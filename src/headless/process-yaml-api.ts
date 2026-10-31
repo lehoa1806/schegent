@@ -32,7 +32,12 @@ import {
 } from '../services/process-yaml/export-service';
 import { preflightProcessDocument } from '../services/process-yaml/preflight-service';
 import type { ExchangeDeps } from '../services/process-yaml/service-ports';
-import type { ImportPlan, ImportPlanRow } from '../services/process-yaml/types';
+import {
+  PROCESS_YAML_RESOURCE_KINDS,
+  type ImportPlan,
+  type ImportPlanRow,
+  type ProcessYamlResourceKind
+} from '../services/process-yaml/types';
 import {
   checkDocumentBytes,
   checkExportSelection,
@@ -143,6 +148,13 @@ export type ImportCommitOutcome = 'imported' | 'partial' | 'failed';
 export interface ImportProcessDocumentResult {
   readonly outcome: ImportCommitOutcome;
   readonly results: readonly ImportLayerResult[];
+  /**
+   * The kinds that had `import` rows and were handed to no write (feature 254, FR-041). Present only when
+   * there are some, and then the outcome is `failed`: a kind nothing wrote is a drop the commit must not
+   * report as success for the rest. Empty in every case the dispatch below covers; it is a guard for the
+   * kind someone adds to the plan and forgets to write (hard rule 63).
+   */
+  readonly undispatched?: readonly string[];
 }
 
 type ImportRowOf<K extends ImportPlanRow['resourceKind']> = Extract<
@@ -174,6 +186,39 @@ function modelsDeltaByBackend(
     (delta[row.backend] ??= []).push(row.modelId);
   }
   return delta;
+}
+
+/**
+ * How each resource kind reaches the store (feature 254, FR-041, V2; research R24).
+ *
+ * Typed over the union, so a kind added to `ProcessYamlResourceKind` with no entry here fails `typecheck`,
+ * naming the key. The three catalog kinds go out together in one package publish; the Model Catalog is the
+ * one configuration-backed kind and has its own save. `tests/lint/process-yaml-coverage-seams.test.ts` holds
+ * that this map covers `PROCESS_YAML_RESOURCE_KINDS` and no more.
+ */
+export const DISPATCH_OF_KIND: {
+  readonly [K in ProcessYamlResourceKind]: 'package-layer' | 'model-settings';
+} = {
+  phase: 'package-layer',
+  pipeline: 'package-layer',
+  workflow: 'package-layer',
+  modelCatalog: 'model-settings'
+};
+
+/**
+ * The kinds that have `import` rows in `plan` and are not in `dispatched`, known kinds first in list order.
+ *
+ * Takes the kinds PRESENT in the plan, not the known list, so a row of a kind the dispatch has never heard
+ * of is named too: that is the shape of the failure (a new kind reaches the plan and nothing writes it).
+ */
+export function undispatchedKinds(plan: ImportPlan, dispatched: ReadonlySet<string>): readonly string[] {
+  const present = new Set<string>();
+  for (const row of plan.rows) {
+    if (row.outcome === 'import') present.add(row.resourceKind);
+  }
+  const known: readonly string[] = PROCESS_YAML_RESOURCE_KINDS;
+  const missing = (kind: string): boolean => present.has(kind) && !dispatched.has(kind);
+  return [...known.filter(missing), ...[...present].filter((kind) => !known.includes(kind) && missing(kind))];
 }
 
 /** The layer key each catalog kind reports under. */
@@ -328,6 +373,9 @@ export async function importProcessDocument(
   }
 
   const results: ImportLayerResult[] = [];
+  // The kinds handed to a write, by whatever outcome. A rejected write is reported in `results`; what
+  // `undispatchedKinds` looks for is a kind with rows that no write was ever asked to take.
+  const dispatched = new Set<string>();
 
   // One call, not three. The layers still go out in dependency order, but the
   // order is now inside the operation rather than in this sequence — see
@@ -335,7 +383,9 @@ export async function importProcessDocument(
   // ones because a package addresses definitions by id: there is no whole-array
   // envelope left for an untouched row to fall out of.
   if (layerRequest.length > 0) {
-    results.push(...packageResults(layerRequest, await deps.publishPackage({ layers: layerRequest })));
+    const published = await deps.publishPackage({ layers: layerRequest });
+    for (const layer of layerRequest) dispatched.add(layer.kind);
+    results.push(...packageResults(layerRequest, published));
     if (results.some((result) => result.ack.status !== 'accepted')) {
       return { outcome: importCommitOutcome(results), results };
     }
@@ -352,8 +402,14 @@ export async function importProcessDocument(
       expectedRevision: modelsRevision,
       mutation: { kind: 'import-package' }
     });
+    dispatched.add('modelCatalog');
     results.push({ key: 'models', ack });
   }
+
+  // Feature 254 (FR-041, V2): a kind with rows that nothing wrote fails the import by name, rather than
+  // letting the commit report success for the kinds that were written.
+  const undispatched = undispatchedKinds(plan, dispatched);
+  if (undispatched.length > 0) return { outcome: 'failed', results, undispatched };
 
   return { outcome: importCommitOutcome(results), results };
 }

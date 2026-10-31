@@ -25,6 +25,11 @@
 //         not a character and that the export write silently rewrote to U+FFFD.
 //         The accepted half proves the well-formed pair still decodes.
 //
+//   254 — no change to the language. The exporter now writes a sequence item that
+//         would read as a key (`ollama:llama3`) double-quoted. The quoted form was
+//         already accepted and the plain form already refused; this vintage pins
+//         both, so the fix to the writer cannot be paid for by widening the reader.
+//
 // The corpus is also checked for its own integrity: an orphaned document or an
 // orphaned expectation fails, because a golden corpus that silently skips a case
 // is worse than no corpus.
@@ -50,7 +55,7 @@ type Half = 'accepted' | 'refused';
 // directory without adding it to this union is the failure mode 086's analyze
 // pass caught: the corpus half of the no-widening guarantee would have covered
 // nothing while still reporting green.
-type Vintage = '084' | '085' | '086' | '091';
+type Vintage = '084' | '085' | '086' | '091' | '254';
 
 function directory(half: Half, vintage: Vintage): string {
   return join(FIXTURES, half, vintage);
@@ -91,7 +96,7 @@ function parse(text: string): YamlMappingNode {
   return result.node;
 }
 
-describe.each(['084', '085', '086', '091'] as const)('process-yaml corpus — accepted/%s', (vintage) => {
+describe.each(['084', '085', '086', '091', '254'] as const)('process-yaml corpus — accepted/%s', (vintage) => {
   const cases = names('accepted', vintage);
 
   it('has fixtures', () => {
@@ -113,7 +118,7 @@ describe.each(['084', '085', '086', '091'] as const)('process-yaml corpus — ac
   });
 });
 
-describe.each(['084', '085', '086', '091'] as const)('process-yaml corpus — refused/%s', (vintage) => {
+describe.each(['084', '085', '086', '091', '254'] as const)('process-yaml corpus — refused/%s', (vintage) => {
   const cases = names('refused', vintage);
 
   it('has fixtures', () => {

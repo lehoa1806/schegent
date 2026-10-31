@@ -41,7 +41,7 @@ import { parseModelCatalogDocument } from './model-catalog-yaml-mapper';
 import { findScalar, validatePhaseDocument } from './phase-yaml-validator';
 import { parsePipelinePackage } from './pipeline-document';
 import { parseWorkflowPackage } from './workflow-document';
-import { parseDocumentBytes } from './yaml-parser';
+import { parseDocumentBytes, tooLargeRefusal } from './yaml-parser';
 import {
   MODEL_CATALOG_YAML_KIND,
   PHASE_YAML_API_VERSION,
@@ -495,6 +495,22 @@ function workflowContext(
  * the write that may follow. The command that wraps it is gated all the same
  * (FR-R4-F05, FR-003), because a refusal appends an audit row.
  */
+/**
+ * Refuse a document the host judged too large before it read a byte of it (FR-R4-F07, FR-003).
+ *
+ * The same outcome and the same audit row as a parsed oversized document: `preflightProcessDocument`
+ * reaches the parser's `too-large` check and refuses through the same `refuse()`, with the same
+ * `tooLargeRefusal()` text. The difference is where the cap was noticed. Here it was noticed by the
+ * file's size, so there are no bytes to hand over and the parser is never entered. Reads and writes
+ * no catalog: a refusal is audited and nothing else (FR-049).
+ */
+export async function preflightOversizedDocument(
+  deps: PreflightDeps,
+  input: Pick<PreflightInput, 'correlationId'> = {}
+): Promise<PreflightOutcome> {
+  return refuse(deps, tooLargeRefusal(), deps.logger.sanitize, input.correlationId);
+}
+
 export async function preflightProcessDocument(
   deps: PreflightDeps,
   input: PreflightInput

@@ -19,7 +19,7 @@
 // lives in this file (contracts/yaml-grammar.md "Determinism"), so determinism
 // is one file's property rather than a convention several modules follow.
 
-import { chooseScalarStyle, quoteDouble } from './scalar-style';
+import { chooseScalarStyle, quoteDouble, type ScalarPosition } from './scalar-style';
 import {
   PHASE_YAML_INDENT,
   type PhaseYamlDocument,
@@ -273,11 +273,15 @@ export type ScalarValue = string | number | boolean;
  * sequence entry it is the dash's indent plus one level, because the dash
  * occupies exactly one level.
  */
-function renderScalar(ownerIndent: string, value: ScalarValue): string {
+function renderScalar(
+  ownerIndent: string,
+  value: ScalarValue,
+  position: ScalarPosition = 'value'
+): string {
   if (typeof value !== 'string') {
     return String(value);
   }
-  const style = chooseScalarStyle(value);
+  const style = chooseScalarStyle(value, position);
   if (style === 'block') {
     const contentIndent = `${ownerIndent}${PHASE_YAML_INDENT}`;
     const body = value
@@ -317,7 +321,9 @@ export function emitMapping(indent: string, order: readonly string[], section: o
 
 /** One `- scalar` entry. `indent` is the dash's own indent. */
 export function emitScalarItem(indent: string, value: ScalarValue): string {
-  return `${indent}- ${renderScalar(`${indent}${PHASE_YAML_INDENT}`, value)}\n`;
+  // The only `'item'` caller (feature 254, FR-009): a sequence item the scanner would read as a
+  // mapping entry, such as `ollama:llama3`, is written quoted.
+  return `${indent}- ${renderScalar(`${indent}${PHASE_YAML_INDENT}`, value, 'item')}\n`;
 }
 
 /**

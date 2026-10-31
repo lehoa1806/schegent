@@ -91,19 +91,67 @@ export function isCatalogActivationTrusted(): boolean {
  *                       and path-free, what narrowing its directories and files
  *                       found. Activation passes its logger; a caller that omits
  *                       it is told nothing.
+ * @param disposables Feature 254 (FR-038, TA7) — where the claim on the store root
+ *                       is released. The store root is claimed for this host while
+ *                       the store lives: a second call for the same root returns
+ *                       `null` with one path-free warning, because two stores on one
+ *                       directory are not ordered by anything (the manifest is
+ *                       last-writer-wins across them). Activation passes the
+ *                       session's `disposables`, which `closeStage2Resources`
+ *                       disposes, so a re-activated Stage 2 claims again. A caller
+ *                       that omits it holds the claim for the life of the host, which
+ *                       is why every caller that builds more than one store for a
+ *                       root passes it. No claim is made in an untrusted workspace or
+ *                       with no folder open: there is no directory to claim.
  */
 export function createHostCatalogStore(
   enumeratePlans: () => Iterable<RunVersionCarrier> = () => [],
   enumerateRetained: () => Iterable<RunVersionCarrier> = () => [],
-  logger?: Pick<SanitizedLogger, 'warn'>
+  logger?: Pick<SanitizedLogger, 'warn'>,
+  disposables?: vscode.Disposable[]
 ): CatalogStore | null {
   if (!isCatalogActivationTrusted()) return null;
+  const anchor = catalogStoreAnchor();
+  if (anchor !== null && !claimStoreRoot(anchor.storeRoot, logger, disposables)) return null;
   return createCatalogStore({
-    fs: createCatalogFsAdapter(catalogStoreAnchor(), logger),
+    fs: createCatalogFsAdapter(anchor, logger),
     clock: systemClock,
     digest: nodeDigest,
     provenance: createQueueRunProvenance(enumeratePlans, enumerateRetained)
   });
+}
+
+/**
+ * The store roots a live host store holds, for this host (feature 254, FR-038).
+ *
+ * In memory, and nothing else: no lock file and no lock directory (FR-038). It orders the stores THIS host
+ * builds; it cannot order another process, which is why the single-writer precondition is also written in
+ * `docs/architecture/durability-decision.md`. `createCatalogStore` itself is not claimed: the test
+ * fixtures build it directly to model two windows.
+ */
+const claimedStoreRoots = new Set<string>();
+
+/** Claim `storeRoot`, or say once, without a path, that it is held. Returns whether the claim was made. */
+function claimStoreRoot(
+  storeRoot: string,
+  logger: Pick<SanitizedLogger, 'warn'> | undefined,
+  disposables: vscode.Disposable[] | undefined
+): boolean {
+  if (claimedStoreRoots.has(storeRoot)) {
+    logger?.warn('catalog store: a store is already open on this catalog directory, so this one was not created');
+    return false;
+  }
+  claimedStoreRoots.add(storeRoot);
+  // Released once: a second dispose of an old claim's Disposable must not free a claim made after it.
+  let held = true;
+  disposables?.push({
+    dispose: () => {
+      if (!held) return;
+      held = false;
+      claimedStoreRoots.delete(storeRoot);
+    }
+  });
+  return true;
 }
 
 /**

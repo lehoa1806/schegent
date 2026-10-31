@@ -28,7 +28,10 @@
 // operator to classify a file before opening it would make "picked the wrong
 // per-kind action" a reachable failure (FR-055a).
 
-import { preflightProcessDocument } from '../../../services/process-yaml/preflight-service';
+import {
+  preflightOversizedDocument,
+  preflightProcessDocument
+} from '../../../services/process-yaml/preflight-service';
 import type { PreflightProcessYamlCommand, PreflightProcessYamlResult } from '../messages';
 import type { CommandHandler, HandlerContext } from './handler-contract';
 import { ack } from './handler-helpers';
@@ -69,6 +72,15 @@ export const handler: CommandHandler<PreflightProcessYamlCommand> = async (ctx) 
   }
   if (opened.outcome === 'failed') {
     await respond(ctx, { outcome: 'failed', message: 'Could not read the document.' });
+    return;
+  }
+  // Feature 254 (FR-003) — the host judged the file over the cap before reading it, so there are no
+  // bytes. The refusal and its audit row are the parser's own, built in one place.
+  if (opened.outcome === 'too-large') {
+    await respond(
+      ctx,
+      await preflightOversizedDocument(ctx.deps, { correlationId: ctx.correlationId })
+    );
     return;
   }
 

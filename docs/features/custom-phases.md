@@ -53,7 +53,7 @@ The new-feature example declares Pipeline `speckit-new-feature` and includes nin
 
 ## Pipeline definition reference
 
-A Pipeline orders Phase identities and declares inputs, outputs, position-addressed bindings, execution defaults, and recommended successors. A Phase ID may repeat; bindings therefore use `phaseIndex` rather than a bare ID. Pipeline IDs are bounded to 64 characters.
+A Pipeline orders Phase identities and declares inputs, outputs, position-addressed bindings, execution defaults, and recommended successors. Execution defaults are advisory: they are stored, exported and imported with the Pipeline, but a Run does not apply them. The Runs launcher shows the settings host policy resolves for each Phase, and lists the authored defaults on a separate line labelled advisory and not applied. A Phase ID may repeat; bindings therefore use `phaseIndex` rather than a bare ID. Pipeline IDs are bounded to 64 characters.
 
 <!-- Source: src/contracts/pipeline-definitions.ts -->
 
@@ -139,7 +139,7 @@ From version 3 its repairs have a stated limit, because a headless run has nobod
 
 ## Versioning and publication
 
-Catalog definitions are stored as immutable version records. Draft and active pointers derive the lifecycle state (`draft`, `active`, or `active-with-draft`). Saving, publishing, restoring, deactivating, and discarding use an expected draft token; stale callers are refused instead of overwriting a newer edit.
+Catalog definitions are stored as immutable version records. Draft and active pointers derive the lifecycle state (`draft`, `active`, or `active-with-draft`). Saving, publishing, restoring, deactivating, and discarding use an expected draft token; stale callers are refused instead of overwriting a newer edit of the same definition. The store runs its writes in turn within one extension host; another process writing the same catalog directory is unsupported, and the last manifest rename would win.
 
 <!-- Source: src/contracts/catalog-lifecycle.ts -->
 <!-- Source: src/catalog/lifecycle-service.ts -->

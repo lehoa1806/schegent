@@ -10,7 +10,7 @@ import type { BackendPingState } from '../../services/backend-ping-service';
 import type { QueueStartFailure } from '../../services/queue-start-failure-registry';
 import type { Disposable, WorkspaceStateStore } from '../../state/workspace-state';
 import type { WorkflowRun } from '../../state/workflow-run';
-import type { EffectiveLimitsProjection } from '../../contracts/snapshot-projections';
+import type { EffectiveLimit, EffectiveLimitsProjection } from '../../contracts/snapshot-projections';
 import type { HistoryStore } from '../../state/history-store';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { WorkflowCatalogResolution } from '../../contracts/workflow-definitions';
@@ -149,6 +149,15 @@ export interface StateProjectorDeps {
   readonly getConfirmationsEnabled?: () => boolean;
   /** FR-R4-F02 (E3 G9) — the limits one Run runs under, from the inputs execution uses; absent publishes none. */
   readonly getEffectiveLimits?: (run: WorkflowRun) => EffectiveLimitsProjection | null;
+  /**
+   * FR-R4-F07 (FR-022; contract D, D3) — the idle and wall-clock bounds a Run would be held to, with
+   * their layers, so the launch projection can state what each Phase would use. Absent publishes no
+   * run settings and the launcher says they are resolved when the Run starts.
+   */
+  readonly getLaunchLimits?: () => {
+    readonly idleTimeoutSeconds: EffectiveLimit<number>;
+    readonly maxDurationSeconds: EffectiveLimit<number>;
+  };
   readonly getDebugLogTail?: () => readonly DebugLogEntry[];
   readonly getAvailableModels?: () => Record<BackendRunnerKind, readonly string[]>;
   readonly getAvailableBackends?: () => readonly BackendRunnerKind[];

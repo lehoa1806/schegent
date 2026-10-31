@@ -1,0 +1,6 @@
+apiVersion: schegent/v1
+kind: ModelCatalog
+groups:
+  - backend: agy
+    models:
+      - ollama:llama3

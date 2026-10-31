@@ -38,6 +38,23 @@ export const WORKFLOW_CONDITION_OPERATORS = [
 ] as const;
 export type WorkflowConditionOperator = (typeof WORKFLOW_CONDITION_OPERATORS)[number];
 
+/**
+ * FR-R4-F07 (FR-027; contract C, C8) -- the operators that compare text, which is what v1 operands are:
+ * a node status, or the location reference an output is recorded as.
+ *
+ * A subset of {@link WORKFLOW_CONDITION_OPERATORS}, which is unchanged: a stored Workflow may still carry
+ * an ordering operator, and the graph validator reports it as `condition-comparison-unsupported` rather
+ * than as an unknown operator. This is the list an authoring surface offers. The evaluator is not
+ * involved and is not edited; it compares only values of the same type, so an ordering operator, or a
+ * number or boolean literal, can never match a text operand.
+ */
+export const WORKFLOW_TEXT_COMPARISON_OPERATORS = [
+  'equals',
+  'notEquals',
+  'in',
+  'exists'
+] as const satisfies readonly WorkflowConditionOperator[];
+
 export function isWorkflowConditionOperator(value: unknown): value is WorkflowConditionOperator {
   return (
     typeof value === 'string' && (WORKFLOW_CONDITION_OPERATORS as readonly string[]).includes(value)

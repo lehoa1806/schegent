@@ -20,6 +20,7 @@
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { WORKFLOW_TEXT_COMPARISON_OPERATORS } from '../../../../src/contracts/workflow-definitions';
 import {
   WORKFLOW_CONDITION_OPERATORS,
   WORKFLOW_NODE_TERMINAL_STATUSES,
@@ -176,12 +177,57 @@ describe('branch endpoints', () => {
 });
 
 describe('condition controls are closed sets (FR-021)', () => {
-  it('offers exactly the contract operators, in contract order', () => {
+  // Feature 254 (FR-R4-F07, C-T6, contract C8; FR-027) -- v1 operands are text, so the picker offers
+  // the four operators that compare text. The ordering operators are still in the contract set (a stored
+  // Workflow may carry one, and the host reports it), but a form that offered them would invite exactly
+  // the condition the host now refuses. This read 'offers exactly the contract operators, in contract
+  // order' when all eight were offered.
+  it('offers exactly the four text-comparison operators, in contract order', () => {
     const { getByTestId } = mount(conditional(STATUS_CONDITION));
 
     expect(optionValues(getByTestId('workflow-condition-operator-0') as HTMLSelectElement)).toEqual([
-      ...WORKFLOW_CONDITION_OPERATORS
+      'equals',
+      'notEquals',
+      'in',
+      'exists'
     ]);
+    expect(WORKFLOW_TEXT_COMPARISON_OPERATORS).toEqual(['equals', 'notEquals', 'in', 'exists']);
+  });
+
+  it('keeps the text-comparison set a subset of the contract operators', () => {
+    for (const operator of WORKFLOW_TEXT_COMPARISON_OPERATORS) {
+      expect(WORKFLOW_CONDITION_OPERATORS).toContain(operator);
+    }
+  });
+
+  it('offers none of the ordering operators on a condition that uses a text comparison', () => {
+    const { getByTestId } = mount(conditional(STATUS_CONDITION));
+    const offered = optionValues(getByTestId('workflow-condition-operator-0') as HTMLSelectElement);
+
+    for (const operator of ['greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual']) {
+      expect(offered).not.toContain(operator);
+    }
+  });
+
+  it('adds the condition\'s own operator when it is outside the set, so a stored value is not silently changed', () => {
+    const { getByTestId } = mount(
+      conditional({ ...STATUS_CONDITION, operator: 'greaterThan' } as WorkflowCondition)
+    );
+    const select = getByTestId('workflow-condition-operator-0') as HTMLSelectElement;
+
+    expect(optionValues(select)).toEqual([...WORKFLOW_TEXT_COMPARISON_OPERATORS, 'greaterThan']);
+    // The select shows the operator the condition really carries, rather than snapping to the first option.
+    expect(select.value).toBe('greaterThan');
+  });
+
+  it('offers only the one extra operator, not every ordering operator', () => {
+    const { getByTestId } = mount(
+      conditional({ ...STATUS_CONDITION, operator: 'lessThan' } as WorkflowCondition)
+    );
+    const offered = optionValues(getByTestId('workflow-condition-operator-0') as HTMLSelectElement);
+
+    expect(offered).toContain('lessThan');
+    expect(offered).not.toContain('greaterThan');
   });
 
   it('offers exactly the two operand sources', () => {

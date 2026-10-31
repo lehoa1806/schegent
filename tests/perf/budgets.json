@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "description": "Performance budgets enforced by perf and integration smoke tests. The inline assertion in each test is the source of truth; this file is the human-readable index. Update both together when a budget changes.",
   "feature": "049-perf-budgets",
-  "updated": "2026-10-30",
+  "updated": "2026-10-31",
   "budgets": [
     {
       "test": "tests/perf/rate-limit-extractor.test.ts",
@@ -87,6 +87,13 @@
       "budgetMs": 1000,
       "constant": "LOCATIONS_BUDGET_MS",
       "rationale": "FR-R4-F21 (feature 249): the location count of one finding is untrusted and bounded only by the 16 MiB capture size. Measured 2026-10-30 on darwin/arm64 (macOS 27.0.1, Node 24.19.0) under a load average of 54: the linear classification took 17 to 54 ms over 7 samples, median 25 ms; the quadratic one it replaced took 25.5 s. The budget is at least 18x the slowest linear sample and at most a twenty-fifth of the quadratic time."
+    },
+    {
+      "test": "tests/perf/process-yaml-scanner-linear.test.ts",
+      "name": "process-YAML scanner: cost of each doubling of a hostile run of spaces (5k, 10k, 20k), six shapes",
+      "budgetRatio": 3.0,
+      "constant": "MAX_DOUBLING_RATIO",
+      "rationale": "FR-R4-F07 (feature 254) S-T1, SC-001: the gated value is a ratio, not a time. Linear work doubles per doubling and quadratic work quadruples, so 3.0 separates them on any machine. Measured 2026-10-31 on darwin/arm64 (Node 24.19.0), load average about 3: before the trims were linearized the ratios were 3.97 to 4.01 on shapes 1, 4 and 6 (561.96 ms, 1,123.84 ms and 562.26 ms per scan at 20k spaces); after, every ratio was 1.36 to 1.99. The 20k medians are recorded and not asserted: 0.41 ms (shape 1), 0.04 ms (shape 4), against SC-001's target of under 50 ms. The same harness over the old regexes (kept in the test as an oracle) must show a ratio above 3.0 at 2.5k, 5k and 10k spaces, which proves the gate can see quadratic growth."
     }
   ],
   "notes": [

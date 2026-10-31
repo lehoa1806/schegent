@@ -21,7 +21,7 @@
 // Errors are values. Nothing in this file throws, mirroring the shipped
 // hand-rolled-parser precedent in src/lib/retry-condition.ts (research R1).
 
-import { PLAIN_FIRST_EXCLUDED, plainScalarDefect } from './scalar-style';
+import { KEY_PATTERN, PLAIN_FIRST_EXCLUDED, looksKeyed, plainScalarDefect } from './scalar-style';
 import type { DocumentRefusal, DocumentRefusalCode, YamlScalarNode } from './types';
 
 export interface YamlEntryToken {
@@ -59,8 +59,8 @@ export type ScanResult =
   | { readonly ok: true; readonly tokens: readonly YamlToken[] }
   | { readonly ok: false; readonly refusal: DocumentRefusal };
 
-const KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*/;
 const INDENT_WIDTH = 2;
+const SPACE_CODE = 0x20;
 
 function refuse(code: DocumentRefusalCode, message: string, line: number): ScanResult {
   return { ok: false, refusal: { code, message: `${message} (line ${line})` } };
@@ -175,12 +175,6 @@ export function scanDocument(text: string): ScanResult {
 type KeyedLineResult =
   | { readonly ok: true; readonly token: YamlEntryToken; readonly lastLineIndex: number }
   | { readonly ok: false; readonly result: ScanResult };
-
-/** Whether `text` opens `key:` — the discriminator between an entry and a scalar. */
-function looksKeyed(text: string): boolean {
-  const keyMatch = KEY_PATTERN.exec(text);
-  return keyMatch !== null && text.slice(keyMatch[0].length).startsWith(':');
-}
 
 /**
  * Read `key: value` starting at `column`. Shared by the mapping-entry path and
@@ -332,6 +326,56 @@ function readSequenceItem(
   };
 }
 
+// FR-R4-F07 (feature 254, FR-001, FR-002) — the two trims below replace regular expressions that
+// backtracked: `/ +$/` and the pair `/ +#.*$/`, `/ +$/`. A run of N spaces that does not end the
+// string made each of them retry from every start position inside the run, so one line of twenty
+// thousand spaces held the host for about a second and the cost quadrupled with every doubling. The
+// loops below read each character once. They accept exactly what the regexes accepted, which the
+// differential test `tests/unit/process-yaml/yaml-scanner-linear-trims.test.ts` holds over a seeded
+// corpus, including the regex quirk that `.` does not match a line terminator.
+
+/**
+ * Remove trailing U+0020 and nothing else, walking back from the end once.
+ *
+ * Replaces `text.replace(/ +$/, '')`, which backtracked quadratically. It is never `trimEnd()`: that
+ * would also remove a trailing tab or U+00A0, which `plainScalarDefect` refuses today, and the
+ * language this scanner accepts must not widen. Exported for the differential test and for nothing
+ * else (feature 254, TA6).
+ */
+export function stripTrailingSpaces(text: string): string {
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === SPACE_CODE) end -= 1;
+  return end === text.length ? text : text.slice(0, end);
+}
+
+/**
+ * Whether a block-scalar header is exactly `|-`, then optionally spaces, then optionally a comment.
+ *
+ * True iff `valueText` is `|-`, then zero or more spaces, then optionally (at least one space, `#`,
+ * and a rest that holds no `\r`, `\n`, U+2028 or U+2029). The rest is excluded because the regex this
+ * replaces, `valueText.replace(/ +#.*$/, '').replace(/ +$/, '') === '|-'`, matched a comment with
+ * `.*$`, and `.` does not match a line terminator: a comment holding one was not stripped, so the line
+ * was refused. The loop keeps that on purpose. Exported for the differential test and for nothing
+ * else (feature 254, TA6).
+ */
+export function isBareBlockHeader(valueText: string): boolean {
+  if (!valueText.startsWith('|-')) return false;
+  let cursor = 2;
+  while (cursor < valueText.length && valueText.charCodeAt(cursor) === SPACE_CODE) cursor += 1;
+  if (cursor === valueText.length) return true;
+  // A comment needs at least one space before its `#`: `|-#x` is not a header.
+  if (cursor === 2 || valueText[cursor] !== '#') return false;
+  for (let i = cursor + 1; i < valueText.length; i++) {
+    if (isLineTerminatorCode(valueText.charCodeAt(i))) return false;
+  }
+  return true;
+}
+
+/** The characters a regular expression's `.` does not match. */
+function isLineTerminatorCode(code: number): boolean {
+  return code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
+}
+
 /**
  * Read a plain scalar, strip any trailing comment, then hand the result to the
  * shared predicate. The scanner does not carry its own copy of the plain-safety
@@ -340,7 +384,7 @@ function readSequenceItem(
  */
 function readPlain(valueText: string, lineNo: number): ScalarResult {
   const commentAt = valueText.indexOf(' #');
-  const value = (commentAt === -1 ? valueText : valueText.slice(0, commentAt)).replace(/ +$/, '');
+  const value = stripTrailingSpaces(commentAt === -1 ? valueText : valueText.slice(0, commentAt));
   const defect = plainScalarDefect(value);
   if (defect !== null) {
     return { ok: false, result: refuse('disallowed-syntax', defect, lineNo) };
@@ -459,8 +503,7 @@ function readBlockLiteral(
   valueText: string,
   lineNo: number
 ): BlockLiteralResult {
-  const header = valueText.replace(/ +#.*$/, '').replace(/ +$/, '');
-  if (header !== '|-') {
+  if (!isBareBlockHeader(valueText)) {
     return {
       ok: false,
       result: refuse(

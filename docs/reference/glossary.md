@@ -10,7 +10,7 @@ Schegent uses separate vocabularies for authored process definitions, queued wor
 | Term | Exact meaning |
 |---|---|
 | **Phase** | A reusable `PhaseDefinition` containing a stable `phaseId`, name, numeric version, and exactly one execution form: an instruction or a skill. |
-| **Pipeline** | A `PipelineDefinition`: an ordered list of Phase IDs plus typed input ports, output ports, bindings, and optional execution defaults. Repeated Phase IDs are legal, so a binding addresses a Phase occurrence by `phaseIndex`. |
+| **Pipeline** | A `PipelineDefinition`: an ordered list of Phase IDs plus typed input ports, output ports, bindings, and optional execution defaults (advisory: carried and exported, not applied to a Run). Repeated Phase IDs are legal, so a binding addresses a Phase occurrence by `phaseIndex`. |
 | **Workflow definition** | A `WorkflowDefinition`: an acyclic graph of Pipeline nodes. Nodes have stable `nodeId` values; connections address those nodes and may carry a structured condition, priority, default marker, or collection-selection rule. |
 | **Catalog** | The workspace-local versioned store for Phase, Pipeline, and Workflow definitions. A manifest entry points to immutable version records and may have a draft version, an active version, or both. |
 | **Draft** | An editable catalog version that is not necessarily used for execution. |
@@ -29,7 +29,7 @@ Schegent uses separate vocabularies for authored process definitions, queued wor
 | **Queue** | One ordered `QueueState` partition. It owns pending Tasks, at most one in-flight Task, lifecycle state, scheduling fields, and pause attribution. |
 | **Task** | The UI term for a `FeatureRequest`: a submitted description and its queue status, timestamps, position, run identity, retry data, and optional frozen run plan. |
 | **Run** | One execution record. Its canonical host type is `WorkflowRun`, even when it is executing a Pipeline rather than a Workflow definition. |
-| **Pipeline snapshot** | The `WorkflowRunPipeline` body frozen for a Run, including resolved Phases and, when present, ports, bindings, execution defaults, recommendations, and catalog provenance. |
+| **Pipeline snapshot** | The `WorkflowRunPipeline` body frozen for a Run, including resolved Phases and, when present, ports, bindings, execution defaults (advisory, carried and not applied), recommendations, and catalog provenance. |
 | **Execution Envelope** | The validated and frozen `ExecutionEnvelope` stored with a Run. It carries the immutable plan, normalized request data, frozen bindings, and output plan used by execution. |
 | **Connected Workflow Run** | A `ConnectedWorkflowRun` coordinating child Pipeline Runs over a frozen Workflow graph. It records node state, child references, routing decisions, and the bound queue. |
 

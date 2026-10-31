@@ -404,3 +404,68 @@ describe('resolveWorkflowCatalog — drift is a transition, not a deletion (FR-0
     expect(repaired.effective.map((workflow) => workflow.workflowId)).toEqual(['stored']);
   });
 });
+
+// Feature 254 (FR-R4-F07, C-T4, contract C6; FR-031, US5 AS4) — a stored Workflow whose condition can
+// never match loads as invalid, and the Workflow beside it is untouched.
+//
+// The catalog resolves every row independently, so refusing one Workflow must not move another. The
+// invalid one keeps its record for display (the Builder shows the defect) and is withheld from the
+// effective set, so nothing can launch it; the valid one is effective as before.
+
+describe('a stored Workflow with an unreachable condition (C-T4, FR-031)', () => {
+  const unreachable = row('unreachable', {
+    nodes: [
+      { nodeId: 'a', pipelineId: 'standard' },
+      { nodeId: 'b', pipelineId: 'standard' }
+    ],
+    connections: [
+      {
+        from: { nodeId: 'a', portId: 'plan' },
+        to: { nodeId: 'b', portId: 'brief' },
+        // An ordering operator on a node status: v1 operands are text, so this can never match.
+        condition: { left: { source: 'node-status', nodeId: 'a' }, operator: 'greaterThan', right: 'completed' }
+      }
+    ],
+    startNodeIds: ['a']
+  });
+  const healthy = row('healthy');
+
+  it('loads invalid, carrying the distinct defect at the condition', () => {
+    const resolution = resolve({ rows: [unreachable, healthy] });
+    const record = forId(resolution, 'unreachable').at(0);
+    expect(record?.status).toBe('invalid');
+    expect(record?.definition).toBeNull();
+    expect(codes(record)).toEqual(['condition-comparison-unsupported']);
+    expect(record?.errors.at(0)?.field).toBe('connections[0].condition');
+  });
+
+  it('keeps the other Workflow effective', () => {
+    const resolution = resolve({ rows: [unreachable, healthy] });
+    const record = forId(resolution, 'healthy').at(0);
+    expect(record?.status).toBe('effective');
+    expect(codes(record)).toEqual([]);
+  });
+
+  it('withholds only the invalid Workflow from the effective set', () => {
+    const resolution = resolve({ rows: [unreachable, healthy] });
+    expect(resolution.effective.map((workflow) => workflow.workflowId)).toEqual(['healthy']);
+  });
+
+  it('is effective again once the condition is repaired, with no other change', () => {
+    const repaired = row('unreachable', {
+      ...unreachable,
+      connections: [
+        {
+          from: { nodeId: 'a', portId: 'plan' },
+          to: { nodeId: 'b', portId: 'brief' },
+          condition: { left: { source: 'node-status', nodeId: 'a' }, operator: 'equals', right: 'completed' }
+        }
+      ]
+    });
+    const resolution = resolve({ rows: [repaired, healthy] });
+    expect(resolution.effective.map((workflow) => workflow.workflowId).sort()).toEqual([
+      'healthy',
+      'unreachable'
+    ]);
+  });
+});

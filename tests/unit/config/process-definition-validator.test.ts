@@ -1,4 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// Feature 254 (S-T5, FR-005) — counts the per-member lookups the capability bound must avoid. It
+// delegates, so every other test in this file sees the real predicate.
+const { capabilitySpy } = vi.hoisted(() => ({ capabilitySpy: vi.fn() }));
+vi.mock('../../../src/contracts/phase-capabilities', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/contracts/phase-capabilities')>();
+  return {
+    ...actual,
+    isPhaseCapability: (value: unknown) => {
+      capabilitySpy(value);
+      return actual.isPhaseCapability(value);
+    }
+  };
+});
+
+import { ALL_PHASE_CAPABILITIES } from '../../../src/contracts/phase-capabilities';
 import {
   PHASE_RETRY_CONDITION_MAX_LEN,
   RETRY_CAP_OUTCOMES
@@ -201,5 +217,73 @@ describe('validatePhaseDefinition', () => {
     ).errors.filter((e) => e.field === 'retryCondition');
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe('invalid-expression');
+  });
+});
+
+// Feature 254 (S-T5, contract S7, data-model §3; FR-005, SC-002) — the capability list is bounded
+// before any per-member work, with the same code, field and message as the YAML reader
+// (tests/unit/process-yaml/phase-yaml-mapper.test.ts). A list of more than four members always holds an
+// unknown member or a repeat, so the count refusal narrows nothing that was accepted.
+describe('Phase capabilities are bounded before per-member work (S-T5, FR-005)', () => {
+  const TOO_MANY_MESSAGE = 'Phase capabilities list at most 4 members';
+
+  const capabilityErrors = (capabilities: unknown) =>
+    validatePhaseDefinition(valid({ capabilities })).errors.filter(
+      (error) => error.field === 'capabilities'
+    );
+
+  it('accepts the empty set with no capability error', () => {
+    expect(capabilityErrors([])).toEqual([]);
+  });
+
+  it('accepts the four distinct known members', () => {
+    expect(capabilityErrors([...ALL_PHASE_CAPABILITIES])).toEqual([]);
+  });
+
+  it('refuses five members with one repeat as too-many-members, with the stated message', () => {
+    const errors = capabilityErrors([...ALL_PHASE_CAPABILITIES, ALL_PHASE_CAPABILITIES[0]]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      field: 'capabilities',
+      code: 'too-many-members',
+      message: TOO_MANY_MESSAGE
+    });
+  });
+
+  const tenThousand = Array.from({ length: 10_000 }, () => ALL_PHASE_CAPABILITIES[0]);
+
+  it('refuses 10,000 members as too-many-members', () => {
+    const errors = capabilityErrors(tenThousand);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ field: 'capabilities', code: 'too-many-members' });
+  });
+
+  it('refuses 10,000 members without looking up a single member', () => {
+    capabilitySpy.mockClear();
+    capabilityErrors(tenThousand);
+    expect(capabilitySpy).toHaveBeenCalledTimes(0);
+  });
+
+  it('still looks members up within the bound (control: the spy sees a four-member list)', () => {
+    capabilitySpy.mockClear();
+    capabilityErrors([...ALL_PHASE_CAPABILITIES]);
+    expect(capabilitySpy.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('keeps invalid-enum for four members with one unknown', () => {
+    const errors = capabilityErrors([...ALL_PHASE_CAPABILITIES.slice(0, 3), 'teleport']);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: 'invalid-enum' });
+  });
+
+  it('keeps duplicate-member for four known members with one repeated', () => {
+    const errors = capabilityErrors([
+      ALL_PHASE_CAPABILITIES[0],
+      ALL_PHASE_CAPABILITIES[0],
+      ALL_PHASE_CAPABILITIES[1],
+      ALL_PHASE_CAPABILITIES[2]
+    ]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: 'duplicate-member' });
   });
 });

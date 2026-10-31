@@ -984,3 +984,200 @@ describe('validation latency (SC-009)', () => {
     ).toBeLessThanOrEqual(SC009_BUDGET_MS);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Feature 254 (FR-R4-F07, C-T2; contract C1, C3; data-model §7; FR-026, FR-028) — a condition whose
+// outcome v1 operand semantics fix in advance is refused
+// ---------------------------------------------------------------------------
+//
+// Operands are text in v1: a node status, or the location reference an output is recorded as. The
+// evaluator compares only values of the same type, and the ordering operators need numbers, so a
+// condition that asks a text operand about a number, a boolean or an ordering can never match. It used
+// to load, validate and silently send every Run down the default route. The graph validator now refuses
+// it with one distinct code, `condition-comparison-unsupported`, at `connections[<i>].condition`.
+//
+// The rule runs AFTER the shape guard and the right-operand check find nothing, so an unknown operator
+// keeps `unsupported-condition` and a malformed `right` keeps `condition-right-invalid`, each with no
+// second defect. For a node-status operand the existing right-operand check already refuses anything
+// but a terminal status, so the new code covers only an ordering operator against a status there.
+//
+// The message carries no authored value: it names the operator (a closed set) and the literal's type.
+// For `equals`, `notEquals` and the ordering operators the fixed outcome is that the condition can
+// never match, so the default route is always taken. For `in` the list holds a non-text member that can
+// never match, but a list that also holds text can still match through it, so that message never says
+// the default route would always be taken (FR-028).
+
+describe('condition-comparison-unsupported (C-T2, FR-026, FR-028)', () => {
+  const left = { source: 'node-output', nodeId: 'a', field: 'verdict' } as const;
+  const statusLeft = { source: 'node-status', nodeId: 'a' } as const;
+  const UNSUPPORTED = 'condition-comparison-unsupported';
+
+  const verdictOf = (condition: unknown): readonly WorkflowFieldError[] =>
+    validateWorkflowGraph(
+      graph(
+        [node('a'), node('b')],
+        [link('a', 'plan', 'b', 'brief', { condition: condition as WorkflowCondition })]
+      ),
+      CATALOG
+    );
+
+  const unsupportedOf = (condition: unknown): WorkflowFieldError[] =>
+    only(verdictOf(condition), UNSUPPORTED);
+
+  describe('is silent for the conditions that can match (a control per valid row)', () => {
+    it.each([
+      ['exists, no right', { left, operator: 'exists' }],
+      ['equals a string', { left, operator: 'equals', right: 'ship' }],
+      ['notEquals a string', { left, operator: 'notEquals', right: 'ship' }],
+      ['in a list of strings', { left, operator: 'in', right: ['ship', 'hold'] }],
+      ['a node status equals a terminal status', { left: statusLeft, operator: 'equals', right: 'completed' }],
+      ['a node status in terminal statuses', { left: statusLeft, operator: 'in', right: ['failed', 'canceled'] }]
+    ])('%s', (_label, condition) => {
+      expect(verdictOf(condition)).toEqual([]);
+    });
+  });
+
+  describe('refuses a non-text literal under equals and notEquals', () => {
+    it.each([
+      ['equals a number', { left, operator: 'equals', right: 5 }, 'number'],
+      ['equals a boolean', { left, operator: 'equals', right: true }, 'boolean'],
+      ['notEquals a number', { left, operator: 'notEquals', right: 5 }, 'number'],
+      ['notEquals a boolean', { left, operator: 'notEquals', right: false }, 'boolean']
+    ])('%s', (_label, condition, kind) => {
+      const defects = unsupportedOf(condition);
+      expect(defects).toHaveLength(1);
+      expect(defects.at(0)).toMatchObject({
+        workflowId: 'wf',
+        field: 'connections[0].condition',
+        code: UNSUPPORTED
+      });
+      expect(defects.at(0)?.message).toContain(kind);
+    });
+  });
+
+  describe('refuses a non-text member of an in list', () => {
+    it.each([
+      ['a number among strings', ['ship', 5]],
+      ['only numbers', [5, 6]],
+      ['a boolean among strings', [true, 'ship']],
+      ['a number and a boolean', [5, false]]
+    ])('%s', (_label, right) => {
+      const defects = unsupportedOf({ left, operator: 'in', right });
+      expect(defects).toHaveLength(1);
+      expect(defects.at(0)?.field).toBe('connections[0].condition');
+    });
+  });
+
+  describe('refuses every ordering operator, whatever the literal', () => {
+    it.each(['greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual'])('%s', (operator) => {
+      for (const right of [3, 'text', true]) {
+        const defects = unsupportedOf({ left, operator, right });
+        expect(defects, `${operator} ${typeof right}`).toHaveLength(1);
+        expect(defects.at(0)?.field).toBe('connections[0].condition');
+      }
+    });
+
+    it('covers a node-status operand under an ordering operator against a status', () => {
+      const defects = unsupportedOf({ left: statusLeft, operator: 'greaterThan', right: 'completed' });
+      expect(defects).toHaveLength(1);
+      expect(defects.at(0)?.field).toBe('connections[0].condition');
+    });
+  });
+
+  describe('leaves the existing defects to the existing checks', () => {
+    it('keeps unsupported-condition for an unknown operator, with no second defect', () => {
+      const errors = verdictOf({ left, operator: 'matches', right: 'ship' });
+      expect(codes(errors)).toContain('unsupported-condition');
+      expect(codes(errors)).not.toContain(UNSUPPORTED);
+    });
+
+    it('keeps condition-right-invalid for a malformed right, with no second defect', () => {
+      for (const condition of [
+        { left, operator: 'equals' },
+        { left, operator: 'equals', right: { nested: 1 } },
+        { left, operator: 'in', right: 'ship' },
+        { left, operator: 'in', right: [] },
+        { left, operator: 'exists', right: 'ship' }
+      ]) {
+        const errors = verdictOf(condition);
+        expect(codes(errors), JSON.stringify(condition)).toContain('condition-right-invalid');
+        expect(codes(errors), JSON.stringify(condition)).not.toContain(UNSUPPORTED);
+      }
+    });
+
+    it('keeps condition-right-invalid for a node status compared with a number, with no second defect (TA14)', () => {
+      const errors = verdictOf({ left: statusLeft, operator: 'equals', right: 5 });
+      const invalid = only(errors, 'condition-right-invalid');
+      expect(invalid).toHaveLength(1);
+      expect(invalid.at(0)?.field).toBe('connections[0].condition.right');
+      expect(codes(errors)).not.toContain(UNSUPPORTED);
+    });
+
+    it('keeps condition-right-invalid for a node status in a list holding a number', () => {
+      const errors = verdictOf({ left: statusLeft, operator: 'in', right: ['completed', 5] });
+      expect(codes(errors)).toContain('condition-right-invalid');
+      expect(codes(errors)).not.toContain(UNSUPPORTED);
+    });
+  });
+
+  it('reports one defect per connection, each at its own index', () => {
+    const errors = validateWorkflowGraph(
+      graph(
+        [node('a'), node('b')],
+        [
+          link('a', 'plan', 'b', 'brief', { condition: { left, operator: 'equals', right: 5 } as WorkflowCondition }),
+          link('a', 'data', 'b', 'list', { condition: { left, operator: 'lessThan', right: 9 } as WorkflowCondition })
+        ]
+      ),
+      CATALOG
+    );
+    expect(only(errors, UNSUPPORTED).map((defect) => defect.field)).toEqual([
+      'connections[0].condition',
+      'connections[1].condition'
+    ]);
+  });
+
+  describe('the message (FR-028)', () => {
+    it('states that v1 compares text and names only the operator and the literal type', () => {
+      const message = unsupportedOf({ left, operator: 'equals', right: 987654 }).at(0)?.message ?? '';
+      expect(message).toMatch(/compare text/);
+      expect(message).toContain('equals');
+      expect(message).toContain('number');
+      // The authored value never reaches the message.
+      expect(message).not.toContain('987654');
+    });
+
+    it('does not echo an authored in-list member', () => {
+      const message = unsupportedOf({ left, operator: 'in', right: ['secret-text', 424242] }).at(0)?.message ?? '';
+      expect(message).not.toContain('424242');
+      expect(message).not.toContain('secret-text');
+    });
+
+    it.each([
+      ['equals', { left, operator: 'equals', right: 5 }],
+      ['notEquals', { left, operator: 'notEquals', right: true }],
+      ['greaterThan', { left, operator: 'greaterThan', right: 3 }],
+      ['lessThanOrEqual', { left, operator: 'lessThanOrEqual', right: 'x' }]
+    ])('says the default route would always be taken for %s', (_label, condition) => {
+      const message = unsupportedOf(condition).at(0)?.message ?? '';
+      expect(message).toMatch(/can never match/);
+      expect(message).toMatch(/default route would always be taken/);
+    });
+
+    it('says an in-list non-text member can never match, and never that the default route is always taken', () => {
+      // `['ship', 5]` can still match through 'ship', so "the default route would always be taken"
+      // would be false of it. The message states what is true: the number member can never match.
+      const message = unsupportedOf({ left, operator: 'in', right: ['ship', 5] }).at(0)?.message ?? '';
+      expect(message).toMatch(/compare text/);
+      expect(message).toMatch(/can never match/);
+      expect(message).toContain('number');
+      expect(message).not.toMatch(/default route/);
+    });
+
+    it('names both literal types when an in list holds both', () => {
+      const message = unsupportedOf({ left, operator: 'in', right: [5, false] }).at(0)?.message ?? '';
+      expect(message).toContain('number');
+      expect(message).toContain('boolean');
+    });
+  });
+});

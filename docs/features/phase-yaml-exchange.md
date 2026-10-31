@@ -38,7 +38,16 @@ Document-level refusal codes are:
 
 A document-level refusal produces no partial import plan.
 
+A file over the limit is refused before it is read. For a local file the host checks the size from the open file and refuses with `too-large` without reading its contents, and otherwise reads at most one byte past the limit, so a file that grew after the check is still refused. A document from another file provider is checked with `stat` first and then read whole, because the editor's file-system API offers no ranged read; the parser's own limit still applies to what it returns. The refusal, its text and its audit row are the same whichever check noticed the size.
+
+A Phase `capabilities` list longer than the four capabilities that exist is refused as `too-many-members` before any member is looked up, in the YAML reader and in the definition validator alike. Every such list already held an unknown or a repeated member, so nothing that was accepted is refused. A line of many spaces is scanned in time proportional to its length.
+
+A Phase `model` is refused on import when it could not be passed to a backend as its own command-line argument: more than 128 characters (`invalid-length`), or not starting with a letter or digit and made of letters, digits and `. _ : / -` (`invalid-charset`), so `--dangerously-skip-permissions` is refused in the plan and not only at the commit. The reader and the definition validator call one check, and `tests/parity/phase-yaml-definition-parity.test.ts` holds their answers together on the boundary values of every Phase field they both check. The one listed difference is `retryCondition`: the reader never parses the expression, because it is inert text during exchange, while the definition validator parses it.
+
+Exports write a sequence item that the reader would take for the start of a mapping entry, such as the model identifier `ollama:llama3`, double-quoted (`- "ollama:llama3"`), and a value that opens with a double quote quoted as well. The same text as a mapping value stays plain (`model: ollama:llama3`), so every other export is byte for byte what it was. The unquoted item `- ollama:llama3` is still refused on import, and `apiVersion` is unchanged: the quoted form was already accepted, and the exchange format's closed subset did not widen. Documents exported before this change that held such an item were refused on import and could not be read back.
+
 <!-- Source: src/services/process-yaml/yaml-scanner.ts -->
+<!-- Source: src/activation/process-yaml-document-read.ts -->
 <!-- Source: src/services/process-yaml/yaml-parser.ts -->
 <!-- Source: src/services/process-yaml/types.ts -->
 <!-- Source: src/services/process-yaml/preflight-service.ts -->

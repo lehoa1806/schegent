@@ -49,9 +49,19 @@ vi.mock('../../lib/process-yaml-ipc', () => ({
 // the kind travels in the layer, so `layersSent` is how a test names which write
 // it is looking at. Acks are queued in send order and default to accepted.
 const publishSpy = vi.fn<(request: PackagePublishRequest) => Promise<LifecycleResult>>();
+// Feature 254 (P-T5, P9) — the wait options the component passes the sender, so a test can deliver
+// the late outcome of a write whose wait ran out exactly the way the transport would.
+let lastWait: { readonly onLateOutcome?: (late: LifecycleResult) => void } | undefined;
 vi.mock('../../lib/catalog-lifecycle', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/catalog-lifecycle')>()),
-  publishDefinitionPackage: (request: PackagePublishRequest) => publishSpy(request)
+  publishDefinitionPackage: (
+    request: PackagePublishRequest,
+    _unused?: unknown,
+    wait?: { readonly onLateOutcome?: (late: LifecycleResult) => void }
+  ) => {
+    lastWait = wait;
+    return publishSpy(request);
+  }
 }));
 
 /** Every layer the commit sent, flattened in send order. */
@@ -1212,17 +1222,18 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
     expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('imported');
   });
 
-  it('writes the Phase layer before the Pipeline layer (FR-038)', async () => {
+  it('sends the Phase layer and the Pipeline layer in one request, Phase first (FR-013, FR-038)', async () => {
     preflightSpy.mockResolvedValue(packageResult());
 
     const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
     await confirm(getByTestId);
 
-    // A Pipeline written first would reference Phases the catalog does not hold.
-    // Two publishes, not one carrying both layers: the second is conditional on
-    // the first, and one package would send them together.
-    expect(publishSpy).toHaveBeenCalledTimes(2);
+    // Feature 254 (FR-013) — ONE publish carrying both layers. The host validates the whole
+    // document, with every candidate overlaid on the catalog, before it writes anything, and orders
+    // the passes itself, so a Pipeline can no longer be written ahead of its Phases. This read
+    // 'Two publishes, not one carrying both layers' when each layer was sent on its own.
+    expect(publishSpy).toHaveBeenCalledTimes(1);
     expect(layersSent().map((layer) => layer.kind)).toEqual(['phase', 'pipeline']);
   });
 
@@ -1232,13 +1243,13 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
     await inspect(getByTestId);
     await confirm(getByTestId);
 
+    expect(publishSpy).toHaveBeenCalledTimes(1);
     expect(publishSpy.mock.calls[0][0]).toEqual({
       layers: [
         {
           kind: 'phase',
           // Two Phases in one layer — a package is not N separate saves, because
-          // both are gated on the same revision, and the first accepted save
-          // moves the revision the second would have gated on.
+          // both are gated on the same revision.
           //
           // Feature 101 (T029) — the `import-package` intent that said so
           // explicitly is gone with the whole-array request; the shared gate is
@@ -1257,12 +1268,7 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
               body: { id: 'plan', name: 'Plan', version: 1, instruction: 'Plan the work.' }
             }
           ]
-        }
-      ]
-    });
-
-    expect(publishSpy.mock.calls[1][0]).toEqual({
-      layers: [
+        },
         {
           kind: 'pipeline',
           // The Pipeline catalog's revision, not the Phase catalog's — they move
@@ -1317,7 +1323,18 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
   });
 
   it('reports the partial outcome exactly, and offers no undo (FR-042a, FR-042c)', async () => {
-    ackWith({ status: 'accepted' }, { status: 'rejected', reason: 'stale-catalog' });
+    // Feature 254 — one acknowledgement now: the Phase layer is live, the Pipeline layer failed to
+    // publish and stays a draft (the host lists it as drafted-only and as the failed layer).
+    ackWith({
+      status: 'rejected',
+      reason: 'package-partial',
+      result: {
+        published: [{ kind: 'phase', total: 2 }],
+        draftedOnly: ['pipeline'],
+        failedKind: 'pipeline',
+        cause: 'stale'
+      }
+    });
     preflightSpy.mockResolvedValue(packageResult());
     const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
@@ -1341,23 +1358,129 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
     expect(outcome.textContent).toContain('again');
   });
 
-  it('does not send the Pipeline write when the Phase write is rejected', async () => {
+  it('rejects every layer when the one request is refused, naming the reason on each row', async () => {
     ackWith({ status: 'rejected', reason: 'stale-catalog' });
     preflightSpy.mockResolvedValue(packageResult());
     const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
     await confirm(getByTestId);
 
-    // A Pipeline whose Phases were never written would reference absent rows.
-    expect(layerFor('pipeline')).toBeUndefined();
+    // Feature 254 (FR-013) — both layers went in the one request, so the one refusal belongs to
+    // every layer. This case read 'does not send the Pipeline write when the Phase write is
+    // rejected' when the layers were sent one at a time, and the Pipeline row said it was never
+    // reached; now nothing is withheld, and nothing was written.
+    expect(publishSpy).toHaveBeenCalledTimes(1);
+    expect(layersSent().map((layer) => layer.kind)).toEqual(['phase', 'pipeline']);
     const rows = Array.from(
       container.querySelectorAll('[data-testid="process-import-result-row"]')
     ) as HTMLElement[];
     expect(rows.map((row) => row.dataset['outcome'])).toEqual(['failed', 'failed', 'failed']);
-    // The Pipeline row was never attempted, so it must not borrow the Phase
-    // layer's reason and send the operator to fix the wrong thing.
-    expect(rows[2].textContent).toContain('stopped before this layer');
+    for (const row of rows) expect(row.textContent).toContain('stale-catalog');
     expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('failed');
+  });
+
+  it('shows each validation defect on the row it belongs to (FR-014)', async () => {
+    ackWith({
+      status: 'rejected',
+      reason: 'validation-failed',
+      result: {
+        defects: [
+          {
+            kind: 'pipeline',
+            id: 'ship-it',
+            field: 'phaseIds[0]',
+            code: 'unknown-phase',
+            message: 'no such Phase'
+          }
+        ],
+        total: 1
+      }
+    });
+    preflightSpy.mockResolvedValue(packageResult());
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    const rows = Array.from(
+      container.querySelectorAll('[data-testid="process-import-result-row"]')
+    ) as HTMLElement[];
+    expect(rows.map((row) => row.dataset['outcome'])).toEqual(['failed', 'failed', 'failed']);
+    // The Pipeline row carries its defect; the Phase rows say the package was refused.
+    expect(rows[2].textContent).toContain('phaseIds[0]');
+    expect(rows[2].textContent).toContain('no such Phase');
+    expect(rows[0].textContent).toContain('Not written: the package was refused');
+    expect(rows[1].textContent).toContain('Not written: the package was refused');
+    expect(rows[0].textContent).not.toContain('phaseIds[0]');
+  });
+
+  // Feature 254 (P-T5, P9) — the late outcome of a write whose wait ran out. The sequence sent
+  // several writes, so the old handler replaced only `layerResults.at(-1)` and the earlier layers'
+  // rows stayed 'unknown' for good. With one request there is one answer for every layer, and the
+  // handler re-projects the whole report from it.
+  it('marks every row unknown on a timeout, and a late accepted outcome then updates every row', async () => {
+    ackWith({ status: 'rejected', reason: 'timeout' });
+    preflightSpy.mockResolvedValue(packageResult());
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    const rowOutcomes = () =>
+      (
+        Array.from(
+          container.querySelectorAll('[data-testid="process-import-result-row"]')
+        ) as HTMLElement[]
+      ).map((row) => row.dataset['outcome']);
+    expect(rowOutcomes()).toEqual(['unknown', 'unknown', 'unknown']);
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('unknown');
+
+    expect(lastWait?.onLateOutcome).toBeTypeOf('function');
+    lastWait?.onLateOutcome?.({ status: 'accepted' });
+    await tick();
+
+    expect(rowOutcomes()).toEqual(['imported', 'imported', 'imported']);
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('imported');
+  });
+
+  it('updates every row from a late partial outcome, not only the last layer', async () => {
+    ackWith({ status: 'rejected', reason: 'timeout' });
+    preflightSpy.mockResolvedValue(packageResult());
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    lastWait?.onLateOutcome?.({
+      status: 'rejected',
+      reason: 'package-partial',
+      result: {
+        published: [{ kind: 'phase', total: 2 }],
+        draftedOnly: ['pipeline'],
+        failedKind: 'pipeline',
+        cause: 'stale'
+      }
+    });
+    await tick();
+
+    const outcomes = (
+      Array.from(container.querySelectorAll('[data-testid="process-import-result-row"]')) as HTMLElement[]
+    ).map((row) => row.dataset['outcome']);
+    expect(outcomes).toEqual(['imported', 'imported', 'failed']);
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('partial');
+  });
+
+  it('ignores a late outcome once the report is no longer the unknown one', async () => {
+    ackWith({ status: 'accepted' });
+    preflightSpy.mockResolvedValue(packageResult());
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    lastWait?.onLateOutcome?.({ status: 'rejected', reason: 'stale-catalog' });
+    await tick();
+
+    const outcomes = (
+      Array.from(container.querySelectorAll('[data-testid="process-import-result-row"]')) as HTMLElement[]
+    ).map((row) => row.dataset['outcome']);
+    expect(outcomes).toEqual(['imported', 'imported', 'imported']);
   });
 });
 

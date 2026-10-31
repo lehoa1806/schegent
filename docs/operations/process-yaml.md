@@ -67,12 +67,27 @@ build a fresh plan.
 <!-- Source: webview-ui/src/components/ProcessImport/ProcessImportPreflight.svelte -->
 <!-- Source: webview-ui/src/components/ProcessImport/process-import-state.ts -->
 
-For process definitions, writes run in dependency order: Phases, then Pipelines,
-then Workflows. Each catalog write checks the revision captured during
-inspection. The sequence stops at the first rejected write and does not remove
-an earlier accepted layer. To recover from a partial import, fix the reported
-condition and inspect the same document again; definitions already present are
-planned as **Skip**.
+For process definitions, Confirm sends the plan's definitions as one publication:
+every layer you are importing, Phases, Pipelines and Workflows, in a single
+request. Each layer carries the revision captured during inspection, so a
+catalog changed since then is refused rather than overwritten.
+
+The host validates the whole document before it writes anything, with every
+definition in it applied over the catalog, so a Pipeline that uses a Phase from
+the same document is checked against the Phase it is about to receive. Only then
+does it write the definitions as drafts and publish them, in dependency order.
+
+- **An invalid definition means nothing is written.** Every defect is shown on the
+  row it belongs to, and the other rows read **Not written: the package was
+  refused**. Fix the document and inspect it again.
+- **A storage failure part-way is reported row by row.** Each row says whether it
+  was published, saved as a draft but not published, or not written. Nothing that
+  landed is removed.
+- **This is not a rollback.** Checking the whole document first stops a bad
+  document from being written; it does not make the write all-or-nothing on disk.
+  To recover from a partial import, fix the reported condition and inspect the
+  same document again; definitions already present, drafts included, are planned
+  as **Skip**.
 
 <!-- Source: webview-ui/src/components/ProcessImport/process-import-state.ts -->
 <!-- Source: webview-ui/src/lib/catalog-lifecycle.ts -->

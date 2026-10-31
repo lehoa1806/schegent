@@ -1,7 +1,9 @@
 # Durability of the evidence writes
 
 **Decided**: 2026-08-26 · **Item**: [`FR-R3-111`](../../../docs/features/round_3/DONE_111_FR-R3-111_durability_and_lifecycle_floors.md)
-**Scope**: the three writes that constitute evidence. Everything else is explicitly out.
+**Extended**: 2026-10-31 · **Item**: `FR-R4-F07` (the catalog store, section 4)
+**Scope**: the three writes that constitute evidence, and the catalog store as a fourth decision.
+Everything else is explicitly out.
 
 ## The finding
 
@@ -30,7 +32,7 @@ APFS, Node 24.19.0), 2026-08-26:
 Reproduce with the script recorded in `specs/156-round-3-close/baselines.md`. Verified locally,
 once, on one platform — a spinning disk or a network mount would be worse, and neither was measured.
 
-## The three writes, and the decision for each
+## The writes, and the decision for each
 
 ### 1. The gate attestation — **barrier applied**
 
@@ -75,10 +77,87 @@ reach.
 Recorded as *unavailable* rather than *declined*, because those are different facts and a reader
 deciding whether to trust this journal needs the right one.
 
+### 4. The catalog store — **barrier applied on local POSIX filesystems**
+
+Added by `FR-R4-F07`. The catalog (`.schegent/catalog/`) holds the operator's authored Phases,
+Pipelines and Workflows, and drafts have no other copy. This one was not an evidence write, so it was
+out of the first decision; it is in now because the loss it prevents is the operator's whole catalog.
+
+**The loss.** A save writes a version record and then replaces `manifest.json` by writing a sibling temp
+file and renaming it over (`src/catalog/atomic-write.ts`). A `rename` that reaches disk before the temp
+file's contents can leave an empty or truncated `manifest.json` after a power cut. The store reads that as
+malformed, and every definition in the catalog becomes unreadable.
+
+**The process-crash order, unchanged.** Record first, then manifest. A crash between them leaves a record
+no manifest entry names: it is reported as collectable, the definition still resolves at its previous
+version, and nothing is lost. The reverse order would leave a manifest entry naming a record that is not
+there. That order is not what this section changes.
+
+**The barrier.** In `src/host-services/catalog-fs-adapter.ts`, for each save:
+
+1. exclusive create of the record (`wx`), write, **`sync`**, close;
+2. **directory sync** of the record's directory;
+3. write of the temp manifest, **`sync`**, close, `rename` over `manifest.json`;
+4. **directory sync** of the store root.
+
+The file `sync` comes before every `close` that precedes a rename or ends an exclusive create. The
+directory sync is a read-only open of an existing directory, so it creates no path. A directory-sync
+failure (`EINVAL`, `ENOTSUP`, `EISDIR`, `EPERM`) does not change the outcome, because the rename has
+landed: the write is reported as written, and one warning carrying only the errno is logged per adapter.
+`tests/integration/catalog-writer-faults.test.ts` fails each step in turn on a real directory and holds
+the reported outcome, the files on disk and the next read's classification, and the order.
+
+**The measured cost.** 200 saves per arm, alternating blocks of 20, a 4 KiB manifest and a 600-byte
+record, in a directory created under the OS temp directory (macOS, arm64, APFS, Node 24.19.0,
+2026-10-31, two takes):
+
+| | Median per save | p95 |
+|---|---|---|
+| No barrier | 0.77 to 0.78 ms | 1.4 ms |
+| Barrier (two file syncs, two directory syncs) | 15.3 to 15.9 ms | 23.7 to 23.8 ms |
+| Difference | **+14.5 to +15.1 ms** | |
+
+About 3.7 ms per barrier, which agrees with the single-`fsync` figure above. A catalog write is an
+operator action, so the cost lands on a click and not on a hot path.
+
+**The single-writer precondition.** The barrier makes one writer's files durable. It does not make two
+writers safe. The manifest is replaced by `rename`, which has no compare, so the last rename wins. This
+product writes the catalog from one place:
+
+- **One store per directory per host.** `createHostCatalogStore` claims the store root, and a second
+  claim while the first is held returns no store and logs one warning without a path. Within that store,
+  writes run in turn (`src/catalog/write-chain.ts`).
+- **The primary window is the writer.** All seven catalog-writing commands are gated on window primacy.
+  A second window on the same workspace does not write.
+- **If a second process writes anyway** (another editor, a script, a primacy handover), a definition's
+  pointer update can be lost. Its version record survives as collectable debris, and no history record is
+  lost. Measured: two independent stores racing a draft of a different definition each, 50 rounds, lost
+  50 of 100 pointer updates, every one leaving its record collectable and none removed
+  (`specs/254-process-authoring-exchange/measurements.md`).
+- **The residual.** Primacy is checked when a command is dispatched, not at the rename. A primacy
+  handover during a save that is already in flight is not fenced.
+
+A compare-and-swap was considered and not built: the only atomic primitives in use are the exclusive
+create and the rename, and a CAS needs a generation-numbered manifest (a storage-layout migration) or a
+claim file (a lock in all but name, which a crash between claim and rename would wedge).
+
+**Platform limits, stated.**
+
+- **Windows:** no directory sync, because Node cannot open a directory there. The file `sync` still runs.
+  The directory entry is not barriered.
+- **Network and remote mounts:** no claim. `fsync` and directory sync are not observed to be honoured over
+  NFS, SMB or a remote workspace, and nothing here tests them.
+- **APFS only observed.** The measurement and the fault tests ran on one machine. Other local
+  filesystems are expected to behave, and have not been observed.
+
+**Power loss: not observed.** Pending qualification: a controlled power cut on a supported filesystem.
+This section states what the writes do and what they cost. It does not claim the catalog survives a power
+cut, because none was cut.
+
 ## What is explicitly out of scope
 
-Everything not named above. Transcripts, runtime logs, metrics rollups, the catalog store, session
-artifacts, checkpoints. `FR-R3-111` §3.1 is explicit — *"Everything else is explicitly out"* — and the
+Everything not named above. Transcripts, runtime logs, metrics rollups, session artifacts,
+checkpoints. `FR-R3-111` §3.1 is explicit — *"Everything else is explicitly out"* — and the
 reason is that a barrier applied everywhere is a barrier nobody measured: the cost lands on paths
 whose loss costs nothing, and the practice gets reverted wholesale the first time someone profiles
 activation.
