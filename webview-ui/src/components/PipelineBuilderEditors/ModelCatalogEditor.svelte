@@ -91,8 +91,8 @@
 </script>
 
 <div class="models-container">
-  <div class="toolbar" style="margin-bottom: 24px;">
-    <div style="flex: 1;"></div>
+  <div class="toolbar models-toolbar">
+    <div class="flex-1"></div>
     <button type="button" class="btn btn-secondary" onclick={onExport}>Export Model Catalog</button>
     <button type="button" class="btn btn-primary" onclick={onsave}>Save All Models</button>
   </div>
@@ -114,10 +114,10 @@
   {/if}
   
   {#each backends as backend}
-    <div class="backend-section" style="margin-bottom: 32px; padding: 16px; background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); border-radius: var(--schegent-radius);">
-      <h3 style="margin-bottom: 16px; text-transform: capitalize;">{backend} Models</h3>
+    <div class="backend-section backend-panel">
+      <h3 class="backend-heading">{backend} Models</h3>
       
-      <div class="toolbar" style="margin-bottom: 16px;">
+      <div class="toolbar backend-toolbar">
         <form class="model-form" onsubmit={(event) => { event.preventDefault(); onAddSubmit(backend); }}>
           <input
             class="text-input flex-1"
@@ -130,8 +130,7 @@
         </form>
         <button
           type="button"
-          class="btn btn-secondary"
-          style="margin-left: 12px;"
+          class="btn btn-secondary btn-offset"
           aria-label={`Detect ${backend} models`}
           title={detectTitle(backend)}
           disabled={detectedFor(backend).length === 0}
@@ -152,8 +151,7 @@
             />
             <button
               type="button"
-              class="btn btn-destructive"
-              style="margin-left: 12px;"
+              class="btn btn-destructive btn-offset"
               aria-label={`Remove ${backend} model ${model}`}
               onclick={() => onremove(backend, index)}
             >Remove</button>

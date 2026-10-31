@@ -19,8 +19,8 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **220** | 2026-10-31 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 195 | 2026-10-31 | hand verdict |
+| Gate files | **221** | 2026-10-31 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 196 | 2026-10-31 | hand verdict |
 | Marked `partially redundant` | 25 | 2026-10-31 | hand verdict |
 | Marked `redundant` | 0 | 2026-10-31 | hand verdict |
 
@@ -457,6 +457,7 @@ is decided about this one entry.
 | `no-new-error-cast.test.ts` | FR-R3-110 — the error-cast baseline is shrink-only | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-running-state-literal.test.ts` | Feature 017 — no stray running state literal | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-scope-in-catalog-payloads.test.ts` | catalog payloads carry no scope, no shadowed status, and no layer id (SC-007) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `no-static-inline-style.test.ts` | no static inline style in webview Svelte files (FR-028) | — | unique | the browser smoke `tests/visual/actual-policy.visual.spec.ts` observes the violation, but only on the routes it visits and it is not a lint gate; no sibling gate, type, generated contract or compiler flag refuses the attribute; see Method |
 | `no-transport-in-audit.test.ts` | FR-R3-007 — CLI transport stays out of the structured audit log | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-tryAutoDrain-doc-references.test.ts` | Feature 056 Track 5 — operator docs are free of removed symbols | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-unaddressed-queue-command.test.ts` | every webview queue-lifecycle command names its queue | — | unique | the two adjacent gates were read and neither holds it: `queue-command-reachability.test.ts` asks whether a queue command has a webview call site, never whether that site says which queue it means; `no-implicit-default-queue.test.ts` scans `src/`/`tests/` and deliberately permits a value fallback at a caller that tried to name its queue, one layer below the webview senders that never tried. No type holds it either — `queueId` is optional by contract, so omitting it compiles |

@@ -35,4 +35,10 @@ describe('buildCspMeta', () => {
       expect(csp).not.toContain(token);
     }
   });
+
+  it('restricts base-uri and form-action to none (FR-029)', () => {
+    const csp = buildCspMeta(cspSource, nonce);
+    expect(csp).toContain(`base-uri 'none'`);
+    expect(csp).toContain(`form-action 'none'`);
+  });
 });

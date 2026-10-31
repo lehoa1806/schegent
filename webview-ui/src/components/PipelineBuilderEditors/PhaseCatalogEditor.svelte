@@ -229,7 +229,7 @@
   <button class="btn btn-primary" data-testid="phases-add" onclick={onadd} disabled={!trusted || savePending || mutationActive}>Add Phase</button>
   <button class="btn" disabled={!trusted || savePending || mutationActive || historyIndex <= 0} onclick={onundo}>Undo</button>
   <button class="btn" disabled={!trusted || savePending || mutationActive || historyIndex >= historyLength - 1} onclick={onredo}>Redo</button>
-  <button class="btn btn-secondary" data-testid="phases-save-all" style="margin-left:auto" onclick={onsave} disabled={!trusted || savePending || !mutationActive}>{savePending ? 'Saving…' : 'Save Phase'}</button>
+  <button class="btn btn-secondary push-right" data-testid="phases-save-all" onclick={onsave} disabled={!trusted || savePending || !mutationActive}>{savePending ? 'Saving…' : 'Save Phase'}</button>
 </div>
 {#if snapshot.phaseCatalog.warnings.length > 0}
   <div class="catalog-warning" role="status" aria-live="polite">
@@ -390,7 +390,7 @@
                 <input class="text-input" value={phase.skill ?? ''} readonly={selectedReadOnly} aria-invalid={phase.sourceErrors.some((error) => error.field === 'skill' || error.field === 'directive') ? 'true' : undefined} aria-describedby={phaseErrorId(phase)} oninput={(event) => onphasechange(index, { skill: event.currentTarget.value })} placeholder="skill-name" />
               </label>
             {/if}
-            <label class="form-field" style="flex: 1">
+            <label class="form-field flex-1">
               <span class="form-label">Model</span>
               <select class="select-input" data-testid="phases-model-{phase.id}" value={phase.model ?? ''} disabled={selectedReadOnly} onchange={(event) => onphasechange(index, { model: event.currentTarget.value || undefined })}>
                 <option value="">[Inherit / Default Backend Model]</option>
@@ -402,7 +402,7 @@
                 {/each}
               </select>
             </label>
-            <label class="form-field" style="flex: 1">
+            <label class="form-field flex-1">
               <span class="form-label">Effort</span>
               <select class="select-input" data-testid="phases-effort-{phase.id}" value={phase.effort ?? ''} disabled={selectedReadOnly} onchange={(event) => { const value = event.currentTarget.value; onphasechange(index, { effort: value ? (value as PhaseDefinition['effort']) : undefined }); }}>
                 <option value="">[Inherit]</option>
@@ -411,7 +411,7 @@
                 {/each}
               </select>
             </label>
-            <label class="form-field" style="flex: 1">
+            <label class="form-field flex-1">
               <!-- Feature 099 (T488, FR-041) — no precedence badge. It named the
                    layer whose `runner` won; precedence is the answer to "which
                    layer won", and one layer answers it by existing. -->

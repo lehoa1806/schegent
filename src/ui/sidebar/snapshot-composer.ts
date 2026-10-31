@@ -1,6 +1,6 @@
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
-import type { SanitizedLogger } from '../../lib/logger';
+import type { ProjectionLogger } from './projection-failure-episodes';
 import type { WorkspaceStateStore } from '../../state/workspace-state';
 import type { WorkflowRun } from '../../state/workflow-run';
 import type { RunStateMap } from '../../state/run-state-migrator';
@@ -84,7 +84,7 @@ export interface SnapshotComposerContext {
   readonly ownerId: string;
   readonly forcedIsPrimary: boolean | null;
   readonly now: () => Date;
-  readonly logger: Pick<SanitizedLogger, 'warn' | 'debug' | 'sanitize'> | null;
+  readonly logger: ProjectionLogger | null;
   readonly externalSanitize: ((value: string | null | undefined) => string) | null;
   readonly monitor: Pick<ClaudeCliMonitor, 'getCurrentState'> | null;
   readonly history: Pick<HistoryStore, 'list'> | null;
@@ -228,9 +228,9 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     ...(deps.getWorkflowPipelineRefs !== undefined
       ? { workflowRefs: deps.getWorkflowPipelineRefs() }
       : {}),
-    onError: (message) => ctx.logger?.warn(message)
+    onError: (message) => ctx.logger?.projectionFailed('pipeline-catalog', message)
   });
-  const workflowCatalog = composeWorkflowCatalogProjection(deps, sanitize, (m) => ctx.logger?.warn(m));
+  const workflowCatalog = composeWorkflowCatalogProjection(deps, sanitize, (m) => ctx.logger?.projectionFailed('workflow-catalog', m));
   // Feature 092 (T092, T093, T095, FR-048/FR-051/FR-053) — one runtime per
   // registry entry, composed from projections that already exist rather than
   // rebuilt: `queueProjection.queues` is the registry read, and
@@ -255,7 +255,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     effectiveLimitsOf: deps.getEffectiveLimits
   });
 
-  const trust = composeTrustProjection((message) => ctx.logger?.warn(message));
+  const trust = composeTrustProjection((message) => ctx.logger?.projectionFailed('trust-capabilities', message));
   // Feature 102 (FR-R3-018) — read off the two catalog projections above, never
   // re-resolved from the store; absent while either is still unresolved.
   const launchables = buildLaunchProjection(pipelineCatalogProjection, workflowCatalog, phaseCatalogProjection, ctx.defaultRunnerKind, deps.getLaunchLimits?.());

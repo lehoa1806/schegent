@@ -58,6 +58,8 @@
   let draftName = $state('');
   let configuring = $state(false);
   let configOpener: HTMLElement | null = $state(null);
+  // FR-R4-F08 (K8) — the tier's own root, offered to the dialog as its focus fallback.
+  let tierRoot: HTMLElement | null = $state(null);
 
   function openConfig(event: MouseEvent): void {
     configOpener = event.currentTarget as HTMLElement;
@@ -101,7 +103,13 @@
   }
 </script>
 
-<main class="queues-tier" data-testid="queues-tier" aria-label="Queues">
+<main
+  class="queues-tier"
+  data-testid="queues-tier"
+  aria-label="Queues"
+  tabindex="-1"
+  bind:this={tierRoot}
+>
   <header class="tier-header">
     <div>
       <h1>Queues</h1>
@@ -131,6 +139,7 @@
       machineMemoryBytes={snapshotStore.snapshot?.streamPressure?.machineMemoryBytes ?? 0}
       onClose={closeConfig}
       originatingElement={configOpener}
+      fallbackFocusElement={tierRoot}
     />
   {/if}
 
