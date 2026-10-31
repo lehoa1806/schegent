@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 128
+    vacuity-census-denominator: 129
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **128** |
+| Gates the detector calls **controlled** (the denominator) | **129** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1595,3 +1595,21 @@ The rate stays **0.0%**: the entrant was mutated with the rest and did not survi
 | Gate | Seeded case that must fail | Result |
 |---|---|---|
 | `execution-defaults-stay-advisory.test.ts` (N7) | `readersIn` over `src/config/pipeline-snapshot.ts`, a file that reads the field in code | names the file; and a source whose only mention is in a comment is not named |
+
+**Denominator movement 128 → 129 (2026-10-31, feature 255 / `FR-R4-F08`).** One gate joined, controlled on
+its first run. Attribution is by census membership: the feature added exactly one file under `tests/lint/`,
+`no-static-inline-style.test.ts`, and the denominator rose by exactly one when the census was re-run over the
+tree that held it. None left.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `no-static-inline-style.test.ts` (128 → 129) | Joined (N4). Walks every `.svelte` file under `webview-ui/src` and refuses a `style="..."` attribute whose value holds no `{`, because the webview ships under a policy whose `style-src` takes a nonce and nothing else. Its controls are a floor of 100 files scanned, a synthetic static attribute it must refuse beside a dynamic one it must not, and a pinned count of the one dynamic attribute, so neither an empty walk nor a static attribute relabelled dynamic passes. |
+
+The rate stays **0.0%**: the census's other three cases strip every gate's controls and re-ask the detector,
+and they pass with the entrant in the set.
+
+**Seeded red of the gate this feature added.** Shipped with the case that shows it can fail, run on 2026-10-31:
+
+| Gate | Seeded case that must fail | Result |
+|---|---|---|
+| `no-static-inline-style.test.ts` (N4) | the 13 static attributes the Builder's editors carried before they moved; and `style="margin-left:auto"` put back into `PipelineToolbar.svelte` | the first run named all 13 as `path:line`; the second named `PipelineToolbar.svelte:188`; the synthetic dynamic attribute is not named |

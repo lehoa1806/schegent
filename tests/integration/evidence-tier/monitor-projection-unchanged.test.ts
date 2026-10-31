@@ -40,7 +40,7 @@ import type { QueueState } from '../../../src/queue/feature-request';
 import { AuditTailState } from '../../../src/ui/sidebar/audit-tail-state';
 import { ProjectorBookkeepingRegistry } from '../../../src/ui/sidebar/projector-bookkeeping-registry';
 import { AUDIT_TAIL_MAX, type WorkflowSnapshot } from '../../../src/ui/sidebar/snapshot';
-import { composeWorkflowSnapshot } from '../../../src/ui/sidebar/snapshot-composer';
+import { ProjectionFailureEpisodes } from '../../../src/ui/sidebar/projection-failure-episodes';
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
 
@@ -115,7 +115,7 @@ function harness(recorderFor?: (logger: SanitizedLogger) => CliTransportRecorder
       elapsed += ms;
     },
     compose: () =>
-      composeWorkflowSnapshot({
+      new ProjectionFailureEpisodes().compose({
         deps: { getDebugLogTail: () => logSink.getEntries() },
         store: {
           getRunMap: () => ({}),

@@ -98,6 +98,16 @@
 .pb .model-form { display: flex; gap: 8px; flex: 1; }
 .pb .models-list { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; }
 .pb .model-list-item { display: flex; align-items: center; background: transparent; border-bottom: 1px solid var(--schegent-divider); padding: 8px 12px; border-radius: 0; }
+/* FR-R4-F08 (P9, FR-028) — the static inline styles of the Builder's editors, as classes. A static
+   `style="..."` is a `style-src-attr` violation under the policy the extension ships, so each moved
+   here with its declarations unchanged (`.flex-1` above already carried `flex: 1`). These sit after
+   every rule they could meet on the same element, at the same specificity, so none is outranked. */
+.pb .models-toolbar { margin-bottom: 24px; }
+.pb .backend-panel { margin-bottom: 32px; padding: 16px; background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); border-radius: var(--schegent-radius); }
+.pb .backend-heading { margin-bottom: 16px; text-transform: capitalize; }
+.pb .backend-toolbar { margin-bottom: 16px; }
+.pb .btn-offset { margin-left: 12px; }
+.pb .push-right { margin-left: auto; }
 .pb .save-error-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-errorForeground); border-radius: var(--schegent-radius); color: var(--schegent-error-text); font-size: 0.9em; }
 .pb .save-error-icon { font-size: 1.1em; flex-shrink: 0; }
 .pb .save-error-text { flex: 1; word-break: break-word; }

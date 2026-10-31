@@ -191,9 +191,8 @@
     Export Workflow
   </button>
   <button
-    class="btn btn-secondary"
+    class="btn btn-secondary push-right"
     data-testid="workflows-save-all"
-    style="margin-left:auto"
     onclick={onsave}
     disabled={saveDisabled}
   >

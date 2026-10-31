@@ -17,7 +17,12 @@ export function buildCspMeta(cspSource: string, nonce: string): string {
     `style-src ${cspSource} 'nonce-${nonce}'`,
     `script-src 'nonce-${nonce}'`,
     `font-src ${cspSource}`,
-    `connect-src 'none'`
+    `connect-src 'none'`,
+    // FR-R4-F08 (P10, FR-029) — adopted after the actual-policy smoke passed under them with every
+    // form the webview mounts submitted. Both only restrict: no `<base>` can retarget a relative
+    // URL, and no form may navigate away.
+    `base-uri 'none'`,
+    `form-action 'none'`
   ];
   return directives.join('; ') + ';';
 }

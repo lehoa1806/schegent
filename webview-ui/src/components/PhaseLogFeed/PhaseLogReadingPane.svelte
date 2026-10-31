@@ -16,15 +16,21 @@
   //     dismisses the affordance.
   //
   // Truncation banner: when the host capped the iteration's entries
-  // (entries.length === MAX_ENTRIES === 500) the head was dropped; the
+  // (a read of `PHASE_LOG_MAX_ENTRIES` rows, 500) the head was dropped; the
   // synthetic `truncated-head` entry already carries the dropped
   // count, so this component does NOT render a secondary banner.
+  //
+  // FR-R4-F08 (L6) — the live tail is windowed to the same 500 rows, so once it
+  // is full `entries.length` stops moving while entries keep arriving. The
+  // "new entries" count is therefore taken over what was RECEIVED: the marker's
+  // dropped count plus the real entries.
 
   import type { PhaseLogDisplayEntry } from '../../../../src/services/phase-log/types';
   import PhaseLogEntry from './PhaseLogEntry.svelte';
   import MetadataStrip from './parts/MetadataStrip.svelte';
   import { detectMetadataLinesFromSummary } from '../../lib/activity-feed/detect-metadata-line';
   import type { MetadataLine } from '../../lib/activity-feed/types';
+  import { hiddenEntryCount } from '../../lib/phase-log-window';
 
   interface Props {
     readonly entries: readonly PhaseLogDisplayEntry[];
@@ -78,6 +84,12 @@
   // via the affordance click).
   let newEntryCount = $state(0);
 
+  /** Entries received so far: those hidden behind the marker plus those in the list. */
+  function receivedCount(list: readonly PhaseLogDisplayEntry[]): number {
+    const marker = list.at(0)?.kind === 'truncated-head' ? 1 : 0;
+    return hiddenEntryCount(list) + list.length - marker;
+  }
+
   function isSticky(el: HTMLElement): boolean {
     return el.scrollTop + el.clientHeight >= el.scrollHeight - STICKY_THRESHOLD_PX;
   }
@@ -92,7 +104,7 @@
     if (!next && stickyAtBottom) {
       // User just scrolled up off the bottom — snapshot the current
       // entry count so subsequent rerenders compute a stable delta.
-      baselineCount = entries.length;
+      baselineCount = receivedCount(entries);
     }
     stickyAtBottom = next;
   }
@@ -116,7 +128,7 @@
   // re-runs whenever the list grows. When NOT sticky, recompute the
   // "↓ N new entries" delta from the captured baseline.
   $effect(() => {
-    const len = entries.length;
+    const len = receivedCount(entries);
     const el = listEl;
     if (el === null) return;
     if (stickyAtBottom) {

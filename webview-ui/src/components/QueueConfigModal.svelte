@@ -58,8 +58,10 @@
      */
     queueSummaries?: readonly QueueSummary[];
     onClose: () => void;
-    /** Focus returns here on unmount, as `ConfirmDialog` does. */
+    /** Focus returns here on unmount, as `ConfirmDialog` does, while it is still connected. */
     originatingElement?: HTMLElement | null;
+    /** FR-R4-F08 (K7) — focus target when the opener is gone; the Queues tier passes its root. */
+    fallbackFocusElement?: HTMLElement | null;
     /**
      * FR-R3-130 (T1495) — `os.totalmem()`, from the stream-pressure projection.
      *
@@ -76,6 +78,7 @@
     queueSummaries = [],
     onClose,
     originatingElement = null,
+    fallbackFocusElement = null,
     machineMemoryBytes = 0
   }: Props = $props();
 
@@ -127,6 +130,7 @@
   let refusal = $state<string | null>(null);
   let busy = $state(false);
   let capInputEl: HTMLInputElement | null = $state(null);
+  let dialogEl: HTMLElement | null = $state(null);
 
   // Feature 195 (T040, FR-019) — one message per queue row, keyed by
   // `queueId`, so a refusal or no-op on one queue's control cannot bleed onto
@@ -147,9 +151,14 @@
     return queueSummaries.find((entry) => entry.id === queueId)?.failurePolicy ?? 'halt-on-failure';
   }
 
+  // FR-R4-F08 (K7) — on unmount focus goes to the opener while it is connected, else to the
+  // fallback, else nowhere: focusing a detached element is a silent no-op that strands focus.
   onMount(() => {
     void tick().then(() => capInputEl?.focus());
-    return () => originatingElement?.focus?.();
+    return () => {
+      if (originatingElement?.isConnected === true) originatingElement.focus?.();
+      else if (fallbackFocusElement?.isConnected === true) fallbackFocusElement.focus();
+    };
   });
 
   async function save(): Promise<void> {
@@ -208,7 +217,31 @@
     };
   }
 
+  // FR-R4-F08 (K5) — the focus trap: ConfirmDialog's wrap rule and boundary-only `preventDefault`,
+  // over a set read at each keypress because this dialog's stops change while it is open (a queue
+  // added to `queues` adds a select; a pending write disables Save). Outside focus is pulled in.
+  const FOCUSABLE = 'input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  function trapTab(event: KeyboardEvent): void {
+    if (dialogEl === null) return;
+    const stops = Array.from(dialogEl.querySelectorAll<HTMLElement>(FOCUSABLE));
+    const first = stops.at(0);
+    const last = stops.at(-1);
+    if (first === undefined || last === undefined) return;
+    const active = document.activeElement;
+    const outside = active === null || !dialogEl.contains(active);
+    if (outside) (event.shiftKey ? last : first).focus();
+    else if (event.shiftKey && active === first) last.focus();
+    else if (!event.shiftKey && active === last) first.focus();
+    else return;
+    event.preventDefault();
+  }
+
   function onKeyDown(event: KeyboardEvent): void {
+    if (event.key === 'Tab') {
+      trapTab(event);
+      return;
+    }
     if (event.key !== 'Escape') return;
     event.preventDefault();
     onClose();
@@ -223,6 +256,7 @@
   aria-modal="true"
   aria-labelledby="queue-config-title"
   data-testid="queue-config-modal"
+  bind:this={dialogEl}
 >
   <h2 id="queue-config-title">Queue settings</h2>
 
