@@ -1,6 +1,6 @@
 # Command Palette reference
 
-This is the manifest-parity index for every command Schegent contributes to the VS Code Command Palette. The full boundary contract—including accepted arguments, nine registered-only command IDs, all 61 webview messages, guards, and backend argv—is in [API and command reference](api-and-cli.md).
+This is the manifest-parity index for every command Schegent contributes to the VS Code Command Palette. The full boundary contract—including accepted arguments, the registered-only command IDs, every webview message, guards, and backend argv—is in [API and command reference](api-and-cli.md).
 
 <!-- Source: package.json -->
 <!-- Source: src/activation/ui-wiring.ts -->

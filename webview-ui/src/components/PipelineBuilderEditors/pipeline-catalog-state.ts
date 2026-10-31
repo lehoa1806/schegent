@@ -20,6 +20,7 @@ import type {
   PipelineOutputPort,
   WorkflowSnapshot
 } from '../../lib/snapshot-types';
+import { boundaryRefusalText } from '../../lib/boundary-refusal-text';
 import { authoredPhaseSequence } from '../../../../src/contracts/pipeline-definitions';
 import type { SavePipelineRow } from '../../lib/definition-rows';
 import type { MutablePipeline, PipelinePortPatch } from './types';
@@ -719,5 +720,5 @@ export function formatPipelineSaveRejection(reason: string, result: unknown): st
     return `${reason} — ${visible.join('; ')}${remaining > 0 ? `; +${remaining} more` : ''}`;
   }
   if (reason === 'stale-catalog') return `${reason} — refresh the catalog, then reapply the draft`;
-  return reason;
+  return boundaryRefusalText(reason);
 }

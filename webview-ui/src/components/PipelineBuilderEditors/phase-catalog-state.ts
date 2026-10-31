@@ -1,3 +1,4 @@
+import { boundaryRefusalText } from '../../lib/boundary-refusal-text';
 import { AUTHORED_PHASE_FIELDS } from '../../../../src/contracts/process-definitions';
 import type { PhaseDefinition, WorkflowSnapshot } from '../../lib/snapshot-types';
 import type { SavePhaseRow } from '../../lib/definition-rows';
@@ -276,5 +277,5 @@ export function formatPhaseSaveRejection(reason: string, result: unknown): strin
     return `${reason} — ${visible.join('; ')}${remaining > 0 ? `; +${remaining} more` : ''}`;
   }
   if (reason === 'stale-catalog') return `${reason} — refresh the catalog, then reapply the draft`;
-  return reason;
+  return boundaryRefusalText(reason);
 }

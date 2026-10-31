@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { PipelineDefinition } from '../lib/snapshot-types';
+  import { OUTCOME_NOT_YET_KNOWN_TEXT, boundaryRefusalText } from '../lib/boundary-refusal-text';
   import { postCommand } from '../lib/vscode-api';
-  import { snapshotStore } from '../lib/snapshot-store.svelte';
+  import { sendIntent } from '../lib/intent-ledger';
+  import type { AckResult } from '../lib/snapshot-store.svelte';
   import { CMD_START } from '../lib/messages';
 
   const MAX_TEXTAREA_LINES = 12;
@@ -33,12 +35,20 @@
   let operatorTouchedPipeline = $state(false);
   let textareaEl = $state<HTMLTextAreaElement | undefined>(undefined);
 
-  let submitInFlightId = $state<string | null>(null);
+  let submitInFlight = $state(false);
   let submitFeedback = $state<
     | { kind: 'accepted'; queueName: string | null }
     | { kind: 'rejected'; reason: string }
+    | { kind: 'unknown' }
     | null
   >(null);
+
+  // FR-R4-F05 (I7, I8) — the wait is the ledger's 5 s. The in-flight send's signal is aborted when
+  // this component goes: its timer and late callback are removed, and the ledger keeps the
+  // identity for a retry.
+  const SUBMIT_TIMEOUT_MS = 5_000;
+  let submission: AbortController | null = null;
+  $effect(() => () => submission?.abort());
 
   // Feature 098 (T049, FR-033a) — `defaultPipelineId` is the empty string when
   // no default is set, which is what a fresh install ships now that no Pipeline
@@ -76,42 +86,61 @@
   const submitDisabled = $derived(
     trimmedDescription.length === 0 ||
       availablePipelines.length === 0 ||
-      submitInFlightId !== null
+      submitInFlight
   );
 
   function onPipelineChange(): void {
     operatorTouchedPipeline = true;
   }
 
-  function dispatchStart(draft: { description: string; pipelineId?: string }): void {
+  /** One ack, shown through the one text path whether it arrives in time or late (O4). */
+  function showAck(ack: AckResult): void {
+    if (ack.status === 'accepted') {
+      const result = ack.result as { outcome?: string; queueName?: string | null } | undefined;
+      if (result?.outcome === 'enqueued') {
+        description = '';
+        submitFeedback = { kind: 'accepted', queueName: result.queueName ?? null };
+      }
+      return;
+    }
+    // FR-R4-F05 (O1) — the shared boundary text, never the raw reason.
+    submitFeedback = { kind: 'rejected', reason: boundaryRefusalText(ack.reason ?? '') };
+  }
+
+  async function dispatchStart(draft: { description: string; pipelineId?: string }): Promise<void> {
     const payload: Record<string, unknown> = { description: draft.description };
     if (draft.pipelineId !== undefined && draft.pipelineId !== 'standard') {
       payload['pipelineId'] = draft.pipelineId;
     }
     if (queueId !== undefined) payload['queueId'] = queueId;
-    const { correlationId } = postCommand(CMD_START, payload as never);
-    submitInFlightId = correlationId;
+    const controller = new AbortController();
+    submission = controller;
+    submitInFlight = true;
     submitFeedback = null;
-    snapshotStore.onceAck(correlationId, (ack) => {
-      submitInFlightId = null;
-      if (ack.status === 'accepted') {
-        const result = ack.result as
-          | { outcome?: string; queueName?: string | null }
-          | undefined;
-        if (result?.outcome === 'enqueued') {
-          description = '';
-          submitFeedback = { kind: 'accepted', queueName: result.queueName ?? null };
-        }
-        return;
-      }
-      submitFeedback = { kind: 'rejected', reason: ack.reason ?? 'rejected' };
-    });
+    try {
+      // The post stays here, in the component that holds the command today (I4).
+      const outcome = await sendIntent({
+        type: CMD_START,
+        payload,
+        post: (correlationId, stored) => {
+          postCommand(CMD_START, stored as never, { correlationId });
+        },
+        timeoutMs: SUBMIT_TIMEOUT_MS,
+        signal: controller.signal,
+        onLateOutcome: showAck
+      });
+      if (controller.signal.aborted) return;
+      if (outcome.kind === 'ack') showAck(outcome.ack);
+      else if (outcome.kind === 'unknown') submitFeedback = { kind: 'unknown' };
+    } finally {
+      if (!controller.signal.aborted) submitInFlight = false;
+    }
   }
 
   function onSubmit(event: Event): void {
     event.preventDefault();
     if (submitDisabled) return;
-    dispatchStart({
+    void dispatchStart({
       description: trimmedDescription,
       pipelineId: selectedPipelineId
     });
@@ -171,6 +200,8 @@
       >
         {#if submitFeedback.kind === 'accepted'}
           Enqueued to {submitFeedback.queueName ?? 'queue'}
+        {:else if submitFeedback.kind === 'unknown'}
+          {OUTCOME_NOT_YET_KNOWN_TEXT}
         {:else}
           Rejected: {submitFeedback.reason}
         {/if}
@@ -299,4 +330,5 @@
   }
   .submit-feedback-accepted { color: var(--schegent-color-completed); }
   .submit-feedback-rejected { color: var(--schegent-error-text); }
+  .submit-feedback-unknown { color: var(--schegent-color-text-muted, inherit); }
 </style>

@@ -37,7 +37,7 @@
     defaultQueueId, findQueueRuntime, haltedStartFailure,
     isWorkingARun, ownsRun
   } from '../../lib/queue-runtime-view';
-  import { clearCompleted, clearQueue, confirmAndDeleteQueue, refusalText } from '../../lib/queue-control-ipc';
+  import { clearCompleted, clearQueue, confirmAndDeleteQueue, refusalText, type ClearQueueOutcome, type DeleteQueueOutcome } from '../../lib/queue-control-ipc';
   import { useConfirm } from '../../lib/use-confirm';
   import { deriveCleanAllContext, deriveClearDoneContext } from '../../lib/queue-derived';
   import type { WorkflowSnapshot } from '../../lib/snapshot-types';
@@ -149,6 +149,14 @@
   let draftName = $state('');
   let refusal = $state<string | null>(null);
   let busy = $state(false);
+  // FR-R4-F05 (I6, I8, FR-024) — a late answer replaces the not-yet-known text; unmount aborts.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  function showOutcome(outcome: DeleteQueueOutcome | ClearQueueOutcome): void {
+    if (outcome.status === 'deleted') onBack();
+    else refusal = outcome.status === 'refused' ? refusalText(outcome.reason) : null;
+  }
+  const wait = { signal: lifetime.signal, onLateOutcome: showOutcome };
 
   // T008 (FR-009) — closed by default, opened on demand. `QueueInputForm`
   // posts its own submission command internally and exposes no
@@ -210,18 +218,10 @@
     refusal = null;
     busy = true;
     try {
-      const outcome = await confirmAndDeleteQueue(
-        queueId,
-        queueName,
-        event.currentTarget as HTMLElement
+      // A deleted queue leaves this tier nothing to render (FR-005): `showOutcome` goes back.
+      showOutcome(
+        await confirmAndDeleteQueue(queueId, queueName, event.currentTarget as HTMLElement, wait)
       );
-      if (outcome.status === 'deleted') {
-        // The queue this tier is showing no longer exists; there is nothing left
-        // to render here (FR-005).
-        onBack();
-        return;
-      }
-      if (outcome.status === 'refused') refusal = refusalText(outcome.reason);
     } finally {
       busy = false;
     }
@@ -264,9 +264,10 @@
     const outcome = await clearCompleted(
       queueId,
       deriveClearDoneContext(snapshot, queueId),
-      event.currentTarget as HTMLElement
+      event.currentTarget as HTMLElement,
+      wait
     );
-    if (outcome.status === 'refused') refusal = refusalText(outcome.reason);
+    showOutcome(outcome);
   }
 
   async function onClean(event: MouseEvent): Promise<void> {
@@ -276,12 +277,11 @@
     // contract and reset every queue regardless of which one was open
     // (LC-Q-01) — the workspace-wide reset survives only as the Command
     // Palette's separate `schegent.clearAll` (FR-009).
-    //
-    // Code-review finding (iteration 4, FR-011) — see `onClearDone` above:
-    // same fix, via `clearQueue`.
+    // Code-review finding (iteration 4, FR-011) — see `onClearDone` above: same fix, via
+    // `clearQueue`.
     refusal = null;
-    const outcome = await clearQueue(queueId, cleanAllContext, event.currentTarget as HTMLElement);
-    if (outcome.status === 'refused') refusal = refusalText(outcome.reason);
+    const outcome = await clearQueue(queueId, cleanAllContext, event.currentTarget as HTMLElement, wait);
+    showOutcome(outcome);
   }
 </script>
 

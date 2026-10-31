@@ -22,8 +22,20 @@ import type { RunRequest } from '../../../../../src/contracts/run-request';
 import type { PipelineDefinition } from '../../../lib/snapshot-types';
 
 const launchSpy = vi.fn<(request: RunRequest) => Promise<LaunchPipelineResult>>();
+// FR-R4-F05 (I6, I8) — the options the component passes (its abort signal and its late-outcome
+// callback) are captured so a case can answer a send whose wait ran out.
+let lastWaitOptions:
+  | { signal?: AbortSignal; onLateOutcome?: (result: LaunchPipelineResult) => void }
+  | undefined;
 vi.mock('../../../lib/run-launcher-ipc', () => ({
-  launchPipeline: (request: RunRequest) => launchSpy(request)
+  launchPipeline: (
+    request: RunRequest,
+    _queueId?: string,
+    options?: { signal?: AbortSignal; onLateOutcome?: (result: LaunchPipelineResult) => void }
+  ) => {
+    lastWaitOptions = options;
+    return launchSpy(request);
+  }
 }));
 
 // The overwrite decision is the one destructive choice inside a launch, and it
@@ -461,54 +473,73 @@ describe('host rejection and the overwrite decision (T060, US8-1, FR-023)', () =
   });
 });
 
-describe('the outer bound on a submission (T060, US8-3, FR-046, SC-012)', () => {
-  it('restores the editable form with an explanation when the host never answers', async () => {
+// FR-R4-F05 (T17, T118; contract I, I5 to I8; contract O, O3, O4) — this block was "the outer bound
+// on a submission": a 30 s timer in the component that restored the form and said "Nothing was
+// queued", and ignored any answer after it. The timer and its message are gone. The wait is the
+// ledger's 5 s, resolved here by the IPC module as `not-yet-known`; the text says the outcome is
+// not yet known (the host may still queue the run), and the host's late answer replaces it once.
+describe('a submission whose wait ran out (T118; FR-024, FR-026)', () => {
+  const NOT_YET_KNOWN = 'The host has not answered yet, so the outcome is not yet known.';
+
+  it('restores the editable form with the not-yet-known text, composition unchanged', async () => {
+    launchSpy.mockResolvedValue({ outcome: 'not-yet-known' } as never);
+
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+    await type(getByTestId, 'run-input-topic', 'run composition');
+    await fireEvent.click(getByTestId('run-launcher-submit'));
+    await tick();
+    await tick();
+
+    expect((getByTestId('run-launcher-submit') as HTMLButtonElement).disabled).toBe(false);
+    expect(getByTestId('run-launcher-status').textContent).toContain(NOT_YET_KNOWN);
+    expect(getByTestId('run-launcher-status').textContent).not.toContain('Nothing was queued');
+    expect((getByTestId('run-input-topic') as HTMLInputElement).value).toBe('run composition');
+  });
+
+  it('starts no 30 s timer of its own', async () => {
     vi.useFakeTimers();
     try {
       launchSpy.mockImplementation(() => new Promise<LaunchPipelineResult>(() => {}));
 
       const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
-      await type(getByTestId, 'run-input-topic', 'run composition');
       await fireEvent.click(getByTestId('run-launcher-submit'));
-
-      expect((getByTestId('run-launcher-submit') as HTMLButtonElement).disabled).toBe(true);
-
+      const before = vi.getTimerCount();
       await vi.advanceTimersByTimeAsync(30_000);
 
-      // "Not permanently locked without an explanation" is the requirement: the
-      // form is editable again AND the operator is told why, with the
-      // composition exactly as they left it.
-      expect((getByTestId('run-launcher-submit') as HTMLButtonElement).disabled).toBe(false);
-      expect(getByTestId('run-launcher-status').textContent).toContain('30 seconds');
-      expect((getByTestId('run-input-topic') as HTMLInputElement).value).toBe('run composition');
+      // Nothing in the component fired: only the ledger, in the module the spy replaces, waits.
+      expect(before).toBe(0);
+      expect((getByTestId('run-launcher-submit') as HTMLButtonElement).disabled).toBe(true);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('ignores an answer that arrives after the bound has already restored the form', async () => {
-    vi.useFakeTimers();
-    try {
-      let release: ((result: LaunchPipelineResult) => void) | undefined;
-      launchSpy.mockImplementation(
-        () =>
-          new Promise<LaunchPipelineResult>((resolve) => {
-            release = resolve;
-          })
-      );
+  it('replaces the not-yet-known text with the late outcome', async () => {
+    launchSpy.mockResolvedValue({ outcome: 'not-yet-known' } as never);
 
-      const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
-      await fireEvent.click(getByTestId('run-launcher-submit'));
-      await vi.advanceTimersByTimeAsync(30_000);
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+    await fireEvent.click(getByTestId('run-launcher-submit'));
+    await tick();
+    await tick();
+    expect(getByTestId('run-launcher-status').textContent).toContain(NOT_YET_KNOWN);
 
-      release!({ outcome: 'rejected-definition', reason: 'pipeline-not-found' });
-      await vi.advanceTimersByTimeAsync(0);
+    lastWaitOptions!.onLateOutcome!({ outcome: 'enqueued', requestId: 'req-late' } as never);
+    await tick();
 
-      // A verdict the operator can no longer act on must not overwrite the one
-      // they can: the timeout message stands.
-      expect(getByTestId('run-launcher-status').textContent).toContain('30 seconds');
-    } finally {
-      vi.useRealTimers();
-    }
+    const status = getByTestId('run-launcher-status').textContent;
+    expect(status).toContain('Queued as req-late.');
+    expect(status).not.toContain(NOT_YET_KNOWN);
+  });
+
+  it('aborts its wait when the component unmounts', async () => {
+    launchSpy.mockImplementation(() => new Promise<LaunchPipelineResult>(() => {}));
+
+    const { getByTestId, unmount } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+    await fireEvent.click(getByTestId('run-launcher-submit'));
+    expect(lastWaitOptions!.signal!.aborted).toBe(false);
+
+    unmount();
+
+    expect(lastWaitOptions!.signal!.aborted).toBe(true);
   });
 });

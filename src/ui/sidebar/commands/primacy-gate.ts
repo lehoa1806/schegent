@@ -4,9 +4,13 @@ import { ack } from './handler-helpers';
 import { SECONDARY_REJECT } from './constants';
 
 /**
- * FR-R3-024 (FR-012) — the non-mutating commands that require primacy of their
- * own accord, because `MUTATING_COMMANDS` does not cover them and the router's
- * gate therefore never runs.
+ * FR-R3-024 (FR-012) — the read commands that require primacy of their own
+ * accord, so that a handler is never the unguarded one if the declaration moves.
+ *
+ * FR-R4-F05 (FR-003) — `CMD_READ_METRICS` is now ALSO gated by the router (trust,
+ * then primacy), because it appends a `metrics-view-opened` row. Its handler gate
+ * is therefore redundant: it only ever passes. It is kept, deliberately, so this
+ * list keeps its entry and the handler stays the second line.
  *
  * A read command belongs here when serving it touches shared workspace state a
  * rival window may be writing — `CMD_READ_METRICS` scans the archive corpus.

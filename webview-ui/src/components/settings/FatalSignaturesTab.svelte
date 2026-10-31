@@ -33,10 +33,15 @@
    * items are non-focusable so they are described by the section
    * header alone.
    */
+  import {
+    OUTCOME_NOT_YET_KNOWN_TEXT,
+    boundaryRefusalText,
+    isOutcomeNotYetKnown
+  } from '../../lib/boundary-refusal-text';
   import type { GeneralSettings, WorkflowSnapshot } from '../../lib/snapshot-types';
   import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
   import { FATAL_SIGNATURES } from '../../lib/fatal-signature-registry';
-  import { saveGeneralSettings } from '../../lib/save-general-settings';
+  import { saveGeneralSettings, type SaveResult } from '../../lib/save-general-settings';
   import { hoverTextAnchor } from '../hover-text/hover-text-anchor-action';
   import { FATAL_SIGNATURES_DESCRIPTIONS } from './FatalSignaturesTab.descriptions';
 
@@ -55,9 +60,22 @@
 
   let draft = $state<string[]>([]);
   let lastProjectedJson = $state('');
-  let status = $state<{ status: 'idle' | 'pending' | 'accepted' | 'rejected'; reason?: string }>({
-    status: 'idle'
-  });
+  let status = $state<{
+    status: 'idle' | 'pending' | 'accepted' | 'rejected' | 'unknown';
+    reason?: string;
+  }>({ status: 'idle' });
+
+  // FR-R4-F05 (I5, I6, I8, FR-024) — a timeout reads as not yet known, never "Save rejected",
+  // and a late answer replaces it through the same path. Unmounting aborts the wait.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  function showSaveResult(result: SaveResult): void {
+    status = result.status === 'accepted'
+      ? { status: 'accepted' }
+      : isOutcomeNotYetKnown(result.reason)
+        ? { status: 'unknown' }
+        : { status: 'rejected', reason: result.reason };
+  }
 
   $effect(() => {
     const next = [...projectedAdditions];
@@ -114,10 +132,12 @@
   async function save(): Promise<void> {
     if (!canSave) return;
     status = { status: 'pending' };
-    const result = await saveGeneralSettings({ fatalSignatures: trimmedDraft });
-    status = result.status === 'accepted'
-      ? { status: 'accepted' }
-      : { status: 'rejected', reason: result.reason };
+    showSaveResult(
+      await saveGeneralSettings({ fatalSignatures: trimmedDraft }, undefined, {
+        signal: lifetime.signal,
+        onLateOutcome: showSaveResult
+      })
+    );
   }
 
   function resetAll(): void {
@@ -248,9 +268,11 @@
       <div class="status pending" data-testid="fatal-status" role="status">Saving...</div>
     {:else if status.status === 'accepted'}
       <div class="status accepted" data-testid="fatal-status" role="status">Saved.</div>
+    {:else if status.status === 'unknown'}
+      <div class="status pending" data-testid="fatal-status" role="status">{OUTCOME_NOT_YET_KNOWN_TEXT}</div>
     {:else if status.status === 'rejected'}
       <div class="status rejected" data-testid="fatal-status" role="alert">
-        Save rejected: <code>{status.reason ?? 'unknown'}</code>
+        Save rejected. {boundaryRefusalText(status.reason ?? '')}
       </div>
     {/if}
   </div>

@@ -17,6 +17,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import ScheduledStartIndicator from '../ScheduledStartIndicator.svelte';
+import { disposeIntentLedger } from '../../lib/intent-ledger';
 
 // Mock postCommand so we can assert dispatch calls without a real host.
 //
@@ -26,7 +27,10 @@ import ScheduledStartIndicator from '../ScheduledStartIndicator.svelte';
 // a second dispatch silently overwrite the first one's listener.
 let nextCorrelationId = 0;
 vi.mock('../../lib/vscode-api', () => ({
-  postCommand: vi.fn(() => ({ correlationId: `corr-${++nextCorrelationId}` }))
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  postCommand: vi.fn((_type: string, _payload?: unknown, opts?: { correlationId?: string }) => ({
+    correlationId: opts?.correlationId ?? `corr-${++nextCorrelationId}`
+  }))
 }));
 
 import { postCommand } from '../../lib/vscode-api';
@@ -62,6 +66,8 @@ const QUEUE_ID = 'q-beta';
 
 afterEach(() => {
   cleanup();
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
   vi.clearAllMocks();
 });
 
@@ -188,6 +194,31 @@ describe('ScheduledStartIndicator — actions dispatch CMD_START_QUEUE', () => {
         'The workspace is not trusted, so the queue cannot be started.'
       );
     });
+  });
+
+  // FR-R4-F05 (O4, FR-024) — the interim "not yet known" text promises that the view will update;
+  // a late answer replaces it through the same text path as an on-time one, and a late
+  // acceptance clears it.
+  it('replaces the not-yet-known text of a cancel with the late answer', async () => {
+    vi.useFakeTimers();
+    try {
+      const target = Date.now() + 60 * 60 * 1000;
+      const { getByTestId } = render(ScheduledStartIndicator, {
+        props: { queueId: QUEUE_ID, scheduledStartAt: target }
+      });
+      await fireEvent.click(getByTestId('scheduled-start-cancel'));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(getByTestId('scheduled-start-message').textContent).toContain('has not answered yet');
+
+      ack(0, 'rejected', 'rejected-untrusted', 'refused');
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(getByTestId('scheduled-start-message').textContent).toBe(
+        'The workspace is not trusted, so the queue cannot be started.'
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says nothing when the host accepts the intent', async () => {

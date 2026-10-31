@@ -7,13 +7,21 @@
 // that the header does so, and only when the queue is actually halted.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { disposeIntentLedger } from '../../lib/intent-ledger';
+
+// FR-R4-F05 (I4) — a command sent through the intent ledger carries the ledger's identity as
+// the third argument of `postCommand`; the payload assertions below stay exact.
+const LEDGER_IDENTITY = expect.objectContaining({ correlationId: expect.any(String) });
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import QueueControls from '../QueueControls.svelte';
 import type { QueueItem } from '../../lib/snapshot-types';
 
 let nextCorrelationId = 0;
-const postCommandSpy = vi.fn((..._args: readonly unknown[]) => ({
-  correlationId: `corr-${++nextCorrelationId}`
+const postCommandSpy = vi.fn((...args: readonly unknown[]) => ({
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  correlationId:
+    (args[2] as { correlationId?: string } | undefined)?.correlationId ??
+    `corr-${++nextCorrelationId}`
 }));
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args)
@@ -40,7 +48,11 @@ import {
 beforeEach(() => {
   postCommandSpy.mockReset();
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
+});
 
 const QUEUE_ID = 'q-halted';
 
@@ -124,7 +136,7 @@ describe('QueueControls — halted task actions in the queue header (FR-009)', (
     expect(postCommandSpy).toHaveBeenCalledWith(
       CMD_REMOVE_QUEUE_ITEM,
       expect.objectContaining({ id: task.id, confirmed: true })
-    );
+    , LEDGER_IDENTITY);
   });
 
   it('disables retry and remove in a non-primary window', () => {

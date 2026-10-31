@@ -17,6 +17,8 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { COMMAND_AUTHORITY } from '../../../src/contracts/sidebar-command-metadata';
+import type { CommandType } from '../../../src/contracts/sidebar-ipc';
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
 
@@ -148,16 +150,17 @@ describe('Feature 084 T064 — the Phase catalog is unchanged by the exchange (S
     ]);
 
     // Everything the `CMD_READ_*` guard hides, and the proof each one is a read.
-    // A command is a write iff it carries a reason in the mutation metadata —
-    // that registry, not this file's regex, is what the router gates on.
+    // FR-R4-F05 — the declaration is total, so every command now has an entry and
+    // "carries a reason" no longer tells a write from a read. A command is a write
+    // iff its entry declares it `gated`; that declaration, not this file's regex,
+    // is what the router gates on.
     const excluded = literals(/export const (CMD_READ_[A-Z_]*(?:DEFINITION|PACKAGE)[A-Z_]*)\b/g);
     expect(excluded).toEqual(['CMD_READ_DEFINITION_VERSION']);
-    const metadata = readFileSync(
-      resolve(REPO_ROOT, 'src', 'contracts', 'sidebar-command-metadata.ts'),
-      'utf8'
-    );
     for (const command of excluded) {
-      expect(metadata.includes(command), `${command} is excluded as a read but mutates`).toBe(false);
+      expect(
+        COMMAND_AUTHORITY[command as CommandType].authority,
+        `${command} is excluded as a read but is declared gated`
+      ).toBe('read-only');
     }
   });
 });

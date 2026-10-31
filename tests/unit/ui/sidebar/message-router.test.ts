@@ -5,6 +5,9 @@ import {
   type RouterDeps
 } from '../../../../src/ui/sidebar/message-router';
 import { SanitizedLogger } from '../../../../src/lib/logger';
+import { HANDLERS } from '../../../../src/ui/sidebar/commands';
+import type { CommandHandler } from '../../../../src/ui/sidebar/commands/handler-contract';
+import { ack } from '../../../../src/ui/sidebar/commands/handler-helpers';
 import type { CommandAckMessage, SidebarCommand } from '../../../../src/ui/sidebar/messages';
 import {
   CMD_CANCEL,
@@ -341,6 +344,27 @@ describe('MessageRouter.dispatch', () => {
     expect(acks[0].msg.reason).toBe('queue-paused');
   });
 
+  // FR-R4-F05 (FR-017) — the storage-fault outcome is additive and reaches the webview as its fixed
+  // code: the operator's surface words it, and nothing of the exception travels.
+  it('CMD_START acks a storage fault as rejected with the fixed queue-state-unavailable code', async () => {
+    executeCommand.mockResolvedValueOnce({
+      result: { outcome: 'failed-storage', reason: 'queue-state-unavailable' },
+      queueId: null,
+      queueName: null
+    });
+    await dispatch(
+      router,
+      {
+        type: CMD_START,
+        correlationId: 'storage-fault',
+        payload: { description: 'queued task', queueId: 'default', position: 0 }
+      },
+      acks
+    );
+    expect(acks[0]!.msg.status).toBe('rejected');
+    expect(acks[0]!.msg.reason).toBe('queue-state-unavailable');
+  });
+
   it('CMD_START primary-host gate is unchanged: secondary host rejects with secondary-window-readonly (T021b, US2)', async () => {
     const built = makeRouter({ isPrimary: () => false });
     const localAcks: CapturedAck[] = [];
@@ -451,7 +475,13 @@ describe('MessageRouter.dispatch', () => {
   // remaining route that still calls `executeCommand` without catching — so the
   // property keeps its coverage rather than losing it to the route that used to
   // carry it. Cancel's replacement behaviour is pinned directly below.
-  it('sends rejected ack with sanitized reason when a handler lets a dispatch error propagate', async () => {
+  // FR-R4-F05 (T9, FR-011, FR-014; TA9) — this case used to assert that the
+  // router's catch-all sent the SANITIZED MESSAGE as the ack's reason
+  // ("[REDACTED]" inside it). A sanitized message still carries whatever the
+  // redaction patterns do not know, so the reason is now always the fixed code and
+  // the detail goes to the log only. The cases that carry the whole contract are in
+  // the describe at the foot of this file.
+  it('answers a dispatch error that propagates out of a handler with the fixed code, never a message', async () => {
     executeCommand.mockRejectedValueOnce(new Error('boom: Bearer abcdefghijklmnopqrst'));
     await dispatch(
       router,
@@ -463,9 +493,10 @@ describe('MessageRouter.dispatch', () => {
       acks
     );
     expect(acks[0].msg.status).toBe('rejected');
-    expect(acks[0].msg.reason).toBeDefined();
+    expect(acks[0].msg.outcome).toBe('failed');
+    expect(acks[0].msg.reason).toBe('command-dispatch-failed');
     expect(acks[0].msg.reason).not.toContain('abcdefghijklmnopqrst');
-    expect(acks[0].msg.reason).toContain('[REDACTED]');
+    expect(acks[0].msg.reason).not.toContain('[REDACTED]');
   });
 
   // Feature 202 (FR-007, FR-032, data-model.md §1.1) — the same throw, through
@@ -817,4 +848,165 @@ describe('MessageRouter.dispatch', () => {
     });
   });
 
+});
+
+// FR-R4-F05 (T9; contract F, F1 to F5; FR-011 to FR-014; SC-004) — what the router's
+// catch-all sends and logs for ANY thrown value.
+//
+// WHY THE FIXED CODE. The catch-all used to ack `(err as Error).message` after
+// sanitizing it: `null` and `undefined` gave no ack at all (the cast read a property
+// of nothing and the catch itself threw), and any message reached the webview with
+// whatever the redaction patterns did not recognise. Now a throw before an ack gives
+// exactly one `command-dispatch-failed` ack with no `result`, a throw after an ack
+// gives none, and the detail goes to the log through `describeFailure`, bounded.
+describe('MessageRouter catch-all (T9, F1 to F5)', () => {
+  const PATH = '/synthetic/home/user-252/secret.txt';
+  // Built at runtime so no credential-shaped literal sits in the source.
+  const CREDENTIAL = ['Bearer', 'abcdefghijklmnopqrstuvwxyz0123456789'].join(' ');
+  const GETTER_MARKER = 'SYNTHETIC-MARKER-252-9';
+  const MARKERS = ['user-252', 'abcdefghijklmnopqrstuvwxyz0123456789', GETTER_MARKER] as const;
+
+  const CONTROL_CHARACTERS = ['line1', String.fromCharCode(0, 7, 27), '[31mred', '\r\nline2'].join('');
+  const throwingMessage = Object.defineProperty(new Error('placeholder'), 'message', {
+    configurable: true,
+    get(): string {
+      throw new Error(`message getter exploded ${GETTER_MARKER}`);
+    }
+  }) as Error;
+
+  const THROWN: ReadonlyArray<readonly [string, unknown]> = [
+    ['an Error holding a path', new Error(`failed at ${PATH}`)],
+    ['an Error holding a credential', new Error(`boom: ${CREDENTIAL}`)],
+    ['an Error holding control characters', new Error(CONTROL_CHARACTERS)],
+    ['an Error holding 1 MiB of text', new Error('A'.repeat(1024 * 1024))],
+    ['a string', `thrown string ${PATH}`],
+    ['an object with no message', { code: 'E_SYNTHETIC', path: PATH }],
+    ['null', null],
+    ['undefined', undefined],
+    ['an Error whose message getter throws', throwingMessage]
+  ];
+
+  interface RecordedLog {
+    readonly level: string;
+    readonly message: string;
+    readonly context: Record<string, unknown> | undefined;
+  }
+
+  function routerWithRecordingLogger(): {
+    router: MessageRouter;
+    executeCommand: ReturnType<typeof vi.fn>;
+    logs: RecordedLog[];
+  } {
+    const logs: RecordedLog[] = [];
+    const executeCommand = vi.fn();
+    const sanitizer = new SanitizedLogger();
+    const record = (level: string) => (message: string, context?: Record<string, unknown>) => {
+      logs.push({ level, message, context });
+    };
+    const router = new MessageRouter({
+      executeCommand: executeCommand as unknown as RouterDeps['executeCommand'],
+      isPrimary: () => true,
+      isTrusted: () => true,
+      logger: {
+        info: record('info'),
+        warn: record('warn'),
+        error: record('error'),
+        debug: record('debug'),
+        sanitize: (value: string) => sanitizer.sanitize(value)
+      } as unknown as RouterDeps['logger']
+    });
+    return { router, executeCommand, logs };
+  }
+
+  const START: SidebarCommand = {
+    type: CMD_START,
+    correlationId: 'fixed-ack',
+    payload: { description: 'add login', queueId: 'default' }
+  };
+
+  it.each(THROWN)('sends one fixed ack and no thrown content when a handler throws %s', async (_label, thrown) => {
+    const { router, executeCommand, logs } = routerWithRecordingLogger();
+    executeCommand.mockRejectedValueOnce(thrown);
+    const acks: CapturedAck[] = [];
+
+    await dispatch(router, START, acks);
+
+    expect(acks.map((a) => a.msg)).toEqual([
+      {
+        type: 'CMD_ACK',
+        correlationId: 'fixed-ack',
+        status: 'rejected',
+        outcome: 'failed',
+        reason: 'command-dispatch-failed'
+      }
+    ]);
+    const wire = JSON.stringify(acks[0]?.msg);
+    for (const marker of MARKERS) expect(wire).not.toContain(marker);
+    expect(wire).not.toContain('AAAAAAAAAA');
+    expect(wire).not.toContain(String.fromCharCode(7));
+    expect(logs.filter((l) => l.message.includes('failed')).length).toBeGreaterThan(0);
+  });
+
+  it('sends one fixed ack when the router itself catches (the handler throws before acking)', async () => {
+    // A synthetic handler: no production handler throws before its first ack on
+    // demand for every thrown kind, and the router's contract is independent of
+    // which handler threw.
+    const { router, logs } = routerWithRecordingLogger();
+    const handlers = HANDLERS as unknown as Map<string, CommandHandler>;
+    const spy = vi.spyOn(handlers, 'get').mockImplementation(() => async () => {
+      throw new Error(`before any ack ${PATH}`);
+    });
+    try {
+      const acks: CapturedAck[] = [];
+      await dispatch(router, START, acks);
+
+      expect(acks).toHaveLength(1);
+      expect(acks[0]?.msg).toMatchObject({ status: 'rejected', reason: 'command-dispatch-failed' });
+      expect(acks[0]?.msg.result).toBeUndefined();
+      const failures = logs.filter((l) => l.message === 'sidebar router: command failed');
+      expect(failures).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('sends no second ack when a handler throws after it acked, and logs one line', async () => {
+    const { router, logs } = routerWithRecordingLogger();
+    const handlers = HANDLERS as unknown as Map<string, CommandHandler>;
+    const spy = vi.spyOn(handlers, 'get').mockImplementation(() => async (ctx) => {
+      await ack(ctx, 'accepted');
+      throw new Error(`after the ack ${PATH}`);
+    });
+    try {
+      const acks: CapturedAck[] = [];
+      await dispatch(router, START, acks);
+
+      expect(acks.map((a) => a.msg.status)).toEqual(['accepted']);
+      const failures = logs.filter((l) => l.message === 'sidebar router: command failed');
+      expect(failures).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('logs { type, correlationId, error } with a bounded, sanitized error and no payload or stack', async () => {
+    const { router, executeCommand, logs } = routerWithRecordingLogger();
+    executeCommand.mockRejectedValueOnce(
+      new Error(`boom: ${CREDENTIAL} ${'B'.repeat(4096)}`)
+    );
+
+    await dispatch(router, START, []);
+
+    const failures = logs.filter((l) => l.message === 'sidebar router: command failed');
+    expect(failures).toHaveLength(1);
+    const context = failures[0]?.context;
+    expect(failures[0]?.level).toBe('warn');
+    expect(Object.keys(context ?? {}).sort()).toEqual(['correlationId', 'error', 'type']);
+    expect(context).toMatchObject({ type: CMD_START, correlationId: 'fixed-ack' });
+    const detail = String(context?.error);
+    expect(detail.length).toBeLessThanOrEqual(512);
+    expect(detail).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789');
+    expect(detail).not.toContain('add login');
+    expect(detail).not.toMatch(/\n\s+at /);
+  });
 });

@@ -36,7 +36,7 @@ Mutating webview commands fail closed unless VS Code reports the workspace trust
 
 ### Window primacy and mutation serialization
 
-Every command classified in `MUTATING_COMMAND_REASONS` also requires the current window to hold authoritative filesystem-backed ownership. Accepted mutations execute serially, and correlation IDs support bounded acknowledgement replay. `CMD_READ_METRICS` is the sole primary-gated read because it scans shared archives.
+Every command that `COMMAND_AUTHORITY` declares gated also requires the current window to hold authoritative filesystem-backed ownership, checked after workspace trust. Accepted mutations execute serially, except the few gated commands that wait on a child process or an operator's dialog, and correlation IDs support bounded acknowledgement replay. A read that appends an audit row, such as the metrics read, is gated like a mutation.
 
 <!-- Source: src/contracts/sidebar-command-metadata.ts -->
 <!-- Source: src/state/ownership-registry.ts -->
@@ -63,7 +63,7 @@ Runs containing a Phase that declares `git` or `unrestricted` effects require th
 
 ## Input handling
 
-Webview traffic passes through a closed 61-command runtime validator before routing. Invalid input is logged and dropped without a handler acknowledgement. Process YAML uses a size-bounded, closed scanner/parser rather than a general YAML loader; preflight writes nothing and publication rechecks revision and capability gates.
+Webview traffic passes through a closed runtime validator, one for every command in `COMMAND_TYPES`, before routing. Invalid input is logged and dropped without a handler acknowledgement. Process YAML uses a size-bounded, closed scanner/parser rather than a general YAML loader; preflight writes nothing and publication rechecks revision and capability gates.
 
 <!-- Source: src/contracts/runtime-validators.ts -->
 <!-- Source: src/ui/sidebar/sidebar-view-provider.ts -->

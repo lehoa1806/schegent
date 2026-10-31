@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { QueueItem } from '../lib/snapshot-types';
+  import { OUTCOME_NOT_YET_KNOWN_TEXT, boundaryRefusalText } from '../lib/boundary-refusal-text';
+  import { sendIntent } from '../lib/intent-ledger';
   import { postCommand } from '../lib/vscode-api';
   import {
     CMD_RETRY_QUEUE_ITEM,
@@ -20,7 +22,6 @@
     // Feature 195 (T064, FR-025) — the third exit from a halted queue.
     CMD_ATTEST_TASK_COMPLETED
   } from '../lib/messages';
-  import { snapshotStore } from '../lib/snapshot-store.svelte';
   import { useConfirm } from '../lib/use-confirm';
 
   interface Props {
@@ -75,6 +76,11 @@
   // by the time the click reached the host). Cleared on the next click
   // attempt so the operator can retry without stale text lingering.
   let removeError = $state<string | null>(null);
+  // FR-R4-F05 (I7, I8) — the remove wait is the ledger's 5 s; its signal is aborted when this
+  // component goes.
+  const REMOVE_TIMEOUT_MS = 5_000;
+  let removal: AbortController | null = null;
+  $effect(() => () => removal?.abort());
 
   $effect(() => {
     editDraft = item.label;
@@ -135,16 +141,27 @@
     // BUG-002 (T117) — clear any prior rejection text before dispatching
     // so the operator sees the fresh outcome (or no text on success).
     removeError = null;
-    const { correlationId } = postCommand(CMD_REMOVE_QUEUE_ITEM, {
-      id: item.id,
-      confirmed: true
+    const controller = new AbortController();
+    removal = controller;
+    // FR-R4-F05 (I4, I7, I8) — through the intent ledger, with the post kept here inside the
+    // `useConfirm` block (hard rule 30). The wait is 5 s; a timeout says the outcome is not yet
+    // known, and the late outcome replaces it once (O4). Unmount aborts the wait.
+    const showAck = (ack: { status: 'accepted' | 'rejected'; reason?: string }): void => {
+      removeError = ack.status === 'rejected' ? humanizeRemoveRejection(ack.reason) : null;
+    };
+    const outcome = await sendIntent({
+      type: CMD_REMOVE_QUEUE_ITEM,
+      payload: { id: item.id, confirmed: true },
+      post: (correlationId, payload) => {
+        postCommand(CMD_REMOVE_QUEUE_ITEM, payload, { correlationId });
+      },
+      timeoutMs: REMOVE_TIMEOUT_MS,
+      signal: controller.signal,
+      onLateOutcome: showAck
     });
-    snapshotStore.markPending(correlationId);
-    snapshotStore.onceAck(correlationId, (ack) => {
-      if (ack.status === 'rejected') {
-        removeError = humanizeRemoveRejection(ack.reason);
-      }
-    });
+    if (controller.signal.aborted) return;
+    if (outcome.kind === 'ack') showAck(outcome.ack);
+    else if (outcome.kind === 'unknown') removeError = OUTCOME_NOT_YET_KNOWN_TEXT;
   }
   function humanizeRemoveRejection(reason: string | undefined): string {
     if (reason === 'task-not-in-pending-state') {
@@ -156,7 +173,8 @@
     if (reason === 'unknown-task-id' || reason === 'not-found') {
       return 'Cannot remove: task no longer exists.';
     }
-    return `Cannot remove: ${reason ?? 'rejected'}.`;
+    // FR-R4-F05 (O1) — the shared boundary text, never the raw reason.
+    return `Cannot remove. ${boundaryRefusalText(reason ?? '')}`;
   }
   async function onSaveEdit(event: SubmitEvent): Promise<void> {
     if (disabled) return;

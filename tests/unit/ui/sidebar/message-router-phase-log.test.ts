@@ -1,15 +1,15 @@
-// Feature 020 T008 — message router contract for the 3 new phase-log
-// commands.
+// FR-R4-F05 (US2, FR-003; contract T, T6) — message router contract for the 3
+// phase-log commands. Feature 020 T008 kept them out of MUTATING_COMMANDS so that a
+// secondary host could still read phase logs; each appends an audit row, so FR-003
+// gates them now and this file asserts the opposite of what it did.
 //
 // Asserts:
-// 1. The 3 new command constants are NOT members of MUTATING_COMMANDS
-//    (read-only by construction — see specs/020-phase-level-logs/
-//    contracts/phase-log-ipc.md "CRITICAL: MUTATING_COMMANDS membership").
-// 2. Dispatching each command from a secondary host (isPrimary === false)
-//    still completes — the gate does not reject. The handler may
-//    currently return failure for unrelated reasons (no audit /
-//    state-projector dependencies yet); the assertion is specifically
-//    that the rejection reason is NEVER 'secondary-window-readonly'.
+// 1. The 3 command constants ARE members of MUTATING_COMMANDS (see
+//    `tests/lint/phase-log-commands-are-gated.test.ts` for the superseded reason).
+// 2. A trusted secondary host (isPrimary === false) is refused with
+//    'secondary-window-readonly' before the handler runs, and an untrusted
+//    workspace with 'untrusted-workspace'. Trust is checked first.
+// 3. A trusted primary host is not refused by either gate.
 
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -24,118 +24,102 @@ import {
   type AckPoster,
   type RouterDeps
 } from '../../../../src/ui/sidebar/message-router';
+import type { SidebarCommand } from '../../../../src/ui/sidebar/messages';
 
 const noopExecuteCommand: RouterDeps['executeCommand'] = (() =>
   Promise.resolve(undefined)) as RouterDeps['executeCommand'];
 
-const PHASE_LOG_COMMAND_NAMES = [
-  CMD_READ_PHASE_LOG,
-  CMD_START_PHASE_LOG_TAIL,
-  CMD_STOP_PHASE_LOG_TAIL
-] as const;
+const SELECTION = {
+  queueId: 'q',
+  taskId: 't',
+  pipelineId: 'p1',
+  phaseId: 'p2',
+  iterationN: 1
+};
 
-describe('Feature 020 T008 — phase-log commands are not mutating', () => {
-  for (const cmd of PHASE_LOG_COMMAND_NAMES) {
-    it(`${cmd} is NOT a mutating command`, () => {
-      expect(isMutatingCommand(cmd)).toBe(false);
+const PHASE_LOG_COMMANDS: ReadonlyArray<{ readonly type: string; readonly command: SidebarCommand }> = [
+  {
+    type: CMD_READ_PHASE_LOG,
+    command: {
+      type: CMD_READ_PHASE_LOG,
+      correlationId: 'corr-1',
+      payload: { selection: { ...SELECTION, iterationN: null } }
+    }
+  },
+  {
+    type: CMD_START_PHASE_LOG_TAIL,
+    command: {
+      type: CMD_START_PHASE_LOG_TAIL,
+      correlationId: 'corr-2',
+      payload: { selection: SELECTION }
+    }
+  },
+  {
+    type: CMD_STOP_PHASE_LOG_TAIL,
+    command: {
+      type: CMD_STOP_PHASE_LOG_TAIL,
+      correlationId: 'corr-3',
+      payload: { sessionId: 'session-xyz' }
+    }
+  }
+];
+
+function routerWith(gate: {
+  readonly isPrimary: () => boolean;
+  readonly isTrusted: () => boolean;
+}): MessageRouter {
+  return new MessageRouter({
+    executeCommand: noopExecuteCommand,
+    isPrimary: gate.isPrimary,
+    isTrusted: gate.isTrusted,
+    logger: {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      sanitize: (s: string) => s
+    }
+  });
+}
+
+async function lastAckOf(router: MessageRouter, command: SidebarCommand): Promise<CommandAckMessage | undefined> {
+  const ackSpy = vi.fn<AckPoster>(() => Promise.resolve(true));
+  await router.dispatch(command, ackSpy);
+  expect(ackSpy).toHaveBeenCalled();
+  return ackSpy.mock.calls[ackSpy.mock.calls.length - 1]?.[0] as CommandAckMessage | undefined;
+}
+
+describe('FR-R4-F05 T032 — phase-log commands are gated', () => {
+  for (const { type } of PHASE_LOG_COMMANDS) {
+    it(`${type} IS a mutating command`, () => {
+      expect(isMutatingCommand(type)).toBe(true);
     });
   }
 
-  it('secondary host can dispatch CMD_READ_PHASE_LOG without secondary-window-readonly rejection', async () => {
-    const ackSpy = vi.fn<AckPoster>(() => Promise.resolve(true));
-    const router = new MessageRouter({
-      executeCommand: noopExecuteCommand,
-      isPrimary: () => false,
-      logger: {
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
-        sanitize: (s: string) => s
-      }
+  for (const { type, command } of PHASE_LOG_COMMANDS) {
+    it(`a trusted secondary host is refused ${type} with secondary-window-readonly`, async () => {
+      const router = routerWith({ isPrimary: () => false, isTrusted: () => true });
+      const ack = await lastAckOf(router, command);
+      expect(ack).toMatchObject({ status: 'rejected', reason: 'secondary-window-readonly' });
     });
-    await router.dispatch(
-      {
-        type: CMD_READ_PHASE_LOG,
-        correlationId: 'corr-1',
-        payload: {
-          selection: {
-            queueId: 'q',
-            taskId: 't',
-            pipelineId: 'p1',
-            phaseId: 'p2',
-            iterationN: null
-          }
-        }
-      },
-      ackSpy
-    );
-    expect(ackSpy).toHaveBeenCalled();
-    const lastAck = ackSpy.mock.calls[ackSpy.mock.calls.length - 1]?.[0] as
-      | CommandAckMessage
-      | undefined;
-    expect(lastAck?.reason).not.toBe('secondary-window-readonly');
-  });
 
-  it('secondary host can dispatch CMD_START_PHASE_LOG_TAIL without secondary-window-readonly rejection', async () => {
-    const ackSpy = vi.fn<AckPoster>(() => Promise.resolve(true));
-    const router = new MessageRouter({
-      executeCommand: noopExecuteCommand,
-      isPrimary: () => false,
-      logger: {
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
-        sanitize: (s: string) => s
-      }
+    it(`an untrusted workspace is refused ${type} with untrusted-workspace`, async () => {
+      const router = routerWith({ isPrimary: () => true, isTrusted: () => false });
+      const ack = await lastAckOf(router, command);
+      expect(ack).toMatchObject({ status: 'rejected', reason: 'untrusted-workspace' });
     });
-    await router.dispatch(
-      {
-        type: CMD_START_PHASE_LOG_TAIL,
-        correlationId: 'corr-2',
-        payload: {
-          selection: {
-            queueId: 'q',
-            taskId: 't',
-            pipelineId: 'p1',
-            phaseId: 'p2',
-            iterationN: 1
-          }
-        }
-      },
-      ackSpy
-    );
-    const lastAck = ackSpy.mock.calls[ackSpy.mock.calls.length - 1]?.[0] as
-      | CommandAckMessage
-      | undefined;
-    expect(lastAck?.reason).not.toBe('secondary-window-readonly');
-  });
 
-  it('secondary host can dispatch CMD_STOP_PHASE_LOG_TAIL without secondary-window-readonly rejection', async () => {
-    const ackSpy = vi.fn<AckPoster>(() => Promise.resolve(true));
-    const router = new MessageRouter({
-      executeCommand: noopExecuteCommand,
-      isPrimary: () => false,
-      logger: {
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
-        sanitize: (s: string) => s
-      }
+    it(`an untrusted secondary host is refused ${type} on trust first`, async () => {
+      const router = routerWith({ isPrimary: () => false, isTrusted: () => false });
+      const ack = await lastAckOf(router, command);
+      expect(ack?.reason).toBe('untrusted-workspace');
     });
-    await router.dispatch(
-      {
-        type: CMD_STOP_PHASE_LOG_TAIL,
-        correlationId: 'corr-3',
-        payload: { sessionId: 'session-xyz' }
-      },
-      ackSpy
-    );
-    const lastAck = ackSpy.mock.calls[ackSpy.mock.calls.length - 1]?.[0] as
-      | CommandAckMessage
-      | undefined;
-    expect(lastAck?.reason).not.toBe('secondary-window-readonly');
-  });
+
+    it(`a trusted primary host is not refused ${type} by a gate`, async () => {
+      const router = routerWith({ isPrimary: () => true, isTrusted: () => true });
+      const ack = await lastAckOf(router, command);
+      expect(ack?.reason).not.toBe('secondary-window-readonly');
+      expect(ack?.reason).not.toBe('untrusted-workspace');
+    });
+  }
 });

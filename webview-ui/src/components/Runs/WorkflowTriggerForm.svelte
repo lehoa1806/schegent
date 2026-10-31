@@ -39,10 +39,15 @@
   // operator's own string reaches the host verbatim, and the host resolves it
   // against the workspace. This form names no location of its own.
 
+  import {
+    OUTCOME_NOT_YET_KNOWN_TEXT,
+    boundaryRefusalText,
+    refusalTextFrom
+  } from '../../lib/boundary-refusal-text';
   import RunInputFields from '../RunLauncher/RunInputFields.svelte';
   import SupplementalInputs from '../RunLauncher/SupplementalInputs.svelte';
   import RunOutputTargets from '../RunLauncher/RunOutputTargets.svelte';
-  import { launchWorkflow } from '../../lib/workflow-run-ipc';
+  import { launchWorkflow, type NotYetKnown } from '../../lib/workflow-run-ipc';
   import {
     composeRunRequest,
     errorsByField as mapErrorsByField,
@@ -59,11 +64,9 @@
   } from '../../lib/snapshot-types';
   import type { RunRequestFieldError } from '../../../../src/contracts/run-request';
 
-  /** The outer bound on a submission, as on both sibling composers. */
-  const SUBMIT_TIMEOUT_MS = 30_000;
-
-  const TIMEOUT_MESSAGE =
-    'The host did not answer within 30 seconds. Nothing was started; your composition is unchanged.';
+  // FR-R4-F05 (I7, O3) — the 30 s outer timer and its message are gone, as on both sibling
+  // composers: the wait is the ledger's 5 s, a timeout says the outcome is not yet known, and the
+  // late outcome replaces it once (O4).
 
   /**
    * The host's refusal vocabulary, said in words an operator can act on.
@@ -217,7 +220,12 @@
     }
   });
 
-  function applyResult(result: LaunchWorkflowResult): void {
+  function applyResult(result: LaunchWorkflowResult | NotYetKnown): void {
+    if (result.outcome === 'not-yet-known') {
+      fieldErrors = [];
+      statusMessage = OUTCOME_NOT_YET_KNOWN_TEXT;
+      return;
+    }
     if (result.outcome === 'started') {
       fieldErrors = [];
       statusMessage = `Started connected run ${result.connectedRunId}.`;
@@ -230,14 +238,21 @@
     }
     fieldErrors = [];
     if (result.outcome === 'rejected-definition') {
-      statusMessage =
-        DEFINITION_REFUSALS[result.reason] ?? `This Workflow was not started: ${result.reason}.`;
+      statusMessage = refusalTextFrom(DEFINITION_REFUSALS, result.reason);
       return;
     }
+    // FR-R4-F05 (O1) — `reason` is the code `queue-refused` and `detail` is the guard's own
+    // code, so neither is shown raw: the detail goes through the shared boundary text.
     statusMessage = result.detail
-      ? `The queue refused this run: ${result.reason} (${result.detail}).`
-      : `The queue refused this run: ${result.reason}.`;
+      ? `The queue refused this run. ${boundaryRefusalText(result.detail)}`
+      : 'The queue refused this run.';
   }
+
+
+  // FR-R4-F05 (I8) — the in-flight submission's signal, aborted when this component goes: the
+  // wait's timer and late callback are removed, and the ledger keeps the identity for a retry.
+  let submission: AbortController | null = null;
+  $effect(() => () => submission?.abort());
 
   async function submitRequest(): Promise<void> {
     if (pending) return;
@@ -249,26 +264,21 @@
     statusMessage = null;
     submittedSupplementalKeys = supplementalKeys;
 
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      pending = false;
-      statusMessage = TIMEOUT_MESSAGE;
-    }, SUBMIT_TIMEOUT_MS);
-
+    const controller = new AbortController();
+    submission = controller;
     try {
-      const result = await launchWorkflow({
-        workflowId: entry.id,
-        startNodeId: node.nodeId,
-        request
-      });
-      // The outer bound already restored the form and said so; a late answer
-      // must not overwrite that with a verdict the operator can no longer act on.
-      if (timedOut) return;
+      const result = await launchWorkflow(
+        { workflowId: entry.id, startNodeId: node.nodeId, request },
+        {
+          signal: controller.signal,
+          // O4 — the outcome of a send whose wait ran out, shown once through the same text path.
+          onLateOutcome: (late) => applyResult(late)
+        }
+      );
+      if (controller.signal.aborted) return;
       applyResult(result);
     } finally {
-      clearTimeout(timer);
-      if (!timedOut) pending = false;
+      if (!controller.signal.aborted) pending = false;
     }
   }
 

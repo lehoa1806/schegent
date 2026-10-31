@@ -985,7 +985,6 @@ export const IDLE_TRUST_PROJECTION: TrustProjection = Object.freeze({
 
 export const AUDIT_TAIL_MAX = 50;
 export const RECENT_QUEUE_MAX = 5;
-export const HISTORY_MAX = 50;
 
 export const IDLE_LIVE_ACTIVITY: LiveActivity = Object.freeze({
   summary: null,

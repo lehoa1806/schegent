@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runRestartCanceledTask } from '../../../src/commands/restart-canceled-task';
+import {
+  RESTART_FAILED_TOAST,
+  runRestartCanceledTask
+} from '../../../src/commands/restart-canceled-task';
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -185,5 +188,71 @@ describe('runRestartCanceledTask — BUG-001', () => {
     if (!result.ok) expect(result.reason).toBe('task-cap-reached');
     expect(audit.append).not.toHaveBeenCalled();
     expect(queue.findById(target.id)?.status).toBe('canceled');
+  });
+});
+
+// FR-R4-F05 (T12; contract F, F6; contract O, O5; FR-014, FR-015) — the generic arm.
+//
+// It used to toast `Schegent: restart failed — ${message}` and log the bare message, so a
+// path in an exception reached the operator's screen. The toast is fixed text now and
+// the detail goes to the log through `describeFailure`; the two typed refusals keep
+// their codes and add no toast.
+describe('runRestartCanceledTask — the unexpected-failure arm (FR-R4-F05)', () => {
+  const PATH = '/synthetic/home/user-252/secret.txt';
+
+  async function canceledTask(): Promise<string> {
+    const feature = await queue.enqueue('canceled task');
+    await queue.markInFlight(feature.id, 'run-prev');
+    await queue.finish(feature.id, 'canceled');
+    return feature.id;
+  }
+
+  it('toasts the fixed text and logs the detail when an Error carries a path', async () => {
+    const taskId = await canceledTask();
+    audit.append.mockRejectedValueOnce(new Error(`audit write failed at ${PATH}`));
+    const errorLog = vi.spyOn(logger, 'error');
+
+    const result = await runRestartCanceledTask({ store, queue, audit, notifier, logger, taskId });
+
+    expect(result).toEqual({ ok: false, reason: 'unexpected-error' });
+    expect(notifier.error).toHaveBeenCalledTimes(1);
+    expect(notifier.error).toHaveBeenCalledWith(RESTART_FAILED_TOAST);
+    expect(String(vi.mocked(notifier.error).mock.calls[0]?.[0])).not.toContain('user-252');
+    expect(errorLog).toHaveBeenCalledWith(
+      'restart-canceled-task: unexpected failure',
+      expect.objectContaining({ error: expect.stringContaining('user-252') })
+    );
+  });
+
+  it('toasts the fixed text for a thrown null', async () => {
+    const taskId = await canceledTask();
+    audit.append.mockRejectedValueOnce(null);
+
+    const result = await runRestartCanceledTask({ store, queue, audit, notifier, logger, taskId });
+
+    expect(result).toEqual({ ok: false, reason: 'unexpected-error' });
+    expect(notifier.error).toHaveBeenCalledWith(RESTART_FAILED_TOAST);
+  });
+
+  it('words the toast without an exception, a path or a code', () => {
+    expect(RESTART_FAILED_TOAST).toBe(
+      'Schegent: the task could not be restarted. See the Schegent log for details.'
+    );
+  });
+
+  it('keeps illegal-state and task-cap-reached as codes, with no failure toast', async () => {
+    const pending = await queue.enqueue('pending task');
+
+    const illegal = await runRestartCanceledTask({
+      store,
+      queue,
+      audit,
+      notifier,
+      logger,
+      taskId: pending.id
+    });
+
+    expect(illegal).toEqual({ ok: false, reason: 'illegal-state' });
+    expect(notifier.error).not.toHaveBeenCalled();
   });
 });

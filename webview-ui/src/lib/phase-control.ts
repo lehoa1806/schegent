@@ -10,6 +10,7 @@ import {
 import { postCommand } from './vscode-api';
 import { correlatedLifecycle } from './lifecycle-control-ipc';
 import type { LifecycleControlResult } from './lifecycle-control-ipc';
+import type { IntentWaitOptions } from './intent-ledger';
 
 // Feature 093 (FR-018 / T080) — every lifecycle control names the queue whose
 // Run it addresses. The host refuses an unaddressed control at the IPC
@@ -30,22 +31,38 @@ import type { LifecycleControlResult } from './lifecycle-control-ipc';
 // a `useConfirm`, so the `destructive-actions.lint.test.ts` constraint that
 // keeps retry-now in its component (see the note further down) does not apply.
 
-export function pausePhase(queueId: string): Promise<LifecycleControlResult> {
-  return correlatedLifecycle(() => postCommand(CMD_PAUSE_PHASE, { queueId }).correlationId);
+export function pausePhase(
+  queueId: string,
+  wait?: IntentWaitOptions<LifecycleControlResult>
+): Promise<LifecycleControlResult> {
+  return correlatedLifecycle(CMD_PAUSE_PHASE, { queueId }, (correlationId, payload) => {
+    postCommand(CMD_PAUSE_PHASE, payload, { correlationId });
+  }, wait);
 }
 
-export function resumePhase(queueId: string, prompt?: string): Promise<LifecycleControlResult> {
+export function resumePhase(
+  queueId: string,
+  prompt?: string,
+  wait?: IntentWaitOptions<LifecycleControlResult>
+): Promise<LifecycleControlResult> {
   return correlatedLifecycle(
-    () =>
-      postCommand(CMD_RESUME_PHASE, prompt === undefined ? { queueId } : { queueId, prompt })
-        .correlationId
+    CMD_RESUME_PHASE,
+    { queueId, ...(prompt === undefined ? {} : { prompt }) },
+    (correlationId, payload) => {
+      postCommand(CMD_RESUME_PHASE, payload, { correlationId });
+    },
+    wait
   );
 }
 
-export function restartPhase(phaseId: string, queueId: string): Promise<LifecycleControlResult> {
-  return correlatedLifecycle(
-    () => postCommand(CMD_RESTART_PHASE, { queueId, phaseId }).correlationId
-  );
+export function restartPhase(
+  phaseId: string,
+  queueId: string,
+  wait?: IntentWaitOptions<LifecycleControlResult>
+): Promise<LifecycleControlResult> {
+  return correlatedLifecycle(CMD_RESTART_PHASE, { queueId, phaseId }, (correlationId, payload) => {
+    postCommand(CMD_RESTART_PHASE, payload, { correlationId });
+  }, wait);
 }
 
 // FR-R4-F20 — `runId` is the Run the operator confirmed, captured by the caller before its
@@ -53,10 +70,16 @@ export function restartPhase(phaseId: string, queueId: string): Promise<Lifecycl
 export function skipPhase(
   runId: string,
   phaseId: string,
-  queueId: string
+  queueId: string,
+  wait?: IntentWaitOptions<LifecycleControlResult>
 ): Promise<LifecycleControlResult> {
   return correlatedLifecycle(
-    () => postCommand(CMD_SKIP_PHASE, { queueId, runId, phaseId }).correlationId
+    CMD_SKIP_PHASE,
+    { queueId, runId, phaseId },
+    (correlationId, payload) => {
+      postCommand(CMD_SKIP_PHASE, payload, { correlationId });
+    },
+    wait
   );
 }
 

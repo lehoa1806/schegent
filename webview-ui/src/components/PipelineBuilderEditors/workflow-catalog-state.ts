@@ -17,6 +17,7 @@
 // (FR-049), so nothing in this module sorts, dedupes, or normalizes either
 // list: add appends, edit replaces in place, remove closes the gap.
 
+import { boundaryRefusalText } from '../../lib/boundary-refusal-text';
 import {
   WORKFLOW_NODE_TERMINAL_STATUSES,
   type PortablePipelineDefinition,
@@ -834,9 +835,10 @@ interface WorkflowSaveRejectionResult {
 }
 
 /**
- * Turn a host rejection into one line the operator can act on. An unrecognized
- * reason passes through verbatim rather than being flattened into a generic
- * message — a reason this build does not know about is still information.
+ * Turn a host rejection into one line the operator can act on. A reason this function has no
+ * sentence for goes through the shared boundary text (FR-R4-F05, FR-014): a code-shaped reason
+ * is still named, inside a fixed sentence, because a reason this build does not know about is
+ * still information, but free text and the bare dispatch-failure code are not shown.
  */
 export function formatWorkflowSaveRejection(
   reason: string,
@@ -845,7 +847,7 @@ export function formatWorkflowSaveRejection(
   if (reason === 'stale-catalog') {
     return 'This Workflow layer changed since you started editing. Refresh to take the current version, or reapply your edits on top of it.';
   }
-  if (reason !== 'workflow-validation') return reason;
+  if (reason !== 'workflow-validation') return boundaryRefusalText(reason);
 
   const errors = result?.errors ?? [];
   const shown = errors.slice(0, MAX_VISIBLE_FIELD_ERRORS);

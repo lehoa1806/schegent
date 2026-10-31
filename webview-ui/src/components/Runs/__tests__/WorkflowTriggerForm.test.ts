@@ -332,7 +332,9 @@ describe('what the host says back (FR-012)', () => {
     launchWorkflow.mockResolvedValueOnce({
       outcome: 'rejected-queue',
       reason: 'queue-refused',
-      detail: 'the queue is paused'
+      // FR-R4-F05 (O1; TA9) — the guard's detail is a code (the host sends one, not a
+      // sentence), and it is named inside the shared boundary sentence.
+      detail: 'queue-paused'
     });
     const view = mountOneStart();
 
@@ -340,7 +342,7 @@ describe('what the host says back (FR-012)', () => {
     await submit(view);
 
     const status = view.getByTestId('workflow-trigger-status').textContent ?? '';
-    expect(status).toContain('the queue is paused');
+    expect(status).toContain('queue-paused');
     expect(status.toLowerCase()).not.toContain('start node');
   });
 
@@ -410,5 +412,76 @@ describe('submission routes through the shared helper', () => {
     answer({ outcome: 'started', connectedRunId: 'c', revision: 1, queueItemId: 'q' });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(control.disabled).toBe(false);
+  });
+});
+
+// FR-R4-F05 (T17, T119; contract I, I5 to I8; contract O, O3, O4) — a launch whose wait ran out.
+// The 30 s outer timer and its message are gone: the wait is the ledger's 5 s (resolved by the
+// IPC module as `not-yet-known`), the text says the outcome is not yet known, the host's late
+// answer replaces it once, and unmount aborts the wait.
+describe('a launch whose wait ran out (T119; FR-024, FR-026)', () => {
+  const NOT_YET_KNOWN = 'The host has not answered yet, so the outcome is not yet known.';
+
+  function lastOptions(): {
+    signal?: AbortSignal;
+    onLateOutcome?: (result: unknown) => void;
+  } {
+    const call = launchWorkflow.mock.calls.at(-1);
+    return (call?.[1] ?? {}) as { signal?: AbortSignal; onLateOutcome?: (result: unknown) => void };
+  }
+
+  it('says the outcome is not yet known, and re-enables the form', async () => {
+    launchWorkflow.mockResolvedValueOnce({ outcome: 'not-yet-known' });
+    const view = mountOneStart();
+
+    await submit(view);
+    await fireEvent.input(view.getByTestId('run-input-seed'), { target: { value: 'x' } });
+
+    const status = view.getByTestId('workflow-trigger-status').textContent;
+    expect(status).toContain(NOT_YET_KNOWN);
+    expect(status).not.toContain('queue refused');
+    expect((view.getByTestId('workflow-trigger-submit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('starts no 30 s timer of its own', async () => {
+    vi.useFakeTimers();
+    try {
+      launchWorkflow.mockImplementation(() => new Promise(() => {}));
+      const view = mountOneStart();
+
+      await submit(view);
+      const before = vi.getTimerCount();
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(before).toBe(0);
+      expect((view.getByTestId('workflow-trigger-submit') as HTMLButtonElement).disabled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('replaces the not-yet-known text with the late outcome', async () => {
+    launchWorkflow.mockResolvedValueOnce({ outcome: 'not-yet-known' });
+    const view = mountOneStart();
+    await submit(view);
+    expect(view.getByTestId('workflow-trigger-status').textContent).toContain(NOT_YET_KNOWN);
+
+    lastOptions().onLateOutcome!({ outcome: 'started', connectedRunId: 'cr-late', queueItemId: 'qi-1' });
+    await fireEvent.input(view.getByTestId('run-input-seed'), { target: { value: 'y' } });
+
+    const status = view.getByTestId('workflow-trigger-status').textContent;
+    expect(status).toContain('Started connected run cr-late.');
+    expect(status).not.toContain(NOT_YET_KNOWN);
+  });
+
+  it('aborts its wait when the form unmounts', async () => {
+    launchWorkflow.mockImplementation(() => new Promise(() => {}));
+    const view = mountOneStart();
+    await submit(view);
+    expect(lastOptions().signal!.aborted).toBe(false);
+
+    view.unmount();
+
+    expect(lastOptions().signal!.aborted).toBe(true);
   });
 });

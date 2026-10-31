@@ -18,6 +18,8 @@
    * `saveGeneralSettings` helper every other field uses, so a profile is four
    * updates in one post rather than a new command surface.
    */
+  import { boundaryRefusalText, isOutcomeNotYetKnown } from '../../../lib/boundary-refusal-text';
+  import type { SaveResult } from '../../../lib/save-general-settings';
   import { saveGeneralSettings } from '../../../lib/save-general-settings';
   import {
     detectPrivacyProfile,
@@ -65,6 +67,17 @@
 
   let applying = $state<PrivacyProfileName | null>(null);
   let refusal = $state<string | null>(null);
+  // FR-R4-F05 (I5) — a timeout is not "not applied": the host may still apply the profile.
+  let notYetKnown = $state(false);
+
+  // FR-R4-F05 (I6, I8, FR-024) — a late answer replaces the not-yet-known text through the same
+  // path as an on-time one. Unmounting aborts the wait.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  function showResult(result: SaveResult): void {
+    notYetKnown = result.status === 'rejected' && isOutcomeNotYetKnown(result.reason);
+    refusal = result.status === 'accepted' ? null : boundaryRefusalText(result.reason);
+  }
 
   const DESCRIPTION_ID = 'privacy-profile-description';
 
@@ -73,14 +86,18 @@
     if (profile === undefined) return;
     applying = name;
     try {
-      const result = await saveGeneralSettings({
-        'logging.verbose': profile.settings.loggingVerbose,
-        'logging.rawTranscriptMode': profile.settings.rawTranscriptMode,
-        'logging.sessionRetentionMaxAgeDays': profile.settings.sessionRetentionMaxAgeDays,
-        'logging.sessionRetentionMaxBytes': profile.settings.sessionRetentionMaxBytes,
-        'logging.transportCaptureMode': profile.settings.transportCaptureMode
-      });
-      refusal = result.status === 'accepted' ? null : result.reason;
+      const result = await saveGeneralSettings(
+        {
+          'logging.verbose': profile.settings.loggingVerbose,
+          'logging.rawTranscriptMode': profile.settings.rawTranscriptMode,
+          'logging.sessionRetentionMaxAgeDays': profile.settings.sessionRetentionMaxAgeDays,
+          'logging.sessionRetentionMaxBytes': profile.settings.sessionRetentionMaxBytes,
+          'logging.transportCaptureMode': profile.settings.transportCaptureMode
+        },
+        undefined,
+        { signal: lifetime.signal, onLateOutcome: showResult }
+      );
+      showResult(result);
     } finally {
       applying = null;
     }
@@ -112,7 +129,7 @@
   </span>
   {#if refusal !== null}
     <p class="profile-refusal" role="alert" data-testid="privacy-profile-refusal">
-      The host refused the profile: {refusal}
+      {notYetKnown ? refusal : `The profile was not applied. ${refusal}`}
     </p>
   {/if}
   <p class="hint" id={DESCRIPTION_ID}>

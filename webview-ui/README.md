@@ -138,7 +138,7 @@ Seven queue mutation commands feature 030 removed were reinstated in
 `CMD_SAVE_QUEUE_SETTINGS`, `CMD_MOVE_TASK`. The other two,
 `CMD_SET_QUEUE_SCHEDULE` and `CMD_CLEAR_QUEUE_SCHEDULE`, were deregistered
 again by feature 097 — not merely hidden — so neither has a
-`MUTATING_COMMAND_REASONS` entry, a validator, or a handler any more. Every
+`COMMAND_AUTHORITY` entry, a validator, or a handler any more. Every
 one of the five standing commands is a member of `MUTATING_COMMAND_TYPES`
 (`src/contracts/sidebar-command-metadata.ts`), so every one is primary-host
 gated, and every one has a host handler under `src/ui/sidebar/commands/`.
@@ -163,7 +163,7 @@ as `phase-log-ipc.ts` and `save-general-settings.ts`. The two that already had
 call sites keep them; relocating working code to make the rule uniform would be
 a diff with no requirement behind it.
 `tests/lint/queue-command-reachability.test.ts` derives the mutating
-queue-command set from `MUTATING_COMMAND_REASONS` and fails the build if any
+queue-command set from `COMMAND_AUTHORITY` and fails the build if any
 member has no non-test call site — the gap is now checked rather than recorded.
 
 Only one schedule mechanism remains. Feature 092's `CMD_SET_QUEUE_SCHEDULE`
@@ -622,7 +622,7 @@ Host → webview push channel:
 
 - `MSG_PHASE_LOG_ENTRY` — `{ kind: 'entry' | 'tail-ended', entry?, reason? }`. Carries either a single projected/sanitized entry or a synthetic terminal `tail-ended` notice (`reason` ∈ `webview-stop` | `webview-dispose` | `phase-complete`).
 
-All three commands are **read-only** and are NOT members of `MUTATING_COMMANDS` — they bypass the primary-only mutation gate so a secondary VS Code window can still browse logs. They flow through the shared helper at [`webview-ui/src/lib/phase-log-ipc.ts`](src/lib/phase-log-ipc.ts) (single call site); a repo-grep regression test at [`../tests/lint/no-inline-phase-log-ipc.test.ts`](../tests/lint/no-inline-phase-log-ipc.test.ts) fails the build on any drift. No new snapshot envelope keys; no `AUDIT_SCHEMA_VERSION` or `STATE_SCHEMA_VERSION` bump (logs are derived from the existing diagnostics directory).
+All three commands were read-only and outside `MUTATING_COMMANDS`, so a secondary VS Code window could browse logs. `FR-R4-F05` gates them, because each appends an audit row: `COMMAND_AUTHORITY` declares them gated and not serialized, so an untrusted workspace and a secondary window are refused (see "What a refused command shows" in `docs/reference/api-and-cli.md`). They flow through the shared helper at [`webview-ui/src/lib/phase-log-ipc.ts`](src/lib/phase-log-ipc.ts) (single call site); a repo-grep regression test at [`../tests/lint/no-inline-phase-log-ipc.test.ts`](../tests/lint/no-inline-phase-log-ipc.test.ts) fails the build on any drift. No new snapshot envelope keys; no `AUDIT_SCHEMA_VERSION` or `STATE_SCHEMA_VERSION` bump (logs are derived from the existing diagnostics directory).
 
 ### Scoped Phase catalog manager (spec 081)
 

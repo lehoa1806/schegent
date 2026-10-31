@@ -490,10 +490,10 @@ function workflowContext(
  * Say what importing this document would do, and change nothing.
  *
  * Read-only by construction (FR-031, FR-032): no configuration write, no layer
- * revision moved, no lock taken, nothing retained past the call. That is why the
- * command that wraps it is deliberately NOT a member of `MUTATING_COMMANDS`, and
- * why a headless caller reaching this function directly needs no trust gate
- * either — the gate lives on the write that may follow.
+ * revision moved, no lock taken, nothing retained past the call. A headless
+ * caller reaching this function directly needs no trust gate — the gate lives on
+ * the write that may follow. The command that wraps it is gated all the same
+ * (FR-R4-F05, FR-003), because a refusal appends an audit row.
  */
 export async function preflightProcessDocument(
   deps: PreflightDeps,

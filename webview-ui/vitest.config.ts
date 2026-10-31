@@ -97,11 +97,15 @@ export default defineConfig({
       // floor to what the tree happens to measure today makes the next one red
       // for nothing. Full run recorded in
       // ../docs/development/coverage-measurements.md.
+      //
+      // Raised on feature 252 (trusted commands and acknowledgements), whose
+      // intent-ledger tests measured 91.38% statements / 84.11% functions /
+      // 91.38% lines; branches were not flagged and stay at 75.
       thresholds: {
-        statements: 84,
+        statements: 86,
         branches: 75,
-        functions: 77,
-        lines: 84
+        functions: 79,
+        lines: 86
       }
     }
   }

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import QueueItemActions from '../QueueItemActions.svelte';
+import { disposeIntentLedger } from '../../lib/intent-ledger';
 import type { QueueItem } from '../../lib/snapshot-types';
 
 // BUG-002 (T119) — postCommand now returns `{ correlationId }` so the
@@ -12,6 +13,9 @@ const postCommandSpy = vi.fn((..._args: unknown[]) => ({ correlationId: nextCorr
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args)
 }));
+// FR-R4-F05 (I4) — the remove action sends through the intent ledger, which supplies its own
+// identity as the third argument of `postCommand`; this is what the assertions below expect of it.
+const LEDGER_IDENTITY = expect.objectContaining({ correlationId: expect.any(String) });
 
 // Feature 063 (T028, T034) — the per-row destructive actions now gate
 // through the shared `useConfirm` helper. These tests treat the prompt as
@@ -35,6 +39,8 @@ vi.mock('../../lib/snapshot-store.svelte', () => ({
     onceAck: (correlationId: string, listener: (ack: { status: string; reason?: string }) => void) => {
       lastAckListener = listener;
       onceAckSpy(correlationId, listener);
+      // FR-R4-F05 (I3) — the intent ledger keeps the unsubscribe it is handed.
+      return () => undefined;
     }
   }
 }));
@@ -60,7 +66,18 @@ beforeEach(() => {
   useConfirmMock.mockReset();
   useConfirmMock.mockResolvedValue(true);
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
+});
+
+// FR-R4-F05 — the ack now settles a promise the component awaits (the intent ledger), so the
+// continuation that renders the outcome runs a few microtasks after the listener fires.
+async function flushAck(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) await Promise.resolve();
+  await tick();
+}
 
 function buildItem(overrides: Partial<QueueItem> = {}): QueueItem {
   return Object.freeze({
@@ -204,7 +221,7 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
         props: { item: buildItem({ status: 'pending' }), isPrimary: true }
       });
       await confirmRemove(getByTestId);
-      expect(postCommandSpy).toHaveBeenCalledWith(CMD_REMOVE_QUEUE_ITEM, { id: 'q-1', confirmed: true });
+      expect(postCommandSpy).toHaveBeenCalledWith(CMD_REMOVE_QUEUE_ITEM, { id: 'q-1', confirmed: true }, LEDGER_IDENTITY);
       expect(postCommandSpy).not.toHaveBeenCalledWith(CMD_CANCEL);
     });
 
@@ -243,10 +260,14 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
         props: { item: buildItem({ status: 'pending', id: 'q-7' }), isPrimary: true }
       });
       await confirmRemove(getByTestId, 'q-7');
-      expect(postCommandSpy).toHaveBeenCalledWith(CMD_REMOVE_QUEUE_ITEM, { id: 'q-7', confirmed: true });
-      expect(markPendingSpy).toHaveBeenCalledWith('corr-test');
+      expect(postCommandSpy).toHaveBeenCalledWith(CMD_REMOVE_QUEUE_ITEM, { id: 'q-7', confirmed: true }, LEDGER_IDENTITY);
+      // The identity is the intent ledger's, passed to `postCommand` and used for the ack listener.
+      const correlationId = (postCommandSpy.mock.calls[0]![2] as { correlationId: string })
+        .correlationId;
+      expect(correlationId).toEqual(expect.any(String));
+      expect(markPendingSpy).toHaveBeenCalledWith(correlationId);
       expect(onceAckSpy).toHaveBeenCalledTimes(1);
-      expect(onceAckSpy.mock.calls[0]?.[0]).toBe('corr-test');
+      expect(onceAckSpy.mock.calls[0]?.[0]).toBe(correlationId);
     });
 
     it('non-pending rows (in-flight / failed / canceled / completed) expose the remove affordance', () => {
@@ -281,7 +302,7 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       await confirmRemove(getByTestId);
       expect(lastAckListener).not.toBeNull();
       lastAckListener?.({ status: 'accepted' });
-      await tick();
+      await flushAck();
       expect(queryByTestId('queue-item-remove-error-q-1')).toBeNull();
     });
 
@@ -292,7 +313,7 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       await confirmRemove(getByTestId);
       expect(lastAckListener).not.toBeNull();
       lastAckListener?.({ status: 'rejected', reason: 'task-not-in-pending-state' });
-      await tick();
+      await flushAck();
       const err = queryByTestId('queue-item-remove-error-q-1');
       expect(err).not.toBeNull();
       expect(err?.textContent?.trim()).toBe('Cannot remove: task is no longer pending.');
@@ -306,7 +327,7 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       await confirmRemove(getByTestId);
       expect(lastAckListener).not.toBeNull();
       lastAckListener?.({ status: 'rejected', reason: 'unknown-task-id' });
-      await tick();
+      await flushAck();
       const err = queryByTestId('queue-item-remove-error-q-1');
       expect(err).not.toBeNull();
       expect(err?.textContent?.trim()).toBe('Cannot remove: task no longer exists.');
@@ -318,15 +339,20 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       });
       await confirmRemove(getByTestId);
       lastAckListener?.({ status: 'rejected', reason: 'task-not-in-pending-state' });
-      await tick();
+      await flushAck();
       expect(queryByTestId('queue-item-remove-error-q-1')).not.toBeNull();
 
-      nextCorrelationId = 'corr-second';
       await confirmRemove(getByTestId);
       // Stale text cleared synchronously on the new click.
       await tick();
       expect(queryByTestId('queue-item-remove-error-q-1')).toBeNull();
-      expect(markPendingSpy).toHaveBeenLastCalledWith('corr-second');
+      // The first intent settled, so the second click is a new intent under a new identity.
+      const identities = postCommandSpy.mock.calls.map(
+        (call) => (call[2] as { correlationId: string }).correlationId
+      );
+      expect(identities).toHaveLength(2);
+      expect(identities[1]).not.toBe(identities[0]);
+      expect(markPendingSpy).toHaveBeenLastCalledWith(identities[1]);
     });
   });
 
@@ -485,5 +511,76 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       expect(useConfirmMock).not.toHaveBeenCalled();
       expect(postCommandSpy).not.toHaveBeenCalled();
     });
+  });
+});
+
+// FR-R4-F05 (T17, T117; contract I, I5 to I8; contract O, O3, O4) — a remove whose wait ran out. The
+// remove action had no timer: a host that never answered left the row in limbo with no message. It
+// waits 5 s through the intent ledger, says the outcome is NOT YET KNOWN (the host may still remove
+// the task), a second click is the same intent under the same identity, the host's late answer
+// replaces the message once, and unmount removes the timer.
+describe('a remove whose wait ran out (T117; FR-024, FR-026)', () => {
+  const NOT_YET_KNOWN = 'The host has not answered yet, so the outcome is not yet known.';
+
+  it('shows the not-yet-known text at 5,000 ms, and the late outcome replaces it once', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId, queryByTestId } = render(QueueItemActions, {
+        props: { item: buildItem({ status: 'pending' }), isPrimary: true }
+      });
+      await confirmRemove(getByTestId);
+      expect(queryByTestId('queue-item-remove-error-q-1')).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await flushAck();
+      expect(getByTestId('queue-item-remove-error-q-1').textContent.trim()).toBe(NOT_YET_KNOWN);
+
+      lastAckListener?.({ status: 'rejected', reason: 'unknown-task-id' });
+      await flushAck();
+      expect(getByTestId('queue-item-remove-error-q-1').textContent.trim()).toBe(
+        'Cannot remove: task no longer exists.'
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries under the same identity and payload', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId } = render(QueueItemActions, {
+        props: { item: buildItem({ status: 'pending' }), isPrimary: true }
+      });
+      await confirmRemove(getByTestId);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await flushAck();
+
+      await confirmRemove(getByTestId);
+
+      const [first, second] = postCommandSpy.mock.calls;
+      expect((second![2] as { correlationId: string }).correlationId).toBe(
+        (first![2] as { correlationId: string }).correlationId
+      );
+      expect(second![1]).toEqual(first![1]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves no timer behind when the row unmounts before the ack', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId, unmount } = render(QueueItemActions, {
+        props: { item: buildItem({ status: 'pending' }), isPrimary: true }
+      });
+      await confirmRemove(getByTestId);
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+      unmount();
+
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

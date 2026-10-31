@@ -1,8 +1,15 @@
 import type { SidebarCommand } from './messages';
-import { MUTATING_COMMAND_TYPES } from '../../contracts/sidebar-command-metadata';
+import type { CommandAuthority } from '../../contracts/sidebar-command-metadata';
+import {
+  MUTATING_COMMAND_TYPES,
+  commandAuthorityOf
+} from '../../contracts/sidebar-command-metadata';
 import { HANDLERS } from './commands';
 import { SECONDARY_REJECT, UNTRUSTED_REJECT } from './commands/constants';
-import { ack } from './commands/handler-helpers';
+import { ack, ackCommandOutcome, DISPATCH_FAILED_REASON } from './commands/handler-helpers';
+import { failed } from '../../contracts/command-outcome';
+import { describeFailure } from '../../lib/errors';
+import type { HandlerContext } from './commands/handler-contract';
 import { isWindowPrimary } from './commands/primacy-gate';
 import type { AckPoster, RouterDeps } from './commands/router-types';
 import { MutationCommandExecutor } from './mutation-command-executor';
@@ -18,16 +25,28 @@ export const MUTATING_COMMANDS: ReadonlySet<string> = new Set(MUTATING_COMMAND_T
 
 /**
  * Sidebar IPC message router. Decomposed into per-command handler files
- * under `./commands/`; this class owns the primary-host gate, the
- * mutating-command set, the handler-not-found path, and the top-level
- * try/catch that translates handler throws into sanitized rejection acks.
+ * under `./commands/`; this class owns the gate decision (read from
+ * `COMMAND_AUTHORITY`: trust, then primary-host, for a gated command), the
+ * handler-not-found path, and the top-level try/catch that translates a handler
+ * throw into one fixed `command-dispatch-failed` acknowledgement.
  *
- * Adding a new command:
- *   1. Add the CMD_ constant + interface in `src/contracts/sidebar-ipc.ts`.
- *   2. Create the per-command handler file in `./commands/cmd-<name>.ts`.
- *   3. Wire it into `./commands/index.ts`.
- *   4. If the command mutates host state, add it to
- *      `MUTATING_COMMAND_REASONS` in `src/contracts/sidebar-command-metadata.ts`.
+ * Adding a new command (FR-R4-F05, the one recipe; every other mention points here):
+ *   1. Add the CMD_ constant to `src/contracts/sidebar-ipc.ts`, and its entry in
+ *      `COMMAND_TYPES`.
+ *   2. Add the interface and the `SidebarCommand` union member there.
+ *   3. Add the validator in `src/contracts/runtime-validators.ts`.
+ *   4. Create the handler file `./commands/cmd-<name>.ts`.
+ *   5. Register it in `./commands/index.ts`.
+ *   6. Declare its authority in `COMMAND_AUTHORITY`
+ *      (`src/contracts/sidebar-command-metadata.ts`). REQUIRED for every command,
+ *      gated or read-only, with a reason: an omitted entry is a `tsc` error. A
+ *      command that starts a process, writes persisted state, writes a file or
+ *      appends an audit row is `gated`; `readOnly`'s reason says why none applies.
+ *   7. Add its row to `docs/reference/api-and-cli.md`
+ *      (`tests/lint/webview-command-reference-parity.test.ts` fails without it).
+ *   8. Add the webview helper in its family module; a component never imports the
+ *      CMD_ constant.
+ *   9. Add the tests.
  */
 export class MessageRouter {
   private readonly mutations: MutationCommandExecutor;
@@ -47,22 +66,40 @@ export class MessageRouter {
       type: command.type,
       correlationId: command.correlationId
     });
-    if (this.isMutatingCommand(command.type)) {
-      await this.mutations.execute(command.correlationId, postAck, async (captureAck) => {
-        await this.dispatchValidated(command, captureAck);
-      });
+    // FR-R4-F05 (C4) — the one decision, read once from the declaration. A type
+    // the table does not hold is `gated` and `serialized` (fail-closed).
+    const authority = commandAuthorityOf(command.type);
+    if (authority.authority === 'read-only') {
+      await this.dispatchValidated(command, postAck, authority);
       return;
     }
-    await this.dispatchValidated(command, postAck);
+    await this.mutations.execute(
+      command.correlationId,
+      postAck,
+      async (captureAck) => {
+        await this.dispatchValidated(command, captureAck, authority);
+      },
+      { serialize: authority.execution === 'serialized' }
+    );
   }
 
-  private async dispatchValidated(command: SidebarCommand, postAck: AckPoster): Promise<void> {
-    const ctx = {
+  private async dispatchValidated(
+    command: SidebarCommand,
+    postAck: AckPoster,
+    authority: CommandAuthority
+  ): Promise<void> {
+    // FR-R4-F05 (F1) — remembers whether anything was posted for this command, so the
+    // catch-all below sends one fixed ack when none was and none when one was.
+    let acknowledged = false;
+    const ctx: HandlerContext = {
       deps: this.deps,
-      postAck,
+      postAck: (ack) => {
+        acknowledged = true;
+        return postAck(ack);
+      },
       correlationId: command.correlationId
     };
-    if (this.isMutatingCommand(command.type)) {
+    if (authority.authority === 'gated') {
       // Workspace-trust gate: reject mutating commands when VS Code reports
       // the workspace is untrusted. The check runs BEFORE the primary-host
       // gate so a malicious untrusted workspace cannot probe for primary
@@ -103,14 +140,38 @@ export class MessageRouter {
     try {
       await handler(ctx, command);
     } catch (err) {
-      const reason = this.deps.logger.sanitize((err as Error).message ?? 'unknown error');
-      this.deps.logger.warn(`sidebar router: ${command.type} failed: ${reason}`);
-      await ack(ctx, 'rejected', reason);
+      await this.reportHandlerFailure(command, ctx, err, acknowledged);
     }
   }
 
-  private isMutatingCommand(type: string): boolean {
-    return MUTATING_COMMANDS.has(type);
+  /**
+   * FR-R4-F05 (FR-011 to FR-014; contract F, F1 to F5) — the one place a handler's throw
+   * is answered. The detail goes to the log, bounded and sanitized, with the command type
+   * and correlation id; the operator gets `command-dispatch-failed` and nothing of what was
+   * thrown. A handler that already acked is not answered twice: the first ack is the
+   * answer, and a second would contradict it.
+   *
+   * It cannot throw. It runs in a catch block, a thrown value can be `null` or an object
+   * whose `message` getter throws, and a logger or a transport can fail too; whichever
+   * happens, the webview's own timeout reports an unanswered command.
+   */
+  private async reportHandlerFailure(
+    command: SidebarCommand,
+    ctx: HandlerContext,
+    thrown: unknown,
+    acknowledged: boolean
+  ): Promise<void> {
+    try {
+      this.deps.logger.warn('sidebar router: command failed', {
+        type: command.type,
+        correlationId: command.correlationId,
+        error: describeFailure(thrown, (value) => this.deps.logger.sanitize(value))
+      });
+      if (acknowledged) return;
+      await ackCommandOutcome(ctx, failed(DISPATCH_FAILED_REASON));
+    } catch {
+      // Nothing is left to tell anyone: the log or the ack transport itself failed.
+    }
   }
 
   /**
