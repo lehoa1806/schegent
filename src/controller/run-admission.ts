@@ -44,11 +44,17 @@ export interface ResumeOptions {
 export interface ResumeAdmission extends RunAdmission {
   readonly resumed: boolean;
   /**
-   * FR-R4-F02 (contract U4) — why a resume was refused, for the two refusals an unattended
-   * admission has to tell apart: the in-lease eligibility recheck, and another window holding the
-   * queue's lease. Absent on every other refusal and on an admitted resume.
+   * FR-R4-F02 (contract U4) — why a resume was refused, for the refusals a caller has to tell
+   * apart: the in-lease eligibility recheck, and another window holding the queue's lease.
+   * Absent on every other refusal and on an admitted resume.
+   *
+   * FR-R4-F06 (TA3) — two more. `'previous-tree-live'` (the previous backend's process tree, or
+   * its group, still answers) and `'shutdown-begun'` (the drain is closed) are refusals the
+   * drain must NOT turn into a fresh start: `NOT_RESUMED` means "nothing to resume, start
+   * afresh", and a fresh Run written over the queue's Run would put a second backend beside the
+   * survivor. An unattended admission reports both as `'ineligible'`.
    */
-  readonly refusal?: 'ineligible' | 'lease-declined';
+  readonly refusal?: 'ineligible' | 'lease-declined' | 'previous-tree-live' | 'shutdown-begun';
 }
 
 /** Admission failed before a Run existed; there is no drive to await. */
@@ -69,4 +75,24 @@ export const NOT_RESUMED_LEASE_DECLINED: ResumeAdmission = {
   resumed: false,
   completed: Promise.resolve(),
   refusal: 'lease-declined'
+};
+
+/**
+ * FR-R4-F06 (FR-016) — the resume was refused because the previous backend's tree, or its
+ * process group, is still alive. The drain must not fall through to a fresh start on it.
+ */
+export const NOT_RESUMED_TREE_LIVE: ResumeAdmission = {
+  resumed: false,
+  completed: Promise.resolve(),
+  refusal: 'previous-tree-live'
+};
+
+/**
+ * FR-R4-F06 (FR-020) — the resume was refused because shutdown has begun. The drain must not
+ * fall through to a fresh start on it.
+ */
+export const NOT_RESUMED_SHUTDOWN: ResumeAdmission = {
+  resumed: false,
+  completed: Promise.resolve(),
+  refusal: 'shutdown-begun'
 };

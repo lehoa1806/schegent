@@ -44,6 +44,7 @@ The forwarding settings resolve to these effective policies:
 | `schegent.cli.environmentMode: minimal` | Only Schegent-controlled overlays. |
 | `schegent.cli.environmentMode: allowlist` | Bootstrap variables, every `LC_*` variable, configured names, then Schegent-controlled overlays. This is the manifest default. |
 | `schegent.cli.environmentMode: inherit` | The entire extension-host environment, then Schegent-controlled overlays. Activation logs a warning because ambient secrets can be exposed. |
+| `schegent.cli.environmentMode`: absent, `null`, not a string, an unknown string, or a near miss such as `Inherit`, `INHERIT`, `inherits` or ` inherit` | Treated as `allowlist`, the same as the manifest default. Only the exact string `inherit` inherits. |
 
 <!-- Source: src/runner/spawn-env.ts -->
 <!-- Source: src/activation/backend-wiring.ts -->

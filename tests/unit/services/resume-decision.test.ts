@@ -6,6 +6,7 @@ import {
   cleanAnnouncementValue,
   decideResume,
   declineMessage,
+  orphanedGroupDeclineMessage,
   resumeAnnouncement,
   resumePersistedRuns,
   type ResumeWalkDeps
@@ -173,6 +174,97 @@ describe('FR-R3-103 — the activation walk', () => {
     });
     await resumePersistedRuns(d);
     expect(order).toEqual(['audit', 'resume']);
+  });
+});
+
+// FR-R4-F06 (FR-016; T19; contract P, P8) -- a leader that exited with a live group is not a Run
+// that may resume. The activation walk declines it exactly as it declines `alive`, records the
+// same event with the verdict that applied, and tells the operator the true thing: the backend
+// process has gone, but processes it started are still running in its group.
+describe('FR-R4-F06 — the activation walk and orphaned-group (T19)', () => {
+  const run = (over: Record<string, unknown> = {}) => ({
+    id: 'run-7',
+    currentPhase: 'speckit-implement',
+    currentIteration: 2,
+    ...over
+  });
+
+  function deps(over: Partial<ResumeWalkDeps> = {}): ResumeWalkDeps & {
+    appended: Array<Parameters<ResumeWalkDeps['appendAudit']>[0]>;
+    resumed: string[];
+    notices: string[];
+  } {
+    const appended: Array<Parameters<ResumeWalkDeps['appendAudit']>[0]> = [];
+    const resumed: string[] = [];
+    const notices: string[] = [];
+    return {
+      runs: () => [['default', run({ spawnIdentity: identity })]],
+      liveness: async () => 'orphaned-group',
+      appendAudit: async (entry) => {
+        appended.push(entry);
+      },
+      resume: (queueId) => resumed.push(queueId),
+      notify: (message) => notices.push(message),
+      log: () => {},
+      appended,
+      resumed,
+      notices,
+      ...over
+    };
+  }
+
+  it('decides orphaned-group as a decline, with the decline event and the verdict', () => {
+    const decision = decideResume(candidate, 'orphaned-group');
+    expect(decision.resume).toBe(false);
+    expect(decision.eventType).toBe('run-resume-declined-orphan-alive');
+    expect(decision.payload).toEqual({
+      queueId: 'default',
+      runId: 'run-7',
+      liveness: 'orphaned-group'
+    });
+  });
+
+  it('declines, appends the decline row with liveness orphaned-group, and notifies with the group sentence', async () => {
+    const d = deps();
+    await resumePersistedRuns(d);
+
+    expect(d.resumed, 'no second driver may enter a worktree a helper is still writing to').toEqual([]);
+    expect(d.appended).toHaveLength(1);
+    expect(d.appended[0]?.eventType).toBe('run-resume-declined-orphan-alive');
+    expect(d.appended[0]?.payload.liveness).toBe('orphaned-group');
+    expect(d.appended[0]?.outcome).toBe('failure');
+    expect(d.notices).toEqual([orphanedGroupDeclineMessage(candidate)]);
+  });
+
+  it('keeps the existing sentence for alive', async () => {
+    const d = deps({ liveness: async () => 'alive' });
+    await resumePersistedRuns(d);
+    expect(d.notices).toEqual([declineMessage(candidate)]);
+    expect(d.notices[0]).not.toBe(orphanedGroupDeclineMessage(candidate));
+  });
+
+  it('an audit failure does not change an orphaned-group decision', async () => {
+    const d = deps({
+      appendAudit: async () => {
+        throw new Error('audit sink unavailable');
+      }
+    });
+    await expect(resumePersistedRuns(d)).resolves.toBeUndefined();
+    expect(d.resumed).toEqual([]);
+    expect(d.notices).toHaveLength(1);
+  });
+
+  it('the group sentence says what is true: the process exited, its processes are still alive, end them then resume or reload', () => {
+    const message = orphanedGroupDeclineMessage(candidate);
+    expect(message).toContain('default');
+    expect(message).toMatch(/previous backend process has exited/i);
+    // "alive", not the contract's "running": the no-running-literal gate bans that substring in src.
+    expect(message).toMatch(/still alive in its process group/i);
+    expect(message).toMatch(/end them/i);
+    expect(message).toMatch(/resume or reload/i);
+    // It is not the `alive` sentence: that one says the Run is executing elsewhere.
+    expect(message).not.toBe(declineMessage(candidate));
+    expect(message).not.toContain('/');
   });
 });
 

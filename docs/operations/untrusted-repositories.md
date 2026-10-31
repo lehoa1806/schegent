@@ -61,7 +61,8 @@ host-classifiable. So there is no filter here to rely on — only the boundary, 
 Two things follow that are easy to get wrong:
 
 - **The declared `network` capability cannot be withheld in substance** on a backend whose shell
-  subsumes it. A backend with `Bash` can invoke `curl`, whatever a capability declaration says.
+  subsumes it. A backend with `Bash` can invoke `curl`, whatever a capability declaration says. A
+  capability declaration on Claude is a tool-access restriction, not OS network or filesystem isolation.
 - **The grant is machine-level, not workspace-level.** `schegent.backend.uncontainedBackends` is
   `application`-scoped: it applies to every workspace you open in this installation. Granting it
   while working in a repository you wrote does not un-grant it when you open one you did not. This is

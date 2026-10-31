@@ -18,26 +18,58 @@
 // capability that could only be enforced by asking a human is treated as
 // UNENFORCEABLE, not as a prompt. `capability-enforcement-plan.test.ts` asserts
 // no translation ever emits one.
+//
+// FR-R4-F06 (FR-011 to FR-014; contract K; data-model section 3) — EVERY cell is declared. Each backend
+// states, per capability it can withhold, the flag, HOW that flag enforces (a tool restriction the CLI
+// applies to itself, or the vendor's own sandbox) and what it leaves open (residuals). A cell's outcome is
+// composed from those declarations by one rule, and `capability-cell-declarations.test.ts` checks all 48
+// cells against a table written out by hand. A withheld capability whose flag no capture has confirmed the
+// installed CLI lists is refused and named `unqualified`; a flag nobody has seen is never relied on.
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import {
   ALL_PHASE_CAPABILITIES,
   grants,
+  type CapabilityEnforcement,
+  type CapabilityResidual,
   type DeclaredCapabilitySet,
   type PhaseCapability
 } from '../contracts/phase-capabilities';
+import { CONFIRMED_FLAGS } from './capability-confirmed-flags';
 
 export type CapabilityEnforcementPlan =
-  | { readonly outcome: 'argv'; readonly args: readonly string[] }
+  | {
+      readonly outcome: 'argv';
+      readonly args: readonly string[];
+      /** How the withheld capabilities are enforced; `none-withheld` when nothing is withheld. */
+      readonly enforcement: CapabilityEnforcement;
+      /** What the restriction still leaves open. Sorted, unique, and empty when nothing is. */
+      readonly residuals: readonly CapabilityResidual[];
+    }
   | {
       readonly outcome: 'refused';
       readonly reason: 'capability-not-enforceable';
       readonly kind: BackendRunnerKind;
+      /** EVERY withheld capability the cell cannot enforce: no flag expresses it, or its flag is unconfirmed. */
       readonly unenforceable: readonly PhaseCapability[];
+      /** The subset whose flag the planner declares and no capture has confirmed the installed CLI lists. */
+      readonly unqualified: readonly PhaseCapability[];
     };
+
+/** One capability a backend can withhold: the flag, how it enforces, and what it leaves open. */
+interface WithholdDeclaration {
+  /** The flag name first, then its value if it takes one. */
+  readonly flags: readonly string[];
+  readonly enforcement: Exclude<CapabilityEnforcement, 'none-withheld'>;
+  /** Left open whenever this capability is withheld. */
+  readonly residuals: readonly CapabilityResidual[];
+  /** Left open only while the keyed capability stays granted: a shell the restriction does not reach. */
+  readonly residualsIfGranted?: Partial<Record<PhaseCapability, readonly CapabilityResidual[]>>;
+}
 
 /**
  * What each backend's CLI can express, re-derived from the installed binaries on
- * 2026-08-25 rather than assumed:
+ * 2026-08-25 rather than assumed, and re-confirmed by flag name on 2026-10-31
+ * (`capability-confirmed-flags.ts`):
  *
  *   claude  --permission-mode, --allowedTools, --disallowedTools, --settings
  *   agy     --sandbox ("run in a sandbox with terminal restrictions"), --mode
@@ -49,11 +81,7 @@ export type CapabilityEnforcementPlan =
 interface BackendSurface {
   /** The argv this backend spawns with when every capability is granted. */
   readonly unbounded: readonly string[];
-  /**
-   * Flags that WITHHOLD a capability. Ordered so the emitted argv is stable — an
-   * unstable argv would make the byte-identity test flaky for no reason.
-   */
-  readonly withhold: Partial<Record<PhaseCapability, readonly string[]>>;
+  readonly withhold: Partial<Record<PhaseCapability, WithholdDeclaration>>;
 }
 
 const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
@@ -62,14 +90,33 @@ const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
     withhold: {
       // `Bash` is the tool that spawns processes; denying it is the CLI's own
       // way of withholding that authority, and it refuses non-interactively.
-      'process-spawn': ['--disallowedTools', 'Bash'],
-      // The network-reaching tools.
-      network: ['--disallowedTools', 'WebFetch,WebSearch'],
+      'process-spawn': {
+        flags: ['--disallowedTools', 'Bash'],
+        enforcement: 'tool-restriction',
+        residuals: ['unlisted-tools']
+      },
+      // The network-reaching tools. A shell that stays granted reaches the network anyway.
+      network: {
+        flags: ['--disallowedTools', 'WebFetch,WebSearch'],
+        enforcement: 'tool-restriction',
+        residuals: ['unlisted-tools'],
+        residualsIfGranted: { 'process-spawn': ['shell-network'] }
+      },
       // Writing outside the workspace is what a non-bypass permission mode
       // stops. `acceptEdits` is non-interactive, so this does not become a
       // prompt — which principle I forbids.
-      'outside-workspace-write': ['--permission-mode', 'acceptEdits'],
-      'workspace-write': ['--disallowedTools', 'Edit,Write,NotebookEdit']
+      'outside-workspace-write': {
+        flags: ['--permission-mode', 'acceptEdits'],
+        enforcement: 'tool-restriction',
+        residuals: ['unlisted-tools'],
+        residualsIfGranted: { 'process-spawn': ['shell-outside-workspace-write'] }
+      },
+      'workspace-write': {
+        flags: ['--disallowedTools', 'Edit,Write,NotebookEdit'],
+        enforcement: 'tool-restriction',
+        residuals: ['unlisted-tools'],
+        residualsIfGranted: { 'process-spawn': ['shell-workspace-write'] }
+      }
     }
   },
   agy: {
@@ -80,7 +127,11 @@ const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
       // capabilities have NO expression on this backend — a phase withholding one
       // is refused rather than run unbounded. That gap is the honest finding, and
       // `docs/architecture/agent-capability-posture.md` records it.
-      'process-spawn': ['--sandbox']
+      'process-spawn': {
+        flags: ['--sandbox'],
+        enforcement: 'cli-sandbox',
+        residuals: ['sandbox-scope-unqualified']
+      }
     }
   },
   codex: {
@@ -88,91 +139,152 @@ const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
     // the adapter, so the two cannot disagree.
     unbounded: ['--sandbox', 'workspace-write'],
     withhold: {
-      'outside-workspace-write': ['--sandbox', 'workspace-write'],
-      'process-spawn': ['--sandbox', 'read-only'],
-      'workspace-write': ['--sandbox', 'read-only']
+      'outside-workspace-write': {
+        flags: ['--sandbox', 'workspace-write'],
+        enforcement: 'cli-sandbox',
+        residuals: []
+      },
+      'process-spawn': {
+        flags: ['--sandbox', 'read-only'],
+        enforcement: 'cli-sandbox',
+        residuals: ['sandboxed-commands-run']
+      },
+      'workspace-write': {
+        flags: ['--sandbox', 'read-only'],
+        enforcement: 'cli-sandbox',
+        residuals: []
+      }
+      // `network` has no flag on codex: no entry, so a set that withholds it is refused (K9).
     }
   }
 };
+
+/**
+ * Flags whose value is a comma list, so two capabilities that share the flag merge into ONE occurrence. The
+ * merge is the CLI's own documented form, so it asks nothing new of the parser. Only these flags merge:
+ * any other valued flag that appears twice takes one value (see `FLAG_VALUE_STRICTNESS`).
+ */
+export const COMMA_LIST_FLAGS: ReadonlySet<string> = new Set(['--disallowedTools']);
+
+/**
+ * For a valued flag that is NOT a comma list, the values it can take, strictest first. Two capabilities that
+ * give the same flag different values resolve to the strictest, because the stricter bound contains the other.
+ * Codex's `--sandbox` is the one case: `read-only` beats `workspace-write`.
+ *
+ * FR-R4-F06 research R14 — the previous rule joined two `--sandbox` values with a comma
+ * (`read-only,workspace-write`), which Codex does not accept; three Codex cells emitted it.
+ */
+export const FLAG_VALUE_STRICTNESS: Readonly<Partial<Record<string, readonly string[]>>> = Object.freeze({
+  '--sandbox': ['read-only', 'workspace-write']
+});
+
+/** The stricter of two values of one flag; the first when either is not in the flag's ordering. */
+function strictest(flag: string, current: string, incoming: string): string {
+  const order = FLAG_VALUE_STRICTNESS[flag];
+  if (order === undefined) return current;
+  const currentRank = order.indexOf(current);
+  const incomingRank = order.indexOf(incoming);
+  if (currentRank === -1 || incomingRank === -1) return current;
+  return incomingRank < currentRank ? incoming : current;
+}
 
 /**
  * Decide the argv for a backend under a declared capability set.
  *
  * The default set — every capability granted — produces `unbounded` exactly, so
  * a phase that declares nothing spawns with today's argv byte for byte.
+ *
+ * `confirmed` is the flags an installed CLI was shown to list (`CONFIRMED_FLAGS`). It is a parameter so a test
+ * can ask what happens without a flag; production passes nothing.
  */
 export function planCapabilityEnforcement(
   kind: BackendRunnerKind,
-  declared: DeclaredCapabilitySet
+  declared: DeclaredCapabilitySet,
+  confirmed: Readonly<Record<BackendRunnerKind, readonly string[]>> = CONFIRMED_FLAGS
 ): CapabilityEnforcementPlan {
   const surface = SURFACES[kind];
   const withheld = ALL_PHASE_CAPABILITIES.filter((capability) => !grants(declared, capability));
 
   if (withheld.length === 0) {
-    return { outcome: 'argv', args: surface.unbounded };
+    return { outcome: 'argv', args: surface.unbounded, enforcement: 'none-withheld', residuals: [] };
   }
 
-  const unenforceable = withheld.filter((capability) => surface.withhold[capability] === undefined);
+  // A capability the backend cannot express, and one it could express with a flag nobody has confirmed, are
+  // different findings: the second is `unqualified`, and both are refused rather than run unbounded.
+  const unqualified = withheld.filter((capability) => {
+    const flag = surface.withhold[capability]?.flags.at(0);
+    return flag !== undefined && !confirmed[kind].includes(flag);
+  });
+  const unenforceable = withheld.filter(
+    (capability) => surface.withhold[capability] === undefined || unqualified.includes(capability)
+  );
   if (unenforceable.length > 0) {
     // EVERY unenforceable capability, not the first. A refusal naming one of
     // three problems sends someone back twice.
-    return { outcome: 'refused', reason: 'capability-not-enforceable', kind, unenforceable };
+    return { outcome: 'refused', reason: 'capability-not-enforceable', kind, unenforceable, unqualified };
   }
 
-  // Emit in capability order so the argv is deterministic, merging capabilities that
-  // share a FLAG NAME rather than de-duplicating identical token strings.
+  // Compose the argv in capability order, deterministically, so the byte-identity test is not flaky.
   //
-  // FR-R3-105 (FR-064) — the previous form de-duplicated by `flags.join(' ')`, which
-  // only ever collapsed two capabilities whose flag AND value were identical (codex's
-  // overlapping sandbox modes). Claude has three rows that share `--disallowedTools`
-  // with different values — `process-spawn` -> `Bash`, `network` ->
-  // `WebFetch,WebSearch`, `workspace-write` -> `Edit,Write,NotebookEdit` — so
-  // withholding any two emitted the same flag twice and all three emitted it three
-  // times.
-  //
-  // WHY THAT WAS A SECURITY DEFECT AND NOT UNTIDINESS. The host does not control the
-  // child's argument parser. If that parser is last-wins — the common shape — then
-  // `--disallowedTools Bash --disallowedTools WebFetch,WebSearch` silently **re-grants
-  // Bash**, on precisely the most restrictive set anyone can request. The stricter the
-  // operator's request, the more likely it was to be defeated.
-  //
-  // Merging values into one flag is the CLI's own documented comma-list form, so this
-  // asks nothing new of the parser. The merge is only defined for flags whose value is a
-  // comma list; a future flag that repeats with independent values would need a
-  // different answer, which is why `mergeableFlag` is explicit rather than assumed.
-  const args: string[] = [];
-  /** flag name -> the values collected for it, in capability order, de-duplicated. */
-  const merged = new Map<string, string[]>();
-  /** Flags with no value, kept in order and emitted once. */
+  // FR-R3-105 (FR-064) — the earlier form de-duplicated by `flags.join(' ')`, which only collapsed two
+  // capabilities whose flag AND value were identical. Claude has three rows that share `--disallowedTools`
+  // with different values, so withholding any two emitted the flag twice. WHY THAT WAS A SECURITY DEFECT:
+  // the host does not control the child's argument parser. If it is last-wins — the common shape — then
+  // `--disallowedTools Bash --disallowedTools WebFetch,WebSearch` silently RE-GRANTS Bash, on precisely the
+  // most restrictive set anyone can request. So comma-list flags merge into one occurrence, and a valued flag
+  // that is not a comma list takes ONE value, the strictest. The merge is only defined for `COMMA_LIST_FLAGS`;
+  // a future flag that repeats with independent values would need a different answer, which is why that set
+  // is explicit rather than assumed.
   const bare: string[] = [];
+  /** Valued flags in the order first met. */
+  const valuedOrder: string[] = [];
+  const commaValues = new Map<string, string[]>();
+  const singleValue = new Map<string, string>();
+  const enforcements = new Set<CapabilityEnforcement>();
+  const residuals = new Set<CapabilityResidual>();
 
   for (const capability of withheld) {
-    const flags = surface.withhold[capability];
-    if (flags === undefined) continue;
-    // `.at(0)` rather than destructuring: the head of a readonly array is TYPED as present while
-    // an empty declaration genuinely yields `undefined`, and `at` is the read whose type says so.
-    // A withhold entry with no flag narrows nothing, and skipping it is the correct answer.
-    const flag = flags.at(0);
+    const declaration = surface.withhold[capability];
+    if (declaration === undefined) continue;
+    enforcements.add(declaration.enforcement);
+    for (const residual of declaration.residuals) residuals.add(residual);
+    for (const [conditionCapability, conditional] of Object.entries(declaration.residualsIfGranted ?? {})) {
+      if (grants(declared, conditionCapability as PhaseCapability)) {
+        for (const residual of conditional) residuals.add(residual);
+      }
+    }
+
+    // `.at(0)` rather than destructuring: the head of a readonly array is TYPED as present while an empty
+    // declaration genuinely yields `undefined`, and `at` is the read whose type says so. A declaration with
+    // no flag narrows nothing, and skipping it is the correct answer.
+    const flag = declaration.flags.at(0);
     if (flag === undefined) continue;
-    const values = flags.slice(1);
-    if (values.length === 0) {
+    const value = declaration.flags.at(1);
+    if (value === undefined) {
       if (!bare.includes(flag)) bare.push(flag);
       continue;
     }
-    const existing = merged.get(flag);
-    const incoming = values.flatMap((value) => value.split(','));
-    if (existing === undefined) {
-      merged.set(flag, [...new Set(incoming)]);
+    if (!valuedOrder.includes(flag)) valuedOrder.push(flag);
+    if (COMMA_LIST_FLAGS.has(flag)) {
+      const existing = commaValues.get(flag) ?? [];
+      for (const part of value.split(',')) if (!existing.includes(part)) existing.push(part);
+      commaValues.set(flag, existing);
       continue;
     }
-    for (const value of incoming) {
-      if (!existing.includes(value)) existing.push(value);
-    }
+    const current = singleValue.get(flag);
+    singleValue.set(flag, current === undefined ? value : strictest(flag, current, value));
   }
 
-  for (const flag of bare) args.push(flag);
-  for (const [flag, values] of merged) args.push(flag, values.join(','));
-  return { outcome: 'argv', args };
+  const args: string[] = [...bare];
+  for (const flag of valuedOrder) {
+    const merged = commaValues.get(flag);
+    args.push(flag, merged !== undefined ? merged.join(',') : (singleValue.get(flag) ?? ''));
+  }
+  // A mixed cell reports the weaker claim: one tool restriction among sandboxes is still a tool restriction.
+  const enforcement: CapabilityEnforcement = enforcements.has('tool-restriction')
+    ? 'tool-restriction'
+    : 'cli-sandbox';
+  return { outcome: 'argv', args, enforcement, residuals: [...residuals].sort() };
 }
 
 /** The capabilities a backend can express. Exported so a gate can enumerate. */

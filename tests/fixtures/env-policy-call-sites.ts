@@ -11,20 +11,26 @@
 // pulls production modules in through the cross-check.
 
 /**
- * The host components that spawn a backend CLI through `runner.invoke` on their
- * own initiative.
+ * The host components that spawn a configured backend CLI on their own initiative.
  *
- * Scoped to `.invoke` deliberately, because that is what the guard can see. The
- * backend capability probe in `src/activation/backend-wiring.ts` also spawns a
- * CLI on its own initiative, but it calls `buildSpawnEnv` directly rather than
- * invoking a runner, so it is outside both gates -- recorded as a residual on the
- * item rather than silently implied to be covered by a list of three.
+ * The first three go through `runner.invoke`, which is what the `.invoke(` scan in
+ * `invocations-forward-env-policy.test.ts` can see. FR-R4-F06 (FR-006) added the two
+ * probes: the backend capability probe in `src/activation/backend-wiring.ts` calls
+ * `buildSpawnEnv` directly rather than invoking a runner, and the CLI version probe
+ * in `src/runner/cli-version-probe.ts` took no environment at all. Both were outside
+ * the `.invoke(` scan, which is why the first was recorded here as a residual and the
+ * second was not seen. The importer census in that gate now covers them.
  */
 export const ENV_POLICY_CALL_SITES = [
   'phase runner',
   'session compactor',
-  'credit watchdog poll'
+  'credit watchdog poll',
+  'cli version probe',
+  'backend capability probe'
 ] as const;
 
 /** How many call sites both gates must cover, so neither can shrink silently. */
 export const PARITY_CALL_SITE_COUNT = ENV_POLICY_CALL_SITES.length;
+
+/** How many of those sites originate through `.invoke(`, the part the `.invoke(` scan counts. */
+export const INVOKE_CALL_SITE_COUNT = 3;

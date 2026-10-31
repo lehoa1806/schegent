@@ -12,7 +12,7 @@ Schegent contributes the settings below to VS Code under the `schegent.*` namesp
 |---|---|---|---|---|
 | `schegent.cli.path` | string | `claude` | application | Claude executable path. |
 | `schegent.cli.inheritEnvironment` | boolean | `true` | application | Legacy compatibility switch. `false` forces the effective environment mode to `minimal`. |
-| `schegent.cli.environmentMode` | `inherit`, `minimal`, or `allowlist` | `allowlist` | application | Selects how much of the extension-host environment reaches backend processes. |
+| `schegent.cli.environmentMode` | `inherit`, `minimal`, or `allowlist` | `allowlist` | application | Selects how much of the extension-host environment reaches backend processes. A value that is not one of the three modes is treated as `allowlist`; only the exact, case-sensitive string `inherit` inherits the whole environment. |
 | `schegent.cli.environmentAllowlist` | array of names matching `^[A-Za-z_][A-Za-z0-9_]*$` | `[]` | application | Adds environment-variable names to the bootstrap set in `allowlist` mode; values are read at spawn time. |
 | `schegent.backend.runner` | `claude`, `codex`, or `agy` | `claude` | application | Selects the default backend. Claude is the default and, like Agy, runs with approval prompts off and acts without asking via `--dangerously-skip-permissions`; Codex uses `exec --json --sandbox workspace-write`. |
 | `schegent.backend.probeTimeoutSeconds` | integer, `1`–`30` | `5` | application | Bounds availability and model-discovery probes. |
@@ -26,6 +26,10 @@ Schegent contributes the settings below to VS Code under the `schegent.*` namesp
 <!-- Source: src/runner/codex-cli.ts -->
 <!-- Source: src/runner/agy-cli.ts -->
 <!-- Source: src/activation/backend-wiring.ts -->
+
+<a id="schegentclienvironmentmode"></a>
+
+The policy that `schegent.cli.environmentMode` selects reaches every backend process Schegent starts: the Phase runner, the session compactor, the credit watchdog, the backend capability probe, and the CLI version probe. A hand-edited value that is not `inherit`, `minimal`, or `allowlist`, whether misspelled, mis-cased, empty or not a string, resolves to `allowlist` and never to `inherit`.
 
 The default backend and process-environment policy are resolved during workspace-bound activation. Reload the VS Code Extension Host after changing `schegent.backend.runner`, `schegent.cli.environmentMode`, `schegent.cli.environmentAllowlist`, or `schegent.cli.inheritEnvironment`. In contrast, the three CLI executable-path settings are read for each invocation and can take effect without a reload.
 

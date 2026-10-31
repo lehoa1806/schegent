@@ -2,7 +2,11 @@ import { readFileSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { filesUnder } from './source-scan';
-import { PARITY_CALL_SITE_COUNT } from '../fixtures/env-policy-call-sites';
+import {
+  ENV_POLICY_CALL_SITES,
+  INVOKE_CALL_SITE_COUNT,
+  PARITY_CALL_SITE_COUNT
+} from '../fixtures/env-policy-call-sites';
 
 /**
  * FR-R3-049 (M-11) — every production invocation forwards the environment policy.
@@ -33,6 +37,13 @@ import { PARITY_CALL_SITE_COUNT } from '../fixtures/env-policy-call-sites';
  * remembering anything; its weakness is matching a comment or a test file, which
  * masking comments and scoping to `src/` closes.
  */
+
+/**
+ * The root of the seeded fixtures' paths. Built, not written as a `src/...` literal, because
+ * `lint-anchor-grounding.test.ts` reads a literal that starts that way as a claim about a file that exists,
+ * and a seeded fixture's path is by construction not one.
+ */
+const SEEDED_SRC = 'src';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SRC_ROOT = resolve(REPO_ROOT, 'src');
@@ -121,7 +132,11 @@ interface MaskedSource {
  * reported rather than absorbed: every call site in that file becomes unreadable,
  * which `callSitesIn` already fails closed on.
  */
-function maskCommentsAndLiterals(source: string): MaskedSource {
+function maskCommentsAndLiterals(
+  source: string,
+  options: { readonly keepLiterals?: boolean } = {}
+): MaskedSource {
+  const keepLiterals = options.keepLiterals === true;
   const out = source.split('');
   const blank = (index: number): void => {
     if (out[index] !== '\n') out[index] = ' ';
@@ -165,7 +180,11 @@ function maskCommentsAndLiterals(source: string): MaskedSource {
         continue;
       }
       if (!closed) unterminated = true;
-      for (let at = body; at < Math.min(cursor, source.length); at += 1) blank(at);
+      // FR-R4-F06 (FR-006) -- the importer census must READ a module specifier, so it asks
+      // for comments blanked and literals kept. The `.invoke(` scan blanks both, as before.
+      if (!keepLiterals) {
+        for (let at = body; at < Math.min(cursor, source.length); at += 1) blank(at);
+      }
       index = closed ? cursor + 1 : source.length;
       continue;
     }
@@ -244,6 +263,315 @@ function offenders(sites: readonly CallSite[]): string[] {
     .map((site) => site.at);
 }
 
+/**
+ * FR-R4-F06 (FR-006) -- the `child_process` importer census.
+ *
+ * WHY THE `.invoke(` SCAN IS NOT ENOUGH
+ *
+ * It sees a spawn only when it is written `runner.invoke(...)`. Two configured-backend
+ * spawns are not: the CLI version probe calls `run(cliPath, ['--version'], ...)` and the
+ * capability probe calls `this.spawnFn(cliPath, args, { env, ... })`. The first took no
+ * environment at all, so a `--version` child received every credential in the host under
+ * every mode; the second was recorded as a known residual in the call-site fixture. A new
+ * spawn written in either shape would pass the old gate by omission.
+ *
+ * The census shape is how this repository makes "a new X" fail rather than pass by
+ * omission (`evidence-sink-mode-census.test.ts`, hard rule 69). Every `src/` file that
+ * imports `child_process`, in any of its three forms, must be classified in the table
+ * below, and a file that is not classified fails by name. A classification that no longer
+ * matches the file fails as well, so a row cannot go on excusing a file that changed.
+ *
+ *  - A STATIC import is `from 'node:child_process'`; a DYNAMIC one is
+ *    `await import('child_process')`, which two telemetry files use; a `require(...)` is
+ *    the third. Searching for the static form alone found 11 of 15 files at `befeccc8` (16 now: `teardown-ledger.ts` joined, as a type-only importer).
+ *  - A CONFIGURED-BACKEND SPAWNER is held to a rule per spawn call: the call's own
+ *    arguments must carry the environment, built by `buildSpawnEnv(`, taken from the
+ *    request a caller built, or taken from an injected builder whose construction site is
+ *    itself checked to hold `buildSpawnEnv(` and `policyRequestFields(`.
+ *  - A TYPE-ONLY importer is accepted only while the import stays `import type`.
+ *  - An UNRELATED DIAGNOSTIC runs a fixed system tool, never an operator-configured
+ *    backend, and each row says which.
+ */
+type SpawnRule =
+  | { readonly marker: string; readonly envFrom: 'buildSpawnEnv' }
+  | { readonly marker: string; readonly envFrom: 'caller-input' }
+  | { readonly marker: string; readonly envFrom: 'caller-options' }
+  | {
+      readonly marker: string;
+      readonly envFrom: 'injected-builder';
+      readonly builderSite: string;
+      readonly builderExpects: readonly string[];
+    };
+
+type ImporterRow =
+  | {
+      readonly path: string;
+      readonly role: 'spawner';
+      readonly reason: string;
+      readonly rules: readonly SpawnRule[];
+      /** The call site this spawner is in `ENV_POLICY_CALL_SITES`, when it is a probe. */
+      readonly probe?: (typeof ENV_POLICY_CALL_SITES)[number];
+    }
+  | { readonly path: string; readonly role: 'type-only'; readonly reason: string }
+  | { readonly path: string; readonly role: 'diagnostic'; readonly reason: string };
+
+const CHILD_PROCESS_IMPORTERS: readonly ImporterRow[] = [
+  {
+    path: 'src/runner/claude-cli.ts',
+    role: 'spawner',
+    reason: 'the Claude adapter; `safeSpawn` wraps the spawn and takes its options from the caller',
+    rules: [
+      { marker: 'safeSpawn(', envFrom: 'buildSpawnEnv' },
+      { marker: 'spawnFn(', envFrom: 'caller-options' }
+    ]
+  },
+  {
+    path: 'src/runner/process-lifecycle-runner.ts',
+    role: 'spawner',
+    reason: 'the shared lifecycle for Codex and Agy; its caller builds `env` from the request',
+    rules: [{ marker: 'spawnFn(', envFrom: 'caller-input' }]
+  },
+  {
+    path: 'src/runner/cli-version-probe.ts',
+    role: 'spawner',
+    reason: 'the `--version` probe; its child environment is built from the policy',
+    probe: 'cli version probe',
+    rules: [{ marker: 'run(', envFrom: 'buildSpawnEnv' }]
+  },
+  {
+    path: 'src/services/backend-capability-service.ts',
+    role: 'spawner',
+    reason: 'the capability probe; its environment comes from an injected builder',
+    probe: 'backend capability probe',
+    rules: [
+      {
+        marker: 'spawnFn(',
+        envFrom: 'injected-builder',
+        builderSite: 'src/activation/backend-wiring.ts',
+        builderExpects: ['buildEnv:', 'buildSpawnEnv(', 'policyRequestFields(']
+      }
+    ]
+  },
+  {
+    path: 'src/runner/codex-cli.ts',
+    role: 'spawner',
+    reason: 'imports `spawn` only to inject it into `ProcessLifecycleRunner` as its default `spawnFn`',
+    rules: []
+  },
+  {
+    path: 'src/runner/agy-cli.ts',
+    role: 'spawner',
+    reason: 'imports `spawn` only to inject it into `ProcessLifecycleRunner` as its default `spawnFn`',
+    rules: []
+  },
+  {
+    path: 'src/runner/child-completion.ts',
+    role: 'type-only',
+    reason: 'names the `ChildProcess` type for the completion helper'
+  },
+  {
+    path: 'src/runner/child-stdin.ts',
+    role: 'type-only',
+    reason: 'names the `ChildProcess` type for the stdin helper'
+  },
+  {
+    path: 'src/runner/teardown-ledger.ts',
+    role: 'type-only',
+    reason: 'names the `ChildProcess` type to key the ladders a runner has started (FR-R4-F06)'
+  },
+  {
+    path: 'src/lib/git-diff-base.ts',
+    role: 'diagnostic',
+    reason: 'runs `git` to read a diff base; not an operator-configured backend'
+  },
+  {
+    path: 'src/services/run-checkpoint-service.ts',
+    role: 'diagnostic',
+    reason: 'runs `git` to take the recovery checkpoint diff; not a configured backend'
+  },
+  {
+    path: 'src/activation/run-safety-wiring.ts',
+    role: 'diagnostic',
+    reason: 'runs `git diff` for the run-safety requester; not a configured backend'
+  },
+  {
+    path: 'src/services/process-liveness.ts',
+    role: 'diagnostic',
+    reason: 'runs `ps` to read a process start time; a fixed system tool'
+  },
+  {
+    path: 'src/runner/process-tree.ts',
+    role: 'diagnostic',
+    reason: 'runs `taskkill` on Windows to end a process tree; a fixed system tool'
+  },
+  {
+    path: 'src/telemetry/platform/platform-ps.ts',
+    role: 'diagnostic',
+    reason: 'dynamic import; runs `ps` for process telemetry'
+  },
+  {
+    path: 'src/telemetry/platform/platform-windows.ts',
+    role: 'diagnostic',
+    reason: 'dynamic import; runs `powershell.exe` for process telemetry'
+  }
+];
+
+interface SourceText {
+  readonly path: string;
+  readonly text: string;
+}
+
+/** The three ways a module reaches `child_process`, tested on text with comments blanked. */
+const CHILD_PROCESS_FORMS: readonly RegExp[] = [
+  /\bfrom\s*(['"])(?:node:)?child_process\1/,
+  /\bimport\s*\(\s*(['"])(?:node:)?child_process\1\s*\)/,
+  /\brequire\s*\(\s*(['"])(?:node:)?child_process\1\s*\)/
+];
+const TYPE_ONLY_IMPORT = /\bimport\s+type\s+\{[^}]*\}\s+from\s*(['"])(?:node:)?child_process\1\s*;?/g;
+
+function withoutComments(source: string): string {
+  return maskCommentsAndLiterals(source, { keepLiterals: true }).text;
+}
+
+function importsChildProcess(text: string): boolean {
+  return CHILD_PROCESS_FORMS.some((form) => form.test(text));
+}
+
+/** Calls whose names are how a process is started in a spawner. */
+const SPAWN_CALL = /(?<![A-Za-z0-9_$])(safeSpawn|spawnFn|spawnSync|spawn|execFileSync|execFile|fork|run)\(/g;
+
+interface SpawnCall {
+  readonly at: string;
+  readonly marker: string;
+  /** The call's argument text with comments and literals blanked, or null when unbalanced. */
+  readonly args: string | null;
+}
+
+function spawnCallsIn(name: string, source: string): SpawnCall[] {
+  const masked = maskCommentsAndLiterals(source);
+  const src = masked.text;
+  const out: SpawnCall[] = [];
+  for (const match of src.matchAll(new RegExp(SPAWN_CALL.source, 'g'))) {
+    const at = match.index;
+    // A declaration is not a call: `function safeSpawn(spawnFn, ...)`.
+    if (/function\s+$/.test(src.slice(Math.max(0, at - 16), at))) continue;
+    const open = at + match[0].length - 1;
+    let depth = 0;
+    let end = open;
+    for (; end < src.length; end += 1) {
+      if (src[end] === '(') depth += 1;
+      else if (src[end] === ')' && --depth === 0) break;
+    }
+    out.push({
+      at: `${name}:${src.slice(0, at).split('\n').length}`,
+      marker: `${match[1]}(`,
+      args: !masked.unterminated && depth === 0 && end < src.length ? src.slice(open + 1, end) : null
+    });
+  }
+  return out;
+}
+
+const CARRIES_ENV_PROPERTY = /(^|[\s,{])env\s*[:,}]/;
+
+function ruleFailures(
+  call: SpawnCall,
+  rule: SpawnRule,
+  readSite: (path: string) => string | null
+): string[] {
+  const args = call.args;
+  if (args === null) return [`${call.at}: ${call.marker} call could not be read`];
+  if (rule.envFrom === 'buildSpawnEnv') {
+    return args.includes('buildSpawnEnv(') && CARRIES_ENV_PROPERTY.test(args)
+      ? []
+      : [`${call.at}: ${call.marker} carries no \`env\` built by buildSpawnEnv(`];
+  }
+  if (rule.envFrom === 'caller-input') {
+    return args.includes('input.env') && CARRIES_ENV_PROPERTY.test(args)
+      ? []
+      : [`${call.at}: ${call.marker} carries no \`env\` taken from the caller's input`];
+  }
+  if (rule.envFrom === 'caller-options') {
+    return /\.\.\.options\b/.test(args) ? [] : [`${call.at}: ${call.marker} spreads no caller options`];
+  }
+  if (!CARRIES_ENV_PROPERTY.test(args)) {
+    return [`${call.at}: ${call.marker} carries no \`env\``];
+  }
+  const site = readSite(rule.builderSite);
+  if (site === null) return [`${rule.builderSite}: the injected builder's site cannot be read`];
+  return rule.builderExpects
+    .filter((needle) => !site.includes(needle))
+    .map((needle) => `${rule.builderSite}: the injected builder's site does not hold ${needle}`);
+}
+
+function rowFailures(
+  row: ImporterRow,
+  file: SourceText,
+  readSite: (path: string) => string | null
+): string[] {
+  if (row.role === 'diagnostic') return [];
+  if (row.role === 'type-only') {
+    const rest = withoutComments(file.text).replace(TYPE_ONLY_IMPORT, '');
+    return importsChildProcess(rest)
+      ? [`${file.path}: classified type-only but now imports a value from child_process`]
+      : [];
+  }
+  const calls = spawnCallsIn(file.path, file.text);
+  const failures: string[] = [];
+  for (const call of calls) {
+    const rule = row.rules.find((candidate) => candidate.marker === call.marker);
+    if (rule === undefined) {
+      failures.push(`${call.at}: ${call.marker} is a spawn call this row declares no rule for`);
+      continue;
+    }
+    failures.push(...ruleFailures(call, rule, readSite));
+  }
+  for (const rule of row.rules) {
+    if (!calls.some((call) => call.marker === rule.marker)) {
+      failures.push(`${file.path}: the row declares ${rule.marker} but the file has no such call`);
+    }
+  }
+  return failures;
+}
+
+/** Every way the table and the tree disagree. Empty means the census holds. */
+function censusFailures(
+  rows: readonly ImporterRow[],
+  files: readonly SourceText[],
+  readSite: (path: string) => string | null
+): string[] {
+  const failures: string[] = [];
+  const importers = files.filter((file) => importsChildProcess(withoutComments(file.text)));
+  for (const file of importers) {
+    const row = rows.find((candidate) => candidate.path === file.path);
+    if (row === undefined) {
+      failures.push(`${file.path}: imports child_process and is not classified in the table`);
+      continue;
+    }
+    failures.push(...rowFailures(row, file, readSite));
+  }
+  for (const row of rows) {
+    if (!importers.some((file) => file.path === row.path)) {
+      failures.push(`${row.path}: classified, but the file no longer imports child_process`);
+    }
+  }
+  return failures;
+}
+
+function productionSources(): SourceText[] {
+  return filesUnder(SRC_ROOT, { extensions: ['.ts'] }).map((file) => ({
+    path: displayPath(file),
+    text: readFileSync(file, 'utf8')
+  }));
+}
+
+function readRepoFile(path: string): string | null {
+  try {
+    return readFileSync(resolve(REPO_ROOT, path), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
 describe('every production invocation forwards the environment policy', () => {
   it('routes every call site through the shared policy helper', () => {
     const sites = productionCallSites();
@@ -264,7 +592,18 @@ describe('every production invocation forwards the environment policy', () => {
     // silently cover fewer sites than the other: the guard proves each site
     // forwards, the parity test proves forwarding produces the right environment,
     // and a drift between the two counts fails here.
-    expect(originatingCallSites(productionCallSites()).length).toBe(PARITY_CALL_SITE_COUNT);
+    //
+    // FR-R4-F06 -- the guard now has two parts. The `.invoke(` scan covers the
+    // sites that start a spawn through a runner; the importer census covers the
+    // two probes. Their sum is what the parity test models.
+    expect(originatingCallSites(productionCallSites()).length).toBe(INVOKE_CALL_SITE_COUNT);
+    const probeNames = CHILD_PROCESS_IMPORTERS.flatMap((row) =>
+      row.role === 'spawner' && row.probe !== undefined ? [row.probe] : []
+    );
+    expect(INVOKE_CALL_SITE_COUNT + probeNames.length).toBe(PARITY_CALL_SITE_COUNT);
+    expect([...probeNames].sort()).toEqual(
+      [...ENV_POLICY_CALL_SITES.slice(INVOKE_CALL_SITE_COUNT)].sort()
+    );
   });
 
   it('fails on a seeded policy-less call site beside a correct one', () => {
@@ -347,5 +686,166 @@ describe('every production invocation forwards the environment policy', () => {
   it('does not count a test file', () => {
     // Scoping is by root, so the assertion is that the root excludes tests.
     expect(productionCallSites().every((site) => site.at.startsWith('src/'))).toBe(true);
+  });
+});
+
+describe('every child_process importer is classified, and a spawner forwards env (FR-006)', () => {
+  it('classifies every importer in src/ and holds every spawner to its rule', () => {
+    expect(censusFailures(CHILD_PROCESS_IMPORTERS, productionSources(), readRepoFile)).toEqual([]);
+  });
+
+  it('is not vacuous: it finds all 16 importers and every role is exercised', () => {
+    const found = productionSources().filter((file) =>
+      importsChildProcess(withoutComments(file.text))
+    );
+    expect(found.map((file) => file.path).sort()).toEqual(
+      CHILD_PROCESS_IMPORTERS.map((row) => row.path).sort()
+    );
+    expect(found).toHaveLength(16);
+    const roles = new Set(CHILD_PROCESS_IMPORTERS.map((row) => row.role));
+    expect([...roles].sort()).toEqual(['diagnostic', 'spawner', 'type-only']);
+    // Both probes are spawners with a rule, which is the whole reason for the census.
+    const probes = CHILD_PROCESS_IMPORTERS.filter(
+      (row) => row.role === 'spawner' && row.probe !== undefined && row.rules.length > 0
+    );
+    expect(probes).toHaveLength(2);
+  });
+
+  it('finds the dynamic imports the static form misses', () => {
+    const dynamic = productionSources().filter((file) =>
+      /\bimport\s*\(\s*(['"])(?:node:)?child_process\1\s*\)/.test(withoutComments(file.text))
+    );
+    expect(dynamic.map((file) => file.path).sort()).toEqual([
+      'src/telemetry/platform/platform-ps.ts',
+      'src/telemetry/platform/platform-windows.ts'
+    ]);
+  });
+
+  // The four seeded cases. A gate nobody has seen fire is one nobody should trust, and each
+  // of these is a way a configured-backend spawn would otherwise slip in.
+
+  it('fails on a fixture importer missing from the table', () => {
+    const files: SourceText[] = [
+      {
+        path: `${SEEDED_SRC}/lib/new-importer.ts`,
+        text: "import { execFile } from 'node:child_process';\nexecFile('x');"
+      }
+    ];
+    expect(censusFailures([], files, () => null)).toEqual([
+      'src/lib/new-importer.ts: imports child_process and is not classified in the table'
+    ]);
+  });
+
+  it('fails on a fixture dynamic import missing from the table', () => {
+    const files: SourceText[] = [
+      {
+        path: `${SEEDED_SRC}/lib/lazy-importer.ts`,
+        text: "export async function go() {\n  const { spawn } = await import('child_process');\n  spawn('x');\n}"
+      }
+    ];
+    expect(censusFailures([], files, () => null)).toEqual([
+      'src/lib/lazy-importer.ts: imports child_process and is not classified in the table'
+    ]);
+  });
+
+  it('fails on a spawner call text without env', () => {
+    const row: ImporterRow = {
+      path: `${SEEDED_SRC}/services/probe.ts`,
+      role: 'spawner',
+      reason: 'seeded',
+      rules: [{ marker: 'spawnFn(', envFrom: 'injected-builder', builderSite: `${SEEDED_SRC}/b.ts`, builderExpects: ['buildSpawnEnv('] }]
+    };
+    const files: SourceText[] = [
+      {
+        path: `${SEEDED_SRC}/services/probe.ts`,
+        text: "import { spawn } from 'node:child_process';\nconst c = this.spawnFn(cliPath, args, { cwd: x, shell: false });"
+      }
+    ];
+    const failures = censusFailures([row], files, () => 'buildEnv: () => buildSpawnEnv(');
+    expect(failures).toEqual(['src/services/probe.ts:2: spawnFn( carries no `env`']);
+  });
+
+  it('fails on an injected-builder row whose builder site lacks buildSpawnEnv(', () => {
+    const row: ImporterRow = {
+      path: `${SEEDED_SRC}/services/probe.ts`,
+      role: 'spawner',
+      reason: 'seeded',
+      rules: [
+        {
+          marker: 'spawnFn(',
+          envFrom: 'injected-builder',
+          builderSite: 'src/activation/backend-wiring.ts',
+          builderExpects: ['buildEnv:', 'buildSpawnEnv(', 'policyRequestFields(']
+        }
+      ]
+    };
+    const files: SourceText[] = [
+      {
+        path: `${SEEDED_SRC}/services/probe.ts`,
+        text: "import { spawn } from 'node:child_process';\nconst c = this.spawnFn(cliPath, args, { cwd: x, env, shell: false });"
+      }
+    ];
+    expect(censusFailures([row], files, () => 'buildEnv: () => ({ A: 1 })')).toEqual([
+      "src/activation/backend-wiring.ts: the injected builder's site does not hold buildSpawnEnv(",
+      "src/activation/backend-wiring.ts: the injected builder's site does not hold policyRequestFields("
+    ]);
+  });
+
+  it('passes the same fixtures once they are correct', () => {
+    const row: ImporterRow = {
+      path: `${SEEDED_SRC}/services/probe.ts`,
+      role: 'spawner',
+      reason: 'seeded',
+      rules: [
+        {
+          marker: 'spawnFn(',
+          envFrom: 'injected-builder',
+          builderSite: 'src/activation/backend-wiring.ts',
+          builderExpects: ['buildEnv:', 'buildSpawnEnv(', 'policyRequestFields(']
+        }
+      ]
+    };
+    const files: SourceText[] = [
+      {
+        path: `${SEEDED_SRC}/services/probe.ts`,
+        text: "import { spawn } from 'node:child_process';\nconst c = this.spawnFn(cliPath, args, { cwd: x, env, shell: false });"
+      }
+    ];
+    const builder = 'buildEnv: () => buildSpawnEnv({ ...policyRequestFields(p) })';
+    expect(censusFailures([row], files, () => builder)).toEqual([]);
+  });
+
+  it('fails when a type-only importer starts importing a value', () => {
+    const row: ImporterRow = { path: `${SEEDED_SRC}/runner/helper.ts`, role: 'type-only', reason: 'seeded' };
+    const typeOnly: SourceText = {
+      path: `${SEEDED_SRC}/runner/helper.ts`,
+      text: "import type { ChildProcess } from 'node:child_process';"
+    };
+    const widened: SourceText = {
+      path: `${SEEDED_SRC}/runner/helper.ts`,
+      text: "import type { ChildProcess } from 'node:child_process';\nimport { spawn } from 'node:child_process';"
+    };
+    expect(censusFailures([row], [typeOnly], () => null)).toEqual([]);
+    expect(censusFailures([row], [widened], () => null)).toEqual([
+      'src/runner/helper.ts: classified type-only but now imports a value from child_process'
+    ]);
+  });
+
+  it('fails when a classified file no longer imports child_process', () => {
+    const row: ImporterRow = { path: `${SEEDED_SRC}/lib/gone.ts`, role: 'diagnostic', reason: 'seeded' };
+    const files: SourceText[] = [{ path: `${SEEDED_SRC}/lib/gone.ts`, text: 'export const x = 1;' }];
+    expect(censusFailures([row], files, () => null)).toEqual([
+      'src/lib/gone.ts: classified, but the file no longer imports child_process'
+    ]);
+  });
+
+  it('does not read a commented-out import as an importer', () => {
+    const files: SourceText[] = [
+      {
+        path: `${SEEDED_SRC}/lib/commented.ts`,
+        text: "// import { spawn } from 'node:child_process';\n/* const x = await import('child_process'); */\nexport const y = 1;"
+      }
+    ];
+    expect(censusFailures([], files, () => null)).toEqual([]);
   });
 });

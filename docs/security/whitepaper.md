@@ -91,11 +91,12 @@ All adapters spawn with `shell: false`, prompts on stdin, an explicit `cwd`, bou
 <!-- Source: src/runner/process-lifecycle-runner.ts -->
 <!-- Source: src/runner/claude-cli.ts -->
 
-Environment forwarding defaults to `allowlist`, which includes bootstrap variables plus explicitly named entries. `minimal` narrows further; `inherit` restores the ambient extension-host environment. The credit watchdog's internal status invocation currently supplies no policy and therefore inherits, an explicit exception recorded in the command reference.
+Environment forwarding defaults to `allowlist`, which includes bootstrap variables plus explicitly named entries. `minimal` narrows further; `inherit` restores the ambient extension-host environment, and only the exact string `inherit` selects it: a missing, misspelled or otherwise malformed mode resolves to `allowlist`. The Phase runner, the session compactor, the credit watchdog's status call, the capability probe and the CLI version probe all build their child environment from that one policy.
 
 <!-- Source: package.json -->
 <!-- Source: src/runner/spawn-env.ts -->
 <!-- Source: src/watchdog/credit-watchdog.ts -->
+<!-- Source: src/runner/cli-version-probe.ts -->
 
 ## Evidence boundary
 

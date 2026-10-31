@@ -2,7 +2,8 @@
 // Constructs the CLI monitor, the telemetry sampler and the runner registry, and
 // returns three late-binding setters. `new RunnerRegistry(...)` spawns nothing;
 // the spawn happens when a Run starts, and no Run starts in an untrusted window.
-// The one `disposables.push` here is `cancelAll` at teardown.
+// It registers no teardown disposable of its own: the registry's teardown is `teardown`, run by
+// `closeStage2Resources` before ownership is released (FR-R4-F06).
 
 import * as os from 'node:os';
 
@@ -10,6 +11,7 @@ import * as vscode from 'vscode';
 
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import { RawTranscriptWriter } from '../audit/raw-transcript-writer';
+import { createHostTeardown } from '../controller/host-teardown-recorder';
 import { ProcessTreeDegradationRecorder } from '../controller/process-tree-degradation-recorder';
 import type { SanitizedLogger } from '../lib/logger';
 import { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
@@ -136,6 +138,11 @@ export interface BackendExecutionWiring {
    */
   readonly monitorHook: MonitorSidecarHook;
   readonly runnerRegistry: BackendRunnerRegistry;
+  /**
+   * FR-R4-F06 (S5) — close the runners, wait for the backend trees under the teardown bound, and
+   * record the shutdown evidence. Handed to `closeStage2Resources`; never rejects.
+   */
+  readonly teardown: () => Promise<void>;
   readonly historyStore: HistoryStore;
   readonly promptBuilder: PromptBuilder;
   readonly rawTranscript: RawTranscriptWriter;
@@ -405,12 +412,23 @@ const runnerRegistry = new BackendRunnerRegistry({
   // FR-R3-125 (FR-007) — so the factory can state the compounding case
   // (no OS bound AND the full ambient environment) where both facts are known.
   environmentMode: processEnvironmentPolicy.mode,
+  // FR-R4-F06 (FR-004) -- the same resolved policy the runners spawn under, so the
+  // registry's `--version` probe obeys it too. It was the one spawn that took none.
+  environmentPolicy: processEnvironmentPolicy,
   monitorHook,
   probeTransport: true,
   logger
 }, backendKind);
-// Stage 2 teardown cancels workspace-bound subprocesses.
-disposables.push({ dispose: () => runnerRegistry.cancelAll() });
+// FR-R4-F06 (FR-021; S5, S7) -- Stage 2 teardown stops workspace-bound subprocesses, and WAITS for them.
+// This replaces the `cancelAll` disposable, which fired every ladder and let the caller release the
+// execution leases and window primacy without waiting for any of them. `closeStage2Resources` runs it
+// after the synchronous disposals and before the transport flush; the shutdown evidence is written
+// inside it, while this window is still primary.
+const teardown = createHostTeardown(runnerRegistry, {
+  treeRecorder: treeDegradationRecorder,
+  append: (entry) => auditWriter.append(entry),
+  logger
+});
 let capabilityProjector: Pick<StateProjector, 'kick'> | null = null;
 const backendDiagnostics = createBackendDiagnosticsWiring({
   workspaceRoot,
@@ -444,6 +462,7 @@ const verboseAccessor = {
     sampler,
     monitorHook,
     runnerRegistry,
+    teardown,
     historyStore,
     promptBuilder,
     rawTranscript,

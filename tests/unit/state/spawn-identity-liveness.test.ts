@@ -37,6 +37,9 @@ const probe = (over: Partial<LivenessProbe> = {}): LivenessProbe => ({
   platform: 'darwin',
   exists: () => true,
   startedAtMs: async () => 1_700_000_000_000,
+  // FR-R4-F06 (TA9) -- the interface gained a member. Defaulting it to "no group" keeps every
+  // case above on the verdict it pinned before the group was ever asked about.
+  groupExists: () => false,
   ...over
 });
 
@@ -207,5 +210,173 @@ describe('FR-R3-193 — an exited CLI reads as dead through the real probe', () 
     const kill = stubKill(() => true);
     expect(createLivenessProbe().exists(4242)).toBe(true);
     expect(kill).toHaveBeenCalledWith(4242, 0);
+  });
+});
+
+// FR-R4-F06 (FR-016, FR-017; T17 and T20; contract P, P5, P6 and P9) -- the decision table of
+// data-model section 4, one case per row, each asserting the verdict AND which members of the
+// probe were asked. "Which were asked" is half the claim: the recycled-pid row must not probe
+// the group, because a stranger leading group N would otherwise block a genuinely abandoned
+// Run forever, and the Windows row must ask nothing at all.
+describe('FR-R4-F06 — checkLiveness follows the group (data-model section 4, rows 1 to 9)', () => {
+  interface Asked {
+    exists: number;
+    startedAtMs: number;
+    groupExists: number;
+  }
+
+  /** A probe that records what it was asked, with each member answering as the case says. */
+  function recording(answers: {
+    platform?: string;
+    exists?: () => boolean;
+    startedAtMs?: () => Promise<number | null>;
+    groupExists?: () => boolean;
+  }): { probe: LivenessProbe; asked: Asked } {
+    const asked: Asked = { exists: 0, startedAtMs: 0, groupExists: 0 };
+    const answer = <T>(count: keyof Asked, fallback: () => T, given?: () => T) => (): T => {
+      asked[count] += 1;
+      return (given ?? fallback)();
+    };
+    return {
+      asked,
+      probe: {
+        platform: answers.platform ?? 'darwin',
+        exists: answer('exists', () => true, answers.exists),
+        startedAtMs: answer(
+          'startedAtMs',
+          async () => 1_700_000_000_000,
+          answers.startedAtMs
+        ),
+        groupExists: answer('groupExists', () => false, answers.groupExists)
+      }
+    };
+  }
+
+  const eperm = (): never => {
+    throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+  };
+
+  it('row 1: no identity is unrecorded, and nothing is asked', async () => {
+    const { probe: p, asked } = recording({});
+    expect(await checkLiveness(undefined, p)).toBe('unrecorded');
+    expect(asked).toEqual({ exists: 0, startedAtMs: 0, groupExists: 0 });
+  });
+
+  it('row 2: win32 is unanswerable, and nothing is asked', async () => {
+    const { probe: p, asked } = recording({ platform: 'win32' });
+    expect(await checkLiveness(identity(), p)).toBe('unanswerable');
+    expect(asked).toEqual({ exists: 0, startedAtMs: 0, groupExists: 0 });
+  });
+
+  it('row 3: a pid probe that throws is unanswerable, and the group is not asked', async () => {
+    const { probe: p, asked } = recording({ exists: eperm });
+    expect(await checkLiveness(identity(), p)).toBe('unanswerable');
+    expect(asked).toEqual({ exists: 1, startedAtMs: 0, groupExists: 0 });
+  });
+
+  it('row 4: a live pid whose start time cannot be read is unanswerable, with no group probe', async () => {
+    const { probe: p, asked } = recording({ startedAtMs: async () => null });
+    expect(await checkLiveness(identity(), p)).toBe('unanswerable');
+    expect(asked).toEqual({ exists: 1, startedAtMs: 1, groupExists: 0 });
+  });
+
+  it('row 5: a live pid with a matching start time is alive, with no group probe', async () => {
+    const { probe: p, asked } = recording({});
+    expect(await checkLiveness(identity(), p)).toBe('alive');
+    expect(asked).toEqual({ exists: 1, startedAtMs: 1, groupExists: 0 });
+  });
+
+  it('row 6: a recycled pid is dead, and the group is NOT probed', async () => {
+    const { probe: p, asked } = recording({
+      startedAtMs: async () => 1_700_000_000_000 + 60_000,
+      // Were it asked, a stranger's group would answer — and the verdict would be wrong.
+      groupExists: () => true
+    });
+    expect(await checkLiveness(identity(), p)).toBe('dead');
+    expect(asked.groupExists).toBe(0);
+  });
+
+  it('row 7: an absent leader and an empty group is dead', async () => {
+    const { probe: p, asked } = recording({ exists: () => false, groupExists: () => false });
+    expect(await checkLiveness(identity(), p)).toBe('dead');
+    expect(asked).toEqual({ exists: 1, startedAtMs: 0, groupExists: 1 });
+  });
+
+  it('row 8: an absent leader and a group that answers is orphaned-group', async () => {
+    const { probe: p, asked } = recording({ exists: () => false, groupExists: () => true });
+    expect(await checkLiveness(identity(), p)).toBe('orphaned-group');
+    expect(asked).toEqual({ exists: 1, startedAtMs: 0, groupExists: 1 });
+  });
+
+  it('row 9: an absent leader and a group probe that throws is unanswerable', async () => {
+    const { probe: p, asked } = recording({ exists: () => false, groupExists: eperm });
+    expect(await checkLiveness(identity(), p)).toBe('unanswerable');
+    expect(asked).toEqual({ exists: 1, startedAtMs: 0, groupExists: 1 });
+  });
+
+  it('probes the recorded pgid, not the pid', async () => {
+    const seen: number[] = [];
+    const p: LivenessProbe = {
+      platform: 'darwin',
+      exists: () => false,
+      startedAtMs: async () => null,
+      groupExists: (pgid) => {
+        seen.push(pgid);
+        return true;
+      }
+    };
+    await checkLiveness(identity({ pid: 4242, pgid: 4300 }), p);
+    expect(seen).toEqual([4300]);
+  });
+
+  it('orphaned-group permits no resume', () => {
+    expect(RESUME_ON).not.toContain('orphaned-group');
+    expect([...RESUME_ON].sort()).toEqual(['dead', 'unanswerable', 'unrecorded']);
+  });
+
+  it('reads an identity written before this feature identically', async () => {
+    // `{ pid, pgid, startedAtMs }` is the whole shape, then and now (P9). No field was added.
+    const preFeature: SpawnIdentity = { pid: 4242, pgid: 4242, startedAtMs: 1_700_000_000_000 };
+    expect(Object.keys(preFeature).sort()).toEqual(['pgid', 'pid', 'startedAtMs']);
+    const { probe: p } = recording({});
+    expect(await checkLiveness(preFeature, p)).toBe('alive');
+  });
+});
+
+describe('FR-R4-F06 — the real probe sends no signal other than 0 (P6, P9)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ['a leader that is gone and a group that answers', 'ESRCH', true],
+    ['a leader that is gone and an empty group', 'ESRCH', false],
+    ['a leader held by someone else', 'EPERM', true]
+  ] as const)('%s', async (_label, pidError, groupAnswers) => {
+    const kill = vi.spyOn(process, 'kill').mockImplementation(((target: number) => {
+      if (target > 0) throw Object.assign(new Error(pidError), { code: pidError });
+      if (groupAnswers) return true;
+      throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+    }) as unknown as typeof process.kill);
+    const realProbe: LivenessProbe = { ...createLivenessProbe(), platform: 'darwin' };
+
+    await checkLiveness(identity(), realProbe);
+
+    expect(kill.mock.calls.length).toBeGreaterThan(0);
+    // Every call is a probe. A resume walk that killed would be a different feature.
+    expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+  });
+
+  it('asks the group by the negated pgid', async () => {
+    const kill = vi.spyOn(process, 'kill').mockImplementation(((target: number) => {
+      if (target > 0) throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+      return true;
+    }) as unknown as typeof process.kill);
+    const realProbe: LivenessProbe = { ...createLivenessProbe(), platform: 'darwin' };
+
+    expect(await checkLiveness(identity({ pid: 4242, pgid: 4300 }), realProbe)).toBe(
+      'orphaned-group'
+    );
+    expect(kill).toHaveBeenCalledWith(-4300, 0);
   });
 });
