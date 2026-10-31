@@ -56,16 +56,24 @@ export interface SpawnIdentity {
 /**
  * What a liveness check concluded.
  *
- * Four arms, and the fourth is the one that matters. `unanswerable` is NOT folded into
- * `dead`: a platform that cannot answer must not be recorded as having answered, and an
- * operator reading the audit trail needs to tell "we checked and it is gone" from "we could
- * not check". They lead to the same resume decision today — see `RESUME_ON` — and that is a
- * decision, recorded as one, rather than a conflation baked into the type.
+ * Five arms. `unanswerable` is NOT folded into `dead`: a platform that cannot answer must
+ * not be recorded as having answered, and an operator reading the audit trail needs to tell
+ * "we checked and it is gone" from "we could not check". They lead to the same resume
+ * decision today — see `RESUME_ON` — and that is a decision, recorded as one, rather than a
+ * conflation baked into the type.
+ *
+ * FR-R4-F06 (FR-016) — `orphaned-group` is the fifth: the recorded leader is gone but a
+ * member of its process group still answers. It is NOT `dead`, because `dead` permits a
+ * resume and a resumed Run would then start beside a helper still writing to the workspace;
+ * and it is NOT `alive`, because the leader the identity names has exited. It permits no
+ * resume.
  */
-export type LivenessVerdict = 'alive' | 'dead' | 'unrecorded' | 'unanswerable';
+export type LivenessVerdict = 'alive' | 'dead' | 'unrecorded' | 'unanswerable' | 'orphaned-group';
 
 /**
- * The verdicts that permit a resume.
+ * The verdicts that permit a resume. This is the ONE statement of the policy; the operator
+ * documentation carries marked copies that `resume-policy-doc-parity.test.ts` checks
+ * against it (FR-018).
  *
  * `unanswerable` is included deliberately. Refusing every resume on a platform that cannot
  * answer would strand Runs exactly where the mechanism is weakest — Windows, where
@@ -73,6 +81,9 @@ export type LivenessVerdict = 'alive' | 'dead' | 'unrecorded' | 'unanswerable';
  * mechanism whose failure mode is "nothing ever resumes here" would be turned off. The audit
  * trail records which verdict applied, so an operator can see that the check could not
  * answer rather than inferring it from a resume that looks ordinary.
+ *
+ * `orphaned-group` is excluded deliberately, and for the opposite reason: here the platform
+ * CAN answer, and the answer is that something the previous Run started is still alive.
  */
 export const RESUME_ON: ReadonlyArray<LivenessVerdict> = Object.freeze([
   'dead',

@@ -1572,7 +1572,18 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // one-line note (two), because the row has no run and belongs on the System tab. The payload is
       // empty, so there is no type to add, and `evidence-exported`'s projection lives in
       // `src/audit/evidence-lifecycle-payload.ts`.
-      highWaterMark: 1590
+      //
+      // Feature 253 (FR-R4-F06, 2026-10-31) — 1590 → 1627, +37, by this gate's count. The lines are
+      // the feature entry in the file's own header (eight, with its blank comment line); the new family
+      // `HOST_TEARDOWN_EVENT_TYPES` with its doc comment (six) and its spread into
+      // `ALL_AUDIT_EVENT_TYPES` (one), kept apart from `PROCESS_TREE_EVENT_TYPES` because that gate pins
+      // the single-member form; the closed payload `HostTeardownUnconfirmedPayload` with its doc comment
+      // (nine), which every payload in this file carries; and the three additive capability fields,
+      // `enforcement` and `residuals` on `CapabilityAppliedPayload` and `unqualified` on
+      // `CapabilityRefusedPayload`, each with its one-line note, plus the import that names their closed
+      // unions. `RunResumePayload.liveness` gains a value and adds no line. The projection arm lives in
+      // `src/audit/audit-payload.ts`.
+      highWaterMark: 1627
     }
   },
   // The second file of the same 2026-10-01 decision; see the waiver above.

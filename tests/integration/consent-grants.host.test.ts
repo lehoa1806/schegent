@@ -5,8 +5,10 @@ import * as vscode from 'vscode';
 
 import { INTEGRATION_USER_DATA_DIR_ENV } from './vscode-test-executable';
 import { createUncontainedConsentRequester } from '../../src/activation/uncontained-consent';
+import { createBackendRunner } from '../../src/runner/backend-runner-factory';
 import {
   ALLOW_UNCONTAINED_SETTING,
+  UncontainedBackendRefusedError,
   judgeBackendContainment,
   resolveUncontainedGrant
 } from '../../src/services/backend-containment-policy';
@@ -56,6 +58,7 @@ const GIT_APPROVALS_COMMAND = 'schegent.gitApprovals';
 export async function run(): Promise<void> {
   await assertRefusalReachesTheDialogWhole();
   await assertGrantLandsInTheProfileAndTakesEffectWithoutReload();
+  await assertAWorkspaceScopedValueGrantsNothing();
   await assertGitApprovalsIsReachable();
 }
 
@@ -247,6 +250,88 @@ async function assertGrantLandsInTheProfileAndTakesEffectWithoutReload(): Promis
         `'${KIND}' from refused to allowed with no reload.`
     );
   } finally {
+    await vscode.workspace
+      .getConfiguration()
+      .update(ALLOW_UNCONTAINED_SETTING, previousGlobal, vscode.ConfigurationTarget.Global);
+  }
+}
+
+/**
+ * FR-R4-F06 (FR-010; T9; contract D, D9) -- a workspace-scoped value grants nothing.
+ *
+ * The grant is application-scoped on purpose: a repository the operator opened must not
+ * be able to grant itself an unbounded agent by shipping a `.vscode/settings.json`. The
+ * launch notice now tells the operator exactly that ("application-scoped", "in every
+ * trusted workspace in this installation"), so the claim is worth observing in a real
+ * host and not only in the unit suite, whose existing legs write `Global` only.
+ *
+ * The write is ATTEMPTED at the Workspace target. VS Code may reject an application-scoped
+ * key at that target or may store it and ignore it on read; this leg does not decide which,
+ * it records which, and asserts the one thing that matters in both cases: the grant the
+ * product reads is empty, and constructing the backend is refused.
+ */
+async function assertAWorkspaceScopedValueGrantsNothing(): Promise<void> {
+  const inspected = vscode.workspace.getConfiguration().inspect<unknown>(ALLOW_UNCONTAINED_SETTING);
+  const previousWorkspace = inspected?.workspaceValue;
+  const previousGlobal = inspected?.globalValue;
+  assert.equal(
+    resolveUncontainedGrant(previousGlobal).granted.has(KIND),
+    false,
+    `'${KIND}' is already granted at the global layer in this profile, so a workspace-scoped ` +
+      `value cannot be shown to grant nothing.`
+  );
+
+  let writeOutcome: 'accepted' | 'rejected' = 'accepted';
+  try {
+    try {
+      await vscode.workspace
+        .getConfiguration()
+        .update(ALLOW_UNCONTAINED_SETTING, [KIND], vscode.ConfigurationTarget.Workspace);
+    } catch {
+      writeOutcome = 'rejected';
+    }
+
+    const read = resolveUncontainedGrant(
+      vscode.workspace.getConfiguration('schegent.backend').get<unknown>('uncontainedBackends')
+    );
+    assert.equal(
+      read.granted.has(KIND),
+      false,
+      `a workspace-scoped value of '${ALLOW_UNCONTAINED_SETTING}' granted '${KIND}'. The grant ` +
+        `is documented as application-scoped, and a repository must not be able to grant ` +
+        `itself an unbounded agent.`
+    );
+    assert.equal(
+      judgeBackendContainment(KIND, read.granted).outcome,
+      'refused',
+      `the policy allows '${KIND}' after a workspace-scoped write`
+    );
+    assert.throws(
+      () => createBackendRunner(KIND, { uncontainedGranted: () => read.granted }),
+      UncontainedBackendRefusedError,
+      `constructing '${KIND}' was not refused after a workspace-scoped write`
+    );
+
+    if (writeOutcome === 'accepted') {
+      // Control: the platform did store the value, so "grants nothing" is a statement about
+      // reading it and not about the write having silently failed.
+      assert.deepEqual(
+        vscode.workspace.getConfiguration().inspect<readonly string[]>(ALLOW_UNCONTAINED_SETTING)
+          ?.workspaceValue,
+        [KIND],
+        'the write reported success but no workspace value is stored, so this leg observed nothing'
+      );
+    }
+
+    console.log(
+      `[consent-grants] a Workspace-target write was ${writeOutcome}; the grant the product ` +
+        `reads stayed empty and '${KIND}' stayed refused.`
+    );
+  } finally {
+    await vscode.workspace
+      .getConfiguration()
+      .update(ALLOW_UNCONTAINED_SETTING, previousWorkspace, vscode.ConfigurationTarget.Workspace)
+      .then(undefined, () => undefined);
     await vscode.workspace
       .getConfiguration()
       .update(ALLOW_UNCONTAINED_SETTING, previousGlobal, vscode.ConfigurationTarget.Global);

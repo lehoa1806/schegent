@@ -402,6 +402,7 @@ Runs is now where work is **started**, and the only place it is started.
 | [`LaunchableRow.svelte`](src/components/Runs/LaunchableRow.svelte) | One offered definition and its **Trigger** control |
 | [`LaunchableDetail.svelte`](src/components/Runs/LaunchableDetail.svelte) | The selected definition's trigger panel |
 | [`WorkflowTriggerForm.svelte`](src/components/Runs/WorkflowTriggerForm.svelte) | Fulfil a Workflow's derived inputs, then Run — the first call site `launchWorkflow()` has ever had |
+| [`LaunchAuthorityNotice.svelte`](src/components/Runs/LaunchAuthorityNotice.svelte) | The host's sentences about what a launch will have authority to do (an uncontained backend, a Phase whose capability set leaves something open or cannot be enforced), rendered as text, with a link to Settings. Mounted by `LaunchableDetail.svelte` and `RunLauncher.svelte`; it composes and derives nothing |
 | [`launch-selection.ts`](src/components/Runs/launch-selection.ts) | Pure selection state: which definition is picked, across both sections |
 
 The flow is explicit at every step — select, Trigger, fulfil inputs, Run — and

@@ -2,7 +2,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import type {
   MonitorSidecarEvent,
   MonitorSidecarHook,
-  TreeAttribution, RunnerLabel } from '../contracts/backend-runner';
+  TreeAttribution, TreeTeardownOutcome, RunnerLabel } from '../contracts/backend-runner';
 import type { SanitizedLogger } from '../lib/logger';
 import { waitForChildCompletion } from './child-completion';
 import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
@@ -10,9 +10,10 @@ import type { InvocationOutputSink, InvocationRequest, RawInvocationOutput } fro
 import { armedMaxDurationMs } from './invocation-result';
 import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
-import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
+import { processTreeSpawnOptions, escalateAndReportTree, trackGroupAtExit } from './process-tree';
 import { nextInvocationId } from './invocation-identity';
 import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
+import { TeardownLedger } from './teardown-ledger';
 
 export type ProcessSpawnFn = (
   command: string,
@@ -73,6 +74,9 @@ export class ProcessLifecycleRunner {
    */
   private readonly reportedTrees = new WeakSet<ChildProcess>();
 
+  /** FR-R4-F06 (S2) -- the ladders started and not yet reported, so shutdown can wait for them. */
+  private readonly teardowns = new TeardownLedger();
+
   /** Set by `close()` at host teardown; no spawn follows it. */
   private closed = false;
 
@@ -117,6 +121,7 @@ export class ProcessLifecycleRunner {
       // kept mutating the workspace after a terminal state was recorded.
       ...processTreeSpawnOptions()
     });
+    trackGroupAtExit(child); // FR-R4-F06 (P2) -- the ownership anchor for a leader reaped before its ladder
     const invocationId = nextInvocationId(this.label);
     const attribution: TreeAttribution = {
       runId: request.runId ?? null,
@@ -314,7 +319,7 @@ export class ProcessLifecycleRunner {
     // The ladder owns the decision, including whether there is anything left to
     // signal at all. See `childIsReaped` in `process-tree.ts` for that rule and why
     // it is the whole of it.
-    escalateAndReportTree({
+    const ladder = escalateAndReportTree({
       child,
       attribution,
       runner: this.label,
@@ -327,5 +332,12 @@ export class ProcessLifecycleRunner {
       alreadyReported: () => this.reportedTrees.has(child),
       markReported: () => void this.reportedTrees.add(child)
     });
+    // FR-R4-F06 (S2) -- kept, not voided: shutdown awaits it through `settleTeardowns()`.
+    this.teardowns.track(child, { attribution, runner: this.label, pid: child.pid ?? null }, ladder);
+  }
+
+  /** FR-R4-F06 (S1) -- the outcomes of every ladder started and not yet reported. Never rejects. */
+  public settleTeardowns(deadline?: Promise<void>): Promise<readonly TreeTeardownOutcome[]> {
+    return this.teardowns.settle(deadline);
   }
 }

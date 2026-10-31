@@ -60,6 +60,11 @@ export type RunnerLabel = 'claude-cli' | 'codex-cli' | 'agy-cli';
  * escalating on the GROUP, a report is only ever reachable after a delivered
  * SIGKILL. An enum arm nothing can emit is worse than no arm: it invites a reader
  * to handle a case that cannot occur.
+ *
+ * FR-R4-F06 (P1) -- the one value is unchanged, and it is now also reachable on
+ * the reaped-leader path: when the leader has exited and the host holds evidence
+ * that it owned the group, the ladder escalates against that group, so a report
+ * after a reaped leader names this value too.
  */
 export type TreeEscalation = 'sigterm-then-sigkill';
 
@@ -215,6 +220,39 @@ export interface TreeAttribution {
   readonly iteration: number;
 }
 
+/**
+ * FR-R4-F06 (FR-020) -- how one termination ladder ended.
+ *
+ * `group-gone` means the process GROUP is gone: the group probe answered `ESRCH`,
+ * or pid `N` is now held by another process and the host will not signal it. It
+ * does NOT mean no descendant survives. A descendant that left the group with
+ * `setsid` is the permanent limit `docs/architecture/native-binding-decision.md`
+ * records, and the name is chosen so the outcome cannot be read as more than it
+ * proves.
+ */
+export type TreeTeardownResult =
+  /** POSIX: the group probe answers `ESRCH`, or pid `N` is held by another process. */
+  | 'group-gone'
+  /** POSIX: the group still answers, or its probe answered `EPERM`. */
+  | 'tree-unconfirmed'
+  /** win32: `taskkill` was sent (or the leader was already reaped); the platform cannot confirm a tree. */
+  | 'platform-unanswerable'
+  /** Set by the registry only: the ladder had not settled when the teardown bound elapsed. */
+  | 'bound-elapsed';
+
+/**
+ * FR-R4-F06 (FR-020) -- the report a runner gives for one ladder it started, so
+ * shutdown can wait for it instead of firing it and forgetting it. The identity
+ * fields are the ones `TreeAttribution` already carries; nothing here holds a
+ * path, an argument vector or an environment value.
+ */
+export interface TreeTeardownOutcome {
+  readonly attribution: TreeAttribution;
+  readonly runner: RunnerLabel;
+  readonly pid: number | null;
+  readonly result: TreeTeardownResult;
+}
+
 export interface BackendRunner {
   /** Whether an invocation is currently running. */
   readonly hasActiveProcess: boolean;
@@ -231,4 +269,18 @@ export interface BackendRunner {
    * Idempotent and never throws. Called at host teardown.
    */
   close(): void;
+  /**
+   * FR-R4-F06 (FR-020; S1) -- Outcomes of every ladder this runner started and has not yet
+   * settled. Never rejects. A runner with no ladder resolves `[]`.
+   *
+   * That includes a ladder an idle timeout, a deadline or an abort started before shutdown, not
+   * only the ones `cancelActive()` starts. Each ladder is reported once: a settled ladder is
+   * forgotten.
+   *
+   * `deadline` is the registry's shared teardown bound. It is a promise that resolves when the
+   * bound has elapsed. A ladder still pending then is reported as `bound-elapsed`, stamped with
+   * the attribution it started with, because the runner alone knows it. The registry owns the
+   * deadline; the runner only reads it. Absent, the call waits for every ladder.
+   */
+  settleTeardowns(deadline?: Promise<void>): Promise<readonly TreeTeardownOutcome[]>;
 }

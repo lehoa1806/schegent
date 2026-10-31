@@ -27,6 +27,8 @@
   import RunOutputTargets from './RunOutputTargets.svelte';
   import { OUTCOME_NOT_YET_KNOWN_TEXT, boundaryRefusalText } from '../../lib/boundary-refusal-text';
   import { launchPipeline, type NotYetKnown } from '../../lib/run-launcher-ipc';
+  import { snapshotStore } from '../../lib/snapshot-store.svelte';
+  import LaunchAuthorityNotice from '../Runs/LaunchAuthorityNotice.svelte';
   import {
     composeRunRequest,
     errorsByField as mapErrorsByField,
@@ -68,6 +70,19 @@
   }
 
   const { pipeline, onClose, initialSupplemental, queueId }: Props = $props();
+
+  // FR-R4-F06 (FR-007; D4) -- the launch notice for THIS Pipeline. `HistoryRerunPanel` mounts
+  // this component too, so a History re-run is covered by the same read. The entry is found by
+  // id in the snapshot's launch projection, which is where the host put the backends this
+  // Pipeline would spawn; a Pipeline the projection does not offer shows no backend notice,
+  // and a start of it is refused by the host regardless.
+  const launchEntry = $derived.by(() => {
+    const section = snapshotStore.snapshot?.launchables?.pipelines;
+    return section?.state === 'entries'
+      ? section.entries.find((entry) => entry.id === pipeline.id)
+      : undefined;
+  });
+  const postures = $derived(snapshotStore.snapshot?.backendPostures ?? []);
 
   let inputValues = $state<Record<string, string>>({});
   // `untrack` states the intent the compiler otherwise warns about: this reads
@@ -241,6 +256,12 @@
         2
       )}</pre>
   </section>
+
+  <LaunchAuthorityNotice
+    backends={launchEntry?.backends ?? []}
+    {postures}
+    capabilityNotices={launchEntry?.capabilityNotices ?? []}
+  />
 
   <footer class="launcher-footer">
     <button

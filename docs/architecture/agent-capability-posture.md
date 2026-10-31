@@ -144,7 +144,7 @@ runner built under a posture the operator can change is the caching shape the ha
 itself rather than gating whether it may run at all"*. `FR-R3-086` is where that is decided on
 mechanism. The three routes it names, each costed rather than argued from preference:
 
-### Route A — OS/CLI-enforced containment, driven by a host-declared capability set — **CHOSEN**
+### Route A — backend-enforced restriction (CLI tool restrictions and vendor sandboxes), driven by a host-declared capability set — **CHOSEN**
 
 The host declares a capability set per phase and translates it into each backend's **own** enforcement
 surface. The backend's permission engine refuses at the attempt.

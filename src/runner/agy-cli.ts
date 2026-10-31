@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import type { BackendRunner, MonitorSidecarEvent, MonitorSidecarHook } from '../contracts/backend-runner';
+import type { BackendRunner, MonitorSidecarEvent, MonitorSidecarHook, TreeTeardownOutcome } from '../contracts/backend-runner';
 import type { Effort } from '../config/pipeline-config';
 import { SanitizedLogger } from '../lib/logger';
 import { extractCliSessionId } from '../parser/session-id-extractor';
@@ -95,7 +95,7 @@ function capabilityArgs(
   }
   const plan = planCapabilityEnforcement(kind, request.capabilities);
   if (plan.outcome === 'refused') {
-    throw new CapabilityNotEnforceableError(plan.kind, plan.unenforceable);
+    throw new CapabilityNotEnforceableError(plan.kind, plan.unenforceable, plan.unqualified);
   }
   return plan.args;
 }
@@ -138,6 +138,11 @@ export class AgyCliRunner implements BackendRunner {
   }
 
   public cancelActive(): boolean { return this.lifecycle.cancelActive(); }
+
+  /** FR-R4-F06 (S2) -- the ladders are the lifecycle runner's; this delegates to it. */
+  public settleTeardowns(deadline?: Promise<void>): Promise<readonly TreeTeardownOutcome[]> {
+    return this.lifecycle.settleTeardowns(deadline);
+  }
 
   public close(): void { this.lifecycle.close(); }
 }

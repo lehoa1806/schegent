@@ -140,6 +140,22 @@ export interface BackendPosture {
    * enforcement's own statement of that consequence and not a paraphrase of it.
    */
   readonly refusal?: string;
+  /**
+   * FR-R4-F06 (FR-007, FR-009; contract D, D1) -- what a granted uncontained backend
+   * means, as one host-built sentence: present exactly when `containment` is `none`
+   * and `grant` is `granted`, and absent otherwise.
+   *
+   * The mirror of `refusal`: that field exists exactly when the grant is NOT in force
+   * and is worded as a refusal, so it cannot say what a grant means, and this one
+   * exists exactly when it is. The two are never both present. A contained backend
+   * never carries one, so the launch surface cannot label a contained backend as
+   * uncontained (FR-009).
+   *
+   * Built by `uncontainedGrantNotice` from the validated backend kind only, so no
+   * operator text can reach it; the webview renders it as text and composes none of
+   * it.
+   */
+  readonly notice?: string;
 }
 
 /**

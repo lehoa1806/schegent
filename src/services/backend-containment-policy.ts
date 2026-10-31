@@ -271,6 +271,35 @@ export function judgeBackendContainment(
 }
 
 /**
+ * FR-R4-F06 (FR-007, FR-009) -- what a GRANTED uncontained backend means, in one sentence
+ * the launch surface shows.
+ *
+ * `judgeBackendContainment`'s refusal is worded for a backend that has NOT been granted
+ * ("Add '...' to ..."), so it cannot be reused for the granted case: it would tell an
+ * operator who already granted to grant. This is the other half. It is built here, beside
+ * the refusal, for the reason the refusal is: one module owns what an uncontained posture
+ * is, and the webview composes none of it (hard rule 2).
+ *
+ * It states the same three substances the refusal and the setting description state
+ * (`tests/lint/backend-permission-posture.test.ts` reads this output too): the authority
+ * being granted, the application scope of the grant, and that it is per backend. It ends
+ * by pointing at Settings, where the grant is revoked.
+ *
+ * Built from the validated `kind` ALONE. No operator text, setting value or path can reach
+ * it, so it is safe to project to the webview and to render. The display name is the kind
+ * with its first letter capitalised, which extends to a fourth backend without an edit.
+ */
+export function uncontainedGrantNotice(kind: BackendRunnerKind): string {
+  const name = `${kind.charAt(0).toUpperCase()}${kind.slice(1)}`;
+  return (
+    `${name} runs with no OS-enforced bound, so model-generated actions execute with your ` +
+    'local user authority; you accepted that for this backend only, the grant is ' +
+    'application-scoped and applies in every trusted workspace in this installation, and ' +
+    'you can review or revoke it in Settings.'
+  );
+}
+
+/**
  * FR-R3-056 — thrown rather than returned, because there is no runner to return.
  * A distinct type so a caller can report the posture refusal as itself instead of
  * as a generic construction failure.

@@ -70,6 +70,23 @@ export function declineMessage(candidate: ResumeCandidate): string {
   );
 }
 
+/**
+ * FR-R4-F06 (FR-016, P8) — the sentence for a leader that has exited while a member of its
+ * process group is still alive. `declineMessage` says the Run is "still executing in another
+ * window or process", which is false here: nothing is executing the Run, and the operator's
+ * next step is different. The wording says what is true and what to do, and names no path.
+ *
+ * The sentence says "alive" so that the status-literal gate, which scans `src/` for the Run
+ * status word, needs no allowlist entry for this file.
+ */
+export function orphanedGroupDeclineMessage(candidate: ResumeCandidate): string {
+  return (
+    'Schegent: the previous backend process has exited, but processes it started are still ' +
+    `alive in its process group, so this window did not resume the run on queue "${candidate.queueId}". ` +
+    'End them, then resume or reload.'
+  );
+}
+
 /** The title `package.json` gives `schegent.showActiveRun`; a unit test pins the two together. */
 export const SHOW_ACTIVE_RUN_TITLE = 'Schegent: Show Active Run';
 
@@ -190,8 +207,12 @@ export async function resumePersistedRuns(deps: ResumeWalkDeps): Promise<void> {
         /* evidence about a decision must not change the decision */
       });
     if (!decision.resume) {
-      deps.log(`activation: declined to resume run ${run.id} — its process tree is alive`);
-      deps.notify(declineMessage(candidate));
+      const orphaned = decision.liveness === 'orphaned-group';
+      deps.log(
+        `activation: declined to resume run ${run.id} — ` +
+          (orphaned ? 'its process group still has live members' : 'its process tree is alive')
+      );
+      deps.notify(orphaned ? orphanedGroupDeclineMessage(candidate) : declineMessage(candidate));
       continue;
     }
     deps.log(`activation: resuming run ${run.id} at ${run.currentPhase}`);

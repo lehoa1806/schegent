@@ -46,6 +46,13 @@ That bounds what the matrix can claim, precisely:
 | Platform sandbox binary | `/usr/bin/sandbox-exec` present |
 | Execution repo | `2b1736d0` on `develop`, product version `0.2.0` |
 
+**These versions are from 2026-08-27 and are not re-dated.** Sections 7 and 8 carry the versions captured
+at `FR-R4-F06`'s implement, on 2026-10-31, by `scripts/capture-backend-help.mjs`: `claude` 2.1.316,
+`codex-cli` 0.163.0 and `agy` 1.4.12, on Darwin arm64, macOS 27.0.1. The product's own list of
+live-canary-qualified versions, `QUALIFIED_BACKEND_VERSIONS` (2.1.302, 0.159.2 and 1.4.2, dated
+2026-10-19), is a different claim and is gated against `docs/release/backend-qualification-log.md`, not
+against this record: a version appearing here says what was *captured*, not that it was *qualified*.
+
 ## 3. The matrix
 
 `mechanism` values are the closed set in `src/services/backend-containment-policy.ts`, and
@@ -138,3 +145,116 @@ overturn it.**
 - It does not claim any enforcement was tested live. §1 states the evidence and its limit.
 - It does not claim Windows or Linux behaviour. Every non-darwin cell is marked unverified with its
   probe.
+
+## 7. Capability semantics (`FR-R4-F06`)
+
+A Phase may withhold a capability: `workspace-write`, `outside-workspace-write`, `process-spawn` or
+`network`. Whether the withholding *means* anything depends on what kind of thing enforces it, and four
+different things get called "restricting a backend":
+
+1. **Permission prompts.** The CLI asks a person before acting. Schegent spawns backends without a
+   terminal, so a prompt would deadlock the run; no capability is ever enforced by asking.
+2. **Tool restrictions.** The CLI is told not to offer some of its own tools (`--disallowedTools`) or to
+   refuse a class of edits (`--permission-mode`). The CLI's tool layer applies it to itself. A shell the
+   model is allowed to run can still do what the denied tool would have done, which is why a restriction
+   that leaves the shell open records a residual.
+3. **Git worktrees.** A separate checkout limits what a run can disturb in the main one. It is not a
+   permission, and nothing in this table claims it.
+4. **OS isolation.** The operating system decides what the process can reach. Only the vendor's own
+   sandbox (`codex --sandbox`, `agy --sandbox`) is even *claimed by its vendor* to sit below the tool
+   layer.
+
+**This record qualifies the presence of a flag in the installed CLI's `--help`, and nothing more.** It does
+not say a flag's values are accepted, that the flag enforces what its name suggests, or that the vendor's
+claim about its sandbox is true: §1's limit applies to every row. A row is `observed` when the capture below
+listed its flag at the stated version, `unsupported` when no flag expresses the capability (so the planner
+refuses a Phase that withholds it), and `unobserved` otherwise. Cell status is read by
+`tests/lint/containment-qualification-parity.test.ts` against `CONFIRMED_FLAGS` in
+`src/services/capability-confirmed-flags.ts`, and the enforcement class and residuals against the planner.
+
+The capture ran `scripts/capture-backend-help.mjs claude codex agy` on 2026-10-31 under the minimal policy's
+shape (PATH and an isolated, empty home), with no account and no model call. Every command exited 0, and
+every capability flag below was listed by the CLI's own `--help`.
+
+| Backend | Withheld capability | Flag | Enforcement class | Residuals | Evidence | Status | Version |
+|---|---|---|---|---|---|---|---|
+| `claude` | `workspace-write` | `--disallowedTools Edit,Write,NotebookEdit` | `tool-restriction` | `shell-workspace-write` (when process-spawn is granted), `unlisted-tools` | `--help` lists `--disallowedTools` | observed | claude 2.1.316 |
+| `claude` | `outside-workspace-write` | `--permission-mode acceptEdits` | `tool-restriction` | `shell-outside-workspace-write` (when process-spawn is granted), `unlisted-tools` | `--help` lists `--permission-mode` | observed | claude 2.1.316 |
+| `claude` | `process-spawn` | `--disallowedTools Bash` | `tool-restriction` | `unlisted-tools` | `--help` lists `--disallowedTools` | observed | claude 2.1.316 |
+| `claude` | `network` | `--disallowedTools WebFetch,WebSearch` | `tool-restriction` | `shell-network` (when process-spawn is granted), `unlisted-tools` | `--help` lists `--disallowedTools` | observed | claude 2.1.316 |
+| `codex` | `workspace-write` | `--sandbox read-only` | `cli-sandbox` | none | `--help` lists `--sandbox` | observed | codex-cli 0.163.0 |
+| `codex` | `outside-workspace-write` | `--sandbox workspace-write` | `cli-sandbox` | none | `--help` lists `--sandbox` | observed | codex-cli 0.163.0 |
+| `codex` | `process-spawn` | `--sandbox read-only` | `cli-sandbox` | `sandboxed-commands-run` | `--help` lists `--sandbox` | observed | codex-cli 0.163.0 |
+| `codex` | `network` | none | `refused` | none | no flag in the planner's table expresses it | unsupported | codex-cli 0.163.0 |
+| `agy` | `process-spawn` | `--sandbox` | `cli-sandbox` | `sandbox-scope-unqualified` | `--help` lists `--sandbox` ("Run in a sandbox with terminal restrictions enabled") | observed | agy 1.4.12 |
+| `agy` | `workspace-write` | none | `refused` | none | no flag in the planner's table expresses it | unsupported | agy 1.4.12 |
+| `agy` | `outside-workspace-write` | none | `refused` | none | no flag in the planner's table expresses it | unsupported | agy 1.4.12 |
+| `agy` | `network` | none | `refused` | none | no flag in the planner's table expresses it | unsupported | agy 1.4.12 |
+
+`unsupported` here is about the planner's table: it declares no flag for the capability, so a Phase that
+withholds it on that backend is refused before it starts rather than run unbounded. It does not say the CLI
+has no mechanism the table could one day name; the capture looked for the flags the table names and no others.
+
+<!-- Source: src/services/capability-confirmed-flags.ts -->
+<!-- Source: src/services/capability-enforcement-plan.ts -->
+<!-- Source: scripts/capture-backend-help.mjs -->
+
+## 8. Platform qualification (`FR-R4-F06`)
+
+Every row states what was observed, on what, at which version, or what it is waiting for. **No row is
+`observed` on a fake, a stub or a simulation.** The cycle host is Darwin arm64, macOS 27.0.1, with
+`claude` 2.1.316, `codex-cli` 0.163.0 and `agy` 1.4.12 installed. It is the only host available, so every
+`linux` and `win32` row is `unobserved` or `unsupported`, never inferred from darwin (§1).
+
+| Topic | Platform | Status | Versions | Evidence or prerequisite |
+|---|---|---|---|---|
+| Containment flags present in `--help` | darwin | observed | claude 2.1.316, codex-cli 0.163.0, agy 1.4.12 | the offline capture of 2026-10-31; every flag in `CONFIRMED_FLAGS` was listed |
+| Containment flags present in `--help` | linux | unobserved | n/a | a Linux host |
+| Containment flags present in `--help` | win32 | unobserved | n/a | a Windows host |
+| The ladder escalates a surviving same-group helper | darwin | observed | n/a | a real detached leader and a same-group helper that ignores SIGTERM: the ladder settled `group-gone`, the helper's pid answered `ESRCH` and no process carried its tag afterwards (`process-tree-surviving-helper.test.ts`) |
+| The ladder escalates a surviving same-group helper | linux | unobserved | n/a | a Linux host |
+| The ladder escalates a surviving same-group helper | win32 | unobserved | n/a | a Windows host. `taskkill /T` semantics and the job-object gap (a permanent limit, per `docs/architecture/native-binding-decision.md`) are stated from source, not observed |
+| `orphaned-group` liveness | darwin | observed | n/a | a real leader that exited while its same-group helper slept: `orphaned-group`, then `dead` once the helper was killed (`process-liveness-group.test.ts`) |
+| `orphaned-group` liveness | linux | unobserved | n/a | a Linux host |
+| `orphaned-group` liveness | win32 | unsupported | n/a | liveness is `unanswerable` by design there: no process group is probeable (`src/services/process-liveness.ts`) |
+| `--help` and `--version` under the minimal policy with an isolated home | darwin | observed | claude 2.1.316, codex-cli 0.163.0, agy 1.4.12 | each CLI exited 0 for both commands in the offline capture |
+| `--help` and `--version` under the minimal policy with an isolated home | linux | unobserved | n/a | a Linux host with the CLIs installed |
+| `--help` and `--version` under the minimal policy with an isolated home | win32 | unobserved | n/a | a Windows host with the CLIs installed |
+| A real turn under the minimal policy | darwin | unobserved | n/a | an account and a pinned CLI; a turn costs money and is not part of this record |
+| A real turn under the minimal policy | linux | unobserved | n/a | an account, a pinned CLI and a Linux host |
+| A real turn under the minimal policy | win32 | unobserved | n/a | an account, a pinned CLI and a Windows host |
+| A same-user child can read the parent's environment | darwin | observed | n/a | `parent-env-sentinel.test.ts`, two booleans: `inOwnEnv=false` (the allowlist kept the sentinel out of the child's own environment), `readableFromParent=true` (`ps -E -p <ppid>` showed it) |
+| A same-user child can read the parent's environment | linux | unobserved | n/a | a Linux host (`/proc/<ppid>/environ`) |
+| A same-user child can read the parent's environment | win32 | unobserved | n/a | a Windows host |
+| Remote extension-host topology | darwin | unobserved | n/a | a controlled Remote SSH or Dev Container host with a stub CLI |
+| Remote extension-host topology | linux | unobserved | n/a | the same |
+| Remote extension-host topology | win32 | unobserved | n/a | the same |
+
+**What the sentinel row means.** The environment allowlist decides which variables a backend child
+*receives*. It is not an operating-system boundary: on the host above, a same-user child could read its
+parent's environment from the OS, so a secret kept out of the child's own environment is not thereby out of
+its reach. Nothing in the product or its documentation should be read to say otherwise.
+
+**Remote development is unqualified.** Whether the extension host, the workspace URI scheme, the sidecar
+and the process host line up under Remote SSH or a Dev Container has not been measured. No `extensionKind`
+is declared, and no activation diagnostic claims a configuration unsupported that has not been shown to be.
+Treat remote use as outside what this record qualifies.
+
+### 8.1 A version is not an identity
+
+A version string does not authenticate an executable: two different binaries can print the same version. This
+record's version column says what a CLI *reported*, and nothing here depends on its being the one a vendor
+shipped. **Recording an executable's identity (a content hash or a code signature) is not adopted**, for three
+reasons:
+
+- vendor auto-updates would invalidate a hash pin, and requiring one is out of scope;
+- anyone who can replace the binary already holds the operator's user authority, which is the authority an
+  uncontained backend has regardless;
+- no claim in this record depends on which build ran beyond its version.
+
+The case that would reopen the decision is a support claim tied to a specific build: a promise that *this*
+build behaves a certain way would need to know it was *this* build.
+
+<!-- Source: src/services/process-liveness.ts -->
+<!-- Source: src/runner/process-tree.ts -->
+<!-- Source: src/services/capability-confirmed-flags.ts -->

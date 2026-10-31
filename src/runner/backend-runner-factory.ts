@@ -8,7 +8,7 @@ import {
   UncontainedBackendRefusedError,
   judgeBackendContainment
 } from '../services/backend-containment-policy';
-import type { ProcessEnvironmentMode } from './spawn-env';
+import type { ProcessEnvironmentMode, ProcessEnvironmentPolicy } from './spawn-env';
 import {
   DEFAULT_BACKEND,
   SUPPORTED_BACKENDS,
@@ -72,6 +72,13 @@ export interface BackendRunnerFactoryOptions {
    * missing mode suppresses the compound warning rather than fabricating one.
    */
   readonly environmentMode?: ProcessEnvironmentMode;
+  /**
+   * FR-R4-F06 (FR-004) -- the resolved environment policy, so the registry's CLI
+   * version probe starts its `--version` child under the same policy a Run spawn
+   * gets. Optional because a registry built by a test needs no policy; absent
+   * means the shipped allowlist default, never `inherit`.
+   */
+  readonly environmentPolicy?: ProcessEnvironmentPolicy;
   readonly monitorHook?: MonitorSidecarHook | null;
   /**
    * Probe `<cli> --help` once per activation to pick the safest available
@@ -188,12 +195,20 @@ export function createBackendRunner(
     case 'agy':
       return new AgyCliRunner(undefined, monitorHook, logger);
     case 'claude':
-    default:
       return new ClaudeCliRunner(
         undefined,
         monitorHook,
         { probeTransport: options.probeTransport ?? false },
         logger
       );
+    default: {
+      // FR-R4-F06 (TA7; R44) -- `claude` used to share this label, so a fourth backend added to the union
+      // would have been built as Claude with no compile error and no test failing. The unknown-backend
+      // fallback (`resolveBackendKind`) resolves the kind BEFORE it reaches here, so the three kinds are
+      // unchanged. A new kind now stops compiling on this assignment, and refuses at run time if it is
+      // forced through, instead of quietly spawning the wrong CLI.
+      const unhandled: never = kind;
+      throw new Error(`createBackendRunner: no runner is built for backend '${String(unhandled)}'`);
+    }
   }
 }

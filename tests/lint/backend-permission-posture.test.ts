@@ -6,7 +6,9 @@ import { SUPPORTED_BACKENDS, DEFAULT_BACKEND } from '../../src/contracts/backend
 import {
   ALLOW_UNCONTAINED_SETTING,
   REMOVED_ALLOW_UNCONTAINED_SETTING,
-  judgeBackendContainment
+  containmentOf,
+  judgeBackendContainment,
+  uncontainedGrantNotice
 } from '../../src/services/backend-containment-policy';
 import { createUncontainedConsentRequester } from '../../src/activation/uncontained-consent';
 
@@ -1078,6 +1080,24 @@ describe('the uncontained-backend consent surface states what it grants (FR-R3-1
         'answered on the spot. It carries the refusal message verbatim precisely so these three ' +
         'stay one text — a modal that paraphrases them is a fourth vocabulary for one authority.'
     ).toEqual([]);
+  });
+
+  /**
+   * FR-R4-F06 (FR-007; L3; contract D, D2) -- a FOURTH surface: the sentence the launch
+   * surface shows for a granted backend. It is held to the same list as the other three,
+   * for each uncontained backend, for the reason the modal is: four surfaces describing
+   * one authority in four vocabularies is how some of them come to be wrong without
+   * anything failing. Enumerated over `SUPPORTED_BACKENDS`, so a backend added to the
+   * platform is held to it on the day it is added.
+   */
+  it('states all three substances in the launch notice, for every uncontained backend', () => {
+    const uncontained = SUPPORTED_BACKENDS.filter((kind) => containmentOf(kind) === 'none');
+    expect(uncontained.length, 'no uncontained backend to hold the notice to').toBeGreaterThan(0);
+    for (const kind of uncontained) {
+      const text = substance(uncontainedGrantNotice(kind));
+      const missing = SUBSTANCES.filter((s) => !s.pattern.test(text)).map((s) => s.what);
+      expect(missing, `the launch notice for '${kind}' omits a substance`).toEqual([]);
+    }
   });
 
   it('names the backend and the installation scope in what the operator clicks', async () => {

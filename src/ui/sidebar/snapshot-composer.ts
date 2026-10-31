@@ -258,7 +258,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
   const trust = composeTrustProjection((message) => ctx.logger?.warn(message));
   // Feature 102 (FR-R3-018) — read off the two catalog projections above, never
   // re-resolved from the store; absent while either is still unresolved.
-  const launchables = buildLaunchProjection(pipelineCatalogProjection, workflowCatalog);
+  const launchables = buildLaunchProjection(pipelineCatalogProjection, workflowCatalog, phaseCatalogProjection, ctx.defaultRunnerKind);
 
   return Object.freeze({
     schemaVersion: SCHEMA_VERSION,

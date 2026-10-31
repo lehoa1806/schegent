@@ -1,4 +1,4 @@
-import type { PhaseCapability } from './phase-capabilities';
+import type { CapabilityEnforcement, CapabilityResidual, PhaseCapability } from './phase-capabilities';
 import type { BackendRunnerKind } from './backend-kinds';
 import type {
   BackendContainment,
@@ -64,6 +64,14 @@ import type { CatalogKind } from './catalog-store';
 // registered by feature 249, is now written for the first time, with a closed payload of its own
 // (`../audit/evidence-lifecycle-payload`). A reader that does not know either preserves the row
 // (warn-and-preserve). Additive — no `AUDIT_SCHEMA_VERSION` bump (same precedent).
+//
+// Feature 253 (FR-R4-F06) — additive event type `host-teardown-unconfirmed`, written at shutdown, before
+// ownership is released, for a backend tree the host could not answer for (`platform-unanswerable`, or
+// `bound-elapsed` at the teardown bound); Run-scoped, with a closed payload below. Additive value
+// `orphaned-group` in `RunResumePayload.liveness`; additive `enforcement` and `residuals` on
+// `capability-applied` and `unqualified` on `capability-refused` (closed unions from `./phase-capabilities`).
+// A reader that does not know either preserves the row (warn-and-preserve). Additive — no
+// `AUDIT_SCHEMA_VERSION` bump (same precedent).
 export const AUDIT_SCHEMA_VERSION = 3 as const;
 
 export type {
@@ -510,7 +518,7 @@ export type RunResumeEventType = (typeof RUN_RESUME_EVENT_TYPES)[number];
 export interface RunResumePayload {
   readonly queueId: string;
   readonly runId: string;
-  readonly liveness?: 'alive' | 'dead' | 'unrecorded' | 'unanswerable';
+  readonly liveness?: 'alive' | 'dead' | 'unrecorded' | 'unanswerable' | 'orphaned-group';
 }
 
 /**
@@ -686,6 +694,8 @@ export type CapabilityRefusalEventType = (typeof CAPABILITY_REFUSAL_EVENT_TYPES)
 export interface CapabilityRefusedPayload {
   readonly kind: BackendRunnerKind;
   readonly unenforceable: readonly PhaseCapability[];
+  /** FR-R4-F06 (K3) -- the subset whose flag exists in the planner but no capture confirmed. */
+  readonly unqualified: readonly PhaseCapability[];
   readonly phaseIndex: number;
 }
 
@@ -704,6 +714,10 @@ export interface CapabilityAppliedPayload {
   readonly kind: BackendRunnerKind;
   readonly granted: readonly PhaseCapability[];
   readonly phaseIndex: number;
+  /** FR-R4-F06 (K5) -- how the withheld capabilities are enforced. */
+  readonly enforcement: CapabilityEnforcement;
+  /** FR-R4-F06 (K5) -- what the restriction still leaves open. Sorted; empty when nothing is. */
+  readonly residuals: readonly CapabilityResidual[];
   /**
    * FR-R3-105 (FR-066) — what the backend's own configuration said, observed.
    *
@@ -797,6 +811,28 @@ export interface ProcessTreeUnconfirmedPayload {
    * reaches the audit record without an edit to the recorder.
    */
   readonly escalation: TreeEscalation;
+}
+
+/**
+ * FR-R4-F06 (FR-023) -- shutdown released ownership with a tree it could not answer for. Its own
+ * family rather than a member of `PROCESS_TREE_EVENT_TYPES`: that event means a delivered SIGKILL and
+ * a surviving group, which neither Windows nor a ladder cut off by the bound is.
+ */
+export const HOST_TEARDOWN_EVENT_TYPES = ['host-teardown-unconfirmed'] as const;
+
+/**
+ * FR-R4-F06 (FR-023) -- the closed payload for a `host-teardown-unconfirmed` entry: shutdown released
+ * ownership while a tree could not be confirmed gone. `platform-unanswerable` is Windows (`taskkill`
+ * was sent, no tree can be confirmed); `bound-elapsed` is a ladder still pending at the teardown
+ * bound, which `boundMs` records. Run, phase and iteration ride on the entry's envelope. Identifiers
+ * and a bounded class only: no path, argv, environment value or message (hard rule 22).
+ */
+export interface HostTeardownUnconfirmedPayload {
+  readonly runner: RunnerLabel;
+  /** The direct child's pid, or `null` when the child never had one. */
+  readonly pid: number | null;
+  readonly result: 'platform-unanswerable' | 'bound-elapsed';
+  readonly boundMs: number;
 }
 
 /**
@@ -992,6 +1028,7 @@ export const ALL_AUDIT_EVENT_TYPES = [
   // A Run whose Task row was deleted out from under it, ended at load.
   ...RUN_RECONCILIATION_EVENT_TYPES,
   ...PROCESS_TREE_EVENT_TYPES,
+  ...HOST_TEARDOWN_EVENT_TYPES,
   ...METRICS_EVENT_TYPES,
   ...PROCESS_EXCHANGE_EVENT_TYPES,
   ...CONCURRENCY_EVENT_TYPES,

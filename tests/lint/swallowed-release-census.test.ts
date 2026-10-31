@@ -53,7 +53,10 @@ interface LoggedRow {
 
 /** Sites that were swallowed and now call `releaseLeaseLogged`, with their call counts. */
 const NOW_LOGGED: readonly LoggedRow[] = [
-  { site: 'services/auto-drain-coordinator.ts#AutoDrainCoordinator.startPendingHead', calls: 3 },
+  // FR-R4-F06 (TA3): 3 -> 4. The fourth is the drain's branch for a resume refused because the previous
+  // backend's tree is alive or shutdown has begun: it starts nothing and gives back the lease claimed at
+  // step 6, through `releaseLeaseLogged` like the other three. A release, not a swallowed one.
+  { site: 'services/auto-drain-coordinator.ts#AutoDrainCoordinator.startPendingHead', calls: 4 },
   { site: 'controller/workflow-controller.ts#SchegentWorkflowController.resumeExistingOnQueue', calls: 1 }
 ];
 

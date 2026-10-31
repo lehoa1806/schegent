@@ -27,7 +27,8 @@ import {
   containmentOf,
   judgeBackendContainment,
   mechanismOf,
-  resolveUncontainedGrant
+  resolveUncontainedGrant,
+  uncontainedGrantNotice
 } from '../../services/backend-containment-policy';
 import { SUPPORTED_BACKENDS } from '../../contracts/backend-kinds';
 import type { BackendGrantState, BackendPosture } from './snapshot';
@@ -94,13 +95,18 @@ export function composeBackendPostures(rawSetting: unknown): BackendPostureProje
       mechanism: mechanismOf(kind),
       grant: grantStateOf(kind, resolved.granted)
     };
+    // FR-R4-F06 (D1) -- the mirror of `refusal`: said exactly when the backend is uncontained
+    // AND its grant is in force. Derived from the two fields just computed rather than from the
+    // verdict, so a granted row and its notice cannot part company.
+    const carriesNotice = base.containment === 'none' && base.grant === 'granted';
     // Keys are omitted rather than set to `undefined`: both fields are optional on
     // `BackendPosture`, and a snapshot that ships `problem: undefined` on every
     // row makes the ordinary case look like it carries a fact it does not.
     return Object.freeze({
       ...base,
       ...(problem === undefined ? {} : { problem }),
-      ...(verdict.outcome === 'refused' ? { refusal: verdict.message } : {})
+      ...(verdict.outcome === 'refused' ? { refusal: verdict.message } : {}),
+      ...(carriesNotice ? { notice: uncontainedGrantNotice(kind) } : {})
     });
   });
 
