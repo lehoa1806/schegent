@@ -179,8 +179,8 @@ describe('FR-R3-136 — every command entry point carries a trust disposition, a
   it('every contributed palette command carries a disposition', () => {
     // The manifest is the surface an operator can reach from the palette, so a
     // contributed command with no disposition is the case that matters most —
-    // and it is a different set from the registrations, because 22 of the 30 are
-    // contributed and the rest are registered-only.
+    // and it is a different set from the registrations: the contributed commands
+    // are a subset of them, and the rest are registered-only.
     const contributed = contributedCommands();
     expect(contributed.length, 'the manifest declares no commands').toBeGreaterThan(15);
     const unclassified = contributed

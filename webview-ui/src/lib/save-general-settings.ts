@@ -18,7 +18,8 @@
 
 import { CMD_SAVE_GENERAL_SETTINGS } from './messages';
 import { postCommand } from './vscode-api';
-import { snapshotStore } from './snapshot-store.svelte';
+import { sendIntent, type IntentWaitOptions } from './intent-ledger';
+import type { AckResult } from './snapshot-store.svelte';
 // FR-R3-144 (T007) — the backend union is READ from the contract the host
 // declares it in, through the same re-export the rest of the webview uses. A
 // literal `'claude' | 'codex' | 'agy'` here would be a fourth place a backend
@@ -164,77 +165,40 @@ export type SaveResult =
  */
 export function saveGeneralSettings(
   updates: GeneralSettingsPayload,
-  postMessage?: (msg: unknown) => void
+  postMessage?: (msg: unknown) => void,
+  wait: IntentWaitOptions<SaveResult> = {}
 ): Promise<SaveResult> {
-  return new Promise<SaveResult>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: (() => void) | null = null;
-
-    const finalise = (result: SaveResult): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (unsubscribe !== null) {
-        try {
-          unsubscribe();
-        } catch {
-          // unsubscribe errors must not leak; the listener is one-shot.
-        }
-        unsubscribe = null;
-      }
-      resolve(result);
-    };
-
-    let correlationId: string;
-    if (postMessage) {
-      // Test-injection path: build the envelope manually so the test
-      // can observe the exact shape posted. Still routes through the
-      // snapshot store for ack correlation parity with production.
-      correlationId = uuidv4();
-      const envelope = {
-        type: CMD_SAVE_GENERAL_SETTINGS,
-        correlationId,
-        payload: { updates }
-      };
-      postMessage(envelope);
-    } else {
-      const posted = postCommand(CMD_SAVE_GENERAL_SETTINGS, {
-        updates: updates as Readonly<Record<string, unknown>>
-      });
-      correlationId = posted.correlationId;
-    }
-
-    snapshotStore.markPending(correlationId);
-    unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      if (ack.status === 'accepted') {
-        finalise({ status: 'accepted' });
+  // FR-R4-F05 (I4) — through the intent ledger: an identical retry of an unresolved save reuses
+  // its identity and payload, so the host writes the settings once. The wire payload is the
+  // `{ updates }` envelope; the ledger keys on it, so two saves of the same updates are one intent.
+  return sendIntent({
+    type: CMD_SAVE_GENERAL_SETTINGS,
+    payload: { updates },
+    post: (correlationId, stored) => {
+      if (postMessage) {
+        // Test-injection path: build the envelope manually so the test can observe the exact
+        // shape posted. Still routes through the ledger for ack correlation parity.
+        postMessage({ type: CMD_SAVE_GENERAL_SETTINGS, correlationId, payload: stored });
       } else {
-        finalise({ status: 'rejected', reason: ack.reason ?? 'rejected' });
+        postCommand(
+          CMD_SAVE_GENERAL_SETTINGS,
+          { updates: stored.updates as Readonly<Record<string, unknown>> },
+          { correlationId }
+        );
       }
-    });
-
-    timer = setTimeout(() => {
-      finalise({ status: 'rejected', reason: 'timeout' });
-    }, ACK_TIMEOUT_MS);
-  });
+    },
+    timeoutMs: ACK_TIMEOUT_MS,
+    ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+    ...(wait.onLateOutcome === undefined
+      ? {}
+      : { onLateOutcome: (ack: AckResult) => wait.onLateOutcome?.(toSaveResult(ack)) })
+  }).then((result): SaveResult =>
+    result.kind === 'ack' ? toSaveResult(result.ack) : { status: 'rejected', reason: 'timeout' }
+  );
 }
 
-function uuidv4(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  const bytes = new Uint8Array(16);
-  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-    crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
-  }
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+function toSaveResult(ack: AckResult): SaveResult {
+  return ack.status === 'accepted'
+    ? { status: 'accepted' }
+    : { status: 'rejected', reason: ack.reason ?? 'rejected' };
 }

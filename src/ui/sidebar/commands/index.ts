@@ -132,11 +132,10 @@ import { handler as stopPhaseLogTail } from './cmd-stop-phase-log-tail';
 // Frozen registry of per-command handlers. The dispatcher in
 // `message-router.ts` looks up handlers by command type literal and invokes
 // them with a `HandlerContext` carrying deps, postAck, and the
-// correlationId. Adding a new command requires (1) adding the CMD_ constant
-// + interface in `src/contracts/sidebar-ipc.ts`, (2) creating the
-// per-command handler file in this directory, and (3) wiring it here. The
-// drift-guard at `tests/unit/contracts/sidebar-ipc-drift.test.ts` enforces
-// that `messages.ts` re-exports from the authoritative module.
+// correlationId. The recipe for adding a command, including its authority
+// declaration, is the header of `message-router.ts`; this registry is its fifth
+// step. The drift-guard at `tests/unit/contracts/sidebar-ipc-drift.test.ts`
+// enforces that `messages.ts` re-exports from the authoritative module.
 export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   string,
   CommandHandler

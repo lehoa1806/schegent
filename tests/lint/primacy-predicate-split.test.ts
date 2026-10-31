@@ -148,14 +148,14 @@ describe('the advisory/authoritative primacy split (FR-R3-024)', () => {
     ).toEqual([]);
   });
 
-  it('keeps the gated read command out of the mutating set', () => {
-    // FR-011 — `CMD_READ_METRICS` gates itself precisely because the router's
-    // gate does not cover it. Adding it to MUTATING_COMMANDS would change the
-    // rejection surface and the operator toast for a read.
-    const metadata = readFileSync(
-      resolve(SRC_ROOT, 'contracts', 'sidebar-command-metadata.ts'),
-      'utf8'
-    );
-    expect(metadata).not.toContain('CMD_READ_METRICS');
+  it('keeps the metrics read behind its own handler gate, whatever the router decides', () => {
+    // FR-011 — `CMD_READ_METRICS` gates itself in its handler. This used to read
+    // the declaration's text and refuse the name, which held while the router's
+    // gate left the command alone. FR-R4-F05 (FR-001, FR-003) made the
+    // declaration total, so every command's name is in that file, and the metrics
+    // read became gated because it appends a `metrics-view-opened` row. The
+    // handler gate stays (contract C10): it now only ever passes, but dropping it
+    // would leave the router's gate as the only one, so the list keeps its entry.
+    expect(PRIMACY_GATED_READ_HANDLERS).toContain('cmd-read-metrics.ts');
   });
 });

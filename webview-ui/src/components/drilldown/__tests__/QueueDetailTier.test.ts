@@ -10,6 +10,11 @@
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { disposeIntentLedger } from '../../../lib/intent-ledger';
+
+// FR-R4-F05 (I4) — a command sent through the intent ledger carries the ledger's identity as
+// the third argument of `postCommand`; the payload assertions below stay exact.
+const LEDGER_IDENTITY = expect.objectContaining({ correlationId: expect.any(String) });
 
 import QueueDetailTier from '../QueueDetailTier.svelte';
 import {
@@ -41,8 +46,11 @@ import type {
 } from '../../../lib/snapshot-types';
 
 let nextCorrelationId = 0;
-const postCommandSpy = vi.fn((..._args: readonly unknown[]) => ({
-  correlationId: `corr-${++nextCorrelationId}`
+const postCommandSpy = vi.fn((...args: readonly unknown[]) => ({
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  correlationId:
+    (args[2] as { correlationId?: string } | undefined)?.correlationId ??
+    `corr-${++nextCorrelationId}`
 }));
 vi.mock('../../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args),
@@ -274,6 +282,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
   cleanup();
 });
 
@@ -365,7 +375,7 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
 
     // FR-R3-150 (T1621b) — addressed to this tier's own queue, not the
     // bare command envelope that used to (silently) mean Default.
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_COMPLETED, { queueId: 'q-beta' });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_COMPLETED, { queueId: 'q-beta' }, LEDGER_IDENTITY);
   });
 
   it('clears Default’s completed Tasks when Default is the queue on screen', async () => {
@@ -376,7 +386,7 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
 
     await fireEvent.click(getByTestId('dashboard-queue-clear-done'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_COMPLETED, { queueId: 'default' });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_COMPLETED, { queueId: 'default' }, LEDGER_IDENTITY);
   });
 
   it('cleans all of THIS queue’s finished and pending Tasks', async () => {
@@ -389,7 +399,7 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
     // FR-R3-150 (T1618/T1622d) — CMD_CLEAR_QUEUE, addressed to this tier's
     // own queue. Replaces the bare CMD_CLEAR_ALL envelope, which reset every
     // queue in the workspace regardless of which one was open (LC-Q-01).
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_QUEUE, { queueId: 'q-beta' });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_QUEUE, { queueId: 'q-beta' }, LEDGER_IDENTITY);
   });
 
   it('cleans Default when Default is the queue on screen', async () => {
@@ -400,7 +410,7 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
 
     await fireEvent.click(getByTestId('dashboard-queue-clean'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_QUEUE, { queueId: 'default' });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_QUEUE, { queueId: 'default' }, LEDGER_IDENTITY);
   });
 
   // Code-review finding (iteration 4, FR-011) — CMD_CLEAR_QUEUE/
@@ -433,6 +443,26 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
     await vi.waitFor(() =>
       expect(getByTestId('queue-control-refusal').textContent).toMatch(/no longer exists/i)
     );
+  });
+
+  // FR-R4-F05 code review (I6, FR-024) — the not-yet-known text says the view will update; a late
+  // acceptance has to take it away, and a late refusal has to replace it.
+  it('replaces a Clear Done timeout with the late answer, once', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId, queryByTestId } = mount(
+        buildSnapshot([task('done', { position: 0, status: 'completed' })])
+      );
+      await fireEvent.click(getByTestId('dashboard-queue-clear-done'));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(getByTestId('queue-control-refusal').textContent).toMatch(/has not answered yet/i);
+
+      ack(0, 'accepted');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(queryByTestId('queue-control-refusal')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('disables Clear Done when this queue has no completed Tasks', () => {
@@ -523,7 +553,7 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
     expect(postCommandSpy).toHaveBeenCalledWith(
       CMD_START,
       expect.objectContaining({ description: 'ship the release', queueId: 'q-beta' })
-    );
+    , LEDGER_IDENTITY);
   });
 });
 
@@ -623,7 +653,7 @@ describe('QueueDetailTier — on-demand composer (T008, FR-009)', () => {
 
     expect(queryByTestId('queue-composer')).toBeNull();
     expect(queryByTestId('queue-composer-open')).not.toBeNull();
-    expect(postCommandSpy).not.toHaveBeenCalledWith(CMD_START, expect.anything());
+    expect(postCommandSpy).not.toHaveBeenCalledWith(CMD_START, expect.anything(), LEDGER_IDENTITY);
   });
 });
 
@@ -787,7 +817,7 @@ describe('QueueDetailTier — deleting a queue (US1)', () => {
 
     // The first post carries no `confirmed` flag: it asks what the delete costs.
     expect(postCommandSpy).toHaveBeenCalledTimes(1);
-    expect(postCommandSpy).toHaveBeenNthCalledWith(1, CMD_DELETE_QUEUE, { queueId: 'q-beta' });
+    expect(postCommandSpy).toHaveBeenNthCalledWith(1, CMD_DELETE_QUEUE, { queueId: 'q-beta' }, LEDGER_IDENTITY);
 
     ack(0, 'rejected', 'confirmation-required', DELETE_IMPACT);
     await vi.waitFor(() => expect(useConfirm).toHaveBeenCalledTimes(1));
@@ -803,7 +833,7 @@ describe('QueueDetailTier — deleting a queue (US1)', () => {
     expect(postCommandSpy).toHaveBeenNthCalledWith(2, CMD_DELETE_QUEUE, {
       queueId: 'q-beta',
       confirmed: true
-    });
+    }, LEDGER_IDENTITY);
   });
 
   it('posts nothing further when the operator declines', async () => {
@@ -873,7 +903,7 @@ describe('QueueDetailTier — moving a pending Task (US4)', () => {
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_MOVE_TASK, {
       taskId: 'waiting',
       targetQueueId: 'default'
-    });
+    }, LEDGER_IDENTITY);
     const payload = postCommandSpy.mock.calls[0]![1] as Record<string, unknown>;
     expect(Object.keys(payload)).not.toContain('position');
   });
@@ -994,7 +1024,7 @@ describe('QueueDetailTier — reordering a pending Task (US2, feature 030)', () 
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_REORDER_TASK, {
       taskId: 'source',
       newPosition: 1
-    });
+    }, LEDGER_IDENTITY);
   });
 
   it('dropping onto its own row is a no-op', async () => {
@@ -1005,7 +1035,7 @@ describe('QueueDetailTier — reordering a pending Task (US2, feature 030)', () 
     await fireEvent.mouseDown(handle);
     await fireEvent.drop(wrap, { dataTransfer: { getData: () => 'waiting' } });
 
-    expect(postCommandSpy).not.toHaveBeenCalledWith(CMD_REORDER_TASK, expect.anything());
+    expect(postCommandSpy).not.toHaveBeenCalledWith(CMD_REORDER_TASK, expect.anything(), LEDGER_IDENTITY);
   });
 
   it('clicking the up arrow posts CMD_MOVE_QUEUE_ITEM_UP for that Task', async () => {
@@ -1013,7 +1043,7 @@ describe('QueueDetailTier — reordering a pending Task (US2, feature 030)', () 
 
     await fireEvent.click(getByTestId('queue-task-reorder-up-waiting'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_MOVE_QUEUE_ITEM_UP, { id: 'waiting' });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_MOVE_QUEUE_ITEM_UP, { id: 'waiting' }, LEDGER_IDENTITY);
   });
 
   it('clicking the down arrow posts CMD_MOVE_QUEUE_ITEM_DOWN for that Task', async () => {
@@ -1021,7 +1051,7 @@ describe('QueueDetailTier — reordering a pending Task (US2, feature 030)', () 
 
     await fireEvent.click(getByTestId('queue-task-reorder-down-waiting'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_MOVE_QUEUE_ITEM_DOWN, { id: 'waiting' });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_MOVE_QUEUE_ITEM_DOWN, { id: 'waiting' }, LEDGER_IDENTITY);
   });
 
   it('surfaces a refusal when the host rejects a reorder', async () => {
@@ -1031,7 +1061,7 @@ describe('QueueDetailTier — reordering a pending Task (US2, feature 030)', () 
     ack(0, 'rejected', 'timeout');
 
     await vi.waitFor(() =>
-      expect(getByTestId('queue-control-refusal').textContent).toMatch(/did not answer/i)
+      expect(getByTestId('queue-control-refusal').textContent).toMatch(/has not answered yet/i)
     );
   });
 });
@@ -1300,7 +1330,7 @@ describe('QueueDetailTier — mounts the idle-pending affordance (T012a)', () =>
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, {
       queueId: 'q-beta',
       startIntent: { startMode: 'now', source: 'operator-restart' }
-    });
+    }, LEDGER_IDENTITY);
   });
 
   it('withholds the affordance when a different queue is the idle-pending one', () => {
@@ -1370,7 +1400,7 @@ describe('QueueDetailTier — a Run that has ended is not a Run in flight', () =
 
     await fireEvent.click(getByTestId('dashboard-queue-action'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, { queueId: 'q-beta' });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, { queueId: 'q-beta' }, LEDGER_IDENTITY);
   });
 
   it.each(TERMINAL_WORKFLOW_STATUSES)(

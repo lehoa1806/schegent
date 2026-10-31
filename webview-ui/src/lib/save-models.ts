@@ -1,7 +1,8 @@
 import { CMD_SAVE_MODELS } from './messages';
 import { saveCatalogCommand, type SaveCatalogResult } from './save-catalog-command';
 import { postCommand } from './vscode-api';
-import { snapshotStore } from './snapshot-store.svelte';
+import { sendIntent, type IntentWaitOptions } from './intent-ledger';
+import type { AckResult } from './snapshot-store.svelte';
 
 export type SaveModelsResult = SaveCatalogResult;
 
@@ -25,8 +26,8 @@ const IMPORT_ACK_TIMEOUT_MS = 5000;
  * `revision`/`mutation` on acceptance — that `saveCatalogCommand` discards.
  *
  * Structurally identical to the lifecycle senders in `catalog-lifecycle.ts` for
- * that reason: UUIDv4 correlation, `snapshotStore.markPending`, a one-shot ack
- * listener, and a 5-second timeout so the caller can surface a recovery
+ * that reason: it sends through the intent ledger (an identical retry reuses its
+ * identity), with a 5-second timeout so the caller can surface a recovery
  * affordance instead of hanging. It stays separate from them because the Model
  * Catalog is not a versioned catalog: it has no drafts, no versions, and no
  * lifecycle to run.
@@ -43,71 +44,34 @@ export type SaveModelsImportResult =
 
 export function saveModelsImport(
   request: SaveModelsImportRequest,
-  postMessage?: (msg: unknown) => void
+  postMessage?: (msg: unknown) => void,
+  wait: IntentWaitOptions<SaveModelsImportResult> = {}
 ): Promise<SaveModelsImportResult> {
-  return new Promise<SaveModelsImportResult>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: (() => void) | null = null;
-
-    const finalise = (result: SaveModelsImportResult): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (unsubscribe !== null) {
-        try {
-          unsubscribe();
-        } catch {
-          // unsubscribe errors must not leak; the listener is one-shot.
-        }
-        unsubscribe = null;
-      }
-      resolve(result);
-    };
-
-    let correlationId: string;
-    if (postMessage) {
-      correlationId = uuidv4();
-      postMessage({ type: CMD_SAVE_MODELS, correlationId, payload: request });
-    } else {
-      const posted = postCommand(CMD_SAVE_MODELS, request);
-      correlationId = posted.correlationId;
-    }
-
-    snapshotStore.markPending(correlationId);
-    unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      if (ack.status === 'accepted') {
-        finalise({ status: 'accepted', ...(ack.result !== undefined ? { result: ack.result } : {}) });
-      } else {
-        finalise({
-          status: 'rejected',
-          reason: ack.reason ?? 'rejected',
-          ...(ack.result !== undefined ? { result: ack.result } : {})
-        });
-      }
-    });
-
-    timer = setTimeout(() => {
-      finalise({ status: 'rejected', reason: 'timeout' });
-    }, IMPORT_ACK_TIMEOUT_MS);
-  });
+  // FR-R4-F05 (I4) — through the intent ledger, as `saveCatalogCommand` is. The expected
+  // revision is part of the payload, so a retry of the SAME import is the same intent.
+  return sendIntent({
+    type: CMD_SAVE_MODELS,
+    payload: request,
+    post: (correlationId, stored) => {
+      if (postMessage) postMessage({ type: CMD_SAVE_MODELS, correlationId, payload: stored });
+      else postCommand(CMD_SAVE_MODELS, stored, { correlationId });
+    },
+    timeoutMs: IMPORT_ACK_TIMEOUT_MS,
+    ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+    ...(wait.onLateOutcome === undefined
+      ? {}
+      : { onLateOutcome: (ack: AckResult) => wait.onLateOutcome?.(toImportResult(ack)) })
+  }).then((result): SaveModelsImportResult =>
+    result.kind === 'ack' ? toImportResult(result.ack) : { status: 'rejected', reason: 'timeout' }
+  );
 }
 
-function uuidv4(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  const bytes = new Uint8Array(16);
-  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-    crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
-  }
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+function toImportResult(ack: AckResult): SaveModelsImportResult {
+  return ack.status === 'accepted'
+    ? { status: 'accepted', ...(ack.result !== undefined ? { result: ack.result } : {}) }
+    : {
+        status: 'rejected',
+        reason: ack.reason ?? 'rejected',
+        ...(ack.result !== undefined ? { result: ack.result } : {})
+      };
 }

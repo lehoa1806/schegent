@@ -2,8 +2,11 @@ import type { ReadPhaseLogCommand, ReadPhaseLogResponse } from '../messages';
 import type { CommandHandler } from './handler-contract';
 import { ack, appendPhaseLogAudit } from './handler-helpers';
 
-// Feature 020 T031 — read-only handler. MUST stay out of MUTATING_COMMANDS so
-// secondary VS Code hosts can dispatch it too. The adapter resolves the
+// Feature 020 T031 — a read handler, originally kept out of MUTATING_COMMANDS so
+// secondary VS Code hosts could dispatch it too. FR-R4-F05 (FR-003) gates it: it
+// appends a `phase-log-read` audit row on every read, so the router's trust and
+// primary-host gates run first and a secondary window can no longer read phase
+// logs; it is not serialized. The adapter resolves the
 // selection tuple against the current snapshot and loads the manifest;
 // sanitization happens inside the adapter at the IPC boundary
 // (research.md §5). The audit event payload is paths-free per

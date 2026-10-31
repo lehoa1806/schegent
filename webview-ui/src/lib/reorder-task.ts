@@ -21,10 +21,12 @@
 import {
   CMD_REORDER_TASK,
   CMD_MOVE_QUEUE_ITEM_UP,
-  CMD_MOVE_QUEUE_ITEM_DOWN
+  CMD_MOVE_QUEUE_ITEM_DOWN,
+  type CommandType
 } from './messages';
 import { postCommand } from './vscode-api';
-import { snapshotStore } from './snapshot-store.svelte';
+import { sendIntent, type IntentWaitOptions } from './intent-ledger';
+import type { AckResult } from './snapshot-store.svelte';
 
 const ACK_TIMEOUT_MS = 5000;
 
@@ -39,11 +41,12 @@ export type ReorderResult =
  */
 export function postReorderTask(
   taskId: string,
-  newPosition: number
+  newPosition: number,
+  wait?: IntentWaitOptions<ReorderResult>
 ): Promise<ReorderResult> {
-  return correlatedRequest(
-    () => postCommand(CMD_REORDER_TASK, { taskId, newPosition }).correlationId
-  );
+  return correlatedRequest(CMD_REORDER_TASK, { taskId, newPosition }, (correlationId, payload) => {
+    postCommand(CMD_REORDER_TASK, payload, { correlationId });
+  }, wait);
 }
 
 /**
@@ -52,58 +55,54 @@ export function postReorderTask(
  * but the host resolves the current pending position so the caller
  * does not need to re-read the snapshot.
  */
-export function postMoveItemUp(taskId: string): Promise<ReorderResult> {
-  return correlatedRequest(
-    () => postCommand(CMD_MOVE_QUEUE_ITEM_UP, { id: taskId }).correlationId
-  );
+export function postMoveItemUp(
+  taskId: string,
+  wait?: IntentWaitOptions<ReorderResult>
+): Promise<ReorderResult> {
+  return correlatedRequest(CMD_MOVE_QUEUE_ITEM_UP, { id: taskId }, (correlationId, payload) => {
+    postCommand(CMD_MOVE_QUEUE_ITEM_UP, payload, { correlationId });
+  }, wait);
 }
 
 /**
  * Arrow-driven move: move `taskId` down one position in the unified
  * pending list. See `postMoveItemUp` for semantics.
  */
-export function postMoveItemDown(taskId: string): Promise<ReorderResult> {
-  return correlatedRequest(
-    () => postCommand(CMD_MOVE_QUEUE_ITEM_DOWN, { id: taskId }).correlationId
+export function postMoveItemDown(
+  taskId: string,
+  wait?: IntentWaitOptions<ReorderResult>
+): Promise<ReorderResult> {
+  return correlatedRequest(CMD_MOVE_QUEUE_ITEM_DOWN, { id: taskId }, (correlationId, payload) => {
+    postCommand(CMD_MOVE_QUEUE_ITEM_DOWN, payload, { correlationId });
+  }, wait);
+}
+
+// FR-R4-F05 (I4) — through the intent ledger: an identical retry of an unresolved reorder reuses
+// its identity and payload, so the host moves the task once. A wait that outlives
+// `ACK_TIMEOUT_MS` resolves `timeout` (the outcome is not yet known), as it always did; a
+// caller that shows that text passes `wait`, and the late answer arrives through it (I6).
+function correlatedRequest<P>(
+  type: CommandType,
+  payload: P,
+  post: (correlationId: string, payload: P) => void,
+  wait: IntentWaitOptions<ReorderResult> = {}
+): Promise<ReorderResult> {
+  return sendIntent({
+    type,
+    payload,
+    post,
+    timeoutMs: ACK_TIMEOUT_MS,
+    ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+    ...(wait.onLateOutcome === undefined
+      ? {}
+      : { onLateOutcome: (ack: AckResult) => wait.onLateOutcome?.(toReorderResult(ack)) })
+  }).then((result): ReorderResult =>
+    result.kind === 'ack' ? toReorderResult(result.ack) : { status: 'rejected', reason: 'timeout' }
   );
 }
 
-function correlatedRequest(post: () => string): Promise<ReorderResult> {
-  return new Promise<ReorderResult>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: (() => void) | null = null;
-
-    const finalise = (result: ReorderResult): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (unsubscribe !== null) {
-        try {
-          unsubscribe();
-        } catch {
-          // one-shot listener errors must not leak
-        }
-        unsubscribe = null;
-      }
-      resolve(result);
-    };
-
-    const correlationId = post();
-    snapshotStore.markPending(correlationId);
-    unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      if (ack.status === 'accepted') {
-        finalise({ status: 'accepted' });
-      } else {
-        finalise({ status: 'rejected', reason: ack.reason ?? 'rejected' });
-      }
-    });
-
-    timer = setTimeout(() => {
-      finalise({ status: 'rejected', reason: 'timeout' });
-    }, ACK_TIMEOUT_MS);
-  });
+function toReorderResult(ack: AckResult): ReorderResult {
+  return ack.status === 'accepted'
+    ? { status: 'accepted' }
+    : { status: 'rejected', reason: ack.reason ?? 'rejected' };
 }

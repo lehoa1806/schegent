@@ -18,13 +18,15 @@ import {
   CMD_START_PHASE_LOG_TAIL,
   CMD_STOP_PHASE_LOG_TAIL,
   MSG_PHASE_LOG_ENTRY,
+  type CommandType,
   type PhaseLogEntryPushMessage,
   type ReadPhaseLogResponse,
   type StartPhaseLogTailResponse,
   type StopPhaseLogTailResponse
 } from './messages';
+import { OUTCOME_NOT_YET_KNOWN_TEXT, boundaryRefusalText } from './boundary-refusal-text';
+import { sendIntent, type IntentWaitOptions } from './intent-ledger';
 import { onHostMessage, postCommand } from './vscode-api';
-import { snapshotStore } from './snapshot-store.svelte';
 import type {
   PhaseLogDisplayEntry,
   PhaseLogReadResult,
@@ -34,6 +36,36 @@ import type {
 } from '../../../src/services/phase-log/types';
 
 const ACK_TIMEOUT_MS = 5000;
+
+/**
+ * FR-R4-F05 (O1, O7) — a failure that was a REFUSAL (the router's gate, or a dispatch that
+ * threw) carries the shared sentence for it. The three commands became gated, so a refused
+ * window used to see every refusal as `internal-error` (or, for a stop, `unknown-session`),
+ * which tells the operator nothing and names a fault that did not happen. `reason` keeps the
+ * wire's closed union; this field is what a view shows.
+ */
+export type WithRefusalText<T> = T & { readonly refusalText?: string };
+
+/**
+ * FR-R4-F05 (I5, O3) — what a wait that ran out resolves to. The wire's `reason` stays
+ * `internal-error` (the union is closed), but a timeout is not an internal error: the host may
+ * still answer, so the text a view shows says the outcome is not yet known.
+ */
+const NOT_YET_KNOWN_FAILURE = {
+  outcome: 'failure',
+  reason: 'internal-error',
+  refusalText: OUTCOME_NOT_YET_KNOWN_TEXT
+} as const;
+
+function refusalTextOf(ack: {
+  readonly status: 'accepted' | 'rejected';
+  readonly reason?: string;
+}): { readonly refusalText: string } | Record<string, never> {
+  if (ack.status !== 'rejected' || ack.reason === undefined) return {};
+  // The module's own reasons are not refusals by the gate.
+  if (ack.reason === 'unknown-tuple') return {};
+  return { refusalText: boundaryRefusalText(ack.reason) };
+}
 
 export interface ReadPhaseLogRequest {
   readonly selection: PhaseLogSelection;
@@ -57,10 +89,15 @@ export interface PhaseLogEntryPushPayload {
 // response on accepted ack, or a synthetic failure when the host
 // rejects, the ack carries no result, or the 5-second timeout fires.
 export function readPhaseLog(
-  req: ReadPhaseLogRequest
-): Promise<PhaseLogReadResult> {
-  return correlatedRequest<PhaseLogReadResult>(
-    () => postCommand(CMD_READ_PHASE_LOG, req).correlationId,
+  req: ReadPhaseLogRequest,
+  wait?: IntentWaitOptions<WithRefusalText<PhaseLogReadResult>>
+): Promise<WithRefusalText<PhaseLogReadResult>> {
+  return correlatedRequest<WithRefusalText<PhaseLogReadResult>, ReadPhaseLogRequest>(
+    CMD_READ_PHASE_LOG,
+    req,
+    (correlationId, payload) => {
+      postCommand(CMD_READ_PHASE_LOG, payload, { correlationId });
+    },
     (ack) => {
       const result = ack.result as ReadPhaseLogResponse | undefined;
       if (result && (result.outcome === 'success' || result.outcome === 'failure')) {
@@ -68,34 +105,44 @@ export function readPhaseLog(
       }
       return {
         outcome: 'failure',
-        reason: ack.reason === 'unknown-tuple' ? 'unknown-tuple' : 'internal-error'
+        reason: ack.reason === 'unknown-tuple' ? 'unknown-tuple' : 'internal-error',
+        ...refusalTextOf(ack)
       };
     },
-    { outcome: 'failure', reason: 'internal-error' }
+    NOT_YET_KNOWN_FAILURE,
+    wait
   );
 }
 
 export function startPhaseLogTail(
   req: StartPhaseLogTailRequest
-): Promise<PhaseLogTailStartResult> {
-  return correlatedRequest<PhaseLogTailStartResult>(
-    () => postCommand(CMD_START_PHASE_LOG_TAIL, req).correlationId,
+): Promise<WithRefusalText<PhaseLogTailStartResult>> {
+  return correlatedRequest<WithRefusalText<PhaseLogTailStartResult>, StartPhaseLogTailRequest>(
+    CMD_START_PHASE_LOG_TAIL,
+    req,
+    (correlationId, payload) => {
+      postCommand(CMD_START_PHASE_LOG_TAIL, payload, { correlationId });
+    },
     (ack) => {
       const result = ack.result as StartPhaseLogTailResponse | undefined;
       if (result && (result.outcome === 'success' || result.outcome === 'failure')) {
         return result as PhaseLogTailStartResult;
       }
-      return { outcome: 'failure', reason: 'internal-error' };
+      return { outcome: 'failure', reason: 'internal-error', ...refusalTextOf(ack) };
     },
-    { outcome: 'failure', reason: 'internal-error' }
+    NOT_YET_KNOWN_FAILURE
   );
 }
 
 export function stopPhaseLogTail(
   req: StopPhaseLogTailRequest
-): Promise<PhaseLogTailStopResult> {
-  return correlatedRequest<PhaseLogTailStopResult>(
-    () => postCommand(CMD_STOP_PHASE_LOG_TAIL, req).correlationId,
+): Promise<WithRefusalText<PhaseLogTailStopResult>> {
+  return correlatedRequest<WithRefusalText<PhaseLogTailStopResult>, StopPhaseLogTailRequest>(
+    CMD_STOP_PHASE_LOG_TAIL,
+    req,
+    (correlationId, payload) => {
+      postCommand(CMD_STOP_PHASE_LOG_TAIL, payload, { correlationId });
+    },
     (ack) => {
       const result = ack.result as StopPhaseLogTailResponse | undefined;
       if (result && (result.outcome === 'success' || result.outcome === 'failure')) {
@@ -108,10 +155,16 @@ export function stopPhaseLogTail(
       return {
         outcome: 'failure',
         sessionId: req.sessionId,
-        reason: 'unknown-session'
+        reason: 'unknown-session',
+        ...refusalTextOf(ack)
       };
     },
-    { outcome: 'failure', sessionId: req.sessionId, reason: 'internal-error' }
+    {
+      outcome: 'failure',
+      sessionId: req.sessionId,
+      reason: 'internal-error',
+      refusalText: OUTCOME_NOT_YET_KNOWN_TEXT
+    }
   );
 }
 
@@ -142,51 +195,29 @@ export function subscribePhaseLogPush(
   });
 }
 
-// Shared ack-correlation primitive: post a command, register a
-// one-shot ack listener, and resolve via the supplied projection. On
-// 5-second timeout, resolves with the supplied timeout fallback. The
-// post-and-correlate sequence runs synchronously inside the Promise
-// executor so concurrent calls never cross-resolve.
-function correlatedRequest<T>(
-  post: () => string,
+// Shared ack-correlation primitive. FR-R4-F05 (I4): it sends through the intent ledger, so an
+// identical retry of an unresolved request reuses its identity and payload. On the 5-second
+// timeout it resolves with the supplied fallback (the outcome is not yet known).
+function correlatedRequest<T, P>(
+  type: CommandType,
+  payload: P,
+  post: (correlationId: string, payload: P) => void,
   project: (ack: {
     readonly status: 'accepted' | 'rejected';
     readonly reason?: string;
     readonly result?: unknown;
   }) => T,
-  onTimeout: T
+  onTimeout: T,
+  wait: IntentWaitOptions<T> = {}
 ): Promise<T> {
-  return new Promise<T>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: (() => void) | null = null;
-
-    const finalise = (result: T): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (unsubscribe !== null) {
-        try {
-          unsubscribe();
-        } catch {
-          // one-shot listener errors must not leak
-        }
-        unsubscribe = null;
-      }
-      resolve(result);
-    };
-
-    const correlationId = post();
-    snapshotStore.markPending(correlationId);
-    unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      finalise(project(ack));
-    });
-
-    timer = setTimeout(() => {
-      finalise(onTimeout);
-    }, ACK_TIMEOUT_MS);
-  });
+  return sendIntent({
+    type,
+    payload,
+    post,
+    timeoutMs: ACK_TIMEOUT_MS,
+    ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+    ...(wait.onLateOutcome === undefined
+      ? {}
+      : { onLateOutcome: (ack) => wait.onLateOutcome?.(project(ack)) })
+  }).then((result) => (result.kind === 'ack' ? project(result.ack) : onTimeout));
 }

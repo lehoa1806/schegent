@@ -19,6 +19,7 @@
 // reason `tests/lint/no-inline-save-catalog.test.ts` still allowlists it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { disposeIntentLedger } from '../intent-ledger';
 import { CMD_SAVE_MODELS } from '../messages';
 import { saveModels } from '../save-models';
 
@@ -47,6 +48,8 @@ function fireAck(id: string, status: 'accepted' | 'rejected', reason?: string): 
 }
 
 beforeEach(() => {
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
   ackListeners.clear();
   pendingSet.clear();
   vi.useFakeTimers();
@@ -75,5 +78,28 @@ describe('save catalog helpers', () => {
     const promise = saveModels({ claude: ['claude-sonnet-5-5'] }, vi.fn());
     vi.advanceTimersByTime(5000);
     await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
+  });
+});
+
+// FR-R4-F05 (T17; contract I, I4 to I6) — this helper sends through the intent ledger: a retry of an
+// unresolved action posts the same correlation id and the same payload, and the host's answer
+// reaches the retry.
+describe('retry identity (T17)', () => {
+  it('posts the same correlation id and payload for a retry after a timeout, and answers it with the ACK', async () => {
+    const posted: Array<{ correlationId: string; payload: unknown }> = [];
+    const postMessage = (msg: unknown): void => {
+      posted.push(msg as { correlationId: string; payload: unknown });
+    };
+    const first = saveModels({ claude: ['claude-sonnet-5-5'] }, postMessage);
+    await vi.advanceTimersByTimeAsync(5000);
+    await expect(first).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
+
+    const retry = saveModels({ claude: ['claude-sonnet-5-5'] }, postMessage);
+
+    expect(posted).toHaveLength(2);
+    expect(posted[1]!.correlationId).toBe(posted[0]!.correlationId);
+    expect(posted[1]!.payload).toEqual(posted[0]!.payload);
+    fireAck(posted[0]!.correlationId, 'accepted');
+    await expect(retry).resolves.toMatchObject({ status: 'accepted' });
   });
 });

@@ -324,7 +324,7 @@ The sanitizer reaches that set by rebuilding each object it cleans onto a fresh 
 
 ### T2 — Untrusted webview mutating host state
 
-The webview is not authoritative. Runtime validation precedes routing; the 46 metadata-classified mutations then require workspace trust and authoritative window primacy.
+The webview is not authoritative. Runtime validation precedes routing; every command the authority declaration (`COMMAND_AUTHORITY`) marks gated then requires workspace trust and authoritative window primacy, trust first. The declaration is total, so a command with no entry fails `tsc`, and the rule it applies is that a command that can start a process, write persisted state, write a file or append an audit row is gated. Backend Ping is the case that went around this gate before `FR-R4-F05`: it starts the backend CLI in the workspace folder and appends an audit row, the old partial list did not name it, and so an untrusted workspace and a secondary window could both run it. The seven other commands the declaration review gated (the metrics read, the three phase-log commands, export, preflight and the migration-notice dismissal) had the same gap.
 
 <!-- Source: src/contracts/runtime-validators.ts -->
 <!-- Source: src/contracts/sidebar-command-metadata.ts -->
@@ -425,7 +425,7 @@ state:
 
 - **Mutating IPC** fails closed when the trust callback is missing, throws, or returns anything but
   `true`.
-- **Commands** (`FR-R3-136`). Every one of the 23 mutating command ids is registered through
+- **Commands** (`FR-R3-136`). Every command id that `entry-point-dispositions.ts` classifies `mutating` is registered through
   `registerGuardedCommand`, which re-reads `vscode.workspace.isTrusted` **at the point of effect**.
   Until 2026-08-28 the 30 registrations were bare `vscode.commands.registerCommand` calls and the
   sidebar router was the only gate — so the palette, a task, and any other installed extension
@@ -781,6 +781,18 @@ sanitized message goes to the extension log and never into the acknowledgement. 
 no `reason` field at all, so an acceptance cannot arrive alongside an explanation of why it did not
 happen.
 
+`FR-R4-F05` puts that conversion at the one place every handler throw lands. The router's catch-all
+logs the sanitized, length-bounded message with the command type and correlation ID, and acknowledges
+`failed` with the fixed `command-dispatch-failed` code; the exception's text is never placed in a field
+the webview receives. A throw after the handler has already acknowledged sends no second
+acknowledgement, so the webview never reads a rejection beside an acceptance of the same identity. The
+webview's fallback is bounded too: `boundaryRefusalText` shows a known code's sentence, names a
+code-shaped unknown inside a fixed sentence, and shows nothing of any other string.
+
+<!-- Source: src/ui/sidebar/message-router.ts -->
+<!-- Source: src/lib/errors.ts -->
+<!-- Source: webview-ui/src/lib/boundary-refusal-text.ts -->
+
 <!-- Source: src/ui/sidebar/commands/handler-helpers.ts -->
 <!-- Source: src/contracts/command-outcome.ts -->
 <!-- Source: tests/unit/ui/sidebar/commands/cmd-start-queue.test.ts -->
@@ -795,3 +807,9 @@ happen.
   into a `MutationResult.reason` would reach the webview intact. What is checked is the class where
   the risk actually arose: the dispatch-failure path is asserted to put no absolute path in any field
   of the acknowledgement, not merely to carry the right code.
+- **The webview shows a reason only when it has the shape of a code.** A reason from a host
+  vocabulary still travels verbatim, but a surface that has no sentence of its own for it renders it
+  through `boundaryRefusalText`: a code of at most 64 lowercase letters, digits and hyphens is named
+  inside a fixed sentence, and anything else is not shown, so a composed string that reached the
+  acknowledgement would not be displayed. This bounds what the operator reads. It does not
+  re-sanitize what the host sends, which is why the first bullet still stands.

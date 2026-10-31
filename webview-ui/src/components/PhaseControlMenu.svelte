@@ -20,7 +20,7 @@
   import { phaseControlEligibility } from '../lib/phase-control-eligibility';
   import { controlTitle as titleFor, skipControlTitle } from '../lib/phase-control-titles';
   import { useConfirm } from '../lib/use-confirm';
-  import { correlatedLifecycle, lifecycleMessage } from '../lib/lifecycle-control-ipc';
+  import { correlatedLifecycle, lifecycleMessage, lifecycleWait } from '../lib/lifecycle-control-ipc';
   import { postCommand } from '../lib/vscode-api';
   import { CMD_RETRY_PHASE_NOW } from '../lib/messages';
   import type { PhaseName, PhaseTile } from '../lib/snapshot-types';
@@ -188,11 +188,15 @@
   // Every dispatch below therefore clears it, whether or not it can set it.
   // FR-R4-F20: Skip is now one of the controls that can set it, and still clears it first.
   let controlMessage = $state<string | null>(null);
+  // FR-R4-F05 (O4, FR-024, FR-026) — a late answer replaces the interim text; unmounting aborts the wait.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  const wait = lifecycleWait(lifetime.signal, (message) => (controlMessage = message));
 
   async function onPause(): Promise<void> {
     if (gate.pauseDisabled) return;
     controlMessage = null;
-    controlMessage = lifecycleMessage(await pausePhase(queueId));
+    controlMessage = lifecycleMessage(await pausePhase(queueId, wait));
   }
 
   let resumePromptStr = $state('');
@@ -205,14 +209,14 @@
     // looking at a prompt that has already been sent.
     const prompt = resumePromptStr.trim() || undefined;
     resumePromptStr = '';
-    controlMessage = lifecycleMessage(await resumePhase(queueId, prompt));
+    controlMessage = lifecycleMessage(await resumePhase(queueId, prompt, wait));
   }
 
   async function onRestart(): Promise<void> {
     if (gate.restartDisabled || currentPhase === null) return;
     controlMessage = null;
     const targetPhase = currentPhase; // live-binding capture, as in `onSkip`
-    controlMessage = lifecycleMessage(await restartPhase(targetPhase, queueId));
+    controlMessage = lifecycleMessage(await restartPhase(targetPhase, queueId, wait));
   }
 
   async function onSkip(event: MouseEvent): Promise<void> {
@@ -232,7 +236,7 @@
     // dispatch, and wiping the previous answer for it would hide a refusal the
     // operator had not finished reading.
     controlMessage = null;
-    controlMessage = lifecycleMessage(await skipPhase(targetRunId, targetPhase, targetQueueId));
+    controlMessage = lifecycleMessage(await skipPhase(targetRunId, targetPhase, targetQueueId, wait));
   }
 
   /**
@@ -250,15 +254,12 @@
     });
     if (!confirmed) return;
     controlMessage = null;
-    // FR-R3-154 (T1646) — the `postCommand` stays in this scope, beside its
-    // `useConfirm`, exactly as the comment above requires; it is now passed to
-    // `correlatedLifecycle` as the `post` callback so the ACK is read instead
-    // of discarded. `no-active-run`, `not-pending-retry` and `already-retrying`
-    // are the three refusals this reached no listener for.
+    // FR-R3-154 (T1646) — the `postCommand` stays beside its `useConfirm`, passed as `post`
+    // so the ACK is read (`no-active-run`, `not-pending-retry`, `already-retrying`).
     controlMessage = lifecycleMessage(
-      await correlatedLifecycle(
-        () => postCommand(CMD_RETRY_PHASE_NOW, { queueId: targetQueueId }).correlationId
-      )
+      await correlatedLifecycle(CMD_RETRY_PHASE_NOW, { queueId: targetQueueId }, (correlationId, payload) => {
+        postCommand(CMD_RETRY_PHASE_NOW, payload, { correlationId });
+      }, wait)
     );
   }
 

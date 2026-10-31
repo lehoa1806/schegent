@@ -214,7 +214,7 @@ describe('Dashboard render integration (T062)', () => {
     const html = mocks.state.panels[0].webview.html;
     // Every Vite-emitted asset reference must be rewritten through asWebviewUri.
     expect(html).toMatch(/vscode-webview:\/\/[^"]*dashboard\.js/);
-    expect(html).toMatch(/vscode-webview:\/\/[^"]*chunks\/theme\.js/);
+    expect(html).toMatch(/vscode-webview:\/\/[^"]*chunks\/[^"]+\.js/);
     expect(html).toMatch(/vscode-webview:\/\/[^"]*index2\.css/);
     expect(html).toMatch(/vscode-webview:\/\/[^"]*dashboard\.css/);
     // crossorigin must be stripped (incompatible with VS Code webview iframe).

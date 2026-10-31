@@ -20,6 +20,8 @@
   // directive (FR-038): defect fields and messages quote operator-authored
   // documents, and a Pipeline whose id is markup must render as characters.
   import type { CatalogKind } from '../../../../src/contracts/catalog-store';
+  import { OUTCOME_NOT_YET_KNOWN_TEXT, refusalTextFrom } from '../../lib/boundary-refusal-text';
+  import type { IntentWaitOptions } from '../../lib/intent-ledger';
   import type { BuilderLifecycle } from '../../lib/snapshot-types';
   import {
     deactivateDefinition,
@@ -80,7 +82,10 @@
     referenced: 'An active definition still references this one.',
     'version-unreadable': 'That version could not be read, so nothing was restored.',
     'store-refused': 'The catalog store refused the write.',
-    timeout: 'The extension host did not answer. Nothing was written.'
+    // FR-R4-F05 (O3) — "Nothing was written." was a claim the host had not made: the write may
+    // still happen, so a timeout says the outcome is not yet known, and the late outcome replaces
+    // this headline once (O4).
+    timeout: OUTCOME_NOT_YET_KNOWN_TEXT
   });
 
   interface RefusalDetail {
@@ -139,7 +144,8 @@
 
     const payload = result.result;
     return {
-      headline: REFUSAL_HEADLINE[result.reason] ?? `The operation was refused (${result.reason}).`,
+      // FR-R4-F05 (O1) — this table first, the shared boundary text for anything it lacks.
+      headline: refusalTextFrom(REFUSAL_HEADLINE, result.reason),
       defects: listOf(payload, 'defects').map((defect) => ({
         field: textOf(defect, 'field'),
         message: textOf(defect, 'message')
@@ -149,6 +155,19 @@
         message: `${textOf(blocker, 'kind')} ${textOf(blocker, 'id')}`.trim()
       }))
     };
+  }
+
+  // FR-R4-F05 (I6, I8, O4) — the wait's signal is aborted when this component goes, and an
+  // outcome that arrives after the wait ran out replaces the "not yet known" headline once,
+  // through the same `refusalViewOf` path as an on-time answer.
+  let submission: AbortController | null = null;
+  $effect(() => () => submission?.abort());
+  let wait: IntentWaitOptions<LifecycleResult> = {};
+
+  function startWait(): void {
+    const controller = new AbortController();
+    submission = controller;
+    wait = { signal: controller.signal, onLateOutcome: (late) => (refusal = refusalViewOf(late)) };
   }
 
   function dispatchFor(
@@ -162,20 +181,25 @@
     };
     switch (action) {
       case 'publish':
-        return publishDefinition(target);
+        return publishDefinition(target, undefined, wait);
       case 'deactivate':
-        return deactivateDefinition(target, { definitionName, originatingElement });
+        return deactivateDefinition(target, { definitionName, originatingElement, wait });
       case 'discard-draft':
         return discardDefinitionDraft(target, {
           definitionName,
           originatingElement,
+          wait,
           // A definition with no active version has nothing behind the draft, so
           // discarding it removes the entry rather than an edit to it (FR-030).
           // The two prompts read differently and this is what picks between them.
           removesEntry: lifecycle.state === 'draft'
         });
       case 'restore':
-        return restoreDefinitionVersion({ ...target, fromVersionId: versionId ?? '' });
+        return restoreDefinitionVersion(
+          { ...target, fromVersionId: versionId ?? '' },
+          undefined,
+          wait
+        );
       default: {
         // Restore was the `default` arm until review: an action added to
         // `DefinitionRowAction` would have posted a *write* nobody asked for,
@@ -193,8 +217,13 @@
     pending = action;
     // The previous refusal described a state the definition may no longer be in.
     refusal = null;
+    startWait();
+    const controller = submission;
     try {
-      refusal = refusalViewOf(await dispatchFor(action, originatingElement));
+      const result = await dispatchFor(action, originatingElement);
+      // The component went while the host was deciding: nothing is shown for it.
+      if (controller?.signal.aborted === true) return;
+      refusal = refusalViewOf(result);
     } finally {
       pending = null;
     }

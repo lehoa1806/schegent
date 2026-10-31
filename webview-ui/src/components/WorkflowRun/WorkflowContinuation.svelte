@@ -29,6 +29,11 @@
   // and the refusal is the feedback (FR-045). Every rendered string is
   // interpolated with `{}`, which escapes (FR-059).
 
+  import {
+    OUTCOME_NOT_YET_KNOWN_TEXT,
+    boundaryRefusalText,
+    refusalTextFrom
+  } from '../../lib/boundary-refusal-text';
   import RunInputFields from '../RunLauncher/RunInputFields.svelte';
   import SupplementalInputs from '../RunLauncher/SupplementalInputs.svelte';
   import RunOutputTargets from '../RunLauncher/RunOutputTargets.svelte';
@@ -41,14 +46,13 @@
     supplementalErrors as mapSupplementalErrors
   } from '../../lib/run-composition';
   import type { ContinueWorkflowResult } from '../../lib/messages';
+  import type { NotYetKnown } from '../../lib/workflow-run-ipc';
   import type { ConnectedNodeProjection, PipelineDefinition } from '../../lib/snapshot-types';
   import type { RunRequestFieldError } from '../../../../src/contracts/run-request';
 
-  /** The outer bound on a submission, as on the independent launcher. */
-  const SUBMIT_TIMEOUT_MS = 30_000;
-
-  const TIMEOUT_MESSAGE =
-    'The host did not answer within 30 seconds. Nothing was started; your composition is unchanged.';
+  // FR-R4-F05 (I7, O3) — the 30 s outer timer and its message are gone, as on the launcher: the
+  // wait is the ledger's 5 s, a timeout says the outcome is not yet known, and the late outcome
+  // replaces it once (O4).
 
   interface Props {
     readonly connectedRunId: string;
@@ -121,7 +125,12 @@
     'node-not-eligible': 'This node is not one the run offers right now.'
   };
 
-  function applyResult(result: ContinueWorkflowResult): void {
+  function applyResult(result: ContinueWorkflowResult | NotYetKnown): void {
+    if (result.outcome === 'not-yet-known') {
+      fieldErrors = [];
+      statusMessage = OUTCOME_NOT_YET_KNOWN_TEXT;
+      return;
+    }
     if (result.outcome === 'started') {
       fieldErrors = [];
       statusMessage = `Started as ${result.queueItemId}.`;
@@ -141,7 +150,7 @@
       return;
     }
     if (result.outcome === 'rejected-state') {
-      statusMessage = STATE_REFUSAL_MESSAGES[result.reason] ?? `This node was not started: ${result.reason}.`;
+      statusMessage = refusalTextFrom(STATE_REFUSAL_MESSAGES, result.reason);
       return;
     }
     if (result.outcome === 'rejected-run') {
@@ -149,13 +158,20 @@
       return;
     }
     if (result.outcome === 'rejected-definition') {
-      statusMessage = `This node could not be started: ${result.reason}.`;
+      statusMessage = `This node could not be started. ${boundaryRefusalText(result.reason)}`;
       return;
     }
+    // FR-R4-F05 (O1) — neither the code `queue-refused` nor the guard's detail is shown raw.
     statusMessage = result.detail
-      ? `The queue refused this node: ${result.reason} (${result.detail}).`
-      : `The queue refused this node: ${result.reason}.`;
+      ? `The queue refused this node. ${boundaryRefusalText(result.detail)}`
+      : 'The queue refused this node.';
   }
+
+
+  // FR-R4-F05 (I8) — the in-flight submission's signal, aborted when this component goes: the
+  // wait's timer and late callback are removed, and the ledger keeps the identity for a retry.
+  let submission: AbortController | null = null;
+  $effect(() => () => submission?.abort());
 
   async function submitRequest(): Promise<void> {
     if (pending) return;
@@ -165,28 +181,25 @@
     statusMessage = null;
     submittedSupplementalKeys = supplementalKeys;
 
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      pending = false;
-      statusMessage = TIMEOUT_MESSAGE;
-    }, SUBMIT_TIMEOUT_MS);
-
+    const controller = new AbortController();
+    submission = controller;
     try {
-      const result = await continueWorkflow({
-        connectedRunId,
-        expectedRevision,
-        nodeId: node.nodeId,
-        request
-      });
-      // The outer bound already restored the form and said so; a late answer
-      // must not overwrite that with a verdict the operator can no longer act on.
-      if (timedOut) return;
+      const result = await continueWorkflow(
+        { connectedRunId, expectedRevision, nodeId: node.nodeId, request },
+        {
+          signal: controller.signal,
+          // O4 — the outcome of a send whose wait ran out, shown once through the same text path.
+          onLateOutcome: (late) => {
+            applyResult(late);
+            if (late.outcome !== 'not-yet-known') onResult?.(late);
+          }
+        }
+      );
+      if (controller.signal.aborted) return;
       applyResult(result);
-      onResult?.(result);
+      if (result.outcome !== 'not-yet-known') onResult?.(result);
     } finally {
-      clearTimeout(timer);
-      if (!timedOut) pending = false;
+      if (!controller.signal.aborted) pending = false;
     }
   }
 

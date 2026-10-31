@@ -11,7 +11,7 @@ const EXTENSION_ID = 'schegent.schegent';
 // path (a) succeeds against the real `vscode.Webview` API — which rejects
 // duck-typed `{ fsPath }` arguments — (b) carries a Content-Security-Policy
 // <meta>, and (c) rebases the Vite-emitted asset graph (dashboard.js,
-// chunks/theme.js, index2.css, dashboard.css). See plan.md "Webview
+// a shared chunks/*.js, index2.css, dashboard.css). See plan.md "Webview
 // Sanitization Contract" rules 6-7 and the dashboard's BUG-001 patch.
 //
 // BUG-003 (T060) extension: also asserts the operations-surface layout-zone
@@ -80,8 +80,8 @@ export async function run(): Promise<void> {
         'dashboard render did not reference dashboard.js'
       );
       assert.ok(
-        /chunks\/theme\.js/.test(html),
-        'dashboard render did not reference chunks/theme.js — Vite shared chunk not rebased (BUG-001)'
+        /chunks\/[^"']+\.js/.test(html),
+        'dashboard render did not reference a chunks/*.js file — Vite shared chunk not rebased (BUG-001)'
       );
       assert.ok(
         /index2\.css/.test(html),

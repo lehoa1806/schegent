@@ -4,6 +4,7 @@
     deactivateDefinition,
     draftTokenOfRecord,
     saveDefinitionDraft,
+    type CatalogWriteWait,
     type LifecycleResult
   } from '../lib/catalog-lifecycle';
   import { identityAt, reselectIndex } from '../lib/builder-selection';
@@ -101,10 +102,19 @@
   }
   // Feature 082 — the Pipeline tab's rows, mutation handshake, and history live
   // in a rune store so this component stays inside the 500-line Svelte budget.
+  // FR-R4-F05 (I6, I8, FR-024) — a catalog write whose wait ran out shows its late answer once:
+  // an acceptance clears the not-yet-known text, a refusal replaces it. Unmounting aborts the waits.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  function showLateWrite(late: LifecycleResult): void {
+    if (late.status === 'accepted') saveError = null;
+    else if (late.reason !== 'declined') showSaveError(formatPhaseSaveRejection(late.reason, late.result));
+  }
   const pipelineStore = new PipelineCatalogStore({
     getSnapshot: () => snapshot,
     onSaveError: showSaveError,
-    onSaveAccepted: () => { saveError = null; }
+    onSaveAccepted: () => { saveError = null; },
+    signal: lifetime.signal
   });
   $effect(() => { pipelineStore.syncFromSnapshot(snapshot); });
   $effect(() => { if (initialized) pipelineStore.recordHistory(); });
@@ -154,10 +164,10 @@
    * pending gate, the refusal handling, and when to stop waiting — so that is
    * what lives here and nothing else does.
    */
-  function submitPhaseWrite(send: () => Promise<LifecycleResult>): void {
+  function submitPhaseWrite(send: (wait: CatalogWriteWait) => Promise<LifecycleResult>): void {
     if (phaseSavePending) return;
     phaseSavePending = true; phaseSaveAccepted = false;
-    void send().then((result) => {
+    void send({ signal: lifetime.signal, onLateOutcome: showLateWrite }).then((result) => {
       if (result.status === 'rejected') {
         phaseSavePending = false;
         // Feature 100 (T509b) — the operator closed the removal prompt. Nothing
@@ -195,13 +205,12 @@
     const row = phases.find((candidate) => candidate.sourceKey === phaseMutationSourceKey);
     if (!row) return;
     const record = catalog.records.find((candidate) => candidate.key === row.sourceKey);
-    submitPhaseWrite(() =>
-      saveDefinitionDraft({
-        kind: 'phase',
-        id: row.id,
-        expectedDraftVersion: draftTokenOfRecord(record),
-        body: toSavePhaseRow(row)
-      })
+    submitPhaseWrite((wait) =>
+      saveDefinitionDraft(
+        { kind: 'phase', id: row.id, expectedDraftVersion: draftTokenOfRecord(record), body: toSavePhaseRow(row) },
+        undefined,
+        wait
+      )
     );
   }
   function saveModels(): void {
@@ -260,10 +269,10 @@
     const record = catalog.records.find((candidate) => candidate.key === phase.sourceKey);
     phaseMutation = { kind: 'remove', phaseId: phase.id };
     phaseMutationSourceKey = phase.sourceKey;
-    submitPhaseWrite(() =>
+    submitPhaseWrite((wait) =>
       deactivateDefinition(
         { kind: 'phase', id: phase.id, expectedDraftVersion: draftTokenOfRecord(record) },
-        { definitionName: phase.name, originatingElement: originatingElement ?? null }
+        { definitionName: phase.name, originatingElement: originatingElement ?? null, wait }
       )
     );
   }

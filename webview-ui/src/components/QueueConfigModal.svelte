@@ -16,6 +16,7 @@
   import { onMount, tick } from 'svelte';
 
   import { refusalText, saveQueueSettings, setQueueFailurePolicy } from '../lib/queue-control-ipc';
+  import type { QueueControlResult, SetQueueFailurePolicyOutcome } from '../lib/queue-control-ipc';
   import { adviseStreamPressure } from '../../../src/contracts/stream-pressure-advice';
   import { QUEUE_FAILURE_POLICIES, type QueueFailurePolicy } from '../lib/generated/queue-failure-policy';
   import type { QueueRuntime, QueueSettingsProjection, QueueSummary } from '../lib/snapshot-types';
@@ -132,6 +133,11 @@
   // another's while both are visible in the same list.
   let failurePolicyMessage = $state<Record<string, string>>({});
 
+  // FR-R4-F05 (I6, I8, FR-024) — a late answer goes through the same text path as an on-time
+  // one, so it replaces the not-yet-known text; closing the modal aborts the waits.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+
   function currentChoice(queueId: string): FailurePolicyChoice {
     const summary = queueSummaries.find((entry) => entry.id === queueId);
     return summary?.failurePolicyOverride ?? FOLLOW_DEFAULT;
@@ -153,15 +159,23 @@
     refusal = null;
     busy = true;
     try {
-      const result = await saveQueueSettings(parsedCap, defaultQueue);
-      if (result.status === 'rejected') {
-        refusal = refusalText(result.reason);
-        return;
-      }
-      onClose();
+      showSaveResult(
+        await saveQueueSettings(parsedCap, defaultQueue, {
+          signal: lifetime.signal,
+          onLateOutcome: showSaveResult
+        })
+      );
     } finally {
       busy = false;
     }
+  }
+
+  function showSaveResult(result: QueueControlResult): void {
+    if (result.status === 'rejected') {
+      refusal = refusalText(result.reason);
+      return;
+    }
+    onClose();
   }
 
   /**
@@ -178,7 +192,11 @@
    */
   async function onChangeFailurePolicy(queueId: string, choice: FailurePolicyChoice): Promise<void> {
     const policy = choice === FOLLOW_DEFAULT ? null : choice;
-    const outcome = await setQueueFailurePolicy(queueId, policy);
+    const show = (outcome: SetQueueFailurePolicyOutcome): void => showPolicyOutcome(queueId, outcome);
+    show(await setQueueFailurePolicy(queueId, policy, { signal: lifetime.signal, onLateOutcome: show }));
+  }
+
+  function showPolicyOutcome(queueId: string, outcome: SetQueueFailurePolicyOutcome): void {
     failurePolicyMessage = {
       ...failurePolicyMessage,
       [queueId]:

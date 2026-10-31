@@ -17,26 +17,27 @@ import { CMD_LAUNCH_PIPELINE, type LaunchPipelineResult } from './messages';
 // types this way.
 import type { RunRequest } from '../../../src/contracts/run-request';
 import { postCommand } from './vscode-api';
-import { snapshotStore } from './snapshot-store.svelte';
+import { sendIntent, type IntentWaitOptions } from './intent-ledger';
+import type { AckResult } from './snapshot-store.svelte';
 
 const ACK_TIMEOUT_MS = 5000;
 
 /**
- * What the composer renders when the host says nothing at all.
- *
- * It is a `rejected-queue` rather than a new outcome so the wire union stays the
- * contract's (`src/contracts/sidebar-ipc/run-launcher.ts`) and the composer has
- * one refusal family to render, not two. `detail` distinguishes it for the
- * operator, whose next action — retry — is the same as for any other queue-side
- * refusal.
+ * FR-R4-F05 (I5, O3, FR-024) — the wait ran out before the host answered. This is NOT a queue
+ * refusal: the host may still enqueue the run, so the outcome is not yet known. It used to be
+ * the `rejected-queue` below with the detail `no-host-response`, which the composer rendered
+ * as a refusal. A module-local outcome, so the wire union stays the contract's.
  */
-const TIMEOUT_RESULT: LaunchPipelineResult = {
-  outcome: 'rejected-queue',
-  reason: 'queue-refused',
-  detail: 'no-host-response'
-};
+export type NotYetKnown = { readonly outcome: 'not-yet-known' };
 
-/** The host answered, but not with something this family can render. */
+const NOT_YET_KNOWN: NotYetKnown = Object.freeze({ outcome: 'not-yet-known' });
+
+/**
+ * The host answered, but not with something this family can render. It is a `rejected-queue`
+ * rather than a new outcome so the wire union stays the contract's
+ * (`src/contracts/sidebar-ipc/run-launcher.ts`) and the composer has one refusal family to
+ * render. `detail` distinguishes it for the operator.
+ */
 const UNUSABLE_ACK_RESULT: LaunchPipelineResult = {
   outcome: 'rejected-queue',
   reason: 'queue-refused',
@@ -69,7 +70,7 @@ function asLaunchResult(value: unknown): LaunchPipelineResult | null {
  *
  * Resolves the wire `LaunchPipelineResult` verbatim — the union is declared once,
  * in the contract, so there is no webview copy to drift. The promise always
- * settles: host silence past five seconds resolves as the timeout refusal above,
+ * settles: host silence past five seconds resolves as `not-yet-known`,
  * which is what lets the composer's `finally` restore an editable form (FR-045)
  * without a second unwinding path.
  *
@@ -85,46 +86,30 @@ function asLaunchResult(value: unknown): LaunchPipelineResult | null {
  */
 export function launchPipeline(
   request: RunRequest,
-  queueId?: string
-): Promise<LaunchPipelineResult> {
-  return new Promise<LaunchPipelineResult>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: (() => void) | null = null;
-
-    const finalise = (result: LaunchPipelineResult): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (unsubscribe !== null) {
-        try {
-          unsubscribe();
-        } catch {
-          // one-shot listener errors must not leak
-        }
-        unsubscribe = null;
-      }
-      resolve(result);
-    };
-
-    const { correlationId } = postCommand(CMD_LAUNCH_PIPELINE, {
-      request,
-      // Spread rather than `queueId` so an absent one is an absent key. The
-      // ingress guard allowlists the two names and rejects anything else; an
-      // explicit `undefined` survives `Object.keys` and would be refused.
-      ...(queueId === undefined ? {} : { queueId })
-    });
-
-    snapshotStore.markPending(correlationId);
-    unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      finalise(asLaunchResult(ack.result) ?? UNUSABLE_ACK_RESULT);
-    });
-
-    timer = setTimeout(() => {
-      finalise(TIMEOUT_RESULT);
-    }, ACK_TIMEOUT_MS);
-  });
+  queueId?: string,
+  options: IntentWaitOptions<LaunchPipelineResult | NotYetKnown> = {}
+): Promise<LaunchPipelineResult | NotYetKnown> {
+  // Spread rather than `queueId` so an absent one is an absent key. The ingress guard
+  // allowlists the two names and rejects anything else; an explicit `undefined` survives
+  // `Object.keys` and would be refused.
+  const payload = { request, ...(queueId === undefined ? {} : { queueId }) };
+  const toResult = (ack: AckResult): LaunchPipelineResult =>
+    asLaunchResult(ack.result) ?? UNUSABLE_ACK_RESULT;
+  const { onLateOutcome } = options;
+  // FR-R4-F05 (I4) — through the intent ledger: an identical retry of an unresolved launch
+  // reuses its identity and payload, so the host enqueues the run once.
+  return sendIntent({
+    type: CMD_LAUNCH_PIPELINE,
+    payload,
+    post: (correlationId, stored) => {
+      postCommand(CMD_LAUNCH_PIPELINE, stored, { correlationId });
+    },
+    timeoutMs: ACK_TIMEOUT_MS,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(onLateOutcome === undefined
+      ? {}
+      : { onLateOutcome: (ack: AckResult) => onLateOutcome(toResult(ack)) })
+  }).then((result): LaunchPipelineResult | NotYetKnown =>
+    result.kind === 'ack' ? toResult(result.ack) : NOT_YET_KNOWN
+  );
 }

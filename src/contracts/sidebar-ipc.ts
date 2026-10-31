@@ -39,7 +39,7 @@ export const CMD_OPEN_HISTORY_ITEM_DETAILS = 'CMD_OPEN_HISTORY_ITEM_DETAILS' as 
 export const CMD_SAVE_MODELS = 'CMD_SAVE_MODELS' as const;
 // Feature 100 (FR-R3-016) — the per-definition lifecycle. These are what the
 // three layer saves above become: one definition, one declared operation. All
-// six are mutating and all six are registered in `MUTATING_COMMAND_REASONS`.
+// six are mutating and all six are declared `gated` in `COMMAND_AUTHORITY`.
 // Only the first name carries a verb the naming-convention lint recognises, so
 // the other five entries there are deliberate rather than incidental.
 export const CMD_SAVE_DEFINITION_DRAFT = 'CMD_SAVE_DEFINITION_DRAFT' as const;
@@ -85,9 +85,9 @@ export const CMD_REORDER_TASK = 'CMD_REORDER_TASK' as const;
 // single, taxonomy-correct command.
 export const CMD_RESTART_CANCELED_TASK = 'CMD_RESTART_CANCELED_TASK' as const;
 
-// Feature 020 — phase log read + tail commands. All READ-ONLY; they
-// MUST stay out of `MUTATING_COMMANDS` so a secondary VS Code host can
-// still read phase logs in a multi-window session. See
+// Feature 020 — phase log read + tail commands. Feature 020 kept them out of the
+// mutating set; FR-R4-F05 (FR-003) gates them, because each appends an audit
+// row (see `COMMAND_AUTHORITY`). See
 // specs/020-phase-level-logs/contracts/phase-log-ipc.md.
 export const CMD_READ_PHASE_LOG = 'CMD_READ_PHASE_LOG' as const;
 export const CMD_START_PHASE_LOG_TAIL = 'CMD_START_PHASE_LOG_TAIL' as const;
@@ -131,43 +131,43 @@ export const CMD_START_QUEUE = 'CMD_START_QUEUE' as const;
 // every task (pending, in-flight, paused, terminal) belonging to the
 // addressed queue, cancels its active run if any, and clears its pause and
 // scheduled-start state in a single batched memento write — never a
-// sibling queue's. Member of `MUTATING_COMMAND_REASONS` and gated by the
-// primary-host + workspace-lock guards. The workspace-wide reset survives
+// sibling queue's. Declared gated in `COMMAND_AUTHORITY`, so the primary-host
+// + workspace-lock guards apply. The workspace-wide reset survives
 // as `schegent.clearAll`, a Command Palette entry only (FR-009).
 export const CMD_CLEAR_QUEUE = 'CMD_CLEAR_QUEUE' as const;
 // Feature 063 — per-action confirmation-prompt suppression persistence.
 // Mutating: writes to the `schegent.ui.confirmSuppression` memento via
-// `WorkspaceState`. Member of `MUTATING_COMMAND_REASONS` for audit
+// `WorkspaceState`. Declared gated in `COMMAND_AUTHORITY` for audit
 // completeness, even though it does not touch run state.
 export const CMD_SET_CONFIRM_SUPPRESSION = 'CMD_SET_CONFIRM_SUPPRESSION' as const;
 // Feature 065 (T054a / FR-020) — operator dismisses the one-time post-migration
 // notice that surfaces when at least one queue migrated into `idle-pending`.
-// NON-mutating: the handler performs a single `setQueue({...migrationNotice:
-// 'dismissed'})` write that flips a UI flag and does NOT touch workflow,
-// queue, or task state. NOT a member of `MUTATING_COMMANDS` — the dismiss
-// is non-destructive UX state per FR-020 and parity with the other
-// `CMD_OPEN_*` non-mutating commands.
+// The handler performs a single `setQueue({...migrationNotice: 'dismissed'})`
+// write that flips a UI flag and does NOT touch workflow, queue, or task state.
+// FR-R4-F05 (FR-003) gates it all the same: it is a persisted write, so it is
+// declared `gated` (serialized) in `COMMAND_AUTHORITY`. Feature 065 left it
+// ungated as non-destructive UX state.
 export const CMD_DISMISS_MIGRATION_NOTICE = 'CMD_DISMISS_MIGRATION_NOTICE' as const;
-// Feature 073 — read-only Metrics Dashboard scan.
+// Feature 073 — Metrics Dashboard scan; gated by FR-R4-F05, it appends a row.
 export const CMD_READ_METRICS = 'CMD_READ_METRICS' as const;
 export const CMD_PING_BACKEND = 'CMD_PING_BACKEND' as const;
-// Feature 084 — read-only Phase export. NOT a member of
-// `MUTATING_COMMAND_REASONS`: it writes a file the operator named in a host
-// dialog and changes no extension state. Import commits through
-// `CMD_PUBLISH_PACKAGE`, so the exchange feature adds no mutating command.
+// Feature 084 — Phase export. It writes a file the operator named in a host
+// dialog and appends an export row, so FR-R4-F05 (FR-003) gates it
+// (`COMMAND_AUTHORITY`, concurrent). Import commits through
+// `CMD_PUBLISH_PACKAGE`, which is gated too.
 export const CMD_EXPORT_PROCESS_YAML = 'CMD_EXPORT_PROCESS_YAML' as const;
-// Feature 084 — read-only import preflight. Also NOT mutating: it reads the
-// operator's chosen document once and returns a plan. Nothing is written until
-// the operator confirms, and that confirmation is a `CMD_PUBLISH_PACKAGE`.
+// Feature 084 — import preflight. It reads one document and returns a plan, but a
+// refusal appends an audit row, so FR-R4-F05 gates it (concurrent). Nothing is
+// written until the operator confirms: that is a `CMD_PUBLISH_PACKAGE`.
 export const CMD_PREFLIGHT_PROCESS_YAML = 'CMD_PREFLIGHT_PROCESS_YAML' as const;
-// Feature 087 — compose, validate, freeze, enqueue. Mutating, unlike the two
-// exchange commands above; see `MUTATING_COMMAND_REASONS`.
+// Feature 087 — compose, validate, freeze, enqueue. Mutating, as the two
+// exchange commands above now are; see `COMMAND_AUTHORITY`.
 export const CMD_LAUNCH_PIPELINE = 'CMD_LAUNCH_PIPELINE' as const;
 // Feature 088 — connected Workflow runs. Both mutating: the first creates the
 // aggregate and enqueues its first child, the second appends an attempt and
 // increments the revision. Neither name carries a mutating verb prefix, so the
 // naming-convention lint would not have caught an omission from
-// `MUTATING_COMMAND_REASONS` — both entries are deliberate.
+// `COMMAND_AUTHORITY` — both entries are deliberate.
 export const CMD_LAUNCH_WORKFLOW = 'CMD_LAUNCH_WORKFLOW' as const;
 export const CMD_CONTINUE_WORKFLOW = 'CMD_CONTINUE_WORKFLOW' as const;
 // FR-R3-144 (T015, D-2) — grant or revoke ONE backend's uncontained posture.
@@ -184,7 +184,7 @@ export const CMD_SET_QUEUE_FAILURE_POLICY = 'CMD_SET_QUEUE_FAILURE_POLICY' as co
 // actually completed outside the tool, so the halt it caused ends without a
 // re-run and without discarding the row. Mutating: it writes the task's status.
 // The name carries no mutating verb prefix, so the naming-convention lint would
-// not have caught an omission from `MUTATING_COMMAND_REASONS` — that entry is
+// not have caught an omission from `COMMAND_AUTHORITY` — that entry is
 // deliberate, as `CMD_LAUNCH_PIPELINE`'s and the two Workflow ones are.
 export const CMD_ATTEST_TASK_COMPLETED = 'CMD_ATTEST_TASK_COMPLETED' as const;
 

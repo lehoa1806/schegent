@@ -22,7 +22,7 @@
     type HistoryRow
   } from '../lib/history-rows';
   import type { MetricsRunSummary } from '../lib/messages';
-  import { readRunSummary } from '../lib/metrics-ipc';
+  import { readRunSummary, type RunSummaryResult } from '../lib/metrics-ipc';
   import {
     FAILURE_CAUSE_LABELS,
     FAILURE_CAUSE_NOT_RECORDED,
@@ -97,15 +97,20 @@
     const wanted = runId;
     let live = true;
     join = { state: 'pending' };
-    void readRunSummary(wanted).then((result) => {
+    // FR-R4-F05 (I6, I8, FR-024) — a late answer replaces the unreadable state through the same
+    // path; a new run or unmounting aborts the wait.
+    const lifetime = new AbortController();
+    const show = (result: RunSummaryResult): void => {
       if (!live) return;
       join =
         result.outcome === 'read'
           ? { state: 'read', summary: result.summary }
           : { state: 'unreadable' };
-    });
+    };
+    void readRunSummary(wanted, { signal: lifetime.signal, onLateOutcome: show }).then(show);
     return () => {
       live = false;
+      lifetime.abort();
     };
   });
 

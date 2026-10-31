@@ -11,6 +11,14 @@
 // CMD_RETRY_* / CMD_RESET_* command but forgets to register it in
 // MUTATING_COMMANDS. The repository convention treats those verb
 // prefixes as the visible signal of write intent.
+//
+// FR-R4-F05 (L4) — this verb heuristic is a CROSS-CHECK, not the coverage gate.
+// The gate is the declaration's totality: `COMMAND_AUTHORITY` is typed
+// `satisfies Record<CommandType, CommandAuthority>`, and
+// `tests/unit/contracts/sidebar-command-metadata.test.ts` and
+// `tests/unit/contracts/command-authority-totality.test.ts` fail if any command
+// lacks an entry. The heuristic still earns its place: it catches a command whose
+// NAME says it writes but whose entry was declared read-only.
 
 import { describe, it, expect } from 'vitest';
 import * as Ipc from '../../src/contracts/sidebar-ipc';

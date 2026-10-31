@@ -16,10 +16,9 @@ Schegent 0.2.0 exposes a VS Code extension surface, not a network service. The p
 Schegent has no user account, login, API key, role, tenant, or network authentication layer. Its relevant guards are local capabilities:
 
 - **Direct VS Code commands** have the individual guards documented below, and one gate above all of them: every one of the 38 registrations goes through `registerGuardedCommand`, which classifies the ID from `src/contracts/entry-point-dispositions.ts`. The 32 `mutating` IDs are wrapped in a re-read of `vscode.workspace.isTrusted` that runs on **every invocation** — not a boolean captured at registration, because a command outlives its registration and can be invoked after trust is granted — and a refusal warns the operator, logs once at info, and returns `undefined` rather than throwing. The 6 `read-only` IDs are registered unwrapped, so reads pay nothing. An ID in neither map does not type-check at the call site and throws at registration if cast. Until FR-R3-136 (2026-08-28) this line read "none of the 27 registrations checks `vscode.workspace.isTrusted` directly", and it was accurate: the sidebar router was the only gate, so the palette, a task, and any other installed extension reached every mutation.
-- **M — mutation gate:** all 46 metadata-classified webview mutations are rejected unless `vscode.workspace.isTrusted === true` and this window holds authoritative workspace primacy. Trust is checked first. Missing callbacks, thrown checks, and any non-`true` result fail closed. Accepted mutations are serialized; a repeated correlation ID replays its acknowledgement for one hour, with at most 1,000 cached acknowledgements.
+- **M — mutation gate:** all 53 metadata-classified webview mutations are rejected unless `vscode.workspace.isTrusted === true` and this window holds authoritative workspace primacy. Trust is checked first. Missing callbacks, thrown checks, and any non-`true` result fail closed. A command is gated when it can start a process, write persisted state, write a file or append an audit row, whatever its name suggests; `COMMAND_AUTHORITY` in `src/contracts/sidebar-command-metadata.ts` declares an authority for every command, and a command with no entry fails `tsc`. Most gated commands are serialized, so accepted mutations run one at a time. Ping, export, preflight, the phase-log commands and the metrics read are gated without being serialized: Ping, export and preflight wait on a child process or an operator's dialog, and the others are short reads with no state the chain protects, so none of them holds a queue write behind it. [What a refused command shows](#what-a-refused-command-shows) says what an operator sees, and [Repeat protection](#repeat-protection) says what a repeated correlation ID does.
 - **C — catalog content gate:** some catalog lifecycle handlers additionally require the `phases` capability for Phase authoring and the `retryConditions` capability when a newly supplied Phase body declares that field. These checks occur after the M gate and stale-draft check.
-- **P — primary read gate:** `CMD_READ_METRICS` is read-only but independently requires window primacy because it scans shared archive state.
-- **R — read/UI gate:** no trust or primacy check after transport validation.
+- **R — read-only:** a command whose declaration says it starts no process, writes no persisted state or file and appends no audit row. No trust or primacy check after transport validation, so it stays available in an untrusted workspace and in a secondary window.
 
 Every webview command must be an object with a known `type`, a non-empty `correlationId` of at most 64 characters, and the command-specific payload below. The production ingress is `validateInboundMessage`, not the discriminator-only `COMMAND_GUARDS` registry despite a stale source comment claiming otherwise. Each command has a runtime validator; exceptions to strict object and unexpected-field rejection are recorded under the table. Invalid messages are logged and dropped by both webview hosts without a `CMD_ACK`.
 
@@ -77,7 +76,7 @@ These 27 commands appear in the Command Palette. A question mark means that the 
 
 ## Registered-only VS Code commands
 
-These nine IDs can be invoked through `vscode.commands.executeCommand`, but they are not contributed to the Command Palette. Palette absence is not authorization: `executeCommand` reaches a registered command from a task, from another installed extension, and from this extension's own webview alike. That is why the trust check on each row below sits at the point of effect rather than at contribution, and why the guard is code rather than an `enablement` clause.
+These 11 IDs can be invoked through `vscode.commands.executeCommand`, but they are not contributed to the Command Palette. Palette absence is not authorization: `executeCommand` reaches a registered command from a task, from another installed extension, and from this extension's own webview alike. That is why the trust check on each row below sits at the point of effect rather than at contribution, and why the guard is code rather than an `enablement` clause.
 
 | Command | Accepted argument | Behavior and guard | Source |
 |---|---|---|---|
@@ -90,30 +89,27 @@ These nine IDs can be invoked through `vscode.commands.executeCommand`, but they
 | `schegent.pausePhase` | `queueId?: string` | Pauses the addressed active Phase; omission is allowed only when the controller can resolve one Run. Classified `mutating`, so an untrusted workspace refuses it at the point of effect; no direct primacy check. **Owner-only:** after the trust check, a window that does not hold the workspace lock refuses it with the palette warning "Schegent: another window holds the workspace lock; ignoring request." and nothing runs, so no Run starts and nothing is recorded there. | <!-- Source: src/activation/ui-wiring.ts --> |
 | `schegent.resumePhase` | `prompt?: string, queueId?: string` | Resumes the addressed active Phase; omission relies on sole-Run resolution. Classified `mutating`, so an untrusted workspace refuses it at the point of effect; no direct primacy check. **Owner-only:** after the trust check, a window that does not hold the workspace lock refuses it with the palette warning "Schegent: another window holds the workspace lock; ignoring request." and nothing runs, so no Run starts and nothing is recorded there. | <!-- Source: src/activation/ui-wiring.ts --> |
 | `schegent.restartPhase` | `queueId?: string` | Restarts the addressed active Phase; omission relies on sole-Run resolution. Classified `mutating`, so an untrusted workspace refuses it at the point of effect; no direct primacy check. **Owner-only:** after the trust check, a window that does not hold the workspace lock refuses it with the palette warning "Schegent: another window holds the workspace lock; ignoring request." and nothing runs, so no Run starts and nothing is recorded there. | <!-- Source: src/activation/ui-wiring.ts --> |
+| `schegent.setQueueFailurePolicy` | `(queueId: string, policy: 'halt-on-failure' or 'continue' or null)`, two positional arguments | Sets the addressed queue's stated failure policy, or removes it with `null` so the queue follows the workspace default. Refuses an unknown queue as `unknown-queue-id` and reports an unchanged policy as a no-op (`failure-policy-unchanged`). Classified `mutating`, so an untrusted workspace refuses it at the point of effect; no direct primacy check. Called only from `CMD_SET_QUEUE_FAILURE_POLICY`'s sidebar handler. | <!-- Source: src/activation/queue-failure-policy-wiring.ts --><!-- Source: src/commands/set-queue-failure-policy.ts --><!-- Source: src/contracts/entry-point-dispositions.ts --> |
+| `schegent.attestTaskCompleted` | non-empty `id: string` or `{ id: string }` | Requires primacy. Records the operator's assertion that a `failed` task's work completed outside the tool, ending the halt it caused without a re-run, then asks the controller to drain the queue. Refuses `invalid-id`, `not-primary` and an illegal state. Classified `mutating`, so an untrusted workspace refuses it at the point of effect. Called only from `CMD_ATTEST_TASK_COMPLETED`'s sidebar handler, which carries the operator's `confirmed: true`. | <!-- Source: src/activation/queue-item-exit-wiring.ts --><!-- Source: src/commands/queue-ops.ts --><!-- Source: src/contracts/entry-point-dispositions.ts --> |
 
 ## Webview command boundary
 
-The authoritative schema version is `3`. The table is exhaustive: `COMMAND_TYPES` contains exactly these 61 inbound literals. Payload notation describes the runtime boundary; `?` means optional. All rows also require the shared `type` and `correlationId` envelope.
+The authoritative schema version is `3`. The table is exhaustive: `COMMAND_TYPES` contains exactly these 62 inbound literals, and 9 are read-only (`R`); the rest are gated (`M`). Payload notation describes the runtime boundary; `?` means optional. All rows also require the shared `type` and `correlationId` envelope.
 
 | Inbound command | Payload | Guard | Source |
 |---|---|---|---|
 | `CMD_START` | `{ description: string, pipelineId?, queueId?, position?: non-negative integer, startIntent? }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_CANCEL` | `{ taskId: string }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
-| `CMD_RESUME` | no payload at runtime | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/runtime-validators.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
-| `CMD_RESET` | `{ confirmed: true }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_REMOVE_QUEUE_ITEM` | `{ id: string, confirmed: true }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_OPEN_AUDIT_LOG` | no payload | R | <!-- Source: src/contracts/sidebar-ipc.ts --> |
 | `CMD_RETRY_QUEUE_ITEM` | `{ id: string }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_MOVE_QUEUE_ITEM_UP` | `{ id: string }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_MOVE_QUEUE_ITEM_DOWN` | `{ id: string }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_CLEAR_COMPLETED` | `{ queueId: string }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
-| `CMD_CLEAR_FAILED` | no payload | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_PAUSE_QUEUE` | optional `{ queueId?, reason? }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_RESUME_QUEUE` | optional `{ queueId? }` at runtime | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/runtime-validators.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_OPEN_DASHBOARD` | no payload | R | <!-- Source: src/contracts/sidebar-ipc.ts --> |
-| `CMD_RETRY_ACTIVE_RUN` | no payload | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_RERUN_FROM_HISTORY` | `{ runId: string, force?: boolean }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
-| `CMD_OPEN_QUEUE_ITEM_DETAILS` | `{ id: string }` | R | <!-- Source: src/contracts/sidebar-ipc.ts --> |
 | `CMD_OPEN_HISTORY_ITEM_DETAILS` | `{ id: string }` | R | <!-- Source: src/contracts/sidebar-ipc.ts --> |
 | `CMD_SAVE_MODELS` | `{ models: Record<string, string[]>, expectedRevision?: string, mutation?: { kind: 'manual-edit' or 'import-package' } }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_SAVE_DEFINITION_DRAFT` | `{ kind, id, expectedDraftVersion, body, note? }` | M + C(`phases`) for Phase; also C(`retryConditions`) if its body declares that field | <!-- Source: src/contracts/sidebar-ipc/catalog-lifecycle.ts --><!-- Source: src/contracts/catalog-lifecycle.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --><!-- Source: src/ui/sidebar/commands/cmd-catalog-lifecycle.ts --> |
@@ -124,6 +120,7 @@ The authoritative schema version is `3`. The table is exhaustive: `COMMAND_TYPES
 | `CMD_PUBLISH_PACKAGE` | `{ layers: [{ kind, definitions: [{ id, body }], expectedRevision }] }` | M + C(`phases`) when a Phase layer exists; also C(`retryConditions`) when a Phase body declares it | <!-- Source: src/contracts/sidebar-ipc/catalog-lifecycle.ts --><!-- Source: src/contracts/catalog-lifecycle.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --><!-- Source: src/ui/sidebar/commands/cmd-catalog-lifecycle.ts --> |
 | `CMD_READ_DEFINITION_VERSION` | `{ kind, id, versionId }` | R | <!-- Source: src/contracts/sidebar-ipc/catalog-history.ts --> |
 | `CMD_SAVE_GENERAL_SETTINGS` | `{ updates: Record<string, unknown> }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/config/general-settings.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
+| `CMD_SET_UNCONTAINED_BACKEND_GRANT` | `{ kind: 'claude' or 'codex' or 'agy', granted: boolean }` | M | <!-- Source: src/contracts/sidebar-ipc/uncontained-grant.ts --><!-- Source: src/contracts/validators/uncontained-grant.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --><!-- Source: src/ui/sidebar/commands/cmd-set-uncontained-backend-grant.ts --> |
 | `CMD_RETRY_PHASE_NOW` | `{ queueId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_PAUSE_PHASE` | `{ queueId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_RESUME_PHASE` | `{ queueId: string, prompt?: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
@@ -136,29 +133,65 @@ The authoritative schema version is `3`. The table is exhaustive: `COMMAND_TYPES
 | `CMD_RENAME_QUEUE` | `{ queueId: string, name: string }` | M | <!-- Source: src/contracts/sidebar-ipc/queue.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_DELETE_QUEUE` | `{ queueId: string, confirmed?: true }` | M | <!-- Source: src/contracts/sidebar-ipc/queue.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_SAVE_QUEUE_SETTINGS` | `{ globalConcurrencyCap: integer 1–20, defaultQueueId: string }`. Both are workspace state, not settings keys, and this is the **only** command that writes either. | M | <!-- Source: src/contracts/sidebar-ipc/queue.ts --><!-- Source: src/contracts/validators/queue-management.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --><!-- Source: src/state/workspace-state.ts --> |
+| `CMD_SET_QUEUE_FAILURE_POLICY` | `{ queueId: string, policy: 'halt-on-failure' or 'continue' or null }`; `null` removes the queue's stated policy so it follows the workspace default | M | <!-- Source: src/contracts/sidebar-ipc/queue.ts --><!-- Source: src/contracts/validators/queue-management.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --><!-- Source: src/ui/sidebar/commands/cmd-set-queue-failure-policy.ts --> |
+| `CMD_ATTEST_TASK_COMPLETED` | `{ taskId: string, confirmed: true }`; the literal `true` is required on the wire, and the host resolves the task's queue itself | M | <!-- Source: src/contracts/sidebar-ipc/queue.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --><!-- Source: src/ui/sidebar/commands/cmd-attest-task-completed.ts --> |
 | `CMD_MOVE_TASK` | `{ taskId: string, targetQueueId: string, position?: non-negative integer }` | M | <!-- Source: src/contracts/sidebar-ipc/queue.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_MODIFY_TASK` | `{ taskId: string, description: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_REORDER_TASK` | `{ taskId: string, newPosition: non-negative integer }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_RESTART_CANCELED_TASK` | `{ taskId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
-| `CMD_READ_PHASE_LOG` | `{ selection: { queueId, taskId, pipelineId, phaseId, iterationN?: positive integer or null } }`; omission becomes `null` | R | <!-- Source: src/contracts/sidebar-ipc/phase-log.ts --><!-- Source: src/contracts/validators/phase-log.ts --> |
-| `CMD_START_PHASE_LOG_TAIL` | `{ selection: { queueId, taskId, pipelineId, phaseId, iterationN: integer } }` | R | <!-- Source: src/contracts/sidebar-ipc/phase-log.ts --> |
-| `CMD_STOP_PHASE_LOG_TAIL` | `{ sessionId: string }` | R | <!-- Source: src/contracts/sidebar-ipc/phase-log.ts --> |
+| `CMD_READ_PHASE_LOG` | `{ selection: { queueId, taskId, pipelineId, phaseId, iterationN?: positive integer or null } }`; omission becomes `null` | M | <!-- Source: src/contracts/sidebar-ipc/phase-log.ts --><!-- Source: src/contracts/validators/phase-log.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
+| `CMD_START_PHASE_LOG_TAIL` | `{ selection: { queueId, taskId, pipelineId, phaseId, iterationN: integer } }` | M | <!-- Source: src/contracts/sidebar-ipc/phase-log.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
+| `CMD_STOP_PHASE_LOG_TAIL` | `{ sessionId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/phase-log.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_OPEN_VERBOSE_SETTING` | no payload | R | <!-- Source: src/contracts/sidebar-ipc.ts --> |
 | `CMD_OPEN_TRUST_SETTINGS` | no payload; the `schegent.trust` query is a literal in the handler, never webview-supplied | R | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/ui/sidebar/commands/cmd-open-trust-settings.ts --> |
 | `CMD_RESOLVE_AUDIT_POINTER` | `{ runId: string }` | R | <!-- Source: src/contracts/sidebar-ipc/history-evidence.ts --> |
+| `CMD_RESOLVE_HISTORY_DESCRIPTION` | `{ runId: string }` | R | <!-- Source: src/contracts/sidebar-ipc/history-description.ts --><!-- Source: src/contracts/validators/history-description.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
+| `CMD_READ_FAILURE_RECORD` | `{ queueId: string, taskId: string }` | R | <!-- Source: src/contracts/sidebar-ipc/failure-record.ts --><!-- Source: src/contracts/validators/failure-record.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_SET_PHASE_BREAKPOINT` | `{ queueId: string, runId: string, phaseId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_CLEAR_PHASE_BREAKPOINT` | `{ queueId: string, runId: string, phaseId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_START_QUEUE` | no payload, `{}`, or `{ queueId?, startIntent? }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/start-intent-types.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_CLEAR_QUEUE` | `{ queueId: string }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_SET_CONFIRM_SUPPRESSION` | `{ actionKey: string, suppressed: boolean }`; the handler's closed key set is below | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/ui/sidebar/commands/cmd-set-confirm-suppression.ts --><!-- Source: src/state/confirm-suppression.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
-| `CMD_DISMISS_MIGRATION_NOTICE` | no payload; performs an idempotent persisted UX-state write but is deliberately metadata-classified as a read | R | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/ui/sidebar/commands/cmd-dismiss-migration-notice.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
-| `CMD_READ_METRICS` | required `{ includeArchives?: boolean, runIds?: string[0..64] }` | P | <!-- Source: src/contracts/sidebar-ipc/metrics.ts --><!-- Source: src/ui/sidebar/commands/primacy-gate.ts --> |
-| `CMD_PING_BACKEND` | `{ runner: 'claude' or 'codex' or 'agy' }` | R | <!-- Source: src/contracts/sidebar-ipc.ts --> |
-| `CMD_EXPORT_PROCESS_YAML` | export-selection union below; may write the operator-selected file but changes no extension state | R | <!-- Source: src/contracts/sidebar-ipc/process-yaml.ts --><!-- Source: src/ui/sidebar/commands/cmd-export-process-yaml.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
-| `CMD_PREFLIGHT_PROCESS_YAML` | required `{}` | R | <!-- Source: src/contracts/sidebar-ipc/process-yaml.ts --> |
+| `CMD_DISMISS_MIGRATION_NOTICE` | no payload; writes the persisted `migrationNotice: 'dismissed'` state, so it is gated and serialized | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/ui/sidebar/commands/cmd-dismiss-migration-notice.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
+| `CMD_READ_METRICS` | required `{ includeArchives?: boolean, runIds?: string[0..64] }`; appends a `metrics-view-opened` row once per session, so the router gates it; the handler also keeps its own primacy check | M | <!-- Source: src/contracts/sidebar-ipc/metrics.ts --><!-- Source: src/ui/sidebar/commands/primacy-gate.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
+| `CMD_PING_BACKEND` | `{ runner: 'claude' or 'codex' or 'agy' }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
+| `CMD_EXPORT_PROCESS_YAML` | export-selection union below; writes the operator-selected file and appends an export audit row for every outcome, so it is gated, and it is not serialized | M | <!-- Source: src/contracts/sidebar-ipc/process-yaml.ts --><!-- Source: src/ui/sidebar/commands/cmd-export-process-yaml.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
+| `CMD_PREFLIGHT_PROCESS_YAML` | required `{}` | M | <!-- Source: src/contracts/sidebar-ipc/process-yaml.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_LAUNCH_PIPELINE` | `{ request: RunRequest, queueId?: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-launcher.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_LAUNCH_WORKFLOW` | `{ workflowId: string, startNodeId: string, request: RunRequest, queueId?: string }` | M | <!-- Source: src/contracts/sidebar-ipc/workflow-run.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_CONTINUE_WORKFLOW` | `{ connectedRunId: string, expectedRevision: non-negative integer, nodeId: string, request: RunRequest }` | M | <!-- Source: src/contracts/sidebar-ipc/workflow-run.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
+
+### What a refused command shows
+
+A gated command is refused for one of two reasons. In an untrusted workspace it acknowledges `untrusted-workspace`; in a trusted window that does not hold the workspace lock it acknowledges `secondary-window-readonly`. Trust is checked first, so an untrusted workspace cannot learn whether a window is primary. The host shows one warning toast ("Workspace is not trusted. Commands that modify settings are disabled", or "Another window holds the workspace lock. Commands are disabled") and logs the refusal once at warn with the command type and correlation ID, never a payload. The handler does not run, so no process starts, nothing is written and no audit row is appended. A raw IPC message is refused the same way, whatever the webview shows or disables. A read-only command has no gate and behaves the same in every window.
+
+The webview words the two reasons as "The workspace is not trusted, so this action is unavailable." and "This window is not the primary one, so it cannot make this change." The eight commands that became gated look like this to an operator:
+
+| Command | Webview | Host |
+|---|---|---|
+| Ping | Nothing changes. The Ping button's state comes from the host snapshot, which does not change, so the state stays idle and no result line appears. | The warning toast. |
+| Export process YAML | No dialog opens. The export button does not wait for the acknowledgement, so no text appears beside it. | The warning toast. |
+| Preflight process YAML | The import panel reports the refusal in the sentence for the reason. | The warning toast. |
+| Dismiss migration notice | The notice stays, because only a snapshot that records the dismissal hides it. | The warning toast. |
+| Read metrics | The metrics view shows the sentence for the reason. | The warning toast. |
+| Read phase log, start or stop phase-log tail | The phase-log feed shows "Could not load logs:" followed by the sentence for the reason, because the read is refused for the same two reasons. The tail adds no message of its own: a refused start leaves the feed without live updates, and a refused stop clears the feed's own session locally. A window that loses primacy while a tail runs cannot stop it; the tail ends when the panel is disposed. | The warning toast. |
+
+<!-- Source: src/ui/sidebar/message-router.ts -->
+<!-- Source: src/ui/sidebar/commands/constants.ts -->
+<!-- Source: src/contracts/sidebar-command-metadata.ts -->
+<!-- Source: webview-ui/src/lib/boundary-refusal-text.ts -->
+<!-- Source: webview-ui/src/lib/process-yaml-ipc.ts -->
+<!-- Source: webview-ui/src/lib/metrics-ipc.ts -->
+<!-- Source: webview-ui/src/lib/phase-log-ipc.ts -->
+<!-- Source: webview-ui/src/lib/phase-log-store.svelte.ts -->
+
+### Repeat protection
+
+A repeat of a command reuses its identity only while the first send is unresolved and within one hour of it. The host remembers the first outcome of each correlation ID for one hour and at most 1,000 outcomes, the oldest dropped first, and answers a repeat with that outcome without running the command again; a gated read is remembered with its result and counts toward the same bound, so heavy read traffic shortens protection for mutations. A webview that waited five seconds and has no answer reports that the outcome is not yet known, not that the action failed, because the host may still run it, and it shows the outcome once if it arrives. A host restart, a webview reload (the Dashboard reloads when it is hidden) or a different panel starts a new action, and so does either bound. This reduces the risk of a repeated action; it is not exactly-once delivery.
+
+<!-- Source: src/contracts/ack-retention.ts -->
+<!-- Source: src/ui/sidebar/mutation-command-executor.ts -->
+<!-- Source: webview-ui/src/lib/intent-ledger.ts -->
 
 ### Shared payload structures
 
@@ -244,14 +277,13 @@ The host allowlist and the webview `ActionKey` union are one set rather than two
 
 ### Known boundary mismatches
 
-- The TypeScript `ResumeCommand` permits an optional `{ prompt? }`, but runtime validation rejects every `CMD_RESUME` payload. The shipped ingress therefore accepts no payload.
 - The TypeScript `ResumeQueueCommand` permits `{ queueId?, prompt? }`, but runtime validation accepts only `queueId`; `prompt` is rejected as unexpected. Both `CMD_PAUSE_QUEUE` and `CMD_RESUME_QUEUE` also accept an array such as `[]` as a payload and normalize it to no payload because their validators check for an object but not for an array.
 - `CMD_SAVE_MODELS` requires a valid `models` map, but ignores unexpected payload keys, silently omits malformed optional `expectedRevision` or `mutation` fields, and does not enforce coupling between revision and mutation metadata.
 - The declared enqueue `startIntent.source` union includes `system-rate-limit-recovery`, but `CMD_START` ingress deliberately rejects that host-internal source.
 - The `ReadPhaseLogCommand` TypeScript interface requires `selection.iterationN`; runtime ingress accepts omission and normalizes it to `null`.
 - `CMD_SET_CONFIRM_SUPPRESSION` ingress strips unexpected payload keys rather than rejecting them. The allowlist drift this bullet also recorded is closed: feature 193 made `src/contracts/action-keys.ts` the one declaration both sides derive from, so the comments that claimed the two sets were mirrored now describe a generated artifact instead of a convention.
 - `CMD_READ_METRICS` requires a payload object and rejects unexpected object fields, but also accepts an array such as `[]` and normalizes it to `{}`. Its discriminator guard has the opposite partial behavior: it rejects arrays but admits unexpected object keys. Production hosts use ingress validation, not this guard.
-- `CMD_DISMISS_MIGRATION_NOTICE` is intentionally absent from mutation metadata even though its handler can persist `migrationNotice: 'dismissed'`; it therefore receives neither workspace-trust nor primacy protection. `CMD_EXPORT_PROCESS_YAML` is likewise classified as non-mutating because the file write is operator-selected and does not change extension state.
+- `CMD_DISMISS_MIGRATION_NOTICE` and `CMD_EXPORT_PROCESS_YAML` were once classified as non-mutating, and so received neither workspace-trust nor primacy protection, although the first persists `migrationNotice: 'dismissed'` and the second writes a file. `COMMAND_AUTHORITY` declares both gated now, and every other command with an effect (Ping, preflight, the metrics read and the three phase-log commands) with them.
 
 <!-- Source: src/contracts/sidebar-ipc.ts -->
 <!-- Source: src/contracts/runtime-validators.ts -->

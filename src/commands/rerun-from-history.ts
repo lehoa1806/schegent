@@ -3,6 +3,7 @@ import type { WorkspaceLockManager } from '../state/lock';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import type { GuardedRunService } from '../services/guarded-run-service';
+import { ENQUEUE_STORAGE_FAULT_TOAST } from '../services/enqueue-failure';
 import type { HistoryDescriptionStore } from '../services/history/history-description-store';
 import { resolveHistoryDescription } from '../services/history/history-description-resolver';
 
@@ -114,6 +115,10 @@ export async function runRerunFromHistory(arg: unknown, ctx: RerunCtx): Promise<
         return;
       case 'rejected-validation':
         ctx.notifier.warn(`Schegent: rerun rejected (${result.reason ?? 'validation-failed'}).`);
+        return;
+      // FR-R4-F05 (F8) — one fixed sentence; `reason` is a code and is not echoed.
+      case 'failed-storage':
+        ctx.notifier.error(ENQUEUE_STORAGE_FAULT_TOAST);
         return;
     }
   } catch (err) {

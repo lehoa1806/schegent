@@ -39,14 +39,20 @@ vi.mock('../snapshot-store.svelte', () => ({
 }));
 
 vi.mock('../vscode-api', () => ({
-  postCommand(type: string, payload?: unknown): { correlationId: string } {
-    const correlationId = `c${++nextId}`;
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  postCommand(
+    type: string,
+    payload?: unknown,
+    opts?: { correlationId?: string }
+  ): { correlationId: string } {
+    const correlationId = opts?.correlationId ?? `c${++nextId}`;
     posted.push({ type, payload, correlationId });
     return { correlationId };
   }
 }));
 
 const { pausePhase, restartPhase, resumePhase } = await import('../phase-control');
+const { disposeIntentLedger } = await import('../intent-ledger');
 
 function answer(
   status: 'accepted' | 'rejected',
@@ -65,6 +71,8 @@ const QUEUE = 'queue-beta';
 const PHASE = 'speckit-plan';
 
 beforeEach(() => {
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
   ackListeners.clear();
   posted.length = 0;
   nextId = 0;

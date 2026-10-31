@@ -927,6 +927,17 @@ describe('Feature 085 T048 — the whole-commit outcome (FR-042a)', () => {
     // "imported" line under a document that was never written.
     expect(commitOutcome([])).toBe('failed');
   });
+
+  // FR-R4-F05 code review (I5, FR-024) — the sequence stopped at a write whose wait ran out. The
+  // host may still apply it, so neither "Nothing was written." nor a partial sentence is true yet.
+  it('is unknown, not failed, when the last write timed out', () => {
+    expect(commitOutcome([rejected('phases', 'timeout')])).toBe('unknown');
+    expect(commitOutcome([accepted('phases'), rejected('pipelines', 'timeout')])).toBe('unknown');
+    const sentence = commitOutcomeStatement('unknown', [rejected('phases', 'timeout')]);
+    expect(sentence).toMatch(/not yet known/);
+    expect(sentence).not.toMatch(/Nothing was written/);
+    expect(modelCatalogCommitOutcomeStatement('unknown')).toMatch(/not yet known/);
+  });
 });
 
 describe('Feature 085 T048 — the outcome sentence (FR-042b, FR-042c)', () => {
@@ -1863,10 +1874,12 @@ describe('Feature 096 T023 — projecting the Model Catalog ack onto the plan (F
       status: 'rejected',
       reason: 'persistence-failed'
     });
+    // FR-R4-F05 (O1; TA9) — the formatter's fall-through is the shared boundary text, which
+    // names a code-shaped reason inside a fixed sentence instead of printing it bare.
     expect(results[0]).toEqual({
       resourceId: 'custom-model-b',
       outcome: 'failed',
-      detail: 'persistence-failed'
+      detail: 'The host refused this action (`persistence-failed`).'
     });
   });
 

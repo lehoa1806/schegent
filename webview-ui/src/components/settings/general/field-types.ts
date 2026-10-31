@@ -189,7 +189,9 @@ export type Draft = {
 };
 
 export interface FieldStatus {
-  status: 'pending' | 'accepted' | 'rejected';
+  // FR-R4-F05 (I5, FR-024) — `unknown`: the wait ran out and the host may still write the
+  // setting, so the row says the outcome is not yet known instead of "Rejected".
+  status: 'pending' | 'accepted' | 'rejected' | 'unknown';
   reason?: string;
 }
 

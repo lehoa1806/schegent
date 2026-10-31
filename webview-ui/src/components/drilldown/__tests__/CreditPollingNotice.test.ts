@@ -12,10 +12,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import CreditPollingNotice from '../CreditPollingNotice.svelte';
 import type { CreditPollingProjection } from '../../../lib/snapshot-types';
 import type { LifecycleControlResult } from '../../../lib/lifecycle-control-ipc';
+import type { IntentWaitOptions } from '../../../lib/intent-ledger';
 
 const resumePhaseMock = vi.fn<(queueId: string) => Promise<LifecycleControlResult>>();
+// The wait options the component hands `resumePhase`, kept apart so the cases that assert the
+// call's arguments read as they always did.
+const waitSeen = vi.fn<(wait: IntentWaitOptions<LifecycleControlResult> | undefined) => void>();
 vi.mock('../../../lib/phase-control', () => ({
-  resumePhase: (queueId: string) => resumePhaseMock(queueId)
+  resumePhase: (
+    queueId: string,
+    _prompt?: string,
+    wait?: IntentWaitOptions<LifecycleControlResult>
+  ) => {
+    waitSeen(wait);
+    return resumePhaseMock(queueId);
+  }
 }));
 
 const QUEUE_ID = '11111111-2222-4333-8444-555555555555';
@@ -27,6 +38,7 @@ const projection = (state: CreditPollingProjection['state']): CreditPollingProje
 });
 
 beforeEach(() => {
+  waitSeen.mockReset();
   resumePhaseMock.mockReset();
   resumePhaseMock.mockResolvedValue({ outcome: 'accepted' });
 });
@@ -34,6 +46,33 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('CreditPollingNotice', () => {
+  // FR-R4-F05 (O4, FR-024, FR-026) — the Resume's wait is the component's: a late answer replaces the
+  // interim text through the same text path, a late acceptance clears it, and unmounting aborts it.
+  it('hands resumePhase a wait whose late outcome replaces the interim text, and whose signal aborts on unmount', async () => {
+    resumePhaseMock.mockResolvedValueOnce({ outcome: 'unknown', message: 'The host has not answered yet.' });
+    const { getByTestId, queryByTestId, unmount } = render(CreditPollingNotice, {
+      queueId: QUEUE_ID,
+      creditPolling: projection('stopped')
+    });
+
+    await fireEvent.click(getByTestId(`credit-polling-resume-${QUEUE_ID}`));
+    await waitFor(() =>
+      expect(getByTestId(`credit-polling-refusal-${QUEUE_ID}`).textContent).toBe('The host has not answered yet.')
+    );
+    const wait = waitSeen.mock.calls[0]![0]!;
+
+    wait.onLateOutcome!({ outcome: 'refused', message: 'The run is no longer paused.' });
+    await waitFor(() =>
+      expect(getByTestId(`credit-polling-refusal-${QUEUE_ID}`).textContent).toBe('The run is no longer paused.')
+    );
+    wait.onLateOutcome!({ outcome: 'accepted' });
+    await waitFor(() => expect(queryByTestId(`credit-polling-refusal-${QUEUE_ID}`)).toBeNull());
+
+    expect(wait.signal!.aborted).toBe(false);
+    unmount();
+    expect(wait.signal!.aborted).toBe(true);
+  });
+
   it('stopped: says "Credit polling stopped" and offers exactly one Resume', () => {
     const { getByTestId, container } = render(CreditPollingNotice, {
       queueId: QUEUE_ID,

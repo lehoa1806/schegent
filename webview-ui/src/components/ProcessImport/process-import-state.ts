@@ -62,6 +62,7 @@ import { formatModelCatalogSaveRejection } from '../PipelineBuilderEditors/model
 import { formatPhaseSaveRejection } from '../PipelineBuilderEditors/phase-catalog-state';
 import { formatPipelineSaveRejection } from '../PipelineBuilderEditors/pipeline-catalog-state';
 import { formatWorkflowSaveRejection } from '../PipelineBuilderEditors/workflow-catalog-state';
+import { OUTCOME_NOT_YET_KNOWN_TEXT, isOutcomeNotYetKnown } from '../../lib/boundary-refusal-text';
 
 /**
  * The definition an `import` plan row carries.
@@ -132,7 +133,9 @@ export interface ConfirmGate {
   readonly plan: ImportPlan | null;
 }
 
-export type ImportResultOutcome = 'imported' | 'skipped' | 'blocked' | 'invalid' | 'failed';
+// FR-R4-F05 (I5, FR-024) — `unknown`: the write's wait ran out and the host may still apply it,
+// so the row says the outcome is not yet known instead of `failed`.
+export type ImportResultOutcome = 'imported' | 'skipped' | 'blocked' | 'invalid' | 'failed' | 'unknown';
 
 export interface ImportResultRow {
   readonly resourceId: string | null;
@@ -675,7 +678,12 @@ export function buildImportWrites(plan: ImportPlan): readonly ImportLayerWrite[]
 }
 
 /** What a confirmed import did, taken as a whole (FR-042a). */
-export type ImportCommitOutcome = 'imported' | 'partial' | 'failed';
+export type ImportCommitOutcome = 'imported' | 'partial' | 'failed' | 'unknown';
+
+/** FR-R4-F05 (I5) — an ack the helper synthesised at its timeout, not an answer from the host. */
+function isTimedOut(ack: { readonly status: string; readonly reason?: string }): boolean {
+  return ack.status === 'rejected' && isOutcomeNotYetKnown(ack.reason);
+}
 
 export interface ImportLayerResult {
   readonly key: ImportLayerKey;
@@ -698,6 +706,10 @@ export interface ImportLayerResult {
  */
 export function commitOutcome(results: readonly ImportLayerResult[]): ImportCommitOutcome {
   if (results.length === 0) return 'failed';
+  // FR-R4-F05 (I5) — the sequence stopped at a write whose wait ran out, so what it did is not
+  // yet known; "nothing was written" would be a claim the host may still contradict.
+  const last = results.at(-1);
+  if (last !== undefined && isTimedOut(last.ack)) return 'unknown';
   const accepted = results.filter((result) => result.ack.status === 'accepted').length;
   if (accepted === results.length) return 'imported';
   return accepted === 0 ? 'failed' : 'partial';
@@ -750,6 +762,10 @@ export function projectCommitResults(
     if (row.outcome === 'invalid') {
       return { resourceId: row.resourceId, outcome: 'invalid' as const, detail: reasonLines(row).join(' ') };
     }
+    const layerAck = results.find((result) => result.key === layerOf(row.resourceKind))?.ack;
+    if (layerAck !== undefined && isTimedOut(layerAck)) {
+      return { resourceId: row.resourceId, outcome: 'unknown' as const, detail: OUTCOME_NOT_YET_KNOWN_TEXT };
+    }
     const failure = failureFor(layerOf(row.resourceKind));
     return failure === null
       ? {
@@ -783,6 +799,7 @@ export function commitOutcomeStatement(
 ): string {
   if (outcome === 'imported') return 'Every eligible resource was written to the catalog.';
   if (outcome === 'failed') return 'Nothing was written.';
+  if (outcome === 'unknown') return IMPORT_NOT_YET_KNOWN;
   const landed = IMPORT_LAYER_ORDER.filter((key) =>
     results.some((result) => result.key === key && result.ack.status === 'accepted')
   ).map((key) => IMPORT_LAYER_LABELS[key]);
@@ -876,6 +893,14 @@ export async function runImportCommit(
     results.push({ key: write.key, ack });
     if (ack.status !== 'accepted') break;
   }
+  return importCommitReport(plan, results);
+}
+
+/** The report for a set of layer acks, on time or with a late answer in place (FR-R4-F05, I6). */
+export function importCommitReport(
+  plan: ImportPlan,
+  results: readonly ImportLayerResult[]
+): ImportCommitReport {
   return {
     outcome: commitOutcome(results),
     results,
@@ -923,7 +948,11 @@ export interface ModelCatalogCommitDeps {
  * Binary rather than `ImportCommitOutcome`'s three values: a single write has
  * nothing in between imported and failed, so there is no `partial` to report.
  */
-export type ModelCatalogCommitOutcome = 'imported' | 'failed';
+export type ModelCatalogCommitOutcome = 'imported' | 'failed' | 'unknown';
+
+/** FR-R4-F05 (I5, FR-024) — the whole-commit sentence when the last write's wait ran out. */
+const IMPORT_NOT_YET_KNOWN =
+  'The host has not answered the last write yet, so its outcome is not yet known. This view will update when it does.';
 
 export interface ModelCatalogCommitReport {
   readonly outcome: ModelCatalogCommitOutcome;
@@ -942,6 +971,7 @@ export function projectModelCatalogCommitResults(
   ack: SaveModelsImportResult
 ): readonly ImportResultRow[] {
   const failure = ack.status === 'accepted' ? null : formatModelCatalogSaveRejection(ack.reason);
+  const timedOut = isTimedOut(ack);
   return plan.rows.map((row) => {
     if (row.outcome === 'skip') {
       return {
@@ -970,6 +1000,9 @@ export function projectModelCatalogCommitResults(
     // the null fallback covers what the row union still permits at the type
     // level.
     const backend = row.resourceKind === 'modelCatalog' ? row.backend : null;
+    if (timedOut) {
+      return { resourceId: row.resourceId, outcome: 'unknown' as const, detail: OUTCOME_NOT_YET_KNOWN_TEXT };
+    }
     return failure === null
       ? {
           resourceId: row.resourceId,
@@ -1015,8 +1048,19 @@ export async function runModelCatalogImportCommit(
   } catch {
     ack = { status: 'rejected', reason: DISPATCH_FAILED_REASON };
   }
+  return modelCatalogCommitReport(plan, ack);
+}
+
+/**
+ * The report for one Model Catalog ack, on time or late (FR-R4-F05, I6): `unknown` when the
+ * helper's wait ran out, because the host may still add the models.
+ */
+export function modelCatalogCommitReport(
+  plan: ImportPlan,
+  ack: SaveModelsImportResult
+): ModelCatalogCommitReport {
   return {
-    outcome: ack.status === 'accepted' ? 'imported' : 'failed',
+    outcome: ack.status === 'accepted' ? 'imported' : isTimedOut(ack) ? 'unknown' : 'failed',
     ack,
     rows: projectModelCatalogCommitResults(plan, ack)
   };
@@ -1029,6 +1073,7 @@ export async function runModelCatalogImportCommit(
  * nothing to report between imported and failed.
  */
 export function modelCatalogCommitOutcomeStatement(outcome: ModelCatalogCommitOutcome): string {
+  if (outcome === 'unknown') return IMPORT_NOT_YET_KNOWN;
   return outcome === 'imported'
     ? 'Every eligible model was added to the catalog.'
     : 'Nothing was added to the catalog.';

@@ -5,8 +5,13 @@ import { withPrimary } from './primacy-gate';
 import { buildMetricsCoverage, EMPTY_CUMULATIVE_TOTALS } from '../../../metrics/metrics-rollup';
 
 // Feature 073 T010 — this handler gates on primacy to prevent multi-window races
-// during archive scans. `CMD_READ_METRICS` is not in `MUTATING_COMMANDS`, so the
-// router's gate never runs for it and the gate has to be here.
+// during archive scans. It was written when `CMD_READ_METRICS` was not in
+// `MUTATING_COMMANDS`, so the router's gate never ran and the gate had to be here.
+//
+// FR-R4-F05 (FR-003) — the router gates it now, trust then primacy, because it
+// appends a `metrics-view-opened` row; it is not serialized. The gate below is
+// redundant and stays, so the handler is never the unguarded one if the declaration
+// moves (`PRIMACY_GATED_READ_HANDLERS`, `tests/lint/primacy-predicate-split.test.ts`).
 //
 // FR-R3-024 (FR-009) — it was here, and it did nothing: the handler awaited
 // `checkPrimary(ctx)` and discarded the verdict, so a secondary window scanned

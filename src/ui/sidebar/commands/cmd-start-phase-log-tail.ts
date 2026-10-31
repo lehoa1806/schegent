@@ -2,8 +2,9 @@ import type { StartPhaseLogTailCommand, StartPhaseLogTailResponse } from '../mes
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
 
-// Feature 020 T048 — start a phase-log tail session. Read-only by
-// construction (MUST NOT be in MUTATING_COMMANDS). The adapter validates the
+// Feature 020 T048 — start a phase-log tail session. Gated, not serialized
+// (FR-R4-F05, FR-003): the registry appends a `phase-log-tail-started` audit row,
+// so the router's trust and primary-host gates run first. The adapter validates the
 // snapshot (task in-flight + active phase) and delegates to the registry,
 // which owns cap-1, mechanism probe, and audit emission.
 export const handler: CommandHandler<StartPhaseLogTailCommand> = async (ctx, command) => {

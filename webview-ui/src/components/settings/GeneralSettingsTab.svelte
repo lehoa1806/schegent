@@ -2,7 +2,9 @@
   import type { GeneralSettings, WorkflowSnapshot } from '../../lib/snapshot-types';
   import { IDLE_GENERAL_SETTINGS, IDLE_SESSION_ARTIFACTS } from '../../lib/snapshot-types';
   import { saveGeneralSettings } from '../../lib/save-general-settings';
-  import type { Draft, FieldSpec, ScalarKey } from './general/field-types';
+  import type { Draft, FieldSpec, FieldStatus, ScalarKey } from './general/field-types';
+  import type { SaveResult } from '../../lib/save-general-settings';
+  import { isOutcomeNotYetKnown } from '../../lib/boundary-refusal-text';
   // FR-R3-143 (T033) — the pure functions of (projection, draft). See that
   // module's header for why they left the component and why `FIELDS` did not.
   import {
@@ -196,9 +198,26 @@
     statusByKey = {};
   });
 
-  let statusByKey = $state<
-    Partial<Record<ScalarKey, { status: 'pending' | 'accepted' | 'rejected'; reason?: string }>>
-  >({});
+  let statusByKey = $state<Partial<Record<ScalarKey, FieldStatus>>>({});
+
+  // FR-R4-F05 (I5, I6, I8, FR-024) — one status path for an on-time and a late answer: a timeout
+  // reads as not yet known, and the late answer replaces it. Unmounting aborts the waits.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  function showSaveResult(specs: readonly { readonly key: ScalarKey; readonly ipcKey?: string }[], result: SaveResult): void {
+    const next: typeof statusByKey = { ...statusByKey };
+    for (const spec of specs) {
+      next[spec.key] = result.status === 'accepted'
+        ? { status: 'accepted' }
+        : isOutcomeNotYetKnown(result.reason)
+          ? { status: 'unknown' }
+          : { status: 'rejected', reason: friendlyReason(spec, result.reason) };
+    }
+    statusByKey = next;
+  }
+  function saveWait(specs: readonly { readonly key: ScalarKey; readonly ipcKey?: string }[]) {
+    return { signal: lifetime.signal, onLateOutcome: (late: SaveResult) => showSaveResult(specs, late) };
+  }
 
   // Bound to the current projection so the groups keep the `(key) => …` prop
   // signature `SettingsGroupProps` declares.
@@ -217,13 +236,7 @@
     // sit showing a state that was never written.
     if (!(await confirmSettingsWrite(updates))) return resetField('uiConfirmationsEnable');
     statusByKey = { ...statusByKey, [key]: { status: 'pending' } };
-    const result = await saveGeneralSettings(updates);
-    statusByKey = {
-      ...statusByKey,
-      [key]: result.status === 'accepted'
-        ? { status: 'accepted' }
-        : { status: 'rejected', reason: friendlyReason(spec, result.reason) }
-    };
+    showSaveResult([spec], await saveGeneralSettings(updates, undefined, saveWait([spec])));
   }
 
   async function saveAll(): Promise<void> {
@@ -249,14 +262,7 @@
       pending[spec.key] = { status: 'pending' };
     }
     statusByKey = { ...statusByKey, ...pending };
-    const result = await saveGeneralSettings(updates);
-    const next: typeof statusByKey = { ...statusByKey };
-    for (const spec of changedSpecs) {
-      next[spec.key] = result.status === 'accepted'
-        ? { status: 'accepted' }
-        : { status: 'rejected', reason: friendlyReason(spec, result.reason) };
-    }
-    statusByKey = next;
+    showSaveResult(changedSpecs, await saveGeneralSettings(updates, undefined, saveWait(changedSpecs)));
   }
 
   function resetField(key: ScalarKey): void {
