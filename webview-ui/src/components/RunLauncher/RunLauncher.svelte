@@ -37,7 +37,7 @@
     supplementalErrors as mapSupplementalErrors
   } from '../../lib/run-composition';
   import type { LaunchPipelineResult } from '../../lib/messages';
-  import type { PipelineDefinition } from '../../lib/snapshot-types';
+  import type { Launchable, PipelineDefinition } from '../../lib/snapshot-types';
   import type { RunRequestFieldError } from '../../../../src/contracts/run-request';
 
   // FR-R4-F05 (I7, O3) — the 30 s outer timer and its message are gone. The wait is the ledger's
@@ -123,16 +123,43 @@
   );
   const overwriteRequested = $derived(overwriteRequestedPorts(fieldErrors));
 
-  const effectiveSettings = $derived.by(() => {
+  // FR-R4-F07 (FR-021 to FR-025; contract D, D4) -- the settings the Run will use are the host's
+  // `runSettings` on this Pipeline's launch entry, resolved by the functions execution calls. This
+  // component words them and derives none of them. It does not read `executionDefaults` as settings
+  // in force: nothing applies them, so they are disclosed on their own line as advisory. Present only
+  // when the host sent settings for every Phase this form lists; otherwise the form says they are
+  // resolved when the Run starts.
+  type PhaseSettings = NonNullable<Launchable['runSettings']>['phases'][number];
+  const runSettings = $derived.by(() => {
+    const settings = launchEntry?.runSettings;
+    return settings !== undefined && settings.phases.length === pipeline.phases.length
+      ? settings
+      : undefined;
+  });
+  const advisoryDefaults = $derived.by(() => {
     const defaults = pipeline.executionDefaults;
-    if (!defaults) return 'Workspace defaults';
+    if (!defaults) return null;
     const parts: string[] = [];
     if (defaults.runner) parts.push(`Runner ${defaults.runner}`);
     if (defaults.model) parts.push(`Model ${defaults.model}`);
     if (defaults.effort) parts.push(`Effort ${defaults.effort}`);
     if (defaults.timeoutSeconds !== undefined) parts.push(`Timeout ${defaults.timeoutSeconds}s`);
-    return parts.length > 0 ? parts.join(' · ') : 'Workspace defaults';
+    return parts.length > 0 ? parts.join(' · ') : null;
   });
+  const SECONDS_PER_HOUR = 3600;
+  const SECONDS_PER_MINUTE = 60;
+  /** "6 h", "90 min" or "45 s": the largest whole unit, so a figure never rounds. */
+  function duration(seconds: number): string {
+    if (seconds % SECONDS_PER_HOUR === 0) return `${seconds / SECONDS_PER_HOUR} h`;
+    if (seconds % SECONDS_PER_MINUTE === 0) return `${seconds / SECONDS_PER_MINUTE} min`;
+    return `${seconds} s`;
+  }
+  const backendName = (kind: string): string => kind.charAt(0).toUpperCase() + kind.slice(1);
+  function phaseLine(settings: PhaseSettings): string {
+    const model = settings.model.kind === 'value' ? settings.model.value : 'backend default';
+    const effort = settings.effort.kind === 'value' ? settings.effort.value : 'backend default';
+    return `${backendName(settings.backend)} · model: ${model} · effort: ${effort} · idle limit ${duration(settings.idleTimeoutSeconds.value)}`;
+  }
 
   function applyResult(result: LaunchPipelineResult | NotYetKnown): void {
     if (result.outcome === 'not-yet-known') {
@@ -244,12 +271,28 @@
     <p class="preview-line" data-testid="run-launcher-preview-pipeline">
       {pipeline.name} ({pipeline.id})
     </p>
-    <ol class="phase-order" data-testid="run-launcher-preview-phases">
-      {#each pipeline.phases as phaseId, index (`${index}-${phaseId}`)}
-        <li>{phaseId}</li>
-      {/each}
-    </ol>
-    <p class="preview-line" data-testid="run-launcher-preview-settings">{effectiveSettings}</p>
+    <div class="settings-block" data-testid="run-launcher-preview-settings">
+      <ol class="phase-order" data-testid="run-launcher-preview-phases">
+        {#each pipeline.phases as phaseId, index (`${index}-${phaseId}`)}
+          <li>
+            {phaseId}
+            {#if runSettings}
+              <span class="phase-settings">{phaseLine(runSettings.phases[index]!)}</span>
+            {/if}
+          </li>
+        {/each}
+      </ol>
+      {#if runSettings}
+        <p class="preview-line">Run time limit {duration(runSettings.maxDurationSeconds.value)}</p>
+      {:else}
+        <p class="preview-line">Settings are resolved when the Run starts</p>
+      {/if}
+    </div>
+    {#if advisoryDefaults}
+      <p class="preview-line" data-testid="run-launcher-preview-advisory">
+        Authored defaults (advisory, not applied): {advisoryDefaults}
+      </p>
+    {/if}
     <pre class="request-preview" data-testid="run-launcher-preview-request">{JSON.stringify(
         composition.request,
         null,
@@ -316,6 +359,11 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+  }
+  .phase-settings {
+    display: block;
+    opacity: 0.8;
+    font-size: 0.9em;
   }
   .preview-line {
     margin: 0;

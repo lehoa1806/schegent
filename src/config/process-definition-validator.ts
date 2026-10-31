@@ -166,6 +166,46 @@ function boundedSpend(
   return value;
 }
 
+/** Why a trimmed, non-empty `model` may not become an argv token (FR-R3-105). */
+export interface ModelValueDefect {
+  readonly code: 'invalid-length' | 'invalid-charset';
+  readonly message: string;
+}
+
+/**
+ * The one argv check on an authored `model`, shared by this validator and the exchange reader.
+ *
+ * FR-R3-105 — REFUSED, never rewritten. A leading `-` is not stripped and an out-of-charset value is
+ * not sanitised: the `catalogVersion` rule's reasoning applies, because laundering an untrusted value
+ * into a legitimate-looking one is worse than declining it. The refusal names the field so the operator
+ * knows which row of their document to fix.
+ *
+ * Feature 254 (FR-R4-F07, FR-034; H5) extracted this from the body below. The exchange reader
+ * (`phase-yaml-validator.ts`) checked only that a `model` was not blank, so a document naming
+ * `--dangerously-skip-permissions` previewed clean and was refused at the commit; the differential in
+ * `tests/parity/phase-yaml-definition-parity.test.ts` found the divergence, and the leaf now lives
+ * with the validator that owns it so the two cannot say different things.
+ *
+ * Takes the TRIMMED value and returns `null` when it is acceptable.
+ */
+export function modelValueDefect(candidate: string): ModelValueDefect | null {
+  if (candidate.length > ARGV_VALUE_MAX_LEN) {
+    return {
+      code: 'invalid-length',
+      message: `Phase model must be at most ${ARGV_VALUE_MAX_LEN} characters`
+    };
+  }
+  if (!ARGV_VALUE_PATTERN.test(candidate)) {
+    return {
+      code: 'invalid-charset',
+      message:
+        'Phase model reaches the backend command line, so it must start with a letter ' +
+        'or digit and use only letters, digits and . _ : / -'
+    };
+  }
+  return null;
+}
+
 function recognizedDisplay(raw: Record<string, unknown>): Readonly<Record<string, unknown>> {
   return recognizedAuthoredDisplay(raw, AUTHORED_PHASE_FIELDS);
 }
@@ -297,30 +337,9 @@ export function validatePhaseDefinition(
       errors.push(fieldError(phaseId, 'model', 'non-empty-required', 'Phase model must be non-empty'));
     } else {
       const candidate = value.model.trim();
-      // FR-R3-105 — REFUSED, never rewritten. A leading `-` is not stripped and an
-      // out-of-charset value is not sanitised: the `catalogVersion` rule's reasoning
-      // applies, because laundering an untrusted value into a legitimate-looking one is
-      // worse than declining it. The refusal names the field so the operator knows which
-      // row of their document to fix.
-      if (candidate.length > ARGV_VALUE_MAX_LEN) {
-        errors.push(
-          fieldError(
-            phaseId,
-            'model',
-            'invalid-length',
-            `Phase model must be at most ${ARGV_VALUE_MAX_LEN} characters`
-          )
-        );
-      } else if (!ARGV_VALUE_PATTERN.test(candidate)) {
-        errors.push(
-          fieldError(
-            phaseId,
-            'model',
-            'invalid-charset',
-            'Phase model reaches the backend command line, so it must start with a letter ' +
-              'or digit and use only letters, digits and . _ : / -'
-          )
-        );
+      const refusal = modelValueDefect(candidate);
+      if (refusal !== null) {
+        errors.push(fieldError(phaseId, 'model', refusal.code, refusal.message));
       } else {
         model = candidate;
       }
@@ -440,10 +459,24 @@ export function validatePhaseDefinition(
       errors.push(
         fieldError(phaseId, 'capabilities', 'array-required', 'Phase capabilities must be an array')
       );
+    } else if (value.capabilities.length > ALL_PHASE_CAPABILITIES.length) {
+      // Feature 254 (FR-R4-F07, FR-005) — more members than the vocabulary holds always means an
+      // unknown member or a repeat, so the list is refused on its length, before any member is
+      // looked up. The `filter` and `indexOf` this replaces were quadratic in the list, and the
+      // list is operator input. The YAML reader applies the same bound with the same code and
+      // message; tests/parity/phase-yaml-definition-parity.test.ts holds the two together.
+      errors.push(
+        fieldError(
+          phaseId,
+          'capabilities',
+          'too-many-members',
+          `Phase capabilities list at most ${ALL_PHASE_CAPABILITIES.length} members`
+        )
+      );
     } else {
-      const unknown = value.capabilities.filter((entry) => !isPhaseCapability(entry));
       const members = value.capabilities as unknown[];
-      const repeated = members.filter((entry, index) => members.indexOf(entry) !== index);
+      const unknown = members.filter((entry) => !isPhaseCapability(entry));
+      const repeated = new Set(members).size < members.length;
       if (unknown.length > 0) {
         errors.push(
           fieldError(
@@ -453,7 +486,7 @@ export function validatePhaseDefinition(
             `Phase capabilities must each be one of ${ALL_PHASE_CAPABILITIES.join(', ')}`
           )
         );
-      } else if (repeated.length > 0) {
+      } else if (repeated) {
         // Refused HERE as well as in the exchange format's reader, and the two
         // must agree: a definition this validator accepts but the reader refuses
         // is one that cannot survive its own export. The set is what carries

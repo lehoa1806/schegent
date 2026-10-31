@@ -46,7 +46,14 @@ export const AUTHORED_WORKFLOW_FIELDS: ReadonlySet<string> = new Set([
   'startNodeIds'
 ]);
 
-const AUTHORED_NODE_FIELDS: ReadonlySet<string> = new Set(['nodeId', 'pipelineId', 'label']);
+/**
+ * The closed set of fields a Workflow node may carry.
+ *
+ * Exported (feature 254, FR-042, V3) so the coverage gate can compare it with `WORKFLOW_NODE_KEY_ORDER`, the
+ * list the exporter writes a node's keys from: a field that is validated and stored but missing from that
+ * list is silently not exported (`tests/lint/process-yaml-coverage-seams.test.ts`).
+ */
+export const AUTHORED_NODE_FIELDS: ReadonlySet<string> = new Set(['nodeId', 'pipelineId', 'label']);
 
 const AUTHORED_CONNECTION_FIELDS: ReadonlySet<string> = new Set([
   'from',

@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 127
+    vacuity-census-denominator: 128
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **127** |
+| Gates the detector calls **controlled** (the denominator) | **128** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1576,3 +1576,22 @@ fail, run on 2026-10-31 and recorded here in the form of the neighbouring gates:
 
 At the closing run the first of these was also red against the real tree before the documents were
 corrected: it named exactly `agent-capability-posture.md:147` and `phase-capabilities.ts:13`.
+
+**Denominator movement 127 → 128 (2026-10-31, feature 254 / `FR-R4-F07`).** One gate joined, controlled on
+its first run. Attribution is by census membership: the predicate the detector applies (`isScanningGate` and
+`looksControlled`) was run over the two lint files the feature added. `execution-defaults-stay-advisory.test.ts`
+satisfies it; `process-yaml-coverage-seams.test.ts` does not scan a tree for a pattern (it reads two wiring files
+by name for a reader name, and compares in-memory maps), so it is neither in the denominator nor a vacuity risk of
+this kind. None left.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `execution-defaults-stay-advisory.test.ts` (127 → 128) | Joined (N7). Walks `src/controller`, `src/services/workflow-execution` and `src/runner` plus the launch projection for the field name `executionDefaults` in code (comments removed), so a read added by a runner or by the projection that states what a Run will use is a reviewed edit. Its controls are a floor of 20 files scanned, a check that the comment stripper removes comments and keeps code, and a scan of `src/config/pipeline-snapshot.ts`, which copies the field into the frozen plan and must be found. |
+
+The rate stays **0.0%**: the entrant was mutated with the rest and did not survive.
+
+**Seeded red of the gate this feature added.** Shipped with the case that shows it can fail, run on 2026-10-31:
+
+| Gate | Seeded case that must fail | Result |
+|---|---|---|
+| `execution-defaults-stay-advisory.test.ts` (N7) | `readersIn` over `src/config/pipeline-snapshot.ts`, a file that reads the field in code | names the file; and a source whose only mention is in a comment is not named |

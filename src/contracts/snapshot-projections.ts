@@ -26,6 +26,7 @@
 import type { PhaseName } from './phase-identity';
 import type { BackendRunnerKind } from './backend-kinds';
 import type { PipelineInputPortType } from './pipeline-definitions';
+import type { PhaseDefinitionEffort } from './process-definitions';
 import type { AuditScope } from './audit-events';
 import type { CatalogVersionId } from './catalog-store';
 import type { ChangedFieldSummary } from './snapshot-vocabulary';
@@ -118,6 +119,48 @@ export interface Launchable {
    * sentence of its own. Optional only so a fixture that predates it still compiles.
    */
   readonly capabilityNotices?: readonly CapabilityNotice[];
+  /**
+   * FR-R4-F07 (FR-021, FR-022; contract D, D1; data-model §5) -- what each Phase of this Pipeline
+   * would actually use, and the Run's wall-clock bound, resolved by the functions execution calls.
+   *
+   * Pipeline entries only, and present only when every Phase of the active version resolves in the
+   * effective Phase projection and the window's limits were supplied. Otherwise absent, and the
+   * launcher says the settings are resolved when the Run starts; it never shows the Pipeline's
+   * authored `executionDefaults` as if they were in force (they are advisory, FR-023).
+   *
+   * Host-computed; the launch surface renders it and derives no backend, model, effort or bound.
+   */
+  readonly runSettings?: LaunchRunSettings;
+}
+
+/**
+ * FR-R4-F07 (data-model §5) -- the settings one Run of a Pipeline would use: one entry per Phase of
+ * the active version, in order, and the Run-wide wall-clock bound with the layer it came from.
+ */
+export interface LaunchRunSettings {
+  readonly phases: readonly LaunchPhaseSettings[];
+  /** The Run-wide wall-clock bound. The host always passes one, so it is always a value. */
+  readonly maxDurationSeconds: EffectiveLimit<number>;
+}
+
+/**
+ * FR-R4-F07 (data-model §5) -- what one Phase would use. `model` and `effort` are `backend-default`
+ * when execution passes the backend none (an unauthored value, or an unsafe model string the runner
+ * drops), and never a value the Run would not receive. The idle bound is always a value: the host
+ * always passes one, from the Phase when it states a timeout and from the settings layer otherwise.
+ */
+export interface LaunchPhaseSettings {
+  /** From the sanitized Phase projection. */
+  readonly phaseName: string;
+  /** `effectiveRunnerKindForPhase`: a pinned runner, else Claude for a git Phase, else the window default. */
+  readonly backend: BackendRunnerKind;
+  readonly model:
+    | { readonly kind: 'value'; readonly value: string }
+    | { readonly kind: 'backend-default' };
+  readonly effort:
+    | { readonly kind: 'value'; readonly value: PhaseDefinitionEffort }
+    | { readonly kind: 'backend-default' };
+  readonly idleTimeoutSeconds: EffectiveLimit<number>;
 }
 
 /**

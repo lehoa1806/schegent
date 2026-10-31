@@ -35,6 +35,7 @@ import {
   PIPELINE_OUTPUT_PORT_TYPES
 } from '../../../src/contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
+import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
 import { phaseDefinitionFromDocument } from '../../../src/services/process-yaml/phase-yaml-mapper';
 import {
   documentFromPipelineDefinition,
@@ -629,5 +630,66 @@ describe('Feature 091 T024a — an astral character survives the whole loop (FR-
     const read = readPackage(text);
     expect(read.pipeline.name).toBe(ASTRAL_TEXT);
     expect(read.pipeline.inputs[0]?.label).toBe(ASTRAL_TEXT);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 254 (FR-R4-F07, D-T4; contract D6; FR-024) — authored execution defaults are carried
+// ---------------------------------------------------------------------------
+//
+// The launcher no longer presents a Pipeline's `executionDefaults` as settings in force: nothing
+// applies them to a Run, so they are shown as advisory (tests/lint/execution-defaults-stay-advisory.
+// test.ts pins that no execution code reads them). What FR-024 keeps true is the other half: they are
+// still AUTHORED data, so they are exported, they re-import unchanged, and the advisory about a model
+// the catalog does not offer still carries the message it always did. Green at baseline.
+
+describe('Feature 254 D-T4 — authored execution defaults still travel and warn (FR-024)', () => {
+  const ADVISORY: PipelineDefinition = Object.freeze({
+    pipelineId: 'advisory',
+    name: 'Advisory',
+    version: 1,
+    phaseIds: ['specify'],
+    inputs: [],
+    outputs: [],
+    bindings: [],
+    executionDefaults: { runner: 'claude', model: 'opus', effort: 'high' as const, timeoutSeconds: 900 },
+    recommendedNext: []
+  });
+
+  it('exports the defaults and re-imports them byte for byte', () => {
+    const text = serializePipelineDocument(documentFromPipelineDefinition(ADVISORY, PHASES));
+    expect(text).toContain('executionDefaults:');
+    expect(text).toContain('model: opus');
+
+    const read = readPackage(text);
+    expect(read.pipeline.executionDefaults).toEqual(ADVISORY.executionDefaults);
+    expect(writePackage(read, true)).toBe(text);
+  });
+
+  it('keeps the unavailable-model advisory, with the message it has always had', () => {
+    const catalog = resolvePipelineCatalog({
+      rows: [ADVISORY],
+      revision: 'rev-1',
+      phaseCatalog: PHASES,
+      availableModels: { claude: ['sonnet'] },
+      defaultRunnerKind: 'claude'
+    });
+
+    expect(catalog.effective.map((definition) => definition.pipelineId)).toEqual(['advisory']);
+    const warning = catalog.warnings.find((entry) => entry.code === 'pipeline-model-unavailable');
+    expect(warning?.message).toBe(
+      "Pipeline 'advisory' requests model 'opus', which runner 'claude' does not currently offer; the stored value is kept"
+    );
+  });
+
+  it('warns about nothing when the model is offered', () => {
+    const catalog = resolvePipelineCatalog({
+      rows: [ADVISORY],
+      revision: 'rev-1',
+      phaseCatalog: PHASES,
+      availableModels: { claude: ['opus'] },
+      defaultRunnerKind: 'claude'
+    });
+    expect(catalog.warnings.some((entry) => entry.code === 'pipeline-model-unavailable')).toBe(false);
   });
 });

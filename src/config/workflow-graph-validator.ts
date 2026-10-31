@@ -357,7 +357,16 @@ function validateConditions(context: GraphContext, acyclic: boolean): void {
       context.errors.push(error(context.definition, field, 'unsupported-condition', shapeDefect));
       return;
     }
-    validateRightOperand(context, condition, field);
+    // The new rule runs only when the right-operand check found nothing, so a condition that check
+    // already refuses keeps its defect and gains no second one (FR-026).
+    if (!validateRightOperand(context, condition, field)) {
+      const fixed = fixedOutcomeDefect(condition);
+      if (fixed !== null) {
+        context.errors.push(
+          error(context.definition, field, 'condition-comparison-unsupported', fixed)
+        );
+      }
+    }
     if (validateLeftOperand(context, condition, field)) {
       validateOperandScope(context, connection, condition, field, scopes);
     }
@@ -474,25 +483,26 @@ function validateOperandScope(
   );
 }
 
+/** @returns true when it reported a defect, so the caller does not add a second one for the same right. */
 function validateRightOperand(
   context: GraphContext,
   condition: WorkflowCondition,
   field: string
-): void {
+): boolean {
   const right = condition.right;
   const defect = rightOperandDefect(condition.operator, right);
   if (defect) {
     context.errors.push(
       error(context.definition, `${field}.right`, 'condition-right-invalid', defect)
     );
-    return;
+    return true;
   }
   if (condition.left.source !== 'node-status' || right === undefined) {
-    return;
+    return false;
   }
   const values = Array.isArray(right) ? right : [right];
   if (values.every((value) => isWorkflowNodeTerminalStatus(value))) {
-    return;
+    return false;
   }
   context.errors.push(
     error(
@@ -502,6 +512,69 @@ function validateRightOperand(
       `A node-status operand compares against ${WORKFLOW_NODE_TERMINAL_STATUSES.join(', ')} only`
     )
   );
+  return true;
+}
+
+/** The operators that order numbers. v1 operands are text, so none of them can ever hold. */
+const ORDERING_OPERATORS: ReadonlySet<string> = new Set([
+  'greaterThan',
+  'greaterThanOrEqual',
+  'lessThan',
+  'lessThanOrEqual'
+]);
+
+/** What an operand is in v1, said once for every message of the rule below. */
+const TEXT_OPERANDS_NOTE =
+  "Workflow conditions compare text in v1 (a node status or an output's location reference)";
+
+/** `number`, `boolean`, or null for text: the only thing a message says about a literal. */
+function nonTextKind(value: unknown): 'number' | 'boolean' | null {
+  if (typeof value === 'number') return 'number';
+  if (typeof value === 'boolean') return 'boolean';
+  return null;
+}
+
+/**
+ * FR-R4-F07 (FR-026, FR-028; contract C, C1, C3) -- a condition whose outcome v1 operand semantics fix in
+ * advance, or null.
+ *
+ * Operands are text, and the evaluator compares only values of the same type (`compareValues`), with the
+ * ordering operators needing numbers. So these can never match, and every Run through them took the
+ * default route without saying so:
+ *
+ *   an ordering operator, whatever the literal;
+ *   `equals` or `notEquals` with a number or boolean literal (a text operand differs in type, so
+ *     `notEquals` is false as well as `equals`);
+ *   `in` whose list holds a number or boolean member (that member can never match).
+ *
+ * Runs only after the shape guard and `validateRightOperand` find nothing, so an unknown operator keeps
+ * `unsupported-condition`, a malformed `right` keeps `condition-right-invalid`, and for a node-status
+ * operand this covers only an ordering operator against a status: the right-operand check already refuses
+ * a status operand compared with anything but a terminal status.
+ *
+ * The message names the operator, a closed set, and the literal's type, and never an authored value. An
+ * `in` list that also holds text can still match through it, so its message says the non-text member can
+ * never match and does NOT say the default route would always be taken (FR-028). The evaluator is not
+ * touched: this is a structured check, not an expression language (hard rule 40).
+ */
+function fixedOutcomeDefect(condition: WorkflowCondition): string | null {
+  const { operator, right } = condition;
+  if (ORDERING_OPERATORS.has(operator)) {
+    return `${TEXT_OPERANDS_NOTE}, so '${operator}' can never match and the default route would always be taken`;
+  }
+  if (operator === 'equals' || operator === 'notEquals') {
+    const kind = nonTextKind(right);
+    return kind === null
+      ? null
+      : `${TEXT_OPERANDS_NOTE}, so '${operator}' with a ${kind} can never match, and the default route would always be taken`;
+  }
+  if (operator === 'in' && Array.isArray(right)) {
+    const kinds = new Set(right.map(nonTextKind).filter((kind) => kind !== null));
+    if (kinds.size === 0) return null;
+    const named = [...kinds].sort().join(' and ');
+    return `${TEXT_OPERANDS_NOTE}, so a ${named} member of an 'in' list can never match`;
+  }
+  return null;
 }
 
 function rightOperandDefect(operator: string, right: unknown): string | null {

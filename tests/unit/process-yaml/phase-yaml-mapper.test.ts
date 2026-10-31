@@ -33,7 +33,10 @@ import { ALL_PHASE_CAPABILITIES } from '../../../src/contracts/phase-capabilitie
 import { parseDocumentText } from '../../../src/services/process-yaml/yaml-parser';
 import { validatePhaseDocument } from '../../../src/services/process-yaml/phase-yaml-validator';
 
-const { validateSpy } = vi.hoisted(() => ({ validateSpy: vi.fn() }));
+const { validateSpy, capabilitySpy } = vi.hoisted(() => ({
+  validateSpy: vi.fn(),
+  capabilitySpy: vi.fn()
+}));
 
 vi.mock('../../../src/lib/retry-condition', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/lib/retry-condition')>();
@@ -42,6 +45,19 @@ vi.mock('../../../src/lib/retry-condition', async (importOriginal) => {
     validate: (expression: string) => {
       validateSpy(expression);
       return actual.validate(expression);
+    }
+  };
+});
+
+// Feature 254 (S-T5, FR-005) — counts the per-member lookups the capability bound must avoid. It
+// delegates, so every other test in this file sees the real predicate.
+vi.mock('../../../src/contracts/phase-capabilities', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/contracts/phase-capabilities')>();
+  return {
+    ...actual,
+    isPhaseCapability: (value: unknown) => {
+      capabilitySpy(value);
+      return actual.isPhaseCapability(value);
     }
   };
 });
@@ -312,5 +328,89 @@ describe('phase-yaml-mapper — the format stays closed (T020, SC-008)', () => {
     for (const field of ['sideEffects', 'evidencePolicy']) {
       expect(PORTABLE_PHASE_FIELDS.has(field)).toBe(true);
     }
+  });
+});
+
+// Feature 254 (S-T5, contract S7, data-model §3; FR-005, SC-002) — the capability list is bounded
+// before any per-member work.
+//
+// The vocabulary has four members, so a list of more than four always holds an unknown member or a
+// repeat. Both checks were quadratic in the list (`filter` with `indexOf`), and the list is operator
+// input. The YAML reader now counts members first and refuses a list over the vocabulary as
+// `too-many-members`, without looking up a single member. The definition-side validator applies the
+// same rule (tests/unit/config/process-definition-validator.test.ts), and tests/parity/
+// phase-yaml-definition-parity.test.ts holds the two to the same code.
+describe('Phase capabilities are bounded before per-member work (S-T5, FR-005)', () => {
+  const TOO_MANY_MESSAGE = 'Phase capabilities list at most 4 members';
+
+  /** Validate a document whose `capabilities` scalar is exactly `encoded`. */
+  function capabilityDefects(encoded: string) {
+    const text = serializePhaseDocument(
+      documentFromPhaseDefinition({ ...MINIMAL, capabilities: [] })
+    ).replace('capabilities: ""', `capabilities: "${encoded}"`);
+    const parsed = parseDocumentText(text);
+    if (!parsed.ok) throw new Error('fixture did not parse');
+    const validated = validatePhaseDocument(parsed.node);
+    if (validated.ok) return [];
+    if (validated.kind === 'document') throw new Error('expected field defects');
+    return validated.defects.filter((d) => d.field === 'capabilities');
+  }
+
+  it('accepts the empty set with no capability defect', () => {
+    expect(capabilityDefects('')).toEqual([]);
+  });
+
+  it('accepts the four distinct known members', () => {
+    expect(capabilityDefects(ALL_PHASE_CAPABILITIES.join(','))).toEqual([]);
+  });
+
+  it('refuses five members with one repeat as too-many-members, with the stated message', () => {
+    const encoded = [...ALL_PHASE_CAPABILITIES, ALL_PHASE_CAPABILITIES[0]].join(',');
+    const defects = capabilityDefects(encoded);
+    expect(defects).toHaveLength(1);
+    expect(defects[0]).toMatchObject({
+      field: 'capabilities',
+      code: 'too-many-members',
+      message: TOO_MANY_MESSAGE
+    });
+  });
+
+  const tenThousand = Array.from({ length: 10_000 }, () => ALL_PHASE_CAPABILITIES[0]).join(',');
+
+  it('refuses 10,000 members as too-many-members', () => {
+    const defects = capabilityDefects(tenThousand);
+    expect(defects).toHaveLength(1);
+    expect(defects[0]).toMatchObject({ field: 'capabilities', code: 'too-many-members' });
+  });
+
+  it('refuses 10,000 members without looking up a single member', () => {
+    capabilitySpy.mockClear();
+    capabilityDefects(tenThousand);
+    expect(capabilitySpy).toHaveBeenCalledTimes(0);
+  });
+
+  it('still looks members up within the bound (control: the spy sees a four-member list)', () => {
+    capabilitySpy.mockClear();
+    capabilityDefects(ALL_PHASE_CAPABILITIES.join(','));
+    expect(capabilitySpy.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('keeps invalid-enum for four members with one unknown', () => {
+    const encoded = [...ALL_PHASE_CAPABILITIES.slice(0, 3), 'teleport'].join(',');
+    const defects = capabilityDefects(encoded);
+    expect(defects).toHaveLength(1);
+    expect(defects[0]).toMatchObject({ code: 'invalid-enum' });
+  });
+
+  it('keeps duplicate-member for four known members with one repeated', () => {
+    const encoded = [
+      ALL_PHASE_CAPABILITIES[0],
+      ALL_PHASE_CAPABILITIES[0],
+      ALL_PHASE_CAPABILITIES[1],
+      ALL_PHASE_CAPABILITIES[2]
+    ].join(',');
+    const defects = capabilityDefects(encoded);
+    expect(defects).toHaveLength(1);
+    expect(defects[0]).toMatchObject({ code: 'duplicate-member' });
   });
 });

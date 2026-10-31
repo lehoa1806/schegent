@@ -920,3 +920,114 @@ describe('buildLaunchProjection -- capability notices (FR-012, K6)', () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Feature 254 (FR-R4-F07, D-T3; contract D1; data-model §5; FR-022) — the settings a Run would use
+// ---------------------------------------------------------------------------
+//
+// `runSettings` is the host's answer to "what will each Phase of this Pipeline actually use", resolved
+// by the functions execution calls (tests/unit/ui/sidebar/launch-run-settings-parity.test.ts proves the
+// agreement). It is present only when the host can give that answer for every Phase: a Pipeline entry,
+// every Phase id resolving in the effective Phase catalog, and the window's limits supplied. In every
+// other case it is absent, and the launcher then says the settings are resolved when the Run starts
+// rather than showing the authored values as effective.
+
+describe('buildLaunchProjection — runSettings (D-T3, FR-022)', () => {
+  const LIMITS = {
+    idleTimeoutSeconds: { value: 5400, origin: 'default' as const },
+    maxDurationSeconds: { value: 21_600, origin: 'workspace' as const }
+  };
+
+  function settingsOf(entry: Launchable | undefined) {
+    return entry?.runSettings;
+  }
+
+  it('is present on a Pipeline entry whose Phases all resolve, when limits are given', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('ship', ['plan', 'build'])]),
+      workflowCatalog([]),
+      phaseCatalog([phaseDefinition('plan'), phaseDefinition('build')]),
+      'claude',
+      LIMITS
+    );
+    const settings = settingsOf(entriesOf(projection!.pipelines)[0]);
+    expect(settings?.phases.map((entry) => entry.phaseName)).toEqual(['plan', 'build']);
+    expect(settings?.maxDurationSeconds).toEqual(LIMITS.maxDurationSeconds);
+  });
+
+  it('is absent without limits', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('ship', ['plan'])]),
+      workflowCatalog([]),
+      phaseCatalog([phaseDefinition('plan')]),
+      'claude'
+    );
+    expect(settingsOf(entriesOf(projection!.pipelines)[0])).toBeUndefined();
+  });
+
+  it('is absent on a Pipeline with a Phase the effective catalog does not resolve', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('dangling', ['plan', 'no-such-phase'])]),
+      workflowCatalog([]),
+      phaseCatalog([phaseDefinition('plan')]),
+      'claude',
+      LIMITS
+    );
+    expect(settingsOf(entriesOf(projection!.pipelines)[0])).toBeUndefined();
+  });
+
+  it('is absent without a Phase catalog at all', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('ship', ['plan'])]),
+      workflowCatalog([]),
+      undefined,
+      'claude',
+      LIMITS
+    );
+    expect(settingsOf(entriesOf(projection!.pipelines)[0])).toBeUndefined();
+  });
+
+  it('is absent on a Workflow entry', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('ship', ['plan'])]),
+      workflowCatalog([
+        workflowRecord({
+          workflowId: 'flow',
+          name: 'flow',
+          nodes: [{ nodeId: 'n1', pipelineId: 'ship' }]
+        })
+      ]),
+      phaseCatalog([phaseDefinition('plan')]),
+      'claude',
+      LIMITS
+    );
+    expect(entriesOf(projection!.workflows)[0]).not.toHaveProperty('runSettings');
+  });
+
+  it('gives the idle bound the origin `phase` when the Phase states a timeout', () => {
+    const stated: PhaseDefinition = { ...phaseDefinition('timed'), timeoutSeconds: 45 };
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('ship', ['timed', 'plain'])]),
+      workflowCatalog([]),
+      phaseCatalog([stated, phaseDefinition('plain')]),
+      'claude',
+      LIMITS
+    );
+    const phases = settingsOf(entriesOf(projection!.pipelines)[0])!.phases;
+    expect(phases[0]!.idleTimeoutSeconds).toEqual({ value: 45, origin: 'phase' });
+    expect(phases[1]!.idleTimeoutSeconds).toEqual(LIMITS.idleTimeoutSeconds);
+  });
+
+  it('keeps the run settings frozen like the rest of the projection', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('ship', ['plan'])]),
+      workflowCatalog([]),
+      phaseCatalog([phaseDefinition('plan')]),
+      'claude',
+      LIMITS
+    );
+    const settings = settingsOf(entriesOf(projection!.pipelines)[0])!;
+    expect(Object.isFrozen(settings)).toBe(true);
+    expect(Object.isFrozen(settings.phases)).toBe(true);
+  });
+});

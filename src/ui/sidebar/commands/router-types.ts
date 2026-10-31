@@ -461,9 +461,15 @@ export interface RouterDeps {
    * UTF-8" and "has a byte-order mark" are refusals this format states rather
    * than repairs (FR-004). Reads the chosen file exactly once and retains
    * nothing — no lock, no watch, no copy (FR-031, FR-045).
+   *
+   * Feature 254 (FR-R4-F07, FR-003) — `too-large` is a fourth arm: the host judged the file over the
+   * parser's 1 MiB cap BEFORE reading its contents, so no bytes accompany it. It adds no member
+   * name (it reuses `outcome`), so the process-YAML paths pin holds, and the command turns it into
+   * the parser's own `too-large` refusal.
    */
   readonly openProcessYamlDocument?: () => Promise<
     | { readonly outcome: 'read'; readonly bytes: Uint8Array }
+    | { readonly outcome: 'too-large' }
     | { readonly outcome: 'canceled' }
     | { readonly outcome: 'failed'; readonly message: string }
   >;

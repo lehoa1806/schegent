@@ -234,6 +234,28 @@ describe('phase-yaml-validator — directive (FR-006, FR-007)', () => {
   });
 });
 
+describe('phase-yaml-validator — model reaches argv (FR-034, H5)', () => {
+  // The definition validator refuses a model that is not a safe argv token (FR-R3-105); the reader called
+  // it only non-blank, so a flag-shaped value previewed clean and was refused at the commit. The leaf is
+  // shared now, and the parity differential holds the two together on every boundary.
+  it.each([
+    ['a flag', '--dangerously-skip-permissions', 'invalid-charset'],
+    ['a space inside', '"two words"', 'invalid-charset'],
+    ['over the length bound', `m${'x'.repeat(130)}`, 'invalid-length']
+  ])('refuses a model that is %s, naming the field', (_label, value, code) => {
+    const found = defects(doc({ spec: ['instruction: i', `model: ${value}`] }));
+    expect(found).toContainEqual(expect.objectContaining({ field: 'model', code }));
+  });
+
+  it('still accepts a vendor-shaped model and still calls a blank one blank', () => {
+    expect(accepted(doc({ spec: ['instruction: i', 'model: claude-opus-4.5:thinking/high'] })).spec.model).toBe(
+      'claude-opus-4.5:thinking/high'
+    );
+    const found = defects(doc({ spec: ['instruction: i', 'model: " "'] }));
+    expect(found).toContainEqual(expect.objectContaining({ field: 'model', code: 'non-empty-required' }));
+  });
+});
+
 describe('phase-yaml-validator — portable behavior fields (FR-008)', () => {
   it('accepts every portable field at once', () => {
     const document = accepted(

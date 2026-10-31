@@ -30,7 +30,14 @@ import type { PipelineInputPort } from '../../contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../../contracts/process-definitions';
 import type { WorkflowDerivedPort } from '../../contracts/workflow-definitions';
 import { declaredCapabilitySet } from '../../contracts/phase-capabilities';
-import type { CapabilityNotice } from '../../contracts/snapshot-projections';
+import type {
+  CapabilityNotice,
+  EffectiveLimit,
+  LaunchPhaseSettings,
+  LaunchRunSettings
+} from '../../contracts/snapshot-projections';
+import { isSafeArgvValue } from '../../contracts/argv-value';
+import { authoredPhaseTimeoutMs, effectivePhaseTimeoutMs } from '../../controller/effective-phase-timeout';
 import { effectiveRunnerKindForPhase } from '../../config/pipeline-snapshot';
 import { describeCapabilityOutcome } from '../../services/capability-disclosure';
 import { planCapabilityEnforcement } from '../../services/capability-enforcement-plan';
@@ -246,9 +253,84 @@ function pipelineBackends(
   return backendsOfPhases(phaseIds, context);
 }
 
+/**
+ * FR-R4-F07 (FR-022; contract D, D1) -- the limits the host runs a Run under, as the composer was
+ * handed them: the idle bound every Phase falls back to, and the Run's wall-clock bound.
+ */
+export interface LaunchLimits {
+  readonly idleTimeoutSeconds: EffectiveLimit<number>;
+  readonly maxDurationSeconds: EffectiveLimit<number>;
+}
+
+const MS_PER_SECOND = 1000;
+
+/**
+ * FR-R4-F07 (data-model §5) -- what execution will use for one Phase, by the functions execution calls.
+ *
+ *   backend  `effectiveRunnerKindForPhase`, which the freeze applies and dispatch reads.
+ *   model    `isSafeArgvValue`: `phase-runner.ts` passes the authored model only when it is safe and
+ *            drops it otherwise, so an unsafe string is `backend-default` here, never echoed.
+ *   effort   passed when the Phase states one; the validators close it to the enum.
+ *   idle     `effectivePhaseTimeoutMs`, with the origin `phase` when the Phase states a timeout and the
+ *            settings layer's own otherwise (`services/effective-limits.ts` does the same).
+ *
+ * The Pipeline's `executionDefaults` are never read (FR-023): they are advisory, and
+ * `tests/lint/execution-defaults-stay-advisory.test.ts` holds this file to that.
+ */
+function phaseSettings(
+  definition: PhaseDefinition,
+  context: BackendContext,
+  limits: LaunchLimits
+): LaunchPhaseSettings {
+  const phaseDef = phaseDefinitionToPhaseDef(definition);
+  const idleMs = effectivePhaseTimeoutMs({
+    timeoutMs: limits.idleTimeoutSeconds.value * MS_PER_SECOND,
+    phaseDef
+  });
+  return Object.freeze({
+    phaseName: definition.name,
+    backend: effectiveRunnerKindForPhase(phaseDef, context.defaultRunner),
+    model: isSafeArgvValue(definition.model)
+      ? Object.freeze({ kind: 'value' as const, value: definition.model })
+      : Object.freeze({ kind: 'backend-default' as const }),
+    effort:
+      definition.effort !== undefined
+        ? Object.freeze({ kind: 'value' as const, value: definition.effort })
+        : Object.freeze({ kind: 'backend-default' as const }),
+    idleTimeoutSeconds: Object.freeze({
+      value: idleMs / MS_PER_SECOND,
+      origin: authoredPhaseTimeoutMs(phaseDef) !== undefined ? ('phase' as const) : limits.idleTimeoutSeconds.origin
+    })
+  });
+}
+
+/**
+ * The settings of a Pipeline's Phases, or nothing when the host cannot state them (data-model §5):
+ * the limits were not supplied, or a Phase of the active version does not resolve in the effective
+ * catalog. An unresolved Phase would otherwise be reported on the window default, which is a guess.
+ */
+function runSettingsOf(
+  phaseIds: readonly string[],
+  context: BackendContext,
+  limits: LaunchLimits | undefined
+): LaunchRunSettings | undefined {
+  if (limits === undefined) return undefined;
+  const phases: LaunchPhaseSettings[] = [];
+  for (const phaseId of phaseIds) {
+    const definition = context.phasesById.get(phaseId);
+    if (definition === undefined) return undefined;
+    phases.push(phaseSettings(definition, context, limits));
+  }
+  return Object.freeze({
+    phases: Object.freeze(phases),
+    maxDurationSeconds: limits.maxDurationSeconds
+  });
+}
+
 function pipelineEntries(
   catalog: PipelineCatalogProjection,
-  context: BackendContext
+  context: BackendContext,
+  limits: LaunchLimits | undefined
 ): readonly Launchable[] {
   const entries: Launchable[] = [];
   for (const record of catalog.records) {
@@ -258,6 +340,7 @@ function pipelineEntries(
     // definition, so there is no entry to build without one.
     if (activeVersionId === undefined || record.definition === null) continue;
     const description = displayText(record.display, 'description') ?? record.definition.description;
+    const runSettings = runSettingsOf(record.definition.phaseIds, context, limits);
     entries.push(
       Object.freeze({
         kind: 'pipeline' as const,
@@ -269,7 +352,8 @@ function pipelineEntries(
         backends: orderedBackends(pipelineBackends(record.definition.phaseIds, context), context),
         capabilityNotices: Object.freeze(
           capabilityNoticesOfPhases(record.definition.phaseIds, context, new Set())
-        )
+        ),
+        ...(runSettings !== undefined ? { runSettings } : {})
       })
     );
   }
@@ -338,7 +422,8 @@ export function buildLaunchProjection(
   pipelineCatalog: PipelineCatalogProjection | undefined,
   workflowCatalog: WorkflowCatalogProjection | undefined,
   phaseCatalog?: PhaseCatalogProjection,
-  defaultRunner: BackendRunnerKind = DEFAULT_BACKEND
+  defaultRunner: BackendRunnerKind = DEFAULT_BACKEND,
+  limits?: LaunchLimits
 ): LaunchProjection | undefined {
   if (pipelineCatalog === undefined || workflowCatalog === undefined) return undefined;
   // The effective catalog is the set of Active versions (100 FR-007), which is
@@ -361,7 +446,7 @@ export function buildLaunchProjection(
   );
   return Object.freeze({
     pipelines: sectionOf(
-      pipelineEntries(pipelineCatalog, context),
+      pipelineEntries(pipelineCatalog, context, limits),
       pipelineCatalog.records.length
     ),
     workflows: sectionOf(

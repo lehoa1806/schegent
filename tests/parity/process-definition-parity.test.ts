@@ -41,12 +41,12 @@
 // go unnoticed. A case that passes before and after a fix is still carrying its
 // weight when it marks the boundary of the one that did not.
 //
-// **One asymmetry is by contract, not by drift**: the Workflow arm delegates to
-// `validateWorkflowGraph`, which takes an already-typed definition, so the
-// headless surface runs the graph pass alone while the sidebar runs shape then
-// graph. The Workflow fixtures are therefore shape-valid on both sides and the
-// broken one is broken *in the graph* — which is why T031 names a connection to a
-// missing node rather than, say, a missing `name`.
+// **The Workflow arm's old asymmetry, and its end.** The Workflow arm used to delegate to
+// `validateWorkflowGraph` alone, which takes an already-typed definition, so the headless surface ran the
+// graph pass where the sidebar runs shape then graph. These fixtures were therefore shape-valid on both
+// sides. Feature 254 (FR-032, FR-033; H-T1, H-T2) removes the asymmetry: the headless arm runs the shape
+// validator first, as `parseRows` does, and the malformed corpus at the end of this file holds the two to
+// the same `(code, field)` set without the restriction.
 //
 // Feature 099 (T496f, FR-042) — the parity claim is untouched by the layer
 // collapse; only the way each surface is handed a catalog changed. What used to be
@@ -92,6 +92,7 @@ import { resolvePipelineCatalog } from '../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../src/config/process-catalog';
 import { FakeCatalogStore, tokenFor } from '../fixtures/fake-catalog-store';
 import { fakeCatalogLifecycle } from '../fixtures/fake-catalog-lifecycle';
+import { resolveWorkflowCatalog } from '../../src/config/workflow-catalog';
 import { validateProcessDefinition } from '../../src/headless/process-definition-api';
 import type { WorkflowDefinition } from '../../src/contracts/workflow-definitions';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
@@ -575,5 +576,156 @@ describe('both adapters return the same verdict (T031, FR-001, SC-001)', () => {
 
     expect(headless.defects).toContain(defect);
     expect(sidebar.defects).toContain(defect);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 254 (FR-R4-F07, H-T1, H-T2, H-T3; contract H1 to H4; data-model §7; FR-032, FR-033, SC-008) --
+// a malformed Workflow is defects, never an exception, and the same defects the sidebar reports
+// ---------------------------------------------------------------------------
+//
+// The Workflow branch of `validateProcessDefinition` cast its argument to a typed definition and handed it
+// to the graph validator, which reads `definition.nodes` and `definition.connections` as arrays. It only
+// ever saw a record (the boundary refuses a non-object), so `nodes: 'x'` or `connections: [null]` reached
+// code that expected a shape and threw. The sidebar never had the problem: `parseRows` validates the shape
+// first and runs the graph pass only on a definition the shape produced. The branch now does the same.
+//
+// Each case below must return typed defects and throw nothing, and the set of `(code, field)` pairs must
+// equal the set `parseRows` produces for the same raw row against the same catalog. Message text and order
+// are not compared (clarification 3). The corpus is data-model §7's, verbatim.
+
+describe('a malformed Workflow is defects and never an exception (H-T1, H-T2, FR-032, FR-033, SC-008)', () => {
+  const MALFORMED: readonly { readonly label: string; readonly row: Row }[] = [
+    { label: 'an empty object', row: {} },
+    { label: 'nodes that is a string', row: { ...WORKFLOW_VALID, nodes: 'x' } },
+    { label: 'nodes holding a number', row: { ...WORKFLOW_VALID, nodes: [1] } },
+    { label: 'nodes holding an empty object', row: { ...WORKFLOW_VALID, nodes: [{}] } },
+    {
+      label: 'a node missing its pipelineId',
+      row: { ...WORKFLOW_VALID, nodes: [{ nodeId: 'source' }, { nodeId: 'target', pipelineId: 'parity-target' }] }
+    },
+    { label: 'connections that is an object', row: { ...WORKFLOW_VALID, connections: {} } },
+    { label: 'connections holding null', row: { ...WORKFLOW_VALID, connections: [null] } },
+    {
+      label: 'a connection missing its to',
+      row: { ...WORKFLOW_VALID, connections: [{ from: { nodeId: 'source', portId: 'notes' } }] }
+    },
+    {
+      label: 'a condition that is an expression string (hard rule 40)',
+      row: {
+        ...WORKFLOW_VALID,
+        connections: [
+          { ...(WORKFLOW_VALID.connections as readonly Row[])[0], condition: 'score > 7' }
+        ]
+      }
+    },
+    {
+      label: 'a condition with an unknown operator',
+      row: {
+        ...WORKFLOW_VALID,
+        connections: [
+          {
+            ...(WORKFLOW_VALID.connections as readonly Row[])[0],
+            condition: {
+              left: { source: 'node-status', nodeId: 'source' },
+              operator: 'matches',
+              right: 'completed'
+            }
+          }
+        ]
+      }
+    },
+    {
+      label: 'a condition whose left is a number',
+      row: {
+        ...WORKFLOW_VALID,
+        connections: [
+          {
+            ...(WORKFLOW_VALID.connections as readonly Row[])[0],
+            condition: { left: 3, operator: 'equals', right: 'completed' }
+          }
+        ]
+      }
+    },
+    { label: 'startNodeIds that is a string', row: { ...WORKFLOW_VALID, startNodeIds: 'a' } },
+    {
+      label: 'duplicate node ids',
+      row: {
+        ...WORKFLOW_VALID,
+        nodes: [
+          { nodeId: 'source', pipelineId: 'parity-source' },
+          { nodeId: 'source', pipelineId: 'parity-target' }
+        ]
+      }
+    },
+    { label: 'a connection to an unknown node', row: WORKFLOW_MISSING_NODE }
+  ];
+
+  /** The set of `field|code` the sidebar's catalog reports for this raw row. */
+  function sidebarDefects(row: Row): readonly Defect[] {
+    const resolution = resolveWorkflowCatalog({
+      rows: [row],
+      revision: SEEDED.revisionOf('workflow'),
+      pipelineCatalog: PIPELINE_RESOLUTION
+    });
+    const record = resolution.records.at(0);
+    return sorted((record?.errors ?? []).map((error) => `${error.field}|${error.code}`));
+  }
+
+  /** The same, from the headless adapter, which must not throw. */
+  function headlessDefects(row: Row): readonly Defect[] {
+    const verdict = validateProcessDefinition({
+      kind: 'workflow',
+      definition: row,
+      catalog: {
+        phases: EFFECTIVE_PHASES,
+        pipelines: PIPELINE_RESOLUTION.effective,
+        invalidPipelines: INVALID_PIPELINES
+      }
+    });
+    if (!('kind' in verdict) || verdict.kind !== 'workflow') {
+      throw new Error(`expected a Workflow verdict, got ${JSON.stringify(verdict)}`);
+    }
+    return sorted(verdict.errors.map((error) => `${error.field}|${error.code}`));
+  }
+
+  it.each(MALFORMED)('returns defects and throws nothing for $label', ({ row }) => {
+    expect(() => headlessDefects(row)).not.toThrow();
+    expect(headlessDefects(row).length).toBeGreaterThan(0);
+  });
+
+  it.each(MALFORMED)('reports the same (code, field) set as the sidebar for $label', ({ row }) => {
+    const sidebar = sidebarDefects(row);
+    // An empty set on both sides would satisfy the equality while proving nothing.
+    expect(sidebar.length).toBeGreaterThan(0);
+    expect(headlessDefects(row)).toEqual(sidebar);
+  });
+
+  it('agrees on a valid Workflow too: no defects on either surface', () => {
+    expect(headlessDefects(WORKFLOW_VALID)).toEqual([]);
+    expect(sidebarDefects(WORKFLOW_VALID)).toEqual([]);
+  });
+
+  it('keeps graph defects for a shape that is usable (a connection to an unknown node)', () => {
+    // H4: graph traversal runs when the shape yields a definition, so the graph's own defect is
+    // reported, and it is the same one the sidebar reports.
+    const defects = headlessDefects(WORKFLOW_MISSING_NODE);
+    expect(defects.some((defect) => defect.endsWith('|unresolved-endpoint'))).toBe(true);
+  });
+
+  // H-T3 -- the existing boundary refusal is unchanged. A non-object `definition` is refused `wrong-type`
+  // at the boundary, before either validator runs; this is the pin the filing's edge case names.
+  it.each([
+    ['a string', 'x'],
+    ['a number', 3],
+    ['null', null],
+    ['an array', []],
+    ['undefined', undefined]
+  ])('still refuses a definition that is %s as wrong-type (H-T3)', (_label, definition) => {
+    for (const kind of ['phase', 'pipeline', 'workflow'] as const) {
+      const verdict = validateProcessDefinition({ kind, definition });
+      expect(verdict).toMatchObject({ field: 'definition' });
+      expect('code' in verdict && verdict.code).toMatch(/^(wrong-type|missing)$/);
+    }
   });
 });

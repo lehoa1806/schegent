@@ -36,6 +36,7 @@ import { describe, expect, it } from 'vitest';
 import { FIXTURE_REVISION } from '../../fixtures/catalog-snapshot-fixture';
 
 import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
+import { resolveWorkflowCatalog } from '../../../src/config/workflow-catalog';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
 import type {
   PipelineDefinition,
@@ -386,6 +387,41 @@ const EVERYTHING: WorkflowDefinition = Object.freeze({
   startNodeIds: Object.freeze(['author'])
 }) as WorkflowDefinition;
 
+/**
+ * Feature 254 (C9) -- `EVERYTHING` with the five conditions the graph validator now refuses made text
+ * comparisons of the same shape: the ordering operators and the boolean `equals` become `equals` and
+ * `notEquals` against strings. Every other field is untouched, so the identity-through-import claims
+ * (T064) still run against a Workflow the catalog accepts.
+ */
+const TEXT_REPLACEMENTS: Readonly<
+  Partial<Record<number, { operator: 'equals' | 'notEquals'; right: string }>>
+> = {
+  3: { operator: 'equals', right: 'high' },
+  4: { operator: 'notEquals', right: 'low' },
+  7: { operator: 'equals', right: 'nine' },
+  8: { operator: 'notEquals', right: 'seven' },
+  9: { operator: 'equals', right: 'ready' }
+};
+
+const IMPORTABLE: WorkflowDefinition = Object.freeze({
+  workflowId: 'ship-it',
+  name: 'Ship It',
+  version: 7,
+  description: 'Author, review, publish twice.',
+  nodes: NODES,
+  connections: Object.freeze(
+    CONNECTIONS.map((connection, index) => {
+      const replacement = TEXT_REPLACEMENTS[index];
+      if (replacement === undefined) return connection;
+      return Object.freeze({
+        ...connection,
+        condition: Object.freeze({ ...connection.condition, ...replacement })
+      }) as WorkflowConnection;
+    })
+  ),
+  startNodeIds: Object.freeze(['author'])
+}) as WorkflowDefinition;
+
 /** The absent-list end of the rule: one node, no connections, no description. */
 const MINIMAL: WorkflowDefinition = Object.freeze({
   workflowId: 'bare',
@@ -449,6 +485,19 @@ const CORPUS: readonly Fixture[] = Object.freeze([
   { label: 'nothing optional, closure included', definition: MINIMAL, mode: 'closure' },
   { label: 'two declared starts, closure included', definition: TWO_STARTS, mode: 'closure' }
 ]);
+
+/**
+ * Feature 254 (C9) -- the fixtures that go through an actual import (T064 to T066). `EVERYTHING` carries
+ * five conditions the graph validator now refuses, so a Workflow built from it is invalid in the catalog
+ * and cannot be selected for export. These carry `IMPORTABLE` instead, the same graph with those five
+ * conditions made valid text comparisons, so the identity-through-import claims keep running against a
+ * Workflow the catalog accepts. The serializer claims (T063) keep `EVERYTHING` and its operators.
+ */
+const IMPORT_CORPUS: readonly Fixture[] = Object.freeze(
+  CORPUS.map((fixture) =>
+    fixture.definition === EVERYTHING ? { ...fixture, definition: IMPORTABLE } : fixture
+  )
+);
 
 function documentFor(fixture: Fixture): string {
   return serializeWorkflowDocument(
@@ -879,7 +928,7 @@ function importAndSelect(read: ReadPackage, mode: Mode): Imported {
 }
 
 describe('Feature 086 T064 — import then re-export is an identity (FR-061, SC-017)', () => {
-  for (const fixture of CORPUS) {
+  for (const fixture of IMPORT_CORPUS) {
     it(`re-exports '${fixture.label}' to the same bytes`, () => {
       // Verified by comparison, not inspection: the definition the catalog
       // resolved after the import is substituted into the same document the
@@ -894,14 +943,14 @@ describe('Feature 086 T064 — import then re-export is an identity (FR-061, SC-
     });
   }
 
-  for (const fixture of CORPUS) {
+  for (const fixture of IMPORT_CORPUS) {
     it(`re-exports '${fixture.label}' to the same definition`, () => {
       const imported = importAndSelect(readPackage(documentFor(fixture)), fixture.mode);
       expect(imported.workflow).toEqual(fixture.definition);
     });
   }
 
-  for (const fixture of CORPUS) {
+  for (const fixture of IMPORT_CORPUS) {
     it(`re-exports '${fixture.label}' from catalog-resolved dependencies to a fixed point`, () => {
       // The whole document this time, dependency sections included, rebuilt from
       // the resolved catalog rather than from the text it came out of. The claim
@@ -919,18 +968,18 @@ describe('Feature 086 T064 — import then re-export is an identity (FR-061, SC-
   }
 
   it('preserves every property FR-061 enumerates, field by field', () => {
-    const imported = importAndSelect(readPackage(documentFor(CORPUS[0]!)), 'closure');
+    const imported = importAndSelect(readPackage(documentFor(IMPORT_CORPUS[0]!)), 'closure');
     const round = imported.workflow;
 
     // node identities and their Pipeline references
     expect(round.nodes.map((node) => node.nodeId)).toEqual(
-      EVERYTHING.nodes.map((node) => node.nodeId)
+      IMPORTABLE.nodes.map((node) => node.nodeId)
     );
     expect(round.nodes.map((node) => node.pipelineId)).toEqual(
-      EVERYTHING.nodes.map((node) => node.pipelineId)
+      IMPORTABLE.nodes.map((node) => node.pipelineId)
     );
     expect(round.nodes.map((node) => node.label)).toEqual(
-      EVERYTHING.nodes.map((node) => node.label)
+      IMPORTABLE.nodes.map((node) => node.label)
     );
 
     // port-to-port connections
@@ -939,31 +988,31 @@ describe('Feature 086 T064 — import then re-export is an identity (FR-061, SC-
         (connection) =>
           `${connection.from.nodeId}.${connection.from.portId}->${connection.to.nodeId}.${connection.to.portId}`
       );
-    expect(endpoints(round)).toEqual(endpoints(EVERYTHING));
+    expect(endpoints(round)).toEqual(endpoints(IMPORTABLE));
 
     // conditions, priorities, default markers, selection rules
     expect(round.connections.map((connection) => connection.condition)).toEqual(
-      EVERYTHING.connections.map((connection) => connection.condition)
+      IMPORTABLE.connections.map((connection) => connection.condition)
     );
     expect(round.connections.map((connection) => connection.priority)).toEqual(
-      EVERYTHING.connections.map((connection) => connection.priority)
+      IMPORTABLE.connections.map((connection) => connection.priority)
     );
     expect(round.connections.map((connection) => connection.isDefault)).toEqual(
-      EVERYTHING.connections.map((connection) => connection.isDefault)
+      IMPORTABLE.connections.map((connection) => connection.isDefault)
     );
     expect(round.connections.map((connection) => connection.selection)).toEqual(
-      EVERYTHING.connections.map((connection) => connection.selection)
+      IMPORTABLE.connections.map((connection) => connection.selection)
     );
 
     // allowed starts and the declared version
-    expect(round.startNodeIds).toEqual(EVERYTHING.startNodeIds);
-    expect(round.version).toBe(EVERYTHING.version);
+    expect(round.startNodeIds).toEqual(IMPORTABLE.startNodeIds);
+    expect(round.version).toBe(IMPORTABLE.version);
   });
 
   it('keeps `isDefault: false` distinct from an absent marker', () => {
     // The value most easily lost, because `false` and absent behave identically at
     // run time — and differ the moment an operator opens the row to edit it.
-    const imported = importAndSelect(readPackage(documentFor(CORPUS[0]!)), 'closure');
+    const imported = importAndSelect(readPackage(documentFor(IMPORT_CORPUS[0]!)), 'closure');
     expect(imported.workflow.connections[2]?.isDefault).toBe(false);
     expect(imported.workflow.connections[6]?.isDefault).toBe(true);
     expect(imported.workflow.connections[0]).not.toHaveProperty('isDefault');
@@ -976,7 +1025,7 @@ describe('Feature 086 T064 — import then re-export is an identity (FR-061, SC-
 
 describe('Feature 086 T065 — one Pipeline, two nodes (FR-062)', () => {
   it('keeps two nodes naming the same Pipeline as two distinct nodes', () => {
-    const imported = importAndSelect(readPackage(documentFor(CORPUS[0]!)), 'closure');
+    const imported = importAndSelect(readPackage(documentFor(IMPORT_CORPUS[0]!)), 'closure');
     const onPublish = imported.workflow.nodes.filter((node) => node.pipelineId === 'publish');
     expect(onPublish.map((node) => node.nodeId)).toEqual(['publish-a', 'publish-b']);
     expect(onPublish.map((node) => node.label)).toEqual(['Publish A', 'Publish B']);
@@ -985,7 +1034,7 @@ describe('Feature 086 T065 — one Pipeline, two nodes (FR-062)', () => {
   it('keeps their connections addressed to the right one of the two', () => {
     // The failure this guards is a collapse to one node, which would not lose a
     // connection — it would silently retarget one branch onto the other node.
-    const imported = importAndSelect(readPackage(documentFor(CORPUS[0]!)), 'closure');
+    const imported = importAndSelect(readPackage(documentFor(IMPORT_CORPUS[0]!)), 'closure');
     const targets = imported.workflow.connections
       .filter((connection) => connection.to.nodeId.startsWith('publish-'))
       .map((connection) => `${connection.to.nodeId}.${connection.to.portId}`);
@@ -1015,7 +1064,7 @@ describe('Feature 086 T065 — authored order survives, because it is the tie-br
   it('keeps node order as authored rather than sorted', () => {
     // `publish-a` before `publish-b` is alphabetical by accident; TWO_STARTS below
     // is the fixture where sorted and authored disagree.
-    const imported = importAndSelect(readPackage(documentFor(CORPUS[0]!)), 'closure');
+    const imported = importAndSelect(readPackage(documentFor(IMPORT_CORPUS[0]!)), 'closure');
     expect(imported.workflow.nodes.map((node) => node.nodeId)).toEqual([
       'author',
       'gate',
@@ -1034,7 +1083,7 @@ describe('Feature 086 T065 — authored order survives, because it is the tie-br
   });
 
   it('keeps connection order as authored, which decides equal priorities', () => {
-    const imported = importAndSelect(readPackage(documentFor(CORPUS[0]!)), 'closure');
+    const imported = importAndSelect(readPackage(documentFor(IMPORT_CORPUS[0]!)), 'closure');
     expect(imported.workflow.connections.map((connection) => connection.priority)).toEqual([
       undefined,
       40,
@@ -1052,11 +1101,11 @@ describe('Feature 086 T065 — authored order survives, because it is the tie-br
   it('keeps two equal-priority branches in the order they were authored', () => {
     // Order is load-bearing only where priorities tie, so the fixture ties them.
     const TIED: WorkflowDefinition = Object.freeze({
-      ...EVERYTHING,
+      ...IMPORTABLE,
       workflowId: 'tied',
       name: 'Tied',
       connections: Object.freeze(
-        CONNECTIONS.map((connection, index) =>
+        IMPORTABLE.connections.map((connection, index) =>
           index === 0 ? connection : Object.freeze({ ...connection, priority: 10 })
         )
       )
@@ -1080,21 +1129,21 @@ describe('Feature 086 T065 — authored order survives, because it is the tie-br
 
 describe('Feature 086 T066 — a condition survives intact (FR-006, SC-021)', () => {
   it('keeps every operand, operator, and literal', () => {
-    const imported = importAndSelect(readPackage(documentFor(CORPUS[0]!)), 'closure');
+    const imported = importAndSelect(readPackage(documentFor(IMPORT_CORPUS[0]!)), 'closure');
     for (const [index, connection] of imported.workflow.connections.entries()) {
-      expect(connection.condition).toEqual(EVERYTHING.connections[index]?.condition);
+      expect(connection.condition).toEqual(IMPORTABLE.connections[index]?.condition);
     }
   });
 
   it('keeps a list literal a list of the same length and order', () => {
-    const imported = importAndSelect(readPackage(documentFor(CORPUS[0]!)), 'closure');
+    const imported = importAndSelect(readPackage(documentFor(IMPORT_CORPUS[0]!)), 'closure');
     expect(imported.workflow.connections[5]?.condition?.right).toEqual(['completed', 'canceled']);
   });
 
   it('leaves `exists` with no right operand rather than a falsy one', () => {
     // A reader that materialized `right: null` or `right: ''` would turn the
     // absent arity into a comparison against nothing.
-    const imported = importAndSelect(readPackage(documentFor(CORPUS[0]!)), 'closure');
+    const imported = importAndSelect(readPackage(documentFor(IMPORT_CORPUS[0]!)), 'closure');
     const condition = imported.workflow.connections[6]?.condition;
     expect(condition?.operator).toBe('exists');
     expect(condition).not.toHaveProperty('right');
@@ -1214,6 +1263,90 @@ describe('Feature 086 T066 — no code path can execute a condition (FR-006, SC-
       './yaml-serializer'
     ]) {
       expect(isProjectRelative(specifier)).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 254 (FR-R4-F07, C9; contract C1, C2; FR-026, FR-027) — the corpus cases whose condition can
+// never match are serializer fixtures, not importable Workflows
+// ---------------------------------------------------------------------------
+//
+// `EVERYTHING` carries a condition of every operator. Five of them (connection 3 `greaterThan`, 4
+// `greaterThanOrEqual`, 7 `lessThan`, 8 `lessThanOrEqual`, and 9 `equals` with the boolean `true`) ask a
+// text operand a question v1 semantics settle in advance, and the graph validator now refuses them with
+// `condition-comparison-unsupported`. That does not touch the serializer claims above: a document that
+// says `greaterThan 3` is still written and read back unchanged (T063), and the operator is kept so the
+// fidelity assertion stays about the operator. What changed is the import verdict. A Workflow carrying
+// them is invalid in the catalog and cannot be selected for export, so the identity-through-import
+// claims (T064) are held on `IMPORTABLE`, the same graph with those five conditions made valid, and the
+// verdict on the original is asserted here.
+
+describe('Feature 254 C9 — the unsupported corpus conditions are refused on import', () => {
+  const UNSUPPORTED_INDEXES = [3, 4, 7, 8, 9] as const;
+
+  function catalogVerdict(definition: WorkflowDefinition) {
+    const phaseCatalog = resolvePhaseCatalog({
+      rows: PHASES.map(phaseRow),
+      revision: FIXTURE_REVISION
+    });
+    const pipelineCatalog = resolvePipelineCatalog({
+      rows: PIPELINES.map(pipelineRow),
+      revision: FIXTURE_REVISION,
+      phaseCatalog: phaseCatalog.effective
+    });
+    return resolveWorkflowCatalog({
+      rows: [workflowRow(definition)],
+      revision: FIXTURE_REVISION,
+      pipelineCatalog: { effective: pipelineCatalog.effective, records: pipelineCatalog.records }
+    });
+  }
+
+  it('marks the Workflow invalid, with one defect at each unsupported connection and no other', () => {
+    const record = catalogVerdict(EVERYTHING).records.at(0);
+    expect(record?.status).toBe('invalid');
+    const errors = record?.errors ?? [];
+    const unsupported = errors.filter((error) => error.code === 'condition-comparison-unsupported');
+    expect(unsupported.map((error) => error.field)).toEqual(
+      UNSUPPORTED_INDEXES.map((index) => `connections[${index}].condition`)
+    );
+    // No other defect: the rest of the corpus is a well-formed Workflow.
+    expect(errors.map((error) => error.code)).toEqual(
+      UNSUPPORTED_INDEXES.map(() => 'condition-comparison-unsupported')
+    );
+  });
+
+  it('cannot be selected for export while it carries them', () => {
+    const phaseCatalog = resolvePhaseCatalog({
+      rows: PHASES.map(phaseRow),
+      revision: FIXTURE_REVISION
+    });
+    const pipelineCatalog = resolvePipelineCatalog({
+      rows: PIPELINES.map(pipelineRow),
+      revision: FIXTURE_REVISION,
+      phaseCatalog: phaseCatalog.effective
+    });
+    const selection = selectWorkflowForExport({
+      rows: [workflowRow(EVERYTHING)],
+      pipelineCatalog: { effective: pipelineCatalog.effective, records: pipelineCatalog.records },
+      workflowId: EVERYTHING.workflowId
+    });
+    expect(selection.outcome).not.toBe('selected');
+  });
+
+  it('is a valid Workflow once the five conditions are made text comparisons (the control)', () => {
+    const record = catalogVerdict(IMPORTABLE).records.at(0);
+    expect(record?.status).toBe('effective');
+    expect(record?.errors).toEqual([]);
+  });
+
+  it('keeps the serializer faithful to the unsupported operators regardless', () => {
+    // The fidelity claim of T063, restated for exactly the connections the rule refuses.
+    const read = readPackage(documentFor({ label: 'every field', definition: EVERYTHING, mode: 'closure' }));
+    for (const index of UNSUPPORTED_INDEXES) {
+      expect(read.workflow.connections.at(index)?.condition).toEqual(
+        EVERYTHING.connections.at(index)?.condition
+      );
     }
   });
 });

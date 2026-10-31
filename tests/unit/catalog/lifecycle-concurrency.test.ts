@@ -213,30 +213,71 @@ describe('two first-draft creations race the same way (FR-012a)', () => {
     expect(versionIdsOf(harness.fs, 'phase', 'plan')).toEqual(['v1']);
   });
 
-  it('leaves the loser of a cross-definition interleave as debris, never unaccounted for', async () => {
-    // The documented boundary, asserted rather than wished away. Two writes of
-    // *different* definitions both pass their own gates — that is the point of a
-    // per-definition gate — and then share one manifest file, where 099's recorded
-    // assumption is last-writer-wins and a cross-window lock is out of scope. The
-    // per-definition gate widened this case rather than closing it, so the property
-    // that has to hold is the weaker one: every record on disk is either history or
-    // collectable debris.
+  it('keeps both definitions when two different definitions are saved in parallel (FR-037)', async () => {
+    // Feature 254 (FR-R4-F07, W-T1; contract W1, FR-037, US7 AS1) rewrote this case. It used to pin a lost
+    // update: two writes of DIFFERENT definitions both pass their own gates (that is the point of a
+    // per-definition gate), then both loaded the one manifest, each wrote it back with only its own entry,
+    // and the second rename erased the first. Both calls returned `saved`, and one definition's entry was
+    // gone, reported as success. The store now runs its writes in turn: the second loads the manifest the
+    // first left, so both entries survive and nothing is left as debris.
     const results = await Promise.all([
       saveDraft('plan', phaseBody('plan'), NO_DRAFT),
       saveDraft('build', phaseBody('build'), NO_DRAFT)
     ]);
 
     expect(outcomesOf(results)).toEqual(['saved', 'saved']);
-    const entries = ['plan', 'build'].filter(
-      (id) => entryOf(harness.fs, 'phase', id) !== undefined
-    );
-    expect(entries).toHaveLength(1);
+    expect(entryOf(harness.fs, 'phase', 'plan')?.draftVersionId).toBe('v1');
+    expect(entryOf(harness.fs, 'phase', 'build')?.draftVersionId).toBe('v1');
     const snapshot = await snapshotOf(harness.store);
-    // The record the manifest lost is reported by name and is not a fault: a
-    // collectable record is the operator's to remove, never the store's (099 FR-026).
-    expect(snapshot.collectable).toEqual([
-      { kind: 'phase', id: entries[0] === 'plan' ? 'build' : 'plan', versionId: 'v1' }
-    ]);
+    expect(snapshot.collectable).toEqual([]);
+    expect(snapshot.faults).toEqual([]);
+  });
+
+  it('keeps every definition when several are saved in parallel, in whatever order they land', async () => {
+    const ids = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot'];
+
+    const results = await Promise.all(ids.map((id) => saveDraft(id, phaseBody(id), NO_DRAFT)));
+
+    expect(outcomesOf(results)).toEqual(ids.map(() => 'saved'));
+    for (const id of ids) expect(entryOf(harness.fs, 'phase', id)?.draftVersionId).toBe('v1');
+    expect((await snapshotOf(harness.store)).collectable).toEqual([]);
+  });
+
+  it('gives one success and the rest refusals when many writes race for one definition', async () => {
+    await seedActive(harness, 'phase', 'plan', phaseBody('plan'));
+    const shared = await tokenOf(harness.store, 'phase', 'plan');
+
+    const results = await Promise.all(
+      ['A', 'B', 'C', 'D', 'E'].map((name) => saveDraft('plan', phaseBody('plan', { name }), shared))
+    );
+
+    expect(outcomesOf(results)).toEqual(['refused', 'refused', 'refused', 'refused', 'saved']);
+    // A loser is refused stale, or by the write-once record (`store-refused`) when it reached the
+    // record first; either way it is a structured refusal and not a second success.
+    for (const result of results) {
+      if (result.outcome === 'refused') {
+        expect(['stale-draft', 'store-refused']).toContain(result.refusal.reason);
+      }
+    }
+    // One draft landed, not five: no loser left a record behind.
+    expect(versionIdsOf(harness.fs, 'phase', 'plan')).toEqual(['v1', 'v2']);
+  });
+
+  it('lets a write that failed be followed by a write that succeeds, through the same store', async () => {
+    // The chain must not wedge on a failure: the first write's manifest step fails (it reports `partial`,
+    // its record having landed), and the second, queued behind it, still runs and lands.
+    harness.fs.failWrite(['manifest.json'], 'EIO');
+
+    const first = saveDraft('plan', phaseBody('plan'), NO_DRAFT);
+    const second = saveDraft('build', phaseBody('build'), NO_DRAFT);
+
+    expect(await first).toEqual({ outcome: 'partial', wrote: ['v1'], errno: 'EIO' });
+    expect(await second).toEqual({ outcome: 'saved', draftVersionId: 'v1' });
+    expect(entryOf(harness.fs, 'phase', 'build')?.draftVersionId).toBe('v1');
+    // The first definition's record is on disk and the manifest does not name it: collectable, not a fault.
+    expect(harness.fs.files.has('phases/plan/v1.json')).toBe(true);
+    const snapshot = await snapshotOf(harness.store);
+    expect(snapshot.collectable).toEqual([{ kind: 'phase', id: 'plan', versionId: 'v1' }]);
     expect(snapshot.faults).toEqual([]);
   });
 

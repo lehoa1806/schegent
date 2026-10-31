@@ -129,7 +129,9 @@ const catalogReader: CatalogConfigReader = createCatalogReader(workspaceRoot);
 const catalogStore = createHostCatalogStore(
   () => liveRunPlans(queue.listAll(), Object.values(store.getRunMap())),
   () => retainedHistoryPlans(getHistoryStore().list()),
-  logger
+  logger,
+  // Feature 254 (FR-038, TA7): the claim on this catalog directory is released with the rest of Stage 2.
+  disposables
 );
 // Feature 099 (T493b, T496f, FR-027a, FR-042) — the store is read once, here,
 // before anything is composed, and the session owns that snapshot together with
