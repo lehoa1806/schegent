@@ -391,6 +391,11 @@ export class AutoDrainCoordinator {
     this.closed = true;
   }
 
+  /** FR-R4-F06 (S4) — has `close()` been called? The resume guard reads it; it admits nothing itself. */
+  public isClosed(): boolean {
+    return this.closed;
+  }
+
   /** Sweep, then sweep again for whatever was asked for while we swept. */
   private async sweepUntilNoneRequested(): Promise<void> {
     try {
@@ -634,6 +639,11 @@ export class AutoDrainCoordinator {
     queueId: string,
     wakeup: UnattendedWakeup
   ): Promise<UnattendedAdmitOutcome> {
+    // FR-R4-F06 (FR-022, S4) -- shutdown has begun. The sweep-end listener, the delayed retry and the
+    // credit-watchdog restore all arrive here and only the drain checked the flag, so each could resume
+    // a Run between `close()` and the runners going down. `ineligible` drops the wakeup: nothing
+    // retries it, and a reload rebuilds it from the persisted record.
+    if (this.closed) return 'ineligible';
     if (!this.executionSlotFor(queueId)) return 'capacity-refused';
     const needsSlot = !this.controller.holdsSession(queueId);
     if (needsSlot) this.reservedStarts += 1;
@@ -790,6 +800,14 @@ export class AutoDrainCoordinator {
           this.detach(queueId, resume.completed);
           await this.openOverlapEpisodeIfStarted(queueId);
           return true;
+        }
+        // FR-R4-F06 (FR-016, TA3) -- a resume refused because the previous backend's tree is
+        // still alive, or because shutdown has begun, is a WAIT. A fresh start would write a new
+        // Run over the queue's Run and put a second backend beside the survivor, so start nothing
+        // and give back the lease claimed at step 6; the Task stays pending.
+        if (resume.refusal === 'previous-tree-live' || resume.refusal === 'shutdown-begun') {
+          await releaseLeaseLogged(this.executionLease, queueId, this.logger);
+          return false;
         }
         // Fall through to a fresh start if the run cannot be resumed
         // (e.g. the persisted run no longer matches).

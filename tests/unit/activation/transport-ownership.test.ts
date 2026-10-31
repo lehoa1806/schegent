@@ -223,6 +223,44 @@ describe('FR-R3-137 — one stop path (T1530g, FR-011)', () => {
     expect(closeResourcesAt).toBeGreaterThan(closeDrainAt);
   });
 
+  // FR-R4-F06 (L8; contract S, S5 and S9) -- the resource teardown takes the bounded backend teardown
+  // as a REQUIRED dependency, and `dispose` still releases ownership only after it. `teardown` is a
+  // required member of `Stage2ResourceTeardown`, so tsc fails a call that omits it; this pins the
+  // call in the composition root that actually runs in production, and the order around it. The
+  // reset transaction's stop-producers step is `tearDownStage2`, which runs this same `dispose`, so
+  // it waits for the same teardown with its own phases unchanged (S9).
+  it('`dispose` passes the backend teardown to the resource teardown (FR-R4-F06, S5)', () => {
+    const call = code.slice(code.indexOf('closeStage2Resources('));
+    const argumentsEnd = call.indexOf('});');
+    expect(argumentsEnd).toBeGreaterThan(-1);
+    expect(call.slice(0, argumentsEnd)).toMatch(/teardown:\s*backend\.teardown/);
+  });
+
+  it('`dispose` runs close-drain, resource teardown, lease release and primacy release, in that order (S5)', () => {
+    const at = (needle: string): number => code.indexOf(needle);
+    const closeDrain = at('closeAutoDrain(');
+    const resources = at('closeStage2Resources(');
+    const leases = at('executionLeases.releaseAll()');
+    const primacy = at('lock.release()');
+    expect(closeDrain).toBeGreaterThan(-1);
+    expect(resources).toBeGreaterThan(closeDrain);
+    expect(leases).toBeGreaterThan(resources);
+    expect(primacy).toBeGreaterThan(leases);
+  });
+
+  it('the backend wiring no longer registers a `cancelAll` disposable: the teardown replaced it (S5)', () => {
+    const wiring = readFileSync(
+      resolve(__dirname, '../../../src/activation/backend-execution-wiring.ts'),
+      'utf8'
+    );
+    const wiringCode = wiring
+      .split('\n')
+      .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+      .join('\n');
+    expect(wiringCode).not.toMatch(/disposables\.push\(\{[^}]*cancelAll/);
+    expect(wiringCode).toContain('createHostTeardown(runnerRegistry');
+  });
+
   it('the host teardown is assigned once and awaited by `deactivate`', () => {
     // Feature 218 — any statement that starts by assigning it. The guarded clear
     // starts with `if` and the declaration with `let`, so neither is counted.

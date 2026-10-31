@@ -1,6 +1,9 @@
 <script lang="ts">
+  import { setContext, tick } from 'svelte';
+
   import { snapshotStore } from '../lib/snapshot-store.svelte';
 
+  import { DASHBOARD_NAVIGATION, type DashboardNavigation } from './navigation-context';
   import { createRouteLoader } from './route-loader';
   import RouteOutlet from './RouteOutlet.svelte';
   import {
@@ -31,6 +34,34 @@
   function navigate(next: DashboardRoute): void {
     route = next;
   }
+
+  // FR-R4-F06 (FR-008; D5) -- "Review in Settings" from a launch surface. Webview-local: it
+  // posts no command, names no setting key and persists nothing. The Settings route mounts
+  // fresh with its General tab selected (the tab is local state that starts there), and its
+  // surface loads lazily, so the heading may not exist after one tick; the scroll waits for it
+  // for a bounded number of frames and then gives up quietly rather than throwing.
+  const BACKEND_HEALTH_HEADING_ID = 'backend-health-heading';
+  const SCROLL_WAIT_FRAMES = 120;
+
+  async function scrollToBackendHealth(): Promise<void> {
+    await tick();
+    for (let frame = 0; frame < SCROLL_WAIT_FRAMES; frame += 1) {
+      const heading = document.getElementById(BACKEND_HEALTH_HEADING_ID);
+      if (heading !== null) {
+        heading.scrollIntoView({ block: 'start' });
+        return;
+      }
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+  }
+
+  const navigation: DashboardNavigation = {
+    openBackendSettings: () => {
+      navigate('settings');
+      void scrollToBackendHealth();
+    }
+  };
+  setContext(DASHBOARD_NAVIGATION, navigation);
 </script>
 
 <div class="dashboard-root" data-testid="dashboard-app-root">

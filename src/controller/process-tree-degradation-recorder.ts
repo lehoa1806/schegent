@@ -33,6 +33,13 @@ import type { ProcessTreeUnconfirmedPayload } from '../contracts/audit-events';
  * already in progress.
  */
 export class ProcessTreeDegradationRecorder {
+  /**
+   * FR-R4-F06 (S7) -- appends started and not yet settled. `record()` is called as `void
+   * recorder.record(...)` from a sidecar hook, so nothing could await the evidence of a surviving
+   * group; shutdown needs to, because the writer refuses appends once ownership is released.
+   */
+  private readonly inFlight = new Set<Promise<void>>();
+
   constructor(
     /**
      * The append. Injected so this class has no opinion about which writer, and so
@@ -48,7 +55,25 @@ export class ProcessTreeDegradationRecorder {
    * is that hook errors do not propagate into runner control flow; this holds up its
    * end of that rather than relying on the runner's `catch`.
    */
-  public async record(
+  public record(
+    event: Omit<Extract<MonitorSidecarEvent, { kind: 'tree-unconfirmed' }>, 'kind'>
+  ): Promise<void> {
+    const appending = this.appendOne(event);
+    this.inFlight.add(appending);
+    const forget = (): void => void this.inFlight.delete(appending);
+    appending.then(forget, forget);
+    return appending;
+  }
+
+  /**
+   * Resolves once every append started before this call has settled. Never rejects: `record()`
+   * does not, and a wait that could would turn a best-effort observation into a shutdown failure.
+   */
+  public async settled(): Promise<void> {
+    await Promise.allSettled([...this.inFlight]);
+  }
+
+  private async appendOne(
     /**
      * DERIVED from the contract arm, not re-declared. An inline shape is
      * structurally satisfied by whatever `extension.ts` passes, so a rename or a

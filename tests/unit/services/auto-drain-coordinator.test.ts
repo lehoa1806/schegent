@@ -980,7 +980,7 @@ describe('AutoDrainCoordinator — the report a failed start leaves on its queue
       logger: logger as never,
       failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
-    return { coord, controller, startFailures, logger };
+    return { coord, controller, startFailures, logger, lease };
   }
 
   it('records the fresh-start admission that threw, against the queue that attempted it', async () => {
@@ -1030,6 +1030,47 @@ describe('AutoDrainCoordinator — the report a failed start leaves on its queue
       'q-7',
       expect.objectContaining({ admission: 'admitNew' })
     );
+  });
+
+  // FR-R4-F06 (TA3; T56; contract P, P7) -- the drain's resume branch used to fall through to
+  // `admitNew` on ANY `resumed: false`, and `admitNew` writes a new Run over the queue's Run. So a
+  // liveness refusal that came back as the plain `NOT_RESUMED` would spawn a second backend beside
+  // the survivor the guard had just refused to resume beside (FR-016). The two new refusals carry
+  // their own values, and the drain must not start anything on either. The control is M17.
+  describe('FR-R4-F06 — a refused resume never falls through to a fresh start (TA3)', () => {
+    /** The value the controller's admission seam returns for a refusal. */
+    const refused = (refusal?: string) => ({
+      resumed: false as const,
+      completed: Promise.resolve(),
+      ...(refusal === undefined ? {} : { refusal })
+    });
+
+    it.each(['previous-tree-live', 'shutdown-begun'])(
+      'starts nothing on the %s refusal, and gives the lease back',
+      async (refusal) => {
+        const s = reportingSetup({ id: 'q-7', description: 'ship the thing', runId: 'run-3' });
+        s.controller.admitResume = vi.fn(async () => refused(refusal));
+
+        await s.coord.drainIfIdle('q-7');
+
+        expect(s.controller.admitResume).toHaveBeenCalledTimes(1);
+        expect(s.controller.admitNew, 'a fresh Run beside a live tree is what FR-016 forbids').not.toHaveBeenCalled();
+        // A refusal is a wait, not a failure: nothing is reported and nothing is cleared.
+        expect(s.startFailures.recordFailure).not.toHaveBeenCalled();
+        expect(s.startFailures.clear).not.toHaveBeenCalled();
+        // The drain claimed the queue's lease at step 6 and started nothing, so it hands it back.
+        expect(s.lease.release).toHaveBeenCalledWith('q-7');
+      }
+    );
+
+    it('still falls through to admitNew on the plain refusal (pins)', async () => {
+      const s = reportingSetup({ id: 'q-7', description: 'ship the thing', runId: 'run-3' });
+      s.controller.admitResume = vi.fn(async () => refused());
+
+      await s.coord.drainIfIdle('q-7');
+
+      expect(s.controller.admitNew).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('clears the report when a fresh start succeeds', async () => {
@@ -1650,6 +1691,53 @@ describe('AutoDrainCoordinator — FR-R3-205: a closed drain starts nothing', ()
     expect(closed.lease.release).toHaveBeenCalledTimes(1);
     expect(closed.lease.release).toHaveBeenCalledWith(QUEUE);
     expectNothingWritten(closed);
+  });
+
+  // FR-R4-F06 (FR-022; T24; contract S, S4; research R31) -- an unattended admission refuses once
+  // shutdown has begun. Only the drain checked the closed flag; the sweep-end listener, the
+  // delayed retry and the credit-watchdog restore all reach `admitUnattended`, and each could
+  // resume a Run in the interval between `close()` and the runners being torn down. They share
+  // this one method, so one gate covers all three. The control is M14.
+  describe('an unattended admission after close (T24)', () => {
+    const WAKEUPS = [
+      ['the sweep-end listener (credits restored)', { cause: 'credits-restored', queueId: QUEUE, evidenceAt: 1 }],
+      ['the delayed retry (backoff elapsed)', { cause: 'backoff-elapsed', queueId: QUEUE, deadline: 1 }],
+      ['the credit-watchdog restore', { cause: 'credits-restored', queueId: QUEUE, evidenceAt: 2 }]
+    ] as const;
+
+    it.each(WAKEUPS)('admits nothing for %s, and calls no controller method', async (_caller, wakeup) => {
+      const f = build();
+      const holdsSession = vi.fn(() => false);
+      const admitResume = vi.fn(async () => ({ resumed: true, completed: Promise.resolve() }));
+      Object.assign(f.deps.controller as object, { holdsSession, admitResume });
+      f.coord.close();
+
+      const outcome = await f.coord.admitUnattended(QUEUE, wakeup);
+
+      expect(outcome).not.toBe('admitted');
+      expect(outcome).toBe('ineligible');
+      expect(admitResume).not.toHaveBeenCalled();
+      expect(holdsSession).not.toHaveBeenCalled();
+      expectNothingWritten(f);
+    });
+
+    it('still admits before close, so the refusal is the close and not the fixture', async () => {
+      const f = build();
+      const admitResume = vi.fn(async () => ({ resumed: true, completed: Promise.resolve() }));
+      Object.assign(f.deps.controller as object, { admitResume });
+
+      const outcome = await f.coord.admitUnattended(QUEUE, WAKEUPS[0][1]);
+
+      expect(outcome).toBe('admitted');
+      expect(admitResume).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports the coordinator closed, for the resume guard to read', () => {
+      const f = build();
+      expect(f.coord.isClosed()).toBe(false);
+      f.coord.close();
+      expect(f.coord.isClosed()).toBe(true);
+    });
   });
 
   it('US4.1 — a coordinator built after another is closed admits as before', async () => {

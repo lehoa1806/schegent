@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 125
+    vacuity-census-denominator: 127
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **125** |
+| Gates the detector calls **controlled** (the denominator) | **127** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1551,3 +1551,28 @@ it; none left.
 | **+1** | `advisory-diff-is-report-only.test.ts` (124 → 125) | Joined. Walks the closure of each script that gives a verdict, a release or a package, and every file under `examples/`, for the script name `security:advisory-diff` and the file name `advisory-diff.mjs`, so a chain or a Phase that starts running the advisory comparison is a reviewed edit; it also holds `security:audit` to its body and the derived release-control facts to their values. Its controls are planted cases, each written to turn one assertion red (a manifest whose `verify:all` runs the command, a script that runs its file reached through `release`, an example that names the command, and a `scripts/` file that makes the checksum detector's call), a check that every chain exists and that the gate's closure is longer than five scripts, and a floor asserting `examples/` was scanned, so an emptied closure or a moved root cannot read as "nothing reaches the command" |
 
 The rate stays **0.0%**: the entrant was mutated with the rest and did not survive.
+
+**Denominator movement 125 → 127 (2026-10-31, feature 253 / `FR-R4-F06`).** Two gates joined, each
+controlled on its first run. Attribution is by census membership: the predicate the detector applies
+(`isScanningGate` and `looksControlled`) was run over the three gate files the feature added; two satisfy
+it, and one does not scan a tree (`resume-policy-doc-parity.test.ts` reads two documents and one source file
+by name), so it is neither in the denominator nor a vacuity risk of this kind. None left.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `capability-wording.test.ts` (125 → 126) | Joined (L5). Walks every Markdown file under `docs/`, the capability contract module and the webview sources for an unnegated phrase that calls a tool denial OS containment. Its control is a floor of 100 files scanned, and it is seeded with one positive and one negated fixture that must fail and pass. |
+| **+1** | `backend-recipe-sites.test.ts` (126 → 127) | Joined (L11). Walks `src/` and `webview-ui/src` for every file that compares to a backend literal or keys a record by the union, and fails one the recipe table does not list. Its controls are a floor of 500 files scanned and 20 sites found, and it is seeded with an unlisted comparison, an unlisted record and an absorbing `default:`. |
+
+The rate stays **0.0%**: both entrants were mutated with the rest and neither survived.
+
+**Seeded reds of the three gates this feature added.** Each shipped with the case that shows it can
+fail, run on 2026-10-31 and recorded here in the form of the neighbouring gates:
+
+| Gate | Seeded case that must fail | Result |
+|---|---|---|
+| `capability-wording.test.ts` (L5) | a capability page that says a Phase "gets filesystem isolation from the CLI"; the retired phrase "OS/CLI-enforced containment" in a capability-named file | both reported; the negated twin and a paragraph not about capabilities pass |
+| `resume-policy-doc-parity.test.ts` (L7) | a resume list missing `unanswerable`; a resume list that permits `orphaned-group`; a verdict list missing one member; a document with no marker; an end marker before its start | each rejected by the same comparison the real documents are held to |
+| `backend-recipe-sites.test.ts` (L11) | an unlisted `k === 'codex'`; an unlisted `Record<BackendRunnerKind, …>`; a switch with `case 'claude':` falling into `default:` | each reported; a comment that quotes the pattern, and a `default:` that stands alone, pass |
+
+At the closing run the first of these was also red against the real tree before the documents were
+corrected: it named exactly `agent-capability-posture.md:147` and `phase-capabilities.ts:13`.

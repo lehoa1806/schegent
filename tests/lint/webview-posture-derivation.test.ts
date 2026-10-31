@@ -239,3 +239,50 @@ describe('FR-R3-144 T024 — the webview never computes a containment answer (FR
     expect(readsTheSettingKey(`config.get('schegent.logging.verbose')`)).toBe(false);
   });
 });
+
+// FR-R4-F06 (FR-009; L2; contract D, D6) -- a contained backend is never labelled
+// uncontained, and the launch notice states no posture of its own.
+//
+// `LaunchAuthorityNotice.svelte` renders the sentence the HOST composed for a granted
+// uncontained backend. The way that goes wrong is a webview-side sentence: a literal
+// saying a backend has "no OS-enforced bound", or calling it "uncontained", written into
+// a component that cannot know which backends those are. Such a sentence would be shown
+// whether or not the backend is contained, so a Codex-only launch could be told its
+// sandboxed backend has no bound. The three rules above forbid the containment
+// VOCABULARY; this one forbids the two phrases a notice would be tempted to write, in
+// the one component that renders notices. They may still reach the screen, but only
+// through a host-supplied `notice`.
+describe('FR-R4-F06 L2 -- the launch notice composes no posture sentence (D6)', () => {
+  const NOTICE = 'webview-ui/src/components/Runs/LaunchAuthorityNotice.svelte';
+  const FORBIDDEN_PHRASES = ['uncontained', 'no OS-enforced bound'] as const;
+
+  /** Case-insensitive: "Uncontained" at the start of a sentence is the same sentence. */
+  const phrasesIn = (source: string): string[] =>
+    FORBIDDEN_PHRASES.filter((phrase) => new RegExp(escape(phrase), 'i').test(source));
+
+  it('scanned the component, which is mounted and non-empty', () => {
+    const found = scanWebviewSources().find((file) => file.path === NOTICE);
+    expect(found, `${NOTICE} is not in the webview scan`).toBeDefined();
+    expect((found?.contents.length ?? 0)).toBeGreaterThan(500);
+  });
+
+  it('holds neither phrase, in markup, script or comment', () => {
+    const contents = scanWebviewSources().find((file) => file.path === NOTICE)?.contents ?? '';
+    expect(phrasesIn(contents)).toEqual([]);
+  });
+
+  it('SEEDED: a fixture holding either phrase is reported, in any case', () => {
+    expect(phrasesIn('<p>This backend is uncontained.</p>')).toEqual(['uncontained']);
+    expect(phrasesIn('const text = "Runs with No OS-Enforced Bound";')).toEqual([
+      'no OS-enforced bound'
+    ]);
+    expect(phrasesIn('Uncontained, with no OS-enforced bound')).toEqual([
+      'uncontained',
+      'no OS-enforced bound'
+    ]);
+  });
+
+  it('CONTROL: text that reaches the screen only through a host field is clean', () => {
+    expect(phrasesIn('<p data-testid="x">{item.notice}</p>')).toEqual([]);
+  });
+});

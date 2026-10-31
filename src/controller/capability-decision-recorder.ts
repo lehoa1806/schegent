@@ -111,6 +111,10 @@ export async function recordCapabilityDecision<TContext extends CapabilityRefusa
       kind,
       granted: set.capabilities,
       phaseIndex: context.iteration,
+      // FR-R4-F06 (K5) -- how the bound was enforced, and what it left open, so a completed Run says
+      // whether its restriction was a tool denial or the CLI's own sandbox.
+      enforcement: plan.enforcement,
+      residuals: plan.residuals,
       ambientConfig
     };
     await append(context, 'capability-applied', 'success', { ...applied });
@@ -120,6 +124,7 @@ export async function recordCapabilityDecision<TContext extends CapabilityRefusa
   const payload: CapabilityRefusedPayload = {
     kind: plan.kind,
     unenforceable: plan.unenforceable,
+    unqualified: plan.unqualified,
     phaseIndex: context.iteration
   };
   // Spread, not a cast: a closed interface has no index signature, so it is not
@@ -127,7 +132,7 @@ export async function recordCapabilityDecision<TContext extends CapabilityRefusa
   // `backend-posture-recorder.ts`, and it is stated here so a later reader does
   // not "simplify" it back into a compile error.
   await append(context, 'capability-refused', 'failure', { ...payload });
-  throw new CapabilityNotEnforceableError(plan.kind, plan.unenforceable);
+  throw new CapabilityNotEnforceableError(plan.kind, plan.unenforceable, plan.unqualified);
 }
 
 /**

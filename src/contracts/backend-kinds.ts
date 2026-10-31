@@ -23,10 +23,9 @@
 // reset-transaction literals that `contracts/audit-events.ts` already reuses
 // rather than restates.
 //
-// ADDING A BACKEND still means three edits, and only the first is here:
-//   1. extend the union and the frozen list below, and the `package.json` enum;
-//   2. implement `BackendRunner` in `src/runner/<your>-cli.ts`;
-//   3. add a `case` to `createBackendRunner`.
+// ADDING A BACKEND is not three edits. The places that name a backend are listed, with their roles, in
+// `tests/fixtures/backend-recipe-sites.ts`, and `tests/lint/backend-recipe-sites.test.ts` fails when one is
+// missing from that list. Start there; the first edit is the union and the frozen list below.
 
 export type BackendRunnerKind = 'claude' | 'codex' | 'agy';
 

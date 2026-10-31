@@ -11,6 +11,8 @@ import type {
   RunSnapshotDeclinedPayload
 } from '../contracts/audit-events';
 import { emitTerminalOutcomeAudit } from '../services/terminal-outcome-audit';
+import type { ResumeWalkDeps } from '../services/resume-decision';
+import { errorMessage } from '../lib/errors';
 
 export type TaskLifecycleAuditEvent =
   | 'task-execution-started'
@@ -45,6 +47,22 @@ export class WorkflowLifecycleAuditor {
       });
     } catch (err) {
       this.logger.warn(`phase-control audit append failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * FR-R4-F06 (P8) — the decline the resume admission guard records. Best-effort like every
+   * append here: a failed write is logged and never changes the refusal it describes. The
+   * payload is copied, so the caller's object is never shared with the writer.
+   */
+  public async appendResumeDeclined(
+    entry: Parameters<ResumeWalkDeps['appendAudit']>[0]
+  ): Promise<void> {
+    if (!this.writer) return;
+    try {
+      await this.writer.append({ ...entry, payload: { ...entry.payload } });
+    } catch (err) {
+      this.logger.warn(`resume-declined audit append failed: ${errorMessage(err)}`);
     }
   }
 

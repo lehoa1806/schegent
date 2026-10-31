@@ -28,10 +28,17 @@ import type {
   WorkflowNode
 } from '../../../../src/contracts/workflow-definitions';
 import { buildLaunchProjection } from '../../../../src/ui/sidebar/launch-projection';
+import {
+  SUPPORTED_BACKENDS,
+  type BackendRunnerKind
+} from '../../../../src/contracts/backend-kinds';
+import type { PhaseDefinition } from '../../../../src/contracts/process-definitions';
+import { resolveBackendKind } from '../../../../src/runner/backend-runner-factory';
 import type {
   BuilderLifecycle,
   Launchable,
   LaunchSection,
+  PhaseCatalogProjection,
   PipelineCatalogProjection,
   PipelineCatalogSourceProjection,
   WorkflowCatalogProjection,
@@ -604,5 +611,312 @@ describe('buildLaunchProjection — ordering (FR-001)', () => {
     );
 
     expect(entriesOf(projection!.workflows).map((entry) => entry.name)).toEqual(['Apple', 'zebra']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Effective backends -- FR-R4-F06 (FR-007, T6; contract D, D3 and D10)
+// ---------------------------------------------------------------------------
+//
+// The launch notice must describe the backend a launch would actually run on, not the
+// one the window advertises. A Phase's pinned `runner` wins over the window default, and
+// a `sideEffects: git` Phase always runs on Claude, so a Codex window can start a Run
+// that spawns Claude. `backends` is computed by the freeze's own function
+// (`effectiveRunnerKindForPhase`), so the notice and the Run cannot disagree.
+
+function phaseDefinition(
+  phaseId: string,
+  options: { readonly runner?: BackendRunnerKind; readonly sideEffects?: 'none' | 'workspace' | 'git' } = {}
+): PhaseDefinition {
+  return {
+    phaseId,
+    name: phaseId,
+    version: 1,
+    instruction: 'do the thing',
+    ...(options.runner !== undefined ? { runner: options.runner } : {}),
+    ...(options.sideEffects !== undefined ? { sideEffects: options.sideEffects } : {})
+  };
+}
+
+function phaseCatalog(definitions: readonly PhaseDefinition[]): PhaseCatalogProjection {
+  return {
+    state: 'ready',
+    records: [],
+    effective: definitions,
+    revision: 'rev-phases',
+    warnings: []
+  };
+}
+
+/** A Pipeline record whose definition names exactly these Phases. */
+function pipelineOver(pipelineId: string, phaseIds: readonly string[]): PipelineCatalogSourceProjection {
+  const record = pipelineRecord({ pipelineId, name: pipelineId });
+  if (record.definition === null) throw new Error('fixture built no definition');
+  return { ...record, definition: { ...record.definition, phaseIds } };
+}
+
+function backendsOf(launchable: Launchable | undefined): readonly BackendRunnerKind[] | undefined {
+  return launchable?.backends;
+}
+
+describe('buildLaunchProjection -- the backends a launch would run on (FR-007, D3)', () => {
+  it('includes claude for a Pipeline with a git Phase on a Codex window', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('ship', ['plan', 'finish'])]),
+      workflowCatalog([]),
+      phaseCatalog([
+        phaseDefinition('plan'),
+        phaseDefinition('finish', { sideEffects: 'git' })
+      ]),
+      'codex'
+    );
+
+    expect(backendsOf(entriesOf(projection!.pipelines)[0])).toEqual(['claude', 'codex']);
+  });
+
+  it('lets a Phase\'s pinned runner win over the window default', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('pinned', ['only'])]),
+      workflowCatalog([]),
+      phaseCatalog([phaseDefinition('only', { runner: 'agy' })]),
+      'codex'
+    );
+
+    expect(backendsOf(entriesOf(projection!.pipelines)[0])).toEqual(['agy']);
+  });
+
+  it('unions the backends over a Workflow\'s node Pipelines', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([
+        pipelineOver('on-agy', ['a']),
+        pipelineOver('on-codex', ['b'])
+      ]),
+      workflowCatalog([
+        workflowRecord({
+          workflowId: 'wf',
+          name: 'wf',
+          nodes: [
+            { nodeId: 'n1', pipelineId: 'on-agy' },
+            { nodeId: 'n2', pipelineId: 'on-codex' }
+          ]
+        })
+      ]),
+      phaseCatalog([phaseDefinition('a', { runner: 'agy' }), phaseDefinition('b', { runner: 'codex' })]),
+      'claude'
+    );
+
+    expect(backendsOf(entriesOf(projection!.workflows)[0])).toEqual(['codex', 'agy']);
+  });
+
+  it('lets an unresolvable Phase contribute the window default', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('dangling', ['no-such-phase'])]),
+      workflowCatalog([]),
+      phaseCatalog([phaseDefinition('unrelated')]),
+      'codex'
+    );
+
+    expect(backendsOf(entriesOf(projection!.pipelines)[0])).toEqual(['codex']);
+  });
+
+  it('contributes the window default when no Phase catalog is resolved yet', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('early', ['a'])]),
+      workflowCatalog([]),
+      undefined,
+      'agy'
+    );
+
+    expect(backendsOf(entriesOf(projection!.pipelines)[0])).toEqual(['agy']);
+  });
+
+  it('is non-empty, unique and in SUPPORTED_BACKENDS order', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([
+        pipelineOver('mixed', ['x1', 'x2', 'x3', 'x4']),
+        pipelineOver('empty', [])
+      ]),
+      workflowCatalog([]),
+      phaseCatalog([
+        phaseDefinition('x1', { runner: 'agy' }),
+        phaseDefinition('x2', { runner: 'claude' }),
+        phaseDefinition('x3', { runner: 'codex' }),
+        phaseDefinition('x4', { runner: 'claude' })
+      ]),
+      'codex'
+    );
+
+    const entries = entriesOf(projection!.pipelines);
+    for (const entry of entries) {
+      const backends = entry.backends ?? [];
+      expect(backends.length).toBeGreaterThan(0);
+      expect(new Set(backends).size).toBe(backends.length);
+      const positions = backends.map((kind) => SUPPORTED_BACKENDS.indexOf(kind));
+      expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    }
+    expect(backendsOf(entries.find((entry) => entry.id === 'mixed'))).toEqual([
+      'claude',
+      'codex',
+      'agy'
+    ]);
+    // A Pipeline naming no Phase still names the backend a start would use.
+    expect(backendsOf(entries.find((entry) => entry.id === 'empty'))).toEqual(['codex']);
+  });
+
+  it('resolves a configured unknown backend to claude (D10)', () => {
+    const resolved = resolveBackendKind('not-a-backend');
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('plain', ['a'])]),
+      workflowCatalog([]),
+      phaseCatalog([phaseDefinition('a')]),
+      resolved
+    );
+
+    expect(backendsOf(entriesOf(projection!.pipelines)[0])).toEqual(['claude']);
+  });
+
+  it('defaults to claude when no window default is given', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('plain', ['a'])]),
+      workflowCatalog([])
+    );
+
+    expect(backendsOf(entriesOf(projection!.pipelines)[0])).toEqual(['claude']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Capability notices -- FR-R4-F06 (FR-012, T13; contract K, K6)
+// ---------------------------------------------------------------------------
+//
+// A Phase that withholds a capability gets a host sentence in the launcher when the restriction leaves
+// something open (a residual) or cannot be enforced at all (a refusal). The plan is made on the Phase's
+// EFFECTIVE backend, the same one `backends` reports, so the sentence describes the Run that would
+// start. A Phase that declares nothing yields no notice, and neither does one whose restriction leaves
+// nothing open.
+
+function phaseWithCapabilities(
+  phaseId: string,
+  capabilities: readonly ('workspace-write' | 'outside-workspace-write' | 'process-spawn' | 'network')[],
+  runner?: BackendRunnerKind
+): PhaseDefinition {
+  return { ...phaseDefinition(phaseId, runner === undefined ? {} : { runner }), capabilities };
+}
+
+function noticesOf(launchable: Launchable | undefined) {
+  return launchable?.capabilityNotices ?? [];
+}
+
+describe('buildLaunchProjection -- capability notices (FR-012, K6)', () => {
+  it('notes a Claude Phase that withholds network while process-spawn stays granted, as a residual', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('p', ['search'])]),
+      workflowCatalog([]),
+      phaseCatalog([
+        phaseWithCapabilities('search', ['workspace-write', 'outside-workspace-write', 'process-spawn'])
+      ]),
+      'claude'
+    );
+
+    const notices = noticesOf(entriesOf(projection!.pipelines)[0]);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ phaseName: 'search', backend: 'claude', outcome: 'residual' });
+    expect(notices[0]?.text).toContain('a granted shell can still reach the network');
+  });
+
+  it('notes an Agy Phase that withholds network as refused', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('p', ['search'])]),
+      workflowCatalog([]),
+      phaseCatalog([
+        phaseWithCapabilities('search', ['workspace-write', 'outside-workspace-write', 'process-spawn'], 'agy')
+      ]),
+      'claude'
+    );
+
+    const notices = noticesOf(entriesOf(projection!.pipelines)[0]);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ phaseName: 'search', backend: 'agy', outcome: 'refused' });
+    expect(notices[0]?.text).toContain('network');
+  });
+
+  it('plans on the Phase\'s effective backend, not the window default', () => {
+    // The same declared set is a residual on Claude and a refusal on Agy.
+    const set = ['workspace-write', 'outside-workspace-write', 'process-spawn'] as const;
+    const onAgy = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('p', ['a'])]),
+      workflowCatalog([]),
+      phaseCatalog([phaseWithCapabilities('a', set, 'agy')]),
+      'claude'
+    );
+    const onWindowDefault = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('p', ['a'])]),
+      workflowCatalog([]),
+      phaseCatalog([phaseWithCapabilities('a', set)]),
+      'claude'
+    );
+    expect(noticesOf(entriesOf(onAgy!.pipelines)[0])[0]?.outcome).toBe('refused');
+    expect(noticesOf(entriesOf(onWindowDefault!.pipelines)[0])[0]?.outcome).toBe('residual');
+  });
+
+  it('yields no notice for a Phase with no capabilities', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('p', ['plain'])]),
+      workflowCatalog([]),
+      phaseCatalog([phaseDefinition('plain')]),
+      'claude'
+    );
+    expect(noticesOf(entriesOf(projection!.pipelines)[0])).toEqual([]);
+  });
+
+  it('yields no notice for a restriction that leaves nothing open', () => {
+    // Codex withholding workspace-write: the CLI sandbox carries it whole, and no residual remains.
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('p', ['a'])]),
+      workflowCatalog([]),
+      phaseCatalog([
+        phaseWithCapabilities('a', ['outside-workspace-write', 'process-spawn', 'network'])
+      ]),
+      'codex'
+    );
+    expect(noticesOf(entriesOf(projection!.pipelines)[0])).toEqual([]);
+  });
+
+  it('yields no notice for a Phase that grants everything', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('p', ['a'])]),
+      workflowCatalog([]),
+      phaseCatalog([
+        phaseWithCapabilities('a', ['workspace-write', 'outside-workspace-write', 'process-spawn', 'network'])
+      ]),
+      'claude'
+    );
+    expect(noticesOf(entriesOf(projection!.pipelines)[0])).toEqual([]);
+  });
+
+  it('collects one notice per Phase that needs one, in order, across a Workflow\'s node Pipelines', () => {
+    const projection = buildLaunchProjection(
+      pipelineCatalog([pipelineOver('first', ['a']), pipelineOver('second', ['b'])]),
+      workflowCatalog([
+        workflowRecord({
+          workflowId: 'wf',
+          name: 'wf',
+          nodes: [
+            { nodeId: 'n1', pipelineId: 'first' },
+            { nodeId: 'n2', pipelineId: 'second' }
+          ]
+        })
+      ]),
+      phaseCatalog([
+        phaseWithCapabilities('a', ['workspace-write', 'outside-workspace-write', 'process-spawn']),
+        phaseWithCapabilities('b', ['workspace-write', 'outside-workspace-write', 'process-spawn'], 'agy')
+      ]),
+      'claude'
+    );
+    const notices = noticesOf(entriesOf(projection!.workflows)[0]);
+    expect(notices.map((notice) => [notice.phaseName, notice.outcome])).toEqual([
+      ['a', 'residual'],
+      ['b', 'refused']
+    ]);
   });
 });

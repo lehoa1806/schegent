@@ -645,12 +645,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     await closeStage2Resources({
       sync: [uiWiring, projector, watchdog, queueScheduleWatchdog, statusBar],
       disposables,
-      transport: backend.transport
+      transport: backend.transport,
+      teardown: backend.teardown // FR-R4-F06 (S5): the bounded teardown, awaited before any release below
     });
-    // Feature 092 (T049) — drop every queue lease this window holds before the
-    // workspace lock, so a window that is shutting down never leaves a queue
-    // claimed while advertising itself as no longer primary. Both releases stay
-    // in THIS file: AGENTS.md rule 4 puts primacy's release at `dispose()` here.
+    // Feature 092 (T049) — drop every queue lease this window holds before the workspace
+    // lock, so a shutting-down window never leaves a queue claimed while advertising itself
+    // as no longer primary. Both releases stay in THIS file: AGENTS.md rule 4 (`dispose()` here).
     await executionLeases.releaseAll();
     await lock.release();
   };
