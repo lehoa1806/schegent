@@ -12,7 +12,7 @@
   // component has no account text to render and renders none.
 
   import { resumePhase } from '../../lib/phase-control';
-  import { lifecycleMessage } from '../../lib/lifecycle-control-ipc';
+  import { lifecycleMessage, lifecycleWait } from '../../lib/lifecycle-control-ipc';
   import type { CreditPollingProjection } from '../../lib/snapshot-types';
 
   interface Props {
@@ -25,11 +25,15 @@
 
   let pending = $state(false);
   let refusal = $state<string | null>(null);
+  // FR-R4-F05 (O4, FR-024, FR-026) — a late answer replaces the interim text; unmounting aborts the wait.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  const wait = lifecycleWait(lifetime.signal, (message) => (refusal = message));
 
   async function resume(): Promise<void> {
     pending = true;
     refusal = null;
-    refusal = lifecycleMessage(await resumePhase(queueId));
+    refusal = lifecycleMessage(await resumePhase(queueId, undefined, wait));
     pending = false;
   }
 </script>

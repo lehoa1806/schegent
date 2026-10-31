@@ -21,9 +21,13 @@
 // the breakpoint belongs to. `runId` alone no longer identifies a Run to the
 // host, because the Run record is keyed by queue.
 
-import { CMD_SET_PHASE_BREAKPOINT, CMD_CLEAR_PHASE_BREAKPOINT } from './messages';
+import {
+  CMD_SET_PHASE_BREAKPOINT,
+  CMD_CLEAR_PHASE_BREAKPOINT,
+  type CommandType
+} from './messages';
 import { postCommand } from './vscode-api';
-import { snapshotStore } from './snapshot-store.svelte';
+import { sendIntent } from './intent-ledger';
 
 const ACK_TIMEOUT_MS = 5000;
 
@@ -41,8 +45,12 @@ export function setPhaseBreakpoint(
   phaseId: string,
   queueId: string
 ): Promise<BreakpointResult> {
-  return correlatedRequest(() =>
-    postCommand(CMD_SET_PHASE_BREAKPOINT, { queueId, runId, phaseId }).correlationId
+  return correlatedRequest(
+    CMD_SET_PHASE_BREAKPOINT,
+    { queueId, runId, phaseId },
+    (correlationId, payload) => {
+      postCommand(CMD_SET_PHASE_BREAKPOINT, payload, { correlationId });
+    }
   );
 }
 
@@ -55,47 +63,29 @@ export function clearPhaseBreakpoint(
   phaseId: string,
   queueId: string
 ): Promise<BreakpointResult> {
-  return correlatedRequest(() =>
-    postCommand(CMD_CLEAR_PHASE_BREAKPOINT, { queueId, runId, phaseId }).correlationId
+  return correlatedRequest(
+    CMD_CLEAR_PHASE_BREAKPOINT,
+    { queueId, runId, phaseId },
+    (correlationId, payload) => {
+      postCommand(CMD_CLEAR_PHASE_BREAKPOINT, payload, { correlationId });
+    }
   );
 }
 
-function correlatedRequest(post: () => string): Promise<BreakpointResult> {
-  return new Promise<BreakpointResult>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: (() => void) | null = null;
-
-    const finalise = (result: BreakpointResult): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (unsubscribe !== null) {
-        try {
-          unsubscribe();
-        } catch {
-          // one-shot listener errors must not leak
-        }
-        unsubscribe = null;
-      }
-      resolve(result);
-    };
-
-    const correlationId = post();
-    snapshotStore.markPending(correlationId);
-    unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      if (ack.status === 'accepted') {
-        finalise({ status: 'accepted' });
-      } else {
-        finalise({ status: 'rejected', reason: ack.reason ?? 'rejected' });
-      }
-    });
-
-    timer = setTimeout(() => {
-      finalise({ status: 'rejected', reason: 'timeout' });
-    }, ACK_TIMEOUT_MS);
-  });
+// FR-R4-F05 (I4) — through the intent ledger: an identical retry of an unresolved breakpoint
+// change reuses its identity and payload. A wait that outlives `ACK_TIMEOUT_MS` resolves
+// `timeout` (the outcome is not yet known), as it always did.
+function correlatedRequest<P>(
+  type: CommandType,
+  payload: P,
+  post: (correlationId: string, payload: P) => void
+): Promise<BreakpointResult> {
+  return sendIntent({ type, payload, post, timeoutMs: ACK_TIMEOUT_MS }).then(
+    (result): BreakpointResult => {
+      if (result.kind !== 'ack') return { status: 'rejected', reason: 'timeout' };
+      return result.ack.status === 'accepted'
+        ? { status: 'accepted' }
+        : { status: 'rejected', reason: result.ack.reason ?? 'rejected' };
+    }
+  );
 }

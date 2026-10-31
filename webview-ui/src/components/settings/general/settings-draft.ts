@@ -16,6 +16,7 @@
 // them into a `.ts` module would empty that gate while every test still passed.
 // `field-types.ts` records the same constraint for the same reason.
 
+import { boundaryRefusalText } from '../../../lib/boundary-refusal-text';
 import type { GeneralSettings } from '../../../lib/snapshot-types';
 import type { TransportUsage } from '../../../../../src/contracts/sidebar-ipc/transport-usage';
 import type { Draft, ScalarKey } from './field-types';
@@ -157,17 +158,27 @@ export function ipcKeyFor(spec: { readonly key: ScalarKey; readonly ipcKey?: str
 }
 
 /**
- * Map rejection reasons (Feature 012 T026) to user-friendly messages for
- * `claude.autoCompactPctOverride`. Other keys keep the raw reason.
+ * Map rejection reasons (Feature 012 T026) to user-friendly messages. The three prefixed
+ * reasons the host writes for `claude.autoCompactPctOverride` keep their own sentences.
+ *
+ * FR-R4-F05 (O1) — every other reason is no longer shown raw. A `write-failed:<key>:<message>`
+ * reason carries the host's exception text after its second colon, so it renders as one fixed
+ * sentence without it, and anything else goes through the shared boundary text.
  */
 export function friendlyReason(
   spec: { readonly key: ScalarKey },
   reason?: string
 ): string | undefined {
   if (!reason) return reason;
-  if (spec.key !== 'claudeAutoCompactPctOverride') return reason;
-  if (reason.startsWith('out-of-range:')) return 'Value must be an integer between 1 and 100';
-  if (reason.startsWith('type-mismatch:')) return 'Value must be a whole number';
-  if (reason.startsWith('clear-failed:')) return 'Failed to clear override — please retry';
-  return reason;
+  if (spec.key === 'claudeAutoCompactPctOverride') {
+    if (reason.startsWith('out-of-range:')) return 'Value must be an integer between 1 and 100';
+    if (reason.startsWith('type-mismatch:')) return 'Value must be a whole number';
+    if (reason.startsWith('clear-failed:')) return 'Failed to clear override — please retry';
+  }
+  if (reason.startsWith('write-failed:') || reason.startsWith('clear-failed:')) {
+    return 'The setting could not be saved. Check the Schegent log and try again.';
+  }
+  if (reason.startsWith('out-of-range:')) return 'That value is outside the range this setting accepts.';
+  if (reason.startsWith('type-mismatch:')) return 'That value is not the kind of value this setting accepts.';
+  return boundaryRefusalText(reason);
 }

@@ -19,13 +19,15 @@
 import {
   CMD_CONTINUE_WORKFLOW,
   CMD_LAUNCH_WORKFLOW,
+  type CommandType,
   type ContinueWorkflowPayload,
   type ContinueWorkflowResult,
   type LaunchWorkflowPayload,
   type LaunchWorkflowResult
 } from './messages';
 import { postCommand } from './vscode-api';
-import { snapshotStore } from './snapshot-store.svelte';
+import { sendIntent, type IntentWaitOptions } from './intent-ledger';
+import type { AckResult } from './snapshot-store.svelte';
 
 const ACK_TIMEOUT_MS = 5000;
 
@@ -41,11 +43,15 @@ const ACK_TIMEOUT_MS = 5000;
  */
 type QueueRefusal = Extract<LaunchWorkflowResult, { outcome: 'rejected-queue' }>;
 
-const TIMEOUT_RESULT: QueueRefusal = {
-  outcome: 'rejected-queue',
-  reason: 'queue-refused',
-  detail: 'no-host-response'
-};
+/**
+ * FR-R4-F05 (I5, O3, FR-024) — the wait ran out before the host answered. This is NOT a queue
+ * refusal: the host may still start the run, so the outcome is not yet known. It used to be
+ * a `rejected-queue` with the detail `no-host-response`, which the views rendered as "the
+ * queue refused this run". A module-local outcome, so the wire union stays the contract's.
+ */
+export type NotYetKnown = { readonly outcome: 'not-yet-known' };
+
+const NOT_YET_KNOWN: NotYetKnown = Object.freeze({ outcome: 'not-yet-known' });
 
 const UNUSABLE_ACK_RESULT: QueueRefusal = {
   outcome: 'rejected-queue',
@@ -86,14 +92,15 @@ function isKnownResult(value: unknown, known: ReadonlySet<string>): boolean {
 /**
  * Correlate one already-posted command with its ack.
  *
- * The promise always settles: host silence past five seconds resolves as the
- * timeout refusal above, which is what lets a composer's `finally` restore an
+ * The promise always settles: host silence past five seconds resolves as
+ * `not-yet-known`, which is what lets a composer's `finally` restore an
  * editable form without a second unwinding path.
  *
- * `post` is a thunk rather than a `(type, payload)` pair so each exported helper
- * keeps `postCommand`'s command-to-payload typing instead of widening it here. It
- * runs synchronously inside the Promise executor, before the listener is attached,
- * so two submissions cannot cross-resolve — the established idiom.
+ * FR-R4-F05 (I4) — it sends through the intent ledger, so an identical retry of an
+ * unresolved launch or continuation reuses its identity and payload (the continuation's
+ * `expectedRevision` is part of the payload, and is still its own idempotency check).
+ * `post` takes the identity the ledger minted, so each exported helper keeps
+ * `postCommand`'s command-to-payload typing.
  *
  * `fallbacks` are passed in rather than read from the module constants, so each
  * exported helper proves at its own call site that the shared refusal really is a
@@ -103,53 +110,44 @@ function isKnownResult(value: unknown, known: ReadonlySet<string>): boolean {
  * The one remaining cast is on `ack.result`, which arrives as `unknown` and is
  * narrowed by `isKnownResult` immediately above it.
  */
-function awaitResult<R>(
-  post: () => { correlationId: string },
+function awaitResult<R, P>(
+  type: CommandType,
+  payload: P,
+  post: (correlationId: string, payload: P) => void,
   known: ReadonlySet<string>,
-  fallbacks: { readonly timeout: R; readonly unusable: R }
-): Promise<R> {
-  return new Promise<R>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: (() => void) | null = null;
-
-    const finalise = (result: R): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (unsubscribe !== null) {
-        try {
-          unsubscribe();
-        } catch {
-          // one-shot listener errors must not leak
-        }
-        unsubscribe = null;
-      }
-      resolve(result);
-    };
-
-    const { correlationId } = post();
-
-    snapshotStore.markPending(correlationId);
-    unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      finalise(isKnownResult(ack.result, known) ? (ack.result as R) : fallbacks.unusable);
-    });
-
-    timer = setTimeout(() => {
-      finalise(fallbacks.timeout);
-    }, ACK_TIMEOUT_MS);
+  fallbacks: { readonly unusable: R },
+  options: IntentWaitOptions<R | NotYetKnown> = {}
+): Promise<R | NotYetKnown> {
+  const toResult = (ack: AckResult): R =>
+    isKnownResult(ack.result, known) ? (ack.result as R) : fallbacks.unusable;
+  const { onLateOutcome } = options;
+  return sendIntent({
+    type,
+    payload,
+    post,
+    timeoutMs: ACK_TIMEOUT_MS,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(onLateOutcome === undefined ? {} : { onLateOutcome: (ack: AckResult) => onLateOutcome(toResult(ack)) })
+  }).then((result): R | NotYetKnown => {
+    if (result.kind === 'ack') return toResult(result.ack);
+    return NOT_YET_KNOWN;
   });
 }
 
 /** Start a connected run at one of its Workflow's allowed starting nodes (FR-010, FR-011). */
-export function launchWorkflow(payload: LaunchWorkflowPayload): Promise<LaunchWorkflowResult> {
-  return awaitResult<LaunchWorkflowResult>(
-    () => postCommand(CMD_LAUNCH_WORKFLOW, payload),
+export function launchWorkflow(
+  payload: LaunchWorkflowPayload,
+  options?: IntentWaitOptions<LaunchWorkflowResult | NotYetKnown>
+): Promise<LaunchWorkflowResult | NotYetKnown> {
+  return awaitResult<LaunchWorkflowResult, LaunchWorkflowPayload>(
+    CMD_LAUNCH_WORKFLOW,
+    payload,
+    (correlationId, stored) => {
+      postCommand(CMD_LAUNCH_WORKFLOW, stored, { correlationId });
+    },
     LAUNCH_OUTCOMES,
-    { timeout: TIMEOUT_RESULT, unusable: UNUSABLE_ACK_RESULT }
+    { unusable: UNUSABLE_ACK_RESULT },
+    options
   );
 }
 
@@ -163,11 +161,17 @@ export function launchWorkflow(payload: LaunchWorkflowPayload): Promise<LaunchWo
  * family's only idempotency mechanism (FR-047).
  */
 export function continueWorkflow(
-  payload: ContinueWorkflowPayload
-): Promise<ContinueWorkflowResult> {
-  return awaitResult<ContinueWorkflowResult>(
-    () => postCommand(CMD_CONTINUE_WORKFLOW, payload),
+  payload: ContinueWorkflowPayload,
+  options?: IntentWaitOptions<ContinueWorkflowResult | NotYetKnown>
+): Promise<ContinueWorkflowResult | NotYetKnown> {
+  return awaitResult<ContinueWorkflowResult, ContinueWorkflowPayload>(
+    CMD_CONTINUE_WORKFLOW,
+    payload,
+    (correlationId, stored) => {
+      postCommand(CMD_CONTINUE_WORKFLOW, stored, { correlationId });
+    },
     CONTINUE_OUTCOMES,
-    { timeout: TIMEOUT_RESULT, unusable: UNUSABLE_ACK_RESULT }
+    { unusable: UNUSABLE_ACK_RESULT },
+    options
   );
 }

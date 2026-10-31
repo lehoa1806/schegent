@@ -158,3 +158,40 @@ export function errorMessage(thrown: unknown): string {
   // number, boolean, bigint, symbol, function — all safely stringifiable and all worth naming.
   return `${typeof thrown} thrown: ${String(thrown)}`;
 }
+
+/** FR-R4-F05 (FR-012) — the most characters one failure's detail may take in a log context. */
+export const FAILURE_DETAIL_MAX_CHARS = 512;
+
+const UNREADABLE_FAILURE = 'unreadable thrown value';
+const TRUNCATION_MARKER = '… [truncated]';
+
+/**
+ * FR-R4-F05 (FR-011, FR-012; contract F, F2, F5) — one bounded, sanitized line describing
+ * anything that was thrown, for a log context field and nowhere else.
+ *
+ * WHY IT EXISTS. A catch block that reports a failure to the operator must not put the
+ * exception in the report: a message can carry a path, a credential the redaction
+ * patterns do not know, or a megabyte of text. Those blocks send a fixed code to the
+ * webview and keep the detail for the log, and this is how the detail is made safe to
+ * keep: `errorMessage` reads it (inside the `try`, because a message getter can throw),
+ * the caller's `sanitize` redacts it, and only then is it bounded, so a secret that
+ * straddles the bound is redacted whole and never cut into a prefix the patterns miss.
+ *
+ * It runs inside `catch` blocks, so it cannot throw, and it never returns an empty
+ * string or a stack. `sanitize` is the caller's `logger.sanitize`; this function does
+ * not fork `SECRET_PATTERNS`.
+ */
+export function describeFailure(thrown: unknown, sanitize: (value: string) => string): string {
+  try {
+    const sanitized = sanitize(errorMessage(thrown));
+    if (sanitized.length === 0) return UNREADABLE_FAILURE;
+    if (sanitized.length <= FAILURE_DETAIL_MAX_CHARS) return sanitized;
+    let end = FAILURE_DETAIL_MAX_CHARS - TRUNCATION_MARKER.length;
+    // Never end on the first half of a surrogate pair.
+    const last = sanitized.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+    return sanitized.slice(0, end) + TRUNCATION_MARKER;
+  } catch {
+    return UNREADABLE_FAILURE;
+  }
+}

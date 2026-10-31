@@ -441,8 +441,40 @@ function readCommandContracts(): readonly CommandContract[] {
   return found;
 }
 
+/**
+ * FR-R4-F05 (T16, T17) — the three webview helpers that send a command through the intent
+ * ledger take `(type, payload, post, …)` and hand `post` the stored payload as its second
+ * argument, so a module's `postCommand(CMD_X, payload, …)` inside that callback names its
+ * queue where the helper is called, two lines above, and not at the post. The scan reads it
+ * there. A `payload` that no wrapper encloses is not resolved and is reported as written.
+ */
+const LEDGER_WRAPPER = /\b(?:correlated|correlatedLifecycle|correlatedRequest)\s*(?:<[^()]*>)?\s*$/;
+const LEDGER_PAYLOAD_PARAMETER = /^payload(?:\s+as\s+never)?$/;
+
+/** The payload argument of the nearest enclosing ledger wrapper call, or null when none encloses `at`. */
+function enclosingWrapperPayload(code: string, at: number): string | null {
+  let depth = 0;
+  for (let index = at - 1; index >= 0; index -= 1) {
+    const char = code[index]!;
+    if (char === ')' || char === ']' || char === '}') depth += 1;
+    else if (char === '(' || char === '[' || char === '{') {
+      if (depth > 0) {
+        depth -= 1;
+        continue;
+      }
+      if (char !== '(' || !LEDGER_WRAPPER.test(code.slice(Math.max(0, index - 400), index))) continue;
+      const args = argumentList(code, index);
+      return args === null ? null : (splitTopLevel(args).at(1) ?? null);
+    }
+  }
+  return null;
+}
+
 function dispatchesIn(file: string): readonly Dispatch[] {
-  const raw = readFileSync(file, 'utf8');
+  return dispatchesInSource(file, readFileSync(file, 'utf8'));
+}
+
+function dispatchesInSource(file: string, raw: string): readonly Dispatch[] {
   const code = stripComments(raw);
   const found: Dispatch[] = [];
   for (const match of code.matchAll(/\bpostCommand\s*\(/g)) {
@@ -455,11 +487,16 @@ function dispatchesIn(file: string): readonly Dispatch[] {
     const command = parts.at(0);
     if (command === undefined || !/^CMD_[A-Z0-9_]+$/.test(command)) continue;
     const line = raw.slice(0, match.index).split('\n').length;
+    const written = parts.at(1) ?? null;
+    const resolved =
+      written !== null && LEDGER_PAYLOAD_PARAMETER.test(written)
+        ? (enclosingWrapperPayload(code, match.index) ?? written)
+        : written;
     found.push({
       file: relative(REPO_ROOT, file),
       line,
       command,
-      payload: parts.at(1) ?? null
+      payload: resolved
     });
   }
   return found;
@@ -549,6 +586,58 @@ describe('every webview queue-lifecycle command names its queue', () => {
         'inline with a queueId key, or record an exemption with the contract sentence that makes ' +
         'omission a decision'
     ).toEqual([]);
+  });
+});
+
+describe('FR-R4-F05 — a payload handed to the post callback of a ledger wrapper is read where the wrapper is called', () => {
+  const site = (text: string): Dispatch | undefined =>
+    dispatchesInSource('fixture.ts', text).find((dispatch) => dispatch.command === 'CMD_PAUSE_QUEUE');
+  const governedOffender = (dispatch: Dispatch | undefined): boolean =>
+    dispatch !== undefined && dispatch.payload !== null && !namesQueueAtTopLevel(dispatch.payload);
+
+  it('resolves `payload` to the literal the wrapper was called with, which names its queue', () => {
+    const found = site(
+      "correlatedLifecycle(CMD_PAUSE_QUEUE, { queueId }, (correlationId, payload) => { postCommand(CMD_PAUSE_QUEUE, payload, { correlationId }); });"
+    );
+
+    expect(found?.payload).toBe('{ queueId }');
+    expect(governedOffender(found)).toBe(false);
+  });
+
+  it('resolves through a wrapper with generic arguments and a cast payload', () => {
+    const found = site(
+      "correlated<Result, { queueId: string }>(CMD_PAUSE_QUEUE, { queueId }, (id, payload) => { postCommand(CMD_PAUSE_QUEUE, payload as never, { correlationId: id }); }, map, fallback);"
+    );
+
+    expect(found?.payload).toBe('{ queueId }');
+    expect(governedOffender(found)).toBe(false);
+  });
+
+  it('still reports a wrapper whose literal leaves the queue out', () => {
+    const found = site(
+      "correlatedRequest(CMD_PAUSE_QUEUE, { reason }, (correlationId, payload) => { postCommand(CMD_PAUSE_QUEUE, payload, { correlationId }); });"
+    );
+
+    expect(found?.payload).toBe('{ reason }');
+    expect(governedOffender(found)).toBe(true);
+  });
+
+  it('still reports a bare `payload` that no ledger wrapper encloses', () => {
+    const found = site(
+      "function send(payload: unknown) { postCommand(CMD_PAUSE_QUEUE, payload, { correlationId }); }"
+    );
+
+    expect(found?.payload).toBe('payload');
+    expect(governedOffender(found)).toBe(true);
+  });
+
+  it('does not read past an unrelated call that encloses the post', () => {
+    const found = site(
+      "somethingElse(CMD_PAUSE_QUEUE, { queueId }, (correlationId, payload) => { postCommand(CMD_PAUSE_QUEUE, payload, { correlationId }); });"
+    );
+
+    expect(found?.payload).toBe('payload');
+    expect(governedOffender(found)).toBe(true);
   });
 });
 

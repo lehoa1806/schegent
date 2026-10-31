@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { disposeIntentLedger } from '../../lib/intent-ledger';
+
+// FR-R4-F05 (I4) — a command sent through the intent ledger carries the ledger's identity as
+// the third argument of `postCommand`; the payload assertions below stay exact.
+const LEDGER_IDENTITY = expect.objectContaining({ correlationId: expect.any(String) });
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import PhaseControlMenu from '../PhaseControlMenu.svelte';
 import { snapshotStore } from '../../lib/snapshot-store.svelte';
@@ -34,8 +39,11 @@ const TEST_RUN_ID = 'run-alpha';
 // rejection (`vitest run` exits 1 on it) while every assertion below still
 // passes, because they all assert on the post that already happened.
 let nextCorrelationId = 0;
-const postCommandSpy = vi.fn((..._args: readonly unknown[]) => ({
-  correlationId: `corr-${++nextCorrelationId}`
+const postCommandSpy = vi.fn((...args: readonly unknown[]) => ({
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  correlationId:
+    (args[2] as { correlationId?: string } | undefined)?.correlationId ??
+    `corr-${++nextCorrelationId}`
 }));
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args)
@@ -81,7 +89,11 @@ beforeEach(() => {
   confirmMock.mockResolvedValue(true);
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
+});
 
 describe('PhaseControlMenu', () => {
   it('dispatches pause, resume, and restart through phase-control helpers', async () => {
@@ -102,7 +114,7 @@ describe('PhaseControlMenu', () => {
     });
 
     await fireEvent.click(getByTestId('phase-control-pause'));
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_PAUSE_PHASE, { queueId: TEST_QUEUE_ID });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_PAUSE_PHASE, { queueId: TEST_QUEUE_ID }, LEDGER_IDENTITY);
 
     await rerender({ targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
       currentPhase: 'speckit-plan',
@@ -112,20 +124,20 @@ describe('PhaseControlMenu', () => {
       manualPauseAt: '2026-05-13T00:00:00.000Z'
     });
     await fireEvent.click(getByTestId('phase-control-resume'));
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESUME_PHASE, { queueId: TEST_QUEUE_ID });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESUME_PHASE, { queueId: TEST_QUEUE_ID }, LEDGER_IDENTITY);
 
     await fireEvent.click(getByTestId('phase-control-restart'));
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESTART_PHASE, {
       queueId: TEST_QUEUE_ID,
       phaseId: 'speckit-plan'
-    });
+    }, LEDGER_IDENTITY);
 
     await fireEvent.click(getByTestId('phase-control-skip'));
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_SKIP_PHASE, {
       queueId: TEST_QUEUE_ID,
       runId: TEST_RUN_ID,
       phaseId: 'speckit-plan'
-    });
+    }, LEDGER_IDENTITY);
 
     // Disable targets a future, no-override selection — `selectedPhaseState:
     // 'not-started'` — since the active Phase ('speckit-plan', selected
@@ -179,6 +191,26 @@ describe('PhaseControlMenu', () => {
       // The code itself never reaches the operator — that is the failure the
       // sibling `queue-control-ipc` table shipped for a release.
       expect(getByTestId('phase-control-message').textContent).not.toContain('run-already-paused');
+    });
+
+    // FR-R4-F05 (O4, FR-024) — the interim "not yet known" text promises that the view will update;
+    // a late answer replaces it through the same text path as an on-time one, and a late
+    // acceptance clears it.
+    it('replaces the not-yet-known text of a pause with the late answer', async () => {
+      vi.useFakeTimers();
+      try {
+        const { getByTestId } = menu();
+        await fireEvent.click(getByTestId('phase-control-pause'));
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(getByTestId('phase-control-message').textContent).toContain('has not answered yet');
+
+        ack(0, 'rejected', 'run-already-paused', 'refused');
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(getByTestId('phase-control-message').textContent).toBe('This Run is already paused.');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('renders a refused restart of a finished Run', async () => {
@@ -500,7 +532,7 @@ describe('PhaseControlMenu — retry now (lifecycle round-check finding C)', () 
     );
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_RETRY_PHASE_NOW, {
       queueId: TEST_QUEUE_ID
-    });
+    }, LEDGER_IDENTITY);
   });
 
   it('posts nothing when the operator declines the confirmation', async () => {
@@ -560,7 +592,7 @@ describe('PhaseControlMenu — retry now (lifecycle round-check finding C)', () 
 
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_RETRY_PHASE_NOW, {
       queueId: TEST_QUEUE_ID
-    });
+    }, LEDGER_IDENTITY);
   });
 
   it('is disabled, and posts nothing, on a run this view is not showing', async () => {
@@ -879,7 +911,7 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
     });
 
     await fireEvent.click(getByTestId('phase-control-pause'));
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_PAUSE_PHASE, { queueId: TEST_QUEUE_ID });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_PAUSE_PHASE, { queueId: TEST_QUEUE_ID }, LEDGER_IDENTITY);
 
     await rerender({
       targetsSubjectRun: true,
@@ -891,13 +923,13 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
       manualPauseAt: '2026-05-13T00:00:00.000Z'
     });
     await fireEvent.click(getByTestId('phase-control-resume'));
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESUME_PHASE, { queueId: TEST_QUEUE_ID });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESUME_PHASE, { queueId: TEST_QUEUE_ID }, LEDGER_IDENTITY);
 
     await fireEvent.click(getByTestId('phase-control-restart'));
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESTART_PHASE, {
       queueId: TEST_QUEUE_ID,
       phaseId: 'speckit-plan'
-    });
+    }, LEDGER_IDENTITY);
 
     await rerender({
       targetsSubjectRun: true,
@@ -913,7 +945,7 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
       queueId: TEST_QUEUE_ID,
       runId: TEST_RUN_ID,
       phaseId: 'speckit-plan'
-    });
+    }, LEDGER_IDENTITY);
   });
 
   // `$props()` bindings are live: a naive `onSkip` that re-reads `currentPhase`
@@ -960,7 +992,7 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
       queueId: TEST_QUEUE_ID,
       runId: TEST_RUN_ID,
       phaseId: 'speckit-plan'
-    });
+    }, LEDGER_IDENTITY);
   });
 
   // Same live-binding hazard as above, for Delete: `onConfirm` is invoked

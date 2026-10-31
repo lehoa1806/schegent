@@ -30,7 +30,9 @@
 // as the `post` callback. See `phase-control.ts` for the same reasoning applied
 // from the other direction.
 
-import { snapshotStore } from './snapshot-store.svelte';
+import { refusalTextFrom } from './boundary-refusal-text';
+import { sendIntent, type IntentWaitOptions } from './intent-ledger';
+import type { CommandType } from './messages';
 import type { AckResult } from './snapshot-store.svelte';
 
 const ACK_TIMEOUT_MS = 5000;
@@ -45,16 +47,20 @@ const ACK_TIMEOUT_MS = 5000;
  * discard it at the last possible moment.
  *
  * `message` is always a full sentence, never a reason code: `refusalText`'s
- * counterpart in `queue-control-ipc.ts` falls through to `The host refused:
+ * counterpart in `queue-control-ipc.ts` used to fall through to `The host refused:
  * <code>` for an unknown key, and `queue-refusal-vocabulary.test.ts` exists
- * because that fall-through hid six invented keys for an entire feature. The
- * test at the bottom of this module's own coverage pins these keys the same way.
+ * because that fall-through hid six invented keys for an entire feature. Both
+ * now fall through to `boundary-refusal-text.ts` (FR-R4-F05). The test at the
+ * bottom of this module's own coverage pins these keys the same way.
  */
 export type LifecycleControlResult =
   | { readonly outcome: 'accepted' }
   | { readonly outcome: 'no-op'; readonly message: string }
   | { readonly outcome: 'refused'; readonly message: string }
-  | { readonly outcome: 'failed'; readonly message: string };
+  | { readonly outcome: 'failed'; readonly message: string }
+  // FR-R4-F05 (I5, FR-024) — the wait ran out before the host answered. Not `failed`: the host
+  // may still run the command, so the outcome is not yet known, and the message says so.
+  | { readonly outcome: 'unknown'; readonly message: string };
 
 /**
  * One sentence per reason the five lifecycle commands can actually answer.
@@ -152,12 +158,16 @@ const LIFECYCLE_REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
   // Skip route — `commands/cmd-skip-phase.ts`, a window whose router has no `phaseOps` wired.
   'phase-ops-unavailable':
     'Phase controls are not ready in this window yet, so nothing was changed.',
-  // Synthesised here.
-  timeout: 'The host did not answer. Try again.'
+  // Synthesised here. FR-R4-F05 (O3) — not yet known, not a failure and not an invitation to try
+  // again: the host may still run the command, and a second click would be a second action.
+  timeout:
+    'The host has not answered yet. The change may still happen; this view will update when it does.'
 });
 
+// FR-R4-F05 (O1) — this family's own sentence when it has one, the shared boundary text
+// otherwise (it used to echo the reason as `The host refused: ${reason}`).
 export function lifecycleRefusalText(reason: string): string {
-  return LIFECYCLE_REFUSAL_TEXT[reason] ?? `The host refused: ${reason}`;
+  return refusalTextFrom(LIFECYCLE_REFUSAL_TEXT, reason);
 }
 
 /**
@@ -179,44 +189,46 @@ function toLifecycleResult(ack: AckResult): LifecycleControlResult {
 }
 
 /**
- * The correlated-request scaffolding, resolving to a lifecycle result. Every
- * caller resolves exactly once: `settled` guards the ack path, the timeout
- * path, and a late ack arriving after the timeout.
+ * The correlated-request scaffolding, resolving to a lifecycle result. FR-R4-F05 (I4): it sends
+ * through the intent ledger, so an identical retry of an unresolved control reuses its identity
+ * and its payload and the host applies it once. A wait that outlives `ACK_TIMEOUT_MS` resolves
+ * `unknown` (the host may still run the command); an abort or a disposed ledger resolves it too,
+ * and no caller renders that one. Every caller keeps its own `postCommand` and passes it in as
+ * `post`, so a confirmed control's post stays inside its `useConfirm` block.
  */
-export function correlatedLifecycle(post: () => string): Promise<LifecycleControlResult> {
-  return new Promise<LifecycleControlResult>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: (() => void) | null = null;
+export function correlatedLifecycle<P>(
+  type: CommandType,
+  payload: P,
+  post: (correlationId: string, payload: P) => void,
+  wait: IntentWaitOptions<LifecycleControlResult> = {}
+): Promise<LifecycleControlResult> {
+  const { onLateOutcome } = wait;
+  return sendIntent({
+    type,
+    payload,
+    post,
+    timeoutMs: ACK_TIMEOUT_MS,
+    ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+    ...(onLateOutcome === undefined
+      ? {}
+      : { onLateOutcome: (ack: AckResult) => onLateOutcome(toLifecycleResult(ack)) })
+  }).then((result) =>
+    result.kind === 'ack'
+      ? toLifecycleResult(result.ack)
+      : { outcome: 'unknown', message: lifecycleRefusalText('timeout') }
+  );
+}
 
-    const finalise = (result: LifecycleControlResult): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (unsubscribe !== null) {
-        try {
-          unsubscribe();
-        } catch {
-          // one-shot listener errors must not leak
-        }
-        unsubscribe = null;
-      }
-      resolve(result);
-    };
-
-    const correlationId = post();
-    snapshotStore.markPending(correlationId);
-    unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      finalise(toLifecycleResult(ack));
-    });
-
-    timer = setTimeout(() => {
-      finalise({ outcome: 'failed', message: lifecycleRefusalText('timeout') });
-    }, ACK_TIMEOUT_MS);
-  });
+/**
+ * FR-R4-F05 (O4, FR-024) — the wait options a surface that shows a lifecycle answer passes: its
+ * lifetime signal, aborted when it unmounts, and a late outcome shown through the same text path as
+ * an on-time one, so an interim "not yet known" never outlives the host's answer.
+ */
+export function lifecycleWait(
+  signal: AbortSignal,
+  show: (message: string | null) => void
+): IntentWaitOptions<LifecycleControlResult> {
+  return { signal, onLateOutcome: (late) => show(lifecycleMessage(late)) };
 }
 
 /**

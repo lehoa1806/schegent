@@ -3,10 +3,12 @@
 // `'dismissed'` via a single persisted-state write.
 //
 // Trust profile:
-//   - NOT a member of `MUTATING_COMMANDS` — the dismiss is non-destructive
-//     UX state per FR-020 (same risk profile as a read-only command). The
-//     workspace-trust gate and primary-host gate are not enforced for this
-//     command.
+//   - GATED (FR-R4-F05, FR-003): the dismiss writes the queue memento, which is
+//     persisted state, so the router's workspace-trust gate and then its
+//     primary-host gate run before this handler, and the command is serialized
+//     with the other memento writers. Feature 065 FR-020 called it
+//     non-destructive UX state and left it ungated; FR-003's rule is that any
+//     persisted write is gated, however small.
 //   - Empty payload — the operator's dismiss action carries no data beyond
 //     the discriminator. The IPC type guard `isCmdDismissMigrationNotice`
 //     enforces this in the contract layer.

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { postCommand } from '../lib/vscode-api';
-  import { correlatedLifecycle, lifecycleMessage } from '../lib/lifecycle-control-ipc';
+  import { correlatedLifecycle, lifecycleMessage, lifecycleWait } from '../lib/lifecycle-control-ipc';
   import { CMD_START_QUEUE } from '../lib/messages';
   import type { QueueItem, QueueLifecycle } from '../lib/snapshot-types';
   import QueueItemActions from './QueueItemActions.svelte';
@@ -106,15 +106,19 @@
   // sentence, or `null` when it committed. Pause and Resume are the parent's
   // callbacks, not this component's posts, so they are not reported here.
   let startMessage = $state<string | null>(null);
+  // FR-R4-F05 (O4, FR-024, FR-026) — a late answer replaces the interim text; unmounting aborts the wait.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  const wait = lifecycleWait(lifetime.signal, (message) => (startMessage = message));
 
   async function onAction(event: MouseEvent): Promise<void> {
     if (actionDisabled) return;
     if (action === 'start') {
       startMessage = null;
       startMessage = lifecycleMessage(
-        await correlatedLifecycle(
-          () => postCommand(CMD_START_QUEUE, { queueId } as never).correlationId
-        )
+        await correlatedLifecycle(CMD_START_QUEUE, { queueId }, (correlationId, payload) => {
+          postCommand(CMD_START_QUEUE, payload as never, { correlationId });
+        }, wait)
       );
     } else if (action === 'pause') {
       onPause(event);

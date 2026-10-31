@@ -11,6 +11,7 @@
 // makes that structural: there is no value of this type that carries both a
 // failure and a body, so the fallback cannot be written by accident.
 
+import { refusalTextFrom } from '../../lib/boundary-refusal-text';
 import type { ReadDefinitionVersionResult } from '../../lib/catalog-history-ipc';
 
 export type VersionBodyView =
@@ -41,7 +42,8 @@ const UNEXPLAINED = 'This version could not be read.';
 
 export function describeReason(reason: string): string {
   if (reason.length === 0) return UNEXPLAINED;
-  return REASON_TEXT[reason] ?? `${UNEXPLAINED} (${reason})`;
+  // FR-R4-F05 (O1) — this table first, the shared boundary text for anything it lacks.
+  return refusalTextFrom(REASON_TEXT, reason);
 }
 
 /**

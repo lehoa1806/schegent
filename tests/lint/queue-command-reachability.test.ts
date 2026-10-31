@@ -11,7 +11,7 @@
 // Three assertions, each closing a different way the gap reopens:
 //
 // A1 — every mutating queue command has a non-test webview call site. The set is
-//      *derived* from `MUTATING_COMMAND_REASONS`, not listed here, so this is
+//      *derived* from `COMMAND_AUTHORITY`, not listed here, so this is
 //      SC-005 as written ("the count of queue commands registered without a
 //      webview call site is zero") rather than a restatement of it.
 // A2 — only `webview-ui/src/lib/queue-control-ipc.ts` posts the five this
@@ -36,6 +36,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { MUTATING_COMMAND_TYPES } from '../../src/contracts/sidebar-command-metadata';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const WEBVIEW_SRC = resolve(REPO_ROOT, 'webview-ui', 'src');
@@ -139,15 +140,25 @@ function references(code: string, constant: string): boolean {
 }
 
 /**
- * The keys of `MUTATING_COMMAND_REASONS`, filtered to the queue surface. Read
- * from the contract rather than copied out of it: a command registered as
- * mutating enters this set the moment it is registered.
+ * The keys of `COMMAND_AUTHORITY` whose value is built by `gated(` or
+ * `gatedConcurrent(`, read out of the declaration's text. A `readOnly(` entry
+ * is not mutating, so it never enters the set.
+ */
+function parseGatedCommands(text: string): readonly string[] {
+  const start = text.indexOf('export const COMMAND_AUTHORITY');
+  const body = start === -1 ? '' : stripComments(text.slice(start));
+  return Array.from(body.matchAll(/\[(CMD_[A-Z0-9_]+)\]:\s*gated(?:Concurrent)?\(/g)).map(
+    (match) => match[1]!
+  );
+}
+
+/**
+ * The gated commands, filtered to the queue surface. Read from the contract
+ * rather than copied out of it: a command declared gated enters this set the
+ * moment it is declared.
  */
 function readMutatingQueueCommands(): readonly string[] {
-  const text = readFileSync(COMMAND_METADATA, 'utf8');
-  const start = text.indexOf('MUTATING_COMMAND_REASONS');
-  const body = start === -1 ? '' : stripComments(text.slice(start));
-  const keys = Array.from(body.matchAll(/\[(CMD_[A-Z0-9_]+)\]:/g)).map((match) => match[1]!);
+  const keys = parseGatedCommands(readFileSync(COMMAND_METADATA, 'utf8'));
   return keys.filter((key) => key.includes('QUEUE') || key === 'CMD_MOVE_TASK');
 }
 
@@ -230,11 +241,28 @@ describe('Feature 095 T035 — every queue command is reachable from the webview
   it('derives the surface from the contract rather than trusting the pin alone', () => {
     // Guards the derivation itself: a parse that silently returns nothing would
     // make A3 fail with a message about the *surface* when the real fault is
-    // that `MUTATING_COMMAND_REASONS` could not be read at all.
+    // that `COMMAND_AUTHORITY` could not be read at all.
     expect(
       QUEUE_SURFACE.length,
       'No mutating queue commands could be parsed out of src/contracts/sidebar-command-metadata.ts. ' +
         'The map was renamed or reshaped, and this test is no longer reading it.'
     ).toBeGreaterThan(0);
+  });
+
+  // FR-R4-F05 (L3) — the parser reads a text, so it can be shown to still see
+  // every gated entry, and to notice one going missing.
+  it('parses every gated entry of the declaration, and a removed entry drops the count by one', () => {
+    const text = readFileSync(COMMAND_METADATA, 'utf8');
+    const parsed = parseGatedCommands(text);
+
+    expect(new Set(parsed)).toEqual(new Set(MUTATING_COMMAND_TYPES));
+
+    const removed = parsed[0]!;
+    const withoutOne = text.replace(
+      new RegExp(`(\\[${removed}\\]:\\s*)gated(?:Concurrent)?\\(`),
+      '$1removed('
+    );
+    expect(withoutOne).not.toBe(text);
+    expect(parseGatedCommands(withoutOne)).toHaveLength(parsed.length - 1);
   });
 });

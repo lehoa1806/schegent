@@ -184,7 +184,8 @@ describe('the refusal an operator reads is the host (FR-012)', () => {
     launchPipeline.mockResolvedValueOnce({
       outcome: 'rejected-queue',
       reason: 'queue-refused',
-      detail: 'the queue is paused'
+      // FR-R4-F05 (O1; TA9) — the guard's detail is a code, named inside the boundary sentence.
+      detail: 'queue-paused'
     });
     const { getByTestId } = await openForm();
 
@@ -192,7 +193,7 @@ describe('the refusal an operator reads is the host (FR-012)', () => {
     await fireEvent.click(getByTestId('run-launcher-submit'));
 
     const status = getByTestId('run-launcher-status').textContent ?? '';
-    expect(status).toContain('the queue is paused');
+    expect(status).toContain('queue-paused');
     expect(status).not.toContain('withdrawn mid-flight');
   });
 

@@ -45,14 +45,20 @@ vi.mock('../snapshot-store.svelte', () => ({
 }));
 
 vi.mock('../vscode-api', () => ({
-  postCommand(type: string, payload?: unknown): { correlationId: string } {
-    const correlationId = `c${++nextId}`;
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  postCommand(
+    type: string,
+    payload?: unknown,
+    opts?: { correlationId?: string }
+  ): { correlationId: string } {
+    const correlationId = opts?.correlationId ?? `c${++nextId}`;
     posted.push({ type, payload, correlationId });
     return { correlationId };
   }
 }));
 
 const { preflightProcessYaml } = await import('../process-yaml-ipc');
+const { disposeIntentLedger } = await import('../intent-ledger');
 
 function fireAck(id: string, status: 'accepted' | 'rejected', result?: unknown): void {
   const fn = ackListeners.get(id);
@@ -93,6 +99,8 @@ function track(promise: Promise<PreflightProcessYamlResult>): {
 }
 
 beforeEach(() => {
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
   ackListeners.clear();
   pendingSet.clear();
   posted.length = 0;
@@ -154,20 +162,35 @@ describe('preflightProcessYaml', () => {
     const promise = preflightProcessYaml();
 
     await vi.advanceTimersByTimeAsync(BEYOND_ANY_HUMAN_DIALOG_MS);
+    // FR-R4-F05 (O3; TA9) — "The host did not respond." said the host was gone; the wait only ran
+    // out, so the text says the outcome is not yet known.
     await expect(promise).resolves.toEqual({
       outcome: 'failed',
-      message: 'The host did not respond.'
+      message: 'The host has not answered yet, so the outcome is not yet known.'
     });
   });
 
-  it('ignores an ack that arrives after the timeout fired', async () => {
+  // FR-R4-F05 (I3; TA9) — this case used to assert that the listener was unsubscribed at the timeout.
+  // It stays now, until the host answers, so a retry can reuse the identity.
+  it('settles once at the timeout, and an ack after it changes nothing and removes the listener', async () => {
     const promise = preflightProcessYaml();
     const { correlationId } = posted[0]!;
 
     await vi.advanceTimersByTimeAsync(BEYOND_ANY_HUMAN_DIALOG_MS);
     await expect(promise).resolves.toMatchObject({ outcome: 'failed' });
+    expect(ackListeners.has(correlationId)).toBe(true);
 
-    // `finalise` unsubscribed, so nothing is left listening to shout at.
-    expect(ackListeners.has(correlationId)).toBe(false);
+    ackListeners.get(correlationId)!({ status: 'accepted', result: { outcome: 'canceled' } });
+
+    await expect(promise).resolves.toMatchObject({ outcome: 'failed' });
+  });
+
+  // FR-R4-F05 (T17; I4, I7) — a retry after the five-minute wait reuses the identity.
+  it('posts the same correlation id for a second preflight while the first is unresolved', async () => {
+    void preflightProcessYaml();
+    void preflightProcessYaml();
+
+    expect(posted).toHaveLength(2);
+    expect(posted[1]!.correlationId).toBe(posted[0]!.correlationId);
   });
 });

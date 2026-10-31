@@ -27,6 +27,7 @@ import type {
 import {
   readPhaseLog,
   startPhaseLogTail,
+  type WithRefusalText,
   stopPhaseLogTail,
   subscribePhaseLogPush,
   type PhaseLogEntryPushPayload,
@@ -34,6 +35,7 @@ import {
   type StopPhaseLogTailRequest
 } from './phase-log-ipc';
 import { getWebviewState, setWebviewState } from './vscode-api';
+import type { IntentWaitOptions } from './intent-ledger';
 
 export type PhaseLogSelectionDraft = {
   readonly queueId: string | null;
@@ -228,9 +230,10 @@ function readInitialLiveMode(): boolean {
 }
 
 export function createPhaseLogStore(
-  read: (req: {
-    readonly selection: PhaseLogSelection;
-  }) => Promise<PhaseLogReadResult> = readPhaseLog,
+  read: (
+    req: { readonly selection: PhaseLogSelection },
+    wait?: IntentWaitOptions<WithRefusalText<PhaseLogReadResult>>
+  ) => Promise<WithRefusalText<PhaseLogReadResult>> = readPhaseLog,
   // T051 — tail IPC seam. Defaults wire to the real IPC helpers; tests
   // overwrite via vi.mock on the underlying module. Keeping the
   // constructor surface stable so existing call sites
@@ -356,15 +359,28 @@ export function createPhaseLogStore(
     }
     const token = ++loadToken;
     setState({ ...getState(), loading: true, errorReason: null });
-    const result = await read({
-      selection: {
-        queueId: sel.queueId,
-        taskId: sel.taskId,
-        pipelineId: sel.pipelineId,
-        phaseId: sel.phaseId,
-        iterationN: sel.iterationN
-      }
-    });
+    // FR-R4-F05 (I6, FR-024) — a late answer to THIS read replaces the not-yet-known text through
+    // the same path; a newer read or a `reset()` makes it stale, as it does an on-time answer.
+    const result = await read(
+      {
+        selection: {
+          queueId: sel.queueId,
+          taskId: sel.taskId,
+          pipelineId: sel.pipelineId,
+          phaseId: sel.phaseId,
+          iterationN: sel.iterationN
+        }
+      },
+      { onLateOutcome: (late) => applyRead(token, sel, late) }
+    );
+    applyRead(token, sel, result);
+  }
+
+  function applyRead(
+    token: number,
+    sel: PhaseLogSelectionDraft,
+    result: WithRefusalText<PhaseLogReadResult>
+  ): void {
     if (token !== loadToken) return; // stale
     if (result.outcome === 'success') {
       const manifest = result.manifest;
@@ -397,7 +413,8 @@ export function createPhaseLogStore(
         isInFlight: false,
         skippedLines: 0,
         truncatedCount: 0,
-        errorReason: result.reason
+        // FR-R4-F05 (O1, O7) — a refusal is shown as its sentence, not as `internal-error`.
+        errorReason: result.refusalText ?? result.reason
       });
     }
   }

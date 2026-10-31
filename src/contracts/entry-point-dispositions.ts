@@ -1,9 +1,10 @@
 // FR-R3-136 (FR-002, FR-003, FR-004) — the disposition of every direct VS Code
 // command entry point.
 //
-// WHY THIS FILE EXISTS. `MUTATING_COMMAND_REASONS` in
+// WHY THIS FILE EXISTS. `COMMAND_AUTHORITY` in
 // `./sidebar-command-metadata.ts` has classified the sidebar's IPC surface since
-// Feature 059, and `src/ui/sidebar/message-router.ts` refuses every member of it
+// Feature 059 (as a partial reason table, total since FR-R4-F05), and
+// `src/ui/sidebar/message-router.ts` refuses every gated command in it
 // while the workspace is untrusted. That works, and it covers one of the two ways
 // to reach a mutating service. The other is `vscode.commands.executeCommand`, and
 // it had no classification at all: `src/activation/ui-wiring.ts` registered 29
@@ -25,7 +26,7 @@
 // THE CRITERION (spec C3 as narrowed by C7): a mutating entry writes to a path the
 // workspace or persisted state can influence, spawns a child process, or arms a
 // timer. Writing to a destination the operator confirms in a modal is NOT such a
-// path, because no repository content can confirm a modal. Three of the thirty
+// path, because no repository content can confirm a modal. Three of the
 // rows below come out opposite to what their names suggest, and each says why.
 
 /**

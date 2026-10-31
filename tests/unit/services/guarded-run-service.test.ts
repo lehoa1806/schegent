@@ -20,7 +20,11 @@ import {
   type Clock,
   type Scheduler
 } from '../../../src/state/lock';
-import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
+import {
+  QueueMutationRejected,
+  WorkspaceStateStore,
+  type Memento
+} from '../../../src/state/workspace-state';
 import type {
   PipelineCatalog,
   PipelineDef
@@ -114,6 +118,8 @@ function makeController(
 }
 
 interface Harness {
+  /** The store's backing memento, so a test can make a write fail. */
+  memento: FakeMemento;
   store: WorkspaceStateStore;
   queue: QueueManager;
   lock: WorkspaceLockManager;
@@ -168,6 +174,7 @@ async function makeHarness(opts?: {
   });
 
   return {
+    memento,
     store,
     queue,
     lock,
@@ -568,5 +575,117 @@ describe('GuardedRunService — workspace trust (FR-R3-136)', () => {
     ]);
     expect(written).not.toContain('a-description-that-must-not-be-logged');
     expect(written).toContain('workspace-untrusted');
+  });
+});
+
+// FR-R4-F05 (T13; contract F, F7, F9; FR-016, FR-017; SC-005) — a validation refusal and a
+// storage fault are different outcomes, and neither carries the exception.
+//
+// The enqueue `try` used to cover `queue.enqueue` AND the start-intent step after it,
+// and its catch reported anything as `rejected-validation` with the exception's message
+// as the reason. A memento write that failed therefore told the operator their request
+// was invalid, put a path into an audit row, and a failure in the start-intent step
+// AFTER the commit reported a rejection for a task that was in the queue.
+describe('GuardedRunService — enqueue failures (FR-R4-F05)', () => {
+  const PATH = '/synthetic/home/user-252/secret.txt';
+
+  const request = (h: Harness) => ({
+    description: 'a perfectly valid feature request',
+    scheduledAt: h.clock.now(),
+    via: 'webview' as const,
+    pipelineId: 'speckit-default'
+  });
+
+  function auditRows(h: Harness): Array<{
+    eventType: string;
+    outcome: string;
+    payload: Record<string, unknown>;
+  }> {
+    return (
+      h.audit.append.mock.calls as unknown as Array<
+        Array<{ eventType: string; outcome: string; payload: Record<string, unknown> }>
+      >
+    ).map((call) => call[0]);
+  }
+
+  it('reports a queue rule refusal as rejected-validation with its code', async () => {
+    const h = await makeHarness();
+    vi.spyOn(h.queue, 'enqueue').mockRejectedValueOnce(
+      new QueueMutationRejected('task-cap-reached', `cap reached at ${PATH}`)
+    );
+
+    const result = await h.service.scheduleOrEnqueue(request(h));
+
+    expect(result).toEqual({ outcome: 'rejected-validation', reason: 'task-cap-reached' });
+    expect(JSON.stringify([result, auditRows(h)])).not.toContain('user-252');
+  });
+
+  it('reports a failed memento write as failed-storage with the fixed code, and no marker', async () => {
+    const h = await makeHarness();
+    vi.spyOn(h.memento, 'update').mockRejectedValue(new Error(`EACCES: cannot write ${PATH}`));
+
+    const result = await h.service.scheduleOrEnqueue(request(h));
+
+    expect(result).toEqual({ outcome: 'failed-storage', reason: 'queue-state-unavailable' });
+    expect(JSON.stringify(result)).not.toContain('user-252');
+    // The detail is not lost: it goes to the log, through describeFailure.
+    expect(JSON.stringify(h.logger.warn.mock.calls)).toContain('user-252');
+  });
+
+  it('keeps the rejection row to its event type, outcome and five payload fields', async () => {
+    const h = await makeHarness();
+    vi.spyOn(h.memento, 'update').mockRejectedValue(new Error(`EACCES: cannot write ${PATH}`));
+
+    await h.service.scheduleOrEnqueue(request(h));
+
+    const rows = auditRows(h);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ eventType: 'warning', outcome: 'failure' });
+    expect(Object.keys(rows[0]?.payload ?? {}).sort()).toEqual([
+      'operation',
+      'outcome',
+      'reason',
+      'source',
+      'via'
+    ]);
+    expect(rows[0]?.payload).toMatchObject({
+      source: 'guarded-run-service',
+      operation: 'schedule',
+      outcome: 'failed-storage',
+      via: 'webview',
+      reason: 'queue-state-unavailable'
+    });
+    expect(JSON.stringify(rows)).not.toContain('user-252');
+  });
+
+  it('reports a fence it could not verify as failed-storage', async () => {
+    const h = await makeHarness();
+    vi.spyOn(h.queue, 'enqueue').mockRejectedValueOnce(
+      new QueueMutationRejected('fence-unverifiable', `could not read ${PATH}`)
+    );
+
+    const result = await h.service.scheduleOrEnqueue(request(h));
+
+    expect(result).toEqual({ outcome: 'failed-storage', reason: 'queue-state-unavailable' });
+  });
+
+  it('reports enqueued, with the item id, when the start-intent step fails after the commit', async () => {
+    const h = await makeHarness();
+    // A private seam, forced to fail: nothing a request can set makes the real
+    // step throw on demand, and the claim is about what happens AFTER the commit.
+    vi.spyOn(
+      h.service as unknown as { applyStartIntentPolicy: () => Promise<unknown> },
+      'applyStartIntentPolicy'
+    ).mockRejectedValueOnce(new Error(`start intent failed at ${PATH}`));
+
+    const result = await h.service.scheduleOrEnqueue(request(h));
+
+    expect(result.outcome).toBe('enqueued');
+    expect(result.queueItemId).toBeDefined();
+    expect(result.lifecycleAfter).toBeUndefined();
+    expect(h.store.getQueue('default').requests).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain('user-252');
+    expect(auditRows(h)).toHaveLength(0);
+    expect(JSON.stringify(h.logger.warn.mock.calls)).toContain('user-252');
   });
 });

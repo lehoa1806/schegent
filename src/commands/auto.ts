@@ -5,6 +5,7 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import { runEnqueue, type EnqueueCommandArgs, type RunEnqueueResult } from './enqueue';
+import { ENQUEUE_STORAGE_FAULT_TOAST } from '../services/enqueue-failure';
 
 /**
  * FR-R3-002 (T279) — `queueId` stays optional here even though `runEnqueue`
@@ -79,6 +80,11 @@ function handleEnqueueResult(outcome: RunEnqueueResult, notifier: Notifier): voi
       return;
     case 'rejected-validation':
       notifier.warn(`Schegent: rejected (${outcome.result.reason ?? 'validation-failed'}).`);
+      return;
+    // FR-R4-F05 (F8) — a queue that could not be read or saved. Shown as one fixed
+    // sentence; `reason` is a code and is not echoed.
+    case 'failed-storage':
+      notifier.error(ENQUEUE_STORAGE_FAULT_TOAST);
       return;
   }
 }

@@ -602,7 +602,12 @@ describe('removal is a deactivation, gated where it is posted (FR-049)', () => {
     // as options because the helper is what asks. Feature 099 (T496f, FR-042) — a
     // `scope` stood beside the name in the old prompt context; `toEqual` here is
     // exact, so its absence is pinned.
-    expect(options).toEqual({ definitionName: 'Design then Build', originatingElement: trigger });
+    // FR-R4-F05 review (I6, I8) — the options also carry the editor's wait for a late answer.
+    expect(options).toEqual({
+      definitionName: 'Design then Build',
+      originatingElement: trigger,
+      wait: expect.objectContaining({ onLateOutcome: expect.any(Function) })
+    });
   });
 
   it('asks nothing itself, so one removal cannot prompt twice', async () => {

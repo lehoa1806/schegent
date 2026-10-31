@@ -3,11 +3,22 @@ import { withRefreshedLifecycle } from '../queue/queue-lifecycle-refresh';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
+import { describeFailure } from '../lib/errors';
 import { QueueMutationRejected, type WorkspaceStateStore } from '../state/workspace-state';
 import type { FeatureRequest } from '../queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import { MAX_PENDING_TASKS_PER_QUEUE } from '../queue/feature-request';
 import { decideTaskTransition } from '../queue/task-transition-decision';
+
+/**
+ * FR-R4-F05 (FR-014; contract F, F6; contract O, O5) — what the operator is told when a
+ * restart fails for a reason the function has no code for. Fixed text: an exception's
+ * message can carry a path, so it goes to the log through `describeFailure` and never to
+ * the toast. The two typed refusals (`task-cap-reached`, `illegal-state`) keep their codes
+ * and add no toast of their own.
+ */
+export const RESTART_FAILED_TOAST =
+  'Schegent: the task could not be restarted. See the Schegent log for details.';
 
 export type RestartCanceledResult =
   | { ok: true; queueId: string }
@@ -167,9 +178,10 @@ export async function runRestartCanceledTask(ctx: {
       if (err.reason === 'task-cap-reached') return { ok: false, reason: 'task-cap-reached' };
       if (err.reason === 'illegal-source-status') return { ok: false, reason: 'illegal-state' };
     }
-    const message = (err as Error).message ?? 'unknown error';
-    ctx.notifier.error(`Schegent: restart failed — ${message}`);
-    ctx.logger.error(message);
+    ctx.notifier.error(RESTART_FAILED_TOAST);
+    ctx.logger.error('restart-canceled-task: unexpected failure', {
+      error: describeFailure(err, (value) => ctx.logger.sanitize(value))
+    });
     return { ok: false, reason: 'unexpected-error' };
   }
 }

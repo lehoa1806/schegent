@@ -29,7 +29,7 @@
   import ScheduledStartIndicator from '../ScheduledStartIndicator.svelte';
   import StartModeChooser, { type StartQueueIntent } from '../StartModeChooser.svelte';
   import { postCommand } from '../../lib/vscode-api';
-  import { correlatedLifecycle, lifecycleMessage } from '../../lib/lifecycle-control-ipc';
+  import { correlatedLifecycle, lifecycleMessage, lifecycleWait } from '../../lib/lifecycle-control-ipc';
   import { CMD_START_QUEUE, CMD_DISMISS_MIGRATION_NOTICE } from '../../lib/messages';
   import { defaultQueueId, findQueueRuntime } from '../../lib/queue-runtime-view';
   import { remoteLifecycleChangeStore } from '../../lib/remote-lifecycle-change-store.svelte';
@@ -75,6 +75,10 @@
   // sole dispatcher, so a `rejected-horizon` refusal of the operator's chosen
   // time surfaced nowhere at all: the chooser closed and the queue stayed idle.
   let startMessage = $state<string | null>(null);
+  // FR-R4-F05 (O4, FR-024, FR-026) — a late answer replaces the interim text; unmounting aborts the wait.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  const wait = lifecycleWait(lifetime.signal, (message) => (startMessage = message));
 
   async function onRestartChooserCommit(intent: StartQueueIntent | null): Promise<void> {
     showRestartChooser = false;
@@ -85,7 +89,12 @@
     // the host does not fall back to the default (hard rule 56).
     startMessage = lifecycleMessage(
       await correlatedLifecycle(
-        () => postCommand(CMD_START_QUEUE, { queueId, startIntent: intent } as never).correlationId
+        CMD_START_QUEUE,
+        { queueId, startIntent: intent },
+        (correlationId, payload) => {
+          postCommand(CMD_START_QUEUE, payload as never, { correlationId });
+        },
+        wait
       )
     );
   }

@@ -41,8 +41,11 @@ const SRC = resolve(REPO_ROOT, 'src');
  * the same change — not a drive-by, since those files are already in the diff, and a normalizer
  * shipped with no caller is a normalizer nobody adopts. The remaining 140 are the ratchet's
  * actual job.
+ *
+ * **Then 130** (FR-R4-F05, L7). The router's catch-all, the restart arm and the enqueue catch stopped
+ * casting a thrown value (`describeFailure` reads it), and the count was re-measured: 130 sites.
  */
-const BASELINE = 140;
+const BASELINE = 130;
 
 /** `(x as Error).message`, in the forms this codebase writes it. */
 const CAST = /as Error\)\.message/g;

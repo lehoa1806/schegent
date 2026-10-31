@@ -212,7 +212,10 @@ describe('Feature 019 — runtime log controls — rejection + reset flows', () 
     expect(snapshotAck).not.toBeNull();
     snapshotAck!({
       status: 'rejected',
-      reason: 'relative-traversal: ..'
+      // FR-R4-F05 (O1; TA9) — the host's validator answers the bare code
+      // (`general-settings-validate.ts`); the old fixture had a path-like suffix a real
+      // host never sends, and the shared fallback does not print a reason with one.
+      reason: 'relative-traversal'
     });
     await waitFor(() => {
       const el = container.querySelector(
@@ -224,6 +227,39 @@ describe('Feature 019 — runtime log controls — rejection + reset flows', () 
       '[data-testid="general-settings-status-runtimeLogFilePath"]'
     );
     expect(statusEl!.textContent).toContain('relative-traversal');
+  });
+
+  // FR-R4-F05 code review (I5, I6, FR-024) — a save whose wait ran out may still be written, so the
+  // row says the outcome is not yet known (it read "Rejected: The host refused this action"), and
+  // the late answer replaces that text.
+  it('shows a timed-out save as not yet known, then the late answer', async () => {
+    vi.useFakeTimers();
+    try {
+      const snap = buildSnapshot(buildGeneralSettings('INFO', ''));
+      const { container } = render(GeneralSettingsTab, { props: { snapshot: snap } });
+      const input = container.querySelector(
+        '[data-testid="general-settings-input-runtimeLogFilePath"]'
+      ) as HTMLInputElement;
+      await fireEvent.input(input, { target: { value: '/tmp/late.log' } });
+      await fireEvent.click(
+        container.querySelector(
+          '[data-testid="general-settings-save-runtimeLogFilePath"]'
+        ) as HTMLButtonElement
+      );
+      await vi.advanceTimersByTimeAsync(5000);
+      const status = (): string =>
+        container.querySelector('[data-testid="general-settings-status-runtimeLogFilePath"]')
+          ?.textContent ?? '';
+      expect(status()).toContain('not yet known');
+      expect(status()).not.toContain('Rejected');
+
+      expect(snapshotAck).not.toBeNull();
+      snapshotAck!({ status: 'accepted' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(status()).toContain('Saved');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('resets the level field to the projected value on Reset', async () => {

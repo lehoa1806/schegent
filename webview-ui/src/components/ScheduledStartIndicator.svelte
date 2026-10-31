@@ -20,7 +20,7 @@
 
   import { nowFine, nowCoarse } from '../lib/tick-store';
   import { postCommand } from '../lib/vscode-api';
-  import { correlatedLifecycle, lifecycleMessage } from '../lib/lifecycle-control-ipc';
+  import { correlatedLifecycle, lifecycleMessage, lifecycleWait } from '../lib/lifecycle-control-ipc';
   import { CMD_START_QUEUE } from '../lib/messages';
   import StartModeChooser, { type StartQueueIntent } from './StartModeChooser.svelte';
   import { findQueueRuntime } from '../lib/queue-runtime-view';
@@ -111,12 +111,21 @@
   // `rejected-horizon` and `start-intent-no-change` are both reachable from
   // this surface, and neither reached a listener before.
   let startMessage = $state<string | null>(null);
+  // FR-R4-F05 (O4, FR-024, FR-026) — a late answer replaces the interim text; unmounting aborts the wait.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  const wait = lifecycleWait(lifetime.signal, (message) => (startMessage = message));
 
   async function dispatchIntent(intent: StartQueueIntent): Promise<void> {
     startMessage = null;
     startMessage = lifecycleMessage(
       await correlatedLifecycle(
-        () => postCommand(CMD_START_QUEUE, { queueId, startIntent: intent } as never).correlationId
+        CMD_START_QUEUE,
+        { queueId, startIntent: intent },
+        (correlationId, payload) => {
+          postCommand(CMD_START_QUEUE, payload as never, { correlationId });
+        },
+        wait
       )
     );
   }

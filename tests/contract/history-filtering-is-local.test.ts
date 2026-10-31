@@ -19,7 +19,10 @@ import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 
 import { MUTATING_COMMANDS } from '../../src/ui/sidebar/message-router';
-import { MUTATING_COMMAND_TYPES } from '../../src/contracts/sidebar-command-metadata';
+import {
+  COMMAND_AUTHORITY,
+  MUTATING_COMMAND_TYPES
+} from '../../src/contracts/sidebar-command-metadata';
 import { CMD_RERUN_FROM_HISTORY } from '../../src/contracts/sidebar-ipc';
 
 const WEBVIEW_SRC = path.join(__dirname, '../../webview-ui/src');
@@ -104,7 +107,17 @@ describe('the command registry is unchanged by this feature (T040, FR-023)', () 
     // for the strongest reason in the table: it writes `completed`, which
     // 192's invariant 4 admits no return from, so the write spends the
     // operator's remaining retry as well as changing the status.
-    expect(MUTATING_COMMAND_TYPES).toHaveLength(45);
+    //
+    // FR-R4-F05 (L5): the number is no longer written here. It moved with every
+    // reclassification (45 -> 46 when Ping was gated, -> 53 with the seven other
+    // reads), and the count pin is `mutating-commands-pinned-list.test.ts`'s,
+    // where a hand-written list catches a demotion. What this feature owes is the
+    // name-shaped checks below, which hold whatever the count is. So the count is
+    // read from the declaration's own entries.
+    const gatedEntries = Object.values(COMMAND_AUTHORITY).filter(
+      (entry) => entry.authority === 'gated'
+    ).length;
+    expect(MUTATING_COMMAND_TYPES).toHaveLength(gatedEntries);
     expect(MUTATING_COMMANDS.size).toBe(MUTATING_COMMAND_TYPES.length);
   });
 
