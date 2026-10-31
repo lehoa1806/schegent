@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LaunchPipelineResult } from '../../../lib/messages';
 import type { RunRequest } from '../../../../../src/contracts/run-request';
 import type { PipelineDefinition } from '../../../lib/snapshot-types';
+import type { LaunchRunSettings } from '../../../../../src/contracts/snapshot-projections';
 
 const launchSpy = vi.fn<(request: RunRequest) => Promise<LaunchPipelineResult>>();
 // FR-R4-F05 (I6, I8) — the options the component passes (its abort signal and its late-outcome
@@ -35,6 +36,18 @@ vi.mock('../../../lib/run-launcher-ipc', () => ({
   ) => {
     lastWaitOptions = options;
     return launchSpy(request);
+  }
+}));
+
+// Feature 254 (FR-R4-F07, D-T1) — the launcher reads its launch entry, and the host's `runSettings` on
+// it, from the snapshot. The store is replaced by a holder whose `snapshot` a case sets before render;
+// null is the default, which is exactly what every earlier case in this file ran against.
+const storeState = vi.hoisted(() => ({ snapshot: null as unknown }));
+vi.mock('../../../lib/snapshot-store.svelte', () => ({
+  snapshotStore: {
+    get snapshot() {
+      return storeState.snapshot;
+    }
   }
 }));
 
@@ -101,6 +114,7 @@ function submitted(): RunRequest {
 }
 
 beforeEach(() => {
+  storeState.snapshot = null;
   launchSpy.mockReset();
   launchSpy.mockResolvedValue(ENQUEUED);
   confirmSpy.mockReset();
@@ -276,8 +290,57 @@ describe('output section — one target per declared port (T054, FR-013, FR-023)
   });
 });
 
-describe('process preview (T055, FR-035)', () => {
-  it('shows the resolved Pipeline, its Phase order, the effective settings, and the request', async () => {
+/**
+ * What the host projects for `PIPELINE`'s two Phases: structured values and closed kinds, never
+ * sentences. The launcher words them; it derives none of them (FR-022).
+ */
+const RUN_SETTINGS: LaunchRunSettings = {
+  phases: [
+    {
+      phaseName: 'speckit-specify',
+      backend: 'claude',
+      model: { kind: 'backend-default' },
+      effort: { kind: 'value', value: 'high' },
+      idleTimeoutSeconds: { value: 5400, origin: 'default' }
+    },
+    {
+      phaseName: 'speckit-plan',
+      backend: 'codex',
+      model: { kind: 'value', value: 'gpt-6-sol' },
+      effort: { kind: 'backend-default' },
+      idleTimeoutSeconds: { value: 600, origin: 'phase' }
+    }
+  ],
+  maxDurationSeconds: { value: 21_600, origin: 'workspace' }
+};
+
+/** Seed the snapshot with the launch entry the host would project for `pipeline`. */
+function seedLaunchEntry(pipeline: PipelineDefinition, runSettings?: LaunchRunSettings): void {
+  storeState.snapshot = {
+    launchables: {
+      pipelines: {
+        state: 'entries',
+        entries: [
+          {
+            kind: 'pipeline',
+            id: pipeline.id,
+            name: pipeline.name,
+            activeVersionId: 'v1',
+            inputs: [],
+            backends: ['claude'],
+            capabilityNotices: [],
+            ...(runSettings === undefined ? {} : { runSettings })
+          }
+        ]
+      }
+    },
+    backendPostures: []
+  };
+}
+
+describe('process preview (T055, FR-035; Feature 254 D-T1, FR-021, FR-022)', () => {
+  it('shows the resolved Pipeline, its Phase order and the request', async () => {
+    seedLaunchEntry(PIPELINE, RUN_SETTINGS);
     const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
 
     await type(getByTestId, 'run-input-topic', 'run composition');
@@ -287,14 +350,116 @@ describe('process preview (T055, FR-035)', () => {
     expect(phases.indexOf('speckit-specify')).toBeGreaterThanOrEqual(0);
     expect(phases.indexOf('speckit-specify')).toBeLessThan(phases.indexOf('speckit-plan'));
 
-    const settings = getByTestId('run-launcher-preview-settings').textContent ?? '';
-    expect(settings).toContain('claude');
-    expect(settings).toContain('opus');
-    expect(settings).toContain('high');
-
     // The complete request, as it will be sent — the operator reviews the thing
     // that runs, not a summary of it.
     expect(getByTestId('run-launcher-preview-request').textContent).toContain('run composition');
+  });
+
+  it('states, per Phase, the backend, model, effort and idle limit the Run will use', () => {
+    seedLaunchEntry(PIPELINE, RUN_SETTINGS);
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    const settings = getByTestId('run-launcher-preview-settings').textContent;
+    expect(settings).toContain('Claude · model: backend default · effort: high · idle limit 90 min');
+    expect(settings).toContain('Codex · model: gpt-6-sol · effort: backend default · idle limit 10 min');
+  });
+
+  it('states the Run time limit after the Phases', () => {
+    seedLaunchEntry(PIPELINE, RUN_SETTINGS);
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    const settings = getByTestId('run-launcher-preview-settings').textContent;
+    expect(settings).toContain('Run time limit 6 h');
+    expect(settings.indexOf('Run time limit')).toBeGreaterThan(settings.indexOf('Codex'));
+  });
+
+  it('never shows an authored default as an effective setting', () => {
+    seedLaunchEntry(PIPELINE, RUN_SETTINGS);
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    // PIPELINE authors runner claude, model opus and effort high. The host resolved something else
+    // for the Run, and the effective block states that; the authored values are on the advisory line.
+    const settings = getByTestId('run-launcher-preview-settings').textContent;
+    expect(settings).not.toContain('opus');
+    expect(settings).not.toContain('Authored defaults');
+  });
+
+  it('labels the authored defaults advisory and not applied, on their own line', () => {
+    seedLaunchEntry(PIPELINE, RUN_SETTINGS);
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    const advisory = getByTestId('run-launcher-preview-advisory').textContent;
+    expect(advisory).toContain('Authored defaults (advisory, not applied)');
+    expect(advisory).toContain('opus');
+    expect(advisory).toContain('high');
+  });
+
+  it('shows no advisory line for a Pipeline that authors no defaults', () => {
+    seedLaunchEntry(EMPTY_CONTRACT, undefined);
+    const { queryByTestId } = render(RunLauncher, { props: { pipeline: EMPTY_CONTRACT } });
+
+    expect(queryByTestId('run-launcher-preview-advisory')).toBeNull();
+  });
+
+  it('says the settings are resolved when the Run starts, and shows no authored value as in force, when the host sent none', () => {
+    seedLaunchEntry(PIPELINE, undefined);
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    const settings = getByTestId('run-launcher-preview-settings').textContent;
+    expect(settings).toContain('Settings are resolved when the Run starts');
+    expect(settings).not.toContain('opus');
+    expect(settings).not.toContain('Claude');
+    // The authored defaults are still disclosed, as what they are.
+    expect(getByTestId('run-launcher-preview-advisory').textContent).toContain('opus');
+  });
+
+  it('does not show settings that do not line up with the Phases the form lists', () => {
+    seedLaunchEntry(PIPELINE, { ...RUN_SETTINGS, phases: [RUN_SETTINGS.phases[0]!] });
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    const settings = getByTestId('run-launcher-preview-settings').textContent;
+    expect(settings).toContain('Settings are resolved when the Run starts');
+    expect(settings).not.toContain('Claude');
+  });
+
+  it('says the same when the snapshot holds no launch entry at all', () => {
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+    expect(getByTestId('run-launcher-preview-settings').textContent).toContain(
+      'Settings are resolved when the Run starts'
+    );
+  });
+
+  it('puts nothing the snapshot says into markup: a hostile model renders as text', () => {
+    const hostile: LaunchRunSettings = {
+      ...RUN_SETTINGS,
+      phases: [
+        {
+          ...RUN_SETTINGS.phases[0]!,
+          model: { kind: 'value', value: '<img src=x onerror=alert(1)>' }
+        },
+        RUN_SETTINGS.phases[1]!
+      ]
+    };
+    seedLaunchEntry(PIPELINE, hostile);
+    const { container, getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(getByTestId('run-launcher-preview-settings').textContent).toContain('<img src=x');
+  });
+
+  it('leaves the Run request byte-identical whether or not the host sent run settings (D9)', async () => {
+    const requestText = async (runSettings?: LaunchRunSettings): Promise<string> => {
+      cleanup();
+      seedLaunchEntry(PIPELINE, runSettings);
+      const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+      await type(getByTestId, 'run-input-topic', 'run composition');
+      return getByTestId('run-launcher-preview-request').textContent;
+    };
+    const without = await requestText(undefined);
+    const withSettings = await requestText(RUN_SETTINGS);
+    expect(withSettings).toBe(without);
+    expect(without).not.toContain('executionDefaults');
+    expect(without).not.toContain('opus');
   });
 });
 

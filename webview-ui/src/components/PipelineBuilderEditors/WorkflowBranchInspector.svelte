@@ -24,8 +24,8 @@
   //
   // No rule lives in this markup. Arity, literal parsing, and priority parsing all
   // come from `workflow-catalog-state.ts`.
+  import { WORKFLOW_TEXT_COMPARISON_OPERATORS } from '../../../../src/contracts/workflow-definitions';
   import {
-    WORKFLOW_CONDITION_OPERATORS,
     WORKFLOW_NODE_TERMINAL_STATUSES,
     WORKFLOW_SELECTION_RULES,
     type PortablePipelineDefinition,
@@ -79,6 +79,16 @@
   };
 
   const condition = $derived(p.connection.condition);
+  // FR-R4-F07 (FR-027; contract C, C8) -- v1 operands are text, so the picker offers the operators that
+  // compare text. A condition already carrying another operator (a stored Workflow the host reports as
+  // unsupported) keeps it in the list, so opening it shows what it really holds instead of silently
+  // snapping to the first option; the host's defect, shown on the branch, says what to change.
+  const operators = $derived.by((): readonly WorkflowConditionOperator[] => {
+    const offered: readonly WorkflowConditionOperator[] = WORKFLOW_TEXT_COMPARISON_OPERATORS;
+    return condition === undefined || offered.includes(condition.operator)
+      ? offered
+      : [...offered, condition.operator];
+  });
   const values = $derived(condition ? conditionValues(condition) : []);
   const isList = $derived(condition ? conditionRightArity(condition.operator) === 'list' : false);
 
@@ -230,7 +240,7 @@
             operator: event.currentTarget.value as WorkflowConditionOperator
           })}
       >
-        {#each WORKFLOW_CONDITION_OPERATORS as operator (operator)}
+        {#each operators as operator (operator)}
           <option value={operator}>{operator}</option>
         {/each}
       </select>

@@ -22,7 +22,7 @@
 // write order, and the audit envelope are one implementation and cannot diverge.
 // The plan-to-request composer is not: the operator's lives in the webview
 // (`webview-ui/src/components/ProcessImport/process-import-state.ts`,
-// `buildImportWrites`) and is pinned as pure logic by the webview's own unit
+// `buildImportPackage`) and is pinned as pure logic by the webview's own unit
 // test, and the webview is a separate program that a host test does not import —
 // the same rule `pipeline-package-import.test.ts` and `workflow-package-import.
 // test.ts` already follow. It is mirrored below, and `SIDEBAR_COMPOSER_SOURCE`
@@ -47,6 +47,16 @@
 // an operator's untouched pending draft as a side effect of an import that says
 // nothing about it. Both arms must name exactly the document's own ids, and
 // `published` below is the recorder that says whether they do.
+//
+// **Feature 254 (FR-R4-F07, FR-013, P-T4) — one call against one.** The operator's
+// confirmation now builds ONE request through `buildImportPackage` and fans the
+// single acknowledgement out per layer through `layerResultsOf`, so the two arms
+// send the same number of commands and the comparison below is request against
+// request again. What the fan-out adds is the per-layer report, which is compared
+// on its status per layer with automation's `packageResults` for the three
+// packages that matter: a valid one, one whose Workflow is invalid (nothing may be
+// written, on either surface) and one whose store fails part-way (the same layers
+// landed, and neither surface removes anything).
 //
 // The document is a three-layer Workflow package because that is the shape with
 // the most to be wrong about: a two-layer package cannot catch a Workflow write
@@ -134,6 +144,7 @@ import {
 import { CMD_PUBLISH_PACKAGE } from '../../../src/contracts/sidebar-ipc';
 import type { PublishPackageCommand } from '../../../src/contracts/sidebar-ipc';
 import type {
+  PackageLayer,
   PackagePublishOutcome,
   PackagePublishRequest,
   PackagePublishedLayer
@@ -745,137 +756,132 @@ function importRows<K extends ImportPlanRow['resourceKind']>(
   );
 }
 
-/** One layer's publication, as the operator's confirmation sends it. */
-interface LayerWrite {
-  readonly key: LayerKey;
-  readonly payload: PublishPackageCommand['payload'];
-}
-
 /** The layers a request declares — the unit the two surfaces are compared on. */
 type PackageLayers = PublishPackageCommand['payload']['layers'];
 
+/** The operator's one request, and the layer each of its parts reports under. */
+interface SidebarPackage {
+  readonly keys: readonly LayerKey[];
+  readonly request: PublishPackageCommand['payload'];
+}
+
 /**
- * `buildImportWrites` plus the three `save*` functions it feeds, mirrored from
- * {@link SIDEBAR_COMPOSER_SOURCE} and `webview-ui/src/lib/save-{phases,pipelines,
- * workflows}.ts`.
+ * `buildImportPackage`, mirrored from {@link SIDEBAR_COMPOSER_SOURCE}.
  *
- * Kept structurally identical to the originals rather than tidied: each layer
- * carries the revision the PLAN was computed against, and nothing at all is
- * returned when a layer has rows but no revision to gate them with.
+ * Kept structurally identical to the original rather than tidied: one layer per kind that has
+ * `import` rows, in Phase, Pipeline, Workflow order, each carrying the revision the PLAN was
+ * computed against, and nothing at all (`null`) when a layer has rows but no revision to gate it.
  *
  * Feature 099 (T496f, T489a, FR-043/FR-044) — the original's `scope` parameter
  * and the `scope` field on all three payloads are gone, and each layer's revision
  * is read as the plain string the plan now carries rather than indexed out of a
  * per-scope pair.
  *
- * **Feature 100 (T514, FR-039a, FR-039b) — two changes, and the mirror follows
- * both.** The composer's rows no longer carry the held layer: a publication is a
- * merge, and naming a stored id would publish that id's head, so the concatenation
- * is gone from the original and from here. And the three `CMD_SAVE_*` commands are
- * gone — each `save*` wraps its layer in a single-layer `CMD_PUBLISH_PACKAGE`. The
- * composer's `mutation` intent stops at those functions and is never sent, so the
- * mirror does not carry it: mirroring a field no operator's request contains would
- * compare the headless composer against a shape the host has no arm for.
+ * **Feature 100 (T514, FR-039a, FR-039b).** The composer's rows no longer carry the held layer: a
+ * publication is a merge, and naming a stored id would publish that id's head. The composer's
+ * `mutation` intent stops at the old `save*` functions and was never sent, so the mirror does not
+ * carry it.
+ *
+ * **Feature 254 (FR-013).** The three single-layer publications are one request. The old
+ * `sidebarWrites` returned a list of one-layer requests that `sidebarImport` sent in turn,
+ * stopping at the first refusal; this returns the one request the operator's Confirm sends.
  */
-function sidebarWrites(plan: ImportPlan): readonly LayerWrite[] {
+function sidebarPackage(plan: ImportPlan): SidebarPackage | null {
   const phases = importRows(plan, 'phase');
   const pipelines = importRows(plan, 'pipeline');
   const workflows = importRows(plan, 'workflow');
   const pipelineRevision = plan.computedAgainstPipelineRevision;
   const workflowRevision = plan.computedAgainstWorkflowRevision;
-  if (pipelines.length > 0 && pipelineRevision === undefined) return [];
-  if (workflows.length > 0 && workflowRevision === undefined) return [];
+  if (pipelines.length > 0 && pipelineRevision === undefined) return null;
+  if (workflows.length > 0 && workflowRevision === undefined) return null;
 
-  const writes: LayerWrite[] = [];
+  const keys: LayerKey[] = [];
+  const layers: PackageLayer[] = [];
   if (phases.length > 0) {
-    writes.push({
-      key: 'phases',
-      payload: {
-        layers: [
-          {
-            kind: 'phase',
-            expectedRevision: plan.computedAgainstRevision,
-            definitions: phases.map(({ definition }) => {
-              const { phaseId, ...declared } = definition;
-              return { id: phaseId, body: { id: phaseId, ...declared } };
-            })
-          }
-        ]
-      }
+    keys.push('phases');
+    layers.push({
+      kind: 'phase',
+      expectedRevision: plan.computedAgainstRevision,
+      definitions: phases.map(({ definition }) => {
+        const { phaseId, ...declared } = definition;
+        return { id: phaseId, body: { id: phaseId, ...declared } };
+      })
     });
   }
   if (pipelines.length > 0 && pipelineRevision !== undefined) {
-    writes.push({
-      key: 'pipelines',
-      payload: {
-        layers: [
-          {
-            kind: 'pipeline',
-            expectedRevision: pipelineRevision,
-            definitions: pipelines.map(({ definition }) => {
-              const { pipelineId, phaseIds, ...declared } = definition;
-              return {
-                id: pipelineId,
-                body: { id: pipelineId, phases: [...phaseIds], ...declared }
-              };
-            })
-          }
-        ]
-      }
+    keys.push('pipelines');
+    layers.push({
+      kind: 'pipeline',
+      expectedRevision: pipelineRevision,
+      definitions: pipelines.map(({ definition }) => {
+        const { pipelineId, phaseIds, ...declared } = definition;
+        return { id: pipelineId, body: { id: pipelineId, phases: [...phaseIds], ...declared } };
+      })
     });
   }
   if (workflows.length > 0 && workflowRevision !== undefined) {
-    writes.push({
-      key: 'workflows',
-      payload: {
-        layers: [
-          {
-            kind: 'workflow',
-            expectedRevision: workflowRevision,
-            definitions: workflows.map(({ definition }) => ({
-              id: definition.workflowId,
-              body: { ...definition }
-            }))
-          }
-        ]
-      }
+    keys.push('workflows');
+    layers.push({
+      kind: 'workflow',
+      expectedRevision: workflowRevision,
+      definitions: workflows.map(({ definition }) => ({
+        id: definition.workflowId,
+        body: { ...definition }
+      }))
     });
   }
-  return writes;
+  return keys.length === 0 ? null : { keys, request: { layers } };
 }
 
-/** Every layer the operator's requests declared, concatenated in send order. */
-function sentLayers(writes: readonly LayerWrite[]): PackageLayers {
-  return writes.flatMap((write) => write.payload.layers);
+/** The layer key each catalog kind reports under, mirrored from the composer. */
+const KEY_OF_KIND: Readonly<Record<CatalogKind, LayerKey>> = {
+  phase: 'phases',
+  pipeline: 'pipelines',
+  workflow: 'workflows'
+};
+
+/**
+ * `layerResultsOf`, mirrored: the one acknowledgement, read key by key.
+ *
+ * Only the status of each layer and the reason a layer was refused are compared across surfaces,
+ * so this carries those and not the original's row wording. A key is accepted when the package
+ * published it; a `package-partial` acknowledgement keeps the layers it lists as published and
+ * rejects every other key; any other refusal rejects every key under its own reason.
+ */
+function sidebarLayerResults(
+  keys: readonly LayerKey[],
+  ack: CommandAckMessage
+): readonly { readonly key: LayerKey; readonly ack: CommandAckMessage }[] {
+  if (ack.status === 'accepted') return keys.map((key) => ({ key, ack }));
+  if (ack.reason === 'package-partial') {
+    const result = ack.result as { readonly published: readonly { readonly kind: CatalogKind }[] };
+    const live = new Set(result.published.map((layer) => KEY_OF_KIND[layer.kind]));
+    return keys.map((key) => ({
+      key,
+      ack: live.has(key) ? ({ ...ack, status: 'accepted' } as CommandAckMessage) : ack
+    }));
+  }
+  return keys.map((key) => ({ key, ack }));
 }
 
 interface SidebarCommit {
   readonly results: readonly { readonly key: LayerKey; readonly ack: CommandAckMessage }[];
   readonly outcome: 'imported' | 'partial' | 'failed';
-  readonly sent: readonly LayerWrite[];
+  /** The router's own acks, in send order: one, for the one request. */
+  readonly acks: readonly CommandAckMessage[];
+  readonly sent: SidebarPackage | null;
 }
 
 async function sidebarImport(store: Store, plan: ImportPlan): Promise<SidebarCommit> {
   const deps = depsFor(store);
-  const sent = sidebarWrites(plan);
-  const results: { key: LayerKey; ack: CommandAckMessage }[] = [];
-  for (const write of sent) {
-    const ack = await dispatch(deps, CMD_PUBLISH_PACKAGE, write.payload);
-    results.push({ key: write.key, ack });
-    // A rejection stops the sequence. The order exists so a layer never lands
-    // ahead of its dependency; carrying on past a refusal would be exactly that.
-    if (ack.status !== 'accepted') break;
-  }
+  const sent = sidebarPackage(plan);
+  if (sent === null) return { results: [], outcome: 'failed', acks: [], sent };
+  const ack = await dispatch(deps, CMD_PUBLISH_PACKAGE, sent.request);
+  const results = sidebarLayerResults(sent.keys, ack);
   const accepted = results.filter((result) => result.ack.status === 'accepted').length;
   const outcome =
-    results.length === 0
-      ? 'failed'
-      : accepted === results.length
-        ? 'imported'
-        : accepted === 0
-          ? 'failed'
-          : 'partial';
-  return { results, outcome, sent };
+    accepted === results.length ? 'imported' : accepted === 0 ? 'failed' : 'partial';
+  return { results, outcome, acks: [ack], sent };
 }
 
 // -- Export, both surfaces (T033) -------------------------------------------
@@ -1139,7 +1145,8 @@ describe('the fixture drives both surfaces for real (positive controls)', () => 
     // Not a parity assertion — a staleness one. If the original is renamed or its
     // composer removed, the mirror below is describing something that no longer
     // exists and the header's claim about it is false.
-    expect(source).toContain('export function buildImportWrites(');
+    expect(source).toContain('export function buildImportPackage(');
+    expect(source).toContain('export function layerResultsOf(');
   });
 
   it('reaches all three writes and changes the catalog (positive control)', async () => {
@@ -1259,11 +1266,11 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
     const headlessPlan = await headlessPreview(headlessStore, text);
     const sidebarPlan = await sidebarPreview(sidebarStore, text);
 
-    // The operator's requests, from the mirrored composer, flattened to the layers
-    // they declare. Three single-layer publications against automation's one
-    // three-layer publication (see the header) — so the comparison is over the
-    // layers, which is the unit both surfaces address a catalog in.
-    const operator = sentLayers(sidebarWrites(sidebarPlan));
+    // The operator's request, from the mirrored composer, and the layers it
+    // declares. One publication against automation's one (see the header) — the
+    // comparison is over the layers, which is the unit both surfaces address a
+    // catalog in.
+    const operator = sidebarPackage(sidebarPlan)!.request.layers;
 
     // The automation request, recorded at the port rather than inferred. The
     // outcome is stubbed published so the call is observed rather than gated: a
@@ -1341,12 +1348,10 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
     );
 
     expect(headlessResult.result.outcome).toBe(sidebarResult.outcome);
-    // Feature 100 (T514) — per-layer results still line up one-for-one on a
-    // document that lands, because automation reports one result per declared
-    // layer and the operator sends one layer per request. They would NOT line up
-    // on a refusal: automation's single request refuses every declared layer at
-    // once while the operator's sequence stops at the first, which is the shape
-    // the staleness case below asserts on the acks instead.
+    // Feature 100 (T514) / Feature 254 (FR-013) — per-layer results line up one for
+    // one, because automation reports one result per declared layer and the
+    // operator's one acknowledgement is fanned out into one result per layer. They
+    // line up on a refusal too, now that both surfaces send a single request.
     expect(headlessResult.result.results.map((result) => [result.key, result.ack.status])).toEqual(
       sidebarResult.results.map((result) => [result.key, result.ack.status])
     );
@@ -1388,19 +1393,15 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
 
     expect(headlessResult.result.outcome).toBe('failed');
     expect(sidebarResult.outcome).toBe('failed');
-    // Feature 100 (T514) — read off the ROUTER's acks, not off the port's report.
-    // The two arms no longer send the same number of commands, so the derived
-    // per-layer results differ in length by construction and comparing them would
-    // be comparing the derivation rather than the refusal. What parity means here
-    // is that the same handler refused both for the same reason, and its own ack
-    // is where that is stated. Automation sends one request and gets one refusal;
-    // the operator's sequence sends the Phase layer, is refused, and stops.
+    // Read off the ROUTER's acks, not off the port's report: what parity means here is
+    // that the same handler refused both for the same reason, and its own ack is where
+    // that is stated. Feature 254 (FR-013) — both surfaces now send one request and get
+    // one refusal; before, the operator's sequence sent the Phase layer, was refused, and
+    // stopped.
     const reasonsOf = (acks: readonly CommandAckMessage[]) =>
       acks.map((ack) => (ack.status === 'accepted' ? 'accepted' : ack.reason));
     expect(reasonsOf(headlessResult.acks)).toEqual(['stale-catalog']);
-    expect(reasonsOf(sidebarResult.results.map((result) => result.ack))).toEqual([
-      'stale-catalog'
-    ]);
+    expect(reasonsOf(sidebarResult.acks)).toEqual(['stale-catalog']);
     // Refused before any write, on both: the revision gate lives inside the store
     // now, so this also says the store never drafted a row it then had to leave
     // behind (FR-036), and never published one (FR-039a).
@@ -1408,6 +1409,85 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
     expect(sidebarStore.writes).toEqual([]);
     expect(headlessStore.published).toEqual([]);
     expect(sidebarStore.published).toEqual([]);
+  });
+  // Feature 254 (FR-R4-F07, P-T4, FR-013, FR-014, FR-016) — the two packages that exercise the
+  // fan-out, compared per layer with automation's own report. Each surface gets its OWN store and
+  // the same plan, so a difference can only be a difference between the surfaces.
+
+  /** The per-layer status both surfaces report: the part of the report the operator acts on. */
+  const statusesOf = (
+    results: readonly { readonly key: string; readonly ack: { readonly status: string } }[]
+  ) => results.map((result) => [result.key, result.ack.status]);
+
+  it('refuses an invalid-Workflow package on both surfaces, writing nothing (P-T4, FR-014)', async () => {
+    const headlessStore = makeStore(SEEDED);
+    const sidebarStore = makeStore(SEEDED);
+    const plan = await headlessPreview(headlessStore, SELF_CONTAINED);
+    // The plan is valid when preflight reads it; the defect is one the host finds only when it
+    // validates the whole document: the Workflow starts at a node it does not declare.
+    const tampered: ImportPlan = {
+      ...plan,
+      rows: plan.rows.map((row) =>
+        row.outcome === 'import' && row.resourceKind === 'workflow'
+          ? { ...row, definition: { ...row.definition, startNodeIds: ['no-such-node'] } }
+          : row
+      )
+    };
+
+    const headlessResult = await headlessImport(headlessStore, tampered);
+    const sidebarResult = await sidebarImport(sidebarStore, tampered);
+
+    expect(headlessResult.result.outcome).toBe('failed');
+    expect(sidebarResult.outcome).toBe('failed');
+    expect(statusesOf(sidebarResult.results)).toEqual(statusesOf(headlessResult.result.results));
+    expect(statusesOf(sidebarResult.results)).toEqual([
+      ['phases', 'rejected'],
+      ['pipelines', 'rejected'],
+      ['workflows', 'rejected']
+    ]);
+    // The same handler refused both, for the same reason: it validated the whole document first.
+    const reasonOf = (ack: CommandAckMessage) => (ack.status === 'accepted' ? 'accepted' : ack.reason);
+    expect(headlessResult.acks.map(reasonOf)).toEqual(['validation-failed']);
+    expect(sidebarResult.acks.map(reasonOf)).toEqual(['validation-failed']);
+    // Zero writes on both: not a draft, not a publication (FR-014, SC-005).
+    for (const store of [headlessStore, sidebarStore]) {
+      expect(store.writes).toEqual([]);
+      expect(store.published).toEqual([]);
+    }
+  });
+
+  it('reports a store failure part-way identically, and removes nothing (P-T4, FR-016)', async () => {
+    const headlessStore = makeStore(SEEDED);
+    const sidebarStore = makeStore(SEEDED);
+    const plan = await headlessPreview(headlessStore, SELF_CONTAINED);
+
+    // The Pipeline layer's draft write fails after the Phase layer drafted, with a prefix of its own
+    // records on disk: the store reports `partial`, which the fixture's recorder counts as a write.
+    for (const store of [headlessStore, sidebarStore]) {
+      const original = store.catalog.saveDraftLayer.bind(store.catalog);
+      vi.spyOn(store.catalog, 'saveDraftLayer').mockImplementation(async (request) =>
+        request.kind === 'pipeline'
+          ? { outcome: 'partial', wrote: ['parity-authoring@v1'], errno: 'EIO' }
+          : original(request)
+      );
+    }
+
+    const headlessResult = await headlessImport(headlessStore, plan);
+    const sidebarResult = await sidebarImport(sidebarStore, plan);
+
+    const reasonOf = (ack: CommandAckMessage) => (ack.status === 'accepted' ? 'accepted' : ack.reason);
+    expect(headlessResult.acks.map(reasonOf)).toEqual(['package-partial']);
+    expect(sidebarResult.acks.map(reasonOf)).toEqual(['package-partial']);
+    // Nothing is live, on either surface, so every layer reads as not imported.
+    expect(statusesOf(sidebarResult.results)).toEqual(statusesOf(headlessResult.result.results));
+    expect(headlessResult.result.outcome).toBe(sidebarResult.outcome);
+    // The Phase layer landed as a draft on both, the Pipeline layer left a prefix, and nothing was
+    // published or removed.
+    for (const store of [headlessStore, sidebarStore]) {
+      expect(store.writes).toEqual(['phases', 'pipelines']);
+      expect(store.published).toEqual([]);
+    }
+    expect(sidebarStore.writes).toEqual(headlessStore.writes);
   });
 });
 
@@ -1490,10 +1570,10 @@ describe('exportProcessDefinitions matches the sidebar export (T033, FR-009, SC-
 // Import-commit parity here is narrower than the Phase/Pipeline/Workflow
 // coverage above, and deliberately so. `cmd-save-models.ts` now runs the full
 // gated sequence (T021: revision check, server-side re-plan, merge into the
-// current catalog), but the operator-side composer (`buildImportWrites`,
-// mirrored above as `sidebarWrites`) still has no Model Catalog branch — T023
+// current catalog), but the operator-side composer (`buildImportPackage`,
+// mirrored above as `sidebarPackage`) still has no Model Catalog branch — T023
 // gave the webview a separate, simpler commit path
-// (`runModelCatalogImportCommit`) instead of widening `buildImportWrites`,
+// (`runModelCatalogImportCommit`) instead of widening `buildImportPackage`,
 // because a Model Catalog commit is one scope-less write, not an ordered
 // multi-layer sequence. A two-surface "sidebar composer vs. headless
 // composer" comparison here would therefore compare the real headless

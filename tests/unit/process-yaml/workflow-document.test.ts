@@ -512,6 +512,11 @@ describe('Feature 086 — the authored graph (§2.3)', () => {
     // takes one. Arity is the validator's rule; the writer carries what it is
     // handed, including a number and a boolean, which must stay bare so a reader
     // sees the same type back (data-model.md §2.3).
+    //
+    // Feature 254 (C9) -- this asserts serializer fidelity and no validation verdict, so the ordering
+    // operator and the boolean `equals` stay exactly as written. The graph validator now refuses both as
+    // `condition-comparison-unsupported` (tests/unit/config/workflow-graph-validator.test.ts); the writer
+    // is not where that is decided, and a definition the host refuses must still round-trip as text.
     const text = emit(
       withConnections([
         connection({

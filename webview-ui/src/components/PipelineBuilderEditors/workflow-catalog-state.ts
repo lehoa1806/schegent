@@ -642,23 +642,18 @@ export function removeWorkflowConditionValue(
 }
 
 /**
- * Read one typed value as the literal it spells: `true`/`false` are booleans and
- * a plain decimal is a number, so a comparison against either means what the
- * operator wrote. Everything else is kept verbatim.
+ * Read one typed value as the literal it is: the text as typed, unchanged.
  *
- * The trade-off is deliberate and one-directional — the *strings* `"5"` and
- * `"true"` are not authorable through this control, while numeric and boolean
- * comparisons would otherwise be impossible to author at all. The pattern is
- * narrow on purpose: `0x10`, `007`, and `TRUE` stay text rather than being
- * silently reinterpreted.
+ * FR-R4-F07 (FR-027; TA5) -- v1 operands are text (a node status, or the location reference an output
+ * is recorded as), and the evaluator compares only values of the same type. A number or a boolean under
+ * `equals` can therefore never match, and the host now refuses it. This used to read `true` and `false`
+ * as booleans and a plain decimal as a number, which made `equals 5` the easiest thing to author and a
+ * condition that could never hold; the cost of that rule was that the string `"5"` was not authorable at
+ * all. Both are fixed by keeping what is typed. The declared type stays `WorkflowConditionLiteral`, so no
+ * caller changes, and a stored numeric or boolean literal still loads and is shown as its text
+ * (`formatWorkflowConditionLiteral`), where the host's defect asks the operator to repair it.
  */
-const DECIMAL_LITERAL = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
-
 export function parseWorkflowConditionLiteral(text: string): WorkflowConditionLiteral {
-  const trimmed = text.trim();
-  if (trimmed === 'true') return true;
-  if (trimmed === 'false') return false;
-  if (DECIMAL_LITERAL.test(trimmed)) return Number(trimmed);
   return text;
 }
 

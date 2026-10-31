@@ -234,6 +234,8 @@ const projector = new StateProjector({
       run,
       spendTrust: (denomination) => effectiveLimitSources.spendTrust(run.id, denomination)
     }),
+  // FR-R4-F07 (FR-022, D3) — the limits the runner was built with, so the launcher states what each Phase would use.
+  getLaunchLimits: () => effectiveLimitSources.limits,
   getDebugLogTail: () => webviewLogSink.getEntries(),
   getAvailableModels: () => backendCapabilities.getAvailableModels(),
   getAvailableBackends: () => backendCapabilities.getAvailableBackends(),

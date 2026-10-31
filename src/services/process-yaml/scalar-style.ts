@@ -14,10 +14,36 @@
 //      question is about the documents we hand to other tools. It is an
 //      emit-side concern only: `version: 3` must still be readable.
 //
+// Feature 254 (FR-R4-F07, FR-009, FR-010) — a third question, and it is also this module's to answer:
+//
+//   3. Would the scanner read this plain text as the start of a mapping entry? `looksKeyed` answers
+//      it. It moved here from the scanner so that the scanner and the serializer consult ONE
+//      predicate (hard rule 46). The serializer asks it for a sequence item, where `- ollama:llama3`
+//      opens a mapping and was refused on import; the same text as a mapping VALUE is read back as
+//      the string, so value position never asks.
+//
 // Errors are values; nothing here throws.
 
 /** Style a value must be emitted in. */
 export type ScalarStyle = 'plain' | 'double' | 'block';
+
+/** Where a scalar is written: after `key: ` (`value`) or after `- ` (`item`). */
+export type ScalarPosition = 'value' | 'item';
+
+/** The identifier a mapping key may open with. Moved from the scanner (feature 254, Q1). */
+export const KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*/;
+
+/**
+ * Whether `text` opens `key:` — the discriminator between a mapping entry and a scalar.
+ *
+ * Moved from the scanner unchanged (feature 254, Q1), so the scanner and the serializer agree on what
+ * a key is by reading the same function. The scanner uses it to decide that `- a:b` opens a mapping;
+ * the serializer uses it to quote a sequence item that would be read that way.
+ */
+export function looksKeyed(text: string): boolean {
+  const keyMatch = KEY_PATTERN.exec(text);
+  return keyMatch !== null && text.slice(keyMatch[0].length).startsWith(':');
+}
 
 /** Indicators the grammar excludes from `plain_first`, with why each is out. */
 export const PLAIN_FIRST_EXCLUDED: ReadonlyMap<string, string> = new Map([
@@ -93,6 +119,15 @@ export function plainScalarDefect(value: string): string | null {
   if (excluded !== undefined && indicates) {
     return excluded;
   }
+  // Feature 254 (FR-009: "or otherwise refuse"; FR-010: "quotes"). The scanner opens a quoted scalar at
+  // a leading double quote and never reads such a value as plain, so a value written plain with one
+  // came back as a different string (`"q"` read as `q`) or was refused (`"Ak`). The scanner cannot
+  // reach this check with a leading quote, so what it accepts is unchanged; only what the serializer
+  // writes plain narrows, and the exports it moves are ones that did not import. Kept apart from
+  // PLAIN_FIRST_EXCLUDED because the scanner reads that table to word a refused mapping key.
+  if (first === '"') {
+    return 'a value that begins with a double quote reads as a quoted scalar';
+  }
   if (value.includes('\t')) {
     return 'a tab may not appear in a plain scalar';
   }
@@ -156,10 +191,17 @@ function blockLiteralIsLossless(value: string): boolean {
   return true;
 }
 
-/** The single style decision the serializer makes for every scalar. */
-export function chooseScalarStyle(value: string): ScalarStyle {
+/**
+ * The single style decision the serializer makes for every scalar.
+ *
+ * `position` is `'value'` unless the caller is writing a sequence item. In item position a value whose
+ * plain form `looksKeyed` is quoted, because the scanner would read `- ollama:llama3` as a mapping
+ * entry. Nothing else differs between the two positions (feature 254, FR-009).
+ */
+export function chooseScalarStyle(value: string, position: ScalarPosition = 'value'): ScalarStyle {
   if (blockLiteralIsLossless(value)) return 'block';
-  return requiresQuoting(value) ? 'double' : 'plain';
+  if (requiresQuoting(value)) return 'double';
+  return position === 'item' && looksKeyed(value) ? 'double' : 'plain';
 }
 
 const ESCAPES: Readonly<Record<string, string>> = {

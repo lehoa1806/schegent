@@ -560,3 +560,83 @@ describe('Feature 100 — the layer gate is per kind, and the manifest is one fi
     }
   });
 });
+
+describe('Feature 254 — the cross-process probe (W-T3; contract W4; FR-038, SC-010)', () => {
+  // The evidence behind the decision to document a single-writer precondition and not to build a
+  // cross-process compare-and-swap (research R21). Two independent stores stand for two processes: they
+  // share nothing but the bytes, and one chain per store (US7) cannot order them. Each round races a
+  // draft of a DIFFERENT definition through each, so both pass their own gate and meet at the one
+  // manifest file, where the later rename wins.
+  //
+  // It records the count and does not assert zero, because zero is not the claim. The claim is the
+  // documented consequence: a pointer update the second rename erased leaves its record on disk as
+  // collectable debris, no record is unaccounted for, and no history record is ever removed. The count
+  // goes to measurements.md as the baseline evidence for R21.
+  const ROUNDS = 50;
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await createWorkspace('cross-process-probe');
+  });
+
+  afterEach(async () => {
+    await removeWorkspace(workspaceRoot);
+  });
+
+  it('accounts for every record over many races, and reports the pointer updates it lost', async () => {
+    const storeA = openStore(workspaceRoot);
+    const storeB = openStore(workspaceRoot);
+
+    for (let round = 0; round < ROUNDS; round += 1) {
+      await Promise.all(
+        [
+          [storeA, `probe-a-${round}`],
+          [storeB, `probe-b-${round}`]
+        ].map(([store, id]) =>
+          (store as CatalogStore).applyLifecycleWrite({
+            op: 'save-draft',
+            kind: 'phase',
+            id: id as string,
+            body: { round },
+            expectedDraftVersion: 'no-draft'
+          })
+        )
+      );
+    }
+
+    const cold = openStore(workspaceRoot);
+    const result = await cold.read();
+    expect(result.outcome).toBe('read');
+    if (result.outcome !== 'read') return;
+    expect(result.snapshot.faults).toEqual([]);
+
+    const named = new Set(
+      result.snapshot.definitions.flatMap((definition) =>
+        definition.versions.map((version) => `${definition.kind}/${definition.id}/${version.versionId}`)
+      )
+    );
+    const debris = new Set(
+      result.snapshot.collectable.map((record) => `${record.kind}/${record.id}/${record.versionId}`)
+    );
+    const onDisk = (await treeOf(storeRootOf(workspaceRoot))).files
+      .filter((file) => file !== 'manifest.json')
+      .map((file) => {
+        const [, id, record] = file.split('/');
+        return `phase/${id}/${String(record).replace('.json', '')}`;
+      });
+
+    // Every write landed its record, and no record was removed by any path.
+    expect(onDisk).toHaveLength(ROUNDS * 2);
+    // Each record is history or debris, never both and never neither.
+    for (const key of onDisk) {
+      expect(named.has(key) !== debris.has(key), `${key} is neither history nor debris`).toBe(true);
+    }
+    expect(named.size + debris.size).toBe(ROUNDS * 2);
+
+    const lost = debris.size;
+    console.info(
+      `catalog cross-process probe: ${lost} of ${ROUNDS * 2} pointer updates lost over ${ROUNDS} rounds ` +
+        `(each left its record collectable; ${named.size} named)`
+    );
+  });
+});

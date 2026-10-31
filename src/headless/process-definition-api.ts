@@ -33,10 +33,11 @@ import {
   validatePipelineDefinition,
   type PipelineDefinitionValidationResult
 } from '../config/pipeline-definition-validator';
+import { validateWorkflowDefinition } from '../config/workflow-definition-validator';
 import { validateWorkflowGraph } from '../config/workflow-graph-validator';
 import type { PhaseDefinition } from '../contracts/process-definitions';
 import type { PipelineDefinition, PipelineFieldError } from '../contracts/pipeline-definitions';
-import type { WorkflowDefinition, WorkflowFieldError } from '../contracts/workflow-definitions';
+import type { WorkflowFieldError } from '../contracts/workflow-definitions';
 import { checkDefinitionArgs, type BoundaryRefusal } from './process-api-validators';
 
 /** The effective catalog each kind is validated against, supplied by the caller. */
@@ -120,22 +121,35 @@ export function validateProcessDefinition(
   if (input.kind === 'pipeline') {
     return { kind: 'pipeline', result: validatePipeline(input.definition, catalog) };
   }
-  // A Workflow has no shape validator with a result wrapper: `validateWorkflowGraph`
-  // takes an already-typed definition and answers with defects alone. The cast is
-  // the boundary's, and it is why `checkDefinitionArgs` refused a non-object above
-  // — every field the graph validator reads it reads defensively.
-  //
-  // Bound to `effectivePipelines` for the same reason as `effectivePhases` above,
-  // and additionally because the FR-035a gate in
-  // tests/lint/workflow-graph-effective-catalog.test.ts reads this argument's name:
-  // a call site that cannot say the catalog is effective is one that may not be.
+  return { kind: 'workflow', errors: validateWorkflow(input.definition, catalog) };
+}
+
+/**
+ * A Workflow's defects: its shape, then its graph, the order the sidebar's catalog reads a row in
+ * (`parseRows` in `workflow-catalog.ts`).
+ *
+ * The graph validator takes a typed definition and walks it, so it is entered only when the shape
+ * validator produced one. Until feature 254 (FR-032, FR-033) this arm cast the caller's value to a
+ * `WorkflowDefinition` and ran the graph pass alone, which threw on a `nodes` that was not a list and
+ * reported none of the shape defects the sidebar reports for the same row. A shape that yields no
+ * definition returns its own defects and the graph is not walked (the spec's edge case: a connection
+ * to an unknown node is a graph defect, and is reported only when the shape gives a graph to read).
+ *
+ * The shape validator is called with no options, as the catalog calls it: a Workflow `version` the
+ * author left out is a defect here and there.
+ */
+function validateWorkflow(
+  definition: unknown,
+  catalog: ProcessDefinitionCatalog
+): readonly WorkflowFieldError[] {
+  const shape = validateWorkflowDefinition(definition);
+  if (shape.definition === null) return shape.errors;
+  // Bound to `effectivePipelines` for the same reason as `effectivePhases` above, and additionally
+  // because the FR-035a gate in tests/lint/workflow-graph-effective-catalog.test.ts reads this
+  // argument's name: a call site that cannot say the catalog is effective is one that may not be.
   const effectivePipelines = catalog.pipelines ?? [];
-  return {
-    kind: 'workflow',
-    errors: validateWorkflowGraph(
-      input.definition as WorkflowDefinition,
-      effectivePipelines,
-      catalog.invalidPipelines ?? new Map()
-    )
-  };
+  return [
+    ...shape.errors,
+    ...validateWorkflowGraph(shape.definition, effectivePipelines, catalog.invalidPipelines ?? new Map())
+  ];
 }

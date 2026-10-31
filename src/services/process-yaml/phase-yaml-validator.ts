@@ -37,6 +37,7 @@
 // Errors are values. Nothing here throws.
 
 import {
+  modelValueDefect,
   PHASE_DESCRIPTION_MAX_LEN,
   PHASE_ID_PATTERN,
   PHASE_INSTRUCTION_MAX_LEN,
@@ -173,6 +174,27 @@ export function unknownField(key: string): ImportDefect {
 export function findScalar(node: YamlMappingNode, key: string): YamlScalarNode | undefined {
   const entry = node.entries.find((candidate) => candidate.key === key);
   return entry !== undefined && entry.value.kind === 'scalar' ? entry.value : undefined;
+}
+
+/**
+ * Whether a joined capability scalar names more members than the vocabulary holds (FR-005).
+ *
+ * Counts separators and stops at the first member over the bound, so a hostile list costs at most
+ * `ALL_PHASE_CAPABILITIES.length + 1` separator searches and no member lookup. The empty scalar is
+ * the empty set, not one empty member.
+ */
+function holdsMoreMembersThanVocabulary(joined: string): boolean {
+  if (joined.length === 0) return false;
+  let members = 1;
+  for (
+    let at = joined.indexOf(CAPABILITY_SEPARATOR);
+    at !== -1;
+    at = joined.indexOf(CAPABILITY_SEPARATOR, at + 1)
+  ) {
+    members += 1;
+    if (members > ALL_PHASE_CAPABILITIES.length) return true;
+  }
+  return false;
 }
 
 function hasKey(node: YamlMappingNode, key: string): boolean {
@@ -474,33 +496,54 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
   const capabilitiesNode = optionalScalar(section, 'capabilities', defects);
   if (capabilitiesNode !== undefined) {
     const raw = capabilitiesNode.value;
-    const members = raw.length === 0 ? [] : raw.split(CAPABILITY_SEPARATOR);
-    const unknown = members.filter((member) => !isPhaseCapability(member));
-    const duplicated = members.filter((member, index) => members.indexOf(member) !== index);
-    if (unknown.length > 0) {
+    // Feature 254 (FR-R4-F07, FR-005) — a list longer than the vocabulary always holds an unknown
+    // member or a repeat, so it is refused on its count, before any member is looked up. The
+    // lookup and the duplicate check below were quadratic in the list, and the list is operator
+    // input. Counting separators stops at the fifth member.
+    if (holdsMoreMembersThanVocabulary(raw)) {
       defects.push(
         defect(
           'capabilities',
-          'invalid-enum',
-          `Phase capabilities must each be one of ${ALL_PHASE_CAPABILITIES.join(', ')}`
+          'too-many-members',
+          `Phase capabilities list at most ${ALL_PHASE_CAPABILITIES.length} members`
         )
       );
-    } else if (duplicated.length > 0) {
-      defects.push(
-        defect('capabilities', 'duplicate-member', 'Phase capabilities must not repeat a member')
-      );
     } else {
-      capabilities = members as PhaseCapability[];
+      const members = raw.length === 0 ? [] : raw.split(CAPABILITY_SEPARATOR);
+      const unknown = members.filter((member) => !isPhaseCapability(member));
+      const duplicated = new Set(members).size < members.length;
+      if (unknown.length > 0) {
+        defects.push(
+          defect(
+            'capabilities',
+            'invalid-enum',
+            `Phase capabilities must each be one of ${ALL_PHASE_CAPABILITIES.join(', ')}`
+          )
+        );
+      } else if (duplicated) {
+        defects.push(
+          defect('capabilities', 'duplicate-member', 'Phase capabilities must not repeat a member')
+        );
+      } else {
+        capabilities = members as PhaseCapability[];
+      }
     }
   }
 
   let model: string | undefined;
   const modelNode = optionalScalar(section, 'model', defects);
   if (modelNode !== undefined) {
-    if (modelNode.value.trim().length === 0) {
+    const candidate = modelNode.value.trim();
+    // Feature 254 (FR-R4-F07, FR-034; H5) — the argv check is the definition validator's own, called
+    // rather than restated: a `model` this reader admitted and the catalog refused would preview clean
+    // and fail at the commit (FR-021), and a flag-shaped value reaches the child's command line.
+    const refusal = candidate.length === 0 ? null : modelValueDefect(candidate);
+    if (candidate.length === 0) {
       defects.push(defect('model', 'non-empty-required', 'Phase model must be non-empty'));
+    } else if (refusal === null) {
+      model = candidate;
     } else {
-      model = modelNode.value.trim();
+      defects.push(defect('model', refusal.code, refusal.message));
     }
   }
 

@@ -70,6 +70,30 @@ export const PHASE_YAML_INDENT = '  ';
  */
 export type ProcessYamlResourceKind = 'phase' | 'pipeline' | 'workflow' | 'modelCatalog';
 
+/**
+ * Every resource kind, as a runtime list (feature 254, FR-041, V2; research R24).
+ *
+ * The union above cannot be iterated, and a check that must visit every kind needs a list to visit. Kept
+ * beside the union and held equal to it at compile time: a kind added to one and not the other fails
+ * `typecheck`, naming the mismatch. `undispatchedKinds` (`src/headless/process-yaml-api.ts`) and the
+ * coverage gate (`tests/lint/process-yaml-coverage-seams.test.ts`) read it.
+ */
+export const PROCESS_YAML_RESOURCE_KINDS = ['phase', 'pipeline', 'workflow', 'modelCatalog'] as const;
+
+type KindListEquality<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+
+/** Compile-time only: `never` (an error) unless the list and the union hold the same members. */
+export type ProcessYamlResourceKindListIsComplete = KindListEquality<
+  (typeof PROCESS_YAML_RESOURCE_KINDS)[number],
+  ProcessYamlResourceKind
+> extends true
+  ? true
+  : never;
+
+/** Assigning `true` here fails to compile when the list and the union drift apart. */
+export const PROCESS_YAML_RESOURCE_KIND_LIST_COMPLETE: ProcessYamlResourceKindListIsComplete = true;
+
 // ---------------------------------------------------------------------------
 // Document
 // ---------------------------------------------------------------------------
