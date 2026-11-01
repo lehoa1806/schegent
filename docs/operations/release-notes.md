@@ -9,6 +9,37 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### Credential protection at commit and runtime boundaries (FR-R4-F10, 2026-11-01)
+
+A commit can now be scanned for the bytes it carries, the secret scan detects more, and the redaction of
+runtime content covers the shapes it was found to miss. None of this is a guarantee: each control is
+best-effort, and the documents say where it stops.
+
+- **A staged scan, and an opt-in hook.** `npm run security:secrets:staged` scans what a commit would carry,
+  read from the Git index and not from the working tree, so a secret staged and then edited out of the working
+  copy is still found. It judges a renamed or copied file at its new path, never writes the index, and refuses
+  rather than passes when it cannot answer. To make `git commit` run it, activate the tracked hook once, inside
+  `repo/`, with `git config core.hooksPath scripts/hooks`. Nothing installs it for you. `git commit --no-verify`
+  bypasses it, git does not run it for a conflict-free merge, and there is no server-side check, so the tree scan
+  in the gate stays the check that covers what was merged.
+- **The scan detects more.** A lone AWS access key id and an AWS account id, an Anthropic API key, a JSON web
+  token, a password assignment (an unquoted value on an env-style line, or a quoted literal, of at least 8
+  characters), and a dotenv file named `.env.<suffix>` other than `.env.example`, `.env.sample` and
+  `.env.template`. Test literals the new families reported were rewritten to be built when the test runs. No file or
+  directory was added to the exemptions. `SECURITY.md` lists every family and every shape it does not detect.
+- **Runtime redaction covers more, and is called what it is.** The value is removed, and the key stays readable,
+  for a password, secret or token key in text (`MY_DB_PASSWORD=`, `db_password=`, a JSON `client_secret`) and for a
+  string under such a key in a structured record; the password in `scheme://user:password@host` is removed with the
+  scheme, user and host kept; and GitHub `gho_`, `ghu_`, `ghs_` and `ghr_` tokens and `npm_` tokens are added. The
+  documents that said "sanitized" now say best-effort secret-pattern redacted, otherwise raw.
+- **What stays raw.** Ordinary content, file paths and any secret format with no pattern stay in the clear. A keyed
+  value shorter than 8 characters in text is not removed. **The process-definition export is written without
+  redaction:** its document body does not pass through the redactor, only its audit row does.
+- **Redaction is bounded.** Two existing patterns (a JSON web token, and a service-account private key in JSON) cost
+  time that grew with the square of a hostile line, about 10 seconds for a 128 Ki line in one case. Both are
+  rewritten to linear forms; one sanitize call now takes under 250 ms at the 1 MiB line bound and under 4 seconds for
+  a 16 MiB export, checked by a performance test.
+
 ### Reproducible release artifacts and qualification (FR-R4-F09, 2026-11-01)
 
 Preparing a release now produces one candidate and one record that names it, and the documents that

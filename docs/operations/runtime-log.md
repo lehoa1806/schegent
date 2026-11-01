@@ -1,6 +1,6 @@
 # Runtime log
 
-The runtime log is Schegent's sanitized operational log. Its default path is `<workspaceRoot>/.schegent/syslog`; it is independent of the structured audit log and the unredacted session artifacts.
+The runtime log is Schegent's operational log, best-effort secret-pattern redacted; otherwise raw. Its default path is `<workspaceRoot>/.schegent/syslog`; it is independent of the structured audit log and the unredacted session artifacts.
 
 <!-- Source: src/lib/runtime-log/runtime-log-path.ts -->
 <!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
@@ -45,7 +45,7 @@ This is not complete: the lines the backend runners and the stream monitor write
 
 ## Age: none, by decision
 
-The runtime log keeps size and generation bounds and **no age bound**. Its path can be configured outside the workspace, where an age sweep would delete files in a place you chose, so the maintenance pass and the retention settings never remove it by age. It holds sanitized host diagnostics (the content class in [the retention disclosure](evidence-retention-disclosure.md)), and `Schegent: Delete Run Evidence` leaves it in place.
+The runtime log keeps size and generation bounds and **no age bound**. Its path can be configured outside the workspace, where an age sweep would delete files in a place you chose, so the maintenance pass and the retention settings never remove it by age. It holds host diagnostics, best-effort secret-pattern redacted (the content class in [the retention disclosure](evidence-retention-disclosure.md)), and `Schegent: Delete Run Evidence` leaves it in place.
 
 <!-- Source: src/services/retention-disclosure.ts -->
 
@@ -69,7 +69,7 @@ The sink is released once, when the Extension Host deactivates, and not when a w
 <!-- Source: src/activation/backend-wiring.ts -->
 <!-- Source: src/lib/webview-log-sink.ts -->
 
-Runtime-log records pass through `SanitizedLogger`, but sanitization is pattern-based. The log may still contain local paths and other operational context; treat it as local diagnostic material.
+Runtime-log records pass through `SanitizedLogger`, but its redaction is best-effort secret-pattern redaction and nothing more. The log may still contain local paths and other operational context; treat it as local diagnostic material.
 
 <!-- Source: src/lib/logger.ts -->
 <!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->

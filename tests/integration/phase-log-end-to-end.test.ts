@@ -43,6 +43,15 @@ import {
 
 const FIXTURES_DIR = path.resolve(__dirname, 'fixtures/phase-log');
 
+// FR-R4-F10 (tasks TA5): `iter-2.jsonl` holds this placeholder where an Anthropic-shaped value
+// belongs. The copy into the temporary workspace substitutes a value assembled at call time.
+const KEY_PLACEHOLDER = '__SYNTHETIC_ANTHROPIC_KEY__';
+
+/** An Anthropic-shaped key with the body the fixture held, built from split literals. */
+function syntheticAnthropicKey(): string {
+  return `${['sk', '-ant-'].join('')}api03-${'A'.repeat(25)}0123456789BBBB`;
+}
+
 const RUN_ID = 'run-test-1';
 const TASK_ID = 'task-id-different-from-run';
 const QUEUE_ID = 'default';
@@ -73,7 +82,11 @@ async function buildHarness(): Promise<Harness> {
     await fs.mkdir(iterDir, { recursive: true });
     const src = path.join(FIXTURES_DIR, `iter-${n}.jsonl`);
     const dst = path.join(iterDir, 'stream.jsonl');
-    await fs.copyFile(src, dst);
+    // The fixture holds a placeholder where an Anthropic-shaped value belongs, so the repository's
+    // own secret scan finds no committed token (FR-R4-F10, FR-006). The value is assembled here, at
+    // call time, in the same shape the fixture held, and written with the copy.
+    const fixture = await fs.readFile(src, 'utf8');
+    await fs.writeFile(dst, fixture.replaceAll(KEY_PLACEHOLDER, syntheticAnthropicKey()));
   }
   const logger = new SanitizedLogger();
   return {

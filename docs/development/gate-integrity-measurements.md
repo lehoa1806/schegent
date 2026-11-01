@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 130
+    vacuity-census-denominator: 131
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **130** |
+| Gates the detector calls **controlled** (the denominator) | **131** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1613,6 +1613,14 @@ and they pass with the entrant in the set.
 | Gate | Seeded case that must fail | Result |
 |---|---|---|
 | `no-static-inline-style.test.ts` (N4) | the 13 static attributes the Builder's editors carried before they moved; and `style="margin-left:auto"` put back into `PipelineToolbar.svelte` | the first run named all 13 as `path:line`; the second named `PipelineToolbar.svelte:188`; the synthetic dynamic attribute is not named |
+
+**Denominator movement 130 → 131 (2026-11-01, feature 257 / `FR-R4-F10`).** One gate joined, controlled on
+its first run: `redaction-key-names-single-source.test.ts`. Attribution is by the detector's own two
+predicates, run over the two files the feature added under `tests/lint/`: that file is a scanning gate (it walks
+`src/` and `webview-ui/src/`) and carries the controls the detector recognises (a floor on the number of source
+files it reads, and a planted in-memory fork it must flag); the other, `credential-wording.test.ts`, is not a
+scanning gate (it reads four named documents and `SECURITY.md`), so it is outside the denominator. None left. The
+false-negative rate stays **0.0%**: all 131 still read as uncontrolled once their controls are stripped.
 
 **Denominator movement 129 → 130 (2026-11-01, feature 256 / `FR-R4-F09`).** One gate joined, controlled on
 its first run. Attribution is by census membership, measured rather than assumed: the controlled set was
