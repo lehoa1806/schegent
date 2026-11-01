@@ -19,8 +19,6 @@ Reports about the shipped extension host, webviews and IPC, ownership gates, loc
 <!-- Source: src/runner/backend-runner-factory.ts -->
 <!-- Source: src/lib/logger.ts -->
 
-The detailed operator threat catalog currently covers T1–T25. Host code normally appends structured audit records, but the workspace audit file is not a tamper-proof ledger: Schegent has no hash chain or post-write tamper detector.
+The threat catalog, and the description of every mechanism and its limits, live in [the repository-root security policy](../SECURITY.md) and the documents it links.
 
-<!-- Source: docs/security/threat-model.md -->
-<!-- Source: src/audit/audit-log-writer.ts -->
-<!-- Source: tests/lint/threat-id-anchor-parity.test.ts -->
+<!-- Source: SECURITY.md -->

@@ -198,7 +198,7 @@ The host keeps raw process output away from the webview boundary. `PhaseRunner`,
 
 ## Persistence, not a database layer
 
-`WorkspaceStateStore` is the durable structured-state adapter. Its numeric schema is forward-only and currently version 13. The principal records are Queues, active Runs partitioned by Queue, terminal history partitioned by Queue, connected Workflow Runs, lock/lease mirrors, watchdog state, confirmation suppressions, and migration/reset markers. Migrations transform Memento values in sequence; there is no down migration and no relational schema.
+`WorkspaceStateStore` is the durable structured-state adapter. Its numeric schema is forward-only, and its current version is the `STATE_SCHEMA_VERSION` constant, stated and checked in [the Schema Versions table of `ARCHITECTURE.md`](../../ARCHITECTURE.md#schema-versions). The principal records are Queues, active Runs partitioned by Queue, terminal history partitioned by Queue, connected Workflow Runs, lock/lease mirrors, watchdog state, confirmation suppressions, and migration/reset markers. Migrations transform Memento values in sequence; there is no down migration and no relational schema.
 
 <!-- Source: src/contracts/state-schema.ts -->
 <!-- Source: src/state/workspace-state.ts -->

@@ -114,14 +114,14 @@ These checkpoints are outside the workspace so a repository cleanup cannot erase
 
 ## VS Code Memento state
 
-`WorkspaceStateStore` writes keyed JSON-compatible values to `workspaceState`. Schema version 13 is forward-only. The principal partitions are the Queue registry and Queue states, active Runs keyed by Queue, terminal history keyed by Queue, connected-run aggregates, execution-lease mirrors, confirmation suppression, watchdog state, and migration/reset markers. The authoritative ownership records remain on disk; Memento copies are projections or compatibility state where the owning contract says so.
+`WorkspaceStateStore` writes keyed JSON-compatible values to `workspaceState`. The schema is forward-only; its current version is the `STATE_SCHEMA_VERSION` constant, stated and checked in [the Schema Versions table of `ARCHITECTURE.md`](../../ARCHITECTURE.md#schema-versions). The principal partitions are the Queue registry and Queue states, active Runs keyed by Queue, terminal history keyed by Queue, connected-run aggregates, execution-lease mirrors, confirmation suppression, watchdog state, and migration/reset markers. The authoritative ownership records remain on disk; Memento copies are projections or compatibility state where the owning contract says so.
 
 <!-- Source: src/contracts/state-schema.ts -->
 <!-- Source: src/state/workspace-state.ts -->
 <!-- Source: src/state/execution-lease.ts -->
 <!-- Source: src/state/lock.ts -->
 
-There is no down-migration command or database migration directory. On read, sequential migrators advance old Memento shapes through schema 13; newer-than-supported state is quarantined rather than interpreted as current.
+There is no down-migration command or database migration directory. On read, sequential migrators advance old Memento shapes up to the current `STATE_SCHEMA_VERSION` (see [the Schema Versions table of `ARCHITECTURE.md`](../../ARCHITECTURE.md#schema-versions)). Two different things happen to state that cannot be used as it stands. A persisted version newer than the running extension supports is **refused**: the error ends "Update the extension before opening this workspace.", and nothing is read. Separately, an individual malformed record is **quarantined**, kept aside rather than interpreted as current or discarded, and the rest of the state is read.
 
 <!-- Source: src/contracts/state-schema.ts -->
 <!-- Source: src/state/workspace-state.ts -->

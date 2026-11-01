@@ -1,9 +1,10 @@
 # Single-task queue migration history
 
 This runbook covers the historical v5 to v6 migration that combined multiple
-queues into one queue. Current Schegent state is schema v13 and supports a live
-multi-queue registry with one to 20 entries, including the reserved `default`
-queue. The old collapse remains in the forward-migration ladder so older
+queues into one queue. The current state schema version is `STATE_SCHEMA_VERSION`
+(see [the Schema Versions table of `ARCHITECTURE.md`](../../ARCHITECTURE.md#schema-versions)),
+and Schegent state supports a live multi-queue registry with one to 20 entries,
+including the reserved `default` queue. The old collapse remains in the forward-migration ladder so older
 workspaces can still open; it is not the current queue model.
 
 <!-- Source: src/contracts/state-schema.ts -->

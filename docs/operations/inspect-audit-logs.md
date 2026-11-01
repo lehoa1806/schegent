@@ -433,7 +433,10 @@ event; it is not, by itself, permission to edit or delete the row.
 Run **Schegent: Verify Audit Chain** (`schegent.verifyAuditChain`) in any window,
 trusted or not. It walks the hash chain across the archives and the cut file,
 then reads the history against the head checkpoint that Schegent keeps in the
-extension's per-user storage, outside `.schegent/`. The result is one message:
+extension's per-user storage, outside `.schegent/`. The chain detects an edit, a reorder or an
+unrecorded removal. It does not prevent the same OS user from rewriting the log, recomputing the
+chain and replacing the checkpoint ([what the chain does and does not cover](../security/threat-model.md#t3--audit-log-tampering-or-non-append-writes)).
+The result is one message:
 
 - **The chain**: how many chained entries and recorded prunes, whether it began
   at `genesis` or by linking to the last legacy row, how many leading legacy

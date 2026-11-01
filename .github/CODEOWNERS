@@ -14,6 +14,6 @@ src/headless/              @lehoa1806
 src/telemetry/             @lehoa1806
 src/runner/claude-cli.ts   @lehoa1806
 docs/security/             @lehoa1806
-CLAUDE.md                  @lehoa1806
+AGENTS.md                  @lehoa1806
 SECURITY.md                @lehoa1806
 .github/SECURITY.md        @lehoa1806

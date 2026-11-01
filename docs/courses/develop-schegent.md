@@ -58,13 +58,16 @@ navigation spine.
 
 ## 2. Load the governing rules before editing
 
-Read the execution repository's `AGENTS.md`, then its workspace-level
-`../AGENTS.md`. The parent file is the source of truth for sensitive host-code
-invariants, nested-repository synchronization, and the Spec Driven Development
-workflow. If you cloned only this execution repository and `../AGENTS.md` is
-absent, do not guess at a change involving IPC, audit/redaction, locks, state
-migration, process execution, or catalog save gates; obtain the governing rules
-from a maintainer first.
+Read the execution repository's `AGENTS.md`, which orients you, then
+`docs/hard-rules.md` in the planning envelope, one directory above this
+checkout (the workspace-level `../AGENTS.md` points at it). The hard rules are
+the source of truth for sensitive host-code invariants; read the rows of the
+index at their head that your change touches. The workspace-level files also
+cover nested-repository synchronization and the Spec Driven Development
+workflow. If you cloned only this execution repository, those parent files are
+absent: do not guess at a change involving IPC, audit/redaction, locks, state
+migration, process execution, or catalog save gates; obtain the planning
+envelope first.
 
 Before adding text rendered to an operator, read the
 [English-only decision](../concepts/english-only-not-localizable.md). Schegent
