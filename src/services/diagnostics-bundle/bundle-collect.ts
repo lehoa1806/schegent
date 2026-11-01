@@ -27,6 +27,7 @@ import { AUDIT_CUTS_BASENAME, collectChainFiles } from '../../audit/audit-chain'
 import { parseRecordName } from '../../contracts/validators/failure-record';
 import { FAILURE_RECORD_DIR } from '../../contracts/failure-record';
 import { openWithinRoot } from '../../lib/safe-open';
+import type { BuildIdentity } from '../../lib/build-identity';
 import { removeWorkspaceRoot, replaceAbsolutePaths } from '../failure-record/record-text';
 import {
   BUNDLE_ITEM_SHARES,
@@ -48,6 +49,13 @@ export interface BundleSources {
   readonly sanitize: (text: string) => string;
   readonly sanitizeRecord: <T extends Record<string, unknown>>(record: T) => T;
   readonly hostVersion: string;
+  /**
+   * Which build produced the loaded bundle (FR-R4-F09, contract BI4): the commit, whether the tree was dirty and the
+   * mode, validated by pattern where it is read, so it holds only constant-shaped values. It is
+   * shown beside the version and is NOT passed through `sanitizeRecord`: it names no path and no
+   * secret, and the item's text still goes through `sanitize` like every other item.
+   */
+  readonly hostBuild: BuildIdentity;
   /** The host's settings, already read; secrets are removed here by `sanitizeRecord`. */
   readonly hostSettings: () => Record<string, unknown>;
   /** The Run's projected status record, or `null` when no state knows it. Holds no free text. */
@@ -141,7 +149,11 @@ export async function probeBundle(src: BundleSources, runId: string): Promise<Bu
   const probes: BundleProbe[] = [];
   const add = (item: BundleItemId, available: boolean, bytes: number): void => void probes.push({ item, available, bytes });
 
-  add('host', true, utf8Bytes(JSON.stringify({ hostVersion: src.hostVersion, settings: src.hostSettings() })));
+  add(
+    'host',
+    true,
+    utf8Bytes(JSON.stringify({ hostVersion: src.hostVersion, build: src.hostBuild, settings: src.hostSettings() }))
+  );
   const status = src.runStatus(runId);
   add('run-status', status !== null, status === null ? 0 : utf8Bytes(JSON.stringify(status)));
 
@@ -275,7 +287,11 @@ export async function collectBundle(src: BundleSources, runId: string, plan: Bun
 
   const readers: Record<BundleItemId, () => Promise<string>> = {
     host: async () =>
-      JSON.stringify({ hostVersion: src.hostVersion, settings: src.sanitizeRecord(src.hostSettings()) }, null, 2),
+      JSON.stringify(
+        { hostVersion: src.hostVersion, build: src.hostBuild, settings: src.sanitizeRecord(src.hostSettings()) },
+        null,
+        2
+      ),
     'run-status': async () => JSON.stringify(src.sanitizeRecord(src.runStatus(runId) ?? {}), null, 2),
     'failure-records': async () => {
       const parts: string[] = [];

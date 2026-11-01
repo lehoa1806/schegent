@@ -2,7 +2,7 @@
 // `typecheck:tests` can see the list reader and the application of a list without the script
 // becoming TypeScript. Same arrangement as `gate-distance.d.mts`.
 import type { ComparisonResult } from './advisory-compare.mjs';
-import type { DispositionStatus, TreeName } from './advisory-model.mjs';
+import type { DispositionStatus, DispositionVerdict, TreeName } from './advisory-model.mjs';
 
 /** One entry of a version-1 list, every field required and a non-empty string. */
 export interface DispositionEntry {
@@ -38,3 +38,37 @@ export declare function applyDispositions(
   list: DispositionList | { readonly state: 'not-supplied' } | null,
   evaluatedAt: string
 ): ComparisonResult;
+
+/**
+ * The finding shape `dispositionOf` reads. A caller with a different finding adapts it to this:
+ * the identifiers, the package, the tree and the installed locations of one side.
+ */
+export interface DispositionSubject {
+  readonly ids: { readonly canonical: string; readonly aliases: readonly string[] };
+  readonly package: string;
+  readonly tree: TreeName;
+  readonly candidate?: { readonly locations: ReadonlyArray<{ readonly version: string }> };
+  readonly base?: { readonly locations: ReadonlyArray<{ readonly version: string }> };
+}
+
+/** One related entry's own result, as `dispositionOf` returns it. */
+export interface DispositionEntryResult {
+  readonly advisory: string;
+  readonly status: DispositionStatus;
+  readonly owner: string;
+  readonly decidedOn: string;
+  readonly expiresOn: string;
+  readonly result: 'covers' | 'expired' | 'does-not-cover';
+  readonly mismatch?: { readonly reason: 'other-tree' | 'range-excludes'; readonly versions?: readonly string[] };
+}
+
+/**
+ * FR-R4-F09 (contract AR6) -- the verdict and related entries of one finding at `evaluatedMs`.
+ * Exported with no change of behavior, so release preparation and the comparison share one
+ * coverage rule.
+ */
+export declare function dispositionOf(
+  finding: DispositionSubject,
+  list: DispositionList,
+  evaluatedMs: number
+): { readonly verdict: DispositionVerdict; readonly entries: readonly DispositionEntryResult[] };

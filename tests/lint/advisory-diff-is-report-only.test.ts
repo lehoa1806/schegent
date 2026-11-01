@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 
@@ -17,10 +17,14 @@ import { beforeAll, describe, expect, it } from 'vitest';
  *   2. No chain reaches the command: the closure of each script that gives a verdict names neither
  *      `security:advisory-diff` nor `advisory-diff.mjs`.
  *   3. No file under `examples/` names it, so no Phase or pipeline runs it.
- *   4. The derived release-control facts are unchanged: still no audit in the gate closure, and no
- *      producer of checksums or of independently verifiable provenance. A lockfile digest computed
- *      with the hashing call the checksum detector looks for would flip the generated release page
- *      to say checksums exist.
+ *   4. The advisory command adds no release control to the derived facts: still no audit in the
+ *      gate closure, no producer of independently verifiable provenance, and no `advisory-*` module
+ *      among the checksum producers. FR-R4-F09 narrowed this from "no checksum producer exists":
+ *      the release record's digest needs exactly one, `scripts/release-digest.mjs`, and the
+ *      detector reads any file under `scripts/` that hashes. The purpose never changed, which is
+ *      that the advisory command must not act as a control, and a second producer anywhere else
+ *      is still reported. The exact list is asserted, so a producer that is not the sanctioned
+ *      one fails here and names itself.
  *
  * It searches by script name and by file name, never by a body's value (hard rule 67), and it is
  * hermetic: nothing is spawned. Each assertion is a pure function, and a planted tree built under
@@ -54,7 +58,11 @@ interface Facts {
   readonly auditInGateClosure: boolean;
   readonly emitsChecksums: boolean;
   readonly emitsIndependentProvenance: boolean;
+  readonly evidence: { readonly checksums: readonly string[] };
 }
+
+/** FR-R4-F09 (research R9) — the one module allowed to hash, and so the one the controls page names. */
+const SANCTIONED_CHECKSUM_PRODUCER = 'scripts/release-digest.mjs';
 
 let reachableScripts: (all: Scripts, entry: string) => readonly string[];
 let controlFacts: (root?: string) => Facts;
@@ -111,7 +119,13 @@ function filesNaming(dir: string): { readonly scanned: number; readonly hits: st
 function factViolations(facts: Facts): string[] {
   const moved: string[] = [];
   if (facts.auditInGateClosure) moved.push('the audit is reached by the gate');
-  if (facts.emitsChecksums) moved.push('a producer of release checksums appeared');
+  const unsanctioned = facts.evidence.checksums.filter(
+    (producer) => producer !== SANCTIONED_CHECKSUM_PRODUCER
+  );
+  if (unsanctioned.length > 0) moved.push('a producer of release checksums appeared');
+  if (facts.evidence.checksums.some((producer) => basename(producer).startsWith('advisory-'))) {
+    moved.push('an advisory module is a checksum producer');
+  }
   if (facts.emitsIndependentProvenance) moved.push('a producer of verifiable provenance appeared');
   return moved;
 }
@@ -173,16 +187,25 @@ describe('3. no Phase or pipeline file names the comparison', () => {
   });
 });
 
-describe('4. the derived release-control facts are unchanged', () => {
-  it('still reports no audit in the gate closure, no checksum producer and no verifiable provenance', () => {
+describe('4. the advisory command adds no release control to the derived facts', () => {
+  it('reports no audit in the gate closure, no verifiable provenance and no advisory checksum producer', () => {
     expect(factViolations(controlFacts(REPO_ROOT))).toEqual([]);
     const facts = controlFacts(REPO_ROOT);
     expect(facts.auditInGateClosure).toBe(false);
-    expect(facts.emitsChecksums).toBe(false);
     expect(facts.emitsIndependentProvenance).toBe(false);
+    expect(
+      facts.evidence.checksums.filter((producer) => basename(producer).startsWith('advisory-'))
+    ).toEqual([]);
   });
 
-  it('NON-VACUITY: a scripts/ file that hashes with the checksum detector\'s call is reported', () => {
+  it('names exactly one checksum producer, the release digest module', () => {
+    const facts = controlFacts(REPO_ROOT);
+    expect(facts.emitsChecksums).toBe(true);
+    expect(facts.evidence.checksums).toEqual([SANCTIONED_CHECKSUM_PRODUCER]);
+  });
+
+  /** A scripts/ tree holding one file that hashes with the checksum detector's call. */
+  const plantedRoot = (fileName: string): string => {
     const root = mkdtempSync(join(tmpdir(), 'advisory-report-only-'));
     mkdirSync(join(root, 'scripts'));
     writeFileSync(
@@ -191,7 +214,22 @@ describe('4. the derived release-control facts are unchanged', () => {
     );
     // Composed, not written out: the call is what `controlFacts` looks for in a scripts/ file.
     const call = ['create', 'Hash'].join('');
-    writeFileSync(join(root, 'scripts', 'planted.mjs'), `const digest = ${call}('sha256');\n`);
+    writeFileSync(join(root, 'scripts', fileName), `const digest = ${call}('sha256');\n`);
+    return root;
+  };
+
+  it('NON-VACUITY: a scripts/ file other than the sanctioned one that hashes is reported', () => {
+    const root = plantedRoot('planted.mjs');
     expect(factViolations(controlFacts(root))).toContain('a producer of release checksums appeared');
+  });
+
+  it('NON-VACUITY: an advisory-* module that hashes is reported as an advisory producer', () => {
+    const root = plantedRoot('advisory-planted.mjs');
+    expect(factViolations(controlFacts(root))).toContain('an advisory module is a checksum producer');
+  });
+
+  it('NON-VACUITY: the sanctioned producer alone is not reported', () => {
+    const root = plantedRoot('release-digest.mjs');
+    expect(factViolations(controlFacts(root))).toEqual([]);
   });
 });

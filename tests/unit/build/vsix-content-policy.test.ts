@@ -136,3 +136,56 @@ describe('a leaked test scratch root stays out of the package', () => {
     }
   });
 });
+
+/**
+ * FR-R4-F09 (research R5, R27; contract test T15) — the module graphs and the release outputs stay
+ * out of the package, and out of version control, by two rules each.
+ *
+ * `dist/module-graph/*.json` is written by both bundlers so the SBOM can say what was bundled,
+ * and `.vscodeignore` keeps nothing JSON out of `dist/` on its own, so without a rule of its own
+ * the graph files would ship. `.release/` holds the staging VSIX, the candidate and the release
+ * record: a stray record at the package root would otherwise be packaged by the next
+ * `package:smoke` and fail the allowlist. The ignore rules fix the cause, and the allowlist stays
+ * the closed check that catches the next cause nobody predicted, as it does for the scratch root
+ * above.
+ */
+describe('the module graphs and the release outputs stay out of the package', () => {
+  const GRAPH_AND_RELEASE_ENTRIES = [
+    'dist/module-graph/host.json',
+    'dist/module-graph/webview.json',
+    '.release/schegent-0.2.0.release.json',
+    '.release/staging/schegent-0.2.0.vsix'
+  ] as const;
+
+  const lines = async (name: '.vscodeignore' | '.gitignore') => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    return readFileSync(resolve(__dirname, '..', '..', '..', name), 'utf8')
+      .split('\n')
+      .map((line) => line.trim());
+  };
+
+  it('ignores dist/module-graph in .vscodeignore', async () => {
+    expect((await lines('.vscodeignore')).includes('dist/module-graph/**')).toBe(true);
+  });
+
+  it('ignores .release in .vscodeignore', async () => {
+    expect((await lines('.vscodeignore')).includes('.release/**')).toBe(true);
+  });
+
+  it('ignores .release in .gitignore, anchored or not', async () => {
+    const gitignore = await lines('.gitignore');
+    expect(gitignore.includes('.release/') || gitignore.includes('/.release/')).toBe(true);
+  });
+
+  it('would reject each if it reached the archive anyway', async () => {
+    const { assertAllowedEntryNames } = await import('../../../scripts/check-vsix-smoke.mjs');
+    const names = await plausiblePackagedNames();
+    for (const name of GRAPH_AND_RELEASE_ENTRIES) {
+      expect(
+        () => assertAllowedEntryNames([...names, `extension/${name}`]),
+        `${name} must not be an allowed entry`
+      ).toThrow(/unexpected packaged file/);
+    }
+  });
+});

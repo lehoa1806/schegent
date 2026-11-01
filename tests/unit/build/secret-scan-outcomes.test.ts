@@ -1,16 +1,5 @@
-import { execFileSync, spawnSync } from 'node:child_process';
-import {
-  copyFileSync,
-  mkdirSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync
-} from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { removeSandboxes, sandbox, scan } from './secret-scan-harness';
 
 /**
  * The secret scan reads every file it is given, prints no value it finds, and refuses a run
@@ -36,54 +25,13 @@ import { afterEach, describe, expect, it } from 'vitest';
  * token is assembled at run time, so this file holds no value for the repository's own scan to
  * report.
  */
-const REPO_ROOT = resolve(__dirname, '..', '..', '..');
-const SCRIPTS = ['scan-secrets.mjs', 'invoked-as-script.mjs'];
-// Engine start-up dominates a run; a hung child fails the case instead of the suite.
-const CHILD_TIMEOUT_MS = 30_000;
-
 // The part of the token a partial mask would still show.
 const TOKEN_TAIL = 'Zq3K8vR2mN7pL4wT9yB6cD1f';
 const PLANTED_TOKEN = ['xo', 'xb-', '1234567890-', '1234567890-', TOKEN_TAIL].join('');
 // Outside printable ASCII, so `git ls-files` quotes it when `core.quotePath` is on, its default.
 const QUOTED_NAME = 'café-notes.txt';
 
-const roots: string[] = [];
-
-function git(root: string, ...args: string[]): void {
-  execFileSync('git', args, { cwd: root, stdio: 'pipe' });
-}
-
-/** A repository holding a copy of the scan, tracking `files` and nothing else. */
-function sandbox(files: Record<string, string>): string {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'secret-scan-'));
-  roots.push(root);
-  mkdirSync(join(root, 'scripts'));
-  for (const script of SCRIPTS) {
-    copyFileSync(join(REPO_ROOT, 'scripts', script), join(root, 'scripts', script));
-  }
-  copyFileSync(join(REPO_ROOT, '.secretlintrc.json'), join(root, '.secretlintrc.json'));
-  symlinkSync(join(REPO_ROOT, 'node_modules'), join(root, 'node_modules'), 'dir');
-  git(root, 'init', '--quiet');
-  // Set here rather than inherited, so the case does not turn on the developer's own config.
-  git(root, 'config', 'core.quotePath', 'true');
-  for (const [name, contents] of Object.entries(files)) writeFileSync(join(root, name), contents);
-  const names = Object.keys(files);
-  if (names.length > 0) git(root, 'add', '--', ...names);
-  return root;
-}
-
-function scan(root: string) {
-  const result = spawnSync(process.execPath, [join(root, 'scripts', 'scan-secrets.mjs')], {
-    cwd: root,
-    encoding: 'utf8',
-    timeout: CHILD_TIMEOUT_MS
-  });
-  return { status: result.status, out: `${result.stdout}${result.stderr}` };
-}
-
-afterEach(() => {
-  while (roots.length > 0) rmSync(roots.pop() as string, { recursive: true, force: true });
-});
+afterEach(removeSandboxes);
 
 describe('the secret scan reports what it was given', () => {
   it('passes a clean tree and prints the scope it read', () => {

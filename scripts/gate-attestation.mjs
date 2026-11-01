@@ -169,8 +169,16 @@ export const GATE_COMMAND = renderGateCommandLabel(GATE_COMMAND_SPEC.args);
  *
  * So refusing the whole version is not a precaution against an indistinguishable minority; it
  * is the exact set. The remedy is one gate run.
+ *
+ * FR-R4-F09 (FR-030, contract GR1) — version 3, and every version-2 record is refused by version,
+ * for a different reason: a version-2 record is HONEST and says too little. It names the platform
+ * and the Node that ran, and nothing about the Node the repository declares, whether the planning
+ * envelope was present (so whether the envelope-reading gates ran at all), or which lockfile and
+ * which installed tree each dependency tree was gated on. Version 3 adds exactly those four
+ * fields (`gate-observation.mjs`). Migration is a re-run of `npm run gate:record`, not an upgrade
+ * of the old record, because the old record never observed what the new fields describe.
  */
-export const ATTESTATION_VERSION = 2;
+export const ATTESTATION_VERSION = 3;
 
 /** `git` output for one repository, trimmed. Throws when git cannot answer. */
 function git(args) {
@@ -197,6 +205,90 @@ export function readTreeState() {
     head: git(['rev-parse', 'HEAD']),
     treeClean: git(['status', '--porcelain']).length === 0
   };
+}
+
+/**
+ * Why a record at an older version cannot be read, and what to do. Each version has its own
+ * reason, because the remedy is the same one gate run and the explanation is what tells the
+ * operator the refusal is not about their record being wrong.
+ */
+function staleVersionExplanation(version) {
+  const remedy =
+    'Re-run `npm run gate:record` on this commit — migration is a deliberate re-run, not an ' +
+    'upgrade of the old record.';
+  if (version === 1) {
+    return (
+      `Records at earlier versions are refused by version rather than by name: until FR-R3-135 the ` +
+      `recorder wrote the label \`${GATE_COMMAND}\` while spawning \`npm run ci\`, so a version-1 ` +
+      `record's command field cannot be trusted to say what ran. ${remedy}`
+    );
+  }
+  if (version === 2) {
+    return (
+      'A version-2 record has no declared Node, workspace envelope or per-tree lockfile and ' +
+      'install observation, so it cannot say what environment the gate ran in. ' +
+      remedy
+    );
+  }
+  return `This checker does not read that version. ${remedy}`;
+}
+
+const INSTALL_STATES = Object.freeze(['matches', 'differs', 'absent', 'unreadable']);
+const TREE_ORDER = Object.freeze(['root', 'webview-ui']);
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/**
+ * The first field of a version-3 observation that is missing or malformed, by the name an operator
+ * would look for, or `null` when the observation is complete. It checks SHAPE only: no value of a
+ * well-formed observation refuses a release (research R17).
+ */
+function observationDefect(attestation) {
+  if (attestation.nodeDeclared !== null && typeof attestation.nodeDeclared !== 'string') {
+    return 'nodeDeclared';
+  }
+  if (typeof attestation.nodeMatchesDeclared !== 'boolean') return 'nodeMatchesDeclared';
+  const { envelope, trees } = attestation;
+  if (envelope === null || typeof envelope !== 'object') return 'envelope';
+  if (typeof envelope.present !== 'boolean') return 'envelope.present';
+  if (!Array.isArray(trees) || trees.length !== TREE_ORDER.length) return 'trees';
+  for (const [index, name] of TREE_ORDER.entries()) {
+    const entry = trees[index];
+    if (entry === null || typeof entry !== 'object' || entry.tree !== name) return 'trees';
+    if (typeof entry.lockfile !== 'string') return `trees[${index}].lockfile`;
+    if (entry.lockfileSha256 !== null && !SHA256_HEX.test(String(entry.lockfileSha256))) {
+      return `trees[${index}].lockfileSha256`;
+    }
+    if (!INSTALL_STATES.includes(entry.install)) return `trees[${index}].install`;
+  }
+  return null;
+}
+
+/**
+ * The lines that describe a version-3 observation, for the verified message and for the release
+ * output (GR4, RP5): the Node that ran beside the declared one (marked when they differ), the
+ * workspace envelope, and each tree's install state. Every value printed is a fixed word, a
+ * number, or the `nodeVersion` and `nodeDeclared` the record carries; no path is printed.
+ *
+ * @param {object} attestation A record that passed `decideRelease`'s observation check.
+ * @returns {string[]}
+ */
+export function describeObservation(attestation) {
+  const declared = attestation.nodeDeclared;
+  const node =
+    declared === null
+      ? `Node: ${String(attestation.nodeVersion)} ran; .nvmrc declares none (absent, empty or unusable)`
+      : `Node: ${String(attestation.nodeVersion)} ran; .nvmrc declares ${declared}` +
+        (attestation.nodeMatchesDeclared ? '' : ' (differs)');
+  const envelope = attestation.envelope.present
+    ? 'workspace envelope: present'
+    : 'workspace envelope: absent (standalone clone); the gates that read it skipped';
+  const installs = attestation.trees.map((entry) => {
+    const count = entry.install === 'differs' && Number.isInteger(entry.installDifferences)
+      ? ` (${entry.installDifferences} difference${entry.installDifferences === 1 ? '' : 's'})`
+      : '';
+    return `${entry.tree} install: ${entry.install}${count}`;
+  });
+  return [node, envelope, ...installs];
 }
 
 /**
@@ -248,11 +340,7 @@ export function decideRelease({ attestation, head, treeClean, now }) {
       reason: 'stale-version',
       message:
         `the attestation declares version ${String(attestation.version)} and this checker reads ` +
-        `version ${ATTESTATION_VERSION}. Records at earlier versions are refused by version rather ` +
-        `than by name: until FR-R3-135 the recorder wrote the label \`${GATE_COMMAND}\` while ` +
-        `spawning \`npm run ci\`, so a version-1 record's command field cannot be trusted to say ` +
-        `what ran. Re-run \`npm run gate:record\` on this commit — migration is a deliberate ` +
-        `re-run, not an upgrade of the old record.`
+        `version ${ATTESTATION_VERSION}. ${staleVersionExplanation(attestation.version)}`
     };
   }
   if (attestation.version !== ATTESTATION_VERSION) {
@@ -363,6 +451,22 @@ export function decideRelease({ attestation, head, treeClean, now }) {
         `at this commit. Fix it and re-run \`npm run gate:record\`.`
     };
   }
+  // FR-R4-F09 (GR4) — AFTER every existing check, in their existing order, so a red or
+  // wrong-commit record keeps the reason it always had. A complete observation is required; no
+  // value in it refuses a release.
+  const defect = observationDefect(attestation);
+  if (defect !== null) {
+    return {
+      ok: false,
+      reason: 'observation-missing',
+      message:
+        `the attestation is at version ${ATTESTATION_VERSION} but its observation is missing or ` +
+        `malformed at \`${defect}\`. A version-${ATTESTATION_VERSION} record written by the recorder ` +
+        `always carries the declared Node, the workspace envelope and both trees' lockfile and ` +
+        `install state; this one did not come from it, or was edited. Re-run ` +
+        `\`npm run gate:record\`.`
+    };
+  }
   return {
     ok: true,
     reason: 'verified',
@@ -371,7 +475,8 @@ export function decideRelease({ attestation, head, treeClean, now }) {
       `${String(attestation.platform)}/${String(attestation.arch)}, node ${String(attestation.nodeVersion)}, ` +
       `recorded ${String(attestation.recordedAt)}` +
       (typeof now === 'string' ? ` (checked ${now})` : '') +
-      `.\nThis is a LOCAL record on this machine, not independent verification. ` +
+      `.\n${describeObservation(attestation).join('\n')}\n` +
+      `This is a LOCAL record on this machine, not independent verification. ` +
       `The platform above is the only one the gate ran on.`
   };
 }

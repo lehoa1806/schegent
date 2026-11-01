@@ -7,8 +7,10 @@
 // could assert it, and it was `['run', 'ci']` under a `npm run gate` label for the ~32 hours
 // between FR-R3-100 and this item.
 import { spawnSync } from 'node:child_process';
-import { closeSync, fsyncSync, openSync, writeFileSync } from 'node:fs';
-import { ATTESTATION_PATH, readTreeState } from './gate-attestation.mjs';
+import { closeSync, fsyncSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { envelopePresent } from './check-doc-links.mjs';
+import { ATTESTATION_PATH, REPO_ROOT, readTreeState } from './gate-attestation.mjs';
+import { observeGateEnvironment } from './gate-observation.mjs';
 import { recordGateRun } from './gate-recorder.mjs';
 
 /**
@@ -47,6 +49,15 @@ const outcome = recordGateRun({
   spawn: spawnSync,
   platform: process.platform,
   readTreeState,
+  // FR-R4-F09 (GR3): the real filesystem and the real envelope predicate, bound here for the same
+  // reason `writeAttestation` is: the recorder's tests inject captures in their place.
+  observe: () =>
+    observeGateEnvironment({
+      root: REPO_ROOT,
+      readFile: (path) => readFileSync(path),
+      envelopePresent: () => envelopePresent(),
+      nodeVersion: process.version
+    }),
   writeAttestation,
   log: (message) => console.log(message),
   error: (message) => console.error(message),

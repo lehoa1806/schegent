@@ -122,8 +122,9 @@ counts, stated for that tree only. The thirteen reasons:
 ## Budgets
 
 The two captures of a tree must be at most 60 minutes apart, and each capture at most 24 hours old
-at the evaluation time (`--at`, default now). Both are development defaults. The release budget is
-owned by `FR-R4-009`, and neither is a flag.
+at the evaluation time (`--at`, default now). Both are development defaults, and neither is a flag.
+Release preparation has its own, separate budget: `npm run release` accepts a capture up to seven days
+old, inclusive (`FR-R4-F09`; see [release preparation](../../RELEASE.md)).
 
 ## Dispositions
 
@@ -139,6 +140,14 @@ Each finding shows one verdict and every related entry:
 - **not-recorded**: no list was named, or none of its entries relates to the finding.
 - **unknown**: a list was named but cannot be used (missing, unreadable, over 8 MiB or 10,000
   entries, malformed, or another version). The report says why.
+
+The tracked list is [`docs/release/advisory-dispositions.json`](../release/advisory-dispositions.json),
+which starts empty, and `compare --dispositions docs/release/advisory-dispositions.json` reads it. It is
+the list release preparation reads as well. Its entries may carry a `rationale`, a string of at most 2,000
+characters. This command ignores the field, so a list that carries it reads exactly as before; release
+preparation requires it on every entry and refuses a list where one is missing. The list changes only in
+a reviewed commit: nothing here or in release preparation ever writes it. See
+[the page for the list](../release/advisory-dispositions.md).
 
 A disposition never changes a class, a count or whether the comparison is complete. `accepted` is a
 label, not a waiver.

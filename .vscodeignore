@@ -62,6 +62,12 @@ coverage/**
 # catch the next cause nobody predicted.
 .tmp/**
 .vitest-*/**
+# FR-R4-F09 (research R5, R27) -- the module graphs the SBOM is built from, and the release
+# driver's staging directory, candidate and record. `!dist/**/*.js` re-includes only scripts, so
+# without this rule nothing keeps a graph's JSON out of the package. The allowlist in
+# scripts/check-vsix-smoke.mjs would still refuse it: this fixes the cause.
+dist/module-graph/**
+.release/**
 **/.DS_Store
 *.vsix
 CHANGELOG.md
