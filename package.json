@@ -531,6 +531,7 @@
     "contracts:check": "node scripts/generate-contract-schemas.mjs --check",
     "docs:check": "node scripts/check-docs.mjs && node scripts/check-doc-links.mjs && node scripts/check-gate-coverage-parity.mjs",
     "security:secrets": "node scripts/scan-secrets.mjs",
+    "security:secrets:staged": "node scripts/scan-secrets.mjs --staged",
     "security:actions": "node scripts/check-workflow-pins.mjs",
     "security:audit": "npm audit --audit-level=low && npm --prefix webview-ui audit --audit-level=low",
     "security:advisory-diff": "node scripts/advisory-diff.mjs",

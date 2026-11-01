@@ -133,10 +133,23 @@ action pinned by tag, or a directory it cannot read, it refuses. Since the workf
 (`FR-R3-099`) the no-subject outcome is the one a run reports. The check is kept rather than deleted
 precisely so a workflow file reappearing is pinned from its first commit rather than from the day
 somebody notices.
+The secret scan has a second mode that reads what a commit would carry from the Git index, not the working
+tree, so a secret staged and then edited out of the working copy is still found. Run it by hand, or activate
+the tracked commit hook once, inside `repo/`, so that `git commit` runs it:
+
+```bash
+npm run security:secrets:staged
+git config core.hooksPath scripts/hooks
+```
+
+The hook is local and opt-in, and `git commit --no-verify` bypasses it. Git does not run it for a
+conflict-free merge, and there is no server-side check, so the tree-mode gate above remains the check that
+covers what was merged. [The security notes](../../SECURITY.md) list what the scan detects and what it does not.
 <!-- Source: package.json -->
 <!-- Source: scripts/check-docs.mjs -->
 <!-- Source: scripts/check-doc-links.mjs -->
 <!-- Source: scripts/scan-secrets.mjs -->
+<!-- Source: scripts/hooks/pre-commit -->
 <!-- Source: scripts/check-workflow-pins.mjs -->
 <!-- Source: scripts/check-licenses.mjs -->
 
