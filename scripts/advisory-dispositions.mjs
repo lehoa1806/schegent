@@ -132,8 +132,23 @@ function byEntry(a, b) {
   );
 }
 
-/** The verdict and related entries of one classified finding, decided in the order of data-model §7. */
-function dispositionOf(finding, list, evaluatedMs) {
+/**
+ * The verdict and related entries of one classified finding, decided in the order of data-model §7.
+ *
+ * Exported, with no change of behavior, by FR-R4-F09 (contract AR6): release preparation shows the
+ * same verdict for a capture's finding as the comparison does, and re-implementing the coverage
+ * rule there would put two authorities on one decision. A caller adapts its finding to the shape
+ * read here: `{ ids, package, tree, candidate: { locations } }`.
+ *
+ * @param {{ ids: { canonical: string, aliases: readonly string[] }, package: string, tree: string,
+ *   candidate?: { locations: ReadonlyArray<{ version: string }> },
+ *   base?: { locations: ReadonlyArray<{ version: string }> } }} finding
+ * @param {import('./advisory-dispositions.d.mts').DispositionList} list
+ * @param {number} evaluatedMs The evaluation instant, in UTC milliseconds.
+ * @returns {{ verdict: 'unknown' | 'not-recorded' | 'covers' | 'expired' | 'does-not-cover',
+ *   entries: readonly object[] }}
+ */
+export function dispositionOf(finding, list, evaluatedMs) {
   if (list.state === 'unusable') return { verdict: 'unknown', entries: [] };
   const names = new Set(identifierSet(finding.ids));
   const related = list.entries.filter(

@@ -75,16 +75,17 @@ from `develop`, rather than merging the bot's branch.
   minutes. It was a PASS at `49319218`, a `develop` merge, on 2026-08-28 (darwin/arm64, Node
   24.19.0).
 - **The gate already fails most root proposals that move a declared range.**
-  `tests/lint/dependency-change-scope.test.ts` pins the declared range of 18 of the 21 root
+  `tests/lint/dependency-change-scope.test.ts` pins the declared range of 18 of the 22 root
   `devDependencies`, and the gate runs it. Each of the three open proposals moves one of those 18,
   so the pin fails at each of their heads, and the gate fails with it. The pin's own message says an
   intended bump is "its OWN change with its own verification". That is the change this rule records.
-  The other three, `axe-core`, `secretlint` and `@secretlint/secretlint-rule-preset-recommend`, are
-  not pinned. The pin reads declared ranges, not the lockfile, and the same file holds the declared
-  versions of the last two to the versions the lockfile resolves. So a proposal that moves
-  `axe-core`, or moves either of the last two with its lockfile entry, passes; one that moves either
-  one's lockfile entry alone fails; and one that rewrites only `package-lock.json` for anything
-  else, such as an update to a transitive dependency, passes.
+  The other four, `axe-core`, `secretlint`, `@secretlint/secretlint-rule-preset-recommend` and
+  `semver`, are not pinned. The pin reads declared ranges, not the lockfile, and the same file holds
+  the declared versions of the three promoted packages (`secretlint`, the preset and `semver`) to the
+  versions the lockfile resolves. So a proposal that moves `axe-core`, or moves a promoted package
+  with its lockfile entry, passes; one that moves a promoted package's lockfile entry alone fails;
+  and one that rewrites only `package-lock.json` for anything else, such as an update to a
+  transitive dependency, passes.
 
 **Reason.** Pausing the bot would forfeit an update path that is in use. The one batch drew twelve
 upgrades from these proposals, and one of them changed code inside the package.
@@ -161,8 +162,8 @@ pause the bot, not to write a stronger sentence.
   builds and passes its own checks with the new version. It does not say the new version is
   trustworthy. The dependency audit is
   `npm run security:audit`; an operator invokes it, and the gate does not contain it.
-- **The pin covers 18 of the root manifest's 21 ranges.** It does not stop a `webview-ui` proposal,
-  or a root one that moves one of the three ranges it leaves out, but the rule applies to each all the
+- **The pin covers 18 of the 22 root manifest ranges.** It does not stop a `webview-ui` proposal,
+  or a root one that moves one of the four ranges it leaves out, but the rule applies to each all the
   same.
 - **No proposal has been merged under it yet.** The one batch, `b6993e80`, predates the recorder
   (2026-08-26). Its verification is what its commit message describes, not a record.
@@ -283,3 +284,49 @@ It lists both kinds of skipped change: a merge that did not carry the line, and 
 
 <!-- Source: scripts/gate-distance.mjs -->
 <!-- Source: CONTRIBUTING.md -->
+
+## Local-only verification, reaffirmed — 2026-10-31 (FR-R4-F09)
+
+`FR-R4-F09` (`FR-036`, `FR-030`, `FR-031`). This section extends the cadence rule above and the
+decision it descends from. It adds no check and removes none.
+
+**The decision.** Verification stays local. There are no hosted or paid checks, and the full gate is
+recorded at each integration merge into `develop` and before each release preparation. Nothing
+enforces it: the record is a local file, and the rule holds as far as the operator follows it.
+
+**The reason.** Budget. The hosted workflows were retired on 2026-08-26 by operator decision for
+budget reasons (`FR-R3-099`), and a recorded gate run is what stands where they ran. The decision is
+reaffirmed rather than reopened because nothing about that budget has changed, and because the
+failure it would be reopened for, a release made from a commit whose gate never ran, is already
+refused by `npm run release:preflight`.
+
+**The revisit condition.** Only a later recorded decision may amend it. It is worth revisiting when
+the budget that retired the hosted workflows changes, or when a maintainer decides that a platform in
+[the qualification matrix](../release/qualification-matrix.md) other than the one the gate runs on
+must be observed on every merge. Until then those cells stay `unobserved`.
+
+### What version 3 of the record adds, and what it proves
+
+A gate record is now written at version 3 (`ATTESTATION_VERSION`). A record at version 2 is refused
+by version, with the instruction to re-run `npm run gate:record`, because it cannot say what it
+observed. The recorder takes the new fields once, before it spawns the gate:
+
+| Field | What it says |
+|---|---|
+| `nodeDeclared`, `nodeMatchesDeclared` | The Node `.nvmrc` declares, trimmed (`null` when the file is absent, empty or over 64 bytes), and whether the Node that ran is exactly it. `nodeVersion` stays beside them |
+| `envelope.present` | Whether the planning envelope above this checkout was present. A standalone clone records `false`, and the gates that read the envelope skipped; that record is not an envelope run |
+| `trees[].lockfileSha256` | The SHA-256 of the lockfile of `root` and of `webview-ui`, so a record names the dependency declaration it was made against |
+| `trees[].install` | `matches`, `differs` (with a count), `absent` or `unreadable`: whether npm's hidden lockfile for that tree agrees with its lockfile, ignoring the platform packages the lockfile marks optional |
+
+**What these prove, and what they do not.** They describe the environment of one run. They do not
+vouch for a platform, a Node or a dependency tree that did not run, and they do not prove the
+installed code is what the lockfile names: the hidden lockfile records what npm installed, not a
+digest of its files. A Node mismatch, an absent envelope or an install that differs is printed by the
+preflight and copied into the release record, and none of them refuses a release; refusing on a
+Node patch difference would block every release from a login shell that differs from `.nvmrc` by a
+patch. The integration gate is recorded under the pinned 24.19.0 as a step of the procedure, and its
+record shows `nodeMatchesDeclared: true` or it does not.
+
+<!-- Source: scripts/gate-observation.mjs -->
+<!-- Source: scripts/gate-attestation.mjs -->
+<!-- Source: scripts/gate-recorder.mjs -->

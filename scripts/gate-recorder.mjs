@@ -16,8 +16,14 @@
 // assertion in `tests/unit/build/gate-recorder.test.ts`.
 //
 // Injected here is every dependency whose behaviour a test needs to VARY — `spawn`, `platform`,
-// `readTreeState`, `writeAttestation`, `now`, and `log`/`error` for the operator's console —
-// for that reason and no other; there is no second production caller and none is wanted.
+// `readTreeState`, `observe`, `writeAttestation`, `now`, and `log`/`error` for the operator's
+// console — for that reason and no other; there is no second production caller and none is wanted.
+//
+// FR-R4-F09 (FR-030, contract GR3) — `observe` is the version-3 addition: the declared Node beside
+// the one that ran, whether the planning envelope was present, and the lockfile and installed
+// identity of each tree, taken ONCE before the gate is spawned and written into the record. It
+// sits after the dirty-tree refusal, so a refused run observes nothing, and its result is spread
+// into the record without the recorder reading any of it.
 // `process.arch` and `process.version` are read directly below: they are inert facts about the
 // running interpreter, not seams, and injecting them would add two parameters no test varies.
 import { ATTESTATION_VERSION, GATE_COMMAND, GATE_COMMAND_SPEC } from './gate-attestation.mjs';
@@ -30,6 +36,8 @@ import { ATTESTATION_VERSION, GATE_COMMAND, GATE_COMMAND_SPEC } from './gate-att
  * @property {string} platform `process.platform`, injected so the Windows executable
  *   resolution is assertable from a POSIX test.
  * @property {() => { head: string, treeClean: boolean }} readTreeState
+ * @property {() => object} observe The environment the gate is about to run in
+ *   (`gate-observation.mjs`): `nodeDeclared`, `nodeMatchesDeclared`, `envelope` and `trees`.
  * @property {(attestation: object) => void} writeAttestation Durable write. The `fsync`
  *   barrier lives in the caller's implementation, not here.
  * @property {(message: string) => void} log
@@ -60,7 +68,7 @@ import { ATTESTATION_VERSION, GATE_COMMAND, GATE_COMMAND_SPEC } from './gate-att
  * @returns {RecordGateRunResult}
  */
 export function recordGateRun(deps) {
-  const { spawn, platform, readTreeState, writeAttestation, log, error, now } = deps;
+  const { spawn, platform, readTreeState, observe, writeAttestation, log, error, now } = deps;
 
   // Refuse a dirty tree BEFORE spending the gate's wall-clock, because the result would
   // describe a tree nobody can reconstruct.
@@ -73,6 +81,10 @@ export function recordGateRun(deps) {
     );
     return { exitCode: 2, attestation: null, reason: 'dirty-tree-before' };
   }
+
+  // Once, before the spawn: the record describes the environment the gate RAN in, and a refused
+  // run above has spent nothing and observed nothing.
+  const observation = observe();
 
   const executable = GATE_COMMAND_SPEC.executableFor(platform);
   log(`record-gate-run: observing \`${GATE_COMMAND}\` at ${head} — this takes a while.`);
@@ -121,6 +133,7 @@ export function recordGateRun(deps) {
     platform,
     arch: process.arch,
     nodeVersion: process.version,
+    ...observation,
     startedAt,
     recordedAt: now()
   };

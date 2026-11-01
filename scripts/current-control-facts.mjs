@@ -36,6 +36,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve, dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reachableScripts, GATE_SCRIPT } from './check-gate-coverage-parity.mjs';
+import { RELEASE_CHILD_SCRIPTS } from './release-candidate.mjs';
 import { invokedAsScript } from './invoked-as-script.mjs';
 
 const HERE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -168,7 +169,19 @@ export function controlFacts(root = HERE) {
   const all = pkg.scripts ?? {};
 
   const gateClosure = reachableScripts(all, GATE_SCRIPT);
-  const releaseClosure = reachableScripts(all, RELEASE_SCRIPT);
+  // FR-R4-F09 (research R1): `release` is a driver that spawns `build` and `sbom` itself, and the
+  // walk of `npm run` references cannot see a spawn. The driver exports the scripts it spawns,
+  // and the closure of each joins the release closure -- but only for a script `package.json`
+  // defines, because `reachableScripts` returns its entry whether or not it exists, and a
+  // closure that always held `sbom` would make `releaseReachesSbom` true of any repository.
+  const releaseClosure = [
+    ...new Set([
+      ...reachableScripts(all, RELEASE_SCRIPT),
+      ...RELEASE_CHILD_SCRIPTS.filter((child) => typeof all[child] === 'string').flatMap((child) =>
+        reachableScripts(all, child)
+      )
+    ])
+  ];
 
   // The stated candidate set for the two absence facts: the release closure's own
   // command bodies, plus every file under `scripts/`.
@@ -233,7 +246,8 @@ export function renderControlBlock(facts) {
       'SBOM for a release',
       yesNo(
         facts.releaseReachesSbom,
-        `Produced. \`npm run ${RELEASE_SCRIPT}\` reaches \`sbom\`, so packaging cannot skip it.`,
+        `Produced. \`npm run ${RELEASE_SCRIPT}\` reaches \`sbom\` through the release driver, which builds, ` +
+          'writes the SBOM from that build, and packages once, so a candidate cannot skip it.',
         `Not produced. \`npm run ${RELEASE_SCRIPT}\` does not reach \`sbom\`.`
       )
     ],

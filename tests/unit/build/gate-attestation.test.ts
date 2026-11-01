@@ -42,6 +42,22 @@ const OTHER = 'b'.repeat(40);
  * whatever it was actually asserting. `commandArgv` is the label's witness and is part of the
  * shape now; a record without one is refused.
  */
+/**
+ * FR-R4-F09 (GR1, GR2) -- the version-3 observation a recorder writes, in the order it writes it.
+ * The values describe a run that matched everything it was asked about, so a case that wants a
+ * difference changes one field and the others keep it from being a second reason.
+ */
+const observation = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  nodeDeclared: '22.0.0',
+  nodeMatchesDeclared: true,
+  envelope: { present: true },
+  trees: [
+    { tree: 'root', lockfile: 'package-lock.json', lockfileSha256: 'a'.repeat(64), install: 'matches' },
+    { tree: 'webview-ui', lockfile: 'webview-ui/package-lock.json', lockfileSha256: 'b'.repeat(64), install: 'matches' }
+  ],
+  ...over
+});
+
 const passing = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   version: gate.ATTESTATION_VERSION,
   command: gate.GATE_COMMAND,
@@ -53,6 +69,7 @@ const passing = (over: Record<string, unknown> = {}): Record<string, unknown> =>
   platform: 'darwin',
   arch: 'arm64',
   nodeVersion: 'v22.0.0',
+  ...observation(),
   startedAt: '2026-08-26T10:00:00.000Z',
   recordedAt: '2026-08-26T10:30:00.000Z',
   ...over
@@ -237,7 +254,8 @@ describe('FR-R3-095 — a release is bound to a verified gate result for THIS co
       decide({ attestation: passing({ command: 'npm run lint' }) }),
       decide({ attestation: passing({ version: 'unparseable' }) }),
       decide({ attestation: passing({ version: 1 }) }),
-      decide({ attestation: passing({ commandArgv: ['run', 'ci'] }) })
+      decide({ attestation: passing({ commandArgv: ['run', 'ci'] }) }),
+      decide({ attestation: passing({ envelope: undefined }) })
     ].map((v) => v.reason);
     expect(new Set(reasons).size).toBe(reasons.length);
     for (const reason of reasons) expect(reason).not.toBe('verified');
@@ -307,5 +325,178 @@ describe('FR-R3-095 — the recorder observes the gate rather than vouching for 
         'dirty the tree, and the release check refuses a dirty tree -- so every release ' +
         'would be refused with a message that names no cause. Restore the .gitignore entry.'
     ).toBe(0);
+  });
+});
+
+describe('FR-R4-F09 — version 3 says what the gate observed (T10, GR1, GR4)', () => {
+  it('reads version 3', () => {
+    expect(gate.ATTESTATION_VERSION).toBe(3);
+  });
+
+  it('refuses a version-2 record by version, with the re-record instruction', () => {
+    const verdict = decide({ attestation: passing({ version: 2 }) });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toBe('stale-version');
+    expect(verdict.message).toContain('version 2');
+    expect(verdict.message).toContain('version 3');
+    expect(verdict.message).toContain('npm run gate:record');
+  });
+
+  it('says why version 2 cannot be read: it holds no declared-Node, envelope or tree observation', () => {
+    const { message } = decide({ attestation: passing({ version: 2 }) });
+    expect(message).toMatch(/declared Node/i);
+    expect(message).toMatch(/envelope/i);
+    expect(message).toMatch(/tree/i);
+    expect(message).toMatch(/re-?run/i);
+  });
+
+  it.each(['nodeDeclared', 'nodeMatchesDeclared', 'envelope', 'trees'])(
+    'refuses a version-3 record missing %s as observation-missing, naming it',
+    (field) => {
+      const without = { ...passing() };
+      delete without[field];
+      const verdict = decide({ attestation: without });
+      expect(verdict.ok).toBe(false);
+      expect(verdict.reason).toBe('observation-missing');
+      expect(verdict.message).toContain(field);
+    }
+  );
+
+  it.each([
+    ['nodeDeclared that is a number', { nodeDeclared: 24 }, 'nodeDeclared'],
+    ['nodeMatchesDeclared that is a string', { nodeMatchesDeclared: 'yes' }, 'nodeMatchesDeclared'],
+    ['an envelope that is null', { envelope: null }, 'envelope'],
+    ['an envelope.present that is not a boolean', { envelope: { present: 'yes' } }, 'envelope.present'],
+    ['no trees', { trees: [] }, 'trees'],
+    ['trees that are not a list', { trees: 'root' }, 'trees'],
+    [
+      'the trees in the wrong order',
+      { trees: [...(observation().trees as object[])].reverse() },
+      'trees'
+    ],
+    [
+      'a third tree',
+      { trees: [...(observation().trees as object[]), { tree: 'extra', lockfile: 'x', lockfileSha256: null, install: 'matches' }] },
+      'trees'
+    ],
+    [
+      'a tree with no lockfile path',
+      { trees: [{ tree: 'root', lockfileSha256: null, install: 'matches' }, (observation().trees as object[])[1]] },
+      'lockfile'
+    ],
+    [
+      'a lockfile digest that is not 64 hex or null',
+      {
+        trees: [
+          { tree: 'root', lockfile: 'package-lock.json', lockfileSha256: 'abc', install: 'matches' },
+          (observation().trees as object[])[1]
+        ]
+      },
+      'lockfileSha256'
+    ],
+    [
+      'an install state outside the closed set',
+      {
+        trees: [
+          { tree: 'root', lockfile: 'package-lock.json', lockfileSha256: null, install: 'perfect' },
+          (observation().trees as object[])[1]
+        ]
+      },
+      'install'
+    ]
+  ])('refuses %s as observation-missing, naming the field', (_label, over, field) => {
+    const verdict = decide({ attestation: passing(over) });
+    expect(verdict.reason).toBe('observation-missing');
+    expect(verdict.message).toContain(field);
+  });
+
+  it('checks the observation AFTER the existing checks, so a red or wrong-commit record keeps its own reason', () => {
+    const bare = { ...passing({ exitCode: 1 }) };
+    delete bare['envelope'];
+    expect(decide({ attestation: bare }).reason).toBe('gate-failed');
+    const elsewhere = { ...passing({ head: OTHER }) };
+    delete elsewhere['trees'];
+    expect(decide({ attestation: elsewhere }).reason).toBe('wrong-commit');
+  });
+
+  it('accepts a complete version-3 record', () => {
+    expect(decide().reason).toBe('verified');
+  });
+});
+
+describe('FR-R4-F09 — the verified message prints the observation and refuses on none of it (GR4, research R17)', () => {
+  it('prints the Node that ran beside the declared one, marking a difference', () => {
+    const differs = decide({
+      attestation: passing({ nodeVersion: 'v24.21.0', nodeDeclared: '24.19.0', nodeMatchesDeclared: false })
+    });
+    expect(differs.ok).toBe(true);
+    expect(differs.message).toContain('v24.21.0');
+    expect(differs.message).toContain('24.19.0');
+    expect(differs.message).toContain('(differs)');
+
+    const same = decide({
+      attestation: passing({ nodeVersion: 'v24.19.0', nodeDeclared: '24.19.0', nodeMatchesDeclared: true })
+    });
+    expect(same.ok).toBe(true);
+    expect(same.message).toContain('24.19.0');
+    expect(same.message).not.toContain('(differs)');
+  });
+
+  it('says so, without calling it a difference, when no Node was declared', () => {
+    const verdict = decide({ attestation: passing({ nodeDeclared: null, nodeMatchesDeclared: false }) });
+    expect(verdict.ok).toBe(true);
+    expect(verdict.message).toMatch(/declares none|not declared|no declared/i);
+    expect(verdict.message).not.toContain('(differs)');
+  });
+
+  it('prints the envelope as present, or as absent in a standalone clone', () => {
+    expect(decide().message).toContain('workspace envelope: present');
+    const standalone = decide({ attestation: passing({ envelope: { present: false } }) });
+    expect(standalone.ok).toBe(true);
+    expect(standalone.message).toContain('absent (standalone clone)');
+    expect(standalone.message).toMatch(/skipped/i);
+  });
+
+  it('prints each tree\'s install state, and an install that is not a match does not refuse', () => {
+    const trees = [
+      { tree: 'root', lockfile: 'package-lock.json', lockfileSha256: 'a'.repeat(64), install: 'differs', installDifferences: 3 },
+      { tree: 'webview-ui', lockfile: 'webview-ui/package-lock.json', lockfileSha256: null, install: 'unreadable' }
+    ];
+    const verdict = decide({ attestation: passing({ trees }) });
+    expect(verdict.ok).toBe(true);
+    expect(verdict.message).toContain('root install: differs');
+    expect(verdict.message).toContain('3');
+    expect(verdict.message).toContain('webview-ui install: unreadable');
+
+    const matching = decide().message;
+    expect(matching).toContain('root install: matches');
+    expect(matching).toContain('webview-ui install: matches');
+
+    const absent = decide({
+      attestation: passing({
+        trees: [
+          { tree: 'root', lockfile: 'package-lock.json', lockfileSha256: 'a'.repeat(64), install: 'absent' },
+          (observation().trees as object[])[1]
+        ]
+      })
+    });
+    expect(absent.ok).toBe(true);
+    expect(absent.message).toContain('root install: absent');
+  });
+
+  it('keeps the sentence that the record is local and not independent verification', () => {
+    expect(decide().message).toContain('This is a LOCAL record on this machine, not independent verification');
+  });
+
+  it('prints a record\'s free text only as data: a path or label it carries never reaches the message', () => {
+    const verdict = decide({
+      attestation: passing({
+        trees: [
+          { tree: 'root', lockfile: '/Users/someone/package-lock.json', lockfileSha256: null, install: 'matches' },
+          (observation().trees as object[])[1]
+        ]
+      })
+    });
+    expect(verdict.message).not.toContain('/Users/someone');
   });
 });

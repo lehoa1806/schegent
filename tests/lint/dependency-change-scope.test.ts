@@ -18,6 +18,13 @@
 // expected and named: `axe-core`, which FR-R3-091 declares for the accessibility
 // scan and which the constitution's forbidden-action carve-out permits precisely
 // because a task names it.
+//
+// FR-R4-F09 (FR-021, FR-022, FR-025) changes exactly ONE range: `@secretlint/node` moves from
+// `^13.0.4` to `^10.2.2`, aligning the engine with the 10.2.2 ruleset and CLI it already runs
+// beside and the family `@vscode/vsce` depends on. It is an alignment to versions already in the
+// lockfile, made offline; no package is added and none is removed. The same feature adds the case
+// that checks the denominator the documents state ("18 of the 22") against this file, so the next
+// declaration cannot leave a document counting a manifest that no longer exists.
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -76,7 +83,13 @@ const PROMOTIONS = [
 const PINNED: ReadonlyMap<string, string> = new Map([
   ['@eslint/js', '^9.39.5'],
   ['@playwright/test', '^1.62.1'],
-  ['@secretlint/node', '^13.0.4'],
+  // FR-R4-F09 (research R19): ALIGNED from ^13.0.4. The ruleset the scan runs
+  // (`@secretlint/secretlint-rule-preset-recommend`) and the CLI (`secretlint`) resolve at 10.2.2,
+  // as do the copies `@vscode/vsce` carries; only this engine sat at 13. Moving the other two to
+  // 13 would be a major upgrade of two packages and would change the rules that run, so the
+  // engine moves to the family. `@secretlint/node` 13 becomes a held major
+  // (`docs/release/held-major-upgrades.md`).
+  ['@secretlint/node', '^10.2.2'],
   ['@types/node', '^22.20.1'],
   ['@types/vscode', '1.107.0'],
   ['@vitest/coverage-v8', '^3.2.7'],
@@ -113,6 +126,27 @@ const WITHDRAWN_SCANNERS = ['codeql'] as const;
 interface Manifest {
   readonly dependencies?: Record<string, string>;
   readonly devDependencies?: Record<string, string>;
+}
+
+/**
+ * The pin counts a document states, as `<n> of the <m>` and as `<n> of the root manifest's <m>`.
+ * Comment markers and line breaks are folded away first, so a figure that wraps is still read.
+ */
+function statedPinCounts(text: string): {
+  readonly plain: Array<[number, number]>;
+  readonly possessive: Array<[number, number]>;
+} {
+  const flat = text
+    .split('\n')
+    .map((line) => line.replace(/^\s*#\s?/, ''))
+    .join(' ')
+    .replace(/\s+/g, ' ');
+  const pairs = (pattern: RegExp): Array<[number, number]> =>
+    [...flat.matchAll(pattern)].map((match) => [Number(match[1]), Number(match[2])]);
+  return {
+    plain: pairs(/\b(\d+) of the (\d+)\b/g),
+    possessive: pairs(/\b(\d+) of the root manifest(?:'s)? (\d+)\b/g)
+  };
 }
 
 const root = JSON.parse(read('package.json')) as Manifest;
@@ -216,6 +250,37 @@ describe('FR-R3-090 §5 — no dependency is bumped, and the scanners are untouc
     }
     expect(security).toMatch(/2026-08-26/);
     expect(existsSync('docs/release/withdrawn-ci-controls.md')).toBe(true);
+  });
+
+  it('every document that states how much of the manifest this file pins states the real figure (FR-022)', () => {
+    // "18 of the 21" outlived the declaration that made it "18 of the 22", in three places, because
+    // each was typed by hand. The figure is derived here from this file's own table and from the
+    // manifest, and each document is read for it. Whitespace is normalized first, so a sentence
+    // that wraps across two lines counts.
+    const declared = Object.keys(root.devDependencies ?? {}).length;
+    const expected: Array<[number, number]> = [[PINNED.size, declared]];
+    const documents: ReadonlyArray<{ readonly path: string; readonly times: number }> = [
+      { path: '.github/dependabot.yml', times: 1 },
+      { path: 'docs/operations/gate-recording.md', times: 2 }
+    ];
+    for (const { path, times } of documents) {
+      const stated = statedPinCounts(read(path));
+      expect(
+        stated.plain,
+        `${path} must state the pin as ${PINNED.size} of the ${declared}, ${times} time(s)`
+      ).toEqual(Array.from({ length: times }, () => expected[0]));
+      expect(stated.possessive, `${path} counts the manifest in a form this gate cannot read`).toEqual([]);
+    }
+  });
+
+  it('NON-VACUITY: a planted wrong count, in either wording, is reported', () => {
+    expect(statedPinCounts('pins the declared range of 18 of the 21 root\n  manifest ranges').plain).toEqual([
+      [18, 21]
+    ]);
+    expect(statedPinCounts('The pin covers 18 of the root manifest\'s 21 ranges.').possessive).toEqual([
+      [18, 21]
+    ]);
+    expect(statedPinCounts('nothing is stated here')).toEqual({ plain: [], possessive: [] });
   });
 
   it('NON-VACUITY: a bumped range and an undeclared addition are both detected', () => {

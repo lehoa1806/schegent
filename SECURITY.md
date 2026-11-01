@@ -104,8 +104,9 @@ enforcement point, so a control outside the gate is a control nothing runs for y
 | Control | Coverage and trigger | Enforcement |
 |---|---|---|
 | Secret scan | Every git-tracked file, **including `tests/**`**, scanned by secretlint's recommended ruleset plus the dotenv rule | `scripts/scan-secrets.mjs` via `npm run security:secrets`, inside `npm run gate`. Findings are exempted per entry with a stated reason in `.secretlintignore`, never by excluding a directory. Measured **≈39 s** over 1,947 tracked files. <!-- Source: package.json --><!-- Source: scripts/scan-secrets.mjs --> |
-| npm audit | Root and `webview-ui` lockfiles, **operator-invoked** (`npm run security:audit`) | `npm audit --audit-level=low`; it does not auto-fix or commit. **Not in the attested gate**, and the reason is stated rather than left to inference: it queries the npm registry, so a gate containing it would fail for want of a network — and a gate that fails for reasons unrelated to the tree is a gate people learn to bypass with `--no-verify`. Before this item it had no local home at all: the deleted `security-audit.yml` was its only caller. <!-- Source: package.json --> |
+| npm audit | Root and `webview-ui` lockfiles, **operator-invoked** (`npm run security:audit`) | `npm audit --audit-level=low`; it does not auto-fix or commit. **Not in the attested gate**, and the reason is stated rather than left to inference: it queries the npm registry, so a gate containing it would fail for want of a network — and a gate that fails for reasons unrelated to the tree is a gate people learn to bypass with `--no-verify`. Before this item it had no local home at all: the deleted `security-audit.yml` was its only caller. It is **not release evidence**: the release path reads feature 249's captures instead, which override the npm settings that let this audit pass falsely. <!-- Source: package.json --> |
 | Advisory comparison | Root and `webview-ui` lockfiles at the base and candidate commits, **operator-invoked** (`npm run security:advisory-diff`) | Report-only and not part of `npm run gate`. The capture step queries the registry for the same reason given for `npm audit`. The comparison is offline, exits 0 whatever it finds, and is neither a waiver nor permission to integrate; `npm run security:audit` is unchanged. See [the operator page](docs/operations/dependency-advisory-comparison.md). <!-- Source: package.json --><!-- Source: scripts/advisory-diff.mjs --> |
+| Release advisory evidence | One capture per tree (`npm run security:advisory-diff -- capture`) and the tracked list [`docs/release/advisory-dispositions.json`](docs/release/advisory-dispositions.md), read by `npm run release` | `scripts/release-advisory.mjs` reads files and spawns nothing, so it has no network and the gate never reaches it. Release preparation refuses a capture that is `incomplete` or `unavailable` (the audit gave no report), one made for a different lockfile than HEAD holds, one observed after the preparation time, one older than **seven days** (exactly seven is accepted), and a list it cannot use. A finding with no covering disposition is reported with its verdict, not refused, and `accepted` is a label, not a waiver. <!-- Source: scripts/release-advisory.mjs --><!-- Source: scripts/advisory-dispositions.mjs --> |
 | Workflow pin check | Any workflow file that reappears | `scripts/check-workflow-pins.mjs` requires immutable 40-character SHA pins. With no workflows present it reports *nothing to pin* rather than *passed* — a latent guard against a re-added, unpinned workflow. <!-- Source: package.json --><!-- Source: scripts/check-workflow-pins.mjs --> |
 | License check | Root manifest and the license operations record | `scripts/check-licenses.mjs` checks that `LICENSE.md` and `docs/operations/licenses.md` exist and that the manifest has a truthy `license` field; it does not inspect dependency licenses. <!-- Source: package.json --><!-- Source: scripts/check-licenses.mjs --> |
 | Dependabot | Root and `webview-ui` npm manifests; weekly Monday minor/patch updates; major updates ignored | Still configured, and it opens pull requests — but **nothing runs checks on them any more**. A Dependabot pull request now arrives unverified. It is merged into `develop` only from a commit that carries a passing `npm run gate:record` record naming that commit, and that is a rule the operator follows, not a check ([gate recording](docs/operations/gate-recording.md)). <!-- Source: .github/dependabot.yml --><!-- Source: docs/operations/gate-recording.md --> |
@@ -179,7 +180,7 @@ immediately, then audit for similar exposure. It is not a line item to allowlist
 | **CodeQL** static analysis (`security-extended`, JS/TS) | **green at `2a885187`, 2026-08-26** | **None.** There is no static-analysis equivalent in this repository. This is a real reduction in coverage, and wiring the secret scan to a real scanner (`FR-R3-109`) does not replace it — a secret scanner finds credentials, not injection or taint |
 | Dependency review on pull requests | failure, 2026-08-23 | `npm run security:audit`, operator-invoked. Narrower in two ways: it sees the lockfile rather than the diff, and nothing forces anyone to run it |
 | Scheduled `npm audit` (Monday 03:00 UTC) | green at `b6993e80`, 2026-08-24 | The same audit as `npm run security:audit`, operator-invoked. **Not in the attested gate** and on no schedule, so it runs only when someone remembers |
-| Release provenance (SBOM, checksums, attestation, GitHub Release) | never ran — no `v*` tag was ever pushed | Partial. `npm run package` reaches `npm run sbom`, so packaging does emit `schegent-sbom.cdx.json`. It emits no digest and no signature a consumer could check; `.gate-attestation.json` records that a gate ran on the releasing machine, which is a local record rather than provenance |
+| Release provenance (SBOM, checksums, attestation, GitHub Release) | never ran — no `v*` tag was ever pushed | Partial. `npm run package` reaches `npm run sbom`, so packaging does emit `schegent-sbom.cdx.json`, and it emits no digest. `npm run release` builds once, packages once, inspects those bytes and writes a local release record under `.release/` that names the candidate's SHA-256; it tags, publishes and uploads nothing. Neither emits a signature a consumer could check; `.gate-attestation.json` records that a gate ran on the releasing machine, which is a local record rather than provenance |
 | Three-OS matrix and the Node version-floor job | `ci.yml` red at `2a885187` on the **Windows** leg | None. Windows remains a stated permanent limit |
 
 No Snyk or Semgrep configuration or invocation exists in the repository.
@@ -188,6 +189,24 @@ What runs *today*, as opposed to what was withdrawn, is generated from the tree
 into [current release controls](docs/release/current-release-controls.md). That
 page is the single present-tense authority; this section is the security-facing
 reading of it, and if the two ever disagree the generated one is right.
+
+#### The SBOM, and what it says is shipped (FR-R4-F09)
+
+`schegent-sbom.cdx.json` is generated from the module graphs the two builds write, joined with
+the two lockfiles, and is packaged inside the VSIX. The extension declares **zero runtime
+dependencies** and **does ship bundled third-party code**: the webview build bundles the Svelte
+runtime (`svelte` today), and the SBOM lists it as `bundled` with `scope: required` although
+`svelte` is a `devDependency` of the webview tree. `scope: excluded` means only that a package
+is not in the shipped code. A module a graph cannot map to a lockfile entry is listed as unknown
+provenance and is never dropped. The shipped files are listed with their SHA-256, and both
+`npm run package:smoke` and the release driver compare that list with the archive's `dist/`
+entries, so an SBOM left over from another build fails the check.
+
+The document asserts what the graphs and the lockfiles recorded at generation time. It does not
+claim that any component is exploitable, anything about licenses beyond the lock's `license`
+field, or any signature, and the archive's own bytes are verified by the separate comparison
+above.
+<!-- Source: scripts/generate-sbom.mjs --><!-- Source: scripts/check-vsix-smoke.mjs -->
 
 #### The static-analysis class is permanently absent — decided 2026-08-27
 

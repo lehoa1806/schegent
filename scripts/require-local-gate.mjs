@@ -45,7 +45,11 @@ if (!verdict.ok) {
   console.error(`require-local-gate: REFUSED (${verdict.reason})\n  ${verdict.message}`);
   process.exit(1);
 }
-console.log(`require-local-gate: ${verdict.message}`);
+// FR-R4-F09 (GR4) — the verified message is several lines: the verdict, then the Node that ran
+// beside the declared one, the workspace envelope and each tree's install state, then the
+// sentence that the record is local. Continuation lines are indented under the first, so the
+// observation reads as part of the answer and not as stray output.
+console.log(`require-local-gate: ${verdict.message.split('\n').join('\n  ')}`);
 
 // FR-R3-104 (FR-051, FR-053, FR-055, FR-058) — the second binding: the gate attestation says the
 // verification suite passed on this tree, and it says nothing about whether the three third-party

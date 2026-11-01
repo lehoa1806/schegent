@@ -9,6 +9,45 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### Reproducible release artifacts and qualification (FR-R4-F09, 2026-11-01)
+
+Preparing a release now produces one candidate and one record that names it, and the documents that
+describe the release controls say what each control actually checks.
+
+- **`npm run release` builds and checks the candidate itself.** After the preflight it removes every
+  existing build output, builds once, generates the SBOM from that build, packages once into
+  `.release/`, inspects those exact bytes, and writes `.release/schegent-<version>.release.json`
+  beside the candidate. The record names the candidate's SHA-256, the commit, the build mode, the
+  advisory evidence it relied on and the gate record. It tags, publishes and uploads nothing, and every
+  run says so on its last line. Output is never reused, so a stale or foreign `dist/` cannot become a
+  candidate.
+- **Release preparation takes two advisory captures.** Pass `--advisory-capture root=<path>` and
+  `--advisory-capture webview-ui=<path>`, made by `security:advisory-diff -- capture`. It refuses a
+  capture that is incomplete or unavailable, made for a different lockfile than the commit holds,
+  from the future, or more than seven days old (seven exactly is accepted). Each finding is listed with
+  its advisory id and link, severity, whether the package is in the shipped code, and its disposition;
+  a finding without a covering disposition is shown, not refused. Dispositions live in
+  `docs/release/advisory-dispositions.json`, which needs a `rationale` on every entry.
+- **The SBOM lists what ships.** The webview's bundled third-party code (the Svelte runtime today) is
+  listed as shipping, beside zero declared runtime dependencies, where it used to be listed as
+  excluded tooling. The SBOM is checked against the archive, and the smoke package now writes and
+  checks its own.
+- **Gate records say what they observed.** `npm run gate:record` writes version 3, which adds the Node
+  the repository declares beside the one that ran, whether the planning envelope was present, and each
+  dependency tree's lockfile digest and install state. A version-2 record is refused with an
+  instruction to record again. A difference is printed and carried; it does not refuse a release.
+- **An installed build names its commit.** The diagnostics bundle's `host` item now shows the commit,
+  whether the tree was dirty, and the build mode, or `unknown` for a build that was not made by the
+  project's build. `RELEASE.md` describes how to install the exact candidate and compare.
+- **Two pages are new.** The [qualification matrix](../release/qualification-matrix.md) lists six
+  platform cells and marks five of them unobserved. The
+  [advisory dispositions page](../release/advisory-dispositions.md) describes the list.
+- **Descriptions now say what each check does.** The license check verifies three structural facts and
+  reads no dependency, the workflow-pin check names its three outcomes, and the performance budgets are
+  wall-clock, single-worker and unretried. The held-major review test now tests its 90-day boundary
+  exactly, and two stale hold reasons were rewritten. A hold review date still moves only with
+  registry evidence.
+
 ### Bounded and keyboard-accessible webview (FR-R4-F08, 2026-10-31)
 
 A sidebar left open through a long Run now stays responsive, shows the current state when it is revealed,

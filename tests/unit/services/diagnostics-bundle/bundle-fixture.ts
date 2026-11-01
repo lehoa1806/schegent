@@ -16,6 +16,7 @@ import { AuditLogWriter } from '../../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import { createFailureRecorder } from '../../../../src/services/failure-record/failure-record-service';
 import type { BundleSources } from '../../../../src/services/diagnostics-bundle/bundle-collect';
+import { readBuildIdentity, type BuildIdentity } from '../../../../src/lib/build-identity';
 import { removeTempRoot } from '../../../temp-root-cleanup';
 
 export const SELECTED_RUN = '5b8a1c22-7d3e-4f10-9c44-1a2b3c4d5e6f';
@@ -53,7 +54,9 @@ function runLogLine(runId: string, message: string): string {
   return `[2026-10-31T00:00:00.000Z] INFO ${message} {"runId":"${runId}","phase":"speckit-plan"}`;
 }
 
-export async function buildBundleFixture(): Promise<BundleFixture> {
+export async function buildBundleFixture(
+  options: { readonly hostBuild?: BuildIdentity } = {}
+): Promise<BundleFixture> {
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'bundle-251-'));
   const workspaceRoot = path.join(scratch, 'workspace');
   const destinationDirectory = path.join(scratch, 'destination');
@@ -131,6 +134,9 @@ export async function buildBundleFixture(): Promise<BundleFixture> {
     sanitize: (text) => logger.sanitize(text),
     sanitizeRecord: (record) => logger.sanitizeRecord(record),
     hostVersion: '0.2.0',
+    // FR-R4-F09 (BI4): the build the host item shows. Unless a case injects one, this is what a
+    // vitest run reads: nothing was stamped, so the identity is unknown.
+    hostBuild: options.hostBuild ?? readBuildIdentity(),
     hostSettings: () => ({
       'logging.sessionRetentionMaxAgeDays': 30,
       'backend.apiKey': SECRETS.anthropic,

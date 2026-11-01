@@ -36,6 +36,7 @@ export declare function renderGateCommandLabel(args: readonly string[]): string;
 /** The command whose observed exit code is the evidence. Derived from the spec's argv. */
 export declare const GATE_COMMAND: string;
 
+/** FR-R4-F09 (GR1): 3. A record at any other numeric version is refused as `stale-version`. */
 export declare const ATTESTATION_VERSION: number;
 
 /**
@@ -45,7 +46,9 @@ export declare const ATTESTATION_VERSION: number;
  * sends someone to read the gate instead of fixing the cause. FR-R3-135 added two — `stale-version`
  * split from `unreadable` (a superseded record needs a gate run; a file whose `version` is not a
  * number needs looking at), and `command-identity-mismatch` for a label its own recorded argv does
- * not witness.
+ * not witness. FR-R4-F09 (GR4) adds `observation-missing`, for a version-3 record whose declared
+ * Node, envelope or tree observation is absent or malformed. It is checked last, so every other
+ * refusal keeps the reason it had.
  */
 export type ReleaseVerdictReason =
   | 'verified'
@@ -57,7 +60,8 @@ export type ReleaseVerdictReason =
   | 'command-identity-mismatch'
   | 'wrong-commit'
   | 'recorded-dirty'
-  | 'gate-failed';
+  | 'gate-failed'
+  | 'observation-missing';
 
 export interface ReleaseVerdict {
   readonly ok: boolean;
@@ -82,3 +86,10 @@ export declare function decideRelease(input: {
   treeClean: boolean;
   now?: string;
 }): ReleaseVerdict;
+
+/**
+ * FR-R4-F09 (GR4, RP5) — the lines that describe a version-3 record's observation: the Node that
+ * ran beside the declared one, the workspace envelope and each tree's install state. For a record
+ * `decideRelease` has already accepted.
+ */
+export declare function describeObservation(attestation: unknown): string[];
