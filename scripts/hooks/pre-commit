@@ -1,0 +1,26 @@
+#!/bin/sh
+# FR-R4-F10 (contract HK1; research R17) -- refuse a commit whose staged content holds a secret.
+#
+# WHAT IT RUNS. The staged secret scan, `node scripts/scan-secrets.mjs --staged`, which reads what
+# the commit would carry from the Git index, so a secret staged and then edited out of the working
+# copy is still caught. It exits 0 to let the commit proceed (clean content, or nothing staged that
+# needed scanning) and non-zero to refuse it (a finding, or a scan that could not answer).
+#
+# ACTIVATION. This hook is local and opt-in: nothing installs it. Run once, inside `repo/`:
+#
+#     git config core.hooksPath scripts/hooks
+#
+# BYPASS. `git commit --no-verify` skips every client-side hook. Git does not run this hook for a
+# conflict-free `git merge` either, and there is no server-side check. SECURITY.md states all three.
+#
+# It makes no network call and writes nothing; it only changes to the work tree's top and runs Node.
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-commit: node not found on PATH; the staged secret scan cannot run. Commit refused (use git commit --no-verify to bypass, see SECURITY.md)." >&2
+  exit 1
+fi
+
+exec node scripts/scan-secrets.mjs --staged

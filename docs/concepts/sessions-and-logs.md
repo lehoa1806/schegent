@@ -63,10 +63,10 @@ For a workspace-backed run, the main sinks are:
 
 | Sink | Default location | Content posture | Bound |
 | --- | --- | --- | --- |
-| Structured audit | `.schegent/audit.log` | Projected and sanitized JSONL metadata | Rotates by configured size or age; archives are retained by count and age. |
+| Structured audit | `.schegent/audit.log` | Projected JSONL metadata, best-effort secret-pattern redacted; otherwise raw | Rotates by configured size or age; archives are retained by count and age. |
 | Raw transcript | `.schegent/sessions/raw-<runId>.log` | Verbatim, unredacted prompt/stdout/stderr/exit status | Per-run retention policy plus session-artifact age/byte sweep. |
 | Verbose diagnostics | `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/` | Opt-in, unredacted debug and stream files | Session-artifact age/byte sweep. |
-| Runtime log | `.schegent/syslog` by default | Sanitized formatted host log | Configurable byte threshold and generation count. |
+| Runtime log | `.schegent/syslog` by default | Formatted host log, best-effort secret-pattern redacted; otherwise raw | Configurable byte threshold and generation count. |
 | CLI transport | `.schegent/sessions/<runId>/transport.log`; an earlier release's `.schegent/cli-transport.log` and `.1`–`.3` are legacy and no longer written | Secret patterns redacted, otherwise CLI content as sent (it may contain workspace paths) | Per Run, when the transport capture mode keeps it: at most 5 MiB per Run and 20 MiB across the workspace, aged at the session retention age. Legacy files expire whole at that age. |
 | Metrics rollup | `.schegent/metrics-rollup.jsonl` | Typed terminal-run counters; no free text | Trimmed to the newest 5,000 records when it passes 8 MiB; totals carried forward. |
 | Recovery checkpoints | `<globalStorage>/checkpoints/<runId>/` | Private Git patches and metadata; may contain source or secrets | 14-day age, 256 MiB total, and a ten-recent-run size floor. |
@@ -195,7 +195,7 @@ sanitization boundary. The source diagnostic file is never modified.
 
 ## Runtime and transport logs
 
-The runtime log mirrors sanitized host records. An empty
+The runtime log mirrors host records, best-effort secret-pattern redacted; otherwise raw. An empty
 `schegent.logging.runtimeLogFilePath` selects `.schegent/syslog`; a relative
 path is workspace-relative and may not contain `..`. In production an absolute
 path must remain under the current workspace, the extension's global storage,
@@ -219,7 +219,7 @@ changed. See [Who can read them](#who-can-read-them).
 <!-- Source: src/config/settings-schema.ts -->
 
 The CLI transport sink records one tab-separated line as
-`timestamp`, `runId`, `phase`, `stdout|stderr`, and sanitized CLI content. It
+`timestamp`, `runId`, `phase`, `stdout|stderr`, and CLI content, best-effort secret-pattern redacted; otherwise raw. It
 retains paths because path-bearing CLI output is operationally useful, but it
 uses the same secret sanitizer as the host logger. Capture is best-effort: an
 I/O failure warns and the phase continues. Its bounds are code-resident at 5

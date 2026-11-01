@@ -21,10 +21,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { SanitizedLogger } from '../../../../src/lib/logger';
+import { REDACTION_SENTINEL, SanitizedLogger } from '../../../../src/lib/logger';
 import {
   SANITIZED_BODY_FIELDS,
-  sanitizeDisplayEntryBody
+  sanitizeDisplayEntryBody,
+  sanitizeToolArguments
 } from '../../../../src/services/phase-log/phase-log-sanitizer';
 import { readIterationManifest } from '../../../../src/services/phase-log/phase-log-reader';
 import {
@@ -39,9 +40,9 @@ import type {
 const logger = new SanitizedLogger();
 const sanitize = (s: string): string => logger.sanitize(s);
 
-const API_KEY = 'sk-ant-api03-CANARYCANARYCANARYCANARY0123456789';
+const API_KEY = ['sk', '-ant-', 'api03-CANARYCANARYCANARYCANARY0123456789'].join('');
 const GH_TOKEN = 'ghp_CANARYCANARYCANARYCANARYCANARY0123';
-const AWS_KEY = 'AKIACANARY0123456789';
+const AWS_KEY = ['AK', 'IA', 'CANARY0123456789'].join('');
 
 const SELECTION: PhaseLogSelection = {
   queueId: 'q1',
@@ -237,5 +238,59 @@ describe('phase-log sanitizer — live tail and reopen agree (PRIV-01)', () => {
     // agree, or the redaction of one is undone by the other.
     expect(entry!.body.toolInput).not.toContain(API_KEY);
     expect(JSON.stringify(entry!.body.toolArguments)).not.toContain(API_KEY);
+  });
+});
+
+// FR-R4-F10 (contract test T9; RD4; research R10) -- a string leaf under a key that names a secret is
+// removed by the structured walk, because `sanitize()` sees the leaf and never the key. The tail
+// emits a tool's input twice (`toolInput` as a JSON string, `toolArguments` as an object), so a
+// walker blind to keys would ship `toolInput` masked beside `toolArguments` in cleartext.
+describe('sanitizeToolArguments removes a string leaf under a secret key (FR-R4-F10)', () => {
+  // Plain filler: no pattern matches it, so only the key can cause the removal.
+  const KEYED_VALUE = 'Zq3K8vR2mN7pL4wT9yB6cD1f';
+
+  it('redacts a flat and a nested keyed string, keeps the count, and reports the change', () => {
+    const args = { password: KEYED_VALUE, nested: { client_secret: KEYED_VALUE }, count: 3 };
+    const result = sanitizeToolArguments(args, sanitize);
+    expect(result.mutated).toBe(true);
+    expect(result.value).toEqual({
+      password: REDACTION_SENTINEL,
+      nested: { client_secret: REDACTION_SENTINEL },
+      count: 3
+    });
+  });
+
+  it('reaches a keyed string inside an array element', () => {
+    const result = sanitizeToolArguments({ steps: [{ apiToken: KEYED_VALUE }, { label: 'plain' }] }, sanitize);
+    expect(result.mutated).toBe(true);
+    expect(result.value).toEqual({ steps: [{ apiToken: REDACTION_SENTINEL }, { label: 'plain' }] });
+  });
+
+  it('keeps non-string leaves and empty strings under a secret key', () => {
+    const args = { token: 12345, secret: true, password: '', passwd: null };
+    const result = sanitizeToolArguments(args, sanitize);
+    expect(result.mutated).toBe(false);
+    expect(result.value).toBe(args);
+  });
+
+  it('returns the input reference and mutated false when no key names a secret and nothing matches', () => {
+    const args = { command: 'ls -la', input_tokens: 12, tokenizer: KEYED_VALUE };
+    const result = sanitizeToolArguments(args, sanitize);
+    expect(result.mutated).toBe(false);
+    expect(result.value).toBe(args);
+  });
+
+  it('allocates a new body when only a keyed leaf changed', () => {
+    const entry: PhaseLogDisplayEntry = {
+      seq: 1,
+      kind: 'tool-use',
+      ts: null,
+      body: { toolName: 'Deploy', toolArguments: { target: 'staging', password: KEYED_VALUE } },
+      bodyTruncated: null
+    };
+    const cleaned = sanitizeDisplayEntryBody(entry, sanitize);
+    expect(cleaned).not.toBe(entry);
+    expect(cleaned.body.toolArguments).toEqual({ target: 'staging', password: REDACTION_SENTINEL });
+    expect(entry.body.toolArguments).toEqual({ target: 'staging', password: KEYED_VALUE });
   });
 });

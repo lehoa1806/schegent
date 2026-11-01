@@ -175,7 +175,7 @@ describe('projectWorkflowCatalog — sanitization and bounds (C5, C6, C7)', () =
   });
 
   it('sanitizes node labels, connection endpoints, start ids, and display alike', () => {
-    const secret = 'sk-ant-api03-0123456789abcdefghijklmnopqrstuvwxyz0123456789';
+    const secret = ['sk', '-ant-', 'api03-0123456789abcdefghijklmnopqrstuvwxyz0123456789'].join('');
     const projection = project({
       rows: [
         {

@@ -140,22 +140,71 @@ tree the old scan excluded. That is the exclusion's cost, stated as a number: a 
 credential pasted into a test file was invisible **by construction** rather than
 missed.
 
-**What it does now.** secretlint's `preset-recommend` plus `no-dotenv`, over
-`git ls-files`, **including `tests/**`**. Roughly **39 seconds** for 1,947 files. Scoped
-to tracked files so an untracked scratch file is not read and `node_modules` is never
-walked; the previous scan used the same scope and the measurement is why it was kept.
-A finding is reported by rule and location with its value masked, so the report is safe to
-leave in a terminal or a log: open the file at that location to see what matched. A run
-that finds no file to scan, such as one outside a repository of its own, is refused rather
-than passed.
+**What it does now.** secretlint's `preset-recommend` with its AWS id scan switched on, `no-dotenv`, and one
+local rule (`scripts/secretlint-rule-schegent.mjs`, declared in `.secretlintrc.json`, so that file stays
+the whole ruleset), over `git ls-files`, **including `tests/**`**. Roughly **39 seconds** for 1,947 files.
+Scoped to tracked files so an untracked scratch file is not read and `node_modules` is never walked; the
+previous scan used the same scope and the measurement is why it was kept. A finding is reported by rule and
+location with its value masked, so the report is safe to leave in a terminal or a log: open the file at that
+location to see what matched. A run that finds no file to scan, such as one outside a repository of its own,
+is refused rather than passed.
+
+**Two modes, one ruleset.** Tree mode (`npm run security:secrets`, in the gate) reads the tracked files on
+disk. **Staged mode** (`npm run security:secrets:staged`, which is `node scripts/scan-secrets.mjs --staged`)
+reads what a commit would carry **from the Git index, never from the working tree**: a secret staged and then
+edited out of the working copy passes the tree scan and is committed, and staged mode closes that. It scans
+every added, modified, renamed, copied and type-changed path at its new path, whatever a rename's similarity,
+and reads the configuration and the ignore list as staged, so a commit that weakens the ignore list is judged
+by the list it commits. It skips, and counts, a deletion, a gitlink, a path the ignore list names, and a path
+whose staged content is the base's (a mode-only change). It never writes the index, the working tree or the
+stash, and takes no lock. A scan that cannot answer is a refusal, not a pass: an unmerged path, a missing or
+unparseable staged configuration, a blob git cannot read, an engine that will not load, an unknown argument.
+A commit with nothing to scan says "nothing staged needed scanning" and exits 0.
+
+**What it detects.** One planted case per family, in each mode, in `tests/fixtures/secret-scan-corpus.ts`:
+
+| Family (`PLANTED.family`) | What it is | Reported by |
+|---|---|---|
+| `1password`, `aws`, `basicauth`, `gcp`, `github`, `linear`, `npm`, `openai`, `privatekey`, `sendgrid`, `shopify`, `slack` | the preset's twelve families | `secretlint-rule-<family>` |
+| `no-dotenv` | a file named exactly `.env` | the dotenv rule |
+| `aws-access-key-id` | a lone AWS access key id (`AKIA…`, `ASIA…`), which the preset reports only with its id scan on; the AWS documentation example is ignored | `secretlint-rule-aws` |
+| `aws-account-id` | a 12-digit account id after an `account`-type key; the same option enables it | `secretlint-rule-aws` |
+| `anthropic` | `sk-ant-`, a version tag such as `api03-`, then a body of at least 32 characters | the local rule |
+| `jwt` | three base64url segments whose header and payload both begin `eyJ` | the local rule |
+| `password-assignment` | a name ending in a password word, `=`, then an unquoted value of at least 8 characters on an env-style line | the local rule |
+| `password-assignment-quoted` | a name ending in a password word, `:` or `=`, then a quoted literal of at least 8 characters that holds no `${` | the local rule |
+| `dotenv-variant`, `dotenv-variant-nested` | a file whose base name is `.env.<suffix>`, such as `.env.local` or `config/.env.production`; not `.env.example`, `.env.sample` or `.env.template` | the local rule |
+| `anthropic-in-template` | an Anthropic key inside one of those three templates: a template is not reported by name, and its content still passes through every rule | the local rule |
+
+**What it does not detect**, each recorded as an unsupported shape in the same fixture, with its reason:
+
+- a TOKEN or SECRET code constant: names ending in `TOKEN` or `SECRET` are not matched, because the tree holds
+  constants with such names whose values are not credentials (the runtime redactor covers them);
+- a .envrc file, and a dotenv file with no leading dot (`env.local`);
+- a secret split across two files;
+- a bespoke internal token format.
+
+**The commit hook.** `scripts/hooks/pre-commit` runs the staged scan on `git commit`. It is **local and
+opt-in**: nothing installs it. Activate it once, inside `repo/`, with
+`git config core.hooksPath scripts/hooks`. Its limits are stated here and not hidden:
+
+- `git commit --no-verify` bypasses it, as it bypasses every client-side hook;
+- git does not run it for a conflict-free merge (a merge that commits by itself runs `pre-merge-commit`, not
+  `pre-commit`), so the merged tree is covered only by the tree-mode gate;
+- there is **no server-side check**, so a commit that reached a remote without the hook was not scanned;
+- it needs `node` on `PATH`, and refuses with a named line when it is missing;
+- whether it is active on a given clone is a property of that clone's `core.hooksPath`, and is observed, not assumed.
 
 **What it does not do**, because an honest small control beats an implied large one:
 
 - **It is not a general credential detector.** It matches the patterns its ruleset
   carries. A bespoke internal token format is not among them.
-- **The AWS rule wants a pair.** A lone `AKIA…` access key id was not flagged in
-  testing; a GitHub `ghp_…` token in the same file was. Do not read a green scan as
-  "no AWS key here".
+- **A lone AWS access key id is detected, since the id scan was switched on.** An earlier version of this
+  section said the AWS rule needed a pair and did not flag a lone `AKIA…` id. That was true of the
+  configuration, which never switched on the rule's `enableIDScanRule` option, and not of the rule: with it
+  on, a lone access key id is reported (the documentation example `AKIAIOSFODNN7EXAMPLE` is ignored). The
+  same option also enables the 12-digit account-id check. Do not read a green scan as "no AWS secret access
+  key here" for a key that is not next to an id: the secret half is matched only after its own key name.
 - **Four files are exempt at file scope**, listed with reasons in `.secretlintignore`:
   the private-key **redaction** fixtures. The rule matches the PEM *header*, and a real
   key's header is byte-identical to a fixture's, so there is no value to allow that
@@ -165,13 +214,51 @@ than passed.
 - **Two values are allowed by pattern** rather than by file, which is the granularity to
   prefer: `https://user:pass@example.com` and a sequential-alphabet `ghp_` dummy. A real
   credential does not match either.
-- **It scans the tree, not history.** A credential committed and later removed is still
-  in the git history, and rotating it is the only remedy.
+- **History is not scanned.** A credential committed and later removed is still in the git history, and
+  rotating it is the only remedy. Staged mode looks at the commit being made and nothing before it.
+- **The two modes read a symlink differently.** Tree mode follows the link to its target file on disk; staged
+  mode scans the link's own target text, because that is what the commit stores.
+- **A bare `npx secretlint` run cannot load the configuration.** The local rule is declared by a `./` id, which
+  `scripts/scan-secrets.mjs` resolves against its own root before it creates the engine; the engine's loader
+  accepts a package name or an absolute path and nothing relative. Run `npm run security:secrets`.
+- **Exact-value allowances: none for the new rules.** The local rule's `allows` list and the AWS rule's are
+  empty, and `.secretlintignore` gained no entry. A fixture a new family reports is built at call time instead
+  of being allowed. The two existing allowed values above are unchanged, and
+  `tests/unit/build/secret-scan-corpus.test.ts` pins them, the ignore list and the order of the rules.
 - **It is not a defence against the operator.** Anyone who can run the gate can edit
   `.secretlintignore`.
 
 **If it ever finds a real one**, that is an incident with its own procedure — rotate
 immediately, then audit for similar exposure. It is not a line item to allowlist.
+
+### Runtime redaction: what it is, and what it is not
+
+**What it is.** It is best-effort secret-pattern redaction, in one place (`src/lib/logger.ts`, `SECRET_PATTERNS`),
+applied on the host before content reaches the audit log, the CLI transport log, the runtime log and the
+output channel, the webview's log tail, and the evidence and diagnostics exports. It removes the value of a
+key that names a secret (`password`, `passwd`, `pwd`, `secret`, `token`, `client_secret`; in text, and for a
+string leaf under such a key in a structured record), the password in URL userinfo (`scheme://user:PASSWORD@host`,
+keeping the scheme, the user and the host), the vendor tokens it has a pattern for (including `gho_`, `ghu_`,
+`ghs_`, `ghr_` and `npm_`), and private-key blocks across records.
+
+**What stays.** Ordinary content, file paths, and any secret format it has no pattern for stay in the clear:
+the log is "redacted for secret patterns, otherwise raw". A keyed value shorter than 8 characters in text is not
+removed (so `password: none` stays readable); the shell's `PWD=` and `OLDPWD=` paths are not secrets and stay;
+a count named `TOKEN_COUNT` is removed although it is benign, by a pattern that cannot be narrowed.
+**The process-definition export is written without redaction:** the exported document's body does not pass through
+the redactor; only the export's audit row does. Treat an exported definition as you would the file it was made from.
+
+**The corpus is the statement.** `tests/fixtures/redaction-corpus.ts` lists 70 synthetic cases (the floor is 40), each with its
+category, its expected outcome (redacted, preserved, over-redacted, or unsupported with a reason) and the sinks it
+applies to; five tests drive every applicable case through the real writer of each sink and read what it wrote.
+
+**The bounds.** One `sanitize()` call over a 1,048,576-unit line completes in under 250 ms, and over a 16 MiB
+artifact in under 4,000 ms, with a full-over-half growth ratio of at most 3.0, on hostile input from fixed seeds
+(`tests/perf/sanitize-bounded-work.test.ts`, in `test:perf`). Measured on one machine (Apple M1 Pro, macOS, Node
+24.19.0); Linux and Windows are unobserved.
+
+**Detection and redaction are separate mechanisms.** The secret scan above decides what may be committed; the
+redactor decides what is written at run time. Neither one's result is evidence about the other.
 
 ### What no longer runs, and what it cost
 

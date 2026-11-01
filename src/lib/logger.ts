@@ -141,6 +141,99 @@ function lastMarkerEnd(pattern: RegExp, line: string): number {
 export const REDACTION_SENTINEL = '[REDACTED]';
 
 /**
+ * FR-R4-F10 (RD1; research R9, R10) -- the words that make a key name a secret key, in one place.
+ *
+ * Two things need to know which names denote a secret, and they must agree. The string pattern
+ * below removes the VALUE after such a name in text (`password=...`, `"client_secret": "..."`), and
+ * `isSecretKeyName` answers the same question for the structured walkers, which see a record's keys
+ * and its leaves separately and so cannot use a text pattern. Writing the words twice is how the two
+ * drift until one quietly stops covering a name, so both derive from this list, and
+ * `tests/lint/redaction-key-names-single-source.test.ts` fails a second copy anywhere else.
+ *
+ * `secret` covers `client_secret`. The match is on the END of a name, so `input_tokens`,
+ * `tokenizer` and `secretary` are not secret keys.
+ */
+export const SECRET_KEY_NAME_WORDS: ReadonlyArray<string> = Object.freeze([
+  'password',
+  'passwd',
+  'pwd',
+  'secret',
+  'token'
+]);
+
+/**
+ * Words that count only as the END of a longer name. `pwd` is the shell's working directory as well as
+ * an abbreviation of a password: `PWD=/tmp/work` and `OLDPWD=/tmp/prev` are paths, which are not
+ * secrets (FR-023), while `db_pwd` is one. The string pattern cannot tell `dbPwd` from `OLDPWD`
+ * without case, so it asks for a separator before the word, and the structured predicate asks for a
+ * name of more than one segment.
+ */
+const SUFFIX_ONLY_KEY_WORDS: ReadonlyArray<string> = Object.freeze(['pwd']);
+
+/** The two-segment name that is a secret key although neither word alone would be checked as one. */
+const CLIENT_SECRET_KEY = 'client_secret';
+
+/**
+ * True when `key` names a secret: split on camelCase and on `-`, `.`, space and `_`, lowercased, its
+ * last segment (or its last two joined by `_`) is one of `SECRET_KEY_NAME_WORDS` or `client_secret`.
+ * `pwd` counts only when it is not the whole name. The structured walkers use it to remove a string
+ * leaf whose own key names a secret, which the string patterns cannot see.
+ *
+ * Linear in the key's length: a key can come from model output (a tool call's argument names, up to the
+ * phase log's 64 Ki field cap). The acronym split looks one character ahead instead of matching the whole
+ * uppercase run, which backtracked over the run from every start and took 9 s for an 80 Ki-unit key.
+ *
+ * @param key a record key
+ */
+export function isSecretKeyName(key: string): boolean {
+  const segments = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z])(?=[A-Z][a-z])/g, '$1_')
+    .toLowerCase()
+    .split(/[-._\s]+/)
+    .filter((segment) => segment.length > 0);
+  const last = segments.at(-1);
+  if (last === undefined) return false;
+  if (SECRET_KEY_NAME_WORDS.includes(last)) {
+    return !(SUFFIX_ONLY_KEY_WORDS.includes(last) && segments.length === 1);
+  }
+  return segments.slice(-2).join('_') === CLIENT_SECRET_KEY;
+}
+
+/**
+ * Value-only pattern for a keyed secret in text: the match is the VALUE, so replacing it with the
+ * sentinel leaves the key readable (`MY_DB_PASSWORD=[REDACTED]`). The key word, an optional quote, up to
+ * 8 spaces, `:` or `=`, up to 8 spaces and an optional quote sit in a bounded lookbehind. A backslash
+ * before a quote is allowed, because a JSON document inside a JSON string spells its quotes `\"`.
+ *
+ * The value is at least 8 characters that are not whitespace, a quote, a backtick, `,`, `;` or `&`,
+ * so `password: none` stays readable; a shorter keyed value in text is not removed (FR-022). The word
+ * must abut its separator, so `tokens=` never matches `token`. No duplicate named groups: the module
+ * must parse on Node 22 (research R9).
+ *
+ * The value never ends in a backslash that escapes the quote after it: in a JSON string holding JSON,
+ * the closing quote is `\"`, and removing its backslash with the value would end the outer string
+ * early, so a transport or export line would no longer parse. The greedy loop gives back that one
+ * character, which leaves every backslash pair before the quote balanced. Any other trailing
+ * backslash is part of the value and is removed with it, so `password=Pa55wd!\` is not left readable.
+ */
+const KEYED_SECRET_VALUE_RE = new RegExp(
+  `(?<=(?:${SECRET_KEY_NAME_WORDS.filter((word) => !SUFFIX_ONLY_KEY_WORDS.includes(word)).join('|')}` +
+    `${SUFFIX_ONLY_KEY_WORDS.map((word) => `|(?<=[_.-])${word}`).join('')})` +
+    `\\\\?["']?[ \\t]{0,8}[:=][ \\t]{0,8}\\\\?["']?)[^\\s"'\`,;&]{8,}(?!(?<=\\\\)["'])`,
+  'gi'
+);
+
+/**
+ * Value-only pattern for the password in URL userinfo (`scheme://user:PASSWORD@host`): the scheme and
+ * username sit in a bounded lookbehind, so the scheme, user and host stay readable. The value ends at
+ * the LAST `@` of the authority, which is the delimiter a URL parser uses, so an `@` inside a password
+ * is removed with it. Userinfo with no colon (`ssh://git@host`) cannot match (research R11).
+ */
+const URL_USERINFO_PASSWORD_RE =
+  /(?<=[a-z][a-z0-9+.-]{0,31}:\/\/[^:/?#@\s"']{0,128}:)[^/?#\s"'<>]{1,256}(?=@)/gi;
+
+/**
  * What the markers on one line do to the block state: a line can open a block,
  * close one, or say nothing about either.
  */
@@ -153,9 +246,12 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   // (`sk-ant-…`) and OpenAI (`sk-proj-…`, `sk-svcacct-…`, legacy
   // `sk-…`) families.
   /\bsk-(ant-|proj-|svcacct-)?[A-Za-z0-9_-]{20,}/g,
-  // GitHub personal access tokens (classic + fine-grained)
-  /\bghp_[A-Za-z0-9]{30,}\b/g,
+  // GitHub tokens: personal access (`ghp_`), OAuth (`gho_`), user-to-server (`ghu_`),
+  // server-to-server (`ghs_`) and refresh (`ghr_`), and fine-grained personal access tokens
+  /\bgh[pousr]_[A-Za-z0-9]{30,}\b/g,
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
+  // npm automation and publish tokens (`npm_` and 36 alphanumerics)
+  /\bnpm_[A-Za-z0-9]{36}\b/g,
   // Slack bot/user/app/refresh/legacy tokens
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
   // AWS access key IDs (long-lived IAM user credentials)
@@ -175,8 +271,17 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\bya29\.[A-Za-z0-9_-]{20,}/g,
   // Stripe live/test secret + restricted keys.
   /\b[rs]k_(live|test)_[A-Za-z0-9]{20,}\b/g,
-  // GCP service account snippet
-  /"private_key"\s*:\s*"-----BEGIN [^"]+-----[\s\S]+?-----END [^"]+-----\\n?"/g,
+  // GCP service account snippet.
+  //
+  // FR-R4-F10 (RD5; research R13): linear in the input. The old body, `[\s\S]+?`, could cross any number
+  // of quotes, so an opening with no close made every later opening scan to the end of the input
+  // (1.85 s at 1 MiB, quadratic). The body is now one JSON string: any character but a quote or a
+  // backslash, or an escape. A raw quote cannot occur inside a JSON string, so only a cross-field match
+  // the old expression over-redacted is given up, and the private-key pass above still removes any
+  // armored block inside it. The armor labels are bounded as well, and so is the body (64 Ki units, many
+  // times the size of any key): a lazy loop keeps one backtrack frame per character, and an unbounded one
+  // threw "Maximum call stack size exceeded" on a 16 MiB body.
+  /"private_key"\s*:\s*"-----BEGIN [A-Za-z0-9 ]{1,40}-----(?:[^"\\]|\\.){0,65536}?-----END [A-Za-z0-9 ]{1,40}-----(?:\\n)?"/g,
   // Standalone PEM private-key blocks — SSH, PGP and the rest, leaking into
   // stdout without the JSON envelope above.
   //
@@ -209,10 +314,30 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   // third-party SaaS shape that the api_key pattern misses because of
   // the `x-` prefix.
   /x[_-]api[_-]?key["'\s:=]+[A-Za-z0-9_-]{16,}/gi,
-  // JSON Web Tokens
-  /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+  // JSON Web Tokens.
+  //
+  // FR-R4-F10 (RD5; research R13): linear in the input, and safe on a 16 MiB run. The old expression
+  // started at EVERY `eyJ`, and from each it scanned to the end of its run of token characters looking
+  // for a `.`, so a line of repeated `eyJ` cost time quadratic in its length (10.8 s for 128 Ki).
+  //
+  // A match now starts only at the beginning of a run (the lookbehind). One lookahead asks whether the
+  // run contains an `eyJ` with at least 8 token characters after it, which is what the old header part
+  // asked; the header is then the whole run, followed by the same two segments. If the first `eyJ` of a
+  // run cannot start a match, no later one in the same run can, since they share the run's end and the
+  // same later segments, so one attempt per run decides it. The only change in output is a superset:
+  // characters glued before the token (`abc` in `abceyJ...`) are removed with it.
+  //
+  // Every loop here is a greedy repeat of a single character class, which the regular-expression engine
+  // runs without a backtrack frame per character. A lazy prefix (`[...]*?eyJ`) was tried first and
+  // linear at 1 MiB, but it threw "Maximum call stack size exceeded" on one 16 MiB run.
+  /(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*eyJ[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
   // Generic KEY=VALUE secrets in env-style strings
-  /\b(SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|ACCESS_KEY)[A-Z_]*\s*=\s*[A-Za-z0-9_\-/+=]{8,}/g
+  /\b(SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|ACCESS_KEY)[A-Z_]*\s*=\s*[A-Za-z0-9_\-/+=]{8,}/g,
+  // FR-R4-F10 -- value-only matches that keep the key, scheme, user and host readable. Both are
+  // case-insensitive, so they join the second union, which runs after the env-style rule above: that
+  // rule consumes `PASSWORD=...` whole, and these then see no separator before the sentinel.
+  KEYED_SECRET_VALUE_RE,
+  URL_USERINFO_PASSWORD_RE
 ];
 
 /**
@@ -461,7 +586,14 @@ export class SanitizedLogger {
       const out: Record<string, unknown> = {};
       const keys = Object.keys(input as Record<string, unknown>);
       for (const key of keys) {
-        const cleaned = this.sanitizeValue((input as Record<string, unknown>)[key], seen);
+        const child = (input as Record<string, unknown>)[key];
+        // FR-R4-F10 (RD4; research R10) -- the string patterns see a leaf and never its key, so a
+        // non-empty string under a key that names a secret is removed here. Every other leaf takes
+        // the path it always took: numbers, booleans and null under the same key are kept.
+        const cleaned =
+          typeof child === 'string' && child.length > 0 && isSecretKeyName(key)
+            ? REDACTION_SENTINEL
+            : this.sanitizeValue(child, seen);
         if (cleaned === undefined) continue;
         out[key === PROTOTYPE_SETTER_KEY ? this.protoRenameTarget(keys) : key] = cleaned;
       }
