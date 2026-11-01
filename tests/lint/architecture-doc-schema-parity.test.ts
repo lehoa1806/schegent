@@ -46,8 +46,13 @@ const ARCH_LINES = ARCH.split('\n');
  * Extracted by FR-R3-102 (FR-034) so the live assertion and its non-vacuity control
  * run **one** body. Two copies of a detector is how a gate comes to pass while its
  * control passes for a different reason.
+ *
+ * FR-R4-F11 (FR-028) — `label` names the page the lines came from. The detector used to hard-code
+ * `ARCHITECTURE.md` in its message because it read only that page; it now reads every Markdown page
+ * (the live case below), and a message that named the wrong file would send the author to the wrong
+ * place. The body is unchanged.
  */
-function disagreements(lines: readonly string[]): string[] {
+function disagreements(label: string, lines: readonly string[]): string[] {
   const wrong: string[] = [];
   for (const [name, value] of VERSION_CONSTANTS) {
     const assignment = new RegExp(`${name}\\s*=\\s*(\\d+)`, 'g');
@@ -62,7 +67,7 @@ function disagreements(lines: readonly string[]): string[] {
       for (const found of stated) {
         if (found === value) continue;
         wrong.push(
-          `${ARCH_REL}:${index + 1} states \`${found}\` on a line naming ${name}, ` +
+          `${label}:${index + 1} states \`${found}\` on a line naming ${name}, ` +
             `which is \`${value}\``
         );
       }
@@ -167,6 +172,27 @@ function claimNear(anchor: string, pattern: RegExp, window = 240): RegExpMatchAr
   return FLAT.slice(at, at + window).match(pattern);
 }
 
+/** Every Markdown page under `docs/` and every root page, repo-relative and POSIX. */
+function pagesToCheck(): string[] {
+  const found: string[] = [];
+  const walk = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.name === 'node_modules') continue;
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (entry.name.endsWith('.md')) found.push(path.relative(REPO_ROOT, full).split(path.sep).join('/'));
+    }
+  };
+  walk(path.join(REPO_ROOT, 'docs'));
+  for (const entry of fs.readdirSync(REPO_ROOT, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.md')) found.push(entry.name);
+  }
+  return found.sort();
+}
+
 describe('FR-R3-013 — ARCHITECTURE.md schema and defaults parity', () => {
   it('the Schema Versions table states each constant’s current value', () => {
     for (const [name, value] of VERSION_CONSTANTS) {
@@ -213,7 +239,7 @@ describe('FR-R3-013 — ARCHITECTURE.md schema and defaults parity', () => {
     // The self-contradiction case: `STATE_SCHEMA_VERSION = 11` in the State
     // subsystem prose while the table said `10`. Neither of the two assertions
     // above sees it, because each looks at one place.
-    const wrong = disagreements(ARCH_LINES);
+    const wrong = disagreements(ARCH_REL, ARCH_LINES);
     expect(
       wrong,
       `${ARCH_REL} contradicts a schema constant:\n${wrong.join('\n')}`
@@ -249,14 +275,40 @@ describe('FR-R3-013 — ARCHITECTURE.md schema and defaults parity', () => {
       ARCH_LINES[target]
     );
 
-    const found = disagreements(mutated);
+    const found = disagreements(ARCH_REL, mutated);
     expect(
       found.length,
       'the detector did not notice a schema version it was pointed straight at'
     ).toBeGreaterThan(0);
     expect(found.join('\n')).toContain('STATE_SCHEMA_VERSION');
     // ...and the unmutated document is clean, so the detector is not matching everything.
-    expect(disagreements(ARCH_LINES)).toEqual([]);
+    expect(disagreements(ARCH_REL, ARCH_LINES)).toEqual([]);
+  });
+
+  it('no Markdown page states a schema version that disagrees with its constant (FR-R4-F11)', () => {
+    // The check above reads one page. The same drift lives in the pages that restate the
+    // version in prose ("schema 13", "currently version 13"), so the one detector is run over
+    // every page under docs/ and every root page: a page that names a version constant and
+    // states a different backticked integer on that line is reported with its own path.
+    const wrong = pagesToCheck().flatMap((relPath) =>
+      disagreements(relPath, fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf8').split('\n'))
+    );
+    expect(
+      wrong,
+      `a page contradicts a schema constant; state the version without a literal, or correct it:\n${wrong.join('\n')}`
+    ).toEqual([]);
+  });
+
+  it('NON-VACUITY: a drifted schema version on any other page is detected and labelled', () => {
+    // The same function the live case calls, over a synthetic page: one wrong literal on a line
+    // that names the constant is reported once, under the page's own path and line.
+    const drifted = [`The current version is \`STATE_SCHEMA_VERSION\` \`${STATE_SCHEMA_VERSION + 1}\`.`];
+    const found = disagreements('docs/x.md', drifted);
+    expect(found).toHaveLength(1);
+    expect(found.join('\n')).toContain('docs/x.md:1');
+    // A page that states the version without a literal, and one that states the true value, are clean.
+    expect(disagreements('docs/x.md', ['The current version is `STATE_SCHEMA_VERSION`.'])).toEqual([]);
+    expect(disagreements('docs/x.md', [`\`STATE_SCHEMA_VERSION\` \`${STATE_SCHEMA_VERSION}\``])).toEqual([]);
   });
 
   /**

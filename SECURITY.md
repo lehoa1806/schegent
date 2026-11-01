@@ -51,10 +51,14 @@ Claude is the default backend. Claude and Agy are launched with their CLI approv
 <!-- Source: src/config/phase-runner-policy.ts -->
 <!-- Source: src/activation/git-approval.ts -->
 
-The detailed operator threat catalog covers T1–T27 in [the threat model](docs/security/threat-model.md). It records mitigations and residual risk; it is not a claim that local autonomous execution is safe against every input.
+The operator threat catalog in [the threat model](docs/security/threat-model.md#threat-catalog) is the complete set, lettered entries such as T5a and T5b included. It records mitigations and residual risk; it is not a claim that local autonomous execution is safe against every input.
+
+The audit log is hash-chained, with a head checkpoint. The chain detects edits, reorders and unrecorded removals in the retained chain. It does not prevent the same OS user from rewriting the log, recomputing the chain and replacing the checkpoint: [the audit-log entry of the threat model](docs/security/threat-model.md#t3--audit-log-tampering-or-non-append-writes) states what is detected and what is not.
 
 <!-- Source: tests/lint/threat-id-anchor-parity.test.ts -->
 <!-- Source: src/runner/prompt-builder.ts -->
+<!-- Source: src/audit/audit-chain.ts -->
+<!-- Source: src/audit/audit-checkpoint.ts -->
 
 ## Automated security checks
 

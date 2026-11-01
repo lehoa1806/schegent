@@ -84,7 +84,9 @@ const SEEDS: readonly MechanismSeed[] = [
       /\bnot\s+a\s+tamper-evident\s+(?:guarantee|ledger)\b/i,
       /\bno\s+chain,?\s+signature\s+or\s+post-write\s+detection\b/i
     ],
-    scope: ['docs', 'ARCHITECTURE.md', 'SECURITY.md', 'README.md', 'RELEASE.md'],
+    // FR-R4-F11 (FR-013): `.github/SECURITY.md` is the copy GitHub's Security tab may render, and
+    // it denied the chain for as long as the gate read every other policy page but this one.
+    scope: ['docs', 'ARCHITECTURE.md', 'SECURITY.md', '.github/SECURITY.md', 'README.md', 'RELEASE.md'],
     why:
       'The pair that produced the finding. Five shipped documents denied it, one of them ' +
       'twice-contradicting itself, while the mechanism was wired and its verifier shipped.'

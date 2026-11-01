@@ -139,7 +139,9 @@ Every page in this tree, so that none is reachable only by knowing it exists.
 FR-R3-063 added this: the 2026-08-23 review found 21 of 53 pages with no inbound
 link — in a tree it had itself inventoried — and a page nobody can arrive at also
 drifts unnoticed, because the readers who would catch an error never get there.
-`tests/lint/doc-orphan-pages.test.ts` now fails on an unindexed page.
+The section lists every page under `docs/`, except a page that the exclusion list in
+`tests/lint/doc-orphan-pages.test.ts` names with its reason, and that gate fails on a page that is
+neither listed nor excluded.
 
 ### Courses
 
@@ -154,12 +156,19 @@ drifts unnoticed, because the readers who would catch an error never get there.
 ### How-to
 
 - [Feature guides](how-to/feature-guides.md)
+- [Developer workflows](how-to/developer-workflows.md) — the build, test and verify commands, run from the repository root
+- [Product workflows](how-to/product-workflows.md) — operator workflows that use only surfaces the extension host registers
 
 ### Concepts and explanation
 
 - [Local-first, not offline](concepts/local-first-not-offline.md)
 - [English-only is a product decision](concepts/english-only-not-localizable.md)
 - [Domain model](explanation/domain-model.md)
+- [Architecture](explanation/architecture.md) — the extension host, the webviews, Queues and Runs, and how they fit together
+- [Core concepts](explanation/core-concepts.md) — the domain model as contracts, and where each part is persisted
+- [Sessions, logs, and local evidence](concepts/sessions-and-logs.md) — the several things "session" means, and the privacy and durability of each local file
+- [The agent runs unprompted](concepts/unprompted-agent-not-contained.md) — the accepted product-boundary decision of 2026-08-22
+- [Workspace ownership and execution leases](concepts/workspace-lock.md) — the two lease families, and the question each one answers
 
 ### Operations
 
@@ -203,6 +212,11 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Trust scopes](operations/trust-scopes.md)
 - [VSIX allowlist derivation](operations/vsix-allowlist-derivation.md)
 - [Workspace Trust](operations/workspace-trust.md) — what stays available, what refuses, and what granting trust runs, in a window VS Code has not trusted
+- [Running Schegent on a repository you do not trust](operations/untrusted-repositories.md) — owns the rule; the threat model and the quickstart link here
+- [Counts the round-3 documents assert](operations/asserted-counts-sweep.md) — what was examined, and why the mechanism is the size it is (FR-R3-067)
+- [Duplicate-authority detection: the threshold measurements](operations/duplicate-authority-threshold-measurement.md) — the measurements behind the threshold (FR-R3-066)
+- [Lazy-route wait budget](operations/lazy-route-wait-budget.md) — the sweep, and what was observed (FR-R3-068)
+- [Visual gate preflight observations](operations/visual-gate-preflight-observations.md) — the recorded observations behind the preflight (FR-R3-065)
 
 ### Architecture and decisions
 
@@ -216,6 +230,11 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Remote multi-user expansion gate](architecture/remote-multi-user-expansion-gate.md)
 - [Webview dead surface removal](architecture/webview-dead-surface-removal.md) — **decided 2026-08-29: deleted** (ten Svelte components, 1,685 lines, each measured unreachable from both bundle entry points; the gate that allowlisted them is retired and `tests/lint/svelte-surface-reachability.test.ts` now needs an owner and an expiry date for any new exemption)
 - [Workspace ownership fencing](architecture/workspace-ownership-fencing.md)
+- [The composition root, decided](architecture/composition-root-extraction.md) — **decided 2026-08-27** (FR-R3-119)
+- [Distribution posture](architecture/distribution-posture.md) — **decided 2026-08-27** (FR-R3-120)
+- [Durability of the evidence writes](architecture/durability-decision.md) — **decided 2026-08-26, extended 2026-10-31** (FR-R3-111, FR-R4-F07)
+- [Declined: an encrypted evidence store](architecture/evidence-encryption-declination.md) — **declined 2026-08-27, with a reversal trigger** (FR-R3-127)
+- [The phase verdict default](architecture/phase-verdict-default.md) — **decided 2026-08-27** (FR-R3-117)
 
 ### Development
 
@@ -241,6 +260,9 @@ drifts unnoticed, because the readers who would catch an error never get there.
   every `src/` file of 1,000 lines or more carries a ceiling or a waiver in the size gate's table. The
   measured distribution, each rejected threshold with the count it would have captured, and what
   would move it (FR-R3-183)
+- [The devcontainer question](development/devcontainer-declination.md) — **declined 2026-08-28** (FR-R3-132)
+- [Lint gate census](development/lint-gate-census.md) — one line per gate, generated, with the current dated count
+- [Verification tiers](development/verification-tiers.md) — three tiers, cheapest first, and what each one does not establish (FR-R3-132)
 
 ### Release
 
@@ -261,6 +283,32 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Qualification matrix](release/qualification-matrix.md) — Node 22 and 24 on macOS, Linux and Windows:
   each cell is either observed, with the five facts of an observation, or `unobserved` with its
   prerequisite. Never a bare "passed" (FR-R4-F09).
+- [GitHub Actions: terminal record](release/actions-terminal-record.md) — retired by operator decision on 2026-08-26 (FR-R3-099)
+- [Backend qualification log](release/backend-qualification-log.md) — whether the canary has ever produced a result, and what it said
+- [Withdrawn CI-dependent controls](release/withdrawn-ci-controls.md) — what each control was, and what replaced it (FR-R3-099)
+
+### Reference
+
+- [Reference documents](reference/README.md) — what is authoritative for what
+- [API and command reference](reference/api-and-cli.md) — every command surface the extension ships
+- [Audit events](reference/audit-events.md) — the structured audit record and its event types
+- [Command Palette reference](reference/commands.md) — the manifest-parity index of every contributed command
+- [File layout](reference/file-layout.md) — where durable state lives
+- [Glossary](reference/glossary.md) — the vocabularies for authored, queued and running work
+- [Settings reference](reference/settings.md) — every `schegent.*` setting
+- [System configuration](reference/system-config.md) — how configuration reaches the product
+
+### Security
+
+- [Operator threat model](security/threat-model.md) — the threat catalog, with each mitigation and its residual risk
+- [Security white paper](security/whitepaper.md) — how the extension coordinates local CLI processes, and the limits of what it does about them
+- [CSP supply-chain policy](security/csp-supply-chain-record.md) — what it decided, and what enforces it
+- [Prototype-rebuild census](security/prototype-rebuild-census.md) — every place that rebuilds an object by copying enumerated keys
+
+### Features
+
+- [Custom Phases and Pipelines](features/custom-phases.md) — the empty catalog, and how definitions are imported or authored
+- [Process YAML exchange format](features/phase-yaml-exchange.md) — portable YAML for Phase, Pipeline, Workflow and ModelCatalog
 
 ### Other
 
@@ -273,15 +321,20 @@ steps:
 
 - Schegent ships an empty active catalog. Operators need a reviewed process
   YAML package or must author and publish definitions before launching work.
-- Tagged GitHub Releases are the durable VSIX route; a source build is the
-  fallback when a suitable release artifact is unavailable.
+- The engineering-preview VSIX route is a local `npm run build`, then
+  `npm run package`, from a checkout installed by the canonical sequence in
+  [Prepare a checkout](../CONTRIBUTING.md#prepare-a-checkout). The package step
+  refuses when the module graphs the build writes are absent. No tag or GitHub
+  Release publishes a VSIX; [RELEASE.md](../RELEASE.md) says what a release is.
 - The bundled Spec-kit example is a real, Git-mutating development workflow,
   not a harmless first-run sample. Use it only in a disposable checkout after
   review.
-- Sensitive contributor changes are governed by the workspace-level
-  `../AGENTS.md`. A standalone execution-repository clone may not contain that
-  parent file, so contributors must obtain it instead of guessing at its
-  invariants.
+- Sensitive contributor changes are governed by the hard rules in
+  `docs/hard-rules.md` in the planning envelope, one directory above this
+  checkout; read the rows of its index that your change touches. `../AGENTS.md`
+  orients you and points at it. A standalone execution-repository clone does
+  not contain either parent file, so contributors must obtain the planning
+  envelope instead of guessing at the rules.
 
 <!-- Source: ../src/config/pipeline-config.ts -->
 <!-- Source: ../RELEASE.md -->
