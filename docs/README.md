@@ -255,6 +255,12 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Held major dependency upgrades](release/held-major-upgrades.md) — the deliberate holds, why each is
   held, and when it was last re-examined. A held upgrade with no review date is indistinguishable from a
   forgotten one (FR-R3-090).
+- [Advisory dispositions](release/advisory-dispositions.md) — the tracked list of recorded decisions about
+  dependency advisories: what each field means, the `rationale` release preparation requires, and what
+  a disposition does not do. `accepted` is a label, not a waiver (FR-R4-F09).
+- [Qualification matrix](release/qualification-matrix.md) — Node 22 and 24 on macOS, Linux and Windows:
+  each cell is either observed, with the five facts of an observation, or `unobserved` with its
+  prerequisite. Never a bare "passed" (FR-R4-F09).
 
 ### Other
 

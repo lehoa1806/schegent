@@ -26,6 +26,7 @@ import {
 } from '../../../../src/services/diagnostics-bundle/bundle-plan';
 import { bundleFileName, serializeBundle } from '../../../../src/services/diagnostics-bundle/bundle-write';
 import { buildBundleFixture, MARKERS, SECRETS, SELECTED_RUN, SIBLING_RUN, type BundleFixture } from './bundle-fixture';
+import { UNKNOWN_BUILD_IDENTITY } from '../../../../src/lib/build-identity';
 
 let fixture: BundleFixture;
 
@@ -233,5 +234,67 @@ describe('the helpers', () => {
     expect(cut.truncated).toBe(true);
     expect(cut.text.endsWith('cccc')).toBe(true);
     expect(cut.text.startsWith('aaaa')).toBe(false);
+  });
+});
+
+describe('FR-R4-F09 — the host item shows which build is running (FR-032, T12, BI4)', () => {
+  const hostItem = (items: readonly { item: string; content: string }[]) => {
+    const found = items.find((entry) => entry.item === 'host');
+    if (!found) throw new Error('the bundle has no host item');
+    return JSON.parse(found.content) as { hostVersion: string; build: unknown; settings: unknown };
+  };
+
+  it('carries a build object, which is the unknown identity under a runner that stamped nothing', async () => {
+    const { items } = await build(false);
+    const host = hostItem(items);
+    expect(host.build).toEqual(UNKNOWN_BUILD_IDENTITY);
+    expect(host.hostVersion).toBe('0.2.0');
+  });
+
+  it('lists hostVersion, then build, then settings', async () => {
+    const { items } = await build(false);
+    expect(Object.keys(hostItem(items))).toEqual(['hostVersion', 'build', 'settings']);
+  });
+
+  it('shows a valid injected identity verbatim', async () => {
+    const injected = { commit: '0123456789abcdef0123456789abcdef01234567', dirty: false, mode: 'production' } as const;
+    const other = await buildBundleFixture({ hostBuild: injected });
+    try {
+      const probes = await probeBundle(other.sources, SELECTED_RUN);
+      const items = await collectBundle(other.sources, SELECTED_RUN, planBundle(probes, false));
+      expect(hostItem(items).build).toEqual(injected);
+    } finally {
+      await other.cleanup();
+    }
+  });
+
+  it('keeps the settings redacted beside it: the identity does not open the item to a secret', async () => {
+    const { items } = await build(false);
+    const text = items.find((entry) => entry.item === 'host')?.content ?? '';
+    expect(text).not.toContain(SECRETS.anthropic);
+    expect(text).toContain('[path]');
+  });
+
+  it('counts the build in the plan\'s size estimate for the item', async () => {
+    const probes = await probeBundle(fixture.sources, SELECTED_RUN);
+    const host = probes.find((probe) => probe.item === 'host');
+    const withoutBuild = Buffer.byteLength(
+      JSON.stringify({ hostVersion: fixture.sources.hostVersion, settings: fixture.sources.hostSettings() }),
+      'utf8'
+    );
+    expect(host?.bytes).toBeGreaterThan(withoutBuild);
+  });
+
+  it('leaves the bundle version at 1 and adds nothing to the top-level manifest', async () => {
+    const { serialized } = await build(false);
+    expect(serialized.bundle.version).toBe(1);
+    expect(Object.keys(serialized.bundle.manifest)).toEqual([
+      'runId',
+      'createdAt',
+      'hostVersion',
+      'rawConversationIncluded',
+      'included',
+      'omitted'
+    ]);
   });
 });

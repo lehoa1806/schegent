@@ -120,6 +120,21 @@ function first<T>(items: readonly T[], what: string): T {
  * back but what was *not* done — no spawn on a dirty tree, no write on a refusal. "Wrote
  * nothing" is half of what the refusal paths guarantee and it is unobservable without this.
  */
+/**
+ * FR-R4-F09 (GR2, GR3) -- what `observe` returns unless a case supplies its own: the version-3
+ * fields, in the order the record carries them. The values are arbitrary and distinct, so a case
+ * that asserts a field arrived is asserting THIS object arrived and not a default.
+ */
+const OBSERVATION = {
+  nodeDeclared: '24.19.0',
+  nodeMatchesDeclared: false,
+  envelope: { present: true },
+  trees: [
+    { tree: 'root', lockfile: 'package-lock.json', lockfileSha256: 'a'.repeat(64), install: 'matches' },
+    { tree: 'webview-ui', lockfile: 'webview-ui/package-lock.json', lockfileSha256: 'b'.repeat(64), install: 'absent' }
+  ]
+};
+
 function harness(
   over: {
     status?: number | null;
@@ -127,8 +142,10 @@ function harness(
     error?: Error;
     platform?: string;
     treeStates?: Array<{ head: string; treeClean: boolean }>;
+    observation?: Record<string, unknown>;
   } = {}
 ) {
+  const calls: string[] = [];
   const spawns: SpawnCall[] = [];
   const writes: Array<Record<string, unknown>> = [];
   const logs: string[] = [];
@@ -142,6 +159,7 @@ function harness(
 
   const result = recorder.recordGateRun({
     spawn: (executable: string, args: readonly string[], options: Record<string, unknown>) => {
+      calls.push('spawn');
       spawns.push({ executable, args, options });
       if (over.error) return { status: null, signal: null, error: over.error };
       // `??` would be wrong here: a deliberate `status: null` is the signal-termination case,
@@ -160,13 +178,18 @@ function harness(
         'the harness was given no tree states'
       );
     },
+    observe: () => {
+      calls.push('observe');
+      // The harness hands the recorder whatever a case supplies; the recorder only spreads it.
+      return (over.observation ?? OBSERVATION) as never;
+    },
     writeAttestation: (attestation: Record<string, unknown>) => void writes.push(attestation),
     log: (message: string) => void logs.push(message),
     error: (message: string) => void errors.push(message),
     now: () => `2026-08-28T00:0${clock++}:00.000Z`
   });
 
-  return { result, spawns, writes, logs, errors };
+  return { result, spawns, writes, logs, errors, calls };
 }
 
 describe('FR-R3-135 — the recorder spawns the specification, not a literal', () => {
@@ -427,5 +450,55 @@ describe('FR-R3-135 — the attested command reaches all five release-only stage
       readFileSync(resolve(scriptsDir(), 'gate-recorder.mjs'), 'utf8')
     );
     expect(recorderSource).toContain('GATE_COMMAND_SPEC.args');
+  });
+});
+
+describe('FR-R4-F09 — the record carries what the gate observed (version 3; T9, GR3)', () => {
+  it('writes the observation after the Node version, before the timestamps, field for field', () => {
+    const { writes } = harness();
+    const record = first(writes, 'attestation');
+    const keys = Object.keys(record);
+    const from = keys.indexOf('nodeVersion');
+    expect(from).toBeGreaterThanOrEqual(0);
+    expect(keys.slice(from, from + 6)).toEqual([
+      'nodeVersion',
+      'nodeDeclared',
+      'nodeMatchesDeclared',
+      'envelope',
+      'trees',
+      'startedAt'
+    ]);
+    expect(keys.at(-1)).toBe('recordedAt');
+    expect(record.nodeDeclared).toBe(OBSERVATION.nodeDeclared);
+    expect(record.nodeMatchesDeclared).toBe(OBSERVATION.nodeMatchesDeclared);
+    expect(record.envelope).toEqual(OBSERVATION.envelope);
+    expect(record.trees).toEqual(OBSERVATION.trees);
+  });
+
+  it('writes version 3', () => {
+    expect(first(harness().writes, 'attestation').version).toBe(3);
+  });
+
+  it('observes once, before the gate is spawned', () => {
+    expect(harness().calls).toEqual(['observe', 'spawn']);
+  });
+
+  it('observes once even when the gate fails', () => {
+    expect(harness({ status: 1 }).calls).toEqual(['observe', 'spawn']);
+  });
+
+  it('does not observe after a dirty-tree refusal, which spends nothing', () => {
+    const { calls, writes } = harness({ treeStates: [{ head: HEAD, treeClean: false }] });
+    expect(calls).toEqual([]);
+    expect(writes).toHaveLength(0);
+  });
+
+  it('leaves the argv, the executable and the exit codes as they were', () => {
+    const { spawns, result } = harness();
+    expect(first(spawns, 'spawn').args).toEqual(['run', 'gate']);
+    expect(first(spawns, 'spawn').executable).toBe('npm');
+    expect(result.exitCode).toBe(0);
+    expect(harness({ status: 1 }).result.exitCode).toBe(1);
+    expect(harness({ error: new Error('ENOENT npm') }).result.exitCode).toBe(2);
   });
 });

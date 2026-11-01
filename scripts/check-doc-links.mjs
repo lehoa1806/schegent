@@ -65,8 +65,14 @@ const SKIP_DIRS = new Set([
 // claim about the files that was not true.
 const WS_SKIP_TOP = new Set(['repo', 'specs', '.specify', '.claude']);
 
-/** True when `wsRoot` (`..` unless a caller says otherwise) holds the planning envelope rather than an unrelated parent. */
-function envelopePresent(wsRoot = WS_ROOT) {
+/**
+ * True when `wsRoot` (`..` unless a caller says otherwise) holds the planning envelope rather than an unrelated parent.
+ *
+ * Exported by FR-R4-F09 (research R15), unchanged, so the gate recorder can write whether the
+ * envelope was present into the record it makes. Importing this module runs nothing: its checks
+ * start only when it is started.
+ */
+export function envelopePresent(wsRoot = WS_ROOT) {
   return (
     existsSync(join(wsRoot, 'ARCHITECTURE.md')) &&
     existsSync(join(wsRoot, 'CLAUDE.md')) &&
