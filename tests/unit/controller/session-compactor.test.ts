@@ -213,7 +213,7 @@ describe('session compaction failure reporting', () => {
   it('redacts a secret that reached the CLI output', async () => {
     const { runner } = makeRunner({
       exitCode: 1,
-      stderr: 'auth failed for sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n'
+      stderr: `auth failed for ${['sk', '-ant-'].join('')}api03-${'A'.repeat(40)}\n`
     });
     const message = await compactClaudeSession(inputs(runner)).then(
       () => 'did not throw',

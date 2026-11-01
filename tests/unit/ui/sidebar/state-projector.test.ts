@@ -353,7 +353,9 @@ describe('StateProjector.getCurrentSnapshot', () => {
         phaseId: 'speckit-plan',
         entryCount: 2,
         byteSize: 48,
-        secret: 'should-not-project'
+        // Not named `secret`: the audit writer now refuses a string under a key that names a secret
+        // (FR-R4-F10), and this field only probes that the projector drops what it does not know.
+        messageValue: 'should-not-project'
       },
       outcome: 'info'
     });

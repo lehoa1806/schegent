@@ -45,7 +45,7 @@ Task statuses are `pending`, `in-flight`, `paused`, `completed`, `canceled`, and
 | Term | Exact meaning |
 |---|---|
 | **History Entry** | A terminal summary built from a Run. It records terminal status, timing, outputs, audit-pointer metadata, and catalog provenance when available. History is partitioned by queue ID. |
-| **Audit Entry** | A schema-versioned, typed host-observed event written as one JSON object per audit-log line. Audit payloads are bounded by the event contract and sanitized before persistence. |
+| **Audit Entry** | A schema-versioned, typed host-observed event written as one JSON object per audit-log line. Audit payloads are bounded by the event contract and best-effort secret-pattern redacted before persistence; otherwise raw. |
 | **Correlation ID** | The bounded identifier carried across an inbound webview command and related host activity so responses and evidence can be associated with the initiating request. |
 | **Run ID** | The stable identity of one Run; it is also the key used by history audit pointers and many audit events. |
 

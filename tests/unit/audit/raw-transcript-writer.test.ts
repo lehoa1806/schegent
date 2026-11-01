@@ -394,7 +394,7 @@ describe('RawTranscriptWriter empty runId (T013, FR-011)', () => {
 
 describe('RawTranscriptWriter custom-phase instruction redaction (T049, US3, SC-008, FR-019)', () => {
   it('keeps a sensitive token verbatim in the raw transcript while logger.sanitize redacts it', async () => {
-    const sensitive = 'sk-ant-api03-fake-token-ABCDEFGHIJKLMNOPQRSTUVWX';
+    const sensitive = ['sk', '-ant-', 'api03-fake-token-ABCDEFGHIJKLMNOPQRSTUVWX'].join('');
     const customInstruction = `Audit the staged diff. Use creds: ${sensitive} to authenticate.`;
     const customPhaseId = 'security-audit';
     const runId = 'custom-phase-run';

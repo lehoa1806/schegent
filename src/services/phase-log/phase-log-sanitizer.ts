@@ -28,6 +28,7 @@
 // fields can carry operator content — and merging them would silently
 // couple a size decision to a privacy one.
 
+import { REDACTION_SENTINEL, isSecretKeyName } from '../../lib/logger';
 import type { PhaseLogDisplayEntry, ToolArgumentValue } from './types';
 
 /**
@@ -50,7 +51,10 @@ export type SanitizableBodyField = (typeof SANITIZED_BODY_FIELDS)[number];
 /**
  * Recursively sanitize the string leaves of a `ToolArgumentValue`,
  * preserving object/array shape and non-string leaves. Keys are NOT
- * sanitized — they are well-known argument names, not values.
+ * sanitized — they are well-known argument names, not values — but a
+ * non-empty string leaf whose own key names a secret (`isSecretKeyName`) is
+ * replaced by the redaction sentinel, because the string patterns cannot see
+ * a key.
  *
  * Returns the input reference unchanged when nothing matched, so callers
  * can use identity to decide whether to allocate a new body.
@@ -82,6 +86,15 @@ export function sanitizeToolArguments(
   const out: { [k: string]: ToolArgumentValue } = {};
   let mutated = false;
   for (const [k, v] of Object.entries(value as object)) {
+    // FR-R4-F10 (RD4; hard rule 23): a non-empty string under a key that names a secret is removed
+    // here, because `sanitize` sees the leaf and never its key. The predicate is the logger's own, so
+    // this adds no pattern and no word list; `toolInput` carries the same text as a JSON string,
+    // which the string patterns already mask, so both copies agree in one message.
+    if (typeof v === 'string' && v.length > 0 && isSecretKeyName(k)) {
+      out[k] = REDACTION_SENTINEL;
+      if (v !== REDACTION_SENTINEL) mutated = true;
+      continue;
+    }
     const r = sanitizeToolArguments(v as ToolArgumentValue, sanitize);
     out[k] = r.value;
     if (r.mutated) mutated = true;

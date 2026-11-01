@@ -21,13 +21,21 @@
  * SCOPE. `git ls-files`, the same tracked-file set the previous scan used, so an
  * untracked scratch file is not scanned and a `node_modules` tree is never walked. The
  * measurement that justified this scoping is recorded in `SECURITY.md`.
+ *
+ * STAGED MODE (FR-R4-F10). `--staged` scans what a commit would carry, read from the Git index
+ * and not from the working tree: a secret staged and then edited out of the working copy passes
+ * the tree scan and is committed. The scope, the blob reads and the temporary directory live in
+ * `secret-scan-staged.mjs`; this file keeps the dispatch, the engine and the four outcome lines
+ * (passed, finding, nothing staged needed scanning, cannot run). Any other argument is refused.
+ * An error anywhere in staged mode is a refusal, never a pass.
  */
 import { execFileSync } from 'node:child_process';
 import { createEngine } from '@secretlint/node';
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { invokedAsScript } from './invoked-as-script.mjs';
+import { StagedRefusal, collectStagedSubject, withStagedFiles } from './secret-scan-staged.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG = resolve(ROOT, '.secretlintrc.json');
@@ -75,7 +83,125 @@ export function isIgnored(file, patterns) {
   return false;
 }
 
+/** The rules the summary lines name, so tree and staged mode cannot disagree about them. */
+const RULES_SUMMARY = 'preset-recommend (aws id scan on), no-dotenv, schegent local rule';
+const ALLOWLIST_REMINDER =
+  'A finding that is a fixture rather than a leak is allowlisted BY ENTRY in ' +
+  '.secretlintignore with a stated reason — never by excluding a directory.';
+const STAGED_DIRECTORY = /\S*schegent-staged-scan-[A-Za-z0-9]+\/?/g;
+const DETAIL_LIMIT = 200;
+
+/**
+ * The configuration with every rule id that begins `./` resolved against `root`, because the
+ * engine's loader resolves a package name or an absolute path and nothing relative. Other ids pass
+ * through unchanged. An id that resolves outside `root` is a refusal (`config-unparseable`): a
+ * configuration must not make the scan load code from elsewhere. Rules nested in a preset are
+ * resolved too. The input is not modified.
+ */
+function resolveLocalRuleIds(configJson, root) {
+  const resolveEntry = (entry) => {
+    if (entry === null || typeof entry !== 'object') return entry;
+    const resolved = { ...entry };
+    if (typeof entry.id === 'string' && entry.id.startsWith('./')) {
+      const absolute = resolve(root, entry.id);
+      const inside = relative(root, absolute);
+      if (inside.startsWith('..') || isAbsolute(inside)) {
+        throw new StagedRefusal('config-unparseable', 'a rule id in the configuration resolves outside the repository');
+      }
+      resolved.id = absolute;
+    }
+    if (Array.isArray(entry.rules)) resolved.rules = entry.rules.map(resolveEntry);
+    return resolved;
+  };
+  return resolveEntry(configJson);
+}
+
+/** A diagnostic fragment with control characters, the staged directory's path and excess length removed. */
+function sanitizedDetail(text) {
+  return String(text)
+    .replace(STAGED_DIRECTORY, '')
+    .replace(/[^\x20-\x7e]/g, ' ')
+    .trim()
+    .slice(0, DETAIL_LIMIT);
+}
+
+/** The engine's report with the temporary directory replaced by the repository-relative form. */
+function repositoryRelative(text, dir) {
+  return text.split(`${dir}/`).join('').split(dir).join('.').replace(STAGED_DIRECTORY, '<staged>');
+}
+
+/** The scope a staged outcome line prints: what was read against which base, and each counted skip. */
+function stagedScope(subject) {
+  const parts = [`${subject.scan.length} path(s) scanned against ${subject.base === 'HEAD' ? 'HEAD' : 'empty tree'}`];
+  for (const cause of ['ignored', 'deleted', 'gitlink', 'unchanged']) {
+    if (subject.skipped[cause] > 0) parts.push(`${subject.skipped[cause]} ${cause}`);
+  }
+  return parts.join(', ');
+}
+
+/** Print the refusal line for any throw and return exit code 1. Nothing after a throw may print a pass. */
+function refuseStaged(error) {
+  const cause = error instanceof StagedRefusal ? error.cause : 'engine-failed';
+  const detail = sanitizedDetail(error instanceof StagedRefusal ? error.detail : (error?.message ?? 'unknown error'));
+  console.error(
+    `Secret scan (staged) cannot run: ${cause}: ${detail}. An unanswerable check is a refusal.`
+  );
+  return 1;
+}
+
+/** Staged mode: scan what the index would commit. Returns the process exit code. */
+async function runStaged() {
+  try {
+    const subject = collectStagedSubject(ROOT, isIgnored);
+    const scope = stagedScope(subject);
+    if (subject.scan.length === 0) {
+      console.log(`Secret scan (staged): nothing staged needed scanning; ${scope}.`);
+      return 0;
+    }
+    const configFileJSON = resolveLocalRuleIds(subject.config, ROOT);
+    const result = await withStagedFiles(subject, async (dir, paths) => {
+      const engine = await createEngine({
+        configFileJSON,
+        formatter: 'stylish',
+        color: false,
+        maskSecrets: true,
+        cwd: dir
+      });
+      const executed = await engine.executeOnFiles({ filePathList: paths });
+      return { ok: executed.ok, output: repositoryRelative(executed.output, dir) };
+    });
+    const line = `${scope}; rules: ${RULES_SUMMARY}.`;
+    if (result.ok === false) {
+      console.error(result.output);
+      console.error(`Secret scan (staged): FINDING; ${line}`);
+      console.error(ALLOWLIST_REMINDER);
+      return 1;
+    }
+    console.log(`Secret scan (staged): passed; ${line}`);
+    return 0;
+  } catch (error) {
+    return refuseStaged(error);
+  }
+}
+
+/**
+ * The exit code of every invocation that is not tree mode: `--staged` runs, and any other argument
+ * is refused before a git call is made. Tree mode is the invocation with no argument.
+ */
+async function runAnotherMode(args) {
+  if (args.length === 1 && args.at(0) === '--staged') return runStaged();
+  console.error(
+    `Secret scan cannot run: unknown-argument: ${sanitizedDetail(args.join(' '))}. ` +
+      'Accepted: no argument (tree mode) or --staged. An unanswerable check is a refusal.'
+  );
+  return 1;
+}
+
 if (invokedAsScript(import.meta.url)) {
+  // FR-R4-F10: an argument selects another mode and ends here. No argument is tree mode, below.
+  const args = process.argv.slice(2);
+  if (args.length > 0) process.exit(await runAnotherMode(args));
+
   if (!existsSync(CONFIG)) {
     console.error(`Secret scan cannot run: ${CONFIG} is missing. An unanswerable check is a refusal.`);
     process.exit(1);
@@ -106,8 +232,17 @@ if (invokedAsScript(import.meta.url)) {
     process.exit(1);
   }
 
+  let treeConfigJson;
+  try {
+    treeConfigJson = resolveLocalRuleIds(JSON.parse(readFileSync(CONFIG, 'utf8')), ROOT);
+  } catch (error) {
+    if (!(error instanceof StagedRefusal)) throw error;
+    console.error(`Secret scan cannot run: ${error.cause}: ${error.detail}. An unanswerable check is a refusal.`);
+    process.exit(1);
+  }
+
   const engine = await createEngine({
-    configFileJSON: JSON.parse(readFileSync(CONFIG, 'utf8')),
+    configFileJSON: treeConfigJson,
     formatter: 'stylish',
     color: false,
     // The type declarations say masking is the default, but the core reads
@@ -126,7 +261,7 @@ if (invokedAsScript(import.meta.url)) {
   // repository measures rather than assumes.
   const summary =
     `Secret scan: secretlint over ${files.length} tracked file(s)${unread}` +
-    ` (rules: preset-recommend, no-dotenv; tests/ INCLUDED).`;
+    ` (rules: ${RULES_SUMMARY}; tests/ INCLUDED).`;
 
   if (result.ok === false) {
     console.error(result.output);
