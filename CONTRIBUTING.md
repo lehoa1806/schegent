@@ -3,6 +3,26 @@
 Schegent accepts changes through pull requests targeting `develop`. Nothing checks them on the remote: hosted CI was retired 2026-08-26 by operator decision (`FR-R3-099`), which deleted `.github/workflows/`, and no branch-protection or repository-ruleset file is present. Verification is local and the whole of it — run `npm run gate` before you open a pull request, because no second enforcement point will catch what you skip. The current state of every release control is generated into [current release controls](docs/release/current-release-controls.md).
 <!-- Source: docs/release/actions-terminal-record.md -->
 
+## Your first change
+
+Four steps, in this order:
+
+1. **Install.** Run the two commands in [Prepare a checkout](#prepare-a-checkout).
+2. **See one Run.** Follow [the quickstart](docs/tutorials/user-quickstart.md) in a disposable workspace.
+3. **Read the hard rules your change touches.** Open `docs/hard-rules.md` in the planning envelope
+   (one directory above this checkout; named here, not linked, because a standalone clone does not
+   have it) and read the rows of its index that your change touches. In a standalone clone, obtain
+   the planning envelope rather than guess at a rule.
+4. **Run `npm run gate`.** It is the full local verification. Nothing on the remote checks a pull request.
+
+Two checks keep the pointers honest: `tests/lint/agents-rule-index.test.ts` re-derives the index, and
+`tests/lint/agents-claude-parity.test.ts` fails a pointer file that carries rule text. They cover
+the pointers and the index only; for the rules themselves, the part no tool does for you is reading
+the rows your change touches.
+<!-- Source: tests/lint/agents-rule-index.test.ts -->
+<!-- Source: tests/lint/agents-claude-parity.test.ts -->
+<!-- Source: package.json -->
+
 ## Read these ten, in this order — then stop
 
 **`FR-R3-121`, 2026-08-27.** This repository carries **16.6 MB of Markdown across 1,377 files**
@@ -18,10 +38,10 @@ you there, not before.**
 |---|---|---|
 | 1 | [`README.md`](README.md) | what the product is, and what it deliberately is not |
 | 2 | this file, to the end | how to get a checkout that builds, and what a PR is expected to carry |
-| 3 | [`../AGENTS.md`](../AGENTS.md) — the **index** at the head of its hard-rules section, then only the subsystems your change touches | the authority on host-code invariants. Its hard rules are numbered and you are not expected to read all of them; the index at the head of that section exists to route you to the ones your change touches |
+| 3 | `docs/hard-rules.md` in the planning envelope, one directory above this checkout (named here, not linked) — the **index** at its head, then only the subsystems your change touches | the authority on host-code invariants. Its hard rules are numbered and you are not expected to read all of them; read the rows of the index your change touches. In a standalone clone that file is absent: obtain the planning envelope rather than guess at a rule |
 | 4 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | the module boundaries a change is judged against, including which directory is the composition root |
 | 5 | [`docs/security/threat-model.md`](docs/security/threat-model.md) | what this product claims to prevent and what it explicitly does not. Read before touching audit, logging, IPC or process execution |
-| 6 | [`docs/development/lint-gate-census.md`](docs/development/lint-gate-census.md) | one line per gate. You will trip one; this is how you find out what it wanted without reading 151 files |
+| 6 | [`docs/development/lint-gate-census.md`](docs/development/lint-gate-census.md) | one line per gate, with the current, dated count. You will trip one; this is how you find out what it wanted without reading every gate file |
 | 7 | [`docs/features/custom-phases.md`](docs/features/custom-phases.md) | the Phase model, which most feature work touches |
 | 8 | [`RELEASE.md`](RELEASE.md) | what a release is here — entirely local, three binding refusals — so you do not assume a pipeline that does not exist |
 | 9 | [`SECURITY.md`](SECURITY.md) | how to report a vulnerability, and who reviews security-sensitive paths |
@@ -30,14 +50,14 @@ you there, not before.**
 **Ten, counted honestly.** There is no optional eleventh: a list of eleven with one marked
 optional is a list of eleven, and the point of a bound is that it binds.
 
-**What is deliberately not here**: `specs/` (1,145 files — Spec-Driven Development output, kept as
-provenance, read only when tracing a decision), the rest of `docs/` (reference), and the 151 gate
-files themselves (item 6 is the index into them). None of that is waste; it is simply not an
-entry path.
+**What is deliberately not here**: `specs/` (Spec-Driven Development output, kept as provenance,
+read only when tracing a decision), the rest of `docs/` (reference), and the gate files themselves
+(item 6 is the index into them, and carries the current, dated count). None of that is waste; it is
+simply not an entry path.
 
 ## Start with the governing context
 
-Before changing code, read `../AGENTS.md`, the workspace-level source of truth for host-code invariants. Its rules are especially important for IPC mutations, audit and redaction behavior, workspace/window locks, forward-only state migration, process execution, catalog publication, and run-plan validation.
+Before changing code, read `docs/hard-rules.md` in the planning envelope (one directory above this checkout), the source of truth for host-code invariants; `../AGENTS.md` is the orientation file that points at it. The rules in it are especially important for IPC mutations, audit and redaction behavior, workspace/window locks, forward-only state migration, process execution, catalog publication, and run-plan validation.
 
 If a change alters host structure or IPC contracts, update the architecture documentation in the same pull request. If it adds text rendered to an operator, follow the English-only decision recorded in `docs/concepts/english-only-not-localizable.md`: keep the literal at its render site and do not add a localization boundary.
 <!-- Source: ../AGENTS.md -->
@@ -185,7 +205,7 @@ There is deliberately **no devcontainer**: parity comes from `.nvmrc` plus the t
 reasoning and reopening conditions are recorded in
 [the devcontainer declination](docs/development/devcontainer-declination.md) rather than left as a gap.
 
-At minimum, run the checks relevant to the changed tree. The broad repository gates are:
+At minimum, run the checks relevant to the changed tree. The full verification, and what each broad command runs, follows the note on `npm run ci:fast`:
 
 `npm run ci:fast` is **not** one of the tiers, despite the name — see the tier document. The review
 preflight `npm run ci:fast` invokes these manifest targets in order: `typecheck:tests`, `lint`, `verify:all`, `test:evals`, `test:visual`, `test:perf`, `build:host`, and `package:smoke`. It therefore includes browser-backed visual testing and a VSIX package smoke build, not only typechecking and unit tests. The visual step needs the Chromium build declared under [Prepare a checkout](#prepare-a-checkout) — `npx playwright install chromium`, re-run after a Playwright version bump. A missing or stale browser fails the preflight with a single setup message rather than a wall of red specs.
@@ -193,11 +213,14 @@ preflight `npm run ci:fast` invokes these manifest targets in order: `typecheck:
 <!-- Source: package.json -->
 
 ```bash
-npm run verify:all
-npm run ci
+npm run gate
 ```
 
-`verify:all` covers contract freshness, documentation, secret scanning, pinned actions, the structural license check (`LICENSE.md`, the license record, the manifest `license` field), all type checks, both lint passes, host tests, and covered webview tests.
+`npm run gate` is the full verification. It runs the five repository checks, then `npm run ci`. The five are contract freshness (`contracts:check`), documentation (`docs:check`), secret scanning (`security:secrets`), pinned actions (`security:actions`) and the structural license check (`license:check`: `LICENSE.md`, the license record, the manifest `license` field).
+
+`npm run ci` runs the typechecks, both lint passes, the builds, coverage, and the eval, visual, accessibility, performance and E2E suites, then package smoke and the extension-host integration tests, but none of the five checks.
+
+`npm run verify:all` is the lighter local check: it builds the webview, runs the five checks, all type checks, both lint passes, the host tests and the covered webview tests, and none of the browser-backed, packaging or integration suites.
 
 **If `test:host` dies with `Segmentation fault: 11` and zero test failures, it is not your change.** Diagnosed 2026-08-24 from two macOS crash reports (2026-08-23 05:56 and 2026-08-24 18:31, both during `test:host`, Node `24.19.0` arm64): `EXC_BAD_ACCESS`, `KERN_INVALID_ADDRESS at 0x1`, on a `V8Worker` platform thread inside V8's concurrent Sparkplug JIT — `ConcurrentBaselineCompiler::JobDispatcher::Run` → `BaselineCompilerTask::Compile` → `BaselineCompiler::GenerateCode` → `AssemblerBase::AddEmbeddedObject`. No JavaScript frame appears in the faulting stack, so no test is implicated; the `npm` wrapper then kills itself propagating the child's signal, which is the line the shell prints. Confirm your own case the same way: `ls -lt ~/Library/Logs/DiagnosticReports/node-*.ips` and read the faulting thread. Re-running is the correct response, and the crash is not currently worked around: `--concurrent-sparkplug` is on by default and is rejected by both `NODE_OPTIONS` and worker `execArgv`, so disabling it would mean replacing `vitest run` with a raw `node` invocation permanently — a standing cost against a rare upstream fault. If it starts recurring in CI rather than locally, that trade is worth revisiting. Several of its checks decided their rules by measurement rather than by choosing a number, and each records how — among them the [duplicate-authority threshold](docs/operations/duplicate-authority-threshold-measurement.md), the [counts the round-3 documents assert](docs/operations/asserted-counts-sweep.md), the [lazy-route wait budget](docs/operations/lazy-route-wait-budget.md) and the [webview coverage floors](docs/development/coverage-measurements.md). `ci` covers the broad build/test/package path but does not invoke `verify:all`; use both for a release-sized change. More focused commands and their exact scopes are documented in [Developer workflows](docs/how-to/developer-workflows.md).
 <!-- Source: package.json -->

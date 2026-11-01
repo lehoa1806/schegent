@@ -24,26 +24,33 @@ prerequisites.
 
 ## 1. Install and open a safe workspace
 
-Use a VSIX attached to a tagged [GitHub Release](https://github.com/lehoa1806/schegent/releases)
-when one is available, then install it with VS Code's VSIX installation flow.
-Tagged release automation is the durable distribution route; ordinary workflow
-artifacts are temporary.
-
-If no suitable release VSIX is available, build one from source:
+The engineering-preview way to get a VSIX is to build and package one from a
+checkout. Nothing publishes a VSIX: no tag or GitHub Release carries one (see
+[Releasing Schegent](../../RELEASE.md) for what a release is). Install the
+checkout with the canonical two-command sequence, then build and package it:
 
 ```bash
 git clone https://github.com/lehoa1806/schegent.git
 cd schegent
-npm install
+npm ci
+npm --prefix webview-ui ci
 npm run build
 npm run package
 ```
 
-Install the generated `.vsix` in VS Code. Node.js and npm are required for this
-source-build fallback, not for ordinary use of an already-built VSIX.
+The second install exists because `.npmrc` sets `ignore-scripts=true`, which
+turns off the root `postinstall` that used to install `webview-ui`; without it
+the build fails. [Prepare a checkout](../../CONTRIBUTING.md#prepare-a-checkout)
+is the authority on the install sequence. `npm run package` packages the
+current build, so `npm run build` comes first.
+
+Install the generated `.vsix` with VS Code's VSIX installation flow. Node.js and
+npm are required for this source build, not for ordinary use of an already-built
+VSIX.
 
 <!-- Source: ../../RELEASE.md -->
 <!-- Source: ../../package.json -->
+<!-- Source: ../../CONTRIBUTING.md -->
 <!-- Source: ../release/actions-terminal-record.md -->
 
 Open a folder whose current state you can restore, grant Workspace Trust, open

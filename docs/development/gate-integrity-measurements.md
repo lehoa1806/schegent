@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 131
+    vacuity-census-denominator: 133
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **131** |
+| Gates the detector calls **controlled** (the denominator) | **133** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1613,6 +1613,23 @@ and they pass with the entrant in the set.
 | Gate | Seeded case that must fail | Result |
 |---|---|---|
 | `no-static-inline-style.test.ts` (N4) | the 13 static attributes the Builder's editors carried before they moved; and `style="margin-left:auto"` put back into `PipelineToolbar.svelte` | the first run named all 13 as `path:line`; the second named `PipelineToolbar.svelte:188`; the synthetic dynamic attribute is not named |
+
+**Denominator movement 131 → 133 (2026-11-01, feature 258 / `FR-R4-F11`).** Two gates joined, and the feature
+added no file under `tests/lint/`. Attribution is by census membership, measured rather than assumed: the
+controlled set was computed with the detector's own two predicates (`isScanningGate` and `looksControlled`) over
+`tests/lint/` as it stands at `repo/` `2228e2ce` and over the working tree that held the feature, and the only two
+names in the second set that are not in the first are the two below. None left. Each already existed; each gained a
+walk over the Markdown pages and a synthetic non-vacuity case in the same change, which is what the detector
+reads.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `architecture-doc-schema-parity.test.ts` (131 → 132) | Joined (`FR-028`). A live case now runs its detector over every Markdown page under `docs/` and every root page, and a NON-VACUITY case runs the same detector over a synthetic page and expects exactly one line, labelled with that page's path and its line number |
+| **+1** | `procedure-surface-registry.test.ts` (132 → 133) | Joined (`FR-006`). The install census walks every Markdown page in the repository for a fenced root-install block, and its NON-VACUITY case feeds the same function four synthetic pages |
+
+The rate stays **0.0%**: all 133 still read as uncontrolled once their controls are stripped. The plan expected
+no movement ("no new lint test file, so the census does not move"); the census counts gates by what they scan and
+control, not by file, so extending two files moved it.
 
 **Denominator movement 130 → 131 (2026-11-01, feature 257 / `FR-R4-F10`).** One gate joined, controlled on
 its first run: `redaction-key-names-single-source.test.ts`. Attribution is by the detector's own two

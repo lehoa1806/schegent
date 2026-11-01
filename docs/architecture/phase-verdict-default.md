@@ -91,6 +91,11 @@ by a decision no one made. That is the FR-R3-096 hazard, pointing the other way.
 `STATE_SCHEMA_VERSION` 13 → 14. `migrateV13ToV14()` stamps the resolved value and its
 provenance into every phase of every persisted plan snapshot.
 
+> **Note (2026-11-01, `FR-R4-F11`).** `migrateV13ToV14()` expected a `record.plans` array that no
+> persisted key has, so it never ran. Since feature 239 (`FR-R4-F01`),
+> `migrateVerdictBasisIfNeeded` in `src/state/workspace-state.ts` performs the step, keyed on each
+> Phase's own fields. The paragraph above is the decision as it was taken, and is kept.
+
 **It stamps `'model-token'` into a pre-v14 phase that declared nothing** — it preserves
 the old meaning rather than applying the new default. That looks backwards for about
 ten seconds, and it is not. A plan snapshot is a frozen record of what the operator
