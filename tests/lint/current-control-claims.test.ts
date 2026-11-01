@@ -146,7 +146,12 @@ interface ClaimPattern {
 const DERIVATION: Readonly<Record<Fact, string>> = {
   workflowsExist: 'count of `.yml`/`.yaml` files in `.github/workflows/`',
   auditInGateClosure: 'whether any script reachable from `npm run gate` runs `npm audit`',
-  releaseReachesSbom: 'whether the closure of `npm run release` reaches `sbom`',
+  // FR-R4-F09 (research R1): `release` is a driver that spawns `build` and `sbom` itself, so the walk
+  // of `npm run` references alone cannot see them. The driver exports the scripts it spawns
+  // (`RELEASE_CHILD_SCRIPTS`), and each one `package.json` defines counts toward the closure.
+  releaseReachesSbom:
+    'whether the closure of `npm run release`, plus the closure of each script the release driver ' +
+    'spawns (`RELEASE_CHILD_SCRIPTS` in `scripts/release-candidate.mjs`), reaches `sbom`',
   emitsChecksums: 'a digest-writing producer in the release closure or in `scripts/`',
   emitsIndependentProvenance: 'a cosign/sigstore/in-toto/SLSA producer in that same set',
   nodeFloorIsExecuted: '`engine-strict` in `.npmrc`, or an executed file that reads `engines`'

@@ -44,6 +44,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { RuntimeLogAccessor } from '../lib/runtime-log/runtime-log-settings';
 import type { TransportRouter } from '../monitor/transport/transport-router';
 import type { BundleSources } from '../services/diagnostics-bundle/bundle-collect';
+import { readBuildIdentity } from '../lib/build-identity';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import { isTerminalRunStatus } from '../state/workflow-run';
@@ -230,6 +231,8 @@ function bundleSources(deps: EvidenceCommandsWiringDeps): BundleSources {
       const version: unknown = vscode.extensions.getExtension('schegent.schegent')?.packageJSON?.version;
       return typeof version === 'string' && VERSION_PATTERN.test(version) ? version : UNKNOWN_VERSION;
     })(),
+    // FR-R4-F09 (BI4): the commit and mode esbuild stamped into this bundle, or `unknown`.
+    hostBuild: readBuildIdentity(),
     hostSettings: () =>
       ({
         ...readGeneralSettings(

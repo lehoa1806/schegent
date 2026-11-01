@@ -68,7 +68,7 @@ Despite its name, `dev:webview` is `vite build --watch`; the repository does not
 | Host coverage | `npm run test:coverage` | Root selection with V8 coverage |
 | Webview tests only | `npm run test:webview` | Mock consistency check, then jsdom Vitest tests |
 | Webview coverage | `npm run test:webview:coverage` | Webview tests with V8 coverage, then the coverage-headroom ratchet |
-| Performance budgets | `npm run test:perf` | `tests/perf/**/*.test.ts`, single-threaded |
+| Performance budgets | `npm run test:perf` | `tests/perf/**/*.test.ts`: wall-clock budgets, single-worker, no retries |
 | Sustained evidence path | `npm run test:soak` | `tests/perf/sustained-evidence-path.test.ts` with verbose output |
 | Deterministic CLI E2E | `npm run test:e2e` | `tests/e2e/**/*.test.ts`, including real child processes against the fake CLI fixture |
 | Evaluation fixtures | `npm run test:evals` | `tests/evals/**/*.test.ts` with verbose output |
@@ -122,9 +122,15 @@ live documents, that a section a link or `§` marker names in another file exist
 check reads, and the count it was built on, is
 [recorded as a decision](../development/section-reference-check.md). They also scan tracked content
 for configured secret patterns, require immutable commit pins for executable GitHub Actions, and
-validate production
-dependency licenses. Since the workflows were retired (`FR-R3-099`) the pin check has a third
-outcome and reports it: *"no workflows present, nothing to pin"*. It is kept rather than deleted
+check three structural license facts: `LICENSE.md` exists, the license operations record exists, and
+the manifest's `license` field is set. The license check reads no dependency and no lockfile, so it is
+not a review of dependency licenses.
+
+The pin check has three outcomes and names each. With no workflow directory, or an empty one, it
+reports *"no workflows present, nothing to pin"* and exits 0: a named no-subject outcome, not a pass.
+With workflows that are all pinned to a full 40-character commit it passes and says how many. With an
+action pinned by tag, or a directory it cannot read, it refuses. Since the workflows were retired
+(`FR-R3-099`) the no-subject outcome is the one a run reports. The check is kept rather than deleted
 precisely so a workflow file reappearing is pinned from its first commit rather than from the day
 somebody notices.
 <!-- Source: package.json -->

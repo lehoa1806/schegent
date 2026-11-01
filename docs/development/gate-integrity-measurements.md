@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 129
+    vacuity-census-denominator: 130
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **129** |
+| Gates the detector calls **controlled** (the denominator) | **130** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1613,3 +1613,24 @@ and they pass with the entrant in the set.
 | Gate | Seeded case that must fail | Result |
 |---|---|---|
 | `no-static-inline-style.test.ts` (N4) | the 13 static attributes the Builder's editors carried before they moved; and `style="margin-left:auto"` put back into `PipelineToolbar.svelte` | the first run named all 13 as `path:line`; the second named `PipelineToolbar.svelte:188`; the synthetic dynamic attribute is not named |
+
+**Denominator movement 129 → 130 (2026-11-01, feature 256 / `FR-R4-F09`).** One gate joined, controlled on
+its first run. Attribution is by census membership, measured rather than assumed: the controlled set was
+computed over `tests/lint/` at `repo/` `9ed91ef9` and over the working tree that held the feature, with the
+detector's own two predicates, and the only name in the second set that is not in the first is
+`license-check-descriptions.test.ts`. None left. The feature added two other gates under `tests/lint/`
+(`manifest-lock-parity.test.ts` and `qualification-matrix-shape.test.ts`); neither is a scanning gate with
+a control the detector recognizes, so neither entered the denominator.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `license-check-descriptions.test.ts` (129 → 130) | Joined (L8). Reads every live Markdown page under `repo/` and refuses a sentence that gives `license:check`, or the gate, a scope beyond its three structural facts, because the script reads no dependency and no lockfile. Its controls are a floor of 60 pages read with two named pages that must be among them, and planted sentences (the two probes as they stood, one of them across a line break) that the patterns must catch beside a denial and a plain mention that they must not. |
+
+The rate stays **0.0%**: the census's other three cases strip every gate's controls and re-ask the detector,
+and they pass with the entrant in the set.
+
+**Seeded red of the gate this feature added.** Shipped with the case that shows it can fail, run on 2026-11-01:
+
+| Gate | Seeded case that must fail | Result |
+|---|---|---|
+| `license-check-descriptions.test.ts` (L8) | the live tree as it stood before the correction, with nothing planted | named exactly `docs/how-to/developer-workflows.md` and `CONTRIBUTING.md`, the two pages the filing and the plan found, and nothing else among the live pages |

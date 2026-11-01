@@ -157,9 +157,10 @@ MIT text itself does.
 <!-- Source: .vscodeignore -->
 
 Releasing is local: `npm run release` refuses to proceed without a recorded gate
-run, then packages the extension. Packaging emits a CycloneDX SBOM beside the
-VSIX and inside it. No digest is written for the bundle — the hosted job that
-produced one was retired on 2026-08-26 (`FR-R3-099`) and nothing replaced it. The
+run, then prepares the candidate. Preparation emits a CycloneDX SBOM beside the
+VSIX and inside it, and writes a local release record that names the candidate's
+SHA-256 (`FR-R4-F09`). No digest file is published — the hosted job that
+produced one was retired on 2026-08-26 (`FR-R3-099`) and nothing replaced that. The
 SBOM is a dependency inventory artifact; its existence does not waive or satisfy
 a license or notice obligation by itself. What the release path does and does not
 produce is derived from the tree into

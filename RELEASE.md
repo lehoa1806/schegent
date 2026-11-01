@@ -101,8 +101,9 @@ for the spend bound, the restart replay and where each limit comes from.
 
 ## Release boundary
 
-The boundary is `npm run release`, which is `release:preflight && package`. It refuses to package
-unless **three** local bindings all answer at the current commit:
+The boundary is `npm run release`, which is `release:preflight && node scripts/prepare-release.mjs`
+(`FR-R4-F09`). It refuses to prepare a candidate unless **three** local bindings all answer at the
+current commit:
 
 1. **A gate attestation** naming `HEAD` over a clean tree, at the current schema version, whose
    recorded argument vector witnesses the command it names (`FR-R3-095`, widened by `FR-R3-100`,
@@ -217,7 +218,7 @@ npm run release          # refuses unless a recorded PASS names HEAD over a clea
 
 `gate:record` **spawns** the gate and records the exit code it observed, at the commit, on the platform, with the tree confirmed clean before and after. The writer sits outside the thing the record vouches for, so it cannot record a pass it did not see — a gate step that wrote its own attestation would prove only that the step ran. A red run is recorded too, so a failure leaves anti-evidence instead of leaving an older commit's pass as the newest record anyone finds.
 
-`release` runs the check and then packages. It refuses, naming which of **eight** causes applies, when: the tree is dirty, no record exists, the record is at a superseded schema version, its version is absent or unparseable, it records a different command, its recorded argument vector does not witness the command it names, it names another commit, it says the tree was dirty when the gate ran, or it records a failing gate. The record is untracked — it describes one machine's observation of one tree, and a committed one would travel to a clone that never earned it.
+`release` runs the check and then prepares the candidate (§3). The check refuses, naming which of **eight** causes applies, when: the tree is dirty, no record exists, the record is at a superseded schema version, its version is absent or unparseable, it records a different command, its recorded argument vector does not witness the command it names, it names another commit, it says the tree was dirty when the gate ran, or it records a failing gate. The record is untracked — it describes one machine's observation of one tree, and a committed one would travel to a clone that never earned it.
 
 **The command name was not evidence, and FR-R3-135 is why this section says so.** `GATE_COMMAND`
 moved from `npm run ci` to `npm run gate` when `FR-R3-100` widened the perimeter, and the exact-string
@@ -364,34 +365,116 @@ the same reason. Both are named in `SECURITY.md` and `CONTRIBUTING.md` with the 
 <!-- Source: scripts/record-gate-run.mjs -->
 <!-- Source: package.json -->
 
-## 3. Package the extension
+## 3. Prepare the release candidate
 
-`npm run package` is `npm run sbom && vsce package --no-dependencies`. It emits
-`schegent-sbom.cdx.json` (CycloneDX 1.5) beside the VSIX **and packages it inside**, because a
-recipient is handed one file and an SBOM on the builder's disk describes the artifact to nobody
-(`FR-R3-120`). Its strongest statement is the short one: this extension declares **zero runtime
-dependencies**, and the SBOM now says so verifiably rather than by assertion. What it asserts and
-what it does not — it reads the lockfiles and has not opened the archive — is stated in the
-document's own metadata.
-<!-- Source: scripts/generate-sbom.mjs -->
+`npm run release` builds, packages **once**, inspects those exact bytes, and writes a record that
+names them (`FR-R4-F09`). It tags, publishes and uploads nothing, and no step in it could. It is the
+only path that produces a candidate.
 
 ```bash
-npm run release          # release:preflight, then package
+# 1. Capture the advisories for both trees. This needs the registry; it is the only network step.
+mkdir -p .release/advisories
+npm run security:advisory-diff -- capture --tree root --commit HEAD \
+  --out .release/advisories/root-$(date -u +%F).capture.json
+npm run security:advisory-diff -- capture --tree webview-ui --commit HEAD \
+  --out .release/advisories/webview-ui-$(date -u +%F).capture.json
+
+# 2. Record the gate on this commit (about 4 to 12 minutes).
+npm run gate:record
+
+# 3. Prepare the candidate. The preflight runs first and reads the gate record.
+npm run release -- \
+  --advisory-capture root=.release/advisories/root-<date>.capture.json \
+  --advisory-capture webview-ui=.release/advisories/webview-ui-<date>.capture.json
 ```
+
+**What the driver does, in order.** It reads the tree and refuses a dirty one or one git cannot name.
+It checks the advisory evidence, before any build work (below). It then **removes every existing
+output** (`dist/`, the root `schegent-sbom.cdx.json`, and `.release/staging/` and the same-named
+candidate and record), runs `npm run build`, checks the build identity that build stamped into both
+module graphs, runs `npm run sbom` over that build, packages once into `.release/staging/`, and
+inspects the bytes it just wrote: the archive policy, then that the SBOM inside the archive lists
+the same files with the same SHA-256 digests, then that the SBOM's bundled set equals the one
+re-derived from this run's graphs. It re-reads the tree, and only then renames the file to
+`.release/schegent-<version>.vsix` and writes `.release/schegent-<version>.release.json`, owner-only,
+exclusively. The record's digest is the digest of the bytes that passed inspection. Output is never
+reused, so a `dist/` copied in from another tree, output touched after the build, or output built
+before a configuration change cannot become the candidate, and the mtime freshness check is not
+consulted. A refusal prints `prepare-release: REFUSED (<reason>)`, names the remedy, writes no
+record, and leaves a failed staging file under its staging name, which is never a candidate.
+Every outcome ends with `Nothing was tagged, published or uploaded.`
+
+**Advisory evidence.** The driver reads feature 249's captures and runs no audit itself. It refuses a
+capture that is incomplete or unavailable (the audit gave no report), one made for a lockfile other
+than the one HEAD holds, one observed after the preparation time, and one **more than seven days
+old** (exactly seven days is accepted), and it refuses a disposition list it cannot use. Each finding
+is then listed by its advisory id and URL with its severity, whether the package is in the shipped
+code, and its disposition verdict. A finding with no covering disposition is reported, not refused.
+The list is [`docs/release/advisory-dispositions.json`](docs/release/advisory-dispositions.md),
+changed only in a reviewed commit.
+<!-- Source: scripts/release-candidate.mjs -->
+<!-- Source: scripts/prepare-release.mjs -->
+<!-- Source: scripts/release-advisory.mjs -->
+
+`npm run package` is `npm run sbom && vsce package --no-dependencies`. It is **local-trial packaging**
+of the current `dist/`: it inspects nothing, produces no candidate and no record, and its output must
+not be handed to anyone as a release. It still emits `schegent-sbom.cdx.json` (CycloneDX 1.5) beside
+the VSIX **and packages it inside** (`FR-R3-120`), and since `FR-R4-F09` it refuses to when the module
+graphs the build writes are absent or do not match `dist/`. The SBOM lists bundled third-party code
+(Svelte today) as shipping, beside **zero declared runtime dependencies**. What it asserts and what
+it does not (the bundlers' module graphs and the lockfiles, and not the archive's own bytes, which
+the separate check above compares) is stated in the document's own metadata.
+<!-- Source: scripts/generate-sbom.mjs -->
 
 The packaging policy requires exactly one VSIX, a closed entry allowlist, safe archive paths, at most
 2 MiB compressed, and at most 5 MiB uncompressed. It includes the extension manifest, license, root
 README/RELEASE/SECURITY documents, branding assets, built host/webview files, and every file in
-`examples/`; `.vscodeignore` excludes source, tests, implementation docs, maps, local state, and the
-repository's own tooling configuration.
+`examples/`; `.vscodeignore` excludes source, tests, implementation docs, maps, local state, the
+module graphs under `dist/module-graph/`, `.release/`, and the repository's own tooling
+configuration.
 <!-- Source: scripts/check-vsix-smoke.mjs -->
 <!-- Source: .vscodeignore -->
 
 The build does not set `NODE_ENV=production`, so `esbuild.config.mjs` takes its non-production branch
-for the host bundle; source maps are emitted and then excluded from the VSIX. Do not describe the
-packaged artifact as minified.
+for the host bundle; source maps are emitted and then excluded from the VSIX. The host bundle is
+therefore not minified; the webview half is always minified, because `vite build` minifies whatever
+`NODE_ENV` is. The mode that ran is recorded in the bundle (`host.build` of a diagnostics bundle),
+in the SBOM and in the release record, so an operator who builds with `NODE_ENV=production` is not
+refused and is not mistaken for a default build. Do not describe the packaged host bundle as
+minified.
 <!-- Source: esbuild.config.mjs -->
 <!-- Source: .vscodeignore -->
+
+### Install and qualify the exact candidate
+
+A candidate is only qualified once the build that is running is the build the record names
+(`FR-R4-F09`, `FR-035`). Nothing in this repository can do that for you, because it needs your IDE.
+
+1. **Install the exact file** the record names, over any earlier install:
+
+   ```bash
+   <your IDE's command line> --install-extension .release/schegent-<version>.vsix --force
+   ```
+
+2. **Reload the window.** A window that was already active keeps running the build it loaded, so an
+   install alone proves nothing about the running extension.
+3. **Create a diagnostics bundle**: run "Schegent: Create Diagnostics Bundle". Its `host` item carries
+   a `build` object: the commit, whether the tree was dirty, and the mode the host bundle was built
+   in. Compare:
+   - `host.build.commit` with the record's `source.commit` (they must be equal);
+   - `host.build.mode` with the record's `build.mode`;
+   - the file's digest, `shasum -a 256 .release/schegent-<version>.vsix`, with the record's
+     `candidate.sha256`.
+
+   A build made outside a checkout, or by a tool that did not stamp it, shows `unknown` for all
+   three fields. That is the honest answer, and it is a mismatch with a record that names a commit.
+4. **Record the outcome** in [the qualification matrix](docs/release/qualification-matrix.md), with
+   the five facts an observation has. An install on a platform the gate has not run on is its own
+   observation and fills only its own cell.
+
+<!-- Source: src/lib/build-identity.ts -->
+<!-- Source: src/services/diagnostics-bundle/bundle-collect.ts -->
+<!-- Source: scripts/release-candidate.mjs -->
 
 ## 4. Tag, if you want the bookkeeping
 
@@ -420,8 +503,8 @@ the single present-tense authority the table below must not contradict.
 |---|---|---|
 | A durable GitHub Release | Created by the tag job, containing the VSIX, SBOM and checksums | **None.** The VSIX exists only on the machine that packaged it |
 | Build provenance attestation | GitHub OIDC attestation over the VSIX and SBOM, verifiable with `gh attestation verify --signer-workflow` | **None.** A consumer cannot verify who built a Schegent VSIX |
-| `schegent-sbom.cdx.json` | `npm sbom --sbom-format cyclonedx` in the tag job | **Replaced, and improved.** `npm run package` reaches `npm run sbom`, so §3 above emits the SBOM beside the VSIX *and packages it inside* — which the tag job never did |
-| `SHA256SUMS` | `sha256sum` over the VSIX and SBOM | **None.** No script in this repository writes a digest, so "run it by hand" is the whole procedure and nothing will remind you |
+| `schegent-sbom.cdx.json` | `npm sbom --sbom-format cyclonedx` in the tag job | **Replaced, and improved.** `npm run release` writes the SBOM from the build's own module graphs and packages it inside the VSIX, and checks the archive's copy against the code beside it — which the tag job never did. `npm run package` is local-trial packaging and inspects nothing |
+| `SHA256SUMS` | `sha256sum` over the VSIX and SBOM | **Partly replaced.** `npm run release` writes a local release record naming the candidate's SHA-256 and the SBOM's, computed by `scripts/release-digest.mjs`. There is no `SHA256SUMS` file and nothing publishes the digest, so a recipient has to be handed it |
 | A three-OS verification matrix | `ci.yml` on ubuntu, macOS and Windows | **None.** Single-platform is now a permanent stated limit, not a pending state |
 | A weekly whole-tree gate | `full-gate.yml`, run weekly, red for fourteen weeks unread | `npm run gate`, run deliberately and attested at a commit |
 | Code scanning | CodeQL | **None.** Recorded in `SECURITY.md` |

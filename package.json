@@ -570,14 +570,14 @@
     "release:preflight": "node scripts/require-local-gate.mjs",
     "sbom": "node scripts/generate-sbom.mjs",
     "package": "npm run sbom && vsce package --no-dependencies",
-    "release": "npm run release:preflight && npm run package",
+    "release": "npm run release:preflight && node scripts/prepare-release.mjs",
     "package:smoke": "node scripts/package-vsix-smoke.mjs",
     "postinstall": "npm --prefix webview-ui install --no-audit --no-fund"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
     "@playwright/test": "^1.62.1",
-    "@secretlint/node": "^13.0.4",
+    "@secretlint/node": "^10.2.2",
     "@secretlint/secretlint-rule-preset-recommend": "^10.2.2",
     "@types/node": "^22.20.1",
     "@types/vscode": "1.107.0",

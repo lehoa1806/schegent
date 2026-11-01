@@ -8,6 +8,7 @@
 // `gate-attestation.mjs` too, and the defect this item closed was a second copy of a fact that
 // had one authority — restating the shape here would be the same mistake in a smaller place.
 import type { TreeState } from './gate-attestation.mjs';
+import type { GateObservation } from './gate-observation.mjs';
 
 /**
  * `spawnSync`'s result, narrowed to the three fields the recorder reads.
@@ -45,8 +46,12 @@ export type GateSpawnOptions = {
  * `command` is the derived label and `commandArgv` is its witness: `decideRelease` refuses a
  * record whose label its own argv does not account for. `exitCode` carries a `signal:` string for
  * a child killed by a signal, because a signalled gate is not a gate that returned zero.
+ *
+ * FR-R4-F09 (GR3): version 3 adds `nodeDeclared`, `nodeMatchesDeclared`, `envelope` and `trees`,
+ * spread in after `nodeVersion` from `observe`'s result, which is the `GateObservation` it
+ * intersects with here.
  */
-export type GateAttestationRecord = {
+export type GateAttestationRecord = GateObservation & {
   readonly version: number;
   readonly command: string;
   readonly commandExecutable: string;
@@ -76,6 +81,11 @@ export interface RecordGateRunDeps {
   /** `process.platform`, injected so the win32 executable resolution is assertable from POSIX. */
   readonly platform: string;
   readonly readTreeState: () => TreeState;
+  /**
+   * The environment the gate is about to run in, observed once after the dirty-tree refusal and
+   * before the spawn. The recorder writes the result into the record without reading it.
+   */
+  readonly observe: () => GateObservation;
   /** Durable write. The `fsync` barrier lives in the caller's implementation, not here. */
   readonly writeAttestation: (attestation: GateAttestationRecord) => void;
   readonly log: (message: string) => void;
