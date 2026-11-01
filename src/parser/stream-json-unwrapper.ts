@@ -10,6 +10,17 @@ export interface ApiErrorMetadata {
 export interface UnwrappedStream {
   readonly text: string;
   readonly apiError: ApiErrorMetadata | null;
+  /**
+   * FR-R4-F12 (FR-006) -- where `text` came from.
+   *
+   * `'model'` is text the model printed: plain-mode output, assistant `text`
+   * blocks or Codex `agent_message` items. `'raw-stream'` is the raw JSONL,
+   * returned when JSON lines parsed but none held model text (a tool-use-only
+   * turn, reasoning items, or a backend whose envelope drifted). A completion
+   * token inside `raw-stream` text was typed into a tool call or read from a
+   * tool result, never printed by the model, so the parser reads none from it.
+   */
+  readonly textSource: 'model' | 'raw-stream';
 }
 
 export function unwrapStreamJson(stdout: ZippedStreamBuffer | string): UnwrappedStream {
@@ -109,11 +120,11 @@ export function unwrapStreamJson(stdout: ZippedStreamBuffer | string): Unwrapped
   }
 
   if (!sawAnyLine) {
-    return { text: rawText, apiError: null };
+    return { text: rawText, apiError: null, textSource: 'model' };
   }
 
-  return {
-    text: hasModelText ? unwrapped : rawText,
-    apiError
-  };
+  // One conditional, as before FR-R4-F12: the source is decided by the same fact as the text.
+  return hasModelText
+    ? { text: unwrapped, apiError, textSource: 'model' }
+    : { text: rawText, apiError, textSource: 'raw-stream' };
 }

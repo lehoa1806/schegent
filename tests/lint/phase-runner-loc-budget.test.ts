@@ -599,7 +599,20 @@ const BUDGETS = [
   // `run()`. Paying for them would mean rewrapping unrelated prose to free lines, a reformat
   // this change does not make. The sibling waiver's mark moved by the same lines in the same
   // diff.
-  { path: 'src/controller/phase-runner.ts', max: 1_408 },
+  //
+  // Feature 259 (FR-R4-F12, 2026-11-01) — 1,408 → 1,409, +1, by this gate's count. The line
+  // forwards `textSource` to the parser (CP7), so a stream with no model text cannot advance on
+  // tool output (FR-006). Nothing else moved. The sibling waiver's mark moved by the same line in
+  // the same diff.
+  //
+  // Feature 259 (FR-R4-F12, 2026-11-01), second raise — 1,409 → 1,413, +4, by this gate's count. The
+  // composed prompt's identity is selected beside the prompt and set on `phase-start` (PI4): the
+  // import of the resume marker (one), the selection, which replaced a one-line ternary by a
+  // three-line one that returns the text and the identity together (two), and the `promptIdentity`
+  // field beside `sessionReuse` in the start payload (one). The plan estimated three lines for
+  // CP7 and PI4 together and assumed the ternary stayed on one line; it cannot, once it selects a
+  // pair. Nothing else moved. The sibling waiver's mark moved by the same lines in the same diff.
+  { path: 'src/controller/phase-runner.ts', max: 1_413 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

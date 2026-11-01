@@ -45,7 +45,8 @@ describe('FR-001 disjoint classification (transient-error vs fatal vs rate-limit
   it('clean exit with [SCHEGENT_STATUS: DONE] is `clean` (not transient_error)', () => {
     const result = parseInvocation(
       baseInputs({
-        stdout: '[SCHEGENT_STATUS: DONE]\n',
+        // FR-R4-F12 (FR-002): the token follows a complete audit block, as the prompt asks.
+        stdout: '=== SCHEGENT AUDIT LOG ===\nphase: speckit-specify\n=== END AUDIT LOG ===\n[SCHEGENT_STATUS: DONE]\n',
         exitCode: 0
       })
     );

@@ -178,24 +178,119 @@ function scanOutsideRegion(stdout: string, regionText: string): { count: number;
 }
 
 /**
- * Feature 107 (FR-007, FR-009, FR-010, FR-011) — the one place the host decides
- * whether it saw its own termination token.
+ * FR-R4-F12 (FR-002, FR-006) -- why a token the scan saw did not count.
+ *
+ * `'no-region'`: no complete audit block stood before it, so there was no
+ * trailing region to read it from. `'tool-output'`: the text reached the host
+ * only as backend tool output. `'none'`: nothing was ignored, or the only
+ * tokens were accepted. Read by the no-contract-block arm alone, so the
+ * recoverable outcome names why the token did not count.
+ */
+export type IgnoredTokenReason = 'none' | 'no-region' | 'tool-output';
+
+interface TerminationDetection {
+  /** A token counts as a contract block. Read where `tokenMatched` is read. */
+  readonly matched: boolean;
+  readonly ignored: IgnoredTokenReason;
+}
+
+interface TerminationContext {
+  /** `evidencePolicy` is `best-effort` or `none`, which only an author can write. */
+  readonly relaxed: boolean;
+  readonly textSource: 'model' | 'raw-stream';
+}
+
+const NOT_SEEN: TerminationDetection = { matched: false, ignored: 'none' };
+
+/** FR-R4-F12 (FR-008) -- fixed prefixes: the warnings hold counts and line numbers only. */
+const WARN_NO_REGION = '[constitution] termination token without audit block, not accepted';
+const WARN_TOOL_OUTPUT = '[constitution] termination token in tool output, not accepted';
+const WARN_DEGRADED = '[constitution] token accepted without audit block';
+
+const ISSUE_TOKEN_NO_REGION =
+  'a completion token was printed without a complete audit block before it; print the audit block, then the token as the last line';
+const ISSUE_TOKEN_IN_TOOL_OUTPUT =
+  'the backend stream carried no model text; a completion token in tool output is not read';
+const ISSUE_NO_CONTRACT_BLOCK = 'no contract block detected';
+
+interface TokenSighting {
+  readonly count: number;
+  /** 1-based, 0 when none. */
+  readonly firstLine: number;
+}
+
+/** Tokens on `lines`, skipping `skipIndex`: how many, and the first one's 1-based line. */
+function scanLinesForToken(lines: readonly string[], skipIndex: number): TokenSighting {
+  let count = 0;
+  let firstLine = 0;
+  for (const [i, line] of lines.entries()) {
+    if (i === skipIndex || !containsTerminationToken(line)) continue;
+    count += 1;
+    if (firstLine === 0) firstLine = i + 1;
+  }
+  return { count, firstLine };
+}
+
+function ignoredTokenWarning(prefix: string, seen: TokenSighting): string {
+  return `${prefix} (${seen.count} occurrence${seen.count === 1 ? '' : 's'}, first at line ${seen.firstLine})`;
+}
+
+/** The index of the last line holding a non-blank character, or -1. */
+function lastNonEmptyLineIndex(lines: readonly string[]): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines.at(i);
+    if (line !== undefined && line.trim() !== '') return i;
+  }
+  return -1;
+}
+
+/** FR-R4-F12 (CP8) -- the no-contract-block issue, naming why a seen token did not count. */
+function noContractBlockSummary(ignored: IgnoredTokenReason): string {
+  if (ignored === 'no-region') return ISSUE_TOKEN_NO_REGION;
+  if (ignored === 'tool-output') return ISSUE_TOKEN_IN_TOOL_OUTPUT;
+  return ISSUE_NO_CONTRACT_BLOCK;
+}
+
+/**
+ * Feature 107 (FR-007, FR-009, FR-010, FR-011) and FR-R4-F12 (FR-001 to FR-003, FR-006) -- the one
+ * place the host decides whether it saw its own termination token.
  *
  * With a region, only the region decides; anything found outside it is
- * reported by position and count and otherwise ignored. Without a region the
- * whole-stdout scan is kept — a run whose audit block was cut by the retention
- * window is a real, recoverable shape, not an attack — but an acceptance made
- * that way is labeled so it is never indistinguishable from a bounded one.
+ * reported by position and count and otherwise ignored. Without a region a
+ * token is NOT read: it is reported (W-NOREGION) and the turn stays unfinished.
+ * The one exception is a Phase whose author declared `best-effort` or `none`,
+ * which may complete on the last non-empty line, labelled as a degraded read.
+ * Text that reached the host only as tool output is never read (W-TOOL).
  */
 function detectTermination(
   stdout: string,
   region: TrailingRegion,
-  warnings: string[]
-): boolean {
+  warnings: string[],
+  context: TerminationContext
+): TerminationDetection {
+  if (context.textSource === 'raw-stream') {
+    const seen = scanLinesForToken(stdout.split(/\r?\n/), -1);
+    if (seen.count === 0) return NOT_SEEN;
+    warnings.push(ignoredTokenWarning(WARN_TOOL_OUTPUT, seen));
+    return { matched: false, ignored: 'tool-output' };
+  }
+
   if (!region.present) {
-    const matched = detectTerminationToken(stdout);
-    if (matched) warnings.push('[constitution] token accepted without audit block');
-    return matched;
+    const lines = stdout.split(/\r?\n/);
+    if (context.relaxed) {
+      const finalIndex = lastNonEmptyLineIndex(lines);
+      const finalLine = finalIndex === -1 ? undefined : lines.at(finalIndex);
+      if (finalLine !== undefined && containsTerminationToken(finalLine)) {
+        warnings.push(WARN_DEGRADED);
+        const earlier = scanLinesForToken(lines, finalIndex);
+        if (earlier.count > 0) warnings.push(ignoredTokenWarning(WARN_NO_REGION, earlier));
+        return { matched: true, ignored: 'none' };
+      }
+    }
+    const seen = scanLinesForToken(lines, -1);
+    if (seen.count === 0) return NOT_SEEN;
+    warnings.push(ignoredTokenWarning(WARN_NO_REGION, seen));
+    return { matched: false, ignored: 'no-region' };
   }
 
   const { count, fencedCount } = scanRegion(region.text);
@@ -215,7 +310,7 @@ function detectTermination(
       `[constitution] termination token outside audit region (${outside.count} occurrence${outside.count === 1 ? '' : 's'}, first at line ${outside.firstLine})`
     );
   }
-  return count > 0;
+  return { matched: count > 0, ignored: 'none' };
 }
 
 export function extractOpenQuestions(stdout: string): string[] {
@@ -417,9 +512,10 @@ export interface ParseInputs {
    * consume one string, so the boundary is computed once and the two layers
    * cannot disagree.
    *
-   * With no complete marker pair it is `NO_REGION`, and the parser falls back
-   * to the whole-stdout scan. That path is labeled at the point of acceptance
-   * (FR-009) so a degraded read is never mistaken for a bounded one.
+   * With no complete marker pair it is `NO_REGION`. FR-R4-F12 (FR-002): a token
+   * is then not read, except on the last non-empty line under an authored
+   * `best-effort` or `none` policy, which is labeled (FR-009) so a degraded read
+   * is never mistaken for a bounded one.
    *
    * FR-R3-199 — required. While it was optional, the evals corpus omitted it,
    * and every clean case passed on a token printed where the host never reads
@@ -436,6 +532,13 @@ export interface ParseInputs {
     RawInvocationOutput,
     'completedAwaitingExit' | 'backgroundWorkOpenAtResult' | 'killed'
   >;
+  /**
+   * FR-R4-F12 (FR-006) -- where `stdout` came from, as `unwrapStreamJson` names it.
+   * `'raw-stream'` means the capture held no model text, so a token in it was
+   * typed into or read from a tool and is never read. Optional: absent behaves
+   * as `'model'`, so a caller that was never updated classifies as before.
+   */
+  textSource?: 'model' | 'raw-stream';
 }
 
 /**
@@ -560,8 +663,14 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
   // Feature 107 — the token this floor consults is now region-scoped, so an
   // injected string can no longer buy a fall-through past a non-zero exit.
   // Detection happens once, before the floor, because it accumulates warnings
-  // and a second call would double them.
-  const tokenMatched = detectTermination(inputs.stdout, inputs.region, warnings);
+  // and a second call would double them. FR-R4-F12: the token those arms read
+  // is `detectTermination`'s `matched` -- a token counts in the trailing region
+  // only, or on the last line under an authored `best-effort` or `none` policy.
+  const termination = detectTermination(inputs.stdout, inputs.region, warnings, {
+    relaxed: inputs.evidencePolicy === 'best-effort' || inputs.evidencePolicy === 'none',
+    textSource: inputs.textSource ?? 'model'
+  });
+  const tokenMatched = termination.matched;
   // FR-R3-198 — the two extractors are pure, so they run here, ahead of the
   // incomplete-turn arm, which needs to know whether any block is present.
   const remainingIssues = extractRemainingIssues(inputs.stdout);
@@ -608,7 +717,7 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
     }
     return {
       kind: 'remaining_issues',
-      issues: [{ tag: 'constitution', summary: 'no contract block detected', source: 'host' }],
+      issues: [{ tag: 'constitution', summary: noContractBlockSummary(termination.ignored), source: 'host' }],
       auditEntry: inputs.auditEntry,
       warnings
     };

@@ -6,6 +6,12 @@ import {
   AUDIT_LOG_OPEN_MARKER,
   TERMINATION_TOKEN
 } from '../contracts/phase-output-contract';
+import {
+  PROMPT_COMPOSITION_VERSION,
+  promptContractDigest,
+  type PromptIdentity,
+  type PromptTaskKind
+} from './prompt-identity';
 
 // Feature 107 (FR-R3-023) — the position sentence is new here, not new as a
 // rule. `.specify/memory/constitution.md` § Output Formatting & Loop
@@ -77,8 +83,25 @@ export interface PromptInputs {
   continuationNote?: string;
 }
 
+/** The task block as rendered, and which branch of `taskInstructionFor` rendered it. */
+interface TaskBlock {
+  readonly kind: PromptTaskKind;
+  readonly text: string;
+}
+
 export class PromptBuilder {
+  /** The prompt text. Byte-identical to `compose(inputs).text`. */
   public build(inputs: PromptInputs): string {
+    return this.compose(inputs).text;
+  }
+
+  /**
+   * FR-R4-F12 (FR-010; contract PI3) -- the prompt text and its content-free identity, from one
+   * composition. The identity is computed from the same contract text and task block this method
+   * writes into the text, and reads none of the dynamic inputs (iteration, brief, feature dir,
+   * carried issues, sidecar path, previous messages, envelope, continuation note).
+   */
+  public compose(inputs: PromptInputs): { text: string; identity: PromptIdentity } {
     const lines: string[] = [];
     lines.push(`SCHEGENT_PHASE: ${inputs.phase}`);
     lines.push(`SCHEGENT_ITERATION: ${inputs.iteration}/${inputs.iterationCap}`);
@@ -128,16 +151,29 @@ export class PromptBuilder {
       lines.push(inputs.continuationNote);
     }
 
+    const task = this.taskInstructionFor(inputs);
     lines.push('');
     lines.push('TASK:');
-    lines.push(this.taskInstructionFor(inputs));
+    lines.push(task.text);
     lines.push('');
     lines.push('FEATURE DESCRIPTION:');
     lines.push(inputs.featureDescription);
 
     if (inputs.envelope) lines.push(...this.envelopeSections(inputs.envelope));
 
-    return lines.join('\n');
+    return {
+      text: lines.join('\n'),
+      identity: {
+        scope: 'contract',
+        compositionVersion: PROMPT_COMPOSITION_VERSION,
+        digest: promptContractDigest({
+          compositionVersion: PROMPT_COMPOSITION_VERSION,
+          contractText: `${TOKEN_INSTRUCTION}\n\n${AUDIT_INSTRUCTION}`,
+          taskKind: task.kind,
+          taskText: task.text
+        })
+      }
+    };
   }
 
   /**
@@ -224,18 +260,21 @@ export class PromptBuilder {
     return `${item.kind} (run ${item.reference.sourceRunId}, output ${item.reference.outputName})`;
   }
 
-  private taskInstructionFor(inputs: PromptInputs): string {
+  private taskInstructionFor(inputs: PromptInputs): TaskBlock {
     const fromPhaseDef = inputs.phaseDef?.instruction;
     if (fromPhaseDef && fromPhaseDef.trim().length > 0) {
-      return fromPhaseDef;
+      return { kind: 'instruction', text: fromPhaseDef };
     }
     const skill = inputs.phaseDef?.skill;
     if (skill && skill.trim().length > 0) {
-      return [
-        `AGENT CLI SKILL REFERENCE: ${skill.trim()}`,
-        'Treat this as declarative request content. Invoke the named skill through the Agent CLI if available; Schegent does not load it, resolve it as a path, import it, or execute it as extension code.'
-      ].join('\n');
+      return {
+        kind: 'skill',
+        text: [
+          `AGENT CLI SKILL REFERENCE: ${skill.trim()}`,
+          'Treat this as declarative request content. Invoke the named skill through the Agent CLI if available; Schegent does not load it, resolve it as a path, import it, or execute it as extension code.'
+        ].join('\n')
+      };
     }
-    return '(no-op)';
+    return { kind: 'none', text: '(no-op)' };
   }
 }

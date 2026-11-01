@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { NO_REGION } from '../../../src/parser/audit-log-parser';
+import { NO_REGION, parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import { detectCreditError } from '../../../src/parser/credit-error-detector';
 import { parseInvocation } from '../../../src/parser/stdout-parser';
 import { unwrapStreamJson } from '../../../src/parser/stream-json-unwrapper';
@@ -80,14 +80,16 @@ describe('parseInvocation — rate_limited.resetsAtMs (Feature 027)', () => {
   // callers.
   describe('BUG-008 defensive exitCode !== 0 check', () => {
     it('synthetic matched=true with exitCode 0 does NOT route through rate_limited (with token → clean)', () => {
+      // FR-R4-F12 (FR-002): the token follows a complete audit block, as the prompt asks.
+      const stdout = ['=== SCHEGENT AUDIT LOG ===', 'phase: speckit-specify', '=== END AUDIT LOG ===', '[SCHEGENT_STATUS: CLEAR]'].join('\n');
       const result = parseInvocation({
-        stdout: '[SCHEGENT_STATUS: CLEAR]',
+        stdout,
         stderr: '',
         exitCode: 0,
         rateLimit: { matched: true, cause: 'rate-limit' },
         auditEntry: { entryRaw: '{}', entryParsed: {} } as never,
         auditWarnings: [],
-        region: NO_REGION
+        region: parseAuditLogBlock(stdout).region
       });
       expect(result.kind).not.toBe('rate_limited');
       expect(result.kind).toBe('clean');
@@ -164,7 +166,8 @@ describe('parseInvocation — settled-turn precedence (FR-R4-F02, contract L3)',
   const SETTLED = { completedAwaitingExit: true, backgroundWorkOpenAtResult: false, killed: false } as const;
   const KILLED = { completedAwaitingExit: true, backgroundWorkOpenAtResult: false, killed: true } as const;
   const UNSETTLED = { completedAwaitingExit: false, backgroundWorkOpenAtResult: false, killed: false } as const;
-  const CLEAN_BLOCK = '[SCHEGENT_STATUS: CLEAR]';
+  // FR-R4-F12 (FR-002): a complete audit block, then the token, as the prompt asks.
+  const CLEAN_BLOCK = ['=== SCHEGENT AUDIT LOG ===', 'phase: speckit-specify', '=== END AUDIT LOG ===', '[SCHEGENT_STATUS: CLEAR]'].join('\n');
   const IS_ERROR = { isError: true, terminalReason: 'rate_limit' } as const;
 
   function parse(overrides: Partial<Parameters<typeof parseInvocation>[0]>): ReturnType<typeof parseInvocation> {
@@ -189,6 +192,7 @@ describe('parseInvocation — settled-turn precedence (FR-R4-F02, contract L3)',
       turnEnd: SETTLED,
       apiError: null,
       stdout: CLEAN_BLOCK,
+      region: parseAuditLogBlock(CLEAN_BLOCK).region,
       auditEntry: { entryRaw: '{}', entryParsed: {} } as never
     });
     expect(withBlock.kind).toBe('clean');

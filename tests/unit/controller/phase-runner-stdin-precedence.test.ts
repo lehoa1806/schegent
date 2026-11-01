@@ -203,8 +203,9 @@ describe('stdin delivery classification (the arm, executed)', () => {
 
   it('keeps the warnings the invocation already carried', async () => {
     // The arm reclassifies the invocation; it does not get to forget what the
-    // invocation reported. A clean parse with no audit log block is `clean` AND
-    // carries `[constitution] missing audit log on clean response`, and the
+    // invocation reported. A clean parse whose audit entry could not be read is `clean` AND
+    // carries `[constitution] missing audit log on clean response` (FR-R4-F12: the token must
+    // follow a complete pair, so the fixture below is a pair missing its required fields), and the
     // runner appends its own `diagnosticWarnings` besides. Pinning the payload's
     // warning list to one element erased a constitution finding from the record
     // of the phase that earned it — the same evidence loss the `files_created`
@@ -213,7 +214,9 @@ describe('stdin delivery classification (the arm, executed)', () => {
       stdinDeliveryFailed: true,
       stdinErrorCode: 'EPIPE',
       diagnosticWarnings: ['stdin-delivery-failed'],
-      stdoutBuffer: buffer('[SCHEGENT_STATUS: CLEAR]')
+      stdoutBuffer: buffer(
+        ['=== SCHEGENT AUDIT LOG ===', 'phase: speckit-specify', '=== END AUDIT LOG ===', '[SCHEGENT_STATUS: CLEAR]'].join('\n')
+      )
     });
     const phaseEnd = entries.find((e) => e.eventType === 'phase-end');
     const warnings = (phaseEnd?.payload as { warnings?: string[] }).warnings ?? [];

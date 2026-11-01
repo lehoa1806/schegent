@@ -539,7 +539,7 @@
       "description": "A frame the unwrapper cannot read falls back to raw stream-json, and the termination token survives inside it as literal bytes.",
       "provenance": {
         "kind": "synthesized",
-        "reason": "Hand-authored, not captured. Reproducing this live means running a backend whose envelope schema has moved, which is a condition of the vendor CLI rather than of this repository."
+        "reason": "Hand-authored, not captured. Reproducing this live means running a backend whose envelope schema has moved, which is a condition of the vendor CLI rather than of this repository. FR-R4-F12 (FR-006) changed this expectation: the capture holds no model text, so a token inside the raw stream was typed into or read from a tool and no longer advances the Phase, even after a complete audit block."
       },
       "backends": [
         "claude"
@@ -562,11 +562,11 @@
         "truncated": false
       },
       "expected": {
-        "parserKind": "clean",
-        "phaseOutcome": "clean",
-        "terminationReason": "token",
+        "parserKind": "remaining_issues",
+        "phaseOutcome": "issues_remain",
+        "terminationReason": "remaining_issues",
         "auditEntryPresent": true,
-        "mayAdvance": true,
+        "mayAdvance": false,
         "unwrappedText": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"echo [SCHEGENT_STATUS: CLEAR]\"}}]}}",
         "apiError": null
       }
@@ -576,7 +576,7 @@
       "description": "A frame the unwrapper cannot read falls back to raw stream-json, and the termination token survives inside it as literal bytes.",
       "provenance": {
         "kind": "synthesized",
-        "reason": "Hand-authored, not captured. Reproducing this live means running a backend whose envelope schema has moved, which is a condition of the vendor CLI rather than of this repository."
+        "reason": "Hand-authored, not captured. Reproducing this live means running a backend whose envelope schema has moved, which is a condition of the vendor CLI rather than of this repository. FR-R4-F12 (FR-006) changed this expectation: the capture holds no model text, so a token inside the raw stream was typed into or read from a tool and no longer advances the Phase, even after a complete audit block."
       },
       "backends": [
         "codex"
@@ -599,11 +599,11 @@
         "truncated": false
       },
       "expected": {
-        "parserKind": "clean",
-        "phaseOutcome": "clean",
-        "terminationReason": "token",
+        "parserKind": "remaining_issues",
+        "phaseOutcome": "issues_remain",
+        "terminationReason": "remaining_issues",
         "auditEntryPresent": true,
-        "mayAdvance": true,
+        "mayAdvance": false,
         "unwrappedText": "{\"type\":\"item_completed\",\"item\":{\"type\":\"reasoning\",\"text\":\"Next: echo [SCHEGENT_STATUS: CLEAR]\"}}",
         "apiError": null
       }
@@ -613,7 +613,7 @@
       "description": "A frame the unwrapper cannot read falls back to raw stream-json, and the termination token survives inside it as literal bytes.",
       "provenance": {
         "kind": "synthesized",
-        "reason": "Hand-authored, not captured. Reproducing this live means running a backend whose envelope schema has moved, which is a condition of the vendor CLI rather than of this repository."
+        "reason": "Hand-authored, not captured. Reproducing this live means running a backend whose envelope schema has moved, which is a condition of the vendor CLI rather than of this repository. FR-R4-F12 (FR-006) changed this expectation: the capture holds no model text, so a token inside the raw stream was typed into or read from a tool and no longer advances the Phase, even after a complete audit block."
       },
       "backends": [
         "agy"
@@ -636,11 +636,11 @@
         "truncated": false
       },
       "expected": {
-        "parserKind": "clean",
-        "phaseOutcome": "clean",
-        "terminationReason": "token",
+        "parserKind": "remaining_issues",
+        "phaseOutcome": "issues_remain",
+        "terminationReason": "remaining_issues",
         "auditEntryPresent": true,
-        "mayAdvance": true,
+        "mayAdvance": false,
         "unwrappedText": "{\"type\":\"item.completed\",\"item\":{\"type\":\"reasoning\",\"text\":\"Next: echo [SCHEGENT_STATUS: CLEAR]\"}}",
         "apiError": null
       }
@@ -1405,6 +1405,74 @@
         "auditEntryPresent": false,
         "mayAdvance": false,
         "incompleteTurnCause": "background-work-open"
+      }
+    },
+    {
+      "id": "no-region-token-defaulted",
+      "description": "FR-R4-F12 (FR-002) -- a completion token printed mid-prose with no complete audit block before it is reported and never acted on, so a Phase that declared nothing about its evidence does not advance.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. The shape is a model quoting the host protocol it was given, which a recording would reproduce only by prompting a live backend to do it."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the raw-passthrough branch and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
+      "output": {
+        "stdoutLines": [
+          "I have reviewed the change.",
+          "The completion line will read [SCHEGENT_STATUS: CLEAR] once everything is done.",
+          "Still working through the remaining items."
+        ],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "remaining_issues",
+        "phaseOutcome": "issues_remain",
+        "terminationReason": "remaining_issues",
+        "auditEntryPresent": false,
+        "mayAdvance": false
+      }
+    },
+    {
+      "id": "no-region-final-line-relaxed",
+      "description": "FR-R4-F12 (FR-003) -- the one remaining fallback: a Phase whose author declared best-effort may complete on a token that is the last non-empty line, and the acceptance is labelled as a degraded read.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. The case exists to pin the author-declared exception; a recording would need a live Phase authored with a relaxed evidence policy."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the raw-passthrough branch and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
+      "output": {
+        "stdoutLines": [
+          "Implementation complete.",
+          "[SCHEGENT_STATUS: CLEAR]"
+        ],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "parseInputs": {
+        "evidencePolicy": "best-effort"
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": false,
+        "mayAdvance": true
       }
     }
   ]

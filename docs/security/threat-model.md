@@ -54,7 +54,7 @@ Six classes qualify as untrusted input. The controls common to all six are host-
 | **Process YAML** | A size-bounded closed YAML subset is scanned and parsed host-side; anchors, aliases, merge keys, and unknown document shapes are refused before catalog publication. <!-- Source: src/services/process-yaml/yaml-scanner.ts --><!-- Source: src/services/process-yaml/yaml-parser.ts --><!-- Source: src/services/process-yaml/preflight-service.ts --> |
 | **Webview IPC** | `validateInboundMessage` checks the envelope and command payload before routing; invalid messages are dropped without handler dispatch. <!-- Source: src/contracts/runtime-validators.ts --><!-- Source: src/ui/sidebar/sidebar-view-provider.ts --> |
 | **Persisted local state** | `initialize()` migrates supported old schemas and refuses a numeric schema newer than the runtime. <!-- Source: src/state/workspace-state.ts --><!-- Source: src/state/queue-state-migrator.ts --> |
-| **CLI stdout** | [T25](#t25--control-sentinel-carried-in-cli-output): `src/parser/audit-log-parser.ts` computes the trailing region and `src/parser/stdout-parser.ts` consumes it. A degraded read is labelled `[constitution] token accepted without audit block`; an out-of-region token is reported and never acted on. Process control arms only on the harness envelope `{"type":"result"}` in `src/runner/claude-cli.ts`. <!-- Source: src/parser/audit-log-parser.ts --><!-- Source: src/parser/stdout-parser.ts --><!-- Source: src/runner/claude-cli.ts --> |
+| **CLI stdout** | [T25](#t25--control-sentinel-carried-in-cli-output): `src/parser/audit-log-parser.ts` computes the trailing region and `src/parser/stdout-parser.ts` consumes it. A token outside the trailing region is reported and never acted on: a token with no complete audit block before it is reported as `[constitution] termination token without audit block`, and a token in text that reached the host only as tool output (`src/parser/stream-json-unwrapper.ts` names the source) as `[constitution] termination token in tool output`. The degraded label `[constitution] token accepted without audit block` marks the one remaining fallback: the last non-empty line, under an authored `best-effort` or `none` policy. Process control arms only on the harness envelope `{"type":"result"}` in `src/runner/claude-cli.ts`. <!-- Source: src/parser/audit-log-parser.ts --><!-- Source: src/parser/stdout-parser.ts --><!-- Source: src/parser/stream-json-unwrapper.ts --><!-- Source: src/runner/claude-cli.ts --> |
 | **Local path claims** | Workspace-relative requests and derived artifact paths pass lexical or canonical path checks before host filesystem access. <!-- Source: src/services/run-request/run-request-validator.ts --><!-- Source: src/controller/phase-sidecar-reader.ts --> |
 
 The controls common to all six reduce malformed-input and confused-deputy risk; they do not turn model-authored content into trusted content.
@@ -215,11 +215,14 @@ for every surface:
   `{"type":"result"}` record (`isTerminalResultLine`), never on model text, and
   `tests/lint/no-content-driven-process-control.test.ts` pins the mechanism
   ([T25](#t25--control-sentinel-carried-in-cli-output)).
-- **A status token quoted from any surface is ignored, structurally — when the audit block is
-  present.** Only the trailing region decides (`detectTermination`, over the region the audit-log
-  parser computes), so a token echoed mid-output is counted and dropped. Without a complete block the
-  whole-stream fallback accepts a token anywhere and labels the acceptance
-  `[constitution] token accepted without audit block`: labelled, not refused.
+- **A status token quoted from any surface is not read, structurally.** Only the trailing region of
+  a complete audit block decides (`detectTermination`, over the region the audit-log parser
+  computes), so a token echoed mid-output is counted and dropped. With no complete block a token is
+  reported (`[constitution] termination token without audit block`) and never acted on, and text that
+  reached the host only as tool output is reported the same way
+  (`[constitution] termination token in tool output`). The one exception is a Phase whose author
+  declared `evidencePolicy: best-effort` or `none`: its last non-empty line may complete it, labelled
+  `[constitution] token accepted without audit block`.
 - **A model persuaded to print the real token where the protocol expects it is classified as a model
   that finished.** That is **behavioural**, and it is the residue no structural control reaches. The
   exit-code verdict basis does not reach it either: it vetoes a non-zero exit the backend itself
@@ -636,7 +639,7 @@ Initialization migrates known older schemas in order. A numeric schema above the
 
 ### T25 — Control sentinel carried in CLI output
 
-Outcome classification accepts a termination token only in the trailing region at or after the last complete audit block. An out-of-region token is logged and never acted on; if there is no complete block, acceptance is explicitly labelled `[constitution] token accepted without audit block`.
+Outcome classification accepts a termination token only in the trailing region at or after the last complete audit block. An out-of-region token is logged and never acted on. With no complete block a token is reported (`[constitution] termination token without audit block, not accepted`) and not acted on, and text that reached the host only as tool output, a stream-json capture holding no model text, is never read (`[constitution] termination token in tool output, not accepted`). The one exception is a Phase whose author declared `evidencePolicy: best-effort` or `none`: its last non-empty line may complete it, and the acceptance is labelled `[constitution] token accepted without audit block`. The host accepts `CLEAR`, `DONE` or `RESOLVED`, in any letter case, with optional whitespace after the colon, within one line; the prompt asks for `[SCHEGENT_STATUS: CLEAR]` only.
 
 Process control is stronger: Claude grace termination arms on the parsed stream-json `{"type":"result"}` harness record, not on model-content substrings. The mechanism is pinned by `tests/lint/no-content-driven-process-control.test.ts`.
 
@@ -646,6 +649,7 @@ This does not make the model's evidence truthful. It separates a bounded control
 
 <!-- Source: src/parser/audit-log-parser.ts -->
 <!-- Source: src/parser/stdout-parser.ts -->
+<!-- Source: src/parser/stream-json-unwrapper.ts -->
 <!-- Source: src/runner/claude-cli.ts -->
 <!-- Source: src/runner/background-task-tracker.ts -->
 <!-- Source: tests/lint/no-content-driven-process-control.test.ts -->

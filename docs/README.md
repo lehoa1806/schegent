@@ -250,6 +250,10 @@ neither listed nor excluded.
   construction notes that decide whether a generated case is real or inert, and what the property
   deliberately does not cover (FR-R3-168)
 - [Lint and type-aware rules](development/lint-and-type-aware-rules.md)
+- [Parser and timing coverage inventory](development/parser-and-timing-coverage-inventory.md) — which
+  seeded tests guard each parser and settings boundary, which tests wait on a real timer, and which
+  control the clock, each count with the command that reproduces it and an owner for every gap
+  (FR-R4-F12)
 - [Section references are checked by `docs:check`](development/section-reference-check.md) —
   **decided 2026-10-20**: in live documents, a link fragment or `§` marker naming a section of
   another file must name a heading that file has. The rule was fixed before the count, and the count
@@ -260,6 +264,9 @@ neither listed nor excluded.
   every `src/` file of 1,000 lines or more carries a ceiling or a waiver in the size gate's table. The
   measured distribution, each rejected threshold with the count it would have captured, and what
   would move it (FR-R3-183)
+- [Spec Kit template provenance](development/template-provenance.md) — which templates the artifact
+  criteria were derived from, at which hashes, what state each is in, and the upstream revision that is
+  still pending qualification (FR-R4-F12)
 - [The devcontainer question](development/devcontainer-declination.md) — **declined 2026-08-28** (FR-R3-132)
 - [Lint gate census](development/lint-gate-census.md) — one line per gate, generated, with the current dated count
 - [Verification tiers](development/verification-tiers.md) — three tiers, cheapest first, and what each one does not establish (FR-R3-132)
