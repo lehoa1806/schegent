@@ -1,0 +1,61 @@
+[
+  {
+    "file": "spec/missing-requirements.md",
+    "violations": [
+      "SPEC-01"
+    ]
+  },
+  {
+    "file": "spec/duplicate-fr-ids.md",
+    "violations": [
+      "SPEC-02",
+      "SPEC-03"
+    ]
+  },
+  {
+    "file": "spec/unbounded-clarifications.md",
+    "violations": [
+      "SPEC-04",
+      "SPEC-05",
+      "SPEC-06"
+    ]
+  },
+  {
+    "file": "plan/missing-constitution-check.md",
+    "violations": [
+      "PLAN-01"
+    ]
+  },
+  {
+    "file": "plan/template-residue.md",
+    "violations": [
+      "PLAN-02"
+    ]
+  },
+  {
+    "file": "plan/missing-technical-context.md",
+    "violations": [
+      "PLAN-01",
+      "PLAN-03"
+    ]
+  },
+  {
+    "file": "tasks/bad-task-line.md",
+    "violations": [
+      "TASK-01",
+      "TASK-03"
+    ]
+  },
+  {
+    "file": "tasks/duplicate-task-ids.md",
+    "violations": [
+      "TASK-02"
+    ]
+  },
+  {
+    "file": "tasks/implementation-task-without-path.md",
+    "violations": [
+      "TASK-04"
+    ]
+  }
+]

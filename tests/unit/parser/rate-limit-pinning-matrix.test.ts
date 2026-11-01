@@ -21,7 +21,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { NO_REGION } from '../../../src/parser/audit-log-parser';
+import { parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import { detectCreditError } from '../../../src/parser/credit-error-detector';
 import { parseInvocation } from '../../../src/parser/stdout-parser';
 import { unwrapStreamJson } from '../../../src/parser/stream-json-unwrapper';
@@ -104,7 +104,8 @@ const CASES: readonly MatrixCase[] = [
   { id: "p02-no-reset-info-over-rate-limit", source: "stdout-parser-rate-limited.test.ts", stdout: "no rate-limit info in this output", stderr: "over rate limit", exitCode: 1, matched: true, cause: "rate-limit", status: "rate_limited" },
   { id: "p03-out-of-usage-cause", source: "stdout-parser-rate-limited.test.ts", stdout: "", stderr: "You're out of extra usage", exitCode: 1, matched: true, cause: "out-of-usage", status: "rate_limited" },
   { id: "p04-transient-type-error", source: "stdout-parser-rate-limited.test.ts", stdout: "", stderr: "TypeError", exitCode: 1, matched: false, cause: "", status: "transient_error" },
-  { id: "p05-clean-token-exit-0", source: "stdout-parser-rate-limited.test.ts", stdout: "[SCHEGENT_STATUS: CLEAR]", stderr: "", exitCode: 0, matched: false, cause: "", status: "clean" },
+  // FR-R4-F12 (FR-002): the token follows a complete audit block, as the prompt asks. A bare token with no block is no longer clean.
+  { id: "p05-clean-token-exit-0", source: "stdout-parser-rate-limited.test.ts", stdout: "=== SCHEGENT AUDIT LOG ===\nphase: speckit-specify\n=== END AUDIT LOG ===\n[SCHEGENT_STATUS: CLEAR]", stderr: "", exitCode: 0, matched: false, cause: "", status: "clean" },
   { id: "p06-plain-output-exit-0", source: "stdout-parser-rate-limited.test.ts", stdout: "plain output\n", stderr: "", exitCode: 0, matched: false, cause: "", status: "remaining_issues" },
   { id: "o01-out-of-credits-event", source: "stdout-parser-out-of-credits.test.ts", stdout: "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"overageDisabledReason\":\"out_of_credits\"}}", stderr: "", exitCode: 1, matched: true, cause: "out-of-credits", status: "rate_limited" }, // FR-012: status added
   { id: "o02-generic-event", source: "stdout-parser-out-of-credits.test.ts", stdout: "{\"type\":\"rate_limit_event\",\"subtype\":\"unified\",\"rate_limit_info\":{\"status\":\"rejected\"}}", stderr: "", exitCode: 1, matched: true, cause: "rate-limit", status: "rate_limited" }, // FR-012: status added
@@ -129,7 +130,9 @@ describe('FR-R4-F02 T030 — the rate-limit pinning matrix (outcomes at 5d700407
         rateLimit,
         auditEntry: null,
         auditWarnings: [],
-        region: NO_REGION,
+        // From the same text, as phase-runner.ts derives it. Every row but p05 carries no audit
+        // marker, so its region is the absent one it was parsed with before FR-R4-F12.
+        region: parseAuditLogBlock(unwrapped.text).region,
         apiError: unwrapped.apiError
       });
       expect({ matched: rateLimit.matched, cause: rateLimit.cause, status: parsed.kind }).toEqual({

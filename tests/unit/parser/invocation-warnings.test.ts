@@ -40,6 +40,13 @@ function block(notes = 'work done'): string[] {
   ];
 }
 
+/**
+ * FR-R4-F12 (FR-002) -- a complete audit pair whose body the entry parser cannot read, then the
+ * token in the region. A token with no block before it is no longer read, so the warnings that
+ * describe a missing entry on a clean response are driven on this shape: a region, and a null entry.
+ */
+const ENTRY_NULL_TURN = [OPEN, 'phase: speckit-implement', CLOSE, TOKEN].join('\n');
+
 /** `rate_limited` is the one variant with no `warnings` field; it returns
  *  before detection runs, so it can never accumulate one. */
 function warningsOf(result: InvocationResult): string[] | undefined {
@@ -78,8 +85,8 @@ describe('the three previously-discarded warnings are returned (FR-030)', () => 
     expect(warningsOf(result)).toContain('[constitution] multiple contract blocks');
   });
 
-  it('returns "missing audit log on clean response" when a token arrives with no block', () => {
-    const result = parse(TOKEN);
+  it('returns "missing audit log on clean response" when a token arrives with no readable entry', () => {
+    const result = parse(ENTRY_NULL_TURN);
 
     expect(result.kind).toBe('clean');
     expect(warningsOf(result)).toContain('[constitution] missing audit log on clean response');
@@ -204,21 +211,21 @@ describe('evidencePolicy governs how a missing audit block is reported (S12)', (
     // an omitted field. A change that moved only one of them would be a change to
     // every already-persisted snapshot, and this is what would notice.
     for (const overrides of [{ evidencePolicy: 'required' as const }, {}]) {
-      const result = parse(TOKEN, overrides);
+      const result = parse(ENTRY_NULL_TURN, overrides);
       expect(result.kind).toBe('clean');
       expect(warningsOf(result)).toContain(MISSING_ON_CLEAN);
     }
   });
 
   it('best-effort — recorded as an expectation unmet, not a rule broken', () => {
-    const result = parse(TOKEN, { evidencePolicy: 'best-effort' });
+    const result = parse(ENTRY_NULL_TURN, { evidencePolicy: 'best-effort' });
     expect(result.kind).toBe('clean');
     expect(warningsOf(result)).toContain(RELAXED_ON_CLEAN);
     expect(warningsOf(result)).not.toContain(MISSING_ON_CLEAN);
   });
 
   it('none — the Phase declares it produces no audit block, so absence is not news', () => {
-    const result = parse(TOKEN, { evidencePolicy: 'none' });
+    const result = parse(ENTRY_NULL_TURN, { evidencePolicy: 'none' });
     expect(result.kind).toBe('clean');
     expect(warningsOf(result)).not.toContain(MISSING_ON_CLEAN);
     expect(warningsOf(result)).not.toContain(RELAXED_ON_CLEAN);
@@ -238,7 +245,7 @@ describe('evidencePolicy governs how a missing audit block is reported (S12)', (
     for (const declaredAt of [undefined, 'default' as const]) {
       const kinds = (['required', 'best-effort', 'none'] as const).map(
         (evidencePolicy) =>
-          parse(TOKEN, {
+          parse(ENTRY_NULL_TURN, {
             evidencePolicy,
             ...(declaredAt === undefined ? {} : { evidencePolicyDeclaredAt: declaredAt })
           }).kind
@@ -250,7 +257,7 @@ describe('evidencePolicy governs how a missing audit block is reported (S12)', (
 
   it('an AUTHORED required withholds the clean advance, and names why (FR-R3-096)', () => {
     // The other side of the boundary, asserted beside it so the two cannot drift.
-    const result = parse(TOKEN, {
+    const result = parse(ENTRY_NULL_TURN, {
       evidencePolicy: 'required',
       evidencePolicyDeclaredAt: 'phase-definition'
     });
@@ -278,12 +285,39 @@ describe('evidencePolicy governs how a missing audit block is reported (S12)', (
     // one field moved. If `best-effort` also refused, the refusal would be coming
     // from somewhere other than the policy.
     for (const evidencePolicy of ['best-effort', 'none'] as const) {
-      const result = parse(TOKEN, {
+      const result = parse(ENTRY_NULL_TURN, {
         evidencePolicy,
         evidencePolicyDeclaredAt: 'phase-definition'
       });
       expect(result.kind).toBe('clean');
     }
+  });
+
+  it('a token with no block at all is not read under any defaulted shape (FR-R4-F12, FR-007)', () => {
+    // The boundary of the safety property above: it holds for a turn with a region, and a defaulted
+    // Phase on a turn with no block no longer advances on a token alone.
+    for (const overrides of [
+      {},
+      { evidencePolicy: 'required' as const },
+      { evidencePolicy: 'required' as const, evidencePolicyDeclaredAt: 'default' as const }
+    ]) {
+      const result = parse(TOKEN, overrides);
+      expect(result.kind).toBe('remaining_issues');
+      expect(warningsOf(result)).toContainEqual(
+        expect.stringContaining('termination token without audit block')
+      );
+    }
+  });
+
+  it('a relaxed Phase still completes on the last line, at its own warning volume (FR-003)', () => {
+    const relaxed = parse(TOKEN, { evidencePolicy: 'best-effort' });
+    const silent = parse(TOKEN, { evidencePolicy: 'none' });
+
+    expect(relaxed.kind).toBe('clean');
+    expect(warningsOf(relaxed)).toContain(RELAXED_ON_CLEAN);
+    expect(silent.kind).toBe('clean');
+    expect(warningsOf(silent)).not.toContain(MISSING_ON_CLEAN);
+    expect(warningsOf(silent)).not.toContain(RELAXED_ON_CLEAN);
   });
 
   it('reports the no-contract-block path at the same three volumes', () => {

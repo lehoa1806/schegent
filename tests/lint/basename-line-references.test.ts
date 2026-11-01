@@ -835,11 +835,13 @@ describe('bare-basename file:line references resolve (FR-R3-145 follow-up)', () 
       'AGENTS.md'
     ]);
     // Unprefixed, the same document exists under both roots, and that is ambiguous
-    // rather than resolved. `docs/security/threat-model.md` is 1,396 lines in the
-    // envelope and 559 in the repo; a citation past 559 is not ambiguous at all.
+    // rather than resolved. `docs/security/threat-model.md` is about 1,500 lines in the
+    // envelope and about 900 in the repo; a citation past the repo's length is not ambiguous
+    // at all. The probe cites line 1000, past the repo's file with room to spare: it first
+    // cited 900, which the repo's own file reached once FR-R4-F12 added lines to it.
     expect(resolveQualified(ref('docs/security/threat-model.md', REPO_ROOT)).length).toBe(2);
     expect(verdictOf(ref('docs/security/threat-model.md', REPO_ROOT))).toBe('ambiguous');
-    expect(verdictOf({ ...ref('docs/security/threat-model.md', REPO_ROOT), cited: 900 })).toBe(
+    expect(verdictOf({ ...ref('docs/security/threat-model.md', REPO_ROOT), cited: 1000 })).toBe(
       'resolved'
     );
     // `repo/x` is how the envelope names a repo file, and it resolves from either side.
