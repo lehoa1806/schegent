@@ -1583,7 +1583,12 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // `CapabilityRefusedPayload`, each with its one-line note, plus the import that names their closed
       // unions. `RunResumePayload.liveness` gains a value and adds no line. The projection arm lives in
       // `src/audit/audit-payload.ts`.
-      highWaterMark: 1627
+      //
+      // Feature 259 (FR-R4-F12, 2026-11-01) — 1627 → 1631, +4, by this gate's count. The lines are
+      // the type-only import of `PromptIdentity` (one) and the additive optional field
+      // `PhaseStartPayload.promptIdentity` with its two-line note (three). No other payload, event
+      // type or constant changed, and `AUDIT_SCHEMA_VERSION` stays 3.
+      highWaterMark: 1631
     }
   },
   // The second file of the same 2026-10-01 decision; see the waiver above.
@@ -1608,7 +1613,18 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // request's figure and the output's figure. The why is the FR-R3-209 note on this file's
       // entry in tests/lint/phase-runner-loc-budget.test.ts, whose ceiling moved 1,404 → 1,408
       // in the same diff.
-      highWaterMark: 1409
+      //
+      // Feature 259 (FR-R4-F12, 2026-11-01) — 1409 → 1410, +1, by this gate's count. The line
+      // forwards `textSource` from the unwrapper to the parser (CP7), so tool-output text cannot
+      // advance a Phase (FR-006). The why is the FR-R4-F12 note on this file's entry in
+      // tests/lint/phase-runner-loc-budget.test.ts, whose ceiling moved 1,408 → 1,409 in the same
+      // diff.
+      //
+      // Feature 259 (FR-R4-F12, 2026-11-01), second raise — 1410 → 1414, +4, by this gate's count.
+      // The lines select the composed prompt's identity beside the prompt and set it on `phase-start`
+      // (PI4). The why is the second FR-R4-F12 note on this file's entry in
+      // tests/lint/phase-runner-loc-budget.test.ts, whose ceiling moved 1,409 → 1,413 in the same diff.
+      highWaterMark: 1414
     }
   }
 ];

@@ -11,6 +11,10 @@ export const AUDIT_LOG_CLOSE_MARKER = '=== END AUDIT LOG ===';
 /** The completion token the prompt asks for; the host and the activity feed accept it through `containsTerminationToken`. */
 export const TERMINATION_TOKEN = '[SCHEGENT_STATUS: CLEAR]';
 
+// The accepted set: `CLEAR`, `DONE` or `RESOLVED`, in any letter case, with optional whitespace after
+// the colon, within one line (FR-R4-F12, FR-013). The placement rule, that a token counts only in the
+// trailing region of the last complete audit block, is applied by `detectTermination` in
+// `src/parser/stdout-parser.ts`, not by this pattern.
 // Flag `i` only: a `g` or `y` flag would make `test` keep `lastIndex` between calls.
 const TERMINATION_PATTERN = /\[SCHEGENT_STATUS:\s*(CLEAR|DONE|RESOLVED)\]/i;
 

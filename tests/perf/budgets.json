@@ -115,6 +115,13 @@
       "budgetMs": 4000,
       "constant": "artifactCeilingMs",
       "rationale": "FR-R4-F10 SC-005: evidence export and the diagnostics bundle sanitize a whole artifact of up to MAX_ARTIFACT_BYTES (16 MiB) in one call (research R14). One sample per generator, which keeps the tier's added time under a minute."
+    },
+    {
+      "test": "tests/perf/completion-detection-bounded-work.test.ts",
+      "name": "parseAuditLogBlock + parseInvocation \u2014 completion detection at 16 MiB, five hostile shapes, two policies",
+      "budgetMs": 1500,
+      "constant": "MAX_MS_AT_16_MIB",
+      "rationale": "FR-R4-F12 FR-023: completion detection stays linear at 16 MiB. The median of 3 runs over each seeded shape is at most 1,500 ms at 16 MiB with a 16/8 MiB ratio of at most 3.0 (MAX_DOUBLING_RATIO). At plan the worst shape took 295.7 ms with a ratio of 2.4 (research R0). A deliberately quadratic reference scan must show a ratio above 3.0 on the same run shape, so the check can fail."
     }
   ],
   "notes": [

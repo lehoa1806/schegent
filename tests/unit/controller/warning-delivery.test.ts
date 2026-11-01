@@ -20,6 +20,7 @@ import type { ClaudeCliRunner } from '../../../src/runner/claude-cli';
 import type { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
 import type { RawInvocationOutput, InvocationRequest } from '../../../src/runner/invocation-result';
+import type { PhaseDef } from '../../../src/config/pipeline-config';
 
 const OPEN = '=== SCHEGENT AUDIT LOG ===';
 const CLOSE = '=== END AUDIT LOG ===';
@@ -63,7 +64,7 @@ const baseInputs = {
  * Run a phase against fixed stdout and return every warning that reached the
  * audit writer.
  */
-async function deliveredWarnings(stdout: string, exitCode = 0): Promise<string[]> {
+async function deliveredWarnings(stdout: string, exitCode = 0, phaseDef?: PhaseDef): Promise<string[]> {
   const cliRunner = {
     invoke: vi.fn(
       async (_req: InvocationRequest): Promise<RawInvocationOutput> => ({
@@ -90,7 +91,7 @@ async function deliveredWarnings(stdout: string, exitCode = 0): Promise<string[]
   } as unknown as AuditLogWriter;
 
   const runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
-  await runner.run(baseInputs);
+  await runner.run({ ...baseInputs, ...(phaseDef ? { phaseDef } : {}) });
 
   return appended.flatMap((entry) => {
     const warnings = (entry.payload as Record<string, unknown>).warnings;
@@ -112,14 +113,28 @@ describe('constitution warnings reach the persisted audit entry (SC-011)', () =>
   });
 
   it('delivers "missing audit log on clean response"', async () => {
-    expect(await deliveredWarnings(TOKEN)).toContain(
+    // FR-R4-F12: a token with no block is no longer clean, so the warning is reached by a complete
+    // pair that is missing a required field, followed by the token in the region.
+    const stdout = [OPEN, 'phase: speckit-specify', CLOSE, TOKEN].join('\n');
+
+    expect(await deliveredWarnings(stdout)).toContain(
       '[constitution] missing audit log on clean response'
     );
   });
 
   it('delivers the degraded-path label', async () => {
-    expect(await deliveredWarnings(TOKEN)).toContain(
+    // FR-R4-F12 (FR-003): the label marks the one remaining fallback, a final-line token under an
+    // authored `best-effort` policy.
+    const phaseDef = { id: 'speckit-specify', name: 'Best effort', evidencePolicy: 'best-effort' } as PhaseDef;
+
+    expect(await deliveredWarnings(TOKEN, 0, phaseDef)).toContain(
       '[constitution] token accepted without audit block'
+    );
+  });
+
+  it('delivers the no-region report when a defaulted Phase prints a token with no block', async () => {
+    expect(await deliveredWarnings(['notes', TOKEN].join('\n'))).toContain(
+      '[constitution] termination token without audit block, not accepted (1 occurrence, first at line 2)'
     );
   });
 

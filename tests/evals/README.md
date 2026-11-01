@@ -4,14 +4,18 @@
 cited as such.**
 
 FR-R3-061 added this file because the distinction was being lost. The corpus is a versioned,
-deterministic set of **37 cases** (`fixtures/backend-outcomes.json`), and the suite around it reports
-**50 passing tests** — the extra thirteen are structural meta-assertions about the corpus itself, not
+deterministic set of **39 cases** (`fixtures/backend-outcomes.json`), and the suite around it reports
+**52 passing tests** — the extra thirteen are structural meta-assertions about the corpus itself, not
 additional cases. That tally is asserted by the suite against its own test declarations (FR-R3-067), so
 adding a test moves both sides at once; it read 13 for a while because `FR-R3-061` added two
 meta-assertions in the same change that wrote this sentence. Which counts in this corpus are checked, by
 what, and which were deliberately left uncounted is recorded in
 [Counts the round-3 documents assert](../../docs/operations/asserted-counts-sweep.md). A review cited the suite as evidence that backend behaviour was qualified. It is
 not evidence of that, and cannot be.
+
+Artifact **structure** is evaluated separately, offline, in [`artifacts/`](artifacts/README.md): twelve
+synthetic Spec Kit documents against versioned criteria. That suite measures structure, not quality or
+execution safety, and feeds nothing in the host.
 
 ## What it does cover
 

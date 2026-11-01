@@ -334,10 +334,11 @@ function fatalEntries(): EnumerationEntry[] {
  * cases assert `unwrappedText` BEFORE classification.
  */
 const UNWRAPPER_BRANCHES: ReadonlyArray<{ key: string; line: number }> = [
-  { key: 'raw-passthrough', line: 112 },
-  { key: 'unwrapped-model-text', line: 116 },
-  { key: 'raw-fallback-on-drift', line: 116 },
-  { key: 'api-error-detected', line: 35 }
+  // FR-R4-F12 -- each line moved by +11: `UnwrappedStream` gained the documented `textSource` field.
+  { key: 'raw-passthrough', line: 123 },
+  { key: 'unwrapped-model-text', line: 127 },
+  { key: 'raw-fallback-on-drift', line: 127 },
+  { key: 'api-error-detected', line: 46 }
 ];
 
 function unwrapperEntries(): EnumerationEntry[] {

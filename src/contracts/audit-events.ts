@@ -7,6 +7,7 @@ import type {
 import type { TerminationReason } from '../state/workflow-run';
 import type { FailureCause } from './failure-cause';
 import type { RunnerLabel, TreeEscalation } from './backend-runner';
+import type { PromptIdentity } from '../runner/prompt-identity';
 // Feature FR-R3-006 — the reset transaction's phase and refusal literals are
 // declared once, in a module that imports nothing, and the audit payload reuses
 // them rather than restating them. A restated copy is a second source of truth
@@ -123,6 +124,9 @@ export interface PhaseStartPayload {
   readonly timeoutMs?: number;
   readonly isContinue: boolean;
   readonly sessionReuse: boolean;
+  // FR-R4-F12: additive, optional; absent on every earlier row and read as not recorded; no
+  // `AUDIT_SCHEMA_VERSION` bump (028 / 030 / 031 / 032 / 242 precedent).
+  readonly promptIdentity?: PromptIdentity;
 }
 
 export const RUNNER_EVENT_TYPES = ['cli-invocation', 'file-write', 'runner-probe-failed'] as const;

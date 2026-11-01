@@ -7,7 +7,7 @@
  * substitutes carry `source: 'host'`, and the carried prompt text is byte-identical either way.
  */
 import { describe, it, expect } from 'vitest';
-import { NO_REGION } from '../../../src/parser/audit-log-parser';
+import { NO_REGION, parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import { parseInvocation } from '../../../src/parser/stdout-parser';
 import type { InvocationResult, ParseInputs } from '../../../src/parser/stdout-parser';
 import { PromptBuilder } from '../../../src/runner/prompt-builder';
@@ -43,9 +43,18 @@ describe('parser provenance (T6.1)', () => {
   });
 
   it('marks the missing-evidence substitute as host', () => {
+    // FR-R4-F12 (FR-002): the withhold applies to a token in the region of a complete pair whose
+    // entry could not be read. A token with no block before it is not read at all.
+    const stdout = [
+      '=== SCHEGENT AUDIT LOG ===',
+      'phase: speckit-specify',
+      '=== END AUDIT LOG ===',
+      '[SCHEGENT_STATUS: CLEAR]'
+    ].join('\n');
     const result = parseInvocation({
       ...REST,
-      stdout: 'all done\n[SCHEGENT_STATUS: CLEAR]\n',
+      stdout,
+      region: parseAuditLogBlock(stdout).region,
       exitCode: 0,
       evidencePolicy: 'required',
       evidencePolicyDeclaredAt: 'phase-definition'
@@ -54,6 +63,18 @@ describe('parser provenance (T6.1)', () => {
       {
         tag: 'constitution',
         summary: 'this Phase declares evidencePolicy required and produced no audit block',
+        source: 'host'
+      }
+    ]);
+  });
+
+  it('marks the substitute for a token printed with no audit block as host (FR-R4-F12)', () => {
+    const result = parseInvocation({ ...REST, stdout: 'all done\n[SCHEGENT_STATUS: CLEAR]\n', exitCode: 0 });
+    expect(issuesOf(result)).toEqual([
+      {
+        tag: 'constitution',
+        summary:
+          'a completion token was printed without a complete audit block before it; print the audit block, then the token as the last line',
         source: 'host'
       }
     ]);
