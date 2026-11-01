@@ -3,7 +3,8 @@
 This file orients autonomous coding agents working inside the execution
 repository. The workspace-level `../AGENTS.md` orients you above this directory
 and points at `../docs/hard-rules.md`, which is the single source of truth for
-the hard rules when changing host code.
+the hard rules when changing host code. In a standalone clone `../docs/hard-rules.md`
+is absent, so obtain the planning envelope before changing host code.
 
 ## What This Repo Is
 
@@ -23,7 +24,10 @@ npm run test
 npm run build
 npm run test:integration
 npm run ci
+npm run gate
 ```
+
+`npm run gate` runs the five repository checks and then `ci`, and is the full verification.
 
 ## Rules
 

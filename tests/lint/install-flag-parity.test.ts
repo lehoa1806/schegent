@@ -23,8 +23,8 @@
 // install `webview-ui`, so every setup surface that still teaches a bare `npm
 // install` hands a new contributor a checkout whose first build fails. FR-R3-101
 // found four such surfaces. So this gate now checks the hardening against the
-// documents that teach it, and `tests/lint/setup-surface-parity.test.ts` covers the
-// full registered set.
+// documents that teach it, and `tests/lint/procedure-surface-registry.test.ts` (its
+// `two-command-install` entry) covers the full registered set.
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';

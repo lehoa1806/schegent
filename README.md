@@ -73,17 +73,18 @@ npm --prefix webview-ui ci
 **Two commands, and the second one is the point.** `.npmrc` sets `ignore-scripts=true` in both
 trees (`FR-R3-090`), so the root `postinstall` that used to install `webview-ui` does not run.
 Without the second command the first build fails, and it fails somewhere that does not mention
-installing. `CONTRIBUTING.md` is the authority for this sequence; every other document links to
-it rather than repeating it.
+installing. `CONTRIBUTING.md` is the authority for this sequence. A page that repeats it is
+registered with `tests/lint/procedure-surface-registry.test.ts`, which fails a copy that drops the
+second command.
 
 Then verify:
 
 ```bash
-npm run verify:all
+npm run gate
 npm run build
 ```
 
-`npm run verify:all` checks generated contracts, documentation, security scripts, license records, both TypeScript projects, host/webview lint, host tests, and webview coverage. The broader `npm run ci` also runs eval, visual, performance, E2E, package-smoke, and extension-host integration gates.
+`npm run gate` is the full verification. It runs the five repository checks (`contracts:check`, `docs:check`, `security:secrets`, `security:actions` and `license:check`), then `npm run ci`. `npm run ci` runs the typechecks, lint, the builds, coverage, and the eval, visual, accessibility, performance and E2E suites, then package smoke and the extension-host integration tests, but none of the five checks. `npm run verify:all` is the lighter local check: it builds the webview, runs the five checks, the typechecks, lint, the host tests and webview coverage, and none of the browser-backed, packaging or integration suites.
 
 <!-- Source: package.json -->
 

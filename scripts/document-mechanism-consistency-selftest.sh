@@ -98,6 +98,17 @@ expect_red_naming 'row 1 sentence restored' 'audit-chain'
 restore
 expect_green 'row 1 sentence removed again'
 
+# --- seed 1 again, in the GitHub-facing copy (FR-R4-F11) ---------------------
+# `.github/SECURITY.md` is the copy GitHub's Security tab may render. It carried this very
+# denial, and the gate read every other policy page but this one. The leg proves the `.github`
+# copy is read: the denial is planted as bare prose, and the gate must go red naming the seed.
+printf '\nseed audit-chain, .github copy\n'
+plant .github/SECURITY.md \
+  'Schegent has no hash chain or post-write tamper detector.'
+expect_red_naming '.github denial planted' 'audit-chain'
+restore
+expect_green '.github denial removed again'
+
 # --- seed 2: process-tree ----------------------------------------------------
 printf '\nseed process-tree\n'
 plant docs/operations/backends.md \

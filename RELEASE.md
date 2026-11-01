@@ -524,6 +524,8 @@ npm run release:preflight   # both bindings, without packaging
 npm run audit:verify        # the audit log's hash chain, if you are verifying an operator's evidence
 ```
 
+The chain detects a break in the retained log. It does not prevent the same OS user from rewriting the log and recomputing the chain; [the threat model](docs/security/threat-model.md#t3--audit-log-tampering-or-non-append-writes) states what is and is not covered.
+
 Install or smoke-test the VSIX in a second VS Code host before handing it to anyone. `package:smoke`
 exercises the build before packaging; it does not install the final archive.
 <!-- Source: scripts/package-vsix-smoke.mjs -->

@@ -26,15 +26,23 @@ run gives an agent the ability to write to the open workspace. Create an empty d
 mkdir -p /tmp/schegent-tutorial && cd /tmp/schegent-tutorial && git init
 ```
 
-**Rollback.** Everything this tutorial does is confined to that directory. To undo it entirely,
-close the window and delete the directory. Nothing is written outside it except VS Code's own
+**Rollback.** Closing the window and deleting the directory removes the folder and VS Code's own
 per-workspace state, which VS Code discards with the folder.
+
+The backend grant is a different matter. It is a User setting, so deleting the folder does not
+remove it. To undo only what this walkthrough added: if the modal added a backend, remove that one
+id from `schegent.backend.uncontainedBackends`. Either select **Revoke uncontained permission** for
+that backend in Schegent's Settings, under General, Backend, or edit the list back to the value you
+recorded in [Record your backend grant list](#record-your-backend-grant-list). A backend you had
+granted before the walkthrough stays granted. Whichever surface wrote the grant, the result is the
+same: the id the walkthrough added is absent from the list.
 
 The pipeline used here — `Spec-kit Bugfix` — declares **no** `sideEffects: git` on any phase. That is
 why it is the one this tutorial uses. `Spec-kit New Feature` does, on two phases, and is not a first
 run.
 <!-- Source: examples/speckit-bugfix.pipeline.yaml -->
 <!-- Source: examples/speckit-bugfix.pipeline.yaml -->
+<!-- Source: src/services/uncontained-grant-writer.ts -->
 
 ### Satisfy the activation condition explicitly
 
@@ -82,6 +90,18 @@ Grant VS Code Workspace Trust to the disposable folder. In an untrusted workspac
 <!-- Source: webview-ui/src/components/TrustBanner.svelte -->
 <!-- Source: webview-ui/src/components/PipelineBuilder.svelte -->
 <!-- Source: webview-ui/src/components/RunsSurface.svelte -->
+
+### Record your backend grant list
+
+The first Run on the default `claude` backend is refused until you allow that backend. Allowing it
+changes a **User** setting, not the folder (see [If the run is refused](#if-the-run-is-refused)).
+So before you start, note the current value of `schegent.backend.uncontainedBackends`, either in the
+Settings editor or in your User `settings.json`. The default is an empty list, `[]`. Write the value
+down: the rollback note under [Use a disposable workspace](#use-a-disposable-workspace) restores
+exactly that value, so it removes only what this walkthrough added and nothing you had granted
+before.
+<!-- Source: package.json -->
+<!-- Source: src/activation/uncontained-consent.ts -->
 
 ## 1. Open the dashboard
 
@@ -165,6 +185,15 @@ The repository's deterministic integration test, `tests/integration/bugfix-pipel
 
 ## If the run is refused
 
+- **The first Run is refused until you allow the backend:** with the shipped defaults (the `claude`
+  backend and an empty `schegent.backend.uncontainedBackends` list), the first Run is refused when it
+  starts, after `Queued as …` has appeared. A modal reads "Schegent cannot start the '<id>' backend
+  without your approval." (`<id>` is `claude` on the default backend). Its only approving button is
+  **Enable '<id>' for This Installation**. Approving adds that one backend to
+  `schegent.backend.uncontainedBackends` in your User settings, so it applies to every workspace on
+  this installation, and the backend then runs with no OS-enforced bound and your local user
+  authority: that is a risk you accept, not a protection you gain. Cancelling or dismissing the modal
+  leaves the Run refused, and nothing starts. The `codex` backend is contained and never asks.
 - **No import controls:** grant Workspace Trust. Pipeline and workflow mutations require it.
 - **Trigger is disabled:** use the VS Code window whose header says **Workspace Connected**.
 - **Validation feedback appears:** correct the named field and submit again. The extension host, rather than the webview, is authoritative for run-request validation.
@@ -174,4 +203,6 @@ The repository's deterministic integration test, `tests/integration/bugfix-pipel
 <!-- Source: webview-ui/src/components/Runs/LaunchableDetail.svelte -->
 <!-- Source: webview-ui/src/components/RunLauncher/RunLauncher.svelte -->
 <!-- Source: src/contracts/run-request.ts -->
+<!-- Source: src/activation/uncontained-consent.ts -->
+<!-- Source: package.json -->
 <!-- Source: webview-ui/src/dashboard/routes.ts -->
