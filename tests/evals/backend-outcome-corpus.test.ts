@@ -374,6 +374,9 @@ function evaluate(testCase: EvalCase): {
   const extra = testCase.parseInputs;
   const effectiveFatalSignatures = effectiveSignaturesFor(testCase);
   const apiError = unwrapped?.apiError ?? undefined;
+  // FR-R4-F12 (CP7, FR-006) -- forwarded as phase-runner.ts forwards it, and omitted when there is
+  // no envelope to unwrap: a stream with no model text must not advance on a token in tool output.
+  const textSource = unwrapped?.textSource;
   const streamFatalMatch = extra?.streamFatalMatch;
   const turnEnd = extra?.turnEnd;
   const parsed = parseInvocation({
@@ -408,6 +411,7 @@ function evaluate(testCase: EvalCase): {
     // changes with these lines. They are written so the harness can be read
     // under the flag the ratchet is adopting.
     ...(apiError === undefined ? {} : { apiError }),
+    ...(textSource === undefined ? {} : { textSource }),
     ...(effectiveFatalSignatures === undefined ? {} : { effectiveFatalSignatures }),
     ...(streamFatalMatch === undefined ? {} : { streamFatalMatch }),
     // FR-R3-198 — omitted the same way, because `ParseInputs` declares `turnEnd`
@@ -655,7 +659,12 @@ describe('backend-neutral outcome evaluation corpus', () => {
       // of run 777491f8. The second is the same turn at exit 0, which keeps the
       // class on the turn-end facts and off the exit code.
       'incomplete-turn-observed-777491f8',
-      'incomplete-turn-exit-0-background-open'
+      'incomplete-turn-exit-0-background-open',
+
+      // FR-R4-F12 (FR-002, FR-003) — a completion token with no complete audit block before it.
+      // The first is reported and never acted on; the second is the one author-declared exception.
+      'no-region-token-defaulted',
+      'no-region-final-line-relaxed'
     ]);
   });
 

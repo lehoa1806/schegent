@@ -34,7 +34,21 @@ const validAudit: AuditEntryFields = {
   warnings: Object.freeze([] as string[])
 };
 
-const clearToken = '[SCHEGENT_STATUS: CLEAR]\n';
+// FR-R4-F12 -- the token follows a complete audit block, as the prompt asks. A token with no block
+// before it is no longer read (FR-002), so a bare token cannot stand for a clean run here.
+const completeBlock = [
+  '=== SCHEGENT AUDIT LOG ===',
+  'phase: speckit-specify',
+  'files_created: ["specs/001-mock/spec.md"]',
+  'files_modified: []',
+  'files_deleted: []',
+  'commands_executed: ["mock specify"]',
+  'network_calls: ["none"]',
+  'ruleset_switches: ["none"]',
+  'notes: mock',
+  '=== END AUDIT LOG ==='
+].join('\n');
+const clearToken = `${completeBlock}\n[SCHEGENT_STATUS: CLEAR]\n`;
 
 function inputs(overrides: {
   stdout?: string;
@@ -56,8 +70,8 @@ function inputs(overrides: {
     auditEntry: overrides.auditEntry === undefined ? validAudit : overrides.auditEntry,
     auditWarnings: [],
     effectiveFatalSignatures: getEffectiveSignatures([]),
-    // From the same stdout, as phase-runner.ts derives it. None of these
-    // stdouts carries a block, so it is NO_REGION; `auditEntry` stands in.
+    // From the same stdout, as phase-runner.ts derives it. The stdouts that carry the token also
+    // carry a complete block, so their region is present; `auditEntry` stands in for the parsed entry.
     region: parseAuditLogBlock(stdout).region
   };
 }

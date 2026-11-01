@@ -233,18 +233,49 @@ describe('in-region decoration tolerance is preserved (FR-008, SC-002)', () => {
 });
 
 describe('the degraded path is labeled, not silent (FR-009)', () => {
-  it('falls back to the whole-stdout scan when no audit block is present', () => {
-    const result = parse(['did the work', TOKEN].join('\n'));
+  // FR-R4-F12 (FR-002, FR-003) -- with no complete block a token is read only from the last
+  // non-empty line, and only for a Phase whose author declared `best-effort` or `none`. Every
+  // other policy reports the token and leaves the turn unfinished.
+  it('falls back to the last non-empty line when no audit block is present, for an authored best-effort policy', () => {
+    const result = parse(['did the work', TOKEN].join('\n'), { evidencePolicy: 'best-effort' });
 
     expect(result.kind).toBe('clean');
     expect(warningsOf(result)).toContain('[constitution] token accepted without audit block');
   });
 
+  it('does not read a token with no audit block under a defaulted policy, and says why', () => {
+    const result = parse(['did the work', TOKEN].join('\n'));
+
+    expect(result.kind).toBe('remaining_issues');
+    expect(warningsOf(result)).toContain(
+      '[constitution] termination token without audit block, not accepted (1 occurrence, first at line 2)'
+    );
+    expect(warningsOf(result)).not.toContain('[constitution] token accepted without audit block');
+    expect(result).toMatchObject({
+      issues: [
+        {
+          tag: 'constitution',
+          source: 'host',
+          summary:
+            'a completion token was printed without a complete audit block before it; print the audit block, then the token as the last line'
+        }
+      ]
+    });
+  });
+
   it('still records the missing audit block alongside the degraded-path label', () => {
-    const warnings = warningsOf(parse(TOKEN));
+    const warnings = warningsOf(parse(TOKEN, { evidencePolicy: 'best-effort' }));
 
     expect(warnings).toContain('[constitution] token accepted without audit block');
-    expect(warnings).toContain('[constitution] missing audit log on clean response');
+    // The `best-effort` spelling of the same warning (S12): the policy changes its volume, not its presence.
+    expect(warnings).toContain('[evidence] audit log absent on clean response, best-effort');
+  });
+
+  it('still records the missing audit block when the token is not read', () => {
+    const warnings = warningsOf(parse(TOKEN));
+
+    expect(warnings).toContain('[constitution] missing audit log');
+    expect(warnings).not.toContain('[constitution] token accepted without audit block');
   });
 
   it('does not label the degraded path when no token was accepted', () => {
@@ -256,10 +287,14 @@ describe('the degraded path is labeled, not silent (FR-009)', () => {
   it('treats a half-block cut by the retention window as degraded, not fatal', () => {
     // Above MAX_STREAM_BUFFER_BYTES stdout is a head plus a rolling tail, so a
     // bare close marker is ordinary input. It must not synthesise a region.
-    const result = parse(['notes: truncated mid-block', CLOSE, TOKEN].join('\n'));
+    const stdout = ['notes: truncated mid-block', CLOSE, TOKEN].join('\n');
+    const relaxed = parse(stdout, { evidencePolicy: 'best-effort' });
+    const defaulted = parse(stdout);
 
-    expect(result.kind).toBe('clean');
-    expect(warningsOf(result)).toContain('[constitution] token accepted without audit block');
+    expect(relaxed.kind).toBe('clean');
+    expect(warningsOf(relaxed)).toContain('[constitution] token accepted without audit block');
+    expect(defaulted.kind).toBe('remaining_issues');
+    expect(warningsOf(defaulted)).not.toContain('[constitution] token accepted without audit block');
   });
 });
 

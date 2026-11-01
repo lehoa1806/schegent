@@ -197,8 +197,8 @@ Feature 212 added two more `phase-end` fields, both narrowed the same way:
 FR-R3-198 added one `phase-end` outcome, and changed what one metric counts:
 
 - **`incomplete_turn`** — the `outcome` and the `terminationReason` of a turn
-  that printed no contract block (no termination token, no open questions, no
-  remaining issues) when a command it started in the background was still open
+  that printed no contract block (no termination token in the trailing region, no
+  open questions, no remaining issues) when a command it started in the background was still open
   at its last result, or when the runner ended the process after its completion
   settle. A killed invocation — an operator's cancel, for one — never is. Its
   `warnings` name the fact that decided, as one of two codes the warning
@@ -214,7 +214,39 @@ FR-R3-198 added one `phase-end` outcome, and changed what one metric counts:
   resumed session's earlier cost again. Records written before this release keep
   the cumulative figure; nothing rewrites them.
 
+FR-R4-F12 added one `phase-start` field, optional and additive:
+
+- **`phase-start.promptIdentity`** — which prompt contract this attempt was asked
+  under, so two attempts or two Runs can be compared without keeping any prompt
+  text. It is one of exactly two shapes:
+  `{ "scope": "contract", "compositionVersion": 1, "digest": "sha256:<64 hex>" }`
+  for a prompt Schegent composed, and `{ "scope": "resume" }` for an attempt that
+  sent an operator's stored resume prompt, where no digest is recorded.
+  - **What the digest covers**: the output-contract text (the completion-token and
+    audit-block instructions), the composition version, and the task block as
+    rendered. For a skill Phase that is the skill *reference* and the fixed
+    wrapper around it, not the skill file the CLI loads.
+  - **What it does not cover**: the brief, the iteration and its cap, the feature
+    directory, the sidecar path, previous phase messages, carried issues, request
+    inputs, supplemental context, output targets, operator instructions, the
+    continuation note, the Phase id and every path; the CLI's own context (skill
+    files, system prompts, CLI defaults, the model's configuration); and the
+    backend's argv. `PhaseDef.promptVersion` is an unrelated frozen label and is
+    not read.
+  - **Absent means not recorded.** Every row written before this release has no
+    identity, and a row whose value is in neither shape is read the same way.
+    `readPromptIdentity` (`src/runner/prompt-identity.ts`) is the reader: it
+    returns `{ recorded: false }` for absence and `recorded: true` only for one of
+    the two shapes above. Do not read absence as `resume` or as any other value.
+  - **A digest shows equality and is not anonymization.** Anyone holding a
+    candidate instruction can compute its digest and confirm whether a row used
+    it. Nothing recovers a prompt from the value.
+  - **`AUDIT_SCHEMA_VERSION` stays 3**, and no generated schema changes. No
+    reader is edited: the line parser, the metrics service and the audit tail read
+    named fields only, and keep the field on a row they do not otherwise use.
+
 <!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: src/runner/prompt-identity.ts -->
 <!-- Source: src/controller/phase-attempt-recorder.ts -->
 <!-- Source: tests/unit/audit/audit-payload-v3.test.ts -->
 <!-- Source: src/parser/stdout-parser.ts -->

@@ -4,11 +4,27 @@ import {
   extractRemainingIssues,
   parseInvocation
 } from '../../../src/parser/stdout-parser';
-import { NO_REGION } from '../../../src/parser/audit-log-parser';
+import { NO_REGION, parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import type { AuditEntryFields } from '../../../src/audit/audit-entry';
 
-// No stdout below carries an audit block, so each parse passes NO_REGION, as
+// Most stdouts below carry no audit block, so each of those parses passes NO_REGION, as
 // phase-runner.ts would for such a stdout. `validAudit` stands in for the block.
+//
+// FR-R4-F12 (FR-002): a completion token is read only in the trailing region of a complete block,
+// so the stdouts that stand for a finished run carry `COMPLETE_BLOCK` and take their region from
+// `parseAuditLogBlock`, as the production call site does.
+const COMPLETE_BLOCK = [
+  '=== SCHEGENT AUDIT LOG ===',
+  'phase: speckit-specify',
+  'files_created: ["specs/001-mock/spec.md"]',
+  'files_modified: []',
+  'files_deleted: []',
+  'commands_executed: ["mock specify"]',
+  'network_calls: ["none"]',
+  'ruleset_switches: ["none"]',
+  'notes: mock',
+  '=== END AUDIT LOG ==='
+];
 const validAudit: AuditEntryFields = {
   phase: 'speckit-specify',
   filesCreated: ['specs/001-mock/spec.md'],
@@ -85,6 +101,20 @@ describe('extractRemainingIssues', () => {
 
 describe('parseInvocation — block mutual exclusion and edge cases', () => {
   it('returns clean when termination token is alone with audit', () => {
+    const stdout = ['work done', ...COMPLETE_BLOCK, '[SCHEGENT_STATUS: CLEAR]'].join('\n');
+    const result = parseInvocation({
+      stdout,
+      stderr: '',
+      exitCode: 0,
+      rateLimit: { matched: false, cause: '' },
+      auditEntry: validAudit,
+      auditWarnings: [],
+      region: parseAuditLogBlock(stdout).region
+    });
+    expect(result.kind).toBe('clean');
+  });
+
+  it('does not return clean for a token with no audit block before it (FR-R4-F12)', () => {
     const stdout = ['work done', '[SCHEGENT_STATUS: CLEAR]'].join('\n');
     const result = parseInvocation({
       stdout,
@@ -95,18 +125,20 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       auditWarnings: [],
       region: NO_REGION
     });
-    expect(result.kind).toBe('clean');
+    expect(result.kind).toBe('remaining_issues');
   });
 
   it('returns clean with missing audit entry when token present but audit missing', () => {
+    // A complete pair whose body the entry parser could not read: a region, and a null entry.
+    const stdout = ['=== SCHEGENT AUDIT LOG ===', 'phase: speckit-specify', '=== END AUDIT LOG ===', '[SCHEGENT_STATUS: CLEAR]'].join('\n');
     const result = parseInvocation({
-      stdout: '[SCHEGENT_STATUS: CLEAR]',
+      stdout,
       stderr: '',
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: null,
       auditWarnings: [],
-      region: NO_REGION
+      region: parseAuditLogBlock(stdout).region
     });
     expect(result.kind).toBe('clean');
     if (result.kind === 'clean') {
@@ -178,7 +210,7 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
   });
 
   it('warns when multiple contract blocks coexist but still resolves', () => {
-    const stdout = ['[SCHEGENT_STATUS: CLEAR]', 'Open questions:', '- ambiguous'].join('\n');
+    const stdout = [...COMPLETE_BLOCK, '[SCHEGENT_STATUS: CLEAR]', 'Open questions:', '- ambiguous'].join('\n');
     const result = parseInvocation({
       stdout,
       stderr: '',
@@ -186,7 +218,7 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
       auditWarnings: [],
-      region: NO_REGION
+      region: parseAuditLogBlock(stdout).region
     });
     expect(result.kind).toBe('clean');
   });
@@ -231,7 +263,7 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
   });
 
   it('preserves clean classification when no fatal signature matches', () => {
-    const stdout = ['[SCHEGENT_STATUS: CLEAR]'].join('\n');
+    const stdout = [...COMPLETE_BLOCK, '[SCHEGENT_STATUS: CLEAR]'].join('\n');
     const result = parseInvocation({
       stdout,
       stderr: 'noise without the fatal substring',
@@ -239,7 +271,7 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
       auditWarnings: [],
-      region: NO_REGION
+      region: parseAuditLogBlock(stdout).region
     });
     expect(result.kind).toBe('clean');
   });

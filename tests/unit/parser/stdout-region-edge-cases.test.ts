@@ -155,11 +155,13 @@ describe('region edges (T621)', () => {
 });
 
 describe('the region is required (FR-R3-199)', () => {
-  it('cannot be omitted, because the whole-stdout scan reads tokens the host ignores', () => {
+  it('cannot be omitted, because the region decides which tokens the host reads', () => {
     // A token printed before the block. phase-runner.ts forwards the region, so
-    // the host ignores it; omitting the field used to mean the whole-stdout
-    // scan, which accepts it. While the field was optional, the evals corpus
-    // omitted it and every clean case passed that way.
+    // the host ignores it. FR-R3-199: while the field was optional, omitting it
+    // meant a whole-stdout scan that accepted the token, and the evals corpus
+    // omitted it so every clean case passed that way. FR-R4-F12: omitted, the
+    // region now reads as "no block", which refuses a token the host would
+    // accept, so an omission is no longer silent: it stops every compliant Phase.
     const stdout = [TOKEN, ...block()].join('\n');
     const audit = parseAuditLogBlock(stdout);
     // @ts-expect-error — `region` is required. tsc enforces it, not the
@@ -173,8 +175,21 @@ describe('the region is required (FR-R3-199)', () => {
       auditEntry: audit.entry,
       auditWarnings: audit.warnings
     };
-    expect(parseInvocation({ ...withoutRegion, region: NO_REGION }).kind).toBe('clean');
+    expect(parseInvocation({ ...withoutRegion, region: NO_REGION }).kind).not.toBe('clean');
     expect(parseInvocation({ ...withoutRegion, region: audit.region }).kind).not.toBe('clean');
+
+    // The other direction, which is what makes the omission loud: a compliant stream that the
+    // real region accepts is refused when the region is dropped.
+    const compliant = [...block(), TOKEN].join('\n');
+    const compliantAudit = parseAuditLogBlock(compliant);
+    const compliantInputs = {
+      ...withoutRegion,
+      stdout: compliant,
+      auditEntry: compliantAudit.entry,
+      auditWarnings: compliantAudit.warnings
+    };
+    expect(parseInvocation({ ...compliantInputs, region: compliantAudit.region }).kind).toBe('clean');
+    expect(parseInvocation({ ...compliantInputs, region: NO_REGION }).kind).not.toBe('clean');
   });
 
   it('is NO_REGION for a stream with no complete block', () => {

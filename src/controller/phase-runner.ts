@@ -5,6 +5,7 @@ import type { BackendRunner } from '../contracts/backend-runner';
 import type { BackendRunnerRegistry } from '../runner/backend-runner-registry';
 import { DEFAULT_BACKEND, type BackendRunnerKind } from '../contracts/backend-kinds';
 import type { PromptBuilder } from '../runner/prompt-builder';
+import { RESUME_PROMPT_IDENTITY } from '../runner/prompt-identity';
 import type { ExecutionEnvelope } from '../contracts/run-request';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import {
@@ -528,7 +529,9 @@ export class PhaseRunner {
         phaseMessage: null
       };
     }
-    const prompt = inputs.resumePrompt ? inputs.resumePrompt : this.promptBuilder.build({
+    const { text: prompt, identity: promptIdentity } = inputs.resumePrompt
+      ? { text: inputs.resumePrompt, identity: RESUME_PROMPT_IDENTITY }
+      : this.promptBuilder.compose({
       phase: inputs.phase,
       phaseDef: inputs.phaseDef,
       iteration: inputs.iteration,
@@ -573,6 +576,7 @@ export class PhaseRunner {
       // Session reuse — strict-boolean cost-optimization telemetry.
       // Always present (never omitted); defaults `undefined` → `false`.
       sessionReuse: inputs.sessionReuse === true,
+      promptIdentity,
     };
     if (inputs.phaseDef?.model) startPayload.model = inputs.phaseDef.model;
     if (inputs.phaseDef?.effort) startPayload.effort = inputs.phaseDef.effort;
@@ -780,6 +784,7 @@ export class PhaseRunner {
       region: audit.region, // FR-003 — bounds where a token may be read; see T25
       effectiveFatalSignatures,
       apiError: unwrappedStream.apiError,
+      textSource: unwrappedStream.textSource, // FR-R4-F12 — tool-output text never advances
       turnEnd: raw, // FR-R3-198 — the two turn-end facts, and `killed`
       ...(raw.streamFatalMatch ? { streamFatalMatch: raw.streamFatalMatch } : {})
     });

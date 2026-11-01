@@ -9,6 +9,39 @@ This file is maintained by hand: neither the version field nor any script can de
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### Completion tokens without an audit block no longer advance a Phase (FR-R4-F12, 2026-11-01)
+
+A completion token now counts only when it follows a complete audit block, as the prompt asks. A
+token printed with no complete block before it, mid-prose, quoted from a file the model read or
+echoed from a command, is reported in the Phase's warnings and no longer completes the Phase. Text
+that reached the host only as tool output, a stream-json capture holding no model text, is never
+read for a token, even after a complete block.
+
+What happens to the turn depends on its shape. Each is what the same output without the token
+already got:
+
+- **Exit 0, the process still running when the turn ended:** the Phase reports issues and runs
+  another iteration, told to print its audit block and then the token. The Run fails only at the
+  iteration cap.
+- **The turn settled (the host ended a process that had printed its result):** the Phase is an
+  incomplete turn. It is resumed up to twice at once, each time told to end the turn with its
+  contract block, and then halts as failed (`incomplete_turn_unresolved`).
+- **A non-zero exit, not settled:** the existing delayed retry and its budget.
+- **Tool-output text:** reported as in the first case.
+
+Runs already in flight are classified under the new rule at their next invocation. No saved state
+is rewritten.
+
+If you want a Phase that completes on a token on its last non-empty line with no audit block, declare
+`evidencePolicy: best-effort` or `none` on that Phase. The acceptance is then labelled as a degraded
+read. A Phase that declares nothing, or `required`, does not.
+
+Each Phase attempt's `phase-start` audit row now also records a prompt identity: a digest of the
+output-contract text and the task block, or a marker that a stored resume prompt was sent. It holds no
+prompt text, and rows written before this release simply have none. See
+[the `phase-start.promptIdentity` entry](../reference/audit-events.md) for what it covers and what it
+does not.
+
 ### First-run, install and VSIX instructions corrected (FR-R4-F11, 2026-11-01)
 
 The quickstart now says the first Run on the default backend is refused until you allow it in

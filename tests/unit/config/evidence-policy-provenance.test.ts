@@ -35,11 +35,27 @@ function phase(overrides: Partial<PhaseDef> = {}): PhaseDef {
   return { id: 'speckit-implement', name: 'Implement', instruction: 'do it', ...overrides };
 }
 
-/** Drive one snapshotted phase through the real parser on a no-audit-block turn. */
-function advances(snapshot: Pick<PhaseDef, 'evidencePolicy' | 'evidencePolicyDeclaredAt'>): boolean {
-  const audit = parseAuditLogBlock(TOKEN);
-  const result = parseInvocation({
-    stdout: TOKEN,
+/**
+ * A turn whose audit pair is complete but unreadable: a region, a token in it, and no parsed entry.
+ *
+ * FR-R4-F12 (FR-002): a token with no complete block before it is no longer read, so the
+ * FR-R3-096 property (the ORIGIN, not the value, decides the withhold) is driven on the shape
+ * where it still applies: a region is present and the entry is null.
+ */
+const ENTRY_NULL_STDOUT = [
+  '=== SCHEGENT AUDIT LOG ===',
+  'phase: speckit-implement',
+  '=== END AUDIT LOG ===',
+  TOKEN
+].join('\n');
+
+function parseTurn(
+  stdout: string,
+  snapshot: Pick<PhaseDef, 'evidencePolicy' | 'evidencePolicyDeclaredAt'>
+) {
+  const audit = parseAuditLogBlock(stdout);
+  return parseInvocation({
+    stdout,
     stderr: '',
     exitCode: 0,
     rateLimit: { matched: false, cause: '' },
@@ -49,7 +65,19 @@ function advances(snapshot: Pick<PhaseDef, 'evidencePolicy' | 'evidencePolicyDec
     evidencePolicy: snapshot.evidencePolicy,
     evidencePolicyDeclaredAt: snapshot.evidencePolicyDeclaredAt
   });
-  return result.kind === 'clean';
+}
+
+/** Drive one snapshotted phase through the real parser on a region-present, entry-null turn. */
+function advances(snapshot: Pick<PhaseDef, 'evidencePolicy' | 'evidencePolicyDeclaredAt'>): boolean {
+  const audit = parseAuditLogBlock(ENTRY_NULL_STDOUT);
+  expect(audit.entry, 'the fixture must be a region with no parsed entry').toBeNull();
+  expect(audit.region.present).toBe(true);
+  return parseTurn(ENTRY_NULL_STDOUT, snapshot).kind === 'clean';
+}
+
+/** The same Phase on a turn that printed only the token: FR-R4-F12 reads no token without a block. */
+function advancesWithNoBlock(snapshot: Pick<PhaseDef, 'evidencePolicy' | 'evidencePolicyDeclaredAt'>): boolean {
+  return parseTurn(TOKEN, snapshot).kind === 'clean';
 }
 
 describe('FR-R3-096 — the freeze records where evidencePolicy came from', () => {
@@ -81,6 +109,8 @@ describe('FR-R3-096 — the freeze records where evidencePolicy came from', () =
     expect(twice.evidencePolicy).toBe('required');
     expect(twice.evidencePolicyDeclaredAt).toBe('default');
     expect(advances(twice)).toBe(true);
+    // FR-R4-F12 (FR-007): with no block at all, a defaulted Phase no longer advances either.
+    expect(advancesWithNoBlock(twice)).toBe(false);
   });
 
   it('an authored `required` survives a re-freeze as authored', () => {
@@ -114,13 +144,15 @@ describe('FR-R3-096 — the population that already exists is untouched', () => 
     // one: a persisted Run from before any of this existed. Its phases declare no
     // `evidencePolicy` at all, which is the shape the majority of persisted rows
     // have. Read through the parser, every one of them advances clean on a turn
-    // with no audit block -- exactly as it did before FR-R3-096.
+    // with a complete but unreadable audit block, exactly as it did before FR-R3-096.
+    // FR-R4-F12 (FR-007): on a turn with no block at all none of them advances now.
     const state = JSON.parse(readFileSync(PRE_082_STATE, 'utf8')) as Record<string, unknown>;
     const run = state['schegent.run'] as { pipeline: { phases: PhaseDef[] } };
     expect(run.pipeline.phases.length).toBeGreaterThan(0);
     for (const persisted of run.pipeline.phases) {
       expect(persisted.evidencePolicyDeclaredAt).toBeUndefined();
       expect(advances(persisted)).toBe(true);
+      expect(advancesWithNoBlock(persisted)).toBe(false);
     }
   });
 
@@ -138,6 +170,7 @@ describe('FR-R3-096 — the population that already exists is untouched', () => 
     expect(preO96.evidencePolicy).toBe('required');
     expect('evidencePolicyDeclaredAt' in preO96).toBe(false);
     expect(advances(preO96)).toBe(true);
+    expect(advancesWithNoBlock(preO96)).toBe(false);
   });
 
   it('and the same row starts withholding the moment its author declares one', () => {

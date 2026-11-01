@@ -69,7 +69,12 @@ async function readAuditLines(): Promise<unknown[]> {
 
 function makeStubPromptBuilder(): PromptBuilder {
   return {
-    build: () => 'fake-prompt'
+    build: () => 'fake-prompt',
+    // FR-R4-F12: the runner composes the prompt and its identity in one call.
+    compose: () => ({
+      text: 'fake-prompt',
+      identity: { scope: 'contract', compositionVersion: 1, digest: `sha256:${'0'.repeat(64)}` }
+    })
   } as unknown as PromptBuilder;
 }
 

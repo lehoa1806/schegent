@@ -81,6 +81,20 @@ const CLAIMS: ReadonlyArray<BoundClaim> = [
     inSource: '[constitution] termination token outside audit region',
   },
   {
+    // FR-R4-F12 (FR-002, TG L1): a token with no complete block before it is reported, never read.
+    what: 'a token with no complete audit block is reported and not accepted',
+    inDoc: '[constitution] termination token without audit block',
+    source: 'src/parser/stdout-parser.ts',
+    inSource: "'[constitution] termination token without audit block, not accepted'",
+  },
+  {
+    // FR-R4-F12 (FR-006, TG L1): tool-output text is never read for a token.
+    what: 'a token in tool output is reported and not accepted',
+    inDoc: '[constitution] termination token in tool output',
+    source: 'src/parser/stdout-parser.ts',
+    inSource: "'[constitution] termination token in tool output, not accepted'",
+  },
+  {
     what: 'process control arms on the harness envelope, not on content',
     inDoc: '{"type":"result"}',
     source: 'src/runner/claude-cli.ts',
@@ -133,6 +147,54 @@ function findDrift(docText: string, sourceText: (path: string) => string): strin
   return drift;
 }
 
+/**
+ * FR-R4-F12 (FR-013, TG L1, spelling half) -- the accepted set is stated once in the contract module
+ * and again in T25, and the two must not drift.
+ *
+ * The alternatives are DERIVED from the pattern's source text, never retyped here, so adding a
+ * fourth spelling to `TERMINATION_PATTERN` fails this case until T25 names it.
+ */
+const CONTRACT_SOURCE = 'src/contracts/phase-output-contract.ts';
+const T25_TOLERANCE_PHRASES: ReadonlyArray<string> = ['any letter case', 'whitespace after the colon'];
+
+/** The alternatives inside the `(…)` group of `TERMINATION_PATTERN`, or null when they cannot be read. */
+function acceptedAlternatives(contractSource: string): string[] | null {
+  const line = contractSource.split('\n').find((candidate) => candidate.startsWith('const TERMINATION_PATTERN'));
+  if (line === undefined) return null;
+  const open = line.indexOf('(');
+  const close = line.indexOf(')', open);
+  if (open < 0 || close < 0) return null;
+  const alternatives = line.slice(open + 1, close).split('|');
+  return alternatives.every((alternative) => /^[A-Z]+$/.test(alternative)) ? alternatives : null;
+}
+
+/** The T25 section: its heading to the next `###` heading, or to the end of the file. */
+function t25Section(docText: string): string | null {
+  const start = docText.indexOf(ANCHOR_HEADING);
+  if (start < 0) return null;
+  const next = docText.indexOf('\n### ', start + ANCHOR_HEADING.length);
+  return docText.slice(start, next < 0 ? undefined : next);
+}
+
+function findSpellingDrift(docText: string, contractSource: string): string[] {
+  const alternatives = acceptedAlternatives(contractSource);
+  if (alternatives === null) {
+    return [`code: ${CONTRACT_SOURCE} no longer has a TERMINATION_PATTERN whose alternatives can be read`];
+  }
+  const section = t25Section(docText);
+  if (section === null) return [`doc: the threat anchor heading is gone (expected "${ANCHOR_HEADING}")`];
+  const drift: string[] = [];
+  for (const alternative of alternatives) {
+    if (!section.includes(`\`${alternative}\``)) {
+      drift.push(`doc: T25 no longer names the accepted spelling \`${alternative}\``);
+    }
+  }
+  for (const phrase of T25_TOLERANCE_PHRASES) {
+    if (!section.includes(phrase)) drift.push(`doc: T25 no longer states the tolerance "${phrase}"`);
+  }
+  return drift;
+}
+
 const realDoc = (): string => readFileSync(THREAT_MODEL, 'utf8');
 const realSource = (path: string): string => readFileSync(join(REPO_ROOT, path), 'utf8');
 
@@ -174,6 +236,54 @@ describe('CLI stdout boundary: threat model and parser agree (FR-025)', () => {
   });
 });
 
+describe('the accepted spellings are stated in T25 as the contract module accepts them (FR-R4-F12, FR-013)', () => {
+  it('derives CLEAR, DONE and RESOLVED from the pattern, and T25 names each with the tolerance', () => {
+    expect(acceptedAlternatives(realSource(CONTRACT_SOURCE))).toEqual(['CLEAR', 'DONE', 'RESOLVED']);
+    expect(findSpellingDrift(realDoc(), realSource(CONTRACT_SOURCE))).toEqual([]);
+  });
+
+  it('T25 states that the prompt asks for the canonical token only', () => {
+    const section = t25Section(realDoc()) ?? '';
+    expect(section).toContain('the prompt asks for `[SCHEGENT_STATUS: CLEAR]` only');
+  });
+});
+
+describe('the spelling check fails in both directions (FR-R4-F12)', () => {
+  const contract = (): string => realSource(CONTRACT_SOURCE);
+
+  it('reports drift when T25 drops one accepted spelling', () => {
+    const section = t25Section(realDoc()) as string;
+    const gutted = realDoc().replace(section, section.replace('`RESOLVED`', '`REVIEWED`'));
+    const drift = findSpellingDrift(gutted, contract());
+    expect(drift).toEqual(['doc: T25 no longer names the accepted spelling `RESOLVED`']);
+  });
+
+  it('reports drift when T25 drops the case tolerance, and the whitespace tolerance', () => {
+    const section = t25Section(realDoc()) as string;
+    const gutted = realDoc().replace(
+      section,
+      section.replace('any letter case', 'one letter case').replace('whitespace after the colon', 'no whitespace')
+    );
+    expect(findSpellingDrift(gutted, contract())).toEqual([
+      'doc: T25 no longer states the tolerance "any letter case"',
+      'doc: T25 no longer states the tolerance "whitespace after the colon"'
+    ]);
+  });
+
+  it('reports drift when the pattern gains a spelling that T25 does not name', () => {
+    const widened = contract().replace('(CLEAR|DONE|RESOLVED)', '(CLEAR|DONE|RESOLVED|FINISHED)');
+    expect(widened).not.toBe(contract());
+    expect(findSpellingDrift(realDoc(), widened)).toEqual(['doc: T25 no longer names the accepted spelling `FINISHED`']);
+  });
+
+  it('reports drift when the pattern can no longer be read', () => {
+    const unreadable = contract().replace('const TERMINATION_PATTERN', 'const SOMETHING_ELSE');
+    expect(findSpellingDrift(realDoc(), unreadable)).toEqual([
+      `code: ${CONTRACT_SOURCE} no longer has a TERMINATION_PATTERN whose alternatives can be read`
+    ]);
+  });
+});
+
 describe('the parity check fails in both directions (SC-008)', () => {
   // Demonstrated, not asserted. Each fixture removes exactly one thing and the
   // check must name it — so a `findDrift` that stopped looking would fail here
@@ -188,6 +298,46 @@ describe('the parity check fails in both directions (SC-008)', () => {
     expect(drift).toHaveLength(1);
     expect(drift[0]).toContain('doc: the CLI stdout row no longer states');
     expect(drift[0]).toContain('a degraded read is labelled rather than silent');
+  });
+
+  it('reports drift when the document drops the no-block report (FR-R4-F12)', () => {
+    const gutted = realDoc().replace(
+      '[constitution] termination token without audit block',
+      'handled appropriately'
+    );
+    const drift = findDrift(gutted, realSource);
+    expect(drift).toHaveLength(1);
+    expect(drift[0]).toContain('doc: the CLI stdout row no longer states');
+    expect(drift[0]).toContain('a token with no complete audit block is reported and not accepted');
+  });
+
+  it('reports drift when the document drops the tool-output report (FR-R4-F12)', () => {
+    const gutted = realDoc().replace(
+      '[constitution] termination token in tool output',
+      'handled appropriately'
+    );
+    const drift = findDrift(gutted, realSource);
+    expect(drift).toHaveLength(1);
+    expect(drift[0]).toContain('doc: the CLI stdout row no longer states');
+    expect(drift[0]).toContain('a token in tool output is reported and not accepted');
+  });
+
+  it('reports drift when the source drops either new literal (FR-R4-F12)', () => {
+    const stubbed = (path: string): string =>
+      path === 'src/parser/stdout-parser.ts'
+        ? realSource(path)
+            .replace(
+              "'[constitution] termination token without audit block, not accepted'",
+              "'[constitution] renamed'"
+            )
+            .replace(
+              "'[constitution] termination token in tool output, not accepted'",
+              "'[constitution] renamed again'"
+            )
+        : realSource(path);
+    const drift = findDrift(realDoc(), stubbed);
+    expect(drift).toHaveLength(2);
+    expect(drift.every((entry) => entry.startsWith('code: src/parser/stdout-parser.ts no longer provides'))).toBe(true);
   });
 
   it('reports drift when the document loses the whole row', () => {
