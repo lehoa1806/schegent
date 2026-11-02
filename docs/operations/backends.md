@@ -220,10 +220,13 @@ The check sends signal 0 only. It never kills an orphan and never reattaches to 
 | `unanswerable` | The platform or the permissions would not say (Windows, `EPERM`, an unreadable start time) | Yes |
 
 `unanswerable` resumes on purpose: refusing every resume where the check cannot run would strand
-Runs exactly where the mechanism is weakest. The audit trail records which verdict applied, so an
-operator can see that the check could not answer. The verdicts that permit a resume are the
-single list `RESUME_ON` in `src/contracts/spawn-identity.ts`; the two lists below are copies, and a
-test fails if either drifts from the source.
+Runs exactly where the mechanism is weakest. The audit trail records every decline, and every
+resume the activation sweep admits, with the verdict that applied, so an operator can see that the
+check could not answer there. A resume admitted at the admission check by any other path (a manual
+resume or retry, primacy-gain recovery, the auto-drain, an unattended wakeup) writes no row of its
+own: the check writes one when it declines on liveness and none when it admits. The verdicts that
+permit a resume are the single list `RESUME_ON` in `src/contracts/spawn-identity.ts`; the two
+lists below are copies, and a test fails if either drifts from the source.
 
 <!-- resume-on:start -->
 Permits a resume: `dead`, `unrecorded`, `unanswerable`

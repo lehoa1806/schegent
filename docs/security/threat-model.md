@@ -727,10 +727,13 @@ frees stays pending for the next session instead of being admitted and failed.
 - **The liveness check answers `unanswerable` on Windows and resumes anyway.** `detached` is
   false there, so the recorded group is not probeable, and the job-object gap is a stated
   permanent limit (`FR-R3-083`). Refusing every resume where the check cannot run would strand
-  Runs exactly where the mechanism is weakest, so the decision is to resume and record the
-  verdict — an operator can see `unanswerable` in the audit trail rather than inferring it from
-  a resume that looks ordinary. This claims no more than POSIX evidence supports, which is the
-  same discipline `FR-R3-054` applies.
+  Runs exactly where the mechanism is weakest, so the decision is to resume and, where the
+  activation sweep decides, record the verdict — an operator can see `unanswerable` in the audit
+  trail rather than inferring it from a resume that looks ordinary. A resume admitted at the
+  admission check by any other path (a manual resume or retry, primacy-gain recovery, the
+  auto-drain, an unattended wakeup) writes no verdict row, so the trail cannot show that the check
+  could not answer there; the check writes a row only when it declines. This claims no more than
+  POSIX evidence supports, which is the same discipline `FR-R3-054` applies.
 - **A recycled pid is refused, not tolerated.** Liveness is decided by the identity triple, so
   a pid the OS has handed to an unrelated process reads as `dead` rather than as a live orphan.
   A bare `kill(pid, 0)` would have produced a false refusal that never clears.
