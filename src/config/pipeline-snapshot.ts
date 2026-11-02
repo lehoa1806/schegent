@@ -1,9 +1,17 @@
+import { createHash } from 'node:crypto';
 import type { PhaseBinding } from '../contracts/pipeline-definitions';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { DEFAULT_BACKEND } from '../contracts/backend-kinds';
+import type { PhaseDefinition } from '../contracts/process-definitions';
+import type { FrozenWorkflowClosure } from '../contracts/run-request';
+import type {
+  WorkflowDefinition,
+  WorkflowFieldError
+} from '../contracts/workflow-definitions';
 import type { WorkflowRunPipeline } from '../state/workflow-run';
 import type { PhaseDef, PipelineDef } from './pipeline-config';
 import { resolveHostVerification, writesGitMetadata } from './phase-runner-policy';
+import { resolveWorkflowClosure } from './workflow-closure-resolver';
 
 /**
  * Freeze one phase with its effective backend persisted for the run lifetime.
@@ -157,6 +165,239 @@ export function resolvePinnedRunnerKind(
   configured: BackendRunnerKind | undefined
 ): BackendRunnerKind {
   return persisted ?? sessionOwner ?? configured ?? DEFAULT_BACKEND;
+}
+
+function deepCloneAndFreeze<T>(value: T): T {
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((item) => deepCloneAndFreeze(item))) as unknown as T;
+  }
+  const copy: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (nested !== undefined) {
+      copy[key] = deepCloneAndFreeze(nested);
+    }
+  }
+  return Object.freeze(copy) as T;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, nested]) => nested !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+}
+
+/**
+ * FR-R5-F02 — compute a deterministic SHA-256 content digest for a frozen
+ * Workflow or Phase definition.
+ */
+export function computeDefinitionDigest(definition: unknown): string {
+  return `sha256:${createHash('sha256').update(canonicalJson(definition)).digest('hex')}`;
+}
+
+/**
+ * FR-R5-F02 — freeze one PhaseDefinition for a composable Workflow closure.
+ */
+export function snapshotPhaseDefinition(
+  phase: PhaseDefinition,
+  defaultRunner?: BackendRunnerKind
+): PhaseDefinition {
+  const effectiveRunner =
+    phase.runner !== undefined
+      ? phase.runner
+      : writesGitMetadata(phase.sideEffects)
+        ? DEFAULT_BACKEND
+        : (defaultRunner ?? DEFAULT_BACKEND);
+  return deepCloneAndFreeze({
+    ...phase,
+    version: phase.version ?? 1,
+    runner: effectiveRunner,
+    sideEffects: phase.sideEffects ?? 'workspace',
+    evidencePolicy: phase.evidencePolicy ?? 'required',
+    hostVerification: resolveHostVerification(phase.hostVerification, phase.sideEffects, false)
+  });
+}
+
+/**
+ * FR-R5-F02 — freeze one WorkflowDefinition for a composable Workflow closure.
+ * Preserves `executionDefaults` in the frozen snapshot for provenance while
+ * keeping it strictly advisory.
+ */
+export function snapshotWorkflowDefinition(workflow: WorkflowDefinition): WorkflowDefinition {
+  return deepCloneAndFreeze({
+    workflowId: workflow.workflowId,
+    name: workflow.name,
+    version: workflow.version,
+    nodes: workflow.nodes,
+    connections: workflow.connections,
+    startNodeIds: workflow.startNodeIds,
+    ...(workflow.description !== undefined ? { description: workflow.description } : {}),
+    ...(workflow.inputs !== undefined ? { inputs: workflow.inputs } : {}),
+    ...(workflow.outputs !== undefined ? { outputs: workflow.outputs } : {}),
+    ...(workflow.bindings !== undefined ? { bindings: workflow.bindings } : {}),
+    ...(workflow.executionDefaults !== undefined
+      ? { executionDefaults: { ...workflow.executionDefaults } }
+      : {}),
+    ...(workflow.recommendedNext !== undefined
+      ? { recommendedNext: [...workflow.recommendedNext] }
+      : {})
+  });
+}
+
+export interface CreateFrozenWorkflowClosureInput {
+  readonly rootWorkflow: WorkflowDefinition;
+  readonly entryNodeId?: string;
+  readonly effectiveWorkflows?: readonly WorkflowDefinition[];
+  readonly effectivePhases?: readonly PhaseDefinition[];
+  readonly invalidWorkflows?: ReadonlyMap<string, string>;
+  readonly invalidPhases?: ReadonlyMap<string, string>;
+  readonly defaultRunnerKind?: BackendRunnerKind;
+}
+
+export type CreateFrozenWorkflowClosureResult =
+  | {
+      readonly ok: true;
+      readonly closure: FrozenWorkflowClosure;
+    }
+  | {
+      readonly ok: false;
+      readonly code: 'invalid-entry-node' | 'workflow-closure-invalid';
+      readonly message: string;
+      readonly errors: readonly WorkflowFieldError[];
+    };
+
+/**
+ * FR-R5-F02 — resolve, bound-check, and deep-freeze the complete transitive
+ * closure of a composable Workflow before admission.
+ */
+export function createFrozenWorkflowClosure(
+  input: CreateFrozenWorkflowClosureInput
+): CreateFrozenWorkflowClosureResult {
+  const rootNodeIds = new Set(input.rootWorkflow.nodes.map((node) => node.nodeId));
+  const resolvedEntryNodeId = input.entryNodeId ?? input.rootWorkflow.startNodeIds[0];
+
+  if (
+    resolvedEntryNodeId === undefined ||
+    resolvedEntryNodeId.trim().length === 0 ||
+    !input.rootWorkflow.startNodeIds.includes(resolvedEntryNodeId) ||
+    !rootNodeIds.has(resolvedEntryNodeId)
+  ) {
+    return {
+      ok: false,
+      code: 'invalid-entry-node',
+      message: `Entry node '${String(resolvedEntryNodeId ?? '')}' is not in root Workflow '${input.rootWorkflow.workflowId}' startNodeIds.`,
+      errors: [
+        {
+          workflowId: input.rootWorkflow.workflowId,
+          field: 'entryNodeId',
+          code: 'start-node-not-found',
+          message: `Entry node '${String(resolvedEntryNodeId ?? '')}' is not a declared start node of '${input.rootWorkflow.workflowId}'.`
+        }
+      ]
+    };
+  }
+
+  const allWorkflows = [
+    input.rootWorkflow,
+    ...(input.effectiveWorkflows ?? []).filter(
+      (wf) => wf.workflowId !== input.rootWorkflow.workflowId
+    )
+  ];
+  const allPhases = input.effectivePhases ?? [];
+
+  const closureResult = resolveWorkflowClosure(input.rootWorkflow, {
+    effectiveWorkflows: allWorkflows,
+    effectivePhases: allPhases,
+    ...(input.invalidWorkflows !== undefined
+      ? { invalidWorkflows: input.invalidWorkflows }
+      : {}),
+    ...(input.invalidPhases !== undefined ? { invalidPhases: input.invalidPhases } : {})
+  });
+
+  if (!closureResult.ok) {
+    return {
+      ok: false,
+      code: 'workflow-closure-invalid',
+      message:
+        closureResult.errors[0]?.message ??
+        `Workflow '${input.rootWorkflow.workflowId}' closure validation failed.`,
+      errors: closureResult.errors
+    };
+  }
+
+  const workflowsByIdSource = new Map(allWorkflows.map((wf) => [wf.workflowId, wf]));
+  const phasesByIdSource = new Map(allPhases.map((phase) => [phase.phaseId, phase]));
+
+  const workflowsById: Record<string, WorkflowDefinition> = {};
+  const phasesById: Record<string, PhaseDefinition> = {};
+  const definitionDigestsById: Record<string, string> = {};
+
+  const reachableWorkflowIds = new Set<string>([
+    input.rootWorkflow.workflowId,
+    ...closureResult.referencedWorkflowIds
+  ]);
+
+  for (const wfId of reachableWorkflowIds) {
+    const wf = workflowsByIdSource.get(wfId);
+    if (wf === undefined) continue;
+    const childEntry = wf.startNodeIds[0];
+    const wfNodeIds = new Set(wf.nodes.map((node) => node.nodeId));
+    if (childEntry === undefined || !wfNodeIds.has(childEntry)) {
+      return {
+        ok: false,
+        code: 'workflow-closure-invalid',
+        message: `Workflow '${wfId}' has no valid primary start node (startNodeIds[0]).`,
+        errors: [
+          {
+            workflowId: wfId,
+            field: 'startNodeIds[0]',
+            code: 'start-node-not-found',
+            message: `Workflow '${wfId}' has no valid primary start node.`
+          }
+        ]
+      };
+    }
+    const frozenWf = snapshotWorkflowDefinition(wf);
+    const digest = computeDefinitionDigest(frozenWf);
+    workflowsById[wfId] = frozenWf;
+    definitionDigestsById[wfId] = digest;
+    definitionDigestsById[`workflow:${wfId}`] = digest;
+  }
+
+  for (const phaseId of closureResult.referencedPhaseIds) {
+    const phase = phasesByIdSource.get(phaseId);
+    if (phase === undefined) continue;
+    const frozenPhase = snapshotPhaseDefinition(phase, input.defaultRunnerKind);
+    const digest = computeDefinitionDigest(frozenPhase);
+    phasesById[phaseId] = frozenPhase;
+    definitionDigestsById[phaseId] = digest;
+    definitionDigestsById[`phase:${phaseId}`] = digest;
+  }
+
+  return {
+    ok: true,
+    closure: Object.freeze({
+      rootWorkflowId: input.rootWorkflow.workflowId,
+      entryNodeId: resolvedEntryNodeId,
+      workflowsById: Object.freeze(workflowsById),
+      phasesById: Object.freeze(phasesById),
+      definitionDigestsById: Object.freeze(definitionDigestsById),
+      closureMetrics: Object.freeze({
+        maxDepth: closureResult.maxDepthReached,
+        definitionCount: closureResult.closureSize,
+        expandedNodeCount: closureResult.expandedNodeCount
+      })
+    })
+  };
 }
 
 // Feature 099 (T489, FR-042) — `mergePhaseRunnerPolicy` stood here. It carried a

@@ -156,7 +156,12 @@ const HARD_RULE_ANCHORS: ReadonlyArray<string> = [
   // amendments to rules 38, 41, 42, and 48.
   'rejected with `index-addressing-forbidden`',
   'rejected with\n  `derived-ports-not-storable`',
-  'orders child workflows topologically before parent'
+  'orders child workflows topologically before parent',
+  // Feature 261 (FR-R5-F02) — frozen composable Workflow execution amendments
+  // to rules 7, 8, and 52.
+  'bounded `unsupported-run-schema-version` diagnostics',
+  'append-only\n  `invocationinputenvelope` entries (`acceptedat`)',
+  'freezes the complete transitive `frozenworkflowclosure`'
 ];
 
 /** The authoritative file — the only one that carries the rule set. */

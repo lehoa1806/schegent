@@ -110,17 +110,31 @@ function validOutput(value: unknown): boolean {
  * the wire is refused wherever it appears rather than quietly stripped at the
  * one depth someone remembered to check.
  */
+function validTargetDefinitionIds(request: Record<string, unknown>): boolean {
+  const hasPipelineId = request.pipelineId !== undefined;
+  const hasWorkflowId = request.workflowId !== undefined;
+  if (!hasPipelineId && !hasWorkflowId) return false;
+  if (hasPipelineId && !boundedId(request.pipelineId, PIPELINE_ID_MAX)) return false;
+  if (hasWorkflowId && !boundedId(request.workflowId, PIPELINE_ID_MAX)) return false;
+  if (request.entryNodeId !== undefined && !boundedId(request.entryNodeId, PIPELINE_ID_MAX)) {
+    return false;
+  }
+  return true;
+}
+
 export function validRunRequest(value: unknown): boolean {
   const request = record(value);
   return request !== null
     && !hasUnexpectedKeys(request, [
       'pipelineId',
+      'workflowId',
+      'entryNodeId',
       'inputs',
       'supplemental',
       'outputs',
       'instructions'
     ])
-    && boundedId(request.pipelineId, PIPELINE_ID_MAX)
+    && validTargetDefinitionIds(request)
     && Array.isArray(request.inputs)
     && request.inputs.every(validInput)
     && Array.isArray(request.supplemental)

@@ -41,24 +41,41 @@
   ],
   "connections": [
     {
-      "from": { "nodeId": "review-node" },
-      "to": { "nodeId": "approve-node" },
+      "from": {
+        "nodeId": "review-node"
+      },
+      "to": {
+        "nodeId": "approve-node"
+      },
       "handoff": "manual",
       "condition": {
-        "left": { "source": "node-status", "nodeId": "review-node" },
+        "left": {
+          "source": "node-status",
+          "nodeId": "review-node"
+        },
         "operator": "equals",
         "right": "completed"
       },
       "priority": 1
     },
     {
-      "from": { "nodeId": "review-node" },
-      "to": { "nodeId": "return", "kind": "return" },
+      "from": {
+        "nodeId": "review-node"
+      },
+      "to": {
+        "nodeId": "return",
+        "kind": "return"
+      },
       "isDefault": true
     },
     {
-      "from": { "nodeId": "approve-node" },
-      "to": { "nodeId": "return", "kind": "return" }
+      "from": {
+        "nodeId": "approve-node"
+      },
+      "to": {
+        "nodeId": "return",
+        "kind": "return"
+      }
     }
   ],
   "bindings": [
@@ -66,7 +83,10 @@
       "kind": "input",
       "nodeId": "review-node",
       "inputKey": "draft",
-      "source": { "from": "workflow-input", "portId": "draft-doc" }
+      "source": {
+        "from": "workflow-input",
+        "portId": "draft-doc"
+      }
     },
     {
       "kind": "output",
@@ -81,5 +101,7 @@
       "outputKey": "summary"
     }
   ],
-  "startNodeIds": ["review-node"]
+  "startNodeIds": [
+    "review-node"
+  ]
 }

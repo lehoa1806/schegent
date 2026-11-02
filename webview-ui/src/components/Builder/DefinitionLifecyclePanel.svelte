@@ -19,19 +19,19 @@
   // Text interpolation only, never Svelte's raw-HTML directive (FR-038): version
   // ids, defect fields, and defect messages all originate in operator-authored
   // documents.
-  import type { CatalogKind } from '../../../../src/contracts/catalog-store';
-  import type { BuilderLifecycle } from '../../lib/snapshot-types';
-  import ChangedFieldSummary from './ChangedFieldSummary.svelte';
-  import DefinitionActions from './DefinitionActions.svelte';
-  import DefinitionHistoryPanel from './DefinitionHistoryPanel.svelte';
+  import type { CatalogKind } from "../../../../src/contracts/catalog-store";
+  import type { BuilderLifecycle } from "../../lib/snapshot-types";
+  import ChangedFieldSummary from "./ChangedFieldSummary.svelte";
+  import DefinitionActions from "./DefinitionActions.svelte";
+  import DefinitionHistoryPanel from "./DefinitionHistoryPanel.svelte";
   import {
     deriveDefinitionRowView,
-    type DefinitionDefect
-  } from './definition-row-state';
+    type DefinitionDefect,
+  } from "./definition-row-state";
 
   interface Props {
     /** Which catalog the definition belongs to — part of every lifecycle target. */
-    kind: CatalogKind | 'pipeline';
+    kind: CatalogKind | "pipeline";
     /** The definition's own id — the panel's test handle, and its label's suffix. */
     definitionId: string;
     /** What the confirmations name. The id alone is not what the operator recognises. */
@@ -41,7 +41,8 @@
     defects: readonly DefinitionDefect[];
   }
 
-  const { kind, definitionId, definitionName, lifecycle, defects }: Props = $props();
+  const { kind, definitionId, definitionName, lifecycle, defects }: Props =
+    $props();
 
   const view = $derived(lifecycle ? deriveDefinitionRowView(lifecycle) : null);
 
@@ -51,23 +52,35 @@
 </script>
 
 {#if lifecycle && view}
-  <div class="definition-lifecycle-panel" data-testid="definition-lifecycle-panel-{definitionId}">
+  <div
+    class="definition-lifecycle-panel"
+    data-testid="definition-lifecycle-panel-{definitionId}"
+  >
     <dl class="row-cells">
       <div class="row-cell">
         <dt class="cell-label">Created</dt>
-        <dd class="cell-value" data-testid="definition-row-created-{definitionId}">
+        <dd
+          class="cell-value"
+          data-testid="definition-row-created-{definitionId}"
+        >
           {view.createdDisplay}
         </dd>
       </div>
       <div class="row-cell">
         <dt class="cell-label">Modified</dt>
-        <dd class="cell-value" data-testid="definition-row-modified-{definitionId}">
+        <dd
+          class="cell-value"
+          data-testid="definition-row-modified-{definitionId}"
+        >
           {view.modifiedDisplay}
         </dd>
       </div>
       <div class="row-cell">
         <dt class="cell-label">Active version</dt>
-        <dd class="cell-value" data-testid="definition-row-active-version-{definitionId}">
+        <dd
+          class="cell-value"
+          data-testid="definition-row-active-version-{definitionId}"
+        >
           {view.activeVersionCell}
         </dd>
       </div>
@@ -77,11 +90,19 @@
            default so an invalid row costs one line, and every defect at once when
            opened rather than the head one — the same reason FR-023 reports a
            refused publish all at once. -->
-      <details class="row-defects" data-testid="definition-row-defects-{definitionId}">
-        <summary>{defects.length} {defects.length === 1 ? 'defect' : 'defects'}</summary>
+      <details
+        class="row-defects"
+        data-testid="definition-row-defects-{definitionId}"
+      >
+        <summary
+          >{defects.length}
+          {defects.length === 1 ? "defect" : "defects"}</summary
+        >
         <ul>
           {#each defects as defect (defect.field + defect.code + defect.message)}
-            <li><span class="defect-field">{defect.field}</span>: {defect.message}</li>
+            <li>
+              <span class="defect-field">{defect.field}</span>: {defect.message}
+            </li>
           {/each}
         </ul>
       </details>
@@ -104,7 +125,7 @@
         aria-expanded={historyOpen}
         aria-controls="definition-history-{definitionId}"
         onclick={() => (historyOpen = !historyOpen)}
-        >{historyOpen ? 'Hide history' : 'History'}</button
+        >{historyOpen ? "Hide history" : "History"}</button
       >
     </div>
     {#if historyOpen}

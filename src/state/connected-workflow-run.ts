@@ -14,7 +14,17 @@
 // No `vscode` import: this module is loaded by the headless evaluator, the
 // migrator, and the sidebar projector alike.
 
-import type { WorkflowDefinition } from '../contracts/workflow-definitions';
+import type {
+  FrozenOutputRequest,
+  FrozenSupplementalInput,
+  FrozenWorkflowClosure,
+  ResolvedPortValue
+} from '../contracts/run-request';
+import type {
+  WorkflowDefinition,
+  WorkflowNodeKind,
+  WorkflowNodeTerminalStatus
+} from '../contracts/workflow-definitions';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import type { WorkflowRunPipeline } from './workflow-run';
 
@@ -81,6 +91,98 @@ export interface RoutingDecision {
   readonly eligible: readonly number[];
 }
 
+export type InvocationInputSource = 'launch' | 'binding' | 'manual-continuation';
+
+/**
+ * FR-R5-F02 — immutable node input record persisted before node dispatch.
+ * Carries `acceptedAt` rather than `frozenAt` so continuation inputs remain
+ * structurally distinct from the launch-time ExecutionEnvelope.
+ */
+export interface InvocationInputEnvelope {
+  readonly envelopeId: string;
+  readonly invocationId: string;
+  readonly targetNodeId: string;
+  readonly source: InvocationInputSource;
+  readonly inputsByPort: Readonly<Record<string, ResolvedPortValue>>;
+  readonly localInputs: readonly FrozenSupplementalInput[];
+  readonly outputTargetOverrides: readonly FrozenOutputRequest[];
+  readonly acceptedAt: number;
+}
+
+export type NodeAttemptStatus = 'in-flight' | WorkflowNodeTerminalStatus;
+
+/**
+ * FR-R5-F02 — one execution attempt of a `phase` or child `workflow` node
+ * within a specific `WorkflowInvocationFrame`.
+ */
+export interface NodeAttemptRecord {
+  readonly attemptId: string;
+  readonly attemptIndex: number;
+  readonly rootRunId: string;
+  readonly invocationId: string;
+  readonly parentInvocationId: string | null;
+  readonly nodePath: string;
+  readonly nodeId: string;
+  readonly nodeKind: WorkflowNodeKind;
+  readonly targetDefinitionId: string;
+  readonly status: NodeAttemptStatus;
+  readonly startedAt: number;
+  readonly completedAt?: number;
+  readonly queueItemId?: string;
+  readonly childInvocationId?: string;
+  readonly inputEnvelope: InvocationInputEnvelope;
+  readonly declaredOutputs: Readonly<Record<string, ResolvedPortValue>>;
+  readonly verdict?: 'pass' | 'fail' | null;
+  readonly failureCode?: string;
+  readonly failureMessage?: string;
+}
+
+export interface PendingHandoffRecord {
+  readonly invocationId: string;
+  readonly fromNodeId: string;
+  readonly fromAttemptId: string;
+  readonly connectionIndex: number;
+  readonly target:
+    | { readonly kind: 'node'; readonly nodeId: string }
+    | { readonly kind: 'return' };
+  readonly prefilledInputsByPort: Readonly<Record<string, ResolvedPortValue>>;
+  readonly pausedAt: number;
+}
+
+export type WorkflowInvocationStatus =
+  | 'in-flight'
+  | 'waiting-for-handoff'
+  | 'completed'
+  | 'failed'
+  | 'canceled';
+
+/**
+ * FR-R5-F02 — mutable runtime occurrence state for one root or child Workflow
+ * invocation, kept strictly separate from the immutable `FrozenWorkflowClosure`.
+ */
+export interface WorkflowInvocationFrame {
+  readonly invocationId: string;
+  readonly rootRunId: string;
+  readonly parentInvocationId: string | null;
+  readonly parentCallNodeId: string | null;
+  readonly parentAttemptId: string | null;
+  readonly workflowId: string;
+  readonly depth: number;
+  readonly nodePath: string;
+  readonly entryNodeId: string;
+  readonly activeNodeId: string | null;
+  readonly status: WorkflowInvocationStatus;
+  readonly boundInputs: Readonly<Record<string, ResolvedPortValue>>;
+  readonly resolvedOutputs: Readonly<Record<string, ResolvedPortValue>>;
+  readonly attemptsByNodeId: Readonly<Record<string, readonly NodeAttemptRecord[]>>;
+  readonly decisions: readonly RoutingDecision[];
+  readonly pendingHandoff?: PendingHandoffRecord | null;
+  readonly failureCode?: string;
+  readonly failureMessage?: string;
+  readonly startedAt: number;
+  readonly completedAt?: number;
+}
+
 export interface ConnectedWorkflowRun {
   readonly connectedRunId: string;
   readonly workflowId: string;
@@ -108,6 +210,14 @@ export interface ConnectedWorkflowRun {
    * `resolveBoundQueueId()`, which is why no migration entry lifts it.
    */
   readonly queueId?: string;
+  /** FR-R5-F02 — frozen transitive Workflow and Phase closure for nested execution. */
+  readonly frozenClosure?: FrozenWorkflowClosure;
+  /** FR-R5-F02 — root and child invocation frames keyed by `invocationId`. */
+  readonly invocations?: Readonly<Record<string, WorkflowInvocationFrame>>;
+  /** FR-R5-F02 — immutable input envelopes persisted before node dispatch. */
+  readonly inputEnvelopes?: readonly InvocationInputEnvelope[];
+  /** FR-R5-F02 — active manual handoff pause record, if any. */
+  readonly pendingHandoff?: PendingHandoffRecord | null;
 }
 
 export class ConnectedRunInvariantError extends Error {
@@ -120,8 +230,12 @@ export class ConnectedRunInvariantError extends Error {
 const AGGREGATE_KEYS: readonly string[] = [
   'connectedRunId',
   'decisions',
+  'frozenClosure',
   'graph',
+  'inputEnvelopes',
+  'invocations',
   'nodes',
+  'pendingHandoff',
   'pipelines',
   'queueId',
   'revision',
@@ -292,6 +406,28 @@ export function assertConnectedRunInvariants(
   if (!Object.isFrozen(run.graph) || !Object.isFrozen(run.pipelines)) {
     fail('the graph and Pipeline snapshots must be frozen');
   }
+  if (run.frozenClosure !== undefined) {
+    if (
+      !Object.isFrozen(run.frozenClosure) ||
+      !Object.isFrozen(run.frozenClosure.workflowsById) ||
+      !Object.isFrozen(run.frozenClosure.phasesById)
+    ) {
+      fail('the frozenWorkflowClosure must be frozen');
+    }
+  }
+  if (run.invocations !== undefined) {
+    if (!Object.isFrozen(run.invocations)) {
+      fail('the invocations map must be frozen');
+    }
+    for (const [invId, frame] of Object.entries(run.invocations)) {
+      if (frame.invocationId !== invId) {
+        fail(`invocation frame ${invId} disagrees with its key`);
+      }
+    }
+  }
+  if (run.inputEnvelopes !== undefined && !Object.isFrozen(run.inputEnvelopes)) {
+    fail('the inputEnvelopes list must be frozen');
+  }
   const nodeIds = new Set(run.graph.nodes.map((node) => node.nodeId));
   for (const [key, record] of Object.entries(run.nodes)) {
     assertKeys(record, NODE_KEYS, 'node record');
@@ -316,6 +452,9 @@ export interface CreateConnectedRunInput {
    * binding it keeps.
    */
   readonly queueId?: string;
+  readonly frozenClosure?: FrozenWorkflowClosure;
+  readonly invocations?: Readonly<Record<string, WorkflowInvocationFrame>>;
+  readonly inputEnvelopes?: readonly InvocationInputEnvelope[];
 }
 
 /** Freeze the snapshot and open the aggregate at revision 1. */
@@ -329,7 +468,16 @@ export function createConnectedRun(input: CreateConnectedRunInput): ConnectedWor
     decisions: Object.freeze([]),
     revision: 1,
     startedAt: input.startedAt,
-    ...(input.queueId !== undefined ? { queueId: input.queueId } : {})
+    ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
+    ...(input.frozenClosure !== undefined
+      ? { frozenClosure: deepFreeze(deepCopy(input.frozenClosure)) }
+      : {}),
+    ...(input.invocations !== undefined
+      ? { invocations: deepFreeze(deepCopy(input.invocations)) }
+      : {}),
+    ...(input.inputEnvelopes !== undefined
+      ? { inputEnvelopes: deepFreeze(deepCopy(input.inputEnvelopes)) }
+      : {})
   };
   assertConnectedRunInvariants(run);
   return Object.freeze(run);
@@ -364,6 +512,122 @@ export function appendDecision(
   const next: ConnectedWorkflowRun = {
     ...run,
     decisions: Object.freeze([...run.decisions, frozen]),
+    revision: run.revision + 1
+  };
+  assertConnectedRunInvariants(next);
+  return Object.freeze(next);
+}
+
+/**
+ * FR-R5-F02 — derive the hierarchical occurrence `nodePath` (`/<nodeId>` for root
+ * steps and `/<parentCallNodeId>/<childNodeId>` for nested child invocations).
+ */
+export function deriveNodePath(parentNodePath: string, nodeId: string): string {
+  const trimmed = parentNodePath.trim();
+  if (trimmed === '' || trimmed === '/') {
+    return `/${nodeId}`;
+  }
+  const normalized = trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+  return `${normalized}/${nodeId}`;
+}
+
+export interface CreateInvocationFrameInput {
+  readonly invocationId: string;
+  readonly rootRunId: string;
+  readonly parentInvocationId: string | null;
+  readonly parentCallNodeId: string | null;
+  readonly parentAttemptId: string | null;
+  readonly workflowId: string;
+  readonly depth: number;
+  readonly nodePath: string;
+  readonly entryNodeId: string;
+  readonly boundInputs: Readonly<Record<string, ResolvedPortValue>>;
+  readonly startedAt: number;
+}
+
+export function createInvocationFrame(input: CreateInvocationFrameInput): WorkflowInvocationFrame {
+  return deepFreeze(
+    deepCopy({
+      invocationId: input.invocationId,
+      rootRunId: input.rootRunId,
+      parentInvocationId: input.parentInvocationId,
+      parentCallNodeId: input.parentCallNodeId,
+      parentAttemptId: input.parentAttemptId,
+      workflowId: input.workflowId,
+      depth: input.depth,
+      nodePath: input.nodePath,
+      entryNodeId: input.entryNodeId,
+      activeNodeId: input.entryNodeId,
+      status: 'in-flight',
+      boundInputs: input.boundInputs,
+      resolvedOutputs: {},
+      attemptsByNodeId: {},
+      decisions: [],
+      pendingHandoff: null,
+      startedAt: input.startedAt
+    })
+  );
+}
+
+export function recordNodeAttempt(
+  frame: WorkflowInvocationFrame,
+  attempt: NodeAttemptRecord
+): WorkflowInvocationFrame {
+  const existing = frame.attemptsByNodeId[attempt.nodeId] ?? [];
+  const updatedForNode = existing.some((entry) => entry.attemptId === attempt.attemptId)
+    ? existing.map((entry) => (entry.attemptId === attempt.attemptId ? attempt : entry))
+    : [...existing, attempt];
+  return deepFreeze(
+    deepCopy({
+      ...frame,
+      activeNodeId: attempt.nodeId,
+      attemptsByNodeId: {
+        ...frame.attemptsByNodeId,
+        [attempt.nodeId]: updatedForNode
+      }
+    })
+  );
+}
+
+export function upsertInvocationFrame(
+  run: ConnectedWorkflowRun,
+  frame: WorkflowInvocationFrame
+): ConnectedWorkflowRun {
+  const frozenFrame = deepFreeze(deepCopy(frame));
+  const next: ConnectedWorkflowRun = {
+    ...run,
+    invocations: Object.freeze({
+      ...(run.invocations ?? {}),
+      [frozenFrame.invocationId]: frozenFrame
+    }),
+    revision: run.revision + 1
+  };
+  assertConnectedRunInvariants(next);
+  return Object.freeze(next);
+}
+
+export function appendInputEnvelope(
+  run: ConnectedWorkflowRun,
+  envelope: InvocationInputEnvelope
+): ConnectedWorkflowRun {
+  const frozenEnvelope = deepFreeze(deepCopy(envelope));
+  const next: ConnectedWorkflowRun = {
+    ...run,
+    inputEnvelopes: Object.freeze([...(run.inputEnvelopes ?? []), frozenEnvelope]),
+    revision: run.revision + 1
+  };
+  assertConnectedRunInvariants(next);
+  return Object.freeze(next);
+}
+
+export function setPendingHandoff(
+  run: ConnectedWorkflowRun,
+  handoff: PendingHandoffRecord | null
+): ConnectedWorkflowRun {
+  const frozenHandoff = handoff === null ? null : deepFreeze(deepCopy(handoff));
+  const next: ConnectedWorkflowRun = {
+    ...run,
+    pendingHandoff: frozenHandoff,
     revision: run.revision + 1
   };
   assertConnectedRunInvariants(next);
