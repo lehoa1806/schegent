@@ -128,7 +128,9 @@ works from the keyboard, and renders correctly under the content-security policy
 - **A failing projection is logged once.** When a catalog or the trust capabilities cannot be resolved, the
   sanitized runtime log now records the failure once, when it starts, and not again until it recovers. Before,
   the log line itself triggered another refresh that failed and logged again, about ten times a second for as
-  long as the failure lasted. State is still refreshed on every real change.
+  long as the failure lasted. A saved Connected Workflow Run that fails its checks and is skipped when state is
+  read is named the same way, once for each distinct set of skipped records and not on every refresh. State is
+  still refreshed on every real change.
 - **The live phase log keeps the newest 500 rows.** A running phase's live tail now shows at most 500 rows:
   the newest 499 entries and one line saying how many earlier entries are not shown. While following, the
   newest entry stays in view. While paused, the view stays where it is, and the "new entries" count keeps
