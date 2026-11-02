@@ -301,6 +301,12 @@ found) are recorded as `unobserved` in
 [Backend containment qualification](../architecture/backend-containment-qualification.md), section 8, with the
 prerequisite for observing them. The extension declares no `extensionKind`.
 
+The three executable-path settings, `schegent.cli.path`, `schegent.codex.path` and `schegent.agy.path`, are
+declared `application`-scoped in the manifest ([Settings reference](../reference/settings.md)). Under a remote
+window, which machine supplies their values, and whether the executable they name exists on the machine the
+extension host runs on, has not been observed either. Observing it takes a controlled remote host with a stub
+CLI, the prerequisite the qualification record gives for its "Remote extension-host topology" rows.
+
 ## Per-phase capability sets (FR-R3-086)
 
 A Phase definition may declare `capabilities` — any subset of `workspace-write`,
