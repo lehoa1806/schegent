@@ -703,13 +703,15 @@ same abort → SIGTERM → SIGKILL group ladder an operator cancel uses. It acts
 **invocation** and never on the window-primacy lease, which `AGENTS.md` states as a hard rule
 with FR-028's history behind it.
 
-**Teardown's own stop could start one.** Stage-2 teardown runs `cancelAll()`, whose SIGTERM
+**Teardown's own stop could start one.** Stage-2 teardown runs
+`BackendRunnerRegistry.closeAndTearDown()` (through `createHostTeardown`), whose SIGTERM
 ends a child with 143. A turn that still had background work open then reads as unfinished,
 and the controller resumes an unfinished turn with a new `--resume` spawn, detached like every
 other, after the teardown that was meant to stop every CLI (the feature-228 security review,
-S1). `cancelAll()` now closes each runner too, and a closed runner refuses every later
-invocation with `SpawnRefusedAfterCloseError` before anything is spawned; a runner built after
-teardown is handed out closed. The refused invocation fails the Run rather than resuming it.
+S1). `closeAndTearDown()` closes each runner before it cancels that runner's children, and a
+closed runner refuses every later invocation with `SpawnRefusedAfterCloseError` before
+anything is spawned; a runner built after teardown is handed out closed. The refused
+invocation fails the Run rather than resuming it.
 The refusal sits in the runner, not the resume loop, so a phase retry or an auto-drain
 admission after teardown is refused the same way. Teardown also closes the auto-drain before it
 stops any child, so a closed drain starts nothing, and a task waiting for the slot a stopped Run
