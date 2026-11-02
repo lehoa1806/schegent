@@ -932,11 +932,11 @@ export class ClaudeCliRunner implements BackendRunner {
   /**
    * Terminate every live subprocess this runner owns, reporting whether there
    * was any. Feature 093 (T046a): the sole production caller is
-   * `BackendRunnerRegistry.cancelAll()` at extension deactivation, which must
-   * reach all of a shared runner's children rather than whichever one happened
-   * to spawn last. Deliberately takes no run id — per-Run cancellation already
-   * runs through each session's own `AbortController` and `cancellationSignal`,
-   * so a run-addressed overload here would have no caller.
+   * `BackendRunnerRegistry.closeAndTearDown()` at extension deactivation, which
+   * must reach all of a shared runner's children rather than whichever one
+   * happened to spawn last. Deliberately takes no run id — per-Run cancellation
+   * already runs through each session's own `AbortController` and
+   * `cancellationSignal`, so a run-addressed overload here would have no caller.
    */
   public cancelActive(): boolean {
     if (this.active.size === 0) return false;

@@ -171,7 +171,7 @@ export class BackendRunnerRegistry {
 
   /**
    * The synchronous form, for callers that cannot wait. It starts the same single teardown.
-   * Called at deactivation to ensure no orphaned CLI processes.
+   * Deactivation does not use it: the host awaits `closeAndTearDown()` through `createHostTeardown`.
    */
   public cancelAll(): void {
     void this.closeAndTearDown();
