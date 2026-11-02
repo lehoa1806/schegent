@@ -14,6 +14,7 @@
 // Each assertion that a row covers a file is paired with the control that the file exists.
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -289,6 +290,25 @@ describe('the enumerated fields are in their closed sets (§11)', () => {
     for (const row of retentionDisclosure()) {
       expect(row.location, row.store).not.toMatch(/\/Users\/|\/home\/|\/var\/folders\/|[A-Z]:\\/);
     }
+  });
+});
+
+describe('a store the inventory says is swept at activation has the call that does it (FR-R4-F04 G1, G2)', () => {
+  // The inventory is a promise to the operator, and two rows broke it in opposite directions. The history
+  // descriptions were disclosed as swept at activation while nothing called the sweep. The audit log's
+  // archives were pruned at activation, by the owner, and disclosed as pruned at rotation only. Each row is
+  // tied to the call that makes its claim true, so removing the call (or the word) fails here by name.
+  const CALL_SITES: ReadonlyArray<readonly [string, RegExp, string, string]> = [
+    ['the audit log', /^Structured audit log/i, 'src/activation/stage2-producers.ts', 'auditWriter.runArchiveMaintenance()'],
+    ['the history descriptions', /^Run history descriptions/i, 'src/activation/evidence-wiring.ts', 'await sweepHistoryDescriptions(']
+  ];
+
+  it.each(CALL_SITES)('%s names `activation`, and the call site is there', (_name, store, file, call) => {
+    const row = retentionDisclosure().find((candidate) => store.test(candidate.store));
+    expect(row, 'the row must exist').toBeDefined();
+    expect(row?.sweptBy, 'the row must name the activation sweep').toContain('activation');
+    const source = readFileSync(path.resolve(__dirname, '..', '..', '..', file), 'utf8');
+    expect(source, `${file} must still make the call the row's "activation" rests on`).toContain(call);
   });
 });
 
