@@ -232,7 +232,8 @@ export const DROPPED: readonly DroppedFamily[] = [
   {
     family: 'azure',
     reason:
-      'Measured at T073 against secretlint 13.0.4 with the preset at 10.2.2: the preset registers ' +
+      'Measured at T073, and measured again on 2026-11-01 against the installed engine and preset ' +
+      '(both 10.2.2): the preset registers ' +
       'twelve scanning rules and a comments filter, and none is an Azure rule (its package.json ' +
       'lists @secretlint/secretlint-rule-azure, but its src/index.ts does not import it). A ' +
       'synthetic storage-account key, as a connection string and as an assignment, is not reported.'
