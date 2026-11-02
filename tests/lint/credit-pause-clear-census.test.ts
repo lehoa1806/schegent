@@ -24,6 +24,8 @@ const CREDIT_CLEAR = 'creditPause: null';
  * `pendingRetryCause: null` is not a `WorkflowRun` patch.
  */
 const NOT_A_RUN_WRITE: Readonly<Record<string, string>> = {
+  'src/state/connected-workflow-run.ts':
+    'InvocationControlMarkers is a ConnectedWorkflowRun invocation-frame marker record (manualPauseCause, pendingRetryCause), not a WorkflowRun',
   'src/ui/sidebar/snapshot.ts':
     'IDLE_DELAYED_RETRY is a DelayedRetryState projection default (pendingRetryAt, pendingRetryCause, delayedRetryCount), not a WorkflowRun'
 };
