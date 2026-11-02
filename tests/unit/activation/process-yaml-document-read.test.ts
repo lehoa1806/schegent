@@ -12,9 +12,10 @@
 // `read` is spied on to prove the refusal happens before a content read; every spy is restored in
 // `afterEach`.
 
+import { readFileSync } from 'node:fs';
 import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -205,5 +206,119 @@ describe('FR-R4-F07 S-T3 / S9 — a failed read logs a closed code and no path',
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).not.toContain('private');
     expect(warnings[0]).not.toContain('boom');
+  });
+});
+
+// FR-R4-F07 (audit G-E; FR-007, V4) — the two router adapters that wrap the reader log the same way
+// ---------------------------------------------------------------------------
+//
+// `readChosenProcessDocument` logs a closed code and no path, and the cases above hold it. The save
+// dialog and the export write live in adapters that `createSidebarRouter` builds and no test
+// constructs, so their `catch` arms were held by nothing: an arm that logged the caught message would
+// print the location a file-system error names, and `logger.sanitize` redacts secrets, not paths.
+//
+// They cannot be called here, so the property is held on the text of each arm: the only thing the arm
+// does with the caught value is take its closed code, and the only thing it interpolates is that code.
+// It is a narrow text check and it does not parse. It is shown to say no (the synthetic arms) and to find
+// both production arms (the control), so a clean verdict is not a failed lookup.
+
+const ROUTER_WIRING = resolve(__dirname, '..', '..', '..', 'src', 'activation', 'sidebar-router-wiring.ts');
+
+/** The two adapters' log lines, by the text they begin with. */
+const ADAPTER_ARMS: readonly (readonly [string, string])[] = [
+  ['export write', 'extension: phase export write failed'],
+  ['import dialog', 'extension: phase import dialog failed']
+];
+
+/** `${closedErrorCode(err)}` as text, the one interpolation an arm may hold. */
+const CLOSED_CODE_INTERPOLATION = '$' + '{closedErrorCode(err)}';
+
+/** TypeScript source with block and line comments removed. */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+}
+
+/** The body of the `catch (err) { … }` arm that holds `logText`, by balanced braces; absent when none does. */
+function catchArmHolding(code: string, logText: string): string | undefined {
+  const at = code.indexOf(logText);
+  if (at < 0) return undefined;
+  const opener = 'catch (err) {';
+  const open = code.lastIndexOf(opener, at);
+  if (open < 0) return undefined;
+  const bodyStart = open + opener.length;
+  let depth = 1;
+  for (let position = bodyStart; position < code.length; position += 1) {
+    const character = code.charAt(position);
+    if (character === '{') depth += 1;
+    if (character === '}') depth -= 1;
+    if (depth === 0) return code.slice(bodyStart, position);
+  }
+  return undefined;
+}
+
+/** What an arm does with the caught value beyond taking its closed code; empty when it does nothing more. */
+function excessOfClosedCodeArm(arm: string): readonly string[] {
+  const excess: string[] = [];
+  if (!arm.includes(CLOSED_CODE_INTERPOLATION)) excess.push('does not log the closed code');
+  const rest = arm.split(CLOSED_CODE_INTERPOLATION).join('');
+  if (/\berr\b/.test(rest)) excess.push('uses the caught value beyond its closed code');
+  if (rest.includes('${')) excess.push('interpolates something other than the closed code');
+  return excess;
+}
+
+/** `${expression}` as text, without writing a template placeholder in a string the linter reads. */
+const placeholder = (expression: string): string => '$' + '{' + expression + '}';
+
+/** An arm shaped like the production ones, logging `logged` after the log's opening words. */
+const armLogging = (logged: string): string =>
+  'logger.warn(`extension: phase export write failed: ' + logged + '`); return { outcome: "failed" };';
+
+describe('FR-R4-F07 audit G-E — the router adapters log a closed code and nothing else (FR-007, V4)', () => {
+  const code = withoutComments(readFileSync(ROUTER_WIRING, 'utf8'));
+
+  it.each(ADAPTER_ARMS)('control: finds the %s arm in the production wiring', (_name, logText) => {
+    const arm = catchArmHolding(code, logText);
+    expect(arm).toBeDefined();
+    expect(arm).toContain('logger.warn(');
+    expect(arm).toContain(logText);
+  });
+
+  it.each(ADAPTER_ARMS)('the %s arm takes only the closed code of what it caught', (_name, logText) => {
+    expect(excessOfClosedCodeArm(catchArmHolding(code, logText) ?? '(no arm found)')).toEqual([]);
+  });
+
+  it('accepts an arm shaped like the production ones', () => {
+    expect(excessOfClosedCodeArm(armLogging('code=' + placeholder('closedErrorCode(err)')))).toEqual([]);
+  });
+
+  it('names an arm that logs the message of what it caught (synthetic)', () => {
+    expect(excessOfClosedCodeArm(armLogging(placeholder('err.message')))).toEqual([
+      'does not log the closed code',
+      'uses the caught value beyond its closed code',
+      'interpolates something other than the closed code'
+    ]);
+  });
+
+  it('names an arm that adds the message beside the closed code (synthetic)', () => {
+    const logged = 'code=' + placeholder('closedErrorCode(err)') + ' ' + placeholder('logger.sanitize(err.message)');
+    expect(excessOfClosedCodeArm(armLogging(logged))).toEqual([
+      'uses the caught value beyond its closed code',
+      'interpolates something other than the closed code'
+    ]);
+  });
+
+  it('names an arm that adds a location beside the closed code (synthetic)', () => {
+    const logged = 'code=' + placeholder('closedErrorCode(err)') + ' ' + placeholder('target.fsPath');
+    expect(excessOfClosedCodeArm(armLogging(logged))).toEqual([
+      'interpolates something other than the closed code'
+    ]);
+  });
+
+  it('names an arm that logs no code at all (synthetic)', () => {
+    expect(excessOfClosedCodeArm(armLogging('failed'))).toEqual(['does not log the closed code']);
+  });
+
+  it('finds no arm where the log text is absent, rather than reading a neighbour', () => {
+    expect(catchArmHolding(code, 'extension: no such adapter failed')).toBeUndefined();
   });
 });
