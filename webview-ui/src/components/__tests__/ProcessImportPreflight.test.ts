@@ -1354,8 +1354,10 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
     // FR-042c — nothing is rolled back, and no control is offered that would.
     expect(container.querySelector('[data-testid="process-import-undo"]')).toBeNull();
     // FR-042b — the recovery named is re-running the same document, which skips
-    // what is already there.
+    // what is already there. A draft is skipped too (FR-R4-F07 audit G-RECOVERY), so the sentence
+    // also names the step that makes the re-run write: publishing the draft in the Builder.
     expect(outcome.textContent).toContain('again');
+    expect(outcome.textContent).toContain('Builder');
   });
 
   it('rejects every layer when the one request is refused, naming the reason on each row', async () => {
