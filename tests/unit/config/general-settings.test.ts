@@ -495,7 +495,7 @@ describe('Feature 011 — writeGeneralSettings surfaces underlying errors', () =
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.reason).toBe('write-failed:logging.verbose:settings.json: EBUSY');
+    expect(result.reason).toBe('write-failed:logging.verbose');
     expect(fake.updateCalls).toEqual([
       { key: 'loop.maxIterations', value: 7, target: CONFIGURATION_TARGET_WORKSPACE },
       { key: 'logging.verbose', value: true, target: CONFIGURATION_TARGET_WORKSPACE },
@@ -532,6 +532,187 @@ describe('Feature 011 — writeGeneralSettings surfaces underlying errors', () =
     const after = readGeneralSettings(config);
     expect(after.loopMaxIterations).toBe(10);
     expect(after.scopes.loopMaxIterations).toBe('default');
+  });
+});
+
+// FR-R4-F05 (FR-011; the brief's "never leak exception substrings to IPC") — the reason a failed
+// write returns reaches the sidebar acknowledgement. It used to end in the exception's text
+// (`write-failed:<key>:<message>`, and the rollback form's own `:<detail>`), and a settings-file
+// fault names a path. The reason is now the key and the stage only; the exception goes to the
+// `onWriteFailure` hook, which the host wires to the sanitizing logger.
+describe('FR-R4-F05 — a failed settings write answers a code, never the exception', () => {
+  // A synthetic home directory: a real OS fault from the settings file names one.
+  const WRITE_FAULT_PATH = '/synthetic/home/user-252/.vscode/settings.json';
+  const ROLLBACK_FAULT_PATH = '/synthetic/home/user-253/.vscode/settings.json';
+  const writeFault = (): Error =>
+    new Error(`EACCES: permission denied, open '${WRITE_FAULT_PATH}'`);
+  const rollbackFault = (): Error =>
+    new Error(`EBUSY: resource busy, rename '${ROLLBACK_FAULT_PATH}'`);
+
+  /** A config whose update of `failingKey` throws `fault()`; every other key writes normally. */
+  function configFailingOn(failingKey: string, fault: () => Error): GeneralSettingsConfig {
+    const config = makeConfig({
+      defaults: { 'loop.maxIterations': 10, 'logging.verbose': false },
+      workspace: { 'loop.maxIterations': 3 }
+    });
+    const fake = config as unknown as FakeWorkspaceConfig;
+    const update = fake.update.bind(fake);
+    vi.spyOn(fake, 'update').mockImplementation(async (key, value, target) => {
+      if (key === failingKey) {
+        fake.updateCalls.push({ key, value, target });
+        throw fault();
+      }
+      return update(key, value, target);
+    });
+    return config;
+  }
+
+  it('answers write-failed:<key> with no text from the exception', async () => {
+    const config = configFailingOn('logging.verbose', writeFault);
+
+    const result = await writeGeneralSettings(config, { 'logging.verbose': true });
+
+    expect(result).toEqual({ ok: false, reason: 'write-failed:logging.verbose' });
+  });
+
+  it('answers clear-failed:<key> for a failed clear, as before', async () => {
+    const config = configFailingOn('claude.autoCompactPctOverride', writeFault);
+
+    const result = await writeGeneralSettings(config, { 'claude.autoCompactPctOverride': null });
+
+    expect(result).toEqual({ ok: false, reason: 'clear-failed:claude.autoCompactPctOverride' });
+  });
+
+  it('answers rollback-failed with the keys and the primary code, and no text from either exception', async () => {
+    // The first key writes, the second fails, and the compensating restore of the first fails too.
+    const config = makeConfig({
+      defaults: { 'loop.maxIterations': 10, 'logging.verbose': false },
+      workspace: { 'loop.maxIterations': 3 }
+    });
+    const fake = config as unknown as FakeWorkspaceConfig;
+    const update = fake.update.bind(fake);
+    let loopWrites = 0;
+    vi.spyOn(fake, 'update').mockImplementation(async (key, value, target) => {
+      if (key === 'logging.verbose') throw writeFault();
+      if (key === 'loop.maxIterations') {
+        loopWrites += 1;
+        if (loopWrites > 1) throw rollbackFault();
+      }
+      return update(key, value, target);
+    });
+
+    const result = await writeGeneralSettings(config, {
+      'loop.maxIterations': 7,
+      'logging.verbose': true
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'rollback-failed:loop.maxIterations:after:write-failed:logging.verbose'
+    });
+    expect(JSON.stringify(result)).not.toMatch(/user-25[23]|EACCES|EBUSY/);
+  });
+
+  it('hands the write failure to onWriteFailure with its key, its stage and the exception', async () => {
+    const fault = writeFault();
+    const config = configFailingOn('logging.verbose', () => fault);
+    const onWriteFailure = vi.fn();
+
+    await writeGeneralSettings(config, { 'logging.verbose': true }, { onWriteFailure });
+
+    expect(onWriteFailure).toHaveBeenCalledTimes(1);
+    expect(onWriteFailure).toHaveBeenCalledWith({
+      key: 'logging.verbose',
+      stage: 'write',
+      error: fault
+    });
+  });
+
+  it('hands the clear failure to onWriteFailure at the clear stage', async () => {
+    const fault = writeFault();
+    const config = configFailingOn('claude.autoCompactPctOverride', () => fault);
+    const onWriteFailure = vi.fn();
+
+    await writeGeneralSettings(config, { 'claude.autoCompactPctOverride': null }, { onWriteFailure });
+
+    expect(onWriteFailure).toHaveBeenCalledTimes(1);
+    expect(onWriteFailure).toHaveBeenCalledWith({
+      key: 'claude.autoCompactPctOverride',
+      stage: 'clear',
+      error: fault
+    });
+  });
+
+  it('hands both the write failure and the rollback failure to onWriteFailure, in order', async () => {
+    const primary = writeFault();
+    const restore = rollbackFault();
+    const config = makeConfig({
+      defaults: { 'loop.maxIterations': 10, 'logging.verbose': false },
+      workspace: { 'loop.maxIterations': 3 }
+    });
+    const fake = config as unknown as FakeWorkspaceConfig;
+    const update = fake.update.bind(fake);
+    let loopWrites = 0;
+    vi.spyOn(fake, 'update').mockImplementation(async (key, value, target) => {
+      if (key === 'logging.verbose') throw primary;
+      if (key === 'loop.maxIterations') {
+        loopWrites += 1;
+        if (loopWrites > 1) throw restore;
+      }
+      return update(key, value, target);
+    });
+    const onWriteFailure = vi.fn();
+
+    await writeGeneralSettings(
+      config,
+      { 'loop.maxIterations': 7, 'logging.verbose': true },
+      { onWriteFailure }
+    );
+
+    expect(onWriteFailure.mock.calls).toEqual([
+      [{ key: 'logging.verbose', stage: 'write', error: primary }],
+      [{ key: 'loop.maxIterations', stage: 'rollback', error: restore }]
+    ]);
+  });
+
+  it('does not let a throwing onWriteFailure change the answer', async () => {
+    const config = configFailingOn('logging.verbose', writeFault);
+
+    const result = await writeGeneralSettings(
+      config,
+      { 'logging.verbose': true },
+      {
+        onWriteFailure: () => {
+          throw new Error('the hook itself failed');
+        }
+      }
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'write-failed:logging.verbose' });
+  });
+
+  it('calls onWriteFailure for neither a success nor a validation refusal', async () => {
+    const onWriteFailure = vi.fn();
+
+    const written = await writeGeneralSettings(makeConfig(), { 'loop.maxIterations': 7 }, { onWriteFailure });
+    const refused = await writeGeneralSettings(makeConfig(), { 'loop.maxIterations': 'x' }, { onWriteFailure });
+
+    expect(written.ok).toBe(true);
+    expect(refused.ok).toBe(false);
+    expect(onWriteFailure).not.toHaveBeenCalled();
+  });
+
+  it('is supplied by the production wiring, which logs a described, sanitized failure', () => {
+    // The cases above prove the writer calls the hook; this one proves something hands it one. The
+    // sidebar no longer receives the exception, so a missing hook would leave the detail nowhere.
+    const wiring = fs.readFileSync(
+      path.resolve(__dirname, '..', '..', '..', 'src', 'activation', 'sidebar-router-wiring.ts'),
+      'utf8'
+    );
+
+    expect(wiring).toMatch(
+      /onWriteFailure:[\s\S]{0,300}?describeFailure\(error, \(value\) => logger\.sanitize\(value\)\)/
+    );
   });
 });
 
