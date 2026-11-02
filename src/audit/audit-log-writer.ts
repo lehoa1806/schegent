@@ -299,17 +299,6 @@ export class AuditLogWriter {
   }
 
   /**
-   * Set the chain's position from a line the caller read. A TEST-ONLY path: production never calls
-   * it. The step's own tail check reads the chain, across rotation, as bytes, before it links
-   * (contract W1, W3), and an owner that has not read the log has no business assuming one.
-   */
-  public seedChainFrom(lastLine: string | null): void {
-    const trimmed = lastLine?.trim() ?? '';
-    this.landedDigest = trimmed.length === 0 ? AUDIT_CHAIN_GENESIS : digestOf(trimmed);
-    this.tailCheckOwed = false;
-  }
-
-  /**
    * Queue one step on the write chain and keep the chain moving.
    *
    * The step runs after the previous one settles, whichever way it settled, and the next waits for
