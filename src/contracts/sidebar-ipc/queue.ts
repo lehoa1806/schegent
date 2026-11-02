@@ -3,7 +3,7 @@
 // Lives in a sub-module for the same reason `workflow-run.ts` and
 // `run-launcher.ts` do: the barrel is at its LOC ceiling, and only the five
 // mandatory registration edits per command belong there (the literal, the
-// `SIDEBAR_COMMAND_TYPES` entry, the type re-export, the `SidebarCommand`
+// `COMMAND_TYPES` entry, the type re-export, the `SidebarCommand`
 // member, and the `COMMAND_GUARDS` entry). See
 // specs/092-multi-queue-concurrency/contracts/queue-registry-and-migration.md.
 //
