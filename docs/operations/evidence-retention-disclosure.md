@@ -49,6 +49,10 @@ drifted again.
 
 The 90-second stall threshold is a constant (`MONITOR_STALL_THRESHOLD_MS`), not a setting: a Run that has been silent that long is reported as stalled, and no setting changes it.
 
+Run-owned runtime messages include structured `runId` and `phase` context, including backend invocation,
+teardown and monitor audit failures. Diagnostics bundles use that context to select the requested Run's
+lines. Window-wide messages remain unattributed; older lines without context cannot be assigned to a Run.
+
 ## Older audit rows, and when a sweep runs
 
 **Older audit generations can hold content.** Before this release the audit log could carry stream content

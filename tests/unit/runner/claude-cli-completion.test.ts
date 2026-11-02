@@ -687,11 +687,15 @@ describe('ClaudeCliRunner — FR-R3-198 background hold (T1876)', () => {
     return { logger, lines };
   }
 
-  /** The runner's own messages about `about`, without the logger's stamp and level. */
+  /** Message bodies; separately pin the correlation context added by FR-R4-039. */
   function messages(lines: ReadonlyArray<string>, about: string): string[] {
     return lines
       .filter((line) => line.includes(about))
-      .map((line) => line.slice(line.indexOf('[ClaudeCliRunner]')));
+      .map((line) => {
+        const contextAt = line.lastIndexOf(' {');
+        expect(JSON.parse(line.slice(contextAt + 1))).toEqual({ runId: null, phase: 'speckit-implement', iteration: 1 });
+        return line.slice(line.indexOf('[ClaudeCliRunner]'), contextAt);
+      });
   }
 
   /**
