@@ -174,7 +174,7 @@ The webview words the two reasons as "The workspace is not trusted, so this acti
 | Preflight process YAML | The import panel reports the refusal in the sentence for the reason. | The warning toast. |
 | Dismiss migration notice | The notice stays, because only a snapshot that records the dismissal hides it. | The warning toast. |
 | Read metrics | The metrics view shows the sentence for the reason. | The warning toast. |
-| Read phase log, start or stop phase-log tail | The phase-log feed shows "Could not load logs:" followed by the sentence for the reason, because the read is refused for the same two reasons. The tail adds no message of its own: a refused start leaves the feed without live updates, and a refused stop clears the feed's own session locally. A window that loses primacy while a tail runs cannot stop it; the tail ends when the panel is disposed. | The warning toast. |
+| Read phase log, start or stop phase-log tail | The phase-log feed shows "Could not load logs:" followed by the sentence for the reason, because the read is refused for the same two reasons. The tail adds no message of its own: a refused start leaves the feed without live updates, and a refused stop clears the feed's own session locally. A window that loses primacy while a tail runs cannot stop it. The tail ends when its task leaves in flight, when the next tail starts (one runs at a time) or when the extension shuts down; closing the panel does not end it. | The warning toast. |
 
 <!-- Source: src/ui/sidebar/message-router.ts -->
 <!-- Source: src/ui/sidebar/commands/constants.ts -->
