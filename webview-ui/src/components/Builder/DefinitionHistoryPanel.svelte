@@ -30,7 +30,7 @@
   } from './version-body-view';
 
   interface Props {
-    kind: CatalogKind;
+    kind: CatalogKind | 'pipeline';
     /** The definition whose history this is — the wire target and the test handle. */
     definitionId: string;
     /** What Restore's confirmations name. The id alone is not what the operator recognises. */
@@ -68,7 +68,11 @@
     const token = (issued += 1);
     selected = versionId;
     view = { status: 'pending' };
-    const result = await readDefinitionVersion({ kind, id: definitionId, versionId });
+    const result = await readDefinitionVersion({
+      kind: kind as CatalogKind,
+      id: definitionId,
+      versionId
+    });
     // Superseded while in flight. Discarded, not merged — see above.
     if (token !== issued) return;
     view = viewOfReadResult(result);

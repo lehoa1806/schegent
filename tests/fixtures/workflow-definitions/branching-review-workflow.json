@@ -1,0 +1,85 @@
+{
+  "workflowId": "branching-review-workflow",
+  "name": "Branching Review Workflow",
+  "description": "Canonical branching Workflow with conditional transitions, manual handoff, bounded review loop, and branch-optional output.",
+  "version": 1,
+  "inputs": [
+    {
+      "portId": "draft-doc",
+      "label": "Draft Document",
+      "type": "text",
+      "required": true
+    }
+  ],
+  "outputs": [
+    {
+      "portId": "review-report",
+      "label": "Review Report",
+      "type": "markdown",
+      "required": true
+    },
+    {
+      "portId": "approval-summary",
+      "label": "Approval Summary",
+      "type": "markdown",
+      "required": false
+    }
+  ],
+  "nodes": [
+    {
+      "nodeId": "review-node",
+      "kind": "phase",
+      "phaseId": "analyze",
+      "label": "Review"
+    },
+    {
+      "nodeId": "approve-node",
+      "kind": "phase",
+      "phaseId": "finalize",
+      "label": "Approve"
+    }
+  ],
+  "connections": [
+    {
+      "from": { "nodeId": "review-node" },
+      "to": { "nodeId": "approve-node" },
+      "handoff": "manual",
+      "condition": {
+        "left": { "source": "node-status", "nodeId": "review-node" },
+        "operator": "equals",
+        "right": "completed"
+      },
+      "priority": 1
+    },
+    {
+      "from": { "nodeId": "review-node" },
+      "to": { "nodeId": "return", "kind": "return" },
+      "isDefault": true
+    },
+    {
+      "from": { "nodeId": "approve-node" },
+      "to": { "nodeId": "return", "kind": "return" }
+    }
+  ],
+  "bindings": [
+    {
+      "kind": "input",
+      "nodeId": "review-node",
+      "inputKey": "draft",
+      "source": { "from": "workflow-input", "portId": "draft-doc" }
+    },
+    {
+      "kind": "output",
+      "nodeId": "review-node",
+      "portId": "review-report",
+      "outputKey": "report"
+    },
+    {
+      "kind": "output",
+      "nodeId": "approve-node",
+      "portId": "approval-summary",
+      "outputKey": "summary"
+    }
+  ],
+  "startNodeIds": ["review-node"]
+}

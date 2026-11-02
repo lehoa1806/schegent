@@ -37,13 +37,19 @@ import { validateWorkflowDefinition } from '../config/workflow-definition-valida
 import { validateWorkflowGraph } from '../config/workflow-graph-validator';
 import type { PhaseDefinition } from '../contracts/process-definitions';
 import type { PipelineDefinition, PipelineFieldError } from '../contracts/pipeline-definitions';
-import type { WorkflowFieldError } from '../contracts/workflow-definitions';
+import type { WorkflowDefinition, WorkflowFieldError } from '../contracts/workflow-definitions';
 import { checkDefinitionArgs, type BoundaryRefusal } from './process-api-validators';
 
 /** The effective catalog each kind is validated against, supplied by the caller. */
 export interface ProcessDefinitionCatalog {
-  /** The effective Phase catalog. A Pipeline's bindings resolve against this. */
+  /** The effective Phase catalog. A Workflow's phase nodes (or Pipeline's bindings) resolve against this. */
   readonly phases?: readonly PhaseDefinition[];
+  /** Phase id to the reason it is invalid. */
+  readonly invalidPhases?: ReadonlyMap<string, string>;
+  /** The effective Workflow catalog. A Workflow's child workflow nodes resolve against this. */
+  readonly workflows?: readonly WorkflowDefinition[];
+  /** Workflow id to the reason it is invalid. */
+  readonly invalidWorkflows?: ReadonlyMap<string, string>;
   /** The effective Pipeline catalog. A Workflow's nodes resolve against this. */
   readonly pipelines?: readonly PipelineDefinition[];
   /** Pipeline id to the reason it is invalid, as `validateWorkflowGraph` reads it. */
@@ -150,6 +156,16 @@ function validateWorkflow(
   const effectivePipelines = catalog.pipelines ?? [];
   return [
     ...shape.errors,
-    ...validateWorkflowGraph(shape.definition, effectivePipelines, catalog.invalidPipelines ?? new Map())
+    ...validateWorkflowGraph(
+      shape.definition,
+      effectivePipelines,
+      catalog.invalidPipelines ?? new Map(),
+      {
+        effectivePhases: catalog.phases,
+        invalidPhases: catalog.invalidPhases,
+        effectiveWorkflows: catalog.workflows,
+        invalidWorkflows: catalog.invalidWorkflows
+      }
+    )
   ];
 }

@@ -89,7 +89,7 @@ function snapshotOf(kind: CatalogKind): CatalogSnapshot {
   };
 }
 
-const KINDS: readonly CatalogKind[] = ['phase', 'pipeline', 'workflow'];
+const KINDS: readonly CatalogKind[] = ['phase', 'workflow'];
 
 describe('Feature 100 T512 — the two halves of the stored-definition selectors', () => {
   for (const kind of KINDS) {

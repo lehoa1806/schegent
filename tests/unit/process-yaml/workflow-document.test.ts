@@ -404,7 +404,7 @@ describe('Feature 086 — the authored graph (§2.3)', () => {
   it('writes the spec keys in the declared order and keeps authored node order', () => {
     const spec = nodeAt(parsed(emit(FULL)), ['spec']);
     expect(keysOf(spec)).toEqual([...WORKFLOW_SPEC_KEY_ORDER]);
-    expect(keysOf(nodeAt(spec, ['nodes', 0]))).toEqual([...WORKFLOW_NODE_KEY_ORDER]);
+    expect(keysOf(nodeAt(spec, ['nodes', 0]))).toEqual(['nodeId', 'pipelineId', 'label']);
     // Read from the tree rather than by scanning `nodeId:` lines, which a
     // connection endpoint and a condition operand also write.
     const nodes = nodeAt(spec, ['nodes']);

@@ -39,7 +39,9 @@ export const NO_BUILDER_LIFECYCLE: BuilderLifecycleLookup = () => undefined;
  * next to a Workflow with none — a difference the operator would read as a fact
  * about the definition rather than a gap in the wiring.
  */
-export type BuilderLifecycleByKind = Readonly<Record<CatalogKind, BuilderLifecycleLookup>>;
+export type BuilderLifecycleByKind = Readonly<Record<CatalogKind, BuilderLifecycleLookup>> & {
+  readonly pipeline: BuilderLifecycleLookup;
+};
 
 /** A host with no catalog store wired. Every record then omits `lifecycle`. */
 export const NO_BUILDER_LIFECYCLE_BY_KIND: BuilderLifecycleByKind = Object.freeze({
@@ -115,11 +117,11 @@ function lifecycleOf(definition: StoredDefinition): BuilderLifecycle {
  */
 export function buildBuilderLifecycleLookup(
   definitions: readonly StoredDefinition[],
-  kind: CatalogKind
+  kind: CatalogKind | 'pipeline'
 ): BuilderLifecycleLookup {
   const byId = new Map<string, BuilderLifecycle>();
   for (const definition of definitions) {
-    if (definition.kind !== kind) continue;
+    if ((definition.kind as string) !== kind) continue;
     byId.set(definition.id, lifecycleOf(definition));
   }
   return (id: string) => byId.get(id);

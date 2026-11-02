@@ -31,7 +31,7 @@
 
   interface Props {
     /** Which catalog the definition belongs to — part of every lifecycle target. */
-    kind: CatalogKind;
+    kind: CatalogKind | 'pipeline';
     /** The definition's own id — the panel's test handle, and its label's suffix. */
     definitionId: string;
     /** What the confirmations name. The id alone is not what the operator recognises. */

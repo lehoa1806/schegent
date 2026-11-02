@@ -107,27 +107,25 @@ function definedFieldNames(
  */
 function endpointKey(value: unknown): string | null {
   if (!isRecord(value)) return null;
-  const { nodeId, portId } = value;
-  if (typeof nodeId !== 'string' || typeof portId !== 'string') return null;
-  return `${nodeId}.${portId}`;
+  const { nodeId, portId, kind } = value;
+  if (kind === 'return') return typeof nodeId === 'string' ? `${nodeId}:return` : 'return';
+  if (typeof nodeId !== 'string') return null;
+  return typeof portId === 'string' ? `${nodeId}.${portId}` : nodeId;
 }
 
-/**
- * A binding's identity: what it binds, not where it sits.
- *
- * Bindings address a Phase *position* rather than a bare id because `phaseIds` may
- * repeat (082 research R3), so the index is part of the identity and not a
- * substitute for one. The list position is not: reordering the bindings must read
- * as a reordering, which it cannot if position is what names them.
- */
 function bindingKey(entry: Readonly<Record<string, unknown>>): string {
-  const { kind, phaseIndex } = entry;
-  // Both halves of the identity, or neither. A binding missing its index or its
-  // key is malformed, and `String(undefined)` would name every such binding the
-  // same thing — see `endpointKey` for what a shared key does to the accounting.
-  const port = kind === 'input' ? entry.inputKey : kind === 'output' ? entry.outputKey : undefined;
+  const { kind, phaseIndex, nodeId } = entry;
+  const port =
+    kind === 'input'
+      ? (entry.inputKey ?? entry.portId)
+      : kind === 'output'
+        ? (entry.outputKey ?? entry.portId)
+        : undefined;
   if (typeof phaseIndex === 'number' && typeof port === 'string') {
     return `${String(kind)}:${phaseIndex}.${port}`;
+  }
+  if (typeof nodeId === 'string' && typeof port === 'string') {
+    return `${String(kind)}:${nodeId}.${port}`;
   }
   return canonicalText(entry) ?? UNREPRESENTABLE;
 }

@@ -33,7 +33,7 @@
   import { deriveDefinitionRowView, type DefinitionRowAction } from './definition-row-state';
 
   interface Props {
-    kind: CatalogKind;
+    kind: CatalogKind | 'pipeline';
     /** The definition's own id — the wire target, and the test handle's stem. */
     definitionId: string;
     /** What the operator recognises. The confirmations name it; the id alone will not do. */
@@ -175,7 +175,7 @@
     originatingElement: HTMLElement | null
   ): Promise<LifecycleResult> {
     const target = {
-      kind,
+      kind: kind as CatalogKind,
       id: definitionId,
       expectedDraftVersion: lifecycle.expectedDraftVersion
     };

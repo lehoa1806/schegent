@@ -198,12 +198,14 @@ async function scanDefinition(
  * reported as a fault — an unrecognised file in the store is not the store's, and
  * the same rule already governs one that is not `v<N>.json`.
  */
+const SCAN_KINDS: readonly CatalogKind[] = [...CATALOG_KINDS, 'pipeline'];
+
 async function collectOrphanedDefinitions(
   fs: CatalogFsPort,
   manifest: CatalogManifest,
   sink: ScanSink
 ): Promise<void> {
-  for (const kind of CATALOG_KINDS) {
+  for (const kind of SCAN_KINDS) {
     const known = new Set(
       manifest.entries.filter((entry) => entry.kind === kind).map((entry) => entry.id)
     );

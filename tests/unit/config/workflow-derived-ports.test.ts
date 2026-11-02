@@ -191,4 +191,53 @@ describe('deriveWorkflowPorts (FR-048)', () => {
     };
     expect(deriveWorkflowPorts(empty, [pipeline('standard')])).toEqual({ inputs: [], outputs: [] });
   });
+
+  it('derives public inputs and outputs from explicit workflow ports and child workflows (FR-R5-F01-T03)', () => {
+    const childWf: WorkflowDefinition = {
+      workflowId: 'child-wf',
+      name: 'Child WF',
+      version: 1,
+      inputs: [
+        { portId: 'spec', label: 'Spec', type: 'text' },
+        { portId: 'context', label: 'Context', type: 'text' }
+      ],
+      outputs: [{ portId: 'report', label: 'Report', type: 'markdown' }],
+      nodes: [{ nodeId: 'p1', kind: 'phase', phaseId: 'specify' }],
+      connections: [],
+      startNodeIds: ['p1']
+    };
+    const parentWf: WorkflowDefinition = {
+      workflowId: 'parent-wf',
+      name: 'Parent WF',
+      version: 1,
+      inputs: [{ portId: 'root-spec', label: 'Root Spec', type: 'text' }],
+      outputs: [{ portId: 'final-report', label: 'Final Report', type: 'markdown' }],
+      nodes: [{ nodeId: 'call-child', kind: 'workflow', workflowId: 'child-wf' }],
+      connections: [],
+      bindings: [
+        {
+          kind: 'input',
+          nodeId: 'call-child',
+          inputKey: 'spec',
+          source: { from: 'workflow-input', portId: 'root-spec' }
+        },
+        {
+          kind: 'output',
+          nodeId: 'call-child',
+          portId: 'final-report',
+          sourcePortId: 'report'
+        }
+      ],
+      startNodeIds: ['call-child']
+    };
+
+    const derived = deriveWorkflowPorts(parentWf, [], [childWf]);
+    expect(derived.inputs.map((p) => `${p.nodeId}.${p.portId}`)).toEqual([
+      'call-child.root-spec',
+      'call-child.context'
+    ]);
+    expect(derived.outputs.map((p) => `${p.nodeId}.${p.portId}`)).toEqual([
+      'call-child.final-report'
+    ]);
+  });
 });

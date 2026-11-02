@@ -116,6 +116,7 @@ export function loadAndReportCatalog(
     rows: storedRows(snapshot, 'workflow'),
     draftOnlyRows: storedDraftOnlyRows(snapshot, 'workflow'),
     revision: snapshot.revisions.workflow,
+    phaseCatalog,
     pipelineCatalog
   });
   return {
@@ -241,9 +242,10 @@ export class CatalogSession {
    * that kind, and it is what a save echoes back (FR-044).
    */
   storedLayer(kind: CatalogKind): StoredLayer {
+    const revision = this.snapshot.revisions[kind];
     return {
       rows: storedRows(this.snapshot, kind),
-      revision: this.snapshot.revisions[kind],
+      revision,
       // Feature 100 (T512, FR-043) — the ids travel with the rows because they
       // must describe the SAME read. `rows` is the active bodies and `ids` is
       // every entry at every state, so the two differ by exactly the draft-only
