@@ -269,4 +269,38 @@ describe('what the panel says about the authority a start will have (FR-R4-F06 F
     expect(getByTestId('launch-authority-capability-0').textContent).toBe(CAPABILITY_NOTICES.at(0)?.text);
     expect(queryByTestId('launch-authority-notice-text-claude')).toBeNull();
   });
+
+  it('shows declared output ports and resolved run settings on a composable Workflow (FR-R5-F06)', async () => {
+    const composableEntry: Launchable = {
+      ...RESEARCH,
+      inputs: [{ portId: 'topic', label: 'Topic', type: 'text', required: true }],
+      outputs: [{ portId: 'summary', label: 'Summary Report', type: 'markdown', required: true }],
+      runSettings: {
+        maxDurationSeconds: { value: 21_600, origin: 'workspace' },
+        phases: [
+          {
+            phaseName: 'Draft Phase',
+            backend: 'claude',
+            model: { kind: 'backend-default' },
+            effort: { kind: 'backend-default' },
+            idleTimeoutSeconds: { value: 120, origin: 'phase' }
+          }
+        ]
+      }
+    };
+    const snapshot = buildSnapshot({
+      launchables: projection(entries(ANALYSIS), entries(composableEntry))
+    });
+    const view = render(RunsSurface, { snapshot });
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
+
+    expect(view.getByTestId('launchable-detail-required-topic').textContent?.toLowerCase()).toContain(
+      'required'
+    );
+    expect(view.getByTestId('launchable-detail-outputs')).toBeTruthy();
+    expect(view.getByTestId('launchable-detail-output-summary').textContent).toContain(
+      'Summary Report'
+    );
+    expect(view.getByTestId('launchable-detail-run-settings').textContent).toContain('Draft Phase');
+  });
 });

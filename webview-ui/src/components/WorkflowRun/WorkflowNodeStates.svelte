@@ -66,7 +66,18 @@
         </span>
       </div>
       <p class="node-meta" data-testid={`workflow-node-meta-${node.nodeId}`}>
-        {node.pipelineId} · {node.attemptCount}
+        {#if node.nodeKind}
+          <span class="node-kind-badge" data-testid={`workflow-node-kind-${node.nodeId}`}>{node.nodeKind}</span> ·
+        {/if}
+        {#if node.label}
+          <span class="node-label">{node.label}</span> ({node.pipelineId})
+        {:else}
+          {node.pipelineId}
+        {/if}
+        {#if node.frozenVersionId}
+          · <span class="node-version" data-testid={`workflow-node-version-${node.nodeId}`}>{node.frozenVersionId}</span>
+        {/if}
+        · {node.attemptCount}
         {node.attemptCount === 1 ? 'attempt' : 'attempts'}
       </p>
 

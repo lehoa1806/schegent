@@ -7,6 +7,10 @@
 //
 // Zero `vscode` imports and zero I/O: shared by host and headless adapters.
 
+import type {
+  ConnectedInvocationAttemptProjection,
+  ConnectedInvocationProjection
+} from '../../contracts/sidebar-ipc/workflow-run';
 import {
   resolveBoundQueueId,
   resolveRootInvocationId,
@@ -221,15 +225,74 @@ export function buildAncestryEvidenceMetadata(
   const attemptIndex = latestAttempt?.attemptIndex ?? 1;
   const attemptId =
     latestAttempt?.attemptId ?? `${frame.invocationId}:${targetNodeId}:attempt-${attemptIndex}`;
-  const nodePath = latestAttempt?.nodePath ?? frame.nodePath;
 
   return Object.freeze({
     rootRunId: frame.rootRunId,
     invocationId: frame.invocationId,
     parentInvocationId: frame.parentInvocationId,
-    nodePath,
+    nodePath: latestAttempt?.nodePath ?? frame.nodePath,
     attemptId,
     attemptIndex,
     queueId: resolveBoundQueueId(run)
   });
+}
+
+/**
+ * FR-R5-F06 — Project hierarchical `ConnectedInvocationProjection` rows for
+ * the sidebar/webview wire contract from `run.invocations` and `run.frozenClosure`.
+ */
+export function projectConnectedInvocations(
+  run: ConnectedWorkflowRun,
+  control: WorkflowRunControlProjection = buildWorkflowRunControlProjection(run)
+): readonly ConnectedInvocationProjection[] | undefined {
+  const frames = run.invocations;
+  if (frames === undefined || Object.keys(frames).length === 0) return undefined;
+  const orderedFrames: WorkflowInvocationFrame[] = Object.values(frames).sort((a, b) =>
+    a.depth !== b.depth ? a.depth - b.depth : a.startedAt - b.startedAt
+  );
+  return Object.freeze(
+    orderedFrames.map((frame): ConnectedInvocationProjection => {
+      const ctrl = control.invocations[frame.invocationId];
+      const wfDef = run.frozenClosure?.workflowsById[frame.workflowId];
+      const versionRef = run.frozenClosure?.catalogVersionsById?.[frame.workflowId];
+      const attempts: ConnectedInvocationAttemptProjection[] = Object.values(frame.attemptsByNodeId)
+        .flatMap((list) => list)
+        .sort((a, b) => a.startedAt - b.startedAt)
+        .map((att) =>
+          Object.freeze({
+            attemptId: att.attemptId,
+            attemptIndex: att.attemptIndex,
+            nodeId: att.nodeId,
+            nodeKind: att.nodeKind,
+            status: att.status,
+            startedAt: att.startedAt,
+            ...(att.completedAt !== undefined ? { endedAt: att.completedAt } : {}),
+            ...(att.queueItemId !== undefined ? { queueItemId: att.queueItemId } : {}),
+            ...(att.childInvocationId !== undefined ? { childInvocationId: att.childInvocationId } : {}),
+            ...(att.failureCode !== undefined ? { failureCode: att.failureCode } : {})
+          })
+        );
+      return Object.freeze({
+        invocationId: frame.invocationId,
+        parentInvocationId: frame.parentInvocationId,
+        workflowId: frame.workflowId,
+        ...(wfDef?.name !== undefined ? { workflowName: wfDef.name } : {}),
+        ...(versionRef?.versionId !== undefined ? { frozenVersionId: versionRef.versionId } : {}),
+        depth: frame.depth,
+        nodePath: frame.nodePath,
+        status: ctrl?.status ?? frame.status,
+        currentNodeId: ctrl?.currentNodeId ?? frame.activeNodeId,
+        activeAttemptId: ctrl?.activeAttemptId ?? null,
+        activeAttemptIndex: ctrl?.activeAttemptIndex ?? null,
+        allowedActions: ctrl?.allowedActions ?? Object.freeze([]),
+        waitingReason: ctrl?.waitingReason ?? null,
+        pauseCause: ctrl?.pauseCause ?? null,
+        failureReason: ctrl?.failureReason ?? null,
+        pendingRetryAt: ctrl?.pendingRetryAt ?? null,
+        pendingRetryCause: ctrl?.pendingRetryCause ?? null,
+        outputPortIds: Object.freeze(Object.keys(frame.resolvedOutputs)),
+        attempts: Object.freeze(attempts)
+      });
+    })
+  );
 }

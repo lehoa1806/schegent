@@ -26,6 +26,7 @@ import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ContinueWorkflowPayload, ContinueWorkflowResult } from '../../../lib/messages';
 import type {
+  ConnectedInvocationProjection,
   ConnectedNodeProjection,
   ConnectedRunProjection,
   PipelineDefinition,
@@ -33,8 +34,10 @@ import type {
 } from '../../../lib/snapshot-types';
 
 const continueSpy = vi.fn<(payload: ContinueWorkflowPayload) => Promise<ContinueWorkflowResult>>();
+const controlSpy = vi.fn<(...args: readonly unknown[]) => Promise<ContinueWorkflowResult>>();
 vi.mock('../../../lib/workflow-run-ipc', () => ({
-  continueWorkflow: (payload: ContinueWorkflowPayload) => continueSpy(payload)
+  continueWorkflow: (payload: ContinueWorkflowPayload) => continueSpy(payload),
+  controlWorkflowRun: (...args: readonly unknown[]) => controlSpy(...args)
 }));
 
 // The overwrite decision inside the reused output section goes through the
@@ -128,6 +131,8 @@ function submitted(): ContinueWorkflowPayload {
 beforeEach(() => {
   continueSpy.mockReset();
   continueSpy.mockResolvedValue(STARTED);
+  controlSpy.mockReset();
+  controlSpy.mockResolvedValue(STARTED);
   confirmSpy.mockReset();
   confirmSpy.mockResolvedValue(true);
 });
@@ -383,5 +388,144 @@ describe('WorkflowRun — operator text is text (FR-059)', () => {
     expect(getByTestId('workflow-run-title').textContent).toBe(hostile);
     expect(getByTestId(`workflow-node-id-${hostile}`).textContent).toBe(hostile);
     expect(container.querySelector('b')).toBeNull();
+  });
+});
+
+describe('WorkflowRun — hierarchical invocation tree and controls (FR-R5-F06)', () => {
+  function inv(
+    overrides: Partial<ConnectedInvocationProjection> & Pick<ConnectedInvocationProjection, 'invocationId'>
+  ): ConnectedInvocationProjection {
+    return {
+      parentInvocationId: null,
+      workflowId: 'research-workflow',
+      depth: 0,
+      nodePath: 'research-workflow',
+      status: 'in-flight',
+      currentNodeId: null,
+      activeAttemptId: null,
+      activeAttemptIndex: null,
+      waitingReason: null,
+      pauseCause: null,
+      failureReason: null,
+      pendingRetryAt: null,
+      pendingRetryCause: null,
+      allowedActions: [],
+      attempts: [],
+      outputPortIds: [],
+      ...overrides
+    };
+  }
+
+  it('renders distinct invocationId and nodePath across repeated child Workflow occurrences and supports expand/collapse', async () => {
+    const { getByTestId, queryByTestId } = mount(
+      run({
+        queueId: 'queue-bound-1',
+        status: 'in-flight',
+        rootInvocationId: 'inv-root',
+        activeInvocationId: 'inv-child-2',
+        recoveryDisposition: {
+          status: 'clean-handoff',
+          reason: 'Recovered cleanly after restart.',
+          targetInvocationId: 'inv-child-2'
+        },
+        invocations: [
+          inv({
+            invocationId: 'inv-root',
+            workflowName: 'Research Workflow',
+            frozenVersionId: 'v3',
+            currentNodeId: 'call-2',
+            allowedActions: ['pause', 'cancel'],
+            outputPortIds: ['final-summary']
+          }),
+          inv({
+            invocationId: 'inv-child-1',
+            parentInvocationId: 'inv-root',
+            workflowId: 'sub-review',
+            workflowName: 'Sub Review',
+            frozenVersionId: 'v1',
+            depth: 1,
+            nodePath: 'research-workflow/call-1/sub-review',
+            status: 'completed',
+            attempts: [
+              {
+                attemptId: 'att-1',
+                attemptIndex: 1,
+                nodeId: 'review-step',
+                nodeKind: 'phase',
+                status: 'completed',
+                startedAt: 1000,
+                endedAt: 2000
+              }
+            ],
+            outputPortIds: ['verdict']
+          }),
+          inv({
+            invocationId: 'inv-child-2',
+            parentInvocationId: 'inv-root',
+            workflowId: 'sub-review',
+            workflowName: 'Sub Review',
+            frozenVersionId: 'v1',
+            depth: 1,
+            nodePath: 'research-workflow/call-2/sub-review',
+            status: 'paused',
+            currentNodeId: 'review-step',
+            pauseCause: 'operator-pause',
+            waitingReason: 'Paused by operator.',
+            allowedActions: ['resume', 'cancel']
+          })
+        ]
+      })
+    );
+
+    expect(getByTestId('workflow-run-queue').textContent).toContain('queue-bound-1');
+    expect(getByTestId('workflow-run-overall-status').textContent).toBe('in-flight');
+    expect(getByTestId('workflow-run-recovery-disposition').textContent).toContain(
+      'clean-handoff'
+    );
+    expect(getByTestId('workflow-invocation-tree')).toBeTruthy();
+    expect(getByTestId('workflow-invocation-id-inv-child-1').textContent).toBe('inv-child-1');
+    expect(getByTestId('workflow-invocation-path-inv-child-1').textContent).toBe(
+      'research-workflow/call-1/sub-review'
+    );
+    expect(getByTestId('workflow-invocation-id-inv-child-2').textContent).toBe('inv-child-2');
+    expect(getByTestId('workflow-invocation-path-inv-child-2').textContent).toBe(
+      'research-workflow/call-2/sub-review'
+    );
+    expect(getByTestId('workflow-invocation-diagnostic-inv-child-2').textContent).toContain(
+      'operator-pause'
+    );
+
+    // Toggle collapse on inv-child-1
+    expect(getByTestId('workflow-invocation-attempt-att-1')).toBeTruthy();
+    await fireEvent.click(getByTestId('workflow-invocation-toggle-inv-child-1'));
+    expect(queryByTestId('workflow-invocation-attempt-att-1')).toBeNull();
+  });
+
+  it('dispatches invocation-scoped control commands with expectedRevision and target invocationId', async () => {
+    const { getByTestId } = mount(
+      run({
+        revision: 14,
+        rootInvocationId: 'inv-root',
+        invocations: [
+          inv({
+            invocationId: 'inv-root',
+            currentNodeId: 'node-a',
+            allowedActions: ['pause', 'cancel']
+          })
+        ]
+      })
+    );
+
+    await fireEvent.click(getByTestId('workflow-invocation-action-inv-root-pause'));
+    await tick();
+    await tick();
+
+    expect(continueSpy).toHaveBeenCalledTimes(1);
+    expect(continueSpy.mock.calls[0]?.[0]).toMatchObject({
+      connectedRunId: 'connected-run-1',
+      expectedRevision: 14,
+      invocationId: 'inv-root',
+      operation: 'pause'
+    });
   });
 });

@@ -256,6 +256,33 @@ const WORKFLOW_ROWS = [
       }
     ],
     startNodeIds: ['first']
+  },
+  {
+    id: 'child-composable',
+    name: 'Child Composable',
+    version: 1,
+    inputs: [{ portId: 'brief', label: 'Brief', type: 'text', required: true }],
+    nodes: [{ nodeId: 'sub', phaseId: 'beta', label: 'Sub Phase' }],
+    connections: [],
+    startNodeIds: ['sub']
+  },
+  {
+    id: 'composable-workflow',
+    name: 'Composable Root',
+    version: 1,
+    inputs: [{ portId: 'brief', label: 'Brief', type: 'text', required: true }],
+    outputs: [{ portId: 'report', label: 'Report', type: 'markdown' }],
+    bindings: [
+      { kind: 'output', nodeId: 'entry-phase', portId: 'report', outputKey: 'report', type: 'markdown' }
+    ],
+    nodes: [
+      { nodeId: 'entry-phase', phaseId: 'alpha', label: 'Entry Alpha' },
+      { nodeId: 'nested-wf', workflowId: 'child-composable', label: 'Nested Beta' }
+    ],
+    connections: [
+      { from: { nodeId: 'entry-phase', portId: 'report' }, to: { nodeId: 'nested-wf', portId: 'brief' } }
+    ],
+    startNodeIds: ['entry-phase']
   }
 ];
 
@@ -957,5 +984,66 @@ describe('a stored Workflow with an unreachable condition (C-T4, FR-031)', () =>
 
     expect(only(harness).result).toMatchObject({ outcome: 'started' });
     expect(harness.scheduled).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 265 (FR-R5-F06) — Composable Workflow launch (phaseId + child workflowId)
+// ---------------------------------------------------------------------------
+
+describe('composable Workflow launch (FR-R5-F06)', () => {
+  it('validates against the composable Workflow contract and persists a frozen closure + root invocation', async () => {
+    const harness = buildRouter();
+
+    await dispatch(
+      harness,
+      payload({
+        workflowId: 'composable-workflow',
+        startNodeId: 'entry-phase',
+        request: runRequest({ pipelineId: 'alpha' })
+      })
+    );
+
+    const res = only(harness).result;
+    expect(res).toMatchObject({
+      outcome: 'started',
+      revision: 2
+    });
+    expect(harness.writes).toHaveLength(1);
+    const writtenRun = harness.writes[0]!.run;
+    expect(writtenRun.frozenClosure).toBeDefined();
+    expect(writtenRun.frozenClosure?.rootWorkflowId).toBe('composable-workflow');
+    expect(Object.keys(writtenRun.frozenClosure?.workflowsById ?? {})).toEqual(
+      expect.arrayContaining(['composable-workflow', 'child-composable'])
+    );
+    expect(Object.keys(writtenRun.frozenClosure?.phasesById ?? {})).toEqual(
+      expect.arrayContaining(['alpha', 'beta'])
+    );
+    expect(writtenRun.invocations).toBeDefined();
+    expect(Object.keys(writtenRun.invocations ?? {})).toHaveLength(1);
+  });
+
+  it('rejects missing required Workflow inputs on a composable Workflow at gate 5', async () => {
+    const harness = buildRouter();
+
+    await dispatch(
+      harness,
+      payload({
+        workflowId: 'composable-workflow',
+        startNodeId: 'entry-phase',
+        request: runRequest({ pipelineId: 'alpha', inputs: [] })
+      })
+    );
+
+    expect(only(harness).result).toMatchObject({
+      outcome: 'rejected-validation',
+      errors: [
+        expect.objectContaining({
+          field: 'inputs.brief',
+          code: 'missing-required-input'
+        })
+      ]
+    });
+    expect(harness.writes).toEqual([]);
   });
 });

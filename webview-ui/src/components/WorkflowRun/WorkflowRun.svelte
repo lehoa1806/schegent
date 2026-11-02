@@ -19,8 +19,10 @@
 
   import WorkflowNodeStates from './WorkflowNodeStates.svelte';
   import WorkflowContinuation from './WorkflowContinuation.svelte';
-  import type { ContinueWorkflowResult } from '../../lib/messages';
+  import { continueWorkflow } from '../../lib/workflow-run-ipc';
+  import type { ContinueWorkflowResult, WorkflowControlAction } from '../../lib/messages';
   import type {
+    ConnectedInvocationProjection,
     ConnectedNodeProjection,
     ConnectedRunProjection,
     PipelineDefinition,
@@ -47,6 +49,63 @@
 
   let openNodeId = $state<string | null>(null);
   let runStatus = $state<string | null>(null);
+  let controlPending = $state(false);
+  let collapsedInvocations = $state<Record<string, boolean>>({});
+
+  const CONTROL_LABELS: Record<WorkflowControlAction, string> = {
+    pause: 'Pause',
+    resume: 'Resume',
+    cancel: 'Cancel',
+    'retry-phase': 'Retry Phase',
+    'retry-invocation': 'Retry Workflow',
+    'continue-handoff': 'Continue Handoff'
+  };
+
+  function toggleInvocation(invocationId: string): void {
+    collapsedInvocations = {
+      ...collapsedInvocations,
+      [invocationId]: !collapsedInvocations[invocationId]
+    };
+  }
+
+  async function onControlInvocation(
+    inv: ConnectedInvocationProjection,
+    action: WorkflowControlAction
+  ): Promise<void> {
+    if (controlPending) return;
+    controlPending = true;
+    runStatus = null;
+    const nodeId = inv.currentNodeId ?? 'root';
+    try {
+      const outcome = await continueWorkflow({
+        connectedRunId: run.connectedRunId,
+        expectedRevision: run.revision,
+        nodeId,
+        invocationId: inv.invocationId,
+        operation: action,
+        commandId: `${run.connectedRunId}:${inv.invocationId}:${action}:${run.revision}`,
+        request: {
+          pipelineId: nodeId,
+          inputs: [],
+          supplemental: [],
+          outputs: []
+        }
+      });
+      if (outcome.outcome === 'started') {
+        runStatus = `Applied ${action} on ${inv.nodePath} (revision ${outcome.revision}).`;
+      } else if (outcome.outcome === 'rejected-stale') {
+        runStatus = `Action ${action} refused: run moved to revision ${outcome.projection.revision}.`;
+      } else if (outcome.outcome === 'rejected-state') {
+        runStatus = `Action ${action} refused (${outcome.reason}).`;
+      } else if (outcome.outcome === 'not-yet-known') {
+        runStatus = `Action ${action} is still awaiting host confirmation.`;
+      } else {
+        runStatus = `Action ${action} could not be completed.`;
+      }
+    } finally {
+      controlPending = false;
+    }
+  }
 
   /**
    * The composer is rendered only while its node still offers an action at the
@@ -78,7 +137,15 @@
 <section class="workflow-run" data-testid="workflow-run">
   <header class="run-header">
     <h3 class="run-title" data-testid="workflow-run-title">{run.workflowId}</h3>
-    <span class="run-id" data-testid="workflow-run-id">{run.connectedRunId}</span>
+    <div class="run-badges">
+      {#if run.queueId}
+        <span class="run-badge" data-testid="workflow-run-queue">Queue: {run.queueId}</span>
+      {/if}
+      {#if run.status}
+        <span class="run-badge" data-testid="workflow-run-overall-status">{run.status}</span>
+      {/if}
+      <span class="run-id" data-testid="workflow-run-id">{run.connectedRunId}</span>
+    </div>
   </header>
 
   {#if run.hydrating}
@@ -86,6 +153,126 @@
       Loading this run's nodes and their attempts…
     </p>
   {:else}
+    {#if run.recoveryDisposition}
+      <div class="recovery-banner" data-testid="workflow-run-recovery-disposition" role="status">
+        <strong>Recovery ({run.recoveryDisposition.status}):</strong>
+        <span>{run.recoveryDisposition.reason}</span>
+        <span>(target: {run.recoveryDisposition.targetInvocationId})</span>
+      </div>
+    {/if}
+
+    {#if run.invocations && run.invocations.length > 0}
+      <ul class="invocation-tree" data-testid="workflow-invocation-tree">
+        {#each run.invocations as inv (inv.invocationId)}
+          {@const isCollapsed = collapsedInvocations[inv.invocationId] === true}
+          <li
+            class="invocation-item"
+            style={`margin-left: ${inv.depth * 14}px`}
+            data-testid={`workflow-invocation-${inv.invocationId}`}
+          >
+            <div class="invocation-head">
+              <button
+                type="button"
+                class="invocation-toggle"
+                data-testid={`workflow-invocation-toggle-${inv.invocationId}`}
+                aria-expanded={!isCollapsed}
+                onclick={() => toggleInvocation(inv.invocationId)}
+              >
+                {isCollapsed ? '▸' : '▾'} {inv.workflowName ?? inv.workflowId}
+              </button>
+              <span
+                class="invocation-path"
+                data-testid={`workflow-invocation-path-${inv.invocationId}`}
+              >
+                {inv.nodePath}
+              </span>
+              <span
+                class="invocation-id"
+                data-testid={`workflow-invocation-id-${inv.invocationId}`}
+              >
+                {inv.invocationId}
+              </span>
+              {#if inv.frozenVersionId}
+                <span
+                  class="invocation-version"
+                  data-testid={`workflow-invocation-version-${inv.invocationId}`}
+                >
+                  {inv.frozenVersionId}
+                </span>
+              {/if}
+              <span
+                class="invocation-status"
+                data-testid={`workflow-invocation-status-${inv.invocationId}`}
+              >
+                {inv.status}
+              </span>
+            </div>
+
+            {#if inv.waitingReason || inv.pauseCause || inv.failureReason}
+              <p
+                class="invocation-diagnostic"
+                data-testid={`workflow-invocation-diagnostic-${inv.invocationId}`}
+              >
+                {#if inv.waitingReason}Waiting: {inv.waitingReason}{/if}
+                {#if inv.pauseCause} · Paused: {inv.pauseCause}{/if}
+                {#if inv.failureReason} · Failed: {inv.failureReason}{/if}
+              </p>
+            {/if}
+
+            {#if !isCollapsed}
+              {#if inv.outputPortIds.length > 0}
+                <p
+                  class="invocation-outputs"
+                  data-testid={`workflow-invocation-outputs-${inv.invocationId}`}
+                >
+                  Outputs: {inv.outputPortIds.join(', ')}
+                </p>
+              {/if}
+
+              {#if inv.attempts.length > 0}
+                <ul
+                  class="invocation-attempts"
+                  data-testid={`workflow-invocation-attempts-${inv.invocationId}`}
+                >
+                  {#each inv.attempts as att (att.attemptId)}
+                    <li
+                      class="invocation-attempt-row"
+                      data-testid={`workflow-invocation-attempt-${att.attemptId}`}
+                    >
+                      <span>#{att.attemptIndex} {att.nodeId} ({att.nodeKind})</span>
+                      <span>{att.status}</span>
+                      {#if att.failureCode}
+                        <span>({att.failureCode})</span>
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+
+              {#if inv.allowedActions.length > 0}
+                <div
+                  class="invocation-actions"
+                  data-testid={`workflow-invocation-actions-${inv.invocationId}`}
+                >
+                  {#each inv.allowedActions as action (action)}
+                    <button
+                      type="button"
+                      class="invocation-action-btn"
+                      data-testid={`workflow-invocation-action-${inv.invocationId}-${action}`}
+                      disabled={controlPending}
+                      onclick={() => onControlInvocation(inv, action)}
+                    >
+                      {CONTROL_LABELS[action]}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
     <WorkflowNodeStates
       nodes={run.nodes}
       {queueItems}
@@ -147,5 +334,77 @@
     font-size: 0.85em;
     opacity: 0.9;
     word-break: break-word;
+  }
+  .run-badges,
+  .invocation-head,
+  .invocation-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .run-badge,
+  .invocation-version,
+  .invocation-status,
+  .invocation-path {
+    font-size: 0.78em;
+    opacity: 0.85;
+  }
+  .invocation-id {
+    font-size: 0.75em;
+    opacity: 0.7;
+  }
+  .recovery-banner {
+    padding: 6px 8px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: var(--schegent-radius);
+    font-size: 0.82em;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .invocation-tree,
+  .invocation-attempts {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .invocation-item {
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: var(--schegent-radius);
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .invocation-toggle {
+    background: transparent;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-weight: 600;
+    padding: 0;
+    text-align: left;
+  }
+  .invocation-diagnostic,
+  .invocation-outputs,
+  .invocation-attempt-row {
+    margin: 0;
+    font-size: 0.8em;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .invocation-action-btn {
+    padding: 3px 8px;
+    font-size: 0.8em;
+    background: var(--vscode-button-secondaryBackground, transparent);
+    color: var(--vscode-button-secondaryForeground, inherit);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: var(--schegent-radius);
+    cursor: pointer;
   }
 </style>
