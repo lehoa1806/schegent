@@ -127,6 +127,20 @@ describe('region edges (T621)', () => {
     expect(warningsOf(result)).toEqual([]);
   });
 
+  it('records a fence directly above the block on the region, and nothing else about the head', () => {
+    // FR-R4-F12: the one fact read from before the block is whether the line directly above its open
+    // marker is a fence delimiter. A fence further up is the head, which is not read (plan D4), and a
+    // region of an unfenced block is the object it was before the flag existed, key and all.
+    const fenced = parseAuditLogBlock([FENCE, ...block(), FENCE, TOKEN].join('\n')).region;
+    const apart = parseAuditLogBlock([FENCE, 'a line between', ...block(), FENCE, TOKEN].join('\n')).region;
+    const bare = parseAuditLogBlock([...block(), TOKEN].join('\n')).region;
+
+    expect(fenced.blockFenced).toBe(true);
+    expect('blockFenced' in apart).toBe(false);
+    expect('blockFenced' in bare).toBe(false);
+    expect(bare).toEqual({ text: [CLOSE, TOKEN].join('\n'), present: true });
+  });
+
   it('does not resolve a region that contains only its close marker', () => {
     // The block closed and the run stopped. There is a region, it is one line
     // long, and it holds no verdict — so the phase did not report one.

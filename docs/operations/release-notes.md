@@ -36,6 +36,13 @@ If you want a Phase that completes on a token on its last non-empty line with no
 `evidencePolicy: best-effort` or `none` on that Phase. The acceptance is then labelled as a degraded
 read. A Phase that declares nothing, or `required`, does not.
 
+A report that fences its audit block, as the constitution requires, no longer draws
+`termination token inside a code fence` about the token that follows it: the fence that closes the
+block is not counted as opening one around the token. Only the line directly above the block is read
+for that: a token the model fences itself still draws the warning, and a fence further up the output
+changes nothing, as before. The warning never decided whether the token advanced, so no Phase outcome
+changes.
+
 Each Phase attempt's `phase-start` audit row now also records a prompt identity: a digest of the
 output-contract text and the task block, or a marker that a stored resume prompt was sent. It holds no
 prompt text, and rows written before this release simply have none. See
