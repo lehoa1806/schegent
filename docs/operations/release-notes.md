@@ -189,7 +189,8 @@ This makes each of them say what is true, and closes the gaps behind them.
   one at a time, so two saves of different definitions no longer lose one of them. The writer assumes one
   extension host writes a catalog directory: the primary window. A second process writing the same catalog is
   unsupported, and the last manifest write would win: a definition's pointer update can be lost while its
-  version record stays on disk as collectable. Catalog writes are flushed to disk on macOS and Linux (each save
+  version record stays on disk as collectable. Nothing removes that record, and the next save of the
+  definition that would create the same version is refused by the store. Catalog writes are flushed to disk on macOS and Linux (each save
   costs about 15 ms more, measured on APFS; the Linux path has not been run on a Linux host). Windows gets the file flush and no
   directory flush. Network mounts and remote workspaces are not claimed: the flush is attempted and nothing
   here observed it honoured. Power loss has not been observed.

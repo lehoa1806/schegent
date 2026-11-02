@@ -93,6 +93,16 @@ no manifest entry names: it is reported as collectable, the definition still res
 version, and nothing is lost. The reverse order would leave a manifest entry naming a record that is not
 there. That order is not what this section changes.
 
+**What that record costs.** It is debris, not corruption, and nothing in the store removes it: the only
+deletion path is retention, which removes versions the manifest has just stopped naming, and an
+unreferenced record is not one of them. The next save that creates a new version of that definition
+computes the same version number from the manifest, finds the path taken, and refuses with
+`version-exists` rather than overwrite content the store cannot account for or skip to a later number
+(`tests/integration/catalog-store-concurrency.test.ts`). The Builder shows that refusal only as the generic
+"The catalog store refused the write."; the reason travels in the host's result and is not displayed. No
+supported way to clear such a record exists yet, and choosing one is a catalog decision, not a durability
+one.
+
 **The barrier.** In `src/host-services/catalog-fs-adapter.ts`, for each save:
 
 1. exclusive create of the record (`wx`), write, **`sync`**, close;
