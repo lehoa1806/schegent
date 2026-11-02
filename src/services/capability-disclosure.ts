@@ -52,7 +52,8 @@ export function describeCapabilityOutcome(
       `${plan.unenforceable.join(', ')}, so it is refused rather than run without the restriction.`;
     return plan.unqualified.length === 0
       ? refused
-      : `${refused} The flag for ${plan.unqualified.join(', ')} could not be confirmed.`;
+      : `${refused} The flag for ${plan.unqualified.join(', ')} could not be confirmed: ` +
+          'the help capture this extension ships with does not list it.';
   }
   if (plan.residuals.length === 0) return null;
   const lead = plan.enforcement === 'cli-sandbox' ? CLI_SANDBOX_LEAD : TOOL_RESTRICTION_LEAD;

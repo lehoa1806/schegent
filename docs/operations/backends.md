@@ -326,7 +326,8 @@ a **CLI sandbox** is the vendor's own, which the vendor claims sits below the to
 qualifies only that the flag is listed by the installed CLI's `--help`
 ([Backend containment qualification](../architecture/backend-containment-qualification.md), section 7); it does
 not verify the vendor's claim. When a set needs a flag no capture has confirmed the installed CLI lists, the
-phase is refused and the refusal says the flag could not be confirmed.
+phase is refused and the refusal says the flag could not be confirmed. That test reads the help capture the
+extension ships with (`CONFIRMED_FLAGS`); the host does not query the installed CLI when a Phase starts.
 
 **A capability a backend cannot express refuses the phase before it starts**, recording a
 `capability-refused` audit event naming every unenforceable capability. It is not run with the declared
