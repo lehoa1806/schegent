@@ -439,10 +439,16 @@ inherited those semantics would arrive after the kill it exists to predict. The
 record is informational and terminal-adjacent only in subject: it changes no
 status, stops nothing, and the deadline it observes is unchanged.
 
-Workflows compose multiple Pipeline Runs. Connected-run state identifies the
-Workflow graph node, child Run, revision, and continuation position so a later
-node cannot be continued against stale graph state. Conditions are structured
-data rather than evaluated operator-authored source.
+Workflows compose Phase and child Workflow nodes (`FR-R5-F02`). At run admission,
+`validateRunRequest()` freezes the complete transitive `FrozenWorkflowClosure`
+(`workflowsById`, `phasesById`, `definitionDigestsById`, `catalogVersionsById`)
+into the `ExecutionEnvelope` (`FrozenRunPlan`). Connected-run state tracks
+hierarchical `WorkflowInvocationFrame` call/return occurrences, per-node
+`NodeAttemptRecord` attempts, `pendingHandoff`, and append-only
+`InvocationInputEnvelope` continuation records (`acceptedAt`) so child Workflow
+calls execute within the root run's bound `queueId` and manual handoff edits
+never mutate or reconstruct the frozen closure. Conditions are structured data
+rather than evaluated operator-authored source.
 
 **Operator Phase controls are one authoritative state machine (FR-R3-151).**
 `PhaseControlService` is the sole writer for every operator-driven Phase

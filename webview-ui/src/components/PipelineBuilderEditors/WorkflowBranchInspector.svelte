@@ -24,7 +24,7 @@
   //
   // No rule lives in this markup. Arity, literal parsing, and priority parsing all
   // come from `workflow-catalog-state.ts`.
-  import { WORKFLOW_TEXT_COMPARISON_OPERATORS } from '../../../../src/contracts/workflow-definitions';
+  import { WORKFLOW_TEXT_COMPARISON_OPERATORS } from "../../../../src/contracts/workflow-definitions";
   import {
     WORKFLOW_NODE_TERMINAL_STATUSES,
     WORKFLOW_SELECTION_RULES,
@@ -32,8 +32,8 @@
     type WorkflowConditionOperator,
     type WorkflowConnection,
     type WorkflowNode,
-    type WorkflowSelectionRule
-  } from '../../lib/snapshot-types';
+    type WorkflowSelectionRule,
+  } from "../../lib/snapshot-types";
   import {
     conditionRightArity,
     conditionValues,
@@ -43,9 +43,9 @@
     WORKFLOW_CONDITION_OPERAND_SOURCES,
     type WorkflowConditionOperandSource,
     type WorkflowConditionPatch,
-    type WorkflowDraftError
-  } from './workflow-catalog-state';
-  import WorkflowRowDefects from './WorkflowRowDefects.svelte';
+    type WorkflowDraftError,
+  } from "./workflow-catalog-state";
+  import WorkflowRowDefects from "./WorkflowRowDefects.svelte";
 
   interface Props {
     index: number;
@@ -57,8 +57,8 @@
     connectionCount: number;
     onretarget: (
       index: number,
-      end: 'from' | 'to',
-      patch: { nodeId?: string; portId?: string }
+      end: "from" | "to",
+      patch: { nodeId?: string; portId?: string },
     ) => void;
     onpatch: (index: number, patch: Partial<WorkflowConnection>) => void;
     onconditiontoggle: (index: number, conditional: boolean) => void;
@@ -74,8 +74,8 @@
 
   /** What each operand source reads, in the operator's words not the contract's. */
   const SOURCE_LABELS: Record<WorkflowConditionOperandSource, string> = {
-    'node-output': 'output field',
-    'node-status': 'run status'
+    "node-output": "output field",
+    "node-status": "run status",
   };
 
   const condition = $derived(p.connection.condition);
@@ -84,27 +84,39 @@
   // unsupported) keeps it in the list, so opening it shows what it really holds instead of silently
   // snapping to the first option; the host's defect, shown on the branch, says what to change.
   const operators = $derived.by((): readonly WorkflowConditionOperator[] => {
-    const offered: readonly WorkflowConditionOperator[] = WORKFLOW_TEXT_COMPARISON_OPERATORS;
+    const offered: readonly WorkflowConditionOperator[] =
+      WORKFLOW_TEXT_COMPARISON_OPERATORS;
     return condition === undefined || offered.includes(condition.operator)
       ? offered
       : [...offered, condition.operator];
   });
   const values = $derived(condition ? conditionValues(condition) : []);
-  const isList = $derived(condition ? conditionRightArity(condition.operator) === 'list' : false);
+  const isList = $derived(
+    condition ? conditionRightArity(condition.operator) === "list" : false,
+  );
 
   /** The declared ports of the node one end currently names, for that end's select. */
-  function portsFor(nodeId: string, direction: 'in' | 'out'): readonly string[] {
+  function portsFor(
+    nodeId: string,
+    direction: "in" | "out",
+  ): readonly string[] {
     return workflowPortIds(
       p.nodes.find((node) => node.nodeId === nodeId),
       p.pipelines,
-      direction
+      direction,
     );
   }
 </script>
 
-<div class="wf-inspector-section" data-testid="workflow-branch-inspector-{p.index}">
+<div
+  class="wf-inspector-section"
+  data-testid="workflow-branch-inspector-{p.index}"
+>
   <h3>Branch {p.index + 1}</h3>
-  <WorkflowRowDefects id="workflow-connection-defects-{p.index}" defects={p.defects} />
+  <WorkflowRowDefects
+    id="workflow-connection-defects-{p.index}"
+    defects={p.defects}
+  />
 
   <label class="wf-field">
     From
@@ -115,7 +127,8 @@
         aria-label="Branch {p.index + 1} source node"
         value={p.connection.from.nodeId}
         disabled={p.readonly}
-        onchange={(event) => p.onretarget(p.index, 'from', { nodeId: event.currentTarget.value })}
+        onchange={(event) =>
+          p.onretarget(p.index, "from", { nodeId: event.currentTarget.value })}
       >
         {#each p.nodes as node (node.nodeId)}
           <option value={node.nodeId}>{node.nodeId}</option>
@@ -125,11 +138,12 @@
         class="select-input"
         data-testid="workflow-connection-from-port-{p.index}"
         aria-label="Branch {p.index + 1} source output"
-        value={p.connection.from.portId ?? ''}
+        value={p.connection.from.portId ?? ""}
         disabled={p.readonly}
-        onchange={(event) => p.onretarget(p.index, 'from', { portId: event.currentTarget.value })}
+        onchange={(event) =>
+          p.onretarget(p.index, "from", { portId: event.currentTarget.value })}
       >
-        {#each portsFor(p.connection.from.nodeId, 'out') as portId (portId)}
+        {#each portsFor(p.connection.from.nodeId, "out") as portId (portId)}
           <option value={portId}>{portId}</option>
         {/each}
       </select>
@@ -145,7 +159,8 @@
         aria-label="Branch {p.index + 1} target node"
         value={p.connection.to.nodeId}
         disabled={p.readonly}
-        onchange={(event) => p.onretarget(p.index, 'to', { nodeId: event.currentTarget.value })}
+        onchange={(event) =>
+          p.onretarget(p.index, "to", { nodeId: event.currentTarget.value })}
       >
         {#each p.nodes as node (node.nodeId)}
           <option value={node.nodeId}>{node.nodeId}</option>
@@ -155,11 +170,12 @@
         class="select-input"
         data-testid="workflow-connection-to-port-{p.index}"
         aria-label="Branch {p.index + 1} target input"
-        value={p.connection.to.portId ?? ''}
+        value={p.connection.to.portId ?? ""}
         disabled={p.readonly}
-        onchange={(event) => p.onretarget(p.index, 'to', { portId: event.currentTarget.value })}
+        onchange={(event) =>
+          p.onretarget(p.index, "to", { portId: event.currentTarget.value })}
       >
-        {#each portsFor(p.connection.to.nodeId, 'in') as portId (portId)}
+        {#each portsFor(p.connection.to.nodeId, "in") as portId (portId)}
           <option value={portId}>{portId}</option>
         {/each}
       </select>
@@ -173,7 +189,8 @@
       aria-label="Branch {p.index + 1} is conditional"
       checked={condition !== undefined}
       disabled={p.readonly}
-      onchange={(event) => p.onconditiontoggle(p.index, event.currentTarget.checked)}
+      onchange={(event) =>
+        p.onconditiontoggle(p.index, event.currentTarget.checked)}
     />
     <span class="form-label">Conditional</span>
   </label>
@@ -190,7 +207,8 @@
           disabled={p.readonly}
           onchange={(event) =>
             p.onconditionpatch(p.index, {
-              source: event.currentTarget.value as WorkflowConditionOperandSource
+              source: event.currentTarget
+                .value as WorkflowConditionOperandSource,
             })}
         >
           {#each WORKFLOW_CONDITION_OPERAND_SOURCES as source (source)}
@@ -203,7 +221,8 @@
           aria-label="Branch {p.index + 1} condition node"
           value={condition.left.nodeId}
           disabled={p.readonly}
-          onchange={(event) => p.onconditionpatch(p.index, { nodeId: event.currentTarget.value })}
+          onchange={(event) =>
+            p.onconditionpatch(p.index, { nodeId: event.currentTarget.value })}
         >
           {#each p.nodes as node (node.nodeId)}
             <option value={node.nodeId}>{node.nodeId}</option>
@@ -212,7 +231,7 @@
       </span>
     </label>
 
-    {#if condition.left.source === 'node-output'}
+    {#if condition.left.source === "node-output"}
       <label class="wf-field">
         Output field
         <input
@@ -222,7 +241,8 @@
           value={condition.left.field}
           readonly={p.readonly}
           placeholder="field"
-          oninput={(event) => p.onconditionpatch(p.index, { field: event.currentTarget.value })}
+          oninput={(event) =>
+            p.onconditionpatch(p.index, { field: event.currentTarget.value })}
         />
       </label>
     {/if}
@@ -237,7 +257,7 @@
         disabled={p.readonly}
         onchange={(event) =>
           p.onconditionpatch(p.index, {
-            operator: event.currentTarget.value as WorkflowConditionOperator
+            operator: event.currentTarget.value as WorkflowConditionOperator,
           })}
       >
         {#each operators as operator (operator)}
@@ -248,14 +268,19 @@
 
     {#each values as value, valueIndex (valueIndex)}
       <span class="wf-field-row condition-value">
-        {#if condition.left.source === 'node-status'}
+        {#if condition.left.source === "node-status"}
           <select
             class="select-input"
             data-testid="workflow-condition-value-{p.index}-{valueIndex}"
             aria-label="Branch {p.index + 1} condition value {valueIndex + 1}"
             value={String(value)}
             disabled={p.readonly}
-            onchange={(event) => p.onconditionvalue(p.index, valueIndex, event.currentTarget.value)}
+            onchange={(event) =>
+              p.onconditionvalue(
+                p.index,
+                valueIndex,
+                event.currentTarget.value,
+              )}
           >
             {#each WORKFLOW_NODE_TERMINAL_STATUSES as status (status)}
               <option value={status}>{status}</option>
@@ -269,15 +294,22 @@
             value={formatWorkflowConditionLiteral(value)}
             readonly={p.readonly}
             placeholder="value"
-            oninput={(event) => p.onconditionvalue(p.index, valueIndex, event.currentTarget.value)}
+            oninput={(event) =>
+              p.onconditionvalue(
+                p.index,
+                valueIndex,
+                event.currentTarget.value,
+              )}
           />
         {/if}
         {#if !p.readonly && isList && values.length > 1}
           <button
             class="icon-btn destructive-icon"
             data-testid="workflow-condition-remove-value-{p.index}-{valueIndex}"
-            aria-label="Remove branch {p.index + 1} condition value {valueIndex + 1}"
-            onclick={() => p.onconditionvalueremove(p.index, valueIndex)}>✕</button
+            aria-label="Remove branch {p.index +
+              1} condition value {valueIndex + 1}"
+            onclick={() => p.onconditionvalueremove(p.index, valueIndex)}
+            >✕</button
           >
         {/if}
       </span>
@@ -304,7 +336,9 @@
       checked={p.connection.isDefault === true}
       disabled={p.readonly}
       onchange={(event) =>
-        p.onpatch(p.index, { isDefault: event.currentTarget.checked ? true : undefined })}
+        p.onpatch(p.index, {
+          isDefault: event.currentTarget.checked ? true : undefined,
+        })}
     />
     <span class="form-label">Fallback (considered last)</span>
   </label>
@@ -317,11 +351,13 @@
       step="1"
       data-testid="workflow-connection-priority-{p.index}"
       aria-label="Branch {p.index + 1} priority"
-      value={p.connection.priority ?? ''}
+      value={p.connection.priority ?? ""}
       readonly={p.readonly}
       placeholder="unset — offered last"
       oninput={(event) =>
-        p.onpatch(p.index, { priority: parseWorkflowPriority(event.currentTarget.value) })}
+        p.onpatch(p.index, {
+          priority: parseWorkflowPriority(event.currentTarget.value),
+        })}
     />
   </label>
 
@@ -331,11 +367,12 @@
       class="select-input"
       data-testid="workflow-connection-selection-{p.index}"
       aria-label="Branch {p.index + 1} collection selection rule"
-      value={p.connection.selection ?? ''}
+      value={p.connection.selection ?? ""}
       disabled={p.readonly}
       onchange={(event) =>
         p.onpatch(p.index, {
-          selection: (event.currentTarget.value || undefined) as WorkflowSelectionRule | undefined
+          selection: (event.currentTarget.value || undefined) as
+            WorkflowSelectionRule | undefined,
         })}
     >
       <option value="">Not set</option>

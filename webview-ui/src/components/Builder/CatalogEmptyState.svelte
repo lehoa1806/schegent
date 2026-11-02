@@ -17,13 +17,13 @@
   // document" beside no way to import one is an instruction, not a front door —
   // and on the Pipelines and Workflows tabs this is the only import entry there
   // is.
-  import type { CatalogKind } from '../../../../src/contracts/catalog-store';
-  import { emptyCatalogGuidance } from '../../../../src/contracts/empty-catalog-guidance';
-  import ProcessImportPreflight from '../ProcessImport/ProcessImportPreflight.svelte';
+  import type { CatalogKind } from "../../../../src/contracts/catalog-store";
+  import { emptyCatalogGuidance } from "../../../../src/contracts/empty-catalog-guidance";
+  import ProcessImportPreflight from "../ProcessImport/ProcessImportPreflight.svelte";
 
   interface Props {
     /** Which tab is empty — the test handle, and nothing else. The words are shared. */
-    kind: CatalogKind | 'pipeline';
+    kind: CatalogKind | "pipeline";
     /** How many definitions this tab has. Zero is the only value that shows anything. */
     count: number;
     /**
@@ -40,10 +40,15 @@
 
 {#if guidance}
   <div class="catalog-empty-state" data-testid="catalog-empty-state-{kind}">
-    <p class="empty-catalog-headline" data-testid="catalog-empty-headline-{kind}">
+    <p
+      class="empty-catalog-headline"
+      data-testid="catalog-empty-headline-{kind}"
+    >
       {guidance.headline}
     </p>
-    <p class="empty-catalog-body" data-testid="catalog-empty-body-{kind}">{guidance.body}</p>
+    <p class="empty-catalog-body" data-testid="catalog-empty-body-{kind}">
+      {guidance.body}
+    </p>
     <ProcessImportPreflight {disabledReason} />
   </div>
 {/if}

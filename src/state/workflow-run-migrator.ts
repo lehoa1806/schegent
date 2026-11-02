@@ -127,6 +127,25 @@ export interface WorkflowRunRepairResult {
   readonly auditEvent: WorkflowRunRepairedAuditEvent | null;
 }
 
+export type SupportedRunSchemaCheckResult =
+  | { readonly supported: true }
+  | { readonly supported: false; readonly reason: 'unsupported-run-schema-version' };
+
+/**
+ * Verify that a raw persisted run record does not declare an unsupported future
+ * or legacy schema version tag (`FR-R5-F02-T10`).
+ */
+export function checkSupportedRunSchema(raw: unknown): SupportedRunSchemaCheckResult {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { supported: false, reason: 'unsupported-run-schema-version' };
+  }
+  const rec = raw as Record<string, unknown>;
+  if ('schemaVersion' in rec && rec.schemaVersion !== undefined) {
+    return { supported: false, reason: 'unsupported-run-schema-version' };
+  }
+  return { supported: true };
+}
+
 export function migrateLegacyRun(legacy: unknown): WorkflowRun | null {
   if (legacy === null || legacy === undefined) return null;
   if (typeof legacy !== 'object') return null;

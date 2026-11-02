@@ -304,6 +304,7 @@ neither listed nor excluded.
 - [Glossary](reference/glossary.md) — the vocabularies for authored, queued and running work
 - [Settings reference](reference/settings.md) — every `schegent.*` setting
 - [System configuration](reference/system-config.md) — how configuration reaches the product
+- [Workflow execution runtime](workflow-execution-runtime.md) — frozen transitive closure execution, occurrence identity, scoped bindings, routing and handoff semantics (`FR-R5-F02`)
 
 ### Security
 
