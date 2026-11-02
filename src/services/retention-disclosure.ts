@@ -139,7 +139,7 @@ export function retentionDisclosure(): readonly RetentionInventoryRow[] {
         "(age measured from the generation's oldest usable row), whichever comes first; at most " +
         `${AUDIT_ARCHIVE_DEFAULT_MAX_COUNT} archives are kept, each at most ${days(AUDIT_ARCHIVE_DEFAULT_MAX_AGE_MS)} days; ` +
         `each payload is truncated above ${kib(AUDIT_PAYLOAD_MAX_BYTES)} KiB`,
-      sweptBy: ['rotation'],
+      sweptBy: ['rotation', 'activation'],
       liveProtection: 'the live log is never pruned; only rotated archives are, and each prune is recorded as a cut',
       onDelete: 'kept',
       onExport: 'included whole (shared)',

@@ -15,7 +15,7 @@ Schegent uses independent retention rules for independent artifact classes. Dele
 | Raw transcripts and verbose diagnostic trees | 30 days and 512 MiB across complete inactive Runs | artifacts for active/protected Run IDs |
 | Recovery checkpoints | 14 days and 256 MiB | ten most recent Run directories are protected from the size bound, but not the age bound |
 | Run transport (and the legacy shared transport) | 5 MiB per Run, 20 MiB across the workspace, the session age; legacy files expire whole at that age | an active Run's file is not aged or removed to meet the total |
-| History descriptions | coupled to retained history entries | removed best-effort when the owning history row is evicted |
+| History descriptions | coupled to retained history entries; one no history row refers to is removed once it is 24 hours old, at most 200 per activation, in the window that owns the workspace | removed best-effort when the owning history row is evicted |
 | Failure records | 30 days (the session age setting) and the newest 200 per workspace | none |
 
 <!-- Source: src/audit/audit-log-writer.ts -->

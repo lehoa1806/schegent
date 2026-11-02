@@ -64,9 +64,14 @@ they are not rewritten. A pseudonym is still linkable metadata: it ties every ro
 one workspace together, and `Schegent: Reset Operator Pseudonym` changes only the rows written after it.
 
 **An age bound and the time a sweep runs are different things.** An age says when evidence becomes eligible
-for removal. Removal itself happens when something looks: when the host starts, when a Run ends, when a
-retention setting changes, and once an hour in an idle window that owns the workspace. Evidence can
-therefore outlive its age by up to an hour in an open window, and by as long as the host stays closed.
+for removal. Removal itself happens when something looks, and what looks differs by store: the "Swept by"
+column above names it. The host looks when it starts, when a Run ends, when a retention setting changes,
+and once an hour in an idle window that owns the workspace, but the hourly look reaches only the session
+groups (raw transcripts and diagnostic trees), the failure records and the CLI transport. The rotated
+audit archives (also pruned when the log rotates), the private recovery checkpoints and the history
+descriptions are looked at when the host starts, and not again while it stays open. Evidence the hourly
+look reaches can therefore outlive its age by up to an hour in an open window; the rest, for as long as
+the host stays open; and all of it, for as long as the host stays closed.
 Audit files, current and archived, are owner-only (`0600`).
 
 ## The one artifact that is deliberately unredacted
