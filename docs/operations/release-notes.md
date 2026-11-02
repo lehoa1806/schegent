@@ -74,8 +74,10 @@ best-effort, and the documents say where it stops.
 - **Runtime redaction covers more, and is called what it is.** The value is removed, and the key stays readable,
   for a password, secret or token key in text (`MY_DB_PASSWORD=`, `db_password=`, a JSON `client_secret`) and for a
   string under such a key in a structured record; the password in `scheme://user:password@host` is removed with the
-  scheme, user and host kept; and GitHub `gho_`, `ghu_`, `ghs_` and `ghr_` tokens and `npm_` tokens are added. The
-  documents that said "sanitized" now say best-effort secret-pattern redacted, otherwise raw.
+  scheme, user and host kept; and GitHub `gho_`, `ghu_`, `ghs_` and `ghr_` tokens and `npm_` tokens are added. Four
+  documents (the file layout, sessions and logs, glossary and runtime log pages) that said "sanitized" now say
+  best-effort secret-pattern redacted, otherwise raw; other pages still use "sanitization" as the name of the
+  mechanism, which is what they mean by it.
 - **What stays raw.** Ordinary content, file paths and any secret format with no pattern stay in the clear. A keyed
   value shorter than 8 characters in text is not removed. An array or an object under a key that names a secret is
   not replaced as a whole, so a string inside it in a format no pattern knows stays, while a vendor token inside it
