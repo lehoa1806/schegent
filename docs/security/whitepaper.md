@@ -120,7 +120,7 @@ Recovery checkpoints are another sensitive surface outside session retention. Th
 <!-- Source: src/services/run-checkpoint-service.ts -->
 <!-- Source: src/services/run-checkpoint-retention.ts -->
 
-Two workspace-local stores also deserve separate treatment. `.schegent/cli-transport.log` passes through the shared sanitizer but deliberately retains paths from backend output. `.schegent/history/<runId>.txt` stores a full sanitized Task description at mode `0600`; pattern redaction does not make arbitrary operator prose non-sensitive.
+Two workspace-local stores also deserve separate treatment. The CLI transport is a per-Run file, `.schegent/sessions/<runId>/transport.log` (an earlier release's shared `.schegent/cli-transport.log` is legacy and no longer written); it is best-effort secret-pattern redacted and otherwise holds the CLI's stream lines as sent, paths from backend output included. `.schegent/history/<runId>.txt` stores a full sanitized Task description at mode `0600`; pattern redaction does not make arbitrary operator prose non-sensitive.
 
 <!-- Source: src/monitor/cli-transport-sink.ts -->
 <!-- Source: src/services/history/history-description-store.ts -->
