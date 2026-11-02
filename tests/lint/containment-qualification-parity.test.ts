@@ -151,7 +151,7 @@ describe('the containment qualification record agrees with the product (FR-R3-12
 
   it('carries the Agy finding, with its probe and its entry condition', () => {
     // FR-R3-125's substantive finding: `agy` exposes `--sandbox` and Schegent does
-    // not request it. The decision not to request it is only defensible while the
+    // not request it by default. The decision not to is only defensible while the
     // reasoning, the probe and the entry condition are on the record — otherwise
     // it degrades into an unexplained omission, which is what a later reader will
     // reasonably "fix".
