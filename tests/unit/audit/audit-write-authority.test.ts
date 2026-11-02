@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -200,5 +201,43 @@ describe('the production adapter fails closed (R10)', () => {
   it('answers null when the lock cannot answer, and when a primary window has no fence', async () => {
     expect(await lockWriteAuthority(lock(new Error('store unreadable'), 4)).currentFence()).toBeNull();
     expect(await lockWriteAuthority(lock(true, null)).currentFence()).toBeNull();
+  });
+});
+
+describe('production wiring supplies a real authority (W9)', () => {
+  // A writer built with no authority is the owner of every window with a constant fence, which is
+  // what the many tests that build one without a lock rely on. That default is right for them and
+  // wrong for the product: a window wired without an authority appends beside the owner and forks
+  // the chain at the next transfer. The cases above prove the adapter fails closed; these prove
+  // activation hands it to the writer, on the source, because nothing else builds that call.
+  const wiring = readFileSync(
+    path.resolve(__dirname, '..', '..', '..', 'src', 'activation', 'evidence-wiring.ts'),
+    'utf8'
+  );
+  // The options literal of the one `new AuditLogWriter(` call, up to its first closing brace.
+  const AUTHORITY_IN_WRITER_OPTIONS =
+    /new AuditLogWriter\(\s*\{[^}]*authority:\s*lockWriteAuthority\(lock\)/;
+  const CHECKPOINT_IN_WRITER_OPTIONS =
+    /new AuditLogWriter\(\s*\{[^}]*\.\.\.\(checkpoint === undefined \? \{\} : \{ checkpoint \}\)/;
+
+  it('constructs the writer with the lock-backed authority', () => {
+    expect(wiring).toMatch(AUTHORITY_IN_WRITER_OPTIONS);
+  });
+
+  it('hands the writer the head checkpoint port when the store could be prepared', () => {
+    expect(wiring).toMatch(CHECKPOINT_IN_WRITER_OPTIONS);
+  });
+
+  it('never wires the test default into production', () => {
+    expect(wiring).not.toContain('OWNER_FOR_TESTS');
+  });
+
+  it('the patterns discriminate: they do not match the call with the line removed', () => {
+    const withoutAuthority = wiring.replace('authority: lockWriteAuthority(lock),', '');
+    const withoutCheckpoint = wiring.replace('...(checkpoint === undefined ? {} : { checkpoint })', '');
+    expect(withoutAuthority).not.toBe(wiring);
+    expect(withoutCheckpoint).not.toBe(wiring);
+    expect(withoutAuthority).not.toMatch(AUTHORITY_IN_WRITER_OPTIONS);
+    expect(withoutCheckpoint).not.toMatch(CHECKPOINT_IN_WRITER_OPTIONS);
   });
 });
