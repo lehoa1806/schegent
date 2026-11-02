@@ -4,6 +4,8 @@
 // `operator-pseudonym-reset` row with `payload: {}`, `runId: ''` and `phase: 'operator'`, and only THEN
 // stores a new pseudonym, which later actions carry; and an append that throws leaves the stored value
 // unchanged and says the reset did not happen (O9). The row carries neither the old nor the new value.
+// When the row IS written and the new value then cannot be stored, the notice says so (FR-R4-F04 G8): the
+// cause is the store, not the audit log, and the old pseudonym still stands.
 //
 // Why: a reset that stored first and appended second would leave a new identity with no record that the
 // old one was retired, and one that wrote the values into the row would put the identifier it exists to
@@ -19,11 +21,14 @@ import type { Notifier } from '../../../src/ui/notifications';
 function setup(options: { confirm?: boolean; appendFails?: boolean } = {}) {
   const writes: Array<unknown> = [];
   const events: string[] = [];
+  // Switched on by a test AFTER the first pseudonym exists, so the failure lands on the reset's own store.
+  const flags = { storeFails: false };
   const store: OperatorAttributionStore & { value: unknown } = {
     value: undefined,
     readOperatorPseudonym: () => store.value,
     writeOperatorPseudonym: async (next) => {
       events.push('store');
+      if (flags.storeFails) throw new Error('quota exceeded');
       writes.push(next);
       store.value = next;
     }
@@ -52,7 +57,7 @@ function setup(options: { confirm?: boolean; appendFails?: boolean } = {}) {
       attribution,
       notifier
     });
-  return { attribution, rows, notices, events, run, store, writes };
+  return { attribution, rows, notices, events, run, store, writes, flags };
 }
 
 describe('runResetOperatorPseudonym (T18)', () => {
@@ -98,5 +103,21 @@ describe('runResetOperatorPseudonym (T18)', () => {
     expect(t.attribution.current(), 'the stored value did not change').toBe(before);
     expect(t.notices).toContain(RESET_OPERATOR_PSEUDONYM_TEXT.failed);
     expect(t.notices.join(' ')).not.toContain('disk full');
+  });
+
+  it('says the reset was recorded but not stored, and keeps the old pseudonym, when the store throws (G8)', async () => {
+    const t = setup();
+    const before = await t.attribution.ensureStored();
+    t.flags.storeFails = true;
+    t.events.length = 0;
+
+    await t.run();
+
+    expect(t.events, 'the row was appended first, then the store was tried').toEqual(['append', 'store']);
+    expect(t.rows, 'the row is in the log').toHaveLength(1);
+    expect(t.attribution.current(), 'the old pseudonym still stands').toBe(before);
+    expect(t.notices, 'one notice, naming the store').toEqual([RESET_OPERATOR_PSEUDONYM_TEXT.storeFailed]);
+    expect(RESET_OPERATOR_PSEUDONYM_TEXT.storeFailed, 'and it is not the audit-log wording').not.toBe(RESET_OPERATOR_PSEUDONYM_TEXT.failed);
+    expect(t.notices.join(' ')).not.toContain('quota exceeded');
   });
 });
