@@ -765,7 +765,7 @@ export class PhaseRunner {
     // Feature 030 BUG-002 — parse up front so the timeout branch can tell a
     // completed-but-non-exiting run (clean stdout, FR-025) from an idle stall.
     const rateLimit = detectCreditError(raw.stdoutBuffer, raw.stderrBuffer, raw.exitCode);
-    const audit = parseAuditLogBlock(unwrappedStream.text);
+    const audit = parseAuditLogBlock(unwrappedStream.textSource === 'raw-stream' ? '' : unwrappedStream.text);
     const stderrTail = typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100);
     const parsedResult = parseInvocation({
       stdout: unwrappedStream.text,

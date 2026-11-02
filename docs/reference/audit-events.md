@@ -120,6 +120,10 @@ counts, and `cli-invocation` keeps runner, operation, permission mode, model and
 effort identifiers, continuation flags, and a diagnostics flag rather than the
 spawned command.
 
+Phase evidence fields come from model-authored audit blocks. When a structured CLI stream contains no
+model text, its raw-stream fallback supplies neither file-change counts nor authored metrics, even if
+tool output contains audit markers. Missing evidence remains absent rather than becoming measured zeros.
+
 Two classification fields are worth naming, because both are narrowed rather
 than passed through (feature 194):
 
