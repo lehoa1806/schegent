@@ -274,7 +274,7 @@ if (invokedAsScript(import.meta.url)) {
     formatter: 'stylish',
     color: false,
     // The type declarations say masking is the default, but the core reads
-    // `maskSecrets ?? false` (13.0.4), so a report line carried the matched value into the
+    // `maskSecrets ?? false` (as installed, 10.2.2), so a report line carried the matched value into the
     // terminal and into any log that keeps it. The rule and the location are enough to act on.
     maskSecrets: true,
     cwd: ROOT

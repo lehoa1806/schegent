@@ -68,14 +68,18 @@ best-effort, and the documents say where it stops.
   token, a password assignment (an unquoted value on an env-style line, or a quoted literal, of at least 8
   characters), and a dotenv file named `.env.<suffix>` other than `.env.example`, `.env.sample` and
   `.env.template`. Test literals the new families reported were rewritten to be built when the test runs. No file or
-  directory was added to the exemptions. `SECURITY.md` lists every family and every shape it does not detect.
+  directory was added to the exemptions. `SECURITY.md` lists every family and every shape it does not detect,
+  including an Azure storage account key (the installed preset does not register its Azure rule). One run on
+  2026-11-01 took 38 seconds over 2,933 tracked files; it is a single measurement and not a bound.
 - **Runtime redaction covers more, and is called what it is.** The value is removed, and the key stays readable,
   for a password, secret or token key in text (`MY_DB_PASSWORD=`, `db_password=`, a JSON `client_secret`) and for a
   string under such a key in a structured record; the password in `scheme://user:password@host` is removed with the
   scheme, user and host kept; and GitHub `gho_`, `ghu_`, `ghs_` and `ghr_` tokens and `npm_` tokens are added. The
   documents that said "sanitized" now say best-effort secret-pattern redacted, otherwise raw.
 - **What stays raw.** Ordinary content, file paths and any secret format with no pattern stay in the clear. A keyed
-  value shorter than 8 characters in text is not removed. **The process-definition export is written without
+  value shorter than 8 characters in text is not removed. An array or an object under a key that names a secret is
+  not replaced as a whole, so a string inside it in a format no pattern knows stays, while a vendor token inside it
+  is still removed by pattern. **The process-definition export is written without
   redaction:** its document body does not pass through the redactor, only its audit row does.
 - **Redaction is bounded.** Two existing patterns (a JSON web token, and a service-account private key in JSON) cost
   time that grew with the square of a hostile line, about 10 seconds for a 128 Ki line in one case. Both are
