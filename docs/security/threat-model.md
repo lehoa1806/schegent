@@ -111,7 +111,7 @@ What it bounds and what it does not, in the same paragraph on purpose:
   - `shell-network`, `shell-workspace-write`, `shell-outside-workspace-write` — a shell that stays granted can
     still do what the denied tool would have, where the backend's own permission settings let it run;
   - `sandboxed-commands-run` — on Codex, withholding `process-spawn` still lets model-run commands execute,
-    inside Codex's read-only sandbox;
+    inside Codex's read-only sandbox, which also blocks file writes (a granted write is not available);
   - `sandbox-scope-unqualified` — on Agy, the scope of its `--sandbox` has not been qualified.
   A restriction whose flag no capture has confirmed the installed CLI lists is refused, not relied on.
 - **The default is unchanged.** A phase that declares no capability set spawns with exactly the argv it

@@ -344,6 +344,12 @@ to prevent.
   OS network or filesystem isolation. See [the threat model](../security/threat-model.md) for what that
   leaves open.
 
+**A Codex Phase gets one sandbox mode, and the strictest mode any withheld capability needs wins.**
+Withholding `process-spawn` selects `--sandbox read-only`, and `read-only` also blocks file writes. A
+set that grants `workspace-write` (or `outside-workspace-write`) and withholds `process-spawn` therefore
+runs without the write it granted. The host accepts such a set rather than refusing it; it fails toward
+less authority, not more, and the launcher sentence says the sandbox "also blocks file writes".
+
 The launcher says so before the Run starts: a launchable whose Phase declares a set that leaves something
 open, or cannot be enforced, shows the host's sentence for it beside the authority notice, and the audit
 rows record the same facts (`enforcement`, `residuals`, and for a refusal `unqualified`).
