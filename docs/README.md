@@ -221,7 +221,7 @@ neither listed nor excluded.
 ### Architecture and decisions
 
 - [Agent capability posture](architecture/agent-capability-posture.md) — **decided, shipped 2026-08-24** (shape 3: uncontained backends refused by default, `schegent.backend.uncontainedBackends` is the opt-in, per backend since FR-R3-125)
-- [Backend containment qualification](architecture/backend-containment-qualification.md) — **qualified 2026-08-27**: what OS-enforced containment is actually available per backend and platform, and why Agy's `--sandbox` is available and not requested
+- [Backend containment qualification](architecture/backend-containment-qualification.md) — **qualified 2026-08-27**: what OS-enforced containment is actually available per backend and platform, and why Agy's `--sandbox` is available and not requested by default
 - [English-only is a product decision](concepts/english-only-not-localizable.md) — **decided 2026-08-22, re-taken 2026-10-21: English only** (1,122 distinct user-visible strings measured; what would reopen it, and its review date)
 - [HostServices facade removal](architecture/host-services-facade-removal.md) — **decided 2026-08-29: deleted** (a nine-member host facade no installed extension could reach; two of its members had no caller at either end, and `tests/lint/adapter-module-reachability.test.ts` now fails the next one)
 - [Native binding decision](architecture/native-binding-decision.md) — **decided 2026-08-25: no** (the `openat`, `renameat`, Job Object and reparse-tag residuals are permanent stated limits)
