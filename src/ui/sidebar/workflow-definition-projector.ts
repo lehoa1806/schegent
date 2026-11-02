@@ -39,7 +39,14 @@ export function text(value: string, sanitize: Sanitize, max: number): string {
 function projectNode(node: WorkflowNode, sanitize: Sanitize): WorkflowNode {
   return Object.freeze({
     nodeId: text(node.nodeId, sanitize, ID_MAX),
-    pipelineId: text(node.pipelineId, sanitize, ID_MAX),
+    ...(node.kind !== undefined ? { kind: node.kind } : {}),
+    ...(node.phaseId !== undefined ? { phaseId: text(node.phaseId, sanitize, ID_MAX) } : {}),
+    ...(node.workflowId !== undefined
+      ? { workflowId: text(node.workflowId, sanitize, ID_MAX) }
+      : {}),
+    ...(node.pipelineId !== undefined
+      ? { pipelineId: text(node.pipelineId, sanitize, ID_MAX) }
+      : {}),
     ...(node.label !== undefined ? { label: text(node.label, sanitize, LABEL_MAX) } : {})
   });
 }
@@ -87,12 +94,18 @@ function projectConnection(connection: WorkflowConnection, sanitize: Sanitize): 
   return Object.freeze({
     from: Object.freeze({
       nodeId: text(connection.from.nodeId, sanitize, ID_MAX),
-      portId: text(connection.from.portId, sanitize, ID_MAX)
+      ...(connection.from.portId !== undefined
+        ? { portId: text(connection.from.portId, sanitize, ID_MAX) }
+        : {})
     }),
     to: Object.freeze({
       nodeId: text(connection.to.nodeId, sanitize, ID_MAX),
-      portId: text(connection.to.portId, sanitize, ID_MAX)
+      ...(connection.to.portId !== undefined
+        ? { portId: text(connection.to.portId, sanitize, ID_MAX) }
+        : {}),
+      ...(connection.to.kind !== undefined ? { kind: connection.to.kind } : {})
     }),
+    ...(connection.handoff !== undefined ? { handoff: connection.handoff } : {}),
     ...(connection.condition !== undefined
       ? { condition: projectCondition(connection.condition, sanitize) }
       : {}),
@@ -114,11 +127,20 @@ export function projectWorkflowDefinition(
       ? { description: text(definition.description, sanitize, DESCRIPTION_MAX) }
       : {}),
     version: definition.version,
+    ...(definition.inputs !== undefined ? { inputs: definition.inputs } : {}),
+    ...(definition.outputs !== undefined ? { outputs: definition.outputs } : {}),
     nodes: Object.freeze(definition.nodes.map((node) => projectNode(node, sanitize))),
     connections: Object.freeze(
       definition.connections.map((connection) => projectConnection(connection, sanitize))
     ),
-    startNodeIds: Object.freeze(definition.startNodeIds.map((id) => text(id, sanitize, ID_MAX)))
+    ...(definition.bindings !== undefined ? { bindings: definition.bindings } : {}),
+    startNodeIds: Object.freeze(definition.startNodeIds.map((id) => text(id, sanitize, ID_MAX))),
+    ...(definition.executionDefaults !== undefined
+      ? { executionDefaults: definition.executionDefaults }
+      : {}),
+    ...(definition.recommendedNext !== undefined
+      ? { recommendedNext: definition.recommendedNext }
+      : {})
   });
 }
 

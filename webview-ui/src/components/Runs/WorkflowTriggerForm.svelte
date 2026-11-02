@@ -186,7 +186,7 @@
   }
 
   function pipelineNameOf(node: WorkflowNode): string {
-    return pipelines.find((pipeline) => pipeline.id === node.pipelineId)?.name ?? node.pipelineId;
+    return pipelines.find((pipeline) => pipeline.id === node.pipelineId)?.name ?? node.pipelineId ?? node.phaseId ?? node.workflowId ?? node.nodeId;
   }
 
   /**

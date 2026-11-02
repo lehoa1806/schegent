@@ -366,6 +366,9 @@ function workflowEntries(
   pipelinePhaseIds: ReadonlyMap<string, readonly string[]>,
   context: BackendContext
 ): readonly Launchable[] {
+  const effectiveWorkflowIds = new Set(
+    catalog.effective.map((definition) => definition.workflowId)
+  );
   const entries: Launchable[] = [];
   for (const record of catalog.records) {
     const activeVersionId = activeVersionOf(record.lifecycle);
@@ -375,17 +378,26 @@ function workflowEntries(
     // and no other unsatisfied ports is indistinguishable, by port list alone,
     // from one that needs no inputs.
     const resolvable = record.definition.nodes.every((node) =>
-      effectivePipelineIds.has(node.pipelineId)
+      node.phaseId !== undefined
+        ? context.phasesById.has(node.phaseId)
+        : node.workflowId !== undefined
+          ? effectiveWorkflowIds.has(node.workflowId)
+          : node.pipelineId !== undefined && effectivePipelineIds.has(node.pipelineId)
     );
     if (!resolvable) continue;
     const description = displayText(record.display, 'description') ?? record.definition.description;
-    // FR-R4-F06 (D3) -- the union over the node Pipelines, each resolved through the
+    // FR-R4-F06 (D3) -- the union over the node Phases/Pipelines, each resolved through the
     // effective catalog the `resolvable` check above already required.
     const union = new Set<BackendRunnerKind>();
     const notices: CapabilityNotice[] = [];
     const notedPhases = new Set<string>();
     for (const node of record.definition.nodes) {
-      const phaseIds = pipelinePhaseIds.get(node.pipelineId) ?? [];
+      const phaseIds =
+        node.phaseId !== undefined
+          ? [node.phaseId]
+          : node.pipelineId !== undefined
+            ? (pipelinePhaseIds.get(node.pipelineId) ?? [])
+            : [];
       for (const kind of pipelineBackends(phaseIds, context)) union.add(kind);
       notices.push(...capabilityNoticesOfPhases(phaseIds, context, notedPhases));
     }

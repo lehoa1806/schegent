@@ -222,3 +222,53 @@ describe('a configured default is reported and never edited (FR-059, FR-060)', (
     expect(outcome.advisories).toEqual([]);
   });
 });
+
+describe('unified Workflow direct reference blockers (FR-R5-F01-T05)', () => {
+  it('blocks deactivating a Phase referenced directly by an active Workflow', async () => {
+    await seedActive(harness, 'phase', 'specify', phaseBody('specify'));
+    await seedActive(harness, 'workflow', 'spec-flow', {
+      id: 'spec-flow',
+      name: 'Spec Flow',
+      version: 1,
+      nodes: [{ nodeId: 'step-1', kind: 'phase', phaseId: 'specify' }],
+      connections: [],
+      startNodeIds: ['step-1']
+    });
+
+    const outcome = await deactivate('phase', 'specify');
+    expect(outcome.outcome).toBe('refused');
+    if (outcome.outcome !== 'refused') return;
+    expect(outcome.refusal.reason).toBe('referenced');
+    expect(outcome.refusal.blockers).toEqual([
+      { kind: 'workflow', id: 'spec-flow', field: 'nodes[0].phaseId' }
+    ]);
+  });
+
+  it('blocks deactivating a child Workflow referenced by an active parent Workflow', async () => {
+    await seedActive(harness, 'phase', 'specify', phaseBody('specify'));
+    await seedActive(harness, 'workflow', 'child-flow', {
+      id: 'child-flow',
+      name: 'Child Flow',
+      version: 1,
+      nodes: [{ nodeId: 'step-1', kind: 'phase', phaseId: 'specify' }],
+      connections: [],
+      startNodeIds: ['step-1']
+    });
+    await seedActive(harness, 'workflow', 'parent-flow', {
+      id: 'parent-flow',
+      name: 'Parent Flow',
+      version: 1,
+      nodes: [{ nodeId: 'call-child', kind: 'workflow', workflowId: 'child-flow' }],
+      connections: [],
+      startNodeIds: ['call-child']
+    });
+
+    const outcome = await deactivate('workflow', 'child-flow');
+    expect(outcome.outcome).toBe('refused');
+    if (outcome.outcome !== 'refused') return;
+    expect(outcome.refusal.reason).toBe('referenced');
+    expect(outcome.refusal.blockers).toEqual([
+      { kind: 'workflow', id: 'parent-flow', field: 'nodes[0].workflowId' }
+    ]);
+  });
+});

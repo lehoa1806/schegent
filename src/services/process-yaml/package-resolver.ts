@@ -403,6 +403,7 @@ export function resolveWorkflowDependencies(
     // Authored node order, so which unresolved reference is reported is the
     // document's own order. A repeated Pipeline resolves the same way each time
     // by construction (FR-042).
+    if (node.pipelineId === undefined) continue;
     const resolution = resolvePipelineDependency(node.pipelineId, context);
     if (resolution.status === 'blocked') {
       return Object.freeze({ outcome: 'blocked' as const, reason: resolution.reason });

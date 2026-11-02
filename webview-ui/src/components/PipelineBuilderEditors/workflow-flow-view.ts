@@ -67,7 +67,9 @@ export function pipelineOf(
   view: WorkflowFlowView,
   node: WorkflowNode
 ): PortablePipelineDefinition | null {
-  return view.pipelines.find((entry) => entry.pipelineId === node.pipelineId) ?? null;
+  return node.pipelineId !== undefined
+    ? (view.pipelines.find((entry) => entry.pipelineId === node.pipelineId) ?? null)
+    : null;
 }
 
 /**

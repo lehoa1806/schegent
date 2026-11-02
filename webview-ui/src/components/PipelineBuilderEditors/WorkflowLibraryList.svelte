@@ -54,7 +54,12 @@
             <!-- Authored order, never sorted: the sequence the operator wrote
                  is part of the definition's meaning (FR-049). -->
             {#each row.nodes as node, index (node.nodeId)}
-              <span>{index > 0 ? '→ ' : ''}{node.pipelineId}</span>
+              <span
+                >{index > 0 ? '→ ' : ''}{node.pipelineId ??
+                  node.phaseId ??
+                  node.workflowId ??
+                  node.nodeId}</span
+              >
             {/each}
           {/if}
         </div>

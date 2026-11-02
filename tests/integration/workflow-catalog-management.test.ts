@@ -180,17 +180,19 @@ function authoredRow(overrides: Record<string, unknown> = {}): Record<string, un
   };
 }
 
-const nodeOrder = (nodes: readonly { nodeId: string; pipelineId: string }[]): string[] =>
-  nodes.map((node) => `${node.nodeId}:${node.pipelineId}`);
+const nodeOrder = (
+  nodes: readonly { nodeId: string; pipelineId?: string; phaseId?: string; workflowId?: string }[]
+): string[] =>
+  nodes.map((node) => `${node.nodeId}:${node.pipelineId ?? node.phaseId ?? node.workflowId ?? ''}`);
 
 const edgeOrder = (
   connections: readonly {
-    from: { nodeId: string; portId: string };
-    to: { nodeId: string; portId: string };
+    from: { nodeId: string; portId?: string };
+    to: { nodeId: string; portId?: string };
   }[]
 ): string[] =>
   connections.map(
-    (edge) => `${edge.from.nodeId}.${edge.from.portId}->${edge.to.nodeId}.${edge.to.portId}`
+    (edge) => `${edge.from.nodeId}.${edge.from.portId ?? ''}->${edge.to.nodeId}.${edge.to.portId ?? ''}`
   );
 
 const AUTHORED_NODE_ORDER = nodeOrder(AUTHORED_NODES);

@@ -821,7 +821,10 @@ const CATALOG_VERSION_ID_RE = /^v[1-9][0-9]*$/;
  */
 function projectCatalogLifecycle(payload: Record<string, unknown>): CatalogLifecyclePayload {
   const resourceKind = payload.resourceKind;
-  if (typeof resourceKind !== 'string' || !CATALOG_KINDS.includes(resourceKind as CatalogKind)) {
+  if (
+    typeof resourceKind !== 'string' ||
+    (!(CATALOG_KINDS as readonly string[]).includes(resourceKind) && resourceKind !== 'pipeline')
+  ) {
     throw new AuditPayloadValidationError('invalid-catalog-kind');
   }
   const resourceId = payload.resourceId;

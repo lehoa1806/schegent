@@ -83,7 +83,7 @@ export const EMPTY_LAYER: LifecycleResult = Object.freeze({
 /** Optional test seam, matching the retired save helpers' contract. */
 export type PostMessage = (msg: unknown) => void;
 
-const KIND_LABEL: Readonly<Record<CatalogKind, string>> = Object.freeze({
+const KIND_LABEL: Readonly<Record<CatalogKind | 'pipeline', string>> = Object.freeze({
   phase: 'Phase',
   pipeline: 'Pipeline',
   workflow: 'Workflow'

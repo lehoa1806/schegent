@@ -1,3 +1,4 @@
+import type { PhaseDefinition } from '../contracts/process-definitions';
 import type {
   PipelineDefinition,
   PipelineInputPortType,
@@ -11,8 +12,13 @@ import {
   type WorkflowConnection,
   type WorkflowDefinition,
   type WorkflowFieldError,
-  type WorkflowNode
+  type WorkflowInputBinding,
+  type WorkflowInputPort,
+  type WorkflowNode,
+  type WorkflowOutputBinding,
+  type WorkflowOutputPort
 } from '../contracts/workflow-definitions';
+import { resolveWorkflowClosure } from './workflow-closure-resolver';
 import { workflowFieldError } from './workflow-definition-validator';
 import {
   ancestorSets,
@@ -23,20 +29,11 @@ import {
 } from './workflow-graph';
 
 /**
- * Cross-reference validation for one Workflow against the resolved **effective** Pipeline
- * catalog. Pure: no `vscode` import, no configuration read, no mutation of its arguments.
- *
- * Every check accumulates (FR-019) — the pass never returns at the first defect, because an
- * operator repairing a graph one error per save round-trip is the failure mode this feature
- * exists to avoid. There is exactly one ordering dependency, documented at
- * {@link validateConditions}.
+ * Cross-reference validation for one Workflow against the resolved **effective** Phase,
+ * Workflow, and Pipeline catalogs. Pure: no `vscode` import, no configuration read, no
+ * mutation of its arguments.
  */
 
-/**
- * Frozen compatibility table (data-model §4). A fixed matrix, never an operator-authored
- * mapping: letting a definition declare its own coercions would make a portable Workflow
- * behave differently depending on which host opened it.
- */
 export const WORKFLOW_PORT_COMPATIBILITY: Readonly<
   Record<PipelineOutputPortType, readonly PipelineInputPortType[]>
 > = Object.freeze({
@@ -48,27 +45,34 @@ export const WORKFLOW_PORT_COMPATIBILITY: Readonly<
   'external-reference': Object.freeze(['web-url', 'source'] as const)
 });
 
-/** The collection-typed members of each union (FR-018). */
 const COLLECTION_OUTPUT_TYPES: ReadonlySet<PipelineOutputPortType> = new Set(['file-set']);
 const COLLECTION_INPUT_TYPES: ReadonlySet<PipelineInputPortType> = new Set(['source-list']);
-
-/**
- * Output port types a `node-output` condition operand may read a field from (FR-022). These are
- * the two output types the compatibility table maps to the `pipeline-output` input type; the
- * data-model's shorthand "a `structured-data` or `pipeline-output` output port" names that
- * coupling from the input side, and `pipeline-output` is not itself a member of
- * `PipelineOutputPortType`.
- */
 const STRUCTURED_OUTPUT_TYPES: ReadonlySet<PipelineOutputPortType> = new Set([
   'structured-data',
   'run-request'
 ]);
 
+export interface WorkflowGraphValidationOptions {
+  readonly effectivePhases?: readonly PhaseDefinition[] | undefined;
+  readonly invalidPhases?: ReadonlyMap<string, string> | undefined;
+  readonly effectiveWorkflows?: readonly WorkflowDefinition[] | undefined;
+  readonly invalidWorkflows?: ReadonlyMap<string, string> | undefined;
+}
+
+interface PortBearingTarget {
+  readonly kind: 'pipeline' | 'workflow' | 'phase';
+  readonly id: string;
+  readonly inputs: readonly WorkflowInputPort[];
+  readonly outputs: readonly WorkflowOutputPort[];
+}
+
 interface ResolvedNode {
   readonly node: WorkflowNode;
   readonly index: number;
-  /** Null when the Pipeline is unknown or invalid; downstream port checks are then skipped. */
   readonly pipeline: PipelineDefinition | null;
+  readonly phase: PhaseDefinition | null;
+  readonly workflow: WorkflowDefinition | null;
+  readonly target: PortBearingTarget | null;
 }
 
 interface GraphContext {
@@ -78,32 +82,32 @@ interface GraphContext {
   readonly errors: WorkflowFieldError[];
 }
 
-/**
- * @param definition       a Workflow that already passed `validateWorkflowDefinition`
- * @param effectivePipelines the resolved effective Pipeline catalog — the only layer a node may
- *                         bind against, mirroring the Pipeline-to-Phase rule
- * @param invalidPipelines `pipelineId` → short cause, for ids that resolved to an *invalid*
- *                         record rather than being absent. Without it an invalid Pipeline is
- *                         indistinguishable from a missing one and FR-017 could not name the
- *                         transitive cause.
- */
+function isReturnEndpoint(
+  endpoint: WorkflowConnection['to'],
+  nodes: ReadonlyMap<string, ResolvedNode>
+): boolean {
+  return endpoint.kind === 'return' || (endpoint.nodeId === 'return' && !nodes.has('return'));
+}
+
 export function validateWorkflowGraph(
   definition: WorkflowDefinition,
-  effectivePipelines: readonly PipelineDefinition[],
-  invalidPipelines: ReadonlyMap<string, string> = new Map()
+  effectivePipelines: readonly PipelineDefinition[] = [],
+  invalidPipelines: ReadonlyMap<string, string> = new Map(),
+  options: WorkflowGraphValidationOptions = {}
 ): readonly WorkflowFieldError[] {
   const errors: WorkflowFieldError[] = [];
-  const nodes = resolveNodes(definition, effectivePipelines, invalidPipelines, errors);
+  const nodes = resolveNodes(definition, effectivePipelines, invalidPipelines, options, errors);
   const edges = definition.connections
-    .filter((c) => nodes.has(c.from.nodeId) && nodes.has(c.to.nodeId))
+    .filter((c) => nodes.has(c.from.nodeId) && !isReturnEndpoint(c.to, nodes) && nodes.has(c.to.nodeId))
     .map((c) => ({ from: c.from.nodeId, to: c.to.nodeId }));
   const context: GraphContext = { definition, nodes, edges, errors };
 
   validateConnections(context);
   validateDuplicateInputBindings(context);
   const acyclic = validateCycles(context);
-  validateReachability(context);
+  validateReachability(context, acyclic);
   validateConditions(context, acyclic);
+  validateBindingsAndOutputs(context, acyclic);
   return errors;
 }
 
@@ -111,37 +115,71 @@ function resolveNodes(
   definition: WorkflowDefinition,
   effectivePipelines: readonly PipelineDefinition[],
   invalidPipelines: ReadonlyMap<string, string>,
+  options: WorkflowGraphValidationOptions,
   errors: WorkflowFieldError[]
 ): ReadonlyMap<string, ResolvedNode> {
   const byPipelineId = new Map(effectivePipelines.map((entry) => [entry.pipelineId, entry]));
+  const byPhaseId = new Map((options.effectivePhases ?? []).map((entry) => [entry.phaseId, entry]));
+  const byWorkflowId = new Map((options.effectiveWorkflows ?? []).map((entry) => [entry.workflowId, entry]));
   const resolved = new Map<string, ResolvedNode>();
 
+  const hasUnifiedNodes = definition.nodes.some(
+    (n) => n.kind === 'phase' || n.kind === 'workflow' || n.phaseId !== undefined || n.workflowId !== undefined
+  );
+
+  if (hasUnifiedNodes) {
+    const closure = resolveWorkflowClosure(definition, options);
+    errors.push(...closure.errors);
+  }
+
   definition.nodes.forEach((node, index) => {
-    const pipeline = byPipelineId.get(node.pipelineId) ?? null;
-    const cause = invalidPipelines.get(node.pipelineId);
-    if (!pipeline && cause !== undefined) {
-      errors.push(
-        error(
-          definition,
-          `nodes[${index}].pipelineId`,
-          'pipeline-invalid',
-          `Pipeline '${node.pipelineId}' is invalid: ${cause}`
-        )
-      );
-    } else if (!pipeline) {
-      errors.push(
-        error(
-          definition,
-          `nodes[${index}].pipelineId`,
-          'unknown-pipeline',
-          `Pipeline '${node.pipelineId}' is not in the effective catalog`
-        )
-      );
+    let pipeline: PipelineDefinition | null = null;
+    let phase: PhaseDefinition | null = null;
+    let workflow: WorkflowDefinition | null = null;
+    let target: PortBearingTarget | null = null;
+
+    if (node.kind === 'phase' || (node.kind === undefined && node.phaseId !== undefined)) {
+      if (node.phaseId !== undefined) {
+        phase = byPhaseId.get(node.phaseId) ?? null;
+        if (phase) {
+          target = { kind: 'phase', id: phase.phaseId, inputs: [], outputs: [] };
+        }
+      }
+    } else if (node.kind === 'workflow' || node.workflowId !== undefined) {
+      if (node.workflowId !== undefined && node.workflowId !== definition.workflowId) {
+        workflow = byWorkflowId.get(node.workflowId) ?? null;
+        if (workflow) {
+          target = {
+            kind: 'workflow',
+            id: workflow.workflowId,
+            inputs: workflow.inputs ?? [],
+            outputs: workflow.outputs ?? []
+          };
+        }
+      }
+    } else if (node.pipelineId !== undefined) {
+      pipeline = byPipelineId.get(node.pipelineId) ?? null;
+      const cause = invalidPipelines.get(node.pipelineId);
+      if (!pipeline && cause !== undefined) {
+        errors.push(
+          error(definition, `nodes[${index}].pipelineId`, 'pipeline-invalid', `Pipeline '${node.pipelineId}' is invalid: ${cause}`)
+        );
+      } else if (!pipeline) {
+        errors.push(
+          error(definition, `nodes[${index}].pipelineId`, 'unknown-pipeline', `Pipeline '${node.pipelineId}' is not in the effective catalog`)
+        );
+      } else {
+        target = {
+          kind: 'pipeline',
+          id: pipeline.pipelineId,
+          inputs: pipeline.inputs,
+          outputs: pipeline.outputs
+        };
+      }
     }
-    // A duplicate nodeId is the field pass's defect; keep the first occurrence so the graph
-    // checks still run against a coherent node set.
+
     if (!resolved.has(node.nodeId)) {
-      resolved.set(node.nodeId, { node, index, pipeline });
+      resolved.set(node.nodeId, { node, index, pipeline, phase, workflow, target });
     }
   });
   return resolved;
@@ -153,11 +191,8 @@ function validateConnections(context: GraphContext): void {
     const from = readEndpoint(context, connection, index, 'from');
     const to = readEndpoint(context, connection, index, 'to');
     countDefault(context, connection, index, defaultsBySource);
-    if (!from || !to) {
-      // Type compatibility on an endpoint that does not resolve would be a cascade, not a defect.
-      return;
-    }
-    validatePortPair(context, connection, index, from.type, to.type);
+    if (!from || !to || from.type === null || to.type === null) return;
+    validatePortPair(context, `connections[${index}]`, connection.selection, from.type, to.type);
   });
 }
 
@@ -168,34 +203,33 @@ function readEndpoint(
   connection: WorkflowConnection,
   index: number,
   side: EndpointSide
-): { readonly type: PipelineOutputPortType | PipelineInputPortType } | null {
+): { readonly type: PipelineOutputPortType | PipelineInputPortType | null } | null {
   const endpoint = side === 'from' ? connection.from : connection.to;
   const field = `connections[${index}].${side}`;
+  if (side === 'to' && isReturnEndpoint(connection.to, context.nodes)) {
+    return { type: null };
+  }
   const resolved = context.nodes.get(endpoint.nodeId);
   if (!resolved) {
     context.errors.push(
-      error(
-        context.definition,
-        field,
-        'unresolved-endpoint',
-        `Connection names node '${endpoint.nodeId}', which this Workflow does not declare`
-      )
+      error(context.definition, field, 'unresolved-endpoint', `Connection names node '${endpoint.nodeId}', which this Workflow does not declare`)
     );
     return null;
   }
-  if (!resolved.pipeline) {
-    // The unknown/invalid Pipeline is already reported against the node.
-    return null;
-  }
-  const ports = side === 'from' ? resolved.pipeline.outputs : resolved.pipeline.inputs;
+  if (endpoint.portId === undefined) return { type: null };
+  if (!resolved.target) return null;
+  if (resolved.target.kind === 'phase') return { type: null };
+
+  const ports = side === 'from' ? resolved.target.outputs : resolved.target.inputs;
   const port = ports.find((entry) => entry.portId === endpoint.portId);
   if (!port) {
+    const kindLabel = resolved.target.kind === 'workflow' ? 'Workflow' : 'Pipeline';
     context.errors.push(
       error(
         context.definition,
         field,
         'unresolved-endpoint',
-        `Pipeline '${resolved.pipeline.pipelineId}' declares no ${side === 'from' ? 'output' : 'input'} port '${endpoint.portId}'`
+        `${kindLabel} '${resolved.target.id}' declares no ${side === 'from' ? 'output' : 'input'} port '${endpoint.portId}'`
       )
     );
     return null;
@@ -205,8 +239,8 @@ function readEndpoint(
 
 function validatePortPair(
   context: GraphContext,
-  connection: WorkflowConnection,
-  index: number,
+  fieldPrefix: string,
+  selection: WorkflowConnection['selection'],
   fromType: PipelineOutputPortType | PipelineInputPortType,
   toType: PipelineOutputPortType | PipelineInputPortType
 ): void {
@@ -215,24 +249,15 @@ function validatePortPair(
   const accepted = WORKFLOW_PORT_COMPATIBILITY[source] ?? [];
   if (!accepted.includes(target)) {
     context.errors.push(
-      error(
-        context.definition,
-        `connections[${index}]`,
-        'incompatible-port-types',
-        `Output type '${source}' is not accepted by input type '${target}'`
-      )
+      error(context.definition, fieldPrefix, 'incompatible-port-types', `Output type '${source}' is not accepted by input type '${target}'`)
     );
     return;
   }
-  if (
-    COLLECTION_OUTPUT_TYPES.has(source) &&
-    !COLLECTION_INPUT_TYPES.has(target) &&
-    connection.selection === undefined
-  ) {
+  if (COLLECTION_OUTPUT_TYPES.has(source) && !COLLECTION_INPUT_TYPES.has(target) && selection === undefined) {
     context.errors.push(
       error(
         context.definition,
-        `connections[${index}].selection`,
+        `${fieldPrefix}.selection`,
         'selection-rule-required',
         `A '${source}' source feeding a single-valued '${target}' target requires a selection rule`
       )
@@ -246,9 +271,7 @@ function countDefault(
   index: number,
   seen: Set<string>
 ): void {
-  if (connection.isDefault !== true) {
-    return;
-  }
+  if (connection.isDefault !== true) return;
   if (seen.has(connection.from.nodeId)) {
     context.errors.push(
       error(
@@ -263,10 +286,10 @@ function countDefault(
   seen.add(connection.from.nodeId);
 }
 
-/** FR-010a: an input port accepts one producer, so two connections into it is a defect. */
 function validateDuplicateInputBindings(context: GraphContext): void {
   const groups = new Map<string, number[]>();
   context.definition.connections.forEach((connection, index) => {
+    if (connection.to.portId === undefined || isReturnEndpoint(connection.to, context.nodes)) return;
     const key = `${connection.to.nodeId}.${connection.to.portId}`;
     const existing = groups.get(key);
     if (existing) {
@@ -277,29 +300,48 @@ function validateDuplicateInputBindings(context: GraphContext): void {
   });
 
   for (const [key, indices] of groups) {
-    if (indices.length < 2) {
-      continue;
-    }
+    if (indices.length < 2) continue;
     context.errors.push(
       error(
         context.definition,
-        `connections[${indices[0]}].to`,
+        `connections[${indices.at(0) ?? 0}].to`,
         'duplicate-input-binding',
         `Input port '${key}' is bound by connections ${indices.join(', ')}`
       )
     );
   }
+
+  const bindingGroups = new Map<string, number[]>();
+  (context.definition.bindings ?? []).forEach((binding, index) => {
+    if (binding.kind !== 'input') return;
+    const key = `${binding.nodeId}.${binding.inputKey}`;
+    const existing = bindingGroups.get(key);
+    if (existing) {
+      existing.push(index);
+      return;
+    }
+    bindingGroups.set(key, [index]);
+  });
+
+  for (const [key, indices] of bindingGroups) {
+    if (indices.length < 2) continue;
+    context.errors.push(
+      error(
+        context.definition,
+        `bindings[${indices.at(0) ?? 0}].inputKey`,
+        'duplicate-input-binding',
+        `Input '${key}' is bound by bindings ${indices.join(', ')}`
+      )
+    );
+  }
 }
 
-/** @returns true when the graph is acyclic, which is the precondition for ancestry. */
 function validateCycles(context: GraphContext): boolean {
   const nodeIds = [...context.nodes.keys()];
   const { residual } = topologicalOrder(nodeIds, context.edges);
-  if (residual.length === 0) {
-    return true;
-  }
+  if (residual.length === 0) return true;
   for (const component of stronglyConnectedComponents(residual, context.edges)) {
-    const anchor = context.nodes.get(component[0]);
+    const anchor = context.nodes.get(component.at(0) ?? '');
     context.errors.push(
       error(
         context.definition,
@@ -312,18 +354,12 @@ function validateCycles(context: GraphContext): boolean {
   return false;
 }
 
-function validateReachability(context: GraphContext): void {
+function validateReachability(context: GraphContext, acyclic: boolean): void {
   const starts = context.definition.startNodeIds.filter((nodeId) => context.nodes.has(nodeId));
-  if (starts.length === 0) {
-    // An empty or entirely unresolvable start set is `invalid-start-set` from the field pass;
-    // calling every node unreachable on top of it would bury the real defect.
-    return;
-  }
+  if (starts.length === 0) return;
   const reached = reachableFrom(starts, context.edges);
   for (const resolved of context.nodes.values()) {
-    if (reached.has(resolved.node.nodeId)) {
-      continue;
-    }
+    if (reached.has(resolved.node.nodeId)) continue;
     context.errors.push(
       error(
         context.definition,
@@ -333,38 +369,34 @@ function validateReachability(context: GraphContext): void {
       )
     );
   }
+
+  if (!acyclic) return;
+  const explicitReturns = context.definition.connections.filter((c) => isReturnEndpoint(c.to, context.nodes));
+  if (explicitReturns.length > 0) {
+    const anyReachableReturn = explicitReturns.some((c) => reached.has(c.from.nodeId));
+    if (!anyReachableReturn) {
+      context.errors.push(
+        error(context.definition, 'connections', 'unreachable-return', 'No return transition is reachable from any allowed start node')
+      );
+    }
+  }
 }
 
-/**
- * Condition validation (FR-020 – FR-024). No parser, no evaluator, no sandbox: a condition is
- * structured data, so the checks below are shape and catalog lookups.
- *
- * `acyclic` is the pass's single ordering dependency (research R11). Ancestry is undefined while
- * a cycle exists, so the FR-023 scope check is skipped rather than guessed — every other
- * condition check is graph-independent and still runs.
- */
 function validateConditions(context: GraphContext, acyclic: boolean): void {
   const scopes = acyclic ? conditionScopes(context) : null;
   context.definition.connections.forEach((connection, index) => {
     const condition = connection.condition;
-    if (condition === undefined) {
-      return;
-    }
+    if (condition === undefined) return;
     const field = `connections[${index}].condition`;
     const shapeDefect = conditionShapeDefect(condition);
     if (shapeDefect) {
-      // Shape rejection precedes content inspection (FR-021).
       context.errors.push(error(context.definition, field, 'unsupported-condition', shapeDefect));
       return;
     }
-    // The new rule runs only when the right-operand check found nothing, so a condition that check
-    // already refuses keeps its defect and gains no second one (FR-026).
     if (!validateRightOperand(context, condition, field)) {
       const fixed = fixedOutcomeDefect(condition);
       if (fixed !== null) {
-        context.errors.push(
-          error(context.definition, field, 'condition-comparison-unsupported', fixed)
-        );
+        context.errors.push(error(context.definition, field, 'condition-comparison-unsupported', fixed));
       }
     }
     if (validateLeftOperand(context, condition, field)) {
@@ -373,7 +405,6 @@ function validateConditions(context: GraphContext, acyclic: boolean): void {
   });
 }
 
-/** `anc[v] ∪ {v}`: the branching node's own result exists when its outgoing branch is chosen. */
 function conditionScopes(context: GraphContext): ReadonlyMap<string, ReadonlySet<string>> {
   const { order } = topologicalOrder([...context.nodes.keys()], context.edges);
   const ancestors = ancestorSets(order, context.edges);
@@ -384,11 +415,6 @@ function conditionScopes(context: GraphContext): ReadonlyMap<string, ReadonlySet
   return scopes;
 }
 
-/**
- * Second-boundary shape guard. `validateWorkflowDefinition` rejects these shapes first, but a
- * caller that builds a `WorkflowDefinition` directly — the YAML exchange importers of
- * FR-R2-005 and FR-R2-006 will — must not be able to slip an expression string past this layer.
- */
 function conditionShapeDefect(condition: unknown): string | null {
   if (typeof condition !== 'object' || condition === null || Array.isArray(condition)) {
     return 'Condition must be structured data, not an expression';
@@ -418,7 +444,6 @@ function conditionShapeDefect(condition: unknown): string | null {
   return "Condition operand source must be 'node-output' or 'node-status'";
 }
 
-/** @returns true when the operand resolved, so the scope check is still worth performing. */
 function validateLeftOperand(
   context: GraphContext,
   condition: WorkflowCondition,
@@ -436,22 +461,18 @@ function validateLeftOperand(
     );
     return false;
   }
-  if (condition.left.source === 'node-status') {
+  if (condition.left.source === 'node-status' || !resolved.target || resolved.target.kind === 'phase') {
     return true;
   }
-  if (!resolved.pipeline) {
-    // The unknown or invalid Pipeline is already reported against the node. Ancestry does not
-    // depend on it, so the scope check below is still worth performing.
-    return true;
-  }
-  const structured = resolved.pipeline.outputs.some((port) => STRUCTURED_OUTPUT_TYPES.has(port.type));
+  const structured = resolved.target.outputs.some((port) => STRUCTURED_OUTPUT_TYPES.has(port.type));
   if (!structured) {
+    const kindLabel = resolved.target.kind === 'workflow' ? 'Workflow' : 'Pipeline';
     context.errors.push(
       error(
         context.definition,
         `${field}.left`,
         'condition-operand-unknown',
-        `Pipeline '${resolved.pipeline.pipelineId}' declares no structured output port to read a field from`
+        `${kindLabel} '${resolved.target.id}' declares no structured output port to read a field from`
       )
     );
     return false;
@@ -466,13 +487,9 @@ function validateOperandScope(
   field: string,
   scopes: ReadonlyMap<string, ReadonlySet<string>> | null
 ): void {
-  if (!scopes) {
-    return;
-  }
+  if (!scopes) return;
   const scope = scopes.get(connection.from.nodeId);
-  if (scope?.has(condition.left.nodeId)) {
-    return;
-  }
+  if (scope?.has(condition.left.nodeId)) return;
   context.errors.push(
     error(
       context.definition,
@@ -483,7 +500,6 @@ function validateOperandScope(
   );
 }
 
-/** @returns true when it reported a defect, so the caller does not add a second one for the same right. */
 function validateRightOperand(
   context: GraphContext,
   condition: WorkflowCondition,
@@ -492,18 +508,12 @@ function validateRightOperand(
   const right = condition.right;
   const defect = rightOperandDefect(condition.operator, right);
   if (defect) {
-    context.errors.push(
-      error(context.definition, `${field}.right`, 'condition-right-invalid', defect)
-    );
+    context.errors.push(error(context.definition, `${field}.right`, 'condition-right-invalid', defect));
     return true;
   }
-  if (condition.left.source !== 'node-status' || right === undefined) {
-    return false;
-  }
+  if (condition.left.source !== 'node-status' || right === undefined) return false;
   const values = Array.isArray(right) ? right : [right];
-  if (values.every((value) => isWorkflowNodeTerminalStatus(value))) {
-    return false;
-  }
+  if (values.every((value) => isWorkflowNodeTerminalStatus(value))) return false;
   context.errors.push(
     error(
       context.definition,
@@ -515,7 +525,6 @@ function validateRightOperand(
   return true;
 }
 
-/** The operators that order numbers. v1 operands are text, so none of them can ever hold. */
 const ORDERING_OPERATORS: ReadonlySet<string> = new Set([
   'greaterThan',
   'greaterThanOrEqual',
@@ -523,40 +532,15 @@ const ORDERING_OPERATORS: ReadonlySet<string> = new Set([
   'lessThanOrEqual'
 ]);
 
-/** What an operand is in v1, said once for every message of the rule below. */
 const TEXT_OPERANDS_NOTE =
   "Workflow conditions compare text in v1 (a node status or an output's location reference)";
 
-/** `number`, `boolean`, or null for text: the only thing a message says about a literal. */
 function nonTextKind(value: unknown): 'number' | 'boolean' | null {
   if (typeof value === 'number') return 'number';
   if (typeof value === 'boolean') return 'boolean';
   return null;
 }
 
-/**
- * FR-R4-F07 (FR-026, FR-028; contract C, C1, C3) -- a condition whose outcome v1 operand semantics fix in
- * advance, or null.
- *
- * Operands are text, and the evaluator compares only values of the same type (`compareValues`), with the
- * ordering operators needing numbers. So these can never match, and every Run through them took the
- * default route without saying so:
- *
- *   an ordering operator, whatever the literal;
- *   `equals` or `notEquals` with a number or boolean literal (a text operand differs in type, so
- *     `notEquals` is false as well as `equals`);
- *   `in` whose list holds a number or boolean member (that member can never match).
- *
- * Runs only after the shape guard and `validateRightOperand` find nothing, so an unknown operator keeps
- * `unsupported-condition`, a malformed `right` keeps `condition-right-invalid`, and for a node-status
- * operand this covers only an ordering operator against a status: the right-operand check already refuses
- * a status operand compared with anything but a terminal status.
- *
- * The message names the operator, a closed set, and the literal's type, and never an authored value. An
- * `in` list that also holds text can still match through it, so its message says the non-text member can
- * never match and does NOT say the default route would always be taken (FR-028). The evaluator is not
- * touched: this is a structured check, not an expression language (hard rule 40).
- */
 function fixedOutcomeDefect(condition: WorkflowCondition): string | null {
   const { operator, right } = condition;
   if (ORDERING_OPERATORS.has(operator)) {
@@ -591,6 +575,251 @@ function rightOperandDefect(operator: string, right: unknown): string | null {
 
 function isLiteral(value: unknown): boolean {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+}
+
+function validateBindingsAndOutputs(context: GraphContext, acyclic: boolean): void {
+  const { definition, nodes } = context;
+  const bindings = definition.bindings ?? [];
+  const declaredInputs = new Map((definition.inputs ?? []).map((p) => [p.portId, p]));
+  const declaredOutputs = new Map((definition.outputs ?? []).map((p) => [p.portId, p]));
+
+  const ancestors = acyclic
+    ? ancestorSets(topologicalOrder([...nodes.keys()], context.edges).order, context.edges)
+    : null;
+
+  const boundChildInputs = new Set<string>();
+  for (const conn of definition.connections) {
+    if (conn.to.portId !== undefined && !isReturnEndpoint(conn.to, nodes)) {
+      boundChildInputs.add(`${conn.to.nodeId}.${conn.to.portId}`);
+    }
+  }
+
+  bindings.forEach((binding, index) => {
+    const field = `bindings[${index}]`;
+    const targetNode = nodes.get(binding.nodeId);
+    if (!targetNode) {
+      context.errors.push(
+        error(definition, `${field}.nodeId`, 'unresolved-endpoint', `Binding names node '${binding.nodeId}', which this Workflow does not declare`)
+      );
+      return;
+    }
+
+    if (binding.kind === 'input') {
+      validateInputBinding(context, binding, index, targetNode, declaredInputs, ancestors, boundChildInputs);
+    } else {
+      validateOutputBinding(context, binding, index, targetNode, declaredOutputs);
+    }
+  });
+
+  for (const resolved of nodes.values()) {
+    if (resolved.target?.kind !== 'workflow') continue;
+    for (const inputPort of resolved.target.inputs) {
+      if (inputPort.required === false) continue;
+      if (!boundChildInputs.has(`${resolved.node.nodeId}.${inputPort.portId}`)) {
+        context.errors.push(
+          error(
+            definition,
+            `nodes[${resolved.index}].workflowId`,
+            'missing-required-input',
+            `Child Workflow '${resolved.target.id}' on node '${resolved.node.nodeId}' requires input port '${inputPort.portId}'`
+          )
+        );
+      }
+    }
+  }
+
+  if (acyclic && (definition.outputs ?? []).length > 0) {
+    validateRequiredOutputsOnBranches(context);
+  }
+}
+
+function validateInputBinding(
+  context: GraphContext,
+  binding: WorkflowInputBinding,
+  index: number,
+  targetNode: ResolvedNode,
+  declaredInputs: ReadonlyMap<string, WorkflowInputPort>,
+  ancestors: ReadonlyMap<string, ReadonlySet<string>> | null,
+  boundChildInputs: Set<string>
+): void {
+  const field = `bindings[${index}]`;
+  boundChildInputs.add(`${binding.nodeId}.${binding.inputKey}`);
+
+  let targetType: PipelineInputPortType | undefined = binding.type;
+  if (targetNode.target && targetNode.target.kind !== 'phase') {
+    const targetPort = targetNode.target.inputs.find((p) => p.portId === binding.inputKey);
+    if (!targetPort) {
+      const kindLabel = targetNode.target.kind === 'workflow' ? 'Workflow' : 'Pipeline';
+      context.errors.push(
+        error(context.definition, `${field}.inputKey`, 'unresolved-endpoint', `${kindLabel} '${targetNode.target.id}' declares no input port '${binding.inputKey}'`)
+      );
+      return;
+    }
+    targetType = targetPort.type;
+  }
+
+  if (binding.source.from === 'workflow-input') {
+    const wfInput = declaredInputs.get(binding.source.portId);
+    if (!wfInput) {
+      context.errors.push(
+        error(context.definition, `${field}.source.portId`, 'unresolved-endpoint', `Workflow '${context.definition.workflowId}' declares no input port '${binding.source.portId}'`)
+      );
+      return;
+    }
+    if (targetType !== undefined && wfInput.type !== targetType) {
+      if (COLLECTION_INPUT_TYPES.has(wfInput.type) && !COLLECTION_INPUT_TYPES.has(targetType)) {
+        if (binding.selection === undefined) {
+          context.errors.push(
+            error(context.definition, `${field}.selection`, 'selection-rule-required', `A '${wfInput.type}' workflow input feeding a single-valued '${targetType}' target requires a selection rule`)
+          );
+        }
+      } else {
+        context.errors.push(
+          error(context.definition, field, 'incompatible-port-types', `Workflow input type '${wfInput.type}' is not accepted by input type '${targetType}'`)
+        );
+      }
+    }
+    return;
+  }
+
+  const sourceNode = context.nodes.get(binding.source.nodeId);
+  if (!sourceNode) {
+    context.errors.push(
+      error(context.definition, `${field}.source.nodeId`, 'unresolved-endpoint', `Binding source names node '${binding.source.nodeId}', which this Workflow does not declare`)
+    );
+    return;
+  }
+
+  if (ancestors !== null) {
+    const nodeAncestors = ancestors.get(binding.nodeId);
+    if (!nodeAncestors?.has(binding.source.nodeId)) {
+      context.errors.push(
+        error(context.definition, `${field}.source.nodeId`, 'binding-source-not-ancestor', `Binding source node '${binding.source.nodeId}' is not a guaranteed execution ancestor of '${binding.nodeId}'`)
+      );
+    }
+  }
+
+  if (sourceNode.target && sourceNode.target.kind !== 'phase') {
+    const sourcePort = sourceNode.target.outputs.find((p) => p.portId === binding.source.portId);
+    if (!sourcePort) {
+      const kindLabel = sourceNode.target.kind === 'workflow' ? 'Workflow' : 'Pipeline';
+      context.errors.push(
+        error(context.definition, `${field}.source.portId`, 'unresolved-endpoint', `${kindLabel} '${sourceNode.target.id}' declares no output port '${binding.source.portId}'`)
+      );
+      return;
+    }
+    if (targetType !== undefined) {
+      validatePortPair(context, field, binding.selection, sourcePort.type, targetType);
+    }
+  }
+}
+
+function validateOutputBinding(
+  context: GraphContext,
+  binding: WorkflowOutputBinding,
+  index: number,
+  sourceNode: ResolvedNode,
+  declaredOutputs: ReadonlyMap<string, WorkflowOutputPort>
+): void {
+  const field = `bindings[${index}]`;
+  const declared = declaredOutputs.get(binding.portId);
+  if ((context.definition.outputs ?? []).length > 0 && !declared) {
+    context.errors.push(
+      error(context.definition, `${field}.portId`, 'unresolved-endpoint', `Workflow '${context.definition.workflowId}' declares no output port '${binding.portId}'`)
+    );
+    return;
+  }
+
+  if (sourceNode.target && sourceNode.target.kind !== 'phase') {
+    const sourcePortId = binding.sourcePortId ?? binding.outputKey ?? binding.portId;
+    const sourcePort = sourceNode.target.outputs.find((p) => p.portId === sourcePortId);
+    if (!sourcePort) {
+      const kindLabel = sourceNode.target.kind === 'workflow' ? 'Workflow' : 'Pipeline';
+      context.errors.push(
+        error(context.definition, `${field}.portId`, 'unresolved-endpoint', `${kindLabel} '${sourceNode.target.id}' declares no output port '${sourcePortId}'`)
+      );
+      return;
+    }
+    if (declared && sourcePort.type !== declared.type) {
+      context.errors.push(
+        error(context.definition, field, 'incompatible-port-types', `Node output type '${sourcePort.type}' does not match declared Workflow output type '${declared.type}'`)
+      );
+    }
+  } else if (declared && binding.type !== undefined && binding.type !== declared.type) {
+    context.errors.push(
+      error(context.definition, field, 'incompatible-port-types', `Binding output type '${binding.type}' does not match declared Workflow output type '${declared.type}'`)
+    );
+  }
+}
+
+function validateRequiredOutputsOnBranches(context: GraphContext): void {
+  const { definition, nodes } = context;
+  const outputs = definition.outputs ?? [];
+  if (outputs.length === 0) return;
+
+  const starts = definition.startNodeIds.filter((id) => nodes.has(id));
+  if (starts.length === 0) return;
+
+  const outgoingByNode = new Map<string, string[]>();
+  const returnSources = new Set<string>();
+  for (const nodeId of nodes.keys()) {
+    outgoingByNode.set(nodeId, []);
+  }
+  for (const conn of definition.connections) {
+    if (!nodes.has(conn.from.nodeId)) continue;
+    if (isReturnEndpoint(conn.to, nodes)) {
+      returnSources.add(conn.from.nodeId);
+    } else if (nodes.has(conn.to.nodeId)) {
+      outgoingByNode.get(conn.from.nodeId)?.push(conn.to.nodeId);
+    }
+  }
+
+  const paths: ReadonlySet<string>[] = [];
+  function walk(nodeId: string, visited: Set<string>): void {
+    const nextVisited = new Set(visited);
+    nextVisited.add(nodeId);
+    const nextNodes = outgoingByNode.get(nodeId) ?? [];
+    if (returnSources.has(nodeId) || nextNodes.length === 0) {
+      paths.push(nextVisited);
+    }
+    for (const nextId of nextNodes) {
+      if (!nextVisited.has(nextId)) {
+        walk(nextId, nextVisited);
+      }
+    }
+  }
+  for (const startId of starts) {
+    walk(startId, new Set());
+  }
+
+  if (paths.length === 0) return;
+
+  const producersByOutput = new Map<string, Set<string>>();
+  for (const binding of definition.bindings ?? []) {
+    if (binding.kind !== 'output' || !nodes.has(binding.nodeId)) continue;
+    const set = producersByOutput.get(binding.portId) ?? new Set<string>();
+    set.add(binding.nodeId);
+    producersByOutput.set(binding.portId, set);
+  }
+
+  outputs.forEach((output, outIndex) => {
+    if (output.required === false) return;
+    const producers = producersByOutput.get(output.portId);
+    const coveredOnEveryBranch =
+      producers !== undefined &&
+      producers.size > 0 &&
+      paths.every((path) => [...producers].some((producerId) => path.has(producerId)));
+    if (!coveredOnEveryBranch) {
+      context.errors.push(
+        error(
+          definition,
+          `outputs[${outIndex}].portId`,
+          'missing-required-output-on-branch',
+          `Required Workflow output '${output.portId}' is not produced on every reachable return branch`
+        )
+      );
+    }
+  });
 }
 
 function error(

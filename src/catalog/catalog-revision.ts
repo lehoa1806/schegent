@@ -55,13 +55,15 @@ export function revisionForKind(manifest: CatalogManifest, kind: CatalogKind, di
   return digest.sha256(text);
 }
 
+const REVISION_KINDS: readonly CatalogKind[] = [...CATALOG_KINDS, 'pipeline'];
+
 /** One revision per kind — the shape the save contract carries after the scope collapse (FR-044). */
 export function revisionsOf(
   manifest: CatalogManifest,
   digest: Digest
 ): Readonly<Record<CatalogKind, string>> {
   const revisions = {} as Record<CatalogKind, string>;
-  for (const kind of CATALOG_KINDS) {
+  for (const kind of REVISION_KINDS) {
     revisions[kind] = revisionForKind(manifest, kind, digest);
   }
   return revisions;

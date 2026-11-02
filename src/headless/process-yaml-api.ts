@@ -223,7 +223,7 @@ export function undispatchedKinds(plan: ImportPlan, dispatched: ReadonlySet<stri
 }
 
 /** The layer key each catalog kind reports under. */
-const LAYER_KEY_OF: Readonly<Record<PackageLayer['kind'], ImportLayerKey>> = {
+const LAYER_KEY_OF: Readonly<Record<PackageLayer['kind'] | 'pipeline', ImportLayerKey>> = {
   phase: 'phases',
   pipeline: 'pipelines',
   workflow: 'workflows'
@@ -353,7 +353,7 @@ export async function importProcessDocument(
   }
   if (pipelines.length > 0 && pipelineRevision !== undefined) {
     layerRequest.push({
-      kind: 'pipeline',
+      kind: 'pipeline' as PackageLayer['kind'],
       expectedRevision: pipelineRevision,
       definitions: pipelines.map(({ definition }) => {
         const { pipelineId, phaseIds, ...declared } = definition;
