@@ -19,7 +19,10 @@ import {
 import { validatePhaseDefinition } from '../../../src/config/process-definition-validator';
 import { snapshotPhaseDef } from '../../../src/config/pipeline-snapshot';
 import { recordCapabilityDecision } from '../../../src/controller/capability-decision-recorder';
-import { isCapabilityRefusal } from '../../../src/services/capability-refusal';
+import {
+  CapabilityNotEnforceableError,
+  isCapabilityRefusal
+} from '../../../src/services/capability-refusal';
 import {
   enforceableCapabilities,
   planCapabilityEnforcement,
@@ -461,5 +464,19 @@ describe('FR-R4-F06 — the audit rows carry the enforcement class, the residual
       expect((error as { unqualified?: unknown }).unqualified).toEqual([]);
       expect((error as Error).name).toBe('CapabilityNotEnforceableError');
     }
+  });
+
+  it('words the unconfirmed-flag tail as a fact about the shipped help capture, not a check of the CLI', () => {
+    // The planner reads a static transcription of one help capture (`CONFIRMED_FLAGS`) and consults no
+    // installed CLI. A message that said "against the installed CLI" would blame an operator's CLI that
+    // may simply be newer than that capture. The short form "could not be confirmed" stays: the launcher
+    // sentence and the operator documentation use it.
+    const withTail = new CapabilityNotEnforceableError('claude', ['workspace-write'], ['workspace-write']);
+    expect(withTail.message).toContain('could not be confirmed');
+    expect(withTail.message).toContain('help capture');
+    expect(withTail.message).not.toMatch(/against the installed/i);
+    const withoutTail = new CapabilityNotEnforceableError('agy', ['network']);
+    expect(withoutTail.message).toContain('cannot enforce the declared capability set');
+    expect(withoutTail.message).not.toContain('could not be confirmed');
   });
 });

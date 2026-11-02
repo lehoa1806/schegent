@@ -142,6 +142,9 @@ describe('the host sentence for a capability outcome (T12)', () => {
       const sentence = describeCapabilityOutcome(unconfirmed, NAME) ?? '';
       expect(sentence).toMatch(/could not be confirmed/i);
       expect(sentence).toContain('workspace-write');
+      // By what: the planner consults no installed CLI at run time, only the capture it shipped with.
+      expect(sentence).toContain('help capture');
+      expect(sentence).not.toMatch(/against the installed/i);
     });
 
     it('lists every unenforceable capability', () => {
