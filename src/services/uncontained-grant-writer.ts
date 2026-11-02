@@ -109,6 +109,18 @@ function classify(kind: BackendRunnerKind): UncontainedEntryProblem | undefined 
 }
 
 /**
+ * FR-R4-F05 (FR-011; the brief's "never leak exception substrings to IPC") — what a
+ * `write-failed` outcome tells the operator. It read `errorMessage(error)` before, and
+ * the text of a profile fault names a path: it reached the consent modal's toast, where
+ * it is spliced into `ConsentWriteFailedError`'s sentence, and the Settings
+ * acknowledgement. The detail stays in the log line `setUncontainedGrant` writes, which
+ * the sanitizing logger redacts. No terminal punctuation: the sentence is spliced into
+ * another that supplies its own.
+ */
+export const GRANT_WRITE_FAILED_REASON =
+  'the host rejected the settings update (see the Schegent log for details)';
+
+/**
  * Add or remove exactly ONE backend id in the grant list, at application scope.
  *
  * `granted` is the state asked for, and the returned decision is the state that
@@ -155,15 +167,15 @@ export async function setUncontainedGrant(
   try {
     await deps.config.update(ALLOW_UNCONTAINED_SETTING, next, CONFIGURATION_TARGET_GLOBAL);
   } catch (error) {
-    // Via `errorMessage`, not a cast to Error: a host that rejects with a string or
-    // a plain object would otherwise put "undefined" in front of an operator who
-    // has to act on it.
-    const reason = errorMessage(error);
+    // The detail goes to the log through `errorMessage`, not a cast to Error: a host
+    // that rejects with a string or a plain object would otherwise write "undefined"
+    // where the operator who reads the log has to act on it. The outcome carries the
+    // fixed sentence and none of it.
     deps.logger.warn(
       `backend.uncontained-consent write-failed kind=${kind} granted=${granted} ` +
-        `setting=${ALLOW_UNCONTAINED_SETTING} reason=${reason}`
+        `setting=${ALLOW_UNCONTAINED_SETTING} reason=${errorMessage(error)}`
     );
-    return { decision: 'write-failed', reason };
+    return { decision: 'write-failed', reason: GRANT_WRITE_FAILED_REASON };
   }
 
   deps.logger.info(

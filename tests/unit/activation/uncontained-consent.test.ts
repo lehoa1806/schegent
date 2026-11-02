@@ -7,6 +7,7 @@ import {
   type UncontainedConsentConfig
 } from '../../../src/activation/uncontained-consent';
 import type { UncontainedRefusal } from '../../../src/controller/uncontained-consent-gate';
+import { GRANT_WRITE_FAILED_REASON } from '../../../src/services/uncontained-grant-writer';
 import {
   ALLOW_UNCONTAINED_SETTING,
   judgeBackendContainment
@@ -89,9 +90,10 @@ describe('createUncontainedConsentRequester (FR-R3-146, contract C1)', () => {
         answer: uncontainedConsentApproveLabel('claude'),
         writeRejects: new Error('profile is read-only')
       });
+      // FR-R4-F05 — the reason is the writer's fixed sentence, not the host's exception text.
       await expect(h.request(CLAUDE_REFUSAL)).resolves.toEqual({
         decision: 'write-failed',
-        reason: 'profile is read-only'
+        reason: GRANT_WRITE_FAILED_REASON
       });
     });
   });
