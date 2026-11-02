@@ -195,6 +195,13 @@ every capability flag below was listed by the CLI's own `--help`.
 withholds it on that backend is refused before it starts rather than run unbounded. It does not say the CLI
 has no mechanism the table could one day name; the capture looked for the flags the table names and no others.
 
+A Codex Phase that withholds `process-spawn` runs `--sandbox read-only` whatever else its set grants, because
+the strictest mode any withheld capability needs wins. `read-only` also blocks file writes, so a set that
+grants `workspace-write` or `outside-workspace-write` and withholds `process-spawn` runs without the write it
+granted. That is a stricter side effect, not a residual: it narrows authority rather than leaving something
+open, the host accepts the set rather than refusing it, and the launcher sentence says the sandbox "also
+blocks file writes".
+
 <!-- Source: src/services/capability-confirmed-flags.ts -->
 <!-- Source: src/services/capability-enforcement-plan.ts -->
 <!-- Source: scripts/capture-backend-help.mjs -->

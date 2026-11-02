@@ -29,7 +29,8 @@ const CLAUSES: Readonly<Record<CapabilityResidual, string>> = {
     "a granted shell can still write outside the workspace where the backend's own permission settings let it run",
   'unlisted-tools':
     'tools the restriction does not name, including tools from configured extensions or MCP servers, are not covered',
-  'sandboxed-commands-run': "model-run commands still execute, inside Codex's read-only sandbox",
+  'sandboxed-commands-run':
+    "model-run commands still execute, inside Codex's read-only sandbox, which also blocks file writes",
   'sandbox-scope-unqualified': "the scope of Agy's sandbox has not been qualified"
 };
 
