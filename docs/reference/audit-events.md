@@ -67,7 +67,7 @@ payload is closed: identifiers and a bounded classification, and no path, argume
 
 - `process-tree-unconfirmed` — payload `runner`, `pid`, `escalation`. A backend process group still answered after the ladder's SIGKILL. Absence of the event means the group was confirmed gone, not that no descendant survives.
 - `host-teardown-unconfirmed` — payload `runner`, `pid`, `result`, `boundMs`. Shutdown released ownership with a tree it could not answer for. `result` is `platform-unanswerable` (Windows: `taskkill` was sent and no tree can be confirmed) or `bound-elapsed` (the ladder had not settled when the 2,750 ms teardown bound elapsed). One row per such tree, written before the leases and window primacy are released. A tree with no Run writes nothing.
-- `run-resumed` — payload `queueId`, `runId`, `liveness`. A Run was resumed. `liveness` is the verdict that permitted it: `dead`, `unrecorded` or `unanswerable`.
+- `run-resumed` — payload `queueId`, `runId`, `liveness`. The activation sweep resumed a Run; a resume admitted by any other path writes no such row. `liveness` is the verdict that permitted it: `dead`, `unrecorded` or `unanswerable`.
 - `run-resume-declined-orphan-alive` — payload `queueId`, `runId`, `liveness`. A resume was declined, with outcome `failure`. `liveness` is `alive` (the recorded leader is still the same process) or `orphaned-group` (the leader has exited but a member of its process group still answers). Written on every declined attempt, by the activation sweep and by the admission guard every other resume path passes through.
 - `capability-applied` — payload `kind`, `granted`, `phaseIndex`, `ambientConfig`, `enforcement`, `residuals`. A Phase's declared capability set was enforced. `enforcement` is `none-withheld`, `tool-restriction` or `cli-sandbox`; `residuals` names what the restriction still leaves open (`shell-network`, `shell-workspace-write`, `shell-outside-workspace-write`, `unlisted-tools`, `sandboxed-commands-run`, `sandbox-scope-unqualified`), sorted, and empty when none. Outcome `success`.
 - `capability-refused` — payload `kind`, `unenforceable`, `unqualified`, `phaseIndex`. The backend cannot enforce the declared set, so the Phase did not start. `unqualified` is the subset of `unenforceable` whose flag the planner declares and no capture has confirmed the installed CLI lists. Outcome `failure`.
@@ -119,6 +119,10 @@ metadata: for example, `phase-end` turns file lists into created/modified/delete
 counts, and `cli-invocation` keeps runner, operation, permission mode, model and
 effort identifiers, continuation flags, and a diagnostics flag rather than the
 spawned command.
+
+Phase evidence fields come from model-authored audit blocks. When a structured CLI stream contains no
+model text, its raw-stream fallback supplies neither file-change counts nor authored metrics, even if
+tool output contains audit markers. Missing evidence remains absent rather than becoming measured zeros.
 
 Two classification fields are worth naming, because both are narrowed rather
 than passed through (feature 194):
@@ -272,8 +276,12 @@ or any process with sufficient filesystem access can still alter or delete local
 evidence — the chain makes that **evident, not impossible**, because the chain
 head sits on the same disk and an actor who can edit the log can recompute every
 later digest. What they cannot do is edit one entry and leave the rest
-consistent. There is no signature, and no anchor outside the workspace.
+consistent. There is no signature. A head checkpoint kept outside the workspace, in the
+extension's storage, lets verification report a history that is shorter than it was, or
+missing; it is a file the same OS user can edit, so it reduces undetected loss and does not
+show that a history is the original.
 <!-- Source: src/audit/audit-chain.ts -->
+<!-- Source: src/audit/audit-checkpoint.ts -->
 
 `audit-integrity-condition` is written only by the audit writer, never by a caller. Its payload
 carries a `condition` and a `conditionVersion`, which is `1` today. `damaged-tail` names a final line that
@@ -311,7 +319,8 @@ before renaming.
 
 The writer keeps at most ten recognized archives by default and gives archives
 a default maximum age of 90 days, with a hard seven-day minimum. Retention runs
-at writer construction and after rotation. It never prunes the active
+once at activation (after trust, in the window that owns the workspace) and
+after rotation. It never prunes the active
 `audit.log`, ignores unrelated siblings such as `audit.log.backup`, and treats
 pruning failures as best-effort runtime-log warnings.
 

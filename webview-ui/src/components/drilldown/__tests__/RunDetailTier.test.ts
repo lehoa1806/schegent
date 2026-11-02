@@ -978,7 +978,8 @@ describe('RunDetailTier — a finished Run does not name the terminal sentinel',
 // The three tabs were buttons with `role="tab"` and no keyboard contract: every tab was in the
 // Tab order, no arrow key moved between them, and no tab named the panel it controls. These
 // cases drive real key events and read `document.activeElement` and ARIA attributes. No mouse
-// event is fired once the tier is mounted, because the claim is that the keyboard alone works.
+// event is in the key sequence under test; a starting state is arranged by a click where the
+// case says so, and the real Enter or Space press on a button is a pending browser observation.
 describe('FR-R4-F08 K-T1 — arrow, Home and End keys move between the Run Detail tabs', () => {
   const TAB_ORDER = ['log', 'outputs', 'context'] as const;
   type TabName = (typeof TAB_ORDER)[number];

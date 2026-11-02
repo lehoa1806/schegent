@@ -89,7 +89,8 @@ const BASES: ReadonlyArray<{ name: string; phaseDef: PhaseDef }> = [
 async function runWith(
   stdout: string,
   phaseDef: PhaseDef,
-  overrides: Partial<RawInvocationOutput> = {}
+  overrides: Partial<RawInvocationOutput> = {},
+  entries: AuditEntry[] = []
 ): Promise<Awaited<ReturnType<PhaseRunner['run']>>> {
   const runner = new PhaseRunner(
     {
@@ -111,11 +112,15 @@ async function runWith(
     new PromptBuilder(),
     {
       append: vi.fn(
-        async (entry: Omit<AuditEntry, 'id' | 'timestamp'>): Promise<AuditEntry> => ({
-          id: 'audit-1',
-          timestamp: '2026-11-01T00:00:00Z',
-          ...entry
-        })
+        async (entry: Omit<AuditEntry, 'id' | 'timestamp'>): Promise<AuditEntry> => {
+          const recorded = {
+            id: 'audit-1',
+            timestamp: '2026-11-01T00:00:00Z',
+            ...entry
+          };
+          entries.push(recorded);
+          return recorded;
+        }
       )
     } as unknown as AuditLogWriter,
     new SanitizedLogger()
@@ -157,6 +162,22 @@ describe('FR-R4-004 / S-05 -- a no-block echo does not advance, per verdict basi
 
     expect(output.outcome).toBe('clean');
     expect(output.terminationReason).toBe('token');
+  });
+
+  it('does not turn a raw-stream fallback block into persisted Phase evidence', async () => {
+    const entries: AuditEntry[] = [];
+    const authored = [...block().slice(0, -1), 'quality: 17', CLOSE, TOKEN].join('\n');
+    const stdout = [toolUseFrame('read fixture'), authored].join('\n');
+    const output = await runWith(stdout, MODEL_TOKEN_BASIS, {}, entries);
+    expect(output.result.auditEntry).toBeNull();
+    const end = entries.find((entry) => entry.eventType === 'phase-end');
+    expect(end).toBeDefined();
+    expect(end!.payload).not.toHaveProperty('files_created');
+    // Control: model-authored output still supplies the same evidence fields.
+    entries.length = 0;
+    const control = await runWith(authored, MODEL_TOKEN_BASIS, {}, entries);
+    expect(control.result.auditEntry?.metrics).toEqual({ quality: 17 });
+    expect(entries.find((entry) => entry.eventType === 'phase-end')!.payload).toHaveProperty('files_created');
   });
 });
 

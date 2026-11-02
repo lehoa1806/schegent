@@ -32,7 +32,8 @@ export class CapabilityNotEnforceableError extends Error {
         `whose CLI can express the withheld capability.` +
         (unqualified.length === 0
           ? ''
-          : ` The flag for ${unqualified.join(', ')} could not be confirmed against the installed CLI.`)
+          : ` The flag for ${unqualified.join(', ')} could not be confirmed: the help capture this ` +
+            `extension ships with does not list it.`)
     );
     this.name = 'CapabilityNotEnforceableError';
   }

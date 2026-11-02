@@ -5,7 +5,9 @@ import { ack } from './handler-helpers';
 // Feature 020 T048 — stop a phase-log tail session. Gated, not serialized
 // (FR-R4-F05, FR-003): the registry emits a `phase-log-tail-stopped` audit row, so
 // a window that has lost primacy cannot stop its tail through this command. The
-// tail still ends when its panel is disposed (`activation/phase-log-tail-wiring.ts`).
+// tail still ends without it: when its task leaves in flight, when the next tail
+// starts (one runs at a time), or at extension teardown
+// (`activation/phase-log-tail-wiring.ts`). Closing the panel does not end it.
 export const handler: CommandHandler<StopPhaseLogTailCommand> = async (ctx, command) => {
   if (!ctx.deps.phaseLogTailService) {
     const failure: StopPhaseLogTailResponse = {

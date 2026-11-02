@@ -41,7 +41,9 @@ export const handler: CommandHandler<SetUncontainedBackendGrantCommand> = async 
       await ack(ctx, 'accepted', undefined, { decision: outcome.decision, kind });
       return;
     case 'write-failed':
-      await ack(ctx, 'rejected', 'write-failed', { kind, reason: outcome.reason });
+      // FR-R4-F05 (FR-011) — the code and the backend, and not `outcome.reason`: the writer's
+      // sentence is for the consent modal's toast, and the detail behind it is in the log.
+      await ack(ctx, 'rejected', 'write-failed', { kind });
       return;
     default:
       // `not-applicable`: the list does not govern this id — `codex` carries an

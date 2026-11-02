@@ -65,9 +65,9 @@ mechanism for every backend, failing in **both** directions.
 | `codex` | linux | Expected to be the same mode under Landlock/seccomp rather than Seatbelt | `codex-sandbox-workspace-write` | **Unverified.** Probe: run `codex exec --sandbox workspace-write` on a Linux host and attempt a write outside the workspace; the mode is qualified when the write is refused by the kernel. |
 | `codex` | win32 | Unknown | `codex-sandbox-workspace-write` | **Unverified.** Probe: as above on Windows. Codex's own help names Seatbelt, which is macOS-only, so the Windows mechanism is not merely unverified but **unnamed** — the strongest statement available today is that Schegent passes the flag and does not know what enforces it. |
 | `claude` | all | **None.** | `none` | **Verified, and it is a verified absence.** `claude --help` at 2.1.247 offers `--allowedTools`, `--disallowedTools`, `--permission-mode` and `--dangerously-skip-permissions`. Every one is a decision the model's own harness makes about its own tools. The only occurrence of the word is advisory — *"Recommended only for sandboxes with no internet access"* — the CLI asking to be **placed** in a sandbox it does not provide. |
-| `agy` | all | **None requested.** `--sandbox` exists; see §4. | `none` | **Verified that the flag exists; its enforcement is unverified.** See §4, which is the substantive part of this record. |
+| `agy` | all | **None requested by default.** `--sandbox` exists, and a Phase that withholds `process-spawn` gets it (§7), unqualified and not counted here; see §4. | `none` | **Verified that the flag exists; its enforcement is unverified.** See §4, which is the substantive part of this record. |
 
-## 4. Agy's `--sandbox`: available, not requested, and why
+## 4. Agy's `--sandbox`: available, not requested by default, and why
 
 **This contradicts the item that filed the work.** `FR-R3-125` §1 states *"Codex has
 `workspace-write`; the default backend has nothing equivalent"*, and
@@ -77,10 +77,15 @@ declares:
     --sandbox    Run in a sandbox with terminal restrictions enabled
 
 So one of the two backends this product calls uncontained **does** expose a native containment mode,
-and Schegent does not request it. That is the finding; recording it is more important than acting on
-it, and it is recorded here rather than folded into a code comment nobody would find.
+and Schegent does not request it by default. That is the finding; recording it is more important than
+acting on it, and it is recorded here rather than folded into a code comment nobody would find.
 
-**It is not requested, and the reasons are in descending order of weight.**
+The one case where it is requested is a Phase's own: when a Phase withholds `process-spawn`, the
+capability planner passes `--sandbox` (§7). That is a restriction the Phase asked for, with its scope
+unqualified (`sandbox-scope-unqualified`), not a containment claim, so the mechanism above stays
+`none`.
+
+**It is not requested by default, and the reasons are in descending order of weight.**
 
 1. **Its enforcement is unverified, and the phrase points the wrong way.** "Terminal restrictions" is
    consistent with a restriction the agent applies to its own shell tool — which is exactly what
@@ -194,6 +199,13 @@ every capability flag below was listed by the CLI's own `--help`.
 `unsupported` here is about the planner's table: it declares no flag for the capability, so a Phase that
 withholds it on that backend is refused before it starts rather than run unbounded. It does not say the CLI
 has no mechanism the table could one day name; the capture looked for the flags the table names and no others.
+
+A Codex Phase that withholds `process-spawn` runs `--sandbox read-only` whatever else its set grants, because
+the strictest mode any withheld capability needs wins. `read-only` also blocks file writes, so a set that
+grants `workspace-write` or `outside-workspace-write` and withholds `process-spawn` runs without the write it
+granted. That is a stricter side effect, not a residual: it narrows authority rather than leaving something
+open, the host accepts the set rather than refusing it, and the launcher sentence says the sandbox "also
+blocks file writes".
 
 <!-- Source: src/services/capability-confirmed-flags.ts -->
 <!-- Source: src/services/capability-enforcement-plan.ts -->

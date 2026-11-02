@@ -30,6 +30,7 @@ import {
   type ManifestSettingScope,
   type SettingScope
 } from './general-settings-keys';
+import { reportWriteFailure, type SettingsWriteFailure } from './general-settings-failure';
 import {
   checkArrayElements,
   checkType,
@@ -99,8 +100,11 @@ interface WrittenValueSnapshot {
  *   - `out-of-range:<key>` — integer outside the declared `[min, max]` range
  *   - `write-failed:<key>` — underlying `config.update()` rejected
  *   - `clear-failed:<key>` — clear via `config.update(key, undefined)` rejected
- *   - `rollback-failed:<key>:after:<reason>:<detail>` — a write failed and
- *     the compensating rollback for a previously-written key also failed
+ *   - `rollback-failed:<key>:after:<reason>` — a write failed and the
+ *     compensating rollback for a previously-written key also failed
+ *
+ * FR-R4-F05 — no reason carries exception text (a settings-file fault names a
+ * path): the detail goes to `hooks.onWriteFailure`, the host's sanitizing logger.
  */
 /**
  * Optional callback fired AFTER a successful write that touched either
@@ -111,6 +115,8 @@ interface WrittenValueSnapshot {
  */
 export interface WriteGeneralSettingsHooks {
   readonly onRuntimeLogSettingChanged?: () => void;
+  /** FR-R4-F05 — each rejected `config.update` with its exception: the one place the detail survives. */
+  readonly onWriteFailure?: (failure: SettingsWriteFailure) => void;
 }
 
 // Feature 056 Track 9 (T060) — runtimeLogMaxBytes / runtimeLogMaxGenerations
@@ -165,7 +171,8 @@ async function rollbackWrittenSettings(
   config: GeneralSettingsConfig,
   snapshots: ReadonlyMap<string, WrittenValueSnapshot>,
   writtenKeys: readonly string[],
-  primaryReason: string
+  primaryReason: string,
+  hooks: WriteGeneralSettingsHooks | undefined
 ): Promise<string | null> {
   for (const key of [...writtenKeys].reverse()) {
     const snapshot = snapshots.get(key);
@@ -173,8 +180,8 @@ async function rollbackWrittenSettings(
     try {
       await restoreWrittenValue(config, key as AllowedKey, snapshot);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : 'unknown';
-      return `rollback-failed:${key}:after:${primaryReason}:${detail}`;
+      reportWriteFailure(hooks?.onWriteFailure, { key, stage: 'rollback', error: err });
+      return `rollback-failed:${key}:after:${primaryReason}`;
     }
   }
   return null;
@@ -237,13 +244,14 @@ export async function writeGeneralSettings(
       }
       writtenKeys.push(key);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : 'unknown';
-      const primaryReason = isClear ? `clear-failed:${key}` : `write-failed:${key}:${detail}`;
+      reportWriteFailure(hooks?.onWriteFailure, { key, stage: isClear ? 'clear' : 'write', error: err });
+      const primaryReason = isClear ? `clear-failed:${key}` : `write-failed:${key}`;
       const rollbackReason = await rollbackWrittenSettings(
         config,
         snapshots,
         writtenKeys,
-        primaryReason
+        primaryReason,
+        hooks
       );
       return { ok: false, reason: rollbackReason ?? primaryReason };
     }

@@ -38,7 +38,11 @@ const CLAUSES = {
     "a granted shell can still write outside the workspace where the backend's own permission settings let it run",
   'unlisted-tools':
     'tools the restriction does not name, including tools from configured extensions or MCP servers, are not covered',
-  'sandboxed-commands-run': "model-run commands still execute, inside Codex's read-only sandbox",
+  // FR-R4-F06 (FR-012; research R14, R15) -- read-only is the strictest Codex mode and it also blocks file
+  // writes, so a set that grants a write and withholds process-spawn runs without the write it granted.
+  // The clause says so, because the sentence is the only place an operator at the launcher would see it.
+  'sandboxed-commands-run':
+    "model-run commands still execute, inside Codex's read-only sandbox, which also blocks file writes",
   'sandbox-scope-unqualified': "the scope of Agy's sandbox has not been qualified"
 } as const;
 
@@ -138,6 +142,9 @@ describe('the host sentence for a capability outcome (T12)', () => {
       const sentence = describeCapabilityOutcome(unconfirmed, NAME) ?? '';
       expect(sentence).toMatch(/could not be confirmed/i);
       expect(sentence).toContain('workspace-write');
+      // By what: the planner consults no installed CLI at run time, only the capture it shipped with.
+      expect(sentence).toContain('help capture');
+      expect(sentence).not.toMatch(/against the installed/i);
     });
 
     it('lists every unenforceable capability', () => {

@@ -79,8 +79,9 @@ export type LivenessVerdict = 'alive' | 'dead' | 'unrecorded' | 'unanswerable' |
  * answer would strand Runs exactly where the mechanism is weakest — Windows, where
  * `detached` is already false and the job-object gap is a stated permanent limit — and a
  * mechanism whose failure mode is "nothing ever resumes here" would be turned off. The audit
- * trail records which verdict applied, so an operator can see that the check could not
- * answer rather than inferring it from a resume that looks ordinary.
+ * trail records which verdict applied wherever the activation sweep decides, so an operator can
+ * see that the check could not answer rather than inferring it from a resume that looks
+ * ordinary. The admission guard writes a row only when it declines; a resume it admits has none.
  *
  * `orphaned-group` is excluded deliberately, and for the opposite reason: here the platform
  * CAN answer, and the answer is that something the previous Run started is still alive.

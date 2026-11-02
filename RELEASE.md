@@ -157,8 +157,11 @@ them where it is.
 
 Commit the version and release-note changes before attesting the gate: the attestation names a
 commit and refuses a dirty tree, so an uncommitted version bump cannot be part of what was verified.
-The repository has no release-preparation script and no automated version bump.
+`npm run release` (`scripts/prepare-release.mjs`, section 3) prepares the candidate from a committed
+tree, but it only reads the version it finds in `package.json` and refuses one that is not a release
+version; it never writes it. The version bump and the release notes stay hand edits.
 <!-- Source: package.json -->
+<!-- Source: scripts/prepare-release.mjs -->
 <!-- Source: docs/release/actions-terminal-record.md -->
 
 ## 2. Run the attested gate
@@ -218,7 +221,7 @@ npm run release          # refuses unless a recorded PASS names HEAD over a clea
 
 `gate:record` **spawns** the gate and records the exit code it observed, at the commit, on the platform, with the tree confirmed clean before and after. The writer sits outside the thing the record vouches for, so it cannot record a pass it did not see — a gate step that wrote its own attestation would prove only that the step ran. A red run is recorded too, so a failure leaves anti-evidence instead of leaving an older commit's pass as the newest record anyone finds.
 
-`release` runs the check and then prepares the candidate (§3). The check refuses, naming which of **eight** causes applies, when: the tree is dirty, no record exists, the record is at a superseded schema version, its version is absent or unparseable, it records a different command, its recorded argument vector does not witness the command it names, it names another commit, it says the tree was dirty when the gate ran, or it records a failing gate. The record is untracked — it describes one machine's observation of one tree, and a committed one would travel to a clone that never earned it.
+`release` runs the check and then prepares the candidate (§3). The check refuses, naming which of **ten** causes applies, when: the tree is dirty, no record exists, the record is at a superseded schema version, its version is absent or unparseable, it records a different command, its recorded argument vector does not witness the command it names, it names another commit, it says the tree was dirty when the gate ran, it records a failing gate, or its observation (the declared Node, the workspace envelope, and each tree's lockfile and install state) is missing or malformed. Only a missing or malformed observation refuses; no value in a complete one does, so a Node that differs from the pinned one, an absent envelope and an install difference are carried into the release record, not refused. The record is untracked — it describes one machine's observation of one tree, and a committed one would travel to a clone that never earned it.
 
 **The command name was not evidence, and FR-R3-135 is why this section says so.** `GATE_COMMAND`
 moved from `npm run ci` to `npm run gate` when `FR-R3-100` widened the perimeter, and the exact-string
@@ -250,14 +253,21 @@ Two things changed as a result:
   space, which reads correctly and runs nothing of the kind. A strong name over a weak vector is
   now a refusal rather than a pass.
 
-The attestation schema is therefore at **version 2**, and every version-1 record is refused **by
-version rather than by name**, whatever its label says. Not as a precaution against an
+The attestation schema therefore went to **version 2** with this item, and every version-1 record is
+refused **by version rather than by name**, whatever its label says. Not as a precaution against an
 indistinguishable minority — it is the exact set: the label `npm run gate` and the wrong vector
 arrived in the same commit and never coexisted with a correct one, so a version-1 record naming
 `npm run gate` is necessarily a record of a `ci` run. Version-1 records naming `npm run ci` are
 honest records of `ci`, and those the `wrong-command` refusal already rejects by name. The remedy is
 one gate run. The rename is what made FR-R3-100's widening retroactive; the version is what makes
 this one retroactive.
+
+**The current version is 3.** `FR-R4-F09` raised it to add four fields that say what was observed:
+`nodeDeclared` and `nodeMatchesDeclared` (the Node the repository declares, and whether the Node that
+ran is it), `envelope` (whether the workspace envelope was present) and `trees` (each dependency
+tree's lockfile and install state), written by `scripts/gate-observation.mjs`. A version-2 record is
+refused by version for the opposite reason to a version-1 one: it is honest and says too little. The
+remedy is again one gate run, not an upgrade of the old record.
 
 ### 2b. The second binding: backend qualification (FR-R3-104)
 

@@ -128,9 +128,13 @@ const listRefsFromGit: RefLister = () => {
 
 /**
  * Reads the workflow directory, or `null` when it is absent or holds no
- * workflow file. An absent directory is an environment shape — a sparse
- * checkout or a source export — not a defect this gate can substantiate;
- * `scripts/check-workflow-pins.mjs` already fails loudly on it.
+ * workflow file. An absent directory is the settled state of this repository
+ * (the workflows were retired by FR-R3-099, and `install-flag-parity.test.ts`
+ * asserts they stay gone) and the shape of a sparse checkout or a source
+ * export; it is not a defect this gate can substantiate. Nothing else fails on
+ * it either: `scripts/check-workflow-pins.mjs` exits 0 on an absent directory.
+ * So a test that needs the live tree states a skip when this returns `null`,
+ * and the tests that need no tree run regardless.
  */
 function listWorkflowFiles(): readonly string[] | null {
   if (!existsSync(WORKFLOW_DIR)) return null;
@@ -372,6 +376,12 @@ function loadTree(): {
   return { entries, triggers };
 }
 
+/**
+ * The stated reason a test that needs the live workflow tree gives when there is none (FR-012).
+ * Written to stderr beside a skip, never beside a pass.
+ */
+const NO_WORKFLOW_TREE_NOTE = `workflow-trigger-branches: skipped — no workflow directory to read (${WORKFLOW_DIR})`;
+
 describe('workflow trigger branches (FR-R3-020, OPS-N1)', () => {
   const tree = loadTree();
 
@@ -380,10 +390,7 @@ describe('workflow trigger branches (FR-R3-020, OPS-N1)', () => {
       // FR-012: a stated skip, not a pass. Reporting "passed" for a gate that
       // never ran is the exact ambiguity this feature exists to remove, so the
       // reason goes to stderr and the result reads as skipped.
-      console.warn(
-        'workflow-trigger-branches: skipped — no workflow directory to read ' +
-          `(${WORKFLOW_DIR})`
-      );
+      console.warn(NO_WORKFLOW_TREE_NOTE);
       context.skip();
       return;
     }
@@ -403,9 +410,16 @@ describe('workflow trigger branches (FR-R3-020, OPS-N1)', () => {
   });
 
   it('resolves every trigger branch entry to an existing ref', (context) => {
+    // Each cause states its own reason. One message for both said "no git, no .git,
+    // or no refs" in a checkout that has all three and only lacks the workflows.
+    if (tree === null) {
+      console.warn(NO_WORKFLOW_TREE_NOTE);
+      context.skip();
+      return;
+    }
     const refNames = listRefsFromGit();
-    if (tree === null || refNames === null) {
-      // FR-012 / SC-005: ref resolution unavailable, or no workflow directory.
+    if (refNames === null) {
+      // FR-012 / SC-005: ref resolution unavailable.
       console.warn(
         'workflow-trigger-branches: skipped — ref resolution unavailable in this ' +
           'environment (no git, no .git, or no refs)'
@@ -422,14 +436,23 @@ describe('workflow trigger branches (FR-R3-020, OPS-N1)', () => {
     ).toEqual([]);
   });
 
-  it('only resolves branches: entries, never branches-ignore: or tags:', () => {
-    if (tree === null) return;
+  it('contributes no branch entry from the workflow that filters on tags alone', (context) => {
+    if (tree === null) {
+      console.warn(NO_WORKFLOW_TREE_NOTE);
+      context.skip();
+      return;
+    }
 
     // `release.yml` filters on `tags: ['v*']`, which matches no branch. It must
     // contribute no entry, or this gate would report the release flow as broken.
     const releaseEntries = tree.entries.filter((entry) => entry.workflow === 'release.yml');
     expect(releaseEntries).toEqual([]);
+  });
 
+  // Runs with or without a workflow tree: the fixture below is the only coverage
+  // of `tags:`, `branches-ignore:` and a `branches:` key under another trigger,
+  // and a repository with no workflow directory must not lose it.
+  it('only resolves branches: entries, never branches-ignore: or tags:', () => {
     const fixture = [
       'name: fixture',
       'on:',
@@ -601,8 +624,12 @@ describe('workflow trigger branches (FR-R3-020, OPS-N1)', () => {
     expect(failures).toEqual([]);
   });
 
-  it('reaches every workflow by an event that can fire', () => {
-    if (tree === null) return;
+  it('reaches every workflow by an event that can fire', (context) => {
+    if (tree === null) {
+      console.warn(NO_WORKFLOW_TREE_NOTE);
+      context.skip();
+      return;
+    }
 
     const unreachable = tree.triggers
       .filter((entry) => !entry.events.some((event) => REACHABLE_EVENTS.has(event)))

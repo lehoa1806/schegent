@@ -16,7 +16,7 @@ and `tests/lint/qualification-matrix-shape.test.ts` reports it by name.
 
 | OS | Node | State | Command | Runtime | Commit | Outcome | Date | Prerequisite |
 |---|---|---|---|---|---|---|---|---|
-| macOS | 24 | observed | `npm run gate` | v24.21.0 | 97083a1b | exit 0 | 2026-10-22 | — |
+| macOS | 24 | observed | `npm run gate` | v24.19.0 | 5a8af6b0 | exit 0 | 2026-11-01 | — |
 | macOS | 22 | unobserved | — | — | — | — | — | a macOS machine running Node 22, then `npm run gate:record` on it |
 | Linux | 24 | unobserved | — | — | — | — | — | a Linux host running Node 24, then `npm run gate:record` on it |
 | Linux | 22 | unobserved | — | — | — | — | — | a Linux host running Node 22, then `npm run gate:record` on it |
@@ -25,16 +25,21 @@ and `tests/lint/qualification-matrix-shape.test.ts` reports it by name.
 
 ## What the one observed cell is, and is not
 
-The macOS / Node 24 cell quotes the newest gate record made on this machine: `npm run gate`,
-Node v24.21.0 on darwin/arm64, exit 0, recorded 2026-10-22 at commit `97083a1b`. That commit is
-**older than the commit a release is prepared at**, and it is named so that no reader takes the cell
-for an observation of the current tree. A newer record replaces it.
+The macOS / Node 24 cell quotes a version-3 gate record made on this machine: `npm run gate`,
+Node v24.19.0 on darwin/arm64, exit 0, recorded 2026-11-01 at commit `5a8af6b0`. The record states
+four more facts beside those five, and they are copied here because the record is one ignored,
+overwritable file (`.gate-attestation.json`) and the next `npm run gate:record` replaces it:
 
-Two limits come with it. The repository pins Node 24.19.0 in `.nvmrc`, and the record ran on
-v24.21.0; a gate record at version 3 states both beside each other and prints a difference, and a
-difference is carried, not refused. And the record was made before the version-3 fields existed, so
-it does not say whether the workspace envelope was present or what was installed; a release needs a
-newer record anyway.
+- **Pinned runtime.** The Node that ran, v24.19.0, is the Node the repository pins in `.nvmrc`
+  (24.19.0). The record states both and says they match.
+- **Clean tree.** The working tree was clean when the gate ran.
+- **Envelope.** The workspace envelope was present, so the gates that read it ran.
+- **Installs.** Both installed trees, the root and `webview-ui`, matched their lockfiles.
+
+That commit is **older than the commit a release is prepared at**, and it is named so that no reader
+takes the cell for an observation of the current tree. `npm run release` reads a record that names
+the commit it prepares and refuses a record about any other commit, so this cell never stands in for
+that record. A newer record replaces it.
 
 ## The Node 24 crash note
 
@@ -49,7 +54,11 @@ recorded run, the re-run is recorded as such, as that note instructs.
 
 1. On the platform and Node to be observed, run `npm run gate:record` at a clean commit.
 2. Copy `command`, `nodeVersion`, `head` (at least its first seven characters), `exitCode` and the
-   date of `recordedAt` into the cell. Do not copy a result from another platform.
+   date of `recordedAt` into the cell. Do not copy a result from another platform. Copy what the
+   record says about the pinned Node (`nodeMatchesDeclared`), the envelope and each tree's install
+   into the section "What the one observed cell is, and is not" on the same day, before any later
+   `npm run gate:record` overwrites the file. A difference in any of them is carried and printed, not
+   refused, so it is said beside the cell.
 3. A standalone clone records that the workspace envelope was absent. The gates that read the envelope
    skipped, and the cell is still an observation of what did run; say so beside it.
 4. Installing and running a release candidate is its own observation, recorded in

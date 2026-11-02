@@ -112,6 +112,40 @@ describe('sanitizeRecord removes a string leaf under a secret key (RD4)', () => 
 });
 
 /**
+ * RECORDED LIMIT (FR-R4-F10, audit gap G3) -- an array or an object directly under a key that names a
+ * secret is walked, and not replaced. Only a string leaf is replaced, so a string inside the container is
+ * judged by the key it sits under and by the string patterns, and a value in no format a pattern knows
+ * stays. The corpus records this as `a container under a secret-named key` and SECURITY.md says it under
+ * "What stays". The exposure is bounded the way the `unknown-format token` limit is: a vendor token inside
+ * the container is still removed by the pattern pass.
+ *
+ * It is pinned so that replacing the whole container, which changes the evidence shape at every sink, is a
+ * decision that has to edit the record with it, and not a change this file passes over.
+ */
+describe('sanitizeRecord walks a container under a secret key and does not replace it (recorded limit)', () => {
+  const CONTAINERS: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+    ['an array of strings', { token: [VALUE, 'plain'] }],
+    ['an object', { password: { current: VALUE } }],
+    ['an array of objects', { client_secret: [{ current: VALUE }] }]
+  ];
+
+  it.each(CONTAINERS)('keeps a string in a format no pattern knows in %s', (_shape, record) => {
+    expect(logger.sanitizeRecord(record)).toEqual(record);
+  });
+
+  it('removes the same string when it sits directly under the key, which is what makes the limit visible', () => {
+    expect(logger.sanitizeRecord({ token: VALUE })).toEqual({ token: REDACTION_SENTINEL });
+  });
+
+  it('still removes a vendor token inside the container, by pattern', () => {
+    const vendorToken = `${['gh', 'p_'].join('')}${'a1B2'.repeat(9)}`;
+    const cleaned = JSON.stringify(logger.sanitizeRecord({ token: [vendorToken] }));
+    expect(cleaned).toContain(REDACTION_SENTINEL);
+    expect(cleaned).not.toContain('a1B2a1B2');
+  });
+});
+
+/**
  * A transport line or an exported JSONL row is sanitized as TEXT, and a tool result there is a JSON
  * string holding JSON, so a keyed value is followed by `\"`. The value match must stop before that
  * backslash: removing it with the value unescapes the closing quote and the line no longer parses.

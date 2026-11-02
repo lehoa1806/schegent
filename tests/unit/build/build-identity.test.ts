@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
 
 /**
@@ -110,5 +112,53 @@ describe('readBuildIdentity', () => {
     const { readBuildIdentity } = await loadIdentity();
     const identity = readBuildIdentity({ readTreeState: clean, env: {} });
     expect(Object.keys(identity)).toEqual(['commit', 'dirty', 'mode']);
+  });
+});
+
+/**
+ * The host bundle reads the mode a second time.
+ *
+ * `readBuildIdentity` decides the mode that is stamped into the bundle, the module graphs, the SBOM
+ * and the release record, and the cases above pin that decision. The build configuration decides,
+ * by its own comparison, whether the host bundle is minified and keeps its source map. If the two
+ * disagree, a record names `production` for a bundle that was not minified, or the reverse.
+ * RELEASE.md and the system-config reference state the outcome: no repository script sets
+ * `NODE_ENV`, so the host bundle is not minified. These cases tie the three together by reading the
+ * configuration's own text and the package scripts, because the configuration runs a build when
+ * imported and cannot be loaded as a unit. The modules under the scripts directory are not scanned
+ * for an assignment.
+ */
+describe('the host bundle reads the same mode', () => {
+  const readFromRoot = (name: string) => readFileSync(resolve(__dirname, '..', '..', '..', name), 'utf8');
+  const MODE_COMPARISON = /^const isProduction = process\.env\.NODE_ENV === 'production';$/m;
+  const MINIFY_OPTION = /^\s*minify: isProduction,$/m;
+  const SOURCEMAP_OPTION = /^\s*sourcemap: !isProduction,$/m;
+
+  it('compares NODE_ENV with the string production, the comparison the identity makes', () => {
+    expect(readFromRoot('esbuild.config.mjs')).toMatch(MODE_COMPARISON);
+  });
+
+  it('minifies the host bundle and drops its source map exactly when that comparison holds', () => {
+    const config = readFromRoot('esbuild.config.mjs');
+    expect(config).toMatch(MINIFY_OPTION);
+    expect(config).toMatch(SOURCEMAP_OPTION);
+  });
+
+  it('is not given production by any package script, so the documented default holds', () => {
+    const parsed: unknown = JSON.parse(readFromRoot('package.json'));
+    const scripts = (parsed as { scripts: Record<string, string> }).scripts;
+    expect(Object.keys(scripts)).toContain('build:host');
+    const naming = Object.entries(scripts)
+      .filter(([, command]) => command.includes('NODE_ENV'))
+      .map(([name]) => name);
+    expect(naming).toEqual([]);
+  });
+
+  it('NON-VACUITY: a different comparison, a forced minify and a forced source map are each detected', () => {
+    expect("const isProduction = process.env.NODE_ENV !== 'development';").not.toMatch(MODE_COMPARISON);
+    expect("const isProduction = process.env.NODE_ENV == 'production';").not.toMatch(MODE_COMPARISON);
+    expect('  minify: true,').not.toMatch(MINIFY_OPTION);
+    expect('  sourcemap: true,').not.toMatch(SOURCEMAP_OPTION);
+    expect('  sourcemap: isProduction,').not.toMatch(SOURCEMAP_OPTION);
   });
 });

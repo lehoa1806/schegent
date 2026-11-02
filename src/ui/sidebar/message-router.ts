@@ -42,11 +42,20 @@ export const MUTATING_COMMANDS: ReadonlySet<string> = new Set(MUTATING_COMMAND_T
  *      gated or read-only, with a reason: an omitted entry is a `tsc` error. A
  *      command that starts a process, writes persisted state, writes a file or
  *      appends an audit row is `gated`; `readOnly`'s reason says why none applies.
- *   7. Add its row to `docs/reference/api-and-cli.md`
- *      (`tests/lint/webview-command-reference-parity.test.ts` fails without it).
- *   8. Add the webview helper in its family module; a component never imports the
+ *   7. Run `npm run contracts:generate` and review the diff. The generated contract
+ *      output is fed by `COMMAND_TYPES`, and `npm run contracts:check` fails until it is
+ *      regenerated (`docs/operations/contract-generation.md`).
+ *   8. If it is gated, add it to `PINNED_MUTATING_COMMANDS` and move the count that pin
+ *      states (`tests/unit/ui/sidebar/mutating-commands-pinned-list.test.ts`). The list
+ *      is hand-written on purpose: a command dropped from the gate must not vanish from
+ *      both sides at once.
+ *   9. Add its row to `docs/reference/api-and-cli.md`
+ *      (`tests/lint/webview-command-reference-parity.test.ts` fails without it), and
+ *      correct the counts that page states: the gated, read-only and total command
+ *      counts (`tests/lint/asserted-counts.test.ts`; fix the sentence, then `stated`).
+ *  10. Add the webview helper in its family module; a component never imports the
  *      CMD_ constant.
- *   9. Add the tests.
+ *  11. Add the tests.
  */
 export class MessageRouter {
   private readonly mutations: MutationCommandExecutor;
@@ -217,8 +226,8 @@ export class MessageRouter {
 /**
  * Feature 012 T050 — module-level helper so the MUTATING_COMMANDS
  * pinned-list regression test can assert each command is still gated
- * without instantiating a router. Mirrors the private method on
- * `MessageRouter` exactly.
+ * without instantiating a router. FR-R4-F05: the router itself no longer
+ * asks this question; `dispatch` reads `commandAuthorityOf`.
  */
 export function isMutatingCommand(type: string): boolean {
   return MUTATING_COMMANDS.has(type);

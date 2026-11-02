@@ -176,7 +176,11 @@ describe('a damaged final line is diagnosed, kept and continued past (SC-003)', 
   it.each([
     ['digest', (row: string): string => row.replace(/"digest":"[0-9a-f]{64}"/, `"digest":"${'0'.repeat(64)}"`)],
     ['length', (row: string): string => row.replace(/"byteLength":(\d+)/, (_m, n: string) => `"byteLength":${Number(n) + 1}`)],
-    ['link', (row: string): string => row.replace(/"prevDigest":"[0-9a-f]{64}"/, `"prevDigest":"${'1'.repeat(64)}"`)]
+    ['link', (row: string): string => row.replace(/"prevDigest":"[0-9a-f]{64}"/, `"prevDigest":"${'1'.repeat(64)}"`)],
+    // A row written by a later release names a version this one does not know; a row for another
+    // condition is not the diagnosis of a damaged tail. Neither may excuse the line before it.
+    ['condition version', (row: string): string => row.replace(/"conditionVersion":\d+/, '"conditionVersion":2')],
+    ['condition', (row: string): string => row.replace(/"condition":"damaged-tail"/, '"condition":"damaged-head"')]
   ])('calls a damage row with a wrong %s malformed', async (_name, edit) => {
     await seed(1);
     await fs.appendFile(logFile(), TORN_JSON);

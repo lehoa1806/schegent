@@ -22,8 +22,8 @@
 // for its kind, so pass 2 gates on what pass 1 returned.
 //
 // **Nothing here deletes anything, on any path** (FR-038). Whichever prefix landed
-// stays written and is reported (FR-037); recovery is a re-run of the same document,
-// which plans the written rows as skips (FR-039).
+// stays written and is reported (FR-037). A re-run of the same document plans the
+// written rows as skips, drafts included (FR-039), so a draft is published by hand.
 
 import type {
   CandidateDefinition,

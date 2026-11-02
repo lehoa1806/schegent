@@ -24,7 +24,7 @@ drifted again.
 
 | Store | Location | Content | Bounds | Swept by | Live protection | On delete | On export | Derived from |
 |---|---|---|---|---|---|---|---|---|
-| Structured audit log | `.schegent/audit.log`, `.schegent/audit.log.<stamp>` | metadata, redacted | rotates at 5 MiB or 30 days (age measured from the generation's oldest usable row), whichever comes first; at most 10 archives are kept, each at most 90 days; each payload is truncated above 32 KiB | rotation | the live log is never pruned; only rotated archives are, and each prune is recorded as a cut | kept | included whole (shared) | `AUDIT_ROTATION_DEFAULT_SIZE_BYTES / AUDIT_ROTATION_DEFAULT_AGE_MS / AUDIT_ARCHIVE_DEFAULT_MAX_COUNT / AUDIT_ARCHIVE_DEFAULT_MAX_AGE_MS in src/audit/audit-log-writer.ts; AUDIT_PAYLOAD_MAX_BYTES in src/audit/audit-payload.ts` |
+| Structured audit log | `.schegent/audit.log`, `.schegent/audit.log.<stamp>` | metadata, redacted | rotates at 5 MiB or 30 days (age measured from the generation's oldest usable row), whichever comes first; at most 10 archives are kept, each at most 90 days; each payload is truncated above 32 KiB | rotation, activation | the live log is never pruned; only rotated archives are, and each prune is recorded as a cut | kept | included whole (shared) | `AUDIT_ROTATION_DEFAULT_SIZE_BYTES / AUDIT_ROTATION_DEFAULT_AGE_MS / AUDIT_ARCHIVE_DEFAULT_MAX_COUNT / AUDIT_ARCHIVE_DEFAULT_MAX_AGE_MS in src/audit/audit-log-writer.ts; AUDIT_PAYLOAD_MAX_BYTES in src/audit/audit-payload.ts` |
 | Audit cuts | `.schegent/audit.log.cuts` | metadata, redacted | one small record appended each time an archive is pruned, so the chain verifier can tell a prune from a deletion; no bound of its own | none | append-only; the writer never rewrites it | kept | included whole (shared) | `AUDIT_CUTS_BASENAME in src/audit/audit-chain.ts` |
 | Audit head checkpoint | `<globalStorage>/audit-checkpoints/<key>.json` | metadata, redacted | one small file per workspace location, holding a digest, a position and times only; never pruned, and retired only by the reset command; a moved folder leaves its old file behind | none | replaced in place by the window that owns the workspace | kept | n/a | `checkpointKey in src/audit/audit-checkpoint.ts; the store in src/audit/audit-checkpoint-store.ts` |
 | Audit generation sidecar | `.schegent/audit-generation.json` | state, redacted | one small file recording when the live audit generation was first observed, used to age a generation whose rows carry no usable time; no bound of its own | rotation | keyed by the live generation, so a rotation starts a fresh record | kept | n/a | `AUDIT_GENERATION_SIDECAR_NAME in src/audit/audit-generation-sidecar.ts` |
@@ -49,6 +49,10 @@ drifted again.
 
 The 90-second stall threshold is a constant (`MONITOR_STALL_THRESHOLD_MS`), not a setting: a Run that has been silent that long is reported as stalled, and no setting changes it.
 
+Run-owned runtime messages include structured `runId` and `phase` context, including backend invocation,
+teardown and monitor audit failures. Diagnostics bundles use that context to select the requested Run's
+lines. Window-wide messages remain unattributed; older lines without context cannot be assigned to a Run.
+
 ## Older audit rows, and when a sweep runs
 
 **Older audit generations can hold content.** Before this release the audit log could carry stream content
@@ -64,9 +68,14 @@ they are not rewritten. A pseudonym is still linkable metadata: it ties every ro
 one workspace together, and `Schegent: Reset Operator Pseudonym` changes only the rows written after it.
 
 **An age bound and the time a sweep runs are different things.** An age says when evidence becomes eligible
-for removal. Removal itself happens when something looks: when the host starts, when a Run ends, when a
-retention setting changes, and once an hour in an idle window that owns the workspace. Evidence can
-therefore outlive its age by up to an hour in an open window, and by as long as the host stays closed.
+for removal. Removal itself happens when something looks, and what looks differs by store: the "Swept by"
+column above names it. The host looks when it starts, when a Run ends, when a retention setting changes,
+and once an hour in an idle window that owns the workspace, but the hourly look reaches only the session
+groups (raw transcripts and diagnostic trees), the failure records and the CLI transport. The rotated
+audit archives (also pruned when the log rotates), the private recovery checkpoints and the history
+descriptions are looked at when the host starts, and not again while it stays open. Evidence the hourly
+look reaches can therefore outlive its age by up to an hour in an open window; the rest, for as long as
+the host stays open; and all of it, for as long as the host stays closed.
 Audit files, current and archived, are owner-only (`0600`).
 
 ## The one artifact that is deliberately unredacted

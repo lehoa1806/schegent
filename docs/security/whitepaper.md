@@ -100,7 +100,7 @@ Environment forwarding defaults to `allowlist`, which includes bootstrap variabl
 
 ## Evidence boundary
 
-`SanitizedLogger` owns one `SECRET_PATTERNS` set for operator-visible logs. The structured audit writer emits schema-v3 JSONL, and host code appends through one writer and rotates by configured size/age. The write path is a convention; the tamper evidence is separate and real. Since FR-R3-112 each entry carries the previous entry's sha256 digest, so an alteration that does not recompute every later digest is named by `npm run audit:verify`. It is evident, not impossible: there is no signature and no anchor outside the workspace, the chain head sits on the same disk, and an operator or backend process that can alter the file can recompute the digests that follow — what it cannot do is change one entry and leave the rest consistent. The live append path is still not passed through the canonical-path oracle before `fs.appendFile`.
+`SanitizedLogger` owns one `SECRET_PATTERNS` set for operator-visible logs. The structured audit writer emits schema-v3 JSONL, and host code appends through one writer and rotates by configured size/age. The write path is a convention; the tamper evidence is separate and real. Since FR-R3-112 each entry carries the previous entry's sha256 digest, so an alteration that does not recompute every later digest is named by `npm run audit:verify`. It is evident, not impossible: there is no signature, the chain head sits on the same disk, and an operator or backend process that can alter the file can recompute the digests that follow — what it cannot do is change one entry and leave the rest consistent. A head checkpoint kept outside the workspace lets verification report a history that is shorter than it was, or missing; it is a file the same OS user can edit, so it reduces undetected loss and does not show that a history is the original. The live append path is still not passed through the canonical-path oracle before `fs.appendFile`.
 
 <!-- Source: src/lib/logger.ts -->
 <!-- Source: src/audit/audit-log-writer.ts -->
@@ -120,7 +120,7 @@ Recovery checkpoints are another sensitive surface outside session retention. Th
 <!-- Source: src/services/run-checkpoint-service.ts -->
 <!-- Source: src/services/run-checkpoint-retention.ts -->
 
-Two workspace-local stores also deserve separate treatment. `.schegent/cli-transport.log` passes through the shared sanitizer but deliberately retains paths from backend output. `.schegent/history/<runId>.txt` stores a full sanitized Task description at mode `0600`; pattern redaction does not make arbitrary operator prose non-sensitive.
+Two workspace-local stores also deserve separate treatment. The CLI transport is a per-Run file, `.schegent/sessions/<runId>/transport.log` (an earlier release's shared `.schegent/cli-transport.log` is legacy and no longer written); it is best-effort secret-pattern redacted and otherwise holds the CLI's stream lines as sent, paths from backend output included. `.schegent/history/<runId>.txt` stores a full sanitized Task description at mode `0600`; pattern redaction does not make arbitrary operator prose non-sensitive.
 
 <!-- Source: src/monitor/cli-transport-sink.ts -->
 <!-- Source: src/services/history/history-description-store.ts -->

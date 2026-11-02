@@ -21,7 +21,7 @@ enforcement point; what changed is the granularity of the grant.
 Two records were added beside this one and neither is paraphrased here:
 [Backend containment qualification](backend-containment-qualification.md) states what OS-enforced
 containment is actually available per backend and platform (including that `agy` exposes a
-`--sandbox` flag Schegent does not request, and why), and
+`--sandbox` flag Schegent does not request by default, and why), and
 [Running Schegent on a repository you do not trust](../operations/untrusted-repositories.md) owns the
 untrusted-repository rule.
 
@@ -38,7 +38,7 @@ H-01 of the 2026-08-23 principal architecture review — its largest strategic f
 | backend | argv | OS-enforced bound |
 |---|---|---|
 | `claude` (**the default**) | `--dangerously-skip-permissions` | none |
-| `agy` | `--dangerously-skip-permissions` | none — and `FR-R3-125` found the CLI has a `--sandbox` flag Schegent does not request; see [the qualification record](backend-containment-qualification.md) §4 |
+| `agy` | `--dangerously-skip-permissions` | none — and `FR-R3-125` found the CLI has a `--sandbox` flag Schegent does not request by default (a Phase that withholds `process-spawn` gets it); see [the qualification record](backend-containment-qualification.md) §4 |
 | `codex` | `exec --json --sandbox workspace-write` | filesystem, `.git` read-only |
 
 `schegent.backend.runner` defaults to `claude`. So a fresh install's default run path reaches

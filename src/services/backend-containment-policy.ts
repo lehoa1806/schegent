@@ -66,7 +66,8 @@ export type BackendContainmentMechanism =
  * AGY IS `none` AND IT EXPOSES `--sandbox`. This is FR-R3-125's finding and it
  * contradicts the item that filed it: `agy 1.1.22` carries
  * `--sandbox` — "Run in a sandbox with terminal restrictions enabled" — and
- * Schegent does not request it. It is classified `none` anyway, deliberately:
+ * Schegent does not request it by default; the planner adds it only when a Phase
+ * withholds `process-spawn`. It is classified `none` anyway, deliberately:
  * this project's definition of contained is that the OPERATING SYSTEM, not a
  * prompt, decides what the process can reach, and "terminal restrictions" is
  * consistent with a tool-level gate — which is what `claude --disallowedTools`
@@ -81,7 +82,7 @@ const MECHANISM_BY_BACKEND: ReadonlyMap<BackendRunnerKind, BackendContainmentMec
 >([
   // `--dangerously-skip-permissions`: approval prompts off, no filesystem bound.
   ['claude', 'none'],
-  // As above; `--sandbox` exists and is not requested. See the docblock.
+  // As above; `--sandbox` exists and is not requested by default. See the docblock.
   ['agy', 'none'],
   ['codex', 'codex-sandbox-workspace-write']
 ]);

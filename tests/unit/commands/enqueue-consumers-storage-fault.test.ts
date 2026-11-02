@@ -14,7 +14,7 @@
 // canary in the notifier's calls checks it never appears as free text in a toast.
 
 import { describe, expect, it, vi } from 'vitest';
-import { runAuto } from '../../../src/commands/auto';
+import { AUTO_FAILED_TOAST, runAuto } from '../../../src/commands/auto';
 import { runEnqueue } from '../../../src/commands/enqueue';
 import { runRerunFromHistory } from '../../../src/commands/rerun-from-history';
 import { runRetryActiveRun } from '../../../src/commands/retry-active-run';
@@ -183,5 +183,64 @@ describe('enqueue consumers handle failed-storage (T14)', () => {
     } finally {
       await removeWorkspaceRoot(root);
     }
+  });
+});
+
+// FR-R4-F05 (FR-014; contract F, F6; contract O, O5) — `schegent.auto`'s generic arm.
+//
+// It used to toast `Schegent: ${message}` and log the bare message, so a path in an
+// exception thrown below the launch service reached the operator's screen. The toast is
+// fixed text now and the detail goes to the log through `describeFailure`. The outcomes
+// the service returns as codes are the switch above this arm and are untouched.
+describe('schegent.auto — the unexpected-failure arm (FR-R4-F05)', () => {
+  const PATH = '/synthetic/home/user-252/queue.json';
+
+  /** A command whose launch service rejects with `thrown`, and the spies that watch it. */
+  function failingWith(thrown: unknown) {
+    const n = notifier();
+    const logger = new SanitizedLogger();
+    const errorLog = vi.spyOn(logger, 'error');
+    const ctx = {
+      guardedRunService: { scheduleOrEnqueue: vi.fn().mockRejectedValueOnce(thrown) },
+      store: { getQueue: vi.fn(), getQueueRegistry: vi.fn() } as never,
+      audit: null,
+      notifier: n as never,
+      logger
+    };
+    return { ctx, n, errorLog };
+  }
+
+  const ARGS = { description: 'a feature', queueId: 'default' };
+
+  it('toasts the fixed text and logs the detail when an Error carries a path', async () => {
+    const { ctx, n, errorLog } = failingWith(new Error(`queue write failed at ${PATH}`));
+
+    await runAuto(ARGS, ctx);
+
+    expect(n.error).toHaveBeenCalledTimes(1);
+    expect(n.error).toHaveBeenCalledWith(AUTO_FAILED_TOAST);
+    expect(everyToast(n)).not.toContain('user-252');
+    expect(errorLog).toHaveBeenCalledWith(
+      'auto: unexpected failure',
+      expect.objectContaining({ error: expect.stringContaining('user-252') })
+    );
+  });
+
+  it('toasts the fixed text for a thrown null and logs a bounded description of it', async () => {
+    const { ctx, n, errorLog } = failingWith(null);
+
+    await runAuto(ARGS, ctx);
+
+    expect(n.error).toHaveBeenCalledWith(AUTO_FAILED_TOAST);
+    expect(errorLog).toHaveBeenCalledWith(
+      'auto: unexpected failure',
+      expect.objectContaining({ error: 'null thrown' })
+    );
+  });
+
+  it('words the toast without an exception, a path or a code', () => {
+    expect(AUTO_FAILED_TOAST).toBe(
+      'Schegent: the task could not be queued. See the Schegent log for details.'
+    );
   });
 });

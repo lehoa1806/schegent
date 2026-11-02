@@ -8,9 +8,10 @@
 // staged mode or the hook. A claim in prose is not checked by anything, so this gate holds the words to the
 // code. For the four documents that carry the "sanitized" wording, no line may use the word unless the
 // same line says `secret-pattern`, and each replacement phrase must be present. For `SECURITY.md`, the
-// scanner's section must name every family the matrix plants and every shape it records as unsupported
-// (read from the matrix, so a new family cannot ship undocumented), the activation command, the bypass,
-// the limits of the hook, and the one sentence that says an exported process definition is not redacted.
+// scanner's section must name every family the matrix plants, every shape it records as unsupported and every
+// family it records as not detected (read from the matrix, so a new family cannot ship undocumented), the
+// activation command, the bypass, the limits of the hook, the number of cases the redaction corpus lists
+// (read from the corpus), and the one sentence that says an exported process definition is not redacted.
 //
 // Non-vacuity: the line check is run over an in-memory copy with a planted `Sanitized records` line, and
 // must flag it; and it reports how many lines it read, so a path that stopped resolving cannot pass quietly.
@@ -19,7 +20,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { PLANTED, UNSUPPORTED } from '../fixtures/secret-scan-corpus';
+import { REDACTION_CASES } from '../fixtures/redaction-corpus';
+import { DROPPED, PLANTED, UNSUPPORTED } from '../fixtures/secret-scan-corpus';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -101,12 +103,27 @@ describe('credential-wording: SECURITY.md names the scanner families, the limits
     expect(missing, 'unsupported shapes the scanner section does not name').toEqual([]);
   });
 
+  it('names every dropped family, from the matrix', () => {
+    expect(DROPPED.length).toBeGreaterThanOrEqual(1);
+    const lowered = section.toLowerCase();
+    const missing = DROPPED.map((dropped) => dropped.family).filter((family) => !lowered.includes(family));
+    expect(missing, 'families the matrix records as not detected that the scanner section does not name').toEqual([]);
+  });
+
+  it('states the size of the redaction corpus it points at, as the corpus has it', () => {
+    const [, listed = ''] = /lists (\d+) synthetic cases/.exec(section) ?? [];
+    expect(Number(listed), 'the runtime subsection says the corpus lists a different number of cases than it does').toBe(
+      REDACTION_CASES.length
+    );
+  });
+
   it.each([
     'git config core.hooksPath scripts/hooks',
     '--no-verify',
     'conflict-free merge',
     'history',
-    'best-effort secret-pattern redaction'
+    'best-effort secret-pattern redaction',
+    'under a key that names a secret is not replaced as a whole'
   ])('says %s', (phrase) => {
     expect(section, `the scanner section and the runtime subsection do not say "${phrase}"`).toContain(phrase);
   });

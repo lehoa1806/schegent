@@ -843,9 +843,9 @@ the location it tried to write.
 | [`ProcessExportButton.svelte`](src/components/ProcessImport/ProcessExportButton.svelte) | The per-Phase Export control and its disabled reason |
 | [`WorkflowToolbar.svelte`](src/components/PipelineBuilderEditors/WorkflowToolbar.svelte) | The Workflow Export control **and its three-mode inclusion list** |
 | [`ModelCatalogEditor.svelte`](src/components/PipelineBuilderEditors/ModelCatalogEditor.svelte) | The Model Catalog's own Export control — unconditional, since a Model Catalog document always resolves, even an empty one (FR-007) |
-| [`ProcessImportPreflight.svelte`](src/components/ProcessImport/ProcessImportPreflight.svelte) | The import flow shell and the ordered commit, branching to `runModelCatalogImportCommit` for a Model Catalog plan |
+| [`ProcessImportPreflight.svelte`](src/components/ProcessImport/ProcessImportPreflight.svelte) | The import flow shell and the one-request package commit, branching to `runModelCatalogImportCommit` for a Model Catalog plan |
 | [`ProcessImportPlanTable.svelte`](src/components/ProcessImport/ProcessImportPlanTable.svelte) / [`ProcessImportResultsTable.svelte`](src/components/ProcessImport/ProcessImportResultsTable.svelte) | Plan rows before the confirm, result rows after it — a Model Catalog row's fields (`backend`, `modelId`) replace the shared `resourceId`/`name` shape |
-| [`process-import-state.ts`](src/components/ProcessImport/process-import-state.ts) | Pure projection — row labels, reason lines, `confirmBlockedReason`, `commitOutcome`, and the ordered-write sequencer; `modelCatalogImportRows`, `isModelCatalogPlan`, and `runModelCatalogImportCommit` are the Model Catalog's structurally separate, single-write counterparts |
+| [`process-import-state.ts`](src/components/ProcessImport/process-import-state.ts) | Pure projection — row labels, reason lines, `confirmBlockedReason`, `commitOutcome`, and `buildImportPackage`/`runImportCommit` (the one package request and its per-layer result); `modelCatalogImportRows`, `isModelCatalogPlan`, and `runModelCatalogImportCommit` are the Model Catalog's structurally separate, single-write counterparts |
 | [`save-models.ts`](src/lib/save-models.ts) | `saveModelsImport` — the Model Catalog's own `CMD_SAVE_MODELS` call site for a confirmed import; kept apart from the pre-existing `saveModels` manual add/remove path rather than widening that function's signature |
 | [`process-exchange-entry.ts`](src/components/ProcessImport/process-exchange-entry.ts) | The three preconditions a manager must decide before offering the controls |
 
@@ -853,10 +853,10 @@ the location it tried to write.
 Phase/Pipeline/Workflow rows in the same plan (FR-015), so it does not fit the
 three-arm/three-vocabulary shape described next: there is no inclusion-depth
 choice on export (`ModelCatalogEditor.svelte`'s button always produces the
-whole catalog, every backend, as one document) and no ordered multi-layer
-commit on import — a confirmed Model Catalog plan writes once, through
+whole catalog, every backend, as one document) and no multi-layer package on
+import — a confirmed Model Catalog plan writes once, through
 `saveModelsImport` (`save-models.ts`), never through the
-`buildImportWrites`/`runImportCommit` sequencer the rest of this section
+`buildImportPackage`/`runImportCommit` path the rest of this section
 describes. See
 [Inspect an import](../docs/operations/process-yaml.md#inspect-an-import) for the
 plan-row outcomes.
@@ -897,20 +897,26 @@ Every identifier in those lines is the host's already-sanitized, already-bounded
 value and is never re-bounded — a second cap would disagree with the first and
 truncate an id the operator has to find in the catalog.
 
-**The commit is up to three ordered writes, not one.** A package commits through
-the existing `savePhases` → `savePipelines` → `saveWorkflows` helpers, in that
-order, each carrying its own `expectedRevision` and its own single
-`import-package` intent naming that layer's target set. The order is fixed by
-dependency: a Pipeline's bindings are only satisfiable once its Phases are
-effective, and a Workflow's nodes only resolve once its Pipelines are. Import adds
-**no** mutating IPC command — it reuses the three catalog saves, so it inherits
-their revision-before-trust ordering and their intent algebra unchanged.
+**The commit is one package request, not several writes.** A confirmed package
+commits through `runImportCommit`: `buildImportPackage` yields one request with a
+layer per kind that has `import` rows (Phase, Pipeline, Workflow), each layer
+carrying the `expectedRevision` its plan was computed against, and
+`publishDefinitionPackage` (`CMD_PUBLISH_PACKAGE`) sends it once. The host
+validates the whole document before it writes anything, then drafts the layers and
+publishes them in dependency order — a Pipeline's bindings are only satisfiable
+once its Phases are effective, and a Workflow's nodes only resolve once its
+Pipelines are (feature 254). Import adds **no** mutating IPC command of its own,
+so it inherits the package publish's revision-before-trust ordering unchanged, and
+what the operator sees is that one acknowledgement read layer by layer
+(`layerResultsOf`).
 
-The sequencer stops at the first non-accepted ack and **never compensates with a
-delete**: whichever prefix landed stays written, and the outcome is reported as
-`partial` rather than repaired. Re-running the same document is the recovery path
-— the host's presence scan turns the already-written rows into `skip` rows, so the
-retry is self-healing at whatever depth it stopped.
+The host **never compensates with a delete**: whichever prefix landed stays
+written, and the outcome is reported as `partial` rather than repaired. The
+recovery is two steps, because a package publish publishes only what its own
+operation wrote and the next preflight counts a draft as present: publish any draft
+the import left from the Builder, then inspect the same document again. Rows
+already in the catalog, drafts included, plan as `skip`, so the second import
+writes only what is still missing.
 
 ### New built-in pipeline: `speckit-bugfix` (spec 026)
 

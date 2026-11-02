@@ -1004,7 +1004,15 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // docblocks). The key is this store's: it is a memento value, and every memento key is declared and
       // accounted for here (`reset-covers-every-key.test.ts` holds the partition). The attribution
       // logic itself lives in `src/lib/operator-attribution.ts`.
-      highWaterMark: 3379
+      //
+      // Feature 255 (FR-R4-F08, 2026-11-01) — 3379 → 3390, +11, by this gate's count. The close audit
+      // found `getConnectedRuns()` writing its dropped-record WARN on every read; the composer reads it on
+      // every compose, so the log-sink-kicks-projector loop ran there too (6,000 composes in 600 idle
+      // seconds, F-T9 in `tests/unit/ui/sidebar/projection-feedback.test.ts`). The fix is the rule
+      // `gitPlanGrantProblemsWarned` already applies: one field with its note (two), the compare in the
+      // getter (four) and the paragraph that says why (five). The field and the getter are this store's,
+      // so the change cannot move; the warning's decision is the set of dropped ids, nothing larger.
+      highWaterMark: 3390
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1269,7 +1277,12 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // note) and `removeTask` returning the removed row's value beside `priorStatus`, from the same
       // row (contract P2.1, P2.2). What the value means, and what reaches disk, is decided in
       // `src/contracts/completion-provenance.ts` and `src/audit/audit-payload.ts`, not here.
-      highWaterMark: 2392
+      //
+      // Feature 252 (FR-R4-F05, 2026-11-01) — 2392 → 2393: one line, no new responsibility. It is
+      // the import of `unexpectedMutationFailureReason`; the two reason helpers each swapped one
+      // line, `err.message` for a call. What the closed reason is, and where the detail goes, is
+      // decided in `src/queue/unexpected-mutation-failure.ts`, not here.
+      highWaterMark: 2393
     }
   },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new

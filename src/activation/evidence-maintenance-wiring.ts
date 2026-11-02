@@ -13,6 +13,15 @@
 // WHY THE ARMING IS NOT DEFERRED TO `stage2-producers.ts`. That module runs its producers once, at the end
 // of activation, and a producer is a one-shot act. This is a recurring act whose gate has to be read each
 // time, which is what the `GATED HERE` verdict names (a handler that checks trust at the act).
+//
+// WHERE IT IS ARMED, AND WHAT PAID FOR THE LINE. In `wireStage2`, after `await producers.run()`: the scheduler
+// takes its first tick the moment it is created and that tick reads primacy, so a scheduler created ahead of
+// the election can read a window that has not yet tried for the lock, and the first pass then waits an hour
+// for the next tick. The primacy-gain subscription stays ahead of the election (a gain that lands during it must not
+// be missed); `elect-before-recovering.test.ts` pins both orders. `wireStage2` sits at its shrink-only
+// exemption in `source-loc-budget.test.ts`, so the split into two registrations is paid for by pairing two
+// properties of the `createStage2Producers` call onto one line, the move `primacy-gain-wiring.ts` describes,
+// and the explanation lives here and not at the call site.
 
 import type * as vscode from 'vscode';
 

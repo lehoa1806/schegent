@@ -2405,6 +2405,59 @@ describe('Feature 254 — a partial outcome is reported exactly (P-T3 webview ha
     expect(commitOutcome(layerResultsOf(ALL_KEYS, { status: 'rejected', reason: 'stale-catalog' }))).toBe('failed');
     expect(commitOutcome(layerResultsOf(ALL_KEYS, publishPassStopped))).toBe('partial');
   });
+
+  // FR-R4-F07 (audit G-RECOVERY) — the recovery the outcome names has to be one that works. A layer
+  // the import saved as a draft is PRESENT to the next preflight (the presence oracle sees drafts,
+  // hard rule 44) yet is not in the effective catalog, and an import never publishes a draft
+  // (FR-039a). So inspecting the same document again, with nothing else done, plans every written row
+  // as a skip and every dependent of a draft-only Phase as blocked, and Confirm has nothing to write.
+  // The step that makes the re-run write is publishing the draft in the Builder; these sentences
+  // have to say it, in that order, and say nothing of it when no draft was left.
+  describe('the recovery it names (FR-R4-F07 audit G-RECOVERY)', () => {
+    const outcomeSentenceOf = (ack: LifecycleResult): string => {
+      const report = importCommitReport(threePlan, layerResultsOf(ALL_KEYS, ack));
+      return commitOutcomeStatement(report.outcome, report.results);
+    };
+
+    it('tells the operator to publish a drafted layer from the Builder before inspecting the document again', () => {
+      const report = importCommitReport(threePlan, layerResultsOf(ALL_KEYS, draftPassStopped));
+      const detail = report.rows.at(0)?.detail ?? '';
+      expect(detail).toMatch(/draft/i);
+      expect(detail).toContain('Builder');
+      expect(detail).toContain('same document');
+      expect(detail.indexOf('Builder')).toBeLessThan(detail.indexOf('same document'));
+    });
+
+    it.each([
+      ['only drafts landed', draftPassStopped],
+      ['the publish pass stopped', publishPassStopped]
+    ] as const)('names the same two steps, in order, in the outcome sentence when %s', (_label, ack) => {
+      const sentence = outcomeSentenceOf(ack);
+      expect(sentence).toContain('Builder');
+      expect(sentence).toContain('same document');
+      expect(sentence.indexOf('Builder')).toBeLessThan(sentence.indexOf('same document'));
+      // The re-run skips a draft exactly as it skips a published row, which is why publishing comes first.
+      expect(sentence).toContain('drafts included');
+    });
+
+    it('offers no publish step when no layer was left as a draft', () => {
+      const results: readonly ImportLayerResult[] = [
+        { key: 'phases', ack: { status: 'accepted' } },
+        { key: 'pipelines', ack: { status: 'rejected', reason: 'stale-catalog' } }
+      ];
+      const statement = commitOutcomeStatement('partial', results);
+      expect(statement).toContain('same document');
+      expect(statement).not.toMatch(/Builder|publish/i);
+    });
+
+    it('does not call a dependency absent from the catalog when its own row says the catalog holds it as a draft', () => {
+      const draftOnly: ImportPlanRow = { ...SKIP_ROW, presentRowStatus: 'draft' };
+      const details = projectCommitResults(plan([draftOnly, BLOCKED_PIPELINE_ROW]), []).map((row) => row.detail);
+      expect(details.at(0)).toContain('in the catalog as a draft row');
+      expect(details.at(1)).toContain('not published');
+      expect(details.at(1)).not.toContain('not in the catalog');
+    });
+  });
 });
 
 describe('Feature 254 — a late outcome re-runs the fan-out for every layer (P9, TA3)', () => {

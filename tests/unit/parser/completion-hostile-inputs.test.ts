@@ -11,8 +11,11 @@
  *
  * THE ORACLE (`mayAdvance` below) is written without importing the parser's helpers:
  *
- *   region present && a token on a region line, outside a fence
+ *   region present && a token on a region line that is not itself a fence delimiter
  *   OR relaxed policy && no region && a token on the last non-empty line
+ *
+ * A token inside a fence still advances: the parser warns about it and reads it, so fence depth is
+ * not part of the oracle. The warning is pinned where it is specified, in `stdout-injection.test.ts`.
  *
  * Under an authored `required` policy a region token with no parseable entry is withheld, so that
  * shape also asks the (separately tested) audit parser whether an entry exists.
@@ -178,12 +181,9 @@ function mayAdvance(text: string, relaxed: boolean): boolean {
   const lines = oracleLines(text);
   const regionStart = oracleRegionStart(lines);
   if (regionStart !== null) {
-    let inFence = false;
     for (const line of lines.slice(regionStart)) {
-      if (line.trim().startsWith('```')) {
-        inFence = !inFence;
-        continue;
-      }
+      // A delimiter line is structure and is not searched; depth is not tracked (see the header).
+      if (line.trim().startsWith('```')) continue;
       if (ORACLE_TOKEN.test(line)) return true;
     }
     return false;

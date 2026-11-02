@@ -1,6 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { warnIfEnvironmentIsUnrestricted } from '../../../src/activation/backend-wiring';
+import { resolveProcessEnvironmentPolicy } from '../../../src/contracts/process-environment-policy';
+import {
+  validateWorkspaceSettings,
+  type SettingsConfigReader
+} from '../../../src/config/settings-schema-validator';
 import {
   createBackendRunner,
   resolveBackendKind
@@ -132,6 +139,74 @@ describe('createBackendRunner — the uncontained + inherit compound warning', (
       logger: { warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as SanitizedLogger
     });
     expect(compound(warn.mock.calls.map((call) => String(call[0])))).toEqual([]);
+  });
+});
+
+/**
+ * FR-R4-F06 (FR-003; contract E7) — the activation-time warnings the environment policy kept, pinned
+ * beside the compound one above.
+ *
+ * A malformed `schegent.cli.environmentMode` now resolves to the shipped allowlist, so it must still be
+ * SAID (the settings-drift line) and must no longer be ACTED ON as `inherit` (no inherit warning,
+ * because nothing inherits). Each line is a fixed sentence: neither carries the value the operator typed,
+ * a workspace path or an environment value, and the inherit one is said once per workspace.
+ */
+describe('the activation-time environment warnings (FR-003, E7)', () => {
+  const uniqueRoot = (): string => `/home/example/workspace-${randomBytes(6).toString('hex')}`;
+  const policyFor = (mode: unknown) =>
+    resolveProcessEnvironmentPolicy({ inheritEnvironment: true, mode, allowlist: [] });
+  const recordingLogger = () => {
+    const warn = vi.fn();
+    const logger = { warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as SanitizedLogger;
+    const lines = (): readonly string[] => warn.mock.calls.map((call) => String(call.at(0)));
+    return { logger, lines };
+  };
+
+  it('says inherit once per workspace, says it again for another workspace, and never names the path', () => {
+    const { logger, lines } = recordingLogger();
+    const root = uniqueRoot();
+
+    warnIfEnvironmentIsUnrestricted(policyFor('inherit'), root, logger);
+    warnIfEnvironmentIsUnrestricted(policyFor('inherit'), root, logger);
+
+    expect(lines()).toHaveLength(1);
+    expect(lines().join('\n')).toContain('schegent.cli.environmentMode');
+    expect(lines().join('\n')).not.toContain(root);
+
+    warnIfEnvironmentIsUnrestricted(policyFor('inherit'), uniqueRoot(), logger);
+    expect(lines()).toHaveLength(2);
+  });
+
+  it('says nothing for the two restricted modes', () => {
+    const { logger, lines } = recordingLogger();
+    for (const mode of ['allowlist', 'minimal']) {
+      warnIfEnvironmentIsUnrestricted(policyFor(mode), uniqueRoot(), logger);
+    }
+    expect(lines()).toEqual([]);
+  });
+
+  it('a malformed mode still produces the drift line and no longer produces the inherit warning', () => {
+    const { logger, lines } = recordingLogger();
+    const malformed = `not-a-mode-${randomBytes(6).toString('hex')}`;
+    const reader: SettingsConfigReader = {
+      inspect<T>(key: string) {
+        return key === 'cli.environmentMode'
+          ? ({ workspaceValue: malformed } as unknown as { workspaceValue?: T })
+          : undefined;
+      }
+    };
+
+    const drift = validateWorkspaceSettings(reader, logger, new Set());
+    warnIfEnvironmentIsUnrestricted(policyFor(malformed), uniqueRoot(), logger);
+
+    expect(drift).toMatchObject([
+      { key: 'schegent.cli.environmentMode', kind: 'invalid-enum', layer: 'workspace' }
+    ]);
+    const text = lines().join('\n');
+    expect(text).toContain('schegent settings drift: schegent.cli.environmentMode');
+    expect(text).not.toContain('unrestricted (inherit)');
+    // Said, but never with what was typed.
+    expect(text).not.toContain(malformed);
   });
 });
 

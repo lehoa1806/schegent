@@ -1,7 +1,8 @@
 // FR-R3-136 (T1525a) — TRUST CLASSIFICATION: DEFERRED.
 // The migration audit appends and the `.schegent/sessions` retention sweep ran at
 // construction. They are returned as `replayEvidenceBacklog` and run inside the
-// trust gate; nothing here writes any more.
+// trust gate; nothing here writes into the workspace any more. The one write left creates the
+// owner-only head-checkpoint root in global storage, outside every workspace (FR-R4-F03, W9).
 
 import * as vscode from 'vscode';
 
@@ -17,6 +18,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
 import { SessionArtifactRetentionService } from '../services/session-retention/session-artifact-retention-service';
 import { sweepFailureRecords } from '../services/failure-record/failure-record-retention';
+import { sweepHistoryDescriptions } from '../services/history/history-description-sweep';
 import type { EvidenceHealthMonitor } from '../services/evidence-health/evidence-health-monitor';
 import type { VerdictBasisMigrationEvent } from '../state/host-verification-migrator';
 import type { WorkspaceLockManager } from '../state/lock';
@@ -300,6 +302,20 @@ const replayEvidenceBacklog = async (): Promise<void> => {
   // to exact inactive run groups below `.schegent/sessions`; `audit.log` lives
   // outside that root and is never a candidate.
   await sessionRetention.sweep(protectedSessionRunIds());
+
+  // FR-R4-F04 (G1) — the history descriptions are swept at the same moment, which is what the retention
+  // inventory has always said. Owner only: this deletes operator-authored text, and FR-031's principle is
+  // that only the owner sweeps, so two windows over one workspace do not remove each other's files. The
+  // election has already run, so `hasPrimacy()` answers for this window. The referenced set comes from the
+  // raw rows, not the history list (`history-description-sweep.ts`).
+  if (await lock.hasPrimacy()) {
+    await sweepHistoryDescriptions({
+      workspaceRoot,
+      logger,
+      historyMap: () => store.getHistoryMap(),
+      nowMs: Date.now()
+    });
+  }
 
   // Feature 058 — one-shot activation guard for multi-root workspaces.
   // Emits `multi-root.warning-shown` (folder count + canonical folder

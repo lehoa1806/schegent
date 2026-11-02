@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import type { Memento } from '../../../src/state/workspace-state';
@@ -83,5 +83,71 @@ describe('QueueManager — FR-021 preserves existing DEBUG enqueue/dequeue lines
     const warnCount = sink.lines.filter((l) => l.includes('WARN')).length;
     expect(infoCount).toBe(0);
     expect(warnCount).toBe(0);
+  });
+});
+
+// FR-R4-F05 (FR-011; the brief's "never leak exception substrings to IPC") — the reason a failed
+// mutation returns is read by the sidebar and shown to the operator. Two helpers turned any thrown
+// `Error` into `reason: err.message`, so an I/O fault from the persistence layer put its path in
+// that field. A typed refusal keeps its own code; anything else answers the closed
+// `operation-rejected` and the detail goes to the log through `describeFailure`.
+describe('QueueManager — an unexpected mutation failure answers a code, never the exception (FR-R4-F05)', () => {
+  // A synthetic home directory: a real OS fault from the persistence layer names one.
+  const SYNTHETIC_PATH = '/synthetic/home/user-252/state.json';
+  const osFault = (): Error => new Error(`EACCES: permission denied, open '${SYNTHETIC_PATH}'`);
+  const detailLines = (): string[] =>
+    sink.lines.filter((l) => l.includes('WARN') && l.includes('unexpected mutation failure'));
+
+  it('createQueue answers operation-rejected for a registry write that throws a path-bearing Error', async () => {
+    vi.spyOn(store, 'setQueueRegistry').mockRejectedValueOnce(osFault());
+
+    const result = await queue.createQueue('Backlog');
+
+    expect(result).toMatchObject({ ok: false, reason: 'operation-rejected' });
+    expect(JSON.stringify(result)).not.toContain('user-252');
+  });
+
+  it('modifyTask answers operation-rejected for a task write that throws a path-bearing Error', async () => {
+    const task = await queue.enqueue('feature A');
+    vi.spyOn(store, 'modifyPendingRequest').mockRejectedValueOnce(osFault());
+
+    const result = await queue.modifyTask(task.id, 'a new description');
+
+    expect(result).toEqual({ ok: false, reason: 'operation-rejected' });
+  });
+
+  it('keeps the detail for the log, where the logger sanitizes it, and out of the reason', async () => {
+    const task = await queue.enqueue('feature A');
+    vi.spyOn(store, 'modifyPendingRequest').mockRejectedValueOnce(osFault());
+
+    const result = await queue.modifyTask(task.id, 'a new description');
+
+    expect(JSON.stringify(result)).not.toContain('user-252');
+    const lines = detailLines();
+    expect(lines).toHaveLength(1);
+    expect(lines.join('\n')).toContain('user-252');
+  });
+
+  it('answers operation-rejected for a thrown null and logs a bounded description of it', async () => {
+    const task = await queue.enqueue('feature A');
+    vi.spyOn(store, 'modifyPendingRequest').mockRejectedValueOnce(null);
+
+    const result = await queue.modifyTask(task.id, 'a new description');
+
+    expect(result).toEqual({ ok: false, reason: 'operation-rejected' });
+    expect(detailLines().join('\n')).toContain('null thrown');
+  });
+
+  it('keeps the typed refusals and the description-validation code, with no detail line', async () => {
+    const task = await queue.enqueue('feature A');
+
+    const unknownTask = await queue.modifyTask('no-such-task', 'a new description');
+    const emptyDescription = await queue.modifyTask(task.id, '   ');
+    const emptyName = await queue.createQueue('');
+
+    expect(unknownTask).toEqual({ ok: false, reason: 'unknown-task-id' });
+    expect(emptyDescription).toEqual({ ok: false, reason: 'invalid-description' });
+    expect(emptyName).toMatchObject({ ok: false, reason: 'invalid-name' });
+    expect(detailLines()).toHaveLength(0);
   });
 });

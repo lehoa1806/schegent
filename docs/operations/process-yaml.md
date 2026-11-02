@@ -85,9 +85,11 @@ does it write the definitions as drafts and publish them, in dependency order.
   landed is removed.
 - **This is not a rollback.** Checking the whole document first stops a bad
   document from being written; it does not make the write all-or-nothing on disk.
-  To recover from a partial import, fix the reported condition and inspect the
-  same document again; definitions already present, drafts included, are planned
-  as **Skip**.
+  To recover from a partial import, fix the reported condition, publish each
+  draft the import left from the Builder (a second import does not publish a
+  draft an earlier one left), and inspect the same document again. Definitions
+  already present, drafts included, are planned as **Skip**, and a definition
+  that needs a draft is **Blocked** until that draft is published.
 
 <!-- Source: webview-ui/src/components/ProcessImport/process-import-state.ts -->
 <!-- Source: webview-ui/src/lib/catalog-lifecycle.ts -->

@@ -4,7 +4,16 @@ import type { WorkspaceLockManager } from '../state/lock';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceStateStore } from '../state/workspace-state';
-import { LockHeldError } from '../lib/errors';
+import { LockHeldError, describeFailure } from '../lib/errors';
+
+/**
+ * FR-R4-F05 (FR-014; contract F, F6; contract O, O5) — what the operator is told when a
+ * resume fails for a reason the command has no code for. Fixed text: an exception's
+ * message can carry a path, so it goes to the log through `describeFailure` and never to
+ * the toast. Another window holding the lock is a notice, not a failure, and keeps its own.
+ */
+export const RESUME_FAILED_TOAST =
+  'Schegent: the run could not be resumed. See the Schegent log for details.';
 
 export async function runResume(ctx: {
   store: WorkspaceStateStore;
@@ -44,7 +53,9 @@ export async function runResume(ctx: {
       ctx.notifier.info('Schegent: another window holds the workspace lock.');
       return;
     }
-    ctx.notifier.error(`Schegent: ${(err as Error).message}`);
-    ctx.logger.error((err as Error).message);
+    ctx.notifier.error(RESUME_FAILED_TOAST);
+    ctx.logger.error('resume: unexpected failure', {
+      error: describeFailure(err, (value) => ctx.logger.sanitize(value))
+    });
   }
 }

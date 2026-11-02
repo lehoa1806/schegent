@@ -13,9 +13,10 @@
 // the fallback was reachable only through the controller facade, and no test
 // covered a snapshot-less Run.
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { PhaseControlService } from '../../../src/controller/phase-control-service';
+import { installOperatorAttribution, UNKNOWN_OPERATOR } from '../../../src/lib/operator-attribution';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 
 const QUEUE_ID = 'queue-1';
@@ -756,4 +757,70 @@ describe('Skip of a Run that fails while the Skip is in flight (FR-R4-F20, D3, D
       expect(mocks.armIsContinue).not.toHaveBeenCalled();
     }
   );
+});
+
+// FR-R4-F04 (FR-026, G9) — the three writers that stamp a `PhaseOverride` read the installed operator
+// pseudonym. `tests/unit/audit/attribution-legacy-rows.test.ts` pins the helper, the audit envelope and the
+// exports; this pins the override writers themselves by running the patch each one hands `updateRun`, so a
+// writer that went back to the operating-system account, or to a literal, stamps a value other than the
+// pseudonym here. The control is the same writer with no attribution installed.
+describe('a phase override carries the operator pseudonym (FR-R4-F04, FR-026)', () => {
+  const PSEUDONYM = 'pseudonym-0123456789abcdef';
+  type RecordedUpdate = { patch: (current: WorkflowRun) => Partial<WorkflowRun> };
+
+  afterEach(() => {
+    installOperatorAttribution(null);
+  });
+
+  /** The override for `phaseId` that the last write's patch stamps, built against the Run the writer read. */
+  function stampedOverride(
+    updateRun: ReturnType<typeof makeService>['updateRun'],
+    run: WorkflowRun,
+    phaseId: string
+  ) {
+    const calls = updateRun.mock.calls as unknown as Array<[string, RecordedUpdate]>;
+    const last = calls.at(-1);
+    if (last === undefined) throw new Error('expected a Run update, found none');
+    const [, update] = last;
+    return update.patch(run).phaseOverrides?.find((override) => override.phaseId === phaseId);
+  }
+
+  it('Disable stamps the override with the pseudonym', async () => {
+    installOperatorAttribution({ current: () => PSEUDONYM });
+    const run = makeThreePhaseRun();
+    const { service, updateRun } = makeService(run);
+
+    expect(await service.disablePhase(QUEUE_ID, 'gamma')).toEqual({ ok: true });
+
+    expect(stampedOverride(updateRun, run, 'gamma')).toMatchObject({ action: 'disabled', actor: PSEUDONYM });
+  });
+
+  it('Skip stamps the override with the pseudonym', async () => {
+    installOperatorAttribution({ current: () => PSEUDONYM });
+    const run = makeThreePhaseRun();
+    const { service, updateRun } = makeService(run);
+
+    expect(await service.skipPhase(QUEUE_ID, run.id, 'beta')).toMatchObject({ ok: true });
+
+    expect(stampedOverride(updateRun, run, 'beta')).toMatchObject({ action: 'skipped', actor: PSEUDONYM });
+  });
+
+  it('Delete stamps the override with the pseudonym', async () => {
+    installOperatorAttribution({ current: () => PSEUDONYM });
+    const run = makeThreePhaseRun();
+    const { service, updateRun } = makeService(run);
+
+    expect(await service.removeTaskPhase(QUEUE_ID, 'task-1', 'gamma')).toMatchObject({ ok: true });
+
+    expect(stampedOverride(updateRun, run, 'gamma')).toMatchObject({ action: 'removed', actor: PSEUDONYM });
+  });
+
+  it('stamps unknown-operator when no attribution is installed, so the pseudonym above came from the helper', async () => {
+    const run = makeThreePhaseRun();
+    const { service, updateRun } = makeService(run);
+
+    expect(await service.disablePhase(QUEUE_ID, 'gamma')).toEqual({ ok: true });
+
+    expect(stampedOverride(updateRun, run, 'gamma')?.actor).toBe(UNKNOWN_OPERATOR);
+  });
 });
