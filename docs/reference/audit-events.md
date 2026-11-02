@@ -272,8 +272,12 @@ or any process with sufficient filesystem access can still alter or delete local
 evidence — the chain makes that **evident, not impossible**, because the chain
 head sits on the same disk and an actor who can edit the log can recompute every
 later digest. What they cannot do is edit one entry and leave the rest
-consistent. There is no signature, and no anchor outside the workspace.
+consistent. There is no signature. A head checkpoint kept outside the workspace, in the
+extension's storage, lets verification report a history that is shorter than it was, or
+missing; it is a file the same OS user can edit, so it reduces undetected loss and does not
+show that a history is the original.
 <!-- Source: src/audit/audit-chain.ts -->
+<!-- Source: src/audit/audit-checkpoint.ts -->
 
 `audit-integrity-condition` is written only by the audit writer, never by a caller. Its payload
 carries a `condition` and a `conditionVersion`, which is `1` today. `damaged-tail` names a final line that
@@ -311,7 +315,8 @@ before renaming.
 
 The writer keeps at most ten recognized archives by default and gives archives
 a default maximum age of 90 days, with a hard seven-day minimum. Retention runs
-at writer construction and after rotation. It never prunes the active
+once at activation (after trust, in the window that owns the workspace) and
+after rotation. It never prunes the active
 `audit.log`, ignores unrelated siblings such as `audit.log.backup`, and treats
 pruning failures as best-effort runtime-log warnings.
 

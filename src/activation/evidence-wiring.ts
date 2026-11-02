@@ -1,7 +1,8 @@
 // FR-R3-136 (T1525a) — TRUST CLASSIFICATION: DEFERRED.
 // The migration audit appends and the `.schegent/sessions` retention sweep ran at
 // construction. They are returned as `replayEvidenceBacklog` and run inside the
-// trust gate; nothing here writes any more.
+// trust gate; nothing here writes into the workspace any more. The one write left creates the
+// owner-only head-checkpoint root in global storage, outside every workspace (FR-R4-F03, W9).
 
 import * as vscode from 'vscode';
 

@@ -111,9 +111,10 @@ in a normal retention cut that the chain verifier follows.
 <!-- Source: src/extension.ts -->
 
 By default, at most ten recognized archives younger than 90 days are retained;
-the active `audit.log` is never pruned. The retention sweep runs at writer
-construction and after a successful rotation. It is best-effort, and refuses
-rotation or deletion when filesystem containment cannot be established.
+the active `audit.log` is never pruned. The retention sweep runs once at
+activation, after the workspace is trusted and only in the window that owns it,
+and after a successful rotation. It is best-effort, and refuses rotation or
+deletion when filesystem containment cannot be established.
 <!-- Source: src/audit/audit-log-writer.ts -->
 <!-- Source: tests/unit/audit/retention.test.ts -->
 
@@ -472,6 +473,18 @@ audit files away, run **Schegent: Reset Audit History Checkpoint**
 the command never deletes or moves evidence. After a confirmed reset the next
 recorded event starts a new history that begins with a reset record.
 
+One history fails the chain walk for a reason a reset does not touch. An older release pruned the
+boundary between legacy rows and the first chained row and recorded the prune in a version 1 cut
+record. That record names a legacy row's digest that no retained byte produces, so the first link
+cannot be checked, and the walk does not accept it on trust. It reports `broken-link` at that cut,
+with the detail "a cut written before this release removed the start of the chain, so its first link
+cannot be checked", and in the extension the break also reports the audit sink as failing. This
+release writes version 2 cut records, which the walk accounts for, so that detail names a cut an
+older release wrote. The extension does not repair it. To leave it, move the history out yourself:
+every `audit.log*` file under `.schegent/`, the cut file `audit.log.cuts` included. If the loss
+check then reports `missing`, run **Schegent: Reset Audit History Checkpoint** in the owner window.
+The next recorded event starts a new history.
+
 `npm run audit:verify` runs the same walk from a shell and prints the same
 transition, pruned-legacy and diagnosed-damage lines. It cannot read the
 checkpoint, so it always ends with `loss check: not performed`, and when no audit
@@ -479,6 +492,7 @@ file is present it says it cannot tell a new workspace from missing history.
 <!-- Source: src/commands/verify-audit-chain.ts -->
 <!-- Source: src/commands/reset-audit-checkpoint.ts -->
 <!-- Source: src/audit/audit-checkpoint.ts -->
+<!-- Source: src/audit/audit-chain.ts -->
 <!-- Source: scripts/verify-audit-chain.ts -->
 
 ## Diagnose missing durable evidence
