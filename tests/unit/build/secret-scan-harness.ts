@@ -7,6 +7,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -98,6 +99,24 @@ export function sandbox(files: Record<string, string>, options: SandboxOptions =
     git(root, 'config', 'core.hooksPath', join('scripts', 'hooks'));
   }
   return root;
+}
+
+/**
+ * FR-R4-F10 (SS5) -- an engine package that will not load, in one sandbox only. The link to this
+ * tree's `node_modules` is replaced by a directory holding a stub of `@secretlint/node`; resolution
+ * reaches the nearest `node_modules` first, so the scan imports the stub. `entry` is the text of the
+ * stub's entry file, and `null` leaves that file out, so the package names an entry that is not
+ * there. Both are an engine that will not load, as a damaged install is; a package that is absent
+ * altogether cannot be built here, because a sandbox under this repository's temporary root would
+ * find this tree's copy by walking up.
+ */
+export function replaceEngineWithUnloadable(root: string, entry: string | null): void {
+  unlinkSync(join(root, 'node_modules'));
+  const packageDirectory = join(root, 'node_modules', '@secretlint', 'node');
+  mkdirSync(packageDirectory, { recursive: true });
+  const manifest = { name: '@secretlint/node', version: '0.0.0', type: 'module', exports: './index.js' };
+  writeFileSync(join(packageDirectory, 'package.json'), JSON.stringify(manifest));
+  if (entry !== null) writeFileSync(join(packageDirectory, 'index.js'), entry);
 }
 
 /** Run the scan copied into `root`. `args` is `['--staged']` for staged mode; `env` is merged over the process's. */

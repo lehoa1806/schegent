@@ -4,7 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { PLANTED } from '../../fixtures/secret-scan-corpus';
-import { REPO_ROOT, commit, git, gitOut, removeSandboxes, sandbox } from './secret-scan-harness';
+import {
+  REPO_ROOT,
+  commit,
+  git,
+  gitOut,
+  removeSandboxes,
+  replaceEngineWithUnloadable,
+  sandbox
+} from './secret-scan-harness';
 
 /**
  * FR-R4-F10 (contract test T6; HK1 to HK3; FR-015, FR-016) -- the tracked pre-commit hook, run by
@@ -70,6 +78,18 @@ describe('the hook decides what a commit may do', () => {
     const result = commit(root, ['-m', 'broken config']);
     expect(result.status, result.out).not.toBe(0);
     expect(result.out).toContain('cannot run: config-unparseable');
+    expect(commitCount(root)).toBe(before);
+  });
+
+  it('refuses a commit when the engine package will not load, with the named line, and makes no commit', () => {
+    const root = hookRepository({ 'clean.txt': 'nothing here\n' });
+    const before = commitCount(root);
+    replaceEngineWithUnloadable(root, "throw new Error('synthetic load failure');\n");
+    stage(root, 'clean.txt', 'edited\n');
+    const result = commit(root, ['-m', 'edit']);
+    expect(result.status, result.out).not.toBe(0);
+    expect(result.out).toContain('cannot run: engine-failed');
+    expect(result.out, 'a raw module-loader trace reached the operator').not.toContain('node:internal');
     expect(commitCount(root)).toBe(before);
   });
 

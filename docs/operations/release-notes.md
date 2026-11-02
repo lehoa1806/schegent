@@ -59,9 +59,10 @@ best-effort, and the documents say where it stops.
 - **A staged scan, and an opt-in hook.** `npm run security:secrets:staged` scans what a commit would carry,
   read from the Git index and not from the working tree, so a secret staged and then edited out of the working
   copy is still found. It judges a renamed or copied file at its new path, never writes the index, and refuses
-  rather than passes when it cannot answer. To make `git commit` run it, activate the tracked hook once, inside
-  `repo/`, with `git config core.hooksPath scripts/hooks`. Nothing installs it for you. `git commit --no-verify`
-  bypasses it, git does not run it for a conflict-free merge, and there is no server-side check, so the tree scan
+  rather than passes when it cannot answer; that includes a scanner package that cannot be loaded, which is
+  reported by name (`engine-failed`) in the staged scan and in the tree scan. To make `git commit` run it,
+  activate the tracked hook once, inside `repo/`, with `git config core.hooksPath scripts/hooks`. Nothing
+  installs it for you. `git commit --no-verify` bypasses it, git does not run it for a conflict-free merge, and there is no server-side check, so the tree scan
   in the gate stays the check that covers what was merged.
 - **The scan detects more.** A lone AWS access key id and an AWS account id, an Anthropic API key, a JSON web
   token, a password assignment (an unquoted value on an env-style line, or a quoted literal, of at least 8

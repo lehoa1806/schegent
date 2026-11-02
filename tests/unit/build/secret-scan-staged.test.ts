@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { PLANTED } from '../../fixtures/secret-scan-corpus';
-import { commit, git, removeSandboxes, sandbox, scan } from './secret-scan-harness';
+import { commit, git, removeSandboxes, replaceEngineWithUnloadable, sandbox, scan } from './secret-scan-harness';
 
 /**
  * FR-R4-F10 (contract test T3; SS2 to SS6; FR-008 to FR-013; SC-002, SC-003) -- the staged scan
@@ -254,6 +254,47 @@ describe('AC6: every unanswerable check is a named refusal', () => {
     const root = baseRepository({ 'a.txt': 'x\n' });
     stage(root, '.secretlintrc.json', JSON.stringify({ rules: [{ id: '@secretlint/secretlint-rule-absent-rule' }] }));
     stage(root, 'a.txt', 'changed\n');
+    expectRefusal(stagedScan(root), 'engine-failed');
+  });
+
+  // FR-R4-F10 (SS5): "an engine that will not load" is a named refusal in both modes. The engine was
+  // imported statically, so a package that failed to load stopped the module while it linked: Node's
+  // own error, its own trace and no refusal line. The load now happens inside the refusal path.
+  const LOAD_FAILURE = "throw new Error('synthetic load failure');\n";
+
+  it('refuses an engine package that throws while it loads, with engine-failed and no loader trace', () => {
+    const root = baseRepository({ 'a.txt': 'x\n' });
+    replaceEngineWithUnloadable(root, LOAD_FAILURE);
+    stage(root, 'a.txt', 'changed\n');
+    const result = stagedScan(root);
+    expectRefusal(result, 'engine-failed');
+    expect(result.out, 'a raw module-loader trace reached the operator').not.toContain('node:internal');
+    expect(result.out, 'the sandbox path reached the operator').not.toContain(root);
+  });
+
+  it('refuses an engine package whose entry file is missing, naming the loader code and no path', () => {
+    const root = baseRepository({ 'a.txt': 'x\n' });
+    replaceEngineWithUnloadable(root, null);
+    stage(root, 'a.txt', 'changed\n');
+    const result = stagedScan(root);
+    expectRefusal(result, 'engine-failed');
+    expect(result.out).toContain('ERR_MODULE_NOT_FOUND');
+    expect(result.out, 'a raw module-loader trace reached the operator').not.toContain('node:internal');
+    expect(result.out, 'the sandbox path reached the operator').not.toContain(root);
+  });
+
+  it('refuses the same way in tree mode', () => {
+    const root = sandbox({ 'a.txt': 'x\n' });
+    replaceEngineWithUnloadable(root, LOAD_FAILURE);
+    const result = scan(root);
+    expectRefusal(result, 'engine-failed');
+    expect(result.out, 'a raw module-loader trace reached the operator').not.toContain('node:internal');
+  });
+
+  it('refuses a commit with nothing to scan too, as it did when the engine was imported at load', () => {
+    const root = baseRepository({ 'a.txt': 'x\n', 'b.txt': 'y\n' });
+    replaceEngineWithUnloadable(root, LOAD_FAILURE);
+    git(root, 'rm', '--quiet', '--', 'a.txt');
     expectRefusal(stagedScan(root), 'engine-failed');
   });
 
