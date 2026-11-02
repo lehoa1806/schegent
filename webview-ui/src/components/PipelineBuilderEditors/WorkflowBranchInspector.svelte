@@ -29,8 +29,10 @@
     WORKFLOW_NODE_TERMINAL_STATUSES,
     WORKFLOW_SELECTION_RULES,
     type PortablePipelineDefinition,
+    type PortableWorkflowDefinition,
     type WorkflowConditionOperator,
     type WorkflowConnection,
+    type WorkflowHandoffMode,
     type WorkflowNode,
     type WorkflowSelectionRule,
   } from "../../lib/snapshot-types";
@@ -52,13 +54,14 @@
     connection: WorkflowConnection;
     nodes: readonly WorkflowNode[];
     pipelines: readonly PortablePipelineDefinition[];
+    workflows?: readonly PortableWorkflowDefinition[];
     defects: readonly WorkflowDraftError[];
     readonly: boolean;
     connectionCount: number;
     onretarget: (
       index: number,
       end: "from" | "to",
-      patch: { nodeId?: string; portId?: string },
+      patch: { nodeId?: string; portId?: string; kind?: "node" | "return" },
     ) => void;
     onpatch: (index: number, patch: Partial<WorkflowConnection>) => void;
     onconditiontoggle: (index: number, conditional: boolean) => void;
@@ -104,6 +107,7 @@
       p.nodes.find((node) => node.nodeId === nodeId),
       p.pipelines,
       direction,
+      p.workflows ?? [],
     );
   }
 </script>
@@ -143,6 +147,9 @@
         onchange={(event) =>
           p.onretarget(p.index, "from", { portId: event.currentTarget.value })}
       >
+        {#if portsFor(p.connection.from.nodeId, "out").length === 0 || !p.connection.from.portId}
+          <option value="">(execution only)</option>
+        {/if}
         {#each portsFor(p.connection.from.nodeId, "out") as portId (portId)}
           <option value={portId}>{portId}</option>
         {/each}
@@ -175,11 +182,47 @@
         onchange={(event) =>
           p.onretarget(p.index, "to", { portId: event.currentTarget.value })}
       >
+        {#if portsFor(p.connection.to.nodeId, "in").length === 0 || !p.connection.to.portId}
+          <option value="">(execution only)</option>
+        {/if}
         {#each portsFor(p.connection.to.nodeId, "in") as portId (portId)}
           <option value={portId}>{portId}</option>
         {/each}
       </select>
     </span>
+  </label>
+
+  <label class="wf-field">
+    Handoff
+    <select
+      class="select-input"
+      data-testid="workflow-connection-handoff-{p.index}"
+      aria-label="Branch {p.index + 1} handoff mode"
+      value={p.connection.handoff ?? "auto"}
+      disabled={p.readonly}
+      onchange={(event) =>
+        p.onpatch(p.index, {
+          handoff: event.currentTarget.value as WorkflowHandoffMode,
+        })}
+    >
+      <option value="auto">auto</option>
+      <option value="manual">manual</option>
+    </select>
+  </label>
+
+  <label class="checkbox-field">
+    <input
+      type="checkbox"
+      data-testid="workflow-connection-return-{p.index}"
+      aria-label="Branch {p.index + 1} terminates as return"
+      checked={p.connection.to.kind === "return"}
+      disabled={p.readonly}
+      onchange={(event) =>
+        p.onretarget(p.index, "to", {
+          kind: event.currentTarget.checked ? "return" : undefined,
+        })}
+    />
+    <span class="form-label">Return from Workflow</span>
   </label>
 
   <label class="checkbox-field">

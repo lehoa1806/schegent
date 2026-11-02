@@ -116,10 +116,10 @@ The dashboard opens on **Queues** and also exposes **Runs**, **History**, **Metr
 
 ## 2. Import the example process
 
-1. Open **Builder**. Its initial tab is **Phases**, and its tabs read **Phases**, **Pipelines**, **Workflows**, **Models** — the order definitions compose in.
-2. Select the **Pipelines** tab. The import entry is not exclusive to it — the same kind-agnostic
+1. Open **Builder**. Its initial tab is **Phases**, and its tabs read **Phases**, **Workflows**, **Models** — the order definitions compose in.
+2. Select the **Workflows** tab. The import entry is not exclusive to it — the same kind-agnostic
    front door appears on any Builder tab whose catalog is empty, and on **Models** unconditionally —
-   so this step is not what makes the import work. It puts you on the tab where the imported Pipeline
+   so this step is not what makes the import work. It puts you on the tab where the imported Workflow
    appears, which is what the steps below describe.
 3. In the import panel, select **Import…**.
 4. In the YAML picker, choose `examples/speckit-bugfix.pipeline.yaml` from the Schegent checkout.

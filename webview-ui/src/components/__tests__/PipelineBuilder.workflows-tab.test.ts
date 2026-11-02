@@ -152,12 +152,12 @@ function buildSnapshot(opts: SnapshotOpts = {}): WorkflowSnapshot {
 }
 
 describe('PipelineBuilder — Workflow Library mount (083)', () => {
-  it('exposes a Workflows tab alongside Pipelines, Phases, and Models', () => {
+  it('exposes a Workflows tab alongside Phases and Models', () => {
     const { container } = render(PipelineBuilder, { props: { snapshot: buildSnapshot() } });
     const labels = Array.from(container.querySelectorAll('.builder-tabs .tab-btn')).map(
       (btn) => btn.textContent?.trim()
     );
-    expect(labels).toEqual(['Phases', 'Pipelines', 'Workflows', 'Models']);
+    expect(labels).toEqual(['Phases', 'Workflows', 'Models']);
   });
 
   it('mounts the Workflow Library when initialTab is "workflows"', () => {

@@ -80,15 +80,14 @@ const SURFACE_CONTRACTS: Readonly<Record<SurfaceName, SurfaceContract>> = {
   builder: {
     present: [
       'pipeline-builder-root',
-      'pipelines-save-all',
-      'pipelines-sequence-status',
-      'pipelines-discard'
+      'workflows-save-all',
+      'workflows-discard'
     ],
     absent: [
-      'pipeline-catalog-error',
-      'pipeline-catalog-loading',
-      'pipelines-no-phases',
-      'save-error-banner'
+      'workflow-catalog-error',
+      'workflow-catalog-loading',
+      'workflows-no-phases',
+      'workflow-save-error-banner'
     ]
   },
   metrics: {
@@ -592,27 +591,12 @@ async function openSurface(page: Page, surface: SurfaceName, theme: ThemeName): 
     await page.getByTestId('dashboard-route-builder').click();
     const builder = page.getByTestId('pipeline-builder-root');
     await expect(builder).toBeVisible();
-    // Feature 180 (T1556, FR-005) — the Builder opens on Phases now, so the tab
-    // this baseline frames has to be asked for. Role and name rather than a test
-    // id: the tab buttons carry `id="builder-tab-{id}"` and no `data-testid`
-    // (`BuilderTabs.svelte`), and this is the handle a screen-reader user has.
-    // Capturing Pipelines rather than the new landing tab is deliberate — it
-    // keeps the strip the only difference between these baselines and their
-    // predecessors, which is what makes the comparison evidence.
-    await page.getByRole('tab', { name: 'Pipelines' }).click();
-    // Feature 184 (T045, FR-R3-141) — the Library moved into the top bar's
-    // picker, so opening a row means going through the popover. The picker
-    // starts open with nothing selected and closed once a row is, and the toggle
-    // toggles: clicking it unconditionally would CLOSE the popover in the state
-    // this capture actually starts from. So the state is read, not assumed.
-    const picker = page.getByTestId('pipelines-picker-toggle');
+    await page.getByRole('tab', { name: 'Workflows' }).click();
+    const picker = page.getByTestId('workflow-picker-toggle');
     if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
     await expect(picker).toHaveAttribute('aria-expanded', 'true');
-    await builder.locator('.phase-list-item').first().click();
-    // The Name field is in the inspector now rather than the form card; the test
-    // id came across unchanged, so this assertion still names the same control
-    // and still proves the row is open before the shutter fires.
-    await expect(page.getByTestId('pipelines-name-field-dev-new-feature')).toBeVisible();
+    await page.getByTestId('workflows-list-item-dev-new-feature').click();
+    await expect(page.getByTestId('workflow-field-name')).toBeVisible();
     return builder;
   }
 

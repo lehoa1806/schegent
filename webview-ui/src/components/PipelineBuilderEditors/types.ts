@@ -12,10 +12,13 @@ import type {
   PipelineOutputPortType,
   PipelineSourceStatus,
   RetryCapOutcome,
+  WorkflowBinding,
   WorkflowCatalogFieldErrorProjection,
   WorkflowCatalogPortProjection,
   WorkflowConnection,
+  WorkflowInputPort,
   WorkflowNode,
+  WorkflowOutputPort,
   WorkflowSourceStatus
 } from '../../lib/snapshot-types';
 
@@ -99,7 +102,7 @@ export type MutablePhase = {
  * component because both the shell that owns `activeTab` and the strip that
  * renders it need to name the same closed set.
  */
-export type BuilderTab = 'pipelines' | 'phases' | 'workflows' | 'models';
+export type BuilderTab = 'phases' | 'workflows' | 'models';
 
 export type PhaseEditState = {
   rawJsonMode: boolean;
@@ -122,9 +125,14 @@ export type MutableWorkflow = {
   name: string;
   description?: string;
   version: number;
+  inputs?: WorkflowInputPort[];
+  outputs?: WorkflowOutputPort[];
   nodes: WorkflowNode[];
   connections: WorkflowConnection[];
+  bindings?: WorkflowBinding[];
   startNodeIds: string[];
+  executionDefaults?: PipelineExecutionDefaults;
+  recommendedNext?: string[];
   /** Stable list key; mirrors the projection record key for persisted rows. */
   sourceKey: string;
   sourceStatus: WorkflowSourceStatus;

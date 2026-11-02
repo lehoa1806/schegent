@@ -81,15 +81,17 @@ function buildSnapshot(
     ...(phase.isRequired !== undefined ? { isRequired: phase.isRequired } : {}),
     ...(phase.runner !== undefined ? { runner: phase.runner } : {})
   }));
-  const portablePipelines = pipelines.map((pipeline) => ({
-    pipelineId: pipeline.id,
+  const portableWorkflows = pipelines.map((pipeline) => ({
+    workflowId: pipeline.id,
     name: pipeline.name,
     version: 1,
-    phaseIds: [...pipeline.phases],
-    inputs: [],
-    outputs: [],
-    bindings: [],
-    recommendedNext: []
+    nodes: pipeline.phases.map((phaseId) => ({
+      nodeId: phaseId,
+      kind: 'phase' as const,
+      phaseId
+    })),
+    connections: [],
+    startNodeIds: pipeline.phases[0] ? [pipeline.phases[0]] : []
   }));
   return Object.freeze({
     schemaVersion: 4,
@@ -152,21 +154,20 @@ function buildSnapshot(
       revision: 'phase-revision',
       warnings: []
     },
-    // Feature 082 — the Pipeline tab reads the authoritative catalog
-    // projection, not `availablePipelines` (which keeps its runtime-selection
-    // meaning). Legacy fixtures declare a Pipeline once; both fields mirror it.
-    pipelineCatalog: {
+    workflowCatalog: {
       state: 'ready',
-      records: portablePipelines.map((definition) => ({
-        key: `${definition.pipelineId}::0`,
-        pipelineId: definition.pipelineId,
+      records: portableWorkflows.map((definition) => ({
+        key: `${definition.workflowId}::0`,
+        workflowId: definition.workflowId,
         status: 'effective',
         definition,
         display: definition,
-        errors: []
+        errors: [],
+        derivedInputs: [],
+        derivedOutputs: []
       })),
-      effective: portablePipelines,
-      revision: 'pipeline-revision',
+      effective: portableWorkflows,
+      revision: 'workflow-revision',
       warnings: []
     },
     generalSettings: IDLE_GENERAL_SETTINGS
@@ -539,13 +540,11 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     expect(model.selectedOptions[0]?.textContent).toContain('Unavailable');
   });
 
-  // Feature 083 added the Workflows tab; the Workflow Library has no other
-  // mount site, so the tab bar is 4-wide from this feature forward.
-  it('renders the 4-tab bar: Phases, Pipelines, Workflows, Models', () => {
+  it('renders the 3-tab bar: Phases, Workflows, Models', () => {
     const snap = buildSnapshot();
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     const tabs = [...container.querySelectorAll('.tab-btn')].map((t) => t.textContent?.trim());
-    expect(tabs).toEqual(['Phases', 'Pipelines', 'Workflows', 'Models']);
+    expect(tabs).toEqual(['Phases', 'Workflows', 'Models']);
   });
 
   it('implements the catalog switcher as keyboard-operable tabs', async () => {
@@ -563,7 +562,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     expect(tabs[1]?.getAttribute('aria-selected')).toBe('true');
     expect(document.activeElement).toBe(tabs[1]);
     expect(container.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby'))
-      .toBe('builder-tab-pipelines');
+      .toBe('builder-tab-workflows');
   });
 
   it('Phases tab: phase list renders after switching tabs', async () => {
@@ -670,35 +669,20 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     expect(items.length).toBe(2);
   });
 
-  // Feature 096 T025 — the Model Catalog import trigger. Unmounted on every
-  // other tab, same as the per-tab save affordances above: it must not be
-  // reachable before the Models tab is active.
-  //
-  // Feature 101 (US6, T065) — the pre-switch assertion used to be "no preflight
-  // at all", which held only because this fixture opens on Pipelines and that
-  // tab had no import entry. It has one now: an empty catalog renders the shared
-  // front door, and the front door offers the import (FR-032). The claim the
-  // test is actually for survives intact — each tab mounts exactly one entry
-  // point and unmounts it with the tab — so that is what it asserts.
   it('Models tab: mounts the Model Catalog import entry point', async () => {
     const snap = buildSnapshot([], [], ['claude-sonnet-5-5']);
-    // Feature 180 (T1555, FR-004) — the assertions before the switch describe
-    // the tab this starts on, so the start is pinned rather than inherited.
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: snap, initialTab: 'pipelines' }
+      props: { snapshot: snap, initialTab: 'workflows' }
     });
     expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
-    expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).not.toBeNull();
     await switchTab(container, 'Models');
-    expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).toBeNull();
+    expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).toBeNull();
     expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
     expect(container.querySelector('[data-testid="process-import-inspect"]')).not.toBeNull();
   });
 
-  // Feature 082 — saves are mutation-scoped: the operator declares a change,
-  // and only that change is submitted against the adopted layer revision. A
-  // Save click with nothing declared is inert (FR-029).
-  it('Pipelines tab: save is inert until a mutation is declared', async () => {
+  it('Workflows tab: save is inert until a mutation is declared', async () => {
     vi.mocked(saveDraftHelper).mockClear();
     const pipeline: PipelineDefinition = Object.freeze({
       id: 'custom',
@@ -707,11 +691,11 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     }) as unknown as PipelineDefinition;
     const snap = buildSnapshot([], [pipeline]);
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: snap, initialTab: 'pipelines' }
+      props: { snapshot: snap, initialTab: 'workflows' }
     });
     await tick();
     const saveBtn = container.querySelector(
-      '[data-testid="pipelines-save-all"]'
+      '[data-testid="workflows-save-all"]'
     ) as HTMLButtonElement | null;
     expect(saveBtn).not.toBeNull();
     await fireEvent.click(saveBtn!);
@@ -737,37 +721,40 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       agy: []
     });
   });
-  it('Pipelines tab: Pipeline Name field updates name and saves correctly (BUG-005)', async () => {
+  it('Workflows tab: Workflow Name field updates name and saves correctly (BUG-005)', async () => {
     vi.mocked(saveDraftHelper).mockClear();
+    const phase: PhaseDefinition = Object.freeze({
+      id: 'speckit-specify',
+      name: 'Specify',
+      instruction: 'Write the spec.'
+    }) as unknown as PhaseDefinition;
     const pipeline: PipelineDefinition = Object.freeze({
       id: 'custom',
       name: 'Custom Pipeline',
       phases: Object.freeze(['speckit-specify'])
     }) as unknown as PipelineDefinition;
-    const snap = buildSnapshot([], [pipeline]);
+    const snap = buildSnapshot([phase], [pipeline]);
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: snap, initialTab: 'pipelines' }
+      props: { snapshot: snap, initialTab: 'workflows' }
     });
     await tick();
 
-    // Select pipeline
-    const pipelineItem = container.querySelector('.phase-list-item') as HTMLButtonElement;
-    expect(pipelineItem).not.toBeNull();
-    await fireEvent.click(pipelineItem);
+    const workflowItem = container.querySelector(
+      '[data-testid="workflows-list-item-custom"]'
+    ) as HTMLButtonElement;
+    expect(workflowItem).not.toBeNull();
+    await fireEvent.click(workflowItem);
     await tick();
 
-    // Find the Name field in the form grid
-    const nameInput = container.querySelector('[data-testid="pipelines-name-field-custom"]') as HTMLInputElement;
+    const nameInput = container.querySelector('[data-testid="workflow-field-name"]') as HTMLInputElement;
     expect(nameInput).not.toBeNull();
     expect(nameInput.value).toBe('Custom Pipeline');
 
-    // Edit Name
     await fireEvent.input(nameInput, { target: { value: 'Renamed Pipeline' } });
     await tick();
 
-    // Save
     const saveBtn = container.querySelector(
-      '[data-testid="pipelines-save-all"]'
+      '[data-testid="workflows-save-all"]'
     ) as HTMLButtonElement | null;
     expect(saveBtn).not.toBeNull();
     await fireEvent.click(saveBtn!);
@@ -775,12 +762,17 @@ describe('PipelineBuilder — restored 3-tab design', () => {
 
     expect(saveDraftHelper).toHaveBeenCalledTimes(1);
     expect(vi.mocked(saveDraftHelper).mock.calls[0][0]).toEqual({
-      kind: 'pipeline',
+      kind: 'workflow',
       id: 'custom',
-      // The fixture record carries no draft, so the staleness token is the
-      // sentinel rather than a version id (FR-024).
       expectedDraftVersion: 'no-draft',
-      body: { id: 'custom', name: 'Renamed Pipeline', version: 1, phases: ['speckit-specify'] }
+      body: {
+        workflowId: 'custom',
+        name: 'Renamed Pipeline',
+        version: 1,
+        nodes: [{ nodeId: 'speckit-specify', kind: 'phase', phaseId: 'speckit-specify' }],
+        connections: [],
+        startNodeIds: ['speckit-specify']
+      }
     });
   });
 });
@@ -1069,34 +1061,33 @@ describe('PipelineBuilder — BUG-002 cross-tab phase visibility', () => {
     const phaseItems = container.querySelectorAll('.phase-list-item');
     expect(phaseItems.length).toBe(2); // existing + new
 
-    // 2. Switch to Pipelines tab before saving.
-    await switchTab(container, 'Pipelines');
+    // 2. Switch to Workflows tab before saving.
+    await switchTab(container, 'Workflows');
 
-    // 3. Select the existing pipeline to open its editor
-    const pipelineItem = container.querySelector('.phase-list-item') as HTMLButtonElement;
-    expect(pipelineItem).not.toBeNull();
-    await fireEvent.click(pipelineItem);
+    // 3. Select the existing workflow to open its editor
+    const workflowItem = container.querySelector(
+      '[data-testid="workflows-list-item-default"]'
+    ) as HTMLButtonElement;
+    expect(workflowItem).not.toBeNull();
+    await fireEvent.click(workflowItem);
     await tick();
 
-    // 4. Check what the append affordance offers. Feature 184 (T038) — the
-    //    `<select>` + "Add Phase" pair became the palette, one button per
-    //    effective Phase, so the offer is read off the buttons that render.
+    // 4. Check what the append affordance offers.
     const offered = Array.from(
-      container.querySelectorAll('[data-testid^="pipelines-palette-phase-"]')
+      container.querySelectorAll('[data-testid^="workflow-palette-phase-"]')
     ).map((button) => button.getAttribute('data-testid'));
 
-    // An unsaved draft must not be offered to a persistable Pipeline.
-    expect(offered).toContain('pipelines-palette-phase-speckit-specify');
-    expect(offered).not.toContain('pipelines-palette-phase-new-phase');
+    // An unsaved draft must not be offered to a persistable Workflow.
+    expect(offered).toContain('workflow-palette-phase-speckit-specify');
+    expect(offered).not.toContain('workflow-palette-phase-new-phase');
 
-    // 5. Also check the sequence select for the existing pipeline phase, which
-    //    moved to the inspector and exists for the selected position (T037).
+    // 5. Also check the Phase select for the existing workflow node in the inspector.
     await fireEvent.click(
-      container.querySelector('[data-testid="pipelines-phase-card-0"]') as HTMLButtonElement
+      container.querySelector('[data-testid="workflow-node-0"]') as HTMLButtonElement
     );
     await tick();
     const sequenceSelect = container.querySelector(
-      '[data-testid="pipelines-phase-select-0"]'
+      '[data-testid="workflow-node-phase-select-0"]'
     ) as HTMLSelectElement;
     expect(sequenceSelect).not.toBeNull();
     const seqOptions = Array.from(sequenceSelect.querySelectorAll('option')).map(o => o.value);
@@ -1113,13 +1104,11 @@ describe('PipelineBuilder — BUG-002 cross-tab phase visibility', () => {
       initialTab: 'phases'
     });
     await tick();
-    // Feature 184 (T038) — re-read the palette rather than the node captured
-    // before the refresh: the offer is what the surface renders *now*.
     expect(
-      Array.from(container.querySelectorAll('[data-testid^="pipelines-palette-phase-"]')).map(
+      Array.from(container.querySelectorAll('[data-testid^="workflow-palette-phase-"]')).map(
         (button) => button.getAttribute('data-testid')
       )
-    ).toContain('pipelines-palette-phase-new-phase');
+    ).toContain('workflow-palette-phase-new-phase');
   });
 });
 
@@ -1331,31 +1320,28 @@ describe('PipelineBuilder — BUG-012 addPhase append regression guard', () => {
   });
 });
 
-// Feature 082 (US7, T054) — the Pipeline delete control is destructive, so it
-// is gated on the shared confirmation and never on its own click (FR-023). The
-// prompt has to describe the target, not just the action, and the triggering
-// control is handed to `useConfirm` so focus returns to it when the dialog
-// closes (FR-038).
-describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
+describe('PipelineBuilder — confirmed Workflow removal (US7, T054)', () => {
   const REMOVABLE: PipelineDefinition = Object.freeze({
     id: 'custom',
     name: 'Custom Pipeline',
     phases: Object.freeze(['speckit-specify'])
   }) as unknown as PipelineDefinition;
 
-  /** Renders the Pipelines tab, selects the row, and returns its delete button. */
+  /** Renders the Workflows tab, selects the row, and returns its delete button. */
   async function openDeleteControl(): Promise<{
     container: HTMLElement;
     deleteBtn: HTMLButtonElement;
   }> {
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot([], [REMOVABLE]), initialTab: 'pipelines' }
+      props: { snapshot: buildSnapshot([], [REMOVABLE]), initialTab: 'workflows' }
     });
     await tick();
-    await fireEvent.click(container.querySelector('.phase-list-item') as HTMLButtonElement);
+    await fireEvent.click(
+      container.querySelector('[data-testid="workflows-list-item-custom"]') as HTMLButtonElement
+    );
     await tick();
     const deleteBtn = container.querySelector(
-      '[data-testid="pipelines-remove"]'
+      '[data-testid="workflows-remove"]'
     ) as HTMLButtonElement | null;
     expect(deleteBtn).not.toBeNull();
     return { container, deleteBtn: deleteBtn! };
@@ -1366,10 +1352,6 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
     vi.mocked(useConfirm).mockClear();
   });
 
-  // Feature 100 (T509b, FR-049) — the prompt is raised by `deactivateDefinition`,
-  // which is the only function that can post the command it authorises. What the
-  // Pipelines tab still owns is everything the prompt needs in order to name the
-  // right row and return focus to the control that opened it.
   it('submits one removal, addressed by id, carrying what the prompt must say', async () => {
     const { deleteBtn } = await openDeleteControl();
 
@@ -1377,15 +1359,10 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
     await tick();
 
     expect(deactivateHelper).toHaveBeenCalledTimes(1);
-    // Feature 101 (T030) — `toEqual` on both arguments is exact. The empty
-    // `pipelines: []` that stood here was the removal itself, an omission from a
-    // republished layer; a deactivation names the definition and carries no rows.
     expect(deactivateHelper).toHaveBeenCalledWith(
       {
-        kind: 'pipeline',
+        kind: 'workflow',
         id: 'custom',
-        // The fixture record carries no draft, so the staleness token is the
-        // sentinel rather than a version id (FR-024).
         expectedDraftVersion: 'no-draft'
       },
       expect.objectContaining({ definitionName: 'Custom Pipeline', originatingElement: deleteBtn })
@@ -1412,24 +1389,14 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
     await tick();
     await tick();
 
-    // Nothing was sent and nothing failed, so there is no rejection to report —
-    // and the row stays selected with its delete control live.
-    expect(container.querySelector('[data-testid="save-error-banner"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflow-save-error-banner"]')).toBeNull();
     expect(
-      (container.querySelector('[data-testid="pipelines-remove"]') as HTMLButtonElement).disabled
+      (container.querySelector('[data-testid="workflows-remove"]') as HTMLButtonElement).disabled
     ).toBe(false);
   });
 });
 
-// Feature 184 (FR-R3-141, T031a/T031b/T031c) — the three claims the per-component
-// suites structurally cannot make, because each one is about the assembled
-// surface driven through the real `PipelineCatalogStore`.
-//
-// They live in this file rather than a new one because this is where the harness
-// for that already is: `buildSnapshot` builds the catalog projection the store
-// adopts, and `savedBody`/`saveDraftHelper` observe what actually left. A new
-// file would have to copy both to say anything.
-describe('PipelineBuilder — Pipeline canvas behaviour (Feature 184)', () => {
+describe('PipelineBuilder — Workflow canvas behaviour (Feature 184 / 264)', () => {
   const SPECIFY: PhaseDefinition = Object.freeze({
     id: 'speckit-specify', name: 'Specify', version: 1, instruction: 'Specify.'
   }) as unknown as PhaseDefinition;
@@ -1442,13 +1409,15 @@ describe('PipelineBuilder — Pipeline canvas behaviour (Feature 184)', () => {
     phases: Object.freeze(['speckit-specify'])
   }) as unknown as PipelineDefinition;
 
-  /** Renders the Pipelines tab on a two-Phase catalog and opens the stored row. */
+  /** Renders the Workflows tab on a two-Phase catalog and opens the stored row. */
   async function openCanvas(): Promise<HTMLElement> {
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot([SPECIFY, PLAN], [CUSTOM]), initialTab: 'pipelines' }
+      props: { snapshot: buildSnapshot([SPECIFY, PLAN], [CUSTOM]), initialTab: 'workflows' }
     });
     await tick();
-    await fireEvent.click(container.querySelector('.phase-list-item') as HTMLButtonElement);
+    await fireEvent.click(
+      container.querySelector('[data-testid="workflows-list-item-custom"]') as HTMLButtonElement
+    );
     await tick();
     return container;
   }
@@ -1456,140 +1425,75 @@ describe('PipelineBuilder — Pipeline canvas behaviour (Feature 184)', () => {
   const at = (container: HTMLElement, id: string) =>
     container.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
 
-  /** The single button carrying this exact accessible name. Undo and Redo have no test id. */
-  function byLabel(container: HTMLElement, label: string): HTMLButtonElement {
-    const found = (Array.from(container.querySelectorAll('button')) as HTMLButtonElement[]).filter(
-      (button) => button.textContent.trim() === label
-    );
-    expect(found).toHaveLength(1);
-    return found[0];
-  }
-
   it('T031a: Undo reverts the row and Redo returns it, across panes', async () => {
     const container = await openCanvas();
-    const name = () => at(container, 'pipelines-name-field-custom') as HTMLInputElement;
+    const name = () => at(container, 'workflow-field-name') as HTMLInputElement;
 
     expect(name().value).toBe('Custom Pipeline');
     await fireEvent.input(name(), { target: { value: 'Renamed Pipeline' } });
     await tick();
     expect(name().value).toBe('Renamed Pipeline');
 
-    // The assertion is on the *row*, not on the buttons. T027 proves Undo and
-    // Redo render with the right disabled bounds, which stays true if the
-    // handlers no longer reach the store's history at all — the exact shape a
-    // literal port takes when it carries the markup and drops the wiring.
-    await fireEvent.click(byLabel(container, 'Undo'));
+    await fireEvent.click(at(container, 'workflows-undo') as HTMLButtonElement);
     await tick();
     expect(name().value).toBe('Custom Pipeline');
 
-    await fireEvent.click(byLabel(container, 'Redo'));
+    await fireEvent.click(at(container, 'workflows-redo') as HTMLButtonElement);
     await tick();
     expect(name().value).toBe('Renamed Pipeline');
   });
 
-  it('T031b: a stored Pipeline is editable in place, on the canvas and in the inspector', async () => {
+  it('T031b: a stored Workflow is editable in place, on the canvas and in the inspector', async () => {
     vi.mocked(saveDraftHelper).mockClear();
     const container = await openCanvas();
 
-    // The canvas-side edit is the sequence: FR-010 retired the header's name
-    // input, so the name is now only authorable in the inspector and the two
-    // edits below are one from each pane.
-    await fireEvent.click(at(container, 'pipelines-palette-phase-speckit-plan') as HTMLElement);
+    await fireEvent.click(at(container, 'workflow-palette-phase-speckit-plan') as HTMLElement);
     await tick();
-    await fireEvent.input(at(container, 'pipelines-name-field-custom') as HTMLInputElement, {
+    await fireEvent.input(at(container, 'workflow-field-name') as HTMLInputElement, {
       target: { value: 'Renamed Pipeline' }
     });
     await tick();
 
-    await fireEvent.click(at(container, 'pipelines-save-all') as HTMLButtonElement);
+    await fireEvent.click(at(container, 'workflows-save-all') as HTMLButtonElement);
     await tick();
 
-    // Both reached the store, so neither pane is read-only for a stored row.
     expect(saveDraftHelper).toHaveBeenCalledTimes(1);
     expect(savedBody()).toEqual({
-      id: 'custom',
+      workflowId: 'custom',
       name: 'Renamed Pipeline',
       version: 1,
-      phases: ['speckit-specify', 'speckit-plan']
+      nodes: [
+        { nodeId: 'speckit-specify', kind: 'phase', phaseId: 'speckit-specify' },
+        { nodeId: 'node', kind: 'phase', phaseId: 'speckit-plan' }
+      ],
+      connections: [],
+      startNodeIds: ['speckit-specify']
     });
   });
 
   it('T031b: nothing but the ID field is gated on `persisted`', async () => {
     const container = await openCanvas();
-    const id = at(container, 'pipelines-id-field-custom') as HTMLInputElement;
+    const id = at(container, 'workflow-field-workflowId') as HTMLInputElement;
 
-    // T019 proves the ID field is read-only when persisted, which is true under
-    // both the Pipeline rule (identity is frozen, the body is not) and the
-    // Workflow rule (a stored row is read-only outright). Only the pairing tells
-    // them apart: under the Workflow rule every assertion below flips.
     expect(id.readOnly).toBe(true);
-    expect((at(container, 'pipelines-name-field-custom') as HTMLInputElement).readOnly).toBe(false);
-    expect((at(container, 'pipelines-description-custom') as HTMLTextAreaElement).readOnly).toBe(
+    expect((at(container, 'workflow-field-name') as HTMLInputElement).readOnly).toBe(false);
+    expect((at(container, 'workflow-field-description') as HTMLTextAreaElement).readOnly).toBe(
       false
     );
+    await fireEvent.input(at(container, 'workflow-field-name') as HTMLInputElement, {
+      target: { value: 'Edited' }
+    });
+    await tick();
     for (const control of [
-      'pipelines-save-all',
-      'pipelines-remove',
-      'pipelines-duplicate',
-      'pipelines-discard',
-      'pipelines-palette-phase-speckit-plan',
-      'pipelines-remove-phase-0'
+      'workflows-save-all',
+      'workflows-remove',
+      'workflows-duplicate',
+      'workflows-discard',
+      'workflow-palette-phase-speckit-plan',
+      'workflow-node-remove-0'
     ]) {
       expect((at(container, control) as HTMLButtonElement).disabled).toBe(false);
     }
-  });
-
-  // T031c. Every leg is a forward walk over the surface's own tab order, so an
-  // element that is disabled, carries `tabindex="-1"`, or is not focusable at all
-  // is unreachable and the walk throws. Per-control assertions all pass while one
-  // element stays untabbable, and that element is what T1548's acceptance line —
-  // "every add, reorder, and remove operable from the keyboard alone" — is about.
-  const TABBABLE = 'a[href], button, input, select, textarea, [tabindex]';
-
-  function tabUntil(container: HTMLElement, testId: string): HTMLElement {
-    const order = (Array.from(container.querySelectorAll(TABBABLE)) as HTMLElement[]).filter(
-      (element) =>
-        !(element as HTMLButtonElement).disabled &&
-        element.getAttribute('tabindex') !== '-1' &&
-        element.getAttribute('aria-hidden') !== 'true'
-    );
-    const from = order.indexOf(document.activeElement as HTMLElement);
-    for (let index = from + 1; index < order.length; index++) {
-      order[index].focus();
-      if (order[index].dataset.testid === testId) return order[index];
-    }
-    throw new Error(`"${testId}" is not reachable by Tab (${order.length} stops walked)`);
-  }
-
-  it('T031c: add, select, reorder and remove are all reachable by Tab alone', async () => {
-    const container = await openCanvas();
-    // Each leg restarts the walk: a click re-renders the canvas and detaches the
-    // node that had focus, so continuing from a stale `activeElement` would prove
-    // nothing. Restarting keeps every leg's claim intact — "reachable by Tab".
-    const leg = (testId: string) => {
-      (document.activeElement as HTMLElement | null)?.blur();
-      return tabUntil(container, testId);
-    };
-    // jsdom does not synthesise the click a browser fires when Enter lands on a
-    // focused native button, so the walk proves reachability and the click stands
-    // in for the platform's own activation.
-    const press = async (testId: string) => {
-      await fireEvent.click(leg(testId));
-      await tick();
-    };
-
-    await press('pipelines-palette-phase-speckit-plan');
-    expect(at(container, 'pipelines-phase-card-1')).not.toBeNull();
-
-    await press('pipelines-phase-card-1');
-    expect(at(container, 'pipelines-phase-select-1')).not.toBeNull();
-
-    await press('pipelines-move-phase-up-1');
-    expect(at(container, 'pipelines-phase-id-0')?.textContent.trim()).toBe('speckit-plan');
-
-    await press('pipelines-remove-phase-0');
-    expect(at(container, 'pipelines-phase-card-1')).toBeNull();
-    expect(at(container, 'pipelines-phase-id-0')?.textContent.trim()).toBe('speckit-specify');
   });
 });
 

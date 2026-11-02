@@ -15,21 +15,13 @@
   import TrustBanner from '../TrustBanner.svelte';
   import { mergeDetectedModels } from './model-catalog-state';
   import { authoredPhaseDocument } from './phase-catalog-state';
+  import { dependentWorkflowsForPhase } from './workflow-catalog-state';
   import RetryCapOutcomeEditor from './RetryCapOutcomeEditor.svelte';
   import type { MutablePhase, PhaseEditState } from './types';
 
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
   const RUNNER_KINDS = ['claude', 'codex', 'agy'] as const;
-  // Feature 098 T018 — this file used to mirror the host's
-  // `GIT_METADATA_WRITE_PHASE_IDS` and grey out the Inherit and Codex runner
-  // options for a built-in Phase on that list. Both halves of the condition are
-  // gone: the host rule now keys on the Phase's declared `sideEffects === 'git'`
-  // (FR-007) and FR-008 permits **no replacement id list** anywhere, webview
-  // copies included. `MutablePhase` carries no declared containment class, so
-  // this surface cannot answer the re-keyed question and does not guess at it —
-  // the host's lifecycle save gate and the launch assertion in `phase-runner.ts`
-  // are the authoritative refusals, and a save that violates the rule comes back
-  // as a field error on `runner`.
+  // Feature 098 T018 — runner sideEffects containment is enforced by the host save gate and runner.
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -197,6 +189,14 @@
       (snapshot.phaseCatalog?.records ?? []).map((record) => [record.key, record.lifecycle])
     )
   );
+  const selectedPhaseDependents = $derived(
+    selectedPhase
+      ? dependentWorkflowsForPhase(
+          selectedPhase.id,
+          snapshot.workflowCatalog?.state === 'ready' ? snapshot.workflowCatalog.effective : []
+        )
+      : []
+  );
 </script>
 
 <!--
@@ -332,10 +332,18 @@
         </div>
 
         <!-- Feature 186 (US1, T008, D-1, D-3) — the open Phase's lifecycle
-             facts and actions. Its own bordered block, never inside
-             `.header-actions`: the panel's "Discard draft" write must never
-             sit adjacent to this header's local-reset "Discard Draft" button
-             above, which is a same-named but unrelated control (D-3). -->
+             facts and actions. -->
+        <div class="phase-badges" data-testid="phase-dependent-workflows">
+          {#if selectedPhaseDependents.length === 0}
+            <span class="wf-badge">Used by 0 Workflows</span>
+          {:else}
+            <span class="wf-badge">
+              Used by {selectedPhaseDependents.length}
+              {selectedPhaseDependents.length === 1 ? 'Workflow' : 'Workflows'}:
+              {selectedPhaseDependents.map((w) => w.name || w.workflowId).join(', ')}
+            </span>
+          {/if}
+        </div>
         <DefinitionLifecyclePanel
           kind="phase"
           definitionId={phase.id}

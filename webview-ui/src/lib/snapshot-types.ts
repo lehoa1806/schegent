@@ -296,14 +296,22 @@ export type {
   PipelineSourceStatus
 } from '../../../src/contracts/pipeline-definitions.js';
 export type {
+  WorkflowBinding,
   WorkflowCatalogMutation,
   WorkflowCondition,
   WorkflowConditionLiteral,
   WorkflowConditionOperand,
   WorkflowConditionOperator,
   WorkflowConnection,
+  WorkflowHandoffMode,
+  WorkflowInputBinding,
+  WorkflowInputBindingSource,
+  WorkflowInputPort,
   WorkflowNode,
+  WorkflowNodeKind,
   WorkflowNodeTerminalStatus,
+  WorkflowOutputBinding,
+  WorkflowOutputPort,
   WorkflowSelectionRule,
   WorkflowSourceStatus
 } from '../../../src/contracts/workflow-definitions.js';
