@@ -27,7 +27,11 @@ export const RESET_OPERATOR_PSEUDONYM_TEXT = {
     'recorded without either value.',
   confirmLabel: 'Reset pseudonym',
   done: 'Operator pseudonym reset.',
-  failed: 'The pseudonym was not reset, because the reset could not be recorded in the audit log.'
+  failed: 'The pseudonym was not reset, because the reset could not be recorded in the audit log.',
+  // The row IS in the log here: telling the operator it was not recorded would be wrong twice (G8).
+  storeFailed:
+    'The pseudonym was not reset: the reset was recorded in the audit log, but the new pseudonym could not be stored, ' +
+    'so the old one still applies.'
 } as const;
 
 export interface ResetOperatorPseudonymDeps {
@@ -60,8 +64,8 @@ export async function runResetOperatorPseudonym(deps: ResetOperatorPseudonymDeps
     await deps.attribution.reset();
   } catch {
     // The row is written and the new value could not be kept: the old pseudonym still stands, and the
-    // operator is told the reset did not complete rather than that it did.
-    void deps.notifier.warn(RESET_OPERATOR_PSEUDONYM_TEXT.failed);
+    // operator is told the reset did not complete rather than that it did, and why.
+    void deps.notifier.warn(RESET_OPERATOR_PSEUDONYM_TEXT.storeFailed);
     return;
   }
   deps.notifier.info(RESET_OPERATOR_PSEUDONYM_TEXT.done);
