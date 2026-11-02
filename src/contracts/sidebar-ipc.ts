@@ -334,7 +334,7 @@ export type {
 // Feature 092 (US1, FR-019/FR-020) — the seven reinstated queue commands. Their
 // wire shapes live in sidebar-ipc/queue.ts, as every family since 084 does; what
 // stays here is the registration the drift test requires be exhaustive — the
-// literal, the SIDEBAR_COMMAND_TYPES entry, this re-export, the SidebarCommand
+// literal, the COMMAND_TYPES entry, this re-export, the SidebarCommand
 // member, and the COMMAND_GUARDS entry.
 import type {
   AttestTaskCompletedCommand, CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
@@ -691,8 +691,8 @@ export type SidebarCommand =
 //
 // Each guard validates the discriminator literal only — the deeper
 // payload validation is performed by `src/ui/sidebar/ipc-validator.ts`.
-// The exhaustive `COMMAND_GUARDS` registry is what the message router
-// uses to reject unknown command types before any further processing.
+// The exhaustive `COMMAND_GUARDS` registry has no production reader (ingress is
+// `validateInboundMessage`; the router decides from `COMMAND_AUTHORITY`); tests read it.
 
 function isObjectWithType<T extends string>(value: unknown, type: T): boolean {
   return (
