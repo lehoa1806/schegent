@@ -175,10 +175,36 @@ function expireStale(now: number): void {
   }
 }
 
+/** An error class name that is safe to print: letters and digits, bounded. */
+const THROWN_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
+
+/** The kind of a thrown value for a log line: a class name or a type, never its message. */
+function thrownKind(thrown: unknown): string {
+  if (thrown instanceof Error && THROWN_NAME_PATTERN.test(thrown.name)) return thrown.name;
+  return typeof thrown;
+}
+
+/**
+ * The caller's `post` threw, so nothing reached the host for this send. The waiter ends `unknown`
+ * (the text the operator already sees for "not yet known") and is owed no late outcome.
+ *
+ * An entry this call created is undone whole, its pending mark and ack listener included: no ack
+ * can ever arrive for it, and the next send must mint a new identity. An entry an earlier send
+ * created stays, because that send may still be answered and the retry identity must survive it.
+ */
+function abandonSend(entry: IntentEntry, waiter: Waiter, entryIsNew: boolean): void {
+  entry.waiters.delete(waiter);
+  waiter.onLateOutcome = undefined;
+  settle(waiter, { kind: 'unknown', correlationId: entry.correlationId });
+  if (!entryIsNew) return;
+  discard(entry);
+  snapshotStore.clearPending(entry.correlationId);
+}
+
 /**
  * Sends one intent, or re-sends an unresolved one under its original identity. Resolves with the
- * host's ack, with `unknown` at `timeoutMs`, or with `cancelled` when the waiter's signal aborts or
- * the ledger is discarded. It never rejects.
+ * host's ack, with `unknown` at `timeoutMs` or when `post` throws, or with `cancelled` when the
+ * waiter's signal aborts or the ledger is discarded. It never rejects.
  */
 export function sendIntent<P>(request: SendIntentRequest<P>): Promise<IntentResult> {
   const now = Date.now();
@@ -226,7 +252,16 @@ export function sendIntent<P>(request: SendIntentRequest<P>): Promise<IntentResu
     live.waiters.add(waiter);
     // The post is the module's own `postCommand` site. A retry re-posts the STORED payload, so
     // the host sees the same command it already has under this identity (FR-022).
-    request.post(live.correlationId, (isNew ? request.payload : live.payload) as P);
+    try {
+      request.post(live.correlationId, (isNew ? request.payload : live.payload) as P);
+    } catch (thrown) {
+      // A `postMessage` can throw (a `DataCloneError` for a payload structured clone cannot carry).
+      // The helper never rejects, so the throw ends here. The line names the command and the kind
+      // of throw and nothing else: the message can carry a fragment of the payload or a path.
+      console.warn(`[schegent] a command could not be posted type=${request.type} cause=${thrownKind(thrown)}`);
+      abandonSend(live, waiter, isNew);
+      return;
+    }
     waiter.timer = setTimeout(() => {
       waiter.timer = null;
       // The outcome is not yet known. The waiter stays in the entry for its late callback.
