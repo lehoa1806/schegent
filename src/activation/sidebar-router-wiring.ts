@@ -20,6 +20,7 @@ import { coerceModels } from '../config/pipeline-config-loader';
 import { readGeneralSettings, writeGeneralSettings, type GeneralSettingsConfig } from '../config/general-settings';
 import { setUncontainedGrant } from '../services/uncontained-grant-writer';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
+import { describeFailure } from '../lib/errors';
 import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
 import type { GuardedRunService } from '../services/guarded-run-service';
@@ -256,6 +257,13 @@ return new MessageRouter({
           if (nextPath && nextPath !== previousPath) {
             runtimeLogSink.clearSuppression(nextPath);
           }
+        },
+        // FR-R4-F05 — the sidebar is answered a code (`write-failed:<key>`), never the exception;
+        // its detail lands here, sanitized first and bounded after.
+        onWriteFailure: ({ key, stage, error }) => {
+          logger.warn(`extension: general settings ${stage} failed: key=${key}`, {
+            error: describeFailure(error, (value) => logger.sanitize(value))
+          });
         }
       }
     );
