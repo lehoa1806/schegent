@@ -43,8 +43,14 @@ export type RedactionCategory =
 
 export type RedactionOutcome = 'redacted' | 'preserved' | 'over-redacted' | 'unsupported';
 
-/** How the sink test delivers a case: as a plain line, or in the shape its sink's framing needs. */
-export type RedactionFraming = 'line' | 'split-key-block' | 'structured' | 'whole-artifact';
+/**
+ * How the sink test delivers a case: as a plain line, or in the shape its sink's framing needs.
+ * `container-under-key` is for one recorded limit: the value is placed in an array under `key`. No sink
+ * test selects it, because an `unsupported` case is printed and never asserted, so its `sinks` is empty;
+ * the two walkers that make the limit are pinned in `redaction-structured-keys.test.ts` and
+ * `phase-log-sanitizer.test.ts`.
+ */
+export type RedactionFraming = 'line' | 'split-key-block' | 'structured' | 'whole-artifact' | 'container-under-key';
 
 export interface RedactionCase {
   /** Unique and human-readable. */
@@ -409,6 +415,15 @@ const RECORDED_LIMITS: ReadonlyArray<RedactionCase> = [
     (s) => `dbPwd=${s}`,
     24,
     'The string pattern cannot tell dbPwd from the shell OLDPWD without case, so pwd counts only after a separator; the structured walker does see the key.'
+  ),
+  limit(
+    'a container under a secret-named key',
+    'quoting-casing',
+    'unsupported',
+    (s) => `internal credential ${s.slice(0, 12)}-${s.slice(12)}`,
+    24,
+    'Only a string directly under a key that names a secret is replaced; an array or an object under such a key is walked, so a string inside it in a format no pattern knows stays, and a vendor token inside it is still removed by pattern.',
+    { sinks: [], framing: 'container-under-key', key: 'token' }
   ),
   {
     name: 'a count named TOKEN_COUNT',
