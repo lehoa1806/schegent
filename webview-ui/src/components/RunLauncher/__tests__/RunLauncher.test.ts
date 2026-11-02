@@ -19,7 +19,7 @@ import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LaunchPipelineResult } from '../../../lib/messages';
 import type { RunRequest } from '../../../../../src/contracts/run-request';
-import type { PipelineDefinition } from '../../../lib/snapshot-types';
+import type { BackendPosture, CapabilityNotice, PipelineDefinition } from '../../../lib/snapshot-types';
 import type { LaunchRunSettings } from '../../../../../src/contracts/snapshot-projections';
 
 const launchSpy = vi.fn<(request: RunRequest) => Promise<LaunchPipelineResult>>();
@@ -314,8 +314,19 @@ const RUN_SETTINGS: LaunchRunSettings = {
   maxDurationSeconds: { value: 21_600, origin: 'workspace' }
 };
 
+/** What the host projects about authority for a launch entry (FR-R4-F06): all three default to nothing. */
+interface AuthoritySeed {
+  readonly backends?: readonly string[];
+  readonly capabilityNotices?: readonly CapabilityNotice[];
+  readonly postures?: readonly BackendPosture[];
+}
+
 /** Seed the snapshot with the launch entry the host would project for `pipeline`. */
-function seedLaunchEntry(pipeline: PipelineDefinition, runSettings?: LaunchRunSettings): void {
+function seedLaunchEntry(
+  pipeline: PipelineDefinition,
+  runSettings?: LaunchRunSettings,
+  authority: AuthoritySeed = {}
+): void {
   storeState.snapshot = {
     launchables: {
       pipelines: {
@@ -327,14 +338,14 @@ function seedLaunchEntry(pipeline: PipelineDefinition, runSettings?: LaunchRunSe
             name: pipeline.name,
             activeVersionId: 'v1',
             inputs: [],
-            backends: ['claude'],
-            capabilityNotices: [],
+            backends: authority.backends ?? ['claude'],
+            capabilityNotices: authority.capabilityNotices ?? [],
             ...(runSettings === undefined ? {} : { runSettings })
           }
         ]
       }
     },
-    backendPostures: []
+    backendPostures: authority.postures ?? []
   };
 }
 
@@ -460,6 +471,82 @@ describe('process preview (T055, FR-035; Feature 254 D-T1, FR-021, FR-022)', () 
     expect(withSettings).toBe(without);
     expect(without).not.toContain('executionDefaults');
     expect(without).not.toContain('opus');
+  });
+});
+
+// FR-R4-F06 (FR-007; D4; tasks TA8) -- what the form says about the authority the Run will have.
+//
+// `LaunchAuthorityNotice` has its own suite, which feeds it props directly. What that suite cannot
+// show is that the LAUNCHER mounts it and hands it the right three things: the host's postures, the
+// backends of the launch entry found for THIS Pipeline, and that entry's capability notices. The
+// launcher is also what a History re-run mounts, so these cases cover that path too. Every case
+// renders the real form against a seeded snapshot and reads the notice off it.
+describe('the launcher says what authority the Run will have (FR-R4-F06 FR-007)', () => {
+  const CLAUDE_TEXT = 'Host text: Claude runs with your local user authority.';
+  const POSTURES: readonly BackendPosture[] = [
+    { kind: 'claude', containment: 'none', mechanism: 'none', grant: 'granted', notice: CLAUDE_TEXT },
+    {
+      kind: 'codex',
+      containment: 'os-enforced',
+      mechanism: 'codex-sandbox-workspace-write',
+      grant: 'not-required'
+    }
+  ];
+
+  it('shows the host notice for a Pipeline that runs on a granted uncontained backend', () => {
+    seedLaunchEntry(PIPELINE, undefined, { backends: ['claude'], postures: POSTURES });
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    expect(getByTestId('launch-authority-notice-text-claude').textContent).toBe(CLAUDE_TEXT);
+  });
+
+  it('puts the notice above the control that starts the Run', () => {
+    seedLaunchEntry(PIPELINE, undefined, { backends: ['claude'], postures: POSTURES });
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    const notice = getByTestId('launch-authority-notice');
+    const submit = getByTestId('run-launcher-submit');
+    expect(notice.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows nothing for a Pipeline that runs only on a contained backend', () => {
+    // The postures still carry Claude's notice. A launcher that rendered every posture's notice, or
+    // read the window default in place of the entry's own backends, would show it here.
+    seedLaunchEntry(PIPELINE, undefined, { backends: ['codex'], postures: POSTURES });
+    const { getByTestId, queryByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    expect(getByTestId('run-launcher-submit')).toBeTruthy();
+    expect(queryByTestId('launch-authority-notice')).toBeNull();
+    expect(queryByTestId('launch-authority-notice-text-claude')).toBeNull();
+  });
+
+  it('shows the entry capability notices, even where no posture notice applies', () => {
+    const notices: readonly CapabilityNotice[] = [
+      {
+        phaseName: 'speckit-plan',
+        backend: 'codex',
+        outcome: 'residual',
+        text: 'Host text: speckit-plan is bounded by tool access.'
+      }
+    ];
+    seedLaunchEntry(PIPELINE, undefined, {
+      backends: ['codex'],
+      postures: POSTURES,
+      capabilityNotices: notices
+    });
+    const { getByTestId, queryByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    expect(getByTestId('launch-authority-capability-0').textContent).toBe(notices.at(0)?.text);
+    expect(queryByTestId('launch-authority-notice-text-claude')).toBeNull();
+  });
+
+  it('shows nothing for a Pipeline the launch projection does not offer', () => {
+    // The entry is found by id. A Pipeline the host did not project has no backends to speak of, and
+    // the form must not borrow another entry's.
+    seedLaunchEntry(EMPTY_CONTRACT, undefined, { backends: ['claude'], postures: POSTURES });
+    const { queryByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    expect(queryByTestId('launch-authority-notice')).toBeNull();
   });
 });
 
