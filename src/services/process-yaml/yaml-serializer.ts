@@ -104,85 +104,11 @@ export const SPEC_KEY_ORDER = Object.freeze([
   'retryCondition'
 ] as const);
 
-// --- package document orders (data-model.md §2) -----------------------------
-
-export const PACKAGE_DOCUMENT_KEY_ORDER = Object.freeze([
-  'apiVersion',
-  'kind',
-  'metadata',
-  'spec',
-  'included'
-] as const);
-
-export const PIPELINE_METADATA_KEY_ORDER = Object.freeze([
-  'id',
-  'name',
-  'version',
-  'description'
-] as const);
-
-export const PIPELINE_SPEC_KEY_ORDER = Object.freeze([
-  'phaseIds',
-  'inputs',
-  'outputs',
-  'bindings',
-  'executionDefaults',
-  'recommendedNext'
-] as const);
-
-export const INPUT_PORT_KEY_ORDER = Object.freeze([
-  'portId',
-  'label',
-  'type',
-  'required',
-  'description'
-] as const);
-
-export const OUTPUT_PORT_KEY_ORDER = Object.freeze([
-  'portId',
-  'label',
-  'type',
-  'description'
-] as const);
-
-export const INPUT_BINDING_KEY_ORDER = Object.freeze([
-  'kind',
-  'phaseIndex',
-  'inputKey',
-  'source'
-] as const);
-
-export const OUTPUT_BINDING_KEY_ORDER = Object.freeze([
-  'kind',
-  'phaseIndex',
-  'portId',
-  'outputKey'
-] as const);
-
-export const BINDING_SOURCE_KEY_ORDER = Object.freeze([
-  'from',
-  'phaseIndex',
-  'portId'
-] as const);
-
-export const EXECUTION_DEFAULTS_KEY_ORDER = Object.freeze([
-  'runner',
-  'model',
-  'effort',
-  'timeoutSeconds'
-] as const);
-
 // --- Workflow package document orders (contracts/workflow-yaml-grammar.md §2) -
 //
-// Feature 086 adds orders, not productions. A Workflow document is written with
-// the same emitters as a Pipeline one — the grammar does not move — so what is
-// new here is nine declarations and nothing else.
-//
-// Each of these is also the unknown-key oracle on read, as `PACKAGE_TOP_LEVEL_KEYS`
-// already is: a key absent from the order is a key this format does not have.
-// That is why the document order below duplicates `PACKAGE_DOCUMENT_KEY_ORDER`
-// key for key rather than aliasing it — the two documents are free to diverge,
-// and an alias would silently accept the other's shape if either ever did.
+// Feature 086 / Feature 263 (FR-R5-F04) — every mapping key order in a
+// composable Workflow package is declared here and serves as both the
+// deterministic emission order and the unknown-key oracle on read.
 
 export const WORKFLOW_PACKAGE_DOCUMENT_KEY_ORDER = Object.freeze([
   'apiVersion',
@@ -200,9 +126,22 @@ export const WORKFLOW_METADATA_KEY_ORDER = Object.freeze([
 ] as const);
 
 export const WORKFLOW_SPEC_KEY_ORDER = Object.freeze([
+  'inputs',
+  'outputs',
   'nodes',
   'connections',
-  'startNodeIds'
+  'bindings',
+  'startNodeIds',
+  'executionDefaults',
+  'recommendedNext'
+] as const);
+
+export const WORKFLOW_PORT_KEY_ORDER = Object.freeze([
+  'portId',
+  'label',
+  'type',
+  'required',
+  'description'
 ] as const);
 
 export const WORKFLOW_NODE_KEY_ORDER = Object.freeze([
@@ -210,13 +149,13 @@ export const WORKFLOW_NODE_KEY_ORDER = Object.freeze([
   'kind',
   'phaseId',
   'workflowId',
-  'pipelineId',
   'label'
 ] as const);
 
 export const WORKFLOW_CONNECTION_KEY_ORDER = Object.freeze([
   'from',
   'to',
+  'handoff',
   'condition',
   'priority',
   'isDefault',
@@ -225,7 +164,8 @@ export const WORKFLOW_CONNECTION_KEY_ORDER = Object.freeze([
 
 export const WORKFLOW_ENDPOINT_KEY_ORDER = Object.freeze([
   'nodeId',
-  'portId'
+  'portId',
+  'kind'
 ] as const);
 
 /**
@@ -245,8 +185,35 @@ export const WORKFLOW_OPERAND_KEY_ORDER = Object.freeze([
   'field'
 ] as const);
 
+export const WORKFLOW_BINDING_KEY_ORDER = Object.freeze([
+  'kind',
+  'nodeId',
+  'inputKey',
+  'portId',
+  'outputKey',
+  'sourcePortId',
+  'type',
+  'required',
+  'label',
+  'source',
+  'selection'
+] as const);
+
+export const WORKFLOW_BINDING_SOURCE_KEY_ORDER = Object.freeze([
+  'from',
+  'nodeId',
+  'portId'
+] as const);
+
+export const EXECUTION_DEFAULTS_KEY_ORDER = Object.freeze([
+  'runner',
+  'model',
+  'effort',
+  'timeoutSeconds'
+] as const);
+
 export const WORKFLOW_INCLUDED_KEY_ORDER = Object.freeze([
-  'pipelines',
+  'workflows',
   'phases'
 ] as const);
 

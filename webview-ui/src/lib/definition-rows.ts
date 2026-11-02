@@ -22,6 +22,11 @@ import type {
   RetryCapOutcome
 } from '../../../src/contracts/process-definitions';
 import type {
+  WorkflowBinding,
+  WorkflowInputPort,
+  WorkflowOutputPort
+} from '../../../src/contracts/workflow-definitions';
+import type {
   PhaseBinding,
   PhaseDefinition,
   PipelineExecutionDefaults,
@@ -108,9 +113,14 @@ export interface SaveWorkflowRow {
   readonly name: string;
   readonly description?: string;
   readonly version: number;
+  readonly inputs?: readonly WorkflowInputPort[];
+  readonly outputs?: readonly WorkflowOutputPort[];
   readonly nodes: readonly WorkflowNode[];
   readonly connections: readonly WorkflowConnection[];
+  readonly bindings?: readonly WorkflowBinding[];
   readonly startNodeIds: readonly string[];
+  readonly executionDefaults?: PipelineExecutionDefaults;
+  readonly recommendedNext?: readonly string[];
 }
 
 /** The id a Pipeline row is addressed by; `''` when it declares neither spelling. */

@@ -371,7 +371,6 @@ export type {
 export { READ_METRICS_RUN_IDS_MAX, isReadMetricsRunIdList } from './sidebar-ipc/metrics';
 export type {
   ProcessYamlResourceKind,
-  PipelineExportInclusion,
   WorkflowExportInclusion,
   ExportProcessYamlRequest,
   ExportProcessYamlCommand,

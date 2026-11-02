@@ -33,6 +33,7 @@ of them — are in
 |---|---|
 | [`api-and-cli.md`](api-and-cli.md) | every shipped command surface: Command Palette commands and their arguments, the host/webview boundary operations, and the access-control vocabulary. The exhaustive user-facing reference |
 | [`commands.md`](commands.md) | the Command Palette entries as an operator index, pointing into `api-and-cli.md` for argument detail |
+| [`workflow-yaml-grammar.md`](workflow-yaml-grammar.md) | canonical key ordering, closed field sets, inclusion closure traversal, and refusal semantics for `kind: Workflow` YAML documents (`FR-R5-F04`) |
 
 `tests/lint/doc-duplicate-authority.test.ts` enforces the one-authority rule by substantive-line overlap
 across the whole envelope. Adding a document that restates an existing one fails it.

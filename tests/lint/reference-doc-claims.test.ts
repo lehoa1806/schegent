@@ -67,6 +67,10 @@ const NO_CHECKABLE_CLAIMS: ReadonlyArray<{ readonly file: string; readonly reaso
   {
     file: 'file-layout.md',
     reason: 'on-disk paths under .schegent/, which are runtime artifacts rather than tracked files, so no path check applies'
+  },
+  {
+    file: 'workflow-yaml-grammar.md',
+    reason: 'frozen YAML grammar for Workflow package and Model Catalog documents; carries field tables and refusal codes rather than manifest settings or audit event names'
   }
 ];
 

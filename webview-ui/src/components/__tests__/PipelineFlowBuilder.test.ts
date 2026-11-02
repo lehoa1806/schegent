@@ -13,8 +13,6 @@ import PipelineFlowBuilder from '../PipelineBuilderEditors/PipelineFlowBuilder.s
 import type { MutablePipeline } from '../PipelineBuilderEditors/types';
 import { FLOW_PHASES, flowPipelineRow } from './pipeline-flow-fixtures';
 
-vi.mock('../../lib/process-yaml-ipc', () => ({ exportPipelineYaml: vi.fn() }));
-
 afterEach(cleanup);
 
 const SNAPSHOT = {

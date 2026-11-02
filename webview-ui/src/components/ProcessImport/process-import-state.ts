@@ -54,10 +54,8 @@ import type {
 } from '../../lib/messages';
 import type { SaveModelsImportRequest, SaveModelsImportResult } from '../../lib/save-models';
 import type { LifecycleResult } from '../../lib/catalog-lifecycle';
-import { pipelineRowId } from '../../lib/definition-rows';
 import type {
   SavePhaseRow,
-  SavePipelineRow,
   SaveWorkflowRow
 } from '../../lib/definition-rows';
 import type {
@@ -66,7 +64,6 @@ import type {
 } from '../../../../src/contracts/catalog-lifecycle';
 import { formatModelCatalogSaveRejection } from '../PipelineBuilderEditors/model-catalog-state';
 import { formatPhaseSaveRejection } from '../PipelineBuilderEditors/phase-catalog-state';
-import { formatPipelineSaveRejection } from '../PipelineBuilderEditors/pipeline-catalog-state';
 import { formatWorkflowSaveRejection } from '../PipelineBuilderEditors/workflow-catalog-state';
 import { OUTCOME_NOT_YET_KNOWN_TEXT, isOutcomeNotYetKnown } from '../../lib/boundary-refusal-text';
 
@@ -76,19 +73,10 @@ import { OUTCOME_NOT_YET_KNOWN_TEXT, isOutcomeNotYetKnown } from '../../lib/boun
  * Derived from the contract rather than mirrored, because a second declaration
  * of the portable field set is a second thing to keep in step with the host, and
  * FR-046a turns any divergence into a lossy round trip.
- *
- * Narrowed to the `'phase'` arm as of feature 085, which widened the row union
- * with a Pipeline arm; `ImportedPipelineDefinition` is its counterpart.
  */
 export type ImportedPhaseDefinition = Extract<
   ImportPlanRow,
   { outcome: 'import'; resourceKind: 'phase' }
->['definition'];
-
-/** The definition a Pipeline `import` plan row carries, derived the same way. */
-export type ImportedPipelineDefinition = Extract<
-  ImportPlanRow,
-  { outcome: 'import'; resourceKind: 'pipeline' }
 >['definition'];
 
 /** The definition a Workflow `import` plan row carries, derived the same way. */
@@ -98,11 +86,6 @@ export type ImportedWorkflowDefinition = Extract<
 >['definition'];
 
 type ImportOutcomeRow = Extract<ImportPlanRow, { outcome: 'import'; resourceKind: 'phase' }>;
-
-type PipelineImportOutcomeRow = Extract<
-  ImportPlanRow,
-  { outcome: 'import'; resourceKind: 'pipeline' }
->;
 
 type WorkflowImportOutcomeRow = Extract<
   ImportPlanRow,
@@ -170,28 +153,13 @@ export function phaseImportRows(plan: ImportPlan): readonly ImportOutcomeRow[] {
 }
 
 /**
- * The Pipeline `import` rows of a plan, in plan order.
- *
- * Separate from the Phase accessor rather than a filter at the call site,
- * because the two are written by different layer saves under different intents,
- * in a fixed order (FR-038). A single list would make the ordering an accident
- * of how the plan happened to arrive.
- */
-export function pipelineImportRows(plan: ImportPlan): readonly PipelineImportOutcomeRow[] {
-  return plan.rows.filter(
-    (row): row is PipelineImportOutcomeRow =>
-      row.outcome === 'import' && row.resourceKind === 'pipeline'
-  );
-}
-
-/**
  * The Workflow `import` rows of a plan, in plan order.
  *
- * A third accessor for the same reason there is a second: the Workflow layer is
- * a third independently-revisioned catalog, written last under its own intent
- * (FR-045). Folding it into either of the others would make the write order —
- * the thing that decides whether a self-contained package resolves — depend on
- * how the plan happened to list its rows.
+ * Separate from the Phase accessor: the Workflow layer is an
+ * independently-revisioned catalog, written after Phases under its own intent
+ * (FR-045). Folding it into the Phase list would make the write order — the
+ * thing that decides whether a self-contained package resolves — depend on how
+ * the plan happened to list its rows.
  */
 export function workflowImportRows(plan: ImportPlan): readonly WorkflowImportOutcomeRow[] {
   return plan.rows.filter(
@@ -249,7 +217,6 @@ export function isModelCatalogPlan(plan: ImportPlan): boolean {
  */
 const RESOURCE_KIND_LABELS: Readonly<Record<ProcessYamlResourceKind, string>> = {
   phase: 'Phase',
-  pipeline: 'Pipeline',
   workflow: 'Workflow',
   modelCatalog: 'Model Catalog'
 };
@@ -269,12 +236,12 @@ export function outcomeLabel(row: ImportPlanRow): string {
 /**
  * A blocked row's dependency, named with its own kind.
  *
- * Read from the reason rather than assumed: as of feature 086 a Pipeline waits
- * on a Phase and a Workflow waits on a Pipeline, so a hard-coded "Phase" would
- * misname half the cases and send the operator to the wrong catalog.
+ * Read from the reason rather than assumed: a Workflow can wait on a Phase or a
+ * child Workflow, so a hard-coded "Phase" would misname child Workflow
+ * dependencies and send the operator to the wrong catalog.
  */
 function dependencyLabel(dependency: BlockedDependency): string {
-  return `${dependency.kind === 'pipeline' ? 'Pipeline' : 'Phase'} ${dependency.resourceId}`;
+  return `${dependency.kind === 'workflow' ? 'Workflow' : 'Phase'} ${dependency.resourceId}`;
 }
 
 /**
@@ -440,20 +407,11 @@ export function confirmBlockedReason(gate: ConfirmGate): string | null {
   // silently. Held closed instead; re-inspecting the document rebuilds a plan
   // that carries it.
   if (
-    pipelineImportRows(gate.plan).length > 0 &&
-    gate.plan.computedAgainstPipelineRevision === undefined
-  ) {
-    return 'This plan does not carry the Pipeline catalog revision its write has to check. Inspect the document again.';
-  }
-  if (
     workflowImportRows(gate.plan).length > 0 &&
     gate.plan.computedAgainstWorkflowRevision === undefined
   ) {
     return 'This plan does not carry the Workflow catalog revision its write has to check. Inspect the document again.';
   }
-  // Feature 099 (T494a, FR-043) — a fourth refusal, "Choose the scope to import
-  // into", used to sit here. There is one target, so an operator can no longer
-  // fail to have chosen it.
   return null;
 }
 
@@ -514,33 +472,14 @@ export function savePhaseRowFromDefinition(definition: ImportedPhaseDefinition):
 }
 
 /**
- * The declared Pipeline definition as a catalog row.
- *
- * Two key names change rather than one — stored rows key identity as `id` and
- * the sequence as `phases`, while the portable document and the host contract
- * use `pipelineId` and `phaseIds`. Every other field spreads through, for the
- * same reason as the Phase row: a field added to the contract later must not be
- * silently dropped on the import path (FR-046a). `phaseIds` is copied rather
- * than aliased so the row does not share an array with the plan.
- */
-export function savePipelineRowFromDefinition(
-  definition: ImportedPipelineDefinition
-): SavePipelineRow {
-  const { pipelineId, phaseIds, ...declared } = definition;
-  return { id: pipelineId, phases: [...phaseIds], ...declared };
-}
-
-/**
  * The declared Workflow definition as a catalog row.
  *
- * No key name changes at all, unlike the Phase and Pipeline rows: the Workflow
- * catalog arrived with feature 083, after the `id` spelling was retired, so
- * `workflowId` is the only identity key a stored Workflow row has ever had.
- * Everything is spread through, for the same reason the other two spread their
- * remainder — a field added to the contract later must not be silently dropped
- * on the import path (FR-046a). The graph itself is carried as declared: a
- * rewritten connection or a reordered node list is precisely the lossy round
- * trip that requirement forbids.
+ * No key name changes at all: `workflowId` is the only identity key a stored
+ * Workflow row has ever had. Everything is spread through, for the same reason
+ * the Phase row spreads its remainder — a field added to the contract later
+ * must not be silently dropped on the import path (FR-046a). The graph itself is
+ * carried as declared: a rewritten connection or a reordered node list is
+ * precisely the lossy round trip that requirement forbids.
  */
 export function saveWorkflowRowFromDefinition(
   definition: ImportedWorkflowDefinition
@@ -551,11 +490,10 @@ export function saveWorkflowRowFromDefinition(
 /** The stored rows of each catalog the commit appends to. */
 export interface ImportTargetLayers {
   readonly phases: readonly SavePhaseRow[];
-  readonly pipelines: readonly SavePipelineRow[];
   readonly workflows: readonly SaveWorkflowRow[];
 }
 
-export type ImportLayerKey = 'phases' | 'pipelines' | 'workflows';
+export type ImportLayerKey = 'phases' | 'workflows';
 
 /**
  * The one request an import commit sends, and the layer each part of it reports under.
@@ -576,64 +514,28 @@ export interface ImportPackage {
  * out in code instead, because each arm reads a different revision and builds a differently shaped
  * layer; a loop over this list would have to switch on the key anyway.
  */
-const IMPORT_LAYER_ORDER: readonly ImportLayerKey[] = ['phases', 'pipelines', 'workflows'];
+const IMPORT_LAYER_ORDER: readonly ImportLayerKey[] = ['phases', 'workflows'];
 
 /** The layer name used when the outcome sentence has to name what landed. */
 const IMPORT_LAYER_LABELS: Readonly<Record<ImportLayerKey, string>> = {
   phases: 'Phases',
-  pipelines: 'Pipelines',
   workflows: 'Workflows'
 };
 
 /** The catalog kind each layer key carries, and back (Feature 254, data-model §6). */
-const KIND_OF_LAYER: Readonly<Record<ImportLayerKey, PackageLayer['kind']>> = {
+const KIND_OF_LAYER: Readonly<Record<ImportLayerKey, 'phase' | 'workflow'>> = {
   phases: 'phase',
-  pipelines: 'pipeline',
   workflows: 'workflow'
 };
-const LAYER_OF_KIND: Readonly<Record<PackageLayer['kind'], ImportLayerKey>> = {
+const LAYER_OF_KIND: Readonly<Record<'phase' | 'workflow', ImportLayerKey>> = {
   phase: 'phases',
-  pipeline: 'pipelines',
   workflow: 'workflows'
 };
 
-/**
- * The package a plan applies, as one request (FR-013, FR-038, FR-043, FR-045, FR-050).
- *
- * One layer per kind that has `import` rows, in Phase, Pipeline, Workflow order. The order is the
- * dependency order: a Pipeline that references a Phase this same document supplies, and a Workflow
- * whose nodes name such a Pipeline, are validated by the host against the whole document, so they
- * resolve however the layers are listed, and the host sorts them again before it writes (FR-035). The
- * request is still built in that order so a reader of it sees the order that will be written. Each
- * layer carries the revision the PLAN was computed against — its own, from its own catalog — because
- * that is what makes a catalog written since preflight refuse as `stale-catalog` (FR-040) rather
- * than overwrite an operator's work. Reading any of the three revisions live at this moment would
- * leave that gate unable to fire.
- *
- * Feature 101 (T029) — the `import`/`import-package` mutation intent is gone. It was already
- * dropped before dispatch: feature 100 rewired every one of these writes onto the package publish,
- * which carries layers and ids and no intent at all. It is not recorded here as a comment either,
- * because a field nothing reads is a claim nothing checks.
- *
- * Returns `null` — not a partial package — when a Pipeline or Workflow row's plan carries no revision
- * for that layer, and when the plan has no `import` row at all. Half a package is the one outcome no
- * requirement here admits, so a caller that ignores `confirmBlockedReason` sends nothing rather than
- * the layers it happens to have a gate for.
- *
- * **Feature 100 (T511, FR-039a, FR-039b) — the document's own rows, and nothing else.** A package
- * publish is a merge: an id it does not name is left exactly as it is, so the stored rows are not
- * carried and must not be. Sending them would name every stored definition in a publication, and
- * publishing an id publishes its head — so an operator's pending, deliberately unpublished draft of an
- * untouched definition would go live as a side effect of importing a document that says nothing about
- * it. That is the one thing FR-039a forbids by name.
- */
 export function buildImportPackage(plan: ImportPlan): ImportPackage | null {
   const phases = phaseImportRows(plan);
-  const pipelines = pipelineImportRows(plan);
   const workflows = workflowImportRows(plan);
-  const pipelineRevision = plan.computedAgainstPipelineRevision;
   const workflowRevision = plan.computedAgainstWorkflowRevision;
-  if (pipelines.length > 0 && pipelineRevision === undefined) return null;
   if (workflows.length > 0 && workflowRevision === undefined) return null;
 
   const keys: ImportLayerKey[] = [];
@@ -646,21 +548,6 @@ export function buildImportPackage(plan: ImportPlan): ImportPackage | null {
       definitions: phases.map((row) => {
         const body = savePhaseRowFromDefinition(row.definition);
         return { id: body.id, body };
-      })
-    });
-  }
-  if (pipelines.length > 0 && pipelineRevision !== undefined) {
-    keys.push('pipelines');
-    layers.push({
-      kind: 'pipeline',
-      expectedRevision: pipelineRevision,
-      // `pipelineRowId` rather than `body.id` for the same reason the Builder uses it: `id` and
-      // `pipelineId` are both accepted spellings. A row from this path always carries `id`, because
-      // the contract requires `pipelineId` and the translation above renames it — the shared reader
-      // is what keeps the two paths from disagreeing if that ever changes.
-      definitions: pipelines.map((row) => {
-        const body = savePipelineRowFromDefinition(row.definition);
-        return { id: pipelineRowId(body), body };
       })
     });
   }
@@ -707,15 +594,15 @@ function reasonOfCause(cause: string): string {
 
 /** What a `package-partial` acknowledgement lists, read defensively (the webview trusts no payload). */
 interface PartialPackage {
-  readonly published: ReadonlySet<PackageLayer['kind']>;
-  readonly draftedOnly: ReadonlySet<PackageLayer['kind']>;
-  readonly failedKind: PackageLayer['kind'];
+  readonly published: ReadonlySet<'phase' | 'workflow'>;
+  readonly draftedOnly: ReadonlySet<'phase' | 'workflow'>;
+  readonly failedKind: 'phase' | 'workflow';
   readonly cause: string;
 }
 
-const PACKAGE_KINDS: readonly string[] = ['phase', 'pipeline', 'workflow'];
+const PACKAGE_KINDS: readonly string[] = ['phase', 'workflow'];
 
-function isPackageKind(value: unknown): value is PackageLayer['kind'] {
+function isPackageKind(value: unknown): value is 'phase' | 'workflow' {
   return typeof value === 'string' && PACKAGE_KINDS.includes(value);
 }
 
@@ -729,12 +616,12 @@ function readPartialPackage(result: unknown): PartialPackage | null {
   const { published, draftedOnly, failedKind, cause } = result;
   if (!Array.isArray(published) || !Array.isArray(draftedOnly)) return null;
   if (!isPackageKind(failedKind) || typeof cause !== 'string') return null;
-  const publishedKinds = new Set<PackageLayer['kind']>();
+  const publishedKinds = new Set<'phase' | 'workflow'>();
   for (const entry of published) {
     if (!isRecord(entry) || !isPackageKind(entry['kind'])) return null;
     publishedKinds.add(entry['kind']);
   }
-  const draftedKinds = new Set<PackageLayer['kind']>();
+  const draftedKinds = new Set<'phase' | 'workflow'>();
   for (const kind of draftedOnly) {
     if (!isPackageKind(kind)) return null;
     draftedKinds.add(kind);
@@ -760,7 +647,7 @@ function readFailedCause(result: unknown): string | null {
 }
 
 /** The facts a drafted-only layer's row states: which layer failed and why. */
-function readDraftedInfo(result: unknown): { readonly failedKind: PackageLayer['kind']; readonly cause: string } | null {
+function readDraftedInfo(result: unknown): { readonly failedKind: 'phase' | 'workflow'; readonly cause: string } | null {
   if (!isRecord(result)) return null;
   const { failedKind, cause } = result;
   return isPackageKind(failedKind) && typeof cause === 'string' ? { failedKind, cause } : null;
@@ -936,12 +823,10 @@ export function projectCommitResults(
     const text =
       key === 'phases'
         ? formatPhaseSaveRejection(entry.ack.reason, entry.ack.result)
-        : key === 'pipelines'
-          ? formatPipelineSaveRejection(entry.ack.reason, entry.ack.result)
-          : formatWorkflowSaveRejection(
-              entry.ack.reason,
-              entry.ack.result as Parameters<typeof formatWorkflowSaveRejection>[1]
-            );
+        : formatWorkflowSaveRejection(
+            entry.ack.reason,
+            entry.ack.result as Parameters<typeof formatWorkflowSaveRejection>[1]
+          );
     // The host's word for a failure the formatters have no sentence for (an errno, say) still has to
     // reach the operator: the row names the cause as the acknowledgement gave it.
     const cause = readFailedCause(entry.ack.result);
@@ -952,7 +837,6 @@ export function projectCommitResults(
     return drafted ? `${named.replace(/[.\s]+$/, '')}. The layer was saved as a draft and not published.` : named;
   };
   const layerOf = (kind: ProcessYamlResourceKind): ImportLayerKey => {
-    if (kind === 'pipeline') return 'pipelines';
     if (kind === 'workflow') return 'workflows';
     return 'phases';
   };
