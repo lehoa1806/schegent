@@ -30,7 +30,6 @@
  * An error anywhere in staged mode is a refusal, never a pass.
  */
 import { execFileSync } from 'node:child_process';
-import { createEngine } from '@secretlint/node';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,6 +89,7 @@ const ALLOWLIST_REMINDER =
   '.secretlintignore with a stated reason — never by excluding a directory.';
 const STAGED_DIRECTORY = /\S*schegent-staged-scan-[A-Za-z0-9]+\/?/g;
 const DETAIL_LIMIT = 200;
+const LOAD_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 /**
  * The configuration with every rule id that begins `./` resolved against `root`, because the
@@ -114,6 +114,23 @@ function resolveLocalRuleIds(configJson, root) {
     return resolved;
   };
   return resolveEntry(configJson);
+}
+
+/**
+ * The engine's `createEngine`, loaded when a scan needs it and not when this module links. A static
+ * import made an engine package that would not load (a clone before `npm ci`, a damaged install)
+ * stop the module before any of it ran: Node's own error, trace and exit code, and none of the
+ * refusal lines that contract SS5 and `SECURITY.md` describe. A failure here is the `engine-failed`
+ * refusal in both modes. The line carries Node's error code and never its message, which names a path.
+ */
+async function loadCreateEngine() {
+  try {
+    const { createEngine } = await import('@secretlint/node');
+    return createEngine;
+  } catch (error) {
+    const code = typeof error?.code === 'string' && LOAD_ERROR_CODE.test(error.code) ? error.code : 'unknown';
+    throw new StagedRefusal('engine-failed', `the secretlint engine package could not be loaded (${code})`);
+  }
 }
 
 /** A diagnostic fragment with control characters, the staged directory's path and excess length removed. */
@@ -152,6 +169,8 @@ function refuseStaged(error) {
 /** Staged mode: scan what the index would commit. Returns the process exit code. */
 async function runStaged() {
   try {
+    // First, so that an engine which will not load refuses every commit, as it did when it was imported at link time.
+    const createEngine = await loadCreateEngine();
     const subject = collectStagedSubject(ROOT, isIgnored);
     const scope = stagedScope(subject);
     if (subject.scan.length === 0) {
@@ -235,6 +254,15 @@ if (invokedAsScript(import.meta.url)) {
   let treeConfigJson;
   try {
     treeConfigJson = resolveLocalRuleIds(JSON.parse(readFileSync(CONFIG, 'utf8')), ROOT);
+  } catch (error) {
+    if (!(error instanceof StagedRefusal)) throw error;
+    console.error(`Secret scan cannot run: ${error.cause}: ${error.detail}. An unanswerable check is a refusal.`);
+    process.exit(1);
+  }
+
+  let createEngine;
+  try {
+    createEngine = await loadCreateEngine();
   } catch (error) {
     if (!(error instanceof StagedRefusal)) throw error;
     console.error(`Secret scan cannot run: ${error.cause}: ${error.detail}. An unanswerable check is a refusal.`);
