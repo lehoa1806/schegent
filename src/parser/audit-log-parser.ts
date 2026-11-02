@@ -154,6 +154,30 @@ const METRIC_IDENT_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 export interface TrailingRegion {
   text: string;
   present: boolean;
+  /**
+   * FR-R4-F12 -- true only when the line directly above the open marker is a code-fence
+   * delimiter, which is how a block looks when its writer fenced it as the constitution
+   * requires. The region starts at the close-marker line, so that fence's closing half is the
+   * region's second line; the token scan reads this to leave it out of its fence count. Omitted
+   * (not `false`) otherwise, so a region that was not fenced is the object it was before.
+   */
+  blockFenced?: true;
+}
+
+// Feature 107 (FR-012) — fence delimiters are triple-backtick sequences at
+// line start after trimming. A fixed-string comparison, never a regex: this
+// runs over attacker-influenced input and must not backtrack. Tilde fences and
+// indented code blocks are deliberately not tracked; a token inside one warns
+// nothing and still resolves, which is the pre-107 behavior.
+const FENCE_DELIMITER = '```';
+
+/**
+ * Whether a line is a code-fence delimiter, the one definition both sides of `blockFenced`
+ * use: this module decides the flag from the line above the block, the token scan decides
+ * its fence depth from the lines of the region, and they must agree on what a delimiter is.
+ */
+export function isFenceDelimiterLine(line: string): boolean {
+  return line.trim().startsWith(FENCE_DELIMITER);
 }
 
 /** The region of a stdout with no complete marker pair, as `parseAuditLogBlock` returns it. */
@@ -220,7 +244,17 @@ export function parseAuditLogBlock(stdout: string): AuditLogParseResult {
   // it. A correct run whose block is the last thing on the stream would
   // otherwise publish an empty region and read as tokenless, and a token
   // appended to the marker line is the shape models actually produce.
-  const region: TrailingRegion = { text: lines.slice(closeIndex).join('\n'), present: true };
+  //
+  // FR-R4-F12 -- only the line directly above the open marker is read for a fence, never the
+  // head (feature 107, plan D4: nothing before the block changes how the region is interpreted).
+  // It cannot tell an opening fence from the closing fence of a code block that ended there; the
+  // cost of that is one fence warning not raised, never a token read differently.
+  const fenceAbove = openIndex > 0 && isFenceDelimiterLine(lines.at(openIndex - 1) ?? '');
+  const region: TrailingRegion = {
+    text: lines.slice(closeIndex).join('\n'),
+    present: true,
+    ...(fenceAbove ? { blockFenced: true as const } : {})
+  };
 
   const body = lines.slice(openIndex + 1, closeIndex);
   const map = new Map<string, string>();
