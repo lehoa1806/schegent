@@ -40,6 +40,7 @@ import type {
 } from '../../state/connected-workflow-run';
 import {
   appendDecision,
+  clearInvocationControlMarkers,
   recordNodeAttempt,
   resolveBoundQueueId,
   setPendingHandoff,
@@ -245,6 +246,11 @@ export type ComposableWorkflowStepResult =
       readonly invocationId: string;
       readonly failureCode: string;
       readonly detail?: string;
+    }
+  | {
+      readonly outcome: 'workflow-canceled';
+      readonly run: ConnectedWorkflowRun;
+      readonly invocationId: string;
     }
   | {
       readonly outcome: 'rejected-stale';
@@ -624,6 +630,15 @@ async function settleAttemptInternal(
     transition.outcome === 'unhandled-node-failure' ||
     transition.outcome === 'no-eligible-transition'
   ) {
+    if (status === 'canceled' && transition.outcome === 'unhandled-node-failure') {
+      return cancelFrameAndPropagate(
+        deps,
+        nextRun,
+        expectedRevision,
+        updatedFrame,
+        completedAt
+      );
+    }
     return failFrameAndPropagate(
       deps,
       nextRun,
@@ -799,5 +814,53 @@ async function failFrameAndPropagate(
     invocationId: frame.invocationId,
     failureCode,
     ...(detail !== undefined ? { detail } : {})
+  }));
+}
+
+async function cancelFrameAndPropagate(
+  deps: ComposableWorkflowCoordinatorDeps,
+  run: ConnectedWorkflowRun,
+  expectedRevision: number,
+  frame: WorkflowInvocationFrame,
+  completedAt: number
+): Promise<ComposableWorkflowStepResult> {
+  const existingMarkers = frame.controlMarkers;
+  const canceledFrame: WorkflowInvocationFrame = {
+    ...frame,
+    activeNodeId: null,
+    status: 'canceled',
+    completedAt,
+    pendingHandoff: null,
+    ...(existingMarkers !== undefined
+      ? { controlMarkers: clearInvocationControlMarkers(existingMarkers) }
+      : {})
+  };
+  const nextRun = upsertInvocationFrame(run, canceledFrame);
+
+  if (canceledFrame.parentInvocationId !== null && canceledFrame.parentCallNodeId !== null) {
+    const parentFrame = nextRun.invocations?.[canceledFrame.parentInvocationId];
+    const parentNodeAttempts =
+      parentFrame?.attemptsByNodeId[canceledFrame.parentCallNodeId] ?? [];
+    const parentAttempt = parentNodeAttempts.find(
+      (a) => a.childInvocationId === canceledFrame.invocationId
+    );
+    if (parentFrame !== undefined && parentAttempt !== undefined) {
+      return settleAttemptInternal(
+        deps,
+        nextRun,
+        expectedRevision,
+        parentFrame.invocationId,
+        parentAttempt.nodeId,
+        parentAttempt.attemptIndex,
+        'canceled',
+        completedAt
+      );
+    }
+  }
+
+  return persistRunStep(deps.connectedRuns, nextRun, expectedRevision, (persisted) => ({
+    outcome: 'workflow-canceled',
+    run: persisted,
+    invocationId: frame.invocationId
   }));
 }

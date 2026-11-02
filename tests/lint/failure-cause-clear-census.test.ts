@@ -34,6 +34,8 @@ const DOES_NOT_LEAVE_FAILED: Readonly<Record<string, string>> = {
   'src/state/workflow-run-migrator.ts': 'it migrates a persisted shape and writes no cause',
   'src/state/orphaned-run-reconciler.ts':
     'it ends only non-terminal Runs; failed is terminal, so a failed Run passes through unchanged (TA1)',
+  'src/state/connected-workflow-run.ts':
+    'InvocationControlMarkers is a ConnectedWorkflowRun invocation-frame marker record (manualPauseCause, pendingRetryCause), not a WorkflowRun',
   'src/ui/sidebar/snapshot.ts':
     'IDLE_DELAYED_RETRY is a DelayedRetryState projection default (pendingRetryAt, pendingRetryCause, delayedRetryCount), not a WorkflowRun'
 };

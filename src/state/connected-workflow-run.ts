@@ -109,7 +109,81 @@ export interface InvocationInputEnvelope {
   readonly acceptedAt: number;
 }
 
-export type NodeAttemptStatus = 'in-flight' | WorkflowNodeTerminalStatus;
+export type NodeAttemptStatus = 'in-flight' | 'paused' | WorkflowNodeTerminalStatus;
+
+export type WorkflowPauseCause =
+  | 'operator-pause'
+  | 'credit-exhausted'
+  | 'recovery-uncertain-effect'
+  | 'spend-bound-exceeded';
+
+export type WorkflowDelayedRetryCause =
+  | 'transient-backoff'
+  | 'rate-limit-backoff';
+
+export type WorkflowControlOperation =
+  | 'pause'
+  | 'resume'
+  | 'cancel'
+  | 'retry-phase'
+  | 'retry-invocation'
+  | 'continue-handoff';
+
+export const MAX_COMMAND_RECEIPTS = 64;
+export const DEFAULT_MAX_PHASE_ATTEMPTS = 5;
+
+/**
+ * FR-R5-F03 — paired pause and delayed-retry markers on an invocation frame.
+ * Rule 28 pairing invariants:
+ *   - `(manualPauseAt === null) === (manualPauseCause === null)`
+ *   - `(pendingRetryAt === null) === (pendingRetryCause === null)`
+ *   - When paused or canceled, `pendingRetryAt === null && pendingRetryCause === null`.
+ */
+export interface InvocationControlMarkers {
+  readonly manualPauseAt: number | null;
+  readonly manualPauseCause: WorkflowPauseCause | null;
+  readonly pendingRetryAt: number | null;
+  readonly pendingRetryCause: WorkflowDelayedRetryCause | null;
+  readonly delayedRetryCount: number;
+  readonly spendUsd: number;
+  readonly spendBoundUsd?: number;
+  readonly maxPhaseAttempts?: number;
+}
+
+export const DEFAULT_INVOCATION_CONTROL_MARKERS: InvocationControlMarkers = Object.freeze({
+  manualPauseAt: null,
+  manualPauseCause: null,
+  pendingRetryAt: null,
+  pendingRetryCause: null,
+  delayedRetryCount: 0,
+  spendUsd: 0
+});
+
+export function pauseInvocationControlMarkers(
+  markers: InvocationControlMarkers | undefined,
+  pausedAt: number,
+  pauseCause: WorkflowPauseCause
+): InvocationControlMarkers {
+  return Object.freeze({
+    ...(markers ?? DEFAULT_INVOCATION_CONTROL_MARKERS),
+    manualPauseAt: pausedAt,
+    manualPauseCause: pauseCause,
+    pendingRetryAt: null,
+    pendingRetryCause: null
+  });
+}
+
+export function clearInvocationControlMarkers(
+  markers: InvocationControlMarkers | undefined
+): InvocationControlMarkers {
+  return Object.freeze({
+    ...(markers ?? DEFAULT_INVOCATION_CONTROL_MARKERS),
+    manualPauseAt: null,
+    manualPauseCause: null,
+    pendingRetryAt: null,
+    pendingRetryCause: null
+  });
+}
 
 /**
  * FR-R5-F02 — one execution attempt of a `phase` or child `workflow` node
@@ -147,18 +221,50 @@ export interface PendingHandoffRecord {
     | { readonly kind: 'return' };
   readonly prefilledInputsByPort: Readonly<Record<string, ResolvedPortValue>>;
   readonly pausedAt: number;
+  /** FR-R5-F03 (T006) — persisted accepted continuation envelope prior to target dispatch. */
+  readonly acceptedEnvelope?: InvocationInputEnvelope;
 }
 
 export type WorkflowInvocationStatus =
   | 'in-flight'
   | 'waiting-for-handoff'
+  | 'paused'
   | 'completed'
   | 'failed'
   | 'canceled';
 
+export interface CommittedCommandReceipt {
+  readonly commandId: string;
+  readonly operation: WorkflowControlOperation;
+  readonly targetInvocationId: string;
+  readonly targetNodeId?: string;
+  readonly committedRevision: number;
+  readonly committedAt: number;
+  readonly resultingRunStatus: WorkflowInvocationStatus;
+  readonly resultingInvocationStatus: WorkflowInvocationStatus;
+  readonly spawnedInvocationId?: string;
+  readonly spawnedAttemptId?: string;
+}
+
+export type RecoveryDispositionStatus =
+  | 'clean-handoff'
+  | 'pending-dispatch-recovered'
+  | 'settled-from-evidence'
+  | 'uncertain-effect-paused'
+  | 'orphaned-canceled';
+
+export interface RecoveryDispositionRecord {
+  readonly status: RecoveryDispositionStatus;
+  readonly invocationId: string;
+  readonly nodeId: string | null;
+  readonly attemptId?: string;
+  readonly reconciledAt: number;
+  readonly reasonCode: string;
+}
+
 /**
- * FR-R5-F02 — mutable runtime occurrence state for one root or child Workflow
- * invocation, kept strictly separate from the immutable `FrozenWorkflowClosure`.
+ * FR-R5-F02 / FR-R5-F03 — mutable runtime occurrence state for one root or child
+ * Workflow invocation, kept strictly separate from the immutable `FrozenWorkflowClosure`.
  */
 export interface WorkflowInvocationFrame {
   readonly invocationId: string;
@@ -177,6 +283,7 @@ export interface WorkflowInvocationFrame {
   readonly attemptsByNodeId: Readonly<Record<string, readonly NodeAttemptRecord[]>>;
   readonly decisions: readonly RoutingDecision[];
   readonly pendingHandoff?: PendingHandoffRecord | null;
+  readonly controlMarkers?: InvocationControlMarkers;
   readonly failureCode?: string;
   readonly failureMessage?: string;
   readonly startedAt: number;
@@ -218,6 +325,10 @@ export interface ConnectedWorkflowRun {
   readonly inputEnvelopes?: readonly InvocationInputEnvelope[];
   /** FR-R5-F02 — active manual handoff pause record, if any. */
   readonly pendingHandoff?: PendingHandoffRecord | null;
+  /** FR-R5-F03 — bounded ledger of committed control command receipts (<= 64). */
+  readonly commandReceipts?: readonly CommittedCommandReceipt[];
+  /** FR-R5-F03 — latest restart recovery reconciliation disposition, if any. */
+  readonly recoveryDisposition?: RecoveryDispositionRecord | null;
 }
 
 export class ConnectedRunInvariantError extends Error {
@@ -228,6 +339,7 @@ export class ConnectedRunInvariantError extends Error {
 }
 
 const AGGREGATE_KEYS: readonly string[] = [
+  'commandReceipts',
   'connectedRunId',
   'decisions',
   'frozenClosure',
@@ -238,6 +350,7 @@ const AGGREGATE_KEYS: readonly string[] = [
   'pendingHandoff',
   'pipelines',
   'queueId',
+  'recoveryDisposition',
   'revision',
   'startedAt',
   'workflowId'
@@ -423,10 +536,21 @@ export function assertConnectedRunInvariants(
       if (frame.invocationId !== invId) {
         fail(`invocation frame ${invId} disagrees with its key`);
       }
+      if (frame.controlMarkers !== undefined) {
+        assertInvocationControlMarkers(frame);
+      }
     }
   }
   if (run.inputEnvelopes !== undefined && !Object.isFrozen(run.inputEnvelopes)) {
     fail('the inputEnvelopes list must be frozen');
+  }
+  if (run.commandReceipts !== undefined) {
+    if (!Object.isFrozen(run.commandReceipts)) {
+      fail('the commandReceipts list must be frozen');
+    }
+    if (run.commandReceipts.length > MAX_COMMAND_RECEIPTS) {
+      fail(`commandReceipts exceeds ${MAX_COMMAND_RECEIPTS} entries`);
+    }
   }
   const nodeIds = new Set(run.graph.nodes.map((node) => node.nodeId));
   for (const [key, record] of Object.entries(run.nodes)) {
@@ -437,6 +561,40 @@ export function assertConnectedRunInvariants(
     record.attempts.forEach((attempt) => assertKeys(attempt, ATTEMPT_KEYS, 'attempt'));
   }
   run.decisions.forEach((decision) => assertDecision(decision, run));
+}
+
+export function assertInvocationControlMarkers(frame: WorkflowInvocationFrame): void {
+  const markers = frame.controlMarkers;
+  if (markers === undefined) return;
+  const pauseTimeNull = markers.manualPauseAt === null;
+  const pauseCauseNull = markers.manualPauseCause === null;
+  if (pauseTimeNull !== pauseCauseNull) {
+    fail(
+      `invocation ${frame.invocationId} violates paired manualPauseAt/manualPauseCause invariant`
+    );
+  }
+  const retryTimeNull = markers.pendingRetryAt === null;
+  const retryCauseNull = markers.pendingRetryCause === null;
+  if (retryTimeNull !== retryCauseNull) {
+    fail(
+      `invocation ${frame.invocationId} violates paired pendingRetryAt/pendingRetryCause invariant`
+    );
+  }
+  if (frame.status === 'paused') {
+    if (markers.manualPauseAt === null || markers.manualPauseCause === null) {
+      fail(`paused invocation ${frame.invocationId} is missing manualPauseAt/manualPauseCause`);
+    }
+    if (markers.pendingRetryAt !== null || markers.pendingRetryCause !== null) {
+      fail(`paused invocation ${frame.invocationId} must clear pendingRetryAt/pendingRetryCause`);
+    }
+  }
+  if (frame.status === 'canceled' || frame.status === 'completed') {
+    if (markers.pendingRetryAt !== null || markers.pendingRetryCause !== null) {
+      fail(
+        `terminal invocation ${frame.invocationId} must clear pendingRetryAt/pendingRetryCause`
+      );
+    }
+  }
 }
 
 export interface CreateConnectedRunInput {
@@ -455,6 +613,8 @@ export interface CreateConnectedRunInput {
   readonly frozenClosure?: FrozenWorkflowClosure;
   readonly invocations?: Readonly<Record<string, WorkflowInvocationFrame>>;
   readonly inputEnvelopes?: readonly InvocationInputEnvelope[];
+  readonly commandReceipts?: readonly CommittedCommandReceipt[];
+  readonly recoveryDisposition?: RecoveryDispositionRecord | null;
 }
 
 /** Freeze the snapshot and open the aggregate at revision 1. */
@@ -477,6 +637,12 @@ export function createConnectedRun(input: CreateConnectedRunInput): ConnectedWor
       : {}),
     ...(input.inputEnvelopes !== undefined
       ? { inputEnvelopes: deepFreeze(deepCopy(input.inputEnvelopes)) }
+      : {}),
+    ...(input.commandReceipts !== undefined
+      ? { commandReceipts: deepFreeze(deepCopy(input.commandReceipts)) }
+      : {}),
+    ...(input.recoveryDisposition !== undefined
+      ? { recoveryDisposition: deepFreeze(deepCopy(input.recoveryDisposition)) }
       : {})
   };
   assertConnectedRunInvariants(run);
@@ -543,9 +709,12 @@ export interface CreateInvocationFrameInput {
   readonly entryNodeId: string;
   readonly boundInputs: Readonly<Record<string, ResolvedPortValue>>;
   readonly startedAt: number;
+  readonly controlMarkers?: InvocationControlMarkers;
 }
 
 export function createInvocationFrame(input: CreateInvocationFrameInput): WorkflowInvocationFrame {
+  const controlMarkers: InvocationControlMarkers =
+    input.controlMarkers ?? DEFAULT_INVOCATION_CONTROL_MARKERS;
   return deepFreeze(
     deepCopy({
       invocationId: input.invocationId,
@@ -564,6 +733,7 @@ export function createInvocationFrame(input: CreateInvocationFrameInput): Workfl
       attemptsByNodeId: {},
       decisions: [],
       pendingHandoff: null,
+      controlMarkers,
       startedAt: input.startedAt
     })
   );
@@ -632,4 +802,47 @@ export function setPendingHandoff(
   };
   assertConnectedRunInvariants(next);
   return Object.freeze(next);
+}
+
+export function appendCommandReceipt(
+  run: ConnectedWorkflowRun,
+  receipt: CommittedCommandReceipt
+): ConnectedWorkflowRun {
+  const frozenReceipt = deepFreeze(deepCopy(receipt));
+  const existing = run.commandReceipts ?? [];
+  const trimmed =
+    existing.length >= MAX_COMMAND_RECEIPTS
+      ? existing.slice(existing.length - MAX_COMMAND_RECEIPTS + 1)
+      : existing;
+  const next: ConnectedWorkflowRun = {
+    ...run,
+    commandReceipts: Object.freeze([...trimmed, frozenReceipt]),
+    revision: run.revision + 1
+  };
+  assertConnectedRunInvariants(next);
+  return Object.freeze(next);
+}
+
+export function setRecoveryDisposition(
+  run: ConnectedWorkflowRun,
+  disposition: RecoveryDispositionRecord | null
+): ConnectedWorkflowRun {
+  const frozenDisposition = disposition === null ? null : deepFreeze(deepCopy(disposition));
+  const next: ConnectedWorkflowRun = {
+    ...run,
+    recoveryDisposition: frozenDisposition,
+    revision: run.revision + 1
+  };
+  assertConnectedRunInvariants(next);
+  return Object.freeze(next);
+}
+
+export function resolveRootInvocationId(run: ConnectedWorkflowRun): string {
+  const invocations = run.invocations ?? {};
+  for (const frame of Object.values(invocations)) {
+    if (frame.parentInvocationId === null) {
+      return frame.invocationId;
+    }
+  }
+  return `${run.connectedRunId}:root`;
 }
