@@ -23,12 +23,22 @@
 import * as path from 'path';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
+import { describeFailure } from '../lib/errors';
 import { verifyAuditChainAt, type ChainVerdict } from '../audit/audit-chain';
 import { classifyLoss, type CheckpointRead, type LossState } from '../audit/audit-checkpoint';
 
 /** The command a loss finding sends the operator to. */
 const RESET_COMMAND_TITLE = 'Schegent: Reset Audit History Checkpoint';
 const MOVE_HISTORY_OUT = 'move the audit history out of .schegent/ first (the reset never deletes or moves evidence)';
+
+/**
+ * FR-R4-F05 (FR-014; contract O, O1) — the warning for a log the verifier could not read. Fixed
+ * text: a read fault's message names the file's path, and the operator text names "basenames,
+ * counts and digest prefixes, never a path". What was thrown goes to the log, through
+ * `describeFailure`.
+ */
+export const CHAIN_UNREADABLE_TOAST =
+  'Schegent could not verify the audit chain: the log could not be read. See the Schegent log for details.';
 
 /** How the chain began, when a transition occurred (contract O1). */
 export const TRANSITION_TEXT = {
@@ -151,13 +161,11 @@ export async function runVerifyAuditChain(ctx: VerifyAuditChainCtx): Promise<voi
   } catch (err) {
     // An unanswerable check is a refusal, never a pass. The operator is told the chain could
     // not be read, which is a different and more urgent fact than "the chain is broken".
-    const message = err instanceof Error ? err.message : 'unknown error';
     ctx.logger.warn('audit chain verification could not read the log', {
-      reasonCode: 'chain-unreadable'
+      reasonCode: 'chain-unreadable',
+      error: describeFailure(err, (value) => ctx.logger.sanitize(value))
     });
-    ctx.notifier.warn(
-      `Schegent could not verify the audit chain: the log could not be read (${message}).`
-    );
+    ctx.notifier.warn(CHAIN_UNREADABLE_TOAST);
     return;
   }
 

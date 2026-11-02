@@ -7,6 +7,16 @@ import { decideTaskTransition } from '../queue/task-transition-decision';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
+import { describeFailure } from '../lib/errors';
+
+/**
+ * FR-R4-F05 (FR-014; contract F, F6; contract O, O5) — what the operator is told when a
+ * cancel fails for a reason the command has no code for. Fixed text: an exception's
+ * message can carry a path, so it goes to the log through `describeFailure` and never to
+ * the toast. The coded refusals (`not-found`, `illegal-state`, `no-active-run`,
+ * `ambiguous-run-target`) return their codes and add no failure toast of their own.
+ */
+export const CANCEL_FAILED_TOAST = 'Schegent: cancel failed. See the Schegent log for details.';
 
 export type CancelResult = { ok: true } | { ok: false; reason: string };
 
@@ -60,9 +70,10 @@ export async function runCancel(ctx: {
     }
     return await cancelActiveRun(ctx);
   } catch (err) {
-    const message = (err as Error).message ?? 'unknown error';
-    ctx.notifier.error(`Schegent: cancel failed — ${message}`);
-    ctx.logger.error(message);
+    ctx.notifier.error(CANCEL_FAILED_TOAST);
+    ctx.logger.error('cancel: unexpected failure', {
+      error: describeFailure(err, (value) => ctx.logger.sanitize(value))
+    });
     return { ok: false, reason: 'unexpected-error' };
   }
 }

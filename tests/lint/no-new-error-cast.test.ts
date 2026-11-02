@@ -44,8 +44,12 @@ const SRC = resolve(REPO_ROOT, 'src');
  *
  * **Then 130** (FR-R4-F05, L7). The router's catch-all, the restart arm and the enqueue catch stopped
  * casting a thrown value (`describeFailure` reads it), and the count was re-measured: 130 sites.
+ *
+ * **Then 123** (FR-R4-F05, closing, 2026-11-01). The palette cancel, resume, schedule and auto commands
+ * toasted `(err as Error).message` (seven casts between them). Each now shows fixed text and sends
+ * `describeFailure(thrown, …)` to the log, and the count was re-measured with the regex below: 123 sites.
  */
-const BASELINE = 130;
+const BASELINE = 123;
 
 /** `(x as Error).message`, in the forms this codebase writes it. */
 const CAST = /as Error\)\.message/g;

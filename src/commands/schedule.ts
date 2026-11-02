@@ -1,9 +1,19 @@
 import * as vscode from 'vscode';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
+import { describeFailure } from '../lib/errors';
 import type { GuardedRunService } from '../services/guarded-run-service';
 import { ENQUEUE_STORAGE_FAULT_TOAST } from '../services/enqueue-failure';
 import type { PipelineDef, PipelineCatalog } from '../config/pipeline-config';
+
+/**
+ * FR-R4-F05 (FR-014; contract F, F6; contract O, O5) — what the operator is told when
+ * scheduling fails for a reason the command has no code for. Fixed text: an exception's
+ * message can carry a path, so it goes to the log through `describeFailure` and never to
+ * the toast. The outcomes the launch service returns as codes keep their own handling.
+ */
+export const SCHEDULE_FAILED_TOAST =
+  'Schegent: the task could not be scheduled. See the Schegent log for details.';
 
 export interface ScheduleCommandArgs {
   description?: string;
@@ -89,8 +99,10 @@ export async function runSchedule(
         return;
     }
   } catch (err) {
-    ctx.notifier.error(`Schegent: ${(err as Error).message}`);
-    ctx.logger.error((err as Error).message);
+    ctx.notifier.error(SCHEDULE_FAILED_TOAST);
+    ctx.logger.error('schedule: unexpected failure', {
+      error: describeFailure(err, (value) => ctx.logger.sanitize(value))
+    });
   }
 }
 

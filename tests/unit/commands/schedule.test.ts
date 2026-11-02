@@ -50,7 +50,7 @@ vi.mock('vscode', () => ({
   }
 }));
 
-import { runSchedule } from '../../../src/commands/schedule';
+import { SCHEDULE_FAILED_TOAST, runSchedule } from '../../../src/commands/schedule';
 import { buildCatalog, type PipelineDef } from '../../../src/config/pipeline-config';
 import { SanitizedLogger } from '../../../src/lib/logger';
 
@@ -230,5 +230,64 @@ describe('Feature 098 (T044) — the picker treats the empty default as "no defa
     expect(scheduleOrEnqueue).toHaveBeenCalledTimes(1);
     expect(scheduleOrEnqueue.mock.calls[0]![0]).toMatchObject({ pipelineId: '' });
     expect(notifier.warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// FR-R4-F05 (FR-014; contract F, F6; contract O, O5) — the generic arm.
+//
+// It used to toast `Schegent: ${message}` and log the bare message, so a path in an
+// exception reached the operator's screen. The toast is fixed text now and the detail goes
+// to the log through `describeFailure`. The outcomes the service returns as codes
+// (`rejected-validation`, `failed-storage` and the rest) are not failures of the command
+// and are untouched.
+describe('runSchedule — the unexpected-failure arm (FR-R4-F05)', () => {
+  const PATH = '/synthetic/home/user-252/queue.json';
+
+  /** A command whose launch service rejects with `thrown`, and the spies that watch it. */
+  function failingWith(thrown: unknown) {
+    const notifier = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const logger = new SanitizedLogger();
+    const errorLog = vi.spyOn(logger, 'error');
+    const ctx = {
+      guardedRunService: { scheduleOrEnqueue: vi.fn().mockRejectedValueOnce(thrown) },
+      getCatalog: () => buildCatalog([], [], NO_MODELS, ''),
+      notifier,
+      logger
+    } as unknown as Parameters<typeof runSchedule>[1];
+    return { ctx, notifier, errorLog };
+  }
+
+  const ARGS = { description: 'a feature to schedule', pipelineId: 'alpha-flow' };
+
+  it('toasts the fixed text and logs the detail when an Error carries a path', async () => {
+    const { ctx, notifier, errorLog } = failingWith(new Error(`queue write failed at ${PATH}`));
+
+    await runSchedule(ARGS, ctx);
+
+    expect(notifier.error).toHaveBeenCalledTimes(1);
+    expect(notifier.error).toHaveBeenCalledWith(SCHEDULE_FAILED_TOAST);
+    expect(JSON.stringify(notifier.error.mock.calls)).not.toContain('user-252');
+    expect(errorLog).toHaveBeenCalledWith(
+      'schedule: unexpected failure',
+      expect.objectContaining({ error: expect.stringContaining('user-252') })
+    );
+  });
+
+  it('toasts the fixed text for a thrown null and logs a bounded description of it', async () => {
+    const { ctx, notifier, errorLog } = failingWith(null);
+
+    await runSchedule(ARGS, ctx);
+
+    expect(notifier.error).toHaveBeenCalledWith(SCHEDULE_FAILED_TOAST);
+    expect(errorLog).toHaveBeenCalledWith(
+      'schedule: unexpected failure',
+      expect.objectContaining({ error: 'null thrown' })
+    );
+  });
+
+  it('words the toast without an exception, a path or a code', () => {
+    expect(SCHEDULE_FAILED_TOAST).toBe(
+      'Schegent: the task could not be scheduled. See the Schegent log for details.'
+    );
   });
 });
