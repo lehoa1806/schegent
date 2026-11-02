@@ -36,7 +36,7 @@ The full inventory of every store, with its location, bounds, what sweeps it and
 
 Retention runs when the host starts, after a Run ends, when a retention setting changes, and now on a timer: once an hour, an idle window that owns the workspace and is trusted removes what has expired and is inactive (the session groups and the transport files), skipping every Run still executing. A pass that removes nothing writes no audit row. A window that does not own the workspace, or is untrusted, runs no pass. The timing is separate from each age bound: an age says when evidence becomes eligible, and these triggers say when it is looked at.
 
-The session age setting covers raw transcripts, verbose diagnostic trees and failure records; the session byte setting covers the first two only. Neither deletes structured audit entries, recovery checkpoints in extension `globalStorage`, runtime logs, CLI transport generations, or history descriptions.
+The session age setting covers raw transcripts, verbose diagnostic trees, failure records and the CLI transport (a Run's transport records older than it are removed, and so is a legacy shared transport file whose newest record is older than it); the session byte setting covers the first two only. Neither deletes structured audit entries, recovery checkpoints in extension `globalStorage`, runtime logs, or history descriptions.
 
 <!-- Source: src/services/session-retention/session-artifact-retention-service.ts -->
 <!-- Source: src/services/run-checkpoint-retention.ts -->
