@@ -244,6 +244,118 @@ const KNOWN_ABSENT: ReadonlyMap<string, string> = new Map([
   [
     'pipeline-package-import.test.ts',
     'retired by FR-R5-F04 (263-workflow-yaml-exchange) with Pipeline package import; tests/integration/process-yaml/workflow-package-import.test.ts covers composable Workflow packages'
+  ],
+  [
+    'PipelineCatalogEditor.svelte',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) when the separate Pipelines Builder tab was merged into WorkflowCatalogEditor.svelte'
+  ],
+  [
+    'PipelineFieldErrors.svelte',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowRowDefects.svelte is the survivor'
+  ],
+  [
+    'PipelineFlowBuilder.svelte',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowFlowBuilder.svelte is the survivor'
+  ],
+  [
+    'PipelineFlowCanvas.svelte',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowFlowCanvas.svelte is the survivor'
+  ],
+  [
+    'PipelineFlowNode.svelte',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowFlowNode.svelte is the survivor'
+  ],
+  [
+    'PipelineFlowTopBar.svelte',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowFlowTopBar.svelte is the survivor'
+  ],
+  [
+    'PipelineInspector.svelte',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowInspector.svelte is the survivor'
+  ],
+  [
+    'PipelineLibraryList.svelte',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowLibraryList.svelte is the survivor'
+  ],
+  [
+    'PipelinePhasePalette.svelte',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowActionPalette.svelte is the survivor'
+  ],
+  [
+    'PipelinePortsEditor.svelte',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowPortsAndBindingsEditor.svelte is the survivor'
+  ],
+  [
+    'PipelineToolbar.svelte',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowToolbar.svelte is the survivor'
+  ],
+  [
+    'pipeline-catalog-state.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; workflow-catalog-state.ts is the survivor'
+  ],
+  [
+    'pipeline-catalog-store.svelte.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowCatalogEditor.svelte owns the unified store'
+  ],
+  [
+    'pipeline-flow-view.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; workflow-flow-view.ts is the survivor'
+  ],
+  [
+    'PipelineCatalogEditor.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowCatalogEditor.test.ts covers the unified editor'
+  ],
+  [
+    'PipelineFlowCanvas.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineFlowCanvas.svelte; WorkflowFlowCanvas.test.ts covers the unified canvas'
+  ],
+  [
+    'PipelineFlowNode.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineFlowNode.svelte; WorkflowFlowNode.test.ts covers the unified node card'
+  ],
+  [
+    'PipelineFlowTopBar.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineFlowTopBar.svelte; WorkflowFlowTopBar.test.ts covers the unified top bar'
+  ],
+  [
+    'PipelineInspector.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineInspector.svelte; WorkflowInspector.test.ts covers the unified inspector'
+  ],
+  [
+    'PipelineLibraryList.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineLibraryList.svelte; WorkflowLibraryList.test.ts covers the unified library list'
+  ],
+  [
+    'PipelinePhasePalette.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelinePhasePalette.svelte; WorkflowActionPalette.test.ts covers the unified palette'
+  ],
+  [
+    'PipelinePortsEditor.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelinePortsEditor.svelte; WorkflowCatalogEditor.test.ts covers ports and bindings'
+  ],
+  [
+    'PipelineToolbar.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineToolbar.svelte; WorkflowToolbar.test.ts covers the unified toolbar'
+  ],
+  [
+    'pipeline-catalog-state.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with pipeline-catalog-state.ts; workflow-catalog-state.test.ts covers unified state'
+  ],
+  [
+    'pipeline-catalog-store.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with pipeline-catalog-store.svelte.ts; WorkflowCatalogEditor.test.ts covers unified state mutations'
+  ],
+  [
+    'PipelineBuilder.canvas.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineFlowBuilder.svelte; PipelineBuilder.workflows-tab.test.ts covers the Builder canvas'
+  ],
+  [
+    'PipelineBuilder.pipeline-authoring.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowCatalogEditor.test.ts covers unified Workflow authoring'
+  ],
+  [
+    'PipelineCatalogEditor.reconciliation.test.ts',
+    'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowCatalogEditor.reconciliation.test.ts covers reconciliation'
   ]
 ]);
 

@@ -24,10 +24,18 @@ import {
   type WorkflowConditionOperator
 } from '../../lib/snapshot-types';
 import {
+  addWorkflowBinding,
   addWorkflowBranch,
   addWorkflowConditionValue,
   addWorkflowConnection,
+  addWorkflowInputPort,
   addWorkflowNode,
+  addWorkflowOutputPort,
+  appendWorkflowNode,
+  buildChildWorkflowPreview,
+  dependentWorkflowsForPhase,
+  dependentWorkflowsForWorkflow,
+  deriveSelectedWorkflowLaunchHandoff,
   insertWorkflowNodeAfter,
   spliceWorkflowNodeIntoConnection,
   conditionRightArity,
@@ -43,6 +51,8 @@ import {
   removeWorkflowNode,
   sourceRecordToMutableWorkflow,
   toSaveWorkflowRow,
+  updateWorkflowExecutionDefaults,
+  updateWorkflowRecommendedNext,
   updateWorkflowCondition,
   updateWorkflowConditionValue,
   updateWorkflowConnection,
@@ -772,6 +782,97 @@ describe('canvas composite edits', () => {
     it('leaves the draft untouched when the source node is not in it', () => {
       const before = row();
       expect(addWorkflowBranch(before, 'ghost', PIPELINES)).toEqual(before);
+    });
+  });
+
+  describe('FR-R5-F05 unified Phase + child-Workflow authoring state', () => {
+    it('appends Phase and child Workflow nodes and seeds startNodeIds on the first node', () => {
+      let draft = makeNewWorkflowDraft([]);
+      draft = appendWorkflowNode(draft, { kind: 'phase', phaseId: 'speckit-specify' });
+      draft = appendWorkflowNode(draft, { kind: 'workflow', workflowId: 'child-wf' });
+
+      expect(draft.nodes).toEqual([
+        { nodeId: 'node', kind: 'phase', phaseId: 'speckit-specify' },
+        { nodeId: 'node-2', kind: 'workflow', workflowId: 'child-wf' }
+      ]);
+      expect(draft.startNodeIds).toEqual(['node']);
+      expect(draft.connections).toEqual([]);
+    });
+
+    it('authors public ports, bindings, execution defaults, and recommendedNext in save payload', () => {
+      let draft = makeNewWorkflowDraft([]);
+      draft = appendWorkflowNode(draft, { kind: 'phase', phaseId: 'speckit-specify' });
+      draft = addWorkflowInputPort(draft, { portId: 'goal', label: 'Goal', type: 'text', required: true });
+      draft = addWorkflowOutputPort(draft, { portId: 'spec', label: 'Spec', type: 'markdown' });
+      draft = addWorkflowBinding(draft, {
+        kind: 'input',
+        nodeId: 'node',
+        inputKey: 'in',
+        source: { from: 'workflow-input', portId: 'goal' }
+      });
+      draft = updateWorkflowExecutionDefaults(draft, { runner: 'claude', effort: 'high' });
+      draft = updateWorkflowRecommendedNext(draft, ['follow-up']);
+
+      const saved = toSaveWorkflowRow(draft);
+      expect(saved.inputs).toEqual([{ portId: 'goal', label: 'Goal', type: 'text', required: true }]);
+      expect(saved.outputs).toEqual([{ portId: 'spec', label: 'Spec', type: 'markdown', required: true }]);
+      expect(saved.bindings).toHaveLength(1);
+      expect(saved.executionDefaults).toEqual({ runner: 'claude', effort: 'high' });
+      expect(saved.recommendedNext).toEqual(['follow-up']);
+    });
+
+    it('derives dependent Workflows and bounds child Workflow preview against cycles', () => {
+      const wfA = {
+        workflowId: 'wf-a',
+        name: 'WF A',
+        nodes: [
+          { nodeId: 'p1', kind: 'phase' as const, phaseId: 'phase-1' },
+          { nodeId: 'sub', kind: 'workflow' as const, workflowId: 'wf-b' }
+        ]
+      };
+      const wfB = {
+        workflowId: 'wf-b',
+        name: 'WF B',
+        nodes: [{ nodeId: 'loop', kind: 'workflow' as const, workflowId: 'wf-a' }]
+      };
+
+      expect(dependentWorkflowsForPhase('phase-1', [wfA, wfB])).toEqual([
+        { workflowId: 'wf-a', name: 'WF A' }
+      ]);
+      expect(dependentWorkflowsForWorkflow('wf-b', [wfA, wfB])).toEqual([
+        { workflowId: 'wf-a', name: 'WF A' }
+      ]);
+
+      const preview = buildChildWorkflowPreview('wf-a', [wfA, wfB]);
+      expect(preview.nodes[1]?.children[0]?.truncatedReason).toBe('cycle');
+    });
+
+    it('derives launch handoff eligibility from persistence, status, and lifecycle state', () => {
+      const draft = makeNewWorkflowDraft([]);
+      expect(deriveSelectedWorkflowLaunchHandoff(draft, null)?.launchEligible).toBe(false);
+
+      const stored = { ...draft, persisted: true, workflowId: 'live-wf', name: 'Live WF' };
+      const activeRecord = {
+        key: 'live-wf::0',
+        workflowId: 'live-wf',
+        status: 'effective',
+        definition: null,
+        display: {},
+        errors: [],
+        derivedInputs: [],
+        derivedOutputs: [],
+        lifecycle: {
+          state: 'active',
+          createdAt: 0,
+          updatedAt: 0,
+          activeVersionId: 'v1',
+          expectedDraftVersion: 'no-draft',
+          versions: []
+        }
+      } as unknown as WorkflowCatalogSourceProjection;
+      expect(deriveSelectedWorkflowLaunchHandoff(stored, activeRecord, false)?.launchEligible).toBe(
+        true
+      );
     });
   });
 });

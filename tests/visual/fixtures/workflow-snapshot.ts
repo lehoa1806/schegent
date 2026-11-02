@@ -552,6 +552,74 @@ export const workflowSnapshot = {
     "revision": "visual-pipeline-revision",
     "warnings": []
   },
+  "workflowCatalog": {
+    "state": "ready",
+    "records": [
+      {
+        "key": "dev-new-feature::0",
+        "workflowId": "dev-new-feature",
+        "status": "effective",
+        "definition": {
+          "workflowId": "dev-new-feature",
+          "name": "New Feature",
+          "version": 1,
+          "nodes": [
+            { "nodeId": "speckit-specify", "kind": "phase", "phaseId": "speckit-specify" },
+            { "nodeId": "speckit-clarify", "kind": "phase", "phaseId": "speckit-clarify" },
+            { "nodeId": "speckit-plan", "kind": "phase", "phaseId": "speckit-plan" },
+            { "nodeId": "speckit-tasks", "kind": "phase", "phaseId": "speckit-tasks" },
+            { "nodeId": "speckit-analyze", "kind": "phase", "phaseId": "speckit-analyze" },
+            { "nodeId": "speckit-implement", "kind": "phase", "phaseId": "speckit-implement" },
+            { "nodeId": "finalize", "kind": "phase", "phaseId": "finalize" }
+          ],
+          "connections": [
+            { "from": { "nodeId": "speckit-specify" }, "to": { "nodeId": "speckit-clarify" } },
+            { "from": { "nodeId": "speckit-clarify" }, "to": { "nodeId": "speckit-plan" } },
+            { "from": { "nodeId": "speckit-plan" }, "to": { "nodeId": "speckit-tasks" } },
+            { "from": { "nodeId": "speckit-tasks" }, "to": { "nodeId": "speckit-analyze" } },
+            { "from": { "nodeId": "speckit-analyze" }, "to": { "nodeId": "speckit-implement" } },
+            { "from": { "nodeId": "speckit-implement" }, "to": { "nodeId": "finalize" } }
+          ],
+          "startNodeIds": ["speckit-specify"]
+        },
+        "display": {
+          "id": "dev-new-feature",
+          "name": "New Feature",
+          "version": 1
+        },
+        "errors": [],
+        "derivedInputs": [],
+        "derivedOutputs": []
+      }
+    ],
+    "effective": [
+      {
+        "workflowId": "dev-new-feature",
+        "name": "New Feature",
+        "version": 1,
+        "nodes": [
+          { "nodeId": "speckit-specify", "kind": "phase", "phaseId": "speckit-specify" },
+          { "nodeId": "speckit-clarify", "kind": "phase", "phaseId": "speckit-clarify" },
+          { "nodeId": "speckit-plan", "kind": "phase", "phaseId": "speckit-plan" },
+          { "nodeId": "speckit-tasks", "kind": "phase", "phaseId": "speckit-tasks" },
+          { "nodeId": "speckit-analyze", "kind": "phase", "phaseId": "speckit-analyze" },
+          { "nodeId": "speckit-implement", "kind": "phase", "phaseId": "speckit-implement" },
+          { "nodeId": "finalize", "kind": "phase", "phaseId": "finalize" }
+        ],
+        "connections": [
+          { "from": { "nodeId": "speckit-specify" }, "to": { "nodeId": "speckit-clarify" } },
+          { "from": { "nodeId": "speckit-clarify" }, "to": { "nodeId": "speckit-plan" } },
+          { "from": { "nodeId": "speckit-plan" }, "to": { "nodeId": "speckit-tasks" } },
+          { "from": { "nodeId": "speckit-tasks" }, "to": { "nodeId": "speckit-analyze" } },
+          { "from": { "nodeId": "speckit-analyze" }, "to": { "nodeId": "speckit-implement" } },
+          { "from": { "nodeId": "speckit-implement" }, "to": { "nodeId": "finalize" } }
+        ],
+        "startNodeIds": ["speckit-specify"]
+      }
+    ],
+    "revision": "visual-workflow-revision",
+    "warnings": []
+  },
   "availablePhases": [
     {
       "id": "speckit-specify",

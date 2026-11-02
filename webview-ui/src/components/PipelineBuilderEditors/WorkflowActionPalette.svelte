@@ -1,99 +1,129 @@
 <script lang="ts">
-  // The Actions palette: what can be added to the flow.
+  // Feature 183 (US2, T015, FR-007) / FR-R5-F05 — the Actions palette.
   //
-  // Every item is a BUTTON, and the six-dot glyph beside it is decoration
-  // (`aria-hidden`). The reference design makes drag the way to add a node; FR-042
-  // makes that unacceptable on its own, because a drag is the one gesture a
-  // keyboard cannot produce. Click and Enter are therefore the operation, not a
-  // fallback to it.
-  //
-  // The Pipelines group is the effective Pipeline catalog and nothing else. It is
-  // not a fixed list of action kinds, because a Workflow node runs an
-  // operator-defined Pipeline — the contract has no node-kind union to enumerate.
-  // The reference design's Messages group (Email, Text message, WhatsApp) and its
-  // Time delay have no member in `WorkflowNode`, so they are absent rather than
-  // rendered as controls that could not do anything; adding any of them is a
-  // contract change, not a palette entry.
-  //
-  // `Split` is in Logic because a split is not a node either: it is a second
-  // connection leaving one node. It therefore acts on the selected node, and says
-  // so when nothing is selected instead of failing silently on click.
-  import type { PortablePipelineDefinition } from '../../lib/snapshot-types';
+  // Offers atomic Phases (`kind: 'phase'`), reusable child Workflows
+  // (`kind: 'workflow'`, excluding self), transitional Pipelines, and Logic (`Split`).
+  import type {
+    PortablePhaseDefinition,
+    PortablePipelineDefinition,
+    PortableWorkflowDefinition
+  } from '../../lib/snapshot-types';
+  import type { WorkflowNodeTarget } from './workflow-catalog-state';
 
   interface Props {
     pipelines: readonly PortablePipelineDefinition[];
+    phases?: readonly PortablePhaseDefinition[];
+    workflows?: readonly PortableWorkflowDefinition[];
+    currentWorkflowId?: string;
     readonly: boolean;
-    /** The node a Logic action applies to, or null when none is selected. */
-    selectedNodeId: string | null;
-    onaddnode: (pipelineId: string) => void;
-    onbranchadd: (nodeId: string) => void;
-    onclose: () => void;
+    /** The node a `Split` click will branch from, or null when nothing can split. */
+    splitTargetId: string | null;
+    onaddnode: (target: WorkflowNodeTarget) => void;
+    onaddsplit: () => void;
   }
 
-  const { pipelines, readonly, selectedNodeId, onaddnode, onbranchadd, onclose }: Props = $props();
+  const {
+    pipelines,
+    phases = [],
+    workflows = [],
+    currentWorkflowId,
+    readonly: readOnly,
+    splitTargetId,
+    onaddnode,
+    onaddsplit
+  }: Props = $props();
 
-  const splitHint = $derived(
-    selectedNodeId === null
-      ? 'Select a node on the canvas first: a split is another connection leaving it.'
-      : `Add another branch leaving ${selectedNodeId}.`
+  const childWorkflows = $derived(
+    workflows.filter((wf) => wf.workflowId !== currentWorkflowId)
+  );
+  const isEmpty = $derived(
+    phases.length === 0 && childWorkflows.length === 0 && pipelines.length === 0
   );
 </script>
 
-<div class="wf-palette" data-testid="workflow-palette">
-  <div class="wf-palette-head">
-    <h3 id="workflow-palette-label">Actions</h3>
-    <button
-      class="icon-btn"
-      data-testid="workflow-palette-close"
-      aria-label="Hide the Actions palette"
-      onclick={onclose}>‹</button
-    >
-  </div>
+<aside class="wf-palette" aria-label="Workflow actions" data-testid="workflow-action-palette">
+  {#if phases.length > 0}
+    <div class="wf-palette-group">
+      <div class="wf-palette-heading">Phases</div>
+      {#each phases as phase (phase.phaseId)}
+        <button
+          type="button"
+          class="wf-palette-item"
+          data-testid="workflow-palette-phase-{phase.phaseId}"
+          disabled={readOnly}
+          onclick={() => onaddnode({ kind: 'phase', phaseId: phase.phaseId })}
+        >
+          <span class="wf-palette-item-title">{phase.name}</span>
+          <span class="wf-palette-item-meta">Phase · {phase.phaseId}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
 
-  <div class="wf-palette-group" aria-labelledby="workflow-palette-pipelines">
-    <div class="wf-palette-group-label" id="workflow-palette-pipelines">Pipelines</div>
-    {#each pipelines as pipeline (pipeline.pipelineId)}
-      <button
-        class="wf-palette-item"
-        data-testid="workflow-palette-pipeline-{pipeline.pipelineId}"
-        disabled={readonly}
-        title={pipeline.description ?? pipeline.name}
-        onclick={() => onaddnode(pipeline.pipelineId)}
-      >
-        <span class="wf-chip wf-chip-pipeline" aria-hidden="true">
-          {pipeline.name.slice(0, 1).toUpperCase() || 'P'}
-        </span>
-        <span class="wf-palette-label">{pipeline.name}</span>
-        <span class="wf-handle" aria-hidden="true">⠿</span>
-      </button>
-    {/each}
-    <!-- Outside the loop: an empty catalog is not a Pipeline. FR-045 — every node
-         runs a Pipeline, so with none effective there is nothing to add. -->
-    {#if pipelines.length === 0}
-      <div class="wf-palette-empty" data-testid="workflow-palette-no-pipelines">
-        No effective Pipeline to add.
-      </div>
-    {/if}
-  </div>
+  {#if childWorkflows.length > 0}
+    <div class="wf-palette-group">
+      <div class="wf-palette-heading">Workflows</div>
+      {#each childWorkflows as wf (wf.workflowId)}
+        <button
+          type="button"
+          class="wf-palette-item"
+          data-testid="workflow-palette-workflow-{wf.workflowId}"
+          disabled={readOnly}
+          onclick={() => onaddnode({ kind: 'workflow', workflowId: wf.workflowId })}
+        >
+          <span class="wf-palette-item-title">{wf.name}</span>
+          <span class="wf-palette-item-meta">
+            Workflow · {wf.nodes.length} {wf.nodes.length === 1 ? 'step' : 'steps'}
+          </span>
+        </button>
+      {/each}
+    </div>
+  {/if}
 
-  <div class="wf-palette-group" aria-labelledby="workflow-palette-logic">
-    <div class="wf-palette-group-label" id="workflow-palette-logic">Logic</div>
+  {#if pipelines.length > 0}
+    <div class="wf-palette-group">
+      <div class="wf-palette-heading">Pipelines</div>
+      {#each pipelines as pipeline (pipeline.pipelineId)}
+        {@const phaseCount = pipeline.phaseIds.length}
+        <button
+          type="button"
+          class="wf-palette-item"
+          data-testid="workflow-palette-pipeline-{pipeline.pipelineId}"
+          disabled={readOnly}
+          onclick={() => onaddnode(pipeline.pipelineId)}
+        >
+          <span class="wf-palette-item-title">{pipeline.name}</span>
+          <span class="wf-palette-item-meta">
+            {phaseCount} {phaseCount === 1 ? 'phase' : 'phases'}
+          </span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
+  {#if isEmpty}
+    <p class="wf-palette-empty" data-testid="workflow-palette-empty">
+      No effective Phases or Workflows
+    </p>
+  {/if}
+
+  <div class="wf-palette-group">
+    <div class="wf-palette-heading">Logic</div>
     <button
+      type="button"
       class="wf-palette-item"
       data-testid="workflow-palette-split"
-      disabled={readonly || selectedNodeId === null}
-      title={splitHint}
-      onclick={() => selectedNodeId !== null && onbranchadd(selectedNodeId)}
+      disabled={readOnly || splitTargetId === null}
+      onclick={onaddsplit}
     >
-      <span class="wf-chip wf-chip-logic" aria-hidden="true">⑂</span>
-      <span class="wf-palette-label">Split</span>
-      <span class="wf-handle" aria-hidden="true">⠿</span>
+      <span class="wf-palette-item-title">Split</span>
+      <span class="wf-palette-item-meta">
+        {#if splitTargetId !== null}
+          Add branch on {splitTargetId}
+        {:else}
+          Select or add a node first
+        {/if}
+      </span>
     </button>
-    <!-- The reason sits with the control it disables, the same rule the Save
-         prerequisite follows. A dead button with no explanation beside it is the
-         failure this pattern exists to avoid. -->
-    {#if selectedNodeId === null}
-      <div class="wf-palette-empty" data-testid="workflow-palette-split-hint">{splitHint}</div>
-    {/if}
   </div>
-</div>
+</aside>
