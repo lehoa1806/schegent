@@ -22,7 +22,7 @@
   ],
   "rules": {
     "@typescript-eslint/no-unnecessary-condition": {
-      "host": 335,
+      "host": 334,
       "webview": 253,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
@@ -32,7 +32,7 @@
       "hostFiles": {
         "src/audit/audit-log-writer.ts": 1,
         "src/audit/raw-transcript-writer.ts": 2,
-        "src/commands/cancel.ts": 2,
+        "src/commands/cancel.ts": 1,
         "src/commands/enqueue.ts": 2,
         "src/commands/restart-canceled-task.ts": 2,
         "src/commands/schedule.ts": 1,

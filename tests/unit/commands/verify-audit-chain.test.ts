@@ -17,6 +17,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  CHAIN_UNREADABLE_TOAST,
   DAMAGE_RECORDED_NOT_REPAIRED,
   TRANSITION_TEXT,
   renderLossCheck,
@@ -121,22 +122,53 @@ describe('Verify Audit Chain command', () => {
       expect(sent[0]!.message).toContain('could not verify the audit chain');
       expect(sent[0]!.message).toContain('could not be read');
       expect(sent[0]!.message).not.toMatch(/verified/);
+      expect(sent.map((entry) => entry.message)).toEqual([CHAIN_UNREADABLE_TOAST]);
       expect(onBreak).not.toHaveBeenCalled();
     });
 
     // No filesystem can make `readFileSync` throw a non-Error, so this is the one stubbed case.
-    it('U2 — a read failure that is not an Error is named unknown, still a single warning', async () => {
+    // FR-R4-F05: the warning is the same fixed sentence whatever was thrown; the description of
+    // what was thrown goes to the log, not to the operator's screen.
+    it('U2 — a read failure that is not an Error gets the same fixed warning, still a single one', async () => {
       vi.mocked(verifyAuditChainAt).mockImplementationOnce(() => {
         throw 'not-an-error-object';
       });
+      const warnLog = vi.spyOn(logger, 'warn');
 
       await run();
 
-      expect(sent).toHaveLength(1);
-      expect(sent[0]!.level).toBe('warn');
-      expect(sent[0]!.message).toContain('could not verify the audit chain');
-      expect(sent[0]!.message).toContain('unknown error');
+      expect(sent).toEqual([{ level: 'warn', message: CHAIN_UNREADABLE_TOAST }]);
+      expect(warnLog).toHaveBeenCalledWith(
+        'audit chain verification could not read the log',
+        expect.objectContaining({ reasonCode: 'chain-unreadable', error: 'not-an-error-object' })
+      );
       expect(onBreak).not.toHaveBeenCalled();
+    });
+
+    // FR-R4-F05 (FR-014; contract O, O1): the warning "names basenames, counts and digest
+    // prefixes, never a path". A real read fault names the path in its message, so the
+    // message is kept for the log and the warning is the fixed sentence.
+    it('U3 — a read fault that names a path leaves the path out of the warning and in the log', async () => {
+      vi.mocked(verifyAuditChainAt).mockImplementationOnce(() => {
+        throw new Error("EACCES: permission denied, open '/synthetic/home/user-252/.schegent/audit.log'");
+      });
+      const warnLog = vi.spyOn(logger, 'warn');
+
+      await run();
+
+      expect(sent).toEqual([{ level: 'warn', message: CHAIN_UNREADABLE_TOAST }]);
+      expect(JSON.stringify(sent)).not.toContain('user-252');
+      expect(warnLog).toHaveBeenCalledWith(
+        'audit chain verification could not read the log',
+        expect.objectContaining({ error: expect.stringContaining('user-252') })
+      );
+      expect(onBreak).not.toHaveBeenCalled();
+    });
+
+    it('U4 — the warning reads as a refusal, names no cause, and points at the log', () => {
+      expect(CHAIN_UNREADABLE_TOAST).toBe(
+        'Schegent could not verify the audit chain: the log could not be read. See the Schegent log for details.'
+      );
     });
   });
 
