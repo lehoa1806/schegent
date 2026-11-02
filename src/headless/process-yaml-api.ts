@@ -90,7 +90,8 @@ export type LayerSaveAck =
  * that never landed: the second pass runs only over what the first pass wrote.
  * What can still happen is the whole thing stopping partway, and that is reported
  * rather than repaired — FR-042c forbids a compensating delete, and FR-039a leaves
- * whatever landed as a Draft for the operator to publish or re-import over.
+ * whatever landed as a Draft for the operator to publish. A re-import skips a row
+ * that is already there, drafts included, so it writes only what is still missing.
  *
  * The Model Catalog keeps its own write because it never shares a document with
  * the other three (FR-015) and is still configuration-backed (099 FR-054).
@@ -273,12 +274,11 @@ export function packageResults(
 /**
  * The three outcomes, read off the acks that actually came back (FR-042a).
  *
- * `partial` exists because the writes are independently gated and an earlier one
- * can succeed while a later one is refused — two shapes as of feature 086, a
- * refused Pipeline write after a Phase write and a refused Workflow write after
- * both. Counting acks is total over either. It is reported rather than repaired:
- * FR-042c forbids a compensating delete, so the honest report is all this surface
- * owes its caller.
+ * `partial` exists because a package can stop partway: the layers that went live
+ * read as accepted and the rest, drafted only or never reached, as rejected
+ * (`packageResults`). Counting acks is total over every such split. It is
+ * reported rather than repaired: FR-042c forbids a compensating delete, so the
+ * honest report is all this surface owes its caller.
  *
  * An empty result list is `failed`, not `imported` — the commit sent nothing.
  */
@@ -292,25 +292,27 @@ export function importCommitOutcome(
 }
 
 /**
- * Apply a plan as ordered per-layer writes: Phases, then Pipelines, then
- * Workflows (FR-008, and the repository's standing package-write rule).
+ * Apply a plan as one package publication, Phases then Pipelines then Workflows,
+ * plus the Model Catalog write when the document is a Model Catalog (FR-008,
+ * FR-013, and the repository's standing package-write rule).
  *
- * The order is fixed by dependency and no write may precede the one it depends
- * on: a Pipeline's bindings are only satisfiable once its Phases are effective,
- * and a Workflow's nodes only resolve once its Pipelines are. Each write carries
- * its OWN expected revision — the one the PLAN was computed against, taken from
- * the plan and never read live, because a revision read at the moment of the
- * write leaves the staleness gate unable to fire (FR-040).
- * Each layer names its own target set through the ids it carries, so a document
- * supplying fewer layers writes fewer times and never merges two kinds into one
- * layer. The per-layer `import-package` mutation intent is gone with the intent
- * algebra (feature 100, FR-051): there is no whole-array diff left for a declared
- * intent to be reconciled against, and a layer's `kind` is what identifies it.
+ * The order is fixed by dependency and the host keeps it inside the operation: a
+ * Pipeline's bindings are only satisfiable once its Phases are effective, and a
+ * Workflow's nodes only resolve once its Pipelines are. Each layer carries its OWN
+ * expected revision — the one the PLAN was computed against, taken from the plan
+ * and never read live, because a revision read at the moment of the write leaves
+ * the staleness gate unable to fire (FR-040). Each layer names its own target set
+ * through the ids it carries, so a document supplying fewer layers sends fewer
+ * layers and never merges two kinds into one. The per-layer `import-package`
+ * mutation intent is gone with the intent algebra (feature 100, FR-051): there is
+ * no whole-array diff left for a declared intent to be reconciled against, and a
+ * layer's `kind` is what identifies it.
  *
- * Sequential and short-circuiting: a rejection stops the sequence, and stopping
- * is all it does. Whichever prefix landed stays written (FR-042c). Importing the
- * same document a second time is the recovery path, because the presence scan
- * turns the already-written rows into `skip` rows.
+ * A rejection stops the operation, and stopping is all it does. Whichever prefix
+ * landed stays written (FR-042c). Importing the same document a second time writes
+ * only what is still missing: the presence scan turns every row already there,
+ * drafts included, into `skip`, and a package publish publishes only what its own
+ * operation wrote (FR-039a), so a draft is published by the operator.
  */
 export async function importProcessDocument(
   deps: ImportWritePort,

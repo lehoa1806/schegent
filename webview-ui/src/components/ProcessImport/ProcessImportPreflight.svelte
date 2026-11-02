@@ -46,19 +46,20 @@
   // that control is gone with the layer tier, so the live region is now the
   // whole announcement.)
   //
-  // T049 — the commit is now two ordered writes, so this component gained one
+  // T049 — the commit carries more than one layer, so this component gained one
   // fact and no new judgment: an outcome that can be `partial`. Everything that
-  // decides — which writes, in what order, on which revision, and what each row
+  // decides — which layers, in what order, on which revision, and what each row
   // is then reported as — stays in `process-import-state.ts`; `runImportCommit`
   // is handed the sender and returns the whole report. No compensating action is
   // offered here, because there is none to offer (FR-042c).
   //
-  // Feature 086 T054/T055 — a third ordered write, and again no new judgment
-  // here: one more layer built there, and the layer acks held alongside the
-  // rows so the outcome sentence can name which layers landed (FR-051). What is
-  // NOT added is a retry, a rollback, or any other compensating affordance —
-  // whichever prefix of the three writes landed, stays landed, and re-inspecting
-  // the same document is the whole recovery path (FR-042b).
+  // Feature 086 T054/T055 — a third layer, and again no new judgment here: one
+  // more layer built there, and the layer acks held alongside the rows so the
+  // outcome sentence can name which layers landed (FR-051). What is NOT added is
+  // a retry, a rollback, or any other compensating affordance — whichever layers
+  // landed stay landed, and the recovery is the two steps the outcome sentence
+  // names: publish what was left as a draft, then inspect the same document
+  // again (FR-042b, FR-R4-F07 audit G-RECOVERY).
   //
   // T070 — the two tables are child components. The split is presentational
   // only: this file keeps every decision (what to request, when a commit is

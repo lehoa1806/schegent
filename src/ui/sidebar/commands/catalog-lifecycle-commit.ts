@@ -453,8 +453,8 @@ export async function commitPackagePublish(
     }
     case 'partial': {
       // Whichever prefix landed stays written and is reported (FR-037, FR-038).
-      // Recovery is a re-run of the same document, which plans the written rows as
-      // skips (FR-039) — not a compensating delete, which this path never performs.
+      // A re-run plans the written rows as skips, drafts included (FR-039); this
+      // path never performs a compensating delete.
       await refreshCatalog(ctx);
       // The layers that landed before the failure still trimmed history, and a
       // re-run prunes nothing (FR-039) — so this is the only report of those

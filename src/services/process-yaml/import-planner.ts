@@ -149,7 +149,7 @@ export interface PackageImportContext {
   readonly revision: ProcessYamlCatalogRevision;
   /**
    * The Pipeline kind's store revision. Separate because the two kinds are
-   * independently mutable and a confirmed package is two ordered writes, each
+   * independently mutable and a confirmed package carries a layer per kind, each
    * gated on its own kind having not moved since this plan was computed
    * (FR-040, FR-043).
    */
@@ -190,7 +190,7 @@ export interface WorkflowPackageImportContext extends PackageImportContext {
   /**
    * The Workflow kind's store revision. A third field for the reason there is a
    * second: three independently mutable kinds cannot share one staleness gate,
-   * and a confirmed package is three ordered writes each carrying its own
+   * and a confirmed package carries a layer per kind, each with its own
    * `expectedRevision`.
    */
   readonly workflowRevision: ProcessYamlCatalogRevision;
