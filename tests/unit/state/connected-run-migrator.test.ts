@@ -143,6 +143,80 @@ describe('connected-run migration (v8 → v9)', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('cr-bad'));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('cr-mismatched'));
   });
+
+  // FR-R4-F08 (G8 of the 2026-11-01 close audit). The composer reads this collection on every pass
+  // and once more for each Run card, and the sidebar's log sink kicks the projector for every line
+  // the logger writes, so a WARN per read was a line per pass that caused the next pass. The
+  // behaviour end to end is F-T9 in `tests/unit/ui/sidebar/projection-feedback.test.ts`; these pin
+  // the rule at the store, where it lives, with the same shape as the Git-plan grant warning.
+  describe('the dropped-record warning is about the set, not about the read (FR-R4-F08)', () => {
+    const BAD = { connectedRunId: 'cr-bad', status: 'running' };
+
+    function storeWithWarnSpy(
+      m: Memento,
+      warn: ReturnType<typeof vi.fn>
+    ): WorkspaceStateStore {
+      return new WorkspaceStateStore(m, {
+        warn,
+        info: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+        sanitize: (s: string) => s
+      } as unknown as ConstructorParameters<typeof WorkspaceStateStore>[1]);
+    }
+
+    it('names an unchanged set of dropped records once however often it is read', () => {
+      const warn = vi.fn();
+      const store = storeWithWarnSpy(memento({ [KEYS.connectedRuns]: { 'cr-bad': BAD } }), warn);
+
+      for (let read = 0; read < 5; read += 1) expect(store.getConnectedRuns()).toEqual({});
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('cr-bad'));
+    });
+
+    it('names a changed set again, and a set that returns after it cleared', () => {
+      const warn = vi.fn();
+      const m = memento({ [KEYS.connectedRuns]: { 'cr-bad': BAD } });
+      const store = storeWithWarnSpy(m, warn);
+
+      store.getConnectedRuns();
+      store.getConnectedRuns();
+      expect(warn, 'the first set, read twice').toHaveBeenCalledTimes(1);
+
+      m.store.set(KEYS.connectedRuns, { 'cr-bad': BAD, 'cr-worse': { ...BAD, connectedRunId: 'cr-worse' } });
+      store.getConnectedRuns();
+      expect(warn, 'a second record fails').toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenLastCalledWith(expect.stringContaining('cr-worse'));
+
+      // The same number of records, a different one: the set is the identity, not its size.
+      m.store.set(KEYS.connectedRuns, { 'cr-bad': BAD, 'cr-other': { ...BAD, connectedRunId: 'cr-other' } });
+      store.getConnectedRuns();
+      expect(warn, 'one record replaced by another').toHaveBeenCalledTimes(3);
+      expect(warn).toHaveBeenLastCalledWith(expect.stringContaining('cr-other'));
+
+      m.store.set(KEYS.connectedRuns, {});
+      store.getConnectedRuns();
+      expect(warn, 'nothing is dropped, so nothing is said').toHaveBeenCalledTimes(3);
+
+      m.store.set(KEYS.connectedRuns, { 'cr-bad': BAD, 'cr-other': { ...BAD, connectedRunId: 'cr-other' } });
+      store.getConnectedRuns();
+      expect(warn, 'the very same set failing again after it cleared is a new episode').toHaveBeenCalledTimes(4);
+    });
+
+    it('says nothing for a collection in which nothing is dropped', () => {
+      const warn = vi.fn();
+      const store = storeWithWarnSpy(
+        memento({ [KEYS.connectedRuns]: { 'cr-good': JSON.parse(JSON.stringify(sample('cr-good'))) as unknown } }),
+        warn
+      );
+
+      store.getConnectedRuns();
+      store.getConnectedRuns();
+
+      expect(warn).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('connected-run compare-and-set', () => {

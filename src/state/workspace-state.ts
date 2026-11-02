@@ -866,6 +866,8 @@ export class WorkspaceStateStore {
   private readonly unfencedQueuesWarned = new Set<string>();
   /** FR-R3-146 — same rule for an unreadable Git-plan grant; see `getGitPlanGrants`. */
   private readonly gitPlanGrantProblemsWarned = new Set<string>();
+  /** FR-R4-F08 — the dropped connected-run ids last named (`null`: none), so an unchanged set is named once. */
+  private connectedRunDropsWarned: string | null = null;
   // Feature 092 (T056) retired the one-shot saturation-WARN guard that used to
   // live here: the reader no longer saturates, so there is no silent coercion
   // left to warn about.
@@ -3130,13 +3132,22 @@ export class WorkspaceStateStore {
    * Narrowing and the v8 → v9 lift live in `./connected-run-migrator.ts`; an
    * absent key reads as an empty collection. A record that fails the aggregate's
    * invariants is named in a WARN rather than dropped silently.
+   *
+   * FR-R4-F08 — named once per distinct set, not once per read. The sidebar composes
+   * this on every pass and once more per Run card, and a log line is what schedules
+   * the next pass, so a WARN per read was a loop (F-T9, `projection-feedback.test.ts`).
+   * The record stays in the key until the next write here: the set is the news.
    */
   public getConnectedRuns(): Readonly<Record<string, ConnectedWorkflowRun>> {
     const result = migrateConnectedRuns(this.memento.get<unknown>(KEYS.connectedRuns));
-    if (result.dropped.length > 0) {
-      this.logger?.warn(
-        `workspace-state: dropped ${result.dropped.length} connected run(s) failing persisted invariants: ${result.dropped.join(', ')}`
-      );
+    const dropped = result.dropped.length === 0 ? null : result.dropped.join(', ');
+    if (dropped !== this.connectedRunDropsWarned) {
+      this.connectedRunDropsWarned = dropped;
+      if (dropped !== null) {
+        this.logger?.warn(
+          `workspace-state: dropped ${result.dropped.length} connected run(s) failing persisted invariants: ${dropped}`
+        );
+      }
     }
     return result.runs;
   }
