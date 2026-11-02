@@ -50,7 +50,7 @@ export const DELETE_EVIDENCE_TEXT = {
   /** The label of each kept store in the retained-items view. */
   keptStore: {
     'audit-log': 'Audit log — shared by every Run, never deleted by a Run\'s deletion',
-    'runtime-log': 'Runtime log — host diagnostics, aged by its own settings',
+    'runtime-log': 'Runtime log — host diagnostics, rotated by size and generation count',
     'metrics-rollup': 'Metrics rollup — cumulative totals across Runs',
     'run-history': 'Run history — kept so the Run stays listed'
   },

@@ -21,6 +21,7 @@ import {
 import type { Notifier } from '../../../src/ui/notifications';
 import type { SanitizedLogger } from '../../../src/lib/logger';
 import type { DeleteOutcome } from '../../../src/services/evidence-delete';
+import { retentionDisclosure } from '../../../src/services/retention-disclosure';
 import type { ExportOutcome } from '../../../src/contracts/evidence-export-outcome';
 
 const RUN = '11111111-1111-4111-8111-111111111111';
@@ -251,6 +252,17 @@ describe('FR-R4-F04 T8 — the deletion notice, the retained-items view and the 
     seedEvidence();
     await runDeleteRunEvidenceCommand(deps());
     expect(shownRows).toEqual([]);
+  });
+
+  it('does not call the runtime log aged: the inventory decided it has no age bound (G11)', () => {
+    // The label repeats a decision the inventory records (the log's path can be configured outside the
+    // workspace, where an age sweep would delete files in a place the operator chose). Saying "aged by its
+    // own settings" told the operator the opposite of what the log does, in the view they open to check.
+    const row = retentionDisclosure().find((candidate) => candidate.store === 'Runtime log');
+    expect(row?.bounds, 'the inventory is the source of the decision').toContain('no age bound');
+    const label = DELETE_EVIDENCE_TEXT.keptStore['runtime-log'];
+    expect(label, 'the label must not say the log is aged').not.toMatch(/\bage[ds]?\b/i);
+    expect(label, 'the label says what bounds it').toMatch(/rotated by .*size.*generation/i);
   });
 
   it('shows the result and says it was not recorded when the audit append throws', async () => {
