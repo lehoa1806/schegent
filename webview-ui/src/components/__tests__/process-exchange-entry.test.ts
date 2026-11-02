@@ -300,8 +300,8 @@ describe('Feature 084/085 — what an import appends to (T066/T048, FR-037, FR-0
 
   it('yields three empty layers when only the Phase catalog is supplied', () => {
     // The default arguments are what a caller that has not been updated passes.
-    // They must still produce the third member, or `buildImportWrites` would read
-    // `undefined` as the stored layer.
+    // They must still produce the third member: `ImportTargetLayers` has three, and
+    // no consumer should have to guard a stored layer being `undefined`.
     expect(storedWritableLayers([])).toEqual(EMPTY_LAYERS);
   });
 

@@ -519,7 +519,7 @@ export interface BlockedDependency {
  * reason names the first in authored reference order.
  */
 export type BlockedReason =
-  /** In no catalog layer, and not supplied by this document. */
+  /** Not published (absent, or held only as a draft) and not supplied by this document. */
   | { readonly code: 'dependency-absent'; readonly dependency: BlockedDependency }
   /** A stored row claims the id, but it is not EFFECTIVE — shadowed or invalid. */
   | { readonly code: 'dependency-unresolvable'; readonly dependency: BlockedDependency }
@@ -705,7 +705,7 @@ export interface ImportPlan {
    *
    * A second field rather than a second use of the first: the two kinds are
    * independently mutable, so one revision cannot gate both, and a confirmed
-   * package is two ordered writes each carrying its OWN expected revision. It is
+   * package carries a layer per kind, each with its OWN expected revision. It is
    * carried on the plan rather than read live at confirm time because FR-040 is
    * about the catalog the operator's PREVIEW described — reading the current
    * revision at the moment of the write would make the gate unable to fire.
@@ -716,8 +716,8 @@ export interface ImportPlan {
    * declared a Workflow.
    *
    * A third field for the same reason there is a second: three independently
-   * mutable kinds cannot share one gate, and a confirmed package is three
-   * ordered writes each carrying its own expected revision (data-model.md §3.4).
+   * mutable kinds cannot share one gate, and a confirmed package carries a layer
+   * per kind, each with its own expected revision (data-model.md §3.4).
    */
   readonly computedAgainstWorkflowRevision?: ProcessYamlCatalogRevision;
   /**
