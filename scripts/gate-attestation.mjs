@@ -295,14 +295,15 @@ export function describeObservation(attestation) {
  * Decide whether a release may proceed. Pure over its inputs.
  *
  * Every refusal names the specific reason AND the remedy it implies. A gate that says only
- * "refused" sends someone to read the gate instead of fixing the cause. The eight refusals
+ * "refused" sends someone to read the gate instead of fixing the cause. The ten refusals
  * below fall into three remedies, and the reason exists to say which one applies:
  *
  *   - **Re-record** (`no-attestation`, `stale-version`, `wrong-commit`, `gate-failed`) — the
  *     record is absent, superseded, about another commit, or about a red run.
  *   - **Change the tree** (`dirty-tree`) — commit or stash, then record.
  *   - **Inspect the file** (`unreadable`, `wrong-command`, `command-identity-mismatch`,
- *     `recorded-dirty`) — what is on disk is not something the recorder would have written.
+ *     `recorded-dirty`, `observation-missing`) — what is on disk is not something the recorder
+ *     would have written.
  *
  * The count in this comment is maintained by hand and was wrong for one revision (it said
  * "three causes" while there were six). `gate-attestation.test.ts` asserts the refusals are
