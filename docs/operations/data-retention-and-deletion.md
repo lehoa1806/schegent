@@ -15,7 +15,7 @@ Schegent uses independent retention rules for independent artifact classes. Dele
 | Raw transcripts and verbose diagnostic trees | 30 days and 512 MiB across complete inactive Runs | artifacts for active/protected Run IDs |
 | Recovery checkpoints | 14 days and 256 MiB | ten most recent Run directories are protected from the size bound, but not the age bound |
 | Run transport (and the legacy shared transport) | 5 MiB per Run, 20 MiB across the workspace, the session age; legacy files expire whole at that age | an active Run's file is not aged or removed to meet the total |
-| History descriptions | coupled to retained history entries | removed best-effort when the owning history row is evicted |
+| History descriptions | coupled to retained history entries; one no history row refers to is removed once it is 24 hours old, at most 200 per activation, in the window that owns the workspace | removed best-effort when the owning history row is evicted |
 | Failure records | 30 days (the session age setting) and the newest 200 per workspace | none |
 
 <!-- Source: src/audit/audit-log-writer.ts -->
@@ -36,7 +36,7 @@ The full inventory of every store, with its location, bounds, what sweeps it and
 
 Retention runs when the host starts, after a Run ends, when a retention setting changes, and now on a timer: once an hour, an idle window that owns the workspace and is trusted removes what has expired and is inactive (the session groups and the transport files), skipping every Run still executing. A pass that removes nothing writes no audit row. A window that does not own the workspace, or is untrusted, runs no pass. The timing is separate from each age bound: an age says when evidence becomes eligible, and these triggers say when it is looked at.
 
-The session age setting covers raw transcripts, verbose diagnostic trees and failure records; the session byte setting covers the first two only. Neither deletes structured audit entries, recovery checkpoints in extension `globalStorage`, runtime logs, CLI transport generations, or history descriptions.
+The session age setting covers raw transcripts, verbose diagnostic trees, failure records and the CLI transport (a Run's transport records older than it are removed, and so is a legacy shared transport file whose newest record is older than it); the session byte setting covers the first two only. Neither deletes structured audit entries, recovery checkpoints in extension `globalStorage`, runtime logs, or history descriptions.
 
 <!-- Source: src/services/session-retention/session-artifact-retention-service.ts -->
 <!-- Source: src/services/run-checkpoint-retention.ts -->

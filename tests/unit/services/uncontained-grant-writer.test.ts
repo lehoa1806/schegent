@@ -22,6 +22,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  GRANT_WRITE_FAILED_REASON,
   setUncontainedGrant,
   type UncontainedConsentConfig
 } from '../../../src/services/uncontained-grant-writer';
@@ -253,12 +254,17 @@ describe('setUncontainedGrant — what it writes', () => {
     expect(c.read()).toBe(true);
   });
 
+  // FR-R4-F05 (FR-011; the brief's "never leak exception substrings to IPC") — the reason on a
+  // `write-failed` outcome is shown to the operator (the consent modal's toast and the Settings
+  // ack both carry it), and a profile fault names a path. It was the exception's own text; it is
+  // now one fixed sentence, and the detail stays in the log line below, which the sanitizing
+  // logger redacts.
   it('reports a rejected write as its own fault, not as a refusal', async () => {
     const c = stubConfig([]);
     c.update.mockRejectedValueOnce(new Error('profile is read-only'));
     await expect(setUncontainedGrant(c.deps, 'claude', true)).resolves.toEqual({
       decision: 'write-failed',
-      reason: 'profile is read-only'
+      reason: GRANT_WRITE_FAILED_REASON
     });
   });
 
@@ -268,17 +274,36 @@ describe('setUncontainedGrant — what it writes', () => {
     const c = stubConfig(['claude']);
     c.update.mockRejectedValueOnce(new Error('profile is read-only'));
     const outcome = await setUncontainedGrant(c.deps, 'claude', false);
-    expect(outcome).toEqual({ decision: 'write-failed', reason: 'profile is read-only' });
+    expect(outcome).toEqual({ decision: 'write-failed', reason: GRANT_WRITE_FAILED_REASON });
     expect(c.read()).toEqual(['claude']);
   });
 
-  it('reports a non-Error rejection without putting undefined in front of an operator', async () => {
+  it('reports a non-Error rejection the same way, so nothing but the sentence reaches an operator', async () => {
     const c = stubConfig([]);
     c.update.mockRejectedValueOnce('EACCES');
     await expect(setUncontainedGrant(c.deps, 'claude', true)).resolves.toEqual({
       decision: 'write-failed',
-      reason: 'EACCES'
+      reason: GRANT_WRITE_FAILED_REASON
     });
+  });
+
+  it('keeps no part of the exception in the reason, and keeps all of it in the log line', async () => {
+    const c = stubConfig([]);
+    c.update.mockRejectedValueOnce(
+      new Error("EACCES: permission denied, open '/synthetic/home/user-252/settings.json'")
+    );
+
+    const outcome = await setUncontainedGrant(c.deps, 'claude', true);
+
+    expect(JSON.stringify(outcome)).not.toMatch(/user-252|EACCES/);
+    const warned = c.logger.warn.mock.calls.map((call) => String(call.at(0))).join('\n');
+    expect(warned).toContain('write-failed kind=claude');
+    expect(warned).toContain('user-252');
+  });
+
+  it('states a sentence that reads inside the consent error and names where the detail is', () => {
+    expect(GRANT_WRITE_FAILED_REASON).toMatch(/Schegent log/);
+    expect(GRANT_WRITE_FAILED_REASON).not.toMatch(/[.!?]$/);
   });
 });
 

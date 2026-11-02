@@ -17,13 +17,18 @@
 //
 // The token in F-T7 is assembled at run time so no secret-shaped literal sits in
 // the tracked source.
+//
+// F-T9 is not one of the contract's cases. The close audit of 2026-11-01 (G8) found a source the cycle
+// did not audit: `WorkspaceStateStore.getConnectedRuns()` wrote a WARN on every read while a persisted
+// connected-run record was being dropped, and the composer reads it on every compose, so the same loop
+// ran there. F-T9 runs it with the store given the fixture's logger.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SanitizedLogger, type LogSink } from '../../../../src/lib/logger';
 import { WebviewLogSink } from '../../../../src/lib/webview-log-sink';
 import { StateProjector, type ProjectorTimer } from '../../../../src/ui/sidebar/state-projector';
 import { IDLE_GENERAL_SETTINGS, type WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
-import { WorkspaceStateStore, type Memento } from '../../../../src/state/workspace-state';
+import { KEYS, WorkspaceStateStore, type Memento } from '../../../../src/state/workspace-state';
 import type { FeatureRequest, QueueState } from '../../../../src/queue/feature-request';
 
 const trustControl = vi.hoisted(() => ({ fail: false, message: 'trust resolver failed' }));
@@ -45,6 +50,7 @@ const DEBOUNCE_MS = 100;
 const PIPELINE_WARNING = 'failed to resolve pipeline catalog';
 const WORKFLOW_WARNING = 'failed to resolve workflow catalog';
 const TRUST_WARNING = 'failed to resolve trust capabilities';
+const DROPPED_RUN_WARNING = 'dropped 1 connected run(s) failing persisted invariants';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -132,13 +138,27 @@ afterEach(() => {
   trustControl.fail = false;
 });
 
-async function buildFixture(): Promise<Fixture> {
-  const store = new WorkspaceStateStore(new FakeMemento());
-  await store.initialize();
+interface FixtureOptions {
+  /**
+   * F-T9. Persist a connected-run record the migrator drops, hand the store the fixture's logger, and
+   * have the composer read the store's collection on each compose, as the live wiring does through
+   * `ConnectedRunService.listProjections` (`ui-wiring.ts`). Off in every other case, so they are unchanged.
+   */
+  readonly droppedConnectedRun?: boolean;
+}
+
+async function buildFixture(options: FixtureOptions = {}): Promise<Fixture> {
+  const droppedConnectedRun = options.droppedConnectedRun === true;
+  const memento = new FakeMemento();
+  if (droppedConnectedRun) {
+    await memento.update(KEYS.connectedRuns, { 'cr-bad': { connectedRunId: 'cr-bad', status: 'running' } });
+  }
   const clock = new VirtualClock();
   const webviewSink = new WebviewLogSink();
   const counting = new CountingSink();
   const logger = new SanitizedLogger([webviewSink, counting]);
+  const store = new WorkspaceStateStore(memento, droppedConnectedRun ? logger : undefined);
+  await store.initialize();
   const control: Control = {
     pipelineFails: false,
     workflowFails: false,
@@ -171,7 +191,15 @@ async function buildFixture(): Promise<Fixture> {
     getWorkflowCatalog: () => {
       if (control.workflowFails) throw new Error('workflow catalog cause');
       return undefined;
-    }
+    },
+    ...(droppedConnectedRun
+      ? {
+          getConnectedRuns: () => {
+            store.getConnectedRuns();
+            return [];
+          }
+        }
+      : {})
   });
   projectorRef = projector;
   live.push(projector);
@@ -398,5 +426,25 @@ describe('F-T7 a secret-shaped cause reaches the sink redacted', () => {
       fixture.webviewSink.getEntries().every((entry) => !entry.message.includes(rawToken)),
       'the debug tail holds no raw token either'
     ).toBe(true);
+  });
+});
+
+describe('F-T9 a persisted connected run the migrator drops', () => {
+  it(`is named once and causes at most 2 composes over ${IDLE_SECONDS} idle seconds`, async () => {
+    const fixture = await buildFixture({ droppedConnectedRun: true });
+    const composesBefore = fixture.control.composes;
+    await changeStore(fixture, 1);
+    idle(fixture, IDLE_SECONDS);
+    const composes = fixture.control.composes - composesBefore;
+    const warnings = fixture.counting.countWarn(DROPPED_RUN_WARNING);
+    const inDebugTail = fixture.webviewSink
+      .getEntries()
+      .filter((entry) => entry.message.includes(DROPPED_RUN_WARNING)).length;
+    report('F-T9 dropped connected run', fixture, { composesAfterChange: composes, warnings, inDebugTail });
+    expect(warnings, 'the control: the record is dropped and the warning does reach the sink').toBeGreaterThanOrEqual(1);
+    expect(composes, 'the change itself was projected').toBeGreaterThanOrEqual(1);
+    expect(composes, 'composes after the change').toBeLessThanOrEqual(2);
+    expect(warnings, 'WARN lines for the dropped record').toBe(1);
+    expect(inDebugTail, 'the sidebar debug tail holds it once').toBe(1);
   });
 });

@@ -131,7 +131,15 @@ posixOnly('a parent environment is not hidden by the allowlist (T30)', () => {
           `readableFromParent=${String(result.readableFromParent)}`
       );
       expect(result.inOwnEnv).toBe(false);
-      expect(result.readableFromParent === null || typeof result.readableFromParent === 'boolean').toBe(true);
+      // The answer belongs to the OS (a hardened host may say no), so its value is recorded and not pinned.
+      // Whether the probe ASKED is pinned: `null` means the probe has no mechanism for this platform, and
+      // darwin and linux have one, so a probe whose platform branch broke would print `null` and still
+      // satisfy a check that allowed it.
+      if (process.platform === 'darwin' || process.platform === 'linux') {
+        expect(typeof result.readableFromParent).toBe('boolean');
+      } else {
+        expect(result.readableFromParent === null || typeof result.readableFromParent === 'boolean').toBe(true);
+      }
     },
     CASE_TIMEOUT_MS
   );

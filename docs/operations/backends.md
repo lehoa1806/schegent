@@ -220,10 +220,13 @@ The check sends signal 0 only. It never kills an orphan and never reattaches to 
 | `unanswerable` | The platform or the permissions would not say (Windows, `EPERM`, an unreadable start time) | Yes |
 
 `unanswerable` resumes on purpose: refusing every resume where the check cannot run would strand
-Runs exactly where the mechanism is weakest. The audit trail records which verdict applied, so an
-operator can see that the check could not answer. The verdicts that permit a resume are the
-single list `RESUME_ON` in `src/contracts/spawn-identity.ts`; the two lists below are copies, and a
-test fails if either drifts from the source.
+Runs exactly where the mechanism is weakest. The audit trail records every decline, and every
+resume the activation sweep admits, with the verdict that applied, so an operator can see that the
+check could not answer there. A resume admitted at the admission check by any other path (a manual
+resume or retry, primacy-gain recovery, the auto-drain, an unattended wakeup) writes no row of its
+own: the check writes one when it declines on liveness and none when it admits. The verdicts that
+permit a resume are the single list `RESUME_ON` in `src/contracts/spawn-identity.ts`; the two
+lists below are copies, and a test fails if either drifts from the source.
 
 <!-- resume-on:start -->
 Permits a resume: `dead`, `unrecorded`, `unanswerable`
@@ -298,6 +301,12 @@ found) are recorded as `unobserved` in
 [Backend containment qualification](../architecture/backend-containment-qualification.md), section 8, with the
 prerequisite for observing them. The extension declares no `extensionKind`.
 
+The three executable-path settings, `schegent.cli.path`, `schegent.codex.path` and `schegent.agy.path`, are
+declared `application`-scoped in the manifest ([Settings reference](../reference/settings.md)). Under a remote
+window, which machine supplies their values, and whether the executable they name exists on the machine the
+extension host runs on, has not been observed either. Observing it takes a controlled remote host with a stub
+CLI, the prerequisite the qualification record gives for its "Remote extension-host topology" rows.
+
 ## Per-phase capability sets (FR-R3-086)
 
 A Phase definition may declare `capabilities` — any subset of `workspace-write`,
@@ -323,7 +332,8 @@ a **CLI sandbox** is the vendor's own, which the vendor claims sits below the to
 qualifies only that the flag is listed by the installed CLI's `--help`
 ([Backend containment qualification](../architecture/backend-containment-qualification.md), section 7); it does
 not verify the vendor's claim. When a set needs a flag no capture has confirmed the installed CLI lists, the
-phase is refused and the refusal says the flag could not be confirmed.
+phase is refused and the refusal says the flag could not be confirmed. That test reads the help capture the
+extension ships with (`CONFIRMED_FLAGS`); the host does not query the installed CLI when a Phase starts.
 
 **A capability a backend cannot express refuses the phase before it starts**, recording a
 `capability-refused` audit event naming every unenforceable capability. It is not run with the declared
@@ -340,6 +350,12 @@ to prevent.
   `Bash` reaches the network (`curl`, `git`, `npm`). A Claude restriction is a tool-access restriction, not
   OS network or filesystem isolation. See [the threat model](../security/threat-model.md) for what that
   leaves open.
+
+**A Codex Phase gets one sandbox mode, and the strictest mode any withheld capability needs wins.**
+Withholding `process-spawn` selects `--sandbox read-only`, and `read-only` also blocks file writes. A
+set that grants `workspace-write` (or `outside-workspace-write`) and withholds `process-spawn` therefore
+runs without the write it granted. The host accepts such a set rather than refusing it; it fails toward
+less authority, not more, and the launcher sentence says the sandbox "also blocks file writes".
 
 The launcher says so before the Run starts: a launchable whose Phase declares a set that leaves something
 open, or cannot be enforced, shows the host's sentence for it beside the authority notice, and the audit

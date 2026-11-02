@@ -23,7 +23,7 @@ and key-management owner; encryption without a usable key lifecycle would add fa
 | Path containment | Every evidence write resolves through the containment oracle, so a planted symlink cannot redirect it (`FR-R3-005`, `FR-R3-053`) |
 | `.gitignore` | Keeps evidence out of commits — and **nothing else**; it does not stop backup or sync tooling |
 | Retention sweeps | Bound how long and how much is held (`FR-R3-012`, `FR-R3-050`) |
-| Redaction | Applies to the structured audit log and the sanitized transport log; the raw transcript is deliberately unredacted, which is what makes it raw |
+| Redaction | Applies to the structured audit log, and best-effort to the CLI transport (secret patterns only; otherwise the stream lines as the CLI sent them); the raw transcript is deliberately unredacted, which is what makes it raw |
 | Privacy profiles | Let an operator choose how much unredacted evidence is kept at all (`FR-R3-127`) |
 | Export and delete | `Schegent: Export Run Evidence` and `Schegent: Delete Run Evidence` (`FR-R3-085`, wired by `FR-R3-127`) |
 

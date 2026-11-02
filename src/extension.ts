@@ -632,13 +632,13 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     controller, operatorAttribution,
     watchdog,
     scheduledStartCoordinator,
-    replayEvidenceBacklog,
-    runSafety,
+    replayEvidenceBacklog, runSafety, // FR-R4-F04 (G7): paired to pay for the maintenance arming below.
     backendCapabilities,
     startMountProbe, refreshCatalog // FR-032 — paired to fund the push below; why in that module.
   });
-  disposables.push(wirePrimacyGain({ logger, lock, producers }), wireEvidenceMaintenance({ logger, isWorkspaceTrusted, lock, protectedSessionRunIds, transportRouter: backend.transportRouter, sessionRetention })); // FR-R4-F04 (FR-031)
+  disposables.push(wirePrimacyGain({ logger, lock, producers }));
   await producers.run();
+  disposables.push(wireEvidenceMaintenance({ logger, isWorkspaceTrusted, lock, protectedSessionRunIds, transportRouter: backend.transportRouter, sessionRetention })); // FR-R4-F04 (FR-031, G7): after the election; why in that module.
 
   const dispose = async (): Promise<void> => {
     controller.closeAutoDrain(); // FR-R3-205 first, then FR-R3-137 (T1530c); why in each callee.

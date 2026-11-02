@@ -412,6 +412,21 @@ describe('FR-R4-F08 K-T6 — the Queues tier root is the dialog\'s fallback focu
     expect(document.activeElement).toBe(opener);
   });
 
+  it('Escape closes the dialog through the tier, and focus returns to the opener', async () => {
+    const { getByTestId, queryByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
+    const opener = getByTestId('queue-settings-open');
+    // The dialog is opened by a click: the real Enter or Space press on the opener is not made here.
+    await fireEvent.click(opener);
+    await tick();
+    expect(queryByTestId('queue-config-modal'), 'the control: the dialog is open').not.toBeNull();
+
+    await fireEvent.keyDown(window, { key: 'Escape' });
+    await tick();
+
+    expect(queryByTestId('queue-config-modal')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
   it('the opener is a native button in the Tab order, so the keyboard opens it natively (SC-004)', () => {
     const { getByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
     const opener = getByTestId('queue-settings-open') as HTMLButtonElement;

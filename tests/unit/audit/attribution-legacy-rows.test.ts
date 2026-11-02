@@ -3,9 +3,10 @@
 //
 // What it pins: a history whose rows name the OS user as their actor, and a stored phase override that
 // does, reads through the parser and verifies with the real chain verifier, with every byte as it was;
-// rows written now through `operatorAuditActor()`, and the two phase-control overrides, carry the pseudonym
-// and not `synthetic-os-user-7f3a`; and an audit export and a Run export of the fixture contain no
-// occurrence of the synthetic username that today's code wrote.
+// rows written now through `operatorAuditActor()` carry the pseudonym and not `synthetic-os-user-7f3a`; the
+// phase-control overrides read the one helper (here, by what the file reads; the writers' stamped actor is
+// pinned in `tests/unit/controller/phase-control-service.test.ts`); and an audit export and a Run export of
+// the fixture contain no occurrence of the synthetic username that today's code wrote.
 //
 // Why: FR-029 says older records are never rewritten (rewriting would break the hash chain) and that the
 // documentation says they may still hold a username. This is the test that no byte moved, and that the one
@@ -20,6 +21,7 @@ import * as path from 'node:path';
 import { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import { verifyAuditChainAt } from '../../../src/audit/audit-chain';
 import { createCountsOnlyAuditExport } from '../../../src/commands/export-audit';
+import { exportRunEvidence } from '../../../src/services/evidence-export';
 import {
   createOperatorAttribution,
   getOperatorActor,
@@ -31,6 +33,7 @@ import { SanitizedLogger } from '../../../src/lib/logger';
 import { removeTempRoot } from '../../temp-root-cleanup';
 
 const SYNTHETIC_OS_USER = 'synthetic-os-user-7f3a';
+const EXPORTED_RUN = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
 
 vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:os')>();
@@ -124,5 +127,28 @@ describe('exports of a mixed history name no username that today\'s code wrote (
     expect(exported.length, 'the control: the export has rows').toBeGreaterThan(0);
     expect(exported).not.toContain(SYNTHETIC_OS_USER);
     expect(await fs.readFile(path.join(auditDir, 'audit.log'), 'utf8')).not.toContain(SYNTHETIC_OS_USER);
+  });
+
+  it('the Run export of rows written after the pseudonym contains no synthetic username, and carries the rows (G9)', async () => {
+    const writer = new AuditLogWriter({ workspaceRoot: root }, new SanitizedLogger([]));
+    const pseudonym = await installPseudonym();
+    await append(writer, 1, operatorAuditActor().id);
+    await append(writer, 2, operatorAuditActor().id);
+    // The audit log is shared and is carried only when the Run has evidence of its own.
+    await fs.mkdir(path.join(auditDir, 'sessions'), { recursive: true });
+    await fs.writeFile(path.join(auditDir, 'sessions', `raw-${EXPORTED_RUN}.log`), 'a transcript line\n');
+    const destination = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-attribution-export-'));
+    try {
+      const result = await exportRunEvidence(root, EXPORTED_RUN, destination);
+
+      expect(result.outcome, 'the control: the export was made').toBe('exported');
+      const names = await fs.readdir(destination);
+      const texts = await Promise.all(names.map((name) => fs.readFile(path.join(destination, name), 'utf8')));
+      const everything = [...names, ...texts].join('\n');
+      expect(everything, 'the control: the exported audit history holds the rows').toContain(pseudonym);
+      expect(everything).not.toContain(SYNTHETIC_OS_USER);
+    } finally {
+      await removeTempRoot(destination);
+    }
   });
 });

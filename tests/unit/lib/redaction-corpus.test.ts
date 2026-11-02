@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { REDACTION_SENTINEL, SanitizedLogger } from '../../../src/lib/logger';
+import { REDACTION_SENTINEL, SanitizedLogger, isSecretKeyName } from '../../../src/lib/logger';
 import {
   BASELINE_REDACTED,
   REDACTION_CASES,
@@ -46,8 +46,14 @@ function eightCharParts(secret: string): string[] {
   return parts;
 }
 
-/** The redacted form of a case: a structured case goes through `sanitizeRecord` under its key. */
+/**
+ * The redacted form of a case: a structured case goes through `sanitizeRecord` under its key, and a
+ * container-under-key case (a recorded limit) goes through it inside an array under its key.
+ */
 function redact(testCase: RedactionCase, input: string): string {
+  if (testCase.framing === 'container-under-key') {
+    return JSON.stringify(logger.sanitizeRecord({ [testCase.key ?? '']: [input] }));
+  }
   if (testCase.framing !== 'structured') return logger.sanitize(input);
   if (testCase.key === undefined) return JSON.stringify(logger.sanitizeRecord({ list: [input] }));
   return JSON.stringify(logger.sanitizeRecord({ [testCase.key]: input }));
@@ -79,10 +85,14 @@ describe('every corpus case, at sanitize() level, against its declared outcome',
       expectSecretGone(testCase, output);
       console.log(`[FR-R4-F10 corpus] over-redacted, kept as is: ${testCase.name}: ${testCase.reason}`);
     } else {
+      // The secret whole, or any 8-character part of it as for a redacted case: a value written with a
+      // hyphen in it (the unknown-format token) is not found whole in the output although every half of it
+      // is, and a secret under 8 characters (the short keyed value) has no 8-character part at all.
+      const secret = testCase.secret?.();
+      const remains =
+        secret !== undefined && (output.includes(secret) || eightCharParts(secret).some((part) => output.includes(part)));
       console.log(
-        `[FR-R4-F10 corpus] unsupported: ${testCase.name}: ${testCase.reason}; the secret ${
-          testCase.secret !== undefined && output.includes(testCase.secret()) ? 'remains' : 'was removed'
-        }`
+        `[FR-R4-F10 corpus] unsupported: ${testCase.name}: ${testCase.reason}; the secret ${remains ? 'remains' : 'was removed'}`
       );
     }
   });
@@ -126,9 +136,21 @@ describe('the corpus is complete and honest', () => {
         'a bare token as URL userinfo',
         'a token in a format no pattern knows',
         'a string-form keyed value under 8 characters',
-        'a string-form camelCase password-suffix key'
+        'a string-form camelCase password-suffix key',
+        'a container under a secret-named key'
       ])
     );
+  });
+
+  it('puts a container-under-key case under a key that names a secret, and records it as unsupported', () => {
+    const containerCases = REDACTION_CASES.filter((testCase) => testCase.framing === 'container-under-key');
+    expect(containerCases.length).toBeGreaterThan(0);
+    for (const testCase of containerCases) {
+      expect(testCase.expected, `${testCase.name} is a recorded limit`).toBe('unsupported');
+      expect(isSecretKeyName(testCase.key ?? ''), `${testCase.name}: its key must name a secret, or the case proves nothing`).toBe(
+        true
+      );
+    }
   });
 
   it('gives every redacted and over-redacted case a secret of at least 8 characters, so the check cannot pass vacuously (AN2)', () => {

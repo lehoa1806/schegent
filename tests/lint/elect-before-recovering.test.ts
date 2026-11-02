@@ -292,6 +292,46 @@ describe('FR-R3-070 — activation elects before it recovers', () => {
     expect(wiring.includes('deps.isWorkspaceTrusted()'), `${WIRING} must pass the trust read`).toBe(true);
   });
 
+  it('arms the evidence maintenance scheduler only after the election has been awaited', () => {
+    // FR-R4-F04 (FR-031, G7) — the scheduler starts its first tick the moment it is created, and the tick
+    // reads primacy. Created ahead of `await producers.run()` that read happens before this window has tried
+    // to take the lock, so the first pass is a race against the election it depends on. The primacy-gain
+    // subscription stays ahead of the election: a gain that lands during it must not be missed.
+    const EXTENSION = 'src/extension.ts';
+    const source = stripComments(read(EXTENSION));
+    const gain = source.indexOf('wirePrimacyGain({');
+    const election = source.indexOf('await producers.run()');
+    const maintenance = source.indexOf('wireEvidenceMaintenance({');
+    expect(gain, `${EXTENSION} must still subscribe to primacy gain`).toBeGreaterThanOrEqual(0);
+    expect(election, `${EXTENSION} must still await the producers`).toBeGreaterThanOrEqual(0);
+    expect(maintenance, `${EXTENSION} must still arm the maintenance scheduler`).toBeGreaterThanOrEqual(0);
+    expect(gain, 'the primacy-gain subscription precedes the election').toBeLessThan(election);
+    expect(election, 'the maintenance scheduler is armed after the election it depends on').toBeLessThan(maintenance);
+  });
+
+  it('sweeps the history descriptions at activation on the owner window only, from the raw rows', () => {
+    // FR-R4-F04 (G1) — the sweep deletes operator-authored text, and FR-031's principle is that only the
+    // owner sweeps, so two windows over one workspace do not remove each other's files. The election has
+    // already run when `replayEvidenceBacklog` does (rule 1), so `hasPrimacy()` answers for this window.
+    const WIRING = 'src/activation/evidence-wiring.ts';
+    const source = stripComments(read(WIRING));
+    const start = source.indexOf('const replayEvidenceBacklog = async');
+    expect(start, `${WIRING} must still define replayEvidenceBacklog`).toBeGreaterThanOrEqual(0);
+    const body = source.slice(start);
+    const sessions = body.indexOf('await sessionRetention.sweep(');
+    const owner = body.indexOf('await lock.hasPrimacy()');
+    const histories = body.indexOf('await sweepHistoryDescriptions(');
+    expect(sessions, `${WIRING} must still sweep the session groups at activation`).toBeGreaterThanOrEqual(0);
+    expect(owner, `${WIRING} must ask the lock whether this window owns the workspace`).toBeGreaterThanOrEqual(0);
+    expect(histories, `${WIRING} must call the history description sweep`).toBeGreaterThanOrEqual(0);
+    expect(owner, 'ownership is read before anything is deleted').toBeLessThan(histories);
+    expect(sessions, 'the history sweep follows the session sweep').toBeLessThan(histories);
+    expect(
+      body.slice(histories).includes('historyMap: () => store.getHistoryMap()'),
+      'the referenced set comes from the raw persisted rows, not the normalised history list'
+    ).toBe(true);
+  });
+
   it('claims the per-queue execution lease on the resume path, before markInFlight', () => {
     const body = methodBody(
       CONTROLLER_SOURCE,

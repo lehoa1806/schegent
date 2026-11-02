@@ -460,7 +460,7 @@ export class ClaudeCliRunner implements BackendRunner {
       });
       trackGroupAtExit(child); // FR-R4-F06 (P2) -- the ownership anchor for a leader reaped before its ladder
       this._logger.info(
-        `[ClaudeCliRunner] Spawned CLI: ${loggedCommand(request.cliPath, args)}, PID=${child.pid}`
+        `[ClaudeCliRunner] Spawned CLI: ${loggedCommand(request.cliPath, args)}, PID=${child.pid}`, { ...attribution }
       );
       this.active.set(invocationId, { child, ...attribution });
       this.emitHook({
@@ -482,7 +482,7 @@ export class ClaudeCliRunner implements BackendRunner {
       // `'error'` listener is attached synchronously inside the helper, so the
       // host is protected from this point on; awaiting here would delay the
       // stream and lifecycle listeners below and lose a fast child's `'exit'`.
-      this._logger.info(`[ClaudeCliRunner] Writing to CLI stdin`);
+      this._logger.info(`[ClaudeCliRunner] Writing to CLI stdin`, { ...attribution });
       const deliveryPromise = writePromptToStdin(child, request.prompt);
 
       const stdoutBuffer = new ZippedStreamBuffer();
@@ -569,7 +569,7 @@ export class ClaudeCliRunner implements BackendRunner {
             `windowMs=${settleArmed() ? COMPLETION_SETTLE_MS : request.timeoutMs} ` +
             `resumed=${shouldResume} ` +
             `elapsedMs=${Date.now() - invocationStartedAt} ` +
-            `phase=${request.phase} iteration=${request.iteration}`
+            `phase=${request.phase} iteration=${request.iteration}`, { ...attribution }
         );
         if (settleArmed()) completedAwaitingExit = true;
         else timedOut = true;
@@ -598,7 +598,7 @@ export class ClaudeCliRunner implements BackendRunner {
                 '[ClaudeCliRunner] invocation deadline exceeded ' +
                   `maxDurationMs=${deadlineBoundMs} ` +
                   `elapsedMs=${Date.now() - invocationStartedAt} ` +
-                  `phase=${request.phase} iteration=${request.iteration}`
+                  `phase=${request.phase} iteration=${request.iteration}`, { ...attribution }
               );
               deadlineExceeded = true;
               this.terminate(child, attribution);
@@ -626,7 +626,7 @@ export class ClaudeCliRunner implements BackendRunner {
         this._logger.info(
           '[ClaudeCliRunner] background hold ended ' +
             `reason=${reason} heldMs=${Date.now() - holdStartedAt} ` +
-            `phase=${request.phase} iteration=${request.iteration}`
+            `phase=${request.phase} iteration=${request.iteration}`, { ...attribution }
         );
         holdStartedAt = null;
         this.emitHook({ kind: 'background-hold', runId: request.runId ?? null, invocationId, held: false });
@@ -646,7 +646,7 @@ export class ClaudeCliRunner implements BackendRunner {
             `untracked=${backgroundTasks.untracked} ` +
             `ceilingMs=${BACKGROUND_HOLD_CEILING_MS} ` +
             `resumed=${shouldResume} ` +
-            `phase=${request.phase} iteration=${request.iteration}`
+            `phase=${request.phase} iteration=${request.iteration}`, { ...attribution }
         );
         this.emitHook({ kind: 'background-hold', runId: request.runId ?? null, invocationId, held: true });
       };
@@ -681,7 +681,7 @@ export class ClaudeCliRunner implements BackendRunner {
                 `elapsedMs=${Date.now() - invocationStartedAt} ` +
                 `windowMs=${RESUME_HISTORY_REPLAY_MS} ` +
                 `suppressedResults=${suppressedResults}/${MAX_SUPPRESSED_RESULTS} ` +
-                `phase=${request.phase} iteration=${request.iteration}`
+                `phase=${request.phase} iteration=${request.iteration}`, { ...attribution }
             );
           } else {
             sawCompletionMarker = true;
@@ -721,7 +721,7 @@ export class ClaudeCliRunner implements BackendRunner {
               `limitUnits=${DEFAULT_MAX_LINE_UNITS} ` +
               `truncatedLines=${stdoutFramer.totals.truncatedLines} ` +
               `droppedUnits=${stdoutFramer.totals.droppedUnits} ` +
-              `phase=${request.phase} iteration=${request.iteration}`
+              `phase=${request.phase} iteration=${request.iteration}`, { ...attribution }
           );
         }
         for (const line of framed.lines) handleStdoutLine(line);
@@ -755,7 +755,7 @@ export class ClaudeCliRunner implements BackendRunner {
       let onAbort: (() => void) | null = null;
       if (request.cancellationSignal) {
         onAbort = () => {
-          this._logger.info(`[ClaudeCliRunner] onAbort fired! (cancellationSignal)`);
+          this._logger.info(`[ClaudeCliRunner] onAbort fired! (cancellationSignal)`, { ...attribution });
           killed = true;
           this.terminate(child, attribution);
         };
@@ -805,7 +805,7 @@ export class ClaudeCliRunner implements BackendRunner {
       const stdinDeliveryFailed = !delivery.delivered;
       if (stdinDeliveryFailed) {
         this._logger.warn(
-          `[ClaudeCliRunner] Prompt delivery failed: ${delivery.errorCode ?? 'unknown'}`
+          `[ClaudeCliRunner] Prompt delivery failed: ${delivery.errorCode ?? 'unknown'}`, { ...attribution }
         );
       }
       const exitCode = completion.exitCode;
@@ -817,7 +817,7 @@ export class ClaudeCliRunner implements BackendRunner {
       }
       if (completion.stdioCloseTimedOut) {
         this._logger.warn(
-          '[ClaudeCliRunner] stdout/stderr close grace expired after process exit; local pipes closed'
+          '[ClaudeCliRunner] stdout/stderr close grace expired after process exit; local pipes closed', { ...attribution }
         );
       }
 
@@ -932,11 +932,11 @@ export class ClaudeCliRunner implements BackendRunner {
   /**
    * Terminate every live subprocess this runner owns, reporting whether there
    * was any. Feature 093 (T046a): the sole production caller is
-   * `BackendRunnerRegistry.cancelAll()` at extension deactivation, which must
-   * reach all of a shared runner's children rather than whichever one happened
-   * to spawn last. Deliberately takes no run id — per-Run cancellation already
-   * runs through each session's own `AbortController` and `cancellationSignal`,
-   * so a run-addressed overload here would have no caller.
+   * `BackendRunnerRegistry.closeAndTearDown()` at extension deactivation, which
+   * must reach all of a shared runner's children rather than whichever one
+   * happened to spawn last. Deliberately takes no run id — per-Run cancellation
+   * already runs through each session's own `AbortController` and
+   * `cancellationSignal`, so a run-addressed overload here would have no caller.
    */
   public cancelActive(): boolean {
     if (this.active.size === 0) return false;
@@ -963,7 +963,7 @@ export class ClaudeCliRunner implements BackendRunner {
 
   private terminate(child: ChildProcess, attribution: TreeAttribution): void {
     this._logger.info(
-      `[ClaudeCliRunner] terminate called! exitCode=${child.exitCode}, signalCode=${child.signalCode}`
+      `[ClaudeCliRunner] terminate called! exitCode=${child.exitCode}, signalCode=${child.signalCode}`, { ...attribution }
     );
     // The ladder owns the decision, including whether there is anything left to
     // signal at all. See `childIsReaped` in `process-tree.ts` for that rule and why
@@ -972,8 +972,8 @@ export class ClaudeCliRunner implements BackendRunner {
       child,
       attribution,
       runner: 'claude-cli',
-      info: (message) => this._logger.info(`[ClaudeCliRunner] ${message}`),
-      warn: (message) => this._logger.warn(`[ClaudeCliRunner] ${message}`),
+      info: (message) => this._logger.info(`[ClaudeCliRunner] ${message}`, { ...attribution }),
+      warn: (message) => this._logger.warn(`[ClaudeCliRunner] ${message}`, { ...attribution }),
       emit: (event) => this.emitHook(event),
       // FR-R3-083 — the guard is on the REPORT, not on the ladder. See the note in
       // `escalateAndReportTree`.

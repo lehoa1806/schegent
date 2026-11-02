@@ -30,7 +30,7 @@ export class ProcessLifecycleRunner {
    * workspace lifetime, so concurrent Runs on the same kind share this
    * instance. A single `ChildProcess | null` slot made the second spawn
    * overwrite the first's handle and the first exit clear the slot for both,
-   * which left `cancelAll()` at deactivation orphaning every child but one and
+   * which left the deactivation teardown orphaning every child but one and
    * `hasActiveProcess` reporting `false` while a subprocess was still alive.
    *
    * Keyed by an invocation identity rather than by run id: an invocation need
@@ -235,10 +235,10 @@ export class ProcessLifecycleRunner {
         : await awaitStdinDelivery(deliveryPromise);
       const stdinDeliveryFailed = !delivery.delivered;
       if (stdinDeliveryFailed) {
-        this.logger.warn(`${this.label}: prompt delivery failed (${delivery.errorCode ?? 'unknown'})`);
+        this.logger.warn(`${this.label}: prompt delivery failed (${delivery.errorCode ?? 'unknown'})`, { ...attribution });
       }
       if (completion.signal && completion.exitCode === null) killed = true;
-      if (completion.stdioCloseTimedOut) this.logger.warn(`${this.label}: stdio close grace expired`);
+      if (completion.stdioCloseTimedOut) this.logger.warn(`${this.label}: stdio close grace expired`, { ...attribution });
       const signal = completion.signal ?? (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
       this.emit({
         kind: 'exited', runId: request.runId ?? null, invocationId,
@@ -268,11 +268,11 @@ export class ProcessLifecycleRunner {
   /**
    * Terminate every live subprocess this runner owns, reporting whether there
    * was any. Feature 093 (T046a): the sole production caller is
-   * `BackendRunnerRegistry.cancelAll()` at extension deactivation, which must
-   * reach all of a shared runner's children rather than whichever one happened
-   * to spawn last. Deliberately takes no run id — per-Run cancellation already
-   * runs through each session's own `AbortController` and `cancellationSignal`,
-   * so a run-addressed overload here would have no caller.
+   * `BackendRunnerRegistry.closeAndTearDown()` at extension deactivation, which
+   * must reach all of a shared runner's children rather than whichever one
+   * happened to spawn last. Deliberately takes no run id — per-Run cancellation
+   * already runs through each session's own `AbortController` and
+   * `cancellationSignal`, so a run-addressed overload here would have no caller.
    */
   public cancelActive(): boolean {
     if (this.active.size === 0) return false;
@@ -323,7 +323,7 @@ export class ProcessLifecycleRunner {
       child,
       attribution,
       runner: this.label,
-      warn: (message) => this.logger.warn(`${this.label}: ${message}`),
+      warn: (message) => this.logger.warn(`${this.label}: ${message}`, { ...attribution }),
       emit: (event) => this.emit(event),
       // FR-R3-083 — the guard is on the REPORT, not on the ladder. Suppressing a
       // second ladder means a tree the first pass failed to reach (a group signal

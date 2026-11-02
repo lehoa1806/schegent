@@ -335,6 +335,22 @@ describe('the disposition list (AR6)', () => {
     expect(result.dispositions.entries).toBe(0);
   });
 
+  /**
+   * Nothing but release preparation reads the committed list, so a reviewed commit that adds an
+   * entry with no rationale, or breaks the JSON, would be found only when someone prepares a
+   * release. This feeds the committed file to the same evaluator, so the commit that breaks it is
+   * the one that fails. The controls are the cases around it: a list with no rationale and a list
+   * that is not JSON are each refused.
+   */
+  it('accepts the list this repository commits, read from the path release preparation reads', async () => {
+    const { DISPOSITIONS_PATH } = await loadAdvisory();
+    const committed = readFileSync(resolve(__dirname, '..', '..', '..', DISPOSITIONS_PATH), 'utf8');
+    const result = await evaluate({ dispositionsText: committed });
+    expect(result.dispositions.state).toBe('read');
+    expect(result.dispositions.defect).toBeNull();
+    expect(result.refusal).toBeNull();
+  });
+
   it('refuses an entry with no rationale', async () => {
     const { rationale: _omitted, ...bare } = entry();
     const result = await evaluate({ dispositionsText: listOf(bare) });

@@ -390,8 +390,8 @@ export type PackagePublishOutcome =
    *
    * Both halves are reported because they are different situations for the operator:
    * `published` is what is now live and triggerable, `draftedOnly` is what was
-   * written and is waiting. There is no compensating delete on any path — recovery
-   * is a re-run of the same document, which plans the written rows as skips (FR-039).
+   * written and is waiting. There is no compensating delete on any path. A re-run
+   * skips every written row, drafts too (FR-039), so `draftedOnly` is published by hand.
    */
   | {
       readonly outcome: 'partial';
@@ -404,9 +404,9 @@ export type PackagePublishOutcome =
        * What retention removed before the failure, from the writes that did land.
        *
        * Reported on this arm for the same reason as on the one above, and more
-       * urgently: recovery is a re-run of the document, which plans the written rows
-       * as skips (FR-039) and prunes nothing, so this is the only report of those
-       * removals there will ever be.
+       * urgently: a re-run of the document plans the written rows as skips (FR-039)
+       * and prunes nothing, so this is the only report of those removals there will
+       * ever be.
        */
       readonly pruned: readonly PrunedVersions[];
     }

@@ -36,6 +36,13 @@ If you want a Phase that completes on a token on its last non-empty line with no
 `evidencePolicy: best-effort` or `none` on that Phase. The acceptance is then labelled as a degraded
 read. A Phase that declares nothing, or `required`, does not.
 
+A report that fences its audit block, as the constitution requires, no longer draws
+`termination token inside a code fence` about the token that follows it: the fence that closes the
+block is not counted as opening one around the token. Only the line directly above the block is read
+for that: a token the model fences itself still draws the warning, and a fence further up the output
+changes nothing, as before. The warning never decided whether the token advanced, so no Phase outcome
+changes.
+
 Each Phase attempt's `phase-start` audit row now also records a prompt identity: a digest of the
 output-contract text and the task block, or a marker that a stored resume prompt was sent. It holds no
 prompt text, and rows written before this release simply have none. See
@@ -59,22 +66,29 @@ best-effort, and the documents say where it stops.
 - **A staged scan, and an opt-in hook.** `npm run security:secrets:staged` scans what a commit would carry,
   read from the Git index and not from the working tree, so a secret staged and then edited out of the working
   copy is still found. It judges a renamed or copied file at its new path, never writes the index, and refuses
-  rather than passes when it cannot answer. To make `git commit` run it, activate the tracked hook once, inside
-  `repo/`, with `git config core.hooksPath scripts/hooks`. Nothing installs it for you. `git commit --no-verify`
-  bypasses it, git does not run it for a conflict-free merge, and there is no server-side check, so the tree scan
+  rather than passes when it cannot answer; that includes a scanner package that cannot be loaded, which is
+  reported by name (`engine-failed`) in the staged scan and in the tree scan. To make `git commit` run it,
+  activate the tracked hook once, inside `repo/`, with `git config core.hooksPath scripts/hooks`. Nothing
+  installs it for you. `git commit --no-verify` bypasses it, git does not run it for a conflict-free merge, and there is no server-side check, so the tree scan
   in the gate stays the check that covers what was merged.
 - **The scan detects more.** A lone AWS access key id and an AWS account id, an Anthropic API key, a JSON web
   token, a password assignment (an unquoted value on an env-style line, or a quoted literal, of at least 8
   characters), and a dotenv file named `.env.<suffix>` other than `.env.example`, `.env.sample` and
   `.env.template`. Test literals the new families reported were rewritten to be built when the test runs. No file or
-  directory was added to the exemptions. `SECURITY.md` lists every family and every shape it does not detect.
+  directory was added to the exemptions. `SECURITY.md` lists every family and every shape it does not detect,
+  including an Azure storage account key (the installed preset does not register its Azure rule). One run on
+  2026-11-01 took 38 seconds over 2,933 tracked files; it is a single measurement and not a bound.
 - **Runtime redaction covers more, and is called what it is.** The value is removed, and the key stays readable,
   for a password, secret or token key in text (`MY_DB_PASSWORD=`, `db_password=`, a JSON `client_secret`) and for a
   string under such a key in a structured record; the password in `scheme://user:password@host` is removed with the
-  scheme, user and host kept; and GitHub `gho_`, `ghu_`, `ghs_` and `ghr_` tokens and `npm_` tokens are added. The
-  documents that said "sanitized" now say best-effort secret-pattern redacted, otherwise raw.
+  scheme, user and host kept; and GitHub `gho_`, `ghu_`, `ghs_` and `ghr_` tokens and `npm_` tokens are added. Four
+  documents (the file layout, sessions and logs, glossary and runtime log pages) that said "sanitized" now say
+  best-effort secret-pattern redacted, otherwise raw; other pages still use "sanitization" as the name of the
+  mechanism, which is what they mean by it.
 - **What stays raw.** Ordinary content, file paths and any secret format with no pattern stay in the clear. A keyed
-  value shorter than 8 characters in text is not removed. **The process-definition export is written without
+  value shorter than 8 characters in text is not removed. An array or an object under a key that names a secret is
+  not replaced as a whole, so a string inside it in a format no pattern knows stays, while a vendor token inside it
+  is still removed by pattern. **The process-definition export is written without
   redaction:** its document body does not pass through the redactor, only its audit row does.
 - **Redaction is bounded.** Two existing patterns (a JSON web token, and a service-account private key in JSON) cost
   time that grew with the square of a hostile line, about 10 seconds for a 128 Ki line in one case. Both are
@@ -128,11 +142,14 @@ works from the keyboard, and renders correctly under the content-security policy
 - **A failing projection is logged once.** When a catalog or the trust capabilities cannot be resolved, the
   sanitized runtime log now records the failure once, when it starts, and not again until it recovers. Before,
   the log line itself triggered another refresh that failed and logged again, about ten times a second for as
-  long as the failure lasted. State is still refreshed on every real change.
+  long as the failure lasted. A saved Connected Workflow Run that fails its checks and is skipped when state is
+  read is named the same way, once for each distinct set of skipped records and not on every refresh. State is
+  still refreshed on every real change.
 - **The live phase log keeps the newest 500 rows.** A running phase's live tail now shows at most 500 rows:
   the newest 499 entries and one line saying how many earlier entries are not shown. While following, the
-  newest entry stays in view. While paused, the view stays where it is, and the "new entries" count keeps
-  counting after the limit is reached.
+  newest entry stays in view. While paused, the pane does not move the view, and the "new entries" count keeps
+  counting after the limit is reached. Whether the browser holds a paused reader's place when the limit removes
+  rows above it has not been observed in a browser run yet.
 - **A hidden sidebar is not sent state, and is updated when it is revealed.** The sidebar no longer receives
   state while it is hidden, and shows the current state as soon as it is revealed. Acknowledgements of your
   commands are unaffected.
@@ -169,7 +186,9 @@ This makes each of them say what is true, and closes the gaps behind them.
   applied: nothing has ever applied them, and the launcher no longer presents them as the settings.
 - **Package import validates the whole document before it writes.** One request now carries all the layers, and
   a document with a defect anywhere is refused before any layer is written. If a failure comes part-way, the
-  layers already written are drafts and not published, and the result says which.
+  result says which layers were published and which were left as drafts, and nothing is removed. A later import
+  does not publish a draft an earlier one left: publish it from the Builder, then inspect the same document
+  again for anything still missing.
 - **A chosen document is size-checked before it is read.** A file over 1 MiB is refused as too large without its
   contents being read, and a failed read is logged with an error code and no path. Long runs of trailing spaces
   in a document no longer slow the reader down quadratically.
@@ -187,7 +206,8 @@ This makes each of them say what is true, and closes the gaps behind them.
   one at a time, so two saves of different definitions no longer lose one of them. The writer assumes one
   extension host writes a catalog directory: the primary window. A second process writing the same catalog is
   unsupported, and the last manifest write would win: a definition's pointer update can be lost while its
-  version record stays on disk as collectable. Catalog writes are flushed to disk on macOS and Linux (each save
+  version record stays on disk as collectable. Nothing removes that record, and the next save of the
+  definition that would create the same version is refused by the store. Catalog writes are flushed to disk on macOS and Linux (each save
   costs about 15 ms more, measured on APFS; the Linux path has not been run on a Linux host). Windows gets the file flush and no
   directory flush. Network mounts and remote workspaces are not claimed: the flush is attempted and nothing
   here observed it honoured. Power loss has not been observed.
@@ -254,7 +274,10 @@ end of the log being removed. This closes both, and says plainly what it still c
 - **Both legacy transitions verify.** A history whose first chained row links to `genesis` after legacy
   rows, and one whose first row links to the last legacy row, both verify, and a retention prune of the
   transition is accounted for (a version 2 cut record). Verification reports which form it found and how
-  many legacy rows retention removed.
+  many legacy rows retention removed. One history still fails: a prune of that transition recorded by an
+  older release (a version 1 cut record) names a digest no retained byte produces, so it is reported as
+  `broken-link` at that cut and the audit sink fails until the history is moved aside
+  ([the way out](inspect-audit-logs.md#verify-the-chain-and-check-for-loss)).
 - **A rejected append no longer forks the chain, and audit health recovers.** Each row links to the last
   row that landed, computed inside the serialized write step, so a refused, torn or queued write is never a
   predecessor. The audit sink is healthy again once an append lands; a broken link or a loss finding is
@@ -643,5 +666,8 @@ replaced by a `## v<version>` heading with evidence-backed additions, changes, f
 migration effects and security notes.
 
 **Two limits worth stating now rather than discovering at release time**: the local path emits
-**no SBOM and no attestation** — those were `release.yml`'s, and they went with it; and
-verification is single-platform, single-machine, permanently, since the three-OS matrix is gone.
+**no provenance attestation, no GitHub Release and no `SHA256SUMS` file** — those were `release.yml`'s,
+and they went with it (it does write the SBOM into the VSIX, and a local release record that names the
+candidate's SHA-256, which a recipient has to be handed; see the "No longer happens" table in
+[`RELEASE.md`](../../RELEASE.md)); and verification is single-platform, single-machine, permanently,
+since the three-OS matrix is gone.

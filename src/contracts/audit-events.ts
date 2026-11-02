@@ -451,9 +451,9 @@ export const MIGRATION_V7_EVENT_TYPES = ['state-migrated-v6-to-v7'] as const;
  *     holding a live child, so the host terminated the invocation. The operator did not cancel
  *     it, which is precisely why it needs a record: without one, a Run that stops mid-phase
  *     looks like a crash.
- *   - `run-resumed` — the ordinary case, recorded so the OTHER two are legible as exceptions
- *     rather than as the only entries that exist. A trail that logs only the unusual path
- *     cannot distinguish "nothing happened" from "nothing was checked".
+ *   - `run-resumed` — the ordinary case, written by the activation sweep so the OTHER two are
+ *     legible as exceptions rather than as the only entries that exist. A trail that logs only the
+ *     unusual path cannot distinguish "nothing happened" from "nothing was checked".
  *
  * Every payload is ids, a closed liveness verdict, and nothing else. No paths, no
  * operator-authored content. Additive, so no `AUDIT_SCHEMA_VERSION` bump — the same

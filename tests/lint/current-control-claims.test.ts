@@ -228,7 +228,7 @@ const REGISTRY: readonly ClaimPattern[] = [
   },
   {
     id: 'sbom-denied',
-    pattern: /\bnothing generates (?:one|it|an SBOM)\b|\bno SBOM is (?:generated|produced|emitted)\b|\bemits no SBOM\b/gi,
+    pattern: /\bnothing generates (?:one|it|an SBOM)\b|\bno SBOM is (?:generated|produced|emitted)\b|\bemits \**no SBOM\b/gi,
     asserts: 'releaseReachesSbom',
     polarity: 'denies',
     why: 'a reader is told no SBOM is produced, and `npm run package` produces one on every package',

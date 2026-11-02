@@ -20,8 +20,9 @@
 // Pipelines and Workflows, each with its OWN expected revision (FR-043), because they are three
 // independently revisioned catalogs. That is also why the outcome has three values rather than two
 // (FR-042a) and why a failed layer triggers no compensating delete (FR-042c): what landed is left in
-// place, and importing the same document again finishes the job (FR-042b). Which layers landed
-// decides what the operator has to look at next, so the partial sentence names them (FR-051).
+// place, and the recovery is to publish any draft the import left and then import the same document
+// again (FR-042b). Which layers landed decides what the operator has to look at next, so the partial
+// sentence names them (FR-051).
 //
 // Feature 254 (FR-R4-F07, FR-013 to FR-020) — the layers travel in ONE `publishPackage` request.
 // The host validates the whole document, with every candidate overlaid on the catalog, before it
@@ -29,13 +30,20 @@
 // for it before the next. What it keeps is the report: the single acknowledgement is fanned out into
 // one result per layer (`layerResultsOf`), and the result table reads those exactly as before.
 //
+// FR-R4-F07 audit G-RECOVERY — the recovery is two steps, because a package publish publishes only
+// what its own operation wrote (FR-039a) and the next preflight counts a draft as present: inspecting
+// the same document again plans a drafted row as a skip and anything that waits on it as blocked. The
+// operator publishes the drafts from the Builder first, and only then does the re-run import what is
+// still missing.
+//
 // Feature 099 (T494a, FR-043/FR-044) — the target scope is gone from every
 // function here. "Which layer" and "which kind" were two independent axes: the
-// three ordered writes are the KIND axis and are untouched, because the three
-// catalogs are still independently revisioned and a Pipeline still cannot be
-// validated before its Phases exist. What collapsed is the other axis — the
-// operator's choice of destination, the per-scope revision lookup, and the layer
-// noun in every sentence a result carries.
+// kinds are the KIND axis and are untouched, because the three catalogs are
+// still independently revisioned and the host writes them in dependency order
+// (Phases, Pipelines, Workflows) inside the one package request. What
+// collapsed is the other axis — the operator's choice of destination, the
+// per-scope revision lookup, and the layer noun in every sentence a result
+// carries.
 
 import type {
   BlockedDependency,
@@ -316,7 +324,9 @@ export function reasonLines(row: ImportPlanRow): readonly string[] {
   if (row.outcome === 'blocked') {
     const needs = dependencyLabel(row.reason.dependency);
     if (row.reason.code === 'dependency-absent') {
-      return [`Needs the ${needs}, which is not in the catalog and this document does not supply.`];
+      // "Not published", not "not in the catalog": the presence check sees a draft, so a dependency the
+      // catalog holds only as a draft lands here too, and its own row says it IS in the catalog.
+      return [`Needs the ${needs}, which is not published and this document does not supply.`];
     }
     if (row.reason.code === 'dependency-unresolvable') {
       return [`Needs the ${needs}, which the catalog holds but does not currently resolve.`];
@@ -891,7 +901,7 @@ function draftedLayerText(result: unknown): string {
   const info = readDraftedInfo(result);
   const failed = info === null ? 'a later' : `the ${IMPORT_LAYER_LABELS[LAYER_OF_KIND[info.failedKind]]}`;
   const cause = info === null || info.cause.length === 0 ? '' : ` (${reasonOfCause(info.cause)})`;
-  return `Saved as a draft, not published — ${failed} layer failed${cause}. Inspect the same document again to finish the import.`;
+  return `Saved as a draft, not published — ${failed} layer failed${cause}. Publish this draft from the Builder, then inspect the same document again to import what is still missing.`;
 }
 
 /**
@@ -992,7 +1002,8 @@ function listLabels(labels: readonly string[]): string {
  * the per-row table cannot: which layers landed, that what landed is still there
  * — no compensating delete was performed and none is offered — and that the
  * recovery is to import the same document again, which is safe precisely because
- * an already-present id is a `skip` (FR-030).
+ * an already-present id is a `skip` (FR-030). A draft counts as present, so when
+ * one was left the recovery starts with publishing it (FR-R4-F07 audit G-RECOVERY).
  *
  * With three layers "part of this document" stopped being enough: which part
  * landed decides what the operator has to look at next. The layers are named
@@ -1018,7 +1029,9 @@ export function commitOutcomeStatement(
       ? ''
       : `${listLabels(drafted)} were saved as drafts and not published. `;
   const recovery =
-    'What was written is still there. Inspect the same document again to finish the import — anything already in the catalog is skipped.';
+    drafted.length === 0
+      ? 'What was written is still there. Inspect the same document again to import the rest — anything already in the catalog is skipped.'
+      : 'What was written is still there. Publish the drafts from the Builder, then inspect the same document again to import anything still missing — anything already in the catalog, drafts included, is skipped.';
   if (outcome === 'failed') {
     if (drafted.length === 0) return 'Nothing was written.';
     return `${draftedSentence}Nothing is live. ${recovery}`;

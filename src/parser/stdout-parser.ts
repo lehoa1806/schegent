@@ -8,7 +8,7 @@ import {
   type FatalSource
 } from '../lib/fatal-signature-registry';
 import type { RawInvocationOutput } from '../runner/invocation-result';
-import type { TrailingRegion } from './audit-log-parser';
+import { isFenceDelimiterLine, type TrailingRegion } from './audit-log-parser';
 import { extractRateLimitMessage, extractResetTimestamp } from './rate-limit-reset-extractor';
 
 /**
@@ -109,12 +109,11 @@ export function detectTerminationToken(stdout: string): boolean {
   return false;
 }
 
-// Feature 107 (FR-012) — fence delimiters are triple-backtick sequences at
-// line start after trimming. A fixed-string comparison, never a regex: this
-// runs over attacker-influenced input and must not backtrack. Tilde fences and
-// indented code blocks are deliberately not tracked; a token inside one warns
-// nothing and still resolves, which is the pre-107 behavior.
-const FENCE_DELIMITER = '```';
+/**
+ * Where the block's own closing fence sits in a region whose block was fenced: region line 0 is
+ * the close-marker line, so the fence the writer closed the block with is the line under it.
+ */
+const BLOCK_CLOSING_FENCE_LINE = 1;
 
 interface RegionScan {
   /** Tokens found in the region, at any fence depth. */
@@ -132,17 +131,27 @@ interface RegionScan {
  * content preceding the audit block change how the region is interpreted,
  * which is exactly the coupling this feature removes. Work is linear in the
  * region's length.
+ *
+ * FR-R4-F12 -- `blockFenced` is the one thing read from before the region, and
+ * only as a single fact about the line above the open marker (see
+ * `TrailingRegion`). The constitution requires the audit block to be a fenced
+ * code block, so a report that follows it has the block's closing fence on the
+ * region's second line; counting that as an opening fence would call the token
+ * after it fenced on every conforming report. That one delimiter is left out of
+ * the depth, and only when the block was fenced: a fence under an unfenced
+ * block still opens one.
  */
-function scanRegion(region: string): RegionScan {
+function scanRegion(region: string, blockFenced: boolean): RegionScan {
   let inFence = false;
   let count = 0;
   let fencedCount = 0;
-  for (const line of region.split(/\r?\n/)) {
-    if (line.trim().startsWith(FENCE_DELIMITER)) {
+  for (const [index, line] of region.split(/\r?\n/).entries()) {
+    if (isFenceDelimiterLine(line)) {
       // A delimiter line is structure, not content: it toggles and is not
       // itself searched. This is why a backtick-*decorated* token (a single
       // backtick) still matches — it is not a delimiter.
-      inFence = !inFence;
+      const closesTheBlock = blockFenced && index === BLOCK_CLOSING_FENCE_LINE;
+      if (!closesTheBlock) inFence = !inFence;
       continue;
     }
     if (containsTerminationToken(line)) {
@@ -293,7 +302,7 @@ function detectTermination(
     return { matched: false, ignored: 'no-region' };
   }
 
-  const { count, fencedCount } = scanRegion(region.text);
+  const { count, fencedCount } = scanRegion(region.text, region.blockFenced === true);
   if (count > 1) {
     warnings.push(`[constitution] multiple termination tokens in audit region (${count} found)`);
   }

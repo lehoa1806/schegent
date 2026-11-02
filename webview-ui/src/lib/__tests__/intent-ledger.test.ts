@@ -9,6 +9,9 @@
 // sends, a late outcome shown twice or never, a timer that outlives the panel. Time is fake and
 // the host's ack is fired by hand; nothing waits for real time.
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CMD_MOVE_TASK, CMD_SAVE_QUEUE_SETTINGS } from '../messages';
@@ -26,6 +29,9 @@ vi.mock('../snapshot-store.svelte', () => ({
   snapshotStore: {
     markPending(id: string): void {
       pending.add(id);
+    },
+    clearPending(id: string): void {
+      pending.delete(id);
     },
     onceAck(id: string, fn: AckListener): () => void {
       ackListeners.set(id, fn);
@@ -348,5 +354,135 @@ describe('disposal (I9)', () => {
     void move({ taskId: 't-1' });
 
     expect(posts[1]!.id).not.toBe(posts[0]!.id);
+  });
+});
+
+// FR-R4-F05 (contract I, I1 and I3; the helper's own "It never rejects") — `post` is the calling
+// module's `postCommand` site, and a `postMessage` can throw: a `DataCloneError` when the payload
+// holds something structured clone cannot carry. A caller written against "never rejects" does not
+// catch, and the entry, the pending mark, the listener and the waiter the helper had already made
+// stayed registered until the reuse window expired. A throw before the send means nothing reached
+// the host, so the intent ends `unknown` (the text the operator already sees for "not yet known")
+// and the helper undoes what it made. A retry's throw undoes only the retry: the earlier send may
+// still be answered.
+describe('a post that throws (FR-R4-F05)', () => {
+  const attempted: string[] = [];
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  function failingPost(id: string): void {
+    attempted.push(id);
+    const fault = new Error("payload not cloneable at '/synthetic/home/user-252/doc.yaml'");
+    fault.name = 'DataCloneError';
+    throw fault;
+  }
+
+  const moveWith = (
+    sender: (id: string, payload: unknown) => void,
+    extra: { signal?: AbortSignal; onLateOutcome?: (ack: AckLike) => void } = {}
+  ) =>
+    sendIntent({
+      type: CMD_MOVE_TASK,
+      payload: { taskId: 't-1' },
+      post: sender,
+      timeoutMs: TIMEOUT_MS,
+      ...extra
+    });
+
+  beforeEach(() => {
+    attempted.length = 0;
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('resolves unknown under the identity it tried, instead of rejecting', async () => {
+    const outcome = await moveWith(failingPost);
+
+    expect(attempted).toHaveLength(1);
+    expect(outcome).toEqual({ kind: 'unknown', correlationId: attempted.at(0) });
+  });
+
+  it('logs one line naming the command and the kind of throw, without the message', async () => {
+    await moveWith(failingPost).catch(() => undefined);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      `[schegent] a command could not be posted type=${CMD_MOVE_TASK} cause=DataCloneError`
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('user-252');
+  });
+
+  it('names a thrown non-Error by its type, not by its value', async () => {
+    await moveWith(() => {
+      throw '/synthetic/home/user-252/doc.yaml';
+    }).catch(() => undefined);
+
+    expect(warn).toHaveBeenCalledWith(
+      `[schegent] a command could not be posted type=${CMD_MOVE_TASK} cause=string`
+    );
+  });
+
+  it('leaves no listener, no pending mark and no timer behind', async () => {
+    await moveWith(failingPost).catch(() => undefined);
+
+    expect(ackListeners.size).toBe(0);
+    expect(pending.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('mints a new identity for the next send, because nothing reached the host under the old one', async () => {
+    await moveWith(failingPost).catch(() => undefined);
+
+    void move({ taskId: 't-1' });
+
+    expect(attempted).toHaveLength(1);
+    expect(posts).toHaveLength(1);
+    expect(posts.map((entry) => entry.id)).not.toContain(attempted.at(0));
+  });
+
+  it('removes the abort listener of the waiter that failed', async () => {
+    const controller = new AbortController();
+    const removed = vi.spyOn(controller.signal, 'removeEventListener');
+
+    await moveWith(failingPost, { signal: controller.signal }).catch(() => undefined);
+
+    expect(removed).toHaveBeenCalledWith('abort', expect.any(Function));
+  });
+
+  it('keeps the earlier send answerable when only the retry throws', async () => {
+    const late = vi.fn();
+    const first = move({ taskId: 't-1' });
+    const firstId = posts.at(0)?.id;
+    expect(firstId).toBeDefined();
+    if (firstId === undefined) return;
+
+    const retry = moveWith(failingPost, { onLateOutcome: late });
+
+    await expect(retry).resolves.toEqual({ kind: 'unknown', correlationId: firstId });
+    expect(attempted).toEqual([firstId]);
+    expect(ackListeners.size).toBe(1);
+
+    fireAck(firstId, { status: 'accepted' });
+
+    await expect(first).resolves.toMatchObject({ kind: 'ack' });
+    expect(late).not.toHaveBeenCalled();
+  });
+});
+
+// FR-R4-F05 (I9, FR-026) — the disposal cases above run the ledger's own teardown. Whether a real
+// webview ever reaches it rests on the two bundle entry points calling it when their realm goes
+// (`pagehide` fires on a reload and on a panel's disposal). Neither entry point runs under a test,
+// because each one mounts the app, so the call is pinned on the source: deleting either line leaves
+// every case above green and the timers and listeners alive until the realm is freed.
+describe('realm teardown wiring (I9)', () => {
+  it.each([
+    ['the sidebar entry point', '../../main.ts'],
+    ['the dashboard entry point', '../../dashboard/main.ts']
+  ])('%s disposes the ledger on pagehide', (_name, relativePath) => {
+    const source = readFileSync(resolve(__dirname, relativePath), 'utf8');
+
+    expect(source).toContain("window.addEventListener('pagehide', () => disposeIntentLedger());");
   });
 });

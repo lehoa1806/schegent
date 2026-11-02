@@ -31,7 +31,9 @@
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Launchable } from '../../../lib/snapshot-types';
+import { STATE_SNAPSHOT } from '../../../lib/messages';
+import { snapshotStore } from '../../../lib/snapshot-store.svelte';
+import type { BackendPosture, CapabilityNotice, Launchable } from '../../../lib/snapshot-types';
 import { ANALYSIS, RESEARCH, buildSnapshot, entries, projection } from './launch-fixture';
 
 const launchPipeline = vi.fn();
@@ -186,5 +188,85 @@ describe('Trigger and Run are distinct controls (FR-008)', () => {
 
     expect(launchPipeline).toHaveBeenCalledTimes(1);
     expect(launchPipeline.mock.calls[0][0]).toMatchObject({ pipelineId: 'analysis-pipeline' });
+  });
+});
+
+// FR-R4-F06 (FR-007; D4; tasks TA8) -- what the panel says about the authority a start will have.
+//
+// `LaunchAuthorityNotice` has its own suite, which feeds it props directly. What that suite cannot
+// show is that THIS panel mounts it and hands it the right three things: the host's postures from
+// the snapshot store, the backends of the entry that is SELECTED (not every backend the host knows),
+// and that entry's capability notices. Each case selects a definition and reads the notice off the
+// real panel. The store is the real one, so a case drives it the way the host does, with a snapshot
+// message, and puts it back afterwards because it is a module singleton.
+describe('what the panel says about the authority a start will have (FR-R4-F06 FR-007)', () => {
+  const CLAUDE_TEXT = 'Host text: Claude runs with your local user authority.';
+  const POSTURES: readonly BackendPosture[] = [
+    { kind: 'claude', containment: 'none', mechanism: 'none', grant: 'granted', notice: CLAUDE_TEXT },
+    {
+      kind: 'codex',
+      containment: 'os-enforced',
+      mechanism: 'codex-sandbox-workspace-write',
+      grant: 'not-required'
+    }
+  ];
+  const CAPABILITY_NOTICES: readonly CapabilityNotice[] = [
+    {
+      phaseName: 'implement',
+      backend: 'codex',
+      outcome: 'residual',
+      text: 'Host text: implement is bounded by tool access.'
+    }
+  ];
+
+  afterEach(() => {
+    snapshotStore.apply({ type: STATE_SNAPSHOT, payload: buildSnapshot() } as never);
+  });
+
+  /** Offers `entry` as the only Pipeline, applies the host's postures, and selects it. */
+  async function selectOffered(entry: Launchable) {
+    const snapshot = buildSnapshot({
+      launchables: projection(entries(entry)),
+      backendPostures: POSTURES
+    });
+    snapshotStore.apply({ type: STATE_SNAPSHOT, payload: snapshot } as never);
+    const view = render(RunsSurface, { snapshot });
+    await fireEvent.click(view.getByTestId('launchable-select-pipeline-analysis-pipeline'));
+    return view;
+  }
+
+  it('shows the host notice for a definition that runs on a granted uncontained backend', async () => {
+    const { getByTestId } = await selectOffered({ ...ANALYSIS, backends: ['claude'] });
+
+    expect(getByTestId('launch-authority-notice-text-claude').textContent).toBe(CLAUDE_TEXT);
+  });
+
+  it('puts the notice above the control that starts the work', async () => {
+    const { getByTestId } = await selectOffered({ ...ANALYSIS, backends: ['claude'] });
+
+    const notice = getByTestId('launch-authority-notice');
+    const trigger = getByTestId('launchable-detail-trigger');
+    expect(notice.compareDocumentPosition(trigger) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows nothing for a definition that runs only on a contained backend', async () => {
+    // The postures still carry Claude's notice. A panel that rendered every posture's notice, or read
+    // the window default in place of the entry's own backends, would show it here.
+    const { getByTestId, queryByTestId } = await selectOffered({ ...ANALYSIS, backends: ['codex'] });
+
+    expect(getByTestId('launchable-detail-trigger')).toBeTruthy();
+    expect(queryByTestId('launch-authority-notice')).toBeNull();
+    expect(queryByTestId('launch-authority-notice-text-claude')).toBeNull();
+  });
+
+  it('shows the entry capability notices, even where no posture notice applies', async () => {
+    const { getByTestId, queryByTestId } = await selectOffered({
+      ...ANALYSIS,
+      backends: ['codex'],
+      capabilityNotices: CAPABILITY_NOTICES
+    });
+
+    expect(getByTestId('launch-authority-capability-0').textContent).toBe(CAPABILITY_NOTICES.at(0)?.text);
+    expect(queryByTestId('launch-authority-notice-text-claude')).toBeNull();
   });
 });

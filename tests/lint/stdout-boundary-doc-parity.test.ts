@@ -248,6 +248,21 @@ describe('the accepted spellings are stated in T25 as the contract module accept
   });
 });
 
+describe('the fence handling is stated in T25 as the parser has it (FR-R4-F12)', () => {
+  const FENCE_WARNING = '[constitution] termination token inside a code fence';
+
+  it('T25 names the warning a fenced token draws and the one fence the count leaves out', () => {
+    const section = t25Section(realDoc()) ?? '';
+    expect(section).toContain(FENCE_WARNING);
+    expect(section).toContain('is not counted as opening one around the token');
+  });
+
+  it('the parser still raises that warning, and still records whether the block was fenced', () => {
+    expect(realSource('src/parser/stdout-parser.ts')).toContain(FENCE_WARNING);
+    expect(realSource('src/parser/audit-log-parser.ts')).toContain('blockFenced?: true');
+  });
+});
+
 describe('the spelling check fails in both directions (FR-R4-F12)', () => {
   const contract = (): string => realSource(CONTRACT_SOURCE);
 

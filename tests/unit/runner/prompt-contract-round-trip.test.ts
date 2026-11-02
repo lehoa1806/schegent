@@ -9,10 +9,17 @@
  * exported markers and the parser, and no private constant, so a prompt edit that stops asking for
  * the block or the token fails here, and so does a parser edit that stops reading what the prompt asks.
  *
- * A PROOF, green on arrival: the spelling and region cases passed before this feature, and the
- * no-block and tool-output cases pass because of the placement rule. Its controls are mutations M1
- * (restore the pre-feature no-region branch) and M4 (ignore `textSource`), recorded in
- * `specs/259-phase-completion-evidence/measurements.md` section 7.
+ * "Following the prompt" includes the fence. The prompt asks for "a fenced audit log block" and the
+ * constitution (Audit Log Format) requires one, so a model that does what both say prints the block
+ * inside a code fence, and the output the cases below build has that shape as well as the bare one.
+ *
+ * A PROOF, green on arrival, for the bare shape: the spelling and region cases passed before this
+ * feature, and the no-block and tool-output cases pass because of the placement rule. Its controls
+ * are mutations M1 (restore the pre-feature no-region branch) and M4 (ignore `textSource`),
+ * recorded in `specs/259-phase-completion-evidence/measurements.md` section 7. The fenced-block
+ * cases are not a proof of that kind: they were written red, against a parser that read the block's
+ * own closing fence as the start of one around the token and warned about every conforming report,
+ * and the parser changed to make them pass. Their controls are in the `describe` that holds them.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -124,6 +131,80 @@ describe('FR-014 -- output that follows the prompt advances, in every accepted s
 
     expect(result.kind).toBe('clean');
     expect(warningsOf(result)).toContainEqual(expect.stringContaining('termination token inside a code fence'));
+  });
+});
+
+// The constitution (Audit Log Format) requires the audit log "fenced as a code block" and the
+// prompt asks for "a fenced audit log block", so the output that follows both has the block's own
+// closing fence between the close marker and the token. The region starts at the close-marker line,
+// which puts that fence in it: before the parser read the fence as the block's, every such report
+// drew "termination token inside a code fence" about a token that stood on its own line.
+describe('FR-014 -- a block fenced the way the constitution and the prompt ask', () => {
+  const token = tokenFromPrompt();
+  const FENCE = '```';
+  const FENCE_NOTICE = 'termination token inside a code fence';
+
+  function fencedBlock(openingFence = FENCE): string {
+    return `${openingFence}\n${auditBlockFromPrompt()}\n${FENCE}`;
+  }
+
+  it('advances with no warning when the token follows the closing fence after a blank line', () => {
+    const result = parse(`${fencedBlock()}\n\n${token}`);
+
+    expect(result.kind).toBe('clean');
+    expect(warningsOf(result)).toEqual([]);
+  });
+
+  it('advances with no warning when the token follows the closing fence directly', () => {
+    const result = parse(`${fencedBlock()}\n${token}`);
+
+    expect(result.kind).toBe('clean');
+    expect(warningsOf(result)).toEqual([]);
+  });
+
+  it('advances with no warning when the opening fence names a language', () => {
+    const result = parse(`${fencedBlock('```text')}\n\n${token}`);
+
+    expect(result.kind).toBe('clean');
+    expect(warningsOf(result)).toEqual([]);
+  });
+
+  it('advances with no warning with Windows line endings', () => {
+    const result = parse(`${fencedBlock()}\n\n${token}`.replace(/\n/g, '\r\n'));
+
+    expect(result.kind).toBe('clean');
+    expect(warningsOf(result)).toEqual([]);
+  });
+
+  it('reads the entry out of the fenced block as it does out of a bare one', () => {
+    const bare = parse(`${auditBlockFromPrompt()}\n${token}`);
+    const fenced = parse(`${fencedBlock()}\n\n${token}`);
+
+    expect(fenced).toEqual(bare);
+  });
+
+  // Controls: the allowance is for the block's own closing fence and nothing else.
+  it('still warns about a token the model fenced itself after a fenced block', () => {
+    const result = parse(`${fencedBlock()}\n${FENCE}\n${token}\n${FENCE}`);
+
+    expect(result.kind).toBe('clean');
+    expect(warningsOf(result)).toContainEqual(expect.stringContaining(FENCE_NOTICE));
+  });
+
+  it('still warns about a fenced token after a block that was not fenced', () => {
+    const result = parse(`${auditBlockFromPrompt()}\n${FENCE}\n${token}\n${FENCE}`);
+
+    expect(result.kind).toBe('clean');
+    expect(warningsOf(result)).toContainEqual(expect.stringContaining(FENCE_NOTICE));
+  });
+
+  it('does not let a fence higher up in the output excuse a fence after an unfenced block', () => {
+    // Only the line directly above the block counts: fence state is not carried in from the head.
+    const head = `${FENCE}\nquoted output\n${FENCE}\nthe block follows`;
+    const result = parse(`${head}\n${auditBlockFromPrompt()}\n${FENCE}\n${token}\n${FENCE}`);
+
+    expect(result.kind).toBe('clean');
+    expect(warningsOf(result)).toContainEqual(expect.stringContaining(FENCE_NOTICE));
   });
 });
 

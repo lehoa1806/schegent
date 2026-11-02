@@ -151,7 +151,9 @@ describe('FR-R3-144 T018 — the handler reports what the writer decided', () =>
     expect(h.lastAck().result).toEqual({ decision: 'denied', kind: 'agy' });
   });
 
-  it('rejects with `write-failed` and the host reason when the setting did not move', async () => {
+  it('rejects with `write-failed` and the backend, and no part of the host exception, when the setting did not move', async () => {
+    // FR-R4-F05 (FR-011) — the ack names the code and the backend. The exception's text used to
+    // ride along as `result.reason`; a profile fault names a path, so it stays in the log.
     const h = buildHarness({ grantWriteRejects: new Error('EROFS: read-only profile') });
 
     await setGrantHandler(h.ctx, grantCmd('claude', true));
@@ -159,10 +161,8 @@ describe('FR-R3-144 T018 — the handler reports what the writer decided', () =>
     expect(h.grants()).toEqual([]);
     expect(h.lastAck().status).toBe('rejected');
     expect(h.lastAck().reason).toBe('write-failed');
-    expect(h.lastAck().result).toEqual({
-      kind: 'claude',
-      reason: 'EROFS: read-only profile'
-    });
+    expect(h.lastAck().result).toEqual({ kind: 'claude' });
+    expect(JSON.stringify(h.lastAck())).not.toContain('EROFS');
   });
 
   it('rejects a contained backend with the policy module`s own problem and sentence', async () => {

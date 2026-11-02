@@ -107,7 +107,7 @@ enforcement point, so a control outside the gate is a control nothing runs for y
 
 | Control | Coverage and trigger | Enforcement |
 |---|---|---|
-| Secret scan | Every git-tracked file, **including `tests/**`**, scanned by secretlint's recommended ruleset plus the dotenv rule | `scripts/scan-secrets.mjs` via `npm run security:secrets`, inside `npm run gate`. Findings are exempted per entry with a stated reason in `.secretlintignore`, never by excluding a directory. Measured **≈39 s** over 1,947 tracked files. <!-- Source: package.json --><!-- Source: scripts/scan-secrets.mjs --> |
+| Secret scan | Every git-tracked file, **including `tests/**`**, scanned by secretlint's recommended ruleset with its AWS id scan switched on, the dotenv rule and one local rule | `scripts/scan-secrets.mjs` via `npm run security:secrets`, inside `npm run gate`. Findings are exempted per entry with a stated reason in `.secretlintignore`, never by excluding a directory. One measurement, on 2026-11-01: **38 s** over 2,933 tracked files (2,929 scanned). <!-- Source: package.json --><!-- Source: scripts/scan-secrets.mjs --> |
 | npm audit | Root and `webview-ui` lockfiles, **operator-invoked** (`npm run security:audit`) | `npm audit --audit-level=low`; it does not auto-fix or commit. **Not in the attested gate**, and the reason is stated rather than left to inference: it queries the npm registry, so a gate containing it would fail for want of a network — and a gate that fails for reasons unrelated to the tree is a gate people learn to bypass with `--no-verify`. Before this item it had no local home at all: the deleted `security-audit.yml` was its only caller. It is **not release evidence**: the release path reads feature 249's captures instead, which override the npm settings that let this audit pass falsely. <!-- Source: package.json --> |
 | Advisory comparison | Root and `webview-ui` lockfiles at the base and candidate commits, **operator-invoked** (`npm run security:advisory-diff`) | Report-only and not part of `npm run gate`. The capture step queries the registry for the same reason given for `npm audit`. The comparison is offline, exits 0 whatever it finds, and is neither a waiver nor permission to integrate; `npm run security:audit` is unchanged. See [the operator page](docs/operations/dependency-advisory-comparison.md). <!-- Source: package.json --><!-- Source: scripts/advisory-diff.mjs --> |
 | Release advisory evidence | One capture per tree (`npm run security:advisory-diff -- capture`) and the tracked list [`docs/release/advisory-dispositions.json`](docs/release/advisory-dispositions.md), read by `npm run release` | `scripts/release-advisory.mjs` reads files and spawns nothing, so it has no network and the gate never reaches it. Release preparation refuses a capture that is `incomplete` or `unavailable` (the audit gave no report), one made for a different lockfile than HEAD holds, one observed after the preparation time, one older than **seven days** (exactly seven is accepted), and a list it cannot use. A finding with no covering disposition is reported with its verdict, not refused, and `accepted` is a label, not a waiver. <!-- Source: scripts/release-advisory.mjs --><!-- Source: scripts/advisory-dispositions.mjs --> |
@@ -146,7 +146,7 @@ missed.
 
 **What it does now.** secretlint's `preset-recommend` with its AWS id scan switched on, `no-dotenv`, and one
 local rule (`scripts/secretlint-rule-schegent.mjs`, declared in `.secretlintrc.json`, so that file stays
-the whole ruleset), over `git ls-files`, **including `tests/**`**. Roughly **39 seconds** for 1,947 files.
+the whole ruleset), over `git ls-files`, **including `tests/**`**. One run on 2026-11-01 took **38 seconds** over 2,933 tracked files, 2,929 of them scanned and 4 skipped by `.secretlintignore` (Darwin arm64, load average near 5); it is a single measurement and not a bound. The earlier figure, about 39 seconds, was taken over 1,947 files.
 Scoped to tracked files so an untracked scratch file is not read and `node_modules` is never walked; the
 previous scan used the same scope and the measurement is why it was kept. A finding is reported by rule and
 location with its value masked, so the report is safe to leave in a terminal or a log: open the file at that
@@ -180,13 +180,16 @@ A commit with nothing to scan says "nothing staged needed scanning" and exits 0.
 | `dotenv-variant`, `dotenv-variant-nested` | a file whose base name is `.env.<suffix>`, such as `.env.local` or `config/.env.production`; not `.env.example`, `.env.sample` or `.env.template` | the local rule |
 | `anthropic-in-template` | an Anthropic key inside one of those three templates: a template is not reported by name, and its content still passes through every rule | the local rule |
 
-**What it does not detect**, each recorded as an unsupported shape in the same fixture, with its reason:
+**What it does not detect**, each recorded in the same fixture, as an unsupported shape or as a dropped family, with its reason:
 
 - a TOKEN or SECRET code constant: names ending in `TOKEN` or `SECRET` are not matched, because the tree holds
   constants with such names whose values are not credentials (the runtime redactor covers them);
 - a .envrc file, and a dotenv file with no leading dot (`env.local`);
 - a secret split across two files;
-- a bespoke internal token format.
+- a bespoke internal token format;
+- an Azure storage account key, as a connection string or as an assignment: the installed preset lists an Azure
+  rule among its dependencies and does not register it, and the local rule has no Azure pattern (a synthetic key
+  was not reported on 2026-11-01, where a GitHub-shaped control in the same run was).
 
 **The commit hook.** `scripts/hooks/pre-commit` runs the staged scan on `git commit`. It is **local and
 opt-in**: nothing installs it. Activate it once, inside `repo/`, with
@@ -247,12 +250,15 @@ keeping the scheme, the user and the host), the vendor tokens it has a pattern f
 
 **What stays.** Ordinary content, file paths, and any secret format it has no pattern for stay in the clear:
 the log is "redacted for secret patterns, otherwise raw". A keyed value shorter than 8 characters in text is not
-removed (so `password: none` stays readable); the shell's `PWD=` and `OLDPWD=` paths are not secrets and stay;
+removed (so `password: none` stays readable); an array or an object
+under a key that names a secret is not replaced as a whole (only a string directly under such a key is), so a
+string inside it in a format no pattern knows stays, while a vendor token inside it is still removed by
+pattern; the shell's `PWD=` and `OLDPWD=` paths are not secrets and stay;
 a count named `TOKEN_COUNT` is removed although it is benign, by a pattern that cannot be narrowed.
 **The process-definition export is written without redaction:** the exported document's body does not pass through
 the redactor; only the export's audit row does. Treat an exported definition as you would the file it was made from.
 
-**The corpus is the statement.** `tests/fixtures/redaction-corpus.ts` lists 70 synthetic cases (the floor is 40), each with its
+**The corpus is the statement.** `tests/fixtures/redaction-corpus.ts` lists 71 synthetic cases (the floor is 40), each with its
 category, its expected outcome (redacted, preserved, over-redacted, or unsupported with a reason) and the sinks it
 applies to; five tests drive every applicable case through the real writer of each sink and read what it wrote.
 
