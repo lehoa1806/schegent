@@ -19,6 +19,8 @@ import { AuditLogWriter } from '../../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import { resolvePipelineCatalog } from '../../../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../../src/config/process-catalog';
+import { resolveWorkflowCatalog } from '../../../../src/config/workflow-catalog';
+import { buildBuilderLifecycleByKind } from '../../../../src/ui/sidebar/builder-lifecycle';
 import { SPECKIT_PHASE_DEFS } from '../../../fixtures/speckit-catalog-fixture';
 
 // Feature 098 (T080) — the Pipelines projected below name `speckit-specify`,
@@ -386,5 +388,90 @@ describe('pipelineCatalog projection — absent projection is tolerated', () => 
     // Feature 092 (T090) — the envelope version this optional field is tolerated
     // at; the per-queue reshape moved it 3 -> 4.
     expect(snapshot.schemaVersion).toBe(4);
+  });
+});
+
+// FR-R4-F07 (audit G-A; FR-022) — the launch limits reach the launcher through the composer
+// ---------------------------------------------------------------------------
+//
+// `launch-projection.test.ts` proves `buildLaunchProjection` states each Phase's settings when it is
+// handed the limits, and `launch-run-settings-parity.test.ts` proves those settings agree with what
+// execution uses. Neither composes a snapshot, so the argument the composer passes
+// (`deps.getLaunchLimits?.()`) was held by no test: dropping it left both green and made every
+// launcher say the settings are resolved when the Run starts, about a window whose limits are known.
+// These cases run the real projector, with the catalogs a launchable Pipeline needs.
+
+describe('launchables projection — the launch limits reach the launcher (FR-022)', () => {
+  const LAUNCH_LIMITS = {
+    idleTimeoutSeconds: { value: 5400, origin: 'default' as const },
+    maxDurationSeconds: { value: 21_600, origin: 'workspace' as const }
+  };
+
+  // The one Pipeline is launchable only with an Active version, which is the store's word
+  // (`getBuilderLifecycle`), not the resolver's.
+  const ACTIVE_CUSTOM_FLOW = {
+    kind: 'pipeline' as const,
+    id: VALID_ROW.id,
+    status: 'effective' as const,
+    activeVersionId: 'v-custom-1',
+    body: VALID_ROW,
+    draftVersionId: null,
+    draftBody: null,
+    createdAt: 1_000,
+    updatedAt: 1_200,
+    versions: [
+      {
+        versionId: 'v-custom-1',
+        contentHash: `sha256:${'a'.repeat(64)}`,
+        createdAt: 1_000,
+        publishedAt: 1_100,
+        note: null
+      }
+    ]
+  };
+
+  function launchablePipeline(options: { withLimits: boolean }) {
+    const pipelineCatalog = resolvePipelineCatalog({
+      rows: [VALID_ROW],
+      revision: SEEDED_PIPELINE_REVISION,
+      phaseCatalog: PHASE_CATALOG.effective
+    });
+    const projector = new StateProjector({
+      store,
+      audit,
+      ownerId: 'this-window',
+      sanitize: (value) => value ?? '',
+      getPhaseCatalog: () => PHASE_CATALOG,
+      getPipelineCatalog: () => pipelineCatalog,
+      getWorkflowCatalog: () =>
+        resolveWorkflowCatalog({ rows: [], revision: 'rev-workflow-launch', pipelineCatalog }),
+      getBuilderLifecycle: () => buildBuilderLifecycleByKind([ACTIVE_CUSTOM_FLOW]),
+      ...(options.withLimits ? { getLaunchLimits: () => LAUNCH_LIMITS } : {})
+    });
+    projector.start();
+    const snapshot = projector.getCurrentSnapshot();
+    projector.dispose();
+    const section = snapshot.launchables?.pipelines;
+    // A section that is not `entries` would make every assertion below about nothing.
+    expect(section?.state).toBe('entries');
+    return section?.state === 'entries' ? section.entries.at(0) : undefined;
+  }
+
+  it('states each Phase and the wall-clock bound of a launchable Pipeline when the host supplies limits', () => {
+    const entry = launchablePipeline({ withLimits: true });
+    expect(entry?.id).toBe(VALID_ROW.id);
+    const settings = entry?.runSettings;
+    expect(settings?.phases.map((phase) => phase.phaseName)).toEqual(
+      VALID_ROW.phases.map((phaseId) => PHASE_CATALOG.effective.find((p) => p.phaseId === phaseId)?.name)
+    );
+    expect(settings?.phases.at(0)?.idleTimeoutSeconds).toEqual(LAUNCH_LIMITS.idleTimeoutSeconds);
+    expect(settings?.maxDurationSeconds).toEqual(LAUNCH_LIMITS.maxDurationSeconds);
+  });
+
+  it('states no settings when the host supplies no limits, rather than guessing the defaults', () => {
+    const entry = launchablePipeline({ withLimits: false });
+    // The entry is there, so the absence below is the limits'.
+    expect(entry?.id).toBe(VALID_ROW.id);
+    expect(entry).not.toHaveProperty('runSettings');
   });
 });
