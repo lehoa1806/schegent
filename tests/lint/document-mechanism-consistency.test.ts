@@ -303,6 +303,16 @@ describe('no shipped document denies a mechanism the tree exports (FR-R3-116)', 
     }
   );
 
+  it('the audit-chain seed reads the policy copy GitHub may render (FR-R4-F11, FR-013)', () => {
+    // The control above is satisfied by `docs` alone, so deleting the `.github/SECURITY.md` scope entry
+    // would leave every other check green and the copy would go unread again. This names the path.
+    const seed = SEEDS.find((candidate) => candidate.id === 'audit-chain');
+    const policyCopy = resolve(REPO_ROOT, '.github/SECURITY.md');
+    expect(seed, 'the audit-chain seed is gone').toBeDefined();
+    expect(existsSync(policyCopy), '.github/SECURITY.md does not exist').toBe(true);
+    expect(seed === undefined ? [] : documentsFor(seed)).toContain(policyCopy);
+  });
+
   it('no document denies a shipped mechanism', () => {
     const findings = SEEDS.flatMap(scan);
     const report = findings.map(
