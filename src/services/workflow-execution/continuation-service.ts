@@ -44,6 +44,8 @@ import {
 import type { ChildRunStateReader } from '../../ui/sidebar/connected-run-projector';
 import { composeHandoffInputEnvelope } from './continuation-composer';
 import type { NodeRunStartDeps } from './node-run-starter';
+import { startPhaseNodeRun } from './node-run-starter';
+import { WorkflowControlService } from './workflow-control-service';
 import { continueWorkflow, type ConnectedRunWriter } from './workflow-launcher';
 
 /**
@@ -141,6 +143,82 @@ export async function continueConnectedRun(
   // Gate 1.
   const run = runs.get(input.payload.connectedRunId);
   if (run === null) return { outcome: 'rejected-run', reason: 'run-not-found' };
+
+  if (input.payload.operation !== undefined) {
+    const controlService = new WorkflowControlService({
+      connectedRuns: runs,
+      dispatchPhase: async (phaseInput) => {
+        if (run.frozenClosure === undefined) {
+          return { outcome: 'rejected', reason: 'missing-closure' };
+        }
+        const phaseRequest: RunRequest = {
+          pipelineId: phaseInput.phase.phaseId,
+          inputs: Object.values(phaseInput.boundInputs).map((portVal) => ({
+            portId: portVal.portId,
+            type: portVal.type as RunRequest['inputs'][number]['type'],
+            value: portVal.value
+          })),
+          supplemental: [],
+          outputs: []
+        };
+        const started = await startPhaseNodeRun(deps, {
+          frozenClosure: run.frozenClosure,
+          phaseId: phaseInput.phase.phaseId,
+          request: phaseRequest,
+          workspaceRoot: input.workspaceRoot,
+          description: phaseInput.node.label ?? phaseInput.phase.name,
+          queueId: phaseInput.queueId,
+          occurrence: {
+            rootRunId: run.connectedRunId,
+            invocationId: phaseInput.frame.invocationId,
+            parentInvocationId: phaseInput.frame.parentInvocationId,
+            nodePath: `${phaseInput.frame.nodePath}/${phaseInput.node.nodeId}`,
+            attemptId: phaseInput.attemptId,
+            attemptIndex: phaseInput.attemptIndex
+          }
+        });
+        if (started.outcome !== 'enqueued') {
+          return { outcome: 'rejected', reason: started.outcome };
+        }
+        return { outcome: 'dispatched', queueItemId: started.queueItemId };
+      }
+    });
+    const outcome = await controlService.executeCommand({
+      runId: run.connectedRunId,
+      commandId:
+        input.payload.commandId ??
+        `${run.connectedRunId}:${input.payload.operation}:${input.payload.expectedRevision}`,
+      expectedRevision: input.payload.expectedRevision,
+      operation: input.payload.operation,
+      ...(input.payload.invocationId !== undefined
+        ? { targetInvocationId: input.payload.invocationId }
+        : {}),
+      targetNodeId: input.payload.nodeId,
+      continuationRequest: input.payload.request,
+      now: input.startedAt
+    });
+    if (outcome.accepted) {
+      return {
+        outcome: 'started',
+        revision: outcome.run.revision,
+        queueItemId: outcome.receipt.spawnedAttemptId ?? outcome.receipt.targetInvocationId
+      };
+    }
+    if (outcome.refusalCode === 'run-not-found') {
+      return { outcome: 'rejected-run', reason: 'run-not-found' };
+    }
+    if (outcome.refusalCode === 'stale-revision') {
+      return staleResult(deps, runs, outcome.run);
+    }
+    return {
+      outcome: 'rejected-state',
+      reason:
+        outcome.refusalCode === 'active-descendant-blocks-retry'
+          ? 'child-not-terminal'
+          : 'node-not-eligible',
+      projection: deps.projectRun(outcome.run ?? run, runs.readChildState)
+    };
+  }
 
   const continued = await continueWorkflow(
     {

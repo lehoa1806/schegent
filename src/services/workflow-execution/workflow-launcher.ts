@@ -29,18 +29,22 @@
 //
 // No `vscode` import: the store and the child-status probe arrive as ports.
 
+import * as fs from 'fs/promises';
 import type {
   ExecutionEnvelope,
   ResolvedPortValue,
   RunRequest,
   RunRequestFieldError
 } from '../../contracts/run-request';
+import type { PhaseDefinition } from '../../contracts/process-definitions';
 import type { WorkflowDefinition, WorkflowNode } from '../../contracts/workflow-definitions';
 import type { PipelineCatalog } from '../../config/pipeline-config';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { ConnectedWorkflowRun } from '../../state/connected-workflow-run';
 import { appendAttempt, resolveBoundQueueId } from '../../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../../state/workspace-state';
+import { checkLocalFile, checkLocalFolder } from '../run-request/local-input-validator';
+import { validateRunRequest } from '../run-request/run-request-validator';
 import {
   createComposableWorkflowRunSnapshot,
   createConnectedRunSnapshot
@@ -134,6 +138,8 @@ export interface LaunchWorkflowInput {
   /** Resolved from the **effective** catalog by the handler, before any freeze. */
   readonly workflow: WorkflowDefinition;
   readonly catalog: PipelineCatalog;
+  readonly effectiveWorkflows?: readonly WorkflowDefinition[];
+  readonly effectivePhases?: readonly PhaseDefinition[];
   readonly startNodeId: string;
   readonly request: RunRequest;
   readonly workspaceRoot: string | null;
@@ -264,6 +270,74 @@ export async function launchWorkflow(
   const node = nodeOf(input.workflow, input.startNodeId);
   if (node === undefined) {
     return { outcome: 'rejected-definition', reason: 'node-not-startable' };
+  }
+  // Composable Workflow launch (FR-R5-F06): when the starting node is a Phase or
+  // child Workflow node rather than a legacy Pipeline node, validate against the
+  // Workflow contract and delegate to `launchComposableWorkflow`.
+  if (node.pipelineId === undefined && (node.phaseId !== undefined || node.workflowId !== undefined)) {
+    const expectedTargetId = node.phaseId ?? node.workflowId ?? input.workflow.workflowId;
+    if (
+      input.request.pipelineId !== expectedTargetId &&
+      input.request.pipelineId !== input.workflow.workflowId
+    ) {
+      return { outcome: 'rejected-definition', reason: 'pipeline-mismatch' };
+    }
+    if (!deps.guardedRun) {
+      return { outcome: 'rejected-queue', reason: 'queue-refused', detail: 'launcher-unavailable' };
+    }
+    if (input.workspaceRoot === null || input.workspaceRoot.trim().length === 0) {
+      return { outcome: 'rejected-definition', reason: 'no-workspace-root' };
+    }
+    const phases: readonly PhaseDefinition[] =
+      input.effectivePhases ??
+      [...input.catalog.phasesById.values()].map((p): PhaseDefinition => {
+        const { instruction, skill, id, ...rest } = p;
+        if (skill !== undefined) {
+          return { ...rest, phaseId: id, version: p.version ?? 1, skill };
+        }
+        return { ...rest, phaseId: id, version: p.version ?? 1, instruction: instruction ?? '' };
+      });
+    const workflows: readonly WorkflowDefinition[] = input.effectiveWorkflows ?? [input.workflow];
+    const validated = await validateRunRequest(
+      {
+        ...input.request,
+        workflowId: input.workflow.workflowId,
+        entryNodeId: input.startNodeId
+      },
+      {
+        workflow: {
+          rootWorkflow: input.workflow,
+          workflows,
+          phases,
+          ...(input.defaultRunnerKind ? { defaultRunnerKind: input.defaultRunnerKind } : {})
+        },
+        workspaceRoot: input.workspaceRoot,
+        now: input.startedAt,
+        localInputs: { checkFile: checkLocalFile, checkFolder: checkLocalFolder },
+        outputProbe: {
+          exists: async (absolutePath) => {
+            try {
+              await fs.lstat(absolutePath);
+              return true;
+            } catch {
+              return false;
+            }
+          }
+        },
+        priorOutputs: { outputsFor: (runId) => deps.readPriorRunOutputs?.(runId) ?? null }
+      }
+    );
+    if (!validated.ok) {
+      return { outcome: 'rejected-validation', errors: validated.errors };
+    }
+    return launchComposableWorkflow(deps, {
+      connectedRunId: input.connectedRunId,
+      envelope: validated.plan,
+      workspaceRoot: input.workspaceRoot,
+      startedAt: input.startedAt,
+      ...(input.defaultRunnerKind ? { defaultRunnerKind: input.defaultRunnerKind } : {}),
+      ...(input.queueId !== undefined ? { queueId: input.queueId } : {})
+    });
   }
   // Gate 3a. Checked before the freeze so a mis-addressed request costs nothing.
   if (node.pipelineId !== input.request.pipelineId) {

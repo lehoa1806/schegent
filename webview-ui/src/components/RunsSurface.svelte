@@ -109,9 +109,10 @@
 
   interface Props {
     readonly snapshot: WorkflowSnapshot;
+    readonly selectedWorkflowId?: string | null;
   }
 
-  const { snapshot }: Props = $props();
+  const { snapshot, selectedWorkflowId = null }: Props = $props();
 
   const connectedRuns = $derived(snapshot.connectedRuns ?? []);
   const pipelines = $derived(snapshot.availablePipelines ?? []);
@@ -170,6 +171,15 @@
         )
       : undefined
   );
+
+  $effect(() => {
+    if (selectedWorkflowId !== null && selectedWorkflowId !== '') {
+      const candidate: LaunchSelection = { kind: 'workflow', id: selectedWorkflowId };
+      if (reconcileSelection(launchables, candidate) !== null) {
+        selection = candidate;
+      }
+    }
+  });
 
   $effect(() => {
     // FR-013 — a selection the next projection no longer offers is let go of,

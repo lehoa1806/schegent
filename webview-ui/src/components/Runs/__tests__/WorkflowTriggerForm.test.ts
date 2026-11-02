@@ -485,3 +485,48 @@ describe('a launch whose wait ran out (T119; FR-024, FR-026)', () => {
     expect(lastOptions().signal!.aborted).toBe(true);
   });
 });
+
+describe('composable Workflow start node (FR-R5-F06)', () => {
+  it('launches a composable Workflow whose start node names a Phase and uses graph outputs', async () => {
+    launchWorkflow.mockResolvedValue({
+      outcome: 'started',
+      connectedRunId: 'connected-composable-1',
+      revision: 1,
+      queueItemId: 'queue-composable-1'
+    });
+    const composableGraph = {
+      ...RESEARCH_GRAPH,
+      workflowId: RESEARCH_GRAPH.workflowId,
+      name: 'Composable Research',
+      version: 1,
+      inputs: [{ portId: 'seed', label: 'Seed', type: 'text' as const, required: true }],
+      outputs: [{ portId: 'digest', label: 'Digest', type: 'markdown' as const }],
+      nodes: [{ nodeId: 'phase-entry', phaseId: 'alpha-phase', label: 'Alpha Step' }],
+      connections: [],
+      startNodeIds: ['phase-entry']
+    };
+    const view = render(WorkflowTriggerForm, {
+      props: {
+        entry: workflow(['phase-entry'], [{ portId: 'seed', label: 'Seed', type: 'text', nodeId: 'phase-entry' }]),
+        graph: composableGraph,
+        pipelines: [],
+        onClose: () => {}
+      }
+    });
+
+    await fireEvent.input(view.getByTestId('run-input-seed'), {
+      target: { value: 'composable topic' }
+    });
+    await submit(view);
+
+    expect(launchWorkflow).toHaveBeenCalledTimes(1);
+    expect(launchWorkflow.mock.calls[0][0]).toMatchObject({
+      workflowId: RESEARCH_GRAPH.workflowId,
+      startNodeId: 'phase-entry',
+      request: {
+        pipelineId: 'alpha-phase',
+        inputs: [{ portId: 'seed', type: 'text', value: 'composable topic' }]
+      }
+    });
+  });
+});
