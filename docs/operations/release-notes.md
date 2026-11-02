@@ -652,5 +652,8 @@ replaced by a `## v<version>` heading with evidence-backed additions, changes, f
 migration effects and security notes.
 
 **Two limits worth stating now rather than discovering at release time**: the local path emits
-**no SBOM and no attestation** — those were `release.yml`'s, and they went with it; and
-verification is single-platform, single-machine, permanently, since the three-OS matrix is gone.
+**no provenance attestation, no GitHub Release and no `SHA256SUMS` file** — those were `release.yml`'s,
+and they went with it (it does write the SBOM into the VSIX, and a local release record that names the
+candidate's SHA-256, which a recipient has to be handed; see the "No longer happens" table in
+[`RELEASE.md`](../../RELEASE.md)); and verification is single-platform, single-machine, permanently,
+since the three-OS matrix is gone.
