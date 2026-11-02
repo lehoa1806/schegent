@@ -966,7 +966,7 @@ export class ClaudeCliMonitor {
         this.unknownRunsReported.add(id);
         this.opts.logger.warn(
           `[monitor] declined ${stream} chunk for unknown run ${this.opts.logger.sanitize(id)}` +
-            ` (invocation ${invocationId ?? 'unnamed'}); ${this.declinedForUnknownRuns} declined for unknown runs so far`
+            ` (invocation ${invocationId ?? 'unnamed'}); ${this.declinedForUnknownRuns} declined for unknown runs so far`, { runId: id }
         );
       }
       return;
@@ -1091,7 +1091,7 @@ export class ClaudeCliMonitor {
       })
       .catch((err: unknown) => {
         try {
-          this.opts.logger.warn(`[monitor] audit append failed: ${errorMessage(err)}`);
+          this.opts.logger.warn(`[monitor] audit append failed: ${errorMessage(err)}`, { runId: state.runId, phase: state.phase });
         } catch {
           // never throw from audit failure path
         }

@@ -235,10 +235,10 @@ export class ProcessLifecycleRunner {
         : await awaitStdinDelivery(deliveryPromise);
       const stdinDeliveryFailed = !delivery.delivered;
       if (stdinDeliveryFailed) {
-        this.logger.warn(`${this.label}: prompt delivery failed (${delivery.errorCode ?? 'unknown'})`);
+        this.logger.warn(`${this.label}: prompt delivery failed (${delivery.errorCode ?? 'unknown'})`, { ...attribution });
       }
       if (completion.signal && completion.exitCode === null) killed = true;
-      if (completion.stdioCloseTimedOut) this.logger.warn(`${this.label}: stdio close grace expired`);
+      if (completion.stdioCloseTimedOut) this.logger.warn(`${this.label}: stdio close grace expired`, { ...attribution });
       const signal = completion.signal ?? (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
       this.emit({
         kind: 'exited', runId: request.runId ?? null, invocationId,
@@ -323,7 +323,7 @@ export class ProcessLifecycleRunner {
       child,
       attribution,
       runner: this.label,
-      warn: (message) => this.logger.warn(`${this.label}: ${message}`),
+      warn: (message) => this.logger.warn(`${this.label}: ${message}`, { ...attribution }),
       emit: (event) => this.emit(event),
       // FR-R3-083 — the guard is on the REPORT, not on the ladder. Suppressing a
       // second ladder means a tree the first pass failed to reach (a group signal
