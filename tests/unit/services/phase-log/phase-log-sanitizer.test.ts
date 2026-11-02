@@ -294,3 +294,35 @@ describe('sanitizeToolArguments removes a string leaf under a secret key (FR-R4-
     expect(entry.body.toolArguments).toEqual({ target: 'staging', password: KEYED_VALUE });
   });
 });
+
+// RECORDED LIMIT (FR-R4-F10, audit gap G3) -- the same shape as in the logger's record walker
+// (`tests/unit/lib/redaction-structured-keys.test.ts`): an array or an object directly under a key that
+// names a secret is walked, not replaced, and only a string leaf directly under the key is. The two
+// walkers share one predicate and must agree, and a change to either has to edit the record.
+describe('sanitizeToolArguments walks a container under a secret key and does not replace it (recorded limit)', () => {
+  // Plain filler: no pattern matches it, so only a key could cause its removal.
+  const KEYED_VALUE = 'Zq3K8vR2mN7pL4wT9yB6cD1f';
+
+  it('keeps a string in an array, an object and an array of objects, and reports no change', () => {
+    const args = {
+      token: [KEYED_VALUE, 'plain'],
+      password: { current: KEYED_VALUE },
+      client_secret: [{ current: KEYED_VALUE }]
+    };
+    const result = sanitizeToolArguments(args, sanitize);
+    expect(result.mutated).toBe(false);
+    expect(result.value).toBe(args);
+  });
+
+  it('removes the same string directly under the key, which is what makes the limit visible', () => {
+    const result = sanitizeToolArguments({ token: KEYED_VALUE }, sanitize);
+    expect(result.mutated).toBe(true);
+    expect(result.value).toEqual({ token: REDACTION_SENTINEL });
+  });
+
+  it('still removes a vendor token inside the container, by pattern', () => {
+    const result = sanitizeToolArguments({ token: [GH_TOKEN] }, sanitize);
+    expect(result.mutated).toBe(true);
+    expect(JSON.stringify(result.value)).not.toContain(GH_TOKEN);
+  });
+});
