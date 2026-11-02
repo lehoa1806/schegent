@@ -133,8 +133,9 @@ works from the keyboard, and renders correctly under the content-security policy
   still refreshed on every real change.
 - **The live phase log keeps the newest 500 rows.** A running phase's live tail now shows at most 500 rows:
   the newest 499 entries and one line saying how many earlier entries are not shown. While following, the
-  newest entry stays in view. While paused, the view stays where it is, and the "new entries" count keeps
-  counting after the limit is reached.
+  newest entry stays in view. While paused, the pane does not move the view, and the "new entries" count keeps
+  counting after the limit is reached. Whether the browser holds a paused reader's place when the limit removes
+  rows above it has not been observed in a browser run yet.
 - **A hidden sidebar is not sent state, and is updated when it is revealed.** The sidebar no longer receives
   state while it is hidden, and shows the current state as soon as it is revealed. Acknowledgements of your
   commands are unaffected.
