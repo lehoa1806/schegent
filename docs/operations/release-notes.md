@@ -169,7 +169,9 @@ This makes each of them say what is true, and closes the gaps behind them.
   applied: nothing has ever applied them, and the launcher no longer presents them as the settings.
 - **Package import validates the whole document before it writes.** One request now carries all the layers, and
   a document with a defect anywhere is refused before any layer is written. If a failure comes part-way, the
-  layers already written are drafts and not published, and the result says which.
+  result says which layers were published and which were left as drafts, and nothing is removed. A later import
+  does not publish a draft an earlier one left: publish it from the Builder, then inspect the same document
+  again for anything still missing.
 - **A chosen document is size-checked before it is read.** A file over 1 MiB is refused as too large without its
   contents being read, and a failed read is logged with an error code and no path. Long runs of trailing spaces
   in a document no longer slow the reader down quadratically.
