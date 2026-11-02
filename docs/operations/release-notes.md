@@ -254,7 +254,10 @@ end of the log being removed. This closes both, and says plainly what it still c
 - **Both legacy transitions verify.** A history whose first chained row links to `genesis` after legacy
   rows, and one whose first row links to the last legacy row, both verify, and a retention prune of the
   transition is accounted for (a version 2 cut record). Verification reports which form it found and how
-  many legacy rows retention removed.
+  many legacy rows retention removed. One history still fails: a prune of that transition recorded by an
+  older release (a version 1 cut record) names a digest no retained byte produces, so it is reported as
+  `broken-link` at that cut and the audit sink fails until the history is moved aside
+  ([the way out](inspect-audit-logs.md#verify-the-chain-and-check-for-loss)).
 - **A rejected append no longer forks the chain, and audit health recovers.** Each row links to the last
   row that landed, computed inside the serialized write step, so a refused, torn or queued write is never a
   predecessor. The audit sink is healthy again once an append lands; a broken link or a loss finding is
