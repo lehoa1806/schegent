@@ -1269,7 +1269,12 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // note) and `removeTask` returning the removed row's value beside `priorStatus`, from the same
       // row (contract P2.1, P2.2). What the value means, and what reaches disk, is decided in
       // `src/contracts/completion-provenance.ts` and `src/audit/audit-payload.ts`, not here.
-      highWaterMark: 2392
+      //
+      // Feature 252 (FR-R4-F05, 2026-11-01) — 2392 → 2393: one line, no new responsibility. It is
+      // the import of `unexpectedMutationFailureReason`; the two reason helpers each swapped one
+      // line, `err.message` for a call. What the closed reason is, and where the detail goes, is
+      // decided in `src/queue/unexpected-mutation-failure.ts`, not here.
+      highWaterMark: 2393
     }
   },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new

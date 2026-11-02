@@ -63,6 +63,7 @@ import { terminalCapture, withoutTerminalCapture } from './terminal-capture';
 import { withRefreshedLifecycle } from './queue-lifecycle-refresh';
 import { hasResettableQueueState, queueResetFields } from './queue-reset-settle';
 import { decideTaskTransition, TASK_TRANSITION_REJECTION_REASONS } from './task-transition-decision';
+import { unexpectedMutationFailureReason } from './unexpected-mutation-failure';
 
 export interface MutationResult {
   ok: boolean;
@@ -2375,7 +2376,7 @@ export class QueueManager {
     if (err instanceof QueueRegistryViolation) {
       return err.code === 'invalid-queue-name' ? 'invalid-name' : err.code;
     }
-    return err instanceof Error ? err.message : 'operation-rejected';
+    return unexpectedMutationFailureReason(this.logger, err);
   }
 
   private taskErrorReason(err: unknown): string {
@@ -2386,6 +2387,6 @@ export class QueueManager {
     if (err instanceof Error && /non-empty|exceeds/i.test(err.message)) {
       return 'invalid-description';
     }
-    return err instanceof Error ? err.message : 'operation-rejected';
+    return unexpectedMutationFailureReason(this.logger, err);
   }
 }
