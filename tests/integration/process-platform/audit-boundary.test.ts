@@ -92,7 +92,6 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
 
 import { buildCatalog, type PhaseDef, type PipelineDef } from '../../../src/config/pipeline-config';
 import { loadCatalog } from '../../../src/config/pipeline-config-loader';
-import { PIPELINE_ID_MAX_LEN } from '../../../src/config/pipeline-definition-validator';
 import { PHASE_ID_MAX_LEN } from '../../../src/config/process-definition-validator';
 import { WORKFLOW_ID_MAX_LEN } from '../../../src/config/workflow-definition-validator';
 import {
@@ -203,9 +202,11 @@ const DOCUMENT = [
   'spec:',
   '  nodes:',
   '    - nodeId: draft',
-  '      pipelineId: audit-authoring',
+  '      kind: workflow',
+  '      workflowId: audit-authoring',
   '    - nodeId: review',
-  '      pipelineId: audit-review',
+  '      kind: workflow',
+  '      workflowId: audit-review',
   '  connections:',
   '    - from:',
   '        nodeId: draft',
@@ -213,32 +214,54 @@ const DOCUMENT = [
   '      to:',
   '        nodeId: review',
   '        portId: brief',
+  '  bindings:',
+  '    - kind: input',
+  '      nodeId: review',
+  '      inputKey: brief',
+  '      source:',
+  '        from: node-output',
+  '        nodeId: draft',
+  '        portId: report',
   '  startNodeIds:',
   '    - draft',
   'included:',
-  '  pipelines:',
+  '  workflows:',
   '    - metadata:',
   '        id: audit-authoring',
   `        name: ${CANARY_TASK}`,
   '        version: 1',
   '      spec:',
-  '        phaseIds:',
-  '          - audit-specify',
   '        outputs:',
   '          - portId: report',
   `            label: ${CANARY_TASK}`,
   '            type: markdown',
+  '        nodes:',
+  '          - nodeId: specify-step',
+  '            kind: phase',
+  '            phaseId: audit-specify',
+  '        bindings:',
+  '          - kind: output',
+  '            nodeId: specify-step',
+  '            portId: report',
+  '            outputKey: report',
+  '        startNodeIds:',
+  '          - specify-step',
   '    - metadata:',
   '        id: audit-review',
   '        name: Audit Review',
   '        version: 1',
   '      spec:',
-  '        phaseIds:',
-  '          - audit-specify',
   '        inputs:',
   '          - portId: brief',
   '            label: Brief',
   '            type: text',
+  '            required: false',
+  '        nodes:',
+  '          - nodeId: review-step',
+  '            kind: phase',
+  '            phaseId: audit-specify',
+  '        startNodeIds:',
+  '          - review-step',
   '  phases:',
   '    - metadata:',
   '        phaseId: audit-specify',
@@ -541,7 +564,7 @@ async function driveExport(): Promise<readonly Emission[]> {
   const selection: ExportProcessYamlRequest = {
     resourceKind: 'workflow',
     resourceId: 'audit-flow',
-    inclusion: 'include-pipelines'
+    inclusion: 'include-closure'
   };
 
   const saved = auditRecorder();
@@ -1222,11 +1245,10 @@ describe('Audit boundary (T036-T038, US6, FR-033 - FR-037)', () => {
         expect(event.payload['operation']).toBe('import-preflight');
       }
 
-      // One commit record per layer of the package: Phases, Pipelines, Workflows.
+      // One commit record per layer of the package: Phases, Workflows.
       const committed = byLabel.get('import committed') ?? [];
       expect(committed.map((event) => event.payload['resourceKind'])).toEqual([
         'phase',
-        'pipeline',
         'workflow'
       ]);
       for (const event of committed) {
@@ -1453,7 +1475,6 @@ describe('Audit boundary (T036-T038, US6, FR-033 - FR-037)', () => {
     it("bounds an over-long id at each catalog's own validator constant (FR-037)", async () => {
       const kinds = [
         { kind: 'phase', max: PHASE_ID_MAX_LEN },
-        { kind: 'pipeline', max: PIPELINE_ID_MAX_LEN },
         { kind: 'workflow', max: WORKFLOW_ID_MAX_LEN }
       ] as const;
 

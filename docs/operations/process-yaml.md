@@ -1,6 +1,6 @@
 # Import and export process YAML
 
-Use the catalog editors to exchange a Phase, Pipeline, Workflow, or the Model
+Use the catalog editors to exchange a Phase, Workflow, or the Model
 Catalog as a portable YAML document. The host owns every open and save dialog:
 the webview sends no file location and receives none.
 
@@ -14,12 +14,10 @@ Choose the control for the resource you want to export:
 | Resource | Control and choices |
 | --- | --- |
 | Phase | Select a saved, valid Phase and choose **Export**. |
-| Pipeline | Choose **Export Pipeline**. Leave **Include Phase definitions** clear for references only, or select it to carry referenced Phase definitions. |
-| Workflow | Choose **Export Workflow** after selecting **References only**, **Include Pipeline definitions**, or **Include Pipelines and their Phases**. The default is references only. |
+| Workflow | Choose **Export Workflow** after selecting **References only** or **Include complete dependency closure (Workflows and Phases)**. The default is references only. |
 | Model Catalog | Choose **Export Model Catalog**. The catalog is exportable even when it is empty. |
 
 <!-- Source: webview-ui/src/components/PipelineBuilderEditors/PhaseCatalogEditor.svelte -->
-<!-- Source: webview-ui/src/components/PipelineBuilderEditors/PipelineToolbar.svelte -->
 <!-- Source: webview-ui/src/components/PipelineBuilderEditors/WorkflowToolbar.svelte -->
 <!-- Source: webview-ui/src/components/PipelineBuilderEditors/ModelCatalogEditor.svelte -->
 
@@ -34,7 +32,7 @@ document.`; location-bearing detail remains in the sanitized host log.
 
 ## Inspect an import
 
-1. In the Phase catalog, choose **Import…** under **Import a Phase, Pipeline,
+1. In the Phase catalog, choose **Import…** under **Import a Phase,
    Workflow, or Model Catalog document**.
 2. In the host's **Inspect document** dialog, choose one YAML or YML file.
 3. Review every plan row. Its outcome is **Import**, **Skip**, **Blocked**, or
@@ -68,14 +66,15 @@ build a fresh plan.
 <!-- Source: webview-ui/src/components/ProcessImport/process-import-state.ts -->
 
 For process definitions, Confirm sends the plan's definitions as one publication:
-every layer you are importing, Phases, Pipelines and Workflows, in a single
+every layer you are importing, Phases and Workflows, in a single
 request. Each layer carries the revision captured during inspection, so a
 catalog changed since then is refused rather than overwritten.
 
 The host validates the whole document before it writes anything, with every
-definition in it applied over the catalog, so a Pipeline that uses a Phase from
-the same document is checked against the Phase it is about to receive. Only then
-does it write the definitions as drafts and publish them, in dependency order.
+definition in it applied over the catalog, so a Workflow that uses a Phase or child
+Workflow from the same document is checked against the definitions it is about to
+receive. Only then does it write the definitions as drafts and publish them, in
+dependency order (Phases first, then child Workflows before parent Workflows).
 
 - **An invalid definition means nothing is written.** Every defect is shown on the
   row it belongs to, and the other rows read **Not written: the package was

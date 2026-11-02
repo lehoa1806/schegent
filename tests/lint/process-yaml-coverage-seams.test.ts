@@ -54,7 +54,6 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
  */
 const READER_OF_KIND: { readonly [K in ProcessYamlResourceKind]: keyof ProcessCatalogPort } = {
   phase: 'readPhaseConfig',
-  pipeline: 'readPipelineConfig',
   workflow: 'readWorkflowConfig',
   modelCatalog: 'readModelsConfig'
 };
@@ -76,7 +75,6 @@ function missingNodeKeys(order: readonly string[], authored: ReadonlySet<string>
 function completePort(): ProcessCatalogPort {
   return {
     readPhaseConfig: () => ({ rows: [], revision: '' }) as never,
-    readPipelineConfig: () => ({ rows: [], revision: '' }) as never,
     readWorkflowConfig: () => ({ rows: [], revision: '' }) as never,
     readModelsConfig: () => ({})
   };
@@ -102,9 +100,9 @@ type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Assert<T extends true> = T;
 
-/** `WORKFLOW_NODE_KEY_ORDER`'s members are exactly the keys of a `WorkflowNode` (N5; a compile-time check). */
+/** `WORKFLOW_NODE_KEY_ORDER`'s members are the authored keys of a `WorkflowNode` (N5; a compile-time check). */
 export type NodeKeyOrderMatchesNode = Assert<
-  Equal<(typeof WORKFLOW_NODE_KEY_ORDER)[number], keyof WorkflowNode>
+  Equal<(typeof WORKFLOW_NODE_KEY_ORDER)[number], Exclude<keyof WorkflowNode, 'pipelineId'>>
 >;
 
 /** The runtime kind list is exactly the union (N3; a compile-time check). */
@@ -178,7 +176,6 @@ describe('FR-R4-F07 N5 — every authored Workflow-node field is in the exported
       'label',
       'nodeId',
       'phaseId',
-      'pipelineId',
       'workflowId'
     ]);
   });
@@ -204,7 +201,6 @@ describe('FR-R4-F07 N5 — every authored Workflow-node field is in the exported
       'label',
       'nodeId',
       'phaseId',
-      'pipelineId',
       'workflowId'
     ]);
   });

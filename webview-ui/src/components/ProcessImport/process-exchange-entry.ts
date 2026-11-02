@@ -13,12 +13,10 @@
 
 import type {
   PhaseCatalogSourceRecord,
-  PipelineCatalogSourceRecord,
   WorkflowCatalogSourceProjection
 } from '../../lib/snapshot-types';
 import type {
   SavePhaseRow,
-  SavePipelineRow,
   SaveWorkflowRow
 } from '../../lib/definition-rows';
 import type { ImportTargetLayers } from './process-import-state';
@@ -134,7 +132,6 @@ export function importDisabledReason(gate: ImportEntryGate): string | null {
  */
 export function storedWritableLayers(
   phaseRecords: readonly PhaseCatalogSourceRecord[],
-  pipelineRecords: readonly PipelineCatalogSourceRecord[] = [],
   workflowRecords: readonly WorkflowCatalogSourceProjection[] = []
 ): ImportTargetLayers {
   // `display` carries the identity key under whichever name the row used, so the
@@ -143,9 +140,6 @@ export function storedWritableLayers(
   // shape is precisely one it must keep refusing.
   return {
     phases: phaseRecords.map((record) => ({ ...record.display }) as unknown as SavePhaseRow),
-    pipelines: pipelineRecords.map(
-      (record) => ({ ...record.display }) as unknown as SavePipelineRow
-    ),
     workflows: workflowRecords.map(
       (record) => ({ ...record.display }) as unknown as SaveWorkflowRow
     )

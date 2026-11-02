@@ -44,7 +44,7 @@
   const DEFINITION_REFUSALS: Record<string, string> = {
     "workflow-not-found":
       "This Workflow is no longer in the catalog. Close the form and reopen Runs to see what is published now.",
-    "workflow-invalid":
+    'workflow-invalid':
       "This Workflow could not be read as a graph. Open it in the Builder, fix what it reports there, and publish it again.",
     "node-not-startable":
       "This is not a node the Workflow begins at. Pick a different one above and try again.",
@@ -211,7 +211,7 @@
       statusMessage = `Started connected run ${result.connectedRunId}.`;
       return;
     }
-    if (result.outcome === "rejected-validation") {
+    if (result.outcome === 'rejected-validation') {
       fieldErrors = result.errors;
       statusMessage =
         "This Workflow was not started. Each field below states what to change.";

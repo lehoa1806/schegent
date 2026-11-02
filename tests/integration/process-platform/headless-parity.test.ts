@@ -99,7 +99,6 @@ import {
   type PhaseDef,
   type PipelineDef
 } from '../../../src/config/pipeline-config';
-import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
 import { resolveWorkflowCatalog } from '../../../src/config/workflow-catalog';
 import {
@@ -212,7 +211,7 @@ function includedResource(
 
 function workflowDocument(body: {
   readonly spec?: readonly string[];
-  readonly pipelines?: readonly (readonly string[])[];
+  readonly workflows?: readonly (readonly string[])[];
   readonly phases?: readonly (readonly string[])[];
 }): string {
   const lines = [
@@ -225,9 +224,9 @@ function workflowDocument(body: {
     'spec:',
     ...(body.spec ?? DEFAULT_SPEC).map((line) => `  ${line}`)
   ];
-  if (body.pipelines !== undefined || body.phases !== undefined) {
+  if (body.workflows !== undefined || body.phases !== undefined) {
     lines.push('included:');
-    if (body.pipelines !== undefined) lines.push('  pipelines:', ...body.pipelines.flat());
+    if (body.workflows !== undefined) lines.push('  workflows:', ...body.workflows.flat());
     if (body.phases !== undefined) lines.push('  phases:', ...body.phases.flat());
   }
   return `${lines.join('\n')}\n`;
@@ -236,9 +235,11 @@ function workflowDocument(body: {
 const DEFAULT_SPEC = [
   'nodes:',
   '  - nodeId: draft',
-  '    pipelineId: parity-authoring',
+  '    kind: workflow',
+  '    workflowId: parity-authoring',
   '  - nodeId: review',
-  '    pipelineId: parity-review',
+  '    kind: workflow',
+  '    workflowId: parity-review',
   'connections:',
   '  - from:',
   '      nodeId: draft',
@@ -246,6 +247,14 @@ const DEFAULT_SPEC = [
   '    to:',
   '      nodeId: review',
   '      portId: spec',
+  'bindings:',
+  '  - kind: input',
+  '    nodeId: review',
+  '    inputKey: spec',
+  '    source:',
+  '      from: node-output',
+  '      nodeId: draft',
+  '      portId: spec-document',
   'startNodeIds:',
   '  - draft'
 ];
@@ -253,18 +262,39 @@ const DEFAULT_SPEC = [
 const INCLUDED_AUTHORING = includedResource(
   ['id: parity-authoring', 'name: Parity Authoring', 'version: 2'],
   [
-    'phaseIds:',
-    '  - parity-specify',
     'outputs:',
     '  - portId: spec-document',
     '    label: Spec',
-    '    type: markdown'
+    '    type: markdown',
+    'nodes:',
+    '  - nodeId: specify-step',
+    '    kind: phase',
+    '    phaseId: parity-specify',
+    'bindings:',
+    '  - kind: output',
+    '    nodeId: specify-step',
+    '    portId: spec-document',
+    '    outputKey: spec-document',
+    'startNodeIds:',
+    '  - specify-step'
   ]
 );
 
 const INCLUDED_REVIEW = includedResource(
   ['id: parity-review', 'name: Parity Review', 'version: 1'],
-  ['phaseIds:', '  - parity-specify', 'inputs:', '  - portId: spec', '    label: Spec', '    type: text']
+  [
+    'inputs:',
+    '  - portId: spec',
+    '    label: Spec',
+    '    type: text',
+    '    required: false',
+    'nodes:',
+    '  - nodeId: review-step',
+    '    kind: phase',
+    '    phaseId: parity-specify',
+    'startNodeIds:',
+    '  - review-step'
+  ]
 );
 
 const INCLUDED_SPECIFY = includedResource(
@@ -274,7 +304,7 @@ const INCLUDED_SPECIFY = includedResource(
 
 /** Every id the root names is supplied by the same document; nothing resolves by accident. */
 const SELF_CONTAINED = workflowDocument({
-  pipelines: [INCLUDED_AUTHORING, INCLUDED_REVIEW],
+  workflows: [INCLUDED_AUTHORING, INCLUDED_REVIEW],
   phases: [INCLUDED_SPECIFY]
 });
 
@@ -282,10 +312,10 @@ const SELF_CONTAINED = workflowDocument({
  * One row of each outcome the plan can carry, so the row-by-row comparison is
  * over a set of four kinds and not over four instances of `import`:
  *
- *   import   the Phase and the one well-formed Pipeline
- *   skip     the Pipeline whose id the target layer already holds
- *   blocked  the root, which names a Pipeline nothing supplies
- *   invalid  the Pipeline whose id the grammar refuses
+ *   import   the Phase
+ *   skip     the Workflow whose id the target layer already holds
+ *   blocked  the root, which names a Workflow nothing supplies
+ *   invalid  the Workflow whose id the grammar refuses
  *
  * `blocked` and `invalid` are the two that carry the fields most easily lost in
  * translation — a reason with a nested dependency, and a defect list — which is
@@ -295,50 +325,54 @@ const MIXED = workflowDocument({
   spec: [
     'nodes:',
     '  - nodeId: draft',
-    '    pipelineId: parity-authoring',
+    '    kind: phase',
+    '    phaseId: parity-specify',
     '  - nodeId: polish',
-    '    pipelineId: no-such-pipeline',
+    '    kind: workflow',
+    '    workflowId: no-such-workflow',
     'startNodeIds:',
     '  - draft'
   ],
-  pipelines: [
-    INCLUDED_AUTHORING,
+  workflows: [
     includedResource(
       ['id: parity-held', 'name: Parity Held', 'version: 1'],
-      ['phaseIds:', '  - parity-specify']
+      [
+        'nodes:',
+        '  - nodeId: held-step',
+        '    kind: phase',
+        '    phaseId: parity-specify',
+        'startNodeIds:',
+        '  - held-step'
+      ]
     ),
     includedResource(
       ['id: Not A Legal Id', 'name: Illegal', 'version: 1'],
-      ['phaseIds:', '  - parity-specify']
+      [
+        'nodes:',
+        '  - nodeId: bad-step',
+        '    kind: phase',
+        '    phaseId: parity-specify',
+        'startNodeIds:',
+        '  - bad-step'
+      ]
     )
   ],
   phases: [INCLUDED_SPECIFY]
 });
 
 /** Already in the target layer, so `parity-held` plans as `skip` rather than `import`. */
-const HELD_PIPELINE = Object.freeze({
+const HELD_WORKFLOW = Object.freeze({
   id: 'parity-held',
   name: 'Parity Held',
   version: 1,
-  // Feature 098 (T080) — this named `speckit-specify`, which resolved out of the
-  // built-in Phase layer. It names the Phase the document brings instead, which is
-  // also what the document's own `parity-held` names. The row has to stay valid: a
-  // Pipeline write carries the whole layer, held rows included, so an unresolvable
-  // held row would fail the write and the case would see one layer written where
-  // it means to observe two.
-  phases: ['parity-specify']
+  nodes: [{ nodeId: 'held-step', kind: 'phase', phaseId: 'parity-specify' }],
+  connections: [{ from: { nodeId: 'held-step' }, to: { kind: 'return', nodeId: 'return' } }],
+  startNodeIds: ['held-step']
 });
 
 /**
  * An unrelated Phase already in the target catalog. It collides with nothing
  * either document declares, so it changes no plan row.
- *
- * Feature 099 (T496f, FR-044) — its stated job was to give the Phase layer a
- * different revision from the Pipeline layer, which a revision derived from rows
- * needed a seed to achieve. Per-kind manifest revisions differ without it, so what
- * this row is for is the job it also always had: a held row the Phase write must
- * carry through unchanged, since a save presents the complete catalog and dropping
- * an untouched row would delete it.
  */
 const HELD_PHASE = Object.freeze({
   id: 'parity-unrelated',
@@ -347,8 +381,8 @@ const HELD_PHASE = Object.freeze({
   instruction: 'Do something unrelated.'
 });
 
-/** The seed that makes the three layer revisions distinguishable. */
-const SEEDED = { phases: [HELD_PHASE], pipelines: [HELD_PIPELINE] } as const;
+/** The seed that makes the layer revisions distinguishable. */
+const SEEDED = { phases: [HELD_PHASE], workflows: [HELD_WORKFLOW] } as const;
 
 const DOCUMENTS: readonly { readonly label: string; readonly text: string }[] = [
   { label: 'a self-contained package', text: SELF_CONTAINED },
@@ -425,13 +459,15 @@ function makeStore(
   seed: {
     readonly phases?: readonly unknown[];
     readonly pipelines?: readonly unknown[];
+    readonly workflows?: readonly unknown[];
     readonly models?: ModelsLayer;
   } = {}
 ): Store {
   return {
     catalog: new FakeCatalogStore({
       phases: seed.phases ?? [],
-      pipelines: seed.pipelines ?? []
+      pipelines: seed.pipelines ?? [],
+      workflows: seed.workflows ?? []
     }),
     models: seed.models ?? { claude: [], codex: [], agy: [] },
     writes: [],
@@ -788,11 +824,8 @@ interface SidebarPackage {
  */
 function sidebarPackage(plan: ImportPlan): SidebarPackage | null {
   const phases = importRows(plan, 'phase');
-  const pipelines = importRows(plan, 'pipeline');
   const workflows = importRows(plan, 'workflow');
-  const pipelineRevision = plan.computedAgainstPipelineRevision;
   const workflowRevision = plan.computedAgainstWorkflowRevision;
-  if (pipelines.length > 0 && pipelineRevision === undefined) return null;
   if (workflows.length > 0 && workflowRevision === undefined) return null;
 
   const keys: LayerKey[] = [];
@@ -805,17 +838,6 @@ function sidebarPackage(plan: ImportPlan): SidebarPackage | null {
       definitions: phases.map(({ definition }) => {
         const { phaseId, ...declared } = definition;
         return { id: phaseId, body: { id: phaseId, ...declared } };
-      })
-    });
-  }
-  if (pipelines.length > 0 && pipelineRevision !== undefined) {
-    keys.push('pipelines');
-    layers.push({
-      kind: 'pipeline',
-      expectedRevision: pipelineRevision,
-      definitions: pipelines.map(({ definition }) => {
-        const { pipelineId, phaseIds, ...declared } = definition;
-        return { id: pipelineId, body: { id: pipelineId, phases: [...phaseIds], ...declared } };
       })
     });
   }
@@ -938,22 +960,24 @@ async function storeWithPackage(): Promise<Store> {
 }
 
 /**
- * A Pipeline whose referenced Phase is absent. The reference-relaxed pass still
- * resolves the Pipeline itself, so an `include-referenced` export of it reaches the
+ * A Workflow whose referenced Phase is absent. The reference-relaxed pass still
+ * resolves the Workflow itself, so an `include-closure` export of it reaches the
  * *dependency* arm of the refusal — the one arm that carries an identifier, and
  * therefore the only arm where a rebuilt refusal differs from a spread one.
  */
-const GHOST_PIPELINE = Object.freeze({
+const GHOST_WORKFLOW = Object.freeze({
   id: 'parity-ghost',
   name: 'Parity Ghost',
   version: 1,
-  phases: ['parity-missing-phase']
+  nodes: [{ nodeId: 'ghost-step', kind: 'phase', phaseId: 'parity-missing-phase' }],
+  connections: [{ from: { nodeId: 'ghost-step' }, to: { kind: 'return', nodeId: 'return' } }],
+  startNodeIds: ['ghost-step']
 });
 
 /** Both refusal arms: the one that carries only a reason, and the one that names a dependency. */
 const EXPORT_REFUSALS: readonly {
   readonly label: string;
-  readonly seed: { readonly phases?: readonly unknown[]; readonly pipelines?: readonly unknown[] };
+  readonly seed: { readonly phases?: readonly unknown[]; readonly workflows?: readonly unknown[] };
   readonly selection: ExportProcessYamlRequest;
   readonly expected: Record<string, unknown>;
 }[] = [
@@ -965,11 +989,11 @@ const EXPORT_REFUSALS: readonly {
   },
   {
     label: 'a referenced Phase that does not resolve',
-    seed: { pipelines: [GHOST_PIPELINE] },
+    seed: { workflows: [GHOST_WORKFLOW] },
     selection: {
-      resourceKind: 'pipeline',
+      resourceKind: 'workflow',
       resourceId: 'parity-ghost',
-      inclusion: 'include-referenced'
+      inclusion: 'include-closure'
     },
     expected: {
       outcome: 'unavailable',
@@ -979,40 +1003,16 @@ const EXPORT_REFUSALS: readonly {
   }
 ];
 
-/** Every inclusion mode the three kinds admit, so no serializer branch is unexercised. */
+/** Every inclusion mode the kinds admit, so no serializer branch is unexercised. */
 const EXPORTS: readonly { readonly label: string; readonly selection: ExportProcessYamlRequest }[] =
   [
     { label: 'a Phase', selection: { resourceKind: 'phase', resourceId: 'parity-specify' } },
-    {
-      label: 'a Pipeline, references only',
-      selection: {
-        resourceKind: 'pipeline',
-        resourceId: 'parity-authoring',
-        inclusion: 'references-only'
-      }
-    },
-    {
-      label: 'a Pipeline and its Phases',
-      selection: {
-        resourceKind: 'pipeline',
-        resourceId: 'parity-authoring',
-        inclusion: 'include-referenced'
-      }
-    },
     {
       label: 'a Workflow, references only',
       selection: {
         resourceKind: 'workflow',
         resourceId: 'parity-flow',
         inclusion: 'references-only'
-      }
-    },
-    {
-      label: 'a Workflow and its Pipelines',
-      selection: {
-        resourceKind: 'workflow',
-        resourceId: 'parity-flow',
-        inclusion: 'include-pipelines'
       }
     },
     {
@@ -1086,46 +1086,33 @@ function comparablePlan(plan: ImportPlan): Record<string, unknown> {
     rows: plan.rows.map(comparableRow),
     counts: plan.counts,
     computedAgainstRevision: plan.computedAgainstRevision,
-    computedAgainstPipelineRevision: plan.computedAgainstPipelineRevision,
     computedAgainstWorkflowRevision: plan.computedAgainstWorkflowRevision,
     computedAgainstModelsRevision: plan.computedAgainstModelsRevision
   };
 }
 
 /**
- * The three effective catalogs a store resolves to, ids and all.
- *
- * Feature 099 (T496f, FR-042) — each resolver took three layer arrays and a
- * shipped one; each takes one row list and the revision the store read them at.
- * The comparison this feeds is unchanged: what the two surfaces must agree on is
- * the definitions the catalog resolves to afterwards, and that is what still
- * comes back.
+ * The effective catalogs a store resolves to, ids and all.
  */
 function effectiveCatalogs(store: Store) {
   const phaseCatalog = resolvePhaseCatalog({
     rows: store.catalog.rowsOf('phase'),
     revision: store.catalog.revisionOf('phase')
-  }).effective;
-  const pipelineCatalog = resolvePipelineCatalog({
-    rows: store.catalog.rowsOf('pipeline'),
-    revision: store.catalog.revisionOf('pipeline'),
-    phaseCatalog
   });
   const workflowCatalog = resolveWorkflowCatalog({
     rows: store.catalog.rowsOf('workflow'),
     revision: store.catalog.revisionOf('workflow'),
-    pipelineCatalog
+    phaseCatalog
   });
   return {
-    phases: phaseCatalog,
-    pipelines: pipelineCatalog.effective,
+    phases: phaseCatalog.effective,
     workflows: workflowCatalog.effective
   };
 }
 
 const IMPORTED_IDS = {
   phases: 'parity-specify',
-  pipelines: 'parity-authoring',
+  childWorkflows: 'parity-authoring',
   workflows: 'parity-flow'
 } as const;
 
@@ -1149,7 +1136,7 @@ describe('the fixture drives both surfaces for real (positive controls)', () => 
     expect(source).toContain('export function layerResultsOf(');
   });
 
-  it('reaches all three writes and changes the catalog (positive control)', async () => {
+  it('reaches all writes and changes the catalog (positive control)', async () => {
     // Without this, two surfaces that both refused before writing anything would
     // agree on an empty catalog and every assertion below would hold vacuously.
     const store = makeStore();
@@ -1157,49 +1144,33 @@ describe('the fixture drives both surfaces for real (positive controls)', () => 
     const { result } = await headlessImport(store, plan);
 
     expect(result.outcome).toBe('imported');
-    expect(store.writes).toEqual(['phases', 'pipelines', 'workflows']);
+    expect(store.writes).toEqual(['phases', 'workflows']);
     // Feature 100 (T514, FR-035) — and every drafted layer was then PUBLISHED, in
     // the same dependency order. Without this the `writes` line above would be
     // satisfied by an import that left the whole document as drafts, which is a
     // different outcome the operator reads differently.
     expect(store.published.map((layer) => layer.kind)).toEqual([
       'phase',
-      'pipeline',
       'workflow'
     ]);
     const catalogs = effectiveCatalogs(store);
     expect(catalogs.phases.map((row) => row.phaseId)).toContain(IMPORTED_IDS.phases);
-    expect(catalogs.pipelines.map((row) => row.pipelineId)).toContain(IMPORTED_IDS.pipelines);
+    expect(catalogs.workflows.map((row) => row.workflowId)).toContain(IMPORTED_IDS.childWorkflows);
     expect(catalogs.workflows.map((row) => row.workflowId)).toContain(IMPORTED_IDS.workflows);
   });
 
-  it('plans against three catalog revisions that differ (positive control)', async () => {
-    // A probe found this the hard way. If the three catalogs carry the same
-    // revision, the three `expectedRevision` fields are interchangeable and a
-    // Pipeline write gated on the PHASE catalog's revision compares equal to a
-    // correct one. This control is what gives the payload comparison below the
-    // resolution to see that mistake, and it fails if a future fixture flattens
-    // them again.
-    //
-    // Feature 099 (T496f, FR-044) — the revisions were derived from the seeded
-    // rows, so the fixture had to seed two catalogs differently to pull them
-    // apart, and the case was named for that seeding. A revision is the store's
-    // per-kind manifest revision now, so they are distinct by construction and
-    // the seeding is no longer what produces the distinction. The property is the
-    // same one and is still asserted here rather than assumed: it is the store's
-    // guarantee, and a fixture is exactly where a guarantee gets quietly lost.
+  it('plans against catalog revisions that differ (positive control)', async () => {
     const plan = await headlessPreview(makeStore(SEEDED), SELF_CONTAINED);
     const revisions = [
       plan.computedAgainstRevision,
-      plan.computedAgainstPipelineRevision,
       plan.computedAgainstWorkflowRevision
     ];
     expect(revisions.every((revision) => revision !== undefined)).toBe(true);
-    expect(new Set(revisions).size).toBe(3);
+    expect(new Set(revisions).size).toBe(2);
   });
 
   it('produces all four plan outcomes from the mixed document (positive control)', async () => {
-    const store = makeStore({ pipelines: [HELD_PIPELINE] });
+    const store = makeStore({ workflows: [HELD_WORKFLOW] });
     const plan = await headlessPreview(store, MIXED);
 
     expect(new Set(plan.rows.map((row) => row.outcome))).toEqual(
@@ -1215,8 +1186,8 @@ describe('previewProcessDocument matches the sidebar preflight (T032, FR-002, SC
   it.each(DOCUMENTS)('plans $label identically on both surfaces', async ({ text }) => {
     // Two stores seeded the same way, so neither surface can be reading a catalog
     // the other cannot see.
-    const headlessStore = makeStore({ pipelines: [HELD_PIPELINE] });
-    const sidebarStore = makeStore({ pipelines: [HELD_PIPELINE] });
+    const headlessStore = makeStore({ workflows: [HELD_WORKFLOW] });
+    const sidebarStore = makeStore({ workflows: [HELD_WORKFLOW] });
 
     const headless = await headlessPreview(headlessStore, text);
     const sidebar = await sidebarPreview(sidebarStore, text);
@@ -1226,25 +1197,25 @@ describe('previewProcessDocument matches the sidebar preflight (T032, FR-002, SC
 
   it('agrees on the blocked row down to the dependency it names', async () => {
     // The narrow assertion behind the broad one. `dependency-absent` on
-    // `no-such-pipeline` is what tells an operator what to supply; a comparison
+    // `no-such-workflow` is what tells an operator what to supply; a comparison
     // that stopped at `outcome: 'blocked'` would agree while the two surfaces sent
     // them looking for different things.
-    const headless = await headlessPreview(makeStore({ pipelines: [HELD_PIPELINE] }), MIXED);
-    const sidebar = await sidebarPreview(makeStore({ pipelines: [HELD_PIPELINE] }), MIXED);
+    const headless = await headlessPreview(makeStore({ workflows: [HELD_WORKFLOW] }), MIXED);
+    const sidebar = await sidebarPreview(makeStore({ workflows: [HELD_WORKFLOW] }), MIXED);
 
     const blockedOf = (plan: ImportPlan) => plan.rows.filter((row) => row.outcome === 'blocked');
     const headlessBlocked = blockedOf(headless);
     expect(headlessBlocked).toHaveLength(1);
     expect(headlessBlocked[0]).toMatchObject({
       resourceId: 'parity-flow',
-      reason: { code: 'dependency-absent', dependency: { resourceId: 'no-such-pipeline' } }
+      reason: { code: 'dependency-absent', dependency: { resourceId: 'no-such-workflow' } }
     });
     expect(blockedOf(sidebar).map(comparableRow)).toEqual(headlessBlocked.map(comparableRow));
   });
 
   it('changes nothing on either surface — preview is read-only (FR-002)', async () => {
-    const headlessStore = makeStore({ pipelines: [HELD_PIPELINE] });
-    const sidebarStore = makeStore({ pipelines: [HELD_PIPELINE] });
+    const headlessStore = makeStore({ workflows: [HELD_WORKFLOW] });
+    const sidebarStore = makeStore({ workflows: [HELD_WORKFLOW] });
 
     await headlessPreview(headlessStore, SELF_CONTAINED);
     await sidebarPreview(sidebarStore, SELF_CONTAINED);
@@ -1315,10 +1286,10 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
     // rather than a literal list, so the claim is "exactly what this document said
     // to import" and cannot be satisfied by a hand-kept list drifting alongside
     // the fixture document.
+    const workflowIds = importRows(headlessPlan, 'workflow').map((row) => row.resourceId);
     const expected = [
       { kind: 'phase', ids: importRows(headlessPlan, 'phase').map((row) => row.resourceId) },
-      { kind: 'pipeline', ids: importRows(headlessPlan, 'pipeline').map((row) => row.resourceId) },
-      { kind: 'workflow', ids: importRows(headlessPlan, 'workflow').map((row) => row.resourceId) }
+      { kind: 'workflow', ids: [...workflowIds.slice(1), ...workflowIds.slice(0, 1)] }
     ];
     expect(expected.every((layer) => layer.ids.length > 0), 'a layer imported nothing').toBe(true);
     expect(headlessStore.published).toEqual(expected);
@@ -1327,16 +1298,16 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
     // that never named them (FR-039b), and never published by one (FR-039a).
     for (const store of [headlessStore, sidebarStore]) {
       expect(store.catalog.stateOf('phase', HELD_PHASE.id)).toBe('active');
-      expect(store.catalog.stateOf('pipeline', HELD_PIPELINE.id)).toBe('active');
+      expect(store.catalog.stateOf('workflow', HELD_WORKFLOW.id)).toBe('active');
     }
   });
 
   it.each([
     { label: 'a self-contained package', text: SELF_CONTAINED, held: [] as readonly unknown[] },
-    { label: 'a document with one row of each outcome', text: MIXED, held: [HELD_PIPELINE] }
+    { label: 'a document with one row of each outcome', text: MIXED, held: [HELD_WORKFLOW] }
   ])('leaves the same effective catalogs after importing $label', async ({ text, held }) => {
-    const headlessStore = makeStore({ pipelines: held });
-    const sidebarStore = makeStore({ pipelines: held });
+    const headlessStore = makeStore({ workflows: held });
+    const sidebarStore = makeStore({ workflows: held });
 
     const headlessResult = await headlessImport(
       headlessStore,
@@ -1363,16 +1334,15 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
   });
 
   it('writes fewer layers, identically, when the document declares fewer', async () => {
-    // The mixed document's root is blocked, so the Workflow layer is never
-    // written. A surface that wrote a fixed three would diverge here and nowhere
-    // else.
-    const headlessStore = makeStore({ pipelines: [HELD_PIPELINE] });
-    const sidebarStore = makeStore({ pipelines: [HELD_PIPELINE] });
+    // The mixed document's root is blocked and its child workflows are skipped/invalid,
+    // so the Workflow layer is never written.
+    const headlessStore = makeStore({ workflows: [HELD_WORKFLOW] });
+    const sidebarStore = makeStore({ workflows: [HELD_WORKFLOW] });
 
     await headlessImport(headlessStore, await headlessPreview(headlessStore, MIXED));
     await sidebarImport(sidebarStore, await sidebarPreview(sidebarStore, MIXED));
 
-    expect(headlessStore.writes).toEqual(['phases', 'pipelines']);
+    expect(headlessStore.writes).toEqual(['phases']);
     expect(sidebarStore.writes).toEqual(headlessStore.writes);
   });
 
@@ -1442,7 +1412,6 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
     expect(statusesOf(sidebarResult.results)).toEqual(statusesOf(headlessResult.result.results));
     expect(statusesOf(sidebarResult.results)).toEqual([
       ['phases', 'rejected'],
-      ['pipelines', 'rejected'],
       ['workflows', 'rejected']
     ]);
     // The same handler refused both, for the same reason: it validated the whole document first.
@@ -1461,12 +1430,12 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
     const sidebarStore = makeStore(SEEDED);
     const plan = await headlessPreview(headlessStore, SELF_CONTAINED);
 
-    // The Pipeline layer's draft write fails after the Phase layer drafted, with a prefix of its own
+    // The Workflow layer's draft write fails after the Phase layer drafted, with a prefix of its own
     // records on disk: the store reports `partial`, which the fixture's recorder counts as a write.
     for (const store of [headlessStore, sidebarStore]) {
       const original = store.catalog.saveDraftLayer.bind(store.catalog);
       vi.spyOn(store.catalog, 'saveDraftLayer').mockImplementation(async (request) =>
-        request.kind === 'pipeline'
+        request.kind === 'workflow'
           ? { outcome: 'partial', wrote: ['parity-authoring@v1'], errno: 'EIO' }
           : original(request)
       );
@@ -1481,10 +1450,10 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
     // Nothing is live, on either surface, so every layer reads as not imported.
     expect(statusesOf(sidebarResult.results)).toEqual(statusesOf(headlessResult.result.results));
     expect(headlessResult.result.outcome).toBe(sidebarResult.outcome);
-    // The Phase layer landed as a draft on both, the Pipeline layer left a prefix, and nothing was
+    // The Phase layer landed as a draft on both, the Workflow layer left a prefix, and nothing was
     // published or removed.
     for (const store of [headlessStore, sidebarStore]) {
-      expect(store.writes).toEqual(['phases', 'pipelines']);
+      expect(store.writes).toEqual(['phases', 'workflows']);
       expect(store.published).toEqual([]);
     }
     expect(sidebarStore.writes).toEqual(headlessStore.writes);

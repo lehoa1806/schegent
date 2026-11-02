@@ -49,8 +49,7 @@
   const INCLUSIONS: readonly { readonly value: WorkflowExportInclusion; readonly label: string }[] =
     [
       { value: 'references-only', label: 'References only' },
-      { value: 'include-pipelines', label: 'Include Pipeline definitions' },
-      { value: 'include-closure', label: 'Include Pipelines and their Phases' }
+      { value: 'include-closure', label: 'Include child Workflows and Phases' }
     ];
 
   interface Props {

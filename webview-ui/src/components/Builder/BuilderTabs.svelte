@@ -16,8 +16,8 @@
   // Feature 180 (T1554, FR-001) — the strip reads in the order definitions
   // compose: a Pipeline is an ordered sequence of Phases, and a Workflow node
   // runs a Pipeline. Both editors already refuse to author until the earlier
-  // surface has been visited (`PipelineToolbar.svelte:202-207`,
-  // `WorkflowToolbar.svelte:225-235`), so leading with Pipelines put first the
+  // surface has been visited (`PipelineToolbar.svelte:127-132`,
+  // `WorkflowToolbar.svelte:223-233`), so leading with Pipelines put first the
   // tab that can send the operator to the tab on its right. Order only — every
   // id and label is what it was, and `BuilderTab` is a set, not a sequence.
   const BUILDER_TABS = Object.freeze([

@@ -1,73 +1,97 @@
-// Feature 086 T021/T027 — the export closure walk, both levels.
+// Feature 086 T021/T027 / Feature 263 (FR-R5-F04) — the composable Workflow
+// export closure walk.
 //
-// `referencedPhaseOrder` in `pipeline-document.ts` is level 1's rule one level
-// down, and this module deliberately mirrors its shape: a projection off the
-// authored graph, derived at a single site, so the order the exporter refuses in
-// and the order the document writes in cannot disagree (FR-021).
+// A composable Workflow's nodes reference either Phases (`phaseId`) or child
+// Workflows (`workflowId`). `include-closure` emits two flat lookup sections
+// under `included`:
 //
-// Level 2 (T027) is a second walk over the Pipelines level 1 yields, not a
-// generalization of it. Two levels, two functions, because their inputs are
-// different kinds of thing — a graph's nodes and a list of resolved Pipelines —
-// and because a Phase references nothing, so there is no third level and nothing
-// recursive to bound.
+//   1. `included.workflows` — all transitive child Workflows in deterministic
+//      first-encountered pre-order depth-first traversal order, excluding the
+//      root Workflow itself and deduplicating shared child Workflows at their
+//      first mention.
+//   2. `included.phases` — all distinct Phases referenced across the root
+//      Workflow followed by `included.workflows` in that emitted order, each
+//      at its first mention.
 
-import type { PipelineDefinition } from '../../contracts/pipeline-definitions';
-import type { WorkflowNode } from '../../contracts/workflow-definitions';
-import { referencedPhaseOrder } from './pipeline-document';
+import { MAX_WORKFLOW_NESTING_DEPTH } from '../../config/workflow-closure-resolver';
+import type { WorkflowDefinition, WorkflowNode } from '../../contracts/workflow-definitions';
 
 /**
- * The distinct Pipelines a graph's nodes name, in first-occurrence order
- * (FR-020, FR-021).
+ * Distinct Phase IDs in first-occurrence order.
  *
- * `Set` preserves insertion order, so the first node to name a Pipeline fixes
- * its position and every later node naming the same one collapses onto it. That
- * is what makes the walk both idempotent and order-preserving: de-duplicating at
- * the LAST occurrence would move a Pipeline's position in the document when a
- * further node referenced it again, changing the bytes without changing the
- * catalog.
- *
- * The order is authored, never sorted. Sorted output would be identical for
- * every permutation of the graph — determinism of the wrong kind, since it would
- * also be identical for a graph the operator deliberately reordered.
- *
- * This is a projection, and `nodes` is read-only in both senses. Two nodes on
- * one Pipeline yield one definition and remain two nodes with their own
- * identities (FR-017, FR-062): the document carries a lookup table beside the
- * graph, never a graph rewritten to deduplicate itself.
+ * `Set` preserves insertion order, so the first reference to a Phase fixes its
+ * position and every later reference collapses onto it.
  */
-export function referencedPipelineOrder(nodes: readonly WorkflowNode[]): readonly string[] {
+export function referencedPhaseOrder(phaseIds: readonly string[]): readonly string[] {
+  return [...new Set(phaseIds)];
+}
+
+/**
+ * Distinct Phase IDs directly referenced by a single Workflow's nodes, in
+ * authored node order.
+ */
+export function referencedNodePhaseOrder(nodes: readonly WorkflowNode[]): readonly string[] {
+  return referencedPhaseOrder(
+    nodes
+      .filter((node) => node.kind !== 'workflow' && node.phaseId !== undefined)
+      .map((node) => node.phaseId!)
+  );
+}
+
+/**
+ * Distinct child Workflow IDs directly referenced by a single Workflow's nodes,
+ * in authored node order.
+ */
+export function referencedChildWorkflowOrder(nodes: readonly WorkflowNode[]): readonly string[] {
   return [
-    ...new Set(nodes.map((node) => node.pipelineId).filter((id): id is string => id !== undefined))
+    ...new Set(
+      nodes
+        .filter((node) => node.kind === 'workflow' || (node.kind === undefined && node.workflowId !== undefined))
+        .map((node) => node.workflowId)
+        .filter((id): id is string => id !== undefined)
+    )
   ];
 }
 
 /**
- * The distinct Phases a closure's Pipelines name, in first-occurrence order across
- * their concatenated `phaseIds` (FR-019, FR-020).
+ * Transitive child Workflows reachable from `root`, in deterministic
+ * first-encountered pre-order depth-first traversal order (excluding `root`
+ * itself and deduplicating shared child Workflows at their first mention).
  *
- * `pipelines` must already be in the order `referencedPipelineOrder` fixed, and
- * this walk does not re-derive or re-sort it: level 1 owns that order, and a
- * second opinion here would let the two sections of one document disagree about
- * which Pipeline came first.
- *
- * One seen-set spanning the whole level — `referencedPhaseOrder` over the
- * concatenation, not once per Pipeline — because the document holds one lookup
- * table. Per-Pipeline de-duplication would put a shared Phase at two positions
- * with no rule for which one a reader takes.
- *
- * That set is deliberately SEPARATE from level 1's. A Pipeline and a Phase may
- * legitimately share an identifier: they are different resource kinds in
- * different sections. Threading one set through both levels would drop such a
- * Phase from the closure and export a package that does not resolve — the exact
- * failure a self-contained export exists to prevent.
- *
- * Termination is by construction: a Phase references nothing, so the closure is
- * exactly two levels deep, nothing re-enters level 1, and there is no depth limit
- * to configure or reach. A Phase named after the Pipeline that names it is not a
- * cycle and is not treated as one.
+ * Guards against cyclic inclusions and bounds recursion at
+ * `MAX_WORKFLOW_CLOSURE_DEPTH` so even an unvalidated graph cannot loop.
+ */
+export function referencedWorkflowClosure(
+  root: WorkflowDefinition,
+  workflowsById: ReadonlyMap<string, WorkflowDefinition>
+): readonly WorkflowDefinition[] {
+  const seen = new Set<string>([root.workflowId]);
+  const ordered: WorkflowDefinition[] = [];
+
+  function visit(current: WorkflowDefinition, depth: number): void {
+    if (depth > MAX_WORKFLOW_NESTING_DEPTH) return;
+    for (const childId of referencedChildWorkflowOrder(current.nodes)) {
+      if (seen.has(childId)) continue;
+      const child = workflowsById.get(childId);
+      if (child === undefined) continue;
+      seen.add(childId);
+      ordered.push(child);
+      visit(child, depth + 1);
+    }
+  }
+
+  visit(root, 1);
+  return ordered;
+}
+
+/**
+ * Distinct Phase IDs referenced across `workflows` (typically
+ * `[root, ...includedWorkflows]`), in first-encountered order.
  */
 export function referencedPhaseClosure(
-  pipelines: readonly PipelineDefinition[]
+  workflows: readonly WorkflowDefinition[]
 ): readonly string[] {
-  return referencedPhaseOrder(pipelines.flatMap((pipeline) => [...pipeline.phaseIds]));
+  return referencedPhaseOrder(
+    workflows.flatMap((workflow) => referencedNodePhaseOrder(workflow.nodes))
+  );
 }

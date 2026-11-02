@@ -15,8 +15,13 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { parsePipelinePackage } from '../../src/services/process-yaml/pipeline-document';
-import type { PhaseYamlDocument } from '../../src/services/process-yaml/types';
+import { standaloneNode } from '../../src/services/process-yaml/package-reader';
+import { validatePhaseDocument } from '../../src/services/process-yaml/phase-yaml-validator';
+import {
+  PHASE_YAML_KIND,
+  type PhaseYamlDocument,
+  type YamlNode
+} from '../../src/services/process-yaml/types';
 import { parseDocumentText } from '../../src/services/process-yaml/yaml-parser';
 
 const EXAMPLE = resolve(
@@ -34,22 +39,39 @@ export interface LoadedExample {
   readonly phaseIds: readonly string[];
 }
 
+function entryOf(node: YamlNode | undefined, key: string): YamlNode | undefined {
+  if (node === undefined || node.kind !== 'mapping') return undefined;
+  return node.entries.find((entry) => entry.key === key)?.value;
+}
+
 export function loadExample(): LoadedExample {
   const parsed = parseDocumentText(readFileSync(EXAMPLE, 'utf8'));
   if (!parsed.ok) throw new Error(`${parsed.refusal.code}: ${parsed.refusal.message}`);
-  const pkg = parsePipelinePackage(parsed.node);
-  if (!pkg.ok) throw new Error(`${pkg.refusal.code}: ${pkg.refusal.message}`);
 
+  const metadata = entryOf(parsed.node, 'metadata');
+  const versionNode = entryOf(metadata, 'version');
+  const pipelineVersion =
+    versionNode?.kind === 'scalar' ? Number(versionNode.value) : Number.NaN;
+
+  const spec = entryOf(parsed.node, 'spec');
+  const phaseIdsNode = entryOf(spec, 'phaseIds');
+  const phaseIds =
+    phaseIdsNode?.kind === 'sequence'
+      ? phaseIdsNode.items.flatMap((item) => (item.kind === 'scalar' ? [item.value] : []))
+      : [];
+
+  const included = entryOf(parsed.node, 'included');
+  const phasesNode = entryOf(included, 'phases');
   const phases = new Map<string, PhaseYamlDocument>();
-  let pipelineVersion = Number.NaN;
-  let phaseIds: readonly string[] = [];
-  for (const resource of pkg.resources) {
-    if (!resource.ok) throw new Error(`refused ${resource.resourceKind} ${resource.resourceId}`);
-    if (resource.resourceKind === 'phase') {
-      phases.set(resource.document.metadata.phaseId, resource.document);
-    } else {
-      pipelineVersion = resource.definition.version;
-      phaseIds = resource.definition.phaseIds;
+  if (phasesNode?.kind === 'sequence') {
+    for (const item of phasesNode.items) {
+      if (item.kind !== 'mapping') throw new Error('expected mapping in included.phases');
+      const validated = validatePhaseDocument(standaloneNode(item, PHASE_YAML_KIND));
+      if (!validated.ok) {
+        const id = validated.kind === 'resource' ? validated.resourceId : null;
+        throw new Error(`refused phase ${id ?? '<unknown>'}`);
+      }
+      phases.set(validated.document.metadata.phaseId, validated.document);
     }
   }
   return { phases, pipelineVersion, phaseIds };

@@ -161,7 +161,13 @@ const HARD_RULE_ANCHORS: ReadonlyArray<string> = [
   // to rules 7, 8, and 52.
   'bounded `unsupported-run-schema-version` diagnostics',
   'append-only\n  `invocationinputenvelope` entries (`acceptedat`)',
-  'freezes the complete transitive `frozenworkflowclosure`'
+  'freezes the complete transitive `frozenworkflowclosure`',
+  // Feature 263 (FR-R5-F04) — composable Workflow YAML exchange amendments
+  // to rules 38, 48, 49, and 63.
+  'composable workflow yaml preflight (`planworkflowpackageimport`)',
+  "`kind: pipeline`\n  is refused with `unsupported-kind`",
+  're-inspecting the same document plans landed drafts as `skip`',
+  "`process_yaml_resource_kinds` is narrowed to\n  `['phase', 'workflow', 'modelcatalog']`"
 ];
 
 /** The authoritative file — the only one that carries the rule set. */

@@ -46,7 +46,6 @@ interface StoredCatalog {
  */
 export interface ProcessCatalogPort {
   readonly readPhaseConfig?: () => StoredCatalog;
-  readonly readPipelineConfig?: () => StoredCatalog;
   readonly readWorkflowConfig?: () => StoredCatalog;
   /**
    * Feature 096 — the Model Catalog stays in configuration and is out of this

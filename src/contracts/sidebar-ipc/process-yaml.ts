@@ -10,7 +10,7 @@
 // See specs/084-phase-yaml-exchange/contracts/process-yaml-ipc.md and
 // specs/085-pipeline-package-exchange/contracts/process-yaml-ipc.md.
 
-import { MODEL_ID_MAX_LEN, PIPELINE_ID_MAX_LEN } from '../pipeline-definitions';
+import { MODEL_ID_MAX_LEN } from '../pipeline-definitions';
 import { PHASE_ID_MAX_LEN } from '../process-definitions';
 import { WORKFLOW_ID_MAX_LEN } from '../workflow-definitions';
 import type {
@@ -44,70 +44,47 @@ export type {
  *
  * Each kind's bound is its own catalog's, not a shared maximum. They are all 64
  * today; reading each from the contract that declares it means a catalog that
- * widens its own bound does not silently widen the other two.
+ * widens its own bound does not silently widen the others.
  *
- * The three come from the `contracts/` leaf modules rather than from the three
+ * The bounds come from the `contracts/` leaf modules rather than from the
  * `config/*-definition-validator` modules that re-export them, because this
  * barrel is bundled into the webview and a validator pulls the host runner graph
  * (`runner/backend-runner-factory` -> `child_process`) behind it.
  *
  * Declared once, here, because FR-037 forbids a second limit for the same class
- * of value. Four modules used to hold their own `RESOURCE_ID_MAX = 64` — they
- * agreed by coincidence, and the day one catalog widened its id length every one
- * of them would have started truncating identifiers the catalog itself accepts.
- * `tests/integration/process-platform/audit-boundary.test.ts` scans the exchange
- * boundary sources for a re-declaration.
+ * of value. `tests/integration/process-platform/audit-boundary.test.ts` scans the
+ * exchange boundary sources for a re-declaration.
  */
 export const RESOURCE_ID_MAX_LEN: Readonly<Record<ProcessYamlResourceKind, number>> = Object.freeze(
   {
     phase: PHASE_ID_MAX_LEN,
-    pipeline: PIPELINE_ID_MAX_LEN,
     workflow: WORKFLOW_ID_MAX_LEN,
     modelCatalog: MODEL_ID_MAX_LEN
   }
 );
 
 /**
- * Feature 085 (FR-012, research R8) — whether a Pipeline export carries the
- * definitions of the Phases it references.
- */
-export type PipelineExportInclusion = 'references-only' | 'include-referenced';
-
-/**
- * Feature 086 (FR-013) — three modes, not two, because a Workflow's closure is
- * two levels deep. The middle mode is the one a Pipeline export has no use for:
- * carrying the referenced Pipelines but not their Phases is a coherent thing to
- * want when the Phases are already shared and only the composition is being
- * moved.
+ * Feature 086 (FR-013) / Feature 263 (FR-R5-F04) — two inclusion modes for a
+ * composable Workflow export: either only the root Workflow (`references-only`)
+ * or the root Workflow together with its complete transitive child Workflow and
+ * Phase closure (`include-closure`).
  */
 export type WorkflowExportInclusion =
   /** No dependency payload at all. */
   | 'references-only'
-  /** The directly referenced Pipelines, without their Phases. */
-  | 'include-pipelines'
-  /** Those Pipelines plus their transitive Phases. */
+  /** Transitive child Workflows plus their referenced Phases. */
   | 'include-closure';
 
 /**
  * A discriminated union rather than an optional field: a Phase has no
  * references, so the inclusion choice does not exist for it. Encoding that in
  * the type beats documenting it in a comment.
- *
- * Feature 086 adds the third arm on the same principle — a Pipeline has one
- * level of dependency and a Workflow has two, so they do not share an inclusion
- * type and no illegal kind/mode pair is constructible.
  */
 export type ExportProcessYamlRequest =
   | {
       readonly resourceKind: 'phase';
       /** The id to export. Read from the EFFECTIVE catalog (FR-014). */
       readonly resourceId: string;
-    }
-  | {
-      readonly resourceKind: 'pipeline';
-      /** The id to export. Read from the EFFECTIVE catalog (FR-014). */
-      readonly resourceId: string;
-      readonly inclusion: PipelineExportInclusion;
     }
   | {
       readonly resourceKind: 'workflow';
@@ -130,42 +107,20 @@ export interface ExportProcessYamlCommand
 }
 
 /**
- * The two inclusion vocabularies as values, and the one function that decides
+ * The inclusion vocabulary as a value, and the one function that decides
  * whether a kind admits a mode.
  *
- * Feature 086 (T068). The union above makes an illegal kind/mode pair
- * unrepresentable in TypeScript, but a message arriving from the webview is
- * `unknown` and both runtime gates — the published `isCmdExportProcessYaml` guard
- * and `validateExportProcessYaml` at the transport boundary — narrow it
- * structurally, with no exhaustiveness check to fail when an arm is added. 085
- * left the Pipeline vocabulary written out twice, once in each gate, so widening
- * the type to three arms compiled cleanly while leaving the Workflow arm rejected
- * at both gates and unreachable in the shipped extension.
- *
- * One function rather than two copies of a list is the fix, because the failure
- * mode was never a typo in a literal — it was a second place that had to be
- * remembered. It lives beside the union it enforces so a fourth arm changes the
- * type and its enforcement in one edit.
- *
- * A Phase is part of the same decision, not an exception to it: its arm has no
- * `inclusion` field, so the only mode it admits is the absence of one.
+ * Feature 086 (T068) / Feature 263 (FR-R5-F04). Both runtime gates — the
+ * published `isCmdExportProcessYaml` guard and `validateExportProcessYaml` at
+ * the transport boundary — call `admitsExportInclusion`.
  */
-export const PIPELINE_EXPORT_INCLUSIONS: readonly PipelineExportInclusion[] = Object.freeze([
-  'references-only',
-  'include-referenced'
-]);
-
 export const WORKFLOW_EXPORT_INCLUSIONS: readonly WorkflowExportInclusion[] = Object.freeze([
   'references-only',
-  'include-pipelines',
   'include-closure'
 ]);
 
 export function admitsExportInclusion(resourceKind: unknown, inclusion: unknown): boolean {
   if (resourceKind === 'phase') return inclusion === undefined;
-  if (resourceKind === 'pipeline') {
-    return PIPELINE_EXPORT_INCLUSIONS.includes(inclusion as PipelineExportInclusion);
-  }
   if (resourceKind === 'workflow') {
     return WORKFLOW_EXPORT_INCLUSIONS.includes(inclusion as WorkflowExportInclusion);
   }
@@ -174,14 +129,11 @@ export function admitsExportInclusion(resourceKind: unknown, inclusion: unknown)
 }
 
 /**
- * Which dependency an export could not resolve (feature 086, contract §2.1).
+ * Which dependency an export could not resolve (FR-R5-F04).
  *
- * Feature 085 named it `unresolvedPhaseId`, because with a one-level closure the
- * only dependency an export could fail on was a Phase. A Workflow export in
- * `include-pipelines` mode fails on an unresolved PIPELINE and has no `phaseId`
- * to give, so the field has to say which catalog it means. Same shape as
- * `BlockedDependency` on the import side, and narrower than
- * `ProcessYamlResourceKind` for the same reason: nothing depends on a Workflow.
+ * A Workflow export in `include-closure` mode can fail on an unresolved child
+ * Workflow (`kind: 'workflow'`) or an unresolved Phase (`kind: 'phase'`). Same
+ * shape as `BlockedDependency` on the import side.
  *
  * `resourceId` is sanitized and bounded to 64 characters before it crosses the
  * boundary, like every other author-supplied string here. It is an identifier,
@@ -189,7 +141,7 @@ export function admitsExportInclusion(resourceKind: unknown, inclusion: unknown)
  * what keeps that true.
  */
 export interface UnresolvedDependency {
-  readonly kind: 'phase' | 'pipeline';
+  readonly kind: 'phase' | 'workflow';
   readonly resourceId: string;
 }
 
