@@ -202,6 +202,8 @@ export interface PhaseAttemptDispatchInput {
   readonly node: WorkflowNode;
   readonly phase: PhaseDefinition;
   readonly boundInputs: Readonly<Record<string, ResolvedPortValue>>;
+  readonly inputEnvelope?: InvocationInputEnvelope;
+  readonly nodePath?: string;
   readonly attemptId: string;
   readonly attemptIndex: number;
   readonly queueId: string;
@@ -426,6 +428,8 @@ async function dispatchNodeInternal(
       node,
       phase,
       boundInputs,
+      inputEnvelope,
+      nodePath: previewAttempt.nodePath,
       attemptId: previewAttempt.attemptId,
       attemptIndex: previewAttempt.attemptIndex,
       queueId: resolveBoundQueueId(run),

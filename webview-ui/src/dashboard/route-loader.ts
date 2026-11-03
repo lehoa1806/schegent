@@ -29,6 +29,7 @@ export type LazyRoute = Exclude<DashboardRoute, 'operations'>;
 export type LazyRouteProps = {
   active?: boolean;
   snapshot?: WorkflowSnapshot;
+  selectedWorkflowId?: string | null;
 };
 
 export type LazyRouteComponent = Component<LazyRouteProps>;

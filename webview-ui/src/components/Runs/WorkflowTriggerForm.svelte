@@ -118,7 +118,11 @@
     startNodeId === null
       ? []
       : operatorPorts(
-          entry.inputs.filter((port) => port.nodeId === startNodeId),
+          entry.inputs.filter(
+            (port) =>
+              port.nodeId === startNodeId ||
+              (graph?.inputs?.some((declared) => declared.portId === port.portId) ?? false),
+          ),
         ),
   );
 

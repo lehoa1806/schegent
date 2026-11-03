@@ -43,9 +43,10 @@
      * opens empty. When recording lands, this is the one place that changes.
      */
     readonly prefillFor?: (node: ConnectedNodeProjection) => Record<string, string> | undefined;
+    readonly isPrimary?: boolean;
   }
 
-  const { run, queueItems = [], pipelines = [], prefillFor }: Props = $props();
+  const { run, queueItems = [], pipelines = [], prefillFor, isPrimary = true }: Props = $props();
 
   let openNodeId = $state<string | null>(null);
   let runStatus = $state<string | null>(null);
@@ -66,6 +67,19 @@
       ...collapsedInvocations,
       [invocationId]: !collapsedInvocations[invocationId]
     };
+  }
+
+  function hasCollapsedAncestor(inv: ConnectedInvocationProjection): boolean {
+    const all = run.invocations ?? [];
+    let parentId = inv.parentInvocationId;
+    const visited: string[] = [];
+    while (parentId !== null && !visited.includes(parentId)) {
+      visited.push(parentId);
+      if (collapsedInvocations[parentId] === true) return true;
+      const parent = all.find((item) => item.invocationId === parentId);
+      parentId = parent?.parentInvocationId ?? null;
+    }
+    return false;
   }
 
   async function onControlInvocation(
@@ -164,6 +178,7 @@
     {#if run.invocations && run.invocations.length > 0}
       <ul class="invocation-tree" data-testid="workflow-invocation-tree">
         {#each run.invocations as inv (inv.invocationId)}
+          {#if !hasCollapsedAncestor(inv)}
           {@const isCollapsed = collapsedInvocations[inv.invocationId] === true}
           <li
             class="invocation-item"
@@ -220,6 +235,17 @@
             {/if}
 
             {#if !isCollapsed}
+              {#if inv.pendingHandoff}
+                <p
+                  class="invocation-diagnostic"
+                  data-testid={`workflow-invocation-handoff-${inv.invocationId}`}
+                >
+                  Handoff: {inv.pendingHandoff.fromNodeId} &rarr; {inv.pendingHandoff.toNodeId ?? 'return'}
+                  {#if inv.pendingHandoff.boundInputPortIds.length > 0}
+                    ({inv.pendingHandoff.boundInputPortIds.join(', ')})
+                  {/if}
+                </p>
+              {/if}
               {#if inv.outputPortIds.length > 0}
                 <p
                   class="invocation-outputs"
@@ -249,7 +275,7 @@
                 </ul>
               {/if}
 
-              {#if inv.allowedActions.length > 0}
+              {#if isPrimary && inv.allowedActions.length > 0}
                 <div
                   class="invocation-actions"
                   data-testid={`workflow-invocation-actions-${inv.invocationId}`}
@@ -269,6 +295,7 @@
               {/if}
             {/if}
           </li>
+          {/if}
         {/each}
       </ul>
     {/if}

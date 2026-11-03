@@ -294,7 +294,7 @@ describe('what the panel says about the authority a start will have (FR-R4-F06 F
     const view = render(RunsSurface, { snapshot });
     await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
 
-    expect(view.getByTestId('launchable-detail-required-topic').textContent?.toLowerCase()).toContain(
+    expect(view.getByTestId('launchable-detail-required-topic').textContent.toLowerCase()).toContain(
       'required'
     );
     expect(view.getByTestId('launchable-detail-outputs')).toBeTruthy();

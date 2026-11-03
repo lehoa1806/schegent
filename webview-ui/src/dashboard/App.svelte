@@ -20,6 +20,7 @@
   // `'operations' | 'settings'` shape; the inner two-tier `Operations |
   // Pipeline Builder` pair under `Dashboard.svelte` is gone (T033).
   let route = $state<DashboardRoute>(DEFAULT_DASHBOARD_ROUTE);
+  let selectedWorkflowId = $state<string | null>(null);
 
   // Feature 105 (T588h) — the loader is created here and handed down because both
   // sides of the split need the same cache: the nav warms it on hover, the outlet
@@ -59,6 +60,10 @@
     openBackendSettings: () => {
       navigate('settings');
       void scrollToBackendHealth();
+    },
+    openWorkflowLaunch: (workflowId: string) => {
+      selectedWorkflowId = workflowId;
+      navigate('runs');
     }
   };
   setContext(DASHBOARD_NAVIGATION, navigation);
@@ -117,7 +122,7 @@
       </div>
     </header>
     <div id="dashboard-content" class="dashboard-route" data-testid="dashboard-route">
-      <RouteOutlet {route} {snapshot} {loader} />
+      <RouteOutlet {route} {snapshot} {loader} {selectedWorkflowId} />
     </div>
   {:else}
     <main class="dashboard-loading" data-testid="dashboard-empty-state" role="status">

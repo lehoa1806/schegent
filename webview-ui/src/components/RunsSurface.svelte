@@ -212,7 +212,7 @@
       <ul class="run-list">
         {#each connectedRuns as run (run.connectedRunId)}
           <li class="run-item">
-            <WorkflowRun {run} {queueItems} {pipelines} />
+            <WorkflowRun {run} {queueItems} {pipelines} isPrimary={canLaunch} />
           </li>
         {/each}
       </ul>

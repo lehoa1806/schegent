@@ -7,6 +7,8 @@ import { groupsFromModelsConfig } from '../../config/model-catalog';
 import { coerceModels } from '../../config/pipeline-config-loader';
 import { resolvePhaseCatalog } from '../../config/process-catalog';
 import {
+  MAX_WORKFLOW_CLOSURE_DEFINITIONS,
+  MAX_WORKFLOW_EXPANDED_NODES,
   MAX_WORKFLOW_NESTING_DEPTH,
   resolveWorkflowClosure
 } from '../../config/workflow-closure-resolver';
@@ -166,6 +168,7 @@ function resolveIncludedWorkflows(
   const stored = deps.readWorkflowConfig?.() ?? { rows: [], revision: '' };
   const workflows: WorkflowDefinition[] = [];
   const seen = new Set<string>([root.workflowId]);
+  let expandedNodes = root.nodes.length;
 
   const walk = (
     current: WorkflowDefinition,
@@ -183,13 +186,7 @@ function resolveIncludedWorkflows(
           }
         };
       }
-      if (seen.has(childId)) continue;
-      const selection = selectWorkflowForExport({
-        rows: stored.rows,
-        phaseCatalog,
-        workflowId: childId
-      });
-      if (selection.outcome === 'unavailable') {
+      if (!seen.has(childId) && workflows.length + 1 > MAX_WORKFLOW_CLOSURE_DEFINITIONS) {
         return {
           outcome: 'unavailable',
           reason: 'dependency-does-not-resolve',
@@ -199,9 +196,42 @@ function resolveIncludedWorkflows(
           }
         };
       }
-      seen.add(childId);
-      workflows.push(selection.definition);
-      const nestedFailure = walk(selection.definition, [...chain, childId], depth + 1);
+      const existing = workflows.find((w) => w.workflowId === childId);
+      let childDef: WorkflowDefinition;
+      if (existing !== undefined) {
+        childDef = existing;
+      } else {
+        const selection = selectWorkflowForExport({
+          rows: stored.rows,
+          phaseCatalog,
+          workflowId: childId
+        });
+        if (selection.outcome === 'unavailable') {
+          return {
+            outcome: 'unavailable',
+            reason: 'dependency-does-not-resolve',
+            unresolvedDependency: {
+              kind: 'workflow',
+              resourceId: deps.logger.sanitize(childId).slice(0, RESOURCE_ID_MAX_LEN.workflow)
+            }
+          };
+        }
+        seen.add(childId);
+        workflows.push(selection.definition);
+        childDef = selection.definition;
+      }
+      expandedNodes += childDef.nodes.length;
+      if (expandedNodes > MAX_WORKFLOW_EXPANDED_NODES) {
+        return {
+          outcome: 'unavailable',
+          reason: 'dependency-does-not-resolve',
+          unresolvedDependency: {
+            kind: 'workflow',
+            resourceId: deps.logger.sanitize(childId).slice(0, RESOURCE_ID_MAX_LEN.workflow)
+          }
+        };
+      }
+      const nestedFailure = walk(childDef, [...chain, childId], depth + 1);
       if (nestedFailure !== null) return nestedFailure;
     }
     return null;
@@ -243,7 +273,18 @@ function selectWorkflow(
       effectiveWorkflows: orderedWorkflows
     });
     if (!closureCheck.ok) {
-      return { outcome: 'unavailable', reason: 'does-not-resolve' };
+      const offendingWorkflowId =
+        resolvedWorkflows.workflows.at(-1)?.workflowId ?? selection.definition.workflowId;
+      return {
+        outcome: 'unavailable',
+        reason: 'dependency-does-not-resolve',
+        unresolvedDependency: {
+          kind: 'workflow',
+          resourceId: deps.logger
+            .sanitize(offendingWorkflowId)
+            .slice(0, RESOURCE_ID_MAX_LEN.workflow)
+        }
+      };
     }
 
     inclusion = {

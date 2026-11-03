@@ -99,6 +99,48 @@ for the spend bound, the restart replay and where each limit comes from.
 
 **New evidence.** None: `AUDIT_SCHEMA_VERSION` is unchanged at 3 and no event type is added.
 
+### FR-R5-F07 — Unified Phase + Composable Workflow model (2026-11-03)
+
+**What changed.** Process definitions are now unified around two kinds: **Phase** (one reusable
+agent action) and **Workflow** (a reusable process whose nodes reference Phases or child
+Workflows). `Pipeline` is retired as a product/domain resource kind, authoring tab, launch
+route, and Process YAML exchange kind (`kind: Pipeline` is refused with `unsupported-kind`).
+
+- **Composable Workflows and explicit public interfaces (`FR-R5-F01`, `260`).** A Workflow node
+  targets either `phaseId` or `workflowId`. Workflows declare explicit public `inputs` and
+  `outputs` with internal `bindings`, and dependency validation enforces acyclic inclusion
+  (`MAX_WORKFLOW_NESTING_DEPTH = 8`, `MAX_WORKFLOW_CLOSURE_DEFINITIONS = 64`,
+  `MAX_WORKFLOW_EXPANDED_NODES = 256`).
+- **Frozen closure execution and hierarchical call stack (`FR-R5-F02`, `261`).** Launching a
+  Workflow freezes the transitive `FrozenWorkflowClosure` before root admission and executes
+  each root or child invocation in its own `WorkflowInvocationFrame` with deterministic entry,
+  automatic/manual handoffs, and parent return.
+- **Invocation-scoped controls and restart reconciliation (`FR-R5-F03`, `262`).** Pause, resume,
+  cancel, retry, and manual continuation address a specific `(queueId, rootRunId, invocationId)`
+  with compare-and-set `expectedRevision` checks and per-queue FIFO serialization. Host startup
+  reconciles composable runs from durable completion evidence and flags interrupted attempts
+  with uncertain external effects (`effect-uncertain-interrupted`) rather than replaying them
+  automatically.
+- **Transitive Process YAML exchange (`FR-R5-F04`, `263`).** `include-closure` export emits a
+  dependency-ordered multi-document YAML bundle of all referenced Phases and child Workflows;
+  import validates the complete candidate overlay before writing.
+- **Unified authoring and launch/run visibility (`FR-R5-F05`/`FR-R5-F06`, `264`/`265`).** The
+  Builder exposes `Phases` and `Workflows` tabs with breadcrumb child drill-down and a direct
+  `Launch in Runs` handoff. The Runs surface launches any published Workflow and renders the
+  hierarchical invocation tree with per-occurrence state, handoff controls, and primary-window
+  action gating.
+- **Shipped Workflow examples (`FR-R5-F07`, `266`).** All shipped examples under `examples/`
+  are authored as `kind: Workflow` packages (`speckit-new-feature.workflow.yaml`,
+  `speckit-bugfix.workflow.yaml`, `example-two-node.workflow.yaml`,
+  `example-nested-delivery.workflow.yaml`) and remain excluded from the packaged VSIX.
+
+**Where to look.** [`docs/how-to/product-workflows.md`](docs/how-to/product-workflows.md) and
+[`docs/how-to/developer-workflows.md`](docs/how-to/developer-workflows.md).
+
+**New evidence.** Invocation and node-path lineage (`rootWorkflowRunId`, `invocationId`,
+`parentInvocationId`, `nodePath`, `attemptNumber`) are recorded in runtime state and audit
+metadata; `AUDIT_SCHEMA_VERSION` remains 3.
+
 ## Release boundary
 
 The boundary is `npm run release`, which is `release:preflight && node scripts/prepare-release.mjs`

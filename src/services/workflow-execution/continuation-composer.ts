@@ -29,16 +29,23 @@ import type {
   FrozenSupplementalInput,
   ResolvedPortValue,
   RunInputValue,
-  RunRequest
+  RunRequest,
+  RunRequestFieldError
 } from '../../contracts/run-request';
+import type { PipelineInputPort } from '../../contracts/pipeline-definitions';
 import type { WorkflowDefinition } from '../../contracts/workflow-definitions';
-import type {
-  InvocationInputEnvelope,
-  PendingHandoffRecord
+import {
+  appendInputEnvelope,
+  setPendingHandoff,
+  upsertInvocationFrame,
+  type ConnectedWorkflowRun,
+  type InvocationInputEnvelope,
+  type PendingHandoffRecord
 } from '../../state/connected-workflow-run';
 import type { WorkflowRunPipeline } from '../../state/workflow-run';
 import type { ConditionContext } from './condition-context';
 import { resolveOperand } from './condition-context';
+import type { ConnectedRunWriter } from './workflow-launcher';
 
 /** One prefilled port, and where its value came from. */
 export interface PrefilledPort {
@@ -183,4 +190,134 @@ export function composeHandoffInputEnvelope(
     outputTargetOverrides: Object.freeze([...(input.outputTargetOverrides ?? [])]),
     acceptedAt: input.acceptedAt
   });
+}
+
+// ---------------------------------------------------------------------------
+// FR-R5-F02 (T018, FR-015, FR-016) — Manual handoff continuation envelope
+// ---------------------------------------------------------------------------
+
+export interface ContinueWaitingHandoffDeps {
+  readonly connectedRuns: ConnectedRunWriter;
+}
+
+export interface ContinueWaitingHandoffInput {
+  readonly run: ConnectedWorkflowRun;
+  readonly expectedRevision: number;
+  readonly invocationId: string;
+  readonly targetNodeId: string;
+  readonly request: RunRequest;
+  readonly acceptedAt: number;
+  readonly expectedInputs?: readonly PipelineInputPort[];
+  /**
+   * FR-R5-F03 (T006) — when true, persists `acceptedEnvelope` on `pendingHandoff`
+   * before target dispatch so a post-acceptance pre-dispatch interruption can be
+   * recovered deterministically without consulting live UI/catalog state.
+   */
+  readonly deferDispatch?: boolean;
+}
+
+export type ContinueWaitingHandoffResult =
+  | {
+      readonly outcome: 'accepted';
+      readonly run: ConnectedWorkflowRun;
+      readonly envelope: InvocationInputEnvelope;
+    }
+  | { readonly outcome: 'rejected-stale'; readonly current: ConnectedWorkflowRun | null }
+  | {
+      readonly outcome: 'rejected-state';
+      readonly reason: 'no-pending-handoff' | 'handoff-mismatch';
+      readonly run: ConnectedWorkflowRun;
+    }
+  | { readonly outcome: 'rejected-validation'; readonly errors: readonly RunRequestFieldError[] };
+
+/**
+ * Validate operator continuation inputs at a `waiting-for-handoff` boundary and
+ * persist an immutable `InvocationInputEnvelope` (`acceptedAt`) onto the active
+ * `ConnectedWorkflowRun` before the target node is dispatched (FR-015, FR-016).
+ *
+ * The frozen closure (`run.frozenClosure`) is never reconstructed or mutated.
+ */
+export async function continueWaitingHandoff(
+  deps: ContinueWaitingHandoffDeps,
+  input: ContinueWaitingHandoffInput
+): Promise<ContinueWaitingHandoffResult> {
+  const { run } = input;
+  if (run.revision !== input.expectedRevision) {
+    return { outcome: 'rejected-stale', current: run };
+  }
+  const pending =
+    run.invocations?.[input.invocationId]?.pendingHandoff ?? run.pendingHandoff;
+  if (pending === undefined || pending === null) {
+    return { outcome: 'rejected-state', reason: 'no-pending-handoff', run };
+  }
+  const targetNodeFromPending =
+    pending.target.kind === 'node' ? pending.target.nodeId : null;
+  if (
+    pending.invocationId !== input.invocationId ||
+    targetNodeFromPending !== input.targetNodeId
+  ) {
+    return { outcome: 'rejected-state', reason: 'handoff-mismatch', run };
+  }
+
+  const envelopeId = `${input.invocationId}:${input.targetNodeId}:handoff:${input.acceptedAt}`;
+  const envelope = composeHandoffInputEnvelope({
+    envelopeId,
+    handoff: pending,
+    targetNodeId: input.targetNodeId,
+    request: input.request,
+    acceptedAt: input.acceptedAt
+  });
+
+  if (input.expectedInputs !== undefined) {
+    const errors: RunRequestFieldError[] = [];
+    for (const port of input.expectedInputs) {
+      const resolvedPort = envelope.inputsByPort[port.portId];
+      const missing =
+        resolvedPort === undefined || resolvedPort.value.trim().length === 0;
+      if (port.required !== false && missing) {
+        errors.push({
+          field: `inputs.${port.portId}`,
+          code: 'missing-required-input',
+          message: `Required handoff input '${port.portId}' is missing.`
+        });
+      }
+    }
+    if (errors.length > 0) {
+      return { outcome: 'rejected-validation', errors };
+    }
+  }
+
+  let next = appendInputEnvelope(run, envelope);
+  if (input.deferDispatch === true) {
+    const updatedHandoff = Object.freeze({
+      ...pending,
+      acceptedEnvelope: envelope
+    });
+    next = setPendingHandoff(next, updatedHandoff);
+    const frame = next.invocations?.[input.invocationId];
+    if (frame !== undefined) {
+      next = upsertInvocationFrame(next, {
+        ...frame,
+        pendingHandoff: updatedHandoff,
+        boundInputs: Object.freeze({ ...frame.boundInputs, ...envelope.inputsByPort })
+      });
+    }
+  } else {
+    next = setPendingHandoff(next, null);
+    const frame = next.invocations?.[input.invocationId];
+    if (frame !== undefined && frame.status === 'waiting-for-handoff') {
+      next = upsertInvocationFrame(next, {
+        ...frame,
+        status: 'in-flight',
+        pendingHandoff: null,
+        boundInputs: Object.freeze({ ...frame.boundInputs, ...envelope.inputsByPort })
+      });
+    }
+  }
+
+  const written = await deps.connectedRuns.compareAndSetConnectedRun(next, run.revision);
+  if (written.outcome === 'stale') {
+    return { outcome: 'rejected-stale', current: written.current };
+  }
+  return { outcome: 'accepted', run: written.run, envelope };
 }

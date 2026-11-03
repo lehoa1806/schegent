@@ -96,6 +96,13 @@ export interface ConnectedInvocationAttemptProjection {
   readonly failureCode?: string;
 }
 
+export interface ConnectedPendingHandoffProjection {
+  readonly fromNodeId: string;
+  readonly toNodeId: string | null;
+  readonly connectionId?: string;
+  readonly boundInputPortIds: readonly string[];
+}
+
 export interface ConnectedInvocationProjection {
   readonly invocationId: string;
   readonly parentInvocationId: string | null;
@@ -114,6 +121,7 @@ export interface ConnectedInvocationProjection {
   readonly failureReason: string | null;
   readonly pendingRetryAt: number | null;
   readonly pendingRetryCause: string | null;
+  readonly pendingHandoff?: ConnectedPendingHandoffProjection | null;
   readonly outputPortIds: readonly string[];
   readonly attempts: readonly ConnectedInvocationAttemptProjection[];
 }
