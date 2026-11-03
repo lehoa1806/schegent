@@ -902,8 +902,10 @@ describe('Unified Workflow Authoring (FR-R5-F05)', () => {
     expect(getByTestId('workflow-breadcrumb-current').textContent).toContain('Child Workflow');
     expect(getByTestId('workflow-dependent-parents').textContent).toContain('Parent Workflow');
 
-    // Navigate back to parent via breadcrumb and verify dirty edit survived
+    // Navigate back to parent via breadcrumb, verify selected node restored, and verify dirty edit survived
     await fireEvent.click(getByTestId('workflow-breadcrumb-0'));
+    expect(getByTestId('workflow-node-inspector-1')).toBeTruthy();
+    await fireEvent.click(getByTestId('workflow-settings-btn'));
     expect((getByTestId('workflow-field-name') as HTMLInputElement).value).toBe(
       'Parent Workflow Dirty'
     );

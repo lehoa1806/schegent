@@ -51,7 +51,7 @@ import {
 } from './connected-run-factory';
 import { dispatchComposableNode } from './connected-run-coordinator';
 import type { NodeRunStartDeps, NodeRunStartResult } from './node-run-starter';
-import { startPhaseNodeRun, startPipelineRun } from './node-run-starter';
+import { startPhaseNodeRun, startPipelineRun, toSupplementalInputs } from './node-run-starter';
 
 /**
  * Why a start was refused for a reason that is neither a field nor the run's
@@ -615,8 +615,16 @@ export async function launchComposableWorkflow(
               type: portVal.type as RunRequest['inputs'][number]['type'],
               value: portVal.value
             })),
-            supplemental: [],
-            outputs: []
+            supplemental:
+              phaseInput.inputEnvelope !== undefined &&
+              phaseInput.inputEnvelope.localInputs.length > 0
+                ? toSupplementalInputs(phaseInput.inputEnvelope.localInputs)
+                : toSupplementalInputs(input.envelope.supplemental),
+            outputs:
+              phaseInput.inputEnvelope !== undefined &&
+              phaseInput.inputEnvelope.outputTargetOverrides.length > 0
+                ? phaseInput.inputEnvelope.outputTargetOverrides
+                : input.envelope.outputs
           };
           const started = await startPhaseNodeRun(deps, {
             frozenClosure: closure,
@@ -629,7 +637,8 @@ export async function launchComposableWorkflow(
               rootRunId: input.connectedRunId,
               invocationId: phaseInput.frame.invocationId,
               parentInvocationId: phaseInput.frame.parentInvocationId,
-              nodePath: `${phaseInput.frame.nodePath}/${phaseInput.node.nodeId}`,
+              nodePath:
+                phaseInput.nodePath ?? `${phaseInput.frame.nodePath}/${phaseInput.node.nodeId}`,
               attemptId: phaseInput.attemptId,
               attemptIndex: phaseInput.attemptIndex
             }

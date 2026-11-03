@@ -30,11 +30,13 @@
   const {
     route,
     snapshot,
-    loader
+    loader,
+    selectedWorkflowId = null
   }: {
     route: DashboardRoute;
     snapshot: WorkflowSnapshot;
     loader: RouteLoader;
+    selectedWorkflowId?: string | null;
   } = $props();
 
   /**
@@ -191,7 +193,9 @@
     {@const RouteComponent = mounted.component}
     {#if mounted.route === 'metrics'}
       <RouteComponent active={true} />
-    {:else if mounted.route === 'builder' || mounted.route === 'settings' || mounted.route === 'runs' || mounted.route === 'history'}
+    {:else if mounted.route === 'runs'}
+      <RouteComponent {snapshot} {selectedWorkflowId} />
+    {:else if mounted.route === 'builder' || mounted.route === 'settings' || mounted.route === 'history'}
       <!-- Feature 103 (T017) — History moved from `history` + `isPrimary`
            to the whole snapshot. It composes its list from `history` and
            `queues` together, and a route that hand-picks fields has to be

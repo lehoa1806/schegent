@@ -711,6 +711,21 @@ function validateInputBinding(
     if (targetType !== undefined) {
       validatePortPair(context, field, binding.selection, sourcePort.type, targetType);
     }
+  } else if (sourceNode.target?.kind === 'phase' && targetType !== undefined) {
+    const matchingOutputBinding = (context.definition.bindings ?? []).find(
+      (b): b is WorkflowOutputBinding =>
+        b.kind === 'output' &&
+        b.nodeId === sourceNode.node.nodeId &&
+        (b.sourcePortId ?? b.outputKey ?? b.portId) === binding.source.portId
+    );
+    const phaseOutType =
+      matchingOutputBinding?.type ??
+      (matchingOutputBinding
+        ? (context.definition.outputs ?? []).find((p) => p.portId === matchingOutputBinding.portId)?.type
+        : undefined);
+    if (phaseOutType !== undefined) {
+      validatePortPair(context, field, binding.selection, phaseOutType, targetType);
+    }
   }
 }
 

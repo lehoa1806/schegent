@@ -58,6 +58,8 @@ import {
   WorkflowControlService,
   type WorkflowControlStore
 } from '../../src/services/workflow-execution/workflow-control-service';
+import { WorkflowRecoveryService } from '../../src/services/workflow-execution/workflow-recovery-service';
+import { selectProcessExportDocument } from '../../src/services/process-yaml/export-service';
 import type { ConnectedWorkflowRun } from '../../src/state/connected-workflow-run';
 import { publishDefinitionPackage } from '../../src/ui/sidebar/commands/cmd-catalog-lifecycle';
 import { handler as preflightHandler } from '../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
@@ -521,6 +523,80 @@ describe('Round 5 clean-install journey (FR-R5-F07)', () => {
     expect(canceled.accepted).toBe(true);
     if (!canceled.accepted) return;
     expect(canceled.projection.status).toBe('canceled');
+
+    // 5b. Exercise `retry-invocation` on the canceled invocation and `WorkflowRecoveryService`.
+    const retriedInvocation = await controlService.executeCommand({
+      runId: 'run-delivery-controlled',
+      commandId: 'cmd-retry-inv-1',
+      expectedRevision: controlledStore.current().revision,
+      operation: 'retry-invocation',
+      targetInvocationId: controlledRunInit.rootInvocationId,
+      now: 1_700_000_025_000
+    });
+    expect(retriedInvocation.accepted).toBe(true);
+    if (!retriedInvocation.accepted) return;
+    expect(retriedInvocation.projection.status).toBe('in-flight');
+
+    const recoveryService = new WorkflowRecoveryService({
+      connectedRuns: {
+        get: (id) => controlledStore.get(id),
+        list: () => [controlledStore.current()],
+        compareAndSetConnectedRun: (next, rev) =>
+          controlledStore.compareAndSetConnectedRun(next, rev)
+      },
+      dispatchPhase: async () => ({ outcome: 'dispatched', queueItemId: 'q-recovered' }),
+      checkDurableAttemptEvidence: () => ({
+        completed: true,
+        status: 'completed',
+        declaredOutputs: {
+          note: { portId: 'note', type: 'markdown', value: 'recovered-check-ok' }
+        },
+        completedAt: 1_700_000_026_000
+      })
+    });
+    const reconciled = await recoveryService.reconcileAllRuns(1_700_000_026_000);
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0]?.disposition?.status).toBe('settled-from-evidence');
+    expect(reconciled[0]?.projection.status).toBe('completed');
+
+    // 6. Export `delivery-root` with `include-closure` and re-import into a fresh empty store.
+    const exported = selectProcessExportDocument(
+      {
+        logger: {
+          warn: () => undefined,
+          sanitize: (msg: string) => msg
+        },
+        readPhaseConfig: () => ({
+          rows: harness.store.rowsOf('phase'),
+          revision: harness.store.revisionOf('phase')
+        }),
+        readWorkflowConfig: () => ({
+          rows: harness.store.rowsOf('workflow'),
+          revision: harness.store.revisionOf('workflow')
+        }),
+        readModelsConfig: () => ({ claude: [], codex: [], agy: [] })
+      },
+      {
+        resourceKind: 'workflow',
+        resourceId: 'delivery-root',
+        inclusion: 'include-closure'
+      }
+    );
+    expect(exported.outcome).toBe('resolved');
+    if (exported.outcome !== 'resolved') return;
+
+    const roundTripHarness = buildCleanInstallHarness();
+    const roundTripPreflight = await roundTripHarness.preflight(exported.text);
+    expect(roundTripPreflight.outcome).toBe('planned');
+    if (roundTripPreflight.outcome !== 'planned') return;
+    expect(roundTripPreflight.plan.counts).toEqual({
+      import: 6,
+      skip: 0,
+      blocked: 0,
+      invalid: 0
+    });
+    const roundTripAcks = await roundTripHarness.publishPlannedPackage(roundTripPreflight.plan);
+    expect(roundTripAcks[0]?.status).toBe('accepted');
   });
 
   it('refuses a legacy kind: Pipeline YAML document at preflight with unsupported-kind and leaves the empty catalog untouched', async () => {

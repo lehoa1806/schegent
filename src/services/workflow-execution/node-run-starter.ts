@@ -33,9 +33,11 @@ import type { CatalogVersionRef } from '../../contracts/catalog-version';
 import { CATALOG_EMPTY_REASON, type CatalogEmptyReason } from '../../contracts/empty-catalog-guidance';
 import type {
   FrozenRunPlan,
+  FrozenSupplementalInput,
   FrozenWorkflowClosure,
   RunRequest,
-  RunRequestFieldError
+  RunRequestFieldError,
+  SupplementalInput
 } from '../../contracts/run-request';
 import type { RunOutputRecord } from '../../contracts/run-results';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
@@ -427,6 +429,35 @@ export async function startPipelineRun(
 }
 
 /**
+ * Convert `FrozenSupplementalInput[]` back to transient `SupplementalInput[]`
+ * when constructing a `RunRequest` for a `Phase` node attempt.
+ */
+export function toSupplementalInputs(
+  frozen: readonly FrozenSupplementalInput[] | undefined
+): readonly SupplementalInput[] {
+  if (frozen === undefined || frozen.length === 0) return [];
+  return frozen.map((item): SupplementalInput => {
+    switch (item.kind) {
+      case 'local-file':
+        return { kind: 'local-file', path: item.value };
+      case 'local-folder':
+        return { kind: 'local-folder', path: item.value };
+      case 'url':
+        return { kind: 'url', url: item.value };
+      case 'text':
+        return { kind: 'text', text: item.value };
+      case 'instruction':
+        return { kind: 'instruction', text: item.value };
+      case 'prior-output':
+        return {
+          kind: 'prior-output',
+          reference: item.reference ?? { sourceRunId: '', outputName: item.value }
+        };
+    }
+  });
+}
+
+/**
  * FR-R5-F02 — start a `phase` node from a `FrozenWorkflowClosure` with
  * occurrence identity metadata (`rootRunId`, `invocationId`, `parentInvocationId`,
  * `nodePath`, `attemptId`, `attemptIndex`).
@@ -446,20 +477,37 @@ export async function startPhaseNodeRun(
     catalogVersion
   );
   const frozenPipeline: WorkflowRunPipeline =
-    input.request.inputs.length === 0
+    input.request.inputs.length === 0 && input.request.outputs.length === 0
       ? basePipeline
       : Object.freeze({
           ...basePipeline,
-          inputs: Object.freeze(
-            input.request.inputs.map((inp) =>
-              Object.freeze({
-                portId: inp.portId,
-                label: inp.portId,
-                type: inp.type,
-                required: false
-              })
-            )
-          )
+          ...(input.request.inputs.length > 0
+            ? {
+                inputs: Object.freeze(
+                  input.request.inputs.map((inp) =>
+                    Object.freeze({
+                      portId: inp.portId,
+                      label: inp.portId,
+                      type: inp.type,
+                      required: false
+                    })
+                  )
+                )
+              }
+            : {}),
+          ...(input.request.outputs.length > 0
+            ? {
+                outputs: Object.freeze(
+                  input.request.outputs.map((out) =>
+                    Object.freeze({
+                      portId: out.portId,
+                      label: out.portId,
+                      type: 'file' as const
+                    })
+                  )
+                )
+              }
+            : {})
         });
   return startPipelineRun(deps, {
     request: {

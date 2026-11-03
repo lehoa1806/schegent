@@ -34,8 +34,25 @@ import { RunCheckpointRetentionService } from '../services/run-checkpoint-retent
 import { RunMutationLedger } from '../services/run-mutation-ledger';
 import type { SessionArtifactRetentionService } from '../services/session-retention/session-artifact-retention-service';
 import { TerminalTransitionCoordinator } from '../services/terminal-transition-coordinator';
-import { recordChildTerminal } from '../services/workflow-execution/connected-run-coordinator';
+import {
+  recordChildTerminal,
+  type PhaseAttemptDispatchInput,
+  type PhaseAttemptDispatchResult
+} from '../services/workflow-execution/connected-run-coordinator';
 import { makeChildRunFactsReader } from '../services/workflow-execution/child-run-facts-reader';
+import {
+  startPhaseNodeRun,
+  toSupplementalInputs,
+  type NodeRunStartDeps
+} from '../services/workflow-execution/node-run-starter';
+import { WorkflowControlService } from '../services/workflow-execution/workflow-control-service';
+import {
+  WorkflowRecoveryService,
+  type DurableAttemptEvidenceResult
+} from '../services/workflow-execution/workflow-recovery-service';
+import { isWorkflowNodeTerminalStatus } from '../contracts/workflow-definitions';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import type { ResolvedPortValue, RunRequest } from '../contracts/run-request';
 import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../state/workspace-state';
 import type { WorkflowRun } from '../state/workflow-run';
@@ -101,8 +118,26 @@ export async function createRunSafetyWiring(input: {
   // this bare keeps today's behaviour. Passed, it lets `replay()` tell a rival
   // that holds an intent's queue from this window, and defer instead of writing
   // a loser's outcome over the winner's Run.
-  const replayTerminalTransitions = (selfOwnerId?: string): Promise<void> =>
-    terminalTransitions.replay(selfOwnerId);
+  let boundGuardedRun: NodeRunStartDeps['guardedRun'] | undefined;
+  let boundDefaultRunnerKind: BackendRunnerKind | undefined;
+  const bindGuardedRun = (
+    guardedRun: NodeRunStartDeps['guardedRun'],
+    defaultRunnerKind?: BackendRunnerKind
+  ): void => {
+    boundGuardedRun = guardedRun;
+    boundDefaultRunnerKind = defaultRunnerKind;
+  };
+  const replayTerminalTransitions = async (selfOwnerId?: string): Promise<void> => {
+    await terminalTransitions.replay(selfOwnerId);
+    await reconcileComposableWorkflowRuns({
+      workspaceRoot: input.workspaceRoot,
+      store: input.store,
+      historyStore: input.historyStore,
+      logger: input.logger,
+      getGuardedRun: () => boundGuardedRun,
+      getDefaultRunnerKind: () => boundDefaultRunnerKind
+    });
+  };
   // Feature 093 (T053, FR-022a) — Runs that could hold uncommitted work in the
   // shared worktree. Counted as **non-terminal**, which is wider than
   // "currently executing" on purpose: a paused Run's edits are still sitting in
@@ -241,6 +276,7 @@ export async function createRunSafetyWiring(input: {
     checkpointRetention,
     replayTerminalTransitions,
     sweepCheckpointRetention,
+    bindGuardedRun,
     checkpoints: new RunCheckpointService(
       input.context.globalStorageUri.fsPath,
       input.workspaceRoot,
@@ -313,7 +349,14 @@ export async function createRunSafetyWiring(input: {
       if (run.status !== 'paused') {
         await input.sessionRetention.sweep(input.protectedSessionRunIds());
       }
-      await recordConnectedWorkflowTransition(input, run);
+      await recordConnectedWorkflowTransition(
+        {
+          ...input,
+          getGuardedRun: () => boundGuardedRun,
+          getDefaultRunnerKind: () => boundDefaultRunnerKind
+        },
+        run
+      );
     }
   };
 }
@@ -347,8 +390,150 @@ export async function createRunSafetyWiring(input: {
  * guard is a lookup over the connected-run records before anything is constructed,
  * so an ordinary Run pays one map scan.
  */
+function makePhaseDispatcher(deps: {
+  readonly workspaceRoot?: string;
+  readonly logger: SanitizedLogger;
+  readonly getGuardedRun?: () => NodeRunStartDeps['guardedRun'] | undefined;
+  readonly getDefaultRunnerKind?: () => BackendRunnerKind | undefined;
+}): (phaseInput: PhaseAttemptDispatchInput) => Promise<PhaseAttemptDispatchResult> {
+  return async (phaseInput) => {
+    const guardedRun = deps.getGuardedRun?.();
+    const closure = phaseInput.run.frozenClosure;
+    if (guardedRun === undefined || closure === undefined) {
+      return { outcome: 'rejected', reason: 'launcher-unavailable' };
+    }
+    const phaseRequest: RunRequest = {
+      pipelineId: phaseInput.phase.phaseId,
+      inputs: Object.values(phaseInput.boundInputs).map((portVal) => ({
+        portId: portVal.portId,
+        type: portVal.type as RunRequest['inputs'][number]['type'],
+        value: portVal.value
+      })),
+      supplemental: toSupplementalInputs(phaseInput.inputEnvelope?.localInputs),
+      outputs: phaseInput.inputEnvelope?.outputTargetOverrides ?? []
+    };
+    const defaultRunnerKind = deps.getDefaultRunnerKind?.();
+    const started = await startPhaseNodeRun(
+      {
+        guardedRun,
+        ...(defaultRunnerKind !== undefined ? { defaultRunnerKind } : {}),
+        logger: deps.logger
+      },
+      {
+        frozenClosure: closure,
+        phaseId: phaseInput.phase.phaseId,
+        request: phaseRequest,
+        workspaceRoot: deps.workspaceRoot ?? null,
+        description: phaseInput.node.label ?? phaseInput.phase.name,
+        queueId: phaseInput.queueId,
+        occurrence: {
+          rootRunId: phaseInput.run.connectedRunId,
+          invocationId: phaseInput.frame.invocationId,
+          parentInvocationId: phaseInput.frame.parentInvocationId,
+          nodePath:
+            phaseInput.nodePath ?? `${phaseInput.frame.nodePath}/${phaseInput.node.nodeId}`,
+          attemptId: phaseInput.attemptId,
+          attemptIndex: phaseInput.attemptIndex
+        }
+      }
+    );
+    if (started.outcome !== 'enqueued') {
+      return { outcome: 'rejected', reason: started.outcome };
+    }
+    return { outcome: 'dispatched', queueItemId: started.queueItemId };
+  };
+}
+
+function buildDeclaredOutputsFromRun(
+  runOutputs: WorkflowRun['runOutputs']
+): Readonly<Record<string, ResolvedPortValue>> {
+  const out: Record<string, ResolvedPortValue> = {};
+  for (const record of runOutputs ?? []) {
+    if (record.status !== 'resolved' || record.reference === undefined) continue;
+    out[record.name] = Object.freeze({
+      portId: record.name,
+      type: 'file',
+      value: record.reference
+    });
+  }
+  return Object.freeze(out);
+}
+
+async function reconcileComposableWorkflowRuns(input: {
+  readonly workspaceRoot: string;
+  readonly store: {
+    getConnectedRuns(): Readonly<Record<string, ConnectedWorkflowRun>>;
+    getRunMap(): Readonly<Record<string, WorkflowRun | undefined>>;
+    compareAndSetConnectedRun(
+      next: ConnectedWorkflowRun,
+      expectedRevision: number
+    ): Promise<ConnectedRunWriteResult>;
+  };
+  readonly historyStore?: Pick<HistoryStore, 'list'>;
+  readonly logger: SanitizedLogger;
+  readonly getGuardedRun?: () => NodeRunStartDeps['guardedRun'] | undefined;
+  readonly getDefaultRunnerKind?: () => BackendRunnerKind | undefined;
+}): Promise<void> {
+  try {
+    const allRuns = Object.values(input.store.getConnectedRuns()).filter(
+      (run) => run.invocations !== undefined
+    );
+    if (allRuns.length === 0) return;
+    const recovery = new WorkflowRecoveryService({
+      connectedRuns: {
+        get: (id) => input.store.getConnectedRuns()[id] ?? null,
+        list: () =>
+          Object.values(input.store.getConnectedRuns()).filter(
+            (run) => run.invocations !== undefined
+          ),
+        compareAndSetConnectedRun: (next, rev) =>
+          input.store.compareAndSetConnectedRun(next, rev)
+      },
+      dispatchPhase: makePhaseDispatcher(input),
+      checkDurableAttemptEvidence: (_workflowRun, _frame, attempt): DurableAttemptEvidenceResult => {
+        if (attempt.queueItemId === undefined) return { completed: false };
+        const liveMatch = Object.values(input.store.getRunMap()).find(
+          (candidate) => candidate !== undefined && candidate.featureId === attempt.queueItemId
+        );
+        if (liveMatch !== undefined && isWorkflowNodeTerminalStatus(liveMatch.status)) {
+          return {
+            completed: true,
+            status: liveMatch.status,
+            declaredOutputs: buildDeclaredOutputsFromRun(liveMatch.runOutputs),
+            completedAt: liveMatch.lastTransitionAt
+          };
+        }
+        const historyMatch = input.historyStore
+          ?.list()
+          .find((entry) => entry.featureId === attempt.queueItemId);
+        if (
+          historyMatch !== undefined &&
+          isWorkflowNodeTerminalStatus(historyMatch.terminalStatus)
+        ) {
+          const parsedCompletedAt = Date.parse(historyMatch.completedAt);
+          return {
+            completed: true,
+            status: historyMatch.terminalStatus,
+            declaredOutputs: buildDeclaredOutputsFromRun(historyMatch.runOutputs),
+            completedAt: Number.isFinite(parsedCompletedAt) ? parsedCompletedAt : Date.now()
+          };
+        }
+        return { completed: false };
+      }
+    });
+    await recovery.reconcileAllRuns(Date.now());
+  } catch (error) {
+    input.logger.warn(
+      `run-safety-wiring: connected-workflow recovery failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+}
+
 async function recordConnectedWorkflowTransition(
   input: {
+    readonly workspaceRoot?: string;
     readonly store: {
       getConnectedRuns(): Readonly<Record<string, ConnectedWorkflowRun>>;
       getRunMap(): Readonly<Record<string, WorkflowRun | undefined>>;
@@ -359,6 +544,8 @@ async function recordConnectedWorkflowTransition(
       ): Promise<ConnectedRunWriteResult>;
     };
     readonly logger: SanitizedLogger;
+    readonly getGuardedRun?: () => NodeRunStartDeps['guardedRun'] | undefined;
+    readonly getDefaultRunnerKind?: () => BackendRunnerKind | undefined;
   },
   run: import('../state/workflow-run').WorkflowRun
 ): Promise<void> {
@@ -390,6 +577,36 @@ async function recordConnectedWorkflowTransition(
           }
         );
         return;
+      }
+
+      if (workflowRun.invocations !== undefined && isWorkflowNodeTerminalStatus(run.status)) {
+        for (const frame of Object.values(workflowRun.invocations)) {
+          for (const attempts of Object.values(frame.attemptsByNodeId)) {
+            const matchedAttempt = attempts.find(
+              (candidate) =>
+                candidate.queueItemId === run.featureId && candidate.status === 'in-flight'
+            );
+            if (matchedAttempt === undefined) continue;
+            const controlService = new WorkflowControlService({
+              connectedRuns: {
+                get: (id) => input.store.getConnectedRuns()[id] ?? null,
+                compareAndSetConnectedRun: (next, rev) =>
+                  input.store.compareAndSetConnectedRun(next, rev)
+              },
+              dispatchPhase: makePhaseDispatcher(input)
+            });
+            await controlService.completeNodeAttemptSerialized({
+              runId: workflowRun.connectedRunId,
+              invocationId: frame.invocationId,
+              nodeId: matchedAttempt.nodeId,
+              attemptIndex: matchedAttempt.attemptIndex,
+              status: run.status,
+              completedAt: run.lastTransitionAt,
+              declaredOutputs: buildDeclaredOutputsFromRun(run.runOutputs)
+            });
+            return;
+          }
+        }
       }
     }
   } catch (error) {

@@ -62,6 +62,7 @@
     onconnectionmove: (index: number, delta: number) => void;
     onconnectionremove: (index: number) => void;
     onopenworkflow?: (workflowId: string, fromNodeId: string) => void;
+    onselectworkflow?: () => void;
   }
 
   const p: Props = $props();
@@ -69,9 +70,16 @@
   const readonly = $derived(!p.editable);
   const phases = $derived(p.phases ?? []);
   const workflows = $derived(p.workflows ?? []);
-  const childWorkflowOptions = $derived(
-    workflows.filter((wf) => wf.workflowId !== p.row.workflowId),
-  );
+  const childWorkflowOptions = $derived.by(() => {
+    const out: { readonly workflowId: string; readonly name: string }[] = [];
+    const seen: string[] = [];
+    for (const wf of [...workflows, ...(p.allWorkflows ?? [])]) {
+      if (!wf.workflowId || wf.workflowId === p.row.workflowId || seen.includes(wf.workflowId)) continue;
+      seen.push(wf.workflowId);
+      out.push({ workflowId: wf.workflowId, name: wf.name || wf.workflowId });
+    }
+    return out;
+  });
   const node = $derived(
     p.selection.kind === "node"
       ? (p.row.nodes[p.selection.index] ?? null)
@@ -111,31 +119,13 @@
     return "pipeline";
   }
 
-  function switchNodeKind(
-    index: number,
-    kind: "phase" | "workflow" | "pipeline",
-  ): void {
+  function switchNodeKind(index: number, kind: "phase" | "workflow" | "pipeline"): void {
     if (kind === "phase") {
-      p.onnodepatch(index, {
-        kind: "phase",
-        phaseId: phases[0]?.phaseId ?? "",
-        workflowId: undefined,
-        pipelineId: undefined,
-      });
+      p.onnodepatch(index, { kind: "phase", phaseId: phases[0]?.phaseId ?? "", workflowId: undefined, pipelineId: undefined });
     } else if (kind === "workflow") {
-      p.onnodepatch(index, {
-        kind: "workflow",
-        workflowId: childWorkflowOptions[0]?.workflowId ?? "",
-        phaseId: undefined,
-        pipelineId: undefined,
-      });
+      p.onnodepatch(index, { kind: "workflow", workflowId: childWorkflowOptions[0]?.workflowId ?? "", phaseId: undefined, pipelineId: undefined });
     } else {
-      p.onnodepatch(index, {
-        kind: undefined,
-        pipelineId: p.pipelines[0]?.pipelineId ?? "",
-        phaseId: undefined,
-        workflowId: undefined,
-      });
+      p.onnodepatch(index, { kind: undefined, pipelineId: p.pipelines[0]?.pipelineId ?? "", phaseId: undefined, workflowId: undefined });
     }
   }
 </script>
@@ -168,6 +158,7 @@
       class="wf-inspector-section"
       data-testid="workflow-node-inspector-{index}"
     >
+      <button type="button" class="btn btn-ghost btn-sm" data-testid="workflow-settings-btn" onclick={() => p.onselectworkflow?.()}>← Workflow</button>
       <h3>Node {index + 1}</h3>
       <span class="wf-inspector-sub" data-testid="workflow-node-inspector-id"
         >{node.nodeId}</span
@@ -293,27 +284,10 @@
 
       <label class="wf-field">
         Label
-        <input
-          class="text-input"
-          data-testid="workflow-node-label-{index}"
-          aria-label="Node {index + 1} label"
-          value={node.label ?? ""}
-          {readonly}
-          placeholder={node.nodeId}
-          oninput={(event) =>
-            p.onnodepatch(index, { label: event.currentTarget.value })}
-        />
+        <input class="text-input" data-testid="workflow-node-label-{index}" aria-label="Node {index + 1} label" value={node.label ?? ""} {readonly} placeholder={node.nodeId} oninput={(event) => p.onnodepatch(index, { label: event.currentTarget.value })} />
       </label>
-
       <label class="checkbox-field">
-        <input
-          type="checkbox"
-          data-testid="workflow-node-start-{index}"
-          aria-label="Node {index + 1} may start the Workflow"
-          checked={p.row.startNodeIds.includes(node.nodeId)}
-          disabled={readonly}
-          onchange={() => p.onstarttoggle(node.nodeId)}
-        />
+        <input type="checkbox" data-testid="workflow-node-start-{index}" aria-label="Node {index + 1} may start the Workflow" checked={p.row.startNodeIds.includes(node.nodeId)} disabled={readonly} onchange={() => p.onstarttoggle(node.nodeId)} />
         <span class="form-label">May start the Workflow</span>
       </label>
 
@@ -437,6 +411,19 @@
             </select>
           </label>
           <label class="wf-field">
+            Default Model
+            <input
+              class="text-input"
+              data-testid="workflow-default-model"
+              value={p.row.executionDefaults?.model ?? ""}
+              {readonly}
+              oninput={(event) =>
+                p.actions?.patchExecutionDefaults?.({
+                  model: event.currentTarget.value.trim() || undefined,
+                })}
+            />
+          </label>
+          <label class="wf-field">
             Default Effort
             <select
               class="select-input"
@@ -455,6 +442,22 @@
                 <option value={effort}>{effort}</option>
               {/each}
             </select>
+          </label>
+          <label class="wf-field">
+            Recommended Next (comma-separated Workflow IDs)
+            <input
+              class="text-input"
+              data-testid="workflow-recommended-next"
+              value={(p.row.recommendedNext ?? []).join(", ")}
+              {readonly}
+              oninput={(event) =>
+                p.actions?.setRecommendedNext?.(
+                  event.currentTarget.value
+                    .split(",")
+                    .map((item) => item.trim())
+                    .filter((item) => item.length > 0),
+                )}
+            />
           </label>
         </div>
       {/if}

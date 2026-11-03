@@ -39,6 +39,7 @@ spec:
   connections:
     - from:
         nodeId: draft-spec
+        portId: summary
       to:
         nodeId: plan-and-verify
         portId: spec-summary
@@ -59,8 +60,9 @@ spec:
       nodeId: plan-and-verify
       inputKey: spec-summary
       source:
-        from: workflow-input
-        portId: feature-brief
+        from: node-output
+        nodeId: draft-spec
+        portId: summary
     - kind: input
       nodeId: final-verify
       inputKey: artifact-text
@@ -136,6 +138,7 @@ included:
         connections:
           - from:
               nodeId: author-plan
+              portId: plan
             to:
               nodeId: pre-verify
               portId: artifact-text
@@ -150,8 +153,9 @@ included:
             nodeId: pre-verify
             inputKey: artifact-text
             source:
-              from: workflow-input
-              portId: spec-summary
+              from: node-output
+              nodeId: author-plan
+              portId: plan
           - kind: output
             nodeId: pre-verify
             portId: verified-plan

@@ -36,7 +36,7 @@ import {
   type PhaseAttemptDispatchInput,
   type PhaseAttemptDispatchResult
 } from './connected-run-coordinator';
-import { continueWaitingHandoff } from './continuation-service';
+import { continueWaitingHandoff } from './continuation-composer';
 import {
   buildWorkflowRunControlProjection,
   type WorkflowRunControlProjection
@@ -212,11 +212,13 @@ function reactivateFrame(
   };
 }
 
+const sharedQueueTailByQueueId = new Map<string, Promise<unknown>>();
+
 /**
  * Serialized control & completion coordinator for nested `ConnectedWorkflowRun`s.
  */
 export class WorkflowControlService {
-  private readonly queueTailByQueueId = new Map<string, Promise<unknown>>();
+  private readonly queueTailByQueueId = sharedQueueTailByQueueId;
 
   constructor(private readonly deps: WorkflowControlServiceDeps) {}
 
@@ -500,6 +502,16 @@ export class WorkflowControlService {
           request.continuationRequest,
           request.now
         );
+        if (!out.accepted) {
+          return {
+            accepted: false,
+            refusalCode: 'handoff-not-pending',
+            reason: 'Pending handoff could not be accepted for the target node.',
+            currentRevision: run.revision,
+            run,
+            projection: buildWorkflowRunControlProjection(run)
+          };
+        }
         spawnedAttemptId = out.spawnedAttemptId;
         break;
       }
@@ -903,7 +915,7 @@ export class WorkflowControlService {
     targetNodeId: string,
     continuationRequest: RunRequest | undefined,
     now: number
-  ): Promise<{ readonly spawnedAttemptId?: string }> {
+  ): Promise<{ readonly accepted: boolean; readonly spawnedAttemptId?: string }> {
     const requestPayload: RunRequest = continuationRequest ?? {
       pipelineId: targetNodeId,
       workflowId: run.workflowId,
@@ -924,21 +936,23 @@ export class WorkflowControlService {
       }
     );
 
-    if (accepted.outcome === 'accepted') {
-      const dispatched = await dispatchComposableNode(
-        { connectedRuns: staging.writer, dispatchPhase: this.deps.dispatchPhase },
-        {
-          run: staging.current(),
-          invocationId: targetInvocationId,
-          nodeId: targetNodeId,
-          startedAt: now
-        }
-      );
-      if (dispatched.outcome === 'phase-dispatched') {
-        return { spawnedAttemptId: dispatched.attemptId };
-      }
+    if (accepted.outcome !== 'accepted') {
+      return { accepted: false };
     }
 
-    return {};
+    const dispatched = await dispatchComposableNode(
+      { connectedRuns: staging.writer, dispatchPhase: this.deps.dispatchPhase },
+      {
+        run: staging.current(),
+        invocationId: targetInvocationId,
+        nodeId: targetNodeId,
+        startedAt: now
+      }
+    );
+    if (dispatched.outcome === 'phase-dispatched') {
+      return { accepted: true, spawnedAttemptId: dispatched.attemptId };
+    }
+
+    return { accepted: true };
   }
 }
