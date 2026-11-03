@@ -19,7 +19,11 @@ import type { CatalogConfigReader } from '../config/pipeline-config-loader';
 import { coerceModels } from '../config/pipeline-config-loader';
 import { readGeneralSettings, writeGeneralSettings, type GeneralSettingsConfig } from '../config/general-settings';
 import { setUncontainedGrant } from '../services/uncontained-grant-writer';
+import { createWorkflowFailureRetirement } from '../controller/task-deletion';
+import { createWorkflowLeafEnd } from '../controller/workflow-leaf-end';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
+import type { ExecutionLeasePort } from '../services/auto-drain-coordinator';
+import type { TerminalTransitionCoordinator } from '../services/terminal-transition-coordinator';
 import { describeFailure } from '../lib/errors';
 import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
@@ -43,6 +47,10 @@ import { HistoryDescriptionStore } from '../services/history/history-description
 import { createFailureRecordAnswerer } from '../services/failure-record/failure-record-service';
 import { normalizedPolicy } from '../services/session-retention/session-artifact-retention-service';
 import { resolveHistoryDescription } from '../services/history/history-description-resolver';
+import {
+  createWorkflowLeafControlHooks,
+  createWorkflowQueueWake
+} from '../services/workflow-execution/workflow-leaf-control';
 
 /**
  * FR-R3-119 — the sidebar message router, wired.
@@ -80,7 +88,9 @@ export interface SidebarRouterWiringDeps {
   readonly store: WorkspaceStateStore;
   readonly queue: QueueManager;
   readonly controller: SchegentWorkflowController;
+  readonly terminalTransitions: Pick<TerminalTransitionCoordinator, 'complete'>;
   readonly lock: WorkspaceLockManager;
+  readonly executionLease: ExecutionLeasePort;
   readonly notifier: Notifier;
   readonly auditWriter: AuditLogWriter;
   readonly historyStore: HistoryStore;
@@ -111,7 +121,9 @@ export function createSidebarRouter(deps: SidebarRouterWiringDeps): MessageRoute
     store,
     queue,
     controller,
+    terminalTransitions,
     lock,
+    executionLease,
     notifier,
     auditWriter,
     historyStore,
@@ -227,6 +239,23 @@ export function createSidebarRouter(deps: SidebarRouterWiringDeps): MessageRoute
     // collapsing it.
     readPriorRunOutputs: (runId) => historyStore.outputsFor(runId),
     connectedRuns,
+    workflowControlHooks: createWorkflowLeafControlHooks({
+      controller,
+      logger,
+      store,
+      executionLease,
+      endLeaf: createWorkflowLeafEnd({
+        logger,
+        queue,
+        store,
+        controller,
+        executionLease,
+        terminalTransitions,
+        audit: auditWriter
+      })
+    }),
+    wakeWorkflowQueue: createWorkflowQueueWake({ controller, logger }),
+    retireWorkflowFailures: createWorkflowFailureRetirement({ queue, audit: auditWriter, logger }),
     // Feature 011 — typed transactional writer used by CMD_SAVE_GENERAL_SETTINGS.
     // Feature 019 — on success that touches a runtime-log key, clear
     // the sink's suppression for both the previous and the new

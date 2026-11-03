@@ -369,9 +369,7 @@ export class SchegentWorkflowController {
   }
 
   /** True while `queueId`'s delayed-retry backoff has not yet elapsed. */
-  public hasPendingDelayedRetry(queueId: string): boolean {
-    return this.retryCoordinator.hasPendingDelayedRetry(queueId);
-  }
+  public hasPendingDelayedRetry(queueId: string): boolean { return this.retryCoordinator.hasPendingDelayedRetry(queueId); }
 
   /**
    * BUG-006 — late injection point. `GuardedRunService` is constructed
@@ -474,6 +472,8 @@ export class SchegentWorkflowController {
   }
 
   public isDriving(queueId: string): boolean { return this.sessions.peek(queueId)?.driver.running === true; } // FR-R3-150 (T1620) — see queue-runner-ack.ts
+
+  public cancelPendingRetry(queueId: string): void { this.retryCoordinator.cancelPendingTimer(queueId); } // Addressed: never another queue's countdown.
 
   /**
    * FR-R3-103 (FR-046, FR-047) — this window lost the execution fence, so every child it is

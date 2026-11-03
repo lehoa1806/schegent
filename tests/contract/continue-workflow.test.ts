@@ -54,16 +54,21 @@ import {
   type PipelineCatalog,
   type PipelineDef
 } from '../../src/config/pipeline-config';
+import { MAX_WORKFLOW_NESTING_DEPTH } from '../../src/config/workflow-closure-resolver';
 import { CMD_CONTINUE_WORKFLOW } from '../../src/contracts/sidebar-ipc';
-import type {
-  ConnectedRunProjection,
-  ContinueWorkflowResult
+import {
+  CONTROL_ID_MAX,
+  isContinueWorkflowPayload,
+  type ConnectedRunProjection,
+  type ContinueWorkflowResult
 } from '../../src/contracts/sidebar-ipc/workflow-run';
 import { validateInboundMessage } from '../../src/contracts/runtime-validators';
 import type { WorkflowDefinition } from '../../src/contracts/workflow-definitions';
 import {
+  createChildWorkflowInvocationFrame,
   createComposableWorkflowRunSnapshot,
-  createConnectedRunSnapshot
+  createConnectedRunSnapshot,
+  createNodeAttemptRecord
 } from '../../src/services/workflow-execution/connected-run-factory';
 import type {
   GuardedScheduleRequest,
@@ -1217,5 +1222,185 @@ describe('invocation-scoped control and hierarchical projection (FR-R5-F06)', ()
     });
     expect(harness.writes).toHaveLength(1);
     expect(harness.writes[0]!.run.invocations?.[rootInvId]?.status).toBe('paused');
+  });
+
+  // The UI addresses a control by the invocation it targets and keys the idempotency
+  // receipt on `${connectedRunId}:${invocationId}:${action}:${revision}`. A child
+  // invocation id embeds its parent's id twice (as the prefix and again inside the
+  // parent attempt id), so ids roughly double per nesting level. Every id below is
+  // minted by the real factory, so a change to the id format moves this test with it
+  // instead of leaving a hand-written length behind.
+  describe('control ids on a nested invocation', () => {
+    /** `cmd-launch-workflow` mints the run id with `randomUUID()`: 36 characters. */
+    const UUID_RUN_ID = '3f2b7c1e-9a4d-4e8b-b6a0-5d1c2e7f9a31';
+    const CHILD_WORKFLOW: WorkflowDefinition = {
+      workflowId: 'child-wf',
+      name: 'Child Workflow',
+      version: 1,
+      nodes: [{ nodeId: 'step', phaseId: 'alpha' }],
+      connections: [],
+      startNodeIds: ['step']
+    };
+
+    /** The invocation id of the frame `levels` Workflow calls below the root. */
+    function invocationIdBelowRoot(levels: number, callNodeId: string): string {
+      const rootWf: WorkflowDefinition = {
+        workflowId: 'root-wf',
+        name: 'Root Workflow',
+        version: 1,
+        nodes: [{ nodeId: callNodeId, workflowId: 'child-wf' }],
+        connections: [],
+        startNodeIds: [callNodeId]
+      };
+      const snap = createComposableWorkflowRunSnapshot({
+        connectedRunId: UUID_RUN_ID,
+        workflow: rootWf,
+        entryNodeId: callNodeId,
+        effectiveWorkflows: [rootWf, CHILD_WORKFLOW],
+        effectivePhases: [{ phaseId: 'alpha', name: 'Alpha', version: 1, instruction: 'Prompt.' }],
+        startedAt: STARTED_AT,
+        defaultRunnerKind: 'claude'
+      });
+      if (snap.outcome !== 'created') {
+        throw new Error(`failed to create composable run: ${snap.reason}`);
+      }
+      let frame = snap.run.invocations?.[resolveRootInvocationId(snap.run)];
+      if (frame === undefined) throw new Error('the composable run has no root frame');
+      for (let level = 0; level < levels; level += 1) {
+        const attempt = createNodeAttemptRecord({
+          frame,
+          nodeId: callNodeId,
+          nodeKind: 'workflow',
+          targetDefinitionId: 'child-wf',
+          inputEnvelope: {
+            envelopeId: `env-${level}`,
+            invocationId: frame.invocationId,
+            targetNodeId: callNodeId,
+            source: 'launch',
+            inputsByPort: {},
+            localInputs: [],
+            outputTargetOverrides: [],
+            acceptedAt: STARTED_AT
+          },
+          startedAt: STARTED_AT
+        });
+        frame = createChildWorkflowInvocationFrame({
+          parentFrame: frame,
+          callNodeId,
+          parentAttemptId: attempt.attemptId,
+          childWorkflow: CHILD_WORKFLOW,
+          boundInputs: {},
+          startedAt: STARTED_AT
+        });
+      }
+      return frame.invocationId;
+    }
+
+    function controlPayload(invocationId: string): Record<string, unknown> {
+      return payload({
+        connectedRunId: UUID_RUN_ID,
+        invocationId,
+        operation: 'pause',
+        commandId: `${UUID_RUN_ID}:${invocationId}:pause:7`
+      });
+    }
+
+    it.each([
+      { label: 'a child of the root', levels: 1, callNodeId: 'call-reviewer' },
+      { label: 'a grandchild', levels: 2, callNodeId: 'call-reviewer' },
+      {
+        label: 'the deepest legal invocation, called through 64-character nodes',
+        levels: MAX_WORKFLOW_NESTING_DEPTH,
+        callNodeId: 'c'.repeat(64)
+      }
+    ])('admits the control the UI sends for $label', ({ levels, callNodeId }) => {
+      const body = controlPayload(invocationIdBelowRoot(levels, callNodeId));
+
+      expect(validateInboundMessage(envelope(body))).toMatchObject({ ok: true });
+      expect(isContinueWorkflowPayload(body)).toBe(true);
+    });
+
+    it.each(['invocationId', 'commandId'])('still refuses a %s one character past the bound', (key) => {
+      const body = payload({
+        invocationId: 'inv-root',
+        operation: 'pause',
+        commandId: 'cmd-pause-1',
+        [key]: 'x'.repeat(CONTROL_ID_MAX + 1)
+      });
+
+      expect(validateInboundMessage(envelope(body))).toMatchObject({
+        ok: false,
+        reason: 'invalid-payload'
+      });
+      expect(isContinueWorkflowPayload(body)).toBe(false);
+    });
+
+    it('keeps the connected run id on its own small bound', () => {
+      const body = payload({ connectedRunId: 'x'.repeat(129) });
+
+      expect(validateInboundMessage(envelope(body))).toMatchObject({
+        ok: false,
+        reason: 'invalid-payload'
+      });
+      expect(isContinueWorkflowPayload(body)).toBe(false);
+    });
+  });
+
+  // A refusal carries the authoritative projection to the webview (FR-045), which
+  // makes it the second route the operator's own words take after the snapshot.
+  // The label and the Workflow name are typed by the operator, so they cross the
+  // boundary redacted by the same logger the snapshot uses (hard rule 2).
+  describe('authored text on a refusal projection', () => {
+    const AUTHORED_WORKFLOW: WorkflowDefinition = {
+      workflowId: 'root-wf',
+      name: 'Release SECRET',
+      version: 1,
+      nodes: [
+        { nodeId: 'step', phaseId: 'alpha', label: 'Review with SECRET' },
+        { nodeId: 'later', phaseId: 'alpha' }
+      ],
+      connections: [],
+      startNodeIds: ['step']
+    };
+
+    async function refusalProjection(
+      refusal: { readonly nodeId: string; readonly revisionOffset: number }
+    ): Promise<ConnectedRunProjection> {
+      const snap = createComposableWorkflowRunSnapshot({
+        connectedRunId: RUN_ID,
+        workflow: AUTHORED_WORKFLOW,
+        entryNodeId: 'step',
+        effectiveWorkflows: [AUTHORED_WORKFLOW],
+        effectivePhases: [{ phaseId: 'alpha', name: 'Alpha', version: 1, instruction: 'Prompt.' }],
+        startedAt: STARTED_AT,
+        defaultRunnerKind: 'claude'
+      });
+      if (snap.outcome !== 'created') {
+        throw new Error(`failed to create composable run: ${snap.reason}`);
+      }
+      const harness = buildRouter({ run: snap.run });
+
+      await dispatch(
+        harness,
+        payload({
+          expectedRevision: snap.run.revision + refusal.revisionOffset,
+          nodeId: refusal.nodeId
+        })
+      );
+
+      return projectionOf(only(harness).result);
+    }
+
+    it.each([
+      { arm: 'rejected-stale', nodeId: 'step', revisionOffset: 1 },
+      { arm: 'rejected-state', nodeId: 'later', revisionOffset: 0 }
+    ])('redacts a node label and a Workflow name on $arm', async ({ nodeId, revisionOffset }) => {
+      const projection = await refusalProjection({ nodeId, revisionOffset });
+
+      expect(projection.nodes.find((node) => node.nodeId === 'step')?.label).toBe(
+        'Review with [redacted]'
+      );
+      expect(projection.invocations?.at(0)?.workflowName).toBe('Release [redacted]');
+    });
   });
 });

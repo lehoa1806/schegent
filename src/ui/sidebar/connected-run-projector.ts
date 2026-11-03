@@ -45,7 +45,7 @@ import {
   projectConnectedInvocations
 } from '../../services/workflow-execution/workflow-control-projector';
 import type { ConnectedWorkflowRun } from '../../state/connected-workflow-run';
-import { resolveRootInvocationId } from '../../state/connected-workflow-run';
+import { attemptsForNode, resolveRootInvocationId } from '../../state/connected-workflow-run';
 
 /**
  * What one child Pipeline Run is doing, in the vocabulary the wire already uses.
@@ -124,7 +124,7 @@ function readChild(
     };
   }
   const rootId = resolveRootInvocationId(run);
-  const frameAttempts = run.invocations?.[rootId]?.attemptsByNodeId[nodeId] ?? [];
+  const frameAttempts = attemptsForNode(run.invocations?.[rootId], nodeId);
   const latestFrameAttempt = frameAttempts.at(-1);
   if (latestFrameAttempt === undefined) return { latest: null, attemptCount: 0 };
   const mappedState: ConnectedChildState | null =
@@ -221,8 +221,9 @@ export function projectConnectedRun(
       // FR-057 — only what the host would accept right now. While any child is
       // non-terminal the launcher refuses every start (FR-044), so nothing is
       // legal anywhere and the projection says so rather than offering a control
-      // that is guaranteed to be refused.
-      actions: anyInFlight ? NO_ACTIONS : actionsOf(state, reading.attemptCount),
+      // that is guaranteed to be refused. A composable node is refused the same way, always: it names
+      // no Pipeline to compose (gate 4a), and its controls are its invocation's `allowedActions`.
+      actions: anyInFlight || hasInvocations ? NO_ACTIONS : actionsOf(state, reading.attemptCount),
       attemptCount: reading.attemptCount,
       ...(reading.latestQueueItemId !== undefined
         ? { latestQueueItemId: reading.latestQueueItemId }

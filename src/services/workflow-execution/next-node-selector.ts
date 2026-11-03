@@ -72,9 +72,19 @@ interface Evaluated extends Candidate {
   readonly operands: readonly OperandResolution[];
 }
 
-function evaluate(candidate: Candidate, context: ConditionContext): Evaluated {
+/**
+ * `recoveryOnly` is set when the node's attempt did not complete. A connection
+ * with no condition is the success path, so it matches nothing then: only a
+ * connection the author gated with a condition can route past a failed or
+ * canceled attempt.
+ */
+function evaluate(
+  candidate: Candidate,
+  context: ConditionContext,
+  recoveryOnly: boolean
+): Evaluated {
   const { condition } = candidate.connection;
-  if (condition === undefined) return { ...candidate, matched: true, operands: [] };
+  if (condition === undefined) return { ...candidate, matched: !recoveryOnly, operands: [] };
   const evaluation = evaluateCondition(condition, context);
   return { ...candidate, matched: evaluation.matched, operands: evaluation.operands };
 }
@@ -99,6 +109,10 @@ function offerOrder(evaluated: readonly Evaluated[]): readonly number[] {
  * empty offer with the evaluation recorded.
  */
 export function selectNextNodes(input: SelectNextNodesInput): RoutingDecision {
+  return decideNextNodes(input, false);
+}
+
+function decideNextNodes(input: SelectNextNodesInput, recoveryOnly: boolean): RoutingDecision {
   const outgoing: Candidate[] = [];
   input.graph.connections.forEach((connection, index) => {
     if (connection.from.nodeId === input.nodeId) outgoing.push({ index, connection });
@@ -109,7 +123,9 @@ export function selectNextNodes(input: SelectNextNodesInput): RoutingDecision {
   const explicit = outgoing.filter((candidate) => candidate.connection.isDefault !== true);
   const fallback = outgoing.filter((candidate) => candidate.connection.isDefault === true);
 
-  const evaluatedExplicit = explicit.map((candidate) => evaluate(candidate, input.context));
+  const evaluatedExplicit = explicit.map((candidate) =>
+    evaluate(candidate, input.context, recoveryOnly)
+  );
   const matchedExplicit = evaluatedExplicit.filter((candidate) => candidate.matched);
 
   // Considered only when nothing explicit matched (FR-027). Leaving it
@@ -119,7 +135,7 @@ export function selectNextNodes(input: SelectNextNodesInput): RoutingDecision {
   const evaluatedFallback =
     matchedExplicit.length > 0
       ? fallback.map((candidate) => ({ ...candidate, matched: false, operands: [] }))
-      : fallback.map((candidate) => evaluate(candidate, input.context));
+      : fallback.map((candidate) => evaluate(candidate, input.context, recoveryOnly));
   const matchedFallback = evaluatedFallback.filter((candidate) => candidate.matched);
 
   const evaluated = [...evaluatedExplicit, ...evaluatedFallback].sort(
@@ -178,11 +194,19 @@ export interface SelectNextTransitionInput extends SelectNextNodesInput {
  * FR-R5-F02 — select the winning transition for composable Workflow execution,
  * distinguishing `{ kind: 'node', nodeId }`, `{ kind: 'return' }`, terminal
  * sink completion, `no-eligible-transition`, and `unhandled-node-failure`.
+ *
+ * A failed or canceled attempt routes only through a conditional connection
+ * (for example `node-status equals failed`). An unconditional or default
+ * connection without a condition is the success path: following it would
+ * dispatch the successor, or return from the invocation, as though the node had
+ * completed, so the attempt is an `unhandled-node-failure` instead.
  */
 export function selectNextTransition(
   input: SelectNextTransitionInput
 ): SelectedTransitionOutcome {
-  const decision = selectNextNodes(input);
+  const attemptStatus =
+    input.attemptStatus ?? input.context.nodes[input.nodeId]?.status ?? 'completed';
+  const decision = decideNextNodes(input, attemptStatus !== 'completed');
   if (decision.eligible.length > 0) {
     const connectionIndex = decision.eligible[0]!;
     const connection = input.graph.connections[connectionIndex]!;
@@ -201,8 +225,6 @@ export function selectNextTransition(
     };
   }
 
-  const attemptStatus =
-    input.attemptStatus ?? input.context.nodes[input.nodeId]?.status ?? 'completed';
   if (attemptStatus !== 'completed') {
     return {
       outcome: 'unhandled-node-failure',

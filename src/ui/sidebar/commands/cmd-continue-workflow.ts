@@ -19,17 +19,30 @@
 // Eligibility (gate 4) comes from that same projection through `isNodeStartable`,
 // which is why the host and the view cannot come to disagree about what is legal.
 // Both are handed over by reference; the service binds the child-state reader.
+//
+// The one thing added on the way out is the redaction. The refusal projection
+// reaches the webview, so the operator-authored text on it (node labels, Workflow
+// names) is sanitized by the window's logger exactly as the snapshot composer
+// sanitizes the same fields (`connected-run-text.ts`, hard rule 2). The wrapper
+// sits on `projectRun` alone: eligibility reads structure and never the text.
 
 import type { ContinueWorkflowCommand } from '../../../contracts/sidebar-ipc';
 import { continueConnectedRun } from '../../../services/workflow-execution/continuation-service';
 import { getCanonicalWorkspaceRoot } from '../../../state/workspace-folder-picker';
+import { sanitizeConnectedRun } from '../connected-run-text';
 import { isNodeStartable, projectConnectedRun } from '../connected-run-projector';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
 
 export const handler: CommandHandler<ContinueWorkflowCommand> = async (ctx, command) => {
+  const sanitize = ctx.deps.logger.sanitize;
   const result = await continueConnectedRun(
-    { ...ctx.deps, projectRun: projectConnectedRun, isNodeStartable },
+    {
+      ...ctx.deps,
+      projectRun: (run, readChildState) =>
+        sanitizeConnectedRun(projectConnectedRun(run, readChildState), sanitize),
+      isNodeStartable
+    },
     {
       payload: command.payload,
       workspaceRoot: getCanonicalWorkspaceRoot()?.uri.fsPath ?? null,

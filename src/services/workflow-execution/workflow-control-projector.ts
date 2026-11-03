@@ -12,6 +12,7 @@ import type {
   ConnectedInvocationProjection
 } from '../../contracts/sidebar-ipc/workflow-run';
 import {
+  attemptsForNode,
   resolveBoundQueueId,
   resolveRootInvocationId,
   type ConnectedWorkflowRun,
@@ -78,7 +79,7 @@ function findLatestAttemptForFrame(
   frame: WorkflowInvocationFrame
 ): NodeAttemptRecord | undefined {
   if (frame.activeNodeId !== null) {
-    const activeList = frame.attemptsByNodeId[frame.activeNodeId] ?? [];
+    const activeList = attemptsForNode(frame, frame.activeNodeId);
     const lastActive = activeList[activeList.length - 1];
     if (lastActive !== undefined) {
       return lastActive;
@@ -220,7 +221,7 @@ export function buildAncestryEvidenceMetadata(
     return undefined;
   }
   const targetNodeId = nodeId ?? frame.activeNodeId ?? frame.entryNodeId;
-  const attempts = frame.attemptsByNodeId[targetNodeId] ?? [];
+  const attempts = attemptsForNode(frame, targetNodeId);
   const latestAttempt = attempts[attempts.length - 1];
   const attemptIndex = latestAttempt?.attemptIndex ?? 1;
   const attemptId =

@@ -94,6 +94,25 @@ describe('the readable context: declared outputs', () => {
       context(COMPLETED, { ...COMPLETED, outputs: [{ name: 'report', status: 'unresolved' }] })
     ).toThrow(/n-triage/);
   });
+
+  it('finds a node whose id is an Object.prototype member only once an attempt is recorded for it', () => {
+    // `constructor` passes the node-id grammar. A plain `nodes[id]` read answers
+    // with the inherited `Object` function: a node that never ran would resolve
+    // for node-status, and its first attempt would be refused as a duplicate.
+    const never = context(COMPLETED);
+    expect(resolveOperand({ source: 'node-status', nodeId: 'constructor' }, never)).toEqual({
+      resolved: false
+    });
+    expect(
+      resolveOperand({ source: 'node-output', nodeId: 'constructor', field: 'report' }, never)
+    ).toEqual({ resolved: false });
+
+    const ran = context({ nodeId: 'constructor', status: 'completed', outputs: [] });
+    expect(resolveOperand({ source: 'node-status', nodeId: 'constructor' }, ran)).toEqual({
+      resolved: true,
+      value: 'completed'
+    });
+  });
 });
 
 describe('the readable context: run metadata is a closed one-member set', () => {

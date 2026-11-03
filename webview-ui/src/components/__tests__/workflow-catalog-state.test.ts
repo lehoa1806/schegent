@@ -43,6 +43,7 @@ import {
   formatWorkflowConditionLiteral,
   formatWorkflowSaveRejection,
   isWorkflowDirty,
+  makeDuplicateWorkflowDraft,
   makeNewWorkflowDraft,
   makeWorkflowCondition,
   parseWorkflowConditionLiteral,
@@ -60,6 +61,7 @@ import {
   validateWorkflowDraft,
   workflowErrorAnchor,
   WORKFLOW_CONDITION_OPERAND_SOURCES,
+  WORKFLOW_LABEL_MAX_LEN,
   type WorkflowConditionRightArity,
   type WorkflowDraftError
 } from '../PipelineBuilderEditors/workflow-catalog-state';
@@ -178,6 +180,26 @@ describe('node and connection row editing', () => {
     expect(next.nodes.map((node) => node.nodeId)).toEqual(['ship', 'draft']);
   });
 
+  it('stores no label for a cleared or blank Label field, which the host would refuse', () => {
+    // The Label input patches on every keystroke, so clearing it patches `label: ''`. The host
+    // validates an authored node label as 1..80 characters, so keeping the empty string would let
+    // the draft save and then fail the Publish.
+    const labelled = updateWorkflowNode(row(), 0, { label: 'Ship it' });
+    expect(labelled.nodes.at(0)?.label).toBe('Ship it');
+
+    const cleared = updateWorkflowNode(labelled, 0, { label: '' });
+    expect(cleared.nodes.at(0)).toEqual({ nodeId: 'ship', pipelineId: 'release-pipeline' });
+    expect(cleared.nodes.at(0)).not.toHaveProperty('label');
+
+    const blank = updateWorkflowNode(labelled, 0, { label: '   ' });
+    expect(blank.nodes.at(0)).not.toHaveProperty('label');
+  });
+
+  it('keeps a label as typed, including a trailing space the operator is still typing past', () => {
+    const typing = updateWorkflowNode(row(), 0, { label: 'Ship ' });
+    expect(typing.nodes.at(0)?.label).toBe('Ship ');
+  });
+
   it('drops a node and every connection and allowed start that named it', () => {
     const next = removeWorkflowNode(row(), 1);
     expect(next.nodes.map((node) => node.nodeId)).toEqual(['ship']);
@@ -224,6 +246,28 @@ describe('makeNewWorkflowDraft', () => {
     expect(draft.workflowId).not.toBe('new-workflow');
     expect(draft.nodes).toEqual([]);
     expect(draft.startNodeIds).toEqual([]);
+  });
+
+  it('gives every draft a source key of its own, whatever the first one is renamed to', () => {
+    // The editor keys drafts, edits and undo history by `sourceKey`. A key derived from the id the
+    // draft was born with is not stable under rename: rename the first draft, add another, and
+    // the id 'new-workflow' is free again, so both would be filed under the same key.
+    const first = makeNewWorkflowDraft([]);
+    const renamed: MutableWorkflow = { ...first, workflowId: 'renamed' };
+    const second = makeNewWorkflowDraft([renamed.workflowId]);
+
+    expect(second.workflowId).toBe(first.workflowId);
+    expect(second.sourceKey).not.toBe(renamed.sourceKey);
+
+    const copyOne = makeDuplicateWorkflowDraft(renamed, [renamed.workflowId, second.workflowId]);
+    const copyTwo = makeDuplicateWorkflowDraft(renamed, [renamed.workflowId, second.workflowId]);
+    expect(new Set([renamed.sourceKey, second.sourceKey, copyOne.sourceKey, copyTwo.sourceKey]).size).toBe(4);
+  });
+
+  it('never files a draft under a key the projection could assign to a stored record', () => {
+    // Stored records are keyed `<workflowId>::<index>`; a draft key that ended in a number could
+    // collide with one whose id happens to be 'draft'.
+    expect(makeNewWorkflowDraft([]).sourceKey).not.toMatch(/::\d+$/);
   });
 });
 
@@ -319,6 +363,31 @@ describe('validateWorkflowDraft', () => {
     expect(validateWorkflowDraft(workflow, [])).toContainEqual(
       expect.objectContaining({ field: 'nodes[1].nodeId', code: 'duplicate-node-id' })
     );
+  });
+
+  it.each(['inputs', 'outputs'] as const)('requires a %s port label of 1 to the host maximum characters', (side) => {
+    // The host refuses a declared port whose trimmed label is empty or over the bound, and only at
+    // Publish; checking here keeps a blank label from saving as a draft that can never publish.
+    const port = { portId: 'topic', label: 'Topic', type: 'text' as const };
+    const withLabel = (label: string): MutableWorkflow => ({ ...row(), [side]: [{ ...port, label }] });
+
+    expect(validateWorkflowDraft(withLabel('Topic'), [])).toEqual([]);
+    expect(validateWorkflowDraft(withLabel('   '), [])).toEqual([
+      expect.objectContaining({ field: `${side}[0].label`, code: 'required' })
+    ]);
+    expect(
+      validateWorkflowDraft(withLabel('x'.repeat(WORKFLOW_LABEL_MAX_LEN + 1)), [])
+    ).toEqual([expect.objectContaining({ field: `${side}[0].label`, code: 'too-long' })]);
+    expect(
+      validateWorkflowDraft(withLabel('x'.repeat(WORKFLOW_LABEL_MAX_LEN)), [])
+    ).toEqual([]);
+  });
+
+  it('reports a node label over the host maximum against that node', () => {
+    const workflow = updateWorkflowNode(row(), 1, { label: 'x'.repeat(WORKFLOW_LABEL_MAX_LEN + 1) });
+    expect(validateWorkflowDraft(workflow, [])).toEqual([
+      expect.objectContaining({ field: 'nodes[1].label', code: 'too-long' })
+    ]);
   });
 });
 

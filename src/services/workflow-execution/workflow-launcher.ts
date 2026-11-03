@@ -51,7 +51,8 @@ import {
 } from './connected-run-factory';
 import { dispatchComposableNode } from './connected-run-coordinator';
 import type { NodeRunStartDeps, NodeRunStartResult } from './node-run-starter';
-import { startPhaseNodeRun, startPipelineRun, toSupplementalInputs } from './node-run-starter';
+import { startPipelineRun } from './node-run-starter';
+import { launchContextOf, phaseDispatchResultOf, startPhaseAttempt } from './phase-attempt-start';
 
 /**
  * Why a start was refused for a reason that is neither a field nor the run's
@@ -531,6 +532,12 @@ export interface LaunchComposableWorkflowInput {
   ) => Promise<void> | void;
 }
 
+function isRootInvocationFailed(run: ConnectedWorkflowRun, rootInvocationId: string): boolean {
+  return Object.values(run.invocations ?? {}).some(
+    (frame) => frame.invocationId === rootInvocationId && frame.status === 'failed'
+  );
+}
+
 function buildRootInputsFromEnvelope(
   envelope: ExecutionEnvelope,
   explicit?: Readonly<Record<string, ResolvedPortValue>>
@@ -582,11 +589,13 @@ export async function launchComposableWorkflow(
       return { outcome: 'rejected-definition', reason: 'no-workspace-root' };
     }
 
+    const launchContext = launchContextOf(input.envelope);
     const snapshot = createComposableWorkflowRunSnapshot({
       connectedRunId: input.connectedRunId,
       workflow: rootWorkflow,
       entryNodeId,
       frozenClosure: closure,
+      ...(launchContext !== undefined ? { launchContext } : {}),
       boundInputs: buildRootInputsFromEnvelope(input.envelope, input.rootInputs),
       startedAt: input.startedAt,
       ...(input.defaultRunnerKind !== undefined
@@ -605,50 +614,18 @@ export async function launchComposableWorkflow(
       {
         connectedRuns: {
           compareAndSetConnectedRun: async (next) =>
-            deps.connectedRuns.compareAndSetConnectedRun(next, 0)
+            // A launch whose root already failed was refused, not started: storing it would
+            // list a failed run nothing can finish, cancel or retry. The caller still gets
+            // the step's result, and the refusal travels in `lastFailure`.
+            isRootInvocationFailed(next, snapshot.rootInvocationId)
+              ? { outcome: 'written', run: next }
+              : deps.connectedRuns.compareAndSetConnectedRun(next, 0)
         },
         dispatchPhase: async (phaseInput) => {
-          const phaseRequest: RunRequest = {
-            pipelineId: phaseInput.phase.phaseId,
-            inputs: Object.values(phaseInput.boundInputs).map((portVal) => ({
-              portId: portVal.portId,
-              type: portVal.type as RunRequest['inputs'][number]['type'],
-              value: portVal.value
-            })),
-            supplemental:
-              phaseInput.inputEnvelope !== undefined &&
-              phaseInput.inputEnvelope.localInputs.length > 0
-                ? toSupplementalInputs(phaseInput.inputEnvelope.localInputs)
-                : toSupplementalInputs(input.envelope.supplemental),
-            outputs:
-              phaseInput.inputEnvelope !== undefined &&
-              phaseInput.inputEnvelope.outputTargetOverrides.length > 0
-                ? phaseInput.inputEnvelope.outputTargetOverrides
-                : input.envelope.outputs
-          };
-          const started = await startPhaseNodeRun(deps, {
-            frozenClosure: closure,
-            phaseId: phaseInput.phase.phaseId,
-            request: phaseRequest,
-            workspaceRoot: input.workspaceRoot,
-            description: phaseInput.node.label ?? phaseInput.phase.name,
-            queueId: phaseInput.queueId,
-            occurrence: {
-              rootRunId: input.connectedRunId,
-              invocationId: phaseInput.frame.invocationId,
-              parentInvocationId: phaseInput.frame.parentInvocationId,
-              nodePath:
-                phaseInput.nodePath ?? `${phaseInput.frame.nodePath}/${phaseInput.node.nodeId}`,
-              attemptId: phaseInput.attemptId,
-              attemptIndex: phaseInput.attemptIndex
-            }
-          });
-          if (started.outcome !== 'enqueued') {
-            lastFailure = refusalOf(started);
-            return { outcome: 'rejected', reason: started.outcome };
-          }
-          firstQueueItemId = started.queueItemId;
-          return { outcome: 'dispatched', queueItemId: started.queueItemId };
+          const started = await startPhaseAttempt(deps, phaseInput, input.workspaceRoot);
+          if (started.outcome === 'enqueued') firstQueueItemId = started.queueItemId;
+          else lastFailure = refusalOf(started);
+          return phaseDispatchResultOf(started);
         }
       },
       {

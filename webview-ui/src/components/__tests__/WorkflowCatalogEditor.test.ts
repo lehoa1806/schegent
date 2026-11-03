@@ -946,4 +946,65 @@ describe('Unified Workflow Authoring (FR-R5-F05)', () => {
     await fireEvent.click(getByTestId('workflows-discard'));
     expect((getByTestId('workflow-default-effort') as HTMLSelectElement).value).toBe('high');
   });
+
+  it('previews a child Workflow that calls the same grandchild twice without a duplicate row key', async () => {
+    // `buildChildWorkflowPreview` expands each call node in place, so the grandchild's nodes show up
+    // once per call at the same depth with the same `nodeId`. A key built from depth and node id
+    // alone repeats, and Svelte throws `each_key_duplicate` out of the keyed block.
+    const leafDef = {
+      workflowId: 'leaf-wf',
+      name: 'Leaf Workflow',
+      version: 1,
+      nodes: [{ nodeId: 'check', kind: 'phase' as const, phaseId: 'speckit-verify' }],
+      connections: [],
+      startNodeIds: ['check']
+    };
+    const midDef = {
+      workflowId: 'mid-wf',
+      name: 'Mid Workflow',
+      version: 1,
+      nodes: [
+        { nodeId: 'first-leaf', kind: 'workflow' as const, workflowId: 'leaf-wf' },
+        { nodeId: 'second-leaf', kind: 'workflow' as const, workflowId: 'leaf-wf' }
+      ],
+      connections: [{ from: { nodeId: 'first-leaf' }, to: { nodeId: 'second-leaf' } }],
+      startNodeIds: ['first-leaf']
+    };
+    const rootDef = {
+      workflowId: 'root-wf',
+      name: 'Root Workflow',
+      version: 1,
+      nodes: [{ nodeId: 'call-mid', kind: 'workflow' as const, workflowId: 'mid-wf' }],
+      connections: [],
+      startNodeIds: ['call-mid']
+    };
+    const base = unifiedSnapshot();
+    const reusing = {
+      ...base,
+      workflowCatalog: {
+        ...base.workflowCatalog,
+        records: [rootDef, midDef, leafDef].map((definition) =>
+          record({
+            workflowId: definition.workflowId,
+            key: `${definition.workflowId}::0`,
+            definition
+          } as Partial<WorkflowCatalogSourceProjection>)
+        ),
+        effective: [rootDef, midDef, leafDef]
+      }
+    } as unknown as WorkflowSnapshot;
+    const { container, getByTestId } = render(WorkflowCatalogEditor, {
+      props: { snapshot: reusing, trusted: true }
+    });
+
+    await fireEvent.click(rowFor(container, 'root-wf'));
+    await fireEvent.click(getByTestId('workflow-node-preview-toggle-0'));
+
+    const steps = getByTestId('workflow-node-preview-0').querySelectorAll(
+      '[data-testid^="workflow-node-preview-step-0-"]'
+    );
+    expect(steps).toHaveLength(4);
+    const testIds = Array.from(steps, (step) => step.getAttribute('data-testid'));
+    expect(new Set(testIds).size).toBe(4);
+  });
 });

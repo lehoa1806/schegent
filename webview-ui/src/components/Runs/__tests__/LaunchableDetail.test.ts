@@ -126,6 +126,45 @@ describe('the detail panel for a selected definition (FR-007)', () => {
   });
 });
 
+describe('the Builder hand-off preselects a Workflow once (FR-R5-F06)', () => {
+  it('lets the operator pick something else and keeps that pick across later snapshots', async () => {
+    // The host sends a fresh snapshot about once a second while a run executes, and the projection
+    // is structured-cloned each time, so `launchables` is a new object on every one of them. A
+    // hand-off that re-applies whenever the projection changes would put the operator's pick back
+    // on the handed-off Workflow within a second of making it.
+    const view = render(RunsSurface, {
+      snapshot: buildSnapshot(),
+      selectedWorkflowId: 'analysis-pipeline'
+    });
+    expect(view.getByTestId('launchable-detail-name').textContent).toContain(RESEARCH.name);
+
+    await fireEvent.click(view.getByTestId('launchable-select-pipeline-analysis-pipeline'));
+    expect(view.getByTestId('launchable-detail-name').textContent).toContain('Analysis Pipeline');
+
+    await view.rerender({
+      snapshot: buildSnapshot(),
+      selectedWorkflowId: 'analysis-pipeline'
+    });
+
+    expect(view.getByTestId('launchable-detail-name').textContent).toContain('Analysis Pipeline');
+  });
+
+  it('waits for the projection to offer the Workflow, then applies the hand-off', async () => {
+    const view = render(RunsSurface, {
+      snapshot: buildSnapshot({ launchables: undefined }),
+      selectedWorkflowId: 'analysis-pipeline'
+    });
+    expect(view.queryByTestId('launchable-detail')).toBeNull();
+
+    await view.rerender({
+      snapshot: buildSnapshot(),
+      selectedWorkflowId: 'analysis-pipeline'
+    });
+
+    expect(view.getByTestId('launchable-detail-name').textContent).toContain(RESEARCH.name);
+  });
+});
+
 describe('a window that cannot start work (FR-015)', () => {
   it('still lists and still selects, but withholds Trigger and says why', async () => {
     // Read-only is not a reduced surface. An operator in a second window is
@@ -302,5 +341,44 @@ describe('what the panel says about the authority a start will have (FR-R4-F06 F
       'Summary Report'
     );
     expect(view.getByTestId('launchable-detail-run-settings').textContent).toContain('Draft Phase');
+  });
+
+  it('lists a Phase once per occurrence when the Workflow reuses it (FR-R5-F06)', async () => {
+    // `collectWorkflowLeafPhases` adds one phase id per occurrence and does not deduplicate, so a
+    // Workflow that reuses a Phase (or calls one child Workflow twice) hands the panel the same
+    // `phaseName` more than once. Keying the rows by that name makes Svelte throw
+    // `each_key_duplicate`, which replaces the whole route.
+    const reusedPhase = {
+      phaseName: 'Verification check phase',
+      backend: 'claude',
+      model: { kind: 'backend-default' },
+      effort: { kind: 'backend-default' },
+      idleTimeoutSeconds: { value: 120, origin: 'phase' }
+    } as const;
+    const reusing: Launchable = {
+      ...RESEARCH,
+      // A Workflow with no declared outputs falls back to the derived ones, one per node, so a child
+      // Workflow called twice contributes the same `portId` under two `nodeId`s.
+      outputs: [
+        { portId: 'verdict', label: 'Verdict', type: 'markdown', nodeId: 'verify-first' },
+        { portId: 'verdict', label: 'Verdict', type: 'markdown', nodeId: 'verify-second' }
+      ],
+      runSettings: {
+        maxDurationSeconds: { value: 21_600, origin: 'workspace' },
+        phases: [reusedPhase, reusedPhase]
+      }
+    };
+    const snapshot = buildSnapshot({
+      launchables: projection(entries(ANALYSIS), entries(reusing))
+    });
+    const view = render(RunsSurface, { snapshot });
+
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
+
+    const settingRows = view.getByTestId('launchable-detail-run-settings').querySelectorAll('li');
+    expect(settingRows).toHaveLength(2);
+    const testIds = Array.from(settingRows, (row) => row.getAttribute('data-testid'));
+    expect(new Set(testIds).size).toBe(2);
+    expect(view.getByTestId('launchable-detail-outputs').querySelectorAll('li')).toHaveLength(2);
   });
 });

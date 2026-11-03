@@ -177,6 +177,8 @@ export interface NodeRunStartInput {
    */
   readonly frozenPipeline?: WorkflowRunPipeline;
   readonly occurrence?: NodeAttemptOccurrenceRef;
+  /** The next node of a Workflow already on this queue; see `GuardedScheduleRequest`. */
+  readonly continuesWorkflow?: true;
 }
 
 export interface PhaseNodeRunStartInput {
@@ -187,6 +189,8 @@ export interface PhaseNodeRunStartInput {
   readonly description?: string;
   readonly queueId?: string;
   readonly occurrence: NodeAttemptOccurrenceRef;
+  /** The next node of a Workflow already on this queue; see `GuardedScheduleRequest`. */
+  readonly continuesWorkflow?: true;
 }
 
 /**
@@ -391,6 +395,7 @@ export async function startPipelineRun(
       via: 'webview',
       pipelineId: plan.pipeline.id,
       ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
+      ...(input.continuesWorkflow === true ? { continuesWorkflow: true } : {}),
       runPlan: plan
     });
   } catch (err) {
@@ -517,6 +522,7 @@ export async function startPhaseNodeRun(
     workspaceRoot: input.workspaceRoot,
     ...(input.description !== undefined ? { description: input.description } : {}),
     ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
+    ...(input.continuesWorkflow === true ? { continuesWorkflow: true } : {}),
     frozenPipeline,
     occurrence: input.occurrence
   });

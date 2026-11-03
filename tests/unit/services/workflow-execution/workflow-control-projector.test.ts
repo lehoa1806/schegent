@@ -11,6 +11,7 @@ import {
   buildAncestryEvidenceMetadata,
   buildWorkflowRunControlProjection
 } from '../../../../src/services/workflow-execution/workflow-control-projector';
+import { isNodeStartable, projectConnectedRun } from '../../../../src/ui/sidebar/connected-run-projector';
 
 const phases: readonly PhaseDefinition[] = [
   { phaseId: 'p-verify', name: 'Verify', version: 1, instruction: 'Run verification' }
@@ -36,6 +37,86 @@ const rootCallingSameChildTwice: WorkflowDefinition = {
   ],
   connections: [{ from: { nodeId: 'call-a' }, to: { kind: 'node', nodeId: 'call-b' } }]
 };
+
+describe('the node actions of a composable Workflow run', () => {
+  const twoPhases: WorkflowDefinition = {
+    workflowId: 'wf-two-phases',
+    name: 'Two Phases',
+    version: 1,
+    startNodeIds: ['first'],
+    nodes: [
+      { nodeId: 'first', kind: 'phase', phaseId: 'p-verify' },
+      { nodeId: 'second', kind: 'phase', phaseId: 'p-verify' }
+    ],
+    connections: [{ from: { nodeId: 'first' }, to: { kind: 'node', nodeId: 'second' } }]
+  };
+
+  async function runWithFirstNode(status: 'completed' | 'failed'): Promise<ConnectedWorkflowRun> {
+    const snap = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'run-node-actions',
+      workflow: twoPhases,
+      effectiveWorkflows: [twoPhases],
+      effectivePhases: phases,
+      startedAt: 1000,
+      queueId: 'q-proj'
+    });
+    if (snap.outcome !== 'created') throw new Error('Failed snapshot');
+    let current: ConnectedWorkflowRun = snap.run;
+    let rows = 0;
+    const deps = {
+      connectedRuns: {
+        async compareAndSetConnectedRun(next: ConnectedWorkflowRun) {
+          current = next;
+          return { outcome: 'written' as const, run: next };
+        }
+      },
+      dispatchPhase: async () => {
+        rows += 1;
+        return { outcome: 'dispatched' as const, queueItemId: `qi-${rows}` };
+      }
+    };
+    await dispatchComposableNode(deps, {
+      run: current,
+      invocationId: snap.rootInvocationId,
+      nodeId: 'first',
+      startedAt: 1010
+    });
+    await completeComposableNodeAttempt(deps, {
+      run: current,
+      invocationId: snap.rootInvocationId,
+      nodeId: 'first',
+      status,
+      completedAt: 1020
+    });
+    return current;
+  }
+
+  it('offers no node start on an ended attempt: the Retry is on the invocation, and only there', async () => {
+    const run = await runWithFirstNode('failed');
+    const failedRow = () => 'failed' as const;
+
+    const projection = projectConnectedRun(run, failedRow);
+
+    expect(projection.nodes.map((node) => [node.nodeId, node.state, node.actions])).toEqual([
+      ['first', 'failed', []],
+      ['second', 'unvisited', []]
+    ]);
+    expect(isNodeStartable(run, 'first', failedRow)).toBe(false);
+    expect(projection.invocations?.at(0)?.allowedActions).toContain('retry-phase');
+  });
+
+  it('offers no node start on a finished node while the next one is in flight', async () => {
+    const run = await runWithFirstNode('completed');
+
+    const projection = projectConnectedRun(run, (row) => (row === 'qi-1' ? 'completed' : 'in-flight'));
+
+    expect(projection.nodes.map((node) => [node.nodeId, node.state, node.attemptCount, node.actions])).toEqual([
+      ['first', 'completed', 1, []],
+      ['second', 'in-flight', 1, []]
+    ]);
+    expect(projection.invocations?.at(0)?.allowedActions).toContain('pause');
+  });
+});
 
 describe('workflow-control-projector — US4: Bounded Ancestry Evidence & Control Projections (FR-R5-F03-T08, T09)', () => {
   it('assigns distinct invocationId and nodePath when the same child workflow is invoked from two parent nodes (/call-a vs /call-b)', async () => {
@@ -127,5 +208,33 @@ describe('workflow-control-projector — US4: Bounded Ancestry Evidence & Contro
     expect(projection.invocations[childBId]?.status).toBe('in-flight');
     expect(projection.invocations[childBId]?.nodePath).toBe('/call-b/v1');
     expect(projection.invocations[childBId]?.allowedActions).toEqual(['pause', 'cancel']);
+  });
+
+  it('projects a node whose id is an Object.prototype member as not yet started, not as an error', () => {
+    // `constructor` satisfies the id grammar. Before the node has run, a plain index read of
+    // the attempts record answers with `Object`, which has no `.at`, so the projection threw.
+    const prototypeNamedWorkflow: WorkflowDefinition = {
+      workflowId: 'wf-prototype-named',
+      name: 'Prototype Named Node',
+      version: 1,
+      startNodeIds: ['constructor'],
+      nodes: [{ nodeId: 'constructor', kind: 'phase', phaseId: 'p-verify' }],
+      connections: []
+    };
+    const snap = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'run-proj-2',
+      workflow: prototypeNamedWorkflow,
+      effectiveWorkflows: [prototypeNamedWorkflow],
+      effectivePhases: phases,
+      startedAt: 1000,
+      queueId: 'q-proj'
+    });
+    if (snap.outcome !== 'created') throw new Error('Failed snapshot');
+
+    const projection = projectConnectedRun(snap.run, () => null);
+
+    expect(projection.nodes.map((node) => [node.nodeId, node.state, node.attemptCount])).toEqual([
+      ['constructor', 'available', 0]
+    ]);
   });
 });

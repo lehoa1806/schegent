@@ -11,6 +11,7 @@
 
 import {
   DEFAULT_MAX_PHASE_ATTEMPTS,
+  attemptsForNode,
   resolveRootInvocationId,
   type ConnectedWorkflowRun,
   type NodeAttemptRecord,
@@ -108,7 +109,7 @@ export function findLatestLeafPhaseAttempt(
   targetNodeId?: string | undefined
 ): NodeAttemptRecord | undefined {
   if (targetNodeId !== undefined) {
-    const attempts = frame.attemptsByNodeId[targetNodeId] ?? [];
+    const attempts = attemptsForNode(frame, targetNodeId);
     for (let i = attempts.length - 1; i >= 0; i -= 1) {
       const candidate = attempts[i];
       if (candidate !== undefined && candidate.nodeKind === 'phase') {
@@ -119,7 +120,7 @@ export function findLatestLeafPhaseAttempt(
   }
 
   if (frame.activeNodeId !== null) {
-    const activeAttempts = frame.attemptsByNodeId[frame.activeNodeId] ?? [];
+    const activeAttempts = attemptsForNode(frame, frame.activeNodeId);
     const lastActive = activeAttempts[activeAttempts.length - 1];
     if (lastActive !== undefined && lastActive.nodeKind === 'phase') {
       return lastActive;
@@ -327,7 +328,7 @@ export function evaluateControlTransition(
         };
       }
       const maxAttempts = frame.controlMarkers?.maxPhaseAttempts ?? DEFAULT_MAX_PHASE_ATTEMPTS;
-      const attemptCount = (frame.attemptsByNodeId[latestAttempt.nodeId] ?? []).length;
+      const attemptCount = attemptsForNode(frame, latestAttempt.nodeId).length;
       if (attemptCount >= maxAttempts) {
         return {
           allowed: false,
@@ -376,7 +377,7 @@ export function evaluateControlTransition(
         if (parentFrame !== undefined) {
           const maxAttempts =
             parentFrame.controlMarkers?.maxPhaseAttempts ?? DEFAULT_MAX_PHASE_ATTEMPTS;
-          const callAttempts = parentFrame.attemptsByNodeId[frame.parentCallNodeId] ?? [];
+          const callAttempts = attemptsForNode(parentFrame, frame.parentCallNodeId);
           if (callAttempts.length >= maxAttempts) {
             return {
               allowed: false,
@@ -388,7 +389,7 @@ export function evaluateControlTransition(
         }
       } else {
         const maxAttempts = frame.controlMarkers?.maxPhaseAttempts ?? DEFAULT_MAX_PHASE_ATTEMPTS;
-        const entryAttempts = frame.attemptsByNodeId[frame.entryNodeId] ?? [];
+        const entryAttempts = attemptsForNode(frame, frame.entryNodeId);
         if (entryAttempts.length >= maxAttempts) {
           return {
             allowed: false,

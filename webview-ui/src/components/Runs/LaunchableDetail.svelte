@@ -95,7 +95,9 @@
   {#if entry.outputs && entry.outputs.length > 0}
     <h5 class="ports-heading">Outputs</h5>
     <ul class="port-list" data-testid="launchable-detail-outputs">
-      {#each entry.outputs as port (port.portId)}
+      <!-- Keyed by position: a Workflow without declared outputs lists the derived ones, one per
+           node, so a child Workflow called twice repeats a `portId` and keying by it would throw. -->
+      {#each entry.outputs as port, index (index)}
         <li class="port-row" data-testid="launchable-detail-output-{port.portId}">
           <span class="port-label">{port.label}</span>
           <span class="port-type">{port.type}</span>
@@ -114,8 +116,10 @@
         Max duration: {entry.runSettings.maxDurationSeconds.value}s ({entry.runSettings.maxDurationSeconds.origin})
       </p>
       <ul class="port-list">
-        {#each entry.runSettings.phases as phase (phase.phaseName)}
-          <li class="port-row" data-testid="launchable-detail-phase-setting-{phase.phaseName}">
+        <!-- One row per occurrence, so a Phase a Workflow reuses repeats its name; keyed by
+             position, and the test id carries the position rather than the name. -->
+        {#each entry.runSettings.phases as phase, index (index)}
+          <li class="port-row" data-testid="launchable-detail-phase-setting-{index}">
             <span class="port-label">{phase.phaseName}</span>
             <span class="port-type">{phase.backend}</span>
             <span class="port-type">

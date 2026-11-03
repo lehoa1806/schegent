@@ -17,7 +17,7 @@ import {
   CMD_LAUNCH_WORKFLOW,
   type SidebarCommand
 } from '../sidebar-ipc';
-import { WORKFLOW_CONTROL_ACTIONS } from '../sidebar-ipc/workflow-run';
+import { CONTROL_ID_MAX, WORKFLOW_CONTROL_ACTIONS } from '../sidebar-ipc/workflow-run';
 import { validRunRequest } from './run-request-shape';
 import { QUEUE_ID_MAX, fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
 
@@ -97,11 +97,11 @@ export function validateContinueWorkflow(
     !Number.isInteger(revision) ||
     (revision as number) < 0 ||
     !boundedId(payload.nodeId, ID_MAX) ||
-    (invocationId !== undefined && !boundedId(invocationId, RUN_ID_MAX)) ||
+    (invocationId !== undefined && !boundedId(invocationId, CONTROL_ID_MAX)) ||
     (operation !== undefined &&
       (typeof operation !== 'string' ||
         !(WORKFLOW_CONTROL_ACTIONS as readonly string[]).includes(operation))) ||
-    (commandId !== undefined && !boundedId(commandId, RUN_ID_MAX)) ||
+    (commandId !== undefined && !boundedId(commandId, CONTROL_ID_MAX)) ||
     !validRunRequest(payload.request)
   ) {
     return fail('invalid-payload', { type: CMD_CONTINUE_WORKFLOW, correlationId });

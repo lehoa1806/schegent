@@ -85,7 +85,7 @@ export class ConditionContextError extends Error {
 export function buildConditionContext(facts: readonly NodeAttemptFacts[]): ConditionContext {
   const nodes: Record<string, NodeAttemptFacts> = {};
   for (const fact of facts) {
-    if (nodes[fact.nodeId] !== undefined) {
+    if (Object.hasOwn(nodes, fact.nodeId)) {
       throw new ConditionContextError(
         `condition context received two attempts for node ${fact.nodeId}`
       );
@@ -112,7 +112,11 @@ export function resolveOperand(
   operand: WorkflowConditionOperand,
   context: ConditionContext
 ): OperandLookup {
-  const facts = context.nodes[operand.nodeId];
+  // Own properties only: a node id such as `constructor` also names an inherited
+  // member of every object, and a node that never ran must stay unresolved.
+  const facts = Object.hasOwn(context.nodes, operand.nodeId)
+    ? context.nodes[operand.nodeId]
+    : undefined;
   if (facts === undefined) return UNRESOLVED;
   if (operand.source === 'node-status') return { resolved: true, value: facts.status };
 
@@ -171,7 +175,7 @@ export function buildInvocationConditionContext(
   }
   if (
     routingAttempt !== undefined &&
-    frame.attemptsByNodeId[routingAttempt.nodeId] === undefined
+    !Object.hasOwn(frame.attemptsByNodeId, routingAttempt.nodeId)
   ) {
     const facts = attemptRecordToFacts(routingAttempt);
     if (facts !== null) factsList.push(facts);

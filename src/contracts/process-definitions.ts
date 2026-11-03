@@ -271,6 +271,12 @@ interface PhaseDefinitionBase {
   readonly sideEffects?: PhaseSideEffects;
   readonly evidencePolicy?: PhaseEvidencePolicy;
   /**
+   * FR-R3-096 — was `evidencePolicy` authored, or supplied by the freeze? Written by the
+   * freeze, never authored (`validatePhaseDefinition` refuses it in a document); a catalog
+   * definition keeps omission as omission. Absent reads as `'default'`.
+   */
+  readonly evidencePolicyDeclaredAt?: EvidencePolicyOrigin;
+  /**
    * FR-R3-117 — **omission no longer means `model-token`.** It means the resolved
    * default: `exit-code` for a Phase whose resolved `sideEffects` is other than
    * `'none'` or which produces an output, and `model-token` otherwise. Because

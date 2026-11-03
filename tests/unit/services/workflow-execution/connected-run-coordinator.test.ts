@@ -107,6 +107,27 @@ const ROOT_WF: WorkflowDefinition = {
   ]
 };
 
+/**
+ * `constructor` satisfies the id grammar (`^[a-z][a-z0-9-]{0,63}$`) and is also a member of
+ * `Object.prototype`, so it is the one author-chosen node id a plain index read answers for
+ * before the node has run.
+ */
+const PROTOTYPE_NAMED_NODE_WF: WorkflowDefinition = {
+  workflowId: 'wf-prototype-named',
+  name: 'Prototype Named Node Workflow',
+  version: 1,
+  startNodeIds: ['constructor'],
+  nodes: [{ nodeId: 'constructor', kind: 'phase', phaseId: 'phase-spec' }],
+  connections: [
+    {
+      from: { nodeId: 'constructor' },
+      to: { nodeId: '', kind: 'return' },
+      handoff: 'auto',
+      priority: 0
+    }
+  ]
+};
+
 describe('connected-run-coordinator — composable nested Workflow call/return (FR-R5-F02)', () => {
   it('pushes child WorkflowInvocationFrame at startNodeIds[0], dispatches within the root queueId, and returns declared outputs to parent', async () => {
     const created = createComposableWorkflowRunSnapshot({
@@ -203,5 +224,130 @@ describe('connected-run-coordinator — composable nested Workflow call/return (
     if (step3.outcome !== 'workflow-completed') return;
     expect(step3.outputs.finalSpec?.value).toBe('specs/261-final');
     expect(step3.run.invocations?.[rootInvocationId]?.status).toBe('completed');
+  });
+
+  it('fails the calling attempt and every ancestor when a child Workflow cannot dispatch its entry Phase (FR-005)', async () => {
+    const created = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'crun-2',
+      workflow: ROOT_WF,
+      entryNodeId: 'node-call-child',
+      effectiveWorkflows: [ROOT_WF, CHILD_WF],
+      effectivePhases: [PHASE_SPEC],
+      boundInputs: {
+        featureDescription: { portId: 'featureDescription', type: 'text', value: 'Nested feature' }
+      },
+      startedAt: 1000,
+      queueId: 'q-serial-2'
+    });
+    expect(created.outcome).toBe('created');
+    if (created.outcome !== 'created') return;
+
+    let currentRun = created.run;
+    const rootInvocationId = created.rootInvocationId;
+    const deps = {
+      connectedRuns: {
+        compareAndSetConnectedRun: async (next: ConnectedWorkflowRun, expectedRevision: number) => {
+          if (currentRun.revision !== expectedRevision) {
+            return { outcome: 'stale' as const, current: currentRun };
+          }
+          currentRun = next;
+          return { outcome: 'written' as const, run: next };
+        }
+      },
+      dispatchPhase: async () => ({ outcome: 'rejected' as const, reason: 'queue-paused' })
+    };
+
+    const result = await dispatchComposableNode(deps, {
+      run: currentRun,
+      invocationId: rootInvocationId,
+      nodeId: 'node-call-child',
+      startedAt: 1000
+    });
+
+    expect(result.outcome).toBe('workflow-failed');
+    if (result.outcome !== 'workflow-failed') return;
+    // The failure ends at the root, not at the child frame that hit it: a child left
+    // failed beside a root still in flight would be a run nothing can finish or cancel.
+    expect(result.invocationId).toBe(rootInvocationId);
+    expect(result.failureCode).toBe('unhandled-node-failure');
+
+    const frames = new Map(Object.entries(currentRun.invocations ?? {}));
+    const child = [...frames.values()].find(
+      (frame) => frame.parentInvocationId === rootInvocationId
+    );
+    const rootFrame = frames.get(rootInvocationId);
+    const callAttempt = new Map(Object.entries(rootFrame?.attemptsByNodeId ?? {}))
+      .get('node-call-child')
+      ?.at(-1);
+    // The cause stays on the frame that hit it, and on the call attempt that carried it up.
+    expect(child?.status).toBe('failed');
+    expect(child?.failureCode).toBe('queue-paused');
+    expect(rootFrame?.status).toBe('failed');
+    expect(callAttempt?.status).toBe('failed');
+    expect(callAttempt?.failureCode).toBe('queue-paused');
+  });
+
+  it('runs a node whose id is an Object.prototype member as its first attempt, then settles it', async () => {
+    const created = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'crun-3',
+      workflow: PROTOTYPE_NAMED_NODE_WF,
+      entryNodeId: 'constructor',
+      effectiveWorkflows: [PROTOTYPE_NAMED_NODE_WF],
+      effectivePhases: [PHASE_SPEC],
+      boundInputs: {},
+      startedAt: 1000,
+      queueId: 'q-serial-3'
+    });
+    expect(created.outcome).toBe('created');
+    if (created.outcome !== 'created') return;
+
+    let currentRun = created.run;
+    const rootInvocationId = created.rootInvocationId;
+    const dispatchedAttempts: { attemptId: string; attemptIndex: number }[] = [];
+    const deps = {
+      connectedRuns: {
+        compareAndSetConnectedRun: async (next: ConnectedWorkflowRun, expectedRevision: number) => {
+          if (currentRun.revision !== expectedRevision) {
+            return { outcome: 'stale' as const, current: currentRun };
+          }
+          currentRun = next;
+          return { outcome: 'written' as const, run: next };
+        }
+      },
+      dispatchPhase: async (input: { readonly attemptId: string; readonly attemptIndex: number }) => {
+        dispatchedAttempts.push({ attemptId: input.attemptId, attemptIndex: input.attemptIndex });
+        return { outcome: 'dispatched' as const, queueItemId: 'qitem-1' };
+      }
+    };
+
+    // Before the node has run its record is absent. A plain index read answered with `Object`
+    // there: the first attempt was numbered 2, and recording it threw after the Phase had
+    // already been enqueued, leaving a queue item no run recorded.
+    const dispatched = await dispatchComposableNode(deps, {
+      run: currentRun,
+      invocationId: rootInvocationId,
+      nodeId: 'constructor',
+      startedAt: 1000
+    });
+
+    expect(dispatched.outcome).toBe('phase-dispatched');
+    expect(dispatchedAttempts).toEqual([
+      { attemptId: `${rootInvocationId}:constructor:attempt-1`, attemptIndex: 1 }
+    ]);
+    if (dispatched.outcome !== 'phase-dispatched') return;
+    const recorded = new Map(
+      Object.entries(dispatched.run.invocations?.[rootInvocationId]?.attemptsByNodeId ?? {})
+    ).get('constructor');
+    expect(recorded?.map((attempt) => attempt.attemptIndex)).toEqual([1]);
+
+    const settled = await completeComposableNodeAttempt(deps, {
+      run: dispatched.run,
+      invocationId: rootInvocationId,
+      nodeId: 'constructor',
+      attemptIndex: 1,
+      status: 'completed',
+      completedAt: 2000
+    });
+    expect(settled.outcome).toBe('workflow-completed');
   });
 });

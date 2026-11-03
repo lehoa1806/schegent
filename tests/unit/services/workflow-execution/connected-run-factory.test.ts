@@ -5,6 +5,8 @@ import {
   createNodeAttemptRecord
 } from '../../../../src/services/workflow-execution/connected-run-factory';
 import {
+  attemptsForNode,
+  createInvocationFrame,
   recordNodeAttempt,
   upsertInvocationFrame
 } from '../../../../src/state/connected-workflow-run';
@@ -184,6 +186,76 @@ describe('connected-run-factory — occurrence identity & hierarchical nodePath 
       childFrameB
     );
     expect(Object.keys(updatedRun.invocations ?? {})).toHaveLength(3);
+  });
+});
+
+describe('connected-run-factory — a node whose id is an Object.prototype member', () => {
+  // `constructor` satisfies the node id grammar (`^[a-z][a-z0-9-]{0,63}$`) and is a member of
+  // `Object.prototype`. The attempts record is keyed by author-chosen node ids, so a plain
+  // index read answers for it before the node has run: `Object`, a function, where a list belongs.
+  const PROTOTYPE_ID = 'constructor';
+
+  function freshFrame(): ReturnType<typeof createInvocationFrame> {
+    return createInvocationFrame({
+      invocationId: 'inv-root',
+      rootRunId: 'run-1',
+      parentInvocationId: null,
+      parentCallNodeId: null,
+      parentAttemptId: null,
+      workflowId: 'wf-prototype-named',
+      depth: 0,
+      nodePath: '/constructor',
+      entryNodeId: PROTOTYPE_ID,
+      boundInputs: {},
+      startedAt: 1_700_000_000_000
+    });
+  }
+
+  function attemptFor(frame: ReturnType<typeof createInvocationFrame>) {
+    return createNodeAttemptRecord({
+      frame,
+      nodeId: PROTOTYPE_ID,
+      nodeKind: 'phase',
+      targetDefinitionId: 'phase-step',
+      inputEnvelope: {
+        envelopeId: 'env-constructor',
+        invocationId: frame.invocationId,
+        targetNodeId: PROTOTYPE_ID,
+        source: 'binding',
+        inputsByPort: {},
+        localInputs: [],
+        outputTargetOverrides: [],
+        acceptedAt: 1_700_000_000_100
+      },
+      startedAt: 1_700_000_000_100
+    });
+  }
+
+  it('has no attempts before it has run', () => {
+    expect(attemptsForNode(freshFrame(), PROTOTYPE_ID)).toEqual([]);
+  });
+
+  it('numbers the first attempt 1 and the retry 2, recording each under the node', () => {
+    const first = attemptFor(freshFrame());
+    expect(first.attemptIndex).toBe(1);
+    expect(first.attemptId).toBe('inv-root:constructor:attempt-1');
+
+    const afterFirst = recordNodeAttempt(freshFrame(), first);
+    expect(attemptsForNode(afterFirst, PROTOTYPE_ID).map((attempt) => attempt.attemptId)).toEqual([
+      first.attemptId
+    ]);
+
+    const retry = attemptFor(afterFirst);
+    expect(retry.attemptIndex).toBe(2);
+    const afterRetry = recordNodeAttempt(afterFirst, retry);
+    expect(attemptsForNode(afterRetry, PROTOTYPE_ID).map((attempt) => attempt.attemptIndex)).toEqual([
+      1, 2
+    ]);
+  });
+
+  it('leaves the other nodes of the frame without attempts', () => {
+    const afterFirst = recordNodeAttempt(freshFrame(), attemptFor(freshFrame()));
+    expect(attemptsForNode(afterFirst, 'other-node')).toEqual([]);
   });
 });
 
