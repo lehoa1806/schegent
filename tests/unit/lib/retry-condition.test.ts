@@ -318,7 +318,7 @@ describe('retry-condition DSL — the shipped corpus fits the bound (111, T693)'
    * bound be tightened below what the product ships without anything going red —
    * which is the one regression this assertion exists to catch.
    */
-  const CORPUS = resolve(__dirname, '../../../examples/speckit-new-feature.pipeline.yaml');
+  const CORPUS = resolve(__dirname, '../../../examples/speckit-new-feature.workflow.yaml');
 
   function shippedConditions(): readonly string[] {
     const text = readFileSync(CORPUS, 'utf8');

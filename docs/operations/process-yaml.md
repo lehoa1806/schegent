@@ -184,7 +184,7 @@ Working out the scope only reads. It stages nothing, switches no branch, creates
 branch, fetches nothing, stashes nothing, writes no ref, touches no index and updates no
 submodule. The reviews still fix code, but only inside the resolved targets.
 
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
 
 ## Finalize and integrate across repositories
 
@@ -286,7 +286,7 @@ Both are gone.
 To bring a catalog that already holds these Phases to this version, see
 [Bring an existing catalog to a revised example](#bring-an-existing-catalog-to-a-revised-example).
 
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
 
 ## Bring an existing catalog to a revised example
 

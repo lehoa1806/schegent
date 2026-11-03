@@ -1,16 +1,45 @@
 apiVersion: schegent/v1
-kind: Pipeline
+kind: Workflow
 metadata:
   id: speckit-bugfix
   name: Spec-kit Bugfix
   version: 1
 spec:
-  phaseIds:
+  startNodeIds:
     - bugfix-report
-    - bugfix-patch
-    - bugfix-verify-pre
-    - bugfix-implement
-    - bugfix-verify-post
+  nodes:
+    - nodeId: bugfix-report
+      kind: phase
+      phaseId: bugfix-report
+    - nodeId: bugfix-patch
+      kind: phase
+      phaseId: bugfix-patch
+    - nodeId: bugfix-verify-pre
+      kind: phase
+      phaseId: bugfix-verify-pre
+    - nodeId: bugfix-implement
+      kind: phase
+      phaseId: bugfix-implement
+    - nodeId: bugfix-verify-post
+      kind: phase
+      phaseId: bugfix-verify-post
+  connections:
+    - from:
+        nodeId: bugfix-report
+      to:
+        nodeId: bugfix-patch
+    - from:
+        nodeId: bugfix-patch
+      to:
+        nodeId: bugfix-verify-pre
+    - from:
+        nodeId: bugfix-verify-pre
+      to:
+        nodeId: bugfix-implement
+    - from:
+        nodeId: bugfix-implement
+      to:
+        nodeId: bugfix-verify-post
 included:
   phases:
     - metadata:

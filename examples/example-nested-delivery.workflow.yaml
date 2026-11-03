@@ -1,0 +1,186 @@
+apiVersion: schegent/v1
+kind: Workflow
+metadata:
+  id: delivery-root
+  name: Three-level feature delivery with repeated verification
+  version: 1
+  description: |-
+    A self-contained three-level composable Workflow package (FR-R5-F07).
+    Level 0 (delivery-root) runs a direct Phase node (draft-spec), invokes a
+    child Workflow (delivery-plan-and-verify, Level 1) that itself invokes
+    delivery-verify-leaf (Level 2), and then invokes delivery-verify-leaf a
+    second time directly on final-verify so repeated child reuse is exercised.
+spec:
+  inputs:
+    - portId: feature-brief
+      label: Feature brief
+      type: text
+      required: true
+  outputs:
+    - portId: delivery-report
+      label: Delivery report
+      type: markdown
+      required: true
+  startNodeIds:
+    - draft-spec
+  nodes:
+    - nodeId: draft-spec
+      kind: phase
+      phaseId: delivery-draft-phase
+      label: Draft specification
+    - nodeId: plan-and-verify
+      kind: workflow
+      workflowId: delivery-plan-and-verify
+      label: Plan and pre-verify
+    - nodeId: final-verify
+      kind: workflow
+      workflowId: delivery-verify-leaf
+      label: Final verification pass
+  connections:
+    - from:
+        nodeId: draft-spec
+      to:
+        nodeId: plan-and-verify
+        portId: spec-summary
+    - from:
+        nodeId: plan-and-verify
+        portId: verified-plan
+      to:
+        nodeId: final-verify
+        portId: artifact-text
+  bindings:
+    - kind: input
+      nodeId: draft-spec
+      inputKey: brief
+      source:
+        from: workflow-input
+        portId: feature-brief
+    - kind: input
+      nodeId: plan-and-verify
+      inputKey: spec-summary
+      source:
+        from: workflow-input
+        portId: feature-brief
+    - kind: input
+      nodeId: final-verify
+      inputKey: artifact-text
+      source:
+        from: node-output
+        nodeId: plan-and-verify
+        portId: verified-plan
+    - kind: output
+      nodeId: final-verify
+      portId: delivery-report
+      sourcePortId: verification-note
+included:
+  workflows:
+    - metadata:
+        id: delivery-verify-leaf
+        name: Leaf verification workflow
+        version: 1
+      spec:
+        inputs:
+          - portId: artifact-text
+            label: Artifact text
+            type: text
+            required: true
+        outputs:
+          - portId: verification-note
+            label: Verification note
+            type: markdown
+            required: true
+        startNodeIds:
+          - run-check
+        nodes:
+          - nodeId: run-check
+            kind: phase
+            phaseId: delivery-check-phase
+            label: Run verification check
+        bindings:
+          - kind: input
+            nodeId: run-check
+            inputKey: target
+            source:
+              from: workflow-input
+              portId: artifact-text
+          - kind: output
+            nodeId: run-check
+            portId: verification-note
+            outputKey: note
+    - metadata:
+        id: delivery-plan-and-verify
+        name: Plan and pre-verify child workflow
+        version: 1
+      spec:
+        inputs:
+          - portId: spec-summary
+            label: Spec summary
+            type: text
+            required: true
+        outputs:
+          - portId: verified-plan
+            label: Verified plan
+            type: markdown
+            required: true
+        startNodeIds:
+          - author-plan
+        nodes:
+          - nodeId: author-plan
+            kind: phase
+            phaseId: delivery-plan-phase
+            label: Author implementation plan
+          - nodeId: pre-verify
+            kind: workflow
+            workflowId: delivery-verify-leaf
+            label: Pre-implementation verification
+        connections:
+          - from:
+              nodeId: author-plan
+            to:
+              nodeId: pre-verify
+              portId: artifact-text
+        bindings:
+          - kind: input
+            nodeId: author-plan
+            inputKey: summary
+            source:
+              from: workflow-input
+              portId: spec-summary
+          - kind: input
+            nodeId: pre-verify
+            inputKey: artifact-text
+            source:
+              from: workflow-input
+              portId: spec-summary
+          - kind: output
+            nodeId: pre-verify
+            portId: verified-plan
+            sourcePortId: verification-note
+  phases:
+    - metadata:
+        phaseId: delivery-draft-phase
+        name: Draft specification phase
+        version: 1
+      spec:
+        instruction: |-
+          Read the feature brief and write a two-paragraph summary of the
+          intended change to DELIVERY-DRAFT.md. Change no other file.
+        hostVerification: exit-code
+    - metadata:
+        phaseId: delivery-plan-phase
+        name: Author plan phase
+        version: 1
+      spec:
+        instruction: |-
+          Read DELIVERY-DRAFT.md and write a three-step implementation plan to
+          DELIVERY-PLAN.md. Change no other file.
+        hostVerification: exit-code
+    - metadata:
+        phaseId: delivery-check-phase
+        name: Verification check phase
+        version: 1
+      spec:
+        instruction: |-
+          Read DELIVERY-PLAN.md and write a one-line verification summary to
+          DELIVERY-VERIFY.md. Change no other file.
+        hostVerification: exit-code
