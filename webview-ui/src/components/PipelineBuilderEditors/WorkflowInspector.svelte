@@ -468,7 +468,9 @@
           data-testid="workflow-field-errors"
           role="alert"
         >
-          {#each p.defects.rest as defect (defect.field + defect.code)}
+          <!-- Keyed by position: the host reports one `missing-required-input` per unbound port
+               of a child Workflow node, all under the same field, so `field + code` repeats. -->
+          {#each p.defects.rest as defect, index (index)}
             <li>{defect.field}: {defect.message}</li>
           {/each}
         </ul>

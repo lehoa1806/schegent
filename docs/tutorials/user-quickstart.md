@@ -150,17 +150,17 @@ experience.
 2. Select the active row named **Spec-kit Bugfix**.
 3. Select **Trigger**.
 4. The sample declares no input ports, so the form says it can run as-is. Under **Additional context**, enter `e2e happy path` in **Instructions**.
-5. In **Workflow structure**, verify this exact phase node order:
+5. In the detail panel above the form, the **Effective Run Policy** list has one row per Phase, in the Workflow's node order, and each row shows the Phase's name. Verify that the rows read, in this order:
 
-   1. `bugfix-report`
-   2. `bugfix-patch`
-   3. `bugfix-verify-pre`
-   4. `bugfix-implement`
-   5. `bugfix-verify-post`
+   1. Spec-kit Bugfix Report (Phase `bugfix-report`)
+   2. Spec-kit Bugfix Patch (Phase `bugfix-patch`)
+   3. Spec-kit Bugfix Verify (pre) (Phase `bugfix-verify-pre`)
+   4. Spec-kit Implement (bugfix) (Phase `bugfix-implement`)
+   5. Spec-kit Bugfix Verify (post) (Phase `bugfix-verify-post`)
 
-6. Select **Launch Workflow**.
+6. Select **Run Workflow**.
 
-Success at this step means the form opens the active Workflow run and enqueues its entry node onto the target queue.
+Success at this step means the host created the connected run and enqueued its entry node onto the target queue. The form reports it as `Started connected run <run-id>.`.
 <!-- Source: webview-ui/src/components/RunsSurface.svelte -->
 <!-- Source: webview-ui/src/components/Runs/LaunchableDetail.svelte -->
 <!-- Source: webview-ui/src/components/Runs/WorkflowTriggerForm.svelte -->
@@ -187,7 +187,7 @@ The repository's deterministic integration test, `tests/integration/bugfix-pipel
 
 - **The first Run is refused until you allow the backend:** with the shipped defaults (the `claude`
   backend and an empty `schegent.backend.uncontainedBackends` list), the first Run is refused when it
-  starts, after `Queued as …` has appeared. A modal reads "Schegent cannot start the '<id>' backend
+  starts, after `Started connected run …` has appeared. A modal reads "Schegent cannot start the '<id>' backend
   without your approval." (`<id>` is `claude` on the default backend). Its only approving button is
   **Enable '<id>' for This Installation**. Approving adds that one backend to
   `schegent.backend.uncontainedBackends` in your User settings, so it applies to every workspace on
@@ -197,7 +197,7 @@ The repository's deterministic integration test, `tests/integration/bugfix-pipel
 - **No import controls:** grant Workspace Trust. Pipeline and workflow mutations require it.
 - **Trigger is disabled:** use the VS Code window whose header says **Workspace Connected**.
 - **Validation feedback appears:** correct the named field and submit again. The extension host, rather than the webview, is authoritative for run-request validation.
-- **The queue or runner fails after admission:** open the task's run detail and **System Log**. `Queued as …` only proves the request entered a queue.
+- **The queue or runner fails after admission:** open the task's run detail and **System Log**. `Started connected run …` only proves the host created the run and enqueued its entry node.
 
 <!-- Source: webview-ui/src/components/PipelineBuilder.svelte -->
 <!-- Source: webview-ui/src/components/Runs/LaunchableDetail.svelte -->

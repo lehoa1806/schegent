@@ -35,6 +35,10 @@ import type { ConnectedWorkflowRun } from '../../src/state/connected-workflow-ru
 import { SanitizedLogger } from '../../src/lib/logger';
 import type { WorkflowRun } from '../../src/state/workflow-run';
 import { projectHistory } from '../../src/ui/sidebar/history-projector';
+import type { PhaseDefinition } from '../../src/contracts/process-definitions';
+import type { WorkflowDefinition } from '../../src/contracts/workflow-definitions';
+import { dispatchComposableNode } from '../../src/services/workflow-execution/connected-run-coordinator';
+import { createComposableWorkflowRunSnapshot } from '../../src/services/workflow-execution/connected-run-factory';
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -167,6 +171,75 @@ describe('a deleted ConnectedWorkflowRun does not change a recorded origin (FR-0
     });
 
     expect(rereadFromDisk(memento)[0]?.origin).toEqual({ kind: 'standalone' });
+  });
+});
+
+describe('a composable run names its Workflow as a legacy one does (FR-013)', () => {
+  const DEPLOY_PHASE: PhaseDefinition = {
+    phaseId: 'phase-deploy',
+    name: 'Deploy',
+    version: 1,
+    instruction: 'Deploy the thing'
+  };
+
+  const RELEASE_WORKFLOW: WorkflowDefinition = {
+    workflowId: 'wf-release',
+    name: 'Release',
+    version: 1,
+    startNodeIds: ['deploy'],
+    nodes: [{ nodeId: 'deploy', kind: 'phase', phaseId: 'phase-deploy' }],
+    connections: []
+  };
+
+  /**
+   * A composable run with its one node dispatched, built by the code that builds them: `nodes`
+   * stays empty and the attempt, queue item included, is recorded on the root invocation frame.
+   */
+  async function dispatchedComposableRun(): Promise<ConnectedWorkflowRun> {
+    const created = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'connected-2',
+      workflow: RELEASE_WORKFLOW,
+      effectivePhases: [DEPLOY_PHASE],
+      startedAt: 1_700_000_000_000,
+      queueId: QUEUE
+    });
+    if (created.outcome !== 'created') throw new Error('expected a created composable run');
+    const dispatched = await dispatchComposableNode(
+      {
+        connectedRuns: {
+          compareAndSetConnectedRun: async (next) => ({ outcome: 'written', run: next })
+        },
+        dispatchPhase: async () => ({ outcome: 'dispatched', queueItemId: 'queue-item-7' })
+      },
+      {
+        run: created.run,
+        invocationId: created.rootInvocationId,
+        nodeId: 'deploy',
+        startedAt: 1_700_000_000_500
+      }
+    );
+    if (dispatched.outcome !== 'phase-dispatched') throw new Error('expected a dispatched node');
+    return dispatched.run;
+  }
+
+  it('stamps the member origin of a run whose attempts live on its invocation frames', async () => {
+    const run = await dispatchedComposableRun();
+    // The control: the shape this case exists for. A resolver that reads only `nodes` finds no
+    // attempt here, so every member of a composable run would be recorded as standalone, and the
+    // record keeps that after the run is gone.
+    expect(run.nodes).toEqual({});
+    const { memento, recorder, getConnectedRuns } = harness({ [run.connectedRunId]: run });
+
+    expect(resolveRunOrigin(getConnectedRuns(), 'queue-item-7')).toEqual({
+      kind: 'workflow-member',
+      workflowId: 'wf-release'
+    });
+
+    await recorder.record(memberRun(), 'deploy the thing', 'completed');
+    expect(rereadFromDisk(memento)[0]?.origin).toEqual({
+      kind: 'workflow-member',
+      workflowId: 'wf-release'
+    });
   });
 });
 

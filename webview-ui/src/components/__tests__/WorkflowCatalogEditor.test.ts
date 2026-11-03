@@ -220,6 +220,34 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
     expect(outputs?.textContent).toContain('Artifact');
   });
 
+  it('lists every declared port of a row with no derived ports, repeated ids included', () => {
+    // An unsaved draft derives nothing, so its row falls back to the declared ports, and the
+    // port-id field accepts any text, so two ports can share an id while it is being edited. Keying
+    // the rows by that id makes Svelte throw `each_key_duplicate`, which replaces the whole route.
+    const declared = {
+      ...record().definition,
+      inputs: [
+        { portId: 'topic', label: 'First topic', type: 'text' },
+        { portId: 'topic', label: 'Second topic', type: 'text' }
+      ],
+      outputs: [
+        { portId: 'report', label: 'First report', type: 'markdown' },
+        { portId: 'report', label: 'Second report', type: 'markdown' }
+      ]
+    } as unknown as WorkflowCatalogSourceProjection['definition'];
+    const { container } = mount([
+      record({ derivedInputs: [], derivedOutputs: [], definition: declared })
+    ]);
+    const row = rowFor(container, 'design-then-build');
+
+    const inputs = row.querySelector('[data-testid="workflow-row-inputs"]')?.textContent ?? '';
+    const outputs = row.querySelector('[data-testid="workflow-row-outputs"]')?.textContent ?? '';
+    expect(inputs).toContain('First topic');
+    expect(inputs).toContain('Second topic');
+    expect(outputs).toContain('First report');
+    expect(outputs).toContain('Second report');
+  });
+
   it('renders a row whose definition failed to parse without inventing content', () => {
     // An invalid record carries no `definition`, so every derived field is
     // absent. The row still has to appear — dropping it would hide the very row
@@ -493,6 +521,33 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
     await fireEvent.click(chip as HTMLElement);
     const branchDefects = container.querySelector('#workflow-connection-defects-0');
     expect(branchDefects?.textContent).toContain('names no port');
+  });
+
+  it('lists every defect when the host repeats a field and code (FR-044)', async () => {
+    // The host reports one `missing-required-input` per unbound port of a child Workflow node, all
+    // under that node's `workflowId`, so two ports repeat field and code and differ only in the
+    // message. Keying the rows by the two makes Svelte throw `each_key_duplicate`, which replaces
+    // the whole route. Node 9 does not exist in this graph, which is where every such defect lands
+    // once the definition fails to parse: it anchors to no row and is listed on the Workflow.
+    const unbound = (nodeIndex: number, portId: string) => ({
+      field: `nodes[${nodeIndex}].workflowId`,
+      code: 'missing-required-input',
+      message: `Required input port '${portId}' on node 'n${nodeIndex}' is missing.`
+    });
+    const { container } = mount([
+      record({
+        errors: [unbound(1, 'alpha'), unbound(1, 'beta'), unbound(9, 'gamma'), unbound(9, 'delta')]
+      })
+    ]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    const nodeDefects = container.querySelector('#workflow-node-defects-1')?.textContent ?? '';
+    expect(nodeDefects).toContain('alpha');
+    expect(nodeDefects).toContain('beta');
+    const workflowDefects =
+      container.querySelector('[data-testid="workflow-field-errors"]')?.textContent ?? '';
+    expect(workflowDefects).toContain('gamma');
+    expect(workflowDefects).toContain('delta');
   });
 
   it('carries the association in text, not color alone (FR-044)', async () => {

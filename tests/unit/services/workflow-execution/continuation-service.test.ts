@@ -383,6 +383,52 @@ describe('continuation-service — continueWaitingHandoff (FR-R5-F02)', () => {
     expect(result.run.frozenClosure).toBe(closureBefore);
   });
 
+  it.each([false, true])(
+    'leaves the Workflow public inputs alone when the hand-off is accepted (deferDispatch: %s)',
+    async (deferDispatch) => {
+      const run = buildWaitingRun();
+
+      const result = await continueWaitingHandoff(
+        {
+          connectedRuns: {
+            compareAndSetConnectedRun: async (next) => ({ outcome: 'written', run: next })
+          }
+        },
+        {
+          run,
+          expectedRevision: run.revision,
+          invocationId: 'crun-1:root',
+          targetNodeId: 'node-impl',
+          request: {
+            pipelineId: 'phase-spec',
+            inputs: [
+              { portId: 'featureDescription', type: 'text', value: 'Operator override' },
+              { portId: 'operatorNote', type: 'text', value: 'For node-impl only' }
+            ],
+            supplemental: [],
+            outputs: []
+          },
+          acceptedAt: 2500,
+          deferDispatch
+        }
+      );
+
+      expect(result.outcome).toBe('accepted');
+      if (result.outcome !== 'accepted') return;
+      // The envelope is how the target receives the operator's values: dispatch applies it as
+      // `overrideInputsByPort`, keyed by the target node's own input keys.
+      expect(result.envelope.inputsByPort).toMatchObject({
+        featureDescription: { value: 'Operator override' },
+        operatorNote: { value: 'For node-impl only' }
+      });
+      // A frame's `boundInputs` are the Workflow's public inputs, which a later node's
+      // `workflow-input` binding reads. Neither the replaced value nor the extra key may reach them.
+      expect(result.run.invocations?.['crun-1:root']?.boundInputs).toEqual({
+        featureDescription: { portId: 'featureDescription', type: 'text', value: 'Initial' }
+      });
+    }
+  );
+
   it('rejects missing required handoff inputs and mismatched handoff targets', async () => {
     const run = buildWaitingRun();
     const writer = {

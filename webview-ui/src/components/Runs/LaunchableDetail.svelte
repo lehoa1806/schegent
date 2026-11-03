@@ -71,7 +71,9 @@
   <h5 class="ports-heading">Inputs</h5>
   {#if entry.inputs.length > 0}
     <ul class="port-list">
-      {#each entry.inputs as port (port.portId)}
+      <!-- Keyed by position: a parent that calls one child Workflow twice lists that child's
+           unbound input once per call, so a `portId` can repeat. -->
+      {#each entry.inputs as port, index (index)}
         <li class="port-row" data-testid="launchable-detail-port-{port.portId}">
           <span class="port-label">{port.label}</span>
           <span class="port-type">{port.type}</span>
