@@ -15,7 +15,8 @@ const ILLEGAL_STATE_MESSAGES: Record<string, string> = {
   'illegal-state': 'Action not allowed in current state',
   'not-found': 'Queue item not found',
   'no-peer': 'No other pending items to reorder',
-  'at-edge': 'Already at the edge of the pending list'
+  'at-edge': 'Already at the edge of the pending list',
+  'workflow-attempt-ended': "This Task's Workflow attempt has ended. Retry it from the Workflow run"
 };
 
 /**

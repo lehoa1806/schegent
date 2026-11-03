@@ -27,6 +27,7 @@ import { NO_BUILDER_LIFECYCLE_BY_KIND } from './builder-lifecycle';
 import { composePhaseCatalogProjection } from './phase-catalog-projection';
 import { composePipelineCatalogProjection } from './pipeline-catalog-projection';
 import { composeWorkflowCatalogProjection } from './workflow-catalog-projector';
+import { sanitizeConnectedRun } from './connected-run-text';
 import { buildLaunchProjection } from './launch-projection';
 import { composeTrustProjection } from './trust-projection';
 import { composeBackendPostures } from './backend-posture-projection';
@@ -310,11 +311,9 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     ...trust,
     ...(launchables !== undefined ? { launchables } : {}),
     ...(phaseCatalogProjection !== undefined ? { phaseCatalog: phaseCatalogProjection } : {}),
-    ...(pipelineCatalogProjection !== undefined
-      ? { pipelineCatalog: pipelineCatalogProjection }
-      : {}),
+    ...(pipelineCatalogProjection !== undefined ? { pipelineCatalog: pipelineCatalogProjection } : {}),
     ...(workflowCatalog !== undefined ? { workflowCatalog } : {}),
-    ...(deps.getConnectedRuns ? { connectedRuns: deps.getConnectedRuns() } : {}),
+    ...(deps.getConnectedRuns ? { connectedRuns: deps.getConnectedRuns().map((run) => sanitizeConnectedRun(run, sanitize)) } : {}),
     ...(confirmSuppression !== undefined ? { confirmSuppression } : {}),
     ...(confirmationsEnabled !== undefined ? { confirmationsEnabled } : {})
   });

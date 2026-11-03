@@ -40,11 +40,11 @@ import {
   type PhaseAttemptDispatchResult
 } from '../services/workflow-execution/connected-run-coordinator';
 import { makeChildRunFactsReader } from '../services/workflow-execution/child-run-facts-reader';
+import type { NodeRunStartDeps } from '../services/workflow-execution/node-run-starter';
 import {
-  startPhaseNodeRun,
-  toSupplementalInputs,
-  type NodeRunStartDeps
-} from '../services/workflow-execution/node-run-starter';
+  phaseDispatchResultOf,
+  startPhaseAttempt
+} from '../services/workflow-execution/phase-attempt-start';
 import { WorkflowControlService } from '../services/workflow-execution/workflow-control-service';
 import {
   WorkflowRecoveryService,
@@ -52,7 +52,7 @@ import {
 } from '../services/workflow-execution/workflow-recovery-service';
 import { isWorkflowNodeTerminalStatus } from '../contracts/workflow-definitions';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
-import type { ResolvedPortValue, RunRequest } from '../contracts/run-request';
+import type { ResolvedPortValue } from '../contracts/run-request';
 import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../state/workspace-state';
 import type { WorkflowRun } from '../state/workflow-run';
@@ -393,54 +393,31 @@ export async function createRunSafetyWiring(input: {
 function makePhaseDispatcher(deps: {
   readonly workspaceRoot?: string;
   readonly logger: SanitizedLogger;
+  readonly historyStore?: Pick<HistoryStore, 'outputsFor'>;
   readonly getGuardedRun?: () => NodeRunStartDeps['guardedRun'] | undefined;
   readonly getDefaultRunnerKind?: () => BackendRunnerKind | undefined;
 }): (phaseInput: PhaseAttemptDispatchInput) => Promise<PhaseAttemptDispatchResult> {
   return async (phaseInput) => {
     const guardedRun = deps.getGuardedRun?.();
-    const closure = phaseInput.run.frozenClosure;
-    if (guardedRun === undefined || closure === undefined) {
+    if (guardedRun === undefined || phaseInput.run.frozenClosure === undefined) {
       return { outcome: 'rejected', reason: 'launcher-unavailable' };
     }
-    const phaseRequest: RunRequest = {
-      pipelineId: phaseInput.phase.phaseId,
-      inputs: Object.values(phaseInput.boundInputs).map((portVal) => ({
-        portId: portVal.portId,
-        type: portVal.type as RunRequest['inputs'][number]['type'],
-        value: portVal.value
-      })),
-      supplemental: toSupplementalInputs(phaseInput.inputEnvelope?.localInputs),
-      outputs: phaseInput.inputEnvelope?.outputTargetOverrides ?? []
-    };
     const defaultRunnerKind = deps.getDefaultRunnerKind?.();
-    const started = await startPhaseNodeRun(
+    const historyStore = deps.historyStore;
+    const started = await startPhaseAttempt(
       {
         guardedRun,
         ...(defaultRunnerKind !== undefined ? { defaultRunnerKind } : {}),
+        ...(historyStore !== undefined
+          ? { readPriorRunOutputs: (runId) => historyStore.outputsFor(runId) }
+          : {}),
         logger: deps.logger
       },
-      {
-        frozenClosure: closure,
-        phaseId: phaseInput.phase.phaseId,
-        request: phaseRequest,
-        workspaceRoot: deps.workspaceRoot ?? null,
-        description: phaseInput.node.label ?? phaseInput.phase.name,
-        queueId: phaseInput.queueId,
-        occurrence: {
-          rootRunId: phaseInput.run.connectedRunId,
-          invocationId: phaseInput.frame.invocationId,
-          parentInvocationId: phaseInput.frame.parentInvocationId,
-          nodePath:
-            phaseInput.nodePath ?? `${phaseInput.frame.nodePath}/${phaseInput.node.nodeId}`,
-          attemptId: phaseInput.attemptId,
-          attemptIndex: phaseInput.attemptIndex
-        }
-      }
+      phaseInput,
+      deps.workspaceRoot ?? null,
+      { continuesWorkflow: true }
     );
-    if (started.outcome !== 'enqueued') {
-      return { outcome: 'rejected', reason: started.outcome };
-    }
-    return { outcome: 'dispatched', queueItemId: started.queueItemId };
+    return phaseDispatchResultOf(started);
   };
 }
 
@@ -459,7 +436,7 @@ function buildDeclaredOutputsFromRun(
   return Object.freeze(out);
 }
 
-async function reconcileComposableWorkflowRuns(input: {
+export async function reconcileComposableWorkflowRuns(input: {
   readonly workspaceRoot: string;
   readonly store: {
     getConnectedRuns(): Readonly<Record<string, ConnectedWorkflowRun>>;
@@ -469,7 +446,7 @@ async function reconcileComposableWorkflowRuns(input: {
       expectedRevision: number
     ): Promise<ConnectedRunWriteResult>;
   };
-  readonly historyStore?: Pick<HistoryStore, 'list'>;
+  readonly historyStore?: Pick<HistoryStore, 'list' | 'outputsFor'>;
   readonly logger: SanitizedLogger;
   readonly getGuardedRun?: () => NodeRunStartDeps['guardedRun'] | undefined;
   readonly getDefaultRunnerKind?: () => BackendRunnerKind | undefined;
@@ -531,9 +508,10 @@ async function reconcileComposableWorkflowRuns(input: {
   }
 }
 
-async function recordConnectedWorkflowTransition(
+export async function recordConnectedWorkflowTransition(
   input: {
     readonly workspaceRoot?: string;
+    readonly historyStore?: Pick<HistoryStore, 'outputsFor'>;
     readonly store: {
       getConnectedRuns(): Readonly<Record<string, ConnectedWorkflowRun>>;
       getRunMap(): Readonly<Record<string, WorkflowRun | undefined>>;

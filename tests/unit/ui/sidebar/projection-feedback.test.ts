@@ -50,7 +50,7 @@ const DEBOUNCE_MS = 100;
 const PIPELINE_WARNING = 'failed to resolve pipeline catalog';
 const WORKFLOW_WARNING = 'failed to resolve workflow catalog';
 const TRUST_WARNING = 'failed to resolve trust capabilities';
-const DROPPED_RUN_WARNING = 'dropped 1 connected run(s) failing persisted invariants';
+const DROPPED_RUN_WARNING = 'refused 1 connected run(s) from persisted state';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();

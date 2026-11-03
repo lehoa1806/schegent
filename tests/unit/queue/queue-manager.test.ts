@@ -5,6 +5,7 @@ import { createQueue } from '../../../src/queue/queue-registry';
 import { KEYS, WorkspaceStateStore } from '../../../src/state/workspace-state';
 import {
   appendAttempt,
+  attemptsForNode,
   createConnectedRun
 } from '../../../src/state/connected-workflow-run';
 import type { Memento } from '../../../src/state/workspace-state';
@@ -12,6 +13,11 @@ import type { PhaseResult, WorkflowRun } from '../../../src/state/workflow-run';
 import type { DegradedPhaseEntry } from '../../../src/contracts/snapshot-projections';
 import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { buildWorkflowRun } from '../../fixtures/state/queue-fixtures';
+import { createComposableWorkflowRunSnapshot } from '../../../src/services/workflow-execution/connected-run-factory';
+import {
+  completeComposableNodeAttempt,
+  dispatchComposableNode
+} from '../../../src/services/workflow-execution/connected-run-coordinator';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -505,6 +511,48 @@ describe('QueueManager.moveTask (Feature 092 T028, FR-017)', () => {
     ]);
   });
 
+  it('refuses to move a composable Workflow leaf, whose attempt is on an invocation frame', async () => {
+    await addOtherQueue();
+    const task = await queue.enqueue('leaf of a workflow');
+    const created = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'connected-composable',
+      workflow: {
+        workflowId: 'wf-composable',
+        name: 'Release',
+        version: 1,
+        startNodeIds: ['draft'],
+        nodes: [{ nodeId: 'draft', kind: 'phase', phaseId: 'draft-phase' }],
+        connections: []
+      },
+      effectivePhases: [{ phaseId: 'draft-phase', name: 'Draft', version: 1, instruction: 'Draft' }],
+      startedAt: 1_700_000_000_000
+    });
+    if (created.outcome !== 'created') throw new Error('fixture refused');
+    expect((await store.compareAndSetConnectedRun(created.run, 0)).outcome).toBe('written');
+    await dispatchComposableNode(
+      {
+        connectedRuns: store,
+        dispatchPhase: () => Promise.resolve({ outcome: 'dispatched', queueItemId: task.id })
+      },
+      {
+        run: created.run,
+        invocationId: created.rootInvocationId,
+        nodeId: 'draft',
+        startedAt: 1_700_000_000_001
+      }
+    );
+    // Guard the fixture: the refusal must come from the attempt on the frame.
+    const frame = store.getConnectedRun('connected-composable')?.invocations?.[created.rootInvocationId];
+    expect(attemptsForNode(frame, 'draft').at(0)?.queueItemId).toBe(task.id);
+
+    const result = await queue.moveTask(task.id, OTHER_QUEUE_ID);
+
+    expect(result).toMatchObject({ ok: false, reason: 'task-bound-to-connected-run' });
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests.map((request) => request.id)).toEqual([
+      task.id
+    ]);
+  });
+
   it('reports the store’s refusals as reasons rather than throwing', async () => {
     await addOtherQueue();
     const running = await queue.enqueue('already started');
@@ -664,6 +712,87 @@ describe('QueueManager.retry', () => {
     expect(positions.find((p) => p.id === a.id)!.position).toBe(0);
     expect(positions.find((p) => p.id === b.id)!.position).toBe(1);
     expect(positions.find((p) => p.id === c.id)!.position).toBe(2);
+  });
+});
+
+describe('QueueManager.retry of a row a Workflow attempt started', () => {
+  async function seedLeafOfAWorkflow(): Promise<{
+    readonly taskId: string;
+    readonly endTheAttempt: () => Promise<void>;
+  }> {
+    const task = await queue.enqueue('leaf of a workflow');
+    await queue.markInFlight(task.id, 'run-of-the-leaf');
+    const created = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'connected-composable',
+      workflow: {
+        workflowId: 'wf-composable',
+        name: 'Release',
+        version: 1,
+        startNodeIds: ['draft'],
+        nodes: [{ nodeId: 'draft', kind: 'phase', phaseId: 'draft-phase' }],
+        connections: []
+      },
+      effectivePhases: [{ phaseId: 'draft-phase', name: 'Draft', version: 1, instruction: 'Draft' }],
+      startedAt: 1_700_000_000_000
+    });
+    if (created.outcome !== 'created') throw new Error('fixture refused');
+    expect((await store.compareAndSetConnectedRun(created.run, 0)).outcome).toBe('written');
+    const coordinator = {
+      connectedRuns: store,
+      dispatchPhase: () => Promise.resolve({ outcome: 'dispatched' as const, queueItemId: task.id })
+    };
+    await dispatchComposableNode(coordinator, {
+      run: created.run,
+      invocationId: created.rootInvocationId,
+      nodeId: 'draft',
+      startedAt: 1_700_000_000_001
+    });
+    return {
+      taskId: task.id,
+      endTheAttempt: async () => {
+        const run = store.getConnectedRun('connected-composable');
+        if (run === null) throw new Error('fixture lost its run');
+        await completeComposableNodeAttempt(coordinator, {
+          run,
+          invocationId: created.rootInvocationId,
+          nodeId: 'draft',
+          status: 'failed',
+          completedAt: 1_700_000_000_002
+        });
+      }
+    };
+  }
+
+  it('refuses a row whose attempt has ended, because nothing would read the result', async () => {
+    const leaf = await seedLeafOfAWorkflow();
+    await queue.finish(leaf.taskId, 'failed');
+    await leaf.endTheAttempt();
+    const before = queue.findById(leaf.taskId);
+
+    const result = await queue.retry(leaf.taskId);
+
+    expect(result).toEqual({ ok: false, reason: 'workflow-attempt-ended' });
+    expect(queue.findById(leaf.taskId)).toEqual(before);
+  });
+
+  it('still returns a row whose attempt is waiting on it', async () => {
+    const leaf = await seedLeafOfAWorkflow();
+    await queue.pause(leaf.taskId, 'phase-paused');
+
+    await expect(queue.retry(leaf.taskId)).resolves.toEqual({ ok: true });
+
+    expect(queue.findById(leaf.taskId)?.status).toBe('pending');
+  });
+
+  it('leaves an ordinary Task on the same queue alone', async () => {
+    const leaf = await seedLeafOfAWorkflow();
+    await queue.finish(leaf.taskId, 'failed');
+    await leaf.endTheAttempt();
+    const ordinary = await queue.enqueue('an ordinary Task');
+    await queue.markInFlight(ordinary.id, 'run-of-the-ordinary-task');
+    await queue.finish(ordinary.id, 'failed');
+
+    await expect(queue.retry(ordinary.id)).resolves.toEqual({ ok: true });
   });
 });
 

@@ -9,6 +9,7 @@ import { AuditLogWriter } from '../../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import { buildHistoryEntry } from '../../../../src/state/history-entry';
 import type { WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
+import type { ConnectedRunProjection } from '../../../../src/contracts/sidebar-ipc/workflow-run';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -166,6 +167,69 @@ describe('Sanitization audit (T069 / FR-014)', () => {
 
     const onDisk = await fs.readFile(audit.logPath, 'utf8');
     assertNoSecrets(onDisk);
+  });
+
+  it('connected run node labels and Workflow names are redacted before reaching the snapshot', () => {
+    // Both are typed by the operator, frozen into the run at launch and read back out by the
+    // connected-run projector, so they are the one place free text enters that projection.
+    const connectedRun: ConnectedRunProjection = {
+      connectedRunId: 'cr-secret-text',
+      workflowId: 'release-flow',
+      revision: 4,
+      hydrating: false,
+      nodes: [
+        {
+          nodeId: 'review',
+          pipelineId: 'review-phase',
+          state: 'completed',
+          actions: [],
+          attemptCount: 1,
+          nodeKind: 'phase',
+          label: `Review with ${SECRETS.apiKey}`
+        }
+      ],
+      invocations: [
+        {
+          invocationId: 'cr-secret-text:root',
+          parentInvocationId: null,
+          workflowId: 'release-flow',
+          workflowName: `Release ${SECRETS.bearer}`,
+          depth: 0,
+          nodePath: '/review',
+          status: 'completed',
+          currentNodeId: null,
+          activeAttemptId: null,
+          activeAttemptIndex: null,
+          allowedActions: [],
+          waitingReason: null,
+          pauseCause: null,
+          failureReason: null,
+          pendingRetryAt: null,
+          pendingRetryCause: null,
+          outputPortIds: [],
+          attempts: []
+        }
+      ]
+    };
+    const proj = new StateProjector({
+      store,
+      audit,
+      ownerId: 'w',
+      logger,
+      monotonicNow: () => 0,
+      getConnectedRuns: () => [connectedRun]
+    });
+    proj.start();
+    const snap = proj.getCurrentSnapshot();
+    proj.dispose();
+
+    const projected = snap.connectedRuns?.at(0);
+    expect(projected?.nodes.at(0)?.label).toContain('[REDACTED]');
+    expect(projected?.invocations?.at(0)?.workflowName).toContain('[REDACTED]');
+    assertNoSecrets(deepStringify(snap.connectedRuns));
+    // Ids and codes are host-chosen and cross unchanged: the pass is for authored text only.
+    expect(projected?.invocations?.at(0)?.invocationId).toBe('cr-secret-text:root');
+    expect(projected?.nodes.at(0)?.pipelineId).toBe('review-phase');
   });
 
   it('history descriptionPreview is redacted via buildHistoryEntry', () => {

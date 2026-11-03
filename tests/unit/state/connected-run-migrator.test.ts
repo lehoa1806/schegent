@@ -221,6 +221,143 @@ describe('connected-run migration (v8 → v9)', () => {
 
       expect(warn).not.toHaveBeenCalled();
     });
+
+    it('says why each record was refused, not only which one', () => {
+      const warn = vi.fn();
+      const store = storeWithWarnSpy(
+        memento({
+          [KEYS.connectedRuns]: {
+            'cr-bad': BAD,
+            'cr-old': { schemaVersion: 5, connectedRunId: 'cr-old' }
+          }
+        }),
+        warn
+      );
+
+      store.getConnectedRuns();
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('cr-bad (invariant-violation)'));
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('cr-old (unsupported-run-schema-version)')
+      );
+    });
+
+    it('bounds the line however many records were refused, and counts the rest', () => {
+      const REFUSED_COUNT = 500;
+      const collection = Object.fromEntries(
+        Array.from({ length: REFUSED_COUNT }, (_, index) => [
+          `cr-bad-${index}`,
+          { ...BAD, connectedRunId: `cr-bad-${index}` }
+        ])
+      );
+      const warn = vi.fn();
+      const store = storeWithWarnSpy(memento({ [KEYS.connectedRuns]: collection }), warn);
+
+      store.getConnectedRuns();
+
+      const line = String(warn.mock.calls.at(0)?.at(0));
+      expect(line).toContain(`${REFUSED_COUNT} connected run(s)`);
+      expect(line).toContain('cr-bad-0 (invariant-violation)');
+      expect(line, 'past the cap').not.toContain('cr-bad-20 ');
+      expect(line).toContain(`and ${REFUSED_COUNT - 20} more`);
+    });
+
+    it('clips an absurdly long key in the diagnostic rather than copying it into the log', () => {
+      const LONG_KEY = 'k'.repeat(10_000);
+      const migrated = migrateConnectedRuns({ [LONG_KEY]: BAD });
+
+      expect(migrated.dropped).toEqual([LONG_KEY]);
+      expect(migrated.diagnostics.at(0)?.connectedRunId.length).toBeLessThan(200);
+    });
+  });
+
+  // Feature 261 FR-011: an unsupported shape is rejected or quarantined "without auto-deleting
+  // developer state files". Reads hide such a record; a read-modify-write of the collection built
+  // from what reads return would erase it on the next unrelated launch, so both writes carry it.
+  describe('a refused record stays in the key until an explicit reset (feature 261 FR-011)', () => {
+    const LEGACY = { schemaVersion: 5, featureId: 'legacy-feature', phases: [{ id: 'old' }] };
+    const INVALID = { connectedRunId: 'cr-bad', status: 'in-flight' };
+    const REFUSED = { 'cr-legacy': LEGACY, 'cr-bad': INVALID };
+
+    function seededWithRefusedRecords(): {
+      readonly m: ReturnType<typeof memento>;
+      readonly store: WorkspaceStateStore;
+    } {
+      const m = memento({ [KEYS.connectedRuns]: REFUSED });
+      return { m, store: new WorkspaceStateStore(m) };
+    }
+
+    it('survives a compare-and-set of an unrelated run, byte for byte', async () => {
+      const { m, store } = seededWithRefusedRecords();
+
+      const written = await store.compareAndSetConnectedRun(sample('cr-new'), 0);
+
+      expect(written.outcome).toBe('written');
+      expect(m.store.get(KEYS.connectedRuns)).toEqual(expect.objectContaining(REFUSED));
+      expect(Object.keys(store.getConnectedRuns())).toEqual(['cr-new']);
+    });
+
+    it('survives every later write, not only the first one', async () => {
+      const { m, store } = seededWithRefusedRecords();
+      const first = sample('cr-new');
+      await store.compareAndSetConnectedRun(first, 0);
+
+      const second = appendAttempt(first, 'n-a', { queueItemId: 'q-2', startedAt: 12 });
+      await store.compareAndSetConnectedRun(second, first.revision);
+
+      expect(m.store.get(KEYS.connectedRuns)).toEqual(expect.objectContaining(REFUSED));
+    });
+
+    it('survives deleting an unrelated run', async () => {
+      const { m, store } = seededWithRefusedRecords();
+      await store.compareAndSetConnectedRun(sample('cr-new'), 0);
+
+      expect(await store.deleteConnectedRuns(['cr-new'])).toBe(1);
+
+      expect(m.store.get(KEYS.connectedRuns)).toEqual(REFUSED);
+      expect(store.getConnectedRuns()).toEqual({});
+    });
+
+    it('is not counted as removed, and not removed, when a delete names it', async () => {
+      const { m, store } = seededWithRefusedRecords();
+
+      expect(await store.deleteConnectedRuns(['cr-bad'])).toBe(0);
+
+      expect(m.store.get(KEYS.connectedRuns)).toEqual(REFUSED);
+    });
+
+    it('is not replaced by a write that happens to reuse its id', async () => {
+      const { m, store } = seededWithRefusedRecords();
+
+      const written = await store.compareAndSetConnectedRun(sample('cr-bad'), 0);
+
+      expect(written).toEqual({ outcome: 'stale', current: null });
+      expect(m.store.get(KEYS.connectedRuns)).toEqual(REFUSED);
+    });
+
+    it('stays hidden from every read while it is kept', async () => {
+      const { store } = seededWithRefusedRecords();
+      await store.compareAndSetConnectedRun(sample('cr-new'), 0);
+
+      expect(store.getConnectedRun('cr-bad')).toBeNull();
+      expect(store.getConnectedRun('cr-legacy')).toBeNull();
+    });
+
+    it('is cleared by an explicit workspace reset', async () => {
+      const { m, store } = seededWithRefusedRecords();
+
+      await store.reset();
+
+      expect(m.store.has(KEYS.connectedRuns)).toBe(false);
+    });
+
+    it('returns the raw value for a key the prototype setter would otherwise swallow', () => {
+      const raw = JSON.parse('{"__proto__":{"connectedRunId":"__proto__"}}') as unknown;
+
+      const migrated = migrateConnectedRuns(raw);
+
+      expect(Object.keys(migrated.refused)).toEqual(['__proto__']);
+    });
   });
 });
 

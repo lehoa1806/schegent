@@ -22,7 +22,7 @@
   ],
   "rules": {
     "@typescript-eslint/no-unnecessary-condition": {
-      "host": 412,
+      "host": 404,
       "webview": 238,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
@@ -74,8 +74,8 @@
         "src/services/process-yaml/yaml-scanner.ts": 1,
         "src/services/run-driver.ts": 2,
         "src/services/run-request/run-request-validator.ts": 1,
-        "src/services/workflow-execution/binding-resolver.ts": 5,
-        "src/services/workflow-execution/condition-context.ts": 4,
+        "src/services/workflow-execution/binding-resolver.ts": 1,
+        "src/services/workflow-execution/condition-context.ts": 1,
         "src/services/workflow-execution/connected-run-coordinator.ts": 12,
         "src/services/workflow-execution/connected-run-factory.ts": 2,
         "src/services/workflow-execution/continuation-composer.ts": 2,
@@ -92,7 +92,7 @@
         "src/state/history-entry.ts": 1,
         "src/state/queue-state-migrator.ts": 3,
         "src/state/workflow-run.ts": 1,
-        "src/state/workspace-state.ts": 13,
+        "src/state/workspace-state.ts": 12,
         "src/telemetry/platform/platform-ps.ts": 4,
         "src/telemetry/platform/platform-windows.ts": 4,
         "src/ui/sidebar/audit-tail-projector.ts": 1,

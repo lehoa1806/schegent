@@ -382,7 +382,7 @@ import {
   type GitPlanGrantMap
 } from './git-plan-grants';
 export { type GitPlanGrant, type GitPlanGrantMap } from './git-plan-grants';
-import { migrateConnectedRuns } from './connected-run-migrator';
+import { connectedRunRefusalWarning, connectedRunsWithout, migrateConnectedRuns } from './connected-run-migrator';
 import { assertConnectedRunInvariants, type ConnectedWorkflowRun } from './connected-workflow-run';
 // Type-only: `execution-lease.ts` imports the staleness constants from `lock.ts`,
 // so a value import here would close a cycle the type import cannot.
@@ -3136,20 +3136,20 @@ export class WorkspaceStateStore {
    * FR-R4-F08 — named once per distinct set, not once per read. The sidebar composes
    * this on every pass and once more per Run card, and a log line is what schedules
    * the next pass, so a WARN per read was a loop (F-T9, `projection-feedback.test.ts`).
-   * The record stays in the key until the next write here: the set is the news.
+   * Feature 261 FR-011 — a refused record stays in the key until an explicit `reset()`.
    */
   public getConnectedRuns(): Readonly<Record<string, ConnectedWorkflowRun>> {
+    return this.readConnectedRunCollection().runs;
+  }
+
+  private readConnectedRunCollection(): ReturnType<typeof migrateConnectedRuns> {
     const result = migrateConnectedRuns(this.memento.get<unknown>(KEYS.connectedRuns));
     const dropped = result.dropped.length === 0 ? null : result.dropped.join(', ');
     if (dropped !== this.connectedRunDropsWarned) {
       this.connectedRunDropsWarned = dropped;
-      if (dropped !== null) {
-        this.logger?.warn(
-          `workspace-state: dropped ${result.dropped.length} connected run(s) failing persisted invariants: ${dropped}`
-        );
-      }
+      if (dropped !== null) this.logger?.warn(connectedRunRefusalWarning(result));
     }
-    return result.runs;
+    return result;
   }
 
   public getConnectedRun(connectedRunId: string): ConnectedWorkflowRun | null {
@@ -3180,7 +3180,9 @@ export class WorkspaceStateStore {
   ): Promise<ConnectedRunWriteResult> {
     let result = staleConnectedRunWrite(null);
     await this.serialize(KEYS.connectedRuns, async () => {
-      const runs = this.getConnectedRuns();
+      const { runs, refused } = this.readConnectedRunCollection();
+      // A refused record holds this id, and replacing it is the deletion feature 261 FR-011 forbids.
+      if (Object.hasOwn(refused, next.connectedRunId)) return;
       const current = runs[next.connectedRunId] ?? null;
       if ((current?.revision ?? 0) !== expectedRevision || next.revision <= expectedRevision) {
         result = staleConnectedRunWrite(current);
@@ -3197,7 +3199,7 @@ export class WorkspaceStateStore {
       assertConnectedRunInvariants(next, {
         knownQueueIds: new Set(this.getQueueRegistry().entries.map((entry) => entry.id))
       });
-      await this.memento.update(KEYS.connectedRuns, { ...runs, [next.connectedRunId]: next });
+      await this.memento.update(KEYS.connectedRuns, { ...refused, ...runs, [next.connectedRunId]: next });
       result = { outcome: 'written', run: next };
     });
     if (result.outcome === 'written') this.notify(KEYS.connectedRuns);
@@ -3214,20 +3216,16 @@ export class WorkspaceStateStore {
    * would be correct.
    *
    * Serialized on the same key as the write path, so a delete cannot interleave
-   * between a compare-and-set's read and its update.
+   * between a compare-and-set's read and its update. A refused record stays, even when named.
    */
   public async deleteConnectedRuns(connectedRunIds: readonly string[]): Promise<number> {
     if (connectedRunIds.length === 0) return 0;
     let removed = 0;
     await this.serialize(KEYS.connectedRuns, async () => {
-      const runs = { ...this.getConnectedRuns() };
-      for (const id of connectedRunIds) {
-        if (runs[id] === undefined) continue;
-        delete runs[id];
-        removed += 1;
-      }
+      const after = connectedRunsWithout(this.readConnectedRunCollection(), connectedRunIds);
+      removed = after.removed;
       if (removed === 0) return;
-      await this.memento.update(KEYS.connectedRuns, runs);
+      await this.memento.update(KEYS.connectedRuns, after.stored);
     });
     if (removed > 0) this.notify(KEYS.connectedRuns);
     return removed;

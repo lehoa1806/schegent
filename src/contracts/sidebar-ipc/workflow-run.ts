@@ -326,6 +326,27 @@ export type ContinueWorkflowOutcome = ContinueWorkflowResult['outcome'];
 const RUN_ID_MAX = 128;
 const ID_MAX = 64;
 
+/**
+ * The bound on the two ids of a control that derive from a nested invocation: the
+ * `invocationId` it targets and the `commandId` the UI builds around it
+ * (`${connectedRunId}:${invocationId}:${action}:${revision}`).
+ *
+ * `RUN_ID_MAX` cannot hold these. A child invocation id is
+ * `${parentInvocationId}:${callNodeId}:${parentAttemptId}` and the parent attempt id
+ * itself starts with the parent invocation id, so each level of nesting a little more
+ * than doubles the length: 41 characters at the root (a 36-character `randomUUID()` plus
+ * `:root`), 135 one level down, and about 24,000 at `MAX_WORKFLOW_NESTING_DEPTH` (8)
+ * with 20-character node ids, about 46,500 with 64-character ones. Under 128 even the
+ * first child's `commandId` is refused, which made every control on a nested
+ * invocation `invalid-payload`.
+ *
+ * 65,536 holds the deepest legal id with room to spare and is still a sanity bound:
+ * anything longer is refused at ingress. `tests/contract/continue-workflow.test.ts`
+ * mints the deepest legal id with the real factory and asserts it fits, so a change to
+ * the id format cannot silently outgrow this.
+ */
+export const CONTROL_ID_MAX = 65_536;
+
 function boundedId(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= max;
 }
@@ -361,11 +382,11 @@ export function isContinueWorkflowPayload(payload: unknown): payload is Continue
     Number.isInteger(value.expectedRevision) &&
     (value.expectedRevision as number) >= 0 &&
     boundedId(value.nodeId, ID_MAX) &&
-    (value.invocationId === undefined || boundedId(value.invocationId, RUN_ID_MAX)) &&
+    (value.invocationId === undefined || boundedId(value.invocationId, CONTROL_ID_MAX)) &&
     (value.operation === undefined ||
       (typeof value.operation === 'string' &&
         (WORKFLOW_CONTROL_ACTIONS as readonly string[]).includes(value.operation))) &&
-    (value.commandId === undefined || boundedId(value.commandId, RUN_ID_MAX)) &&
+    (value.commandId === undefined || boundedId(value.commandId, CONTROL_ID_MAX)) &&
     validRunRequest(value.request)
   );
 }

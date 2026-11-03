@@ -12,7 +12,10 @@
 // - successful enqueue → enqueued exactly once
 
 import { describe, expect, it, vi } from 'vitest';
-import { GuardedRunService } from '../../../src/services/guarded-run-service';
+import {
+  GuardedRunService,
+  type GuardedScheduleRequest
+} from '../../../src/services/guarded-run-service';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import {
   WorkspaceLockManager,
@@ -25,6 +28,7 @@ import {
   WorkspaceStateStore,
   type Memento
 } from '../../../src/state/workspace-state';
+import type { QueueLifecycle } from '../../../src/contracts/snapshot-vocabulary';
 import type {
   PipelineCatalog,
   PipelineDef
@@ -687,5 +691,100 @@ describe('GuardedRunService — enqueue failures (FR-R4-F05)', () => {
     expect(JSON.stringify(result)).not.toContain('user-252');
     expect(auditRows(h)).toHaveLength(0);
     expect(JSON.stringify(h.logger.warn.mock.calls)).toContain('user-252');
+  });
+});
+
+describe("GuardedRunService — a Workflow's next node (spec 261 FR-007, rules 32 and 33)", () => {
+  const nextNode = (h: Harness): GuardedScheduleRequest => ({
+    description: 'next node',
+    scheduledAt: h.clock.now(),
+    via: 'webview',
+    continuesWorkflow: true
+  });
+
+  const firstAdmission = (h: Harness): GuardedScheduleRequest => ({
+    description: 'first admission',
+    scheduledAt: h.clock.now(),
+    via: 'webview'
+  });
+
+  async function setLifecycle(h: Harness, queueLifecycle: QueueLifecycle): Promise<void> {
+    await h.store.setQueue({
+      ...h.store.getQueue('default'),
+      queueLifecycle,
+      pauseSource: null,
+      scheduledStartAt: null,
+      scheduledStartSource: null,
+      updatedAt: h.clock.now()
+    });
+  }
+
+  it('leaves a queue the last leaf ran dry unheld, so the funnel can start the node', async () => {
+    const h = await makeHarness();
+    await setLifecycle(h, 'active-empty');
+
+    const result = await h.service.scheduleOrEnqueue(nextNode(h));
+
+    expect(result).toMatchObject({ outcome: 'enqueued', lifecycleAfter: 'active-empty' });
+    expect(h.store.getQueue('default').queueLifecycle).toBe('active-empty');
+    expect(h.store.getQueue('default').requests).toHaveLength(1);
+    expect(h.audit.append).not.toHaveBeenCalled();
+  });
+
+  it('reports the lifecycle it found on a queue already working, and changes nothing', async () => {
+    const h = await makeHarness();
+    await setLifecycle(h, 'running');
+
+    const result = await h.service.scheduleOrEnqueue(nextNode(h));
+
+    expect(result).toMatchObject({ outcome: 'enqueued', lifecycleAfter: 'running' });
+    expect(h.audit.append).not.toHaveBeenCalled();
+  });
+
+  it('never moves a queue held for its Start: the node waits with everything else', async () => {
+    const h = await makeHarness();
+    await setLifecycle(h, 'idle-pending');
+
+    const result = await h.service.scheduleOrEnqueue(nextNode(h));
+
+    expect(result).toMatchObject({ outcome: 'enqueued', lifecycleAfter: 'idle-pending' });
+    expect(h.store.getQueue('default').queueLifecycle).toBe('idle-pending');
+    expect(h.audit.append).not.toHaveBeenCalled();
+  });
+
+  it('waits behind a queue pause, where new work is refused and the pause stays', async () => {
+    const h = await makeHarness();
+    await h.queue.setQueuePausedState(true, undefined, 'operator-paused', 'operator');
+
+    await expect(h.service.scheduleOrEnqueue(firstAdmission(h))).resolves.toMatchObject({
+      outcome: 'rejected-paused'
+    });
+    expect(h.store.getQueue('default').requests).toHaveLength(0);
+
+    const result = await h.service.scheduleOrEnqueue(nextNode(h));
+
+    expect(result).toMatchObject({ outcome: 'enqueued', lifecycleAfter: 'operator-paused' });
+    expect(h.store.getQueue('default').queueLifecycle).toBe('operator-paused');
+    expect(h.store.getQueue('default').requests).toHaveLength(1);
+  });
+
+  it('leaves a first admission on an empty queue behind the Start hold (feature 065)', async () => {
+    const h = await makeHarness();
+    await setLifecycle(h, 'active-empty');
+
+    const result = await h.service.scheduleOrEnqueue(firstAdmission(h));
+
+    expect(result).toMatchObject({ outcome: 'enqueued', lifecycleAfter: 'idle-pending' });
+    expect(h.store.getQueue('default').queueLifecycle).toBe('idle-pending');
+  });
+
+  it('still answers to every other gate: an untrusted workspace refuses it', async () => {
+    const h = await makeHarness({ trusted: false });
+    await setLifecycle(h, 'active-empty');
+
+    const result = await h.service.scheduleOrEnqueue(nextNode(h));
+
+    expect(result.outcome).toBe('rejected-untrusted');
+    expect(h.store.getQueue('default').requests).toHaveLength(0);
   });
 });
