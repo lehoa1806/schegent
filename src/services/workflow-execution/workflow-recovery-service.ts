@@ -292,14 +292,12 @@ export class WorkflowRecoveryService {
         // Post-acceptance, pre-dispatch crash: recover from persisted InvocationInputEnvelope.
         const staging = createStagingWriter(run);
         let nextRun = setPendingHandoff(staging.current(), null);
+        // The accepted envelope reaches the target through `run.inputEnvelopes` at dispatch. The
+        // frame's `boundInputs` are the Workflow's public inputs and stay as launched.
         nextRun = upsertInvocationFrame(nextRun, {
           ...waitingFrame,
           status: 'in-flight',
-          pendingHandoff: null,
-          boundInputs: Object.freeze({
-            ...waitingFrame.boundInputs,
-            ...acceptedEnvelope.inputsByPort
-          })
+          pendingHandoff: null
         });
         staging.set(nextRun);
 

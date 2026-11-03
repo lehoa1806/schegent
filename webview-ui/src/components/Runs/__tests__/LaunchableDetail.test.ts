@@ -381,4 +381,25 @@ describe('what the panel says about the authority a start will have (FR-R4-F06 F
     expect(new Set(testIds).size).toBe(2);
     expect(view.getByTestId('launchable-detail-outputs').querySelectorAll('li')).toHaveLength(2);
   });
+
+  it('lists an input once per occurrence when the Workflow calls one child twice (FR-R5-F06)', async () => {
+    // A parent that calls one child Workflow twice projects that child's unbound input once per
+    // call, so the same `portId` arrives under two `nodeId`s. Keying the rows by `portId` makes
+    // Svelte throw `each_key_duplicate`, which replaces the whole route.
+    const calling: Launchable = {
+      ...RESEARCH,
+      inputs: [
+        { portId: 'topic', label: 'Topic', type: 'text', nodeId: 'review-first' },
+        { portId: 'topic', label: 'Topic', type: 'text', nodeId: 'review-second' }
+      ]
+    };
+    const snapshot = buildSnapshot({
+      launchables: projection(entries(ANALYSIS), entries(calling))
+    });
+    const view = render(RunsSurface, { snapshot });
+
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
+
+    expect(view.getAllByTestId('launchable-detail-port-topic')).toHaveLength(2);
+  });
 });

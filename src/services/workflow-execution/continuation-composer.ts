@@ -287,6 +287,9 @@ export async function continueWaitingHandoff(
     }
   }
 
+  // The envelope is the target node's own input: dispatch applies it as `overrideInputsByPort`,
+  // keyed by that node's input keys. It is not merged into the frame's `boundInputs`, which are
+  // the Workflow's public inputs and are what a later node's `workflow-input` binding reads.
   let next = appendInputEnvelope(run, envelope);
   if (input.deferDispatch === true) {
     const updatedHandoff = Object.freeze({
@@ -296,11 +299,7 @@ export async function continueWaitingHandoff(
     next = setPendingHandoff(next, updatedHandoff);
     const frame = next.invocations?.[input.invocationId];
     if (frame !== undefined) {
-      next = upsertInvocationFrame(next, {
-        ...frame,
-        pendingHandoff: updatedHandoff,
-        boundInputs: Object.freeze({ ...frame.boundInputs, ...envelope.inputsByPort })
-      });
+      next = upsertInvocationFrame(next, { ...frame, pendingHandoff: updatedHandoff });
     }
   } else {
     next = setPendingHandoff(next, null);
@@ -309,8 +308,7 @@ export async function continueWaitingHandoff(
       next = upsertInvocationFrame(next, {
         ...frame,
         status: 'in-flight',
-        pendingHandoff: null,
-        boundInputs: Object.freeze({ ...frame.boundInputs, ...envelope.inputsByPort })
+        pendingHandoff: null
       });
     }
   }
