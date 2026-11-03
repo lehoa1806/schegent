@@ -306,7 +306,7 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
   // operator put there, and `presentRowStatus: 'effective'` is the residue of that
   // claim: a row that resolves, holding the id.
   const RAW_EXAMPLE = readFileSync(
-    join(__dirname, '..', '..', '..', 'examples', 'speckit-new-feature.pipeline.yaml'),
+    join(__dirname, '..', '..', '..', 'examples', 'speckit-new-feature.workflow.yaml'),
     'utf8'
   );
 

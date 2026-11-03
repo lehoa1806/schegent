@@ -29,9 +29,7 @@ const EXAMPLES: readonly string[] = readdirSync(EXAMPLES_DIR)
   .filter((name) => name.endsWith('.yaml') || name.endsWith('.yml'))
   .sort();
 
-const SUPPORTED_EXAMPLES: readonly string[] = EXAMPLES.filter(
-  (name) => !readFileSync(resolve(EXAMPLES_DIR, name), 'utf8').includes('kind: Pipeline')
-);
+const SUPPORTED_EXAMPLES: readonly string[] = EXAMPLES;
 
 const COMMAND: PreflightProcessYamlCommand = Object.freeze({
   type: CMD_PREFLIGHT_PROCESS_YAML,

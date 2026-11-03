@@ -146,14 +146,14 @@ YAML package, or you must author and publish at least one Phase and Pipeline.
 <!-- Source: ../operations/process-yaml.md -->
 <!-- Source: ../../webview-ui/src/components/ProcessImport/ProcessImportPreflight.svelte -->
 
-The repository example at `examples/speckit-new-feature.pipeline.yaml` is an
+The repository example at `examples/speckit-new-feature.workflow.yaml` is an
 advanced development workflow, not a harmless hello-world sample. It selects a
 specific Claude model, invokes Spec Kit and review skills, changes the working
 tree, and includes Git operations. Use it only in a disposable checkout after
 reviewing the entire YAML and satisfying its prerequisites. For everyday use,
 prefer a process package supplied and reviewed by your team.
 
-<!-- Source: ../../examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: ../../examples/speckit-new-feature.workflow.yaml -->
 
 ## 4. Queue and follow a Task
 

@@ -146,7 +146,7 @@ See [Developer setup](docs/tutorials/developer-setup.md) for the complete build 
 
 <!-- Source: ../AGENTS.md -->
 <!-- Source: .github/PULL_REQUEST_TEMPLATE.md -->
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
 
 ## Follow the actual lint policy
 

@@ -521,7 +521,7 @@ Phases say what they may settle alone, what they must set aside and what they mu
   ignore list stay outside that authority. It merges to `develop` only when every check is
   green and no decision waits on a maintainer.
 
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
 
 **Who is affected**: anyone who runs the shipped pipeline, and whoever maintains a catalog
 that holds an earlier copy of it.
@@ -647,7 +647,7 @@ For each entry, name the affected command, setting, workflow, state transition, 
 <!-- Source: src/contracts/state-schema.ts -->
 <!-- Source: src/contracts/failure-record.ts -->
 <!-- Source: src/services/failure-notice.ts -->
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
 
 ## First release pending — 2026-08-26
 

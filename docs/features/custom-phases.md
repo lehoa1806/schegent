@@ -1,25 +1,25 @@
-# Custom Phases and Pipelines
+# Custom Phases and Workflows
 
-Schegent starts with an empty catalog: it ships no active Phase, Pipeline, Workflow, model selection, or default Pipeline. Operators populate the catalog by importing one of the repository's `schegent/v1` documents or by authoring definitions in the Dashboard Builder.
+Schegent starts with an empty catalog: it ships no active Phase, Workflow, or model selection. Operators populate the catalog by importing one of the repository's `schegent/v1` documents or by authoring definitions in the Dashboard Builder.
 
 <!-- Source: src/config/pipeline-config.ts -->
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
-<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
+<!-- Source: examples/speckit-bugfix.workflow.yaml -->
 <!-- Source: webview-ui/src/dashboard/routes.ts -->
 
-## Import a real Pipeline package
+## Import a real Workflow package
 
-The repository includes `examples/speckit-new-feature.pipeline.yaml`, `examples/speckit-bugfix.pipeline.yaml`, and `examples/model-catalog.yaml`. Open the Dashboard Builder, run the process-YAML preflight, inspect the resource plan, then confirm publication. Preflight is read-only; publication uses the catalog lifecycle and its workspace-trust, primary-window, revision, and capability gates.
+The repository includes `examples/speckit-new-feature.workflow.yaml`, `examples/speckit-bugfix.workflow.yaml`, `examples/example-two-node.workflow.yaml`, `examples/example-nested-delivery.workflow.yaml`, and `examples/model-catalog.yaml`. Open the Dashboard Builder, run the process-YAML preflight, inspect the resource plan, then confirm publication. Preflight is read-only; publication uses the catalog lifecycle and its workspace-trust, primary-window, revision, and capability gates.
 
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
-<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
+<!-- Source: examples/speckit-bugfix.workflow.yaml -->
 <!-- Source: examples/model-catalog.yaml -->
 <!-- Source: src/services/process-yaml/preflight-service.ts -->
 <!-- Source: src/ui/sidebar/commands/cmd-catalog-lifecycle.ts -->
 
-The new-feature example declares Pipeline `speckit-new-feature` and includes nine real Phase definitions. It is data in `examples/`; nothing loads it automatically.
+The new-feature example declares Workflow `speckit-new-feature` and includes eleven real Phase definitions. It is data in `examples/`; nothing loads it automatically.
 
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
 <!-- Source: src/config/pipeline-config.ts -->
 
 ## Phase definition reference
@@ -73,7 +73,7 @@ phaseIds:
   - finalize
 ```
 
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
 
 ## Retry conditions
 
@@ -98,7 +98,7 @@ A *hand-off* is an incomplete task only a person can finish, in three cases and 
 
 A Phase whose condition is falsy advances, even when it reported `Remaining issues:`. A blocked task or an open spec gap therefore makes implement report `Remaining issues:` and not `CLEAR`, and the Run still moves on to the reviews, `finalize` and `integrate`. `integrate` withholds integration while a `needs-maintainer` decision is open, as described under [Author a verification Phase](#author-a-verification-phase), and because it is the last Phase its remaining issues fail the Run with the `last_phase_issues_remain` cause. `finalize` is not last, so its remaining issues do not fail the Run: `integrate` runs next and reads the repositories again. None of this is a human gate the host enforces: the classification is prose the backend follows, the host checks no marker, basis or count, and a miscount shows in the hand-offs the Phase lists.
 
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
 <!-- Source: src/controller/phase.ts -->
 
 ### When the condition is still true at the cap
@@ -134,7 +134,7 @@ The shipped example's `finalize` instruction already names the concrete check cl
 
 From version 3 its repairs have a stated limit, because a headless run has nobody to ask. A failing dependency-audit check whose advisory is in a dependency the feature did not change may be fixed without approval, by a patch or minor bump of at most three packages in a `fix(deps)` commit of its own, which is reverted if it turns a green check red. A major bump, a forced or blanket update, an `overrides` or `resolutions` entry, a new or replaced dependency, and any change to an audit's threshold, ignore list or waiver are outside that authority and are reported under `Remaining issues:`. From version 5 `finalize` no longer merges: it commits only the feature's paths, and the next Phase, `integrate`, moves each target branch without touching a checkout (see [Finalize and integrate across repositories](../operations/process-yaml.md#finalize-and-integrate-across-repositories)). `integrate` moves `develop` only when every check is green and `<feature_dir>/decisions.md` has no `Status: needs-maintainer` entry. Because `integrate` is the last Phase, its remaining issues fail the Run with the `last_phase_issues_remain` cause, and under `halt-on-failure` they stop the Queue; `finalize`'s do not. This reduces the risk of a stalled run; it does not remove it, because the authority is prose the backend follows and the host does not enforce it.
 
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
 <!-- Source: src/controller/phase.ts -->
 
 ## Versioning and publication
@@ -155,7 +155,7 @@ Phase authoring additionally requires the `phases` capability. A newly supplied 
 Since `FR-R3-117` a Phase making a load-bearing claim is judged on its **process's exit
 status** rather than on the model's account of its work: a clean termination token
 cannot override a non-zero exit or a timeout. The shipped example,
-`examples/speckit-new-feature.pipeline.yaml`, writes `hostVerification: exit-code` out
+`examples/speckit-new-feature.workflow.yaml`, writes `hostVerification: exit-code` out
 explicitly on every Phase that makes a verifiable claim, even though those Phases would
 resolve to it anyway — an example is what an operator copies, and a Phase should say
 what judges it rather than inherit it silently.
