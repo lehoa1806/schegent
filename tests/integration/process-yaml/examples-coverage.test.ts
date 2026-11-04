@@ -39,7 +39,7 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
   })
 }));
 
-import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
+import { resolveWorkflowCatalog } from '../../../src/config/workflow-catalog';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
 import {
   CMD_PREFLIGHT_PROCESS_YAML,
@@ -52,7 +52,7 @@ import type {
   PreflightProcessYamlResult,
   PublishPackageCommand
 } from '../../../src/contracts/sidebar-ipc';
-import type { PipelineDefinition } from '../../../src/contracts/pipeline-definitions';
+import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
 import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
 import { publishDefinitionPackage } from '../../../src/ui/sidebar/commands/cmd-catalog-lifecycle';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
@@ -76,7 +76,7 @@ function kindOf(text: string): string {
   return line === undefined ? '' : line.slice('kind:'.length).trim();
 }
 
-const PIPELINE_EXAMPLES = EXAMPLES.filter((name) => kindOf(readExample(name)) === 'Pipeline');
+const WORKFLOW_EXAMPLES = EXAMPLES.filter((name) => kindOf(readExample(name)) === 'Workflow');
 
 function logger() {
   return {
@@ -88,38 +88,20 @@ function logger() {
   };
 }
 
-/**
- * The catalogs an accepted write mutates. Seeded empty on purpose: a fresh
- * install holds nothing, and with the built-in layers gone (FR-018) that is the
- * whole catalog the operator starts from.
- *
- * Feature 099 (T496f, FR-041/FR-042) — the definitions moved out of settings
- * into the store, and the layer pair collapsed with them, so the installation is
- * the store itself rather than three per-layer arrays.
- */
 interface Installation {
   readonly store: FakeCatalogStore;
 }
 
 const emptyInstallation = (): Installation => ({ store: new FakeCatalogStore() });
 
-/**
- * The `{ rows, revision, ids }` seams every handler in this file reads through.
- *
- * Feature 100 (T512, FR-043) — `ids` is every entry at every state, which is what
- * the presence gate reads; `rows` stays the active bodies the catalogs resolve
- * from. The examples publish outright, so the two agree here — supplying both is
- * what makes that agreement a fact about the store rather than about the harness.
- */
 function readDeps(inst: Installation) {
-  const layer = (kind: 'phase' | 'pipeline' | 'workflow') => () => ({
+  const layer = (kind: 'phase' | 'workflow') => () => ({
     rows: inst.store.rowsOf(kind),
     revision: inst.store.revisionOf(kind),
     ids: new Set(inst.store.idsOf(kind))
   });
   return {
     readPhaseConfig: layer('phase'),
-    readPipelineConfig: layer('pipeline'),
     readWorkflowConfig: layer('workflow')
   };
 }
@@ -156,7 +138,7 @@ async function planFor(inst: Installation, text: string): Promise<ImportPlan> {
   return result.plan;
 }
 
-function imported<T>(plan: ImportPlan, kind: 'phase' | 'pipeline'): readonly T[] {
+function imported<T>(plan: ImportPlan, kind: 'phase' | 'workflow'): readonly T[] {
   const definitions: T[] = [];
   for (const row of plan.rows) {
     if (row.outcome === 'import' && row.resourceKind === kind) {
@@ -171,22 +153,11 @@ function phaseRow(definition: PhaseDefinition): Record<string, unknown> {
   return { id: phaseId, ...declared };
 }
 
-function pipelineRow(definition: PipelineDefinition): Record<string, unknown> {
-  const { pipelineId, phaseIds, ...declared } = definition;
-  return { id: pipelineId, phases: [...phaseIds], ...declared };
+function workflowRow(definition: WorkflowDefinition): Record<string, unknown> {
+  const { workflowId, ...declared } = definition;
+  return { id: workflowId, ...declared };
 }
 
-/**
- * Commit one planned document through the real handler. Nothing is stubbed at the
- * write gate: a Pipeline whose Phases had not landed would be rejected here rather
- * than silently accepted.
- *
- * Feature 100 (T514) — one command carrying both layers, rather than a Phase write
- * followed by a Pipeline write. The ordering claim of FR-038/FR-045 is now the
- * host's (it ranks the layers itself), and the document's own consistency is
- * checked over the whole request before anything is written, so an example that
- * referenced a Phase it did not ship would refuse instead of half-landing.
- */
 async function commit(inst: Installation, plan: ImportPlan): Promise<readonly string[]> {
   const acks: CommandAckMessage[] = [];
   const ctx = {
@@ -221,16 +192,16 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly st
     });
   }
 
-  const pipelines = imported<PipelineDefinition>(plan, 'pipeline');
-  if (pipelines.length > 0) {
-    const revision = plan.computedAgainstPipelineRevision;
+  const workflows = imported<WorkflowDefinition>(plan, 'workflow');
+  if (workflows.length > 0) {
+    const revision = plan.computedAgainstWorkflowRevision;
     expect(revision).toBeDefined();
     layers.push({
-      kind: 'pipeline',
+      kind: 'workflow',
       expectedRevision: revision!,
-      definitions: pipelines.map((definition) => ({
-        id: definition.pipelineId,
-        body: pipelineRow(definition)
+      definitions: workflows.map((definition) => ({
+        id: definition.workflowId,
+        body: workflowRow(definition)
       }))
     });
   }
@@ -253,29 +224,24 @@ function phaseCatalog(inst: Installation) {
   });
 }
 
-function pipelineCatalog(inst: Installation) {
-  return resolvePipelineCatalog({
-    rows: inst.store.rowsOf('pipeline'),
-    revision: inst.store.revisionOf('pipeline'),
-    phaseCatalog: phaseCatalog(inst).effective
+function workflowCatalog(inst: Installation) {
+  const phases = phaseCatalog(inst);
+  return resolveWorkflowCatalog({
+    rows: inst.store.rowsOf('workflow'),
+    revision: inst.store.revisionOf('workflow'),
+    phaseCatalog: { effective: phases.effective, records: phases.records }
   });
 }
 
 describe('Feature 098 T059 — the shipped examples are the whole catalog', () => {
-  it('ships at least one importable Pipeline document', () => {
-    // Guards the discovery itself: an empty list would make every assertion
-    // below vacuously true, which is the one way this file could go green while
-    // the product shipped nothing to import.
-    expect(PIPELINE_EXAMPLES.length).toBeGreaterThan(0);
+  it('ships at least one importable Workflow document', () => {
+    expect(WORKFLOW_EXAMPLES.length).toBeGreaterThan(0);
     expect(EXAMPLES).toContain('model-catalog.yaml');
   });
 
   it('plans every example resource as a write against an empty catalog (FR-037)', async () => {
-    // The pre-098 shape of this assertion was sixteen `skip` rows: the built-in
-    // layer claimed the ids and `import-planner.ts` skipped anything claimed in
-    // any layer. With that layer gone there is nothing left to collide with.
     const inst = emptyInstallation();
-    for (const name of PIPELINE_EXAMPLES) {
+    for (const name of WORKFLOW_EXAMPLES) {
       const plan = await planFor(inst, readExample(name));
       const outcomes = plan.rows.map((row) => row.outcome);
       expect(outcomes.length, name).toBeGreaterThan(0);
@@ -284,37 +250,34 @@ describe('Feature 098 T059 — the shipped examples are the whole catalog', () =
     }
   });
 
-  it('leaves the operator every Pipeline the previous build compiled in (SC-017)', async () => {
+  it('leaves the operator every Workflow the shipped examples declare (SC-017)', async () => {
     const inst = emptyInstallation();
-    expect(pipelineCatalog(inst).effective).toHaveLength(0);
+    expect(workflowCatalog(inst).effective).toHaveLength(0);
 
-    for (const name of PIPELINE_EXAMPLES) {
+    for (const name of WORKFLOW_EXAMPLES) {
       await commit(inst, await planFor(inst, readExample(name)));
     }
 
-    // Each shipped document's own id, resolved out of the catalog it wrote —
-    // not a hardcoded list, so adding an example extends the claim rather than
-    // failing it.
-    const declared = PIPELINE_EXAMPLES.map((name) => name.replace(/\.pipeline\.yaml$/, ''));
-    const resolved = pipelineCatalog(inst).effective.map((d) => d.pipelineId);
-    expect([...resolved].sort()).toEqual([...declared].sort());
+    const resolved = workflowCatalog(inst).effective.map((d) => d.workflowId);
+    expect(resolved).toContain('example-conditional-graph');
+    expect(resolved).toContain('example-draft');
+    expect(resolved).toContain('example-revise');
   });
 
-  it('resolves every Phase each example Pipeline runs (FR-038)', async () => {
-    // The ordering claim, stated by outcome rather than by call order: a
-    // Pipeline resolves against the effective Phase catalog, so a run strip
-    // missing a Phase is the failure a Phases-after-Pipelines write would cause.
+  it('resolves every Phase each example Workflow runs (FR-038)', async () => {
     const inst = emptyInstallation();
-    for (const name of PIPELINE_EXAMPLES) {
+    for (const name of WORKFLOW_EXAMPLES) {
       await commit(inst, await planFor(inst, readExample(name)));
     }
 
-    const catalog = pipelineCatalog(inst);
+    const catalog = workflowCatalog(inst);
     expect(catalog.records.filter((record) => record.status === 'invalid')).toHaveLength(0);
     const known = new Set(phaseCatalog(inst).effective.map((d) => d.phaseId));
-    for (const pipeline of catalog.effective) {
-      for (const phaseId of pipeline.phaseIds) {
-        expect(known, `${pipeline.pipelineId} -> ${phaseId}`).toContain(phaseId);
+    for (const workflow of catalog.effective) {
+      for (const node of workflow.nodes) {
+        if (node.kind === 'phase' && node.phaseId !== undefined) {
+          expect(known, `${workflow.workflowId} -> ${node.phaseId}`).toContain(node.phaseId);
+        }
       }
     }
   });

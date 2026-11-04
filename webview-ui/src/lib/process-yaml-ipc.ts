@@ -9,7 +9,6 @@
 import { CMD_EXPORT_PROCESS_YAML, CMD_PREFLIGHT_PROCESS_YAML } from './messages';
 import type {
   ExportProcessYamlRequest,
-  PipelineExportInclusion,
   PreflightProcessYamlResult,
   WorkflowExportInclusion
 } from './messages';
@@ -51,32 +50,12 @@ export function exportPhaseYaml(resourceId: string): PostCommandResult {
 }
 
 /**
- * Ask the host to export one Pipeline as a portable package document.
- *
- * `inclusion` is the operator's choice and travels with the request rather than
- * being inferred host-side: the same Pipeline is legitimately exported both ways
- * (FR-012), and only the operator knows which the recipient needs.
- */
-export function exportPipelineYaml(
-  resourceId: string,
-  inclusion: PipelineExportInclusion
-): PostCommandResult {
-  const request: ExportProcessYamlRequest = {
-    resourceKind: 'pipeline',
-    resourceId,
-    inclusion
-  };
-  return postCommand(CMD_EXPORT_PROCESS_YAML, request);
-}
-
-/**
  * Ask the host to export one Workflow as a portable package document.
  *
- * `inclusion` travels with the request for the same reason it does for a Pipeline:
- * the same Workflow is legitimately exported at more than one depth, and only the
- * operator knows how much the recipient already has. Its union is the Workflow's
- * own — three depths rather than two — because a Workflow has two layers of
- * dependency below it, not one.
+ * `inclusion` is the operator's choice and travels with the request rather than
+ * being inferred host-side: the same Workflow is legitimately exported as
+ * references-only or with its full transitive closure of child Workflows and
+ * Phases, and only the operator knows how much the recipient already has.
  */
 export function exportWorkflowYaml(
   resourceId: string,

@@ -331,8 +331,14 @@ const EXCHANGE_KIND_RANK: Readonly<Record<CatalogKind, number>> = {
 };
 
 function exchangeTargets(request: PackagePublishRequest): readonly ImportCommitTarget[] {
+  type ExchangeLayer = PackagePublishRequest['layers'][number] & {
+    readonly kind: 'phase' | 'workflow';
+  };
   return request.layers
-    .filter((layer) => layer.definitions.length > 0)
+    .filter(
+      (layer): layer is ExchangeLayer =>
+        layer.definitions.length > 0 && (layer.kind === 'phase' || layer.kind === 'workflow')
+    )
     .sort((left, right) => EXCHANGE_KIND_RANK[left.kind] - EXCHANGE_KIND_RANK[right.kind])
     .map((layer) => ({
       resourceKind: layer.kind,

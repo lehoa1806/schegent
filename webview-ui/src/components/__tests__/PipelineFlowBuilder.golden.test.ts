@@ -36,8 +36,6 @@ import {
   serializeBody
 } from './pipeline-authoring-script';
 
-vi.mock('../../lib/process-yaml-ipc', () => ({ exportPipelineYaml: vi.fn() }));
-
 afterEach(cleanup);
 
 function mountCanvas(store: PipelineCatalogStore) {

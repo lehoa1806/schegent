@@ -303,7 +303,7 @@
          on what the document declares. The title names the readable kinds so it
          is clear what this accepts, not so a choice has to be made first. -->
     <h3 class="preflight-title" id="process-import-title">
-      Import a Phase, Pipeline, Workflow, or Model Catalog document
+      Import a Phase, Workflow, or Model Catalog document
     </h3>
     <button
       type="button"

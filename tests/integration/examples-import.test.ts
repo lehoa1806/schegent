@@ -44,7 +44,6 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseDocumentText } from '../../src/services/process-yaml/yaml-parser';
 import type { YamlMappingNode } from '../../src/services/process-yaml/types';
-import { parsePipelinePackage } from '../../src/services/process-yaml/pipeline-document';
 import { parseWorkflowPackage } from '../../src/services/process-yaml/workflow-document';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -54,19 +53,9 @@ const read = (name: string): string => readFileSync(resolve(EXAMPLES_DIR, name),
 
 const PIPELINES = ['speckit-new-feature.pipeline.yaml', 'speckit-bugfix.pipeline.yaml'] as const;
 const WORKFLOW = 'example-two-node.workflow.yaml';
-/** Not a Phase/Pipeline/Workflow package; parsed, but read by its own importer. */
+/** Not a Phase/Workflow package; parsed, but read by its own importer. */
 const MODEL_CATALOG = 'model-catalog.yaml';
 
-/**
- * The parsed root of an example, or a failure naming the file.
- *
- * Returns the NODE rather than the result union: `ParseDocumentResult`'s failure
- * branch has no `node`, so returning the union made every call site re-narrow —
- * which reads fine under the default compiler settings and is two diagnostics
- * under the `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` ratchets.
- * Narrowing once here is the honest shape anyway: past this throw, the parse
- * succeeded.
- */
 function tree(name: string): YamlMappingNode {
   const result = parseDocumentText(read(name));
   if (!result.ok) {
@@ -77,55 +66,34 @@ function tree(name: string): YamlMappingNode {
 
 describe('FR-R3-132 — the shipped examples import through the real path', () => {
   it('pins the example set, so a file added or removed is a decision', () => {
-    // The control, and the reason it is an equality rather than a subset check:
-    // every assertion below names a file, so a deletion would shrink what is
-    // checked without failing anything. It also makes a NEW example a deliberate
-    // act — the next one has to be listed here, which is where somebody notices
-    // it needs a test.
     const found = readdirSync(EXAMPLES_DIR)
       .filter((name) => name.endsWith('.yaml'))
       .sort();
     expect(found).toEqual([...PIPELINES, WORKFLOW, MODEL_CATALOG].sort());
   });
 
-  it.each(PIPELINES)('%s is accepted by the package reader', (name) => {
-    const result = parsePipelinePackage(tree(name));
-    if (!result.ok) throw new Error(`${name} refused: ${result.refusal.code}`);
-    // A package, not a bare pipeline: each carries the phases it references, which
-    // is what makes one file enough for a first import.
-    expect(result.resources.length, `${name} carries no included resources`).toBeGreaterThan(1);
-  });
-
   it(`${WORKFLOW} is accepted by the package reader`, () => {
     const result = parseWorkflowPackage(tree(WORKFLOW));
     if (!result.ok) throw new Error(`${WORKFLOW} refused: ${result.refusal.code}`);
-    expect(result.resources.length).toBeGreaterThanOrEqual(1);
+    expect(result.resources.length).toBeGreaterThan(1);
   });
 
-  it('the workflow resolves every pipeline it names, from this folder', () => {
-    // The failure a newcomer hits first: a graph pointing at a pipeline id that
-    // is not in the set they just imported. The workflow is a self-contained
-    // PACKAGE — it includes the pipelines it references, so those ids count too,
-    // and an id it neither includes nor finds in a sibling package is the defect.
+  it('the workflow resolves every child workflow it names, from this package', () => {
     const declared = new Set(
-      [...PIPELINES, WORKFLOW]
-        .flatMap((name) => [...read(name).matchAll(/^\s*id:\s*([\w-]+)\s*$/gm)])
-        // Destructured with a default: an indexed capture read needs a guard that
-        // `noUncheckedIndexedAccess` requires and `no-unnecessary-condition`
-        // calls dead. A default satisfies both.
+      [...read(WORKFLOW).matchAll(/^\s*id:\s*([\w-]+)\s*$/gm)]
         .map(([, id = '']) => id)
         .filter((id) => id.length > 0)
     );
-    const referenced = [...read(WORKFLOW).matchAll(/pipelineId:\s*([\w-]+)/g)]
+    const referenced = [...read(WORKFLOW).matchAll(/workflowId:\s*([\w-]+)/g)]
       .map(([, id = '']) => id)
       .filter((id) => id.length > 0);
 
-    expect(referenced.length, 'a two-node workflow references two pipelines').toBeGreaterThan(1);
-    for (const pipelineId of referenced) {
+    expect(referenced.length, 'a two-node workflow references two child workflows').toBeGreaterThan(1);
+    for (const workflowId of referenced) {
       expect(
         declared,
-        `${WORKFLOW} references pipeline "${pipelineId}", which no package in examples/ declares`
-      ).toContain(pipelineId);
+        `${WORKFLOW} references workflow "${workflowId}", which no resource in ${WORKFLOW} declares`
+      ).toContain(workflowId);
     }
   });
 

@@ -232,6 +232,18 @@ const KNOWN_ABSENT: ReadonlyMap<string, string> = new Map([
   [
     'dashboard.js',
     'an untracked webview build chunk under dist/webview/chunks, renamed by the 097 task-first redesign (ea391673); no source file ever carried the name'
+  ],
+  [
+    'pipeline-document.ts',
+    'retired by FR-R5-F04 (263-workflow-yaml-exchange) when Pipeline YAML exchange was replaced by composable Workflow packages'
+  ],
+  [
+    'pipeline-export-selection.ts',
+    'retired by FR-R5-F04 (263-workflow-yaml-exchange) with Pipeline YAML export; src/services/process-yaml/workflow-export-selection.ts is the survivor'
+  ],
+  [
+    'pipeline-package-import.test.ts',
+    'retired by FR-R5-F04 (263-workflow-yaml-exchange) with Pipeline package import; tests/integration/process-yaml/workflow-package-import.test.ts covers composable Workflow packages'
   ]
 ]);
 

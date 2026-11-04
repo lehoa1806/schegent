@@ -173,7 +173,7 @@ describe('the process-definition export audit row (SK1)', () => {
     );
     expect(cases.length).toBeGreaterThan(20);
     for (const testCase of cases) {
-      await appendExportAudit(deps, { resourceKind: 'pipeline', resourceId: testCase.build(), outcome: 'saved' });
+      await appendExportAudit(deps, { resourceKind: 'workflow', resourceId: testCase.build(), outcome: 'saved' });
     }
     const text = await auditText();
     for (const testCase of cases) {

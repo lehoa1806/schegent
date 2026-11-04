@@ -175,7 +175,6 @@
     // check.
     storedWritableLayers(
       snapshot.phaseCatalog?.records ?? [],
-      snapshot.pipelineCatalog?.records ?? [],
       snapshot.workflowCatalog?.records ?? []
     )
   );

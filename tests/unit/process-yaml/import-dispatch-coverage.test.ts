@@ -44,23 +44,6 @@ const PHASE_ROW = {
   definition: { phaseId: 'phase-one', name: 'Phase One', version: 1, instruction: 'Do the work.' }
 } satisfies ImportPlanRow;
 
-const PIPELINE_ROW = {
-  outcome: 'import',
-  resourceKind: 'pipeline',
-  resourceId: 'flow',
-  name: 'Flow',
-  definition: {
-    pipelineId: 'flow',
-    name: 'Flow',
-    version: 1,
-    phaseIds: ['phase-one'],
-    inputs: [],
-    outputs: [],
-    bindings: [],
-    recommendedNext: []
-  }
-} satisfies ImportPlanRow;
-
 const WORKFLOW_ROW = {
   outcome: 'import',
   resourceKind: 'workflow',
@@ -70,7 +53,7 @@ const WORKFLOW_ROW = {
     workflowId: 'wf',
     name: 'Workflow',
     version: 1,
-    nodes: [{ nodeId: 'first', pipelineId: 'flow' }],
+    nodes: [{ nodeId: 'first', kind: 'phase', phaseId: 'phase-one' }],
     connections: [],
     startNodeIds: ['first']
   }
@@ -86,7 +69,6 @@ const MODEL_ROW = {
 
 const ROW_OF_KIND: Readonly<Record<ProcessYamlResourceKind, ImportPlanRow>> = {
   phase: PHASE_ROW,
-  pipeline: PIPELINE_ROW,
   workflow: WORKFLOW_ROW,
   modelCatalog: MODEL_ROW
 };
@@ -96,7 +78,6 @@ function planOf(rows: readonly ImportPlanRow[]): ImportPlan {
     rows,
     counts: { import: rows.length, skip: 0, blocked: 0, invalid: 0 },
     computedAgainstRevision: 'phase-revision',
-    computedAgainstPipelineRevision: 'pipeline-revision',
     computedAgainstWorkflowRevision: 'workflow-revision',
     computedAgainstModelsRevision: 'models-revision'
   };
@@ -132,14 +113,14 @@ function recordingPort(): Recorder {
 }
 
 describe('FR-R4-F07 V-T1 — every kind with import rows is written (FR-041)', () => {
-  it('writes all four kinds of a plan with one import row each', async () => {
+  it('writes all three kinds of a plan with one import row each', async () => {
     const recorder = recordingPort();
     const plan = planOf(PROCESS_YAML_RESOURCE_KINDS.map((kind) => ROW_OF_KIND[kind]));
 
     const result = await importProcessDocument(recorder.port, { plan });
 
     expect(recorder.packages).toHaveLength(1);
-    expect(recorder.packages[0]?.layers.map((layer) => layer.kind)).toEqual(['phase', 'pipeline', 'workflow']);
+    expect(recorder.packages[0]?.layers.map((layer) => layer.kind)).toEqual(['phase', 'workflow']);
     expect(recorder.modelSaves).toHaveLength(1);
     expect(recorder.modelSaves[0]).toMatchObject({ models: { claude: ['sonnet'] } });
     expect(result.outcome).toBe('imported');

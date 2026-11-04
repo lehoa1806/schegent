@@ -5,24 +5,13 @@
 // could not reach: no Pipeline open, with the bar still on screen.
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PipelineExportInclusion } from '../../lib/messages';
-
-// Hoisted above the component import, as `PipelineCatalogEditor.test.ts` does:
-// `vi.mock` is lifted, so the reference has to stay inside a body that runs at
-// click time.
-const exportSpy = vi.fn<(resourceId: string, inclusion: PipelineExportInclusion) => void>();
-vi.mock('../../lib/process-yaml-ipc', () => ({
-  exportPipelineYaml: (resourceId: string, inclusion: PipelineExportInclusion) =>
-    exportSpy(resourceId, inclusion)
-}));
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import PipelineToolbar from '../PipelineBuilderEditors/PipelineToolbar.svelte';
 import type { MutablePipeline } from '../PipelineBuilderEditors/types';
 import { flowPipelineRow } from './pipeline-flow-fixtures';
 
 afterEach(cleanup);
-beforeEach(() => exportSpy.mockClear());
 
 interface ToolbarOptions {
   pipeline?: MutablePipeline | null;
@@ -75,20 +64,20 @@ function mount(options: ToolbarOptions = {}) {
 }
 
 describe('PipelineToolbar controls (T027)', () => {
-  it('renders all nine controls in one bar', () => {
+  it('renders all seven authoring controls in one bar (Pipeline YAML export retired by FR-R5-F04)', () => {
     const { at, byLabel } = mount();
 
     for (const id of [
       'pipelines-add',
       'pipelines-discard',
       'pipelines-duplicate',
-      'pipelines-export-inclusion',
-      'pipelines-export',
       'pipelines-save-all',
       'pipelines-remove'
     ]) {
       expect(at(id), `${id} must render`).not.toBeNull();
     }
+    expect(at('pipelines-export')).toBeNull();
+    expect(at('pipelines-export-inclusion')).toBeNull();
     expect(byLabel('Undo')).toBeDefined();
     expect(byLabel('Redo')).toBeDefined();
   });
@@ -212,8 +201,6 @@ describe('PipelineToolbar with no Pipeline open (T027a)', () => {
     for (const id of [
       'pipelines-discard',
       'pipelines-duplicate',
-      'pipelines-export-inclusion',
-      'pipelines-export',
       'pipelines-save-all',
       'pipelines-remove'
     ]) {
@@ -266,71 +253,6 @@ describe('PipelineToolbar with no Pipeline open (T027a)', () => {
 
     expect(bar.at('pipelines-remove')?.disabled).toBe(true);
     expect(bar.at('pipelines-save-all')?.disabled).toBe(true);
-  });
-
-  it('exports nothing when the export control is clicked with nothing open', async () => {
-    const bar = empty();
-
-    await fireEvent.click(bar.at('pipelines-export') as HTMLButtonElement);
-    expect(exportSpy).not.toHaveBeenCalled();
-  });
-});
-
-describe('PipelineToolbar export cluster (T029)', () => {
-  it('keeps Export live when the row is read-only', () => {
-    // FR-022. Export writes nothing this extension owns, so it needs neither
-    // trust nor an idle save. Moving the control is where that would be lost:
-    // the natural thing to do while porting is to give it the same `readonly`
-    // term as its five neighbours.
-    const bar = mount({ readonly: true, trusted: false, savePending: true });
-
-    expect(bar.at('pipelines-export')?.disabled).toBe(false);
-    expect(bar.at('pipelines-export-inclusion')?.disabled).toBe(false);
-  });
-
-  it('keeps the inclusion checkbox adjacent to Export', () => {
-    const { container, at } = mount();
-    const inclusion = at('pipelines-export-inclusion') as HTMLElement;
-    const exportButton = at('pipelines-export') as HTMLElement;
-
-    // Adjacent as rendered, not merely both present: FR-012 is about the choice
-    // being made beside the control it changes.
-    const controls = Array.from(
-      container.querySelectorAll('[data-testid="pipelines-export-inclusion"], [data-testid="pipelines-export"]')
-    );
-    expect(controls).toHaveLength(2);
-    expect(inclusion.closest('label')?.nextElementSibling).toBe(exportButton);
-  });
-
-  it('exports the open Pipeline, carrying the inclusion choice', async () => {
-    const { at } = mount();
-
-    await fireEvent.click(at('pipelines-export') as HTMLButtonElement);
-    expect(exportSpy).toHaveBeenCalledWith('release-flow', 'references-only');
-
-    await fireEvent.click(at('pipelines-export-inclusion') as HTMLInputElement);
-    await fireEvent.click(at('pipelines-export') as HTMLButtonElement);
-    expect(exportSpy).toHaveBeenLastCalledWith('release-flow', 'include-referenced');
-  });
-
-  it('blocks export of an unsaved draft and says why, through aria-describedby', () => {
-    const { at } = mount({ pipeline: flowPipelineRow({ persisted: false }) });
-    const exportButton = at('pipelines-export') as HTMLButtonElement;
-    const reason = at('pipelines-export-disabled-reason') as HTMLElement;
-
-    expect(exportButton.disabled).toBe(true);
-    expect(reason).not.toBeNull();
-    expect(exportButton.getAttribute('aria-describedby')).toBe(reason.getAttribute('id'));
-    expect(reason.textContent).toContain('Save this Pipeline first');
-  });
-
-  it('names no reason region when export is live', () => {
-    const { at } = mount();
-
-    // A dangling `aria-describedby` is a broken reference, so the attribute has
-    // to be absent rather than pointing at a region that is not rendered.
-    expect(at('pipelines-export')?.getAttribute('aria-describedby')).toBeNull();
-    expect(at('pipelines-export-disabled-reason')).toBeNull();
   });
 });
 

@@ -31,7 +31,7 @@ function row(overrides: Partial<MutableWorkflow> = {}): MutableWorkflow {
     workflowId: 'design-then-build',
     name: 'Design then Build',
     version: 1,
-    nodes: [{ nodeId: 'design', pipelineId: 'design-review' }],
+    nodes: [{ nodeId: 'design', kind: 'phase', phaseId: 'design-review' }],
     connections: [],
     startNodeIds: ['design'],
     sourceKey: 'design-then-build::0',
@@ -80,18 +80,18 @@ describe('WorkflowToolbar export inclusion (T023, FR-013)', () => {
     const { getByTestId } = mount(row());
     const select = getByTestId('workflows-export-inclusion') as HTMLSelectElement;
 
-    await fireEvent.change(select, { target: { value: 'include-pipelines' } });
+    await fireEvent.change(select, { target: { value: 'include-closure' } });
     await fireEvent.click(getByTestId('workflows-export'));
 
     expect(exportSpy).toHaveBeenCalledTimes(1);
-    expect(exportSpy).toHaveBeenCalledWith('design-then-build', 'include-pipelines');
+    expect(exportSpy).toHaveBeenCalledWith('design-then-build', 'include-closure');
   });
 
   it('returns to the reference package when the choice is taken back', async () => {
     const { getByTestId } = mount(row());
     const select = getByTestId('workflows-export-inclusion') as HTMLSelectElement;
 
-    await fireEvent.change(select, { target: { value: 'include-pipelines' } });
+    await fireEvent.change(select, { target: { value: 'include-closure' } });
     await fireEvent.change(select, { target: { value: 'references-only' } });
     await fireEvent.click(getByTestId('workflows-export'));
 
@@ -99,42 +99,30 @@ describe('WorkflowToolbar export inclusion (T023, FR-013)', () => {
   });
 
   it('offers only the depths the host can actually produce', () => {
-    // A control listing a mode the exporter ignores would hand back a document
-    // missing the payload it named, with no error to say so. Options grow with
-    // the host, never ahead of it: this list was two entries until T028 gave
-    // `include-closure` an arm that emits `included.phases`, and it is asserted
-    // exhaustively so a fourth arm cannot appear in the contract without a
-    // deliberate decision here.
-    //
-    // Shallowest first, so the default is also the first option and the order
-    // reads as increasing disclosure.
     const { getByTestId } = mount(row());
     const values = Array.from(
       (getByTestId('workflows-export-inclusion') as HTMLSelectElement).options
     ).map((option) => option.value);
 
-    expect(values).toEqual(['references-only', 'include-pipelines', 'include-closure']);
+    expect(values).toEqual(['references-only', 'include-closure']);
   });
 
-  it('stays available for a Workflow whose Pipelines do not resolve (FR-016, FR-018)', async () => {
-    // Whether the references resolve is the host's call — it reads the effective
-    // catalog and this surface does not. Pre-checking here would refuse the
-    // export before the host could name which Pipeline was missing.
+  it('stays available for a Workflow whose dependencies do not resolve (FR-016, FR-018)', async () => {
     const unresolved = row({
       sourceStatus: 'invalid',
       sourceErrors: [
-        { field: 'nodes', code: 'unknown-pipeline', message: 'design-review is not defined.' }
+        { field: 'nodes', code: 'unknown-phase', message: 'design-review is not defined.' }
       ] as MutableWorkflow['sourceErrors']
     });
     const { getByTestId } = mount(unresolved);
 
     expect((getByTestId('workflows-export-inclusion') as HTMLSelectElement).disabled).toBe(false);
     await fireEvent.change(getByTestId('workflows-export-inclusion'), {
-      target: { value: 'include-pipelines' }
+      target: { value: 'include-closure' }
     });
     await fireEvent.click(getByTestId('workflows-export'));
 
-    expect(exportSpy).toHaveBeenCalledWith('design-then-build', 'include-pipelines');
+    expect(exportSpy).toHaveBeenCalledWith('design-then-build', 'include-closure');
   });
 
   it('offers no choice on an unsaved draft, because there is nothing to export', () => {
@@ -151,17 +139,14 @@ describe('WorkflowToolbar export inclusion (T023, FR-013)', () => {
   });
 
   it('keeps the choice across a change of selection, because it describes the handover', async () => {
-    // A property of how this operator is handing the definition over, not of the
-    // Workflow, so it survives re-selection instead of resetting under someone
-    // exporting several rows in a row. Nothing is persisted.
     const { getByTestId, rerender } = mount(row());
     await fireEvent.change(getByTestId('workflows-export-inclusion'), {
-      target: { value: 'include-pipelines' }
+      target: { value: 'include-closure' }
     });
 
     await rerender({ selected: row({ workflowId: 'other-flow', sourceKey: 'workspace::other::1' }) });
     await fireEvent.click(getByTestId('workflows-export'));
 
-    expect(exportSpy).toHaveBeenCalledWith('other-flow', 'include-pipelines');
+    expect(exportSpy).toHaveBeenCalledWith('other-flow', 'include-closure');
   });
 });
