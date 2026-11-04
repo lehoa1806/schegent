@@ -23,6 +23,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { AmbientConfigObservation } from '../contracts/audit-events';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { openWithinRootByPath } from '../lib/safe-open';
 
 /** A minimal read seam, so tests never touch a real home directory. */
 export interface AmbientConfigReader {
@@ -36,12 +37,12 @@ export interface AmbientConfigReader {
  * empty observation, because "there is no such file" and "the file is empty" are different
  * facts and an operator reading evidence should be able to tell them apart.
  */
-function configPathFor(kind: BackendRunnerKind): string | null {
+function configPathFor(kind: BackendRunnerKind, home: string = homedir()): string | null {
   switch (kind) {
     case 'claude':
-      return join(homedir(), '.claude', 'settings.json');
+      return join(home, '.claude', 'settings.json');
     case 'codex':
-      return join(homedir(), '.codex', 'config.toml');
+      return join(home, '.codex', 'config.toml');
     case 'agy':
       return null;
     default:
@@ -61,9 +62,10 @@ export const OBSERVED_KEYS = ['permissions', 'allowedTools', 'disallowedTools', 
 
 export async function observeAmbientConfig(
   kind: BackendRunnerKind,
-  reader: AmbientConfigReader
+  reader: AmbientConfigReader,
+  home: string = homedir()
 ): Promise<AmbientConfigObservation | null> {
-  const path = configPathFor(kind);
+  const path = configPathFor(kind, home);
   if (path === null) return null;
 
   let raw: string;
@@ -94,4 +96,35 @@ export async function observeAmbientConfig(
 
 function digestOf(material: string): string {
   return createHash('sha256').update(material, 'utf8').digest('hex');
+}
+
+/**
+ * Production observer wired into `PhaseRunner` (`src/activation/phase-execution-wiring.ts`).
+ * Reads the candidate user-level file under `home` via `openWithinRootByPath` so a
+ * symlinked directory or leaf under `$HOME` is refused (`O_NOFOLLOW` + `lstat` walk).
+ */
+export async function observeHostAmbientConfig(
+  kind: BackendRunnerKind,
+  home: string = homedir()
+): Promise<AmbientConfigObservation | null> {
+  return observeAmbientConfig(
+    kind,
+    {
+      readFile: async (absolutePath: string) => {
+        const opened = await openWithinRootByPath(home, absolutePath, {
+          flags: 'r',
+          createDirs: false
+        });
+        if (opened.outcome === 'refused') {
+          throw new Error(`ambient config open refused: ${opened.reason}`);
+        }
+        try {
+          return await opened.handle.readFile('utf8');
+        } finally {
+          await opened.handle.close().catch(() => undefined);
+        }
+      }
+    },
+    home
+  );
 }

@@ -346,16 +346,16 @@ export class PhaseRunner {
     backendPostureAccessor: BackendPostureAccessor | null = null,
     /**
      * FR-R3-080 (T1075) — where a refused evidence write becomes an
-     * operator-visible phase-end warning.
-     *
-     * Positional and defaulted for the same reason `backendPostureAccessor`
-     * above is: 109 test harnesses construct this class positionally, so a
-     * required parameter is not available cheaply here. Absent, the phase-end
-     * record carries no refusal codes — which is exactly the state this item
-     * exists to leave, so production wiring is what makes it true, and the
-     * warnings themselves are the observable proof.
+     * operator-visible phase-end warning. Positional and defaulted for the
+     * same reason `backendPostureAccessor` above is: 109 test harnesses
+     * construct this class positionally. Absent, the phase-end record carries
+     * no refusal codes — production wiring (`phase-execution-wiring.ts`)
+     * supplies both this drain and `ambientConfigObserver` (FR-R3-105).
      */
-    private readonly evidenceHealthDrain: { drainPathRefusals(): readonly string[] } | null = null
+    private readonly evidenceHealthDrain: { drainPathRefusals(): readonly string[] } | null = null,
+    private readonly ambientConfigObserver?: (
+      kind: BackendRunnerKind
+    ) => Promise<import('../contracts/audit-events').AmbientConfigObservation | null>
   ) {
     // Feature 074 — accept either a BackendRunnerRegistry (per-phase
     // runner resolution) or a plain BackendRunner (backwards compat
@@ -560,7 +560,7 @@ export class PhaseRunner {
     // method, which is why the record sits here; see `BackendPostureRecorder`.
     await this.postureRecorder.recordOnce(inputs, effectiveRunnerKind);
     // FR-R3-086 — refuse before `phase-start`; see `capability-decision-recorder`.
-    await recordCapabilityDecision(inputs, effectiveRunnerKind, this.appendAudit.bind(this));
+    await recordCapabilityDecision(inputs, effectiveRunnerKind, this.appendAudit.bind(this), this.ambientConfigObserver);
 
     const startPayload: Record<string, unknown> = {
       ...(inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId }),

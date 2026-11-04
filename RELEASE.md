@@ -104,7 +104,10 @@ for the spend bound, the restart replay and where each limit comes from.
 **What changed.** Process definitions are now unified around two kinds: **Phase** (one reusable
 agent action) and **Workflow** (a reusable process whose nodes reference Phases or child
 Workflows). `Pipeline` is retired as a product/domain resource kind, authoring tab, launch
-route, and Process YAML exchange kind (`kind: Pipeline` is refused with `unsupported-kind`).
+route, and Process YAML exchange kind (`kind: Pipeline` is refused with `unsupported-kind`),
+while `schegent.defaultPipelineId` and internal `PipelineDef` / `ExecutionEnvelope`
+representations in `loadCatalog` and `node-run-starter.ts` remain as internal configuration and
+single-node execution substrates.
 
 - **Composable Workflows and explicit public interfaces (`FR-R5-F01`, `260`).** A Workflow node
   targets either `phaseId` or `workflowId`. Workflows declare explicit public `inputs` and
@@ -659,7 +662,9 @@ No npm script runs `vsce publish`, `ovsx publish`, or another Marketplace deploy
 Marketplace token name or credential procedure is checked in. `npm run package` creates a VSIX only.
 
 A maintainer must use the externally governed publisher account and procedure; this document cannot
-supply an exact publish command or credential name from repository evidence.
+supply an exact publish command or credential name from repository evidence. If a published VSIX
+must be withdrawn, unpublish or deprecate that version through the publisher portal and cut a new
+forward patch version rather than retagging an existing tag (see `Failure and rerun policy` below).
 <!-- Source: package.json -->
 
 ## Failure and rerun policy

@@ -129,27 +129,28 @@ What it bounds and what it does not, in the same paragraph on purpose:
   **vocabulary**, not an ability. A phase that withholds `network` while granting `process-spawn` keeps
   `Bash`, and `Bash` reaches the network: `curl`, `wget`, a script, a package manager. So the honest
   reading of that combination is *"the model cannot use the fetch tools"*, not *"the phase cannot reach
-  the network"*. **`Bash` ⊃ `network`.** Withholding both is what actually removes network reach on this
-  backend, and the destination that would close the gap properly is a mediated broker or a CLI-side
-  network sandbox — neither of which exists here.
+  the network"*. **`Bash` ⊃ `network`.** Withholding both removes built-in fetch and shell reach on this
+  backend (though MCP tools or hooks loaded from the CLI's own ambient configuration are not covered by
+  `--disallowedTools WebFetch,WebSearch,Bash`), and the destination that would close the gap properly is a
+  mediated broker or a CLI-side network sandbox — neither of which exists here.
 - **The ambient CLI configuration can widen a narrowed set without any flag being dishonoured.** The
   trust anchor above says the backend honours its own flags. It does — and it also honours its own
   configuration file, which the host neither pins nor controls. A narrowed argv defers to whatever
   `~/.claude/settings.json` (or the codex equivalent) says, so an operator-local file can loosen a bound
   the plan applied, with every flag respected. `FR-R3-105` added an observer
   (`src/services/ambient-config-observer.ts`) and a field on `capability-applied` to carry its result,
-  but the phase runner does not pass the observer (`src/controller/phase-runner.ts:563`), so every
-  `capability-applied` event records that field as `null`: **nothing is observed today**. Once the
-  observer is called it reads one user-level file per backend. For `claude` that is
+  wired through the phase runner (`src/controller/phase-runner.ts:563`, constructed in
+  `src/activation/phase-execution-wiring.ts`). When the observer runs it reads one user-level file per
+  backend via `openWithinRootByPath` under the home directory. For `claude` that is
   `~/.claude/settings.json`, digested over whichever of `permissions`, `allowedTools`, `disallowedTools`
   and `env` are present, or over the whole text when the file does not parse as JSON. For `codex` it is
-  the whole of `~/.codex/config.toml`. For `agy` it is nothing, and an absent or unreadable file yields no
-  observation either. No other settings file is read: the workspace's own `.claude/settings.json` and
+  the whole of `~/.codex/config.toml`. For `agy` it is nothing, and an absent, symlinked, or unreadable
+  file yields `null`. No other settings file is read: the workspace's own `.claude/settings.json` and
   `.claude/settings.local.json` are never observed, and a phase allowed to write the workspace can change
-  them. So evidence cannot answer *was the ambient configuration the same on these two Runs*. Once the
-  observer is wired it could answer only whether the observed user-level file, or its widening keys,
-  changed, and two Runs that both lack that file would have nothing to compare, which is not the same as
-  the same. The observation never records the path (workspace paths may not enter the structured log,
+  them. So evidence still cannot answer *was the entire effective configuration the same on these two
+  Runs*: it answers whether the observed user-level file, or its widening keys, changed between two Runs,
+  while two Runs that both lack that file record `null` (`nothing observed` rather than `proven identical`).
+  The observation never records the path (workspace paths may not enter the structured log,
   and a home path additionally carries the operator's username) or the values (a settings file can hold
   an API key). Pinning with `--settings` is the stronger answer and is the recorded destination; taking it needs
   the flag's stability established against a live CLI, which costs operator quota and has not been spent.
@@ -623,11 +624,12 @@ Workflow conditions remain structured operands and a closed operator union. The 
 
 ### T23 — Operator-authored value escapes its declared bound
 
-Phase, Pipeline, Workflow, port, and retry-expression bounds belong to their contract modules. Ingress and reporting must import those constants rather than declare private look-alike maxima.
+Phase, Pipeline, Workflow, port, and retry-expression bounds belong to their contract modules. Ingress and reporting must import those constants rather than declare private look-alike maxima. Composable Workflow inclusion is additionally bounded across the transitive closure (`MAX_WORKFLOW_NESTING_DEPTH = 8`, `MAX_WORKFLOW_CLOSURE_DEFINITIONS = 64`, `MAX_WORKFLOW_EXPANDED_NODES = 256` in `src/config/workflow-closure-resolver.ts`), refusing cyclic or deep child-Workflow expansion before execution or `include-closure` YAML import/export, and cross-node `local-file` / `local-folder` port bindings pass through the `RunRequest` workspace-root containment check (`src/services/run-request/run-request-validator.ts`).
 
 <!-- Source: src/contracts/process-definitions.ts -->
 <!-- Source: src/contracts/pipeline-definitions.ts -->
 <!-- Source: src/contracts/workflow-definitions.ts -->
+<!-- Source: src/config/workflow-closure-resolver.ts -->
 <!-- Source: tests/lint/retry-condition-bound-declared-once.test.ts -->
 
 ### T24 — Legacy persisted state re-enters the runtime

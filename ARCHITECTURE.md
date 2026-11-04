@@ -130,7 +130,7 @@ table is an ownership map, not permission for cross-layer shortcuts.
 |---|---|
 | `src/activation/` | Extension-host composition and lifecycle wiring. |
 | `src/audit/` | Structured audit envelopes, rotation, raw transcripts, and diagnostic evidence writers. |
-| `src/catalog/` | Versioned Phase, Pipeline, and Workflow catalog persistence and lifecycle state. |
+| `src/catalog/` | Versioned Phase and Workflow catalog persistence and lifecycle state (plus transitional internal Pipeline loader compatibility). |
 | `src/commands/` | Contributed VS Code command handlers. |
 | `src/config/` | Settings schemas, effective catalog projections, Pipeline snapshots, and definition validators. |
 | `src/contracts/` | Shared host/webview, runner, state, audit, and catalog types plus validators. |
@@ -200,20 +200,28 @@ be edited apart without a `contracts:check` failure that names the stale file.
 
 ## Catalog and immutable execution plans
 
-The catalog stores three definition kinds: Phase, Pipeline, and Workflow. Each
-kind has versioned published content, an optional draft, and lifecycle state.
-The effective projection supplies only runtime-eligible definitions. Lifecycle
-writes use expected versions or revisions so stale editors are rejected rather
-than overwriting a newer decision.
+The public catalog and Builder surface expose two definition kinds: Phase and
+composable Workflow (Feature 260 / Round 5 retired Pipeline as a user-facing
+third kind, while `loadCatalog` retains `'pipeline'` as an internal execution
+and migration compatibility substrate). Each kind has versioned published
+content, an optional draft, and lifecycle state. The effective projection
+supplies only runtime-eligible definitions. Lifecycle writes use expected
+versions or revisions so stale editors are rejected rather than overwriting a
+newer decision.
 
-A `RunRequest` is transient and identity-free. It names one Pipeline, declared
-input values, supplemental material, output targets, and optional instructions.
-The validation service resolves the effective published definition, validates
-ports and paths, and produces an immutable `ExecutionEnvelope`. That envelope
-contains the expanded Pipeline snapshot, frozen inputs, supplemental inputs,
-outputs, instructions, timestamp, and, when known, the published catalog
-version. The enqueue path persists the frozen value; execution consumes the
-same value instead of re-reading a changed live catalog.
+A composable `Workflow` DAG contains nodes whose `target.kind` is either
+`'phase'` or `'workflow'` (nested child workflow invocation). At Run admission,
+`freezeWorkflowClosure` (`src/services/workflow-closure-freezer.ts`) snapshots
+the root Workflow, every transitively referenced child Workflow, and every
+referenced Phase into an immutable `FrozenWorkflowClosure`, and runtime graph
+traversal records per-node `WorkflowInvocationFrame` entries on `WorkflowRun`.
+For direct Phase/Pipeline execution and per-node Phase dispatch
+(`src/controller/workflow/node-run-starter.ts`), a transient `RunRequest` is
+validated into an immutable `ExecutionEnvelope` containing the expanded
+`PipelineDef` snapshot, frozen inputs, supplemental inputs, outputs,
+instructions, timestamp, and published catalog version. In both paths, the
+enqueue boundary persists the frozen snapshot and execution consumes that frozen
+value instead of re-reading a changed live catalog.
 
 A Phase definition's `sideEffects` declaration selects mutation planning,
 operator consent, rollback checkpoint behavior, and the refusal of a
@@ -862,9 +870,10 @@ its key to the canonical tuple, never to one side's copy. A new persisted field
 requires an old-record read story and, when record shape changes, the next
 forward migration.
 
-A new catalog definition or lifecycle operation must preserve the three-kind
-closed union, optimistic concurrency, trust ordering, published-version
-history, and immutable execution snapshot. A new destructive filesystem action
+A new catalog definition or lifecycle operation must preserve the two-kind
+public catalog union (Phase and Workflow), optimistic concurrency, trust
+ordering, published-version history, and immutable execution snapshots
+(`FrozenWorkflowClosure` and `ExecutionEnvelope`). A new destructive filesystem action
 must call the shared path-safety oracle immediately before effect. A new audit
 event keeps payloads bounded and paths-free, while readers continue to tolerate
 unknown event types.

@@ -13,13 +13,17 @@
 // is exactly why the mechanism refuses a phase whose declared set a backend
 // cannot express rather than trusting it to do something sensible.
 import { EventEmitter } from 'node:events';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import { AgyCliRunner } from '../../src/runner/agy-cli';
 import { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import { declaredCapabilitySet, DEFAULT_CAPABILITY_SET, ALL_PHASE_CAPABILITIES } from '../../src/contracts/phase-capabilities';
 import { isCapabilityRefusal } from '../../src/services/capability-refusal';
-import { capabilityRequestFields } from '../../src/controller/capability-decision-recorder';
+import { capabilityRequestFields, recordCapabilityDecision } from '../../src/controller/capability-decision-recorder';
+import { observeHostAmbientConfig } from '../../src/services/ambient-config-observer';
 import { planCapabilityEnforcement } from '../../src/services/capability-enforcement-plan';
 import type { DeclaredCapabilitySet } from '../../src/contracts/phase-capabilities';
 import type { InvocationRequest } from '../../src/runner/invocation-result';
@@ -185,5 +189,38 @@ describe('FR-R3-086 — a declared capability set is enforced or the phase is re
     // which would change the shape of every existing invocation.
     expect(capabilityRequestFields({ phaseDef: {}, iteration: 0 })).toEqual({});
     expect(capabilityRequestFields({ iteration: 0 })).toEqual({});
+  });
+
+  it('END TO END: recordCapabilityDecision + observeHostAmbientConfig records non-null ambientConfig on capability-applied (FR-R3-105)', async () => {
+    const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cap-int-'));
+    try {
+      await fs.mkdir(path.join(tmpHome, '.claude'), { recursive: true });
+      await fs.writeFile(
+        path.join(tmpHome, '.claude', 'settings.json'),
+        JSON.stringify({ permissions: { allow: ['Bash'] }, disallowedTools: ['WebFetch'] }),
+        'utf8'
+      );
+      const recorded: Array<{ eventType: string; outcome: string; payload: Record<string, unknown> }> = [];
+      await recordCapabilityDecision(
+        {
+          phaseDef: { capabilities: ['workspace-write'] },
+          iteration: 0
+        },
+        'claude',
+        async (_ctx, eventType, outcome, payload) => {
+          recorded.push({ eventType, outcome, payload });
+        },
+        (kind) => observeHostAmbientConfig(kind, tmpHome)
+      );
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]?.eventType).toBe('capability-applied');
+      expect(recorded[0]?.outcome).toBe('success');
+      expect(recorded[0]?.payload.ambientConfig).toEqual({
+        digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+        keysObserved: ['permissions', 'disallowedTools']
+      });
+    } finally {
+      await fs.rm(tmpHome, { recursive: true, force: true });
+    }
   });
 });

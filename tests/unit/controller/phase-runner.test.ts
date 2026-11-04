@@ -4,6 +4,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { PhaseRunner } from '../../../src/controller/phase-runner';
+import { observeHostAmbientConfig } from '../../../src/services/ambient-config-observer';
 import { COMPACTION_MODEL_ID } from '../../../src/controller/session-compactor';
 import { PromptBuilder } from '../../../src/runner/prompt-builder';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -2164,5 +2165,57 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
       resumeSessionId: 'owned-session',
       resumeSessionCostUsd: 1.0
     });
+  });
+
+  it('records observed ambient CLI config on capability-applied when ambientConfigObserver is injected (FR-R3-105)', async () => {
+    const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-pr-ambient-'));
+    try {
+      await fs.mkdir(path.join(tmpHome, '.claude'), { recursive: true });
+      await fs.writeFile(
+        path.join(tmpHome, '.claude', 'settings.json'),
+        JSON.stringify({ permissions: { allow: ['Bash'] } }),
+        'utf8'
+      );
+
+      cliRunner = makeFakeRunner(async () => makeRawOutput());
+      runner = new PhaseRunner(
+        cliRunner,
+        new PromptBuilder(),
+        auditWriter,
+        new SanitizedLogger(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        (kind) => observeHostAmbientConfig(kind, tmpHome)
+      );
+
+      await runner.run({
+        ...baseInputs,
+        phaseDef: {
+          id: 'speckit-specify',
+          name: 'Specify',
+          instruction: 'Specify the feature.',
+          capabilities: ['workspace-write']
+        }
+      });
+
+      const appendCalls = (auditWriter.append as ReturnType<typeof vi.fn>).mock.calls.map(
+        (call) => call[0] as Omit<AuditEntry, 'id' | 'timestamp'>
+      );
+      const capabilityApplied = appendCalls.find((entry) => entry.eventType === 'capability-applied');
+      expect(capabilityApplied).toBeDefined();
+      expect(capabilityApplied?.payload.ambientConfig).toEqual({
+        digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+        keysObserved: ['permissions']
+      });
+    } finally {
+      await fs.rm(tmpHome, { recursive: true, force: true });
+    }
   });
 });

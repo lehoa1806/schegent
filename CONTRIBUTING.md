@@ -250,7 +250,10 @@ auto-detection will see the launch fail to build first. One honest sentence rath
 claiming a task file or denying the launch file.
 
 `npm run test:integration` remains the checked-in automated Extension Development Host path,
-and it is the one CI-equivalent route — F5 is a person at a keyboard.
+and it is the one CI-equivalent route — F5 is a person at a keyboard. Inside an F5 Extension
+Development Host window, use `Developer: Open Webview Developer Tools` from the Command Palette
+to inspect the Svelte 5 sidebar or dashboard DOM and console, and run `npm run contracts:check`
+whenever you change a host/webview contract or JSON schema.
 <!-- Source: .vscode/settings.json -->
 <!-- Source: package.json -->
 <!-- Source: tests/integration/runTest.ts -->

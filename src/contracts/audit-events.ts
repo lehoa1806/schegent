@@ -726,12 +726,11 @@ export interface CapabilityAppliedPayload {
    * FR-R3-105 (FR-066) — what the backend's own configuration said, observed.
    *
    * WHY EVIDENCE OF A BOUND IS NOT ENOUGH WITHOUT THIS. A narrowed argv defers to
-   * whatever the CLI's ambient configuration says. The host neither pins nor read
-   * that file, so `granted` above answered "which bound did the host apply" while
-   * leaving "and was that bound the operative one" unanswerable. The threat model
-   * discloses the trust anchor — the backend CLI honouring its own flags — but not
-   * that a *local config file* can widen a narrowed set without any flag being
-   * dishonoured.
+   * whatever the CLI's ambient configuration says. The host does not pin that file,
+   * so `granted` above answered "which bound did the host apply" while `PhaseRunner`
+   * wires `observeHostAmbientConfig` (`src/services/ambient-config-observer.ts`) to
+   * record the user-level config digest. The threat model discloses the trust anchor
+   * and that a *local config file* can widen a narrowed set with every flag honoured.
    *
    * `null` when no configuration was found, which is itself an answer.
    *

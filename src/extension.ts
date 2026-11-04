@@ -315,9 +315,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     return null;
   }
 
-  // FR-R3-119 — extracted to `src/activation/workspace-settings.ts`. Two bindings
-  // in, nine values out, no side effects: configuration resolution that lived in
-  // the composition root only because that is where it was first written.
+  // FR-R3-119 — extracted to `src/activation/workspace-settings.ts`.
   const {
     cliPath,
     processEnvironmentPolicy,
@@ -325,16 +323,13 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     pollIntervalMinutes,
     timeoutSeconds,
     maxDurationSeconds,
-    rotationSizeMB, rotationMaxAgeDays, limits
+    rotationSizeMB,
+    rotationMaxAgeDays,
+    limits
   } = resolveWorkspaceSettings({ workspaceRoot, logger });
-  // FR-R3-119 — extracted to `src/activation/workspace-session.ts`: what this
-  // window owns (catalog, both leases, the primacy claim) and the UI shell that
-  // reports it. Six bindings in, ten out.
-  //
+  // FR-R3-119 — extracted to `src/activation/workspace-session.ts`.
   // `getHistoryStore` is a getter because `catalogStore`'s retained-history
-  // enumerator reads it inside a thunk and the store is built ~180 lines below.
-  // Passing the value would reorder activation to suit an extraction; the getter
-  // preserves the lazy read the original comment describes.
+  // enumerator reads it inside a thunk and the store is built below.
   const session = await openWorkspaceSession({
     workspaceRoot,
     ownerId,
@@ -346,18 +341,19 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   });
   const { catalogReader, catalogStore, catalogSession, catalogLifecycle, lock,
     executionLeases, queueStartFailures, statusBar, notifier, queue, startMountProbe } = session;
-  // FR-R3-119 — extracted to `src/activation/evidence-wiring.ts`: the audit
-  // writer, the retention sweep, and the two thunks that tell them what is still
-  // live. The migration events are passed rather than re-derived — the store
-  // reports them once, and asking twice returns nothing or re-runs a migration.
+  // FR-R3-119 — extracted to `src/activation/evidence-wiring.ts`.
+  // Migration events are passed rather than re-derived so `initialize()` runs once.
   const {
     auditWriter,
     sessionRetention,
     collectAllWorkflowPipelineRefs,
     protectedSessionRunIds,
-    replayEvidenceBacklog, operatorAttribution
+    replayEvidenceBacklog,
+    operatorAttribution
   } = await wireEvidence({
-    workspaceRoot, lock, globalStorageRoot: context.globalStorageUri.fsPath,
+    workspaceRoot,
+    lock,
+    globalStorageRoot: context.globalStorageUri.fsPath,
     logger,
     store,
     queue,
@@ -372,18 +368,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     v11MigrationEvents: migrationEvents.v11MigrationEvents,
     v12MigrationEvents: migrationEvents.v12MigrationEvents,
     orphanedRunEvents: migrationEvents.orphanedRunEvents,
-    runRepairEvents: migrationEvents.runRepairEvents, v14MigrationEvents: migrationEvents.v14MigrationEvents
+    runRepairEvents: migrationEvents.runRepairEvents,
+    v14MigrationEvents: migrationEvents.v14MigrationEvents
   });
-  // FR-R3-119 — extracted to `src/activation/backend-execution-wiring.ts`. 148
-  // lines constructing the monitor, sampler, runner registry and their
-  // collaborators, behind the narrowest input boundary of any candidate region:
-  // nine bindings, against 22 and 30 for the two alternatives.
-  //
-  // The three `bind*` calls below replace three `let x = null` declarations that
-  // were captured by closures in that region and reassigned ~280 lines further
-  // down. Returning them as values would have left those closures holding `null`
-  // — no compile error, no failing test, and the monitor silently stops
-  // recording activity. The binding is named at both ends now.
+  // FR-R3-119 — extracted to `src/activation/backend-execution-wiring.ts`.
+  // The `bind*` setters replace `let x = null` closures so late bindings are
+  // explicit at both ends.
   const backend = wireBackendExecution({
     workspaceRoot,
     cliPath,
@@ -407,12 +397,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     readUncontainedAllowed,
     verboseAccessor
   } = backend;
-  // FR-R3-119 — extracted to `src/activation/phase-execution-wiring.ts`: the four
-  // call-time setting accessors, the retry-decision sink, the phase runner and the
-  // run-safety net. The accessors are grouped because they share one reason —
-  // `AGENTS.md` carries four separate "never cache the X setting on long-lived
-  // runner state" rules, one per accessor, and they read better as one rule
-  // applied four times than as four unrelated options.
+  // FR-R3-119 — extracted to `src/activation/phase-execution-wiring.ts`: the
+  // call-time setting accessors, retry-decision sink, phase runner, and run-safety net.
   const { phaseRunner, runSafety } = await wirePhaseExecution({
     context,
     workspaceRoot,
@@ -429,7 +415,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     sessionRetention,
     protectedSessionRunIds,
     readUncontainedAllowed,
-    verboseAccessor, transportRouter: backend.transportRouter
+    verboseAccessor,
+    transportRouter: backend.transportRouter
   });
 
   const controller = new SchegentWorkflowController(
@@ -485,7 +472,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   const guardedRunService = new GuardedRunService({
     // FR-R3-136 (FR-008) — admission is re-decided at the moment of the write,
     // not at the moment this service was built.
-    isWorkspaceTrusted, lock,
+    isWorkspaceTrusted,
+    lock,
     queue,
     controller,
     logger,
@@ -557,7 +545,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     collectAllWorkflowPipelineRefs,
     effectiveLimitSources: { limits, spendTrust: runSafety.spendWatcher.trustFor },
     bindCapabilityProjector: backend.bindCapabilityProjector,
-    bindTelemetryProjector: backend.bindTelemetryProjector, transportUsage: () => backend.transportRouter.usage()
+    bindTelemetryProjector: backend.bindTelemetryProjector,
+    transportUsage: () => backend.transportRouter.usage()
   });
 
   // Feature 073 — constructed once per activation so its lifetime matches
@@ -574,8 +563,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     workspaceRoot,
     store,
     queue,
-    controller, terminalTransitions: runSafety.terminalTransitions,
-    lock, executionLease: executionLeases,
+    controller,
+    terminalTransitions: runSafety.terminalTransitions,
+    lock,
+    executionLease: executionLeases,
     notifier,
     auditWriter,
     historyStore,
@@ -597,22 +588,27 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   });
 
   const uiWiring = registerStage2Ui({
-    extensionRoot: context.extensionUri.fsPath, globalStorageRoot: context.globalStorageUri.fsPath,
+    extensionRoot: context.extensionUri.fsPath,
+    globalStorageRoot: context.globalStorageUri.fsPath,
     workspaceRoot,
     projector,
     dispatch: (cmd, ack) => sidebarRouter.dispatch(cmd, ack),
     guardedRunService,
     store,
-    auditWriter, operatorAttribution,
+    auditWriter,
+    operatorAttribution,
     notifier,
     logger,
     getCatalog: () => catalogSession.catalog,
     controller,
     queue,
-    lock, executionLease: executionLeases, // FR-R3-150 — direct per-queue lease release (D5).
-    historyStore, runtimeLogAccessor, // FR-R4-F04 (T171): the diagnostics bundle reads the runtime log
+    lock,
+    executionLease: executionLeases, // FR-R3-150 — direct per-queue lease release (D5).
+    historyStore,
+    runtimeLogAccessor, // FR-R4-F04 (T171): the diagnostics bundle reads the runtime log
     getWorkspaceFolders: () => vscode.workspace.workspaceFolders,
-    queueStartFailures, transportRouter: backend.transportRouter
+    queueStartFailures,
+    transportRouter: backend.transportRouter
   });
   phaseLogTail.bindDashboardBridge(uiWiring.dashboardBridge);
   output.log(`activated; cli=${cliPath}, cap=${iterationCap}, pollIntervalMin=${pollIntervalMinutes}`);
@@ -629,12 +625,15 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     store,
     auditWriter,
     lock,
-    controller, operatorAttribution,
+    controller,
+    operatorAttribution,
     watchdog,
     scheduledStartCoordinator,
-    replayEvidenceBacklog, runSafety, // FR-R4-F04 (G7): paired to pay for the maintenance arming below.
+    replayEvidenceBacklog,
+    runSafety,
     backendCapabilities,
-    startMountProbe, refreshCatalog // FR-032 — paired to fund the push below; why in that module.
+    startMountProbe,
+    refreshCatalog
   });
   disposables.push(wirePrimacyGain({ logger, lock, producers }));
   await producers.run();
@@ -658,7 +657,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // Feature FR-R3-006 (T342, T344, T345, T348) — the reset transaction's
   // stage-2 half. `dispose()` above is the rest of it.
   const resetSupport: ResetStageSupport = createResetStageSupport({
-    controller, lock,
+    controller,
+    lock,
     auditWriter,
     logger
   });
