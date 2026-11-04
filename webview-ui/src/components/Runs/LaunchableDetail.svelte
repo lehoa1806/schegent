@@ -92,6 +92,47 @@
     </p>
   {/if}
 
+  {#if entry.outputs && entry.outputs.length > 0}
+    <h5 class="ports-heading">Outputs</h5>
+    <ul class="port-list" data-testid="launchable-detail-outputs">
+      {#each entry.outputs as port (port.portId)}
+        <li class="port-row" data-testid="launchable-detail-output-{port.portId}">
+          <span class="port-label">{port.label}</span>
+          <span class="port-type">{port.type}</span>
+          {#if port.description}
+            <span class="port-description">{port.description}</span>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  {/if}
+
+  {#if entry.runSettings}
+    <div class="run-settings-summary" data-testid="launchable-detail-run-settings">
+      <h5 class="ports-heading">Effective Run Policy</h5>
+      <p class="detail-note" data-testid="launchable-detail-max-duration">
+        Max duration: {entry.runSettings.maxDurationSeconds.value}s ({entry.runSettings.maxDurationSeconds.origin})
+      </p>
+      <ul class="port-list">
+        {#each entry.runSettings.phases as phase (phase.phaseName)}
+          <li class="port-row" data-testid="launchable-detail-phase-setting-{phase.phaseName}">
+            <span class="port-label">{phase.phaseName}</span>
+            <span class="port-type">{phase.backend}</span>
+            <span class="port-type">
+              model: {phase.model.kind === 'value' ? phase.model.value : 'backend default'}
+            </span>
+            <span class="port-type">
+              effort: {phase.effort.kind === 'value' ? phase.effort.value : 'backend default'}
+            </span>
+            <span class="port-type">
+              idle: {phase.idleTimeoutSeconds.value}s ({phase.idleTimeoutSeconds.origin})
+            </span>
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
+
   <!-- FR-R4-F06 (FR-007; D4) -- what this start will run with, above the control that starts it.
        The backends are the host's per-entry answer, never the window default. -->
   <LaunchAuthorityNotice

@@ -40,7 +40,12 @@ import type {
   ConnectedNodeState,
   ConnectedRunProjection
 } from '../../contracts/sidebar-ipc';
+import {
+  buildWorkflowRunControlProjection,
+  projectConnectedInvocations
+} from '../../services/workflow-execution/workflow-control-projector';
 import type { ConnectedWorkflowRun } from '../../state/connected-workflow-run';
+import { resolveRootInvocationId } from '../../state/connected-workflow-run';
 
 /**
  * What one child Pipeline Run is doing, in the vocabulary the wire already uses.
@@ -111,11 +116,33 @@ function readChild(
 ): ChildReading {
   const attempts = run.nodes[nodeId]?.attempts ?? [];
   const latestAttempt = attempts[attempts.length - 1];
-  if (latestAttempt === undefined) return { latest: null, attemptCount: 0 };
+  if (latestAttempt !== undefined) {
+    return {
+      latest: readChildState(latestAttempt.queueItemId),
+      attemptCount: attempts.length,
+      latestQueueItemId: latestAttempt.queueItemId
+    };
+  }
+  const rootId = resolveRootInvocationId(run);
+  const frameAttempts = run.invocations?.[rootId]?.attemptsByNodeId[nodeId] ?? [];
+  const latestFrameAttempt = frameAttempts[frameAttempts.length - 1];
+  if (latestFrameAttempt === undefined) return { latest: null, attemptCount: 0 };
+  const mappedState: ConnectedChildState | null =
+    latestFrameAttempt.queueItemId !== undefined
+      ? readChildState(latestFrameAttempt.queueItemId)
+      : latestFrameAttempt.status === 'completed'
+        ? 'completed'
+        : latestFrameAttempt.status === 'failed'
+          ? 'failed'
+          : latestFrameAttempt.status === 'canceled'
+            ? 'canceled'
+            : 'in-flight';
   return {
-    latest: readChildState(latestAttempt.queueItemId),
-    attemptCount: attempts.length,
-    latestQueueItemId: latestAttempt.queueItemId
+    latest: mappedState,
+    attemptCount: frameAttempts.length,
+    ...(latestFrameAttempt.queueItemId !== undefined
+      ? { latestQueueItemId: latestFrameAttempt.queueItemId }
+      : {})
   };
 }
 
@@ -167,13 +194,29 @@ export function projectConnectedRun(
   const anyInFlight = eachAttempt(run, readChildState, (state) => state === 'in-flight');
   const hydrating = eachAttempt(run, readChildState, (state) => state === null);
   const startNodes = new Set(run.graph.startNodeIds);
+  const hasInvocations = run.invocations !== undefined && Object.keys(run.invocations).length > 0;
+  const control = hasInvocations ? buildWorkflowRunControlProjection(run) : undefined;
+  const invocations = control !== undefined ? projectConnectedInvocations(run, control) : undefined;
 
   const nodes: ConnectedNodeProjection[] = run.graph.nodes.map((node) => {
     const reading = readChild(run, node.nodeId, readChildState);
     const state = stateOf(reading, decided.get(node.nodeId), startNodes.has(node.nodeId));
+    const nodeKind =
+      node.phaseId !== undefined
+        ? ('phase' as const)
+        : node.workflowId !== undefined
+          ? ('workflow' as const)
+          : ('pipeline' as const);
+    const targetId = node.pipelineId ?? node.phaseId ?? node.workflowId ?? node.nodeId;
+    const versionRef = run.frozenClosure?.catalogVersionsById?.[targetId];
+    const childInvocationIds = hasInvocations
+      ? Object.values(run.invocations ?? {})
+          .filter((f) => f.parentCallNodeId === node.nodeId)
+          .map((f) => f.invocationId)
+      : [];
     return {
       nodeId: node.nodeId,
-      pipelineId: node.pipelineId ?? node.phaseId ?? node.workflowId ?? node.nodeId,
+      pipelineId: targetId,
       state,
       // FR-057 — only what the host would accept right now. While any child is
       // non-terminal the launcher refuses every start (FR-044), so nothing is
@@ -183,6 +226,16 @@ export function projectConnectedRun(
       attemptCount: reading.attemptCount,
       ...(reading.latestQueueItemId !== undefined
         ? { latestQueueItemId: reading.latestQueueItemId }
+        : {}),
+      ...(hasInvocations
+        ? {
+            nodeKind,
+            ...(node.label !== undefined ? { label: node.label } : {}),
+            ...(versionRef?.versionId !== undefined ? { frozenVersionId: versionRef.versionId } : {}),
+            ...(childInvocationIds.length > 0
+              ? { childInvocationIds: Object.freeze(childInvocationIds) }
+              : {})
+          }
         : {})
     };
   });
@@ -192,7 +245,28 @@ export function projectConnectedRun(
     workflowId: run.workflowId,
     revision: run.revision,
     hydrating,
-    nodes: Object.freeze(nodes)
+    nodes: Object.freeze(nodes),
+    ...(control !== undefined
+      ? {
+          queueId: control.queueId,
+          status: control.status,
+          rootInvocationId: control.rootInvocationId,
+          activeInvocationId: control.activeInvocationId,
+          rootAllowedActions: control.rootAllowedActions,
+          recoveryDisposition:
+            control.recoveryDisposition === null
+              ? null
+              : Object.freeze({
+                  status: control.recoveryDisposition.status,
+                  reason: control.recoveryDisposition.reasonCode,
+                  targetInvocationId: control.recoveryDisposition.invocationId,
+                  ...(control.recoveryDisposition.attemptId !== undefined
+                    ? { targetAttemptId: control.recoveryDisposition.attemptId }
+                    : {})
+                }),
+          ...(invocations !== undefined ? { invocations } : {})
+        }
+      : {})
   };
 }
 

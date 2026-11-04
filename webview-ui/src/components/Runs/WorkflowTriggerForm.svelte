@@ -127,11 +127,17 @@
       ? undefined
       : pipelines.find((pipeline) => pipeline.id === startNode.pipelineId),
   );
-  const outputPorts = $derived(startPipeline?.outputs ?? []);
+  const outputPorts = $derived(
+    startPipeline?.outputs ?? graph?.outputs ?? [],
+  );
 
   const composition = $derived(
     composeRunRequest({
-      pipelineId: startNode?.pipelineId ?? "",
+      pipelineId:
+        startNode?.pipelineId ??
+        startNode?.phaseId ??
+        startNode?.workflowId ??
+        entry.id,
       inputPorts: contractPorts,
       outputPorts,
       inputValues,
@@ -387,56 +393,14 @@
 </section>
 
 <style>
-  .workflow-trigger {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 10px;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--schegent-radius);
-  }
-  .trigger-header {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
-  }
-  .trigger-title {
-    margin: 0;
-    font-size: 0.95em;
-    word-break: break-word;
-  }
-  .close-button {
-    background: transparent;
-    border: none;
-    color: var(--vscode-textLink-foreground);
-    cursor: pointer;
-    text-decoration: underline;
-  }
-  .trigger-note {
-    margin: 0;
-    font-size: 0.9em;
-    opacity: 0.85;
-  }
-  .start-question {
-    border: none;
-    margin: 0;
-    padding: 0;
-    min-width: 0;
-  }
-  .start-legend {
-    padding: 0;
-    font-size: 0.9em;
-    font-weight: 600;
-  }
-  .start-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    list-style: none;
-    margin: 6px 0 0;
-    padding: 0;
-  }
+  .workflow-trigger { display: flex; flex-direction: column; gap: 12px; padding: 10px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); }
+  .trigger-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .trigger-title { margin: 0; font-size: 0.95em; word-break: break-word; }
+  .close-button { background: transparent; border: none; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline; }
+  .trigger-note { margin: 0; font-size: 0.9em; opacity: 0.85; }
+  .start-question { border: none; margin: 0; padding: 0; min-width: 0; }
+  .start-legend { padding: 0; font-size: 0.9em; font-weight: 600; }
+  .start-list { display: flex; flex-direction: column; gap: 4px; list-style: none; margin: 6px 0 0; padding: 0; }
   .start-choice {
     display: flex;
     flex-direction: column;
