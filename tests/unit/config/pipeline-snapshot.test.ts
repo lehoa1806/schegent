@@ -19,8 +19,16 @@
 // not recognise, so a reintroduced id list cannot make these tests pass.
 
 import { describe, expect, it } from 'vitest';
-import { snapshotPhaseDef } from '../../../src/config/pipeline-snapshot';
+import {
+  computeDefinitionDigest,
+  createFrozenWorkflowClosure,
+  snapshotPhaseDef,
+  snapshotPhaseDefinition,
+  snapshotWorkflowDefinition
+} from '../../../src/config/pipeline-snapshot';
 import type { PhaseDef } from '../../../src/config/pipeline-config';
+import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
+import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
 
 /** An id no built-in list claims, so nothing can resolve it by name. */
 const UNKNOWN_ID = 'fixture-imported-phase';
@@ -136,5 +144,145 @@ describe('snapshotPhaseDef — no id list and no scope survives the freeze (FR-0
 
     expect(snapshot.sideEffects).toBe('none');
     expect(Object.isFrozen(snapshot)).toBe(true);
+  });
+});
+
+describe('createFrozenWorkflowClosure — transitive Workflow & Phase closure freezing (FR-R5-F02)', () => {
+  const phaseA: PhaseDefinition = {
+    phaseId: 'phase-a',
+    name: 'Phase A',
+    version: 1,
+    instruction: 'Run Phase A'
+  };
+  const phaseB: PhaseDefinition = {
+    phaseId: 'phase-b',
+    name: 'Phase B',
+    version: 2,
+    instruction: 'Run Phase B'
+  };
+  const childWorkflow: WorkflowDefinition = {
+    workflowId: 'wf-child',
+    name: 'Child Workflow',
+    version: 3,
+    nodes: [{ nodeId: 'c1', kind: 'phase', phaseId: 'phase-b' }],
+    connections: [],
+    startNodeIds: ['c1'],
+    executionDefaults: { timeoutSeconds: 200 }
+  };
+  const rootWorkflow: WorkflowDefinition = {
+    workflowId: 'wf-root',
+    name: 'Root Workflow',
+    version: 1,
+    nodes: [
+      { nodeId: 'r1', kind: 'phase', phaseId: 'phase-a' },
+      { nodeId: 'r2', kind: 'workflow', workflowId: 'wf-child' }
+    ],
+    connections: [{ from: { nodeId: 'r1' }, to: { kind: 'node', nodeId: 'r2' } }],
+    startNodeIds: ['r1', 'r2'],
+    executionDefaults: { timeoutSeconds: 100 }
+  };
+
+  it('freezes all reachable Workflows and Phases with deterministic SHA-256 digests and advisory executionDefaults', () => {
+    const result = createFrozenWorkflowClosure({
+      rootWorkflow,
+      entryNodeId: 'r2',
+      effectiveWorkflows: [childWorkflow],
+      effectivePhases: [phaseA, phaseB]
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.closure.rootWorkflowId).toBe('wf-root');
+    expect(result.closure.entryNodeId).toBe('r2');
+    expect(Object.keys(result.closure.workflowsById).sort()).toEqual(['wf-child', 'wf-root']);
+    expect(Object.keys(result.closure.phasesById).sort()).toEqual(['phase-a', 'phase-b']);
+    expect(result.closure.closureMetrics).toEqual({
+      maxDepth: 1,
+      definitionCount: 3,
+      expandedNodeCount: 3
+    });
+
+    expect(result.closure.definitionDigestsById['wf-root']).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(result.closure.definitionDigestsById['wf-child']).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(result.closure.definitionDigestsById['phase-a']).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(result.closure.definitionDigestsById['phase-b']).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(result.closure.definitionDigestsById['wf-root']).toBe(
+      computeDefinitionDigest(snapshotWorkflowDefinition(rootWorkflow))
+    );
+    expect(result.closure.definitionDigestsById['phase-a']).toBe(
+      computeDefinitionDigest(snapshotPhaseDefinition(phaseA))
+    );
+    expect(result.closure.workflowsById['wf-root']?.executionDefaults).toEqual({
+      timeoutSeconds: 100
+    });
+    expect(Object.isFrozen(result.closure.workflowsById['wf-root'])).toBe(true);
+    expect(Object.isFrozen(result.closure.phasesById['phase-b'])).toBe(true);
+  });
+
+  it('isolates frozen closure definitions from subsequent live catalog mutations', () => {
+    const mutableChild: WorkflowDefinition = {
+      ...childWorkflow,
+      nodes: [{ nodeId: 'c1', kind: 'phase', phaseId: 'phase-b' }]
+    };
+    const result = createFrozenWorkflowClosure({
+      rootWorkflow,
+      effectiveWorkflows: [mutableChild],
+      effectivePhases: [phaseA, phaseB]
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    (mutableChild as { name: string }).name = 'Mutated After Freeze';
+    expect(result.closure.workflowsById['wf-child']?.name).toBe('Child Workflow');
+  });
+
+  it('rejects an entryNodeId that is not in rootWorkflow.startNodeIds', () => {
+    const result = createFrozenWorkflowClosure({
+      rootWorkflow,
+      entryNodeId: 'non-start-node',
+      effectiveWorkflows: [childWorkflow],
+      effectivePhases: [phaseA, phaseB]
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe('invalid-entry-node');
+  });
+
+  it('rejects a closure that exceeds MAX_WORKFLOW_NESTING_DEPTH (8)', () => {
+    const chainWorkflows: WorkflowDefinition[] = [];
+    for (let i = 1; i <= 9; i += 1) {
+      chainWorkflows.push({
+        workflowId: `wf-${i}`,
+        name: `W${i}`,
+        version: 1,
+        nodes:
+          i === 9
+            ? [{ nodeId: 'leaf', kind: 'phase', phaseId: 'phase-a' }]
+            : [{ nodeId: `call-${i + 1}`, kind: 'workflow', workflowId: `wf-${i + 1}` }],
+        connections: [],
+        startNodeIds: [i === 9 ? 'leaf' : `call-${i + 1}`]
+      });
+    }
+    const deepRoot: WorkflowDefinition = {
+      workflowId: 'wf-0',
+      name: 'W0',
+      version: 1,
+      nodes: [{ nodeId: 'call-1', kind: 'workflow', workflowId: 'wf-1' }],
+      connections: [],
+      startNodeIds: ['call-1']
+    };
+
+    const result = createFrozenWorkflowClosure({
+      rootWorkflow: deepRoot,
+      effectiveWorkflows: chainWorkflows,
+      effectivePhases: [phaseA]
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe('workflow-closure-invalid');
+    expect(result.errors.some((e) => e.code === 'workflow-depth-exceeded')).toBe(true);
   });
 });

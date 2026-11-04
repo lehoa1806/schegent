@@ -208,24 +208,24 @@ export async function publishPackage(
       return draftedOnly.length === 0
         ? refusal('stale-layer', layer.kind)
         : {
-            outcome: 'partial',
-            published: [],
-            draftedOnly,
-            failedKind: layer.kind,
-            cause: 'stale',
-            pruned
-          };
-    }
-    return draftedOnly.length === 0
-      ? refusal('store-refused', layer.kind, { storeReason: written.reason })
-      : {
           outcome: 'partial',
           published: [],
           draftedOnly,
           failedKind: layer.kind,
-          cause: written.reason,
+          cause: 'stale',
           pruned
         };
+    }
+    return draftedOnly.length === 0
+      ? refusal('store-refused', layer.kind, { storeReason: written.reason })
+      : {
+        outcome: 'partial',
+        published: [],
+        draftedOnly,
+        failedKind: layer.kind,
+        cause: written.reason,
+        pruned
+      };
   }
 
   // ---- Pass 2: move the active pointers -----------------------------------------

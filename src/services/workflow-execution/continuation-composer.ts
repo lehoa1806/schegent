@@ -24,8 +24,18 @@
 // No I/O. A bound value is the workspace-relative reference the source run
 // recorded, never the document behind it.
 
-import type { RunInputValue, RunRequest } from '../../contracts/run-request';
+import type {
+  FrozenOutputRequest,
+  FrozenSupplementalInput,
+  ResolvedPortValue,
+  RunInputValue,
+  RunRequest
+} from '../../contracts/run-request';
 import type { WorkflowDefinition } from '../../contracts/workflow-definitions';
+import type {
+  InvocationInputEnvelope,
+  PendingHandoffRecord
+} from '../../state/connected-workflow-run';
 import type { WorkflowRunPipeline } from '../../state/workflow-run';
 import type { ConditionContext } from './condition-context';
 import { resolveOperand } from './condition-context';
@@ -133,4 +143,44 @@ export function composeContinuationPrefill(input: ContinuationPrefillInput): Con
     },
     prefilled
   };
+}
+
+export interface ComposeHandoffInputEnvelopeInput {
+  readonly envelopeId: string;
+  readonly handoff: PendingHandoffRecord;
+  readonly targetNodeId: string;
+  readonly request: RunRequest;
+  readonly localInputs?: readonly FrozenSupplementalInput[];
+  readonly outputTargetOverrides?: readonly FrozenOutputRequest[];
+  readonly acceptedAt: number;
+}
+
+/**
+ * FR-R5-F02 — compose an immutable `InvocationInputEnvelope` (`acceptedAt`,
+ * `source: 'manual-continuation'`) from a `PendingHandoffRecord` and operator
+ * continuation edits without mutating the frozen closure.
+ */
+export function composeHandoffInputEnvelope(
+  input: ComposeHandoffInputEnvelopeInput
+): InvocationInputEnvelope {
+  const inputsByPort: Record<string, ResolvedPortValue> = {
+    ...input.handoff.prefilledInputsByPort
+  };
+  for (const supplied of input.request.inputs) {
+    inputsByPort[supplied.portId] = Object.freeze({
+      portId: supplied.portId,
+      type: supplied.type,
+      value: supplied.value
+    });
+  }
+  return Object.freeze({
+    envelopeId: input.envelopeId,
+    invocationId: input.handoff.invocationId,
+    targetNodeId: input.targetNodeId,
+    source: 'manual-continuation',
+    inputsByPort: Object.freeze(inputsByPort),
+    localInputs: Object.freeze([...(input.localInputs ?? [])]),
+    outputTargetOverrides: Object.freeze([...(input.outputTargetOverrides ?? [])]),
+    acceptedAt: input.acceptedAt
+  });
 }

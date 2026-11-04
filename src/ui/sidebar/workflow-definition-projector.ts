@@ -58,10 +58,10 @@ function projectOperand(
   return Object.freeze(
     operand.source === 'node-output'
       ? {
-          source: 'node-output' as const,
-          nodeId: text(operand.nodeId, sanitize, ID_MAX),
-          field: text(operand.field, sanitize, FIELD_MAX)
-        }
+        source: 'node-output' as const,
+        nodeId: text(operand.nodeId, sanitize, ID_MAX),
+        field: text(operand.field, sanitize, FIELD_MAX)
+      }
       : { source: 'node-status' as const, nodeId: text(operand.nodeId, sanitize, ID_MAX) }
   );
 }

@@ -35,13 +35,22 @@
   ],
   "connections": [
     {
-      "from": { "nodeId": "planning-subworkflow" },
-      "to": { "nodeId": "tasks-phase" },
+      "from": {
+        "nodeId": "planning-subworkflow"
+      },
+      "to": {
+        "nodeId": "tasks-phase"
+      },
       "handoff": "auto"
     },
     {
-      "from": { "nodeId": "tasks-phase" },
-      "to": { "nodeId": "return", "kind": "return" }
+      "from": {
+        "nodeId": "tasks-phase"
+      },
+      "to": {
+        "nodeId": "return",
+        "kind": "return"
+      }
     }
   ],
   "bindings": [
@@ -49,7 +58,10 @@
       "kind": "input",
       "nodeId": "planning-subworkflow",
       "inputKey": "feature-spec",
-      "source": { "from": "workflow-input", "portId": "raw-spec" }
+      "source": {
+        "from": "workflow-input",
+        "portId": "raw-spec"
+      }
     },
     {
       "kind": "input",
@@ -68,5 +80,7 @@
       "outputKey": "tasks-artifact"
     }
   ],
-  "startNodeIds": ["planning-subworkflow"]
+  "startNodeIds": [
+    "planning-subworkflow"
+  ]
 }

@@ -19,28 +19,34 @@
   // The refusal report is text interpolation only, never Svelte's raw-HTML
   // directive (FR-038): defect fields and messages quote operator-authored
   // documents, and a Pipeline whose id is markup must render as characters.
-  import type { CatalogKind } from '../../../../src/contracts/catalog-store';
-  import { OUTCOME_NOT_YET_KNOWN_TEXT, refusalTextFrom } from '../../lib/boundary-refusal-text';
-  import type { IntentWaitOptions } from '../../lib/intent-ledger';
-  import type { BuilderLifecycle } from '../../lib/snapshot-types';
+  import type { CatalogKind } from "../../../../src/contracts/catalog-store";
+  import {
+    OUTCOME_NOT_YET_KNOWN_TEXT,
+    refusalTextFrom,
+  } from "../../lib/boundary-refusal-text";
+  import type { IntentWaitOptions } from "../../lib/intent-ledger";
+  import type { BuilderLifecycle } from "../../lib/snapshot-types";
   import {
     deactivateDefinition,
     discardDefinitionDraft,
     publishDefinition,
     restoreDefinitionVersion,
-    type LifecycleResult
-  } from '../../lib/catalog-lifecycle';
-  import { deriveDefinitionRowView, type DefinitionRowAction } from './definition-row-state';
+    type LifecycleResult,
+  } from "../../lib/catalog-lifecycle";
+  import {
+    deriveDefinitionRowView,
+    type DefinitionRowAction,
+  } from "./definition-row-state";
 
   interface Props {
-    kind: CatalogKind | 'pipeline';
+    kind: CatalogKind | "pipeline";
     /** The definition's own id — the wire target, and the test handle's stem. */
     definitionId: string;
     /** What the operator recognises. The confirmations name it; the id alone will not do. */
     definitionName: string;
     lifecycle: BuilderLifecycle;
     /** `history` swaps the row's three actions for Restore this version (FR-019). */
-    surface?: 'row' | 'history';
+    surface?: "row" | "history";
     /** The version Restore copies. Required on `history`, meaningless on a row. */
     versionId?: string;
   }
@@ -50,21 +56,24 @@
     definitionId,
     definitionName,
     lifecycle,
-    surface = 'row',
-    versionId
+    surface = "row",
+    versionId,
   }: Props = $props();
 
-  const ACTION_LABEL: Readonly<Record<DefinitionRowAction, string>> = Object.freeze({
-    publish: 'Publish',
-    'discard-draft': 'Discard draft',
-    deactivate: 'Deactivate',
-    restore: 'Restore this version'
-  });
+  const ACTION_LABEL: Readonly<Record<DefinitionRowAction, string>> =
+    Object.freeze({
+      publish: "Publish",
+      "discard-draft": "Discard draft",
+      deactivate: "Deactivate",
+      restore: "Restore this version",
+    });
 
-  const RESTORE_ONLY: readonly DefinitionRowAction[] = Object.freeze<DefinitionRowAction[]>([
-    'restore'
-  ]);
-  const NONE: readonly DefinitionRowAction[] = Object.freeze<DefinitionRowAction[]>([]);
+  const RESTORE_ONLY: readonly DefinitionRowAction[] = Object.freeze<
+    DefinitionRowAction[]
+  >(["restore"]);
+  const NONE: readonly DefinitionRowAction[] = Object.freeze<
+    DefinitionRowAction[]
+  >([]);
 
   /**
    * What a refusal means, in the operator's words.
@@ -74,18 +83,22 @@
    * the raw token.
    */
   const REFUSAL_HEADLINE: Readonly<Record<string, string>> = Object.freeze({
-    'stale-draft': 'This definition changed in another window. Reload before trying again.',
-    'no-definition': 'This definition no longer exists in the catalog.',
-    'no-draft': 'There is no draft here to publish or discard.',
-    'not-active': 'This definition is not active, so there is nothing to deactivate.',
-    'validation-failed': 'The definition does not validate. Nothing was published.',
-    referenced: 'An active definition still references this one.',
-    'version-unreadable': 'That version could not be read, so nothing was restored.',
-    'store-refused': 'The catalog store refused the write.',
+    "stale-draft":
+      "This definition changed in another window. Reload before trying again.",
+    "no-definition": "This definition no longer exists in the catalog.",
+    "no-draft": "There is no draft here to publish or discard.",
+    "not-active":
+      "This definition is not active, so there is nothing to deactivate.",
+    "validation-failed":
+      "The definition does not validate. Nothing was published.",
+    referenced: "An active definition still references this one.",
+    "version-unreadable":
+      "That version could not be read, so nothing was restored.",
+    "store-refused": "The catalog store refused the write.",
     // FR-R4-F05 (O3) — "Nothing was written." was a claim the host had not made: the write may
     // still happen, so a timeout says the outcome is not yet known, and the late outcome replaces
     // this headline once (O4).
-    timeout: OUTCOME_NOT_YET_KNOWN_TEXT
+    timeout: OUTCOME_NOT_YET_KNOWN_TEXT,
   });
 
   interface RefusalDetail {
@@ -105,29 +118,34 @@
   let pending = $state<DefinitionRowAction | null>(null);
 
   const handle = $derived(
-    surface === 'history' && versionId ? `${definitionId}-${versionId}` : definitionId
+    surface === "history" && versionId
+      ? `${definitionId}-${versionId}`
+      : definitionId,
   );
 
   const offered = $derived<readonly DefinitionRowAction[]>(
-    surface === 'history'
+    surface === "history"
       ? versionId
         ? RESTORE_ONLY
         : NONE
-      : deriveDefinitionRowView(lifecycle).actions
+      : deriveDefinitionRowView(lifecycle).actions,
   );
 
-  function listOf(source: unknown, key: string): readonly Record<string, unknown>[] {
-    if (typeof source !== 'object' || source === null) return [];
+  function listOf(
+    source: unknown,
+    key: string,
+  ): readonly Record<string, unknown>[] {
+    if (typeof source !== "object" || source === null) return [];
     const raw = (source as Record<string, unknown>)[key];
     if (!Array.isArray(raw)) return [];
     return raw.filter((item): item is Record<string, unknown> => {
-      return typeof item === 'object' && item !== null;
+      return typeof item === "object" && item !== null;
     });
   }
 
   function textOf(item: Record<string, unknown>, key: string): string {
     const value = item[key];
-    return typeof value === 'string' ? value : '';
+    return typeof value === "string" ? value : "";
   }
 
   /**
@@ -137,23 +155,23 @@
    * throws while being rendered is a refusal the operator never sees.
    */
   function refusalViewOf(result: LifecycleResult): RefusalView | null {
-    if (result.status === 'accepted') return null;
+    if (result.status === "accepted") return null;
     // The operator closed the prompt themselves. Nothing happened, and saying so
     // would report their own decision back to them as a failure (FR-022).
-    if (result.reason === 'declined') return null;
+    if (result.reason === "declined") return null;
 
     const payload = result.result;
     return {
       // FR-R4-F05 (O1) — this table first, the shared boundary text for anything it lacks.
       headline: refusalTextFrom(REFUSAL_HEADLINE, result.reason),
-      defects: listOf(payload, 'defects').map((defect) => ({
-        field: textOf(defect, 'field'),
-        message: textOf(defect, 'message')
+      defects: listOf(payload, "defects").map((defect) => ({
+        field: textOf(defect, "field"),
+        message: textOf(defect, "message"),
       })),
-      blockers: listOf(payload, 'blockers').map((blocker) => ({
-        field: textOf(blocker, 'field'),
-        message: `${textOf(blocker, 'kind')} ${textOf(blocker, 'id')}`.trim()
-      }))
+      blockers: listOf(payload, "blockers").map((blocker) => ({
+        field: textOf(blocker, "field"),
+        message: `${textOf(blocker, "kind")} ${textOf(blocker, "id")}`.trim(),
+      })),
     };
   }
 
@@ -167,24 +185,31 @@
   function startWait(): void {
     const controller = new AbortController();
     submission = controller;
-    wait = { signal: controller.signal, onLateOutcome: (late) => (refusal = refusalViewOf(late)) };
+    wait = {
+      signal: controller.signal,
+      onLateOutcome: (late) => (refusal = refusalViewOf(late)),
+    };
   }
 
   function dispatchFor(
     action: DefinitionRowAction,
-    originatingElement: HTMLElement | null
+    originatingElement: HTMLElement | null,
   ): Promise<LifecycleResult> {
     const target = {
       kind: kind as CatalogKind,
       id: definitionId,
-      expectedDraftVersion: lifecycle.expectedDraftVersion
+      expectedDraftVersion: lifecycle.expectedDraftVersion,
     };
     switch (action) {
-      case 'publish':
+      case "publish":
         return publishDefinition(target, undefined, wait);
-      case 'deactivate':
-        return deactivateDefinition(target, { definitionName, originatingElement, wait });
-      case 'discard-draft':
+      case "deactivate":
+        return deactivateDefinition(target, {
+          definitionName,
+          originatingElement,
+          wait,
+        });
+      case "discard-draft":
         return discardDefinitionDraft(target, {
           definitionName,
           originatingElement,
@@ -192,13 +217,13 @@
           // A definition with no active version has nothing behind the draft, so
           // discarding it removes the entry rather than an edit to it (FR-030).
           // The two prompts read differently and this is what picks between them.
-          removesEntry: lifecycle.state === 'draft'
+          removesEntry: lifecycle.state === "draft",
         });
-      case 'restore':
+      case "restore":
         return restoreDefinitionVersion(
-          { ...target, fromVersionId: versionId ?? '' },
+          { ...target, fromVersionId: versionId ?? "" },
           undefined,
-          wait
+          wait,
         );
       default: {
         // Restore was the `default` arm until review: an action added to
@@ -211,7 +236,10 @@
     }
   }
 
-  async function run(action: DefinitionRowAction, event: MouseEvent): Promise<void> {
+  async function run(
+    action: DefinitionRowAction,
+    event: MouseEvent,
+  ): Promise<void> {
     if (pending !== null) return;
     const originatingElement = event.currentTarget as HTMLElement | null;
     pending = action;
@@ -239,7 +267,8 @@
           class="action-button action-{action}"
           data-testid="definition-action-{action}-{handle}"
           disabled={pending !== null}
-          onclick={(event) => void run(action, event)}>{ACTION_LABEL[action]}</button
+          onclick={(event) => void run(action, event)}
+          >{ACTION_LABEL[action]}</button
         >
       {/each}
     </div>

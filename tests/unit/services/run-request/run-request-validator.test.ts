@@ -503,6 +503,8 @@ describe('Feature 102 (T033) — the frozen plan records what the host resolved'
     expect(body, 'RunRequest must still be declared in run-request.ts').toBeDefined();
     expect([...(body ?? '').matchAll(/^\s*readonly (\w+)\??:/gm)].map((m) => m[1])).toEqual([
       'pipelineId',
+      'workflowId',
+      'entryNodeId',
       'inputs',
       'supplemental',
       'outputs',
@@ -531,5 +533,111 @@ describe('Feature 102 (T033) — the frozen plan records what the host resolved'
     for (const vocabulary of ['activeVersionId', 'effectiveCatalog', 'applyLifecycleWrite']) {
       expect(source).not.toContain(vocabulary);
     }
+  });
+});
+
+describe('validateRunRequest — composable Workflow closure freezing (FR-R5-F02)', () => {
+  const rootWorkflow = {
+    workflowId: 'wf-root',
+    name: 'Root Composable Workflow',
+    version: 2,
+    inputs: [{ portId: 'topic', label: 'Topic', type: 'text' as const, required: true }],
+    outputs: [{ portId: 'summary', label: 'Summary', type: 'markdown' as const, required: true }],
+    nodes: [
+      { nodeId: 'step-1', kind: 'phase' as const, phaseId: 'phase-1' },
+      { nodeId: 'step-2', kind: 'workflow' as const, workflowId: 'wf-child' }
+    ],
+    connections: [{ from: { nodeId: 'step-1' }, to: { kind: 'node' as const, nodeId: 'step-2' } }],
+    startNodeIds: ['step-1', 'step-2']
+  };
+  const childWorkflow = {
+    workflowId: 'wf-child',
+    name: 'Child Workflow',
+    version: 1,
+    nodes: [{ nodeId: 'child-1', kind: 'phase' as const, phaseId: 'phase-2' }],
+    connections: [],
+    startNodeIds: ['child-1']
+  };
+  const phases = [
+    { phaseId: 'phase-1', name: 'Phase 1', version: 1, instruction: 'Step 1' },
+    { phaseId: 'phase-2', name: 'Phase 2', version: 1, instruction: 'Step 2' }
+  ];
+
+  it('freezes the transitive Workflow closure, validates entryNodeId and root inputs, and stamps catalogVersionsById', async () => {
+    const outcome = await validateRunRequest(
+      {
+        workflowId: 'wf-root',
+        entryNodeId: 'step-2',
+        inputs: [{ portId: 'topic', type: 'text', value: 'Nested Execution' }],
+        supplemental: [],
+        outputs: [{ portId: 'summary', target: 'out/summary.md' }]
+      },
+      {
+        workflow: {
+          rootWorkflow,
+          workflows: [childWorkflow],
+          phases,
+          catalogVersionsById: {
+            'wf-root': { kind: 'workflow', id: 'wf-root', versionId: 'v2' },
+            'wf-child': { kind: 'workflow', id: 'wf-child', versionId: 'v1' },
+            'phase-1': { kind: 'phase', id: 'phase-1', versionId: 'v1' },
+            'phase-2': { kind: 'phase', id: 'phase-2', versionId: 'v1' }
+          }
+        },
+        workspaceRoot: WORKSPACE_ROOT,
+        now: 1_700_000_000_000,
+        ...ACCEPTING_PORTS
+      }
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    expect(outcome.plan.workflowId).toBe('wf-root');
+    expect(outcome.plan.entryNodeId).toBe('step-2');
+    expect(outcome.plan.frozenClosure?.rootWorkflowId).toBe('wf-root');
+    expect(outcome.plan.frozenClosure?.entryNodeId).toBe('step-2');
+    expect(Object.keys(outcome.plan.frozenClosure?.workflowsById ?? {}).sort()).toEqual([
+      'wf-child',
+      'wf-root'
+    ]);
+    expect(Object.keys(outcome.plan.frozenClosure?.phasesById ?? {}).sort()).toEqual([
+      'phase-1',
+      'phase-2'
+    ]);
+    expect(outcome.plan.frozenClosure?.catalogVersionsById?.['wf-root']).toEqual({
+      kind: 'workflow',
+      id: 'wf-root',
+      versionId: 'v2'
+    });
+  });
+
+  it('rejects an entryNodeId not in root startNodeIds and accumulates missing required input errors', async () => {
+    const outcome = await validateRunRequest(
+      {
+        workflowId: 'wf-root',
+        entryNodeId: 'not-a-start-node',
+        inputs: [],
+        supplemental: [],
+        outputs: [{ portId: 'summary', target: 'out/summary.md' }]
+      },
+      {
+        workflow: {
+          rootWorkflow,
+          workflows: [childWorkflow],
+          phases
+        },
+        workspaceRoot: WORKSPACE_ROOT,
+        now: 1_700_000_000_000,
+        ...ACCEPTING_PORTS
+      }
+    );
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.errors.map((e) => e.code)).toEqual([
+      'invalid-entry-node',
+      'missing-required-input'
+    ]);
   });
 });

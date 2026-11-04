@@ -730,9 +730,9 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
     // reads as "nothing recorded" rather than as a counted zero.
     ...(auditBlockParsed
       ? {
-          omittedFileEvidenceCount: created + modified + deleted,
-          omittedToolEvidenceCount: omittedTools
-        }
+        omittedFileEvidenceCount: created + modified + deleted,
+        omittedToolEvidenceCount: omittedTools
+      }
       : {}),
     ...(warnings.recorded.length > 0 ? { warnings: warnings.recorded } : {}),
     ...(warnings.omitted > 0 ? { omittedWarningCount: warnings.omitted } : {})

@@ -31,8 +31,12 @@ import * as fs from 'fs/promises';
 import type { PhaseDef, PipelineCatalog } from '../../config/pipeline-config';
 import type { CatalogVersionRef } from '../../contracts/catalog-version';
 import { CATALOG_EMPTY_REASON, type CatalogEmptyReason } from '../../contracts/empty-catalog-guidance';
-import type { RunRequestFieldError } from '../../contracts/run-request';
-import type { FrozenRunPlan, RunRequest } from '../../contracts/run-request';
+import type {
+  FrozenRunPlan,
+  FrozenWorkflowClosure,
+  RunRequest,
+  RunRequestFieldError
+} from '../../contracts/run-request';
 import type { RunOutputRecord } from '../../contracts/run-results';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { SanitizedLogger } from '../../lib/logger';
@@ -42,6 +46,7 @@ import type { OutputTargetProbe } from '../run-request/output-target-validator';
 import type { EffectivePipelineSource } from '../run-request/run-request-validator';
 import { validateRunRequest } from '../run-request/run-request-validator';
 import type { GuardedScheduleRequest, GuardedScheduleResult } from '../guarded-run-service';
+import { synthesizePhasePipelineSnapshot } from './connected-run-factory';
 
 /** How much of a queue guard's own refusal text is echoed back to the caller. */
 const DETAIL_MAX = 120;
@@ -87,8 +92,22 @@ export type NodeRunStartRejection =
   // literal is a second thing to keep in step.
   | CatalogEmptyReason;
 
+export interface NodeAttemptOccurrenceRef {
+  readonly rootRunId: string;
+  readonly invocationId: string;
+  readonly parentInvocationId: string | null;
+  readonly nodePath: string;
+  readonly attemptId: string;
+  readonly attemptIndex: number;
+}
+
 export type NodeRunStartResult =
-  | { readonly outcome: 'enqueued'; readonly queueItemId: string; readonly plan: FrozenRunPlan }
+  | {
+      readonly outcome: 'enqueued';
+      readonly queueItemId: string;
+      readonly plan: FrozenRunPlan;
+      readonly occurrence?: NodeAttemptOccurrenceRef;
+    }
   | { readonly outcome: 'rejected-definition'; readonly reason: NodeRunStartRejection }
   | { readonly outcome: 'rejected-validation'; readonly errors: readonly RunRequestFieldError[] }
   | {
@@ -155,6 +174,17 @@ export interface NodeRunStartInput {
    * complete by construction, Phases included.
    */
   readonly frozenPipeline?: WorkflowRunPipeline;
+  readonly occurrence?: NodeAttemptOccurrenceRef;
+}
+
+export interface PhaseNodeRunStartInput {
+  readonly frozenClosure: FrozenWorkflowClosure;
+  readonly phaseId: string;
+  readonly request: RunRequest;
+  readonly workspaceRoot: string | null;
+  readonly description?: string;
+  readonly queueId?: string;
+  readonly occurrence: NodeAttemptOccurrenceRef;
 }
 
 /**
@@ -375,7 +405,12 @@ export async function startPipelineRun(
   }
 
   if (result.outcome === 'enqueued' && result.queueItemId !== undefined) {
-    return { outcome: 'enqueued', queueItemId: result.queueItemId, plan };
+    return {
+      outcome: 'enqueued',
+      queueItemId: result.queueItemId,
+      plan,
+      ...(input.occurrence !== undefined ? { occurrence: input.occurrence } : {})
+    };
   }
 
   // Every other guarded outcome is one refusal family: the next action is to
@@ -389,4 +424,52 @@ export async function startPipelineRun(
       ? { detail: deps.logger.sanitize(result.reason).slice(0, DETAIL_MAX) }
       : {})
   };
+}
+
+/**
+ * FR-R5-F02 — start a `phase` node from a `FrozenWorkflowClosure` with
+ * occurrence identity metadata (`rootRunId`, `invocationId`, `parentInvocationId`,
+ * `nodePath`, `attemptId`, `attemptIndex`).
+ */
+export async function startPhaseNodeRun(
+  deps: NodeRunStartDeps,
+  input: PhaseNodeRunStartInput
+): Promise<NodeRunStartResult> {
+  const phase = input.frozenClosure.phasesById[input.phaseId];
+  if (phase === undefined) {
+    return { outcome: 'rejected-definition', reason: 'pipeline-not-found' };
+  }
+  const catalogVersion = input.frozenClosure.catalogVersionsById?.[input.phaseId];
+  const basePipeline = synthesizePhasePipelineSnapshot(
+    phase,
+    deps.defaultRunnerKind,
+    catalogVersion
+  );
+  const frozenPipeline: WorkflowRunPipeline =
+    input.request.inputs.length === 0
+      ? basePipeline
+      : Object.freeze({
+          ...basePipeline,
+          inputs: Object.freeze(
+            input.request.inputs.map((inp) =>
+              Object.freeze({
+                portId: inp.portId,
+                label: inp.portId,
+                type: inp.type,
+                required: false
+              })
+            )
+          )
+        });
+  return startPipelineRun(deps, {
+    request: {
+      ...input.request,
+      pipelineId: input.phaseId
+    },
+    workspaceRoot: input.workspaceRoot,
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
+    frozenPipeline,
+    occurrence: input.occurrence
+  });
 }

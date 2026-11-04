@@ -329,9 +329,9 @@ async function commit(
   const ack =
     saved.status === 'accepted'
       ? await dispatch(router, CMD_PUBLISH_DEFINITION, {
-          ...target,
-          expectedDraftVersion: tokenFor(store, 'workflow', id)
-        })
+        ...target,
+        expectedDraftVersion: tokenFor(store, 'workflow', id)
+      })
       : saved;
 
   return {

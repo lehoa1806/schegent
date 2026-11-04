@@ -11,13 +11,18 @@ import {
   STATE_SCHEMA_VERSION_V9,
   STATE_SCHEMA_VERSION_V15
 } from '../../../src/contracts/state-schema';
+import { createComposableWorkflowRunSnapshot } from '../../../src/services/workflow-execution/connected-run-factory';
 import { migrateConnectedRuns } from '../../../src/state/connected-run-migrator';
 import {
   appendAttempt,
+  appendInputEnvelope,
   createConnectedRun,
+  setPendingHandoff,
   type ConnectedWorkflowRun
 } from '../../../src/state/connected-workflow-run';
+import { checkSupportedRunSchema } from '../../../src/state/workflow-run-migrator';
 import { KEYS, WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
+import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
 import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
 
 const GRAPH: WorkflowDefinition = {
@@ -283,5 +288,116 @@ describe('connected-run compare-and-set', () => {
     await store.compareAndSetConnectedRun(sample(), 0);
     await store.reset();
     expect(store.getConnectedRuns()).toEqual({});
+  });
+
+  it('round-trips new-schema composable Workflow runs (frozenClosure, invocations, inputEnvelopes, pendingHandoff) and refuses unsupported legacy shapes with bounded diagnostics (FR-R5-F02)', async () => {
+    const phaseSpec: PhaseDefinition = {
+      phaseId: 'phase-spec',
+      name: 'Spec Phase',
+      version: 1,
+      instruction: '/speckit.specify'
+    };
+    const rootWf: WorkflowDefinition = {
+      workflowId: 'wf-root',
+      name: 'Root Workflow',
+      version: 1,
+      inputs: [{ portId: 'featureDescription', label: 'Feature', type: 'text', required: true }],
+      outputs: [{ portId: 'finalSpec', label: 'Final Spec', type: 'file-set', required: true }],
+      startNodeIds: ['node-spec'],
+      nodes: [
+        {
+          nodeId: 'node-spec',
+          kind: 'phase',
+          phaseId: 'phase-spec'
+        }
+      ],
+      connections: [],
+      bindings: [
+        {
+          kind: 'input',
+          nodeId: 'node-spec',
+          inputKey: 'featureDescription',
+          source: { from: 'workflow-input', portId: 'featureDescription' }
+        },
+        {
+          kind: 'output',
+          portId: 'finalSpec',
+          nodeId: 'node-spec',
+          outputKey: 'specDir'
+        }
+      ]
+    };
+
+    const created = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'crun-composable-1',
+      workflow: rootWf,
+      entryNodeId: 'node-spec',
+      effectivePhases: [phaseSpec],
+      boundInputs: {
+        featureDescription: {
+          portId: 'featureDescription',
+          type: 'text',
+          value: 'Persist composable run'
+        }
+      },
+      startedAt: 1000
+    });
+    expect(created.outcome).toBe('created');
+    if (created.outcome !== 'created') return;
+
+    let composableRun = created.run;
+    composableRun = appendInputEnvelope(composableRun, {
+      envelopeId: 'env-1',
+      invocationId: created.rootInvocationId,
+      targetNodeId: 'node-spec',
+      source: 'manual-continuation',
+      inputsByPort: Object.freeze({
+        featureDescription: Object.freeze({
+          portId: 'featureDescription',
+          type: 'text',
+          value: 'Override'
+        })
+      }),
+      localInputs: Object.freeze([]),
+      outputTargetOverrides: Object.freeze([]),
+      acceptedAt: 1200
+    });
+    composableRun = setPendingHandoff(composableRun, {
+      invocationId: created.rootInvocationId,
+      fromNodeId: 'node-spec',
+      fromAttemptId: 'att-1',
+      connectionIndex: 0,
+      target: { kind: 'return' },
+      prefilledInputsByPort: Object.freeze({}),
+      pausedAt: 1300
+    });
+
+    const m = memento();
+    const store = new WorkspaceStateStore(m);
+    const written = await store.compareAndSetConnectedRun(composableRun, 0);
+    expect(written.outcome).toBe('written');
+
+    const reloaded = store.getConnectedRun('crun-composable-1');
+    expect(reloaded).toEqual(composableRun);
+    expect(Object.isFrozen(reloaded?.frozenClosure)).toBe(true);
+    expect(Object.isFrozen(reloaded?.invocations)).toBe(true);
+    expect(Object.isFrozen(reloaded?.inputEnvelopes)).toBe(true);
+
+    // Verify bounded refusal diagnostics for unsupported legacy schema shapes
+    const rawWithLegacy: Record<string, unknown> = {
+      'crun-composable-1': JSON.parse(JSON.stringify(composableRun)),
+      'legacy-pipeline-1': { id: 'legacy-pipeline-1', featureId: 'feat-1', status: 'completed' },
+      'legacy-versioned': { connectedRunId: 'legacy-versioned', schemaVersion: 1 }
+    };
+    const migrated = migrateConnectedRuns(rawWithLegacy);
+    expect(Object.keys(migrated.runs)).toEqual(['crun-composable-1']);
+    expect(migrated.diagnostics).toEqual([
+      { connectedRunId: 'legacy-pipeline-1', reason: 'unsupported-run-schema-version' },
+      { connectedRunId: 'legacy-versioned', reason: 'unsupported-run-schema-version' }
+    ]);
+    expect(checkSupportedRunSchema({ schemaVersion: 1 })).toEqual({
+      supported: false,
+      reason: 'unsupported-run-schema-version'
+    });
   });
 });
