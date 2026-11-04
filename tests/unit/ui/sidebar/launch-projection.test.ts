@@ -1031,3 +1031,133 @@ describe('buildLaunchProjection — runSettings (D-T3, FR-022)', () => {
     expect(Object.isFrozen(settings.phases)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Feature 265 (FR-R5-F06) — composable Workflows (phaseId + child workflowId)
+// ---------------------------------------------------------------------------
+
+describe('buildLaunchProjection — composable Workflows (FR-R5-F06)', () => {
+  const LIMITS = {
+    idleTimeoutSeconds: { value: 5400, origin: 'default' as const },
+    maxDurationSeconds: { value: 21_600, origin: 'workspace' as const }
+  };
+
+  it('derives transitive backends, capabilityNotices, runSettings, outputs, nodes, and declared required inputs across phaseId and nested workflowId nodes', () => {
+    const childWf: WorkflowDefinition = {
+      workflowId: 'child-wf',
+      name: 'Child Workflow',
+      version: 1,
+      nodes: [{ nodeId: 'c1', phaseId: 'review-phase', label: 'Review Step' }],
+      connections: [],
+      startNodeIds: ['c1']
+    };
+    const rootWf: WorkflowDefinition = {
+      workflowId: 'root-wf',
+      name: 'Root Workflow',
+      version: 1,
+      inputs: [{ portId: 'topic', label: 'Topic', type: 'text', required: true, description: 'Topic to research' }],
+      outputs: [{ portId: 'final-report', label: 'Final Report', type: 'markdown', required: true }],
+      nodes: [
+        { nodeId: 'r1', phaseId: 'draft-phase', label: 'Draft Step' },
+        { nodeId: 'r2', workflowId: 'child-wf', label: 'Nested Review' }
+      ],
+      connections: [],
+      startNodeIds: ['r1']
+    };
+
+    const draftPhase: PhaseDefinition = {
+      ...phaseDefinition('draft-phase'),
+      runner: 'claude',
+      timeoutSeconds: 120
+    };
+    const reviewPhase: PhaseDefinition = phaseWithCapabilities(
+      'review-phase',
+      ['workspace-write', 'outside-workspace-write', 'process-spawn'],
+      'codex'
+    );
+
+    const wfCatalog: WorkflowCatalogProjection = {
+      state: 'ready',
+      records: [
+        {
+          key: 'child-wf::0',
+          workflowId: 'child-wf',
+          status: 'effective',
+          definition: childWf,
+          display: { name: childWf.name },
+          errors: [],
+          derivedInputs: [],
+          derivedOutputs: [],
+          lifecycle: lifecycle('active', 'v1')
+        },
+        {
+          key: 'root-wf::0',
+          workflowId: 'root-wf',
+          status: 'effective',
+          definition: rootWf,
+          display: { name: rootWf.name },
+          errors: [],
+          derivedInputs: [{ nodeId: 'r1', portId: 'topic', label: 'Topic', type: 'text' }],
+          derivedOutputs: [],
+          lifecycle: lifecycle('active', 'v2')
+        }
+      ],
+      effective: [childWf, rootWf],
+      revision: 'rev-wf-composable',
+      warnings: []
+    };
+
+    const pCatalog: PhaseCatalogProjection = {
+      state: 'ready',
+      records: [],
+      effective: [draftPhase, reviewPhase],
+      revision: 'rev-phases',
+      warnings: []
+    };
+
+    const projection = buildLaunchProjection(
+      pipelineCatalog([]),
+      wfCatalog,
+      pCatalog,
+      'claude',
+      LIMITS
+    );
+
+    const rootEntry = entriesOf(projection!.workflows).find((e) => e.id === 'root-wf')!;
+    expect(rootEntry).toBeDefined();
+    expect(rootEntry.backends).toEqual(['claude', 'codex']);
+    expect((rootEntry.capabilityNotices ?? []).map((n) => [n.phaseName, n.outcome])).toEqual([
+      ['review-phase', 'refused']
+    ]);
+    expect(rootEntry.runSettings?.phases.map((p) => p.phaseName)).toEqual([
+      'draft-phase',
+      'review-phase'
+    ]);
+    expect(rootEntry.runSettings?.phases[0]?.idleTimeoutSeconds).toEqual({
+      value: 120,
+      origin: 'phase'
+    });
+    expect(rootEntry.inputs).toEqual([
+      {
+        nodeId: 'r1',
+        portId: 'topic',
+        label: 'Topic',
+        type: 'text',
+        required: true,
+        description: 'Topic to research'
+      }
+    ]);
+    expect(rootEntry.outputs).toEqual([
+      {
+        portId: 'final-report',
+        label: 'Final Report',
+        type: 'markdown',
+        required: true
+      }
+    ]);
+    expect(rootEntry.nodes).toEqual([
+      { nodeId: 'r1', kind: 'phase', targetId: 'draft-phase', label: 'Draft Step' },
+      { nodeId: 'r2', kind: 'workflow', targetId: 'child-wf', label: 'Nested Review' }
+    ]);
+  });
+});

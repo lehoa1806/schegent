@@ -23,7 +23,8 @@ import {
   type ContinueWorkflowPayload,
   type ContinueWorkflowResult,
   type LaunchWorkflowPayload,
-  type LaunchWorkflowResult
+  type LaunchWorkflowResult,
+  type WorkflowControlAction
 } from './messages';
 import { postCommand } from './vscode-api';
 import { sendIntent, type IntentWaitOptions } from './intent-ledger';
@@ -172,6 +173,44 @@ export function continueWorkflow(
     },
     CONTINUE_OUTCOMES,
     { unusable: UNUSABLE_ACK_RESULT },
+    options
+  );
+}
+
+export interface ControlWorkflowRunInput {
+  readonly connectedRunId: string;
+  readonly expectedRevision: number;
+  readonly invocationId: string;
+  readonly operation: WorkflowControlAction;
+  readonly nodeId?: string;
+  readonly commandId?: string;
+}
+
+/**
+ * Dispatch an invocation-scoped control action (`pause`, `resume`, `cancel`,
+ * `retry-phase`, `retry-invocation`, `continue-handoff`) for a composable
+ * Workflow run (FR-R5-F06-T05).
+ */
+export function controlWorkflowRun(
+  input: ControlWorkflowRunInput,
+  options?: IntentWaitOptions<ContinueWorkflowResult | NotYetKnown>
+): Promise<ContinueWorkflowResult | NotYetKnown> {
+  const nodeId = input.nodeId ?? 'root';
+  return continueWorkflow(
+    {
+      connectedRunId: input.connectedRunId,
+      expectedRevision: input.expectedRevision,
+      nodeId,
+      invocationId: input.invocationId,
+      operation: input.operation,
+      ...(input.commandId !== undefined ? { commandId: input.commandId } : {}),
+      request: {
+        pipelineId: nodeId,
+        inputs: [],
+        supplemental: [],
+        outputs: []
+      }
+    },
     options
   );
 }

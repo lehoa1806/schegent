@@ -241,6 +241,8 @@ export type {
   LaunchProjection,
   LaunchSection,
   Launchable,
+  LaunchableNodeSummary,
+  LaunchableOutputPort,
   LaunchablePort,
   LiveActivity,
   MonitorStatus,
@@ -273,10 +275,13 @@ export type {
   PhaseName
 } from '../../../src/contracts/phase-identity.js';
 export type {
+  ConnectedInvocationAttemptProjection,
+  ConnectedInvocationProjection,
   ConnectedNodeAction,
   ConnectedNodeProjection,
   ConnectedNodeState,
-  ConnectedRunProjection
+  ConnectedRunProjection,
+  WorkflowControlAction
 } from '../../../src/contracts/sidebar-ipc/workflow-run.js';
 export type {
   PhaseSourceStatus

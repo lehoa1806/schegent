@@ -28,11 +28,18 @@ import {
 import { isPipelineInputPortType } from '../../contracts/pipeline-definitions';
 import type { PipelineInputPort } from '../../contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../../contracts/process-definitions';
-import type { WorkflowDerivedPort } from '../../contracts/workflow-definitions';
+import type {
+  WorkflowDefinition,
+  WorkflowDerivedPort,
+  WorkflowInputPort
+} from '../../contracts/workflow-definitions';
+import { MAX_WORKFLOW_NESTING_DEPTH } from '../../config/workflow-closure-resolver';
 import { declaredCapabilitySet } from '../../contracts/phase-capabilities';
 import type {
   CapabilityNotice,
   EffectiveLimit,
+  LaunchableNodeSummary,
+  LaunchableOutputPort,
   LaunchPhaseSettings,
   LaunchRunSettings
 } from '../../contracts/snapshot-projections';
@@ -111,20 +118,106 @@ function pipelinePort(port: PipelineInputPort): LaunchablePort {
  * here would be the second derivation this module exists to avoid (FR-018) —
  * absence reads as "not declared required", which is what the graph says.
  */
-function workflowPorts(ports: readonly WorkflowDerivedPort[]): readonly LaunchablePort[] {
+function workflowPorts(
+  ports: readonly WorkflowDerivedPort[],
+  declaredInputs?: readonly WorkflowInputPort[]
+): readonly LaunchablePort[] {
+  const declaredById = new Map((declaredInputs ?? []).map((input) => [input.portId, input]));
   const narrowed: LaunchablePort[] = [];
   for (const port of ports) {
     if (!isPipelineInputPortType(port.type)) continue;
+    const declared = declaredById.get(port.portId);
     narrowed.push(
+      Object.freeze({
+        portId: port.portId,
+        label: port.label,
+        type: port.type,
+        nodeId: port.nodeId,
+        ...(declared?.required !== undefined ? { required: declared.required } : {}),
+        ...(declared?.description !== undefined ? { description: declared.description } : {})
+      })
+    );
+  }
+  return Object.freeze(narrowed);
+}
+
+function workflowOutputPorts(
+  definition: WorkflowDefinition,
+  derivedOutputs: readonly WorkflowDerivedPort[]
+): readonly LaunchableOutputPort[] {
+  if (definition.outputs !== undefined && definition.outputs.length > 0) {
+    return Object.freeze(
+      definition.outputs.map((port) =>
+        Object.freeze({
+          portId: port.portId,
+          label: port.label,
+          type: port.type,
+          ...(port.required !== undefined ? { required: port.required } : {}),
+          ...(port.description !== undefined ? { description: port.description } : {})
+        })
+      )
+    );
+  }
+  return Object.freeze(
+    derivedOutputs.map((port) =>
       Object.freeze({
         portId: port.portId,
         label: port.label,
         type: port.type,
         nodeId: port.nodeId
       })
-    );
+    )
+  );
+}
+
+function workflowNodeSummaries(definition: WorkflowDefinition): readonly LaunchableNodeSummary[] {
+  return Object.freeze(
+    definition.nodes.map((node) => {
+      const kind =
+        node.phaseId !== undefined
+          ? ('phase' as const)
+          : node.workflowId !== undefined
+            ? ('workflow' as const)
+            : ('pipeline' as const);
+      const targetId = node.phaseId ?? node.workflowId ?? node.pipelineId ?? node.nodeId;
+      return Object.freeze({
+        nodeId: node.nodeId,
+        kind,
+        targetId,
+        ...(node.label !== undefined ? { label: node.label } : {})
+      });
+    })
+  );
+}
+
+function collectWorkflowLeafPhases(
+  workflow: WorkflowDefinition,
+  workflowsById: ReadonlyMap<string, WorkflowDefinition>,
+  pipelinePhaseIds: ReadonlyMap<string, readonly string[]>,
+  depth = 0,
+  visited: ReadonlySet<string> = new Set()
+): readonly string[] {
+  if (depth > MAX_WORKFLOW_NESTING_DEPTH || visited.has(workflow.workflowId)) {
+    return [];
   }
-  return Object.freeze(narrowed);
+  const nextVisited = new Set(visited);
+  nextVisited.add(workflow.workflowId);
+  const phaseIds: string[] = [];
+  for (const node of workflow.nodes) {
+    if (node.phaseId !== undefined) {
+      phaseIds.push(node.phaseId);
+    } else if (node.workflowId !== undefined) {
+      const child = workflowsById.get(node.workflowId);
+      if (child !== undefined) {
+        phaseIds.push(
+          ...collectWorkflowLeafPhases(child, workflowsById, pipelinePhaseIds, depth + 1, nextVisited)
+        );
+      }
+    } else if (node.pipelineId !== undefined) {
+      phaseIds.push(...(pipelinePhaseIds.get(node.pipelineId) ?? []));
+    }
+  }
+  return phaseIds;
 }
 
 /**
@@ -364,10 +457,11 @@ function workflowEntries(
   catalog: WorkflowCatalogProjection,
   effectivePipelineIds: ReadonlySet<string>,
   pipelinePhaseIds: ReadonlyMap<string, readonly string[]>,
-  context: BackendContext
+  context: BackendContext,
+  limits?: LaunchLimits
 ): readonly Launchable[] {
-  const effectiveWorkflowIds = new Set(
-    catalog.effective.map((definition) => definition.workflowId)
+  const workflowsById = new Map(
+    catalog.effective.map((definition) => [definition.workflowId, definition])
   );
   const entries: Launchable[] = [];
   for (const record of catalog.records) {
@@ -381,26 +475,26 @@ function workflowEntries(
       node.phaseId !== undefined
         ? context.phasesById.has(node.phaseId)
         : node.workflowId !== undefined
-          ? effectiveWorkflowIds.has(node.workflowId)
+          ? workflowsById.has(node.workflowId)
           : node.pipelineId !== undefined && effectivePipelineIds.has(node.pipelineId)
     );
     if (!resolvable) continue;
     const description = displayText(record.display, 'description') ?? record.definition.description;
-    // FR-R4-F06 (D3) -- the union over the node Phases/Pipelines, each resolved through the
-    // effective catalog the `resolvable` check above already required.
-    const union = new Set<BackendRunnerKind>();
-    const notices: CapabilityNotice[] = [];
-    const notedPhases = new Set<string>();
-    for (const node of record.definition.nodes) {
-      const phaseIds =
-        node.phaseId !== undefined
-          ? [node.phaseId]
-          : node.pipelineId !== undefined
-            ? (pipelinePhaseIds.get(node.pipelineId) ?? [])
-            : [];
-      for (const kind of pipelineBackends(phaseIds, context)) union.add(kind);
-      notices.push(...capabilityNoticesOfPhases(phaseIds, context, notedPhases));
-    }
+    const isComposable = record.definition.nodes.some(
+      (node) => node.phaseId !== undefined || node.workflowId !== undefined
+    );
+    const leafPhaseIds = collectWorkflowLeafPhases(
+      record.definition,
+      workflowsById,
+      pipelinePhaseIds
+    );
+    const union = pipelineBackends(leafPhaseIds, context);
+    const notices = capabilityNoticesOfPhases(leafPhaseIds, context, new Set<string>());
+    const runSettings = isComposable ? runSettingsOf(leafPhaseIds, context, limits) : undefined;
+    const outputs = isComposable
+      ? workflowOutputPorts(record.definition, record.derivedOutputs)
+      : undefined;
+    const nodes = isComposable ? workflowNodeSummaries(record.definition) : undefined;
     entries.push(
       Object.freeze({
         kind: 'workflow' as const,
@@ -408,10 +502,13 @@ function workflowEntries(
         name: displayText(record.display, 'name') ?? record.definition.name,
         ...(description !== undefined ? { description } : {}),
         activeVersionId,
-        inputs: workflowPorts(record.derivedInputs),
+        inputs: workflowPorts(record.derivedInputs, record.definition.inputs),
+        ...(outputs !== undefined && outputs.length > 0 ? { outputs } : {}),
         startNodeIds: Object.freeze([...record.definition.startNodeIds]),
+        ...(nodes !== undefined ? { nodes } : {}),
         backends: orderedBackends(union, context),
-        capabilityNotices: Object.freeze(notices)
+        capabilityNotices: Object.freeze(notices),
+        ...(runSettings !== undefined ? { runSettings } : {})
       })
     );
   }
@@ -462,7 +559,7 @@ export function buildLaunchProjection(
       pipelineCatalog.records.length
     ),
     workflows: sectionOf(
-      workflowEntries(workflowCatalog, effectivePipelineIds, pipelinePhaseIds, context),
+      workflowEntries(workflowCatalog, effectivePipelineIds, pipelinePhaseIds, context, limits),
       workflowCatalog.records.length
     )
   });

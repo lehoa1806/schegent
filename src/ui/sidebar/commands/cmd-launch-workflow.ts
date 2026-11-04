@@ -35,6 +35,7 @@ import {
   type WorkflowPipelineContext
 } from '../../../config/workflow-catalog';
 import type { LaunchWorkflowCommand, LaunchWorkflowResult } from '../../../contracts/sidebar-ipc';
+import type { PhaseDefinition } from '../../../contracts/process-definitions';
 import type { WorkflowDefinition } from '../../../contracts/workflow-definitions';
 import { launchWorkflow } from '../../../services/workflow-execution/workflow-launcher';
 import { getCanonicalWorkspaceRoot } from '../../../state/workspace-folder-picker';
@@ -67,7 +68,12 @@ function effectivePipelineContext(ctx: HandlerContext): WorkflowPipelineContext 
 }
 
 type Resolution =
-  | { readonly outcome: 'resolved'; readonly workflow: WorkflowDefinition }
+  | {
+      readonly outcome: 'resolved';
+      readonly workflow: WorkflowDefinition;
+      readonly effectiveWorkflows: readonly WorkflowDefinition[];
+      readonly effectivePhases: readonly PhaseDefinition[];
+    }
   | { readonly outcome: 'refused'; readonly reason: 'workflow-not-found' | 'workflow-invalid' };
 
 /**
@@ -75,21 +81,34 @@ type Resolution =
  *
  * `resolveWorkflowCatalog` graph-validates every row as it parses it and excludes
  * an invalid one from `effective`, so "in `effective`" already means "resolves and
- * its graph is valid and every node's Pipeline resolves". What is left is telling
+ * its graph is valid and every node's Phase/Workflow/Pipeline resolves". What is left is telling
  * the two refusals apart, and the records answer that: a row exists under this id
  * but did not become effective, so it is invalid — the operator has a definition
  * to repair, not one to create. (Feature 099, FR-040: `shadowed` was the other way
  * to be present and not effective, and it went with the layer tier.)
  */
 function resolveWorkflow(ctx: HandlerContext, workflowId: string): Resolution {
+  const storedPhases = ctx.deps.readPhaseConfig?.() ?? { rows: [], revision: '' };
+  const phaseCatalog = resolvePhaseCatalog({
+    rows: storedPhases.rows,
+    revision: storedPhases.revision
+  });
   const stored = ctx.deps.readWorkflowConfig?.() ?? { rows: [], revision: '' };
   const catalog = resolveWorkflowCatalog({
     rows: stored.rows,
     revision: stored.revision,
-    pipelineCatalog: effectivePipelineContext(ctx)
+    pipelineCatalog: effectivePipelineContext(ctx),
+    phaseCatalog
   });
   const workflow = catalog.effective.find((entry) => entry.workflowId === workflowId);
-  if (workflow !== undefined) return { outcome: 'resolved', workflow };
+  if (workflow !== undefined) {
+    return {
+      outcome: 'resolved',
+      workflow,
+      effectiveWorkflows: catalog.effective,
+      effectivePhases: phaseCatalog.effective
+    };
+  }
   const claimed = catalog.records.some((record) => record.workflowId === workflowId);
   return { outcome: 'refused', reason: claimed ? 'workflow-invalid' : 'workflow-not-found' };
 }
@@ -138,6 +157,8 @@ export const handler: CommandHandler<LaunchWorkflowCommand> = async (ctx, comman
       connectedRunId: randomUUID(),
       workflow: resolved.workflow,
       catalog,
+      effectiveWorkflows: resolved.effectiveWorkflows,
+      effectivePhases: resolved.effectivePhases,
       startNodeId: command.payload.startNodeId,
       request: command.payload.request,
       workspaceRoot: getCanonicalWorkspaceRoot()?.uri.fsPath ?? null,

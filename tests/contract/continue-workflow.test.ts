@@ -61,7 +61,10 @@ import type {
 } from '../../src/contracts/sidebar-ipc/workflow-run';
 import { validateInboundMessage } from '../../src/contracts/runtime-validators';
 import type { WorkflowDefinition } from '../../src/contracts/workflow-definitions';
-import { createConnectedRunSnapshot } from '../../src/services/workflow-execution/connected-run-factory';
+import {
+  createComposableWorkflowRunSnapshot,
+  createConnectedRunSnapshot
+} from '../../src/services/workflow-execution/connected-run-factory';
 import type {
   GuardedScheduleRequest,
   GuardedScheduleResult
@@ -69,9 +72,15 @@ import type {
 import {
   appendAttempt,
   appendDecision,
+  createInvocationFrame,
+  resolveRootInvocationId,
+  upsertInvocationFrame,
   type ConnectedWorkflowRun
 } from '../../src/state/connected-workflow-run';
-import type { ConnectedChildState } from '../../src/ui/sidebar/connected-run-projector';
+import {
+  projectConnectedRun,
+  type ConnectedChildState
+} from '../../src/ui/sidebar/connected-run-projector';
 import { SECONDARY_REJECT, UNTRUSTED_REJECT } from '../../src/ui/sidebar/commands/constants';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
 import type { CommandAckMessage, SidebarCommand } from '../../src/ui/sidebar/messages';
@@ -1056,4 +1065,157 @@ describe('the whole command reads no catalog', () => {
       expectNoCatalogReads(harness);
     }
   );
+});
+
+// ---------------------------------------------------------------------------
+// Feature 265 (FR-R5-F06) — Invocation-scoped control & hierarchical projection
+// ---------------------------------------------------------------------------
+
+describe('invocation-scoped control and hierarchical projection (FR-R5-F06)', () => {
+  it('accepts optional invocationId, operation, and commandId at gate 0', () => {
+    const valid = envelope(
+      payload({
+        invocationId: 'inv-root',
+        operation: 'pause',
+        commandId: 'cmd-pause-1'
+      })
+    );
+    expect(validateInboundMessage(valid)).toMatchObject({ ok: true, command: valid });
+  });
+
+  it('rejects an unknown operation value at gate 0', () => {
+    expect(
+      validateInboundMessage(
+        envelope(
+          payload({
+            invocationId: 'inv-root',
+            operation: 'not-an-operation'
+          })
+        )
+      )
+    ).toMatchObject({ ok: false, reason: 'invalid-payload' });
+  });
+
+  it('projects distinct invocationId and nodePath across repeated child Workflow occurrences', () => {
+    const childWf: WorkflowDefinition = {
+      workflowId: 'child-wf',
+      name: 'Child Workflow',
+      version: 1,
+      nodes: [{ nodeId: 'step', phaseId: 'alpha' }],
+      connections: [],
+      startNodeIds: ['step']
+    };
+    const rootWf: WorkflowDefinition = {
+      workflowId: 'root-wf',
+      name: 'Root Workflow',
+      version: 1,
+      nodes: [
+        { nodeId: 'call-1', workflowId: 'child-wf', label: 'First Call' },
+        { nodeId: 'call-2', workflowId: 'child-wf', label: 'Second Call' }
+      ],
+      connections: [],
+      startNodeIds: ['call-1']
+    };
+    const snap = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'composable-run-1',
+      workflow: rootWf,
+      entryNodeId: 'call-1',
+      effectiveWorkflows: [rootWf, childWf],
+      effectivePhases: [
+        { phaseId: 'alpha', name: 'Alpha', version: 1, instruction: 'Prompt.' }
+      ],
+      startedAt: STARTED_AT,
+      defaultRunnerKind: 'claude'
+    });
+    if (snap.outcome !== 'created') {
+      throw new Error(`failed to create composable run: ${snap.reason}`);
+    }
+    const rootInvId = resolveRootInvocationId(snap.run);
+    const withFirstChild = upsertInvocationFrame(
+      snap.run,
+      createInvocationFrame({
+        invocationId: 'inv-child-1',
+        rootRunId: 'composable-run-1',
+        parentInvocationId: rootInvId,
+        parentCallNodeId: 'call-1',
+        parentAttemptId: 'att-call-1',
+        workflowId: 'child-wf',
+        depth: 1,
+        nodePath: 'root-wf/call-1/child-wf',
+        entryNodeId: 'step',
+        boundInputs: {},
+        startedAt: STARTED_AT + 100
+      })
+    );
+    const withSecondChild = upsertInvocationFrame(
+      withFirstChild,
+      createInvocationFrame({
+        invocationId: 'inv-child-2',
+        rootRunId: 'composable-run-1',
+        parentInvocationId: rootInvId,
+        parentCallNodeId: 'call-2',
+        parentAttemptId: 'att-call-2',
+        workflowId: 'child-wf',
+        depth: 1,
+        nodePath: 'root-wf/call-2/child-wf',
+        entryNodeId: 'step',
+        boundInputs: {},
+        startedAt: STARTED_AT + 200
+      })
+    );
+
+    const projected = projectConnectedRun(withSecondChild, () => 'completed');
+    expect(projected.invocations).toHaveLength(3);
+    const childProjections = projected.invocations!.filter((inv) => inv.depth === 1);
+    expect(childProjections.map((inv) => [inv.invocationId, inv.nodePath])).toEqual([
+      ['inv-child-1', 'root-wf/call-1/child-wf'],
+      ['inv-child-2', 'root-wf/call-2/child-wf']
+    ]);
+  });
+
+  it('executes an invocation-scoped pause operation via CMD_CONTINUE_WORKFLOW', async () => {
+    const rootWf: WorkflowDefinition = {
+      workflowId: 'root-wf',
+      name: 'Root Workflow',
+      version: 1,
+      nodes: [{ nodeId: 'step', phaseId: 'alpha', label: 'Alpha Step' }],
+      connections: [],
+      startNodeIds: ['step']
+    };
+    const snap = createComposableWorkflowRunSnapshot({
+      connectedRunId: RUN_ID,
+      workflow: rootWf,
+      entryNodeId: 'step',
+      effectiveWorkflows: [rootWf],
+      effectivePhases: [
+        { phaseId: 'alpha', name: 'Alpha', version: 1, instruction: 'Prompt.' }
+      ],
+      startedAt: STARTED_AT,
+      defaultRunnerKind: 'claude'
+    });
+    if (snap.outcome !== 'created') {
+      throw new Error(`failed to create composable run: ${snap.reason}`);
+    }
+    const rootInvId = resolveRootInvocationId(snap.run);
+    const harness = buildRouter({ run: snap.run, persist: true });
+
+    await dispatch(
+      harness,
+      payload({
+        expectedRevision: snap.run.revision,
+        nodeId: 'step',
+        invocationId: rootInvId,
+        operation: 'pause',
+        commandId: 'pause-cmd-1',
+        request: runRequest({ pipelineId: 'alpha' })
+      })
+    );
+
+    expect(only(harness).result).toMatchObject({
+      outcome: 'started',
+      revision: snap.run.revision + 1
+    });
+    expect(harness.writes).toHaveLength(1);
+    expect(harness.writes[0]!.run.invocations?.[rootInvId]?.status).toBe('paused');
+  });
 });

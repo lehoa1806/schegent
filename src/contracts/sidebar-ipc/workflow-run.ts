@@ -66,6 +66,58 @@ export type ConnectedNodeState =
  */
 export type ConnectedNodeAction = 'start' | 'restart';
 
+export type WorkflowControlAction =
+  | 'pause'
+  | 'resume'
+  | 'cancel'
+  | 'retry-phase'
+  | 'retry-invocation'
+  | 'continue-handoff';
+
+export const WORKFLOW_CONTROL_ACTIONS: readonly WorkflowControlAction[] = Object.freeze([
+  'pause',
+  'resume',
+  'cancel',
+  'retry-phase',
+  'retry-invocation',
+  'continue-handoff'
+]);
+
+export interface ConnectedInvocationAttemptProjection {
+  readonly attemptId: string;
+  readonly attemptIndex: number;
+  readonly nodeId: string;
+  readonly nodeKind: 'phase' | 'workflow';
+  readonly status: string;
+  readonly startedAt: number;
+  readonly endedAt?: number;
+  readonly queueItemId?: string;
+  readonly childInvocationId?: string;
+  readonly failureCode?: string;
+}
+
+export interface ConnectedInvocationProjection {
+  readonly invocationId: string;
+  readonly parentInvocationId: string | null;
+  readonly workflowId: string;
+  readonly workflowName?: string;
+  readonly frozenVersionId?: string;
+  readonly depth: number;
+  readonly nodePath: string;
+  readonly status: string;
+  readonly currentNodeId: string | null;
+  readonly activeAttemptId: string | null;
+  readonly activeAttemptIndex: number | null;
+  readonly allowedActions: readonly WorkflowControlAction[];
+  readonly waitingReason: string | null;
+  readonly pauseCause: string | null;
+  readonly failureReason: string | null;
+  readonly pendingRetryAt: number | null;
+  readonly pendingRetryCause: string | null;
+  readonly outputPortIds: readonly string[];
+  readonly attempts: readonly ConnectedInvocationAttemptProjection[];
+}
+
 export interface ConnectedNodeProjection {
   readonly nodeId: string;
   readonly pipelineId: string;
@@ -76,6 +128,10 @@ export interface ConnectedNodeProjection {
   readonly attemptCount: number;
   /** The most recent attempt's queue item, so the view can reuse the existing Run surfaces (FR-056). */
   readonly latestQueueItemId?: string;
+  readonly nodeKind?: 'phase' | 'workflow' | 'pipeline';
+  readonly label?: string;
+  readonly frozenVersionId?: string;
+  readonly childInvocationIds?: readonly string[];
 }
 
 /**
@@ -97,6 +153,18 @@ export interface ConnectedRunProjection {
   /** True until the aggregate and every referenced child run have loaded (FR-058). */
   readonly hydrating: boolean;
   readonly nodes: readonly ConnectedNodeProjection[];
+  readonly queueId?: string;
+  readonly status?: string;
+  readonly rootInvocationId?: string;
+  readonly activeInvocationId?: string;
+  readonly rootAllowedActions?: readonly WorkflowControlAction[];
+  readonly recoveryDisposition?: {
+    readonly status: string;
+    readonly reason: string;
+    readonly targetInvocationId: string;
+    readonly targetAttemptId?: string;
+  } | null;
+  readonly invocations?: readonly ConnectedInvocationProjection[];
 }
 
 // -- CMD_LAUNCH_WORKFLOW -----------------------------------------------------
@@ -183,6 +251,10 @@ export interface ContinueWorkflowPayload {
   readonly expectedRevision: number;
   readonly nodeId: string;
   readonly request: RunRequest;
+  /** Optional target invocation and control operation for composable Workflow runs (FR-R5-F06). */
+  readonly invocationId?: string;
+  readonly operation?: WorkflowControlAction;
+  readonly commandId?: string;
 }
 
 export interface ContinueWorkflowCommand extends CommandBase<typeof CMD_CONTINUE_WORKFLOW> {
@@ -266,13 +338,26 @@ export function isContinueWorkflowPayload(payload: unknown): payload is Continue
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
   const value = payload as Record<string, unknown>;
   return (
-    !hasUnexpectedKeys(value, ['connectedRunId', 'expectedRevision', 'nodeId', 'request']) &&
+    !hasUnexpectedKeys(value, [
+      'connectedRunId',
+      'expectedRevision',
+      'nodeId',
+      'request',
+      'invocationId',
+      'operation',
+      'commandId'
+    ]) &&
     boundedId(value.connectedRunId, RUN_ID_MAX) &&
     // Bounded below and not above, matching the ingress validator: a revision the
     // store has moved past is gate 2's `rejected-stale`, not a transport defect.
     Number.isInteger(value.expectedRevision) &&
     (value.expectedRevision as number) >= 0 &&
     boundedId(value.nodeId, ID_MAX) &&
+    (value.invocationId === undefined || boundedId(value.invocationId, RUN_ID_MAX)) &&
+    (value.operation === undefined ||
+      (typeof value.operation === 'string' &&
+        (WORKFLOW_CONTROL_ACTIONS as readonly string[]).includes(value.operation))) &&
+    (value.commandId === undefined || boundedId(value.commandId, RUN_ID_MAX)) &&
     validRunRequest(value.request)
   );
 }

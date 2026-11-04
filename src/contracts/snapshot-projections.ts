@@ -80,6 +80,22 @@ export interface LaunchablePort {
   readonly nodeId?: string;
 }
 
+export interface LaunchableOutputPort {
+  readonly portId: string;
+  readonly label: string;
+  readonly type: string;
+  readonly required?: boolean;
+  readonly description?: string;
+  readonly nodeId?: string;
+}
+
+export interface LaunchableNodeSummary {
+  readonly nodeId: string;
+  readonly kind: 'phase' | 'workflow' | 'pipeline';
+  readonly targetId: string;
+  readonly label?: string;
+}
+
 /** One entry Runs offers. Identity is `(kind, id)`, never `id` alone (FR-014). */
 export interface Launchable {
   readonly kind: 'pipeline' | 'workflow';
@@ -94,8 +110,12 @@ export interface Launchable {
   readonly activeVersionId: string;
   /** Pipelines: the declared input ports. Workflows: the derived, unsatisfied ones. */
   readonly inputs: readonly LaunchablePort[];
+  /** Declared or derived output ports for composable Workflows (FR-R5-F06). */
+  readonly outputs?: readonly LaunchableOutputPort[];
   /** Workflows only; documented non-empty when present. Drives FR-043. */
   readonly startNodeIds?: readonly string[];
+  /** Composable Workflow node summaries for start-node and target visibility (FR-R5-F06). */
+  readonly nodes?: readonly LaunchableNodeSummary[];
   /**
    * FR-R4-F06 (FR-007; contract D, D3) -- the backends a launch of this entry would
    * actually spawn: non-empty, unique, in `SUPPORTED_BACKENDS` order.
