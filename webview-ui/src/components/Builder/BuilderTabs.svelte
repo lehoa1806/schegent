@@ -13,16 +13,12 @@
     onactivate: (tab: BuilderTab) => void;
   }
   const { activeTab, onactivate }: Props = $props();
-  // Feature 180 (T1554, FR-001) — the strip reads in the order definitions
-  // compose: a Pipeline is an ordered sequence of Phases, and a Workflow node
-  // runs a Pipeline. Both editors already refuse to author until the earlier
-  // surface has been visited (`PipelineToolbar.svelte:127-132`,
-  // `WorkflowToolbar.svelte:223-233`), so leading with Pipelines put first the
-  // tab that can send the operator to the tab on its right. Order only — every
-  // id and label is what it was, and `BuilderTab` is a set, not a sequence.
+  // Feature 180 (T1554, FR-001) / FR-R5-F05 — the strip reads in the order
+  // definitions compose: atomic Phases first, composable Workflows second, and
+  // the backend Models catalog third. Order only — every id and label is
+  // canonical, and `BuilderTab` is a set, not a sequence.
   const BUILDER_TABS = Object.freeze([
     { id: 'phases', label: 'Phases' },
-    { id: 'pipelines', label: 'Pipelines' },
     { id: 'workflows', label: 'Workflows' },
     { id: 'models', label: 'Models' }
   ] satisfies ReadonlyArray<{ id: BuilderTab; label: string }>);

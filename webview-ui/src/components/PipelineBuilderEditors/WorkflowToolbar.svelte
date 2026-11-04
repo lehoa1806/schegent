@@ -60,12 +60,18 @@
     duplicateDisabled: boolean;
     removeDisabled: boolean;
     saveDisabled: boolean;
+    canUndo?: boolean;
+    canRedo?: boolean;
+    canReset?: boolean;
     /** The Library row in focus, or null when nothing is selected. */
     selected: MutableWorkflow | null;
     onadd: () => void;
     onduplicate: () => void;
     onremove: (event: MouseEvent) => void;
     onsave: () => void;
+    onundo?: () => void;
+    onredo?: () => void;
+    onreset?: () => void;
   }
 
   const {
@@ -75,11 +81,17 @@
     duplicateDisabled,
     removeDisabled,
     saveDisabled,
+    canUndo = false,
+    canRedo = false,
+    canReset = false,
     selected,
     onadd,
     onduplicate,
     onremove,
-    onsave
+    onsave,
+    onundo,
+    onredo,
+    onreset
   }: Props = $props();
 
   /**
@@ -158,6 +170,36 @@
   >
     Delete
   </button>
+  {#if onundo}
+    <button
+      class="btn btn-secondary"
+      data-testid="workflows-undo"
+      disabled={mutatingDisabled || !canUndo}
+      onclick={onundo}
+    >
+      Undo
+    </button>
+  {/if}
+  {#if onredo}
+    <button
+      class="btn btn-secondary"
+      data-testid="workflows-redo"
+      disabled={mutatingDisabled || !canRedo}
+      onclick={onredo}
+    >
+      Redo
+    </button>
+  {/if}
+  {#if onreset}
+    <button
+      class="btn btn-secondary"
+      data-testid="workflows-discard"
+      disabled={mutatingDisabled || !canReset}
+      onclick={onreset}
+    >
+      Discard Edits
+    </button>
+  {/if}
   <!-- FR-013 — the choice sits beside the control it changes, so it is made
        before the document is produced rather than after. Disabled on exactly the
        condition Export is: there is no depth to choose for a row that cannot be

@@ -37,7 +37,7 @@ export const POLICY_SMOKE_QUEUE_ID = 'default';
 export const POLICY_SMOKE_PENDING_TASK_ID = 'visual-task-pending';
 
 /** The Builder routes the smoke visits, in order. */
-export const POLICY_SMOKE_ROUTES = Object.freeze(['phases', 'pipelines', 'workflows', 'models'] as const);
+export const POLICY_SMOKE_ROUTES = Object.freeze(['phases', 'workflows', 'models'] as const);
 
 export type PolicySmokeRoute = (typeof POLICY_SMOKE_ROUTES)[number];
 
@@ -59,13 +59,13 @@ const WORKFLOW_DEFINITION = {
   description: 'A Workflow whose first node forks into two arms.',
   version: 1,
   nodes: [
-    { nodeId: 'triage', pipelineId: 'dev-new-feature' },
-    { nodeId: 'fix', pipelineId: 'bugfix' },
-    { nodeId: 'ship', pipelineId: 'dev-new-feature' }
+    { nodeId: 'triage', kind: 'phase' as const, phaseId: POLICY_SMOKE_PHASE_ID },
+    { nodeId: 'fix', kind: 'phase' as const, phaseId: POLICY_SMOKE_PHASE_ID },
+    { nodeId: 'ship', kind: 'phase' as const, phaseId: POLICY_SMOKE_PHASE_ID }
   ],
   connections: [
-    { from: { nodeId: 'triage', portId: 'out' }, to: { nodeId: 'fix', portId: 'in' } },
-    { from: { nodeId: 'triage', portId: 'out' }, to: { nodeId: 'ship', portId: 'in' } }
+    { from: { nodeId: 'triage' }, to: { nodeId: 'fix' } },
+    { from: { nodeId: 'triage' }, to: { nodeId: 'ship' } }
   ],
   startNodeIds: ['triage']
 } as const;
