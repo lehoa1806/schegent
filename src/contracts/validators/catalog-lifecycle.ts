@@ -45,7 +45,7 @@ function isBoundedString(value: unknown, max: number): value is string {
 }
 
 function isKind(value: unknown): boolean {
-  return CATALOG_KINDS.some((kind) => kind === value);
+  return CATALOG_KINDS.some((kind) => kind === value) || value === 'pipeline';
 }
 
 /** `kind`, `id`, `expectedDraftVersion` — the three every operation carries. */

@@ -1181,3 +1181,167 @@ describe('condition-comparison-unsupported (C-T2, FR-026, FR-028)', () => {
     });
   });
 });
+
+describe('unified Phase and child-Workflow graph validation (FR-R5-F01-T03, T04)', () => {
+  const effectivePhases = [
+    { phaseId: 'specify', name: 'Specify', version: 1, instruction: 'Specify' },
+    { phaseId: 'plan', name: 'Plan', version: 1, instruction: 'Plan' },
+    { phaseId: 'implement', name: 'Implement', version: 1, instruction: 'Implement' }
+  ];
+
+  const childWorkflow: WorkflowDefinition = {
+    workflowId: 'child-review',
+    name: 'Child Review',
+    version: 1,
+    inputs: [{ portId: 'draft-plan', label: 'Draft Plan', type: 'text', required: true }],
+    outputs: [{ portId: 'approved-plan', label: 'Approved Plan', type: 'markdown', required: true }],
+    nodes: [{ nodeId: 'p1', kind: 'phase', phaseId: 'plan' }],
+    connections: [],
+    startNodeIds: ['p1']
+  };
+
+  it('accepts a pure Phase control sequence with zero data bindings', () => {
+    const wf: WorkflowDefinition = {
+      workflowId: 'linear-phases',
+      name: 'Linear Phases',
+      version: 1,
+      nodes: [
+        { nodeId: 'step-1', kind: 'phase', phaseId: 'specify' },
+        { nodeId: 'step-2', kind: 'phase', phaseId: 'plan' }
+      ],
+      connections: [{ from: { nodeId: 'step-1' }, to: { nodeId: 'step-2' } }],
+      startNodeIds: ['step-1']
+    };
+
+    const errors = validateWorkflowGraph(wf, [], new Map(), { effectivePhases });
+    expect(errors).toEqual([]);
+  });
+
+  it('validates child-Workflow node bindings and reports missing-required-input when unbound', () => {
+    const wfMissingInput: WorkflowDefinition = {
+      workflowId: 'parent-missing-input',
+      name: 'Parent Missing Input',
+      version: 1,
+      nodes: [{ nodeId: 'review', kind: 'workflow', workflowId: 'child-review' }],
+      connections: [],
+      bindings: [],
+      startNodeIds: ['review']
+    };
+
+    const missingErrors = validateWorkflowGraph(wfMissingInput, [], new Map(), {
+      effectivePhases,
+      effectiveWorkflows: [childWorkflow]
+    });
+    expect(codes(missingErrors)).toContain('missing-required-input');
+
+    const wfBoundInput: WorkflowDefinition = {
+      ...wfMissingInput,
+      inputs: [{ portId: 'spec', label: 'Spec', type: 'text' }],
+      bindings: [
+        {
+          kind: 'input',
+          nodeId: 'review',
+          inputKey: 'draft-plan',
+          source: { from: 'workflow-input', portId: 'spec' }
+        }
+      ]
+    };
+    const cleanErrors = validateWorkflowGraph(wfBoundInput, [], new Map(), {
+      effectivePhases,
+      effectiveWorkflows: [childWorkflow]
+    });
+    expect(cleanErrors).toEqual([]);
+  });
+
+  it('reports binding-source-not-ancestor when a binding reads from a downstream or sibling node', () => {
+    const wf: WorkflowDefinition = {
+      workflowId: 'bad-ancestor',
+      name: 'Bad Ancestor',
+      version: 1,
+      nodes: [
+        { nodeId: 'first', kind: 'phase', phaseId: 'specify' },
+        { nodeId: 'second', kind: 'workflow', workflowId: 'child-review' }
+      ],
+      connections: [{ from: { nodeId: 'first' }, to: { nodeId: 'second' } }],
+      bindings: [
+        {
+          kind: 'input',
+          nodeId: 'first',
+          inputKey: 'brief',
+          source: { from: 'node-output', nodeId: 'second', portId: 'approved-plan' }
+        },
+        {
+          kind: 'input',
+          nodeId: 'second',
+          inputKey: 'draft-plan',
+          source: { from: 'node-output', nodeId: 'first', portId: 'spec' }
+        }
+      ],
+      startNodeIds: ['first']
+    };
+
+    const errors = validateWorkflowGraph(wf, [], new Map(), {
+      effectivePhases,
+      effectiveWorkflows: [childWorkflow]
+    });
+    expect(codes(errors)).toContain('binding-source-not-ancestor');
+  });
+
+  it('enforces required output coverage on all return branches while allowing optional (required: false) branch outputs', () => {
+    const branchingWf = (requiredOutput: boolean): WorkflowDefinition => ({
+      workflowId: 'branching-outputs',
+      name: 'Branching Outputs',
+      version: 1,
+      outputs: [
+        {
+          portId: 'branch-report',
+          label: 'Branch Report',
+          type: 'markdown',
+          required: requiredOutput
+        }
+      ],
+      nodes: [
+        { nodeId: 'gate', kind: 'phase', phaseId: 'specify' },
+        { nodeId: 'left', kind: 'phase', phaseId: 'plan' },
+        { nodeId: 'right', kind: 'phase', phaseId: 'implement' }
+      ],
+      connections: [
+        {
+          from: { nodeId: 'gate' },
+          to: { nodeId: 'left' },
+          priority: 10,
+          condition: {
+            left: { source: 'node-status', nodeId: 'gate' },
+            operator: 'equals',
+            right: 'completed'
+          }
+        },
+        {
+          from: { nodeId: 'gate' },
+          to: { nodeId: 'right' },
+          priority: 1,
+          isDefault: true
+        }
+      ],
+      bindings: [
+        {
+          kind: 'output',
+          nodeId: 'left',
+          portId: 'branch-report',
+          outputKey: 'plan-doc'
+        }
+      ],
+      startNodeIds: ['gate']
+    });
+
+    const requiredErrors = validateWorkflowGraph(branchingWf(true), [], new Map(), {
+      effectivePhases
+    });
+    expect(codes(requiredErrors)).toContain('missing-required-output-on-branch');
+
+    const optionalErrors = validateWorkflowGraph(branchingWf(false), [], new Map(), {
+      effectivePhases
+    });
+    expect(optionalErrors).toEqual([]);
+  });
+});

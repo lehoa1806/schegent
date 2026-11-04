@@ -151,7 +151,12 @@ const HARD_RULE_ANCHORS: ReadonlyArray<string> = [
   // Feature 217 (FR-R3-179) — one rule, two invariants, so two anchors: an
   // evidence open declares its mode, and a mode is narrowed in one routine.
   'open an evidence path without declaring its mode',
-  'narrow a mode anywhere but `repo/src/lib/narrow-mode.ts`'
+  'narrow a mode anywhere but `repo/src/lib/narrow-mode.ts`',
+  // Feature 260 (FR-R5-F01) — unified Workflow definitions and two-kind catalog
+  // amendments to rules 38, 41, 42, and 48.
+  'rejected with `index-addressing-forbidden`',
+  'rejected with\n  `derived-ports-not-storable`',
+  'orders child workflows topologically before parent'
 ];
 
 /** The authoritative file — the only one that carries the rule set. */

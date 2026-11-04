@@ -61,12 +61,14 @@ export interface CatalogVersionRef {
  * Absent is a state the surface already renders honestly (FR-012), so dropping
  * the malformed value lands somewhere true.
  */
+const ACCEPTED_VERSION_KINDS: readonly CatalogKind[] = [...CATALOG_KINDS, 'pipeline'];
+
 export function isCatalogVersionRef(value: unknown): value is CatalogVersionRef {
   if (!value || typeof value !== 'object') return false;
   const ref = value as Record<string, unknown>;
   return (
     typeof ref.kind === 'string'
-    && (CATALOG_KINDS as readonly string[]).includes(ref.kind)
+    && (ACCEPTED_VERSION_KINDS as readonly string[]).includes(ref.kind)
     && typeof ref.id === 'string'
     && ref.id.length > 0
     && typeof ref.versionId === 'string'

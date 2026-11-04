@@ -36,7 +36,9 @@ import { referencedPhaseOrder } from './pipeline-document';
  * graph, never a graph rewritten to deduplicate itself.
  */
 export function referencedPipelineOrder(nodes: readonly WorkflowNode[]): readonly string[] {
-  return [...new Set(nodes.map((node) => node.pipelineId))];
+  return [
+    ...new Set(nodes.map((node) => node.pipelineId).filter((id): id is string => id !== undefined))
+  ];
 }
 
 /**

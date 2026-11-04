@@ -210,7 +210,7 @@ return new MessageRouter({
   // another read's version. `'pipeline'` is named here and only here: this
   // seam starts Pipelines, and a Workflow's own version is a question it has
   // no way to ask (FR-026).
-  resolveCatalogVersion: (pipelineId) => catalogSession.activeVersion('pipeline', pipelineId),
+  resolveCatalogVersion: (pipelineId) => catalogSession.activeVersion('workflow', pipelineId),
   guardedRun: guardedRunService,
   defaultRunnerKind: backendKind,
   // Feature 091 (T014, FR-010/FR-011) — the supply the command router was

@@ -65,7 +65,7 @@
              catalog does not hold still shows its identifier, because that is the
              `unknown-pipeline` defect the operator has to act on. -->
         <span class="wf-node-body" data-testid="workflow-node-pipeline-{index}">
-          {pipeline?.name ?? node.pipelineId}
+          {pipeline?.name ?? node.pipelineId ?? node.phaseId ?? node.workflowId ?? node.nodeId}
         </span>
         <span class="wf-node-foot">
           {#if slot.isStart}

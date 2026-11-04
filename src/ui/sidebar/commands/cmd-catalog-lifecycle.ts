@@ -42,7 +42,6 @@ import type {
   RestoreRequest,
   SaveDraftRequest
 } from '../../../contracts/catalog-lifecycle';
-import { CATALOG_KINDS } from '../../../contracts/catalog-store';
 import type { CatalogKind, StoredDefinition } from '../../../contracts/catalog-store';
 import type { CatalogLifecycleOps } from '../../../catalog';
 import type { TrustCapability } from '../../../contracts/sidebar-ipc';
@@ -325,10 +324,16 @@ export const publishDefinitionPackage = async (
  * An empty layer is not a write and gets no record, matching the store, which drops
  * it before the first pass. Only the ids travel; the bodies stop here (FR-060).
  */
+const EXCHANGE_KIND_RANK: Readonly<Record<CatalogKind, number>> = {
+  phase: 0,
+  pipeline: 1,
+  workflow: 2
+};
+
 function exchangeTargets(request: PackagePublishRequest): readonly ImportCommitTarget[] {
   return request.layers
     .filter((layer) => layer.definitions.length > 0)
-    .sort((left, right) => CATALOG_KINDS.indexOf(left.kind) - CATALOG_KINDS.indexOf(right.kind))
+    .sort((left, right) => EXCHANGE_KIND_RANK[left.kind] - EXCHANGE_KIND_RANK[right.kind])
     .map((layer) => ({
       resourceKind: layer.kind,
       resourceIds: layer.definitions.map((definition) => definition.id)

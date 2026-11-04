@@ -90,7 +90,14 @@ export function composeContinuationPrefill(input: ContinuationPrefillInput): Con
 
   for (const index of input.viaConnections) {
     const connection = input.graph.connections[index];
-    if (connection === undefined || connection.to.nodeId !== input.nodeId) continue;
+    if (
+      connection === undefined ||
+      connection.to.nodeId !== input.nodeId ||
+      connection.to.portId === undefined ||
+      connection.from.portId === undefined
+    ) {
+      continue;
+    }
     const port = ports.get(connection.to.portId);
     if (port === undefined || filled.has(port.portId)) continue;
 

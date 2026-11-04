@@ -173,7 +173,7 @@ export function projectConnectedRun(
     const state = stateOf(reading, decided.get(node.nodeId), startNodes.has(node.nodeId));
     return {
       nodeId: node.nodeId,
-      pipelineId: node.pipelineId,
+      pipelineId: node.pipelineId ?? node.phaseId ?? node.workflowId ?? node.nodeId,
       state,
       // FR-057 — only what the host would accept right now. While any child is
       // non-terminal the launcher refuses every start (FR-044), so nothing is

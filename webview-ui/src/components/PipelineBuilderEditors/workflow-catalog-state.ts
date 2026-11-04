@@ -863,15 +863,26 @@ export function formatWorkflowSaveRejection(
 function copyNode(node: WorkflowNode): WorkflowNode {
   return {
     nodeId: node.nodeId,
-    pipelineId: node.pipelineId,
+    ...(node.kind !== undefined ? { kind: node.kind } : {}),
+    ...(node.phaseId !== undefined ? { phaseId: node.phaseId } : {}),
+    ...(node.workflowId !== undefined ? { workflowId: node.workflowId } : {}),
+    ...(node.pipelineId !== undefined ? { pipelineId: node.pipelineId } : {}),
     ...(node.label !== undefined ? { label: node.label } : {})
   };
 }
 
 function copyConnection(connection: WorkflowConnection): WorkflowConnection {
   return {
-    from: { nodeId: connection.from.nodeId, portId: connection.from.portId },
-    to: { nodeId: connection.to.nodeId, portId: connection.to.portId },
+    from: {
+      nodeId: connection.from.nodeId,
+      ...(connection.from.portId !== undefined ? { portId: connection.from.portId } : {})
+    },
+    to: {
+      nodeId: connection.to.nodeId,
+      ...(connection.to.portId !== undefined ? { portId: connection.to.portId } : {}),
+      ...(connection.to.kind !== undefined ? { kind: connection.to.kind } : {})
+    },
+    ...(connection.handoff !== undefined ? { handoff: connection.handoff } : {}),
     ...(connection.condition !== undefined
       ? {
           condition: {

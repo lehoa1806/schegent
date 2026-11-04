@@ -126,7 +126,7 @@ export function createConnectedRunSnapshot(
   for (const node of input.workflow.nodes) {
     // Two nodes may name the same Pipeline (FR-003); it is frozen once, and both
     // read the same snapshot.
-    if (pipelines[node.pipelineId] !== undefined) continue;
+    if (node.pipelineId === undefined || pipelines[node.pipelineId] !== undefined) continue;
     const frozen = freezeOne(
       node.pipelineId,
       input.catalog,

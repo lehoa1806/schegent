@@ -104,14 +104,14 @@
           class="select-input"
           data-testid="workflow-node-pipeline-select-{index}"
           aria-label="Node {index + 1} runs Pipeline"
-          value={node.pipelineId}
+          value={node.pipelineId ?? ''}
           disabled={readonly}
           onchange={(event) => p.onnodepatch(index, { pipelineId: event.currentTarget.value })}
         >
           <!-- A Pipeline the node names but the effective catalog does not hold
                still has to be selectable, or changing anything else on the node
                would silently retarget it. -->
-          {#if !p.pipelines.some((entry) => entry.pipelineId === node.pipelineId)}
+          {#if node.pipelineId !== undefined && !p.pipelines.some((entry) => entry.pipelineId === node.pipelineId)}
             <option value={node.pipelineId}>{node.pipelineId} (not effective)</option>
           {/if}
           {#each p.pipelines as pipeline (pipeline.pipelineId)}

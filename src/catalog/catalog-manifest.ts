@@ -49,8 +49,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+const ACCEPTED_MANIFEST_KINDS: readonly CatalogKind[] = [...CATALOG_KINDS, 'pipeline'];
+
 function isKind(value: unknown): value is CatalogKind {
-  return typeof value === 'string' && (CATALOG_KINDS as readonly string[]).includes(value);
+  return typeof value === 'string' && (ACCEPTED_MANIFEST_KINDS as readonly string[]).includes(value);
 }
 
 function isEpochMs(value: unknown): value is number {
