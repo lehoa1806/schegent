@@ -297,10 +297,10 @@ export type WorkflowCatalogMutation =
   | { readonly kind: 'import-package'; readonly workflowIds: readonly string[] }
   | { readonly kind: 'edit'; readonly workflowId: string }
   | {
-      readonly kind: 'duplicate';
-      readonly sourceWorkflowId: string;
-      readonly workflowId: string;
-    }
+    readonly kind: 'duplicate';
+    readonly sourceWorkflowId: string;
+    readonly workflowId: string;
+  }
   | { readonly kind: 'remove'; readonly workflowId: string }
   | { readonly kind: 'reset' };
 

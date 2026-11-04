@@ -29,16 +29,25 @@
 //
 // No `vscode` import: the store and the child-status probe arrive as ports.
 
-import type { RunRequestFieldError, RunRequest } from '../../contracts/run-request';
+import type {
+  ExecutionEnvelope,
+  ResolvedPortValue,
+  RunRequest,
+  RunRequestFieldError
+} from '../../contracts/run-request';
 import type { WorkflowDefinition, WorkflowNode } from '../../contracts/workflow-definitions';
 import type { PipelineCatalog } from '../../config/pipeline-config';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { ConnectedWorkflowRun } from '../../state/connected-workflow-run';
 import { appendAttempt, resolveBoundQueueId } from '../../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../../state/workspace-state';
-import { createConnectedRunSnapshot } from './connected-run-factory';
+import {
+  createComposableWorkflowRunSnapshot,
+  createConnectedRunSnapshot
+} from './connected-run-factory';
+import { dispatchComposableNode } from './connected-run-coordinator';
 import type { NodeRunStartDeps, NodeRunStartResult } from './node-run-starter';
-import { startPipelineRun } from './node-run-starter';
+import { startPhaseNodeRun, startPipelineRun } from './node-run-starter';
 
 /**
  * Why a start was refused for a reason that is neither a field nor the run's
@@ -424,4 +433,165 @@ async function recordAttempt(
     'workflow-launcher: child enqueued but the attempt reference was superseded; the queue item is unaffected'
   );
   return written.current ?? run;
+}
+
+// ---------------------------------------------------------------------------
+// FR-R5-F02 (T022, FR-017) — Launch a pre-validated composable Workflow run
+// ---------------------------------------------------------------------------
+
+export interface LaunchComposableWorkflowInput {
+  readonly connectedRunId: string;
+  readonly envelope: ExecutionEnvelope;
+  readonly rootInputs?: Readonly<Record<string, ResolvedPortValue>>;
+  readonly workspaceRoot: string | null;
+  readonly startedAt: number;
+  readonly defaultRunnerKind?: BackendRunnerKind;
+  readonly queueId?: string;
+  /**
+   * Optional lease release hook invoked in `finally` if admission or initial
+   * start fails so no orphaned queue/lock claim remains (FR-017).
+   */
+  readonly releaseRootLease?: (
+    queueId: string,
+    connectedRunId: string
+  ) => Promise<void> | void;
+}
+
+function buildRootInputsFromEnvelope(
+  envelope: ExecutionEnvelope,
+  explicit?: Readonly<Record<string, ResolvedPortValue>>
+): Readonly<Record<string, ResolvedPortValue>> {
+  const merged: Record<string, ResolvedPortValue> = {};
+  for (const binding of envelope.inputs) {
+    merged[binding.portId] = Object.freeze({
+      portId: binding.portId,
+      type: binding.type,
+      value: binding.value
+    });
+  }
+  if (explicit !== undefined) {
+    for (const [key, value] of Object.entries(explicit)) {
+      merged[key] = value;
+    }
+  }
+  return Object.freeze(merged);
+}
+
+/**
+ * Admit a pre-validated composable Workflow `ExecutionEnvelope` onto the target
+ * serial queue, bind the root run's `queueId` once for all nested child steps,
+ * and guarantee lease release in `finally` if admission or initial start fails
+ * (FR-001, FR-002, FR-017).
+ */
+export async function launchComposableWorkflow(
+  deps: WorkflowLauncherDeps,
+  input: LaunchComposableWorkflowInput
+): Promise<LaunchWorkflowResult> {
+  const boundQueueId = input.queueId ?? 'default';
+  let startedSuccessfully = false;
+
+  try {
+    const closure = input.envelope.frozenClosure;
+    const workflowId = input.envelope.workflowId;
+    const entryNodeId = input.envelope.entryNodeId;
+    if (closure === undefined || workflowId === undefined || entryNodeId === undefined) {
+      return { outcome: 'rejected-definition', reason: 'workflow-invalid' };
+    }
+    const rootWorkflow = closure.workflowsById[workflowId];
+    if (rootWorkflow === undefined) {
+      return { outcome: 'rejected-definition', reason: 'workflow-not-found' };
+    }
+    if (!rootWorkflow.startNodeIds.includes(entryNodeId)) {
+      return { outcome: 'rejected-definition', reason: 'node-not-startable' };
+    }
+    if (input.workspaceRoot === null || input.workspaceRoot.trim().length === 0) {
+      return { outcome: 'rejected-definition', reason: 'no-workspace-root' };
+    }
+
+    const snapshot = createComposableWorkflowRunSnapshot({
+      connectedRunId: input.connectedRunId,
+      workflow: rootWorkflow,
+      entryNodeId,
+      frozenClosure: closure,
+      boundInputs: buildRootInputsFromEnvelope(input.envelope, input.rootInputs),
+      startedAt: input.startedAt,
+      ...(input.defaultRunnerKind !== undefined
+        ? { defaultRunnerKind: input.defaultRunnerKind }
+        : {}),
+      ...(input.queueId !== undefined ? { queueId: input.queueId } : {})
+    });
+    if (snapshot.outcome === 'rejected') {
+      return { outcome: 'rejected-definition', reason: 'workflow-invalid' };
+    }
+
+    let lastFailure: LaunchWorkflowResult | null = null;
+    let firstQueueItemId: string | null = null;
+
+    const stepResult = await dispatchComposableNode(
+      {
+        connectedRuns: {
+          compareAndSetConnectedRun: async (next) =>
+            deps.connectedRuns.compareAndSetConnectedRun(next, 0)
+        },
+        dispatchPhase: async (phaseInput) => {
+          const phaseRequest: RunRequest = {
+            pipelineId: phaseInput.phase.phaseId,
+            inputs: Object.values(phaseInput.boundInputs).map((portVal) => ({
+              portId: portVal.portId,
+              type: portVal.type as RunRequest['inputs'][number]['type'],
+              value: portVal.value
+            })),
+            supplemental: [],
+            outputs: []
+          };
+          const started = await startPhaseNodeRun(deps, {
+            frozenClosure: closure,
+            phaseId: phaseInput.phase.phaseId,
+            request: phaseRequest,
+            workspaceRoot: input.workspaceRoot,
+            description: phaseInput.node.label ?? phaseInput.phase.name,
+            queueId: phaseInput.queueId,
+            occurrence: {
+              rootRunId: input.connectedRunId,
+              invocationId: phaseInput.frame.invocationId,
+              parentInvocationId: phaseInput.frame.parentInvocationId,
+              nodePath: `${phaseInput.frame.nodePath}/${phaseInput.node.nodeId}`,
+              attemptId: phaseInput.attemptId,
+              attemptIndex: phaseInput.attemptIndex
+            }
+          });
+          if (started.outcome !== 'enqueued') {
+            lastFailure = refusalOf(started);
+            return { outcome: 'rejected', reason: started.outcome };
+          }
+          firstQueueItemId = started.queueItemId;
+          return { outcome: 'dispatched', queueItemId: started.queueItemId };
+        }
+      },
+      {
+        run: snapshot.run,
+        invocationId: snapshot.rootInvocationId,
+        nodeId: entryNodeId,
+        startedAt: input.startedAt
+      }
+    );
+
+    if (lastFailure !== null) {
+      return lastFailure;
+    }
+    if (stepResult.outcome !== 'phase-dispatched' || firstQueueItemId === null) {
+      return { outcome: 'rejected-definition', reason: 'workflow-invalid' };
+    }
+
+    startedSuccessfully = true;
+    return {
+      outcome: 'started',
+      run: stepResult.run,
+      queueItemId: firstQueueItemId
+    };
+  } finally {
+    if (!startedSuccessfully && input.releaseRootLease !== undefined) {
+      await input.releaseRootLease(boundQueueId, input.connectedRunId);
+    }
+  }
 }

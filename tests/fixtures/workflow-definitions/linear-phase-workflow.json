@@ -35,13 +35,22 @@
   ],
   "connections": [
     {
-      "from": { "nodeId": "specify-node" },
-      "to": { "nodeId": "plan-node" },
+      "from": {
+        "nodeId": "specify-node"
+      },
+      "to": {
+        "nodeId": "plan-node"
+      },
       "handoff": "auto"
     },
     {
-      "from": { "nodeId": "plan-node" },
-      "to": { "nodeId": "return", "kind": "return" }
+      "from": {
+        "nodeId": "plan-node"
+      },
+      "to": {
+        "nodeId": "return",
+        "kind": "return"
+      }
     }
   ],
   "bindings": [
@@ -49,13 +58,20 @@
       "kind": "input",
       "nodeId": "specify-node",
       "inputKey": "spec-doc",
-      "source": { "from": "workflow-input", "portId": "feature-spec" }
+      "source": {
+        "from": "workflow-input",
+        "portId": "feature-spec"
+      }
     },
     {
       "kind": "input",
       "nodeId": "plan-node",
       "inputKey": "upstream-spec",
-      "source": { "from": "node-output", "nodeId": "specify-node", "outputKey": "spec-artifact" }
+      "source": {
+        "from": "node-output",
+        "nodeId": "specify-node",
+        "outputKey": "spec-artifact"
+      }
     },
     {
       "kind": "output",
@@ -64,11 +80,15 @@
       "outputKey": "plan-artifact"
     }
   ],
-  "startNodeIds": ["specify-node"],
+  "startNodeIds": [
+    "specify-node"
+  ],
   "executionDefaults": {
     "runner": "claude",
     "effort": "high",
     "timeoutSeconds": 600
   },
-  "recommendedNext": ["implement-workflow"]
+  "recommendedNext": [
+    "implement-workflow"
+  ]
 }

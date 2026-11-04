@@ -26,6 +26,10 @@ import type {
   WorkflowNodeTerminalStatus
 } from '../../contracts/workflow-definitions';
 import type { RunOutputRecord } from '../../contracts/run-results';
+import type {
+  NodeAttemptRecord,
+  WorkflowInvocationFrame
+} from '../../state/connected-workflow-run';
 
 /**
  * The closed run-metadata set (FR-022). One member, because `node-status` is the
@@ -119,4 +123,58 @@ export function resolveOperand(
   if (record === undefined || record.status !== 'resolved') return UNRESOLVED;
   if (record.reference === undefined) return UNRESOLVED;
   return { resolved: true, value: record.reference };
+}
+
+function attemptRecordToFacts(attempt: NodeAttemptRecord): NodeAttemptFacts | null {
+  if (attempt.status === 'in-flight') {
+    return null;
+  }
+  const outputs: RunOutputRecord[] = Object.entries(attempt.declaredOutputs).map(
+    ([name, portVal]) => ({
+      name,
+      status: 'resolved',
+      reference: portVal.value
+    })
+  );
+  return {
+    nodeId: attempt.nodeId,
+    status: attempt.status,
+    outputs
+  };
+}
+
+/**
+ * FR-R5-F02 — build a `ConditionContext` scoped strictly to the terminal
+ * attempts recorded in `frame`. Sibling or parent invocation frames are never
+ * included.
+ */
+export function buildInvocationConditionContext(
+  frame: WorkflowInvocationFrame,
+  routingAttempt?: NodeAttemptRecord
+): ConditionContext {
+  const factsList: NodeAttemptFacts[] = [];
+  for (const [nodeId, attempts] of Object.entries(frame.attemptsByNodeId)) {
+    if (routingAttempt !== undefined && routingAttempt.nodeId === nodeId) {
+      const facts = attemptRecordToFacts(routingAttempt);
+      if (facts !== null) factsList.push(facts);
+      continue;
+    }
+    for (let idx = attempts.length - 1; idx >= 0; idx -= 1) {
+      const candidate = attempts[idx];
+      if (candidate === undefined) continue;
+      const facts = attemptRecordToFacts(candidate);
+      if (facts !== null) {
+        factsList.push(facts);
+        break;
+      }
+    }
+  }
+  if (
+    routingAttempt !== undefined &&
+    frame.attemptsByNodeId[routingAttempt.nodeId] === undefined
+  ) {
+    const facts = attemptRecordToFacts(routingAttempt);
+    if (facts !== null) factsList.push(facts);
+  }
+  return buildConditionContext(factsList);
 }

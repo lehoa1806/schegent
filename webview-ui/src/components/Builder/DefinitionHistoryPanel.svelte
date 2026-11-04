@@ -17,20 +17,20 @@
   //
   // Text interpolation only, never Svelte's raw-HTML directive (FR-038): version
   // notes and definition bodies are operator-authored documents.
-  import type { CatalogKind } from '../../../../src/contracts/catalog-store';
-  import type { BuilderLifecycle } from '../../lib/snapshot-types';
-  import { readDefinitionVersion } from '../../lib/catalog-history-ipc';
-  import DefinitionActions from './DefinitionActions.svelte';
-  import { EM_DASH, formatDefinitionTimestamp } from './definition-row-state';
+  import type { CatalogKind } from "../../../../src/contracts/catalog-store";
+  import type { BuilderLifecycle } from "../../lib/snapshot-types";
+  import { readDefinitionVersion } from "../../lib/catalog-history-ipc";
+  import DefinitionActions from "./DefinitionActions.svelte";
+  import { EM_DASH, formatDefinitionTimestamp } from "./definition-row-state";
   import {
     describeReason,
     formatVersionBody,
     viewOfReadResult,
-    type VersionBodyView
-  } from './version-body-view';
+    type VersionBodyView,
+  } from "./version-body-view";
 
   interface Props {
-    kind: CatalogKind | 'pipeline';
+    kind: CatalogKind | "pipeline";
     /** The definition whose history this is — the wire target and the test handle. */
     definitionId: string;
     /** What Restore's confirmations name. The id alone is not what the operator recognises. */
@@ -48,7 +48,7 @@
     definitionName,
     lifecycle,
     opener = null,
-    onclose
+    onclose,
   }: Props = $props();
 
   let selected = $state<string | null>(null);
@@ -67,11 +67,11 @@
   async function show(versionId: string): Promise<void> {
     const token = (issued += 1);
     selected = versionId;
-    view = { status: 'pending' };
+    view = { status: "pending" };
     const result = await readDefinitionVersion({
       kind: kind as CatalogKind,
       id: definitionId,
-      versionId
+      versionId,
     });
     // Superseded while in flight. Discarded, not merged — see above.
     if (token !== issued) return;
@@ -90,7 +90,9 @@
     onclose();
   }
 
-  const bodyText = $derived(view?.status === 'ready' ? formatVersionBody(view.body) : null);
+  const bodyText = $derived(
+    view?.status === "ready" ? formatVersionBody(view.body) : null,
+  );
 </script>
 
 <!-- The id is the row's `aria-controls` target, so the toggle and the region it
@@ -111,7 +113,10 @@
   </header>
 
   {#if lifecycle.versions.length === 0}
-    <p class="history-empty" data-testid="definition-history-empty-{definitionId}">
+    <p
+      class="history-empty"
+      data-testid="definition-history-empty-{definitionId}"
+    >
       No versions yet.
     </p>
   {:else}
@@ -135,7 +140,8 @@
             {/if}
             <span class="entry-field">
               <span class="entry-label">Created</span>
-              <span data-testid="definition-history-created-{definitionId}-{entry.versionId}"
+              <span
+                data-testid="definition-history-created-{definitionId}-{entry.versionId}"
                 >{formatDefinitionTimestamp(entry.createdAt)}</span
               >
             </span>
@@ -143,7 +149,8 @@
               <span class="entry-label">Published</span>
               <!-- Never published is an absence, and absences read as the dash
                    the rest of the surface uses (FR-028, FR-014). -->
-              <span data-testid="definition-history-published-{definitionId}-{entry.versionId}"
+              <span
+                data-testid="definition-history-published-{definitionId}-{entry.versionId}"
                 >{entry.publishedAt === null
                   ? EM_DASH
                   : formatDefinitionTimestamp(entry.publishedAt)}</span
@@ -157,8 +164,11 @@
             >
           </div>
           <!-- No note is an empty cell. `{null}` would interpolate the word. -->
-          <p class="entry-note" data-testid="definition-history-note-{definitionId}-{entry.versionId}">
-            {entry.note ?? ''}
+          <p
+            class="entry-note"
+            data-testid="definition-history-note-{definitionId}-{entry.versionId}"
+          >
+            {entry.note ?? ""}
           </p>
           <DefinitionActions
             {kind}
@@ -174,9 +184,12 @@
   {/if}
 
   {#if view !== null && selected !== null}
-    <div class="history-body" data-testid="definition-history-body-{definitionId}">
+    <div
+      class="history-body"
+      data-testid="definition-history-body-{definitionId}"
+    >
       <h5 class="body-title">{selected}</h5>
-      {#if view.status === 'pending'}
+      {#if view.status === "pending"}
         <p
           class="body-pending"
           role="status"
@@ -184,7 +197,7 @@
         >
           Reading this version...
         </p>
-      {:else if view.status === 'ready' && bodyText !== null}
+      {:else if view.status === "ready" && bodyText !== null}
         <!-- Read-only by construction: a `pre` holding interpolated text. No
              input, no textarea, no contenteditable, anywhere in here (FR-030). -->
         <pre
@@ -199,7 +212,9 @@
           role="status"
           data-testid="definition-history-body-error-{definitionId}"
         >
-          {describeReason(view.status === 'error' ? view.reason : 'read-failed')}
+          {describeReason(
+            view.status === "error" ? view.reason : "read-failed",
+          )}
         </p>
       {/if}
     </div>

@@ -23,7 +23,9 @@
 
 import type {
   WorkflowConnection,
-  WorkflowDefinition
+  WorkflowDefinition,
+  WorkflowHandoffMode,
+  WorkflowNodeTerminalStatus
 } from '../../contracts/workflow-definitions';
 import type {
   ConnectionOutcome,
@@ -140,4 +142,86 @@ export function selectNextNodes(input: SelectNextNodesInput): RoutingDecision {
       offerOrder(matchedExplicit.length > 0 ? matchedExplicit : matchedFallback)
     )
   });
+}
+
+export type TransitionTarget =
+  | { readonly kind: 'node'; readonly nodeId: string }
+  | { readonly kind: 'return' };
+
+export type SelectedTransitionOutcome =
+  | {
+      readonly outcome: 'transition';
+      readonly decision: RoutingDecision;
+      readonly connectionIndex: number;
+      readonly connection: WorkflowConnection;
+      readonly target: TransitionTarget;
+      readonly handoff: WorkflowHandoffMode;
+    }
+  | {
+      readonly outcome: 'terminal-sink';
+      readonly decision: RoutingDecision;
+    }
+  | {
+      readonly outcome: 'no-eligible-transition';
+      readonly decision: RoutingDecision;
+    }
+  | {
+      readonly outcome: 'unhandled-node-failure';
+      readonly decision: RoutingDecision;
+    };
+
+export interface SelectNextTransitionInput extends SelectNextNodesInput {
+  readonly attemptStatus?: WorkflowNodeTerminalStatus;
+}
+
+/**
+ * FR-R5-F02 — select the winning transition for composable Workflow execution,
+ * distinguishing `{ kind: 'node', nodeId }`, `{ kind: 'return' }`, terminal
+ * sink completion, `no-eligible-transition`, and `unhandled-node-failure`.
+ */
+export function selectNextTransition(
+  input: SelectNextTransitionInput
+): SelectedTransitionOutcome {
+  const decision = selectNextNodes(input);
+  if (decision.eligible.length > 0) {
+    const connectionIndex = decision.eligible[0]!;
+    const connection = input.graph.connections[connectionIndex]!;
+    const target: TransitionTarget =
+      connection.to.kind === 'return'
+        ? { kind: 'return' }
+        : { kind: 'node', nodeId: connection.to.nodeId };
+    const handoff: WorkflowHandoffMode = connection.handoff ?? 'auto';
+    return {
+      outcome: 'transition',
+      decision,
+      connectionIndex,
+      connection,
+      target,
+      handoff
+    };
+  }
+
+  const attemptStatus =
+    input.attemptStatus ?? input.context.nodes[input.nodeId]?.status ?? 'completed';
+  if (attemptStatus !== 'completed') {
+    return {
+      outcome: 'unhandled-node-failure',
+      decision
+    };
+  }
+
+  const hasOutgoingConnections = input.graph.connections.some(
+    (connection) => connection.from.nodeId === input.nodeId
+  );
+  if (!hasOutgoingConnections) {
+    return {
+      outcome: 'terminal-sink',
+      decision
+    };
+  }
+
+  return {
+    outcome: 'no-eligible-transition',
+    decision
+  };
 }

@@ -21,6 +21,17 @@ import {
   type ConnectedWorkflowRun
 } from './connected-workflow-run';
 
+export type ConnectedRunRefusalReason =
+  | 'unsupported-run-schema-version'
+  | 'invariant-violation';
+
+export interface ConnectedRunRefusalDiagnostic {
+  readonly connectedRunId: string;
+  readonly reason: ConnectedRunRefusalReason;
+}
+
+const DIAGNOSTIC_CAP = 20;
+
 export interface ConnectedRunsMigrationResult {
   readonly runs: Readonly<Record<string, ConnectedWorkflowRun>>;
   /**
@@ -33,11 +44,18 @@ export interface ConnectedRunsMigrationResult {
    * the invariants hold.
    */
   readonly dropped: readonly string[];
+  /**
+   * Bounded refusal diagnostics (`unsupported-run-schema-version` or
+   * `invariant-violation`) for records that cannot be loaded as current-schema
+   * `ConnectedWorkflowRun` aggregates (FR-R5-F02-T10).
+   */
+  readonly diagnostics: readonly ConnectedRunRefusalDiagnostic[];
 }
 
 const EMPTY: ConnectedRunsMigrationResult = Object.freeze({
   runs: Object.freeze({}),
-  dropped: Object.freeze([] as string[])
+  dropped: Object.freeze([] as string[]),
+  diagnostics: Object.freeze([] as ConnectedRunRefusalDiagnostic[])
 });
 
 /**
@@ -54,6 +72,13 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
+function isLegacyOrUnsupportedSchemaShape(value: Record<string, unknown>): boolean {
+  if ('schemaVersion' in value) return true;
+  if ('featureId' in value && !('connectedRunId' in value)) return true;
+  if ('phases' in value && !('graph' in value)) return true;
+  return false;
+}
+
 /**
  * Narrow the persisted memento value into the connected-run collection.
  *
@@ -66,9 +91,23 @@ export function migrateConnectedRuns(raw: unknown): ConnectedRunsMigrationResult
 
   const runs: Record<string, ConnectedWorkflowRun> = {};
   const dropped: string[] = [];
+  const diagnostics: ConnectedRunRefusalDiagnostic[] = [];
+  const pushDiagnostic = (connectedRunId: string, reason: ConnectedRunRefusalReason): void => {
+    if (diagnostics.length < DIAGNOSTIC_CAP) {
+      diagnostics.push(Object.freeze({ connectedRunId, reason }));
+    }
+  };
+
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (value === null || typeof value !== 'object') {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
       dropped.push(key);
+      pushDiagnostic(key, 'invariant-violation');
+      continue;
+    }
+    const record = value as Record<string, unknown>;
+    if (isLegacyOrUnsupportedSchemaShape(record)) {
+      dropped.push(key);
+      pushDiagnostic(key, 'unsupported-run-schema-version');
       continue;
     }
     const candidate = deepFreeze(value) as ConnectedWorkflowRun;
@@ -77,14 +116,20 @@ export function migrateConnectedRuns(raw: unknown): ConnectedRunsMigrationResult
     } catch (err) {
       if (!(err instanceof ConnectedRunInvariantError)) throw err;
       dropped.push(key);
+      pushDiagnostic(key, 'invariant-violation');
       continue;
     }
     if (candidate.connectedRunId !== key) {
       dropped.push(key);
+      pushDiagnostic(key, 'invariant-violation');
       continue;
     }
     runs[key] = candidate;
   }
 
-  return Object.freeze({ runs: Object.freeze(runs), dropped: Object.freeze(dropped) });
+  return Object.freeze({
+    runs: Object.freeze(runs),
+    dropped: Object.freeze(dropped),
+    diagnostics: Object.freeze(diagnostics)
+  });
 }

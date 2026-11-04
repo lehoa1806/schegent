@@ -21,9 +21,9 @@
   // on `MutableWorkflow`: the mutable row is the editable copy every save body
   // is stripped out of, and a projected view field there is one strip away from
   // being sent back to the host (FR-010).
-  import type { BuilderLifecycle } from '../../lib/snapshot-types';
-  import DefinitionLifecycleRow from '../Builder/DefinitionLifecycleRow.svelte';
-  import type { MutableWorkflow } from './types';
+  import type { BuilderLifecycle } from "../../lib/snapshot-types";
+  import DefinitionLifecycleRow from "../Builder/DefinitionLifecycleRow.svelte";
+  import type { MutableWorkflow } from "./types";
 
   interface Props {
     rows: readonly MutableWorkflow[];
@@ -39,14 +39,18 @@
   {#each rows as row (row.sourceKey)}
     <div class="phase-list-row">
       <button
-        class="phase-list-item {selectedKey === row.sourceKey ? 'selected' : ''}"
+        class="phase-list-item {selectedKey === row.sourceKey
+          ? 'selected'
+          : ''}"
         data-testid="workflows-list-item-{row.workflowId}"
-        aria-current={selectedKey === row.sourceKey ? 'true' : undefined}
+        aria-current={selectedKey === row.sourceKey ? "true" : undefined}
         onclick={() => onselect(row.sourceKey)}
       >
-        <div class="phase-list-title">{row.name || 'Untitled Workflow'}</div>
+        <div class="phase-list-title">{row.name || "Untitled Workflow"}</div>
         <div class="phase-list-id">{row.workflowId}</div>
-        <div class="phase-list-purpose">{row.description || 'No purpose recorded.'}</div>
+        <div class="phase-list-purpose">
+          {row.description || "No purpose recorded."}
+        </div>
         <div class="row-ports" data-testid="workflow-row-sequence">
           {#if row.nodes.length === 0}
             <span>No Pipelines yet</span>
@@ -55,7 +59,7 @@
                  is part of the definition's meaning (FR-049). -->
             {#each row.nodes as node, index (node.nodeId)}
               <span
-                >{index > 0 ? '→ ' : ''}{node.pipelineId ??
+                >{index > 0 ? "→ " : ""}{node.pipelineId ??
                   node.phaseId ??
                   node.workflowId ??
                   node.nodeId}</span
@@ -69,7 +73,7 @@
             <span>{port.label || port.portId}</span>
           {/each}
           {#if row.derivedInputs.length === 0}
-            <span>{row.persisted ? 'none' : 'derived once saved'}</span>
+            <span>{row.persisted ? "none" : "derived once saved"}</span>
           {/if}
         </div>
         <div class="row-ports" data-testid="workflow-row-outputs">
@@ -78,7 +82,7 @@
             <span>{port.label || port.portId}</span>
           {/each}
           {#if row.derivedOutputs.length === 0}
-            <span>{row.persisted ? 'none' : 'derived once saved'}</span>
+            <span>{row.persisted ? "none" : "derived once saved"}</span>
           {/if}
         </div>
         <!-- Feature 101 (T037) — the validity badge left with the lifecycle
@@ -87,7 +91,7 @@
         <div class="phase-badges">
           <span class="node-count">
             {row.nodes.length}
-            {row.nodes.length === 1 ? 'node' : 'nodes'}
+            {row.nodes.length === 1 ? "node" : "nodes"}
           </span>
         </div>
       </button>

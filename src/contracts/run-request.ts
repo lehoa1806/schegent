@@ -18,6 +18,8 @@
 
 import type { CatalogVersionRef } from './catalog-version';
 import type { PipelineInputPortType, PipelineOutputPortType } from './pipeline-definitions';
+import type { PhaseDefinition } from './process-definitions';
+import type { WorkflowDefinition } from './workflow-definitions';
 import type { WorkflowRunPipeline } from '../state/workflow-run';
 
 // -- Tier 1: transient ------------------------------------------------------
@@ -84,6 +86,21 @@ export interface RunOutputTargetRequest {
  */
 export interface RunRequest {
   readonly pipelineId: string;
+  readonly workflowId?: string;
+  readonly entryNodeId?: string;
+  readonly inputs: readonly RunInputValue[];
+  readonly supplemental: readonly SupplementalInput[];
+  readonly outputs: readonly RunOutputTargetRequest[];
+  readonly instructions?: string;
+}
+
+/**
+ * FR-R5-F02 — Workflow-addressed request shape when `pipelineId` is omitted by the caller.
+ */
+export interface WorkflowRunRequest {
+  readonly workflowId: string;
+  readonly entryNodeId?: string;
+  readonly pipelineId?: string;
   readonly inputs: readonly RunInputValue[];
   readonly supplemental: readonly SupplementalInput[];
   readonly outputs: readonly RunOutputTargetRequest[];
@@ -124,7 +141,14 @@ export const RUN_REQUEST_ERROR_CODES = [
   'inputs-count-exceeded',
   'supplemental-count-exceeded',
   'outputs-count-exceeded',
-  'request-bytes-exceeded'
+  'request-bytes-exceeded',
+  // FR-R5-F02 — composable Workflow launch and runtime validation codes.
+  'invalid-entry-node',
+  'workflow-closure-invalid',
+  'collection-selection-violation',
+  'missing-required-output',
+  'no-eligible-transition',
+  'unhandled-node-failure'
 ] as const;
 
 export type RunRequestErrorCode = (typeof RUN_REQUEST_ERROR_CODES)[number];
@@ -164,6 +188,35 @@ export interface FrozenOutputRequest {
   readonly overwriteConfirmed: boolean;
 }
 
+export interface ResolvedPortValue {
+  readonly portId: string;
+  readonly type: PipelineInputPortType | PipelineOutputPortType;
+  readonly value: string;
+  readonly items?: readonly string[];
+}
+
+export interface FrozenWorkflowClosureMetrics {
+  readonly maxDepth: number;
+  readonly definitionCount: number;
+  readonly expandedNodeCount: number;
+}
+
+/**
+ * FR-R5-F02 — the immutable transitive closure of a composable Workflow run.
+ * Contains all reachable Workflow and Phase definitions, their SHA-256 content
+ * digests, optional catalog version provenance, and bounded closure metrics
+ * (`maxDepth <= 8`, `definitionCount <= 64`, `expandedNodeCount <= 256`).
+ */
+export interface FrozenWorkflowClosure {
+  readonly rootWorkflowId: string;
+  readonly entryNodeId: string;
+  readonly workflowsById: Readonly<Record<string, WorkflowDefinition>>;
+  readonly phasesById: Readonly<Record<string, PhaseDefinition>>;
+  readonly definitionDigestsById: Readonly<Record<string, string>>;
+  readonly catalogVersionsById?: Readonly<Record<string, CatalogVersionRef>>;
+  readonly closureMetrics: FrozenWorkflowClosureMetrics;
+}
+
 /**
  * What validation produces, the enqueue path consumes, and the execution path
  * executes — one value for all three (FR-R3-001, T256).
@@ -191,6 +244,9 @@ export interface FrozenOutputRequest {
  */
 export interface ExecutionEnvelope {
   readonly pipeline: WorkflowRunPipeline;
+  readonly workflowId?: string;
+  readonly entryNodeId?: string;
+  readonly frozenClosure?: FrozenWorkflowClosure;
   readonly inputs: readonly FrozenInputBinding[];
   readonly supplemental: readonly FrozenSupplementalInput[];
   readonly outputs: readonly FrozenOutputRequest[];

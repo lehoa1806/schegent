@@ -14,14 +14,17 @@
     BuilderLifecycle,
     PortablePipelineDefinition,
     WorkflowConnection,
-    WorkflowNode
-  } from '../../lib/snapshot-types';
-  import type { AnchoredWorkflowDefects, WorkflowConditionPatch } from './workflow-catalog-state';
-  import type { WorkflowFlowSelection } from './workflow-flow-view';
-  import type { MutableWorkflow } from './types';
-  import DefinitionLifecyclePanel from '../Builder/DefinitionLifecyclePanel.svelte';
-  import WorkflowBranchInspector from './WorkflowBranchInspector.svelte';
-  import WorkflowRowDefects from './WorkflowRowDefects.svelte';
+    WorkflowNode,
+  } from "../../lib/snapshot-types";
+  import type {
+    AnchoredWorkflowDefects,
+    WorkflowConditionPatch,
+  } from "./workflow-catalog-state";
+  import type { WorkflowFlowSelection } from "./workflow-flow-view";
+  import type { MutableWorkflow } from "./types";
+  import DefinitionLifecyclePanel from "../Builder/DefinitionLifecyclePanel.svelte";
+  import WorkflowBranchInspector from "./WorkflowBranchInspector.svelte";
+  import WorkflowRowDefects from "./WorkflowRowDefects.svelte";
 
   interface Props {
     row: MutableWorkflow;
@@ -38,10 +41,13 @@
     onbranchadd: (nodeId: string) => void;
     onretarget: (
       index: number,
-      end: 'from' | 'to',
-      patch: { nodeId?: string; portId?: string }
+      end: "from" | "to",
+      patch: { nodeId?: string; portId?: string },
     ) => void;
-    onconnectionpatch: (index: number, patch: Partial<WorkflowConnection>) => void;
+    onconnectionpatch: (
+      index: number,
+      patch: Partial<WorkflowConnection>,
+    ) => void;
     onconditiontoggle: (index: number, conditional: boolean) => void;
     onconditionpatch: (index: number, patch: WorkflowConditionPatch) => void;
     onconditionvalue: (index: number, valueIndex: number, text: string) => void;
@@ -55,19 +61,26 @@
 
   const readonly = $derived(!p.editable);
   const node = $derived(
-    p.selection.kind === 'node' ? (p.row.nodes[p.selection.index] ?? null) : null
+    p.selection.kind === "node"
+      ? (p.row.nodes[p.selection.index] ?? null)
+      : null,
   );
   const connection = $derived(
-    p.selection.kind === 'connection' ? (p.row.connections[p.selection.index] ?? null) : null
+    p.selection.kind === "connection"
+      ? (p.row.connections[p.selection.index] ?? null)
+      : null,
   );
   /** The Pipeline the selected node names, for the port reference below it. */
   const nodePipeline = $derived(
-    node ? (p.pipelines.find((entry) => entry.pipelineId === node.pipelineId) ?? null) : null
+    node
+      ? (p.pipelines.find((entry) => entry.pipelineId === node.pipelineId) ??
+          null)
+      : null,
   );
 </script>
 
 <div class="wf-inspector" data-testid="workflow-inspector">
-  {#if connection && p.selection.kind === 'connection'}
+  {#if connection && p.selection.kind === "connection"}
     <WorkflowBranchInspector
       index={p.selection.index}
       {connection}
@@ -86,13 +99,18 @@
       onmove={p.onconnectionmove}
       onremove={p.onconnectionremove}
     />
-  {:else if node && p.selection.kind === 'node'}
+  {:else if node && p.selection.kind === "node"}
     {@const index = p.selection.index}
-    <div class="wf-inspector-section" data-testid="workflow-node-inspector-{index}">
+    <div
+      class="wf-inspector-section"
+      data-testid="workflow-node-inspector-{index}"
+    >
       <h3>Node {index + 1}</h3>
       <!-- The identifier is shown, never edited: connections and starts address
            it, which is exactly what makes reorder safe (FR-043). -->
-      <span class="wf-inspector-sub" data-testid="workflow-node-inspector-id">{node.nodeId}</span>
+      <span class="wf-inspector-sub" data-testid="workflow-node-inspector-id"
+        >{node.nodeId}</span
+      >
       <WorkflowRowDefects
         id="workflow-node-inspector-defects-{index}"
         defects={p.defects.byNode[index] ?? []}
@@ -104,15 +122,18 @@
           class="select-input"
           data-testid="workflow-node-pipeline-select-{index}"
           aria-label="Node {index + 1} runs Pipeline"
-          value={node.pipelineId ?? ''}
+          value={node.pipelineId ?? ""}
           disabled={readonly}
-          onchange={(event) => p.onnodepatch(index, { pipelineId: event.currentTarget.value })}
+          onchange={(event) =>
+            p.onnodepatch(index, { pipelineId: event.currentTarget.value })}
         >
           <!-- A Pipeline the node names but the effective catalog does not hold
                still has to be selectable, or changing anything else on the node
                would silently retarget it. -->
           {#if node.pipelineId !== undefined && !p.pipelines.some((entry) => entry.pipelineId === node.pipelineId)}
-            <option value={node.pipelineId}>{node.pipelineId} (not effective)</option>
+            <option value={node.pipelineId}
+              >{node.pipelineId} (not effective)</option
+            >
           {/if}
           {#each p.pipelines as pipeline (pipeline.pipelineId)}
             <option value={pipeline.pipelineId}>{pipeline.name}</option>
@@ -126,10 +147,11 @@
           class="text-input"
           data-testid="workflow-node-label-{index}"
           aria-label="Node {index + 1} label"
-          value={node.label ?? ''}
+          value={node.label ?? ""}
           {readonly}
           placeholder={node.nodeId}
-          oninput={(event) => p.onnodepatch(index, { label: event.currentTarget.value })}
+          oninput={(event) =>
+            p.onnodepatch(index, { label: event.currentTarget.value })}
         />
       </label>
 
@@ -163,7 +185,8 @@
         <button
           class="btn btn-secondary"
           data-testid="workflow-node-branch-add-{index}"
-          onclick={() => p.onbranchadd(node.nodeId)}>Add branch from this node</button
+          onclick={() => p.onbranchadd(node.nodeId)}
+          >Add branch from this node</button
         >
       {/if}
     </div>
@@ -177,7 +200,8 @@
           data-testid="workflow-field-workflowId"
           value={p.row.workflowId}
           readonly={p.row.persisted || readonly}
-          oninput={(event) => p.onworkflowpatch({ workflowId: event.currentTarget.value })}
+          oninput={(event) =>
+            p.onworkflowpatch({ workflowId: event.currentTarget.value })}
         />
       </label>
       <label class="wf-field">
@@ -187,7 +211,8 @@
           data-testid="workflow-field-name"
           value={p.row.name}
           {readonly}
-          oninput={(event) => p.onworkflowpatch({ name: event.currentTarget.value })}
+          oninput={(event) =>
+            p.onworkflowpatch({ name: event.currentTarget.value })}
         />
       </label>
       <label class="wf-field">
@@ -195,13 +220,16 @@
         <textarea
           class="text-area"
           data-testid="workflow-field-description"
-          value={p.row.description ?? ''}
+          value={p.row.description ?? ""}
           {readonly}
-          oninput={(event) => p.onworkflowpatch({ description: event.currentTarget.value })}
+          oninput={(event) =>
+            p.onworkflowpatch({ description: event.currentTarget.value })}
         ></textarea>
       </label>
       <div class="phase-badges">
-        <span class="status-badge status-{p.row.sourceStatus}">{p.row.sourceStatus}</span>
+        <span class="status-badge status-{p.row.sourceStatus}"
+          >{p.row.sourceStatus}</span
+        >
       </div>
 
       <!-- Feature 186 (US3, T020, D-1, D-2) — the open Workflow's lifecycle
@@ -211,7 +239,7 @@
       <DefinitionLifecyclePanel
         kind="workflow"
         definitionId={p.row.workflowId}
-        definitionName={p.row.name || 'Untitled Workflow'}
+        definitionName={p.row.name || "Untitled Workflow"}
         lifecycle={p.lifecycle}
         defects={p.row.sourceErrors}
       />
@@ -220,7 +248,11 @@
            those renders on it (FR-044), and repeating it here would make this the
            place to read defects instead. -->
       {#if p.defects.rest.length > 0}
-        <ul class="field-errors" data-testid="workflow-field-errors" role="alert">
+        <ul
+          class="field-errors"
+          data-testid="workflow-field-errors"
+          role="alert"
+        >
           {#each p.defects.rest as defect (defect.field + defect.code)}
             <li>{defect.field}: {defect.message}</li>
           {/each}

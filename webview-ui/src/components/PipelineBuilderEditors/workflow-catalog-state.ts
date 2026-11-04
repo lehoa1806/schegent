@@ -885,18 +885,18 @@ function copyConnection(connection: WorkflowConnection): WorkflowConnection {
     ...(connection.handoff !== undefined ? { handoff: connection.handoff } : {}),
     ...(connection.condition !== undefined
       ? {
-          condition: {
-            left: { ...connection.condition.left },
-            operator: connection.condition.operator,
-            ...(connection.condition.right !== undefined
-              ? {
-                  right: Array.isArray(connection.condition.right)
-                    ? [...connection.condition.right]
-                    : connection.condition.right
-                }
-              : {})
-          }
+        condition: {
+          left: { ...connection.condition.left },
+          operator: connection.condition.operator,
+          ...(connection.condition.right !== undefined
+            ? {
+              right: Array.isArray(connection.condition.right)
+                ? [...connection.condition.right]
+                : connection.condition.right
+            }
+            : {})
         }
+      }
       : {}),
     ...(connection.priority !== undefined ? { priority: connection.priority } : {}),
     ...(connection.isDefault !== undefined ? { isDefault: connection.isDefault } : {}),

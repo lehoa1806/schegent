@@ -152,18 +152,18 @@ export interface CatalogVersionRecord {
 export type CatalogIntegrityFault =
   /** The manifest names a version whose record is missing: this definition is unreadable (FR-027). */
   | {
-      readonly fault: 'dangling-record';
-      readonly kind: CatalogKind;
-      readonly id: string;
-      readonly versionId: CatalogVersionId;
-    }
+    readonly fault: 'dangling-record';
+    readonly kind: CatalogKind;
+    readonly id: string;
+    readonly versionId: CatalogVersionId;
+  }
   /** A record exists but does not hash to the value the manifest recorded for it. */
   | {
-      readonly fault: 'hash-mismatch';
-      readonly kind: CatalogKind;
-      readonly id: string;
-      readonly versionId: CatalogVersionId;
-    }
+    readonly fault: 'hash-mismatch';
+    readonly kind: CatalogKind;
+    readonly id: string;
+    readonly versionId: CatalogVersionId;
+  }
   /** The manifest is present and cannot be read. Never repaired by writing a fresh one (FR-031). */
   | { readonly fault: 'unreadable-manifest'; readonly reason: 'empty' | 'malformed' | 'shape' }
   /** A `storeFormatVersion` this build does not understand (FR-032). */
@@ -328,22 +328,22 @@ interface LifecycleWriteBase {
 export type LifecycleWrite =
   /** Writes a record, points the draft pointer at it. The active pointer is not read. */
   | (LifecycleWriteBase & {
-      readonly op: 'save-draft';
-      /** Stored verbatim. Never validated and never normalised here (FR-010, FR-011). */
-      readonly body: unknown;
-      readonly note?: string;
-    })
+    readonly op: 'save-draft';
+    /** Stored verbatim. Never validated and never normalised here (FR-010, FR-011). */
+    readonly body: unknown;
+    readonly note?: string;
+  })
   /**
    * Writes a record carrying an older version's body, points the draft pointer at
    * it. Only the body is copied — `createdAt`, `publishedAt`, and `note` belong to
    * the version it came from (FR-030).
    */
   | (LifecycleWriteBase & {
-      readonly op: 'restore';
-      readonly body: unknown;
-      /** For reporting only; the store has already been handed the body. */
-      readonly fromVersionId: CatalogVersionId;
-    })
+    readonly op: 'restore';
+    readonly body: unknown;
+    /** For reporting only; the store has already been handed the body. */
+    readonly fromVersionId: CatalogVersionId;
+  })
   /** Active ← draft, draft ← null, `publishedAt` stamped, retention run. One manifest write. */
   | (LifecycleWriteBase & { readonly op: 'publish' })
   /**
@@ -380,20 +380,20 @@ export interface LifecycleWritePointers {
  */
 export type LifecycleWriteOutcome =
   | {
-      readonly outcome: 'written';
-      /** Both pointers as the manifest now holds them. `null`/`null` only with `entryRemoved`. */
-      readonly draftVersionId: CatalogVersionId | null;
-      readonly activeVersionId: CatalogVersionId | null;
-      /** The record this write created. `null` for the three pointer-only operations. */
-      readonly writtenVersionId: CatalogVersionId | null;
-      /** Stamped by `publish` only, once, on the version that became active (FR-020). */
-      readonly publishedAt: number | null;
-      /** Version ids retention removed, oldest first. Empty when nothing was pruned (FR-021). */
-      readonly pruned: readonly CatalogVersionId[];
-      /** `discard-draft` only. The one operation that can clear the last pointer (FR-034). */
-      readonly entryRemoved: boolean;
-      readonly revision: string;
-    }
+    readonly outcome: 'written';
+    /** Both pointers as the manifest now holds them. `null`/`null` only with `entryRemoved`. */
+    readonly draftVersionId: CatalogVersionId | null;
+    readonly activeVersionId: CatalogVersionId | null;
+    /** The record this write created. `null` for the three pointer-only operations. */
+    readonly writtenVersionId: CatalogVersionId | null;
+    /** Stamped by `publish` only, once, on the version that became active (FR-020). */
+    readonly publishedAt: number | null;
+    /** Version ids retention removed, oldest first. Empty when nothing was pruned (FR-021). */
+    readonly pruned: readonly CatalogVersionId[];
+    /** `discard-draft` only. The one operation that can clear the last pointer (FR-034). */
+    readonly entryRemoved: boolean;
+    readonly revision: string;
+  }
   /** The body hashes equal to the definition's **head** — no record written (FR-011a). */
   | { readonly outcome: 'unchanged'; readonly versionId: CatalogVersionId; readonly revision: string }
   /**
@@ -426,10 +426,10 @@ export type LifecycleWriteOutcome =
    * delete on any path.
    */
   | {
-      readonly outcome: 'partial';
-      readonly wrote: readonly CatalogVersionId[];
-      readonly errno: string;
-    };
+    readonly outcome: 'partial';
+    readonly wrote: readonly CatalogVersionId[];
+    readonly errno: string;
+  };
 
 // ---------------------------------------------------------------------------
 // The two layer writes — feature 100 (FR-R3-016) T504a
@@ -491,21 +491,21 @@ export interface CatalogLayerPruned {
 
 export type SaveDraftLayerOutcome =
   | {
-      readonly outcome: 'saved';
-      readonly revision: string;
-      readonly versions: readonly CatalogLayerVersion[];
-      /** Ids whose body hashed equal to their head: no record written (FR-011a). */
-      readonly unchanged: readonly string[];
-      /**
-       * What retention removed to make room for the versions above (FR-035).
-       *
-       * A draft write appends a version, so it prunes on exactly the same terms as a
-       * publication does, and the single-definition save path has always said so. A
-       * layer save that stayed silent about it would delete an operator's history and
-       * report nothing — the one removal in an append-only store, unreported.
-       */
-      readonly pruned: readonly CatalogLayerPruned[];
-    }
+    readonly outcome: 'saved';
+    readonly revision: string;
+    readonly versions: readonly CatalogLayerVersion[];
+    /** Ids whose body hashed equal to their head: no record written (FR-011a). */
+    readonly unchanged: readonly string[];
+    /**
+     * What retention removed to make room for the versions above (FR-035).
+     *
+     * A draft write appends a version, so it prunes on exactly the same terms as a
+     * publication does, and the single-definition save path has always said so. A
+     * layer save that stayed silent about it would delete an operator's history and
+     * report nothing — the one removal in an append-only store, unreported.
+     */
+    readonly pruned: readonly CatalogLayerPruned[];
+  }
   /**
    * Every named definition hashed equal: **nothing is written**, not even the
    * manifest (FR-011a).
@@ -540,20 +540,20 @@ export interface CatalogLayerPublished {
  */
 export type PublishLayerOutcome =
   | {
-      readonly outcome: 'published';
-      readonly revision: string;
-      readonly published: readonly CatalogLayerPublished[];
-      /**
-       * Named ids that had no pending draft to publish.
-       *
-       * Not a failure and not silence: the ordinary cause is a document re-imported
-       * unchanged, where the draft write short-circuited because the content already
-       * equals what is live. The definition is already live at that content, so
-       * there is nothing to publish and nothing wrong.
-       */
-      readonly skipped: readonly string[];
-      readonly pruned: readonly CatalogLayerPruned[];
-    }
+    readonly outcome: 'published';
+    readonly revision: string;
+    readonly published: readonly CatalogLayerPublished[];
+    /**
+     * Named ids that had no pending draft to publish.
+     *
+     * Not a failure and not silence: the ordinary cause is a document re-imported
+     * unchanged, where the draft write short-circuited because the content already
+     * equals what is live. The definition is already live at that content, so
+     * there is nothing to publish and nothing wrong.
+     */
+    readonly skipped: readonly string[];
+    readonly pruned: readonly CatalogLayerPruned[];
+  }
   | { readonly outcome: 'stale'; readonly actualRevision: string }
   | { readonly outcome: 'refused'; readonly reason: CatalogSaveRefusal; readonly id: string | null };
 
