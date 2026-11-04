@@ -33,6 +33,24 @@ import {
   type ComposableWorkflowStepResult
 } from '../services/workflow-execution/connected-run-coordinator';
 import {
+  WorkflowControlService,
+  type WorkflowControlCommandOutcome,
+  type WorkflowControlCommandRequest,
+  type WorkflowControlServiceDeps
+} from '../services/workflow-execution/workflow-control-service';
+import {
+  WorkflowRecoveryService,
+  type ReconcileConnectedRunResult,
+  type WorkflowRecoveryServiceDeps
+} from '../services/workflow-execution/workflow-recovery-service';
+import {
+  buildAncestryEvidenceMetadata,
+  buildWorkflowRunControlProjection,
+  type AncestryEvidenceMetadata,
+  type WorkflowRunControlProjection
+} from '../services/workflow-execution/workflow-control-projector';
+import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
+import {
   launchComposableWorkflow,
   type LaunchWorkflowResult,
   type WorkflowLauncherDeps
@@ -181,4 +199,74 @@ export async function continueComposableWorkflowHandoff(
     nodeId: input.targetNodeId,
     startedAt: input.acceptedAt
   });
+}
+
+// ---------------------------------------------------------------------------
+// FR-R5-F03 (T009, T015) — Headless controls, scoped retry, recovery & projections
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a nested workflow control command (`pause`, `resume`, `cancel`,
+ * `retry-phase`, `retry-invocation`, `continue-handoff`) through the shared
+ * `WorkflowControlService` with `commandId` idempotency and `expectedRevision`
+ * compare-and-set.
+ */
+export async function executeComposableWorkflowControlCommand(
+  deps: WorkflowControlServiceDeps,
+  request: WorkflowControlCommandRequest
+): Promise<WorkflowControlCommandOutcome | BoundaryRefusal> {
+  if (typeof request?.runId !== 'string' || request.runId.trim().length === 0) {
+    return { outcome: 'rejected-argument', field: 'runId', code: 'missing' };
+  }
+  if (typeof request?.commandId !== 'string' || request.commandId.trim().length === 0) {
+    return { outcome: 'rejected-argument', field: 'commandId', code: 'missing' };
+  }
+  if (!Number.isInteger(request.expectedRevision) || request.expectedRevision < 1) {
+    return { outcome: 'rejected-argument', field: 'expectedRevision', code: 'wrong-type' };
+  }
+  if (!Number.isFinite(request.now)) {
+    return { outcome: 'rejected-argument', field: 'now', code: 'wrong-type' };
+  }
+  const service = new WorkflowControlService(deps);
+  return service.executeCommand(request);
+}
+
+/**
+ * Reconcile a persisted `ConnectedWorkflowRun` on startup/restart through the
+ * shared `WorkflowRecoveryService`.
+ */
+export async function recoverComposableWorkflowRun(
+  deps: WorkflowRecoveryServiceDeps,
+  input: { readonly runId: string; readonly now: number }
+): Promise<ReconcileConnectedRunResult | BoundaryRefusal | undefined> {
+  if (typeof input?.runId !== 'string' || input.runId.trim().length === 0) {
+    return { outcome: 'rejected-argument', field: 'runId', code: 'missing' };
+  }
+  if (!Number.isFinite(input.now)) {
+    return { outcome: 'rejected-argument', field: 'now', code: 'wrong-type' };
+  }
+  const service = new WorkflowRecoveryService(deps);
+  return service.reconcileRun(input.runId, input.now);
+}
+
+/**
+ * Compute the authoritative `WorkflowRunControlProjection` for a nested run.
+ */
+export function getComposableWorkflowControlProjection(
+  run: ConnectedWorkflowRun
+): WorkflowRunControlProjection {
+  return buildWorkflowRunControlProjection(run);
+}
+
+/**
+ * Build bounded `AncestryEvidenceMetadata` (`rootRunId`, `invocationId`,
+ * `parentInvocationId`, `nodePath`, `attemptId`, `attemptIndex`, `queueId`)
+ * for an invocation and optional node within a nested run.
+ */
+export function buildComposableWorkflowAncestryEvidence(
+  run: ConnectedWorkflowRun,
+  invocationId: string,
+  nodeId?: string | undefined
+): AncestryEvidenceMetadata | undefined {
+  return buildAncestryEvidenceMetadata(run, invocationId, nodeId);
 }

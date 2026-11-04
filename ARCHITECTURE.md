@@ -450,6 +450,21 @@ calls execute within the root run's bound `queueId` and manual handoff edits
 never mutate or reconstruct the frozen closure. Conditions are structured data
 rather than evaluated operator-authored source.
 
+Nested Workflow runtime controls and restart recovery (`FR-R5-F03`) are governed
+by `workflow-control-transition-table.ts`, `WorkflowControlService`,
+`WorkflowRecoveryService`, and `workflow-control-projector.ts` under
+`src/services/workflow-execution/`. Control operations (`pause`, `resume`, root
+and child-only `cancel`, `retry-phase`, `retry-invocation`, `continue-handoff`)
+execute inside a per-queue serialized mutation boundary with `expectedRevision`
+compare-and-set, bounded `commandId` idempotency receipts (`MAX_COMMAND_RECEIPTS = 64`),
+and paired `InvocationControlMarkers`. Restart recovery reconciles persisted
+`ConnectedWorkflowRun` records into explicit `RecoveryDispositionRecord`
+outcomes (`clean-handoff`, `pending-dispatch-recovered`,
+`settled-from-evidence`, `uncertain-effect-paused`, `orphaned-canceled`) without
+blind replay, and publishes authoritative `WorkflowRunControlProjection` and
+bounded `AncestryEvidenceMetadata` contracts identically across host and
+`src/headless/workflow-run-api.ts` entry points.
+
 **Operator Phase controls are one authoritative state machine (FR-R3-151).**
 `PhaseControlService` is the sole writer for every operator-driven Phase
 mutation — pause, resume, restart, skip, disable, enable, delete, and
