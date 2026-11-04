@@ -297,3 +297,128 @@ describe('no draft is refused, not treated as a no-op (FR-023)', () => {
     expect(outcome.refusal.legalActions).toEqual(['save-draft']);
   });
 });
+
+describe('unified Workflow reverse-dependent protection and topological package publish (FR-R5-F01-T05, T06)', () => {
+  it('refuses publishing a child Workflow update that breaks an active reverse-dependent parent Workflow', async () => {
+    await seedActive(harness, 'phase', 'plan', phaseBody('plan'));
+    await seedActive(harness, 'workflow', 'child-wf', {
+      id: 'child-wf',
+      name: 'Child WF',
+      version: 1,
+      inputs: [{ portId: 'brief', label: 'Brief', type: 'text', required: false }],
+      outputs: [{ portId: 'report', label: 'Report', type: 'markdown' }],
+      nodes: [{ nodeId: 'p1', kind: 'phase', phaseId: 'plan' }],
+      connections: [],
+      bindings: [
+        {
+          kind: 'output',
+          nodeId: 'p1',
+          portId: 'report',
+          outputKey: 'report'
+        }
+      ],
+      startNodeIds: ['p1']
+    });
+    await seedActive(harness, 'workflow', 'parent-wf', {
+      id: 'parent-wf',
+      name: 'Parent WF',
+      version: 1,
+      outputs: [{ portId: 'out', label: 'Out', type: 'markdown' }],
+      nodes: [{ nodeId: 'c1', kind: 'workflow', workflowId: 'child-wf' }],
+      connections: [],
+      bindings: [
+        {
+          kind: 'output',
+          nodeId: 'c1',
+          portId: 'out',
+          sourcePortId: 'report'
+        }
+      ],
+      startNodeIds: ['c1']
+    });
+
+    // Draft a breaking change on child-wf that removes the `report` output port
+    const draftVersionId = await draft(harness, 'workflow', 'child-wf', {
+      id: 'child-wf',
+      name: 'Child WF v2',
+      version: 2,
+      inputs: [{ portId: 'brief', label: 'Brief', type: 'text', required: false }],
+      outputs: [],
+      nodes: [{ nodeId: 'p1', kind: 'phase', phaseId: 'plan' }],
+      connections: [],
+      startNodeIds: ['p1']
+    });
+    harness.fs.calls.length = 0;
+
+    const outcome = await harness.service.publish({
+      kind: 'workflow',
+      id: 'child-wf',
+      expectedDraftVersion: draftVersionId
+    });
+
+    expect(outcome.outcome).toBe('refused');
+    if (outcome.outcome !== 'refused') return;
+    expect(outcome.refusal.reason).toBe('validation-failed');
+    expect(outcome.refusal.defects).toContainEqual(
+      expect.objectContaining({
+        kind: 'workflow',
+        id: 'parent-wf',
+        code: 'unresolved-endpoint'
+      })
+    );
+    expect(harness.fs.writeCalls).toEqual([]);
+  });
+
+  it('topologically orders child Workflows before parent Workflows inside a package publish', async () => {
+    const outcome = await publishPackage(
+      { store: harness.store, semantics: harness.semantics },
+      {
+        layers: [
+          {
+            kind: 'workflow',
+            // Authored parent-first in the request; publishPackage must order child-wf before parent-wf
+            definitions: [
+              {
+                id: 'parent-wf',
+                body: {
+                  id: 'parent-wf',
+                  name: 'Parent WF',
+                  version: 1,
+                  nodes: [{ nodeId: 'call-child', kind: 'workflow', workflowId: 'child-wf' }],
+                  connections: [],
+                  startNodeIds: ['call-child']
+                }
+              },
+              {
+                id: 'child-wf',
+                body: {
+                  id: 'child-wf',
+                  name: 'Child WF',
+                  version: 1,
+                  nodes: [{ nodeId: 'p1', kind: 'phase', phaseId: 'plan' }],
+                  connections: [],
+                  startNodeIds: ['p1']
+                }
+              }
+            ],
+            expectedRevision: await revisionOf(harness.store, 'workflow')
+          },
+          {
+            kind: 'phase',
+            definitions: [{ id: 'plan', body: phaseBody('plan') }],
+            expectedRevision: await revisionOf(harness.store, 'phase')
+          }
+        ]
+      }
+    );
+
+    expect(outcome).toEqual({
+      outcome: 'published',
+      published: [
+        { kind: 'phase', ids: ['plan'] },
+        { kind: 'workflow', ids: ['child-wf', 'parent-wf'] }
+      ],
+      pruned: []
+    });
+  });
+});

@@ -1,0 +1,74 @@
+{
+  "workflowId": "linear-phase-workflow",
+  "name": "Linear Phase Workflow",
+  "description": "Canonical linear Phase-node Workflow with explicit public inputs, outputs, and nodeId-addressed bindings.",
+  "version": 1,
+  "inputs": [
+    {
+      "portId": "feature-spec",
+      "label": "Feature Specification",
+      "type": "text",
+      "required": true
+    }
+  ],
+  "outputs": [
+    {
+      "portId": "implementation-plan",
+      "label": "Implementation Plan",
+      "type": "markdown",
+      "required": true
+    }
+  ],
+  "nodes": [
+    {
+      "nodeId": "specify-node",
+      "kind": "phase",
+      "phaseId": "specify",
+      "label": "Specify"
+    },
+    {
+      "nodeId": "plan-node",
+      "kind": "phase",
+      "phaseId": "plan",
+      "label": "Plan"
+    }
+  ],
+  "connections": [
+    {
+      "from": { "nodeId": "specify-node" },
+      "to": { "nodeId": "plan-node" },
+      "handoff": "auto"
+    },
+    {
+      "from": { "nodeId": "plan-node" },
+      "to": { "nodeId": "return", "kind": "return" }
+    }
+  ],
+  "bindings": [
+    {
+      "kind": "input",
+      "nodeId": "specify-node",
+      "inputKey": "spec-doc",
+      "source": { "from": "workflow-input", "portId": "feature-spec" }
+    },
+    {
+      "kind": "input",
+      "nodeId": "plan-node",
+      "inputKey": "upstream-spec",
+      "source": { "from": "node-output", "nodeId": "specify-node", "outputKey": "spec-artifact" }
+    },
+    {
+      "kind": "output",
+      "nodeId": "plan-node",
+      "portId": "implementation-plan",
+      "outputKey": "plan-artifact"
+    }
+  ],
+  "startNodeIds": ["specify-node"],
+  "executionDefaults": {
+    "runner": "claude",
+    "effort": "high",
+    "timeoutSeconds": 600
+  },
+  "recommendedNext": ["implement-workflow"]
+}

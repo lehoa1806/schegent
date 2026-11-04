@@ -1,0 +1,72 @@
+{
+  "workflowId": "nested-parent-workflow",
+  "name": "Nested Parent Workflow",
+  "description": "Canonical nested parent Workflow invoking a reusable child Workflow node followed by a Phase node.",
+  "version": 1,
+  "inputs": [
+    {
+      "portId": "raw-spec",
+      "label": "Raw Specification",
+      "type": "text",
+      "required": true
+    }
+  ],
+  "outputs": [
+    {
+      "portId": "final-tasks",
+      "label": "Final Tasks",
+      "type": "markdown",
+      "required": true
+    }
+  ],
+  "nodes": [
+    {
+      "nodeId": "planning-subworkflow",
+      "kind": "workflow",
+      "workflowId": "linear-phase-workflow",
+      "label": "Planning Subworkflow"
+    },
+    {
+      "nodeId": "tasks-phase",
+      "kind": "phase",
+      "phaseId": "tasks",
+      "label": "Generate Tasks"
+    }
+  ],
+  "connections": [
+    {
+      "from": { "nodeId": "planning-subworkflow" },
+      "to": { "nodeId": "tasks-phase" },
+      "handoff": "auto"
+    },
+    {
+      "from": { "nodeId": "tasks-phase" },
+      "to": { "nodeId": "return", "kind": "return" }
+    }
+  ],
+  "bindings": [
+    {
+      "kind": "input",
+      "nodeId": "planning-subworkflow",
+      "inputKey": "feature-spec",
+      "source": { "from": "workflow-input", "portId": "raw-spec" }
+    },
+    {
+      "kind": "input",
+      "nodeId": "tasks-phase",
+      "inputKey": "plan-doc",
+      "source": {
+        "from": "node-output",
+        "nodeId": "planning-subworkflow",
+        "outputKey": "implementation-plan"
+      }
+    },
+    {
+      "kind": "output",
+      "nodeId": "tasks-phase",
+      "portId": "final-tasks",
+      "outputKey": "tasks-artifact"
+    }
+  ],
+  "startNodeIds": ["planning-subworkflow"]
+}

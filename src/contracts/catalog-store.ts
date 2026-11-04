@@ -19,9 +19,11 @@
 // pointer-pair projection sits beside the operations that move the pointers.
 import type { ExpectedDraftVersion } from './catalog-lifecycle';
 
-/** The three definition kinds the store holds (FR-003). */
-export const CATALOG_KINDS = ['phase', 'pipeline', 'workflow'] as const;
-export type CatalogKind = (typeof CATALOG_KINDS)[number];
+/** The two canonical definition kinds the store holds (FR-R5-F01, FR-010). */
+export const CATALOG_KINDS = ['phase', 'workflow'] as const;
+export type CanonicalCatalogKind = (typeof CATALOG_KINDS)[number];
+/** Transitional union while F02–F05 migrate remaining Pipeline call sites to Workflow. */
+export type CatalogKind = CanonicalCatalogKind | 'pipeline';
 
 /**
  * The only `storeFormatVersion` this build understands.

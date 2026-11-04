@@ -173,7 +173,14 @@ describe('FR-R4-F07 N5 — every authored Workflow-node field is in the exported
   });
 
   it('lists the authored node fields, so an empty verdict is not an empty set compared to itself', () => {
-    expect([...AUTHORED_NODE_FIELDS].sort()).toEqual(['label', 'nodeId', 'pipelineId']);
+    expect([...AUTHORED_NODE_FIELDS].sort()).toEqual([
+      'kind',
+      'label',
+      'nodeId',
+      'phaseId',
+      'pipelineId',
+      'workflowId'
+    ]);
   });
 
   it('names label when label is removed from the order (synthetic omission)', () => {
@@ -192,6 +199,13 @@ describe('FR-R4-F07 N5 — every authored Workflow-node field is in the exported
   );
 
   it('names every field for an empty order', () => {
-    expect([...missingNodeKeys([], AUTHORED_NODE_FIELDS)].sort()).toEqual(['label', 'nodeId', 'pipelineId']);
+    expect([...missingNodeKeys([], AUTHORED_NODE_FIELDS)].sort()).toEqual([
+      'kind',
+      'label',
+      'nodeId',
+      'phaseId',
+      'pipelineId',
+      'workflowId'
+    ]);
   });
 });

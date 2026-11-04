@@ -35,7 +35,7 @@ import { describe, expect, it } from 'vitest';
 import { storedRows } from '../../src/catalog';
 import type { CandidateDefinition } from '../../src/catalog';
 import { createDefinitionSemantics } from '../../src/config/definition-semantics';
-import { phaseBody, pipelineBody } from '../fixtures/catalog-lifecycle-harness';
+import { phaseBody } from '../fixtures/catalog-lifecycle-harness';
 import { snapshotOf } from '../fixtures/catalog-snapshot-fixture';
 import { filesUnder } from './source-scan';
 
@@ -144,25 +144,32 @@ describe('Feature 100 T500c — the union is persisted nowhere (FR-018)', () => 
 
   const ACTIVE_PHASE = 'specify';
   const CANDIDATE_PHASE = 'plan';
-  const CANDIDATE_PIPELINE = 'ship-it';
+  const CANDIDATE_WORKFLOW = 'ship-it';
 
   /** One Phase live, and nothing else. */
   const activeSnapshot = () => snapshotOf({ phases: [phaseBody(ACTIVE_PHASE)] });
 
   /**
-   * A self-contained set: a new Phase and a Pipeline that binds it alongside the
+   * A self-contained set: a new Phase and a Workflow that binds it alongside the
    * one already live. This is the FR-017 carve-out — the set validates only
-   * because the union resolves the Phase the Pipeline names.
+   * because the union resolves the Phase the Workflow names.
    */
   const candidates: readonly CandidateDefinition[] = [
     { kind: 'phase', id: CANDIDATE_PHASE, body: phaseBody(CANDIDATE_PHASE) },
     {
-      kind: 'pipeline',
-      id: CANDIDATE_PIPELINE,
-      body: pipelineBody(CANDIDATE_PIPELINE, [ACTIVE_PHASE, CANDIDATE_PHASE], {
-        inputs: [],
-        outputs: []
-      })
+      kind: 'workflow',
+      id: CANDIDATE_WORKFLOW,
+      body: {
+        workflowId: CANDIDATE_WORKFLOW,
+        name: 'Ship It',
+        version: 1,
+        nodes: [
+          { nodeId: 'n1', kind: 'phase', phaseId: ACTIVE_PHASE },
+          { nodeId: 'n2', kind: 'phase', phaseId: CANDIDATE_PHASE }
+        ],
+        connections: [{ from: { nodeId: 'n1' }, to: { nodeId: 'n2' } }],
+        startNodeIds: ['n1']
+      }
     }
   ];
 
@@ -186,18 +193,18 @@ describe('Feature 100 T500c — the union is persisted nowhere (FR-018)', () => 
     const snapshot = activeSnapshot();
     semantics.defectsOf(snapshot, candidates);
 
-    // The Pipeline validated a moment ago is not triggerable, and will not be
+    // The Workflow validated a moment ago is not triggerable, and will not be
     // until a publication moves its active pointer (FR-007, FR-041).
     expect(storedRows(snapshot, 'phase')).toEqual([phaseBody(ACTIVE_PHASE)]);
-    expect(storedRows(snapshot, 'pipeline')).toEqual([]);
+    expect(storedRows(snapshot, 'workflow')).toEqual([]);
   });
 
   it('gives the deactivation gate no blocker from a candidate', () => {
     const snapshot = activeSnapshot();
     semantics.defectsOf(snapshot, candidates);
 
-    // Inside the validation, the candidate Pipeline resolved and bound both
-    // Phases. Outside it, that Pipeline does not exist — so taking the live Phase
+    // Inside the validation, the candidate Workflow resolved and bound both
+    // Phases. Outside it, that Workflow does not exist — so taking the live Phase
     // out of service is unblocked, which is the whole difference between a
     // pending write and a stored one (FR-025).
     expect(semantics.referencesTo(snapshot, 'phase', ACTIVE_PHASE)).toEqual([]);
@@ -211,6 +218,6 @@ describe('Feature 100 T500c — the union is persisted nowhere (FR-018)', () => 
     // in the early return.
     const snapshot = activeSnapshot();
     expect(semantics.defectsOf(snapshot, [])).toEqual([]);
-    expect(storedRows(snapshot, 'pipeline')).toEqual([]);
+    expect(storedRows(snapshot, 'workflow')).toEqual([]);
   });
 });

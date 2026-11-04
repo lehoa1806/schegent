@@ -701,7 +701,14 @@ describe('yaml-serializer — declared key order for the Workflow mappings', () 
     ]);
     expect(WORKFLOW_METADATA_KEY_ORDER).toEqual(['id', 'name', 'description', 'version']);
     expect(WORKFLOW_SPEC_KEY_ORDER).toEqual(['nodes', 'connections', 'startNodeIds']);
-    expect(WORKFLOW_NODE_KEY_ORDER).toEqual(['nodeId', 'pipelineId', 'label']);
+    expect(WORKFLOW_NODE_KEY_ORDER).toEqual([
+      'nodeId',
+      'kind',
+      'phaseId',
+      'workflowId',
+      'pipelineId',
+      'label'
+    ]);
     expect(WORKFLOW_CONNECTION_KEY_ORDER).toEqual([
       'from',
       'to',

@@ -30,11 +30,11 @@ import type { CatalogKind, CatalogSnapshot } from '../contracts/catalog-store';
  */
 export function storedRows(
   snapshot: CatalogSnapshot,
-  kind: CatalogKind
+  kind: CatalogKind | 'pipeline'
 ): readonly unknown[] {
   const rows: unknown[] = [];
   for (const definition of snapshot.definitions) {
-    if (definition.kind !== kind) continue;
+    if ((definition.kind as string) !== kind) continue;
     if (definition.body === null) continue;
     rows.push(definition.body);
   }
@@ -70,11 +70,11 @@ export function storedRows(
  */
 export function storedDraftOnlyRows(
   snapshot: CatalogSnapshot,
-  kind: CatalogKind
+  kind: CatalogKind | 'pipeline'
 ): readonly unknown[] {
   const rows: unknown[] = [];
   for (const definition of snapshot.definitions) {
-    if (definition.kind !== kind) continue;
+    if ((definition.kind as string) !== kind) continue;
     if (definitionStateOf(definition.draftVersionId, definition.activeVersionId) !== 'draft') {
       continue;
     }
@@ -92,10 +92,13 @@ export function storedDraftOnlyRows(
  * active version, is still a claim on that id, and an import that treated it as
  * absent would create a second definition under a name already taken (FR-050).
  */
-export function storedIds(snapshot: CatalogSnapshot, kind: CatalogKind): ReadonlySet<string> {
+export function storedIds(
+  snapshot: CatalogSnapshot,
+  kind: CatalogKind | 'pipeline'
+): ReadonlySet<string> {
   const ids = new Set<string>();
   for (const definition of snapshot.definitions) {
-    if (definition.kind === kind) ids.add(definition.id);
+    if ((definition.kind as string) === kind) ids.add(definition.id);
   }
   return ids;
 }

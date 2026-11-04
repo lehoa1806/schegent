@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 import {
   WORKFLOW_ERROR_FIELD_MAX,
   WORKFLOW_ID_MAX_LEN,
@@ -263,6 +265,121 @@ describe('defect accumulation (FR-019)', () => {
       const result = validateWorkflowDefinition(bad);
       expect(result.ok).toBe(false);
       expect(codes(result)).toContain('object-required');
+    }
+  });
+});
+
+describe('unified Workflow definition contract (FR-R5-F01-T01, T02, T03)', () => {
+  it('accepts Phase-referenced and child-Workflow-referenced nodes, ports, handoff, return transitions, bindings, executionDefaults, and recommendedNext', () => {
+    const result = validateWorkflowDefinition({
+      id: 'unified-review-flow',
+      name: 'Unified Review Flow',
+      version: 1,
+      inputs: [{ portId: 'spec-doc', label: 'Spec Doc', type: 'text', required: true }],
+      outputs: [
+        { portId: 'final-report', label: 'Final Report', type: 'markdown', required: true },
+        { portId: 'rework-notes', label: 'Rework Notes', type: 'markdown', required: false }
+      ],
+      nodes: [
+        { nodeId: 'specify', kind: 'phase', phaseId: 'specify' },
+        { nodeId: 'sub-review', kind: 'workflow', workflowId: 'child-review' }
+      ],
+      connections: [
+        {
+          from: { nodeId: 'specify' },
+          to: { nodeId: 'sub-review' },
+          handoff: 'manual'
+        },
+        {
+          from: { nodeId: 'sub-review' },
+          to: { nodeId: 'return', kind: 'return' },
+          handoff: 'auto'
+        }
+      ],
+      bindings: [
+        {
+          kind: 'input',
+          nodeId: 'specify',
+          inputKey: 'spec-doc',
+          source: { from: 'workflow-input', portId: 'spec-doc' }
+        },
+        {
+          kind: 'output',
+          nodeId: 'sub-review',
+          portId: 'final-report',
+          sourcePortId: 'report'
+        }
+      ],
+      executionDefaults: {
+        runner: 'claude',
+        model: 'claude-3-7-sonnet',
+        effort: 'high',
+        timeoutSeconds: 600
+      },
+      recommendedNext: ['release-flow'],
+      startNodeIds: ['specify']
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.definition?.nodes[0]?.phaseId).toBe('specify');
+    expect(result.definition?.nodes[1]?.workflowId).toBe('child-review');
+    expect(result.definition?.outputs?.[0]?.required).toBe(true);
+    expect(result.definition?.outputs?.[1]?.required).toBe(false);
+    expect(result.definition?.connections[0]?.handoff).toBe('manual');
+    expect(result.definition?.connections[1]?.to.kind).toBe('return');
+    expect(result.definition?.bindings).toHaveLength(2);
+    expect(result.definition?.executionDefaults?.effort).toBe('high');
+    expect(result.definition?.recommendedNext).toEqual(['release-flow']);
+  });
+
+  it('rejects positional phaseIndex addressing with index-addressing-forbidden', () => {
+    const result = validateWorkflowDefinition({
+      id: 'bad-index-wf',
+      name: 'Bad Index WF',
+      version: 1,
+      nodes: [{ nodeId: 'specify', kind: 'phase', phaseId: 'specify' }],
+      connections: [],
+      bindings: [
+        {
+          kind: 'input',
+          phaseIndex: 0,
+          nodeId: 'specify',
+          inputKey: 'brief',
+          source: { from: 'workflow-input', portId: 'brief' }
+        }
+      ],
+      startNodeIds: ['specify']
+    });
+
+    expect(codes(result)).toContain('index-addressing-forbidden');
+  });
+
+  it('rejects stored derivedInputs and derivedOutputs with derived-ports-not-storable', () => {
+    const result = validateWorkflowDefinition({
+      ...validRow(),
+      derivedInputs: [],
+      derivedOutputs: []
+    });
+
+    expect(codes(result)).toContain('derived-ports-not-storable');
+  });
+
+  it('validates all canonical fixtures in tests/fixtures/workflow-definitions/', () => {
+    for (const file of [
+      'linear-phase-workflow.json',
+      'branching-review-workflow.json',
+      'nested-parent-workflow.json'
+    ]) {
+      const raw = JSON.parse(
+        readFileSync(
+          resolvePath(__dirname, '../../fixtures/workflow-definitions', file),
+          'utf8'
+        )
+      ) as unknown;
+      const result = validateWorkflowDefinition(raw);
+      expect(result.errors, file).toEqual([]);
+      expect(result.ok, file).toBe(true);
     }
   });
 });

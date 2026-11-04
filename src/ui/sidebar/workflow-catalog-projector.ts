@@ -96,7 +96,7 @@ export function projectWorkflowCatalog(
   const lifecycleOf = options.lifecycle ?? NO_BUILDER_LIFECYCLE;
   const projectRecord = (record: WorkflowSourceRecord): WorkflowCatalogSourceProjection => {
     const derived = record.definition
-      ? deriveWorkflowPorts(record.definition, options.effectivePipelines)
+      ? deriveWorkflowPorts(record.definition, options.effectivePipelines, catalog.effective)
       : { inputs: [], outputs: [] };
     const workflowId = text(record.workflowId, sanitize, ID_MAX);
     // The record's own id, before sanitizing and capping — the manifest holds

@@ -207,6 +207,9 @@ export const WORKFLOW_SPEC_KEY_ORDER = Object.freeze([
 
 export const WORKFLOW_NODE_KEY_ORDER = Object.freeze([
   'nodeId',
+  'kind',
+  'phaseId',
+  'workflowId',
   'pipelineId',
   'label'
 ] as const);

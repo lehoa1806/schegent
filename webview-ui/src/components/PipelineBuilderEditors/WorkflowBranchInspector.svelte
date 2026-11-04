@@ -125,7 +125,7 @@
         class="select-input"
         data-testid="workflow-connection-from-port-{p.index}"
         aria-label="Branch {p.index + 1} source output"
-        value={p.connection.from.portId}
+        value={p.connection.from.portId ?? ''}
         disabled={p.readonly}
         onchange={(event) => p.onretarget(p.index, 'from', { portId: event.currentTarget.value })}
       >
@@ -155,7 +155,7 @@
         class="select-input"
         data-testid="workflow-connection-to-port-{p.index}"
         aria-label="Branch {p.index + 1} target input"
-        value={p.connection.to.portId}
+        value={p.connection.to.portId ?? ''}
         disabled={p.readonly}
         onchange={(event) => p.onretarget(p.index, 'to', { portId: event.currentTarget.value })}
       >

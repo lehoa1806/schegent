@@ -154,12 +154,12 @@ function deriveNeeds(
   };
 
   for (const pipelineId of nodePipelines.values()) {
-    if (!known.has(pipelineId)) needFor(needs, pipelineId);
+    if (pipelineId !== undefined && !known.has(pipelineId)) needFor(needs, pipelineId);
   }
 
   for (const connection of definition.connections) {
     const absentSource = absentPipelineOf(connection.from.nodeId);
-    if (absentSource !== null) {
+    if (absentSource !== null && connection.from.portId !== undefined) {
       const outputs = needFor(needs, absentSource).outputs;
       if (!outputs.has(connection.from.portId)) {
         const peer = knownPipelineOf(connection.to.nodeId)?.inputs.find(
@@ -171,7 +171,7 @@ function deriveNeeds(
     }
 
     const absentTarget = absentPipelineOf(connection.to.nodeId);
-    if (absentTarget !== null) {
+    if (absentTarget !== null && connection.to.portId !== undefined) {
       const inputs = needFor(needs, absentTarget).inputs;
       if (!inputs.has(connection.to.portId)) {
         const peer = knownPipelineOf(connection.from.nodeId)?.outputs.find(
