@@ -10,7 +10,9 @@ import {
 import { createComposableWorkflowRunSnapshot } from '../../../../src/services/workflow-execution/connected-run-factory';
 import {
   completeComposableNodeAttempt,
-  dispatchComposableNode
+  dispatchComposableNode,
+  type PhaseAttemptDispatchInput,
+  type PhaseAttemptDispatchResult
 } from '../../../../src/services/workflow-execution/connected-run-coordinator';
 import {
   WorkflowControlService,
@@ -93,6 +95,20 @@ const rootWorkflowNoCancelEdge: WorkflowDefinition = {
         right: 'completed'
       }
     }
+  ]
+};
+
+const manualHandoffWorkflow: WorkflowDefinition = {
+  workflowId: 'wf-manual-handoff',
+  name: 'Manual Handoff',
+  version: 1,
+  startNodeIds: ['first'],
+  nodes: [
+    { nodeId: 'first', kind: 'phase', phaseId: 'p-c1' },
+    { nodeId: 'second', kind: 'phase', phaseId: 'p-c2' }
+  ],
+  connections: [
+    { from: { nodeId: 'first' }, to: { kind: 'node', nodeId: 'second' }, handoff: 'manual' }
   ]
 };
 
@@ -543,5 +559,182 @@ describe('WorkflowControlService — US2: Scoped Retry (retry-phase vs retry-inv
     expect(rootFrame.attemptsByNodeId['call-child']?.[0]?.status).toBe('failed');
     expect(rootFrame.attemptsByNodeId['call-child']?.[1]?.status).toBe('in-flight');
     expect(rootFrame.attemptsByNodeId['call-child']?.[1]?.childInvocationId).toBe(newChildInvId);
+  });
+});
+
+describe('WorkflowControlService — a re-dispatch the queue refuses is a refusal, not a retry (FR-R5-F03-T04, T07)', () => {
+  function refusingDispatch(reason: string, attemptedNodeIds: string[]) {
+    return async (input: PhaseAttemptDispatchInput): Promise<PhaseAttemptDispatchResult> => {
+      attemptedNodeIds.push(input.node.nodeId);
+      return { outcome: 'rejected', reason };
+    };
+  }
+
+  async function setupFailedChildLeaf() {
+    const setup = await setupActiveChildAtC2();
+    await completeComposableNodeAttempt(
+      { connectedRuns: setup.store, dispatchPhase: setup.dispatchPhase },
+      {
+        run: setup.store.get('run-ctrl-1')!,
+        invocationId: setup.childInvocationId,
+        nodeId: 'c2',
+        status: 'failed',
+        completedAt: 2000,
+        failureCode: 'phase-exit-nonzero'
+      }
+    );
+    return { ...setup, failedRun: setup.store.get('run-ctrl-1')! };
+  }
+
+  it('refuses retry-phase without spending an attempt or committing anything', async () => {
+    const { store, childInvocationId, failedRun } = await setupFailedChildLeaf();
+    const attempted: string[] = [];
+    const service = new WorkflowControlService({
+      connectedRuns: store,
+      dispatchPhase: refusingDispatch('queue-paused', attempted)
+    });
+
+    const out = await service.executeCommand({
+      runId: 'run-ctrl-1',
+      commandId: 'cmd-retry-phase-refused',
+      expectedRevision: failedRun.revision,
+      operation: 'retry-phase',
+      targetInvocationId: childInvocationId,
+      targetNodeId: 'c2',
+      now: 2500
+    });
+
+    expect(attempted).toEqual(['c2']);
+    expect(out.accepted).toBe(false);
+    if (out.accepted) return;
+    expect(out.refusalCode).toBe('invalid-state-for-operation');
+    expect(out.reason).toContain('queue-paused');
+    expect(out.currentRevision).toBe(failedRun.revision);
+    expect(out.run).toBe(failedRun);
+    // Nothing was written: the stored run is the same object, so no receipt, no new
+    // attempt and no reactivated frame can have been committed.
+    expect(store.get('run-ctrl-1')).toBe(failedRun);
+  });
+
+  it('refuses retry-invocation without a new child invocation or a spent call attempt', async () => {
+    const { store, childInvocationId, failedRun } = await setupFailedChildLeaf();
+    const attempted: string[] = [];
+    const service = new WorkflowControlService({
+      connectedRuns: store,
+      dispatchPhase: refusingDispatch('queue-paused', attempted)
+    });
+
+    const out = await service.executeCommand({
+      runId: 'run-ctrl-1',
+      commandId: 'cmd-retry-invocation-refused',
+      expectedRevision: failedRun.revision,
+      operation: 'retry-invocation',
+      targetInvocationId: childInvocationId,
+      now: 2600
+    });
+
+    expect(attempted).toEqual(['c1']);
+    expect(out.accepted).toBe(false);
+    if (out.accepted) return;
+    expect(out.refusalCode).toBe('invalid-state-for-operation');
+    expect(out.reason).toContain('queue-paused');
+    expect(store.get('run-ctrl-1')).toBe(failedRun);
+  });
+
+  it('refuses resume and leaves the invocation paused', async () => {
+    const { store, dispatchPhase, childInvocationId } = await setupActiveChildAtC2();
+    const pauser = new WorkflowControlService({ connectedRuns: store, dispatchPhase });
+    const paused = await pauser.executeCommand({
+      runId: 'run-ctrl-1',
+      commandId: 'cmd-pause-before-refusal',
+      expectedRevision: store.get('run-ctrl-1')!.revision,
+      operation: 'pause',
+      targetInvocationId: childInvocationId,
+      now: 2000
+    });
+    expect(paused.accepted).toBe(true);
+    const pausedRun = store.get('run-ctrl-1')!;
+    const attempted: string[] = [];
+    const resumer = new WorkflowControlService({
+      connectedRuns: store,
+      dispatchPhase: refusingDispatch('queue-paused', attempted)
+    });
+
+    const out = await resumer.executeCommand({
+      runId: 'run-ctrl-1',
+      commandId: 'cmd-resume-refused',
+      expectedRevision: pausedRun.revision,
+      operation: 'resume',
+      targetInvocationId: childInvocationId,
+      now: 2100
+    });
+
+    expect(attempted).toEqual(['c2']);
+    expect(out.accepted).toBe(false);
+    if (out.accepted) return;
+    expect(out.refusalCode).toBe('invalid-state-for-operation');
+    expect(store.get('run-ctrl-1')).toBe(pausedRun);
+    expect(pausedRun.invocations![childInvocationId]!.status).toBe('paused');
+  });
+
+  it('refuses continue-handoff and leaves the handoff pending', async () => {
+    const store = createInMemoryControlStore();
+    const acceptingDispatch = async (): Promise<PhaseAttemptDispatchResult> => ({
+      outcome: 'dispatched',
+      queueItemId: 'qi-manual'
+    });
+    const snap = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'run-ctrl-2',
+      workflow: manualHandoffWorkflow,
+      effectiveWorkflows: [manualHandoffWorkflow],
+      effectivePhases: phases,
+      startedAt: 1000,
+      queueId: 'q-main'
+    });
+    if (snap.outcome !== 'created') throw new Error('Failed snapshot');
+    store.seed(snap.run);
+    await dispatchComposableNode(
+      { connectedRuns: store, dispatchPhase: acceptingDispatch },
+      {
+        run: store.get('run-ctrl-2')!,
+        invocationId: snap.rootInvocationId,
+        nodeId: 'first',
+        startedAt: 1010
+      }
+    );
+    const reached = await completeComposableNodeAttempt(
+      { connectedRuns: store, dispatchPhase: acceptingDispatch },
+      {
+        run: store.get('run-ctrl-2')!,
+        invocationId: snap.rootInvocationId,
+        nodeId: 'first',
+        status: 'completed',
+        completedAt: 1020
+      }
+    );
+    expect(reached.outcome).toBe('waiting-for-handoff');
+    const waitingRun = store.get('run-ctrl-2')!;
+    const attempted: string[] = [];
+    const service = new WorkflowControlService({
+      connectedRuns: store,
+      dispatchPhase: refusingDispatch('queue-paused', attempted)
+    });
+
+    const out = await service.executeCommand({
+      runId: 'run-ctrl-2',
+      commandId: 'cmd-continue-refused',
+      expectedRevision: waitingRun.revision,
+      operation: 'continue-handoff',
+      targetInvocationId: snap.rootInvocationId,
+      targetNodeId: 'second',
+      now: 1100
+    });
+
+    expect(attempted).toEqual(['second']);
+    expect(out.accepted).toBe(false);
+    if (out.accepted) return;
+    expect(out.refusalCode).toBe('invalid-state-for-operation');
+    expect(store.get('run-ctrl-2')).toBe(waitingRun);
+    expect(waitingRun.invocations![snap.rootInvocationId]!.status).toBe('waiting-for-handoff');
   });
 });

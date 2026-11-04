@@ -176,6 +176,54 @@ describe('WorkflowRecoveryService — US3: Deterministic Restart Recovery (FR-R5
     );
   });
 
+  it('leaves the Workflow public inputs alone when it recovers an accepted hand-off (FR-R5-F02)', async () => {
+    const store = createStore();
+    const { dispatchPhase, rootInvocationId } = await createStartedRun(store);
+
+    await completeComposableNodeAttempt(
+      { connectedRuns: store, dispatchPhase },
+      {
+        run: store.get('run-rec-1')!,
+        invocationId: rootInvocationId,
+        nodeId: 'n1',
+        status: 'completed',
+        completedAt: 1050
+      }
+    );
+
+    // The crash lands after the operator's hand-off was accepted and before n2 was dispatched.
+    const waitingRun = store.get('run-rec-1')!;
+    await continueWaitingHandoff(
+      { connectedRuns: store },
+      {
+        run: waitingRun,
+        expectedRevision: waitingRun.revision,
+        invocationId: rootInvocationId,
+        targetNodeId: 'n2',
+        request: {
+          pipelineId: 'n2',
+          workflowId: 'wf-recovery',
+          inputs: [{ portId: 'promptOverride', type: 'text', value: 'operator-edit' }],
+          supplemental: [],
+          outputs: []
+        },
+        acceptedAt: 1100,
+        deferDispatch: true
+      }
+    );
+
+    const recovery = new WorkflowRecoveryService({ connectedRuns: store, dispatchPhase });
+    const reconciled = await recovery.reconcileRun('run-rec-1', 2000);
+
+    expect(reconciled?.disposition?.status).toBe('pending-dispatch-recovered');
+    const recoveredFrame = reconciled?.run.invocations?.[rootInvocationId];
+    expect(recoveredFrame?.attemptsByNodeId['n2']).toHaveLength(1);
+    // The edit reaches n2 through the persisted envelope. The frame's `boundInputs` are the
+    // Workflow's public inputs, which a later node's `workflow-input` binding reads, so the edit
+    // must not be merged into them: the launch supplied none, and none may appear.
+    expect(recoveredFrame?.boundInputs).toEqual({});
+  });
+
   it('settles an in-flight Phase attempt forward when durable completion evidence exists (settled-from-evidence)', async () => {
     const store = createStore();
     const { dispatchPhase, rootInvocationId } = await createStartedRun(store);

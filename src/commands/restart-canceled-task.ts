@@ -9,16 +9,24 @@ import type { FeatureRequest } from '../queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import { MAX_PENDING_TASKS_PER_QUEUE } from '../queue/feature-request';
 import { decideTaskTransition } from '../queue/task-transition-decision';
+import { workflowAttemptEndedForQueueItem } from '../state/connected-workflow-run';
 
 /**
  * FR-R4-F05 (FR-014; contract F, F6; contract O, O5) — what the operator is told when a
  * restart fails for a reason the function has no code for. Fixed text: an exception's
  * message can carry a path, so it goes to the log through `describeFailure` and never to
- * the toast. The two typed refusals (`task-cap-reached`, `illegal-state`) keep their codes
+ * the toast. The typed refusals `task-cap-reached` and `illegal-state` keep their codes
  * and add no toast of their own.
  */
 export const RESTART_FAILED_TOAST =
   'Schegent: the task could not be restarted. See the Schegent log for details.';
+
+/**
+ * Why a restart of a Workflow attempt's row is refused. The registration in `ui-wiring` shows nothing
+ * for a refusal, and this one needs saying: the exit is on another surface.
+ */
+export const RESTART_WORKFLOW_ATTEMPT_ENDED_TOAST =
+  "Schegent: this Task's Workflow attempt has ended. Retry it from the Workflow run.";
 
 export type RestartCanceledResult =
   | { ok: true; queueId: string }
@@ -43,6 +51,8 @@ export type RestartCanceledResult =
  *  - Reject `not-found` when no FeatureRequest matches `taskId`.
  *  - Reject `illegal-state` when the matched task is not in `canceled`
  *    status (operator may have already retried via a different path).
+ *  - Reject `workflow-attempt-ended` when a Workflow attempt started this row
+ *    and has since ended: the attempt's result would have nowhere to go.
  *  - Reject `task-cap-reached` when the target queue is already at the
  *    100-task pending cap (FR-029 ceiling).
  *  - Preserve `description`, `queueId`, `pipelineId`, `rerun`, and
@@ -84,6 +94,11 @@ export async function runRestartCanceledTask(ctx: {
     // inside the mutator below.
     if (feature.status !== 'canceled') {
       return { ok: false, reason: 'illegal-state' };
+    }
+    const connectedRuns = Object.values(ctx.store.getConnectedRuns());
+    if (connectedRuns.some((run) => workflowAttemptEndedForQueueItem(run, taskId))) {
+      ctx.notifier.warn(RESTART_WORKFLOW_ATTEMPT_ENDED_TOAST);
+      return { ok: false, reason: 'workflow-attempt-ended' };
     }
 
     const targetQueueId = feature.queueId ?? DEFAULT_QUEUE_ID;

@@ -29,13 +29,13 @@ const EXAMPLE = resolve(
   '..',
   '..',
   'examples',
-  'speckit-new-feature.pipeline.yaml'
+  'speckit-new-feature.workflow.yaml'
 );
 
 export interface LoadedExample {
   readonly phases: ReadonlyMap<string, PhaseYamlDocument>;
   readonly pipelineVersion: number;
-  /** The pipeline's Phase ids in running order, as its `phaseIds` lists them. */
+  /** The workflow's Phase ids in running order, as its `nodes` list them. */
   readonly phaseIds: readonly string[];
 }
 
@@ -54,11 +54,17 @@ export function loadExample(): LoadedExample {
     versionNode?.kind === 'scalar' ? Number(versionNode.value) : Number.NaN;
 
   const spec = entryOf(parsed.node, 'spec');
+  const nodesNode = entryOf(spec, 'nodes');
   const phaseIdsNode = entryOf(spec, 'phaseIds');
   const phaseIds =
-    phaseIdsNode?.kind === 'sequence'
-      ? phaseIdsNode.items.flatMap((item) => (item.kind === 'scalar' ? [item.value] : []))
-      : [];
+    nodesNode?.kind === 'sequence'
+      ? nodesNode.items.flatMap((item) => {
+          const p = entryOf(item, 'phaseId');
+          return p?.kind === 'scalar' ? [p.value] : [];
+        })
+      : phaseIdsNode?.kind === 'sequence'
+        ? phaseIdsNode.items.flatMap((item) => (item.kind === 'scalar' ? [item.value] : []))
+        : [];
 
   const included = entryOf(parsed.node, 'included');
   const phasesNode = entryOf(included, 'phases');

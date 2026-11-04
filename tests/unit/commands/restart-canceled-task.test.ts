@@ -8,6 +8,11 @@ import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { MAX_PENDING_TASKS_PER_QUEUE } from '../../../src/queue/feature-request';
+import {
+  completeComposableNodeAttempt,
+  dispatchComposableNode
+} from '../../../src/services/workflow-execution/connected-run-coordinator';
+import { createComposableWorkflowRunSnapshot } from '../../../src/services/workflow-execution/connected-run-factory';
 import type { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import type { Notifier } from '../../../src/ui/notifications';
 
@@ -52,6 +57,71 @@ beforeEach(async () => {
   audit = makeAudit();
   notifier = makeNotifier();
   logger = new SanitizedLogger();
+});
+
+describe('runRestartCanceledTask — a row a Workflow attempt started', () => {
+  async function seedCanceledLeaf(attemptEnded: boolean): Promise<string> {
+    const task = await queue.enqueue('leaf of a workflow');
+    await queue.markInFlight(task.id, 'run-of-the-leaf');
+    await queue.finish(task.id, 'canceled');
+    const created = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'connected-composable',
+      workflow: {
+        workflowId: 'wf-composable',
+        name: 'Release',
+        version: 1,
+        startNodeIds: ['draft'],
+        nodes: [{ nodeId: 'draft', kind: 'phase', phaseId: 'draft-phase' }],
+        connections: []
+      },
+      effectivePhases: [{ phaseId: 'draft-phase', name: 'Draft', version: 1, instruction: 'Draft' }],
+      startedAt: 1_700_000_000_000
+    });
+    if (created.outcome !== 'created') throw new Error('fixture refused');
+    expect((await store.compareAndSetConnectedRun(created.run, 0)).outcome).toBe('written');
+    const coordinator = {
+      connectedRuns: store,
+      dispatchPhase: () => Promise.resolve({ outcome: 'dispatched' as const, queueItemId: task.id })
+    };
+    await dispatchComposableNode(coordinator, {
+      run: created.run,
+      invocationId: created.rootInvocationId,
+      nodeId: 'draft',
+      startedAt: 1_700_000_000_001
+    });
+    if (attemptEnded) {
+      const run = store.getConnectedRun('connected-composable');
+      if (run === null) throw new Error('fixture lost its run');
+      await completeComposableNodeAttempt(coordinator, {
+        run,
+        invocationId: created.rootInvocationId,
+        nodeId: 'draft',
+        status: 'canceled',
+        completedAt: 1_700_000_000_002
+      });
+    }
+    return task.id;
+  }
+
+  it('refuses when the attempt has ended, and says where to retry from', async () => {
+    const taskId = await seedCanceledLeaf(true);
+
+    const result = await runRestartCanceledTask({ store, queue, audit, notifier, logger, taskId });
+
+    expect(result).toEqual({ ok: false, reason: 'workflow-attempt-ended' });
+    expect(queue.findById(taskId)?.status).toBe('canceled');
+    expect(audit.append).not.toHaveBeenCalled();
+    expect(notifier.warn).toHaveBeenCalledWith(expect.stringContaining('Workflow run'));
+  });
+
+  it('still restarts a row whose attempt is waiting on it', async () => {
+    const taskId = await seedCanceledLeaf(false);
+
+    const result = await runRestartCanceledTask({ store, queue, audit, notifier, logger, taskId });
+
+    expect(result.ok).toBe(true);
+    expect(queue.findById(taskId)?.status).toBe('pending');
+  });
 });
 
 describe('runRestartCanceledTask — BUG-001', () => {

@@ -15,7 +15,6 @@
   import WorkflowCatalogEditor from './PipelineBuilderEditors/WorkflowCatalogEditor.svelte';
   import type { BuilderTab, MutablePhase, PhaseEditState } from './PipelineBuilderEditors/types';
   import {
-    effectivePhasesToMutable,
     formatPhaseSaveRejection,
     rebasePhaseMutation,
     sourceRecordToMutable,
@@ -60,7 +59,6 @@
   // to the strip's internals to save one string.
   let activeTab = $state<BuilderTab>(initialTab ?? 'phases');
   let phases = $state<MutablePhase[]>([]);
-  let effectivePhases = $state<MutablePhase[]>([]);
   let models = $state<Record<string, string[]>>({});
   let initialized = $state(false);
   let lastAdoptedModels: Record<string, readonly string[]> | null = null; // re-sync on snapshot change
@@ -105,7 +103,6 @@
     if (snapshot.configuredModels && snapshot.configuredModels !== lastAdoptedModels) {
       models = initialModels(snapshot.configuredModels); lastAdoptedModels = snapshot.configuredModels; initialized = true;
     }
-    if (snapshot.availablePhases) effectivePhases = effectivePhasesToMutable(snapshot.availablePhases);
     const catalog = snapshot.phaseCatalog;
     if (catalog?.state === 'ready') {
       // Feature 099 (T494a, FR-043/FR-044) — one layer, so one adopted revision.

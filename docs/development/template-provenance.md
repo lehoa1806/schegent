@@ -38,9 +38,10 @@ manifest". "State" is one of `matches 1.2.3`, `locally adapted (<commits>)`, `lo
 | `.specify/templates/checklist-template.md` | `speckit_version` 1.2.3 | `sha256:856532b3cb66171c662cc16f16b31a5856e4655a8666aad1e545bbfc7f603ca1` | `sha256:856532b3cb66171c662cc16f16b31a5856e4655a8666aad1e545bbfc7f603ca1` | matches 1.2.3 | pending qualification |
 | `.specify/templates/constitution-template.md` | `speckit_version` 1.2.3 | `sha256:ce7549540fa45543cca797a150201d868e64495fdff39dc38246fb17bd4024b3` | `sha256:ce7549540fa45543cca797a150201d868e64495fdff39dc38246fb17bd4024b3` | matches 1.2.3 | pending qualification |
 | `.specify/templates/overrides/checklist-template.md` | none | not in a manifest | `sha256:e38d2051505616cd15537f616ec2069e12cf1a9984e7e405762f0a03999a7a02` | local override | not applicable |
-| `repo/examples/speckit-new-feature.pipeline.yaml` | none | not in a manifest | `sha256:5c3834aaa51816d7a7de9eaa8ad8f89b279fd1b0321e4d6e1a537b9adcde1c6c` | repo-authored (`repo/` `62265e71`) | not applicable |
-| `repo/examples/speckit-bugfix.pipeline.yaml` | none | not in a manifest | `sha256:b7a34e1bc39e776aaad44b24c739fac8e522517a351d34ce6ca5cb517df0aa77` | repo-authored (`repo/` `62265e71`) | not applicable |
-| `repo/examples/example-two-node.workflow.yaml` | none | not in a manifest | `sha256:68cf9474f14db83d390fbe8e57bbac8aee4ceb9e3e25c8b9854fb9193c1f6fc7` | repo-authored (`repo/` `62265e71`) | not applicable |
+| `repo/examples/speckit-new-feature.workflow.yaml` | none | not in a manifest | `sha256:1c621a5b303f81746f1a4e70974e8a80aab617eef4f0e1054741552ea879ebf7` | repo-authored (`repo/` `0dc779a0`) | not applicable |
+| `repo/examples/speckit-bugfix.workflow.yaml` | none | not in a manifest | `sha256:934bf0552a70d19514daace9895334e48ae275f25b07f7d728866ef9ee19cf30` | repo-authored (`repo/` `0dc779a0`) | not applicable |
+| `repo/examples/example-two-node.workflow.yaml` | none | not in a manifest | `sha256:9d83a99004e1f5a6f048748ec840d8c9def9d2f481b02c0668b6421af749f4c6` | repo-authored (`repo/` `0dc779a0`) | not applicable |
+| `repo/examples/example-nested-delivery.workflow.yaml` | none | not in a manifest | `sha256:a4a787b652b8714ad73e2e5fd492058a8f73c4abdc9f9af4a90133191b52b619` | repo-authored (`repo/` `0dc779a0`) | not applicable |
 | `repo/examples/model-catalog.yaml` | none | not in a manifest | `sha256:f727213b8b19d7013373b07e0d37d935a162ca290ab2e00fd85f1a556d4cbb01` | repo-authored (`repo/` `62265e71`) | not applicable |
 
 Reading the table:

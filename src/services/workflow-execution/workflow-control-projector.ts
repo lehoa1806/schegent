@@ -12,6 +12,7 @@ import type {
   ConnectedInvocationProjection
 } from '../../contracts/sidebar-ipc/workflow-run';
 import {
+  attemptsForNode,
   resolveBoundQueueId,
   resolveRootInvocationId,
   type ConnectedWorkflowRun,
@@ -78,7 +79,7 @@ function findLatestAttemptForFrame(
   frame: WorkflowInvocationFrame
 ): NodeAttemptRecord | undefined {
   if (frame.activeNodeId !== null) {
-    const activeList = frame.attemptsByNodeId[frame.activeNodeId] ?? [];
+    const activeList = attemptsForNode(frame, frame.activeNodeId);
     const lastActive = activeList[activeList.length - 1];
     if (lastActive !== undefined) {
       return lastActive;
@@ -220,7 +221,7 @@ export function buildAncestryEvidenceMetadata(
     return undefined;
   }
   const targetNodeId = nodeId ?? frame.activeNodeId ?? frame.entryNodeId;
-  const attempts = frame.attemptsByNodeId[targetNodeId] ?? [];
+  const attempts = attemptsForNode(frame, targetNodeId);
   const latestAttempt = attempts[attempts.length - 1];
   const attemptIndex = latestAttempt?.attemptIndex ?? 1;
   const attemptId =
@@ -243,7 +244,7 @@ export function buildAncestryEvidenceMetadata(
  */
 export function projectConnectedInvocations(
   run: ConnectedWorkflowRun,
-  control: WorkflowRunControlProjection = buildWorkflowRunControlProjection(run)
+  _control: WorkflowRunControlProjection = buildWorkflowRunControlProjection(run)
 ): readonly ConnectedInvocationProjection[] | undefined {
   const frames = run.invocations;
   if (frames === undefined || Object.keys(frames).length === 0) return undefined;
@@ -252,7 +253,7 @@ export function projectConnectedInvocations(
   );
   return Object.freeze(
     orderedFrames.map((frame): ConnectedInvocationProjection => {
-      const ctrl = control.invocations[frame.invocationId];
+      const ctrl = buildInvocationControlProjection(run, frame);
       const wfDef = run.frozenClosure?.workflowsById[frame.workflowId];
       const versionRef = run.frozenClosure?.catalogVersionsById?.[frame.workflowId];
       const attempts: ConnectedInvocationAttemptProjection[] = Object.values(frame.attemptsByNodeId)
@@ -272,24 +273,37 @@ export function projectConnectedInvocations(
             ...(att.failureCode !== undefined ? { failureCode: att.failureCode } : {})
           })
         );
+      const rawHandoff =
+        frame.pendingHandoff ??
+        (run.pendingHandoff?.invocationId === frame.invocationId ? run.pendingHandoff : null);
+      const pendingHandoff =
+        rawHandoff !== null
+          ? Object.freeze({
+              fromNodeId: rawHandoff.fromNodeId,
+              toNodeId: rawHandoff.target.kind === 'node' ? rawHandoff.target.nodeId : null,
+              connectionId: String(rawHandoff.connectionIndex),
+              boundInputPortIds: Object.freeze(Object.keys(rawHandoff.prefilledInputsByPort))
+            })
+          : null;
       return Object.freeze({
         invocationId: frame.invocationId,
         parentInvocationId: frame.parentInvocationId,
         workflowId: frame.workflowId,
-        ...(wfDef?.name !== undefined ? { workflowName: wfDef.name } : {}),
-        ...(versionRef?.versionId !== undefined ? { frozenVersionId: versionRef.versionId } : {}),
+        ...(wfDef !== undefined ? { workflowName: wfDef.name } : {}),
+        ...(versionRef !== undefined ? { frozenVersionId: versionRef.versionId } : {}),
         depth: frame.depth,
         nodePath: frame.nodePath,
-        status: ctrl?.status ?? frame.status,
-        currentNodeId: ctrl?.currentNodeId ?? frame.activeNodeId,
-        activeAttemptId: ctrl?.activeAttemptId ?? null,
-        activeAttemptIndex: ctrl?.activeAttemptIndex ?? null,
-        allowedActions: ctrl?.allowedActions ?? Object.freeze([]),
-        waitingReason: ctrl?.waitingReason ?? null,
-        pauseCause: ctrl?.pauseCause ?? null,
-        failureReason: ctrl?.failureReason ?? null,
-        pendingRetryAt: ctrl?.pendingRetryAt ?? null,
-        pendingRetryCause: ctrl?.pendingRetryCause ?? null,
+        status: ctrl.status,
+        currentNodeId: ctrl.currentNodeId,
+        activeAttemptId: ctrl.activeAttemptId,
+        activeAttemptIndex: ctrl.activeAttemptIndex,
+        allowedActions: ctrl.allowedActions,
+        waitingReason: ctrl.waitingReason,
+        pauseCause: ctrl.pauseCause,
+        failureReason: ctrl.failureReason,
+        pendingRetryAt: ctrl.pendingRetryAt,
+        pendingRetryCause: ctrl.pendingRetryCause,
+        ...(pendingHandoff !== null ? { pendingHandoff } : {}),
         outputPortIds: Object.freeze(Object.keys(frame.resolvedOutputs)),
         attempts: Object.freeze(attempts)
       });

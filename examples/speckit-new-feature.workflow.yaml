@@ -1,22 +1,87 @@
 apiVersion: schegent/v1
-kind: Pipeline
+kind: Workflow
 metadata:
   id: speckit-new-feature
   name: Spec-kit New Feature
   version: 6
 spec:
-  phaseIds:
+  startNodeIds:
     - speckit-specify
-    - speckit-clarify
-    - speckit-plan
-    - speckit-tasks
-    - speckit-checklist
-    - speckit-analyze
-    - speckit-implement
-    - speckit-code-review
-    - speckit-security-review
-    - finalize
-    - integrate
+  nodes:
+    - nodeId: speckit-specify
+      kind: phase
+      phaseId: speckit-specify
+    - nodeId: speckit-clarify
+      kind: phase
+      phaseId: speckit-clarify
+    - nodeId: speckit-plan
+      kind: phase
+      phaseId: speckit-plan
+    - nodeId: speckit-tasks
+      kind: phase
+      phaseId: speckit-tasks
+    - nodeId: speckit-checklist
+      kind: phase
+      phaseId: speckit-checklist
+    - nodeId: speckit-analyze
+      kind: phase
+      phaseId: speckit-analyze
+    - nodeId: speckit-implement
+      kind: phase
+      phaseId: speckit-implement
+    - nodeId: speckit-code-review
+      kind: phase
+      phaseId: speckit-code-review
+    - nodeId: speckit-security-review
+      kind: phase
+      phaseId: speckit-security-review
+    - nodeId: finalize
+      kind: phase
+      phaseId: finalize
+    - nodeId: integrate
+      kind: phase
+      phaseId: integrate
+  connections:
+    - from:
+        nodeId: speckit-specify
+      to:
+        nodeId: speckit-clarify
+    - from:
+        nodeId: speckit-clarify
+      to:
+        nodeId: speckit-plan
+    - from:
+        nodeId: speckit-plan
+      to:
+        nodeId: speckit-tasks
+    - from:
+        nodeId: speckit-tasks
+      to:
+        nodeId: speckit-checklist
+    - from:
+        nodeId: speckit-checklist
+      to:
+        nodeId: speckit-analyze
+    - from:
+        nodeId: speckit-analyze
+      to:
+        nodeId: speckit-implement
+    - from:
+        nodeId: speckit-implement
+      to:
+        nodeId: speckit-code-review
+    - from:
+        nodeId: speckit-code-review
+      to:
+        nodeId: speckit-security-review
+    - from:
+        nodeId: speckit-security-review
+      to:
+        nodeId: finalize
+    - from:
+        nodeId: finalize
+      to:
+        nodeId: integrate
 included:
   phases:
     - metadata:

@@ -347,7 +347,7 @@ steps:
 
 <!-- Source: ../src/config/pipeline-config.ts -->
 <!-- Source: ../RELEASE.md -->
-<!-- Source: ../examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: ../examples/speckit-new-feature.workflow.yaml -->
 <!-- Source: ../AGENTS.md -->
 <!-- Source: ../../AGENTS.md -->
 

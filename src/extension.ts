@@ -485,14 +485,14 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   const guardedRunService = new GuardedRunService({
     // FR-R3-136 (FR-008) — admission is re-decided at the moment of the write,
     // not at the moment this service was built.
-    isWorkspaceTrusted,
-    lock,
+    isWorkspaceTrusted, lock,
     queue,
     controller,
     logger,
     audit: auditWriter,
     store
   });
+  runSafety.bindGuardedRun(guardedRunService, backendKind);
 
   // FR-R3-119 — extracted to `src/activation/scheduled-work-wiring.ts`: the three
   // things that act on a clock. 168 lines for seventeen bindings in and three out.
@@ -574,8 +574,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     workspaceRoot,
     store,
     queue,
-    controller,
-    lock,
+    controller, terminalTransitions: runSafety.terminalTransitions,
+    lock, executionLease: executionLeases,
     notifier,
     auditWriter,
     historyStore,

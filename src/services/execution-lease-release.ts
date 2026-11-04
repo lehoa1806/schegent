@@ -63,3 +63,14 @@ export async function releaseExecutionLeaseForTerminalRun(
     );
   }
 }
+
+/** Lost, not merely unheld: a queue between two Workflow leaves holds no lease and no rival took it. */
+export function isQueueClaimLostToRival(
+  executionLease: Pick<ExecutionLeasePort, 'tenureOf' | 'isForeignLeaseHeld'>,
+  queueId: string
+): boolean {
+  return (
+    executionLease.tenureOf?.(queueId).state === 'lost' ||
+    executionLease.isForeignLeaseHeld?.(queueId) === true
+  );
+}

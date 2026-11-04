@@ -35,9 +35,11 @@ import type {
 import type { WorkflowDefinition } from '../../contracts/workflow-definitions';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import {
+  attemptsForNode,
   createConnectedRun,
   createInvocationFrame,
   deriveNodePath,
+  type ConnectedRunLaunchContext,
   type ConnectedWorkflowRun,
   type InvocationInputEnvelope,
   type NodeAttemptRecord,
@@ -178,6 +180,7 @@ export interface ComposableWorkflowRunFactoryInput {
   readonly queueId?: string;
   readonly boundInputs?: Readonly<Record<string, ResolvedPortValue>>;
   readonly frozenClosure?: FrozenWorkflowClosure;
+  readonly launchContext?: ConnectedRunLaunchContext;
   readonly resolveCatalogVersion?: (id: string) => CatalogVersionRef | undefined;
 }
 
@@ -325,6 +328,7 @@ export function createComposableWorkflowRunSnapshot(
     startedAt: input.startedAt,
     ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
     frozenClosure: closure,
+    ...(input.launchContext !== undefined ? { launchContext: input.launchContext } : {}),
     invocations: { [rootInvocationId]: rootFrame }
   });
 
@@ -389,7 +393,7 @@ export interface CreateNodeAttemptInput {
  * `attemptIndex` and hierarchical `nodePath`.
  */
 export function createNodeAttemptRecord(input: CreateNodeAttemptInput): NodeAttemptRecord {
-  const existingAttempts = input.frame.attemptsByNodeId[input.nodeId] ?? [];
+  const existingAttempts = attemptsForNode(input.frame, input.nodeId);
   const attemptIndex = existingAttempts.length + 1;
   const attemptId = `${input.frame.invocationId}:${input.nodeId}:attempt-${attemptIndex}`;
   const parentPrefix =

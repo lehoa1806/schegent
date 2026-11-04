@@ -23,30 +23,30 @@
 // and the projector arrives by reference — see `ContinuationDeps`.
 
 import type {
-  RunRequest,
-  RunRequestFieldError
-} from '../../contracts/run-request';
-import type {
   ConnectedRunProjection,
   ContinueWorkflowPayload,
   ContinueWorkflowResult
 } from '../../contracts/sidebar-ipc';
-import type { PipelineInputPort } from '../../contracts/pipeline-definitions';
-import type {
-  ConnectedWorkflowRun,
-  InvocationInputEnvelope
-} from '../../state/connected-workflow-run';
-import {
-  appendInputEnvelope,
-  setPendingHandoff,
-  upsertInvocationFrame
-} from '../../state/connected-workflow-run';
+import { resolveBoundQueueId, type ConnectedWorkflowRun } from '../../state/connected-workflow-run';
 import type { ChildRunStateReader } from '../../ui/sidebar/connected-run-projector';
-import { composeHandoffInputEnvelope } from './continuation-composer';
+import {
+  continueWaitingHandoff,
+  type ContinueWaitingHandoffDeps,
+  type ContinueWaitingHandoffInput,
+  type ContinueWaitingHandoffResult
+} from './continuation-composer';
 import type { NodeRunStartDeps } from './node-run-starter';
-import { startPhaseNodeRun } from './node-run-starter';
+import { phaseDispatchResultOf, startPhaseAttempt } from './phase-attempt-start';
 import { WorkflowControlService } from './workflow-control-service';
+import type { WorkflowLeafControlHooks } from './workflow-leaf-control';
 import { continueWorkflow, type ConnectedRunWriter } from './workflow-launcher';
+
+export {
+  continueWaitingHandoff,
+  type ContinueWaitingHandoffDeps,
+  type ContinueWaitingHandoffInput,
+  type ContinueWaitingHandoffResult
+};
 
 /**
  * The connected-run store, as a continuation needs it: read one run, read a
@@ -67,6 +67,24 @@ export interface ContinuationDeps extends NodeRunStartDeps {
    * as a crash.
    */
   readonly connectedRuns?: ConnectedRunStore;
+  /**
+   * What a Pause or Cancel needs from the window that runs it: stopping the leaf, its countdown,
+   * and the fence. Optional because a caller with no controller, the headless entrypoint, has no
+   * leaf of its own to stop.
+   */
+  readonly workflowControlHooks?: WorkflowLeafControlHooks;
+  /**
+   * Offers a queue its work once a command has queued a leaf on it. The drain is edge-triggered and
+   * a command has no driver on the stack, so nothing else would. Optional for the same reason as the
+   * hooks above: the headless entrypoint has no drain to offer it to.
+   */
+  readonly wakeWorkflowQueue?: (queueId: string) => void;
+  /**
+   * Takes the failed rows a Workflow's Retry answers off the queue. Optional like the hooks above: a
+   * headless caller that omits it leaves the new attempt waiting behind the failed row, and on a
+   * `halt-on-failure` queue that row reports the halt.
+   */
+  readonly retireWorkflowFailures?: (run: ConnectedWorkflowRun) => Promise<void>;
   /**
    * The projector's two functions, passed **by reference** rather than as
    * closures over the reader.
@@ -151,37 +169,11 @@ export async function continueConnectedRun(
         if (run.frozenClosure === undefined) {
           return { outcome: 'rejected', reason: 'missing-closure' };
         }
-        const phaseRequest: RunRequest = {
-          pipelineId: phaseInput.phase.phaseId,
-          inputs: Object.values(phaseInput.boundInputs).map((portVal) => ({
-            portId: portVal.portId,
-            type: portVal.type as RunRequest['inputs'][number]['type'],
-            value: portVal.value
-          })),
-          supplemental: [],
-          outputs: []
-        };
-        const started = await startPhaseNodeRun(deps, {
-          frozenClosure: run.frozenClosure,
-          phaseId: phaseInput.phase.phaseId,
-          request: phaseRequest,
-          workspaceRoot: input.workspaceRoot,
-          description: phaseInput.node.label ?? phaseInput.phase.name,
-          queueId: phaseInput.queueId,
-          occurrence: {
-            rootRunId: run.connectedRunId,
-            invocationId: phaseInput.frame.invocationId,
-            parentInvocationId: phaseInput.frame.parentInvocationId,
-            nodePath: `${phaseInput.frame.nodePath}/${phaseInput.node.nodeId}`,
-            attemptId: phaseInput.attemptId,
-            attemptIndex: phaseInput.attemptIndex
-          }
-        });
-        if (started.outcome !== 'enqueued') {
-          return { outcome: 'rejected', reason: started.outcome };
-        }
-        return { outcome: 'dispatched', queueItemId: started.queueItemId };
-      }
+        return phaseDispatchResultOf(
+          await startPhaseAttempt(deps, phaseInput, input.workspaceRoot, { continuesWorkflow: true })
+        );
+      },
+      ...deps.workflowControlHooks
     });
     const outcome = await controlService.executeCommand({
       runId: run.connectedRunId,
@@ -198,6 +190,17 @@ export async function continueConnectedRun(
       now: input.startedAt
     });
     if (outcome.accepted) {
+      // After the commit, because a refused Retry leaves its failed row standing, and before the wake,
+      // because the drain reads that row. Not on a replay: a failure that came after the first delivery
+      // is not one this Retry answered.
+      const answersFailures =
+        input.payload.operation === 'retry-phase' || input.payload.operation === 'retry-invocation';
+      if (answersFailures && !outcome.idempotentReplay) {
+        await deps.retireWorkflowFailures?.(outcome.run);
+      }
+      if (outcome.receipt.spawnedAttemptId !== undefined) {
+        deps.wakeWorkflowQueue?.(resolveBoundQueueId(outcome.run));
+      }
       return {
         outcome: 'started',
         revision: outcome.run.revision,
@@ -268,133 +271,4 @@ export async function continueConnectedRun(
     return LAUNCHER_UNAVAILABLE;
   }
   return continued;
-}
-
-// ---------------------------------------------------------------------------
-// FR-R5-F02 (T018, FR-015, FR-016) — Manual handoff continuation envelope
-// ---------------------------------------------------------------------------
-
-export interface ContinueWaitingHandoffDeps {
-  readonly connectedRuns: ConnectedRunWriter;
-}
-
-export interface ContinueWaitingHandoffInput {
-  readonly run: ConnectedWorkflowRun;
-  readonly expectedRevision: number;
-  readonly invocationId: string;
-  readonly targetNodeId: string;
-  readonly request: RunRequest;
-  readonly acceptedAt: number;
-  readonly expectedInputs?: readonly PipelineInputPort[];
-  /**
-   * FR-R5-F03 (T006) — when true, persists `acceptedEnvelope` on `pendingHandoff`
-   * before target dispatch so a post-acceptance pre-dispatch interruption can be
-   * recovered deterministically without consulting live UI/catalog state.
-   */
-  readonly deferDispatch?: boolean;
-}
-
-export type ContinueWaitingHandoffResult =
-  | {
-      readonly outcome: 'accepted';
-      readonly run: ConnectedWorkflowRun;
-      readonly envelope: InvocationInputEnvelope;
-    }
-  | { readonly outcome: 'rejected-stale'; readonly current: ConnectedWorkflowRun | null }
-  | {
-      readonly outcome: 'rejected-state';
-      readonly reason: 'no-pending-handoff' | 'handoff-mismatch';
-      readonly run: ConnectedWorkflowRun;
-    }
-  | { readonly outcome: 'rejected-validation'; readonly errors: readonly RunRequestFieldError[] };
-
-/**
- * Validate operator continuation inputs at a `waiting-for-handoff` boundary and
- * persist an immutable `InvocationInputEnvelope` (`acceptedAt`) onto the active
- * `ConnectedWorkflowRun` before the target node is dispatched (FR-015, FR-016).
- *
- * The frozen closure (`run.frozenClosure`) is never reconstructed or mutated.
- */
-export async function continueWaitingHandoff(
-  deps: ContinueWaitingHandoffDeps,
-  input: ContinueWaitingHandoffInput
-): Promise<ContinueWaitingHandoffResult> {
-  const { run } = input;
-  if (run.revision !== input.expectedRevision) {
-    return { outcome: 'rejected-stale', current: run };
-  }
-  const pending = run.pendingHandoff;
-  if (pending === undefined || pending === null) {
-    return { outcome: 'rejected-state', reason: 'no-pending-handoff', run };
-  }
-  const targetNodeFromPending =
-    pending.target.kind === 'node' ? pending.target.nodeId : null;
-  if (
-    pending.invocationId !== input.invocationId ||
-    targetNodeFromPending !== input.targetNodeId
-  ) {
-    return { outcome: 'rejected-state', reason: 'handoff-mismatch', run };
-  }
-
-  const envelopeId = `${input.invocationId}:${input.targetNodeId}:handoff:${input.acceptedAt}`;
-  const envelope = composeHandoffInputEnvelope({
-    envelopeId,
-    handoff: pending,
-    targetNodeId: input.targetNodeId,
-    request: input.request,
-    acceptedAt: input.acceptedAt
-  });
-
-  if (input.expectedInputs !== undefined) {
-    const errors: RunRequestFieldError[] = [];
-    for (const port of input.expectedInputs) {
-      const resolvedPort = envelope.inputsByPort[port.portId];
-      const missing =
-        resolvedPort === undefined || resolvedPort.value.trim().length === 0;
-      if (port.required !== false && missing) {
-        errors.push({
-          field: `inputs.${port.portId}`,
-          code: 'missing-required-input',
-          message: `Required handoff input '${port.portId}' is missing.`
-        });
-      }
-    }
-    if (errors.length > 0) {
-      return { outcome: 'rejected-validation', errors };
-    }
-  }
-
-  let next = appendInputEnvelope(run, envelope);
-  if (input.deferDispatch === true) {
-    const updatedHandoff = Object.freeze({
-      ...pending,
-      acceptedEnvelope: envelope
-    });
-    next = setPendingHandoff(next, updatedHandoff);
-    const frame = next.invocations?.[input.invocationId];
-    if (frame !== undefined) {
-      next = upsertInvocationFrame(next, {
-        ...frame,
-        pendingHandoff: updatedHandoff,
-        boundInputs: Object.freeze({ ...frame.boundInputs, ...envelope.inputsByPort })
-      });
-    }
-  } else {
-    next = setPendingHandoff(next, null);
-    const frame = next.invocations?.[input.invocationId];
-    if (frame !== undefined && frame.status === 'waiting-for-handoff') {
-      next = upsertInvocationFrame(next, {
-        ...frame,
-        status: 'in-flight',
-        pendingHandoff: null,
-        boundInputs: Object.freeze({ ...frame.boundInputs, ...envelope.inputsByPort })
-      });
-    }
-  }
-
-  const written = await deps.connectedRuns.compareAndSetConnectedRun(next, run.revision);
-  if (written.outcome === 'stale') {
-    return { outcome: 'rejected-stale', current: written.current };
-  }
-  return { outcome: 'accepted', run: written.run, envelope };
 }

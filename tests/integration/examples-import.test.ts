@@ -51,8 +51,14 @@ const EXAMPLES_DIR = resolve(REPO_ROOT, 'examples');
 
 const read = (name: string): string => readFileSync(resolve(EXAMPLES_DIR, name), 'utf8');
 
-const PIPELINES = ['speckit-new-feature.pipeline.yaml', 'speckit-bugfix.pipeline.yaml'] as const;
+const WORKFLOWS = [
+  'speckit-new-feature.workflow.yaml',
+  'speckit-bugfix.workflow.yaml',
+  'example-two-node.workflow.yaml',
+  'example-nested-delivery.workflow.yaml'
+] as const;
 const WORKFLOW = 'example-two-node.workflow.yaml';
+const NESTED_WORKFLOW = 'example-nested-delivery.workflow.yaml';
 /** Not a Phase/Workflow package; parsed, but read by its own importer. */
 const MODEL_CATALOG = 'model-catalog.yaml';
 
@@ -64,44 +70,54 @@ function tree(name: string): YamlMappingNode {
   return result.node;
 }
 
-describe('FR-R3-132 — the shipped examples import through the real path', () => {
+describe('FR-R3-132 / FR-R5-F07 — the shipped examples import through the real path', () => {
   it('pins the example set, so a file added or removed is a decision', () => {
     const found = readdirSync(EXAMPLES_DIR)
       .filter((name) => name.endsWith('.yaml'))
       .sort();
-    expect(found).toEqual([...PIPELINES, WORKFLOW, MODEL_CATALOG].sort());
+    expect(found).toEqual([...WORKFLOWS, MODEL_CATALOG].sort());
   });
 
-  it(`${WORKFLOW} is accepted by the package reader`, () => {
-    const result = parseWorkflowPackage(tree(WORKFLOW));
-    if (!result.ok) throw new Error(`${WORKFLOW} refused: ${result.refusal.code}`);
+  it('ships no Pipeline YAML document in repo/examples/ (FR-R5-F07)', () => {
+    for (const name of WORKFLOWS) {
+      expect(read(name)).toContain('kind: Workflow');
+      expect(read(name)).not.toContain('kind: Pipeline');
+    }
+  });
+
+  it.each(WORKFLOWS)('%s is accepted by the Workflow package reader', (name) => {
+    const result = parseWorkflowPackage(tree(name));
+    if (!result.ok) throw new Error(`${name} refused: ${result.refusal.code}`);
     expect(result.resources.length).toBeGreaterThan(1);
   });
 
-  it('the workflow resolves every child workflow it names, from this package', () => {
-    const declared = new Set(
-      [...read(WORKFLOW).matchAll(/^\s*id:\s*([\w-]+)\s*$/gm)]
+  it.each([WORKFLOW, NESTED_WORKFLOW])(
+    '%s resolves every child workflow it names, from this package',
+    (name) => {
+      const declared = new Set(
+        [...read(name).matchAll(/^\s*id:\s*([\w-]+)\s*$/gm)]
+          .map(([, id = '']) => id)
+          .filter((id) => id.length > 0)
+      );
+      const referenced = [...read(name).matchAll(/workflowId:\s*([\w-]+)/g)]
         .map(([, id = '']) => id)
-        .filter((id) => id.length > 0)
-    );
-    const referenced = [...read(WORKFLOW).matchAll(/workflowId:\s*([\w-]+)/g)]
-      .map(([, id = '']) => id)
-      .filter((id) => id.length > 0);
+        .filter((id) => id.length > 0);
 
-    expect(referenced.length, 'a two-node workflow references two child workflows').toBeGreaterThan(1);
-    for (const workflowId of referenced) {
-      expect(
-        declared,
-        `${WORKFLOW} references workflow "${workflowId}", which no resource in ${WORKFLOW} declares`
-      ).toContain(workflowId);
+      expect(referenced.length, 'nested workflow references child workflows').toBeGreaterThan(1);
+      for (const workflowId of referenced) {
+        expect(
+          declared,
+          `${name} references workflow "${workflowId}", which no resource in ${name} declares`
+        ).toContain(workflowId);
+      }
     }
-  });
+  );
 
   it('every example parses as a document at all', () => {
     // Including the model catalog, which the assertions above deliberately do not
     // classify: it is read by its own importer, and "it is still valid YAML of this
     // dialect" is the part that rots when the grammar moves.
-    for (const name of [...PIPELINES, WORKFLOW, MODEL_CATALOG]) {
+    for (const name of [...WORKFLOWS, MODEL_CATALOG]) {
       // `tree` throws on a refusal naming the file, so reaching a node IS the
       // assertion. Asserting on the node's own shape here would be asserting on
       // the parser rather than on the example.

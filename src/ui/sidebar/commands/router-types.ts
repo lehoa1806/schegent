@@ -15,6 +15,7 @@ import type { ConnectedRunWriteResult } from '../../../state/workspace-state';
 import type { ChildRunStateReader } from '../connected-run-projector';
 import type { CompletionProvenance } from '../../../queue/feature-request';
 import type { QueueDeletionImpact } from '../../../queue/queue-manager';
+import type { WorkflowLeafControlHooks } from '../../../services/workflow-execution/workflow-leaf-control';
 import type {
   GuardedScheduleRequest,
   GuardedScheduleResult
@@ -386,6 +387,12 @@ export interface RouterDeps {
    * answer `startPipelineRun` already gives when `guardedRun` is absent.
    */
   readonly connectedRuns?: ConnectedRunPort;
+  /** Reaches `continueConnectedRun` with the rest of these deps; see `ContinuationDeps`. */
+  readonly workflowControlHooks?: WorkflowLeafControlHooks;
+  /** Reaches `continueConnectedRun` the same way; see `ContinuationDeps`. */
+  readonly wakeWorkflowQueue?: (queueId: string) => void;
+  /** Reaches `continueConnectedRun` the same way; see `ContinuationDeps`. */
+  readonly retireWorkflowFailures?: (run: ConnectedWorkflowRun) => Promise<void>;
   readonly writeGeneralSettings?: (
     updates: Readonly<Record<string, unknown>>
   ) => Promise<{ ok: true } | { ok: false; reason: string }>;
