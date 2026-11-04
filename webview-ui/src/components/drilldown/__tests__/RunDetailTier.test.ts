@@ -405,7 +405,7 @@ describe('RunDetailTier — pipeline name (T010, T011, FR-010, SC-003)', () => {
     );
 
     const text = getByTestId('run-detail-pipeline').textContent ?? '';
-    expect(text).toMatch(/unknown pipeline/i);
+    expect(text).toMatch(/unknown workflow/i);
     expect(text).not.toContain('ghost-pipeline');
   });
 });

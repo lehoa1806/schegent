@@ -46,6 +46,7 @@
     restoredNodeId?: string | null;
     onworkflowpatch: (patch: Partial<MutableWorkflow>) => void;
     onopenworkflow?: (workflowId: string, fromNodeId?: string) => void;
+    onopenphase?: (phaseId: string) => void;
   }
 
   const p: Props = $props();
@@ -159,6 +160,7 @@
     onconnectionmove={p.graph.moveConnection}
     onconnectionremove={removeConnection}
     onopenworkflow={p.onopenworkflow}
+    onopenphase={p.onopenphase}
     onselectworkflow={() => (selection = { kind: 'workflow' })}
   />
 </div>

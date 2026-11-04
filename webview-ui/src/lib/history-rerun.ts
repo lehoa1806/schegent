@@ -144,9 +144,12 @@ export function resolveRerunTarget(
   // allows and the recorder does not write — a row whose frozen body was not a
   // Pipeline is not something this form can repeat, and looking its id up among
   // Pipelines would answer with the wrong definition or the wrong sentence.
-  if (version.kind !== 'pipeline') return { state: 'unavailable', reason: 'not-a-pipeline-run' };
+  if (version.kind !== 'pipeline' && version.kind !== 'workflow') {
+    return { state: 'unavailable', reason: 'not-a-pipeline-run' };
+  }
 
-  const found = fromSection(launchables.pipelines, version.id);
+  const section = version.kind === 'workflow' ? launchables.workflows : launchables.pipelines;
+  const found = fromSection(section, version.id);
   if (typeof found === 'string') return { state: 'unavailable', reason: found };
 
   return {
@@ -172,12 +175,12 @@ export function rerunUnavailableMessage(reason: RerunUnavailableReason): string 
     case 'definition-not-recorded':
       return 'This run recorded no version, so which definition it ran cannot be established.';
     case 'not-a-pipeline-run':
-      return 'This run did not freeze a Pipeline, so it cannot be repeated from here.';
+      return 'This run did not freeze a Workflow, so it cannot be repeated from here.';
     case 'catalog-empty':
-      return 'No Pipelines are in the catalog. Import a process document to repeat this run.';
+      return 'No Workflows are in the catalog. Import a process document to repeat this run.';
     case 'none-published':
-      return 'No Pipeline has a published version. Publish one to repeat this run.';
+      return 'No Workflow has a published version. Publish one to repeat this run.';
     case 'definition-not-published':
-      return 'This run’s Pipeline has no published version, so there is nothing to repeat it against.';
+      return 'This run’s Workflow has no published version, so there is nothing to repeat it against.';
   }
 }

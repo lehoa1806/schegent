@@ -65,19 +65,14 @@ describe('Feature 098 (T053) — the launch surface stays mounted on an empty ca
     expect(getByTestId('runs-surface-launch-zone')).toBeTruthy();
   });
 
-  it('shows the shared guidance in place of the choices, in both sections', () => {
+  it('shows the shared guidance in place of the choices, in the Workflows section', () => {
     const { getByTestId, queryByTestId } = render(RunsSurface, { snapshot: emptyWorkspace() });
 
-    for (const kind of ['pipeline', 'workflow'] as const) {
-      const guidance = getByTestId(`launch-section-no-definitions-${kind}`);
-      expect(guidance.textContent).toContain(EMPTY_CATALOG_GUIDANCE.headline);
-      expect(guidance.textContent).toContain(EMPTY_CATALOG_GUIDANCE.body);
-
-      // "In place of" — the list is the choice being replaced, and a live row
-      // over an empty catalog would offer a control whose only outcome is a
-      // refusal.
-      expect(queryByTestId(`launch-section-list-${kind}`)).toBeNull();
-    }
+    expect(queryByTestId('launch-section-no-definitions-pipeline')).toBeNull();
+    const guidance = getByTestId('launch-section-no-definitions-workflow');
+    expect(guidance.textContent).toContain(EMPTY_CATALOG_GUIDANCE.headline);
+    expect(guidance.textContent).toContain(EMPTY_CATALOG_GUIDANCE.body);
+    expect(queryByTestId('launch-section-list-workflow')).toBeNull();
   });
 });
 

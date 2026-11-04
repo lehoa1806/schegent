@@ -38,7 +38,7 @@ export function phaseProgressionHeader(
   activePipeline: HeaderPipeline | null
 ): string {
   const pipelineSuffix =
-    activePipeline && activePipeline.id !== 'standard' ? ` — Pipeline: ${activePipeline.name}` : '';
+    activePipeline && activePipeline.id !== 'standard' ? ` — Workflow: ${activePipeline.name}` : '';
   const base = activeTaskId ? `Phase Progression (Active: ${activeTaskId})` : 'Phase Progression';
   return `${base}${pipelineSuffix}`;
 }

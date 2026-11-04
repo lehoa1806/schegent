@@ -119,7 +119,7 @@
               ? "Phase"
               : target.kind === "workflow"
                 ? "Workflow"
-                : "Pipeline"}
+                : "Step"}
           </span>
           {#if node.label?.trim()}
             <span class="wf-badge">{node.nodeId}</span>
@@ -133,7 +133,7 @@
                 ? "Unknown Phase"
                 : target.kind === "workflow"
                   ? "Unknown Workflow"
-                  : "Unknown Pipeline"}
+                  : "Unknown Step"}
             </span>
           {/if}
           {#if inCycle}

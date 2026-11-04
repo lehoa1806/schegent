@@ -1,6 +1,6 @@
 import type { PipelineDefinition, QueueItem } from './snapshot-types';
 
-const UNKNOWN_PIPELINE_NAME = 'Unknown pipeline';
+const UNKNOWN_PIPELINE_NAME = 'Unknown workflow';
 
 type PipelineReferencingTask = Pick<QueueItem, 'currentPipelineId'>;
 

@@ -252,7 +252,7 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
   'run.overwrite-output': {
     title: 'Overwrite existing content?',
     bodyTemplate:
-      'The **{portName}** output is targeted at `{target}`, which already exists. Running this Pipeline replaces it. This cannot be undone.',
+      'The **{portName}** output is targeted at `{target}`, which already exists. Running this Workflow replaces it. This cannot be undone.',
     confirmLabel: 'Overwrite',
     severity: 'destructive'
   },

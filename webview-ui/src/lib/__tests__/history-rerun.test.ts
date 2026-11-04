@@ -98,6 +98,30 @@ describe('resolveRerunTarget — the version it will run (FR-034, FR-035, FR-036
     // here would make the form announce a difference that does not exist.
     expect(target.supersededVersionId).toBeNull();
   });
+  it('resolves a Workflow run against the Workflows section', () => {
+    const target = ready(
+      resolveRerunTarget(
+        row({
+          definitionId: 'wf-a',
+          catalogVersion: { kind: 'workflow', id: 'wf-a', versionId: 'v2' }
+        }),
+        {
+          pipelines: { state: 'no-definitions' },
+          workflows: {
+            state: 'entries',
+            entries: [
+              { kind: 'workflow', id: 'wf-a', name: 'Workflow A', activeVersionId: 'v3', inputs: [] }
+            ]
+          }
+        },
+        QUEUES
+      )
+    );
+    expect(target.launchable.kind).toBe('workflow');
+    expect(target.launchable.id).toBe('wf-a');
+    expect(target.launchable.activeVersionId).toBe('v3');
+    expect(target.supersededVersionId).toBe('v2');
+  });
 });
 
 describe('resolveRerunTarget — when re-run is unavailable (FR-037)', () => {

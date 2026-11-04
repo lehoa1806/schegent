@@ -242,7 +242,7 @@
     />
   {:else}
     <p class="no-contract" data-testid="run-launcher-no-contract">
-      This Pipeline declares no inputs, so there is nothing to supply. It can be run as it is.
+      This Workflow declares no inputs, so there is nothing to supply. It can be run as it is.
     </p>
   {/if}
 
@@ -314,7 +314,7 @@
       disabled={pending}
       onclick={() => submitRequest()}
     >
-      {pending ? 'Queueing…' : 'Run Pipeline'}
+      {pending ? 'Queueing…' : 'Run Workflow'}
     </button>
     {#if statusMessage}
       <p class="status-line" data-testid="run-launcher-status" role="status">{statusMessage}</p>

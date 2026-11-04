@@ -797,7 +797,7 @@ describe('missing-Pipeline prerequisite (US7, FR-045)', () => {
     const notice = noticeIn(container);
     expect(notice).not.toBeNull();
     expect(notice?.getAttribute('role')).toBe('status');
-    expect(notice?.textContent ?? '').toMatch(/Pipeline/i);
+    expect(notice?.textContent ?? '').toMatch(/Phase/i);
     expect((notice?.textContent ?? '').trim().length).toBeGreaterThan(20);
     expect(saveIn(container).disabled).toBe(true);
   });

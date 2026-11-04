@@ -872,7 +872,7 @@ export function validateWorkflowDraft(
     errors.push({
       field: 'nodes',
       code: 'non-empty-required',
-      message: 'A Workflow needs at least one Pipeline node.'
+      message: 'A Workflow needs at least one step.'
     });
   }
 

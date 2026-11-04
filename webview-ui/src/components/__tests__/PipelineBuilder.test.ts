@@ -1579,3 +1579,57 @@ describe('PipelineBuilder — per-phase retry cap outcome (T050, FR-017)', () =>
     ).toBe('continue');
   });
 });
+
+describe('PipelineBuilder — Phase and Workflow cross-links', () => {
+  const PHASE_A: PhaseDefinition = Object.freeze({
+    id: 'speckit-specify',
+    name: 'Specify',
+    version: 1,
+    instruction: 'Specify.'
+  });
+  const WORKFLOW_A: PipelineDefinition = Object.freeze({
+    id: 'spec-workflow',
+    name: 'Spec Workflow',
+    phases: ['speckit-specify']
+  });
+
+  it('navigates from a Phase dependent Workflow badge to that Workflow in the Workflows tab, and back to the Phase definition from the node inspector', async () => {
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([PHASE_A], [WORKFLOW_A]), initialTab: 'phases' }
+    });
+
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-list-item-speckit-specify"]') as HTMLButtonElement
+    );
+    await tick();
+
+    const depBtn = container.querySelector(
+      '[data-testid="phase-dependent-workflow-spec-workflow"]'
+    ) as HTMLButtonElement;
+    expect(depBtn).not.toBeNull();
+    expect(depBtn.textContent).toBe('Spec Workflow');
+
+    await fireEvent.click(depBtn);
+    await tick();
+
+    const wfToggle = container.querySelector(
+      '[data-testid="workflow-picker-toggle"]'
+    ) as HTMLButtonElement;
+    expect(wfToggle).not.toBeNull();
+    expect(wfToggle.textContent).toContain('Spec Workflow');
+
+    await fireEvent.click(
+      container.querySelector('[data-testid="workflow-node-0"]') as HTMLButtonElement
+    );
+    await tick();
+
+    const openPhaseBtn = container.querySelector(
+      '[data-testid="workflow-inspector-open-phase-0"]'
+    ) as HTMLButtonElement;
+    expect(openPhaseBtn).not.toBeNull();
+    await fireEvent.click(openPhaseBtn);
+    await tick();
+
+    expect(container.querySelector('[data-testid="phases-editor-speckit-specify"]')).not.toBeNull();
+  });
+});

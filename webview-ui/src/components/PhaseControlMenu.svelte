@@ -389,17 +389,17 @@
     type="button"
     class="destructive"
     data-testid="phase-control-delete"
-    aria-label="Delete selected phase from pipeline"
+    aria-label="Delete selected phase from workflow"
     aria-disabled={aria(gate.deleteDisabled)}
-    title="Remove the selected phase from this task's pipeline (requires confirmation)"
+    title="Remove the selected phase from this task's workflow (requires confirmation)"
     onclick={onDelete}
   >Delete</button>
   {#if gate.showSetBreakpoint}
     <button
       type="button"
       data-testid="phase-control-set-breakpoint"
-      aria-label="Pause pipeline when this phase is reached"
-      title="Pause pipeline when this phase is reached"
+      aria-label="Pause workflow when this phase is reached"
+      title="Pause workflow when this phase is reached"
       onclick={onSetBreakpoint}
     >Pause when reached</button>
   {/if}

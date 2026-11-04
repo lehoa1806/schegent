@@ -58,6 +58,7 @@
   // rather than read off `BUILDER_TABS[0]`: deriving it would couple the shell
   // to the strip's internals to save one string.
   let activeTab = $state<BuilderTab>(initialTab ?? 'phases');
+  let pendingWorkflowId = $state<string | null>(null);
   let phases = $state<MutablePhase[]>([]);
   let models = $state<Record<string, string[]>>({});
   let initialized = $state(false);
@@ -325,6 +326,10 @@
         ontoggleretry={(index) => updatePhase(index, retryConditionToggle(phases[index]))}
         onretrychange={(index, e) => updatePhase(index, { retryCondition: e.source })}
         onduplicate={(index) => { if (!phaseMutation) applyPhaseEdit(duplicatePhaseRow(phases, index)); }}
+        onopenworkflow={(workflowId) => {
+          pendingWorkflowId = workflowId;
+          activeTab = 'workflows';
+        }}
       />
     {:else if activeTab === 'workflows'}
       <!--
@@ -335,7 +340,16 @@
         and the untrusted case is reported by the branch above, so there is no
         second banner to render here.
       -->
-      <WorkflowCatalogEditor {snapshot} trusted={workflowMutationsAllowed} />
+      <WorkflowCatalogEditor
+        {snapshot}
+        trusted={workflowMutationsAllowed}
+        initialWorkflowId={pendingWorkflowId}
+        onopenphase={(phaseId) => {
+          const idx = phases.findIndex((p) => p.id === phaseId);
+          if (idx >= 0) selectedPhaseIndex = idx;
+          activeTab = 'phases';
+        }}
+      />
     {:else if activeTab === 'models'}
       <!-- Feature 096 T025 — the import entry point for the Model Catalog, its
            own region above the editor for the same reason PhaseCatalogEditor's

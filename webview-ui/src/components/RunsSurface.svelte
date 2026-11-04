@@ -242,13 +242,15 @@
     {#if untrusted}
       <TrustBanner variant="workspace-trust" />
     {:else}
-      <LaunchableSection
-        name="Pipelines"
-        kind="pipeline"
-        section={launchables?.pipelines}
-        {selection}
-        {onSelect}
-      />
+      {#if launchables !== undefined && launchables.pipelines.state === 'entries'}
+        <LaunchableSection
+          name="Pipelines"
+          kind="pipeline"
+          section={launchables.pipelines}
+          {selection}
+          {onSelect}
+        />
+      {/if}
       <LaunchableSection
         name="Workflows"
         kind="workflow"

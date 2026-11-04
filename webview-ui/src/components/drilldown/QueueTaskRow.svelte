@@ -170,7 +170,7 @@
   <span class="cell cell-process" data-testid="queue-task-pipeline-{task.id}">
     <span class="process-name">{pipelineName}</span>
     {#if pipeline !== undefined && task.currentPipelineId}
-      <span class="process-id">pipeline · {task.currentPipelineId}</span>
+      <span class="process-id">workflow · {task.currentPipelineId}</span>
     {/if}
   </span>
 

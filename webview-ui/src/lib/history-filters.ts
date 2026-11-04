@@ -31,7 +31,7 @@ export type HistoryOriginFilter = 'all' | 'standalone' | 'workflow-member';
 export const HISTORY_ORIGIN_FILTERS: readonly { value: HistoryOriginFilter; label: string }[] =
   Object.freeze([
     { value: 'all', label: 'All kinds' },
-    { value: 'standalone', label: 'Pipeline' },
+    { value: 'standalone', label: 'Standalone' },
     { value: 'workflow-member', label: 'Workflow member' }
   ] as const);
 

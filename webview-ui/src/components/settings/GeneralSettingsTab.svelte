@@ -129,7 +129,7 @@
     { key: 'invocationIdleTimeoutSeconds', ipcKey: 'invocation.idleTimeoutSeconds', label: 'Invocation Idle Timeout (seconds)', kind: 'number', min: 60, max: 7200 },
     { key: 'invocationMaxDurationSeconds', ipcKey: 'invocation.maxDurationSeconds', label: 'Invocation Max Duration (seconds)', kind: 'number', min: 60, max: 86400 },
     { key: 'watchdogPollIntervalMinutes', ipcKey: 'watchdog.pollIntervalMinutes', label: 'Watchdog Poll Interval (minutes)', kind: 'number', min: 1, max: 240 },
-    { key: 'defaultPipelineId', ipcKey: 'defaultPipelineId', label: 'Default Pipeline', kind: 'pipeline-select' },
+    { key: 'defaultPipelineId', ipcKey: 'defaultPipelineId', label: 'Default Workflow', kind: 'pipeline-select' },
     // FR-R3-143 (T047) — `1, 5`, from the manifest. T012 wrote `0, 20` and the
     // hover text explained that zero disables retries; the host's minimum is 1,
     // so that was an instruction to enter a value it would reject.

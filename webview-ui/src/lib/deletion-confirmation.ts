@@ -33,7 +33,7 @@ export function phaseDeleteConfirmation(
   if (status === 'future') {
     return {
       title: 'Delete future phase',
-      message: `This will remove "${label}" from this task's remaining pipeline. Continue?`,
+      message: `This will remove "${label}" from this task's remaining workflow. Continue?`,
       confirmLabel: 'Delete phase'
     };
   }

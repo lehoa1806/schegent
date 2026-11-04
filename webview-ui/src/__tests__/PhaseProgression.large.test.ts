@@ -86,7 +86,7 @@ describe('PhaseProgression — large pipelines (T047, US3, SC-005)', () => {
     });
     const header = container.querySelector('[data-testid="dashboard-phase-progression-header"]');
     expect(header).not.toBeNull();
-    expect(header!.textContent).toContain('Pipeline: Security Audit');
+    expect(header!.textContent).toContain('Workflow: Security Audit');
   });
 
   it('hides the pipeline suffix when activePipeline is null or "standard"', () => {
@@ -95,7 +95,7 @@ describe('PhaseProgression — large pipelines (T047, US3, SC-005)', () => {
       props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID, phases, activeFeature: null, activePipeline: null }
     });
     const header = container.querySelector('[data-testid="dashboard-phase-progression-header"]');
-    expect(header!.textContent).not.toContain('Pipeline:');
+    expect(header!.textContent).not.toContain('Workflow:');
     cleanup();
     const { container: c2 } = render(PhaseProgression, {
       props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,

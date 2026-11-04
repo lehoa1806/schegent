@@ -57,10 +57,12 @@
     snapshot: WorkflowSnapshot;
     /** Workspace Trust, resolved host-side; the host re-checks on save. */
     trusted: boolean;
+    initialWorkflowId?: string | null;
     onlaunch?: (workflowId: string) => void;
+    onopenphase?: (phaseId: string) => void;
   }
 
-  const { snapshot, trusted, onlaunch }: Props = $props();
+  const { snapshot, trusted, initialWorkflowId = null, onlaunch, onopenphase }: Props = $props();
   const dashboardNav = getContext<DashboardNavigation | undefined>(DASHBOARD_NAVIGATION);
 
   /** Rows the operator created but the host has not accepted yet. */
@@ -158,6 +160,19 @@
     if (rows.some((row) => row.sourceKey === selectedKey)) return;
     const index = reselectIndex(rows, { sourceKey: selectedKey, id: selectedId ?? '' }, identity);
     select(index === null ? null : rows[index].sourceKey, true);
+  });
+
+  let appliedInitialWorkflowId: string | null = null;
+  $effect(() => {
+    if (!initialWorkflowId) {
+      appliedInitialWorkflowId = null;
+      return;
+    }
+    if (appliedInitialWorkflowId === initialWorkflowId) return;
+    const target = rows.find((row) => row.workflowId === initialWorkflowId);
+    if (!target) return;
+    appliedInitialWorkflowId = initialWorkflowId;
+    select(target.sourceKey);
   });
 
   function identity(row: MutableWorkflow): DefinitionIdentity {
@@ -446,6 +461,7 @@
         {restoredNodeId}
         onworkflowpatch={patchSelected}
         onopenworkflow={openChildWorkflow}
+        {onopenphase}
       />
     {:else}
       <div class="catalog-state" data-testid="workflows-no-selection">

@@ -40,7 +40,7 @@ describe('resolveTaskPipelineName', () => {
   it('falls back to a labeled placeholder rather than the raw id when unresolved', () => {
     const name = resolveTaskPipelineName({ currentPipelineId: 'deleted-pipeline' }, PIPELINES);
 
-    expect(name).toBe('Unknown pipeline');
+    expect(name).toBe('Unknown workflow');
     expect(name).not.toContain('deleted-pipeline');
   });
 });

@@ -54,6 +54,7 @@
     ontoggleretry: (index: number) => void;
     onretrychange: (index: number, event: { source: string; valid: boolean }) => void;
     onduplicate: (index: number) => void;
+    onopenworkflow?: (workflowId: string) => void;
   }
 
   const {
@@ -86,7 +87,8 @@
     onrawsave,
     ontoggleretry,
     onretrychange,
-    onduplicate
+    onduplicate,
+    onopenworkflow
   }: Props = $props();
 
   const selectedPhase = $derived(selectedIndex !== null ? phases[selectedIndex] : null);
@@ -94,10 +96,6 @@
     selectedPhase ? editStateById[selectedPhase.sourceKey] ?? { rawJsonMode: false } : null
   );
 
-  // Feature 099 (T488/T494a, FR-041/FR-043) — no scope. There is one layer, so
-  // no read-only `built-in` tier, no target-scope picker, no scope badge, and no
-  // precedence badge: precedence was the answer to "which layer won", and one
-  // layer answers it by existing.
   const selectedReadOnly = $derived(
     !trusted || savePending ||
       (editableSourceKey !== null && selectedPhase?.sourceKey !== editableSourceKey)
@@ -119,16 +117,6 @@
     return typeof phase.retryCondition === 'string';
   }
 
-  /**
-   * What this phase's backend can be pointed at: the operator's own catalog
-   * (`schegent.models`) followed by whatever the CLI reported, deduped.
-   *
-   * This read `availableModels` alone until Claude and Codex started
-   * reporting no models — neither CLI can enumerate them — which left those
-   * phases with nothing to select but Inherit, the imported ids included.
-   * Configured comes first because it is the operator's list; detection only
-   * adds to it.
-   */
   function modelsFor(phase: MutablePhase): readonly string[] {
     const runner = phase.runner || snapshot.defaultRunnerKind || 'claude';
     return mergeDetectedModels(
@@ -150,21 +138,7 @@
     return phase.sourceErrors.length > 0 ? `phase-errors-${phase.id}` : undefined;
   }
 
-  /**
-   * T066 — the exchange entry points (FR-052, FR-053).
-   *
-   * Both live inside the `phaseCatalog.state === 'ready'` arm below, so the layers
-   * an import appends to are the authoritative ones by construction rather than by
-   * a check: an empty projection taken while the catalog was still loading would
-   * make a commit erase the layer it wrote to.
-   */
   const importLayers = $derived(
-    // Feature 085 T048 / 086 T054 — all three catalogs, because a confirmed
-    // package writes all three and each write sends its whole layer. The
-    // Pipeline and Workflow records come off the same snapshot for the same
-    // reason the Phase records do: it is the one the host resolved, so the layer
-    // an import appends to is authoritative by construction rather than by a
-    // check.
     storedWritableLayers(
       snapshot.phaseCatalog?.records ?? [],
       snapshot.workflowCatalog?.records ?? []
@@ -174,28 +148,24 @@
     importDisabledReason({ trusted, savePending, mutationActive })
   );
 
-  /**
-   * Feature 101 (US1, T037, FR-013) — lifecycle facts, keyed by the projection
-   * record they came from.
-   *
-   * Read off the record and never carried on `MutablePhase`. The mutable row is
-   * the editable copy, and every field on it has to be stripped before a save
-   * body goes out; a lifecycle field there would be one more strip to remember,
-   * and the one that got missed would send a projected view field back to the
-   * host — exactly what FR-010 forbids. Off the record, it cannot reach a write.
-   */
   const lifecycleByKey = $derived(
     new Map<string, BuilderLifecycle | undefined>(
       (snapshot.phaseCatalog?.records ?? []).map((record) => [record.key, record.lifecycle])
     )
   );
+  const allWorkflowDefinitions = $derived.by(() => {
+    if (snapshot.workflowCatalog?.state !== 'ready') return [];
+    const out = [...snapshot.workflowCatalog.effective];
+    for (const rec of snapshot.workflowCatalog.records) {
+      const def = rec.definition;
+      if (def && !out.some((w) => w.workflowId === def.workflowId)) {
+        out.push(def);
+      }
+    }
+    return out;
+  });
   const selectedPhaseDependents = $derived(
-    selectedPhase
-      ? dependentWorkflowsForPhase(
-          selectedPhase.id,
-          snapshot.workflowCatalog?.state === 'ready' ? snapshot.workflowCatalog.effective : []
-        )
-      : []
+    selectedPhase ? dependentWorkflowsForPhase(selectedPhase.id, allWorkflowDefinitions) : []
   );
 </script>
 
@@ -340,7 +310,14 @@
             <span class="wf-badge">
               Used by {selectedPhaseDependents.length}
               {selectedPhaseDependents.length === 1 ? 'Workflow' : 'Workflows'}:
-              {selectedPhaseDependents.map((w) => w.name || w.workflowId).join(', ')}
+              {#each selectedPhaseDependents as w, i (w.workflowId)}
+                {i > 0 ? ', ' : ''}
+                {#if onopenworkflow}
+                  <button type="button" class="btn btn-ghost btn-sm" data-testid="phase-dependent-workflow-{w.workflowId}" onclick={() => onopenworkflow(w.workflowId)}>{w.name || w.workflowId}</button>
+                {:else}
+                  {w.name || w.workflowId}
+                {/if}
+              {/each}
             </span>
           {/if}
         </div>
