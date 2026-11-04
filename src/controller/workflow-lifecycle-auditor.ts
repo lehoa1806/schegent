@@ -1,5 +1,6 @@
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { SanitizedLogger } from '../lib/logger';
+import type { FeatureRequest } from '../queue/feature-request';
 import type { WorkflowRun } from '../state/workflow-run';
 import type {
   BreakpointAuditEvent,
@@ -29,6 +30,27 @@ export class WorkflowLifecycleAuditor {
     private readonly writer: Pick<AuditLogWriter, 'append'> | null,
     private readonly logger: SanitizedLogger
   ) {}
+
+  /**
+   * A Workflow control ended this leaf: the event an operator's Task cancel writes, with its own
+   * reason. The row is canceled by a Pause too, because a Paused Workflow resumes with a new attempt.
+   */
+  public async emitWorkflowLeafCanceled(row: FeatureRequest, run: WorkflowRun | null): Promise<void> {
+    if (!this.writer) return;
+    const runId = run?.id ?? row.runId ?? null;
+    try {
+      await this.writer.append({
+        runId: runId ?? `task:${row.id}`,
+        phase: run?.currentPhase ?? 'queue',
+        iteration: run?.currentIteration ?? 0,
+        eventType: 'task-canceled',
+        payload: { taskId: row.id, runId, reason: 'workflow-control' },
+        outcome: 'info'
+      });
+    } catch (err) {
+      this.logger.warn(`task-canceled audit append failed: ${errorMessage(err)}`);
+    }
+  }
 
   public async appendPhaseControl(
     eventType: PhaseControlAuditEvent,

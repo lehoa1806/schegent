@@ -85,10 +85,9 @@ const CORRELATION = 'examples-round-trip-1';
 
 const readExample = (name: string): string => readFileSync(resolve(EXAMPLES_DIR, name), 'utf8');
 
-/** Supported YAML documents that ship (excluding legacy Pipeline examples retired in F04). */
+/** Every YAML document in repo/examples/ (FR-R5-F07). */
 const EXAMPLES: readonly string[] = readdirSync(EXAMPLES_DIR)
   .filter((name) => name.endsWith('.yaml') || name.endsWith('.yml'))
-  .filter((name) => !readExample(name).includes('kind: Pipeline'))
   .sort();
 
 // ---------------------------------------------------------------------------

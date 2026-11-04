@@ -1,8 +1,12 @@
+import type { AuditLogWriter } from '../audit/audit-log-writer';
+import { createStateTransitionAuditEnvelope } from '../lib/audit-event-envelope';
+import { errorMessage } from '../lib/errors';
 import type { SanitizedLogger } from '../lib/logger';
 import type { ContainmentRefusal } from '../lib/path-containment';
 import type { CompletionProvenance } from '../queue/feature-request';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SessionCleanupOutcome } from '../services/session-cleanup/session-cleanup-service';
+import { failedPhaseQueueItemIds, type ConnectedWorkflowRun } from '../state/connected-workflow-run';
 import { isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-state';
 import {
   canceledRunPatch,
@@ -205,4 +209,70 @@ export async function deleteTaskWithSessionCleanup(
   return sessionCleanupRefusal
     ? { ...removed, sessionCleaned, sessionCleanupRefusal }
     : { ...removed, sessionCleaned };
+}
+
+export interface WorkflowFailureRetirementDeps {
+  readonly queue: Pick<QueueManager, 'findById' | 'removeTask'>;
+  readonly audit: Pick<AuditLogWriter, 'append'>;
+  readonly logger: Pick<SanitizedLogger, 'warn'>;
+}
+
+/**
+ * Take the failed rows of a Workflow's Phase attempts off the queue, once its Retry has committed.
+ *
+ * Under `halt-on-failure` a `failed` row refuses every later start on its queue until the operator
+ * deals with it, and pressing the Workflow's Retry is the operator dealing with it. Removal is one of
+ * feature 195's own exits, so the gate keeps its contract. The failure itself stays on the attempt
+ * and in history, and `task-removed` is what the failed-row census reads for this exit. That reader
+ * takes a missing `completionProvenance` to mean "not recorded", so this writer carries the field,
+ * which is why it lives in this module (feature 244, contract L3).
+ *
+ * A row the operator attested reads `completed`, and stays. The session artifacts stay too, as they
+ * do for a leaf a Workflow control ended. Never throws: the command has already committed.
+ */
+export function createWorkflowFailureRetirement(
+  deps: WorkflowFailureRetirementDeps
+): (run: ConnectedWorkflowRun) => Promise<void> {
+  const { queue, audit, logger } = deps;
+  const retireRow = async (taskId: string): Promise<void> => {
+    if (queue.findById(taskId)?.status !== 'failed') return;
+    const removed = await queue.removeTask(taskId);
+    if (!removed.ok) {
+      logger.warn(`workflow-leaf-retirement: failed row not retired: ${removed.reason ?? 'unknown'}`);
+      return;
+    }
+    const payload = {
+      taskId,
+      queueId: removed.queueId,
+      priorStatus: removed.priorStatus,
+      completionProvenance: removed.completionProvenance ?? null,
+      runId: removed.runId,
+      cause: 'workflow-retry',
+      sessionCleaned: false,
+      sessionCleanupRefusal: null
+    };
+    await audit.append({
+      runId: `queue:${String(removed.queueId)}`,
+      phase: 'queue',
+      iteration: 0,
+      eventType: 'task-removed',
+      payload: {
+        ...payload,
+        stateTransition: createStateTransitionAuditEnvelope({
+          reasonCode: 'task-removed',
+          newState: payload
+        })
+      },
+      outcome: 'info'
+    });
+  };
+  return async (run) => {
+    for (const taskId of failedPhaseQueueItemIds(run)) {
+      try {
+        await retireRow(taskId);
+      } catch (error) {
+        logger.warn(`workflow-leaf-retirement: failed row not retired: ${errorMessage(error)}`);
+      }
+    }
+  };
 }

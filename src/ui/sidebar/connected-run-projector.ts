@@ -45,7 +45,7 @@ import {
   projectConnectedInvocations
 } from '../../services/workflow-execution/workflow-control-projector';
 import type { ConnectedWorkflowRun } from '../../state/connected-workflow-run';
-import { resolveRootInvocationId } from '../../state/connected-workflow-run';
+import { attemptsForNode, resolveRootInvocationId } from '../../state/connected-workflow-run';
 
 /**
  * What one child Pipeline Run is doing, in the vocabulary the wire already uses.
@@ -124,8 +124,8 @@ function readChild(
     };
   }
   const rootId = resolveRootInvocationId(run);
-  const frameAttempts = run.invocations?.[rootId]?.attemptsByNodeId[nodeId] ?? [];
-  const latestFrameAttempt = frameAttempts[frameAttempts.length - 1];
+  const frameAttempts = attemptsForNode(run.invocations?.[rootId], nodeId);
+  const latestFrameAttempt = frameAttempts.at(-1);
   if (latestFrameAttempt === undefined) return { latest: null, attemptCount: 0 };
   const mappedState: ConnectedChildState | null =
     latestFrameAttempt.queueItemId !== undefined
@@ -194,10 +194,12 @@ export function projectConnectedRun(
   const anyInFlight = eachAttempt(run, readChildState, (state) => state === 'in-flight');
   const hydrating = eachAttempt(run, readChildState, (state) => state === null);
   const startNodes = new Set(run.graph.startNodeIds);
-  const hasInvocations = run.invocations !== undefined && Object.keys(run.invocations).length > 0;
+  const invocationFrames = run.invocations !== undefined ? Object.values(run.invocations) : [];
+  const hasInvocations = invocationFrames.length > 0;
   const control = hasInvocations ? buildWorkflowRunControlProjection(run) : undefined;
   const invocations = control !== undefined ? projectConnectedInvocations(run, control) : undefined;
 
+  const rootId = resolveRootInvocationId(run);
   const nodes: ConnectedNodeProjection[] = run.graph.nodes.map((node) => {
     const reading = readChild(run, node.nodeId, readChildState);
     const state = stateOf(reading, decided.get(node.nodeId), startNodes.has(node.nodeId));
@@ -209,11 +211,9 @@ export function projectConnectedRun(
           : ('pipeline' as const);
     const targetId = node.pipelineId ?? node.phaseId ?? node.workflowId ?? node.nodeId;
     const versionRef = run.frozenClosure?.catalogVersionsById?.[targetId];
-    const childInvocationIds = hasInvocations
-      ? Object.values(run.invocations ?? {})
-          .filter((f) => f.parentCallNodeId === node.nodeId)
-          .map((f) => f.invocationId)
-      : [];
+    const childInvocationIds = invocationFrames
+      .filter((f) => f.parentInvocationId === rootId && f.parentCallNodeId === node.nodeId)
+      .map((f) => f.invocationId);
     return {
       nodeId: node.nodeId,
       pipelineId: targetId,
@@ -221,8 +221,9 @@ export function projectConnectedRun(
       // FR-057 — only what the host would accept right now. While any child is
       // non-terminal the launcher refuses every start (FR-044), so nothing is
       // legal anywhere and the projection says so rather than offering a control
-      // that is guaranteed to be refused.
-      actions: anyInFlight ? NO_ACTIONS : actionsOf(state, reading.attemptCount),
+      // that is guaranteed to be refused. A composable node is refused the same way, always: it names
+      // no Pipeline to compose (gate 4a), and its controls are its invocation's `allowedActions`.
+      actions: anyInFlight || hasInvocations ? NO_ACTIONS : actionsOf(state, reading.attemptCount),
       attemptCount: reading.attemptCount,
       ...(reading.latestQueueItemId !== undefined
         ? { latestQueueItemId: reading.latestQueueItemId }
@@ -231,7 +232,7 @@ export function projectConnectedRun(
         ? {
             nodeKind,
             ...(node.label !== undefined ? { label: node.label } : {}),
-            ...(versionRef?.versionId !== undefined ? { frozenVersionId: versionRef.versionId } : {}),
+            ...(versionRef !== undefined ? { frozenVersionId: versionRef.versionId } : {}),
             ...(childInvocationIds.length > 0
               ? { childInvocationIds: Object.freeze(childInvocationIds) }
               : {})

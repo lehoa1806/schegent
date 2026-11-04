@@ -15,6 +15,7 @@ import type { WorkflowNodeTerminalStatus } from '../../contracts/workflow-defini
 import {
   appendCommandReceipt,
   assertConnectedRunInvariants,
+  attemptsForNode,
   clearInvocationControlMarkers,
   pauseInvocationControlMarkers,
   recordNodeAttempt,
@@ -36,7 +37,7 @@ import {
   type PhaseAttemptDispatchInput,
   type PhaseAttemptDispatchResult
 } from './connected-run-coordinator';
-import { continueWaitingHandoff } from './continuation-service';
+import { continueWaitingHandoff } from './continuation-composer';
 import {
   buildWorkflowRunControlProjection,
   type WorkflowRunControlProjection
@@ -118,6 +119,45 @@ interface StagingBuffer {
   readonly set: (run: ConnectedWorkflowRun) => void;
 }
 
+/**
+ * What a dispatching control step reports back to `executeCommandLocked`.
+ *
+ * `undispatched` is set when the step needed a Phase attempt to start and the
+ * coordinator answered with anything other than `phase-dispatched` (the queue
+ * refused the item, a binding no longer resolves, the closure is invalid). The
+ * command is then refused instead of committed: no attempt is spent against
+ * `maxPhaseAttempts`, and no frame is left claiming an attempt that never started.
+ */
+interface DispatchStepOutcome {
+  readonly spawnedInvocationId?: string;
+  readonly spawnedAttemptId?: string;
+  readonly undispatched?: ComposableWorkflowStepResult;
+}
+
+/**
+ * Name why a control step could not start a Phase attempt.
+ *
+ * A failed dispatch cascades up the call chain, so the step result carries the
+ * outermost frame's `unhandled-node-failure`. The cause lives on the deepest
+ * frame the step failed: it is the one frame the staged run changed that is now
+ * `failed`, so frames that were already failed before the command are skipped.
+ */
+function describeUndispatchedStep(
+  before: ConnectedWorkflowRun,
+  staged: ConnectedWorkflowRun,
+  step: ComposableWorkflowStepResult
+): string {
+  const beforeFrames = new Map(Object.entries(before.invocations ?? {}));
+  let deepest: WorkflowInvocationFrame | undefined;
+  for (const frame of Object.values(staged.invocations ?? {})) {
+    if (frame.status !== 'failed' || frame.failureCode === undefined) continue;
+    if (beforeFrames.get(frame.invocationId) === frame) continue;
+    if (deepest === undefined || frame.depth > deepest.depth) deepest = frame;
+  }
+  if (deepest?.failureCode !== undefined) return deepest.failureCode;
+  return step.outcome === 'workflow-failed' ? step.failureCode : step.outcome;
+}
+
 function createStagingWriter(initial: ConnectedWorkflowRun): StagingBuffer {
   let staged = initial;
   const writer: ConnectedRunWriter = {
@@ -182,18 +222,6 @@ function findNewChildInvocationId(
   return undefined;
 }
 
-function findLatestSpawnedAttemptId(
-  after: ConnectedWorkflowRun,
-  invocationId: string,
-  nodeId: string | null
-): string | undefined {
-  const frame = after.invocations?.[invocationId];
-  if (frame === undefined) return undefined;
-  const targetNode = nodeId ?? frame.activeNodeId ?? frame.entryNodeId;
-  const attempts = frame.attemptsByNodeId[targetNode] ?? [];
-  return attempts[attempts.length - 1]?.attemptId;
-}
-
 function reactivateFrame(
   frame: WorkflowInvocationFrame,
   resetOutputs: boolean
@@ -212,11 +240,13 @@ function reactivateFrame(
   };
 }
 
+const sharedQueueTailByQueueId = new Map<string, Promise<unknown>>();
+
 /**
  * Serialized control & completion coordinator for nested `ConnectedWorkflowRun`s.
  */
 export class WorkflowControlService {
-  private readonly queueTailByQueueId = new Map<string, Promise<unknown>>();
+  private readonly queueTailByQueueId = sharedQueueTailByQueueId;
 
   constructor(private readonly deps: WorkflowControlServiceDeps) {}
 
@@ -279,7 +309,7 @@ export class WorkflowControlService {
       if (frame === undefined || frame.status !== 'in-flight') {
         return { outcome: 'ignored-not-in-flight', run: currentRun };
       }
-      const attempts = frame.attemptsByNodeId[input.nodeId] ?? [];
+      const attempts = attemptsForNode(frame, input.nodeId);
       const targetAttempt =
         input.attemptIndex === undefined
           ? attempts[attempts.length - 1]
@@ -432,6 +462,7 @@ export class WorkflowControlService {
     const staging = createStagingWriter(run);
     let spawnedInvocationId: string | undefined;
     let spawnedAttemptId: string | undefined;
+    let undispatched: ComposableWorkflowStepResult | undefined;
 
     switch (request.operation) {
       case 'pause': {
@@ -455,6 +486,7 @@ export class WorkflowControlService {
           request.now
         );
         spawnedAttemptId = out.spawnedAttemptId;
+        undispatched = out.undispatched;
         break;
       }
       case 'cancel': {
@@ -478,6 +510,7 @@ export class WorkflowControlService {
           request.now
         );
         spawnedAttemptId = out.spawnedAttemptId;
+        undispatched = out.undispatched;
         break;
       }
       case 'retry-invocation': {
@@ -489,6 +522,7 @@ export class WorkflowControlService {
         );
         spawnedInvocationId = out.spawnedInvocationId;
         spawnedAttemptId = out.spawnedAttemptId;
+        undispatched = out.undispatched;
         break;
       }
       case 'continue-handoff': {
@@ -500,9 +534,34 @@ export class WorkflowControlService {
           request.continuationRequest,
           request.now
         );
+        if (!out.accepted) {
+          return {
+            accepted: false,
+            refusalCode: 'handoff-not-pending',
+            reason: 'Pending handoff could not be accepted for the target node.',
+            currentRevision: run.revision,
+            run,
+            projection: buildWorkflowRunControlProjection(run)
+          };
+        }
         spawnedAttemptId = out.spawnedAttemptId;
+        undispatched = out.undispatched;
         break;
       }
+    }
+
+    // A control that exists to start a Phase attempt and could not start one is a
+    // refusal, not an accepted command: the staged frames are dropped, so the run,
+    // its attempt counts and its pending handoff stay exactly as the operator saw them.
+    if (undispatched !== undefined) {
+      return {
+        accepted: false,
+        refusalCode: 'invalid-state-for-operation',
+        reason: `Operation '${request.operation}' did not start a Phase attempt (${describeUndispatchedStep(run, staging.current(), undispatched)}); the run is unchanged.`,
+        currentRevision: run.revision,
+        run,
+        projection: buildWorkflowRunControlProjection(run)
+      };
     }
 
     const afterMutation = staging.current();
@@ -625,7 +684,7 @@ export class WorkflowControlService {
     targetInvocationId: string,
     affectedInvocationIds: readonly string[],
     now: number
-  ): Promise<{ readonly spawnedAttemptId?: string }> {
+  ): Promise<DispatchStepOutcome> {
     const ancestorIds = collectAncestorInvocationIds(run, targetInvocationId);
     const allToUnpause = Array.from(new Set([...affectedInvocationIds, ...ancestorIds]));
 
@@ -674,9 +733,9 @@ export class WorkflowControlService {
             startedAt: now
           }
         );
-        if (dispatched.outcome === 'phase-dispatched') {
-          return { spawnedAttemptId: dispatched.attemptId };
-        }
+        return dispatched.outcome === 'phase-dispatched'
+          ? { spawnedAttemptId: dispatched.attemptId }
+          : { undispatched: dispatched };
       }
     }
 
@@ -757,8 +816,7 @@ export class WorkflowControlService {
           };
           nextRun = upsertInvocationFrame(nextRun, parentFrame);
         }
-        const parentAttempts =
-          parentFrame.attemptsByNodeId[targetFrame.parentCallNodeId] ?? [];
+        const parentAttempts = attemptsForNode(parentFrame, targetFrame.parentCallNodeId);
         const parentAttempt = parentAttempts.find(
           (a) => a.childInvocationId === targetInvocationId
         );
@@ -789,7 +847,7 @@ export class WorkflowControlService {
     targetInvocationId: string,
     targetNodeId: string,
     now: number
-  ): Promise<{ readonly spawnedAttemptId?: string }> {
+  ): Promise<DispatchStepOutcome> {
     const ancestorIds = collectAncestorInvocationIds(run, targetInvocationId);
     const chainIds = [targetInvocationId, ...ancestorIds];
     let nextRun = staging.current();
@@ -812,12 +870,9 @@ export class WorkflowControlService {
       }
     );
 
-    const attemptId =
-      dispatched.outcome === 'phase-dispatched'
-        ? dispatched.attemptId
-        : findLatestSpawnedAttemptId(staging.current(), targetInvocationId, targetNodeId);
-
-    return attemptId !== undefined ? { spawnedAttemptId: attemptId } : {};
+    return dispatched.outcome === 'phase-dispatched'
+      ? { spawnedAttemptId: dispatched.attemptId }
+      : { undispatched: dispatched };
   }
 
   private async applyRetryInvocation(
@@ -825,10 +880,7 @@ export class WorkflowControlService {
     run: ConnectedWorkflowRun,
     targetInvocationId: string,
     now: number
-  ): Promise<{
-    readonly spawnedInvocationId?: string;
-    readonly spawnedAttemptId?: string;
-  }> {
+  ): Promise<DispatchStepOutcome> {
     const targetFrame = run.invocations?.[targetInvocationId];
     if (targetFrame === undefined) {
       return {};
@@ -867,14 +919,14 @@ export class WorkflowControlService {
         }
       );
 
-      const afterDispatch = staging.current();
-      const spawnedInvocationId = findNewChildInvocationId(beforeDispatch, afterDispatch);
-      const spawnedAttemptId =
-        dispatched.outcome === 'phase-dispatched' ? dispatched.attemptId : undefined;
+      if (dispatched.outcome !== 'phase-dispatched') {
+        return { undispatched: dispatched };
+      }
 
+      const spawnedInvocationId = findNewChildInvocationId(beforeDispatch, staging.current());
       return {
-        ...(spawnedInvocationId !== undefined ? { spawnedInvocationId } : {}),
-        ...(spawnedAttemptId !== undefined ? { spawnedAttemptId } : {})
+        spawnedAttemptId: dispatched.attemptId,
+        ...(spawnedInvocationId !== undefined ? { spawnedInvocationId } : {})
       };
     }
 
@@ -893,7 +945,7 @@ export class WorkflowControlService {
 
     return dispatched.outcome === 'phase-dispatched'
       ? { spawnedAttemptId: dispatched.attemptId }
-      : {};
+      : { undispatched: dispatched };
   }
 
   private async applyContinueHandoff(
@@ -903,7 +955,7 @@ export class WorkflowControlService {
     targetNodeId: string,
     continuationRequest: RunRequest | undefined,
     now: number
-  ): Promise<{ readonly spawnedAttemptId?: string }> {
+  ): Promise<DispatchStepOutcome & { readonly accepted: boolean }> {
     const requestPayload: RunRequest = continuationRequest ?? {
       pipelineId: targetNodeId,
       workflowId: run.workflowId,
@@ -924,21 +976,21 @@ export class WorkflowControlService {
       }
     );
 
-    if (accepted.outcome === 'accepted') {
-      const dispatched = await dispatchComposableNode(
-        { connectedRuns: staging.writer, dispatchPhase: this.deps.dispatchPhase },
-        {
-          run: staging.current(),
-          invocationId: targetInvocationId,
-          nodeId: targetNodeId,
-          startedAt: now
-        }
-      );
-      if (dispatched.outcome === 'phase-dispatched') {
-        return { spawnedAttemptId: dispatched.attemptId };
-      }
+    if (accepted.outcome !== 'accepted') {
+      return { accepted: false };
     }
 
-    return {};
+    const dispatched = await dispatchComposableNode(
+      { connectedRuns: staging.writer, dispatchPhase: this.deps.dispatchPhase },
+      {
+        run: staging.current(),
+        invocationId: targetInvocationId,
+        nodeId: targetNodeId,
+        startedAt: now
+      }
+    );
+    return dispatched.outcome === 'phase-dispatched'
+      ? { accepted: true, spawnedAttemptId: dispatched.attemptId }
+      : { accepted: true, undispatched: dispatched };
   }
 }

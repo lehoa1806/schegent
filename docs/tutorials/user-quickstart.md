@@ -1,11 +1,11 @@
-# Run the shipped Spec-kit pipeline
+# Run the shipped Spec-kit workflow
 
 This tutorial takes a first-time operator from a source checkout to one queued Schegent run. The repository does not contain a Marketplace identifier, a checked-in VSIX, or an end-user installer, so the reproducible installation path available here is the Extension Development Host described in [Developer setup](developer-setup.md).
 <!-- Source: package.json -->
 <!-- Source: tests/integration/runTest.ts -->
 
-You will import the shipped `Spec-kit Bugfix` process, supply one instruction, and verify that Schegent accepted the run.
-<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
+You will import the shipped `Spec-kit Bugfix` Workflow package, supply one instruction, and verify that Schegent accepted the run.
+<!-- Source: examples/speckit-bugfix.workflow.yaml -->
 
 > **This tutorial was corrected under FR-R3-062.** It previously used
 > `Spec-kit New Feature`, whose `finalize` phase declares `sideEffects: git` and instructs the agent
@@ -37,11 +37,11 @@ recorded in [Record your backend grant list](#record-your-backend-grant-list). A
 granted before the walkthrough stays granted. Whichever surface wrote the grant, the result is the
 same: the id the walkthrough added is absent from the list.
 
-The pipeline used here — `Spec-kit Bugfix` — declares **no** `sideEffects: git` on any phase. That is
+The workflow used here — `Spec-kit Bugfix` — declares **no** `sideEffects: git` on any phase. That is
 why it is the one this tutorial uses. `Spec-kit New Feature` does, on two phases, and is not a first
 run.
-<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
-<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
+<!-- Source: examples/speckit-bugfix.workflow.yaml -->
+<!-- Source: examples/speckit-bugfix.workflow.yaml -->
 <!-- Source: src/services/uncontained-grant-writer.ts -->
 
 ### Satisfy the activation condition explicitly
@@ -83,7 +83,7 @@ spawned with `--dangerously-skip-permissions`: its approval prompts are off and 
 without asking, within whatever the OS user can reach. That is the reason the disposable workspace
 above is a requirement and not a suggestion. Also read what leaves the machine whatever Schegent's
 capture settings say: [egress and the raw transcript's lifetime](../concepts/local-first-not-offline.md#egress-and-the-raw-transcripts-lifetime).
-<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
+<!-- Source: examples/speckit-bugfix.workflow.yaml -->
 <!-- Source: src/runner/claude-cli.ts -->
 
 Grant VS Code Workspace Trust to the disposable folder. In an untrusted workspace, Schegent displays `Workspace is not trusted` and disables catalog edits; the Runs surface also explains that launching is unavailable.
@@ -122,17 +122,17 @@ The dashboard opens on **Queues** and also exposes **Runs**, **History**, **Metr
    so this step is not what makes the import work. It puts you on the tab where the imported Workflow
    appears, which is what the steps below describe.
 3. In the import panel, select **Import…**.
-4. In the YAML picker, choose `examples/speckit-bugfix.pipeline.yaml` from the Schegent checkout.
-5. Review the preflight result. It must identify a Pipeline with ID `speckit-bugfix` and name `Spec-kit Bugfix`.
+4. In the YAML picker, choose `examples/speckit-bugfix.workflow.yaml` from the Schegent checkout.
+5. Review the preflight result. It must identify a Workflow with ID `speckit-bugfix` and name `Spec-kit Bugfix`.
 6. Select **Confirm import**.
 
-The document is a package: it defines the pipeline and includes all five phase definitions it references. A successful confirmed import publishes the complete set so that the pipeline is launchable; the implementation first stages draft records and then publishes them as one import operation.
+The document is a package: it defines the Workflow and includes all five phase definitions it references. A successful confirmed import publishes the complete set so that the Workflow is launchable; the implementation first stages draft records and then publishes them as one import operation.
 
-**The other files in that folder** (`FR-R3-132`): `examples/speckit-new-feature.pipeline.yaml` is the
-same shape for the feature process, and `examples/example-two-node.workflow.yaml` is a two-node
-Workflow that carries its own pipelines and phases, so it imports on its own. Its single edge is
-conditional — the second node runs only if the first failed — which is the smallest graph in which a
-condition does real work. See
+**The other files in that folder** (`FR-R3-132`, `FR-R5-F07`): `examples/speckit-new-feature.workflow.yaml` is the
+same shape for the feature process, `examples/example-two-node.workflow.yaml` is a two-node
+Workflow whose single edge is conditional — the second node runs only if the first failed — and
+`examples/example-nested-delivery.workflow.yaml` is a three-level composable Workflow hierarchy
+demonstrating child Workflow reuse across two call sites. See
 [`examples/README.md`](../../examples/README.md). Every file there is parsed and validated by
 `repo/tests/integration/examples-import.test.ts`, so an example cannot rot into a broken first
 experience.
@@ -142,31 +142,31 @@ experience.
 <!-- Source: webview-ui/src/components/ProcessImport/ProcessImportPreflight.svelte -->
 <!-- Source: src/extension.ts -->
 <!-- Source: tests/integration/catalog-import-always-draft.test.ts -->
-<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
+<!-- Source: examples/speckit-bugfix.workflow.yaml -->
 
 ## 3. Compose and queue the run
 
-1. Open **Runs**, then leave **Pipelines** selected.
+1. Open **Runs**, where published **Workflows** are listed.
 2. Select the active row named **Spec-kit Bugfix**.
 3. Select **Trigger**.
 4. The sample declares no input ports, so the form says it can run as-is. Under **Additional context**, enter `e2e happy path` in **Instructions**.
-5. In **Process preview**, verify this exact phase order:
+5. In the detail panel above the form, the **Effective Run Policy** list has one row per Phase, in the Workflow's node order, and each row shows the Phase's name. Verify that the rows read, in this order:
 
-   1. `bugfix-report`
-   2. `bugfix-patch`
-   3. `bugfix-verify-pre`
-   4. `bugfix-implement`
-   5. `bugfix-verify-post`
+   1. Spec-kit Bugfix Report (Phase `bugfix-report`)
+   2. Spec-kit Bugfix Patch (Phase `bugfix-patch`)
+   3. Spec-kit Bugfix Verify (pre) (Phase `bugfix-verify-pre`)
+   4. Spec-kit Implement (bugfix) (Phase `bugfix-implement`)
+   5. Spec-kit Bugfix Verify (post) (Phase `bugfix-verify-post`)
 
-6. Select **Run Pipeline**.
+6. Select **Run Workflow**.
 
-Success at this step means the form reports `Queued as <request-id>.`, where `<request-id>` is generated by the host. That message confirms admission to the queue, not completion of the five phases.
+Success at this step means the host created the connected run and enqueued its entry node onto the target queue. The form reports it as `Started connected run <run-id>.`.
 <!-- Source: webview-ui/src/components/RunsSurface.svelte -->
 <!-- Source: webview-ui/src/components/Runs/LaunchableDetail.svelte -->
-<!-- Source: webview-ui/src/components/RunLauncher/RunLauncher.svelte -->
+<!-- Source: webview-ui/src/components/Runs/WorkflowTriggerForm.svelte -->
 <!-- Source: webview-ui/src/components/RunLauncher/SupplementalInputs.svelte -->
 <!-- Source: webview-ui/src/lib/run-composition.ts -->
-<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
+<!-- Source: examples/speckit-bugfix.workflow.yaml -->
 
 ## 4. Follow the run
 
@@ -187,7 +187,7 @@ The repository's deterministic integration test, `tests/integration/bugfix-pipel
 
 - **The first Run is refused until you allow the backend:** with the shipped defaults (the `claude`
   backend and an empty `schegent.backend.uncontainedBackends` list), the first Run is refused when it
-  starts, after `Queued as …` has appeared. A modal reads "Schegent cannot start the '<id>' backend
+  starts, after `Started connected run …` has appeared. A modal reads "Schegent cannot start the '<id>' backend
   without your approval." (`<id>` is `claude` on the default backend). Its only approving button is
   **Enable '<id>' for This Installation**. Approving adds that one backend to
   `schegent.backend.uncontainedBackends` in your User settings, so it applies to every workspace on
@@ -197,7 +197,7 @@ The repository's deterministic integration test, `tests/integration/bugfix-pipel
 - **No import controls:** grant Workspace Trust. Pipeline and workflow mutations require it.
 - **Trigger is disabled:** use the VS Code window whose header says **Workspace Connected**.
 - **Validation feedback appears:** correct the named field and submit again. The extension host, rather than the webview, is authoritative for run-request validation.
-- **The queue or runner fails after admission:** open the task's run detail and **System Log**. `Queued as …` only proves the request entered a queue.
+- **The queue or runner fails after admission:** open the task's run detail and **System Log**. `Started connected run …` only proves the host created the run and enqueued its entry node.
 
 <!-- Source: webview-ui/src/components/PipelineBuilder.svelte -->
 <!-- Source: webview-ui/src/components/Runs/LaunchableDetail.svelte -->

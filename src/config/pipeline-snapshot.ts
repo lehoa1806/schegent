@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { PhaseBinding } from '../contracts/pipeline-definitions';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { DEFAULT_BACKEND } from '../contracts/backend-kinds';
-import type { PhaseDefinition } from '../contracts/process-definitions';
+import type { EvidencePolicyOrigin, PhaseDefinition } from '../contracts/process-definitions';
 import type { FrozenWorkflowClosure } from '../contracts/run-request';
 import type {
   WorkflowDefinition,
@@ -12,6 +12,18 @@ import type { WorkflowRunPipeline } from '../state/workflow-run';
 import type { PhaseDef, PipelineDef } from './pipeline-config';
 import { resolveHostVerification, writesGitMetadata } from './phase-runner-policy';
 import { resolveWorkflowClosure } from './workflow-closure-resolver';
+
+/**
+ * Where a frozen policy value came from. An origin the Phase already carries wins, so a re-freeze
+ * never reads the value an earlier freeze filled in as a declaration; otherwise the value itself
+ * says -- present means the author wrote it, absent means the freeze is about to supply it.
+ */
+function declarationOrigin(
+  carried: EvidencePolicyOrigin | undefined,
+  declared: unknown
+): EvidencePolicyOrigin {
+  return carried ?? (declared === undefined ? 'default' : 'phase-definition');
+}
 
 /**
  * Freeze one phase with its effective backend persisted for the run lifetime.
@@ -65,9 +77,10 @@ export function snapshotPhaseDef(
     // that today — all three pass catalog definitions — and the guard costs one
     // `??`, where the failure it prevents is a Phase that stops advancing for
     // reasons nobody authored.
-    evidencePolicyDeclaredAt:
-      phase.evidencePolicyDeclaredAt ??
-      (phase.evidencePolicy === undefined ? 'default' : 'phase-definition'),
+    evidencePolicyDeclaredAt: declarationOrigin(
+      phase.evidencePolicyDeclaredAt,
+      phase.evidencePolicy
+    ),
     // FR-R3-117 — the verdict basis, frozen with the rest of the plan rather than
     // recomputed at read time. A Run's frozen plan must not change meaning if the
     // resolution rule later changes; that is the same "never retargeted in flight"
@@ -82,9 +95,10 @@ export function snapshotPhaseDef(
     // own output as a declaration. Here the consequence is sharper: a defaulted
     // `'model-token'` misread as an opt-out leaves a load-bearing Phase judged on
     // its own account, which is the whole defect FR-R3-117 exists to close.
-    hostVerificationDeclaredAt:
-      phase.hostVerificationDeclaredAt ??
-      (phase.hostVerification === undefined ? 'default' : 'phase-definition'),
+    hostVerificationDeclaredAt: declarationOrigin(
+      phase.hostVerificationDeclaredAt,
+      phase.hostVerification
+    ),
     promptVersion: phase.promptVersion ?? 'custom-v1'
   });
 }
@@ -223,7 +237,20 @@ export function snapshotPhaseDefinition(
     runner: effectiveRunner,
     sideEffects: phase.sideEffects ?? 'workspace',
     evidencePolicy: phase.evidencePolicy ?? 'required',
-    hostVerification: resolveHostVerification(phase.hostVerification, phase.sideEffects, false)
+    // FR-R3-096 / FR-R3-117 — the value is filled in above, so the stored value can no longer
+    // say whether the author asked for it. A Workflow run freezes each Phase a second time when
+    // its node run is built (`synthesizePhasePipelineSnapshot` -> `snapshotPhaseDef`), and that
+    // freeze reads a value with no origin as a declaration: an omitted `evidencePolicy` would be
+    // held to `required` and a resolved `model-token` read as an opt-out nobody made.
+    evidencePolicyDeclaredAt: declarationOrigin(
+      phase.evidencePolicyDeclaredAt,
+      phase.evidencePolicy
+    ),
+    hostVerification: resolveHostVerification(phase.hostVerification, phase.sideEffects, false),
+    hostVerificationDeclaredAt: declarationOrigin(
+      phase.hostVerificationDeclaredAt,
+      phase.hostVerification
+    )
   });
 }
 

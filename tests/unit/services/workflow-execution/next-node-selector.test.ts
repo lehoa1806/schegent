@@ -187,4 +187,101 @@ describe('selectNextTransition — priority routing, return edges, sink completi
 
     expect(outcome.outcome).toBe('unhandled-node-failure');
   });
+
+  it('does not follow an unconditional edge out of a failed attempt, so a failed last node cannot return', () => {
+    const context = buildConditionContext([{ nodeId: 'fast-path', status: 'failed', outputs: [] }]);
+
+    const outcome = selectNextTransition({
+      graph,
+      nodeId: 'fast-path',
+      attemptIndex: 1,
+      decidedAt: 1_700_000_000_000,
+      context
+    });
+
+    expect(outcome.outcome).toBe('unhandled-node-failure');
+    expect(outcome.decision.eligible).toEqual([]);
+    expect(outcome.decision.connections).toEqual([{ index: 3, matched: false, isDefault: false }]);
+  });
+
+  it('does not apply an unconditional default edge for a canceled attempt', () => {
+    const context = buildConditionContext([{ nodeId: 'triage', status: 'canceled', outputs: [] }]);
+
+    const outcome = selectNextTransition({
+      graph,
+      nodeId: 'triage',
+      attemptIndex: 1,
+      decidedAt: 1_700_000_000_000,
+      attemptStatus: 'canceled',
+      context
+    });
+
+    expect(outcome.outcome).toBe('unhandled-node-failure');
+    expect(outcome.decision.defaultApplied).toBe(false);
+  });
+
+  describe('authored failure-recovery routes', () => {
+    const recoveryGraph: WorkflowDefinition = {
+      workflowId: 'wf-recovery',
+      name: 'Recovery Workflow',
+      version: 1,
+      nodes: [
+        { nodeId: 'build', kind: 'phase', phaseId: 'phase-build' },
+        { nodeId: 'notify', kind: 'phase', phaseId: 'phase-notify' },
+        { nodeId: 'recover', kind: 'phase', phaseId: 'phase-recover' }
+      ],
+      connections: [
+        { from: { nodeId: 'build' }, to: { kind: 'node', nodeId: 'notify' } },
+        {
+          from: { nodeId: 'build' },
+          to: { kind: 'node', nodeId: 'recover' },
+          isDefault: true,
+          condition: {
+            left: { source: 'node-status', nodeId: 'build' },
+            operator: 'equals',
+            right: 'failed'
+          }
+        }
+      ],
+      startNodeIds: ['build']
+    };
+
+    it('takes the recovery default instead of the unconditional success edge after a failure', () => {
+      const context = buildConditionContext([{ nodeId: 'build', status: 'failed', outputs: [] }]);
+
+      const outcome = selectNextTransition({
+        graph: recoveryGraph,
+        nodeId: 'build',
+        attemptIndex: 1,
+        decidedAt: 1_700_000_000_000,
+        context
+      });
+
+      expect(outcome.outcome).toBe('transition');
+      if (outcome.outcome !== 'transition') return;
+      expect(outcome.target).toEqual({ kind: 'node', nodeId: 'recover' });
+      expect(outcome.decision.defaultApplied).toBe(true);
+      expect(outcome.decision.connections).toEqual([
+        { index: 0, matched: false, isDefault: false },
+        { index: 1, matched: true, isDefault: true }
+      ]);
+    });
+
+    it('keeps taking the unconditional success edge after a completed attempt', () => {
+      const context = buildConditionContext([{ nodeId: 'build', status: 'completed', outputs: [] }]);
+
+      const outcome = selectNextTransition({
+        graph: recoveryGraph,
+        nodeId: 'build',
+        attemptIndex: 1,
+        decidedAt: 1_700_000_000_000,
+        context
+      });
+
+      expect(outcome.outcome).toBe('transition');
+      if (outcome.outcome !== 'transition') return;
+      expect(outcome.target).toEqual({ kind: 'node', nodeId: 'notify' });
+      expect(outcome.decision.defaultApplied).toBe(false);
+    });
+  });
 });

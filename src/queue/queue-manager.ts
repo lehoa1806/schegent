@@ -36,7 +36,7 @@ import {
   type WorkspaceStateStore
 } from '../state/workspace-state';
 import { OPERABLE_RUN_STATUSES, type RunPatch, type WorkflowRun } from '../state/workflow-run';
-import { resolveBoundQueueId } from '../state/connected-workflow-run';
+import { connectedRunOwnsQueueItem, resolveBoundQueueId, workflowAttemptEndedForQueueItem } from '../state/connected-workflow-run';
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { SanitizedLogger } from '../lib/logger';
 import {
@@ -1620,18 +1620,13 @@ export class QueueManager {
   /**
    * The connected run that enqueued `taskId` as a child, or `null`.
    *
-   * A child Run is recorded as a `ChildRunRef.queueItemId` on the node record
-   * of the attempt that started it, so membership is a scan of every
-   * aggregate's node attempts. Returns the identifier only — the caller refuses
-   * on presence and never on the aggregate's contents.
+   * A child Run is recorded as a `queueItemId` on the attempt that started it, so
+   * membership is a scan of every aggregate's attempts. Returns the identifier
+   * only — the caller refuses on presence and never on the aggregate's contents.
    */
   private connectedRunOwning(taskId: string): string | null {
     for (const run of Object.values(this.store.getConnectedRuns())) {
-      for (const node of Object.values(run.nodes)) {
-        if (node.attempts.some((attempt) => attempt.queueItemId === taskId)) {
-          return run.connectedRunId;
-        }
-      }
+      if (connectedRunOwnsQueueItem(run, taskId)) return run.connectedRunId;
     }
     return null;
   }
@@ -1681,6 +1676,10 @@ export class QueueManager {
   }
 
   public async retry(featureId: string): Promise<MutationResult> {
+    // Retried from the Workflow run, which is what would read the result.
+    if (Object.values(this.store.getConnectedRuns()).some((run) => workflowAttemptEndedForQueueItem(run, featureId))) {
+      return { ok: false, reason: 'workflow-attempt-ended' };
+    }
     // Check whether the task's run context is still the active workspace
     // run. If so, preserve runId and startedAt so the auto-drain
     // coordinator can resume the failed phase instead of restarting the

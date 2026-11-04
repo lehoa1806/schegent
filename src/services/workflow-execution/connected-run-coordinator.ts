@@ -40,6 +40,7 @@ import type {
 } from '../../state/connected-workflow-run';
 import {
   appendDecision,
+  attemptsForNode,
   clearInvocationControlMarkers,
   recordNodeAttempt,
   resolveBoundQueueId,
@@ -202,6 +203,8 @@ export interface PhaseAttemptDispatchInput {
   readonly node: WorkflowNode;
   readonly phase: PhaseDefinition;
   readonly boundInputs: Readonly<Record<string, ResolvedPortValue>>;
+  readonly inputEnvelope?: InvocationInputEnvelope;
+  readonly nodePath?: string;
   readonly attemptId: string;
   readonly attemptIndex: number;
   readonly queueId: string;
@@ -210,7 +213,7 @@ export interface PhaseAttemptDispatchInput {
 
 export type PhaseAttemptDispatchResult =
   | { readonly outcome: 'dispatched'; readonly queueItemId: string }
-  | { readonly outcome: 'rejected'; readonly reason: string };
+  | { readonly outcome: 'rejected'; readonly reason: string; readonly detail?: string };
 
 export interface ComposableWorkflowCoordinatorDeps {
   readonly connectedRuns: ConnectedRunWriter;
@@ -339,13 +342,15 @@ async function dispatchNodeInternal(
   const workflow: WorkflowDefinition | undefined = closure.workflowsById[frame.workflowId];
   const node = workflow?.nodes.find((candidate) => candidate.nodeId === nodeId);
   if (workflow === undefined || node === undefined) {
-    return {
-      outcome: 'workflow-failed',
+    return failFrameAndPropagate(
+      deps,
       run,
-      invocationId,
-      failureCode: 'invalid-entry-node',
-      detail: `Node '${nodeId}' not found in frozen workflow '${frame.workflowId}'.`
-    };
+      expectedRevision,
+      frame,
+      startedAt,
+      'invalid-entry-node',
+      `Node '${nodeId}' not found in frozen workflow '${frame.workflowId}'.`
+    );
   }
 
   const nodeKind = node.kind ?? (node.phaseId !== undefined ? 'phase' : 'workflow');
@@ -366,24 +371,19 @@ async function dispatchNodeInternal(
       : {})
   });
   if (!resolved.ok) {
-    const failedRun = upsertInvocationFrame(run, {
-      ...frame,
-      status: 'failed',
-      completedAt: startedAt,
-      failureCode: resolved.code,
-      failureMessage: resolved.message
-    });
-    return persistRunStep(deps.connectedRuns, failedRun, expectedRevision, (persisted) => ({
-      outcome: 'workflow-failed',
-      run: persisted,
-      invocationId,
-      failureCode: resolved.code,
-      detail: resolved.message
-    }));
+    return failFrameAndPropagate(
+      deps,
+      run,
+      expectedRevision,
+      frame,
+      startedAt,
+      resolved.code,
+      resolved.message
+    );
   }
 
   const boundInputs = resolved.resolvedByPort;
-  const existingAttempts = frame.attemptsByNodeId[nodeId] ?? [];
+  const existingAttempts = attemptsForNode(frame, nodeId);
   const nextAttemptIndex = existingAttempts.length + 1;
   const inputEnvelope: InvocationInputEnvelope =
     handoffEnvelope ??
@@ -402,13 +402,15 @@ async function dispatchNodeInternal(
     const phaseId = node.phaseId ?? '';
     const phase = closure.phasesById[phaseId];
     if (phase === undefined) {
-      return {
-        outcome: 'workflow-failed',
+      return failFrameAndPropagate(
+        deps,
         run,
-        invocationId,
-        failureCode: 'workflow-closure-invalid',
-        detail: `Phase '${phaseId}' missing from frozen closure.`
-      };
+        expectedRevision,
+        frame,
+        startedAt,
+        'workflow-closure-invalid',
+        `Phase '${phaseId}' missing from frozen closure.`
+      );
     }
 
     const previewAttempt = createNodeAttemptRecord({
@@ -426,24 +428,23 @@ async function dispatchNodeInternal(
       node,
       phase,
       boundInputs,
+      inputEnvelope,
+      nodePath: previewAttempt.nodePath,
       attemptId: previewAttempt.attemptId,
       attemptIndex: previewAttempt.attemptIndex,
       queueId: resolveBoundQueueId(run),
       startedAt
     });
     if (dispatched.outcome === 'rejected') {
-      const failedRun = upsertInvocationFrame(run, {
-        ...frame,
-        status: 'failed',
-        completedAt: startedAt,
-        failureCode: dispatched.reason
-      });
-      return persistRunStep(deps.connectedRuns, failedRun, expectedRevision, (persisted) => ({
-        outcome: 'workflow-failed',
-        run: persisted,
-        invocationId,
-        failureCode: dispatched.reason
-      }));
+      return failFrameAndPropagate(
+        deps,
+        run,
+        expectedRevision,
+        frame,
+        startedAt,
+        dispatched.reason,
+        dispatched.detail
+      );
     }
 
     const attempt = createNodeAttemptRecord({
@@ -473,13 +474,15 @@ async function dispatchNodeInternal(
   const childWorkflow = closure.workflowsById[childWorkflowId];
   const childEntryNodeId = childWorkflow?.startNodeIds[0];
   if (childWorkflow === undefined || childEntryNodeId === undefined) {
-    return {
-      outcome: 'workflow-failed',
+    return failFrameAndPropagate(
+      deps,
       run,
-      invocationId,
-      failureCode: 'invalid-entry-node',
-      detail: `Child workflow '${childWorkflowId}' has no valid entry node.`
-    };
+      expectedRevision,
+      frame,
+      startedAt,
+      'invalid-entry-node',
+      `Child workflow '${childWorkflowId}' has no valid entry node.`
+    );
   }
 
   const parentAttemptId = `${invocationId}:${nodeId}:attempt-${nextAttemptIndex}`;
@@ -582,7 +585,7 @@ async function settleAttemptInternal(
     };
   }
 
-  const nodeAttempts = frame.attemptsByNodeId[nodeId] ?? [];
+  const nodeAttempts = attemptsForNode(frame, nodeId);
   const existingAttempt =
     attemptIndex === undefined
       ? nodeAttempts[nodeAttempts.length - 1]
@@ -683,8 +686,7 @@ async function settleAttemptInternal(
       completedFrame.parentCallNodeId !== null
     ) {
       const parentFrame = nextRun.invocations?.[completedFrame.parentInvocationId];
-      const parentNodeAttempts =
-        parentFrame?.attemptsByNodeId[completedFrame.parentCallNodeId] ?? [];
+      const parentNodeAttempts = attemptsForNode(parentFrame, completedFrame.parentCallNodeId);
       const parentAttempt = parentNodeAttempts.find(
         (a) => a.childInvocationId === completedFrame.invocationId
       );
@@ -786,8 +788,7 @@ async function failFrameAndPropagate(
 
   if (failedFrame.parentInvocationId !== null && failedFrame.parentCallNodeId !== null) {
     const parentFrame = nextRun.invocations?.[failedFrame.parentInvocationId];
-    const parentNodeAttempts =
-      parentFrame?.attemptsByNodeId[failedFrame.parentCallNodeId] ?? [];
+    const parentNodeAttempts = attemptsForNode(parentFrame, failedFrame.parentCallNodeId);
     const parentAttempt = parentNodeAttempts.find(
       (a) => a.childInvocationId === failedFrame.invocationId
     );
@@ -839,8 +840,7 @@ async function cancelFrameAndPropagate(
 
   if (canceledFrame.parentInvocationId !== null && canceledFrame.parentCallNodeId !== null) {
     const parentFrame = nextRun.invocations?.[canceledFrame.parentInvocationId];
-    const parentNodeAttempts =
-      parentFrame?.attemptsByNodeId[canceledFrame.parentCallNodeId] ?? [];
+    const parentNodeAttempts = attemptsForNode(parentFrame, canceledFrame.parentCallNodeId);
     const parentAttempt = parentNodeAttempts.find(
       (a) => a.childInvocationId === canceledFrame.invocationId
     );

@@ -27,4 +27,8 @@ export interface DashboardNavigation {
    * Changes no host state and posts nothing.
    */
   readonly openBackendSettings: () => void;
+  /**
+   * Open the Runs route with the named active Workflow preselected for launch (FR-R5-F05).
+   */
+  readonly openWorkflowLaunch?: (workflowId: string) => void;
 }

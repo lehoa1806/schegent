@@ -256,5 +256,139 @@ describe('binding-resolver — explicit data bindings & collection selection (FR
       expect(resolvedResult.resolvedByPort['optionalNotes']).toBeUndefined();
     }
   });
+
+  // `constructor` satisfies the port and node id grammar (`^[a-z][a-z0-9-]{0,63}$`) and is a
+  // member of `Object.prototype`. A plain index read of a record answers for it whether or not
+  // the record owns it, so an absent value came back as the `Object` function: "resolved", with
+  // no `.value`, and a `.trim()` on it threw instead of the refusal the author is owed.
+  describe('ids that are Object.prototype members are absent unless the record owns them', () => {
+    const PROTOTYPE_ID = 'constructor';
+
+    function freshFrame(): ReturnType<typeof createInvocationFrame> {
+      return createInvocationFrame({
+        invocationId: 'inv-root',
+        rootRunId: 'run-1',
+        parentInvocationId: null,
+        parentCallNodeId: null,
+        parentAttemptId: null,
+        workflowId: 'wf-data',
+        depth: 0,
+        nodePath: '/gather',
+        entryNodeId: 'gather',
+        boundInputs: {},
+        startedAt: 1_700_000_000_000
+      });
+    }
+
+    it('refuses a required workflow-input binding whose port was never supplied', () => {
+      const result = resolveNodeInputBindings({
+        workflow: {
+          ...workflow,
+          bindings: [
+            {
+              kind: 'input',
+              nodeId: 'gather',
+              inputKey: 'query',
+              source: { from: 'workflow-input', portId: PROTOTYPE_ID }
+            }
+          ]
+        },
+        frame: freshFrame(),
+        targetNodeId: 'gather'
+      });
+
+      expect(result).toMatchObject({ ok: false, code: 'missing-required-input' });
+    });
+
+    it('refuses a required node-output binding when the completed upstream attempt declared no such output', () => {
+      const frame = recordNodeAttempt(
+        freshFrame(),
+        makeAttempt({ nodeId: 'gather', status: 'completed', declaredOutputs: {} })
+      );
+
+      const result = resolveNodeInputBindings({
+        workflow: {
+          ...workflow,
+          bindings: [
+            {
+              kind: 'input',
+              nodeId: 'summarize',
+              inputKey: 'primaryDoc',
+              source: { from: 'node-output', nodeId: 'gather', portId: PROTOTYPE_ID }
+            }
+          ]
+        },
+        frame,
+        targetNodeId: 'summarize'
+      });
+
+      expect(result).toMatchObject({ ok: false, code: 'missing-required-input' });
+    });
+
+    it('lets an override that does not carry the input key leave the binding unsatisfied', () => {
+      const result = resolveNodeInputBindings({
+        workflow: {
+          ...workflow,
+          bindings: [
+            {
+              kind: 'input',
+              nodeId: 'gather',
+              inputKey: PROTOTYPE_ID,
+              source: { from: 'workflow-input', portId: 'topic' }
+            }
+          ]
+        },
+        frame: freshFrame(),
+        targetNodeId: 'gather',
+        overrideInputsByPort: {}
+      });
+
+      expect(result).toMatchObject({ ok: false, code: 'missing-required-input' });
+    });
+
+    it('refuses a required target port that nothing bound', () => {
+      const result = resolveNodeInputBindings({
+        workflow: { ...workflow, bindings: [] },
+        frame: freshFrame(),
+        targetNodeId: 'gather',
+        targetInputPorts: [{ portId: PROTOTYPE_ID, required: true }]
+      });
+
+      expect(result).toMatchObject({ ok: false, code: 'missing-required-input' });
+    });
+
+    it('refuses a required public output that no completed node produced', () => {
+      const result = resolveWorkflowPublicOutputs({
+        workflow: {
+          ...workflow,
+          outputs: [{ portId: PROTOTYPE_ID, label: 'Prototype', type: 'markdown', required: true }],
+          bindings: []
+        },
+        frame: freshFrame()
+      });
+
+      expect(result).toMatchObject({ ok: false, code: 'missing-required-output' });
+    });
+
+    it('refuses a public output whose bound source key the completed attempt never declared', () => {
+      const frame = recordNodeAttempt(
+        freshFrame(),
+        makeAttempt({ nodeId: 'summarize', status: 'completed', declaredOutputs: {} })
+      );
+
+      const result = resolveWorkflowPublicOutputs({
+        workflow: {
+          ...workflow,
+          outputs: [{ portId: 'finalReport', label: 'Final Report', type: 'markdown', required: true }],
+          bindings: [
+            { kind: 'output', nodeId: 'summarize', portId: 'finalReport', outputKey: PROTOTYPE_ID }
+          ]
+        },
+        frame
+      });
+
+      expect(result).toMatchObject({ ok: false, code: 'missing-required-output' });
+    });
+  });
 });
 

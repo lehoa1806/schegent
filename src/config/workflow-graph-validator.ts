@@ -711,6 +711,21 @@ function validateInputBinding(
     if (targetType !== undefined) {
       validatePortPair(context, field, binding.selection, sourcePort.type, targetType);
     }
+  } else if (sourceNode.target?.kind === 'phase' && targetType !== undefined) {
+    const matchingOutputBinding = (context.definition.bindings ?? []).find(
+      (b): b is WorkflowOutputBinding =>
+        b.kind === 'output' &&
+        b.nodeId === sourceNode.node.nodeId &&
+        (b.sourcePortId ?? b.outputKey ?? b.portId) === binding.source.portId
+    );
+    const phaseOutType =
+      matchingOutputBinding?.type ??
+      (matchingOutputBinding
+        ? (context.definition.outputs ?? []).find((p) => p.portId === matchingOutputBinding.portId)?.type
+        : undefined);
+    if (phaseOutType !== undefined) {
+      validatePortPair(context, field, binding.selection, phaseOutType, targetType);
+    }
   }
 }
 
@@ -774,25 +789,29 @@ function validateRequiredOutputsOnBranches(context: GraphContext): void {
     }
   }
 
-  const paths: ReadonlySet<string>[] = [];
-  function walk(nodeId: string, visited: Set<string>): void {
-    const nextVisited = new Set(visited);
-    nextVisited.add(nodeId);
-    const nextNodes = outgoingByNode.get(nodeId) ?? [];
-    if (returnSources.has(nodeId) || nextNodes.length === 0) {
-      paths.push(nextVisited);
-    }
-    for (const nextId of nextNodes) {
-      if (!nextVisited.has(nextId)) {
-        walk(nextId, nextVisited);
+  /**
+   * Whether a return branch (a node with a Return connection, or one with no onward connection)
+   * can be reached from an allowed start without passing through a node in `blocked`. An output
+   * is produced on every return branch exactly when its producers block every such route, so one
+   * walk per output decides it. Listing the routes instead doubles their number with every
+   * diamond in the graph. The caller has already established that the graph is acyclic; `seen`
+   * keeps the walk linear in nodes and connections.
+   */
+  function reachesReturnBranchAvoiding(blocked: ReadonlySet<string>): boolean {
+    const seen = new Set<string>();
+    const pending = starts.filter((startId) => !blocked.has(startId));
+    while (pending.length > 0) {
+      const nodeId = pending.pop();
+      if (nodeId === undefined || seen.has(nodeId)) continue;
+      seen.add(nodeId);
+      const nextNodes = outgoingByNode.get(nodeId) ?? [];
+      if (returnSources.has(nodeId) || nextNodes.length === 0) return true;
+      for (const nextId of nextNodes) {
+        if (!blocked.has(nextId) && !seen.has(nextId)) pending.push(nextId);
       }
     }
+    return false;
   }
-  for (const startId of starts) {
-    walk(startId, new Set());
-  }
-
-  if (paths.length === 0) return;
 
   const producersByOutput = new Map<string, Set<string>>();
   for (const binding of definition.bindings ?? []) {
@@ -806,9 +825,7 @@ function validateRequiredOutputsOnBranches(context: GraphContext): void {
     if (output.required === false) return;
     const producers = producersByOutput.get(output.portId);
     const coveredOnEveryBranch =
-      producers !== undefined &&
-      producers.size > 0 &&
-      paths.every((path) => [...producers].some((producerId) => path.has(producerId)));
+      producers !== undefined && producers.size > 0 && !reachesReturnBranchAvoiding(producers);
     if (!coveredOnEveryBranch) {
       context.errors.push(
         error(

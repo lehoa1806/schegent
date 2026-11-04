@@ -4,12 +4,15 @@ import {
   mergeRuntimePolicy,
   validateCatalog,
   type PipelineCatalog,
+  type PipelineDef,
   type ValidationError,
   type ValidationWarning
 } from './pipeline-config';
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend-kinds';
 import { resolvePhaseCatalog, type ResolvedPhaseCatalog } from './process-catalog';
 import { resolvePipelineCatalog, type ResolvedPipelineCatalog } from './pipeline-catalog';
+import { resolveWorkflowCatalog } from './workflow-catalog';
+import type { WorkflowDefinition } from '../contracts/workflow-definitions';
 import { storedDraftOnlyRows, storedRows } from '../catalog';
 import type { CatalogSnapshot } from '../contracts/catalog-store';
 
@@ -51,6 +54,28 @@ const PIPELINE_LIMIT_WARNING_CODES: ReadonlySet<string> = new Set([
   'pipeline-soft-cap',
   'pipeline-phase-soft-cap'
 ]);
+
+function flattenWorkflowPhaseIds(
+  workflow: WorkflowDefinition,
+  workflowsById: ReadonlyMap<string, WorkflowDefinition>,
+  visited: ReadonlySet<string> = new Set()
+): readonly string[] {
+  if (visited.has(workflow.workflowId)) return [];
+  const nextVisited = new Set(visited);
+  nextVisited.add(workflow.workflowId);
+  const phaseIds: string[] = [];
+  for (const node of workflow.nodes) {
+    if (node.phaseId !== undefined) {
+      phaseIds.push(node.phaseId);
+    } else if (node.workflowId !== undefined) {
+      const child = workflowsById.get(node.workflowId);
+      if (child !== undefined) {
+        phaseIds.push(...flattenWorkflowPhaseIds(child, workflowsById, nextVisited));
+      }
+    }
+  }
+  return Object.freeze(phaseIds);
+}
 
 /**
  * Projects the Pipeline resolution onto the legacy warning channel: catalog-level
@@ -154,6 +179,17 @@ export function loadCatalog(
     revision: snapshot.revisions.pipeline,
     phaseCatalog: phaseCatalog.effective
   });
+  const workflowRows = storedRows(snapshot, 'workflow');
+  const workflowCatalog =
+    workflowRows.length > 0
+      ? resolveWorkflowCatalog({
+          rows: workflowRows,
+          draftOnlyRows: storedDraftOnlyRows(snapshot, 'workflow'),
+          revision: snapshot.revisions.workflow,
+          phaseCatalog,
+          pipelineCatalog
+        })
+      : null;
 
   const phaseWarnings: ValidationWarning[] = phaseCatalog.warnings.map((warning) => ({
     source: warning.code === 'phase-soft-cap' ? 'limit' : 'phase',
@@ -184,9 +220,55 @@ export function loadCatalog(
     }
   );
 
+  const effectivePipelineDefs: PipelineDef[] = [...pipelineCatalog.effectivePipelineDefs];
+  if (workflowCatalog !== null && workflowCatalog.effective.length > 0) {
+    const existingIds = new Set(effectivePipelineDefs.map((p) => p.id));
+    const workflowsById = new Map<string, WorkflowDefinition>(
+      workflowCatalog.effective.map((w) => [w.workflowId, w])
+    );
+    for (const wf of workflowCatalog.effective) {
+      if (existingIds.has(wf.workflowId)) continue;
+      const phases = flattenWorkflowPhaseIds(wf, workflowsById);
+      if (phases.length === 0) continue;
+      effectivePipelineDefs.push(
+        Object.freeze({
+          id: wf.workflowId,
+          name: wf.name,
+          phases,
+          ...(wf.description !== undefined ? { description: wf.description } : {}),
+          version: wf.version,
+          ...(wf.inputs !== undefined ? { inputs: wf.inputs } : {}),
+          ...(wf.outputs !== undefined
+            ? {
+                outputs: Object.freeze(
+                  wf.outputs.map((out) =>
+                    Object.freeze({
+                      portId: out.portId,
+                      label: out.label,
+                      type: out.type,
+                      ...(out.description !== undefined
+                        ? { description: out.description }
+                        : {})
+                    })
+                  )
+                )
+              }
+            : {}),
+          ...(wf.executionDefaults !== undefined
+            ? { executionDefaults: wf.executionDefaults }
+            : {}),
+          ...(wf.recommendedNext !== undefined
+            ? { recommendedNext: wf.recommendedNext }
+            : {})
+        })
+      );
+      existingIds.add(wf.workflowId);
+    }
+  }
+
   const merged = buildCatalog(
     phaseCatalog.effectivePhaseDefs,
-    pipelineCatalog.effectivePipelineDefs,
+    effectivePipelineDefs,
     policy.models,
     policy.defaultPipelineId
   );

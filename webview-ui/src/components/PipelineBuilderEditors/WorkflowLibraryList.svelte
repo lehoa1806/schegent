@@ -74,7 +74,9 @@
               <span>{port.label || port.portId}</span>
             {/each}
           {:else if (row.inputs ?? []).length > 0}
-            {#each row.inputs ?? [] as port (port.portId)}
+            <!-- Keyed by position: a draft's port-id field accepts any text, so two declared
+                 ports can share an id while it is being edited. -->
+            {#each row.inputs ?? [] as port, index (index)}
               <span>{port.label || port.portId}</span>
             {/each}
           {:else}
@@ -88,7 +90,7 @@
               <span>{port.label || port.portId}</span>
             {/each}
           {:else if (row.outputs ?? []).length > 0}
-            {#each row.outputs ?? [] as port (port.portId)}
+            {#each row.outputs ?? [] as port, index (index)}
               <span>{port.label || port.portId}</span>
             {/each}
           {:else}

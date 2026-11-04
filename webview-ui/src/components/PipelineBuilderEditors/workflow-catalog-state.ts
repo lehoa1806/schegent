@@ -189,6 +189,23 @@ export function toSaveWorkflowRow(workflow: MutableWorkflow): SaveWorkflowRow {
   };
 }
 
+/** Drafts created in this webview so far; only ever incremented, never reset. */
+let draftSequence = 0;
+
+/**
+ * A source key for a draft, distinct from every other draft's and every stored record's.
+ *
+ * The editor files a draft, its edits and its undo history under `sourceKey`, and the id is the
+ * one thing the operator can still change: rename the first draft and the id it was born with is
+ * free again, so a key derived from that id would be handed out twice. The sequence number
+ * identifies the draft instead. Stored records are keyed `<workflowId>::<index>`, so a key that
+ * does not end in `::<number>` cannot equal one.
+ */
+function nextDraftSourceKey(workflowId: string): string {
+  draftSequence += 1;
+  return `${workflowId}::draft-${draftSequence}`;
+}
+
 /** A blank draft, with an id no row in the catalog already uses. */
 export function makeNewWorkflowDraft(
   takenIds: readonly string[]
@@ -201,7 +218,7 @@ export function makeNewWorkflowDraft(
     nodes: [],
     connections: [],
     startNodeIds: [],
-    sourceKey: `${workflowId}::draft`,
+    sourceKey: nextDraftSourceKey(workflowId),
     sourceStatus: 'effective',
     sourceErrors: [],
     persisted: false,
@@ -228,7 +245,7 @@ export function makeDuplicateWorkflowDraft(
     startNodeIds: [...source.startNodeIds],
     ...(source.executionDefaults ? { executionDefaults: { ...source.executionDefaults } } : {}),
     ...(source.recommendedNext ? { recommendedNext: [...source.recommendedNext] } : {}),
-    sourceKey: `${workflowId}::draft`,
+    sourceKey: nextDraftSourceKey(workflowId),
     sourceStatus: 'effective',
     sourceErrors: [],
     persisted: false,
@@ -869,7 +886,17 @@ export function validateWorkflowDraft(
       });
     }
     seen.add(node.nodeId);
+    if (node.label !== undefined && node.label.length > WORKFLOW_LABEL_MAX_LEN) {
+      errors.push({
+        field: `nodes[${index}].label`,
+        code: 'too-long',
+        message: `Label must be ${WORKFLOW_LABEL_MAX_LEN} characters or fewer.`
+      });
+    }
   });
+
+  errors.push(...portLabelErrors('inputs', workflow.inputs ?? []));
+  errors.push(...portLabelErrors('outputs', workflow.outputs ?? []));
 
   if (workflow.startNodeIds.length === 0 && workflow.nodes.length > 0) {
     errors.push({
@@ -879,6 +906,35 @@ export function validateWorkflowDraft(
     });
   }
 
+  return errors;
+}
+
+/**
+ * A declared public port needs a label of 1 to `WORKFLOW_LABEL_MAX_LEN` characters once trimmed;
+ * the host enforces the same bound at Publish. The input has no length limit of its own, so a
+ * label cleared or over-typed here would otherwise save as a draft that cannot be published.
+ */
+function portLabelErrors(
+  side: 'inputs' | 'outputs',
+  ports: readonly { readonly label: string }[]
+): readonly WorkflowDraftError[] {
+  const errors: WorkflowDraftError[] = [];
+  ports.forEach((port, index) => {
+    const length = port.label.trim().length;
+    if (length === 0) {
+      errors.push({
+        field: `${side}[${index}].label`,
+        code: 'required',
+        message: 'Port label is required.'
+      });
+    } else if (length > WORKFLOW_LABEL_MAX_LEN) {
+      errors.push({
+        field: `${side}[${index}].label`,
+        code: 'too-long',
+        message: `Port label must be ${WORKFLOW_LABEL_MAX_LEN} characters or fewer.`
+      });
+    }
+  });
   return errors;
 }
 
@@ -939,6 +995,13 @@ export function formatWorkflowSaveRejection(
   return lines.length > 0 ? lines.join('\n') : reason;
 }
 
+/**
+ * A node label is optional, but one that is present must have content: the host refuses an
+ * authored label whose trimmed text is empty. The Label input patches on every keystroke, so
+ * clearing it arrives here as `''`; dropping the field returns the node to "no label authored"
+ * (the placeholder shows its id) instead of storing a value that cannot publish. The text is kept
+ * as typed otherwise, so the space between two words survives while the operator is still typing.
+ */
 function copyNode(node: WorkflowNode): WorkflowNode {
   return {
     nodeId: node.nodeId,
@@ -946,7 +1009,7 @@ function copyNode(node: WorkflowNode): WorkflowNode {
     ...(node.phaseId !== undefined ? { phaseId: node.phaseId } : {}),
     ...(node.workflowId !== undefined ? { workflowId: node.workflowId } : {}),
     ...(node.pipelineId !== undefined ? { pipelineId: node.pipelineId } : {}),
-    ...(node.label !== undefined ? { label: node.label } : {})
+    ...(node.label !== undefined && node.label.trim().length > 0 ? { label: node.label } : {})
   };
 }
 

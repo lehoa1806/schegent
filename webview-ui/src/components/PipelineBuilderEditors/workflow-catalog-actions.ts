@@ -112,7 +112,10 @@ export function pushWorkflowHistory(
   baseline: MutableWorkflow,
   next: MutableWorkflow
 ): Record<string, WorkflowHistoryTrack> {
-  const existing = historyByKey[sourceKey] ?? { snapshots: [baseline], index: 0 };
+  const existing =
+    sourceKey in historyByKey
+      ? historyByKey[sourceKey]
+      : { snapshots: [baseline], index: 0 };
   const head = existing.snapshots.slice(0, existing.index + 1);
   return {
     ...historyByKey,
@@ -131,12 +134,11 @@ export function stepWorkflowHistory(
   readonly nextHistory: Record<string, WorkflowHistoryTrack>;
   readonly workflow: MutableWorkflow;
 } | null {
+  if (!(sourceKey in historyByKey)) return null;
   const existing = historyByKey[sourceKey];
-  if (!existing) return null;
   const targetIndex = existing.index + delta;
   if (targetIndex < 0 || targetIndex >= existing.snapshots.length) return null;
   const workflow = existing.snapshots[targetIndex];
-  if (!workflow) return null;
   return {
     nextHistory: {
       ...historyByKey,
@@ -221,8 +223,8 @@ export function makeWorkflowGraphActions(
   workflows: () => readonly PortableWorkflowDefinition[] = () => []
 ): WorkflowGraphActions {
   function defaultTarget(): WorkflowNodeTarget | undefined {
-    const firstPhase = phases()[0];
-    if (firstPhase) return { kind: 'phase', phaseId: firstPhase.phaseId };
+    const allPhases = phases();
+    if (allPhases.length > 0) return { kind: 'phase', phaseId: allPhases[0].phaseId };
     const firstPipeline = pipelines()[0];
     if (firstPipeline) return firstPipeline.pipelineId;
     return undefined;

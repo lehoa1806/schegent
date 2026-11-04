@@ -10,7 +10,7 @@ Use this path when you want enqueueing and execution to be separate decisions.
 
 1. Open the dashboard, select **Queues**, then open the target queue card.
 2. Select **Add work**.
-3. Choose a published Pipeline, enter a description of at most 4,096 characters, and select **Add task**.
+3. Choose a published Workflow or process, enter a description of at most 4,096 characters, and select **Add task**.
 4. Wait for `Enqueued to <queue-name>`.
 5. If the queue was empty, use the inline **Start the queue** chooser. Choose one of:
 

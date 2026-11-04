@@ -261,6 +261,7 @@
       run={connectedRun}
       queueItems={tasks}
       pipelines={snapshot.availablePipelines ?? []}
+      {isPrimary}
     />
   {:else if task !== null}
     <!-- Header block: title + meta line + action buttons -->

@@ -25,9 +25,10 @@ import type {
   WorkflowOutputBinding,
   WorkflowSelectionRule
 } from '../../contracts/workflow-definitions';
-import type {
-  NodeAttemptRecord,
-  WorkflowInvocationFrame
+import {
+  attemptsForNode,
+  type NodeAttemptRecord,
+  type WorkflowInvocationFrame
 } from '../../state/connected-workflow-run';
 
 export type BindingFailureCode =
@@ -67,6 +68,18 @@ export interface ResolveWorkflowPublicOutputsInput {
 }
 
 /**
+ * Read `key` from a record keyed by an author-chosen port id, counting only the
+ * record's own properties. Port ids share the `[a-z][a-z0-9-]*` grammar with
+ * `Object.prototype` member names, so a plain `record[key]` for a port called
+ * `constructor` returns the inherited `Object` function: a port nothing supplied
+ * would read as satisfied, or throw on the `.value.trim()` that follows.
+ */
+function ownValue<T>(record: Readonly<Record<string, T>> | undefined, key: string): T | undefined {
+  if (record === undefined || !Object.hasOwn(record, key)) return undefined;
+  return record[key];
+}
+
+/**
  * Return the most recent completed attempt for `nodeId` inside `frame`, or
  * `undefined` if `nodeId` has never completed in this invocation frame.
  *
@@ -77,10 +90,7 @@ export function latestCompletedAttemptForNode(
   frame: WorkflowInvocationFrame,
   nodeId: string
 ): NodeAttemptRecord | undefined {
-  const attempts = frame.attemptsByNodeId[nodeId];
-  if (!attempts || attempts.length === 0) {
-    return undefined;
-  }
+  const attempts = attemptsForNode(frame, nodeId);
   for (let index = attempts.length - 1; index >= 0; index -= 1) {
     const candidate = attempts[index];
     if (candidate !== undefined && candidate.status === 'completed') {
@@ -195,14 +205,14 @@ export function resolveNodeInputBindings(
 
     let rawSourceValue: ResolvedPortValue | undefined;
     if (binding.source.from === 'workflow-input') {
-      rawSourceValue = input.frame.boundInputs[binding.source.portId];
+      rawSourceValue = ownValue(input.frame.boundInputs, binding.source.portId);
     } else {
       const completedAttempt = latestCompletedAttemptForNode(input.frame, binding.source.nodeId);
-      rawSourceValue = completedAttempt?.declaredOutputs[binding.source.portId];
+      rawSourceValue = ownValue(completedAttempt?.declaredOutputs, binding.source.portId);
     }
 
     if (rawSourceValue === undefined) {
-      if (isRequired && input.overrideInputsByPort?.[binding.inputKey] === undefined) {
+      if (isRequired && ownValue(input.overrideInputsByPort, binding.inputKey) === undefined) {
         return {
           ok: false,
           code: 'missing-required-input',
@@ -250,7 +260,7 @@ export function resolveNodeInputBindings(
 
   for (const portSpec of input.targetInputPorts ?? []) {
     if (portSpec.required !== true) continue;
-    const bound = resolved[portSpec.portId];
+    const bound = ownValue(resolved, portSpec.portId);
     if (bound === undefined || bound.value.trim().length === 0) {
       return {
         ok: false,
@@ -289,7 +299,7 @@ export function resolveWorkflowPublicOutputs(
       continue;
     }
     const sourceKey = binding.sourcePortId ?? binding.outputKey ?? binding.portId;
-    const rawValue = completedAttempt.declaredOutputs[sourceKey];
+    const rawValue = ownValue(completedAttempt.declaredOutputs, sourceKey);
     if (rawValue === undefined) {
       continue;
     }
@@ -321,7 +331,7 @@ export function resolveWorkflowPublicOutputs(
   for (const outputPort of input.workflow.outputs ?? []) {
     const isRequired = outputPort.required !== false;
     if (!isRequired) continue;
-    const value = resolved[outputPort.portId];
+    const value = ownValue(resolved, outputPort.portId);
     if (value === undefined || value.value.trim().length === 0) {
       return {
         ok: false,

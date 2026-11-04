@@ -290,6 +290,20 @@ export interface WorkflowInvocationFrame {
   readonly completedAt?: number;
 }
 
+/**
+ * What the operator attached when launching, for the whole run: instructions, supplemental
+ * material and the targets of the root Workflow's public outputs, as validated at launch.
+ *
+ * A reference to frozen input, like `inputEnvelopes`, not lifecycle, so it does not breach the
+ * organizing rule above. Every Phase attempt is built from it, including one started long
+ * after the launcher returned, by a Retry or by startup recovery.
+ */
+export interface ConnectedRunLaunchContext {
+  readonly supplemental: readonly FrozenSupplementalInput[];
+  readonly outputs: readonly FrozenOutputRequest[];
+  readonly instructions?: string;
+}
+
 export interface ConnectedWorkflowRun {
   readonly connectedRunId: string;
   readonly workflowId: string;
@@ -319,6 +333,11 @@ export interface ConnectedWorkflowRun {
   readonly queueId?: string;
   /** FR-R5-F02 — frozen transitive Workflow and Phase closure for nested execution. */
   readonly frozenClosure?: FrozenWorkflowClosure;
+  /**
+   * Absent when the launch attached nothing, and on a record written before this field: a
+   * Phase attempt of such a run is built with no launch material, which is what it had.
+   */
+  readonly launchContext?: ConnectedRunLaunchContext;
   /** FR-R5-F02 — root and child invocation frames keyed by `invocationId`. */
   readonly invocations?: Readonly<Record<string, WorkflowInvocationFrame>>;
   /** FR-R5-F02 — immutable input envelopes persisted before node dispatch. */
@@ -346,6 +365,7 @@ const AGGREGATE_KEYS: readonly string[] = [
   'graph',
   'inputEnvelopes',
   'invocations',
+  'launchContext',
   'nodes',
   'pendingHandoff',
   'pipelines',
@@ -544,6 +564,9 @@ export function assertConnectedRunInvariants(
   if (run.inputEnvelopes !== undefined && !Object.isFrozen(run.inputEnvelopes)) {
     fail('the inputEnvelopes list must be frozen');
   }
+  if (run.launchContext !== undefined && !Object.isFrozen(run.launchContext)) {
+    fail('the launchContext must be frozen');
+  }
   if (run.commandReceipts !== undefined) {
     if (!Object.isFrozen(run.commandReceipts)) {
       fail('the commandReceipts list must be frozen');
@@ -611,6 +634,7 @@ export interface CreateConnectedRunInput {
    */
   readonly queueId?: string;
   readonly frozenClosure?: FrozenWorkflowClosure;
+  readonly launchContext?: ConnectedRunLaunchContext;
   readonly invocations?: Readonly<Record<string, WorkflowInvocationFrame>>;
   readonly inputEnvelopes?: readonly InvocationInputEnvelope[];
   readonly commandReceipts?: readonly CommittedCommandReceipt[];
@@ -631,6 +655,9 @@ export function createConnectedRun(input: CreateConnectedRunInput): ConnectedWor
     ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
     ...(input.frozenClosure !== undefined
       ? { frozenClosure: deepFreeze(deepCopy(input.frozenClosure)) }
+      : {}),
+    ...(input.launchContext !== undefined
+      ? { launchContext: deepFreeze(deepCopy(input.launchContext)) }
       : {}),
     ...(input.invocations !== undefined
       ? { invocations: deepFreeze(deepCopy(input.invocations)) }
@@ -739,11 +766,69 @@ export function createInvocationFrame(input: CreateInvocationFrameInput): Workfl
   );
 }
 
+/**
+ * The attempts recorded for one node of an invocation frame, oldest first; empty for a node
+ * that has not been entered, or for no frame at all.
+ *
+ * An own-property read, not `frame.attemptsByNodeId[nodeId] ?? []`. The record is keyed by an
+ * author-chosen node id, and the id grammar admits `constructor`, which a plain index read finds
+ * on `Object.prototype` for every node that has not run. `?? []` never fires on a function, so
+ * the node's first attempt was numbered 2 and recording it threw once its Phase was enqueued.
+ */
+export function attemptsForNode(
+  frame: WorkflowInvocationFrame | undefined,
+  nodeId: string
+): readonly NodeAttemptRecord[] {
+  if (frame === undefined || !Object.hasOwn(frame.attemptsByNodeId, nodeId)) return [];
+  return frame.attemptsByNodeId[nodeId] ?? [];
+}
+
+/**
+ * Whether an attempt of this run started the queue row: on a legacy node record or on any
+ * invocation frame, since a composable run records its attempts on its frames alone.
+ */
+export function connectedRunOwnsQueueItem(run: ConnectedWorkflowRun, queueItemId: string): boolean {
+  const started = (attempts: readonly { readonly queueItemId?: string | null }[]): boolean =>
+    attempts.some((attempt) => attempt.queueItemId === queueItemId);
+  if (Object.values(run.nodes).some((node) => started(node.attempts))) return true;
+  return Object.values(run.invocations ?? {}).some((frame) =>
+    Object.values(frame.attemptsByNodeId).some(started)
+  );
+}
+
+/**
+ * Whether a Workflow attempt started this queue row and has since ended. Nothing awaits such a row:
+ * starting it again would repeat the Phase's effects for a result no attempt would record.
+ */
+export function workflowAttemptEndedForQueueItem(
+  run: ConnectedWorkflowRun,
+  queueItemId: string
+): boolean {
+  return Object.values(run.invocations ?? {}).some((frame) =>
+    Object.values(frame.attemptsByNodeId).some((attempts) =>
+      attempts.some((attempt) => attempt.queueItemId === queueItemId && attempt.status !== 'in-flight')
+    )
+  );
+}
+
+/** The queue rows of this run's failed Phase attempts, on every invocation frame. */
+export function failedPhaseQueueItemIds(run: ConnectedWorkflowRun): readonly string[] {
+  return Object.values(run.invocations ?? {}).flatMap((frame) =>
+    Object.values(frame.attemptsByNodeId).flatMap((attempts) =>
+      attempts.flatMap((attempt) =>
+        attempt.nodeKind === 'phase' && attempt.status === 'failed' && attempt.queueItemId !== undefined
+          ? [attempt.queueItemId]
+          : []
+      )
+    )
+  );
+}
+
 export function recordNodeAttempt(
   frame: WorkflowInvocationFrame,
   attempt: NodeAttemptRecord
 ): WorkflowInvocationFrame {
-  const existing = frame.attemptsByNodeId[attempt.nodeId] ?? [];
+  const existing = attemptsForNode(frame, attempt.nodeId);
   const updatedForNode = existing.some((entry) => entry.attemptId === attempt.attemptId)
     ? existing.map((entry) => (entry.attemptId === attempt.attemptId ? attempt : entry))
     : [...existing, attempt];

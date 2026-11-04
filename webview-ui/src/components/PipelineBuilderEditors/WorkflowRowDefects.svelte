@@ -22,7 +22,9 @@
   <div class="row-defects" {id}>
     <span class="row-defect-cue">Error</span>
     <ul class="row-defect-list">
-      {#each defects as defect (defect.field + defect.code)}
+      <!-- Keyed by position: the host reports one `missing-required-input` per unbound port of a
+           child Workflow node, all under the same field, so `field + code` repeats. -->
+      {#each defects as defect, index (index)}
         <li>{defect.field}: {defect.message}</li>
       {/each}
     </ul>

@@ -56,6 +56,8 @@ export interface ExecutionLeasePort {
    * windows' Runs in one tree.
    */
   hasLease?(queueId: string): Promise<boolean>;
+  /** Whether another window's fresh entry names this queue. Optional on the same terms. */
+  isForeignLeaseHeld?(queueId: string): boolean;
   /**
    * FR-R3-077 (T1038) — this window's claim on `queueId`, for the commit points
    * that now require one.

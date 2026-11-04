@@ -1344,4 +1344,109 @@ describe('unified Phase and child-Workflow graph validation (FR-R5-F01-T03, T04)
     });
     expect(optionalErrors).toEqual([]);
   });
+
+  describe('required-output coverage stays linear in the size of the graph', () => {
+    // Every diamond doubles the number of start-to-return routes, so 18 stacked diamonds hold
+    // 2^18 of them in 54 nodes. Listing the routes took the better part of a second and about a
+    // gigabyte; walking the graph once per required output takes well under a millisecond.
+    const DIAMOND_COUNT = 18;
+    const BRANCH_COVERAGE_BUDGET_MS = 250;
+
+    const nodeIdOf = (role: string, index: number): string => `${role}-${String(index)}`;
+
+    /**
+     * `fork-i` splits into `left-i` and `right-i`, which rejoin at `join-i`, which feeds
+     * `fork-(i+1)`. The last join is the only node without an outgoing connection.
+     */
+    const stackedDiamonds = (diamondCount: number, producerNodeId: string): WorkflowDefinition => {
+      const nodes: WorkflowNode[] = [];
+      const connections: WorkflowConnection[] = [];
+      for (let index = 0; index < diamondCount; index += 1) {
+        const fork = nodeIdOf('fork', index);
+        const left = nodeIdOf('left', index);
+        const right = nodeIdOf('right', index);
+        const join = nodeIdOf('join', index);
+        for (const nodeId of [fork, left, right, join]) {
+          nodes.push({ nodeId, kind: 'phase', phaseId: 'plan' });
+        }
+        connections.push(
+          { from: { nodeId: fork }, to: { nodeId: left } },
+          { from: { nodeId: fork }, to: { nodeId: right } },
+          { from: { nodeId: left }, to: { nodeId: join } },
+          { from: { nodeId: right }, to: { nodeId: join } }
+        );
+        if (index + 1 < diamondCount) {
+          connections.push({ from: { nodeId: join }, to: { nodeId: nodeIdOf('fork', index + 1) } });
+        }
+      }
+      return {
+        workflowId: 'stacked-diamonds',
+        name: 'Stacked Diamonds',
+        version: 1,
+        outputs: [{ portId: 'final-report', label: 'Final Report', type: 'markdown', required: true }],
+        nodes,
+        connections,
+        bindings: [{ kind: 'output', nodeId: producerNodeId, portId: 'final-report', outputKey: 'report' }],
+        startNodeIds: [nodeIdOf('fork', 0)]
+      };
+    };
+
+    const validateTimed = (
+      definition: WorkflowDefinition
+    ): { readonly errors: readonly WorkflowFieldError[]; readonly elapsedMs: number } => {
+      // Warm the validator on a small graph so the budget measures the algorithm, not the JIT.
+      validateWorkflowGraph(stackedDiamonds(2, nodeIdOf('join', 1)), [], new Map(), { effectivePhases });
+      const started = performance.now();
+      const errors = validateWorkflowGraph(definition, [], new Map(), { effectivePhases });
+      return { errors, elapsedMs: performance.now() - started };
+    };
+
+    it('accepts a required output produced after every branch rejoins, within the time budget', () => {
+      const lastJoin = nodeIdOf('join', DIAMOND_COUNT - 1);
+      const { errors, elapsedMs } = validateTimed(stackedDiamonds(DIAMOND_COUNT, lastJoin));
+
+      expect(errors).toEqual([]);
+      expect(
+        elapsedMs,
+        `${String(DIAMOND_COUNT)} stacked diamonds took ${elapsedMs.toFixed(1)} ms`
+      ).toBeLessThan(BRANCH_COVERAGE_BUDGET_MS);
+    });
+
+    it('refuses a required output produced on one side of the first diamond, within the time budget', () => {
+      const { errors, elapsedMs } = validateTimed(
+        stackedDiamonds(DIAMOND_COUNT, nodeIdOf('left', 0))
+      );
+
+      expect(codes(errors)).toEqual(['missing-required-output-on-branch']);
+      expect(
+        elapsedMs,
+        `${String(DIAMOND_COUNT)} stacked diamonds took ${elapsedMs.toFixed(1)} ms`
+      ).toBeLessThan(BRANCH_COVERAGE_BUDGET_MS);
+    });
+
+    it('treats a node with a Return connection as a terminal branch even when it also has onward connections', () => {
+      const earlyReturn = (producerNodeId: string): WorkflowDefinition => ({
+        workflowId: 'early-return',
+        name: 'Early Return',
+        version: 1,
+        outputs: [{ portId: 'final-report', label: 'Final Report', type: 'markdown', required: true }],
+        nodes: [
+          { nodeId: 'gate', kind: 'phase', phaseId: 'specify' },
+          { nodeId: 'finish', kind: 'phase', phaseId: 'plan' }
+        ],
+        connections: [
+          { from: { nodeId: 'gate' }, to: { nodeId: 'return', kind: 'return' } },
+          { from: { nodeId: 'gate' }, to: { nodeId: 'finish' } }
+        ],
+        bindings: [{ kind: 'output', nodeId: producerNodeId, portId: 'final-report', outputKey: 'report' }],
+        startNodeIds: ['gate']
+      });
+
+      const onlyAfterTheGate = validateWorkflowGraph(earlyReturn('finish'), [], new Map(), { effectivePhases });
+      expect(codes(onlyAfterTheGate)).toEqual(['missing-required-output-on-branch']);
+
+      const atTheGate = validateWorkflowGraph(earlyReturn('gate'), [], new Map(), { effectivePhases });
+      expect(atTheGate).toEqual([]);
+    });
+  });
 });

@@ -22,8 +22,10 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { snapshotPhaseDef } from '../../../src/config/pipeline-snapshot';
+import { snapshotPhaseDef, snapshotPhaseDefinition } from '../../../src/config/pipeline-snapshot';
 import type { PhaseDef } from '../../../src/config/pipeline-config';
+import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
+import { synthesizePhasePipelineSnapshot } from '../../../src/services/workflow-execution/connected-run-factory';
 import { parseInvocation } from '../../../src/parser/stdout-parser';
 import { parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import { validatePhaseDefinition } from '../../../src/config/process-definition-validator';
@@ -177,5 +179,71 @@ describe('FR-R3-096 — the population that already exists is untouched', () => 
     // Non-vacuity for both cases above: `advances() === true` must mean "this row
     // was not enforced", never "the parser advances everything".
     expect(advances(snapshotPhaseDef(phase({ evidencePolicy: 'required' })))).toBe(false);
+  });
+});
+
+describe('FR-R3-096 — the composable closure freeze keeps the origin too (FR-R5-F02)', () => {
+  // A Workflow run freezes each Phase twice: `snapshotPhaseDefinition` when the closure is
+  // taken at launch, then `snapshotPhaseDef` (through `synthesizePhasePipelineSnapshot`) when the
+  // Phase's node run is built. The second freeze reads a policy value as a declaration when it
+  // carries no origin, and the first used to fill the value in without writing one -- so a Phase
+  // that authored nothing came out of the pair `phase-definition` and was held to `required`.
+  // `NonNullable` because indexing an optional property yields `T | undefined`, and spreading
+  // that into a `PhaseDefinition` would assign an explicit `undefined` to an optional key.
+  interface DeclaredPolicies {
+    readonly evidencePolicy?: NonNullable<PhaseDefinition['evidencePolicy']>;
+    readonly sideEffects?: NonNullable<PhaseDefinition['sideEffects']>;
+    readonly hostVerification?: NonNullable<PhaseDefinition['hostVerification']>;
+  }
+
+  function definition(declared: DeclaredPolicies = {}): PhaseDefinition {
+    return {
+      phaseId: 'speckit-implement',
+      name: 'Implement',
+      version: 1,
+      instruction: 'do it',
+      ...declared
+    };
+  }
+
+  /** The Phase as the run executes it: through the closure freeze, then the node-run freeze. */
+  function frozenForRun(declared: DeclaredPolicies = {}): PhaseDef {
+    const pipeline = synthesizePhasePipelineSnapshot(snapshotPhaseDefinition(definition(declared)));
+    const only = pipeline.phases.at(0);
+    if (only === undefined) throw new Error('the synthesized pipeline holds no Phase');
+    return only;
+  }
+
+  it('records an omitted policy `default` at the closure freeze, and it stays `default` in the run', () => {
+    const inClosure = snapshotPhaseDefinition(definition());
+    expect(inClosure.evidencePolicy).toBe('required');
+    expect(inClosure.evidencePolicyDeclaredAt).toBe('default');
+
+    const inRun = frozenForRun();
+    expect(inRun.evidencePolicy).toBe('required');
+    expect(inRun.evidencePolicyDeclaredAt).toBe('default');
+    // The consequence the provenance exists for: a Phase that asked for nothing is not held to it.
+    expect(advances(inRun)).toBe(true);
+  });
+
+  it('keeps an authored policy authored through both freezes', () => {
+    // Non-vacuity for the case above: carrying the origin must not pin every Phase to `default`.
+    expect(snapshotPhaseDefinition(definition({ evidencePolicy: 'required' })).evidencePolicyDeclaredAt).toBe(
+      'phase-definition'
+    );
+    const inRun = frozenForRun({ evidencePolicy: 'required' });
+    expect(inRun.evidencePolicyDeclaredAt).toBe('phase-definition');
+    expect(advances(inRun)).toBe(false);
+  });
+
+  it('records a resolved verdict basis `default` and an authored one `phase-definition`', () => {
+    // `sideEffects: 'none'` resolves to a stored `model-token`; read back as a declaration it
+    // would be an opt-out nobody made (FR-R3-117).
+    const resolved = frozenForRun({ sideEffects: 'none' });
+    expect(resolved.hostVerification).toBe('model-token');
+    expect(resolved.hostVerificationDeclaredAt).toBe('default');
+
+    const optedOut = frozenForRun({ hostVerification: 'model-token' });
+    expect(optedOut.hostVerificationDeclaredAt).toBe('phase-definition');
   });
 });

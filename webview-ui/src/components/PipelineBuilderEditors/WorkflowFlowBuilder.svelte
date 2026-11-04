@@ -43,6 +43,7 @@
      * intermediate component before it reaches it.
      */
     lifecycle?: BuilderLifecycle;
+    restoredNodeId?: string | null;
     onworkflowpatch: (patch: Partial<MutableWorkflow>) => void;
     onopenworkflow?: (workflowId: string, fromNodeId?: string) => void;
   }
@@ -56,7 +57,10 @@
   $effect(() => {
     if (openedKey === p.row.sourceKey) return;
     openedKey = p.row.sourceKey;
-    selection = { kind: 'workflow' };
+    const restoredIdx = p.restoredNodeId
+      ? p.row.nodes.findIndex((node) => node.nodeId === p.restoredNodeId)
+      : -1;
+    selection = restoredIdx >= 0 ? { kind: 'node', index: restoredIdx } : { kind: 'workflow' };
   });
 
   /**
@@ -155,5 +159,6 @@
     onconnectionmove={p.graph.moveConnection}
     onconnectionremove={removeConnection}
     onopenworkflow={p.onopenworkflow}
+    onselectworkflow={() => (selection = { kind: 'workflow' })}
   />
 </div>

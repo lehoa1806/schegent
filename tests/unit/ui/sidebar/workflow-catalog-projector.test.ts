@@ -192,6 +192,82 @@ describe('projectWorkflowCatalog — sanitization and bounds (C5, C6, C7)', () =
     expect(strings(projection).some((value) => value.includes(secret))).toBe(false);
   });
 
+  it('sanitizes the ports, bindings, execution defaults and recommendations of a unified Workflow alike', () => {
+    // These are the fields a unified Workflow carries that a Pipeline-backed one
+    // did not copy raw: nothing about them is closed, so each can hold a secret.
+    const secret = ['sk', '-ant-', 'api03-0123456789abcdefghijklmnopqrstuvwxyz0123456789'].join('');
+    const resolution = resolveWorkflowCatalog({
+      rows: [
+        {
+          workflowId: 'flow',
+          name: 'Flow',
+          version: 1,
+          inputs: [
+            {
+              portId: 'brief',
+              label: `Brief ${secret}`,
+              type: 'text',
+              required: true,
+              description: `see ${secret}`
+            }
+          ],
+          outputs: [
+            {
+              portId: 'report',
+              label: `Report ${secret}`,
+              type: 'markdown',
+              required: true,
+              description: `see ${secret}`
+            }
+          ],
+          nodes: [{ nodeId: 'step', kind: 'phase', phaseId: 'specify' }],
+          connections: [],
+          bindings: [
+            {
+              kind: 'input',
+              nodeId: 'step',
+              inputKey: 'brief',
+              source: { from: 'workflow-input', portId: 'brief' }
+            },
+            {
+              kind: 'output',
+              nodeId: 'step',
+              portId: 'report',
+              outputKey: 'report',
+              type: 'markdown',
+              label: `from ${secret}`
+            }
+          ],
+          startNodeIds: ['step'],
+          executionDefaults: { model: `claude ${secret}` },
+          recommendedNext: [secret]
+        }
+      ],
+      revision: 'w-rev-secret',
+      phaseCatalog: {
+        effective: [{ phaseId: 'specify', name: 'Specify', version: 1, instruction: 'Write spec' }],
+        records: [
+          {
+            key: 'specify::0',
+            phaseId: 'specify',
+            status: 'effective',
+            definition: { phaseId: 'specify', name: 'Specify', version: 1, instruction: 'Write spec' },
+            display: {},
+            errors: []
+          }
+        ]
+      }
+    });
+    const projection = projectWorkflowCatalog(resolution, { sanitize, effectivePipelines: [] });
+    const projected = projection.records.find((record) => record.workflowId === 'flow');
+    // A record that failed validation carries no definition and would pass the
+    // scan below for the wrong reason.
+    expect(projected?.definition).toBeDefined();
+    expect(strings(projection).some((value) => value.includes(secret))).toBe(false);
+    expect(projected?.definition?.inputs?.at(0)?.label).toContain('Brief');
+    expect(projected?.definition?.executionDefaults?.model).toContain('claude');
+  });
+
   it('caps each projected error field at its declared length', () => {
     const projection = project({
       rows: [

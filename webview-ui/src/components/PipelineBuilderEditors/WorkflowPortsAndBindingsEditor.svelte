@@ -5,9 +5,7 @@
     PIPELINE_OUTPUT_PORT_TYPES,
     type PipelineInputPortType,
     type PipelineOutputPortType,
-    type WorkflowBinding,
-    type WorkflowInputPort,
-    type WorkflowOutputPort
+    type WorkflowBinding
   } from '../../lib/snapshot-types';
   import type { MutableWorkflow } from './types';
   import type { WorkflowGraphActions } from './workflow-catalog-actions';
@@ -37,8 +35,8 @@
   );
 
   function addDefaultInputBinding(): void {
-    const firstNodeId = workflow.nodes[0]?.nodeId ?? '';
-    const firstInputPortId = inputs[0]?.portId ?? 'input';
+    const firstNodeId = workflow.nodes.length > 0 ? workflow.nodes[0].nodeId : '';
+    const firstInputPortId = inputs.length > 0 ? inputs[0].portId : 'input';
     actions.addBinding?.({
       kind: 'input',
       nodeId: firstNodeId,
@@ -48,8 +46,9 @@
   }
 
   function addDefaultOutputBinding(): void {
-    const lastNodeId = workflow.nodes[workflow.nodes.length - 1]?.nodeId ?? '';
-    const firstOutputPortId = outputs[0]?.portId ?? 'output';
+    const lastNodeId =
+      workflow.nodes.length > 0 ? workflow.nodes[workflow.nodes.length - 1].nodeId : '';
+    const firstOutputPortId = outputs.length > 0 ? outputs[0].portId : 'output';
     actions.addBinding?.({
       kind: 'output',
       nodeId: lastNodeId,
@@ -71,8 +70,7 @@
     } else {
       const upstreamNodeId =
         workflow.nodes.find((n) => n.nodeId !== binding.nodeId)?.nodeId ??
-        workflow.nodes[0]?.nodeId ??
-        '';
+        (workflow.nodes.length > 0 ? workflow.nodes[0].nodeId : '');
       actions.updateBinding?.(index, {
         ...binding,
         source: {
@@ -401,3 +399,4 @@
 
   <WorkflowRowDefects id="workflow-ports-bindings-errors" defects={portAndBindingDefects} />
 </div>
+

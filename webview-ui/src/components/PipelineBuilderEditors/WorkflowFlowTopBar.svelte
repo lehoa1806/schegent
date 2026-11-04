@@ -21,6 +21,7 @@
     readonly sourceKey: string;
     readonly workflowId: string;
     readonly name: string;
+    readonly fromNodeId?: string;
   }
 
   interface Props {

@@ -45,15 +45,28 @@
       : null,
   );
 
+  /**
+   * `path` is the chain of node ids from the previewed Workflow down to this entry. The preview
+   * expands every call node in place, so a grandchild called twice repeats its node ids at the
+   * same depth; only the path tells those entries apart.
+   */
+  interface PreviewEntry {
+    readonly node: ChildWorkflowPreviewNode;
+    readonly depth: number;
+    readonly path: string;
+  }
+
   function flattenPreview(
     nodes: readonly ChildWorkflowPreviewNode[],
     depth = 0,
-  ): readonly { readonly node: ChildWorkflowPreviewNode; readonly depth: number }[] {
-    const out: { readonly node: ChildWorkflowPreviewNode; readonly depth: number }[] = [];
+    parentPath = "",
+  ): readonly PreviewEntry[] {
+    const out: PreviewEntry[] = [];
     for (const item of nodes) {
-      out.push({ node: item, depth });
+      const path = parentPath === "" ? item.nodeId : `${parentPath}/${item.nodeId}`;
+      out.push({ node: item, depth, path });
       if (item.children.length > 0) {
-        out.push(...flattenPreview(item.children, depth + 1));
+        out.push(...flattenPreview(item.children, depth + 1, path));
       }
     }
     return out;
@@ -176,10 +189,10 @@
                 Child Workflow definition not found
               </span>
             {:else}
-              {#each flattenPreview(childPreview.nodes) as entry (entry.depth + "::" + entry.node.nodeId)}
+              {#each flattenPreview(childPreview.nodes) as entry (entry.path)}
                 <div
                   class="wf-node-preview-item"
-                  data-testid="workflow-node-preview-step-{index}-{entry.node.nodeId}"
+                  data-testid="workflow-node-preview-step-{index}-{entry.path}"
                 >
                   <span class="wf-badge">{entry.node.kind}</span>
                   <span>{entry.node.label} ({entry.node.targetId})</span>

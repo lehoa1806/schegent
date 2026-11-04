@@ -91,6 +91,12 @@ export interface GuardedScheduleRequest {
   // is the definition the operator submitted against. Omission is valid and
   // leaves every pre-existing path byte-identical.
   runPlan?: FrozenRunPlan;
+  // Spec 261 FR-007 — set by the host when this row is the next node of a Workflow
+  // already on this queue, which is not new work. It changes nothing about whether
+  // the queue may start anything: a queue held for its Start stays held, and holds
+  // this row too; a paused queue stays paused, with this row waiting behind the
+  // pause. No webview value reaches it: only the host's Workflow dispatchers set it.
+  continuesWorkflow?: true;
 }
 
 export interface GuardedScheduleResult {
@@ -112,7 +118,8 @@ export interface GuardedScheduleResult {
   reason?: string;
   queueItemId?: string;
   // Feature 065 — `'now'` when the host coerced or routed to `running`;
-  // `'idle-pending'` when the host landed the task in `idle-pending`.
+  // `'idle-pending'` when the host landed the task in `idle-pending`. A silent
+  // append preserves the lifecycle it found, whichever that was.
   lifecycleAfter?: QueueLifecycle;
 }
 
@@ -211,7 +218,14 @@ export class GuardedRunService {
     // representation. The retired `paused` mirror is absent from every record
     // written after the v13 collapse, so reading it here admitted schedules onto
     // a paused queue rather than rejecting them.
-    if (this.deps.store.getQueue(req.queueId ?? 'default').queueLifecycle === 'operator-paused') {
+    //
+    // Spec 261 FR-007 — a Workflow's next node is exempt, because that Workflow is
+    // already on the queue. Three paths reach this gate during a pause: a leaf that
+    // fails with a recovery connection, a leaf finished by its own Resume, and a
+    // pause landing between a leaf ending and the Workflow hearing of it. A refusal
+    // would fail the Workflow over a pause, so the row waits behind the pause instead.
+    const lifecycleAtAdmission = this.deps.store.getQueue(req.queueId ?? 'default').queueLifecycle;
+    if (lifecycleAtAdmission === 'operator-paused' && req.continuesWorkflow !== true) {
       const reason = 'queue-paused';
       await this.emitRejection('schedule', 'rejected-paused', reason, req.via);
       return { outcome: 'rejected-paused', reason };
@@ -519,6 +533,18 @@ export class GuardedRunService {
     if (currentLifecycle === 'running') {
       return { kind: 'append-tail-no-chooser' };
     }
+    // Spec 261 FR-007 — a Workflow's next node, on a queue nothing holds for a Start.
+    // Its last leaf finished before this row was admitted, so the queue reads
+    // `active-empty`, and entering the hold here would stop the Workflow after every
+    // node. The two states are listed by name so that `idle-pending` falls through:
+    // that hold is the operator's to release (rules 32 and 33), and this row waits
+    // behind it with everything else.
+    if (
+      req.continuesWorkflow === true &&
+      (currentLifecycle === 'active-empty' || currentLifecycle === 'operator-paused')
+    ) {
+      return { kind: 'append-tail-no-chooser' };
+    }
     const intent = req.startIntent;
     if (intent === undefined) {
       if (req.callerKind === 'automation') {
@@ -575,14 +601,11 @@ export class GuardedRunService {
     const queueId = req.queueId ?? 'default';
     const current = this.deps.store.getQueue(queueId);
     if (policy.kind === 'append-tail-no-chooser') {
-      // Feature 065 (FR-006) — `running` queue silent enqueue. Lifecycle
-      // is preserved; no scheduledStartAt fields are touched; no
-      // scheduled-start-* / idle-pending-* audit events are emitted.
-      // The task was already appended to the queue via `queue.enqueue`.
-      void now;
-      void current;
-      void queueId;
-      return 'running';
+      // Feature 065 (FR-006) — silent enqueue. Lifecycle is preserved; no
+      // scheduledStartAt fields are touched; no scheduled-start-* /
+      // idle-pending-* audit events are emitted. The task was already appended
+      // to the queue via `queue.enqueue`.
+      return current.queueLifecycle;
     }
     if (policy.kind === 'now') {
       if (policy.coercedFromPast && policy.originalScheduledStartAt !== undefined) {

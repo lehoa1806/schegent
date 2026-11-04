@@ -172,13 +172,27 @@
       : undefined
   );
 
+  /**
+   * The hand-off id already applied to `selection`. A plain variable on purpose: the effect below
+   * must not re-run because it was written.
+   */
+  let appliedHandoffId: string | null = null;
+
   $effect(() => {
-    if (selectedWorkflowId !== null && selectedWorkflowId !== '') {
-      const candidate: LaunchSelection = { kind: 'workflow', id: selectedWorkflowId };
-      if (reconcileSelection(launchables, candidate) !== null) {
-        selection = candidate;
-      }
+    // The Builder's "launch" hand-off preselects its Workflow once. The effect still reads
+    // `launchables`, so a projection that has not offered the Workflow yet is retried when it does;
+    // but every later snapshot also replaces `launchables` (the host sends a fresh clone about once
+    // a second while a run executes), and re-applying then would overwrite whatever the operator
+    // picked since.
+    if (selectedWorkflowId === null || selectedWorkflowId === '') {
+      appliedHandoffId = null;
+      return;
     }
+    if (appliedHandoffId === selectedWorkflowId) return;
+    const candidate: LaunchSelection = { kind: 'workflow', id: selectedWorkflowId };
+    if (reconcileSelection(launchables, candidate) === null) return;
+    appliedHandoffId = selectedWorkflowId;
+    selection = candidate;
   });
 
   $effect(() => {
@@ -212,7 +226,7 @@
       <ul class="run-list">
         {#each connectedRuns as run (run.connectedRunId)}
           <li class="run-item">
-            <WorkflowRun {run} {queueItems} {pipelines} />
+            <WorkflowRun {run} {queueItems} {pipelines} isPrimary={canLaunch} />
           </li>
         {/each}
       </ul>
