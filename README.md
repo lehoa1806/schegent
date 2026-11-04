@@ -2,7 +2,7 @@
 
 # Schegent
 
-Schegent is a local-first VS Code extension that queues development Tasks, executes versioned Pipelines of AI-backed Phases, and projects Run evidence into a sidebar and dashboard. It orchestrates installed Claude, Codex, or Agy CLIs inside the operator's workspace; it does not provide a hosted backend, ship ready-made process definitions, or promise offline AI execution.
+Schegent is a local-first VS Code extension that queues development Tasks, executes versioned Workflows and Pipelines of AI-backed Phases, and projects Run evidence into a sidebar and dashboard. It orchestrates installed Claude, Codex, or Agy CLIs inside the operator's workspace; it does not provide a hosted backend, ship ready-made process definitions, or promise offline AI execution.
 
 <!-- Source: package.json -->
 <!-- Source: src/extension.ts -->
@@ -31,7 +31,7 @@ Schegent is a local-first VS Code extension that queues development Tasks, execu
 
 ## Get started
 
-Install a tagged-release VSIX when one is available, or package a VSIX from source. Open a folder you can restore and ensure at least one supported backend executable is authenticated and available on `PATH` or configured by path. The default backend (Claude) is uncontained, so a fresh install **refuses its first run** until you name it in `schegent.backend.uncontainedBackends` or select a backend that carries its own sandbox — see [Backend permission posture](#backend-permission-posture) below. You are not left to find that setting on your own: the refusal asks, in a dialog that names the backend and what granting it means, and writes that one id to your User settings if you approve. Cancelling declines and starts nothing, and approving is asked once per machine. Schegent ships an empty catalog, so import or author and publish at least one Phase and Pipeline before enqueueing a Task; `schegent.defaultPipelineId` is optional. Before a first run, read what leaves the machine whatever the capture settings say: [egress and the raw transcript's lifetime](docs/concepts/local-first-not-offline.md#egress-and-the-raw-transcripts-lifetime).
+Install a tagged-release VSIX when one is available, or package a VSIX from source. Open a folder you can restore and ensure at least one supported backend executable is authenticated and available on `PATH` or configured by path. The default backend (Claude) is uncontained, so a fresh install **refuses its first run** until you name it in `schegent.backend.uncontainedBackends` or select a backend that carries its own sandbox — see [Backend permission posture](#backend-permission-posture) below. You are not left to find that setting on your own: the refusal asks, in a dialog that names the backend and what granting it means, and writes that one id to your User settings if you approve. Cancelling declines and starts nothing, and approving is asked once per machine. Schegent ships an empty catalog, so import (for example from `examples/speckit-new-feature.workflow.yaml`) or author and publish at least one Phase and Workflow before enqueueing a Task; `schegent.defaultPipelineId` is optional. Before a first run, read what leaves the machine whatever the capture settings say: [egress and the raw transcript's lifetime](docs/concepts/local-first-not-offline.md#egress-and-the-raw-transcripts-lifetime).
 
 <!-- Source: package.json -->
 <!-- Source: RELEASE.md -->

@@ -608,25 +608,74 @@ describe('loadCatalog — runner validation (074, T033)', () => {
     expect(isPhaseDef(phase)).toBe(true);
   });
 
-  it.each(['claude', 'agy'] as const)(
-    'accepts Git-mutating overrides with explicit %s runner',
-    (runner) => {
-      const opts = {
-        phases: [
-          {
-            id: 'finalize',
-            name: 'Finalize override',
-            instruction: 'Commit and merge the work.',
-            runner,
-            sideEffects: 'git' as const
-          }
-        ]
-      };
+    it.each(['claude', 'agy'] as const)(
+      'accepts Git-mutating overrides with explicit %s runner',
+      (runner) => {
+        const opts = {
+          phases: [
+            {
+              id: 'finalize',
+              name: 'Finalize override',
+              instruction: 'Commit and merge the work.',
+              runner,
+              sideEffects: 'git' as const
+            }
+          ]
+        };
 
-      const result = load(opts);
+        const result = load(opts);
 
-      expect(result.errors).toEqual([]);
-      expect(result.catalog.phasesById.get('finalize')?.runner).toBe(runner);
-    }
-  );
+        expect(result.errors).toEqual([]);
+        expect(result.catalog.phasesById.get('finalize')?.runner).toBe(runner);
+      }
+    );
+  });
+
+describe('loadCatalog — composable Workflow synthesis topological ordering (FR-049)', () => {
+  it('orders synthesized PipelineDef phases by startNodeIds and connections rather than raw nodes array order', () => {
+    const snapshot = snapshotOf({
+      phases: REFERENCED_PHASES,
+      workflows: [
+        {
+          workflowId: 'child-wf',
+          name: 'Child Workflow',
+          version: 1,
+          // Authored in reverse of execution order (FR-049: nodes order carries no execution semantics).
+          nodes: [
+            { nodeId: 'child-end', kind: 'phase', phaseId: 'finalize' },
+            { nodeId: 'child-start', kind: 'phase', phaseId: 'speckit-clarify' }
+          ],
+          connections: [
+            { from: { nodeId: 'child-start' }, to: { nodeId: 'child-end' } }
+          ],
+          startNodeIds: ['child-start']
+        },
+        {
+          workflowId: 'parent-wf',
+          name: 'Parent Workflow',
+          version: 1,
+          // Authored with child workflow node before the root entry phase node.
+          nodes: [
+            { nodeId: 'step-2', kind: 'workflow', workflowId: 'child-wf' },
+            { nodeId: 'step-1', kind: 'phase', phaseId: 'speckit-specify' }
+          ],
+          connections: [
+            { from: { nodeId: 'step-1' }, to: { nodeId: 'step-2' } }
+          ],
+          startNodeIds: ['step-1']
+        }
+      ]
+    });
+
+    const result = loadCatalog(snapshot);
+    expect(result.errors).toEqual([]);
+    const childSynthesized = result.catalog.pipelinesById.get('child-wf');
+    expect(childSynthesized?.phases).toEqual(['speckit-clarify', 'finalize']);
+    const parentSynthesized = result.catalog.pipelinesById.get('parent-wf');
+    expect(parentSynthesized?.phases).toEqual([
+      'speckit-specify',
+      'speckit-clarify',
+      'finalize'
+    ]);
+  });
 });

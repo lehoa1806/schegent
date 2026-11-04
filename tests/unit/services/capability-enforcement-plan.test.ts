@@ -5,9 +5,13 @@
 // or a clock. That is the difference between a mechanism and a claim about one —
 // and the reason a table like this belongs in a unit test rather than in an
 // integration run that samples three of them.
-import { observeAmbientConfig } from '../../../src/services/ambient-config-observer';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import {
+  observeAmbientConfig,
+  observeHostAmbientConfig
+} from '../../../src/services/ambient-config-observer';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 import {
@@ -376,6 +380,45 @@ describe('FR-R3-086 — an applied bound is observable, not just an enforced one
     });
     expect(none).toBeNull();
     expect(read, 'a backend with no config location must not be read at all').toBe(false);
+  });
+
+  it('recordCapabilityDecision forwards the injected observer and observeHostAmbientConfig refuses symlinks', async () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), 'schegent-ambient-cfg-'));
+    try {
+      const claudeDir = join(tmpHome, '.claude');
+      mkdirSync(claudeDir, { recursive: true });
+      const settingsPath = join(claudeDir, 'settings.json');
+      writeFileSync(settingsPath, JSON.stringify({ permissions: { allow: ['Bash'] } }), 'utf8');
+
+      const seen: Array<{ eventType: string; payload: Record<string, unknown> }> = [];
+      await recordCapabilityDecision(
+        { iteration: 1, phaseDef: { capabilities: ['workspace-read'] } } as never,
+        'claude',
+        ((_inputs: unknown, eventType: string, _outcome: string, payload: Record<string, unknown>) => {
+          seen.push({ eventType, payload });
+          return Promise.resolve(undefined);
+        }) as never,
+        (kind) => observeHostAmbientConfig(kind, tmpHome)
+      );
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.eventType).toBe('capability-applied');
+      expect(seen[0]!.payload.ambientConfig).toEqual({
+        digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+        keysObserved: ['permissions']
+      });
+
+      // Replace settings.json with a symlink: openWithinRootByPath refuses it and returns null.
+      rmSync(settingsPath);
+      const outsideTarget = join(tmpHome, 'outside.json');
+      writeFileSync(outsideTarget, JSON.stringify({ permissions: { allow: ['WebFetch'] } }), 'utf8');
+      symlinkSync(outsideTarget, settingsPath);
+
+      const symlinkObserved = await observeHostAmbientConfig('claude', tmpHome);
+      expect(symlinkObserved).toBeNull();
+    } finally {
+      rmSync(tmpHome, { recursive: true, force: true });
+    }
   });
 });
 

@@ -8,6 +8,7 @@ import * as vscode from 'vscode';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
 import { PhaseRunner } from '../controller/phase-runner';
+import { observeHostAmbientConfig } from '../services/ambient-config-observer';
 import type { LastRetryDecisionSink } from '../controller/phase-retry-evaluator';
 import { LIVE_RUN_STATUSES } from '../state/workflow-run';
 import type { SanitizedLogger } from '../lib/logger';
@@ -169,7 +170,8 @@ const phaseRunner = new PhaseRunner(
   backendPostureAccessor,
   // FR-R3-080 (T1075) — the refused-write drain. Without it a refusal reaches
   // the log and stops there, which is the state this item exists to leave.
-  evidenceHealth
+  evidenceHealth,
+  (kind) => observeHostAmbientConfig(kind)
 );
 const runSafety = await createRunSafetyWiring({
   context,

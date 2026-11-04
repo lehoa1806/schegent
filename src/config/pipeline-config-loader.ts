@@ -12,7 +12,8 @@ import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend
 import { resolvePhaseCatalog, type ResolvedPhaseCatalog } from './process-catalog';
 import { resolvePipelineCatalog, type ResolvedPipelineCatalog } from './pipeline-catalog';
 import { resolveWorkflowCatalog } from './workflow-catalog';
-import type { WorkflowDefinition } from '../contracts/workflow-definitions';
+import { topologicalOrder } from './workflow-graph';
+import type { WorkflowDefinition, WorkflowNode } from '../contracts/workflow-definitions';
 import { storedDraftOnlyRows, storedRows } from '../catalog';
 import type { CatalogSnapshot } from '../contracts/catalog-store';
 
@@ -55,6 +56,48 @@ const PIPELINE_LIMIT_WARNING_CODES: ReadonlySet<string> = new Set([
   'pipeline-phase-soft-cap'
 ]);
 
+function orderedWorkflowNodes(workflow: WorkflowDefinition): readonly WorkflowNode[] {
+  const nodesById = new Map(workflow.nodes.map((node) => [node.nodeId, node]));
+  const seedNodeIds: string[] = [];
+  const seenSeeds = new Set<string>();
+  for (const startId of workflow.startNodeIds) {
+    if (nodesById.has(startId) && !seenSeeds.has(startId)) {
+      seenSeeds.add(startId);
+      seedNodeIds.push(startId);
+    }
+  }
+  for (const node of workflow.nodes) {
+    if (!seenSeeds.has(node.nodeId)) {
+      seenSeeds.add(node.nodeId);
+      seedNodeIds.push(node.nodeId);
+    }
+  }
+  const indexedConnections = workflow.connections
+    .map((conn, index) => ({ conn, index }))
+    .filter(
+      ({ conn }) =>
+        conn.to.kind !== 'return' &&
+        nodesById.has(conn.from.nodeId) &&
+        nodesById.has(conn.to.nodeId)
+    )
+    .sort((a, b) => {
+      const defA = a.conn.isDefault === true ? 1 : 0;
+      const defB = b.conn.isDefault === true ? 1 : 0;
+      if (defA !== defB) return defA - defB;
+      const prioA = a.conn.priority ?? 0;
+      const prioB = b.conn.priority ?? 0;
+      if (prioA !== prioB) return prioA - prioB;
+      return a.index - b.index;
+    });
+  const topo = topologicalOrder(
+    seedNodeIds,
+    indexedConnections.map(({ conn }) => ({ from: conn.from.nodeId, to: conn.to.nodeId }))
+  );
+  return [...topo.order, ...topo.residual]
+    .map((nodeId) => nodesById.get(nodeId))
+    .filter((node): node is WorkflowNode => node !== undefined);
+}
+
 function flattenWorkflowPhaseIds(
   workflow: WorkflowDefinition,
   workflowsById: ReadonlyMap<string, WorkflowDefinition>,
@@ -64,7 +107,7 @@ function flattenWorkflowPhaseIds(
   const nextVisited = new Set(visited);
   nextVisited.add(workflow.workflowId);
   const phaseIds: string[] = [];
-  for (const node of workflow.nodes) {
+  for (const node of orderedWorkflowNodes(workflow)) {
     if (node.phaseId !== undefined) {
       phaseIds.push(node.phaseId);
     } else if (node.workflowId !== undefined) {
