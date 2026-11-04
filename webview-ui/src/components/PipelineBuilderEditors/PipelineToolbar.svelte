@@ -29,12 +29,6 @@
   // the disabled expression is exactly equivalent for the operator's permissions
   // and strictly better for the layout: a bar that loses a button whenever a save
   // is in flight reflows the eight beside it mid-click.
-  import { exportPipelineYaml } from '../../lib/process-yaml-ipc';
-  import {
-    pipelineExportDisabledReason,
-    pipelineExportInclusionId,
-    pipelineExportReasonId
-  } from './pipeline-catalog-state';
   import type { MutablePipeline } from './types';
 
   interface Props {
@@ -81,36 +75,6 @@
   }: Props = $props();
 
   const noSelection = $derived(pipeline === null || selectedIndex === null);
-
-  /**
-   * Feature 085 T027 (FR-012) — the inclusion choice, made BEFORE the document is
-   * produced rather than discovered in the save dialog after it.
-   *
-   * A property of how this operator is handing the definition over, not of the
-   * Pipeline, so it survives changing the selection instead of resetting under
-   * someone exporting several rows in a row. Nothing is persisted: it describes
-   * one session's exports, and the default is the smaller document (FR-013).
-   * It lives here rather than in the shell because the bar outlives every
-   * selection change, which is the property the comment above depends on.
-   */
-  let includeReferencedPhases = $state(false);
-
-  /**
-   * FR-022 — export is read-only work: it needs neither trust nor an idle save,
-   * because it writes nothing this extension owns. So `readonly` is deliberately
-   * absent from this term, and only two things block it: an unsaved draft (there
-   * is no stored definition to write yet) and no open Pipeline at all.
-   */
-  const exportReason = $derived(pipeline === null ? null : pipelineExportDisabledReason(pipeline));
-  const exportDisabled = $derived(noSelection || exportReason !== null);
-
-  function onExport(): void {
-    if (pipeline === null || exportDisabled) return;
-    exportPipelineYaml(
-      pipeline.id,
-      includeReferencedPhases ? 'include-referenced' : 'references-only'
-    );
-  }
 </script>
 
 <div class="toolbar" data-testid="pipelines-toolbar">
@@ -142,45 +106,6 @@
     disabled={noSelection || !trusted || savePending || mutationActive || noEffectivePhase}
     onclick={() => selectedIndex !== null && onduplicate(selectedIndex)}>Duplicate Pipeline</button
   >
-
-  <!-- FR-022 / mapping #16 — the choice sits beside the control it changes, so it
-       is made before the document is produced rather than after. -->
-  <label
-    class="form-field checkbox-field"
-    for={pipeline ? pipelineExportInclusionId(pipeline) : undefined}
-  >
-    <input
-      type="checkbox"
-      id={pipeline ? pipelineExportInclusionId(pipeline) : undefined}
-      data-testid="pipelines-export-inclusion"
-      disabled={exportDisabled}
-      checked={includeReferencedPhases}
-      onchange={(event) => (includeReferencedPhases = event.currentTarget.checked)}
-    />
-    <span
-      class="form-label"
-      title="Carry a complete definition of every Phase this Pipeline references, so it opens on a catalog that does not have them"
-      >Include Phase definitions</span
-    >
-  </label>
-  <button
-    class="btn btn-ghost"
-    data-testid="pipelines-export"
-    disabled={exportDisabled}
-    title={exportReason ?? (pipeline ? `Export ${pipeline.id} as a document` : 'Export a Pipeline')}
-    aria-label={pipeline ? `Export ${pipeline.id}` : 'Export Pipeline'}
-    aria-describedby={pipeline !== null && exportReason !== null
-      ? pipelineExportReasonId(pipeline)
-      : undefined}
-    onclick={onExport}>Export Pipeline</button
-  >
-  {#if pipeline !== null && exportReason !== null}
-    <span
-      class="field-help"
-      id={pipelineExportReasonId(pipeline)}
-      data-testid="pipelines-export-disabled-reason">{exportReason}</span
-    >
-  {/if}
 
   <button
     class="btn btn-secondary push-right"

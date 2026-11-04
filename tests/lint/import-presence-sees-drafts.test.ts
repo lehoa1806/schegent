@@ -29,7 +29,6 @@ import { describe, expect, it } from 'vitest';
 import { storedIds, storedRows } from '../../src/catalog';
 import {
   findPhaseIdPresence,
-  findPipelineIdPresence,
   findWorkflowIdPresence
 } from '../../src/services/process-yaml/import-planner';
 import type {
@@ -38,7 +37,6 @@ import type {
   StoredDefinition
 } from '../../src/contracts/catalog-store';
 import type { PhaseSourceRecord } from '../../src/contracts/process-definitions';
-import type { PipelineSourceRecord } from '../../src/contracts/pipeline-definitions';
 import type { WorkflowSourceRecord } from '../../src/contracts/workflow-definitions';
 
 const ACTIVE_ID = 'ship-it';
@@ -141,19 +139,15 @@ describe('Feature 100 T512 — the presence oracles read both halves (FR-044)', 
   const phaseRows: readonly PhaseSourceRecord[] = [
     { phaseId: ACTIVE_ID, status: 'effective' } as PhaseSourceRecord
   ];
-  const pipelineRows: readonly PipelineSourceRecord[] = [
-    { pipelineId: ACTIVE_ID, status: 'effective' } as PipelineSourceRecord
-  ];
   const workflowRows: readonly WorkflowSourceRecord[] = [
     { workflowId: ACTIVE_ID, status: 'effective' } as WorkflowSourceRecord
   ];
   const ids: ReadonlySet<string> = new Set([ACTIVE_ID, DRAFT_ONLY_ID]);
 
-  // One table for three oracles, because the property is the same in all three
-  // catalogs and stating it three times invites two of them to drift.
+  // One table for two oracles, because the property is the same in both
+  // catalogs and stating it twice invites one of them to drift.
   const ORACLES = [
     { kind: 'phase', find: (id: string) => findPhaseIdPresence(phaseRows, id, ids) },
-    { kind: 'pipeline', find: (id: string) => findPipelineIdPresence(pipelineRows, id, ids) },
     { kind: 'workflow', find: (id: string) => findWorkflowIdPresence(workflowRows, id, ids) }
   ] as const;
 

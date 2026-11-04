@@ -1,6 +1,6 @@
 # Process YAML exchange format
 
-Schegent exports and imports portable YAML for four resource kinds: `Phase`, `Pipeline`, `Workflow`, and `ModelCatalog`. Every supported document declares `apiVersion: schegent/v1`; decoded input is limited to 1,048,576 bytes before parsing.
+Schegent exports and imports portable YAML for three resource kinds: `Phase`, `Workflow`, and `ModelCatalog` (`kind: Pipeline` is retired by `FR-R5-F04` and refused as `unsupported-kind`). Every supported document declares `apiVersion: schegent/v1`; decoded input is limited to 1,048,576 bytes before parsing.
 
 <!-- Source: src/services/process-yaml/types.ts -->
 <!-- Source: src/services/process-yaml/preflight-service.ts -->
@@ -10,21 +10,19 @@ Schegent exports and imports portable YAML for four resource kinds: `Phase`, `Pi
 | `kind` | Root identity/body | Optional dependency payload |
 |---|---|---|
 | `Phase` | `metadata.phaseId`, `metadata.name`, numeric `metadata.version`, optional description; one `spec.instruction` or `spec.skill` plus authored optional Phase fields | None |
-| `Pipeline` | `metadata.id`, name, version, optional description; ordered Phase IDs, ports, bindings, defaults, and recommendations in `spec` | `included.phases` |
-| `Workflow` | `metadata.id`, name, version, optional description; nodes, connections, and start-node IDs in `spec` | Flat `included.pipelines` and `included.phases` closure |
+| `Workflow` | `metadata.id`, name, version, optional description; public `inputs`/`outputs`, `nodes` (`phase` or `workflow`), `connections`, data `bindings`, `startNodeIds`, `executionDefaults`, and `recommendedNext` in `spec` (see [Composable Workflow YAML grammar](../reference/workflow-yaml-grammar.md)) | Flat `included.workflows` and `included.phases` closure |
 | `ModelCatalog` | Backend groups with model identifiers | None |
 
 An absent optional value remains absent during Phase mapping. Phase `retryCondition` is transported as inert text, and `promptVersion` and `sourceScope` are host-resolved fields that are not part of the portable Phase document. The author fields `sideEffects` and `evidencePolicy` are carried in both directions when present.
 
 <!-- Source: src/services/process-yaml/types.ts -->
 <!-- Source: src/services/process-yaml/phase-yaml-mapper.ts -->
-<!-- Source: src/services/process-yaml/pipeline-document.ts -->
 <!-- Source: src/services/process-yaml/workflow-document.ts -->
 <!-- Source: src/services/process-yaml/model-catalog-yaml-mapper.ts -->
 
 ## Closed YAML subset
 
-The parser accepts the block-style mapping and sequence shapes required by the four schemas. Indentation is exactly two spaces. The scanner refuses tabs, anchors, aliases, merge keys, tags, directives, flow-style collections, multiple documents, and unsupported scalar forms instead of delegating them to a general YAML evaluator.
+The parser accepts the block-style mapping and sequence shapes required by the three schemas. Indentation is exactly two spaces. The scanner refuses tabs, anchors, aliases, merge keys, tags, directives, flow-style collections, multiple documents, and unsupported scalar forms instead of delegating them to a general YAML evaluator.
 
 Document-level refusal codes are:
 
@@ -59,11 +57,10 @@ Exports write a sequence item that the reader would take for the start of a mapp
 | Resource | Required selection fields |
 |---|---|
 | Phase | `{ resourceKind: 'phase', resourceId }` |
-| Pipeline | `{ resourceKind: 'pipeline', resourceId, inclusion }`, where inclusion is `references-only` or `include-referenced` |
-| Workflow | `{ resourceKind: 'workflow', resourceId, inclusion }`, where inclusion is `references-only`, `include-pipelines`, or `include-closure` |
+| Workflow | `{ resourceKind: 'workflow', resourceId, inclusion }`, where inclusion is `references-only` or `include-closure` |
 | Model Catalog | `{ resourceKind: 'modelCatalog' }` |
 
-Export resolves the selected definition from the effective catalog. Inclusion modes are all-or-nothing at their requested depth: an unresolved required dependency returns `dependency-does-not-resolve` with the first unresolved Phase or Pipeline rather than emitting a partial closure. Other unavailable reasons are `not-found` and `does-not-resolve`.
+Export resolves the selected definition from the effective catalog (or a structurally valid stored Workflow for `references-only`). Inclusion modes are all-or-nothing at their requested depth: an unresolved required dependency returns `dependency-does-not-resolve` with the first unresolved Phase or child Workflow rather than emitting a partial closure. Other unavailable reasons are `not-found` and `does-not-resolve`.
 
 The host opens the save dialog and reports only `saved`, `canceled`, `unavailable`, or a bounded `failed` message. The webview supplies no output path and receives none.
 
@@ -82,7 +79,7 @@ A planned document contains one row per declared resource. Each row has one clos
 |---|---|
 | `import` | The definition is valid and available for the eventual publish request. |
 | `skip` | The identity is already claimed by a stored row or model entry; the row records its presence/reason. |
-| `blocked` | The definition itself is valid but a required Phase or Pipeline dependency is absent, unresolvable, or transitively blocked. |
+| `blocked` | The definition itself is valid but a required Phase or child Workflow dependency is absent, unresolvable, or transitively blocked. |
 | `invalid` | The resource has validation defects; `totalDefects` records the uncapped count. |
 
 The plan records the catalog revisions against which it was computed. The later catalog publish is a separate mutation and must use those expected revisions; capability checks are re-evaluated at commit rather than trusted from the preview alone.

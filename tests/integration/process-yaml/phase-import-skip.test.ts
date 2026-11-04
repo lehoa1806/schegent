@@ -305,7 +305,7 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
   // built-in tier outright, so the only rows that can claim an id are ones the
   // operator put there, and `presentRowStatus: 'effective'` is the residue of that
   // claim: a row that resolves, holding the id.
-  const EXAMPLE = readFileSync(
+  const RAW_EXAMPLE = readFileSync(
     join(__dirname, '..', '..', '..', 'examples', 'speckit-new-feature.pipeline.yaml'),
     'utf8'
   );
@@ -324,6 +324,21 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
     'integrate'
   ]);
 
+  const EXAMPLE = [
+    'apiVersion: schegent/v1',
+    'kind: Workflow',
+    'metadata:',
+    '  id: speckit-new-feature',
+    '  name: Spec-kit New Feature',
+    '  version: 6',
+    'spec:',
+    '  nodes:',
+    ...IMPORTED_PHASE_IDS.flatMap((id) => [`    - nodeId: ${id}`, '      kind: phase', `      phaseId: ${id}`]),
+    '  startNodeIds:',
+    ...IMPORTED_PHASE_IDS.map((id) => `    - ${id}`),
+    RAW_EXAMPLE.slice(RAW_EXAMPLE.indexOf('included:'))
+  ].join('\n');
+
   /**
    * What the catalog holds after the first import. The stored rows deliberately do
    * NOT match the document — different names, a raised version — so an overwrite or
@@ -339,23 +354,25 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
     }));
   }
 
-  function importedPipelines(): readonly unknown[] {
+  function importedWorkflows(): readonly unknown[] {
     return [
       {
-        id: 'speckit-new-feature',
-        name: 'Already Imported Pipeline',
+        workflowId: 'speckit-new-feature',
+        name: 'Already Imported Workflow',
         version: 7,
-        phases: [...IMPORTED_PHASE_IDS]
+        nodes: IMPORTED_PHASE_IDS.map((id) => ({ nodeId: id, kind: 'phase', phaseId: id })),
+        connections: [],
+        startNodeIds: [...IMPORTED_PHASE_IDS]
       }
     ];
   }
 
   function buildPackageHarness(): Harness {
-    const pipelines = importedPipelines();
+    const workflows = importedWorkflows();
     const base = buildHarness(importedPhases(), EXAMPLE);
-    base.ctx.deps.readPipelineConfig = () => ({
-      rows: pipelines,
-      revision: base.store.revisionOf('pipeline')
+    base.ctx.deps.readWorkflowConfig = () => ({
+      rows: workflows,
+      revision: base.store.revisionOf('workflow')
     });
     return base;
   }

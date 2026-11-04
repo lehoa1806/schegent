@@ -52,12 +52,10 @@ import type {
   PackagePublishRequest
 } from '../../src/contracts/catalog-lifecycle';
 import type { CatalogKind, CatalogSnapshot } from '../../src/contracts/catalog-store';
-import type { PipelineDefinition } from '../../src/contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../../src/contracts/process-definitions';
 import type { WorkflowDefinition } from '../../src/contracts/workflow-definitions';
 import { preflightProcessDocument } from '../../src/services/process-yaml/preflight-service';
 import type { ImportPlan } from '../../src/services/process-yaml/types';
-import { pipelineBody } from '../fixtures/catalog-lifecycle-harness';
 import {
   createWorkspace,
   draftTokenFor,
@@ -85,7 +83,7 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 /**
- * A Pipeline package that supplies everything it references.
+ * A Workflow package that supplies everything it references.
  *
  * Self-contained on purpose: a document with an unresolved reference would plan its
  * root as `blocked`, and then "the trigger surface did not change" would be true for
@@ -94,27 +92,43 @@ afterEach(async () => {
  */
 const DOCUMENT = [
   'apiVersion: schegent/v1',
-  'kind: Pipeline',
+  'kind: Workflow',
   'metadata:',
   '  id: ship-it',
   '  name: Ship It',
   '  version: 3',
   'spec:',
-  '  phaseIds:',
-  '    - specify',
-  '    - plan',
   '  inputs:',
   '    - portId: feature-brief',
   '      label: Feature brief',
   '      type: text',
   '      required: true',
+  '  nodes:',
+  '    - nodeId: specify-step',
+  '      kind: phase',
+  '      phaseId: specify',
+  '    - nodeId: plan-step',
+  '      kind: phase',
+  '      phaseId: plan',
+  '  connections:',
+  '    - from:',
+  '        nodeId: specify-step',
+  '      to:',
+  '        nodeId: plan-step',
+  '    - from:',
+  '        nodeId: plan-step',
+  '      to:',
+  '        kind: return',
+  '        nodeId: return',
   '  bindings:',
   '    - kind: input',
-  '      phaseIndex: 0',
+  '      nodeId: specify-step',
   '      inputKey: brief',
   '      source:',
-  '        from: pipeline-input',
+  '        from: workflow-input',
   '        portId: feature-brief',
+  '  startNodeIds:',
+  '    - specify-step',
   'included:',
   '  phases:',
   '    - metadata:',
@@ -223,9 +237,8 @@ function phaseRow(definition: PhaseDefinition): Record<string, unknown> {
   return { id: phaseId, ...declared };
 }
 
-function pipelineRow(definition: PipelineDefinition): Record<string, unknown> {
-  const { pipelineId, phaseIds, ...declared } = definition;
-  return { id: pipelineId, phases: [...phaseIds], ...declared };
+function workflowRow(definition: WorkflowDefinition): Record<string, unknown> {
+  return { ...definition };
 }
 
 /**
@@ -237,14 +250,14 @@ function pipelineRow(definition: PipelineDefinition): Record<string, unknown> {
  */
 function requestFor(plan: ImportPlan): PackagePublishRequest {
   const phases: { readonly id: string; readonly body: unknown }[] = [];
-  const pipelines: { readonly id: string; readonly body: unknown }[] = [];
+  const workflows: { readonly id: string; readonly body: unknown }[] = [];
   for (const row of plan.rows) {
     if (row.outcome !== 'import') continue;
     if (row.resourceKind === 'phase') {
       phases.push({ id: row.definition.phaseId, body: phaseRow(row.definition) });
     }
-    if (row.resourceKind === 'pipeline') {
-      pipelines.push({ id: row.definition.pipelineId, body: pipelineRow(row.definition) });
+    if (row.resourceKind === 'workflow') {
+      workflows.push({ id: row.definition.workflowId, body: workflowRow(row.definition) });
     }
   }
 
@@ -256,11 +269,11 @@ function requestFor(plan: ImportPlan): PackagePublishRequest {
       expectedRevision: plan.computedAgainstRevision
     });
   }
-  if (pipelines.length > 0) {
-    // The Pipeline catalog's own revision, never the Phase catalog's (FR-036).
-    const revision = plan.computedAgainstPipelineRevision;
+  if (workflows.length > 0) {
+    // The Workflow catalog's own revision, never the Phase catalog's (FR-036).
+    const revision = plan.computedAgainstWorkflowRevision;
     expect(revision).toBeDefined();
-    layers.push({ kind: 'pipeline', definitions: pipelines, expectedRevision: revision! });
+    layers.push({ kind: 'workflow', definitions: workflows, expectedRevision: revision! });
   }
   return { layers };
 }
@@ -333,13 +346,13 @@ describe('the drafting pass writes drafts and moves nothing (FR-041, FR-042)', (
       'manifest.json',
       'phases/plan/v1.json',
       'phases/specify/v1.json',
-      'pipelines/ship-it/v1.json'
+      'workflows/ship-it/v1.json'
     ]);
     // Draft: every one of them, through the projection the surfaces read.
     expect(midFlight.states).toEqual({
       'phase/specify': 'draft',
       'phase/plan': 'draft',
-      'pipeline/ship-it': 'draft'
+      'workflow/ship-it': 'draft'
     });
   });
 
@@ -374,14 +387,14 @@ describe('the drafting pass writes drafts and moves nothing (FR-041, FR-042)', (
     // straight over these drafts (FR-044).
     expect(midFlight.ids).toEqual({
       phase: ['plan', 'specify'],
-      pipeline: ['ship-it'],
-      workflow: []
+      pipeline: [],
+      workflow: ['ship-it']
     });
   });
 });
 
 describe('only the publication changes what runs (FR-041, FR-042)', () => {
-  it('makes exactly the document\'s definitions triggerable, and only after both passes', async () => {
+  it("makes exactly the document's definitions triggerable, and only after both passes", async () => {
     const plan = await planOn(await openSession());
     const request = requestFor(plan);
 
@@ -391,21 +404,21 @@ describe('only the publication changes what runs (FR-041, FR-042)', () => {
       outcome: 'published',
       published: [
         { kind: 'phase', ids: ['specify', 'plan'] },
-        { kind: 'pipeline', ids: ['ship-it'] }
+        { kind: 'workflow', ids: ['ship-it'] }
       ],
       pruned: []
     });
     // A window opened after the fact, so this is the disk and not a cache.
     const session = await openSession();
     expect(session.catalog.phases.map((phase) => phase.id)).toEqual(['specify', 'plan']);
-    expect(session.catalog.pipelines.map((pipeline) => pipeline.id)).toEqual(['ship-it']);
+    expect(session.workflowCatalog.effective.map((workflow) => workflow.workflowId)).toEqual(['ship-it']);
     // The bodies are the document's, unedited on the way through.
     const snapshot = await snapshotOf(openStore(workspaceRoot));
     expect(storedRows(snapshot, 'phase')).toEqual(
       request.layers.find((layer) => layer.kind === 'phase')?.definitions.map((one) => one.body)
     );
-    expect(storedRows(snapshot, 'pipeline')).toEqual(
-      request.layers.find((layer) => layer.kind === 'pipeline')?.definitions.map((one) => one.body)
+    expect(storedRows(snapshot, 'workflow')).toEqual(
+      request.layers.find((layer) => layer.kind === 'workflow')?.definitions.map((one) => one.body)
     );
   });
 
@@ -418,7 +431,7 @@ describe('only the publication changes what runs (FR-041, FR-042)', () => {
     expect(statesOf(snapshot)).toEqual({
       'phase/specify': 'active',
       'phase/plan': 'active',
-      'pipeline/ship-it': 'active'
+      'workflow/ship-it': 'active'
     });
     // One version each: the draft pass and the publication are two pointer states
     // of one immutable record, not two records (FR-016).
@@ -429,21 +442,25 @@ describe('only the publication changes what runs (FR-041, FR-042)', () => {
 });
 
 describe("an operator's unpublished draft is skipped and left alone (FR-043, FR-044, FR-039a)", () => {
-  /** The Pipeline the operator is mid-way through authoring, under an id the document declares. */
-  const OPERATOR_DRAFT = pipelineBody('ship-it', ['specify'], {
+  /** The Workflow the operator is mid-way through authoring, under an id the document declares. */
+  const OPERATOR_DRAFT = {
+    workflowId: 'ship-it',
     name: 'Ship It, my way',
-    version: 9
-  });
+    version: 9,
+    nodes: [{ nodeId: 'specify-step', kind: 'phase', phaseId: 'specify' }],
+    connections: [{ from: { nodeId: 'specify-step' }, to: { kind: 'return', nodeId: 'return' } }],
+    startNodeIds: ['specify-step']
+  };
 
   /** Save it and never publish it: draft-only, so no resolver can see it (FR-007). */
   async function seedDraft(): Promise<void> {
     const store = openStore(workspaceRoot);
     const written = await store.applyLifecycleWrite({
       op: 'save-draft',
-      kind: 'pipeline',
+      kind: 'workflow',
       id: 'ship-it',
       body: OPERATOR_DRAFT,
-      expectedDraftVersion: await draftTokenFor(store, 'pipeline', 'ship-it')
+      expectedDraftVersion: await draftTokenFor(store, 'workflow', 'ship-it')
     });
     // `'written'` is the STORE's success arm; `'saved'` is the lifecycle service's
     // name for the same thing. This seeds through the store directly, an operator's
@@ -459,7 +476,7 @@ describe("an operator's unpublished draft is skipped and left alone (FR-043, FR-
     expect(plan.counts).toEqual({ import: 2, skip: 1, blocked: 0, invalid: 0 });
     expect(plan.rows).toContainEqual({
       outcome: 'skip',
-      resourceKind: 'pipeline',
+      resourceKind: 'workflow',
       resourceId: 'ship-it',
       name: 'Ship It',
       // Not `invalid` and not absent: the operator's draft is the strongest claim
@@ -469,7 +486,7 @@ describe("an operator's unpublished draft is skipped and left alone (FR-043, FR-
     });
   });
 
-  it('publishes the Phases and never the skipped Pipeline', async () => {
+  it('publishes the Phases and never the skipped Workflow', async () => {
     await seedDraft();
     const plan = await planOn(await openSession());
     const request = requestFor(plan);
@@ -486,14 +503,14 @@ describe("an operator's unpublished draft is skipped and left alone (FR-043, FR-
     });
     const snapshot = await snapshotOf(openStore(workspaceRoot));
     expect(statesOf(snapshot)).toEqual({
-      'pipeline/ship-it': 'draft',
+      'workflow/ship-it': 'draft',
       'phase/specify': 'active',
       'phase/plan': 'active'
     });
-    // Still not triggerable — an import that published the Pipeline layer wholesale
-    // would have made the operator's half-finished Pipeline live (FR-039b).
-    expect(storedRows(snapshot, 'pipeline')).toEqual([]);
-    expect((await openSession()).catalog.pipelines).toEqual([]);
+    // Still not triggerable — an import that published the Workflow layer wholesale
+    // would have made the operator's half-finished Workflow live (FR-039b).
+    expect(storedRows(snapshot, 'workflow')).toEqual([]);
+    expect((await openSession()).workflowCatalog.effective).toEqual([]);
   });
 
   it('leaves the draft byte-identical, body and history included', async () => {
@@ -504,7 +521,7 @@ describe("an operator's unpublished draft is skipped and left alone (FR-043, FR-
 
     const snapshot = await snapshotOf(openStore(workspaceRoot));
     const draft = snapshot.definitions.find(
-      (definition) => definition.kind === 'pipeline' && definition.id === 'ship-it'
+      (definition) => definition.kind === 'workflow' && definition.id === 'ship-it'
     );
     expect(draft?.draftVersionId).toBe('v1');
     expect(draft?.activeVersionId).toBeNull();
@@ -515,6 +532,6 @@ describe("an operator's unpublished draft is skipped and left alone (FR-043, FR-
     // re-create. The manifest is excluded because the Phase publication is meant to
     // change it.
     const after = await fingerprintOf(storeRootOf(workspaceRoot));
-    expect(after.get('pipelines/ship-it/v1.json')).toBe(before.get('pipelines/ship-it/v1.json'));
+    expect(after.get('workflows/ship-it/v1.json')).toBe(before.get('workflows/ship-it/v1.json'));
   });
 });

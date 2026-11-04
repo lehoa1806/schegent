@@ -821,13 +821,13 @@ the editor explains the prerequisite and disables save rather than offering a
 control that cannot succeed; a refreshed snapshot carrying a newly valid
 Pipeline re-enables it without a reload.
 
-### Process document exchange (specs 084 / 085 / 086)
+### Process document exchange (specs 084 / 085 / 086 / 263)
 
-The three catalog managers above can hand a definition to another installation as
-a YAML document, and take one back. The Model Catalog (spec 096) joins the same
+The Phase and Workflow catalog managers can hand a definition to another installation as
+a YAML document, and take one back (`FR-R5-F04` retired `kind: Pipeline` exchange). The Model Catalog (spec 096) joins the same
 **Import…**/**Export** buttons and file dialogs with a structurally separate
-shape rather than a fourth catalog-manager subsection of its own — see the
-ownership table and "A fourth arm, structurally apart" below, and
+shape rather than a catalog-manager subsection of its own — see the
+ownership table and "A third arm, structurally apart" below, and
 [Inspect an import](../docs/operations/process-yaml.md#inspect-an-import) and
 [Confirm the plan](../docs/operations/process-yaml.md#confirm-the-plan) for the
 operator-facing procedure, which covers a Model Catalog document too. The webview owns the operator's decisions;
@@ -839,9 +839,9 @@ the location it tried to write.
 
 | File | Owns |
 |---|---|
-| [`process-yaml-ipc.ts`](src/lib/process-yaml-ipc.ts) | The **single call site** for the whole exchange family: `exportPhaseYaml`, `exportPipelineYaml`, `exportWorkflowYaml`, `exportModelCatalogYaml`, `preflightProcessYaml` |
+| [`process-yaml-ipc.ts`](src/lib/process-yaml-ipc.ts) | The **single call site** for the whole exchange family: `exportPhaseYaml`, `exportWorkflowYaml`, `exportModelCatalogYaml`, `preflightProcessYaml` |
 | [`ProcessExportButton.svelte`](src/components/ProcessImport/ProcessExportButton.svelte) | The per-Phase Export control and its disabled reason |
-| [`WorkflowToolbar.svelte`](src/components/PipelineBuilderEditors/WorkflowToolbar.svelte) | The Workflow Export control **and its three-mode inclusion list** |
+| [`WorkflowToolbar.svelte`](src/components/PipelineBuilderEditors/WorkflowToolbar.svelte) | The Workflow Export control **and its two-mode inclusion list** (`references-only` / `include-closure`) |
 | [`ModelCatalogEditor.svelte`](src/components/PipelineBuilderEditors/ModelCatalogEditor.svelte) | The Model Catalog's own Export control — unconditional, since a Model Catalog document always resolves, even an empty one (FR-007) |
 | [`ProcessImportPreflight.svelte`](src/components/ProcessImport/ProcessImportPreflight.svelte) | The import flow shell and the one-request package commit, branching to `runModelCatalogImportCommit` for a Model Catalog plan |
 | [`ProcessImportPlanTable.svelte`](src/components/ProcessImport/ProcessImportPlanTable.svelte) / [`ProcessImportResultsTable.svelte`](src/components/ProcessImport/ProcessImportResultsTable.svelte) | Plan rows before the confirm, result rows after it — a Model Catalog row's fields (`backend`, `modelId`) replace the shared `resourceId`/`name` shape |
@@ -849,9 +849,9 @@ the location it tried to write.
 | [`save-models.ts`](src/lib/save-models.ts) | `saveModelsImport` — the Model Catalog's own `CMD_SAVE_MODELS` call site for a confirmed import; kept apart from the pre-existing `saveModels` manual add/remove path rather than widening that function's signature |
 | [`process-exchange-entry.ts`](src/components/ProcessImport/process-exchange-entry.ts) | The three preconditions a manager must decide before offering the controls |
 
-**A fourth arm, structurally apart.** A Model Catalog plan never mixes with
-Phase/Pipeline/Workflow rows in the same plan (FR-015), so it does not fit the
-three-arm/three-vocabulary shape described next: there is no inclusion-depth
+**A third arm, structurally apart.** A Model Catalog plan never mixes with
+Phase/Workflow rows in the same plan (FR-015), so it does not fit the
+definition-package shape described next: there is no inclusion-depth
 choice on export (`ModelCatalogEditor.svelte`'s button always produces the
 whole catalog, every backend, as one document) and no multi-layer package on
 import — a confirmed Model Catalog plan writes once, through
@@ -861,13 +861,10 @@ describes. See
 [Inspect an import](../docs/operations/process-yaml.md#inspect-an-import) for the
 plan-row outcomes.
 
-**Three export arms, three inclusion vocabularies.** A Phase has no dependencies,
-so `exportPhaseYaml` takes an id and nothing else. A Pipeline has one level below
-it, so its control is a checkbox — one level admits only two depths
-(`references-only`, `include-referenced`). A Workflow has two levels, so its
-control is a **list**, not a boolean: "the Pipelines" and "the Pipelines and their
-Phases" are different answers and neither is the negation of the other
-(`references-only`, `include-pipelines`, `include-closure`). The vocabularies are
+**Two definition export arms.** A Phase has no dependencies,
+so `exportPhaseYaml` takes an id and nothing else. A composable Workflow (`FR-R5-F04`)
+may reference Phases and child Workflows to arbitrary bounded depth, so its
+control offers two modes (`references-only`, `include-closure`). The vocabularies are
 declared per kind in `src/contracts/sidebar-ipc/process-yaml.ts` and both runtime
 validators route through the single `admitsExportInclusion(resourceKind,
 inclusion)` gate — one function rather than a copy per validator, because two
@@ -881,34 +878,31 @@ document.
 
 Only one export precondition is decided webview-side — an **unsaved draft**,
 because export reads the catalog and a draft is not in it yet. Nothing else is
-pre-checked: a stored Workflow whose Pipelines are missing from every layer is
-still exportable with its graph intact, and whether a row resolves is the host's
-decision, since only the host reads the effective catalog.
+pre-checked: a stored Workflow whose Phases or child Workflows are missing from
+the effective catalog is still exportable in `references-only` mode with its
+graph intact, and whether a closure resolves is the host's decision, since only
+the host reads the effective catalog.
 
 **Plan rows name the dependency's kind, and chain to the root cause.** A blocked
-row reads its dependency's `kind` from the reason rather than assuming one — as of
-086 a Pipeline waits on a Phase and a Workflow waits on a Pipeline, so a hard-coded
-"Phase" would misname half the cases and send the operator to the wrong catalog.
+row reads its dependency's `kind` (`'phase' | 'workflow'`) from the reason rather
+than assuming one — a Workflow node may wait on a Phase or a child Workflow.
 When the dependency is *itself* blocked, the row renders two lines: what this row
-waits on, and the chain through to what would unblock it. The chain is at most
-three links and cannot be more (a Pipeline waits only on a Phase; a Phase waits on
-nothing), so it is a complete trace rather than one hop of an open-ended walk.
-Every identifier in those lines is the host's already-sanitized, already-bounded
-value and is never re-bounded — a second cap would disagree with the first and
-truncate an id the operator has to find in the catalog.
+waits on, and the chain through to what would unblock it. Every identifier in
+those lines is the host's already-sanitized, already-bounded value and is never
+re-bounded — a second cap would disagree with the first and truncate an id the
+operator has to find in the catalog.
 
 **The commit is one package request, not several writes.** A confirmed package
 commits through `runImportCommit`: `buildImportPackage` yields one request with a
-layer per kind that has `import` rows (Phase, Pipeline, Workflow), each layer
+layer per kind that has `import` rows (Phase, Workflow), each layer
 carrying the `expectedRevision` its plan was computed against, and
 `publishDefinitionPackage` (`CMD_PUBLISH_PACKAGE`) sends it once. The host
 validates the whole document before it writes anything, then drafts the layers and
-publishes them in dependency order — a Pipeline's bindings are only satisfiable
-once its Phases are effective, and a Workflow's nodes only resolve once its
-Pipelines are (feature 254). Import adds **no** mutating IPC command of its own,
-so it inherits the package publish's revision-before-trust ordering unchanged, and
-what the operator sees is that one acknowledgement read layer by layer
-(`layerResultsOf`).
+publishes them in dependency order — Phases first, then child Workflows before
+parent Workflows (feature 254, feature 260, feature 263). Import adds **no**
+mutating IPC command of its own, so it inherits the package publish's
+revision-before-trust ordering unchanged, and what the operator sees is that one
+acknowledgement read layer by layer (`layerResultsOf`).
 
 The host **never compensates with a delete**: whichever prefix landed stays
 written, and the outcome is reported as `partial` rather than repaired. The

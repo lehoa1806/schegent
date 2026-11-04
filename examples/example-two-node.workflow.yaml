@@ -15,10 +15,12 @@ spec:
     - draft
   nodes:
     - nodeId: draft
-      pipelineId: example-draft
+      kind: workflow
+      workflowId: example-draft
       label: Draft
     - nodeId: revise
-      pipelineId: example-revise
+      kind: workflow
+      workflowId: example-revise
       label: Revise the draft
   connections:
     - from:
@@ -35,21 +37,25 @@ spec:
         right:
           - failed
 included:
-  pipelines:
+  workflows:
     - metadata:
         id: example-draft
         name: Draft
         version: 1
       spec:
-        phaseIds:
-          - example-write-draft
         outputs:
           - portId: draft-document
             label: Draft document
             type: markdown
+        startNodeIds:
+          - write-draft
+        nodes:
+          - nodeId: write-draft
+            kind: phase
+            phaseId: example-write-draft
         bindings:
           - kind: output
-            phaseIndex: 0
+            nodeId: write-draft
             portId: draft-document
             outputKey: draft
     - metadata:
@@ -57,19 +63,23 @@ included:
         name: Revise
         version: 1
       spec:
-        phaseIds:
-          - example-revise-draft
         inputs:
           - portId: draft-document
             label: Draft document
             type: text
             required: true
+        startNodeIds:
+          - revise-draft
+        nodes:
+          - nodeId: revise-draft
+            kind: phase
+            phaseId: example-revise-draft
         bindings:
           - kind: input
-            phaseIndex: 0
+            nodeId: revise-draft
             inputKey: draft
             source:
-              from: pipeline-input
+              from: workflow-input
               portId: draft-document
   phases:
     - metadata:

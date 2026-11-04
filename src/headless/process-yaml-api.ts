@@ -120,20 +120,19 @@ export interface ImportProcessDocumentInput {
   readonly plan: ImportPlan;
 }
 
-export type ImportLayerKey = 'phases' | 'pipelines' | 'workflows' | 'models';
+export type ImportLayerKey = 'phases' | 'workflows' | 'models';
 
 /**
  * The layer keys in write order — the one place this module states the order.
  *
- * `'models'` has no ordering relationship with the other three: FR-015 rules
+ * `'models'` has no ordering relationship with the other two: FR-015 rules
  * out cross-catalog references, so a Model Catalog document never shares a
- * plan with Phase/Pipeline/Workflow rows (contract §1, research.md Decision
+ * plan with Phase/Workflow rows (contract §1, research.md Decision
  * 4). Its position here is therefore unconstrained; it is listed last only
  * because it was added last.
  */
 export const IMPORT_LAYER_ORDER: readonly ImportLayerKey[] = [
   'phases',
-  'pipelines',
   'workflows',
   'models'
 ];
@@ -201,7 +200,6 @@ export const DISPATCH_OF_KIND: {
   readonly [K in ProcessYamlResourceKind]: 'package-layer' | 'model-settings';
 } = {
   phase: 'package-layer',
-  pipeline: 'package-layer',
   workflow: 'package-layer',
   modelCatalog: 'model-settings'
 };
@@ -223,11 +221,14 @@ export function undispatchedKinds(plan: ImportPlan, dispatched: ReadonlySet<stri
 }
 
 /** The layer key each catalog kind reports under. */
-const LAYER_KEY_OF: Readonly<Record<PackageLayer['kind'] | 'pipeline', ImportLayerKey>> = {
+const LAYER_KEY_OF: Readonly<Record<'phase' | 'workflow', ImportLayerKey>> = {
   phase: 'phases',
-  pipeline: 'pipelines',
   workflow: 'workflows'
 };
+
+function layerKeyOf(kind: PackageLayer['kind']): ImportLayerKey {
+  return kind === 'phase' ? LAYER_KEY_OF.phase : LAYER_KEY_OF.workflow;
+}
 
 /**
  * One package outcome, reported as the per-layer results this module has always
@@ -251,20 +252,20 @@ export function packageResults(
 ): readonly ImportLayerResult[] {
   if (outcome.outcome === 'published') {
     return layers.map((layer) => ({
-      key: LAYER_KEY_OF[layer.kind],
+      key: layerKeyOf(layer.kind),
       ack: { status: 'accepted' } as const
     }));
   }
   if (outcome.outcome === 'refused') {
     const { refusal } = outcome;
     return layers.map((layer) => ({
-      key: LAYER_KEY_OF[layer.kind],
+      key: layerKeyOf(layer.kind),
       ack: { status: 'rejected', reason: refusal.reason, result: refusal } as const
     }));
   }
   const live = new Set(outcome.published.map((published) => published.kind));
   return layers.map((layer) => ({
-    key: LAYER_KEY_OF[layer.kind],
+    key: layerKeyOf(layer.kind),
     ack: live.has(layer.kind)
       ? ({ status: 'accepted' } as const)
       : ({ status: 'rejected', reason: 'package-partial', result: outcome } as const)
@@ -320,19 +321,14 @@ export async function importProcessDocument(
 ): Promise<ImportProcessDocumentResult> {
   const { plan } = input;
   const phases = importRows(plan, 'phase');
-  const pipelines = importRows(plan, 'pipeline');
   const workflows = importRows(plan, 'workflow');
   const models = importRows(plan, 'modelCatalog');
-  const pipelineRevision = plan.computedAgainstPipelineRevision;
   const workflowRevision = plan.computedAgainstWorkflowRevision;
   const modelsRevision = plan.computedAgainstModelsRevision;
 
   // Half a package is the one outcome no requirement admits. A plan that carries
   // rows for a layer but no revision to gate that layer's write cannot be applied
   // at all, so nothing is sent — not the layers it happens to have a gate for.
-  if (pipelines.length > 0 && pipelineRevision === undefined) {
-    return { outcome: 'failed', results: [] };
-  }
   if (workflows.length > 0 && workflowRevision === undefined) {
     return { outcome: 'failed', results: [] };
   }
@@ -348,16 +344,6 @@ export async function importProcessDocument(
       definitions: phases.map(({ definition }) => {
         const { phaseId, ...declared } = definition;
         return { id: phaseId, body: { id: phaseId, ...declared } };
-      })
-    });
-  }
-  if (pipelines.length > 0 && pipelineRevision !== undefined) {
-    layerRequest.push({
-      kind: 'pipeline' as PackageLayer['kind'],
-      expectedRevision: pipelineRevision,
-      definitions: pipelines.map(({ definition }) => {
-        const { pipelineId, phaseIds, ...declared } = definition;
-        return { id: pipelineId, body: { id: pipelineId, phases: [...phaseIds], ...declared } };
       })
     });
   }

@@ -247,8 +247,7 @@ A Phase `body` is the authored Phase document; [Custom Phases](../features/custo
 `CMD_EXPORT_PROCESS_YAML` accepts exactly one of:
 
 - `{ resourceKind: 'phase', resourceId }`
-- `{ resourceKind: 'pipeline', resourceId, inclusion: 'references-only' | 'include-referenced' }`
-- `{ resourceKind: 'workflow', resourceId, inclusion: 'references-only' | 'include-pipelines' | 'include-closure' }`
+- `{ resourceKind: 'workflow', resourceId, inclusion: 'references-only' | 'include-closure' }`
 - `{ resourceKind: 'modelCatalog' }`
 
 The webview supplies no file path for export or preflight; the host owns the open/save dialogs.
