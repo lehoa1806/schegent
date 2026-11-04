@@ -10,10 +10,17 @@
   // heading rather than being hidden. A canvas that draws only the reachable graph
   // would hide the very node the operator has to connect or delete to make the
   // save pass, with the host's defect pointing at something invisible.
-  import type { PortablePipelineDefinition, WorkflowConnection, WorkflowNode } from '../../lib/snapshot-types';
+  import type {
+    PortablePhaseDefinition,
+    PortablePipelineDefinition,
+    PortableWorkflowDefinition,
+    WorkflowConnection,
+    WorkflowNode
+  } from '../../lib/snapshot-types';
   import { buildWorkflowFlowLayout, type FlowNodeSlot } from './workflow-flow-layout';
   import type { WorkflowFlowSelection, WorkflowFlowView } from './workflow-flow-view';
   import type { WorkflowDraftError } from './workflow-catalog-state';
+  import type { MutableWorkflow } from './types';
   import WorkflowFlowSubtree from './WorkflowFlowSubtree.svelte';
 
   interface Props {
@@ -21,6 +28,9 @@
     connections: readonly WorkflowConnection[];
     startNodeIds: readonly string[];
     pipelines: readonly PortablePipelineDefinition[];
+    phases?: readonly PortablePhaseDefinition[];
+    workflows?: readonly PortableWorkflowDefinition[];
+    allWorkflows?: readonly MutableWorkflow[];
     /** Both indexed alongside their authored list; see `anchorWorkflowDefects`. */
     nodeDefects: readonly (readonly WorkflowDraftError[])[];
     connectionDefects: readonly (readonly WorkflowDraftError[])[];
@@ -32,6 +42,7 @@
     onnodemove: (index: number, delta: number) => void;
     onnoderemove: (index: number) => void;
     onbranchadd: (nodeId: string) => void;
+    onopenworkflow?: (workflowId: string, fromNodeId: string) => void;
   }
 
   const props: Props = $props();
@@ -59,6 +70,8 @@
     nodes: props.nodes,
     slotsById,
     pipelines: props.pipelines,
+    phases: props.phases,
+    workflows: props.allWorkflows ?? props.workflows,
     nodeDefects: props.nodeDefects,
     connectionDefects: props.connectionDefects,
     cycleNodeIds: layout.cycleNodeIds,
@@ -69,7 +82,8 @@
     onsplice: props.onsplice,
     onnodemove: props.onnodemove,
     onnoderemove: props.onnoderemove,
-    onbranchadd: props.onbranchadd
+    onbranchadd: props.onbranchadd,
+    onopenworkflow: props.onopenworkflow
   });
 </script>
 

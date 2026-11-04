@@ -376,7 +376,6 @@ const STYLE_ROWS: readonly StyleRow[] = [
   { route: 'phases', source: 'PhaseCatalogEditor:393', selector: PHASE_FIELD('model'), equals: { 'flex-grow': '1' } },
   { route: 'phases', source: 'PhaseCatalogEditor:405', selector: PHASE_FIELD('effort'), equals: { 'flex-grow': '1' } },
   { route: 'phases', source: 'PhaseCatalogEditor:414', selector: PHASE_FIELD('runner'), equals: { 'flex-grow': '1' } },
-  { route: 'pipelines', source: 'PipelineToolbar:188', selector: '[data-testid="pipelines-save-all"]', marginLeftAboveZero: true, containerEdge: true },
   { route: 'workflows', source: 'WorkflowToolbar:196', selector: '[data-testid="workflows-save-all"]', marginLeftAboveZero: true, containerEdge: true }
 ];
 
@@ -440,17 +439,11 @@ async function judgeRow(page: Page, row: StyleRow): Promise<StyleRowResult> {
 /** Open a Builder tab's content and make its affected elements exist. */
 async function openBuilderRoute(page: Page, route: PolicySmokeRoute): Promise<void> {
   const builder = page.getByTestId('pipeline-builder-root');
-  const tabName = { phases: 'Phases', pipelines: 'Pipelines', workflows: 'Workflows', models: 'Models' }[route];
+  const tabName = { phases: 'Phases', workflows: 'Workflows', models: 'Models' }[route];
   await page.getByRole('tab', { name: tabName }).click();
   if (route === 'phases') {
     await builder.locator('.phase-list-item').first().click();
     await expect(page.getByTestId(`phases-model-${POLICY_SMOKE_PHASE_ID}`)).toBeVisible();
-  }
-  if (route === 'pipelines') {
-    const picker = page.getByTestId('pipelines-picker-toggle');
-    if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
-    await builder.locator('.phase-list-item').first().click();
-    await expect(page.getByTestId('pipelines-save-all')).toBeVisible();
   }
   if (route === 'workflows') {
     const picker = page.getByTestId('workflow-picker-toggle');

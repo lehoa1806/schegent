@@ -13,7 +13,12 @@
   // Every edit goes out through `graph`, the same `WorkflowGraphActions` bundle the
   // list Builder used, so the rules still live in `workflow-catalog-state.ts` and
   // no rule is expressible in this markup.
-  import type { BuilderLifecycle, PortablePipelineDefinition } from '../../lib/snapshot-types';
+  import type {
+    BuilderLifecycle,
+    PortablePhaseDefinition,
+    PortablePipelineDefinition,
+    PortableWorkflowDefinition
+  } from '../../lib/snapshot-types';
   import type { AnchoredWorkflowDefects } from './workflow-catalog-state';
   import type { WorkflowGraphActions } from './workflow-catalog-actions';
   import type { WorkflowFlowSelection } from './workflow-flow-view';
@@ -25,8 +30,11 @@
   interface Props {
     row: MutableWorkflow;
     pipelines: readonly PortablePipelineDefinition[];
+    phases?: readonly PortablePhaseDefinition[];
+    workflows?: readonly PortableWorkflowDefinition[];
+    allWorkflows?: readonly MutableWorkflow[];
     defects: AnchoredWorkflowDefects;
-    /** False for a stored row: only an unsaved draft is editable (FR-026). */
+    /** False when trust, readiness, or an in-flight save blocks mutation. */
     editable: boolean;
     graph: WorkflowGraphActions;
     /**
@@ -36,6 +44,7 @@
      */
     lifecycle?: BuilderLifecycle;
     onworkflowpatch: (patch: Partial<MutableWorkflow>) => void;
+    onopenworkflow?: (workflowId: string, fromNodeId?: string) => void;
   }
 
   const p: Props = $props();
@@ -79,11 +88,15 @@
   {#if paletteOpen}
     <WorkflowActionPalette
       pipelines={p.pipelines}
+      phases={p.phases}
+      workflows={p.workflows}
+      currentWorkflowId={p.row.workflowId}
       readonly={!p.editable}
-      {selectedNodeId}
+      splitTargetId={selectedNodeId}
       onaddnode={p.graph.addNodeRunning}
-      onbranchadd={p.graph.addBranch}
-      onclose={() => (paletteOpen = false)}
+      onaddsplit={() => {
+        if (selectedNodeId) p.graph.addBranch(selectedNodeId);
+      }}
     />
   {:else}
     <div class="wf-palette-rail" data-testid="workflow-palette-rail">
@@ -101,6 +114,9 @@
     connections={p.row.connections}
     startNodeIds={p.row.startNodeIds}
     pipelines={p.pipelines}
+    phases={p.phases}
+    workflows={p.workflows}
+    allWorkflows={p.allWorkflows}
     nodeDefects={p.defects.byNode}
     connectionDefects={p.defects.byConnection}
     readonly={!p.editable}
@@ -111,12 +127,17 @@
     onnodemove={p.graph.moveNode}
     onnoderemove={removeNode}
     onbranchadd={p.graph.addBranch}
+    onopenworkflow={p.onopenworkflow}
   />
 
   <WorkflowInspector
     row={p.row}
     {selection}
     pipelines={p.pipelines}
+    phases={p.phases}
+    workflows={p.workflows}
+    allWorkflows={p.allWorkflows}
+    actions={p.graph}
     defects={p.defects}
     editable={p.editable}
     lifecycle={p.lifecycle}
@@ -133,5 +154,6 @@
     onconditionvalueremove={p.graph.removeConditionValue}
     onconnectionmove={p.graph.moveConnection}
     onconnectionremove={removeConnection}
+    onopenworkflow={p.onopenworkflow}
   />
 </div>

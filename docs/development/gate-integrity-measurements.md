@@ -1612,7 +1612,7 @@ and they pass with the entrant in the set.
 
 | Gate | Seeded case that must fail | Result |
 |---|---|---|
-| `no-static-inline-style.test.ts` (N4) | the 13 static attributes the Builder's editors carried before they moved; and `style="margin-left:auto"` put back into `PipelineToolbar.svelte` | the first run named all 13 as `path:line`; the second named `PipelineToolbar.svelte:111`; the synthetic dynamic attribute is not named |
+| `no-static-inline-style.test.ts` (N4) | the 13 static attributes the Builder's editors carried before they moved; and `style="margin-left:auto"` put back into `PipelineToolbar.svelte` (retired by `FR-R5-F05`) | the first run named all 13 as `path:line`; the second named `PipelineToolbar.svelte` line 111; the synthetic dynamic attribute is not named |
 
 **Denominator movement 131 → 133 (2026-11-01, feature 258 / `FR-R4-F11`).** Two gates joined, and the feature
 added no file under `tests/lint/`. Attribution is by census membership, measured rather than assumed: the

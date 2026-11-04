@@ -23,7 +23,7 @@
   "rules": {
     "@typescript-eslint/no-unnecessary-condition": {
       "host": 412,
-      "webview": 253,
+      "webview": 239,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
@@ -219,8 +219,6 @@
         "src/components/PipelineBuilderEditors/PhaseCatalogEditor.svelte": 2,
         "src/components/PipelineBuilderEditors/model-catalog-state.ts": 2,
         "src/components/PipelineBuilderEditors/phase-catalog-actions.ts": 5,
-        "src/components/PipelineBuilderEditors/pipeline-catalog-state.ts": 1,
-        "src/components/PipelineBuilderEditors/pipeline-catalog-store.svelte.ts": 4,
         "src/components/PipelineBuilderEditors/workflow-catalog-actions.ts": 3,
         "src/components/PipelineBuilderEditors/workflow-flow-layout.ts": 1,
         "src/components/ProcessImport/process-import-state.ts": 2,
@@ -248,7 +246,6 @@
         "src/components/__tests__/PhaseProgression.test.ts": 6,
         "src/components/__tests__/PipelineBuilder.test.ts": 11,
         "src/components/__tests__/PipelineBuilder.workflows-tab.test.ts": 2,
-        "src/components/__tests__/PipelineCatalogEditor.test.ts": 9,
         "src/components/__tests__/ProcessImportPreflight.test.ts": 9,
         "src/components/__tests__/QueueConfigModal.test.ts": 1,
         "src/components/__tests__/QueueItem.reorder.test.ts": 1,
@@ -350,12 +347,12 @@
       }
     },
     "suppressionDirectives": {
-      "repo": 4,
+      "repo": 3,
       "owner": {
         "decision": "D10 — Suppression hygiene is a deletion, not a baseline",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
       },
-      "reductionNote": "Four line-scoped eslint-disable comments repo-wide, down from 70; the other 66 named rules that were off or removed and were deleted rather than recorded here. This total is bounded so that lowering a rule count above by suppressing a site shows up as a rise here instead of as an improvement. Of the four: prefer-const at tests/integration/cascaded-pause.test.ts:110 goes when that closure stops needing its binding declared upfront; no-require-imports at tests/integration/index.ts:17 goes when the VS Code test loader takes ESM; the two no-control-regex ones (webview-ui/src/lib/ansi.ts:5 and .../pipeline-catalog-state.ts:465) are load-bearing, because parsing ANSI means matching control characters, and are expected to stay. This count has no tree key, so the lint run skips it and tests/lint/eslint-baseline.test.ts checks it (FR-018)."
+      "reductionNote": "Three line-scoped eslint-disable comments repo-wide, down from 70 (and down from 4 when FR-R5-F05 retired pipeline-catalog-state.ts); the other 66 named rules that were off or removed and were deleted rather than recorded here. This total is bounded so that lowering a rule count above by suppressing a site shows up as a rise here instead of as an improvement. Of the three: prefer-const at tests/integration/cascaded-pause.test.ts:110 goes when that closure stops needing its binding declared upfront; no-require-imports at tests/integration/index.ts:17 goes when the VS Code test loader takes ESM; the no-control-regex one (webview-ui/src/lib/ansi.ts:5) is load-bearing, because parsing ANSI means matching control characters, and is expected to stay. This count has no tree key, so the lint run skips it and tests/lint/eslint-baseline.test.ts checks it (FR-018)."
     }
   }
 }

@@ -17,15 +17,33 @@
   import type { MutableWorkflow } from './types';
   import WorkflowLibraryList from './WorkflowLibraryList.svelte';
 
+  export interface WorkflowBreadcrumbEntry {
+    readonly sourceKey: string;
+    readonly workflowId: string;
+    readonly name: string;
+  }
+
   interface Props {
     rows: readonly MutableWorkflow[];
     selected: MutableWorkflow | null;
     selectedKey: string | null;
     lifecycleByKey: ReadonlyMap<string, BuilderLifecycle | undefined>;
+    dirty?: boolean;
+    breadcrumbs?: readonly WorkflowBreadcrumbEntry[];
     onselect: (sourceKey: string) => void;
+    onbreadcrumbselect?: (index: number) => void;
   }
 
-  const { rows, selected, selectedKey, lifecycleByKey, onselect }: Props = $props();
+  const {
+    rows,
+    selected,
+    selectedKey,
+    lifecycleByKey,
+    dirty = false,
+    breadcrumbs = [],
+    onselect,
+    onbreadcrumbselect
+  }: Props = $props();
 
   /**
    * Null until the operator opens or closes the picker themselves, and a boolean
@@ -93,7 +111,28 @@
            canvas: it looks identical to a stored row until a save is attempted. -->
       {#if !selected.persisted}
         <span class="wf-badge" data-testid="workflow-topbar-unsaved">unsaved draft</span>
+      {:else if dirty}
+        <span class="wf-badge" data-testid="workflow-topbar-dirty">modified</span>
       {/if}
     </div>
+  {/if}
+
+  {#if breadcrumbs.length > 0 && selected}
+    <nav class="wf-breadcrumbs" aria-label="Workflow hierarchy" data-testid="workflow-breadcrumbs">
+      {#each breadcrumbs as crumb, index (crumb.sourceKey + '-' + index)}
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          data-testid="workflow-breadcrumb-{index}"
+          onclick={() => onbreadcrumbselect?.(index)}
+        >
+          {crumb.name || crumb.workflowId}
+        </button>
+        <span aria-hidden="true">/</span>
+      {/each}
+      <span class="wf-breadcrumb-current" data-testid="workflow-breadcrumb-current">
+        {selected.name || selected.workflowId}
+      </span>
+    </nav>
   {/if}
 </div>

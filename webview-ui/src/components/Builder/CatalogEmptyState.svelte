@@ -23,7 +23,7 @@
 
   interface Props {
     /** Which tab is empty — the test handle, and nothing else. The words are shared. */
-    kind: CatalogKind | "pipeline";
+    kind: CatalogKind;
     /** How many definitions this tab has. Zero is the only value that shows anything. */
     count: number;
     /**

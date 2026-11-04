@@ -1,39 +1,45 @@
 <script lang="ts">
   // The inspector: the fields of whatever the canvas has in focus.
   //
-  // The list Builder put the Workflow's identity in a form above the graph and
-  // every node and connection field inline on its row. The canvas has no room for
-  // either, so all three move here and the selection decides which is showing.
-  // `workflow` is the resting selection rather than "nothing selected" — the
-  // identity fields have to be reachable without first clicking a node.
-  //
-  // Holds no rule and sends nothing. Every control calls back into the one gate in
-  // `WorkflowCatalogEditor`, which is what refuses the edit when the row is not an
-  // editable draft.
-  import type {
-    BuilderLifecycle,
-    PortablePipelineDefinition,
-    WorkflowConnection,
-    WorkflowNode,
+  // Supports Workflow settings, public ports & bindings, execution defaults,
+  // dependent-parent impact, and Phase / child-Workflow / Pipeline node configuration.
+  import {
+    EFFORT_LEVELS,
+    type BuilderLifecycle,
+    type Effort,
+    type PortablePhaseDefinition,
+    type PortablePipelineDefinition,
+    type PortableWorkflowDefinition,
+    type WorkflowConnection,
+    type WorkflowNode,
   } from "../../lib/snapshot-types";
-  import type {
-    AnchoredWorkflowDefects,
-    WorkflowConditionPatch,
+  import {
+    dependentWorkflowsForWorkflow,
+    type AnchoredWorkflowDefects,
+    type WorkflowConditionPatch,
   } from "./workflow-catalog-state";
+  import type { WorkflowGraphActions } from "./workflow-catalog-actions";
   import type { WorkflowFlowSelection } from "./workflow-flow-view";
   import type { MutableWorkflow } from "./types";
   import DefinitionLifecyclePanel from "../Builder/DefinitionLifecyclePanel.svelte";
   import WorkflowBranchInspector from "./WorkflowBranchInspector.svelte";
+  import WorkflowPortsAndBindingsEditor from "./WorkflowPortsAndBindingsEditor.svelte";
   import WorkflowRowDefects from "./WorkflowRowDefects.svelte";
 
   interface Props {
     row: MutableWorkflow;
     selection: WorkflowFlowSelection;
     pipelines: readonly PortablePipelineDefinition[];
+    phases?: readonly PortablePhaseDefinition[];
+    workflows?: readonly PortableWorkflowDefinition[];
+    allWorkflows?: readonly {
+      readonly workflowId: string;
+      readonly name: string;
+      readonly nodes: readonly WorkflowNode[];
+    }[];
+    actions?: WorkflowGraphActions;
     defects: AnchoredWorkflowDefects;
-    /** False for a stored row: only an unsaved draft is editable (FR-026). */
     editable: boolean;
-    /** Feature 186 (US3, T020, D-2) — absent on a host with no catalog store wired. */
     lifecycle?: BuilderLifecycle;
     onworkflowpatch: (patch: Partial<MutableWorkflow>) => void;
     onnodepatch: (index: number, patch: Partial<WorkflowNode>) => void;
@@ -42,7 +48,7 @@
     onretarget: (
       index: number,
       end: "from" | "to",
-      patch: { nodeId?: string; portId?: string },
+      patch: { nodeId?: string; portId?: string; kind?: "node" | "return" },
     ) => void;
     onconnectionpatch: (
       index: number,
@@ -55,11 +61,17 @@
     onconditionvalueremove: (index: number, valueIndex: number) => void;
     onconnectionmove: (index: number, delta: number) => void;
     onconnectionremove: (index: number) => void;
+    onopenworkflow?: (workflowId: string, fromNodeId: string) => void;
   }
 
   const p: Props = $props();
 
   const readonly = $derived(!p.editable);
+  const phases = $derived(p.phases ?? []);
+  const workflows = $derived(p.workflows ?? []);
+  const childWorkflowOptions = $derived(
+    workflows.filter((wf) => wf.workflowId !== p.row.workflowId),
+  );
   const node = $derived(
     p.selection.kind === "node"
       ? (p.row.nodes[p.selection.index] ?? null)
@@ -70,13 +82,62 @@
       ? (p.row.connections[p.selection.index] ?? null)
       : null,
   );
-  /** The Pipeline the selected node names, for the port reference below it. */
   const nodePipeline = $derived(
     node
       ? (p.pipelines.find((entry) => entry.pipelineId === node.pipelineId) ??
           null)
       : null,
   );
+  const nodeChildWorkflow = $derived(
+    node?.workflowId
+      ? (workflows.find((entry) => entry.workflowId === node.workflowId) ??
+          null)
+      : null,
+  );
+  const dependentParents = $derived(
+    dependentWorkflowsForWorkflow(
+      p.row.workflowId,
+      p.allWorkflows ?? workflows,
+    ),
+  );
+
+  function effectiveNodeKind(
+    target: WorkflowNode,
+  ): "phase" | "workflow" | "pipeline" {
+    if (target.kind === "phase" || target.phaseId !== undefined) return "phase";
+    if (target.kind === "workflow" || target.workflowId !== undefined) {
+      return "workflow";
+    }
+    return "pipeline";
+  }
+
+  function switchNodeKind(
+    index: number,
+    kind: "phase" | "workflow" | "pipeline",
+  ): void {
+    if (kind === "phase") {
+      p.onnodepatch(index, {
+        kind: "phase",
+        phaseId: phases[0]?.phaseId ?? "",
+        workflowId: undefined,
+        pipelineId: undefined,
+      });
+    } else if (kind === "workflow") {
+      p.onnodepatch(index, {
+        kind: "workflow",
+        workflowId: childWorkflowOptions[0]?.workflowId ?? "",
+        phaseId: undefined,
+        pipelineId: undefined,
+      });
+    } else {
+      p.onnodepatch(index, {
+        kind: undefined,
+        pipelineId: p.pipelines[0]?.pipelineId ?? "",
+        phaseId: undefined,
+        workflowId: undefined,
+      });
+    }
+  }
 </script>
 
 <div class="wf-inspector" data-testid="workflow-inspector">
@@ -86,6 +147,7 @@
       {connection}
       nodes={p.row.nodes}
       pipelines={p.pipelines}
+      {workflows}
       defects={p.defects.byConnection[p.selection.index] ?? []}
       {readonly}
       connectionCount={p.row.connections.length}
@@ -101,13 +163,12 @@
     />
   {:else if node && p.selection.kind === "node"}
     {@const index = p.selection.index}
+    {@const nKind = effectiveNodeKind(node)}
     <div
       class="wf-inspector-section"
       data-testid="workflow-node-inspector-{index}"
     >
       <h3>Node {index + 1}</h3>
-      <!-- The identifier is shown, never edited: connections and starts address
-           it, which is exactly what makes reorder safe (FR-043). -->
       <span class="wf-inspector-sub" data-testid="workflow-node-inspector-id"
         >{node.nodeId}</span
       >
@@ -116,30 +177,119 @@
         defects={p.defects.byNode[index] ?? []}
       />
 
-      <label class="wf-field">
-        Runs Pipeline
-        <select
-          class="select-input"
-          data-testid="workflow-node-pipeline-select-{index}"
-          aria-label="Node {index + 1} runs Pipeline"
-          value={node.pipelineId ?? ""}
-          disabled={readonly}
-          onchange={(event) =>
-            p.onnodepatch(index, { pipelineId: event.currentTarget.value })}
-        >
-          <!-- A Pipeline the node names but the effective catalog does not hold
-               still has to be selectable, or changing anything else on the node
-               would silently retarget it. -->
-          {#if node.pipelineId !== undefined && !p.pipelines.some((entry) => entry.pipelineId === node.pipelineId)}
-            <option value={node.pipelineId}
-              >{node.pipelineId} (not effective)</option
-            >
-          {/if}
-          {#each p.pipelines as pipeline (pipeline.pipelineId)}
-            <option value={pipeline.pipelineId}>{pipeline.name}</option>
-          {/each}
-        </select>
-      </label>
+      {#if phases.length > 0 || childWorkflowOptions.length > 0}
+        <label class="wf-field">
+          Step Type
+          <select
+            class="select-input"
+            data-testid="workflow-node-kind-select-{index}"
+            aria-label="Node {index + 1} step type"
+            value={nKind}
+            disabled={readonly}
+            onchange={(event) =>
+              switchNodeKind(
+                index,
+                event.currentTarget.value as "phase" | "workflow" | "pipeline",
+              )}
+          >
+            <option value="phase">Phase</option>
+            <option value="workflow">Child Workflow</option>
+            {#if p.pipelines.length > 0 || nKind === "pipeline"}
+              <option value="pipeline">Pipeline</option>
+            {/if}
+          </select>
+        </label>
+      {/if}
+
+      {#if nKind === "phase"}
+        <label class="wf-field">
+          Runs Phase
+          <select
+            class="select-input"
+            data-testid="workflow-node-phase-select-{index}"
+            aria-label="Node {index + 1} runs Phase"
+            value={node.phaseId ?? ""}
+            disabled={readonly}
+            onchange={(event) =>
+              p.onnodepatch(index, {
+                kind: "phase",
+                phaseId: event.currentTarget.value,
+                workflowId: undefined,
+                pipelineId: undefined,
+              })}
+          >
+            {#if node.phaseId !== undefined && !phases.some((entry) => entry.phaseId === node.phaseId)}
+              <option value={node.phaseId}
+                >{node.phaseId} (not effective)</option
+              >
+            {/if}
+            {#each phases as phase (phase.phaseId)}
+              <option value={phase.phaseId}>{phase.name}</option>
+            {/each}
+          </select>
+        </label>
+      {:else if nKind === "workflow"}
+        <label class="wf-field">
+          Runs Workflow
+          <select
+            class="select-input"
+            data-testid="workflow-node-workflow-select-{index}"
+            aria-label="Node {index + 1} runs Workflow"
+            value={node.workflowId ?? ""}
+            disabled={readonly}
+            onchange={(event) =>
+              p.onnodepatch(index, {
+                kind: "workflow",
+                workflowId: event.currentTarget.value,
+                phaseId: undefined,
+                pipelineId: undefined,
+              })}
+          >
+            {#if node.workflowId !== undefined && !childWorkflowOptions.some((entry) => entry.workflowId === node.workflowId)}
+              <option value={node.workflowId}
+                >{node.workflowId} (not effective)</option
+              >
+            {/if}
+            {#each childWorkflowOptions as wf (wf.workflowId)}
+              <option value={wf.workflowId}>{wf.name}</option>
+            {/each}
+          </select>
+        </label>
+        {#if node.workflowId && p.onopenworkflow}
+          {@const childId = node.workflowId}
+          {@const fromId = node.nodeId}
+          <button
+            type="button"
+            class="btn btn-ghost"
+            data-testid="workflow-inspector-open-child-{index}"
+            onclick={() => p.onopenworkflow?.(childId, fromId)}
+          >
+            Open child Workflow definition
+          </button>
+        {/if}
+      {:else}
+        <label class="wf-field">
+          Runs Pipeline
+          <select
+            class="select-input"
+            data-testid="workflow-node-pipeline-select-{index}"
+            aria-label="Node {index + 1} runs Pipeline"
+            value={node.pipelineId ?? ""}
+            disabled={readonly}
+            onchange={(event) =>
+              p.onnodepatch(index, { pipelineId: event.currentTarget.value })}
+          >
+            {#if node.pipelineId !== undefined && !p.pipelines.some((entry) => entry.pipelineId === node.pipelineId)}
+              <option value={node.pipelineId}
+                >{node.pipelineId} (not effective)</option
+              >
+            {/if}
+            {#each p.pipelines as pipeline (pipeline.pipelineId)}
+              <option value={pipeline.pipelineId}>{pipeline.name}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
 
       <label class="wf-field">
         Label
@@ -177,11 +327,19 @@
             <span class="wf-badge">out {port.portId}</span>
           {/each}
         </div>
+      {:else if nodeChildWorkflow}
+        <div class="row-ports" data-testid="workflow-node-ports-{index}">
+          <span class="form-label">Child Workflow Ports</span>
+          {#each nodeChildWorkflow.inputs ?? [] as port (port.portId)}
+            <span class="wf-badge">in {port.portId}</span>
+          {/each}
+          {#each nodeChildWorkflow.outputs ?? [] as port (port.portId)}
+            <span class="wf-badge">out {port.portId}</span>
+          {/each}
+        </div>
       {/if}
 
       {#if !readonly}
-        <!-- A split is another connection leaving this node, not a node of its
-             own, so it is authored from the node it leaves. -->
         <button
           class="btn btn-secondary"
           data-testid="workflow-node-branch-add-{index}"
@@ -230,12 +388,18 @@
         <span class="status-badge status-{p.row.sourceStatus}"
           >{p.row.sourceStatus}</span
         >
+        {#if dependentParents.length > 0}
+          <span
+            class="status-badge"
+            data-testid="workflow-dependent-parents"
+          >
+            Used by {dependentParents.length}
+            {dependentParents.length === 1 ? "Workflow" : "Workflows"}:
+            {dependentParents.map((d) => d.name || d.workflowId).join(", ")}
+          </span>
+        {/if}
       </div>
 
-      <!-- Feature 186 (US3, T020, D-1, D-2) — the open Workflow's lifecycle
-           facts and actions, reachable without opening the picker (FR-001,
-           FR-002). Mounted only in this resting branch: a selected node or
-           connection is part of the Workflow, not the open definition itself. -->
       <DefinitionLifecyclePanel
         kind="workflow"
         definitionId={p.row.workflowId}
@@ -244,9 +408,57 @@
         defects={p.row.sourceErrors}
       />
 
-      <!-- Only what no node and no branch could show: anything anchored to one of
-           those renders on it (FR-044), and repeating it here would make this the
-           place to read defects instead. -->
+      {#if p.actions}
+        <WorkflowPortsAndBindingsEditor
+          workflow={p.row}
+          {readonly}
+          actions={p.actions}
+          defects={p.defects.rest}
+        />
+
+        <div class="wf-inspector-section" data-testid="workflow-execution-defaults">
+          <div class="wf-inspector-heading">Execution Defaults</div>
+          <label class="wf-field">
+            Default Runner
+            <select
+              class="select-input"
+              data-testid="workflow-default-runner"
+              value={p.row.executionDefaults?.runner ?? ""}
+              disabled={readonly}
+              onchange={(event) =>
+                p.actions?.patchExecutionDefaults?.({
+                  runner: event.currentTarget.value || undefined,
+                })}
+            >
+              <option value="">[Inherit]</option>
+              <option value="claude">claude</option>
+              <option value="codex">codex</option>
+              <option value="agy">agy</option>
+            </select>
+          </label>
+          <label class="wf-field">
+            Default Effort
+            <select
+              class="select-input"
+              data-testid="workflow-default-effort"
+              value={p.row.executionDefaults?.effort ?? ""}
+              disabled={readonly}
+              onchange={(event) =>
+                p.actions?.patchExecutionDefaults?.({
+                  effort: (event.currentTarget.value || undefined) as
+                    | Effort
+                    | undefined,
+                })}
+            >
+              <option value="">[Inherit]</option>
+              {#each EFFORT_LEVELS as effort (effort)}
+                <option value={effort}>{effort}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
+      {/if}
+
       {#if p.defects.rest.length > 0}
         <ul
           class="field-errors"

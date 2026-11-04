@@ -301,21 +301,23 @@ describe('WorkflowCatalogEditor stored rows (T496f)', () => {
   //
   // Both are pinned here, with their reasons kept apart, so that a build which
   // re-locks the whole row cannot pass by borrowing the surviving reason.
-  it('holds every field of a stored row read-only, a Workflow having no edit mutation', async () => {
+  it('holds workflowId of a stored row read-only while allowing in-place edits to name and description', async () => {
     const { container } = mount([record({ workflowId: 'stored-flow' })]);
     await fireEvent.click(rowFor(container, 'stored-flow'));
 
-    for (const field of ['workflowId', 'name', 'description']) {
+    const idControl = container.querySelector<HTMLInputElement>(
+      '[data-testid="workflow-field-workflowId"]'
+    );
+    expect(idControl?.readOnly === true || idControl?.disabled === true).toBe(true);
+
+    for (const field of ['name', 'description']) {
       const control = container.querySelector<HTMLInputElement>(
         `[data-testid="workflow-field-${field}"]`
       );
       expect(control, `${field} must render`).not.toBeNull();
       const locked = control?.readOnly === true || control?.disabled === true;
-      expect(locked, `${field} must stay read-only on a stored row`).toBe(true);
+      expect(locked, `${field} must be editable in place on a stored row`).toBe(false);
     }
-    // The counterpart is `makes the copy editable` below: the same three fields
-    // on the duplicate of this row are open. Read together they say the gate is
-    // persistence, not the row, and not where the row came from.
   });
 
   it('offers remove and duplicate alike on a stored row', async () => {
@@ -788,5 +790,158 @@ describe('missing-Pipeline prerequisite (US7, FR-045)', () => {
     const { container } = mountWith(undefined);
     expect(noticeIn(container)).toBeNull();
     expect(saveIn(container).disabled).toBe(true);
+  });
+});
+
+// ── Feature 264 (FR-R5-F05): Unified Workflow Authoring ────────────────────
+
+describe('Unified Workflow Authoring (FR-R5-F05)', () => {
+  function unifiedSnapshot(): WorkflowSnapshot {
+    const childDef = {
+      workflowId: 'child-wf',
+      name: 'Child Workflow',
+      version: 1,
+      nodes: [
+        { nodeId: 'verify', kind: 'phase' as const, phaseId: 'speckit-verify' }
+      ],
+      connections: [],
+      startNodeIds: ['verify'],
+      inputs: [{ portId: 'plan_doc', label: 'Plan Doc', type: 'text' as const, required: true }],
+      outputs: [{ portId: 'report_doc', label: 'Report Doc', type: 'markdown' as const }]
+    };
+    const parentDef = {
+      workflowId: 'parent-wf',
+      name: 'Parent Workflow',
+      version: 1,
+      nodes: [
+        { nodeId: 'specify', kind: 'phase' as const, phaseId: 'speckit-specify' },
+        { nodeId: 'review', kind: 'workflow' as const, workflowId: 'child-wf' }
+      ],
+      connections: [
+        { from: { nodeId: 'specify' }, to: { nodeId: 'review' }, handoff: 'manual' as const }
+      ],
+      startNodeIds: ['specify'],
+      inputs: [{ portId: 'feature_spec', label: 'Feature Spec', type: 'text' as const }],
+      outputs: [{ portId: 'final_report', label: 'Final Report', type: 'markdown' as const }],
+      bindings: [
+        {
+          kind: 'input' as const,
+          nodeId: 'review',
+          inputKey: 'plan_doc',
+          source: { from: 'workflow-input' as const, portId: 'feature_spec' }
+        },
+        {
+          kind: 'output' as const,
+          nodeId: 'review',
+          portId: 'report_doc',
+          outputKey: 'final_report'
+        }
+      ],
+      executionDefaults: { runner: 'claude' as const, model: 'model-a', effort: 'high' as const },
+      recommendedNext: ['child-wf']
+    };
+    return {
+      isPrimary: true,
+      availableBackends: ['claude'],
+      availableModels: { claude: ['model-a'], codex: [], agy: [] },
+      phaseCatalog: {
+        state: 'ready',
+        records: [],
+        effective: [
+          { phaseId: 'speckit-specify', name: 'Specify', version: 1, instruction: 'Specify' },
+          { phaseId: 'speckit-verify', name: 'Verify', version: 1, instruction: 'Verify' }
+        ],
+        revision: 'p-1',
+        warnings: []
+      },
+      workflowCatalog: {
+        state: 'ready',
+        records: [
+          record({
+            workflowId: 'parent-wf',
+            key: 'parent-wf::0',
+            definition: parentDef
+          }),
+          record({
+            workflowId: 'child-wf',
+            key: 'child-wf::1',
+            definition: childDef
+          })
+        ],
+        effective: [parentDef, childDef],
+        revision: 'w-1',
+        warnings: []
+      }
+    } as unknown as WorkflowSnapshot;
+  }
+
+  it('authors Phase and child Workflow nodes, inline preview, drill-down breadcrumbs, and preserves dirty state', async () => {
+    const { container, getByTestId } = render(WorkflowCatalogEditor, {
+      props: { snapshot: unifiedSnapshot(), trusted: true }
+    });
+
+    await fireEvent.click(rowFor(container, 'parent-wf'));
+
+    // Launch handoff state on editor root
+    const editorRoot = getByTestId('workflow-catalog-editor');
+    expect(editorRoot.getAttribute('data-selected-workflow-id')).toBe('parent-wf');
+    expect(editorRoot.getAttribute('data-launch-eligible')).toBe('true');
+
+    // Edit parent name so parent has dirty local state
+    await fireEvent.input(getByTestId('workflow-field-name'), {
+      target: { value: 'Parent Workflow Dirty' }
+    });
+
+    // Inline preview on child Workflow node (node index 1)
+    await fireEvent.click(getByTestId('workflow-node-preview-toggle-1'));
+    expect(getByTestId('workflow-node-preview-1').textContent).toContain('verify');
+
+    // Drill down into child Workflow
+    await fireEvent.click(getByTestId('workflow-node-open-child-1'));
+    expect(getByTestId('workflow-breadcrumbs')).not.toBeNull();
+    expect(getByTestId('workflow-breadcrumb-current').textContent).toContain('Child Workflow');
+    expect(getByTestId('workflow-dependent-parents').textContent).toContain('Parent Workflow');
+
+    // Navigate back to parent via breadcrumb and verify dirty edit survived
+    await fireEvent.click(getByTestId('workflow-breadcrumb-0'));
+    expect((getByTestId('workflow-field-name') as HTMLInputElement).value).toBe(
+      'Parent Workflow Dirty'
+    );
+  });
+
+  it('supports adding ports, bindings, execution defaults, undo/redo/discard, and preserves dirty state on rejected save', async () => {
+    const { saveDefinitionDraft } = await import('../../lib/catalog-lifecycle');
+    vi.mocked(saveDefinitionDraft).mockResolvedValueOnce({
+      status: 'rejected',
+      reason: 'stale-catalog',
+      result: { currentRevision: 'w-2' }
+    });
+
+    const { container, getByTestId } = render(WorkflowCatalogEditor, {
+      props: { snapshot: unifiedSnapshot(), trusted: true }
+    });
+    await fireEvent.click(rowFor(container, 'parent-wf'));
+
+    await fireEvent.click(getByTestId('workflow-inputs-add'));
+    await fireEvent.click(getByTestId('workflow-outputs-add'));
+    await fireEvent.change(getByTestId('workflow-default-effort'), {
+      target: { value: 'max' }
+    });
+
+    // Undo and Redo
+    await fireEvent.click(getByTestId('workflows-undo'));
+    expect((getByTestId('workflow-default-effort') as HTMLSelectElement).value).toBe('high');
+    await fireEvent.click(getByTestId('workflows-redo'));
+    expect((getByTestId('workflow-default-effort') as HTMLSelectElement).value).toBe('max');
+
+    // Rejected save preserves dirty draft state
+    await fireEvent.click(getByTestId('workflows-save-all'));
+    await tick();
+    expect(container.querySelector('[data-testid="workflow-save-error-banner"]')).not.toBeNull();
+    expect((getByTestId('workflow-default-effort') as HTMLSelectElement).value).toBe('max');
+
+    // Discard local edits restores stored row
+    await fireEvent.click(getByTestId('workflows-discard'));
+    expect((getByTestId('workflow-default-effort') as HTMLSelectElement).value).toBe('high');
   });
 });

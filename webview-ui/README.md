@@ -269,7 +269,7 @@ after `Operations`). The route ids and their nav labels are declared in
 | `history` | History | `components/HistoryDashboard.svelte` | Completed-run history and rerun. |
 | `metrics` | Metrics | `components/MetricsDashboard/MetricsDashboard.svelte` | On-demand audit-log rollup (spec 073). |
 | `system` | System Log | `components/SystemTab.svelte` | **System-scoped audit entries** (lifecycle, queue/task control, scheduling, audit pipeline housekeeping). See "Audit surfaces" below. |
-| `builder` | Builder | `components/PipelineBuilder.svelte` | Pipelines, phases, and models editor with `RetryConditionEditor` / `RawJsonPhaseEditor` wiring. |
+| `builder` | Builder | `components/PipelineBuilder.svelte` | Phases, Workflows, and Models editor with `RetryConditionEditor` / `RawJsonPhaseEditor` wiring. |
 | `settings` | Settings | `components/SettingsSurface.svelte` | Two sub-tabs: **General** and **Fatal Signatures**. |
 
 `DEFAULT_DASHBOARD_ROUTE` stays `operations` through every such addition —
@@ -443,9 +443,9 @@ It is **not** on **General** and is not a `schegent.*` configuration key at
 all: its value is workspace state, so it reaches the webview in its own
 snapshot projection rather than in `snapshot.generalSettings`.
 
-The Phases, Pipelines, Workflows, and Models editors are not in
-`SettingsSurface` — they live in Pipeline Builder, as its four tabs
-(Phases / Pipelines / Workflows / Models, per spec 083, spec 096 and spec 180).
+The Phases, Workflows, and Models editors are not in
+`SettingsSurface` — they live in Builder, as its three tabs
+(Phases / Workflows / Models, per spec 083, spec 096, spec 180 and spec 264).
 This co-locates configuration with the workflows that consume it.
 
 ### Settings hover-text primitive (spec 018)
@@ -707,90 +707,36 @@ layers, `shadowed` status, per-layer revisions) describes the pre-099 store and
 is stale; feature 099 left one layer and feature 101 left the rows lifecycle
 state where the scope badge used to be.
 
-### Scoped Pipeline catalog manager (spec 082)
+### Retired Pipeline catalog manager (spec 082, retired by FR-R5-F05 / spec 264)
 
-The Pipelines editor is the Phase manager's counterpart and follows the same
-rules. It reads the authoritative `snapshot.pipelineCatalog` source-record
-projection — built-in / user / workspace rows with effective, shadowed, or
-invalid status, bounded field errors, both writable-layer revisions, warnings,
-and each row's `consumingWorkflowIds`. `availablePipelines` remains the
-effective runtime-only list. Built-ins are read-only and offer duplicate only.
+`FR-R5-F05` retired the separate Pipelines Builder tab and its 14 `Pipeline*` editor components (`PipelineCatalogEditor.svelte`, `PipelineFlowBuilder.svelte`, `PipelineFlowCanvas.svelte`, `PipelineFlowNode.svelte`, `PipelineFlowTopBar.svelte`, `PipelineInspector.svelte`, `PipelineLibraryList.svelte`, `PipelinePhasePalette.svelte`, `PipelinePortsEditor.svelte`, `PipelineToolbar.svelte`, `PipelineFieldErrors.svelte`, `pipeline-catalog-state.ts`, `pipeline-catalog-store.svelte.ts`, `pipeline-flow-view.ts`). Ordered Phase sequences, public input/output ports, bindings, execution defaults, and `recommendedNext` are now authored directly inside the unified **Workflows** tab (`WorkflowCatalogEditor.svelte`).
 
-Ownership, given the per-component LOC budget `PipelineBuilder.svelte` sits under, which is
-`MAX_LINES` in [`tests/lint/svelte-component-loc-budget.test.ts`](../tests/lint/svelte-component-loc-budget.test.ts):
+### Unified Workflow catalog manager and Graph Builder (spec 083, spec 264)
 
-| File | Owns |
-|---|---|
-| [`PipelineCatalogEditor.svelte`](src/components/PipelineBuilderEditors/PipelineCatalogEditor.svelte) | The catalog list, the selected Pipeline's header/sequence markup, and the consuming-Workflow list |
-| [`PipelinePortsEditor.svelte`](src/components/PipelineBuilderEditors/PipelinePortsEditor.svelte) | Declared input and output ports |
-| [`PipelineFieldErrors.svelte`](src/components/PipelineBuilderEditors/PipelineFieldErrors.svelte) | Field-associated error regions (`aria-describedby` → `role="alert"`) |
-| [`pipeline-catalog-state.ts`](src/components/PipelineBuilderEditors/pipeline-catalog-state.ts) | Pure draft logic — including the binding `phaseIndex` remap every reorder, insert, and remove must apply *before* revalidation |
-| [`pipeline-catalog-store.svelte.ts`](src/components/PipelineBuilderEditors/pipeline-catalog-store.svelte.ts) | Rune-backed draft state and mutation dispatch |
+A **Workflow definition** is a reusable acyclic graph of Phase nodes (`kind: 'phase'`) and child Workflow nodes (`kind: 'workflow'`) — distinct from the run-side `WorkflowRun`, whose surfaces this section does not touch. Both senses are recorded in [`../docs/reference/glossary.md`](../docs/reference/glossary.md).
 
-`CMD_SAVE_PIPELINES` is widened to `{ scope, expectedRevision, mutation,
-pipelines }`, matching `CMD_SAVE_PHASES`. Each row may now carry `description`,
-`version`, `inputs`, `outputs`, `bindings`, `executionDefaults`, and
-`recommendedNext` in addition to `id`/`name`/`phases`.
-`webview-ui/src/lib/save-pipelines.ts` was the **single call site**, with the
-same correlation and 5-second timeout behavior as `save-phases.ts`. Feature 101
-deleted it along with the command it wrapped (see the feature 101 amendment
-above); what survives is the single-call-site property, now held by
-[`catalog-lifecycle.ts`](src/lib/catalog-lifecycle.ts). The repo-grep regression at
-[`../tests/lint/no-inline-save-catalog.test.ts`](../tests/lint/no-inline-save-catalog.test.ts)
-fails the build if a component posts the command inline. Removal awaits
-`useConfirm('catalog.remove-pipeline', ...)`, enforced by
-[`../tests/lint/destructive-actions.lint.test.ts`](../tests/lint/destructive-actions.lint.test.ts),
-which scans for constructed `{ kind: 'remove' | 'reset' }` mutations rather than
-command names, since catalog removals route through the shared helper.
+The editor reads the authoritative `snapshot.workflowCatalog` source-record projection and `snapshot.phaseCatalog` — effective or invalid status, bounded field errors, revision, and warnings. A Workflow's public `inputs` and `outputs` can be authored explicitly alongside `bindings`, `executionDefaults`, and `recommendedNext`.
 
-The UI stays pending after a save until a snapshot arrives whose
-`revisions[scope]` differs from the one submitted, or a rejection is received. A
-`stale-catalog` rejection carries the authoritative row and the legal next
-actions. With an empty Phase catalog the editor explains the prerequisite and
-disables save rather than offering a control that cannot succeed.
-
-### Scoped Workflow catalog manager and Graph Builder (spec 083)
-
-The third catalog family. A **Workflow definition** is a reusable acyclic graph
-of Pipeline nodes — distinct from the run-side `WorkflowRun` (a queued request
-driven through one Pipeline), whose surfaces this feature does not touch. Both
-senses are recorded in [`../docs/reference/glossary.md`](../docs/reference/glossary.md).
-
-The editor reads the authoritative `snapshot.workflowCatalog` source-record
-projection and nothing else — built-in / user / workspace rows with effective,
-shadowed, or invalid status, bounded field errors, both writable-layer
-revisions, and warnings. A Workflow's own inputs and outputs are **derived**,
-never stored: an input is a node input port no connection lists in `to`, an
-output is a node output port no connection lists in `from`. A stored list would
-drift from the graph the moment a connection changed, so the surface is
-recomputed at resolution and projection time and the rows carry no port list.
-
-`PipelineBuilder.svelte` mounts it behind the **Workflows** tab (the Builder's
-tab bar is Phases / Pipelines / Workflows / Models) and supplies the one thing
-the editor may not compute for itself: the `trusted` verdict, derived from
-`snapshot.resolvedTrust.workflowOverrides` under the workspace-trust ceiling.
-That capability is deliberately **distinct** from `pipelineOverrides` — see
-[`../docs/security/threat-model.md`](../docs/security/threat-model.md) T22 and
-its per-capability trust scopes section. The webview fails closed when a host
-bundle omits the field.
+`PipelineBuilder.svelte` mounts it behind the **Workflows** tab (the Builder's tab bar is Phases / Workflows / Models) and supplies the `trusted` verdict, derived from `snapshot.resolvedTrust.workflowOverrides` under the workspace-trust ceiling.
 
 Ownership, given the per-component LOC budget `PipelineBuilder.svelte` sits under, which is
 `MAX_LINES` in [`tests/lint/svelte-component-loc-budget.test.ts`](../tests/lint/svelte-component-loc-budget.test.ts):
 
 | File | Owns |
 |---|---|
-| [`WorkflowCatalogEditor.svelte`](src/components/PipelineBuilderEditors/WorkflowCatalogEditor.svelte) | The Library: scope, identity fields, draft lifecycle, revision handshake, and the save |
-| [`WorkflowLibraryList.svelte`](src/components/PipelineBuilderEditors/WorkflowLibraryList.svelte) | The row list, each row's node sequence, and its derived input/output ports |
-| [`WorkflowToolbar.svelte`](src/components/PipelineBuilderEditors/WorkflowToolbar.svelte) | The action bar, the writable scope list it renders, the FR-045 "no effective Pipeline" explanation beside the control it disables, and Export — the one control whose own precondition (a saved row) is decided here rather than derived by the editor, because export writes nothing this extension owns and shares none of the mutation flags |
-| [`WorkflowFlowCanvas.svelte`](src/components/PipelineBuilderEditors/WorkflowFlowCanvas.svelte) | The graph surface: one subtree per start, plus the separate lane for nodes no start reaches — an `unreachable-node` defect renders below rather than being hidden, because the operator has to see the node the host's defect points at |
-| [`WorkflowFlowSubtree.svelte`](src/components/PipelineBuilderEditors/WorkflowFlowSubtree.svelte) | One card and everything below it, rendering itself per arm so a fork nests instead of flattening; an arm whose target is already placed comes back as a jump chip rather than recursing, which is what makes a cycle and a diamond both terminate |
-| [`WorkflowFlowNode.svelte`](src/components/PipelineBuilderEditors/WorkflowFlowNode.svelte) | One node card — selection, and the reorder/remove buttons FR-042 keeps off a drag handle |
-| [`WorkflowInspector.svelte`](src/components/PipelineBuilderEditors/WorkflowInspector.svelte) | The fields of whatever the canvas has in focus: Workflow identity, and a node's Pipeline binding and start-node checkbox |
-| [`WorkflowBranchInspector.svelte`](src/components/PipelineBuilderEditors/WorkflowBranchInspector.svelte) | One branch — its endpoints and its condition, every meaning-bearing control a select over a closed set so FR-021 holds by construction |
+| [`WorkflowCatalogEditor.svelte`](src/components/PipelineBuilderEditors/WorkflowCatalogEditor.svelte) | The Library, drill-down navigation stack, draft lifecycle, revision handshake, and the save |
+| [`WorkflowLibraryList.svelte`](src/components/PipelineBuilderEditors/WorkflowLibraryList.svelte) | The row list, each row's Phase/child-Workflow node sequence, and its input/output ports |
+| [`WorkflowToolbar.svelte`](src/components/PipelineBuilderEditors/WorkflowToolbar.svelte) | The action bar, the "no effective Phase" explanation beside the control it disables, and Export |
+| [`WorkflowFlowCanvas.svelte`](src/components/PipelineBuilderEditors/WorkflowFlowCanvas.svelte) | The graph surface: one subtree per start, plus the separate lane for nodes no start reaches |
+| [`WorkflowFlowSubtree.svelte`](src/components/PipelineBuilderEditors/WorkflowFlowSubtree.svelte) | One card and everything below it, rendering itself per arm so a fork nests instead of flattening |
+| [`WorkflowFlowNode.svelte`](src/components/PipelineBuilderEditors/WorkflowFlowNode.svelte) | One Phase or child Workflow node card — selection, inline child preview, drill-down Open action, and reorder/remove buttons |
+| [`WorkflowInspector.svelte`](src/components/PipelineBuilderEditors/WorkflowInspector.svelte) | Workflow identity, dependent parent Workflows, node kind/target/retry/timeout overrides, execution defaults, `recommendedNext`, and `WorkflowPortsAndBindingsEditor.svelte` |
+| [`WorkflowPortsAndBindingsEditor.svelte`](src/components/PipelineBuilderEditors/WorkflowPortsAndBindingsEditor.svelte) | Public Workflow `inputs`, `outputs`, and node `bindings` |
+| [`WorkflowBranchInspector.svelte`](src/components/PipelineBuilderEditors/WorkflowBranchInspector.svelte) | One branch — its endpoints, handoff mode (`auto`/`manual`), and its condition |
 | [`workflow-flow-layout.ts`](src/components/PipelineBuilderEditors/workflow-flow-layout.ts) | Pure layout — placement, arm order, and the `isJump` verdict that terminates the recursion; pinned by [`workflow-flow-layout.test.ts`](src/components/__tests__/workflow-flow-layout.test.ts) |
 | [`WorkflowRowDefects.svelte`](src/components/PipelineBuilderEditors/WorkflowRowDefects.svelte) | Field-associated defect regions (`aria-describedby` → `role="alert"`) |
 | [`workflow-catalog-state.ts`](src/components/PipelineBuilderEditors/workflow-catalog-state.ts) | Pure draft logic — every edit routes through `applyGraphEdit`, so no rule is expressible in markup |
-| [`workflow-catalog-actions.ts`](src/components/PipelineBuilderEditors/workflow-catalog-actions.ts) | The two destructive writes, each with its confirmation in the same scope as the mutation it authorises |
+| [`workflow-catalog-actions.ts`](src/components/PipelineBuilderEditors/workflow-catalog-actions.ts) | The destructive writes, each with its confirmation in the same scope as the mutation it authorises |
 
 Connections address a node by its stable `nodeId`, never by index — the inverse
 of a Pipeline binding's `phaseIndex`, which must be remapped on every reorder.

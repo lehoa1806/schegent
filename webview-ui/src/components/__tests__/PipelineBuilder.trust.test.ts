@@ -153,6 +153,13 @@ function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
       revision: 'pipeline-revision',
       warnings: []
     },
+    workflowCatalog: {
+      state: 'ready',
+      records: [],
+      effective: [],
+      revision: 'workflow-revision',
+      warnings: []
+    },
     generalSettings: IDLE_GENERAL_SETTINGS,
     workspaceTrust: opts.workspaceTrust ?? true,
     resolvedTrust: {
@@ -250,36 +257,23 @@ describe('PipelineBuilder trust gating (059, T022) — phases disabled', () => {
   });
 });
 
-describe('PipelineBuilder trust gating (059, T022) — pipelines under Workspace Trust', () => {
-  // Feature 099 (T496f, FR-046) — one case stood here, seeding
-  // `resolvedTrust.pipelineOverrides: false` and pinning Save Pipelines disabled
-  // beside its own banner. The capability and the banner variant are both
-  // deleted: an *override* is a statement about one layer redefining another's
-  // row, and there is one catalog. What gates the tab now is Workspace Trust,
-  // which the pair below pins in both directions — a control dead either way
-  // would satisfy one of them on its own, and neither alone is the claim.
-  it('opens the Pipelines tab for editing under workspace trust, with no per-capability banner', () => {
-    // Feature 180 (T1555, FR-004) — the tab is named rather than inherited. It
-    // used to arrive by default, and the default is now Phases.
+describe('PipelineBuilder trust gating (059, T022) — workflows under Workspace Trust', () => {
+  it('opens the Workflows tab for editing under workspace trust, with no per-capability banner', () => {
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot(), initialTab: 'pipelines' }
+      props: { snapshot: buildSnapshot(), initialTab: 'workflows' }
     });
-    const add = container.querySelector('[data-testid="pipelines-add"]') as HTMLButtonElement | null;
+    const add = container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement | null;
     expect(add).not.toBeNull();
     expect(add?.disabled).toBe(false);
-    expect(container.querySelector('[data-testid="trust-banner-pipelines"]')).toBeNull();
+    expect(container.querySelector('[data-testid="trust-banner-workflows"]')).toBeNull();
     expect(container.querySelector('[data-testid="trust-banner-workspace-trust"]')).toBeNull();
   });
 
   it('withholds the editor entirely in an untrusted workspace, and says why (FR-052)', () => {
-    // Not a disabled control: an untrusted workspace activates no catalog at all
-    // (T493c), so rendering the editor would present an empty Library — which
-    // reads as "nothing is defined here" when the truth is "this workspace is not
-    // trusted". The banner and the gated line are the report.
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot({ workspaceTrust: false }) }
     });
-    expect(container.querySelector('[data-testid="pipelines-add"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflows-add"]')).toBeNull();
     expect(container.querySelector('[data-testid="builder-trust-gated"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="trust-banner-workspace-trust"]')).not.toBeNull();
   });
@@ -330,7 +324,7 @@ describe('PipelineBuilder — untrusted beats empty (101 US6, T063, FR-032)', ()
   // and the operator would go looking for a document to import when what they
   // need is to trust the workspace. The trust check is ordered first for that
   // reason, and this pins the order rather than the wording.
-  const EMPTY_TAB_STATES = ['pipelines', 'phases', 'workflows'] as const;
+  const EMPTY_TAB_STATES = ['phases', 'workflows'] as const;
 
   for (const initialTab of EMPTY_TAB_STATES) {
     it(`shows the trust banner and no empty-catalog guidance on the ${initialTab} tab`, () => {
@@ -344,13 +338,10 @@ describe('PipelineBuilder — untrusted beats empty (101 US6, T063, FR-032)', ()
   }
 
   it('shows the empty-catalog guidance once the workspace is trusted', () => {
-    // The other half: withholding it when untrusted is only correct if it does
-    // appear when the reason for the emptiness really is an empty catalog. The
-    // fixture's Pipeline catalog projects no records.
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot({ workspaceTrust: true }), initialTab: 'pipelines' }
+      props: { snapshot: buildSnapshot({ workspaceTrust: true }), initialTab: 'workflows' }
     });
     expect(container.querySelector('[data-testid="trust-banner-workspace-trust"]')).toBeNull();
-    expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).not.toBeNull();
   });
 });

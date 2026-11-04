@@ -12,14 +12,11 @@
   import ModelCatalogEditor from './PipelineBuilderEditors/ModelCatalogEditor.svelte';
   import PhaseCatalogEditor from './PipelineBuilderEditors/PhaseCatalogEditor.svelte';
   import ProcessImportPreflight from './ProcessImport/ProcessImportPreflight.svelte';
-  import PipelineCatalogEditor from './PipelineBuilderEditors/PipelineCatalogEditor.svelte';
   import WorkflowCatalogEditor from './PipelineBuilderEditors/WorkflowCatalogEditor.svelte';
   import type { BuilderTab, MutablePhase, PhaseEditState } from './PipelineBuilderEditors/types';
-  import { PipelineCatalogStore } from './PipelineBuilderEditors/pipeline-catalog-store.svelte';
   import {
     effectivePhasesToMutable,
     formatPhaseSaveRejection,
-    phaseTooltip,
     rebasePhaseMutation,
     sourceRecordToMutable,
     toSavePhaseRow,
@@ -82,12 +79,6 @@
   const phaseMutationsAllowed = $derived(
     phaseCatalogReady && snapshot.isPrimary === true && trustPhases && !phaseSavePending
   );
-  const pipelinePhases = $derived(effectivePhases);
-  const pipelineMutationsAllowed = $derived(
-    snapshot.pipelineCatalog?.state === 'ready' &&
-      snapshot.isPrimary === true &&
-      workspaceTrust
-  );
   const workflowMutationsAllowed = $derived(
     snapshot.workflowCatalog?.state === 'ready' &&
       snapshot.isPrimary === true &&
@@ -100,8 +91,6 @@
     if (saveErrorTimer !== null) clearTimeout(saveErrorTimer);
     saveErrorTimer = setTimeout(() => { saveError = null; }, 8000);
   }
-  // Feature 082 — the Pipeline tab's rows, mutation handshake, and history live
-  // in a rune store so this component stays inside the 500-line Svelte budget.
   // FR-R4-F05 (I6, I8, FR-024) — a catalog write whose wait ran out shows its late answer once:
   // an acceptance clears the not-yet-known text, a refusal replaces it. Unmounting aborts the waits.
   const lifetime = new AbortController();
@@ -110,14 +99,6 @@
     if (late.status === 'accepted') saveError = null;
     else if (late.reason !== 'declined') showSaveError(formatPhaseSaveRejection(late.reason, late.result));
   }
-  const pipelineStore = new PipelineCatalogStore({
-    getSnapshot: () => snapshot,
-    onSaveError: showSaveError,
-    onSaveAccepted: () => { saveError = null; },
-    signal: lifetime.signal
-  });
-  $effect(() => { pipelineStore.syncFromSnapshot(snapshot); });
-  $effect(() => { if (initialized) pipelineStore.recordHistory(); });
   $effect(() => {
     // Seeded from the CONFIGURED catalog, so a confirmed import is adopted;
     // `initialModels` records why detection is the wrong source.
@@ -290,7 +271,7 @@
 <main class="pb" data-testid="pipeline-builder-root">
   <div class="header">
     <h2>Builder</h2>
-    <p>Author and manage reusable phases, pipelines, workflows, and models.</p>
+    <p>Author and manage reusable phases, workflows, and models.</p>
     <BuilderTabs {activeTab} onactivate={(tab) => activeTab = tab} />
   </div>
   <div
@@ -305,47 +286,16 @@
     {#if showWorkspaceTrustBanner && activeTab !== 'models'}
       <!--
         Feature 099 (T493c, FR-052) — an untrusted workspace activates no
-        catalog, so the three definition tabs have no rows to render. Showing
+        catalog, so the definition tabs have no rows to render. Showing
         their editors anyway would present an empty catalog, which reads as
         "nothing is defined here" when the truth is "this workspace is not
         trusted". The banner above plus this line are the report. The Models
         tab is not store-backed (FR-056) and keeps its editor.
       -->
       <p class="empty-selection" data-testid="builder-trust-gated">
-        Phase, Pipeline, and Workflow definitions are not read until this
+        Phase and Workflow definitions are not read until this
         workspace is trusted.
       </p>
-    {:else if activeTab === 'pipelines'}
-      <PipelineCatalogEditor
-        {snapshot}
-        pipelines={pipelineStore.pipelines}
-        phases={pipelinePhases}
-        selectedIndex={pipelineStore.selectedIndex}
-        historyIndex={pipelineStore.historyIndex}
-        historyLength={pipelineStore.historyLength}
-        trusted={pipelineMutationsAllowed}
-        {saveError}
-        savePending={pipelineStore.savePending}
-        mutationActive={pipelineStore.mutationActive}
-        editableSourceKey={pipelineStore.mutationSourceKey}
-        getPhaseTooltip={(phaseId) => phaseTooltip(effectivePhases, phaseId)}
-        onselect={(index) => pipelineStore.selectedIndex = index}
-        onadd={() => pipelineStore.add()}
-        onremove={(index, element) => pipelineStore.remove(index, element)}
-        onreset={(index) => pipelineStore.discardDraft(index)}
-        onduplicate={(index) => pipelineStore.duplicate(index)}
-        onpipelinechange={(index, patch) => pipelineStore.update(index, patch)}
-        onphasechange={(pipelineIndex, phaseIndex, phaseId) =>
-          pipelineStore.setPhase(pipelineIndex, phaseIndex, phaseId)}
-        onundo={() => pipelineStore.undo()}
-        onredo={() => pipelineStore.redo()}
-        onsave={() => pipelineStore.save()}
-        ondismisssaveerror={() => saveError = null}
-        onaddphase={(phaseId) => pipelineStore.appendPhaseId(phaseId)}
-        onremovephase={(index) => pipelineStore.removePhase(index)}
-        onmovephaseup={(index) => pipelineStore.movePhaseUp(index)}
-        onmovephasedown={(index) => pipelineStore.movePhaseDown(index)}
-      />
     {:else if activeTab === 'phases'}
       <PhaseCatalogEditor
         {snapshot}

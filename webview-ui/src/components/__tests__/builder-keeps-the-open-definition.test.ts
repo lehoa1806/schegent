@@ -208,45 +208,6 @@ describe('BUG-002 (101) — the Phases tab keeps the open Phase across an adopt'
   });
 });
 
-describe('BUG-002 (101) — the Pipelines tab keeps the open Pipeline across an adopt', () => {
-  it('leaves the saved Pipeline open', async () => {
-    const { container, rerender } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot('rev-1'), initialTab: 'pipelines' }
-    });
-    await fireEvent.click(
-      container.querySelector('[data-testid="pipelines-list-item-open-pipeline"]')!
-    );
-    await fireEvent.input(
-      container.querySelector('[data-testid="pipelines-name-field-open-pipeline"]')!,
-      { target: { value: 'Edited pipeline' } }
-    );
-    await fireEvent.click(container.querySelector('[data-testid="pipelines-save-all"]')!);
-    await tick();
-
-    await rerender({ snapshot: buildSnapshot('rev-2'), initialTab: 'pipelines' });
-    await tick();
-
-    expect(container.querySelector('[data-testid="pipelines-inspector"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="pipelines-topbar-name"]')?.textContent)
-      .toContain('Open Pipeline');
-  });
-
-  it('keeps the open Pipeline across a revision move it did not cause', async () => {
-    const { container, rerender } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot('rev-1'), initialTab: 'pipelines' }
-    });
-    await fireEvent.click(
-      container.querySelector('[data-testid="pipelines-list-item-open-pipeline"]')!
-    );
-    expect(container.querySelector('[data-testid="pipelines-inspector"]')).not.toBeNull();
-
-    await rerender({ snapshot: buildSnapshot('rev-2'), initialTab: 'pipelines' });
-    await tick();
-
-    expect(container.querySelector('[data-testid="pipelines-inspector"]')).not.toBeNull();
-  });
-});
-
 // ── The Workflows tab, which selects by key rather than by index ─────────────
 
 const WORKFLOW_NODES = [{ nodeId: 'build', pipelineId: 'build-it' }];

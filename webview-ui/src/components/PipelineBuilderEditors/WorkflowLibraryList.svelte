@@ -69,19 +69,29 @@
         </div>
         <div class="row-ports" data-testid="workflow-row-inputs">
           <span>Inputs:</span>
-          {#each row.derivedInputs as port (port.nodeId + port.portId)}
-            <span>{port.label || port.portId}</span>
-          {/each}
-          {#if row.derivedInputs.length === 0}
+          {#if row.derivedInputs.length > 0}
+            {#each row.derivedInputs as port (port.nodeId + port.portId)}
+              <span>{port.label || port.portId}</span>
+            {/each}
+          {:else if (row.inputs ?? []).length > 0}
+            {#each row.inputs ?? [] as port (port.portId)}
+              <span>{port.label || port.portId}</span>
+            {/each}
+          {:else}
             <span>{row.persisted ? "none" : "derived once saved"}</span>
           {/if}
         </div>
         <div class="row-ports" data-testid="workflow-row-outputs">
           <span>Outputs:</span>
-          {#each row.derivedOutputs as port (port.nodeId + port.portId)}
-            <span>{port.label || port.portId}</span>
-          {/each}
-          {#if row.derivedOutputs.length === 0}
+          {#if row.derivedOutputs.length > 0}
+            {#each row.derivedOutputs as port (port.nodeId + port.portId)}
+              <span>{port.label || port.portId}</span>
+            {/each}
+          {:else if (row.outputs ?? []).length > 0}
+            {#each row.outputs ?? [] as port (port.portId)}
+              <span>{port.label || port.portId}</span>
+            {/each}
+          {:else}
             <span>{row.persisted ? "none" : "derived once saved"}</span>
           {/if}
         </div>

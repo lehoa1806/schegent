@@ -30,9 +30,9 @@ const RUNS_SECTION = resolve(__dirname, '../../Runs/LaunchableSection.svelte');
 
 afterEach(() => cleanup());
 
-function renderEmpty(opts: { kind?: 'phase' | 'pipeline' | 'workflow'; count?: number } = {}) {
+function renderEmpty(opts: { kind?: 'phase' | 'workflow'; count?: number } = {}) {
   return render(CatalogEmptyState, {
-    props: { kind: opts.kind ?? 'pipeline', count: opts.count ?? 0 }
+    props: { kind: opts.kind ?? 'workflow', count: opts.count ?? 0 }
   });
 }
 
@@ -43,12 +43,12 @@ function text(container: HTMLElement, testid: string): string {
 describe('CatalogEmptyState — the words are the shared ones (US6, T062, FR-032)', () => {
   it('renders the shared headline verbatim', () => {
     const { container } = renderEmpty();
-    expect(text(container, 'catalog-empty-headline-pipeline')).toBe(EMPTY_CATALOG_GUIDANCE.headline);
+    expect(text(container, 'catalog-empty-headline-workflow')).toBe(EMPTY_CATALOG_GUIDANCE.headline);
   });
 
   it('renders the shared body verbatim', () => {
     const { container } = renderEmpty();
-    expect(text(container, 'catalog-empty-body-pipeline')).toBe(EMPTY_CATALOG_GUIDANCE.body);
+    expect(text(container, 'catalog-empty-body-workflow')).toBe(EMPTY_CATALOG_GUIDANCE.body);
   });
 
   it('imports the constant rather than restating it', () => {
@@ -85,17 +85,17 @@ describe('CatalogEmptyState — the words are the shared ones (US6, T062, FR-032
     expect(source).not.toContain('count === 0');
   });
 
-  it('names the tab in its handle so three tabs do not share one', () => {
+  it('names the tab in its handle so the tabs do not share one', () => {
     const { container } = renderEmpty({ kind: 'workflow' });
     expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).toBeNull();
+    expect(container.querySelector('[data-testid="catalog-empty-state-phase"]')).toBeNull();
   });
 });
 
 describe('CatalogEmptyState — it goes away once there is something (US6, T062, FR-033)', () => {
   it('renders nothing at all for a catalog with one definition', () => {
     const { container } = renderEmpty({ count: 1 });
-    expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).toBeNull();
+    expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).toBeNull();
     expect(container.textContent?.trim()).toBe('');
   });
 
@@ -123,7 +123,7 @@ describe('CatalogEmptyState — the remedy is reachable (US6, T064)', () => {
 
   it('passes the tab\'s reason through when an import cannot start', () => {
     const { container } = render(CatalogEmptyState, {
-      props: { kind: 'pipeline' as const, count: 0, disabledReason: 'A save is in flight.' }
+      props: { kind: 'workflow' as const, count: 0, disabledReason: 'A save is in flight.' }
     });
     expect(text(container, 'process-import-unavailable')).toBe('A save is in flight.');
   });
