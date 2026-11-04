@@ -100,3 +100,41 @@ Calling the same child `workflowId` from two different parent nodes (`/call-a` a
    - Runs are persisted with their `frozenClosure`, `invocationsById`, and `InvocationInputEnvelope` records.
    - Unsupported legacy pre-F02 Pipeline-run shapes are refused/quarantined with a bounded diagnostic (`unsupported-run-schema-version`) without synthesizing fake nested runs or silently deleting developer workspace state.
 
+---
+
+## 7. Nested Workflow Controls, Paired Pause/Retry Markers & Scoped Retry (`FR-R5-F03-T01`..`T05`)
+
+1. **Invocation-Scoped Control Transition Table (`workflow-control-transition-table.ts`)**:
+   - Every control operation (`pause`, `resume`, `cancel`, `retry-phase`, `retry-invocation`, `continue-handoff`) addresses a specific `targetInvocationId` (defaulting to the root invocation when omitted) and optional `targetNodeId`.
+   - Each `WorkflowInvocationFrame` carries lifecycle `status` (`'in-flight' | 'waiting-for-handoff' | 'paused' | 'completed' | 'failed' | 'canceled'`) and explicit `InvocationControlMarkers`:
+     - `manualPauseAt: number | null` and `manualPauseCause: WorkflowPauseCause | null` (`'operator-pause' | 'credit-exhausted' | 'recovery-uncertain-effect' | 'spend-bound-exceeded'`), strictly paired (`(manualPauseAt === null) === (manualPauseCause === null)`).
+     - `pendingRetryAt: number | null` and `pendingRetryCause: WorkflowDelayedRetryCause | null` (`'transient-backoff' | 'rate-limit-backoff'`), strictly paired and cleared whenever a frame is paused or canceled.
+2. **Subtree Pause, Resume & Cancellation (`WorkflowControlService`)**:
+   - **Pause**: Transitions the target invocation and any non-terminal descendant frames to `status: 'paused'`, sets paired `manualPauseAt`/`manualPauseCause`, clears any armed `pendingRetryAt`/`pendingRetryCause`, marks the active leaf `NodeAttemptRecord` as `'paused'`, aborts the active leaf runner process, and blocks new descendant admission while retaining the bound `queueId` lease.
+   - **Resume**: Clears `manualPauseAt`/`manualPauseCause` across the target paused subtree. If the leaf frame had an interrupted `'paused'` attempt, `resume` appends a new `NodeAttemptRecord` (`attemptIndex + 1`) and dispatches it; if the frame paused at a `waiting-for-handoff` boundary without an accepted continuation envelope, `resume` restores `'waiting-for-handoff'`.
+   - **Cancel (Root vs. Child)**:
+     - *Root cancel*: Aborts the active leaf runner, clears retry timers, marks all non-terminal frames `'canceled'`, and releases the bound `queueId` lease.
+     - *Child-only cancel*: Aborts the active leaf inside that child subtree, marks the child subtree `'canceled'`, and settles the parent's `workflow` node attempt as `'canceled'`. The parent frame then evaluates outgoing connections from that workflow call node: if an explicit connection matches `node-status == 'canceled'`, the parent continues along that edge; otherwise cancellation propagates to the parent frame.
+3. **Scoped Retry (`retry-phase` vs. `retry-invocation`)**:
+   - **`retry-phase`**: Appends a new `NodeAttemptRecord` (`attemptIndex + 1`) for the failed, canceled, or paused leaf Phase node inside the existing `WorkflowInvocationFrame`, preserving all prior attempt records and completed upstream nodes. Enforces `maxPhaseAttempts` (default `5`) and optional `spendBoundUsd`.
+   - **`retry-invocation`**: Valid for a `failed`, `canceled`, or `completed` child (or root) `WorkflowInvocationFrame` when no active descendant is executing. Retains the prior child frame in `invocations` as immutable historical evidence, appends a new `NodeAttemptRecord` (`attemptIndex + 1`) on the parent workflow-call node, invalidates superseded parent output bindings from the prior child frame, and spawns a fresh child `WorkflowInvocationFrame` starting at `startNodeIds[0]` while keeping completed sibling nodes untouched.
+
+---
+
+## 8. Command Idempotency, Restart Recovery & Bounded Ancestry Evidence (`FR-R5-F03-T06`..`T09`)
+
+1. **Serialized Mutation Boundary & Command Idempotency**:
+   - All control, retry, continuation, and completion mutations for a bound `queueId` execute through a per-queue FIFO serialization lock in `WorkflowControlService`.
+   - Every command carries `commandId` and `expectedRevision`. If `commandId` is already present in `run.commandReceipts` (bounded ring of `MAX_COMMAND_RECEIPTS = 64`), the service returns the committed receipt with `idempotentReplay: true` without re-mutating state or spawning duplicate work. Otherwise, a mismatch between `expectedRevision` and `run.revision` is refused with `'stale-revision'`.
+2. **Deterministic Restart Recovery (`WorkflowRecoveryService`)**:
+   - On host restart, persisted `ConnectedWorkflowRun` records are reconciled into explicit `RecoveryDispositionRecord` outcomes:
+     - `'clean-handoff'`: A frame in `'waiting-for-handoff'` without an accepted continuation envelope remains waiting without synthesizing a continuation.
+     - `'pending-dispatch-recovered'`: A frame whose `pendingHandoff.acceptedEnvelope` (`acceptedAt`) was persisted before an interruption recovers and dispatches the target node from that persisted `InvocationInputEnvelope` without consulting live UI or catalog state.
+     - `'settled-from-evidence'`: An `'in-flight'` phase attempt with durable completion evidence settles forward and advances the workflow graph.
+     - `'uncertain-effect-paused'`: An interrupted `'in-flight'` phase attempt without durable completion evidence transitions to `'paused'` with `manualPauseCause: 'recovery-uncertain-effect'`, requiring explicit operator `retry-phase`, `resume`, or `cancel` rather than blind replay.
+     - `'orphaned-canceled'`: If the bound `queueId` or backing task was deleted while the run was non-terminal, only that orphaned run is canceled and its lease released without disturbing sibling queues.
+3. **Bounded Ancestry Evidence & Authoritative Control Projections (`WorkflowControlProjector`)**:
+   - Every nested runtime event and control audit record includes `AncestryEvidenceMetadata` (`rootRunId`, `invocationId`, `parentInvocationId`, `nodePath`, `attemptId`, `attemptIndex`, `queueId`). Parent frames reference child invocations by ID without duplicating child transcripts.
+   - `buildWorkflowRunControlProjection()` computes the authoritative `WorkflowRunControlProjection` (root and per-frame `allowedActions`, `waitingReason`, `pauseCause`, `failureReason`, `recoveryDisposition`, `revision`), exposed identically through host and `src/headless/workflow-run-api.ts` entry points.
+
+

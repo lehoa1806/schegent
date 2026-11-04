@@ -208,6 +208,12 @@ export interface ContinueWaitingHandoffInput {
   readonly request: RunRequest;
   readonly acceptedAt: number;
   readonly expectedInputs?: readonly PipelineInputPort[];
+  /**
+   * FR-R5-F03 (T006) — when true, persists `acceptedEnvelope` on `pendingHandoff`
+   * before target dispatch so a post-acceptance pre-dispatch interruption can be
+   * recovered deterministically without consulting live UI/catalog state.
+   */
+  readonly deferDispatch?: boolean;
 }
 
 export type ContinueWaitingHandoffResult =
@@ -281,15 +287,31 @@ export async function continueWaitingHandoff(
   }
 
   let next = appendInputEnvelope(run, envelope);
-  next = setPendingHandoff(next, null);
-  const frame = next.invocations?.[input.invocationId];
-  if (frame !== undefined && frame.status === 'waiting-for-handoff') {
-    next = upsertInvocationFrame(next, {
-      ...frame,
-      status: 'in-flight',
-      pendingHandoff: null,
-      boundInputs: Object.freeze({ ...frame.boundInputs, ...envelope.inputsByPort })
+  if (input.deferDispatch === true) {
+    const updatedHandoff = Object.freeze({
+      ...pending,
+      acceptedEnvelope: envelope
     });
+    next = setPendingHandoff(next, updatedHandoff);
+    const frame = next.invocations?.[input.invocationId];
+    if (frame !== undefined) {
+      next = upsertInvocationFrame(next, {
+        ...frame,
+        pendingHandoff: updatedHandoff,
+        boundInputs: Object.freeze({ ...frame.boundInputs, ...envelope.inputsByPort })
+      });
+    }
+  } else {
+    next = setPendingHandoff(next, null);
+    const frame = next.invocations?.[input.invocationId];
+    if (frame !== undefined && frame.status === 'waiting-for-handoff') {
+      next = upsertInvocationFrame(next, {
+        ...frame,
+        status: 'in-flight',
+        pendingHandoff: null,
+        boundInputs: Object.freeze({ ...frame.boundInputs, ...envelope.inputsByPort })
+      });
+    }
   }
 
   const written = await deps.connectedRuns.compareAndSetConnectedRun(next, run.revision);
