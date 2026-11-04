@@ -68,7 +68,7 @@ describe('PhaseProgression — header (016)', () => {
       }
     });
     const text = (getByTestId('dashboard-phase-progression-header').textContent ?? '').trim();
-    expect(text).toBe('Phase Progression (Active: req-X) — Pipeline: Custom Pipeline');
+    expect(text).toBe('Phase Progression (Active: req-X) — Workflow: Custom Pipeline');
   });
 });
 

@@ -131,11 +131,22 @@
   // definition the form composes against. Both come from the same snapshot but
   // are separate fields, so the panel takes `undefined` as a state rather than
   // as an error — see its `pipeline` prop.
-  const rerunPipeline = $derived(
-    rerunTarget === null || rerunTarget.state !== 'ready'
-      ? undefined
-      : (snapshot.availablePipelines ?? []).find((p) => p.id === rerunTarget.launchable.id)
-  );
+  const rerunPipeline = $derived.by(() => {
+    if (rerunTarget === null || rerunTarget.state !== 'ready') return undefined;
+    const targetId = rerunTarget.launchable.id;
+    const fromPipelines = (snapshot.availablePipelines ?? []).find((p) => p.id === targetId);
+    if (fromPipelines) return fromPipelines;
+    const wf = (snapshot.workflowCatalog?.effective ?? []).find((w) => w.workflowId === targetId);
+    if (!wf) return undefined;
+    return {
+      id: wf.workflowId,
+      name: wf.name,
+      description: wf.description,
+      phases: wf.nodes.flatMap((n) => (n.phaseId ? [n.phaseId] : [])),
+      inputs: wf.inputs,
+      outputs: wf.outputs
+    };
+  });
 
   function openRerun(runId: string): void {
     rerunRunId = runId;

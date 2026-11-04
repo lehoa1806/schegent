@@ -121,7 +121,7 @@ const LIFECYCLE_REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
   // failed task (`phase-control-titles.ts` reads this entry), so the explanation and the refusal
   // are one sentence and cannot drift apart.
   'run-failed': 'A failed task cannot be skipped: retry it, mark it completed, or remove it.',
-  'phase-id-not-in-pipeline-snapshot': "That phase is not part of this Run's pipeline.",
+  'phase-id-not-in-pipeline-snapshot': "That phase is not part of this Run's workflow.",
   // Retry now — `applyManualRetryOverride` and the command's own guard.
   'no-active-run': 'There is no active Run to retry.',
   'not-pending-retry': 'This phase is not waiting for a retry, so there is nothing to bring forward.',

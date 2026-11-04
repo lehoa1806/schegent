@@ -1082,7 +1082,7 @@ describe('QueueDetailTier — Task row surfaces its own detail', () => {
     );
 
     const text = getByTestId('queue-task-pipeline-a').textContent ?? '';
-    expect(text).toMatch(/unknown pipeline/i);
+    expect(text).toMatch(/unknown workflow/i);
     expect(text).not.toContain('deleted-pipeline');
   });
 

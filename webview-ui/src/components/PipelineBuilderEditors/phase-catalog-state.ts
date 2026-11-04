@@ -260,12 +260,14 @@ export function phaseTooltip(phases: readonly MutablePhase[], phaseId: string): 
 
 export function formatPhaseSaveRejection(reason: string, result: unknown): string {
   const details = result as {
+    dependentWorkflowIds?: readonly string[];
     dependentPipelineIds?: readonly string[];
     errors?: readonly { phaseId?: string; field?: string; code?: string; message?: string }[];
     total?: number;
   } | undefined;
-  if (details?.dependentPipelineIds?.length) {
-    return `${reason} — used by pipelines: ${details.dependentPipelineIds.join(', ')}`;
+  const dependents = details?.dependentWorkflowIds ?? details?.dependentPipelineIds;
+  if (dependents?.length) {
+    return `${reason} — used by workflows: ${dependents.join(', ')}`;
   }
   if (reason === 'phase-validation' && details?.errors?.length) {
     const visible = details.errors.slice(0, 3).map((error) => {

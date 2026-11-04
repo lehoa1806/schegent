@@ -190,7 +190,7 @@
     </p>
   {:else if pipeline === undefined}
     <p class="note refusal" data-testid="history-rerun-definition-unloaded" role="status">
-      This Pipeline is published, but its definition has not loaded yet. Try again in a moment.
+      This Workflow is published, but its definition has not loaded yet. Try again in a moment.
     </p>
   {:else}
     {#if target.supersededVersionId !== null}
@@ -206,8 +206,8 @@
     {#if target.workflowMemberOf !== null}
       <!-- FR-055 — the row names one run, not a start node. -->
       <p class="note" data-testid="history-rerun-workflow-notice" role="status">
-        This run was one Pipeline inside the Workflow {target.workflowMemberOf}. Repeating it runs
-        that Pipeline alone; the Workflow is not restarted. Start the Workflow from Runs instead.
+        This run was one step inside the Workflow {target.workflowMemberOf}. Repeating it runs
+        that step alone; the Workflow is not restarted. Start the Workflow from Runs instead.
       </p>
     {/if}
 

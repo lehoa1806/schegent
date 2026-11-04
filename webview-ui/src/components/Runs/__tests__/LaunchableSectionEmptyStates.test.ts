@@ -146,7 +146,7 @@ describe('RunsSurface — one section may list while the other explains (FR-031)
     expect(testid(container, 'launch-section-none-active-pipeline')).toBeNull();
   });
 
-  it('lists Workflows while Pipelines shows the import guidance', () => {
+  it('lists Workflows while omitting empty Pipelines', () => {
     const { container } = render(RunsSurface, {
       snapshot: buildSnapshot({
         launchables: projection({ state: 'no-definitions' }, entries({ ...ANALYSIS, kind: 'workflow' }))
@@ -154,18 +154,18 @@ describe('RunsSurface — one section may list while the other explains (FR-031)
     });
 
     expect(testid(container, 'launch-section-list-workflow')).not.toBeNull();
-    expect(testid(container, 'launch-section-no-definitions-pipeline')).not.toBeNull();
+    expect(testid(container, 'launch-section-no-definitions-pipeline')).toBeNull();
     expect(testid(container, 'launch-section-no-definitions-workflow')).toBeNull();
   });
 
-  it('lets the two sections show different empty reasons at the same time', () => {
+  it('shows Workflows empty reason while omitting empty Pipelines', () => {
     const { container } = render(RunsSurface, {
       snapshot: buildSnapshot({
         launchables: projection({ state: 'no-definitions' }, { state: 'none-active' })
       })
     });
 
-    expect(testid(container, 'launch-section-no-definitions-pipeline')).not.toBeNull();
+    expect(testid(container, 'launch-section-no-definitions-pipeline')).toBeNull();
     expect(testid(container, 'launch-section-none-active-workflow')).not.toBeNull();
   });
 });

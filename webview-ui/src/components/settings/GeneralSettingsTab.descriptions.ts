@@ -365,21 +365,21 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
 
   defaultPipelineId: {
-    title: 'Default pipeline',
+    title: 'Default workflow',
     body:
       // Feature 099 (T494a, FR-054) — the retired Pipeline settings key is
-      // deleted, not drained. The list is the Pipeline catalog the store holds.
-      'Pipeline used when /speckit-auto runs without an explicit selection. ' +
-      'The list reflects the Pipelines in the catalog.'
+      // deleted, not drained. The list is the Workflow catalog the store holds.
+      'Workflow used when /speckit-auto runs without an explicit selection. ' +
+      'The list reflects the Workflows in the catalog.'
   },
   'defaultPipelineId-save': {
     body:
-      'Save the default pipeline selection. Disabled until the value differs ' +
+      'Save the default workflow selection. Disabled until the value differs ' +
       'from the saved projection.'
   },
   'defaultPipelineId-reset': {
     body:
-      'Restore the projected default pipeline. Disabled when there are no ' +
+      'Restore the projected default workflow. Disabled when there are no ' +
       'unsaved changes on this field.'
   },
 

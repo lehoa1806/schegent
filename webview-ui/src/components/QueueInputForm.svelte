@@ -164,16 +164,16 @@
       <div class="compose-selectors">
         <div class="pipeline-selector">
           {#if availablePipelines.length === 0}
-            <select class="pipeline-select" aria-label="Pipeline" title="Select Pipeline" disabled>
+            <select class="pipeline-select" aria-label="Workflow" title="Select Workflow" disabled>
               <option value="" disabled selected>N/A</option>
             </select>
           {:else}
             <select
-              aria-label="Pipeline"
+              aria-label="Workflow"
               bind:value={selectedPipelineId}
               onchange={onPipelineChange}
               class="pipeline-select"
-              title="Select Pipeline"
+              title="Select Workflow"
             >
               {#each availablePipelines as p (p.id)}
                 <option value={p.id}>{p.name}</option>

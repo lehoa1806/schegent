@@ -53,7 +53,7 @@
 
 <section class="supplemental-section" data-testid="run-launcher-supplemental">
   <h4 class="section-heading">Supplemental inputs</h4>
-  <p class="section-note">Optional material for this session. Not part of the Pipeline's contract.</p>
+  <p class="section-note">Optional material for this session. Not part of the Workflow's contract.</p>
 
   {#each FIELDS as field (field.key)}
     <div class="supplemental-row">

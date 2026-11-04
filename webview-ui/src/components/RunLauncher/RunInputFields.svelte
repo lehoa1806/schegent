@@ -35,8 +35,8 @@
 </script>
 
 <section class="contract-section" data-testid="run-launcher-contract">
-  <h4 class="section-heading">Pipeline contract</h4>
-  <p class="section-note">The inputs this Pipeline declares. Each one is validated before the run is queued.</p>
+  <h4 class="section-heading">Workflow contract</h4>
+  <p class="section-note">The inputs this Workflow declares. Each one is validated before the run is queued.</p>
 
   {#each ports as port (port.portId)}
     <div class="port-row" data-port-control>

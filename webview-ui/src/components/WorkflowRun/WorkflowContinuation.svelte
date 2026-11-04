@@ -240,7 +240,7 @@
     />
   {:else}
     <p class="no-contract" data-testid="workflow-continuation-no-contract">
-      This Pipeline declares no inputs, so there is nothing to supply. It can be started as it is.
+      This step declares no inputs, so there is nothing to supply. It can be started as it is.
     </p>
   {/if}
 

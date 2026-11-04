@@ -306,14 +306,12 @@ describe('the launch zone on the Runs surface (FR-001, FR-020)', () => {
     );
   });
 
-  it('renders both sections in their loading arm when the field is absent (FR-006)', () => {
-    // A host bundle predating the projection, and every workspace whose catalogs
-    // have not resolved yet. Neither section may claim the workspace has nothing.
-    const { getByTestId } = render(RunsSurface, {
+  it('renders Workflows in its loading arm and omits empty Pipelines when the field is absent (FR-006)', () => {
+    const { getByTestId, queryByTestId } = render(RunsSurface, {
       snapshot: buildSnapshot({ connectedRuns: [] })
     });
 
-    expect(getByTestId('launch-section-loading-pipeline')).toBeTruthy();
+    expect(queryByTestId('launch-section-loading-pipeline')).toBeNull();
     expect(getByTestId('launch-section-loading-workflow')).toBeTruthy();
   });
 

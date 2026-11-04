@@ -283,7 +283,7 @@
     aria-live="polite"
     data-testid="workflows-no-pipelines"
   >
-    No effective Pipeline is available. Every Workflow node runs a Pipeline, so add or restore at
-    least one valid Pipeline in the Pipeline Library before saving a Workflow.
+    No effective Phase is available. Every Workflow step runs a Phase or child Workflow, so add or
+    publish at least one valid Phase in the Phases tab before saving a Workflow.
   </div>
 {/if}

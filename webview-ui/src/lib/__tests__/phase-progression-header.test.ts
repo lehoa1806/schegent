@@ -25,12 +25,12 @@ describe('phaseProgressionHeader', () => {
   });
 
   it('names the Pipeline with no Task in flight', () => {
-    expect(phaseProgressionHeader(null, CUSTOM)).toBe('Phase Progression — Pipeline: Research Flow');
+    expect(phaseProgressionHeader(null, CUSTOM)).toBe('Phase Progression — Workflow: Research Flow');
   });
 
   it('names both, Task first', () => {
     expect(phaseProgressionHeader('task-7', CUSTOM)).toBe(
-      'Phase Progression (Active: task-7) — Pipeline: Research Flow'
+      'Phase Progression (Active: task-7) — Workflow: Research Flow'
     );
   });
 
@@ -44,13 +44,13 @@ describe('phaseProgressionHeader', () => {
     // choice was made", and an operator who deliberately built a Pipeline and
     // called it Standard has made one.
     expect(phaseProgressionHeader(null, { id: 'my-flow', name: 'Standard' })).toBe(
-      'Phase Progression — Pipeline: Standard'
+      'Phase Progression — Workflow: Standard'
     );
   });
 
   it('treats the empty Task id as no Task, matching the falsy check it replaced', () => {
     // Pinned because the extraction turned an inline `activeTaskId ? …` into a
     // parameter, and a reader could reasonably expect a null check instead.
-    expect(phaseProgressionHeader('', CUSTOM)).toBe('Phase Progression — Pipeline: Research Flow');
+    expect(phaseProgressionHeader('', CUSTOM)).toBe('Phase Progression — Workflow: Research Flow');
   });
 });

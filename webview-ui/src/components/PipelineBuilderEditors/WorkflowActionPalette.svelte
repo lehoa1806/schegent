@@ -80,27 +80,6 @@
     </div>
   {/if}
 
-  {#if pipelines.length > 0}
-    <div class="wf-palette-group">
-      <div class="wf-palette-heading">Pipelines</div>
-      {#each pipelines as pipeline (pipeline.pipelineId)}
-        {@const phaseCount = pipeline.phaseIds.length}
-        <button
-          type="button"
-          class="wf-palette-item"
-          data-testid="workflow-palette-pipeline-{pipeline.pipelineId}"
-          disabled={readOnly}
-          onclick={() => onaddnode(pipeline.pipelineId)}
-        >
-          <span class="wf-palette-item-title">{pipeline.name}</span>
-          <span class="wf-palette-item-meta">
-            {phaseCount} {phaseCount === 1 ? 'phase' : 'phases'}
-          </span>
-        </button>
-      {/each}
-    </div>
-  {/if}
-
   {#if isEmpty}
     <p class="wf-palette-empty" data-testid="workflow-palette-empty">
       No effective Phases or Workflows

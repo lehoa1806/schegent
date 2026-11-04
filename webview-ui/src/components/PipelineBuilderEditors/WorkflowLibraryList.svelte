@@ -53,7 +53,7 @@
         </div>
         <div class="row-ports" data-testid="workflow-row-sequence">
           {#if row.nodes.length === 0}
-            <span>No Pipelines yet</span>
+            <span>No steps yet</span>
           {:else}
             <!-- Authored order, never sorted: the sequence the operator wrote
                  is part of the definition's meaning (FR-049). -->
@@ -120,7 +120,7 @@
   {/each}
   {#if rows.length === 0}
     <div class="catalog-state" data-testid="workflows-empty">
-      No Workflows yet. Add one to compose Pipelines into a graph.
+      No Workflows yet. Add one to compose Phases and child Workflows into a graph.
     </div>
   {/if}
 </div>

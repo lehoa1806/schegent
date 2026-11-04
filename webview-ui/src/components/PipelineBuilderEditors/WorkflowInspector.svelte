@@ -62,6 +62,7 @@
     onconnectionmove: (index: number, delta: number) => void;
     onconnectionremove: (index: number) => void;
     onopenworkflow?: (workflowId: string, fromNodeId: string) => void;
+    onopenphase?: (phaseId: string) => void;
     onselectworkflow?: () => void;
   }
 
@@ -185,9 +186,6 @@
           >
             <option value="phase">Phase</option>
             <option value="workflow">Child Workflow</option>
-            {#if p.pipelines.length > 0 || nKind === "pipeline"}
-              <option value="pipeline">Pipeline</option>
-            {/if}
           </select>
         </label>
       {/if}
@@ -219,6 +217,17 @@
             {/each}
           </select>
         </label>
+        {#if node.phaseId && p.onopenphase}
+          {@const targetPhaseId = node.phaseId}
+          <button
+            type="button"
+            class="btn btn-ghost"
+            data-testid="workflow-inspector-open-phase-{index}"
+            onclick={() => p.onopenphase?.(targetPhaseId)}
+          >
+            Open Phase definition
+          </button>
+        {/if}
       {:else if nKind === "workflow"}
         <label class="wf-field">
           Runs Workflow
@@ -258,28 +267,6 @@
             Open child Workflow definition
           </button>
         {/if}
-      {:else}
-        <label class="wf-field">
-          Runs Pipeline
-          <select
-            class="select-input"
-            data-testid="workflow-node-pipeline-select-{index}"
-            aria-label="Node {index + 1} runs Pipeline"
-            value={node.pipelineId ?? ""}
-            disabled={readonly}
-            onchange={(event) =>
-              p.onnodepatch(index, { pipelineId: event.currentTarget.value })}
-          >
-            {#if node.pipelineId !== undefined && !p.pipelines.some((entry) => entry.pipelineId === node.pipelineId)}
-              <option value={node.pipelineId}
-                >{node.pipelineId} (not effective)</option
-              >
-            {/if}
-            {#each p.pipelines as pipeline (pipeline.pipelineId)}
-              <option value={pipeline.pipelineId}>{pipeline.name}</option>
-            {/each}
-          </select>
-        </label>
       {/if}
 
       <label class="wf-field">
@@ -369,7 +356,14 @@
           >
             Used by {dependentParents.length}
             {dependentParents.length === 1 ? "Workflow" : "Workflows"}:
-            {dependentParents.map((d) => d.name || d.workflowId).join(", ")}
+            {#each dependentParents as d, i (d.workflowId)}
+              {i > 0 ? ", " : ""}
+              {#if p.onopenworkflow}
+                <button type="button" class="btn btn-ghost btn-sm" data-testid="workflow-dependent-parent-{d.workflowId}" onclick={() => p.onopenworkflow?.(d.workflowId, "")}>{d.name || d.workflowId}</button>
+              {:else}
+                {d.name || d.workflowId}
+              {/if}
+            {/each}
           </span>
         {/if}
       </div>
