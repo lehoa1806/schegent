@@ -157,13 +157,15 @@ plan)"). A Phase that withholds `outside-workspace-write` on `agy` now runs with
 classed `tool-restriction`: agy's own tool layer decides, and nothing below it is claimed. `agy` keeps
 `mechanism: 'none'` in §3.
 
-Headless probes on 2026-11-06 at agy 1.5.2, on the host of §2, under the minimal policy's shape with an
-isolated home and a disposable workspace (`specs/279-agy-accept-edits-mode/measurements.md`):
+Headless probes on 2026-11-06 at agy 1.5.2, on the host of §2, under the minimal policy's environment
+allowlist with the operator's own home and agy settings, and a disposable workspace
+(`specs/279-agy-accept-edits-mode/measurements.md`):
 
 - Under `--mode accept-edits`, a file-tool write inside the workspace was written and a write outside it was
   not; agy reported it as an automatically denied `write_file`. Without `--mode`, the inside write was denied
   too, so the flag is what permits it.
-- Under `--mode accept-edits`, every shell command was denied (`command`), inside the workspace or outside.
+- Under `--mode accept-edits`, both shell commands tried were denied (`command`): one writing outside the
+  workspace and one writing inside it.
   A Phase that grants `process-spawn` and withholds `outside-workspace-write` therefore has its shell refused.
   That is a stricter side effect, disclosed as the `mode-refuses-shell` residual like Codex's
   `sandboxed-commands-run`, not something left open.
@@ -173,8 +175,12 @@ isolated home and a disposable workspace (`specs/279-agy-accept-edits-mode/measu
 
 **Scope.** This holds while agy's own settings carry no `permissions.allow` rule for `write_file` or
 `command`. Where they do, the shell can run and can write outside the workspace, which is why the
-`mode-refuses-shell` clause is conditional on the backend's own permission settings. **Not observed:** an
-inside write under `--sandbox --mode accept-edits`, MCP and browser tools, and any of this on linux or win32.
+`mode-refuses-shell` clause is conditional on the backend's own permission settings. A `write_file` allow-rule
+would likewise let the file tool write outside the workspace. No residual names that, which is the same
+operator-configuration assumption the claude `--permission-mode acceptEdits` cell rests on. **Not observed:** an
+inside write under `--sandbox --mode accept-edits`; whether a settings file inside the workspace can add an
+allow-rule; outside paths reached through `..` or a symlink; a resumed `--conversation` turn; tools other than
+`write_file` and `command`, MCP and browser tools included; and any of this on linux or win32.
 `workspace-write` and `network` remain refused on `agy`: no flag in the planner's table expresses them.
 
 ## 5. What Schegent does with this

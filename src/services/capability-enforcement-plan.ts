@@ -134,8 +134,8 @@ const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
       // Probed headless at agy 1.5.2 (specs/279-agy-accept-edits-mode/
       // measurements.md): it allows a file-tool write inside the workspace,
       // auto-denies one outside it and exits on its own, so it never prompts,
-      // which principle I forbids. It also denies every shell command, which is
-      // a residual only while `process-spawn` stays granted. `workspace-write`
+      // which principle I forbids. It also denied both shell commands probed,
+      // which is a residual only while `process-spawn` stays granted. `workspace-write`
       // and `network` still have no expression here, so a phase withholding
       // either is refused rather than run unbounded;
       // `docs/architecture/agent-capability-posture.md` records that gap.
