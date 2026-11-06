@@ -23,6 +23,8 @@
     CMD_ATTEST_TASK_COMPLETED
   } from '../lib/messages';
   import { useConfirm } from '../lib/use-confirm';
+  // Spec 278 (OD-2) — the failed row's Restart, through the shared phase-control helper.
+  import QueueItemRestartPhase from './QueueItemRestartPhase.svelte';
 
   interface Props {
     item: QueueItem;
@@ -257,6 +259,9 @@
       aria-disabled={ariaDisabled}
       onclick={onAttestCompleted}
     >✓</button>
+  {/if}
+  {#if status === 'failed'}
+    <QueueItemRestartPhase {item} {disabled} />
   {/if}
   {#if showRestartCanceled}
     <button
