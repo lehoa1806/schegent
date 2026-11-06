@@ -9,15 +9,27 @@ import {
 
 export type HistoryListener = () => void;
 
+interface PartitionSnapshot {
+  readonly queueId: string;
+  readonly raws: readonly PersistedHistoryEntry[];
+  readonly length: number;
+  readonly first: PersistedHistoryEntry | undefined;
+  readonly last: PersistedHistoryEntry | undefined;
+}
+
 export class HistoryStore {
   private readonly store: WorkspaceStateStore;
   private readonly listeners = new Set<HistoryListener>();
   private readonly subscription: Disposable;
+  private cachedList: readonly HistoryRecord[] | null = null;
+  private cachedPartitions: readonly PartitionSnapshot[] | null = null;
 
   constructor(store: WorkspaceStateStore) {
     this.store = store;
     this.subscription = this.store.subscribe((key) => {
       if (key === KEYS.history) {
+        this.cachedList = null;
+        this.cachedPartitions = null;
         this.fire();
       }
     });
@@ -38,12 +50,35 @@ export class HistoryStore {
    * order would group by queue and read as a shuffled list to an operator who
    * expects a chronology. Ties keep the order the fold produced, which is
    * stable for a given map.
+   *
+   * FR-R5-F12: memoized across projections while every partition's array
+   * identity, length, and boundary entries are unchanged.
    */
   public list(): readonly HistoryRecord[] {
-    const entries = this.readAll();
-    return entries.sort(
-      (a, b) => Date.parse(b.completedAt) - Date.parse(a.completedAt)
-    );
+    const map = this.store.getHistoryMap();
+    const keys = Object.keys(map);
+    if (
+      this.cachedList !== null &&
+      this.cachedPartitions !== null &&
+      this.matchesPartitions(keys, map, this.cachedPartitions)
+    ) {
+      return this.cachedList;
+    }
+    const entries = this.readAllFromMap(map);
+    entries.sort((a, b) => Date.parse(b.completedAt) - Date.parse(a.completedAt));
+    const frozen = Object.freeze(entries);
+    this.cachedPartitions = keys.map((queueId) => {
+      const raws = map[queueId] ?? [];
+      return {
+        queueId,
+        raws,
+        length: raws.length,
+        first: raws[0],
+        last: raws[raws.length - 1]
+      };
+    });
+    this.cachedList = frozen;
+    return frozen;
   }
 
   /**
@@ -125,11 +160,33 @@ export class HistoryStore {
 
   /** Every partition's normalised entries, in map order. Unsorted. */
   private readAll(): HistoryRecord[] {
+    return this.readAllFromMap(this.store.getHistoryMap());
+  }
+
+  private readAllFromMap(
+    map: Readonly<Record<string, readonly PersistedHistoryEntry[]>>
+  ): HistoryRecord[] {
     const records: HistoryRecord[] = [];
-    for (const [queueId, raws] of Object.entries(this.store.getHistoryMap())) {
+    for (const [queueId, raws] of Object.entries(map)) {
       records.push(...this.normalize(queueId, raws));
     }
     return records;
+  }
+
+  private matchesPartitions(
+    keys: readonly string[],
+    map: Readonly<Record<string, readonly PersistedHistoryEntry[]>>,
+    cached: readonly PartitionSnapshot[]
+  ): boolean {
+    if (keys.length !== cached.length) return false;
+    for (let i = 0; i < keys.length; i += 1) {
+      const snap = cached[i];
+      if (!snap || snap.queueId !== keys[i]) return false;
+      const raws = map[snap.queueId];
+      if (!raws || raws !== snap.raws || raws.length !== snap.length) return false;
+      if (raws[0] !== snap.first || raws[raws.length - 1] !== snap.last) return false;
+    }
+    return true;
   }
 
   private normalize(queueId: string, raws: readonly PersistedHistoryEntry[]): HistoryRecord[] {
