@@ -48,7 +48,8 @@ That bounds what the matrix can claim, precisely:
 
 **These versions are from 2026-08-27 and are not re-dated.** Sections 7 and 8 carry the versions captured
 at `FR-R4-F06`'s implement, on 2026-10-31, by `scripts/capture-backend-help.mjs`: `claude` 2.1.316,
-`codex-cli` 0.163.0 and `agy` 1.4.12, on Darwin arm64, macOS 27.0.1. The product's own list of
+`codex-cli` 0.163.0 and `agy` 1.4.12, on Darwin arm64, macOS 27.0.1; `agy`'s rows were re-captured alone
+on 2026-11-06 at 1.5.2, when `--mode` joined its flags (§4.2). The product's own list of
 live-canary-qualified versions, `QUALIFIED_BACKEND_VERSIONS` (2.1.302, 0.159.2 and 1.4.2, dated
 2026-10-19), is a different claim and is gated against `docs/release/backend-qualification-log.md`, not
 against this record: a version appearing here says what was *captured*, not that it was *qualified*.
@@ -65,7 +66,7 @@ mechanism for every backend, failing in **both** directions.
 | `codex` | linux | Expected to be the same mode under Landlock/seccomp rather than Seatbelt | `codex-sandbox-workspace-write` | **Unverified.** Probe: run `codex exec --sandbox workspace-write` on a Linux host and attempt a write outside the workspace; the mode is qualified when the write is refused by the kernel. |
 | `codex` | win32 | Unknown | `codex-sandbox-workspace-write` | **Unverified.** Probe: as above on Windows. Codex's own help names Seatbelt, which is macOS-only, so the Windows mechanism is not merely unverified but **unnamed** — the strongest statement available today is that Schegent passes the flag and does not know what enforces it. |
 | `claude` | all | **None.** | `none` | **Verified that Schegent requests none; Claude's settings-based shell sandbox is unverified and not adopted.** `src/runner/claude-cli.ts` passes no sandbox flag or settings override, and `claude --help` offers `--allowedTools`, `--disallowedTools`, `--permission-mode`, `--settings` and `--dangerously-skip-permissions`. Claude Code's settings-based `sandbox` configuration confines Bash/shell subcommands rather than built-in file tools, MCP servers, hooks or all network traffic, and is not qualified under Schegent's print/stream/resume invocation (see §4.1). |
-| `agy` | all | **None requested by default.** `--sandbox` exists, and a Phase that withholds `process-spawn` gets it (§7), unqualified and not counted here; see §4. | `none` | **Verified that the flag exists; its enforcement is unverified.** See §4, which is the substantive part of this record. |
+| `agy` | all | **None requested by default.** `--sandbox` exists, and a Phase that withholds `process-spawn` gets it (§7), unqualified and not counted here; see §4. A Phase that withholds `outside-workspace-write` gets `--mode accept-edits`, a tool restriction rather than OS isolation (§4.2). | `none` | **Verified that the flag exists; its enforcement is unverified.** See §4, which is the substantive part of this record. |
 
 ## 4. Agy's `--sandbox`: available, not requested by default, and why
 
@@ -149,6 +150,39 @@ Claude Code exposes a settings-based shell sandbox (`sandbox` in settings files 
 
 Until those checks are qualified and represented with accurate shell-only vs whole-process semantics, unverified integration leaves the current default-deny grant posture (`mechanism: 'none'`) intact.
 
+### 4.2 Agy's `--mode accept-edits`: a tool restriction for `outside-workspace-write` (feature 279)
+
+`agy --help` at 1.5.2 lists `--mode` ("Set the agent execution mode for this session (accept-edits, auto,
+plan)"). A Phase that withholds `outside-workspace-write` on `agy` now runs with `--mode accept-edits`. It is
+classed `tool-restriction`: agy's own tool layer decides, and nothing below it is claimed. `agy` keeps
+`mechanism: 'none'` in §3.
+
+Headless probes on 2026-11-06 at agy 1.5.2, on the host of §2, under the minimal policy's environment
+allowlist with the operator's own home and agy settings, and a disposable workspace
+(`specs/279-agy-accept-edits-mode/measurements.md`):
+
+- Under `--mode accept-edits`, a file-tool write inside the workspace was written and a write outside it was
+  not; agy reported it as an automatically denied `write_file`. Without `--mode`, the inside write was denied
+  too, so the flag is what permits it.
+- Under `--mode accept-edits`, both shell commands tried were denied (`command`): one writing outside the
+  workspace and one writing inside it.
+  A Phase that grants `process-spawn` and withholds `outside-workspace-write` therefore has its shell refused.
+  That is a stricter side effect, disclosed as the `mode-refuses-shell` residual like Codex's
+  `sandboxed-commands-run`, not something left open.
+- `--sandbox --mode accept-edits` also refused the outside write.
+- Every case ended on its own with exit code 0. None waited for a person, so principle I holds.
+- The `init` event's `permission_mode` read `request-review` in every case and does not reflect `--mode`.
+
+**Scope.** This holds while agy's own settings carry no `permissions.allow` rule for `write_file` or
+`command`. Where they do, the shell can run and can write outside the workspace, which is why the
+`mode-refuses-shell` clause is conditional on the backend's own permission settings. A `write_file` allow-rule
+would likewise let the file tool write outside the workspace. No residual names that, which is the same
+operator-configuration assumption the claude `--permission-mode acceptEdits` cell rests on. **Not observed:** an
+inside write under `--sandbox --mode accept-edits`; whether a settings file inside the workspace can add an
+allow-rule; outside paths reached through `..` or a symlink; a resumed `--conversation` turn; tools other than
+`write_file` and `command`, MCP and browser tools included; and any of this on linux or win32.
+`workspace-write` and `network` remain refused on `agy`: no flag in the planner's table expresses them.
+
 ## 5. What Schegent does with this
 
 - The classification (`os-enforced` / `none`) drives the refusal at `createBackendRunner`. Unchanged
@@ -201,7 +235,9 @@ refuses a Phase that withholds it), and `unobserved` otherwise. Cell status is r
 
 The capture ran `scripts/capture-backend-help.mjs claude codex agy` on 2026-10-31 under the minimal policy's
 shape (PATH and an isolated, empty home), with no account and no model call. Every command exited 0, and
-every capability flag below was listed by the CLI's own `--help`.
+every capability flag below was listed by the CLI's own `--help`. `agy`'s rows were re-captured alone on
+2026-11-06 at agy 1.5.2 the same way, after the script gained `--mode`; that command exited 0 too and listed
+`--dangerously-skip-permissions`, `--mode` and `--sandbox` (`specs/279-agy-accept-edits-mode/measurements.md`).
 
 | Backend | Withheld capability | Flag | Enforcement class | Residuals | Evidence | Status | Version |
 |---|---|---|---|---|---|---|---|
@@ -213,10 +249,10 @@ every capability flag below was listed by the CLI's own `--help`.
 | `codex` | `outside-workspace-write` | `--sandbox workspace-write` | `cli-sandbox` | none | `--help` lists `--sandbox` | observed | codex-cli 0.163.0 |
 | `codex` | `process-spawn` | `--sandbox read-only` | `cli-sandbox` | `sandboxed-commands-run` | `--help` lists `--sandbox` | observed | codex-cli 0.163.0 |
 | `codex` | `network` | none | `refused` | none | no flag in the planner's table expresses it | unsupported | codex-cli 0.163.0 |
-| `agy` | `process-spawn` | `--sandbox` | `cli-sandbox` | `sandbox-scope-unqualified` | `--help` lists `--sandbox` ("Run in a sandbox with terminal restrictions enabled") | observed | agy 1.4.12 |
-| `agy` | `workspace-write` | none | `refused` | none | no flag in the planner's table expresses it | unsupported | agy 1.4.12 |
-| `agy` | `outside-workspace-write` | none | `refused` | none | no flag in the planner's table expresses it | unsupported | agy 1.4.12 |
-| `agy` | `network` | none | `refused` | none | no flag in the planner's table expresses it | unsupported | agy 1.4.12 |
+| `agy` | `process-spawn` | `--sandbox` | `cli-sandbox` | `sandbox-scope-unqualified` | `--help` lists `--sandbox` ("Run in a sandbox with terminal restrictions enabled") | observed | agy 1.5.2 |
+| `agy` | `workspace-write` | none | `refused` | none | no flag in the planner's table expresses it | unsupported | agy 1.5.2 |
+| `agy` | `outside-workspace-write` | `--mode accept-edits` | `tool-restriction` | `mode-refuses-shell` (when process-spawn is granted) | `--help` lists `--mode` ("Set the agent execution mode for this session (accept-edits, auto, plan)"); headless probe in §4.2 | observed | agy 1.5.2 |
+| `agy` | `network` | none | `refused` | none | no flag in the planner's table expresses it | unsupported | agy 1.5.2 |
 
 `unsupported` here is about the planner's table: it declares no flag for the capability, so a Phase that
 withholds it on that backend is refused before it starts rather than run unbounded. It does not say the CLI
@@ -237,12 +273,12 @@ blocks file writes".
 
 Every row states what was observed, on what, at which version, or what it is waiting for. **No row is
 `observed` on a fake, a stub or a simulation.** The cycle host is Darwin arm64, macOS 27.0.1, with
-`claude` 2.1.316, `codex-cli` 0.163.0 and `agy` 1.4.12 installed. It is the only host available, so every
+`claude` 2.1.316, `codex-cli` 0.163.0 and `agy` 1.5.2 installed (`agy` 1.4.12 at the first capture). It is the only host available, so every
 `linux` and `win32` row is `unobserved` or `unsupported`, never inferred from darwin (§1).
 
 | Topic | Platform | Status | Versions | Evidence or prerequisite |
 |---|---|---|---|---|
-| Containment flags present in `--help` | darwin | observed | claude 2.1.316, codex-cli 0.163.0, agy 1.4.12 | the offline capture of 2026-10-31; every flag in `CONFIRMED_FLAGS` was listed |
+| Containment flags present in `--help` | darwin | observed | claude 2.1.316, codex-cli 0.163.0, agy 1.5.2 | the offline capture of 2026-10-31, with `agy` re-captured on 2026-11-06; every flag in `CONFIRMED_FLAGS` was listed |
 | Containment flags present in `--help` | linux | unobserved | n/a | a Linux host |
 | Containment flags present in `--help` | win32 | unobserved | n/a | a Windows host |
 | The ladder escalates a surviving same-group helper | darwin | observed | n/a | a real detached leader and a same-group helper that ignores SIGTERM: the ladder settled `group-gone`, the helper's pid answered `ESRCH` and no process carried its tag afterwards (`process-tree-surviving-helper.test.ts`) |
@@ -251,7 +287,7 @@ Every row states what was observed, on what, at which version, or what it is wai
 | `orphaned-group` liveness | darwin | observed | n/a | a real leader that exited while its same-group helper slept: `orphaned-group`, then `dead` once the helper was killed (`process-liveness-group.test.ts`) |
 | `orphaned-group` liveness | linux | unobserved | n/a | a Linux host |
 | `orphaned-group` liveness | win32 | unsupported | n/a | liveness is `unanswerable` by design there: no process group is probeable (`src/services/process-liveness.ts`) |
-| `--help` and `--version` under the minimal policy with an isolated home | darwin | observed | claude 2.1.316, codex-cli 0.163.0, agy 1.4.12 | each CLI exited 0 for both commands in the offline capture |
+| `--help` and `--version` under the minimal policy with an isolated home | darwin | observed | claude 2.1.316, codex-cli 0.163.0, agy 1.5.2 | each CLI exited 0 for both commands in the offline capture, and `agy` again in its re-capture |
 | `--help` and `--version` under the minimal policy with an isolated home | linux | unobserved | n/a | a Linux host with the CLIs installed |
 | `--help` and `--version` under the minimal policy with an isolated home | win32 | unobserved | n/a | a Windows host with the CLIs installed |
 | A real turn under the minimal policy | darwin | unobserved | n/a | an account and a pinned CLI; a turn costs money and is not part of this record |

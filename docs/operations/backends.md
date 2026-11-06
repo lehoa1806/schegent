@@ -324,7 +324,7 @@ enforcement flags, and the backend's permission engine refuses at the attempt:
 |---|---|---|---|---|
 | `claude` | all four (`network` only partly; see the third limit) | `--disallowedTools`, `--permission-mode` | tool restriction | tools the denylist does not name (`unlisted-tools`), always; and, while `process-spawn` stays granted, a shell that can still reach the network or write files (`shell-network`, `shell-workspace-write`, `shell-outside-workspace-write`) |
 | `codex` | `workspace-write`, `outside-workspace-write`, `process-spawn` | one `--sandbox` mode, the strictest the set needs | the CLI's own sandbox | nothing, except that withholding `process-spawn` still lets model-run commands execute, inside Codex's read-only sandbox (`sandboxed-commands-run`) |
-| `agy` | `process-spawn` only | `--sandbox` | the CLI's own sandbox | the scope of Agy's sandbox has not been qualified (`sandbox-scope-unqualified`) |
+| `agy` | `process-spawn`, `outside-workspace-write` | `--sandbox`, `--mode accept-edits` | the CLI's own sandbox for `process-spawn`; a tool restriction for `outside-workspace-write` | the scope of Agy's sandbox has not been qualified (`sandbox-scope-unqualified`); and, while `process-spawn` stays granted, accept-edits mode refuses shell commands unless Agy's own permission settings allow them, and where they do a shell can still write outside the workspace (`mode-refuses-shell`) |
 
 Each of the 48 combinations of backend and granted set has a declared outcome, checked against a table
 written out by hand. A **tool restriction** is the CLI's tool layer applying a denylist to itself;
@@ -343,8 +343,8 @@ to prevent.
 **Three stated limits**, repeated here because an operator reading this table will otherwise infer more:
 
 - the host trusts the backend to apply the flags it was given; nothing here verifies that;
-- `agy` bounds one of the four, so a narrowed phase on that backend is usually a refusal rather than a
-  bounded run;
+- `agy` bounds two of the four, `process-spawn` and `outside-workspace-write`, so a narrowed phase that
+  withholds `workspace-write` or `network` on that backend is a refusal rather than a bounded run;
 - on `claude`, withholding `network` adds `--disallowedTools WebFetch,WebSearch` and nothing else: it
   removes the two fetch tools, not network reach. A phase that keeps `process-spawn` keeps `Bash`, and
   `Bash` reaches the network (`curl`, `git`, `npm`). A Claude restriction is a tool-access restriction, not

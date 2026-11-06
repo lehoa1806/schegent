@@ -69,10 +69,11 @@ interface WithholdDeclaration {
 /**
  * What each backend's CLI can express, re-derived from the installed binaries on
  * 2026-08-25 rather than assumed, and re-confirmed by flag name on 2026-10-31
- * (`capability-confirmed-flags.ts`):
+ * (agy's `--mode` on 2026-11-06; `capability-confirmed-flags.ts`):
  *
  *   claude  --permission-mode, --allowedTools, --disallowedTools, --settings
- *   agy     --sandbox ("run in a sandbox with terminal restrictions"), --mode
+ *   agy     --sandbox ("run in a sandbox with terminal restrictions"),
+ *           --mode ("agent execution mode": accept-edits, auto, plan)
  *   codex   -s/--sandbox, -a/--ask-for-approval
  *
  * A capability absent from a backend's map is one that backend cannot enforce,
@@ -123,14 +124,26 @@ const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
     unbounded: ['--dangerously-skip-permissions'],
     withhold: {
       // Agy's sandbox is documented as "terminal restrictions enabled", which is
-      // the process-spawn boundary. It has no per-tool flag, so the other three
-      // capabilities have NO expression on this backend — a phase withholding one
-      // is refused rather than run unbounded. That gap is the honest finding, and
-      // `docs/architecture/agent-capability-posture.md` records it.
+      // the process-spawn boundary.
       'process-spawn': {
         flags: ['--sandbox'],
         enforcement: 'cli-sandbox',
         residuals: ['sandbox-scope-unqualified']
+      },
+      // Feature 279: a non-bypass execution mode, like claude's `acceptEdits`.
+      // Probed headless at agy 1.5.2 (specs/279-agy-accept-edits-mode/
+      // measurements.md): it allows a file-tool write inside the workspace,
+      // auto-denies one outside it and exits on its own, so it never prompts,
+      // which principle I forbids. It also denied both shell commands probed,
+      // which is a residual only while `process-spawn` stays granted. `workspace-write`
+      // and `network` still have no expression here, so a phase withholding
+      // either is refused rather than run unbounded;
+      // `docs/architecture/agent-capability-posture.md` records that gap.
+      'outside-workspace-write': {
+        flags: ['--mode', 'accept-edits'],
+        enforcement: 'tool-restriction',
+        residuals: [],
+        residualsIfGranted: { 'process-spawn': ['mode-refuses-shell'] }
       }
     }
   },
