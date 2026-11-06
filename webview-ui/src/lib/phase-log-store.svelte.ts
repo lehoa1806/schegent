@@ -36,10 +36,8 @@ import {
 } from './phase-log-ipc';
 import { getWebviewState, setWebviewState } from './vscode-api';
 import { PHASE_LOG_WINDOW_MAX_ENTRIES, appendToWindow } from './phase-log-window';
-import {
-  OUTCOME_NOT_YET_KNOWN_TEXT,
-  type IntentWaitOptions
-} from './intent-ledger';
+import { OUTCOME_NOT_YET_KNOWN_TEXT } from './boundary-refusal-text';
+import type { IntentWaitOptions } from './intent-ledger';
 
 export type PhaseLogSelectionDraft = {
   readonly queueId: string | null;
