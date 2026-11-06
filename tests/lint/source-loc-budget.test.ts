@@ -1535,13 +1535,18 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // `audit-generation-sidecar.ts`, `audit-generation-classify.ts`), so the writer gained only an import, a
   // field, the clock's construction and its three calls (`observe`, `landed`, `rotated`), and `maybeRotate`
   // lost the mtime read. 1,050 leaves 41 lines, clear of `tightMargin(1050)` = 25.
-  { path: 'src/audit/audit-log-writer.ts', maxLines: 1_050 },
+  // FR-R5-F13 (feature 272, 2026-11-06) — 1,050 -> 1,220 for chronological pre-verified archive pruning,
+  // audited `chain-broken` recovery (`noteChainVerified`), and in-place checkpoint re-anchoring
+  // (`reanchorCheckpoint`), leaving ~43 lines of headroom above `tightMargin`.
+  { path: 'src/audit/audit-log-writer.ts', maxLines: 1_220 },
   // FR-R4-F04 (feature 251, 2026-10-31) — `audit-payload.ts` reaches the 1,000-line entry condition (998 ->
   // 1,001 by this gate's count). The closed `evidence-exported` projection is its own module
   // (`evidence-lifecycle-payload.ts`) and the validation error moved to `audit-payload-error.ts` so the
   // two can be imported without a cycle; this file gained the two imports and one arm and lost the class.
   // 1,050 leaves 49 lines, clear of `tightMargin(1050)` = 25.
-  { path: 'src/audit/audit-payload.ts', maxLines: 1_050 },
+  // FR-R5-F13 (feature 272, 2026-11-06) — 1,050 -> 1,080 for `chain-verified` and `checkpoint-reanchored`
+  // projection arms and the three new evidence-sink path-refused warning literals.
+  { path: 'src/audit/audit-payload.ts', maxLines: 1_080 },
   // 1,186, unchanged by feature 217's workstream.
   //
   // FR-R4-F04 (feature 251, 2026-10-31) — 1,225 -> 1,250. The transport capture setting adds its idle

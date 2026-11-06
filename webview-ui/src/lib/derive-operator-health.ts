@@ -49,7 +49,10 @@ export function deriveOperatorHealth(snapshot: WorkflowSnapshot | null): Operato
       evidenceHealth.metricsRollup?.status === 'degraded' ? 'metrics rollup' : null,
       // FR-R3-010 — an unreadable audit corpus does not stop a run, but it does
       // mean completed runs' evidence cannot be reached from history.
-      evidenceHealth.historyPointer?.status === 'degraded' ? 'history evidence' : null
+      evidenceHealth.historyPointer?.status === 'degraded' ? 'history evidence' : null,
+      evidenceHealth.auditCheckpoint?.status === 'degraded' ? 'audit checkpoint' : null,
+      evidenceHealth.transport?.status === 'degraded' ? 'CLI transport' : null,
+      evidenceHealth.verboseDiagnostics?.status === 'degraded' ? 'verbose diagnostics' : null
     ].filter((name): name is string => name !== null);
     return {
       level: 'attention',

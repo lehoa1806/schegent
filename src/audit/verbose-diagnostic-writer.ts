@@ -3,6 +3,7 @@ import { narrowMode, noticeFor, type NarrowingNotice } from '../lib/narrow-mode'
 import { ensureDirWithinRoot, openWithinRoot } from '../lib/safe-open';
 import type { SanitizedLogger } from '../lib/logger';
 import type { VerboseDiagnosticTarget } from '../runner/invocation-result';
+import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 
 export type { VerboseDiagnosticTarget };
 
@@ -54,8 +55,12 @@ export class VerboseDiagnosticWriter {
   private readonly warnings: string[] = [];
   private readonly warnedSlots = new Map<string, Set<Slot>>();
   private streamCaptured = false;
+  private hadFailure = false;
 
-  constructor(logger: SanitizedLogger) {
+  constructor(
+    logger: SanitizedLogger,
+    private readonly evidenceHealth?: EvidenceHealthReporter
+  ) {
     this.logger = logger;
   }
 
@@ -74,6 +79,11 @@ export class VerboseDiagnosticWriter {
         DIAGNOSTIC_DIR_MODE
       );
       if (ready.outcome === 'refused') {
+        this.hadFailure = true;
+        this.evidenceHealth?.reportFailure(
+          'verboseDiagnostics',
+          ready.reason === 'io-failed' ? ready.errno : 'path-refused'
+        );
         this.recordWarning(
           target,
           'directory',
@@ -100,6 +110,12 @@ export class VerboseDiagnosticWriter {
       if (narrowed !== null) this.recordNarrowing(target, 'directory', narrowed);
       this.preparedDirs.add(target.directory);
     } catch (err) {
+      this.hadFailure = true;
+      const code = (err as { code?: unknown })?.code;
+      this.evidenceHealth?.reportFailure(
+        'verboseDiagnostics',
+        typeof code === 'string' ? code : 'write-failed'
+      );
       this.recordWarning(
         target,
         'directory',
@@ -137,6 +153,11 @@ export class VerboseDiagnosticWriter {
         fileMode: DIAGNOSTIC_FILE_MODE
       });
       if (opened.outcome === 'refused') {
+        this.hadFailure = true;
+        this.evidenceHealth?.reportFailure(
+          'verboseDiagnostics',
+          opened.reason === 'io-failed' ? opened.errno : 'path-refused'
+        );
         this.recordWarning(target, slot, `verbose diagnostic ${slot} refused: ${opened.reason}`);
         return;
       }
@@ -153,10 +174,19 @@ export class VerboseDiagnosticWriter {
       try {
         await opened.handle.write(chunk, null, 'utf8');
         if (slot === 'stream') this.streamCaptured = true;
+        if (!this.hadFailure) {
+          this.evidenceHealth?.reportSuccess('verboseDiagnostics');
+        }
       } finally {
         await opened.handle.close().catch(() => undefined);
       }
     } catch (err) {
+      this.hadFailure = true;
+      const code = (err as { code?: unknown })?.code;
+      this.evidenceHealth?.reportFailure(
+        'verboseDiagnostics',
+        typeof code === 'string' ? code : 'write-failed'
+      );
       this.recordWarning(
         target,
         slot,
@@ -182,6 +212,8 @@ export class VerboseDiagnosticWriter {
         );
         return;
       case 'refused-symlink':
+        this.hadFailure = true;
+        this.evidenceHealth?.reportFailure('verboseDiagnostics', 'path-refused');
         this.recordWarning(
           target,
           slot,

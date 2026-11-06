@@ -9,6 +9,7 @@ import { buildSpawnEnv } from './spawn-env';
 import { planCapabilityEnforcement } from '../services/capability-enforcement-plan';
 import { CapabilityNotEnforceableError } from '../services/capability-refusal';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 
 const HIGH_EFFORT: readonly Effort[] = ['xhigh', 'max'];
 export type SpawnFn = ProcessSpawnFn;
@@ -106,9 +107,10 @@ export class AgyCliRunner implements BackendRunner {
   constructor(
     spawnFn: SpawnFn = spawn as unknown as SpawnFn,
     monitorHook: MonitorSidecarHook | null = null,
-    logger: SanitizedLogger = new SanitizedLogger()
+    logger: SanitizedLogger = new SanitizedLogger(),
+    evidenceHealth?: EvidenceHealthReporter
   ) {
-    this.lifecycle = new ProcessLifecycleRunner(spawnFn, monitorHook, logger, 'agy-cli');
+    this.lifecycle = new ProcessLifecycleRunner(spawnFn, monitorHook, logger, 'agy-cli', evidenceHealth);
   }
 
   public get hasActiveProcess(): boolean { return this.lifecycle.hasActiveProcess; }

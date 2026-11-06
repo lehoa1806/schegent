@@ -1,12 +1,16 @@
 import {
   AUDIT_CHAIN_GENESIS,
   AUDIT_DIGEST_ALG,
+  appendCutText,
   collectChainFiles,
-  cutRecordFor,
+  createAuditCutAccumulator,
   digestOf,
+  finalizeAuditCutRecord,
+  mergeAuditCutAccumulator,
   readChainTail,
   readCutLink,
   verifyAuditChainThrough,
+  type AuditCutAccumulator,
   type ChainCheck,
   type ChainTail
 } from './audit-chain';
@@ -44,6 +48,8 @@ import {
 } from './audit-write-failure';
 import {
   AUDIT_INTEGRITY_CONDITION_EVENT,
+  CHAIN_VERIFIED_CONDITION,
+  CHECKPOINT_REANCHORED_CONDITION,
   DAMAGE_DIGEST_ALG,
   HISTORY_MISSING_CAUSE,
   HISTORY_RESET_CONDITION,
@@ -233,6 +239,7 @@ export class AuditLogWriter {
     establishedAtMs: number;
   } | null = null;
   private checkpointWarned = false;
+  private chainBrokenNoted = false;
 
   constructor(
     config: Partial<AuditLogConfig> & {
@@ -352,11 +359,73 @@ export class AuditLogWriter {
    * whether to trust the record. The reporter stays private; this is the only way in.
    */
   public noteChainBreak(detail: string): void {
+    this.chainBrokenNoted = true;
     this.logger.warn('audit chain verification found a break', { reasonCode: 'chain-broken' });
     const shouldWarn = this.evidenceHealth?.reportFailure('audit', 'chain-broken') ?? true;
     if (shouldWarn) {
       this.logger.warn('structured evidence cannot be relied on', { detail: detail.slice(0, 240) });
     }
+  }
+
+  /**
+   * FR-R5-F13 (FR-006) — clear a prior `chain-broken` latch when a subsequent chain verification
+   * passes AND an `audit-integrity-condition` (`condition: 'chain-verified'`) row is durably appended
+   * by the owner window. No-op when `chain-broken` is not currently active, so routine verifications
+   * stay strictly read-only.
+   */
+  public noteChainVerified(): Promise<'recovered' | 'no-op' | 'not-owner' | 'not-verified' | 'write-failed'> {
+    if (!this.chainBrokenNoted && this.evidenceHealth?.getSnapshot?.().audit.cause !== 'chain-broken') {
+      return Promise.resolve('no-op');
+    }
+    return this.enqueue(
+      async () => {
+        if (!this.chainBrokenNoted && this.evidenceHealth?.getSnapshot?.().audit.cause !== 'chain-broken') {
+          return 'no-op';
+        }
+        const fence = await this.authority.currentFence();
+        if (fence === null) return 'not-owner';
+        const dir = path.dirname(this.logPath);
+        const read = await this.readCheckpoint();
+        const head = read.status === 'active' ? read.checkpoint.headDigest : undefined;
+        let walk: ChainCheck | null = null;
+        try {
+          walk = await verifyAuditChainThrough(
+            dir,
+            (name) => this.readThroughWalk(name),
+            head === undefined ? {} : { probeDigest: head }
+          );
+        } catch {
+          return 'not-verified';
+        }
+        if (walk === null || !walk.verdict.ok) return 'not-verified';
+        const loss = classifyLoss(read, walk);
+        if (loss.state === 'shorter' || loss.state === 'missing') return 'not-verified';
+        try {
+          if (fence !== this.writtenUnderFence) this.tailCheckOwed = true;
+          if (this.tailCheckOwed) await this.checkTail();
+          const line = this.integrityRow(this.landedDigest, {
+            condition: CHAIN_VERIFIED_CONDITION,
+            conditionVersion: INTEGRITY_CONDITION_VERSION,
+            entries: walk.verdict.entries,
+            cuts: walk.verdict.cuts
+          });
+          await this.doWrite(line);
+          this.landedDigest = digestOf(line.trimEnd());
+          this.writtenUnderFence = fence;
+          if (this.cp !== null) this.cp.position += 1;
+          this.chainBrokenNoted = false;
+          this.evidenceHealth?.clearAuditIntegrity?.(['chain-broken']);
+          this.evidenceHealth?.reportSuccess('audit');
+          return 'recovered';
+        } catch (err) {
+          this.tailCheckOwed = true;
+          const cause = classifyAuditWriteFailure(err);
+          if (cause !== null) this.evidenceHealth?.reportFailure('audit', cause);
+          return 'write-failed';
+        }
+      },
+      () => this.advanceCheckpoint()
+    );
   }
 
   /**
@@ -391,7 +460,10 @@ export class AuditLogWriter {
       if (collectChainFiles(path.dirname(this.logPath)) !== null) return 'files-present';
       const read = await this.readCheckpoint();
       if (read.status === 'absent' || read.status === 'retired') return 'absent';
-      if (read.status === 'unreadable' || this.port === undefined) return 'unavailable';
+      if (read.status === 'unreadable' || this.port === undefined) {
+        this.warnCheckpointUnavailable(read.status === 'unreadable' ? read.reason : 'checkpoint-unavailable');
+        return 'unavailable';
+      }
       const now = Date.now();
       try {
         await this.port.write({
@@ -404,11 +476,113 @@ export class AuditLogWriter {
           retiredPosition: read.checkpoint.position
         });
       } catch {
+        this.warnCheckpointUnavailable('checkpoint-unavailable');
         return 'unavailable';
       }
+      this.checkpointWarned = false;
+      this.evidenceHealth?.reportSuccess('auditCheckpoint');
       this.evidenceHealth?.clearAuditIntegrity?.([HISTORY_SHORTER_CAUSE, HISTORY_MISSING_CAUSE]);
       this.tailCheckOwed = true;
       return 'retired';
+    });
+  }
+
+  /**
+   * FR-R5-F13 (FR-007) — re-anchor the head checkpoint in-place to the current verified chain head
+   * without requiring `.schegent/audit.log*` to be moved or deleted, recording a chained
+   * `checkpoint-reanchored` integrity row and clearing `history-shorter` / `history-missing` only
+   * after both the audit entry and the updated checkpoint persist.
+   */
+  public reanchorCheckpoint(options?: {
+    readonly allowOverwriteUnreadable?: boolean;
+  }): Promise<'reanchored' | 'not-owner' | 'no-chain' | 'chain-broken' | 'unreadable-refused' | 'unavailable'> {
+    return this.enqueue(async () => {
+      const fence = await this.authority.currentFence();
+      if (fence === null) return 'not-owner';
+      if (this.port === undefined) return 'unavailable';
+      const dir = path.dirname(this.logPath);
+      let walk: ChainCheck | null = null;
+      try {
+        walk = await verifyAuditChainThrough(dir, (name) => this.readThroughWalk(name));
+      } catch {
+        return 'unavailable';
+      }
+      if (walk === null) return 'no-chain';
+      if (!walk.verdict.ok) return 'chain-broken';
+      const current = await this.readCheckpoint();
+      if (current.status === 'unreadable') {
+        if (current.reason === 'unreachable') {
+          this.warnCheckpointUnavailable('unreachable');
+          return 'unavailable';
+        }
+        if (options?.allowOverwriteUnreadable !== true) {
+          return 'unreadable-refused';
+        }
+      }
+      const priorStatus = current.status;
+      const priorPosition =
+        current.status === 'active'
+          ? current.checkpoint.position
+          : current.status === 'retired'
+            ? (current.checkpoint.retiredPosition ?? 0)
+            : undefined;
+      const now = Date.now();
+      let newHead: string;
+      const newPosition = walk.verdict.positions.tail + 1;
+      try {
+        const read = (name: string): Promise<Buffer> => this.readThroughWalk(name);
+        const tail = await readChainTail(dir, read);
+        let prevDigest: string | null;
+        if (tail === null) {
+          prevDigest = (await readCutLink(dir, read)) ?? AUDIT_CHAIN_GENESIS;
+        } else {
+          if (!tail.endsWithNewline && tail.file === AUDIT_LOG_NAME) await this.appendBytes('\n');
+          prevDigest = tail.digest;
+        }
+        const line = this.integrityRow(prevDigest, {
+          condition: CHECKPOINT_REANCHORED_CONDITION,
+          conditionVersion: INTEGRITY_CONDITION_VERSION,
+          priorStatus,
+          ...(priorPosition !== undefined ? { priorPosition } : {}),
+          newPosition,
+          reanchoredAtMs: now
+        });
+        await this.doWrite(line);
+        newHead = digestOf(line.trimEnd());
+        this.landedDigest = newHead;
+        this.writtenUnderFence = fence;
+        this.tailCheckOwed = false;
+      } catch (err) {
+        this.tailCheckOwed = true;
+        const cause = classifyAuditWriteFailure(err);
+        if (cause !== null) this.evidenceHealth?.reportFailure('audit', cause);
+        return 'unavailable';
+      }
+      try {
+        await this.port.write(
+          {
+            version: 1,
+            workspaceKey: this.port.key,
+            state: 'active',
+            origin: 'reset',
+            headDigest: newHead,
+            position: newPosition,
+            establishedAtMs: now,
+            updatedAtMs: now
+          },
+          { force: options?.allowOverwriteUnreadable === true }
+        );
+      } catch {
+        this.cp = { mode: 'off', position: newPosition, origin: 'reset', establishedAtMs: now };
+        this.warnCheckpointUnavailable('checkpoint-unavailable');
+        return 'unavailable';
+      }
+      this.cp = { mode: 'track', position: newPosition, origin: 'reset', establishedAtMs: now };
+      this.checkpointWarned = false;
+      this.evidenceHealth?.reportSuccess('auditCheckpoint');
+      this.evidenceHealth?.clearAuditIntegrity?.([HISTORY_SHORTER_CAUSE, HISTORY_MISSING_CAUSE]);
+      this.evidenceHealth?.reportSuccess('audit');
+      return 'reanchored';
     });
   }
 
@@ -652,7 +826,9 @@ export class AuditLogWriter {
           : 'the log no longer reaches the checkpointed entry'
       );
     }
-    if (mode === 'off') this.warnCheckpointUnavailable();
+    if (mode === 'off') {
+      this.warnCheckpointUnavailable(read.status === 'unreadable' ? read.reason : 'checkpoint-unavailable');
+    }
     const origin: CheckpointOrigin =
       mode === 'adopt' ? 'adopted' : mode === 'reset' ? 'reset' : read.status === 'active' ? read.checkpoint.origin : 'new';
     this.cp = {
@@ -663,7 +839,8 @@ export class AuditLogWriter {
     };
   }
 
-  private warnCheckpointUnavailable(): void {
+  private warnCheckpointUnavailable(cause = 'checkpoint-unavailable'): void {
+    this.evidenceHealth?.reportFailure('auditCheckpoint', cause);
     if (this.checkpointWarned) return;
     this.checkpointWarned = true;
     this.logger.warn(
@@ -699,9 +876,11 @@ export class AuditLogWriter {
       });
       cp.mode = 'track';
       cp.establishedAtMs = establishedAtMs;
+      this.checkpointWarned = false;
+      this.evidenceHealth?.reportSuccess('auditCheckpoint');
     } catch {
       cp.mode = 'off';
-      this.warnCheckpointUnavailable();
+      this.warnCheckpointUnavailable('checkpoint-unavailable');
     }
   }
 
@@ -863,7 +1042,9 @@ export class AuditLogWriter {
         // ignore unreadable entries
       }
     }
-    archives.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    archives.sort(
+      (a, b) => b.mtimeMs - a.mtimeMs || path.basename(b.fullPath).localeCompare(path.basename(a.fullPath))
+    );
     const now = Date.now();
     const keep = new Set<string>();
     for (let i = 0; i < archives.length && i < this.config.retentionMaxArchives; i++) {
@@ -878,107 +1059,99 @@ export class AuditLogWriter {
     this.narrowing.report(
       await narrowRotatedFiles([...keep], AUDIT_FILE_MODE, [this.config.workspaceRoot])
     );
-    // FR-R3-112 (FR-126a) — a prune is the legitimate operation that looks most like
-    // tampering, so it leaves a record saying what it removed. The lines are read BEFORE the
-    // unlink, because after it the boundary digests are gone and the gap becomes
-    // indistinguishable from a deletion. Best-effort, like the rest of this sweep: an
-    // unreadable archive contributes nothing to the record rather than blocking the prune.
-    const removedLines: string[] = [];
-    for (const entry of archives) {
-      if (keep.has(entry.fullPath)) continue;
-      // Feature FR-R3-005 — the archive list came out of `readdir`, so these
-      // names were never configured by anyone and the enumeration says nothing
-      // about where they lead.
+    // FR-R5-F13 (FR-001, FR-002, FR-003) — prune candidates are processed in chronological
+    // (oldest-first) order so a multi-archive prune derives `removedFrom` from the oldest
+    // removed chained entry and `removedTo` from the newest removed chained entry. Every
+    // candidate is verified and read before any unlink, and `audit.log.cuts` is opened before
+    // the first unlink so an unreadable archive or unwritable cut file leaves the chain intact.
+    const pruneCandidates = archives
+      .filter((entry) => !keep.has(entry.fullPath))
+      .sort((a, b) => path.basename(a.fullPath).localeCompare(path.basename(b.fullPath)));
+    if (pruneCandidates.length === 0) return;
+
+    const verifiedToPrune: { fullPath: string; acc: AuditCutAccumulator }[] = [];
+    let cutsNeeded = false;
+    for (const entry of pruneCandidates) {
       const verdict = await resolveContainedLink(entry.fullPath, [this.config.workspaceRoot]);
       if (verdict.outcome === 'refused') {
         this.warnContainmentRefusal('retention', verdict.reason);
-        continue;
+        break;
       }
-      // Read through the same canonical walk as every other access to this directory. The
-      // name came out of `readdir`, so nobody configured it and the enumeration says nothing
-      // about where it leads — the reason FR-R3-053 gave for the unlink below applies
-      // identically to reading it.
-      let body: string | null = null;
       const reading = await openWithinRootByPath(this.config.workspaceRoot, entry.fullPath, {
         flags: 'r'
       });
       if (reading.outcome === 'refused') {
         this.logger.warn(
           `audit retention refused to read an archive before pruning it: containment ` +
-            `${reading.reason}; its range will be absent from the cut record`
+            `${reading.reason}; leaving it in place to preserve chain continuity`
         );
-      } else {
-        try {
-          body = await reading.handle.readFile('utf8');
-        } catch (err) {
-          this.logger.warn(
-            `audit retention could not read ${path.basename(entry.fullPath)} before pruning it; ` +
-              `its range will be absent from the cut record: ${errorMessage(err)}`
-          );
-        } finally {
-          await reading.handle.close().catch(() => undefined);
-        }
+        break;
       }
+      let body: string;
       try {
-        await fs.unlink(entry.fullPath);
-        if (body !== null) removedLines.push(...body.split('\n'));
+        body = await reading.handle.readFile('utf8');
       } catch (err) {
         this.logger.warn(
-          `audit retention unlink failed for ${path.basename(entry.fullPath)}: ${(err as Error).message}`
+          `audit retention could not read ${path.basename(entry.fullPath)} before pruning it; ` +
+            `leaving it in place to preserve chain continuity: ${errorMessage(err)}`
         );
+        break;
+      } finally {
+        await reading.handle.close().catch(() => undefined);
       }
+      const acc = createAuditCutAccumulator();
+      appendCutText(acc, body);
+      if (acc.removedFrom !== null || acc.removedLegacy > 0) cutsNeeded = true;
+      verifiedToPrune.push({ fullPath: entry.fullPath, acc });
     }
-    await this.recordCut(removedLines);
-  }
+    if (verifiedToPrune.length === 0) return;
 
-  /**
-   * Write the cut record for one prune pass.
-   *
-   * IN ITS OWN FILE, and the file order is why. A prune removes the OLDEST end of history, so
-   * the surviving entries link past the removed range and the record that explains the gap has
-   * to be read before them. Appending it to the live log would place it at the newest end,
-   * where a verifier walking forward would reach it long after the discontinuity it explains.
-   * `scripts/verify-audit-chain.ts` reads this file first for exactly that reason.
-   *
-   * Not chained itself, and this is a stated limit rather than an omission: the cut file is one
-   * more file on the same disk. It makes a prune DISTINGUISHABLE from a deletion; it does not
-   * make a forged cut record impossible. `docs/security/threat-model.md` T3 says so.
-   */
-  private async recordCut(removedLines: readonly string[]): Promise<void> {
-    const record = cutRecordFor(removedLines, Date.now());
-    if (record === null) return;
-    // Opened through the same canonical-path walk as the live log, not `fs.appendFile`.
-    // FR-R3-053's finding applies here unchanged: `appendFile` follows symlinks, so a planted
-    // `.schegent` or `audit.log.cuts` link would redirect the record that explains a prune out
-    // of the workspace — and a cut record written somewhere else is a verification that reports
-    // tampering for a prune that was recorded correctly.
-    const opened = await openWithinRoot(
-      this.config.workspaceRoot,
-      [SCHEGENT_DIR_NAME, AUDIT_CUTS_NAME],
-      { flags: 'a', createDirs: true, dirMode: AUDIT_DIR_MODE, fileMode: AUDIT_FILE_MODE }
-    );
-    if (opened.outcome === 'refused') {
-      // Bounded and path-free, like every other refusal warning here. Not thrown: the prune
-      // is best-effort by design and an unwritable cut file must not wedge the write chain —
-      // but it is said loudly, because the archives are already gone.
-      this.logger.warn(
-        `audit cut record refused: containment ${opened.reason} (errno ${opened.errno}); the ` +
-          'next verification will report a break at this boundary'
+    let cutsHandle: fs.FileHandle | null = null;
+    if (cutsNeeded) {
+      const opened = await openWithinRoot(
+        this.config.workspaceRoot,
+        [SCHEGENT_DIR_NAME, AUDIT_CUTS_NAME],
+        { flags: 'a', createDirs: true, dirMode: AUDIT_DIR_MODE, fileMode: AUDIT_FILE_MODE }
       );
-      return;
+      if (opened.outcome === 'refused') {
+        this.logger.warn(
+          `audit cut record refused: containment ${opened.reason} (errno ${opened.errno}); ` +
+            'retention left archives in place so the chain stays intact'
+        );
+        return;
+      }
+      this.narrowing.report(opened.narrowing);
+      cutsHandle = opened.handle;
     }
-    this.narrowing.report(opened.narrowing);
+
     try {
-      await opened.handle.write(`${JSON.stringify(record)}\n`, null, 'utf8');
-    } catch (err) {
-      // The archives are already gone. Say so loudly: the next verification will report a
-      // break, and an operator needs to know it was this prune and not an edit.
-      this.logger.warn(
-        `audit retention pruned ${record.removedCount} entries but could not write the cut ` +
-          `record; verification will report a break at that boundary: ${errorMessage(err)}`
-      );
+      const totalAcc = createAuditCutAccumulator();
+      for (const item of verifiedToPrune) {
+        try {
+          await fs.unlink(item.fullPath);
+          mergeAuditCutAccumulator(totalAcc, item.acc);
+        } catch (err) {
+          this.logger.warn(
+            `audit retention unlink failed for ${path.basename(item.fullPath)}: ${(err as Error).message}`
+          );
+          break;
+        }
+      }
+      const record = finalizeAuditCutRecord(totalAcc, Date.now());
+      if (record !== null && cutsHandle !== null) {
+        try {
+          await cutsHandle.write(`${JSON.stringify(record)}\n`, null, 'utf8');
+        } catch (err) {
+          this.chainBrokenNoted = true;
+          this.evidenceHealth?.reportFailure('audit', 'chain-broken');
+          this.logger.warn(
+            `audit retention pruned ${record.removedCount} entries but could not write the cut ` +
+              `record; verification will report a break at that boundary: ${errorMessage(err)}`
+          );
+        }
+      }
     } finally {
-      await opened.handle.close().catch(() => undefined);
+      await cutsHandle?.close().catch(() => undefined);
     }
   }
 
