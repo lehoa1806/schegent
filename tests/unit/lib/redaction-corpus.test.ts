@@ -219,4 +219,16 @@ describe('seeded variants: the same cases wrapped in punctuation (BD6)', () => {
     const testCase = REDACTION_CASES.find((candidate) => candidate.name === 'lowercase password assignment');
     expect(logger.sanitize((testCase as RedactionCase).build())).toContain(REDACTION_SENTINEL);
   });
+
+  it('sanitizes 16 MiB MAX_ARTIFACT_BYTES hostile keyed values and unterminated key blocks without RangeError (FR-R5-F14, NS-08)', () => {
+    const maxBytes = 16 * 1024 * 1024;
+    const hugeKeyed = `token = ${'a'.repeat(maxBytes - 8)}`;
+    const outKeyed = logger.sanitize(hugeKeyed);
+    expect(outKeyed).toBe(`token = ${REDACTION_SENTINEL}`);
+
+    const header = ['-----', 'BEGIN RSA PRIVATE', ' KEY-----\n'].join('');
+    const hugeBlock = `${header}${'M'.repeat(maxBytes - header.length)}`;
+    const outBlock = logger.sanitize(hugeBlock);
+    expect(outBlock).toBe(REDACTION_SENTINEL);
+  });
 });

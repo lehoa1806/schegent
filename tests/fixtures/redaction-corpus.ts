@@ -211,6 +211,33 @@ const REPRODUCED_GAPS: ReadonlyArray<RedactionCase> = [
   ),
   redacted('JSON client_secret', 'reproduced-gap', (s) => `{"client_secret": "${s}"}`, 24, {
     extra: { keep: ['"client_secret"'] }
+  }),
+  redacted('AWS_SECRET_ACCESS_KEY assignment', 'reproduced-gap', (s) => `AWS_SECRET_ACCESS_${['KE', 'Y'].join('')}=${s}`, 24, {
+    extra: { keep: [`AWS_SECRET_ACCESS_${['KE', 'Y'].join('')}=`] }
+  }),
+  redacted('lowercase aws_secret_access_key assignment', 'reproduced-gap', (s) => `aws_secret_access_${['ke', 'y'].join('')}=${s}`, 24, {
+    extra: { keep: [`aws_secret_access_${['ke', 'y'].join('')}=`] }
+  }),
+  redacted('MY_ACCESS_KEY assignment', 'reproduced-gap', (s) => `MY_ACCESS_${['KE', 'Y'].join('')}=${s}`, 24, {
+    extra: { keep: [`MY_ACCESS_${['KE', 'Y'].join('')}=`] }
+  }),
+  redacted('PRIVATE_KEY assignment', 'reproduced-gap', (s) => `PRIVATE_${['KE', 'Y'].join('')}=${s}`, 24, {
+    extra: { keep: [`PRIVATE_${['KE', 'Y'].join('')}=`] }
+  }),
+  redacted('SIGNING_KEY assignment', 'reproduced-gap', (s) => `SIGNING_${['KE', 'Y'].join('')}=${s}`, 24, {
+    extra: { keep: [`SIGNING_${['KE', 'Y'].join('')}=`] }
+  }),
+  redacted('Authorization Basic header', 'reproduced-gap', (s) => `Authorization: Basic ${s}`, 24, {
+    extra: { keep: ['Authorization:'] }
+  }),
+  redacted('Proxy-Authorization Basic header', 'reproduced-gap', (s) => `Proxy-Authorization: Basic ${s}`, 24, {
+    extra: { keep: ['Proxy-Authorization:'] }
+  }),
+  redacted('Cookie session value', 'reproduced-gap', (s) => `Cookie: session=${s}; theme=dark`, 24, {
+    extra: { keep: ['Cookie: session=', '; theme=dark'] }
+  }),
+  redacted('Set-Cookie session_id value', 'reproduced-gap', (s) => `Set-Cookie: session_id=${s}; Path=/; HttpOnly`, 24, {
+    extra: { keep: ['Set-Cookie: session_id=', '; Path=/; HttpOnly'] }
   })
 ];
 
@@ -250,7 +277,10 @@ const VENDOR_PREFIXES: ReadonlyArray<RedactionCase> = [
   redacted('GitHub user-to-server token', 'vendor-prefix', (s) => `token ${['gh', 'u_'].join('')}${s} end`, 36),
   redacted('GitHub server-to-server token', 'vendor-prefix', (s) => `token ${['gh', 's_'].join('')}${s} end`, 36),
   redacted('GitHub refresh token', 'vendor-prefix', (s) => `token ${['gh', 'r_'].join('')}${s} end`, 36),
-  redacted('npm token', 'vendor-prefix', (s) => `token ${['npm', '_'].join('')}${s} end`, 36)
+  redacted('npm token', 'vendor-prefix', (s) => `token ${['npm', '_'].join('')}${s} end`, 36),
+  redacted('Slack app-level token', 'vendor-prefix', (s) => `token ${['xa', 'pp-'].join('')}1-A0123456789-${s} end`, 24),
+  redacted('GitLab personal access token', 'vendor-prefix', (s) => `token ${['glp', 'at-'].join('')}${s} end`, 24),
+  redacted('Hugging Face access token', 'vendor-prefix', (s) => `token ${['h', 'f_'].join('')}${s} end`, 32)
 ];
 
 /** A structured case: the value goes under `key`, or into an array when `key` is absent. */
@@ -282,6 +312,9 @@ const QUOTING_AND_CASING: ReadonlyArray<RedactionCase> = [
   structured('structured leaf under client_secret', (s) => s, 16, 'client_secret'),
   structured('structured leaf under a password key', (s) => s, 16, PASS),
   structured('structured leaf under a camelCase token key', (s) => s, 16, 'apiToken'),
+  structured('structured leaf under aws_secret_access_key', (s) => s, 16, 'aws_secret_access_key'),
+  structured('structured leaf under signing_key', (s) => s, 16, 'signing_key'),
+  structured('structured leaf under session_id', (s) => s, 16, 'session_id'),
   structured('vendor token as an array element', (s) => `${['gh', 'p_'].join('')}${s}`, 36)
 ];
 
@@ -292,7 +325,14 @@ const BOUNDARIES: ReadonlyArray<RedactionCase> = [
   redacted('secret between punctuation', 'boundary', (s) => `("${['gh', 'p_'].join('')}${s}"),`, 36),
   redacted('keyed value after a name embedded in a longer word', 'boundary', (s) => `some${PASS}=${s}`, 24, {
     extra: { keep: [`some${PASS}=`] }
-  })
+  }),
+  redacted(
+    'multiple credentials on one line',
+    'boundary',
+    (s) => `first ${['glp', 'at-'].join('')}${s.slice(0, 20)} and second ${['h', 'f_'].join('')}${s.slice(10)} on one line`,
+    42,
+    { extra: { keep: ['first ', ' and second ', ' on one line'] } }
+  )
 ];
 
 /** A private-key case: `build` assembles the blocks from the case's own bodies, `secret` is a first row. */
