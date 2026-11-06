@@ -134,7 +134,9 @@ describe('RunDriver raises the first-blocker notice (FR-R5-F19, FR-001)', () => 
     expect(blockerWarnings()).toHaveLength(1);
   }, 20_000);
 
-  it('does not repeat when the same Run id is driven again, as a resumed failed Run is', async () => {
+  // One driver drives twice here. Production builds a new driver per resume of a failed Run, so the
+  // production path is `tests/unit/controller/blocker-notice-across-resume.test.ts`, not this case.
+  it('does not repeat when one driver drives the same Run id again', async () => {
     const driver = new RunDriver(deps);
     await driver.drive(makeRun('finalize'), 'desc');
     await driver.drive(makeRun('finalize'), 'desc');

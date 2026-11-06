@@ -190,6 +190,7 @@ export interface RunDriverDeps {
    * working; the controller always supplies it.
    */
   readonly releaseExecutionLease?: (run: WorkflowRun) => Promise<void>;
+  readonly blockerNoticeLedger?: BlockerNoticeLedger; // FR-R5-F19 (FR-001): the controller's one; a resumed Run's new driver would forget its own
   readonly onRunTerminal?: (run: WorkflowRun) => Promise<void>;
   readonly failureRecords?: FailureRecorder;
   readonly terminalTransitions?: Pick<TerminalTransitionCoordinator, 'complete'>;
@@ -219,13 +220,13 @@ export class RunDriver {
   private readonly overriddenActivePhaseAborts = new Set<string>();
   private readonly sequencer = new PhaseSequencer();
   /** FR-R5-F19 (FR-001) — Runs already told about a blocking decision; in memory, so a host restart forgets it. */
-  private readonly blockerNotices = new BlockerNoticeLedger();
+  private readonly blockerNotices: BlockerNoticeLedger;
   /** FR-R3-175 (SC-010) — per-drive; cleared in `endOfDriveReset()`. */
   private sessionDisposition: SessionDispositionReporter;
   private logger: SanitizedLogger; // FR-R4-F04 (C1, FR-033): the window logger between drives, `{ runId }` during one
 
   constructor(private readonly deps: RunDriverDeps) {
-    this.logger = deps.logger; this.sessionDisposition = new SessionDispositionReporter(this.logger);
+    this.logger = deps.logger; this.sessionDisposition = new SessionDispositionReporter(this.logger); this.blockerNotices = deps.blockerNoticeLedger ?? new BlockerNoticeLedger();
   }
 
   public get running(): boolean {

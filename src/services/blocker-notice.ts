@@ -61,6 +61,8 @@ export function blockerNotice(input: BlockerNoticeInput, sanitize: Sanitize): Bl
 /**
  * Run ids already notified in this host session, bounded first-in first-out. No entry is removed when
  * a Run ends: a failed Run is resumed under the same id, and the resumed Run is still the same Run.
+ * The controller holds the one instance and gives it to every driver; a driver's own would end with
+ * its session, which a failed Run's does.
  */
 export class BlockerNoticeLedger {
   private readonly notified = new Set<string>();
