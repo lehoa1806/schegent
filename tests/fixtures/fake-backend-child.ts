@@ -43,6 +43,17 @@ export interface FakeChildScript {
   /** Milliseconds between `exit` and `close`. Default 0. */
   readonly closeAfterExitMs?: number;
   /**
+   * When true, `exit` fires at `exitAt` and `close`/`end` never fire on their own, modeling a
+   * descendant holding the inherited stdio pipes open until `waitForChildCompletion`'s close grace
+   * expires and destroys the local streams.
+   */
+  readonly holdStdioOpenAfterExit?: boolean;
+  /**
+   * Simulates a failed spawn (`ENOENT`): `pid` is `undefined`, stdin writes fail with `EPIPE`, and
+   * the child emits a process-level `'error'` event on start.
+   */
+  readonly spawnError?: { readonly code: string };
+  /**
    * The signal that ends the child. Default `SIGTERM`, as most CLIs behave. `SIGKILL` makes a child
    * that ignores SIGTERM, so only the ladder's second rung reaps it. `'never'` makes one nothing
    * ends, for the cases about a bound.
@@ -78,8 +89,9 @@ export function createFakeBackendChild(script: FakeChildScript = {}): FakeBacken
   const stdinWrites: string[] = [];
   const stdin = new Writable({
     write(chunk, _encoding, callback) {
-      if (script.stdinFailure !== undefined) {
-        callback(Object.assign(new Error(script.stdinFailure.code), { code: script.stdinFailure.code }));
+      const failureCode = script.stdinFailure?.code ?? (script.spawnError ? 'EPIPE' : undefined);
+      if (failureCode !== undefined) {
+        callback(Object.assign(new Error(failureCode), { code: failureCode }));
         return;
       }
       stdinWrites.push(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
@@ -89,6 +101,7 @@ export function createFakeBackendChild(script: FakeChildScript = {}): FakeBacken
 
   const signalsReceived: string[] = [];
   let finished = false;
+  let closed = false;
 
   const finish = (code: number | null, signal: NodeJS.Signals | null): void => {
     if (finished) return;
@@ -96,7 +109,9 @@ export function createFakeBackendChild(script: FakeChildScript = {}): FakeBacken
     child.exitCode = code;
     child.signalCode = signal;
     child.emit('exit', code, signal);
+    if (script.holdStdioOpenAfterExit === true && signal === null) return;
     setTimeout(() => {
+      closed = true;
       stdout.emit('end');
       stderr.emit('end');
       child.emit('close', code, signal);
@@ -107,7 +122,7 @@ export function createFakeBackendChild(script: FakeChildScript = {}): FakeBacken
     stdout,
     stderr,
     stdin,
-    pid: script.pid ?? DEFAULT_PID,
+    pid: script.spawnError !== undefined ? (undefined as unknown as number) : (script.pid ?? DEFAULT_PID),
     killed: false,
     exitCode: null,
     signalCode: null,
@@ -125,14 +140,24 @@ export function createFakeBackendChild(script: FakeChildScript = {}): FakeBacken
       return true;
     }),
     start: () => {
+      if (script.spawnError !== undefined) {
+        setTimeout(() => {
+          closed = true;
+          child.emit(
+            'error',
+            Object.assign(new Error(script.spawnError!.code), { code: script.spawnError!.code })
+          );
+        }, 0);
+        return;
+      }
       for (const step of script.stdout ?? []) {
         setTimeout(() => {
-          if (!finished) stdout.emit('data', step.chunk);
+          if (!closed && !child.killed && !stdout.destroyed) stdout.emit('data', step.chunk);
         }, step.at);
       }
       for (const step of script.stderr ?? []) {
         setTimeout(() => {
-          if (!finished) stderr.emit('data', step.chunk);
+          if (!closed && !child.killed && !stderr.destroyed) stderr.emit('data', step.chunk);
         }, step.at);
       }
       if (script.exitAt !== undefined) {
