@@ -62,10 +62,33 @@ const historyReset = (overrides: Record<string, unknown> = {}): Record<string, u
   ...overrides
 });
 
+const chainVerified = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  condition: 'chain-verified',
+  conditionVersion: INTEGRITY_CONDITION_VERSION,
+  entries: 14,
+  cuts: 2,
+  ...overrides
+});
+
+const checkpointReanchored = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  condition: 'checkpoint-reanchored',
+  conditionVersion: INTEGRITY_CONDITION_VERSION,
+  priorStatus: 'active',
+  priorPosition: 10,
+  newPosition: 7,
+  reanchoredAtMs: 1_700_000_000_000,
+  ...overrides
+});
+
 describe('the audit-integrity-condition event type', () => {
   it('is registered, so every reader meets a known event type', () => {
     expect(ALL_AUDIT_EVENT_TYPES).toContain('audit-integrity-condition');
-    expect(INTEGRITY_CONDITIONS).toEqual(['damaged-tail', 'history-reset']);
+    expect(INTEGRITY_CONDITIONS).toEqual([
+      'damaged-tail',
+      'history-reset',
+      'chain-verified',
+      'checkpoint-reanchored'
+    ]);
   });
 });
 
@@ -109,6 +132,27 @@ describe('projecting a history-reset condition', () => {
   it('refuses a field of the wrong type', () => {
     expect(() => projectAuditPayload(EVENT, historyReset({ retiredPosition: 'x' }))).toThrow();
     expect(() => projectAuditPayload(EVENT, historyReset({ retiredAtMs: -1 }))).toThrow();
+  });
+});
+
+describe('projecting a chain-verified and checkpoint-reanchored condition (FR-R5-F13)', () => {
+  it('admits chain-verified fields and drops unknown fields', () => {
+    expect(projectAuditPayload(EVENT, chainVerified({ extra: 'nope' }))).toEqual(chainVerified());
+    expect(() => projectAuditPayload(EVENT, chainVerified({ entries: -1 }))).toThrow();
+    expect(() => projectAuditPayload(EVENT, chainVerified({ cuts: '2' }))).toThrow();
+  });
+
+  it('admits checkpoint-reanchored fields, allows omitted priorPosition, and validates priorStatus', () => {
+    expect(projectAuditPayload(EVENT, checkpointReanchored({ extra: 'nope' }))).toEqual(
+      checkpointReanchored()
+    );
+    const withoutPrior = checkpointReanchored();
+    delete withoutPrior.priorPosition;
+    expect(projectAuditPayload(EVENT, withoutPrior)).toEqual(withoutPrior);
+    expect(() =>
+      projectAuditPayload(EVENT, checkpointReanchored({ priorStatus: 'invalid' }))
+    ).toThrow();
+    expect(() => projectAuditPayload(EVENT, checkpointReanchored({ newPosition: 0 }))).toThrow();
   });
 });
 

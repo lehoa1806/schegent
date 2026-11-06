@@ -14,6 +14,7 @@ import {
   SUPPORTED_BACKENDS,
   type BackendRunnerKind
 } from '../contracts/backend-kinds';
+import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 
 // Feature 034 Item 050 — backend selection.
 //
@@ -87,6 +88,7 @@ export interface BackendRunnerFactoryOptions {
    */
   readonly probeTransport?: boolean;
   readonly logger?: SanitizedLogger;
+  readonly evidenceHealth?: EvidenceHealthReporter;
 }
 
 /**
@@ -191,15 +193,16 @@ export function createBackendRunner(
   }
   switch (kind) {
     case 'codex':
-      return new CodexCliRunner(undefined, monitorHook, logger);
+      return new CodexCliRunner(undefined, monitorHook, logger, options.evidenceHealth);
     case 'agy':
-      return new AgyCliRunner(undefined, monitorHook, logger);
+      return new AgyCliRunner(undefined, monitorHook, logger, options.evidenceHealth);
     case 'claude':
       return new ClaudeCliRunner(
         undefined,
         monitorHook,
         { probeTransport: options.probeTransport ?? false },
-        logger
+        logger,
+        options.evidenceHealth
       );
     default: {
       // FR-R4-F06 (TA7; R44) -- `claude` used to share this label, so a fourth backend added to the union

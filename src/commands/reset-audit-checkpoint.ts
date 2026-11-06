@@ -88,3 +88,73 @@ export async function runResetAuditCheckpoint(deps: ResetAuditCheckpointDeps): P
       return;
   }
 }
+
+export const REANCHOR_AUDIT_CHECKPOINT_TEXT = {
+  noChain: 'Schegent: no audit history is present under .schegent/ to re-anchor a checkpoint against.',
+  chainBroken:
+    'Schegent: the audit chain under .schegent/ is not intact, so the checkpoint cannot be re-anchored.',
+  confirmPrompt:
+    'Re-anchor the audit history checkpoint to the current verified chain head in place? ' +
+    'A checkpoint-reanchored record will be appended to the audit log.',
+  confirmUnreadablePrompt:
+    'The stored audit history checkpoint could not be read. Overwrite it and re-anchor to the current ' +
+    'verified chain head? A checkpoint-reanchored record will be appended to the audit log.',
+  confirmLabel: 'Re-anchor Checkpoint',
+  done:
+    'Schegent: the audit history checkpoint was re-anchored to the current verified chain head and a ' +
+    'checkpoint-reanchored record was appended.',
+  notOwner: 'Schegent: another window holds the workspace lock; ignoring request.',
+  unavailable:
+    'Schegent: the audit history checkpoint could not be re-anchored. Nothing was changed.'
+} as const;
+
+export interface ReanchorAuditCheckpointDeps {
+  readonly workspaceRoot: string;
+  readonly notifier: Pick<Notifier, 'info' | 'warn'>;
+  readonly writer: Pick<AuditLogWriter, 'readCheckpoint' | 'reanchorCheckpoint'>;
+}
+
+export async function runReanchorAuditCheckpoint(deps: ReanchorAuditCheckpointDeps): Promise<void> {
+  const { notifier, writer } = deps;
+  const auditDir = path.join(deps.workspaceRoot, '.schegent');
+
+  if (collectChainFiles(auditDir) === null) {
+    notifier.info(REANCHOR_AUDIT_CHECKPOINT_TEXT.noChain);
+    return;
+  }
+  const stored = await writer.readCheckpoint();
+  if (stored.status === 'unreadable' && stored.reason === 'unreachable') {
+    void notifier.warn(REANCHOR_AUDIT_CHECKPOINT_TEXT.unavailable);
+    return;
+  }
+  const allowOverwriteUnreadable = stored.status === 'unreadable';
+  const prompt = allowOverwriteUnreadable
+    ? REANCHOR_AUDIT_CHECKPOINT_TEXT.confirmUnreadablePrompt
+    : REANCHOR_AUDIT_CHECKPOINT_TEXT.confirmPrompt;
+  const choice = await vscode.window.showWarningMessage(
+    prompt,
+    { modal: true },
+    REANCHOR_AUDIT_CHECKPOINT_TEXT.confirmLabel
+  );
+  if (choice !== REANCHOR_AUDIT_CHECKPOINT_TEXT.confirmLabel) return;
+
+  const outcome = await writer.reanchorCheckpoint({ allowOverwriteUnreadable });
+  switch (outcome) {
+    case 'reanchored':
+      notifier.info(REANCHOR_AUDIT_CHECKPOINT_TEXT.done);
+      return;
+    case 'no-chain':
+      notifier.info(REANCHOR_AUDIT_CHECKPOINT_TEXT.noChain);
+      return;
+    case 'chain-broken':
+      void notifier.warn(REANCHOR_AUDIT_CHECKPOINT_TEXT.chainBroken);
+      return;
+    case 'not-owner':
+      void notifier.warn(REANCHOR_AUDIT_CHECKPOINT_TEXT.notOwner);
+      return;
+    case 'unreadable-refused':
+    case 'unavailable':
+      void notifier.warn(REANCHOR_AUDIT_CHECKPOINT_TEXT.unavailable);
+      return;
+  }
+}

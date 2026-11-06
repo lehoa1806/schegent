@@ -1240,6 +1240,9 @@ export interface EvidenceHealthProjection {
   // corpus; an expired or legacy pointer is a fact about one record, not a
   // condition of the sink.
   readonly historyPointer: EvidenceSinkHealthProjection;
+  readonly auditCheckpoint?: EvidenceSinkHealthProjection;
+  readonly transport?: EvidenceSinkHealthProjection;
+  readonly verboseDiagnostics?: EvidenceSinkHealthProjection;
 }
 
 const HEALTHY_REQUIRED_EVIDENCE: EvidenceSinkHealthProjection = Object.freeze({
@@ -1261,7 +1264,10 @@ export const IDLE_EVIDENCE_HEALTH: EvidenceHealthProjection = Object.freeze({
   rawTranscript: HEALTHY_OPTIONAL_EVIDENCE,
   runtimeLog: HEALTHY_OPTIONAL_EVIDENCE,
   metricsRollup: HEALTHY_OPTIONAL_EVIDENCE,
-  historyPointer: HEALTHY_OPTIONAL_EVIDENCE
+  historyPointer: HEALTHY_OPTIONAL_EVIDENCE,
+  auditCheckpoint: HEALTHY_OPTIONAL_EVIDENCE,
+  transport: HEALTHY_OPTIONAL_EVIDENCE,
+  verboseDiagnostics: HEALTHY_OPTIONAL_EVIDENCE
 });
 
 export const IDLE_STREAM_PRESSURE: StreamPressureProjection = Object.freeze({

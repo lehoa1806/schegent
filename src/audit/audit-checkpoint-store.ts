@@ -73,8 +73,8 @@ export function createAuditCheckpointStore(options: {
       return settle(parseCheckpoint(text, key));
     },
 
-    async write(next: AuditHeadCheckpointV1): Promise<void> {
-      if (lastReadUnreadable) throw new CheckpointNotWritableError();
+    async write(next: AuditHeadCheckpointV1, options?: { readonly force?: boolean }): Promise<void> {
+      if (lastReadUnreadable && options?.force !== true) throw new CheckpointNotWritableError();
       tempCounter += 1;
       const tempName = `.${fileName}.${process.pid}.${tempCounter}.tmp`;
       const opened = await openWithinRoot(root, [CHECKPOINT_DIR, tempName], {
@@ -106,6 +106,7 @@ export function createAuditCheckpointStore(options: {
       }
       try {
         await fs.rename(tempPath, finalPath);
+        lastReadUnreadable = false;
       } catch (err) {
         await fs.rm(tempPath, { force: true }).catch(() => undefined);
         throw err;

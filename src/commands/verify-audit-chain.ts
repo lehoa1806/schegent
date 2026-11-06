@@ -145,6 +145,11 @@ export interface VerifyAuditChainCtx {
   readonly onBreak: (detail: string) => void;
   /** Called only for the two loss states, with a count-only detail. Writes no file. */
   readonly onLoss: (code: 'history-shorter' | 'history-missing', detail: string) => void;
+  /**
+   * FR-R5-F13 (FR-006) — called when a verification passes with no loss so a prior `chain-broken`
+   * latch can be cleared after recording a `chain-verified` audit-integrity-condition row.
+   */
+  readonly onVerified?: () => Promise<unknown> | unknown;
   /** The stored head checkpoint, read-only and never throwing (`AuditLogWriter.readCheckpoint`). */
   readonly readCheckpoint: () => Promise<CheckpointRead>;
 }
@@ -198,6 +203,9 @@ export async function runVerifyAuditChain(ctx: VerifyAuditChainCtx): Promise<voi
     return;
   }
 
+  if (loss.state !== 'shorter' && loss.state !== 'missing') {
+    await ctx.onVerified?.();
+  }
   const unread =
     files.unrecognized.length > 0
       ? ` Not read (unrecognized name): ${files.unrecognized.join(', ')}.`
