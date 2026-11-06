@@ -99,7 +99,7 @@ describe('QueueManager — an unexpected mutation failure answers a code, never 
     sink.lines.filter((l) => l.includes('WARN') && l.includes('unexpected mutation failure'));
 
   it('createQueue answers operation-rejected for a registry write that throws a path-bearing Error', async () => {
-    vi.spyOn(store, 'setQueueRegistry').mockRejectedValueOnce(osFault());
+    vi.spyOn(store, 'updateQueueRegistry').mockRejectedValueOnce(osFault());
 
     const result = await queue.createQueue('Backlog');
 

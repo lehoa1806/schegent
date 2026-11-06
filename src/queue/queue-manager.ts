@@ -32,6 +32,7 @@ import {
   isRunRaceRefusal,
   MAX_GLOBAL_CONCURRENCY_CAP,
   QueueMutationRejected,
+  StorageWriteQuarantinedError,
   type QueueDeletionView,
   type WorkspaceStateStore
 } from '../state/workspace-state';
@@ -1087,9 +1088,10 @@ export class QueueManager {
     const queueId = randomUUID();
     return this.logMutation('queue-manager.create-queue', { queueId }, async () => {
       try {
-        await this.store.setQueueRegistry(
-          createQueue(this.store.getQueueRegistry(), { id: queueId, name, now: Date.now() })
-        );
+        await this.store.updateQueueRegistry((registry) => ({
+          registry: createQueue(registry, { id: queueId, name, now: Date.now() }),
+          result: undefined
+        }));
         await this.armConcurrencyNotice();
         return { ok: true, queueId };
       } catch (err) {
@@ -1139,14 +1141,20 @@ export class QueueManager {
   /** Feature 092 (T029, US1, FR-013) — rename a queue in place. */
   public async renameQueue(queueId: string, name: string): Promise<QueueMutationDetail> {
     return this.logMutation('queue-manager.rename-queue', { queueId }, async () => {
-      const existing = findQueue(this.store.getQueueRegistry(), queueId);
       try {
-        await this.store.setQueueRegistry(
-          renameQueue(this.store.getQueueRegistry(), { id: queueId, name, now: Date.now() })
+        const fromName = await this.store.updateQueueRegistry(
+          (registry) => {
+            const existing = findQueue(registry, queueId);
+            return {
+              registry: renameQueue(registry, { id: queueId, name, now: Date.now() }),
+              result: existing?.name
+            };
+          },
+          [queueId]
         );
         // Names are operator-authored, so they stay out of the audit payload
         // (FR-023a); the handler reports the id and the caller-visible result.
-        return { ok: true, queueId, fromName: existing?.name, toName: name.trim() };
+        return { ok: true, queueId, fromName, toName: name.trim() };
       } catch (err) {
         return { ok: false, reason: this.registryErrorReason(err) };
       }
@@ -1653,18 +1661,22 @@ export class QueueManager {
   }
 
   public async fireDueSchedules(now: number = Date.now()): Promise<readonly string[]> {
-    const registry = this.store.getQueueRegistry();
-    const due = registry.entries.filter((entry) => {
-      if (!entry.schedule) return false;
-      const target = Date.parse(entry.schedule.targetAt);
-      return Number.isFinite(target) && target <= now;
+    const due = await this.store.updateQueueRegistry((registry) => {
+      const dueEntries = registry.entries.filter((entry) => {
+        if (!entry.schedule) return false;
+        const target = Date.parse(entry.schedule.targetAt);
+        return Number.isFinite(target) && target <= now;
+      });
+      if (dueEntries.length === 0) {
+        return { registry, result: [] as readonly typeof dueEntries[number][] };
+      }
+      let next = registry;
+      for (const entry of dueEntries) {
+        next = setQueueSchedule(next, { id: entry.id, schedule: null, now });
+      }
+      return { registry: next, result: dueEntries };
     });
     if (due.length === 0) return [];
-    let next = registry;
-    for (const entry of due) {
-      next = setQueueSchedule(next, { id: entry.id, schedule: null, now });
-    }
-    await this.store.setQueueRegistry(next);
     // FR-R3-011 — the unpause half moved to the queue record, and moving it is
     // what makes a fired schedule actually resume the queue. This loop used to
     // call `setQueuePaused(next, { paused: false })` on the registry alone,
@@ -2396,12 +2408,21 @@ export class QueueManager {
     if (err instanceof QueueRegistryViolation) {
       return err.code === 'invalid-queue-name' ? 'invalid-name' : err.code;
     }
+    if (err instanceof QueueMutationRejected) {
+      return err.reason;
+    }
+    if (err instanceof StorageWriteQuarantinedError) {
+      return err.reason;
+    }
     return unexpectedMutationFailureReason(this.logger, err);
   }
 
   private taskErrorReason(err: unknown): string {
     if (err instanceof QueueMutationRejected) {
       if (err.reason === 'task-not-found') return 'unknown-task-id';
+      return err.reason;
+    }
+    if (err instanceof StorageWriteQuarantinedError) {
       return err.reason;
     }
     if (err instanceof Error && /non-empty|exceeds/i.test(err.message)) {

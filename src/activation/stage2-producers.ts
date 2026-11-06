@@ -73,7 +73,9 @@ export interface Stage2ProducerDeps {
     SchegentWorkflowController,
     'resumeExistingFromActivation' | 'admitResume' | 'scheduleAutoDrain'
   >;
-  readonly watchdog: Pick<CreditWatchdog, 'reattachOnActivation'>;
+  readonly watchdog: Pick<CreditWatchdog, 'reattachOnActivation'> & {
+    readonly cancelPendingTimer?: () => void;
+  };
   readonly scheduledStartCoordinator: Pick<ScheduledStartCoordinator, 'reArm'>;
   /**
    * The audit appends and the retention sweep `wireEvidence` used to perform at
@@ -185,6 +187,12 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
    * other thing: whether the five primacy-gated installers have been installed.
    */
   let installedRecovery = false;
+  if ('onFenceLost' in lock && typeof lock.onFenceLost === 'function') {
+    lock.onFenceLost(() => {
+      installedRecovery = false;
+      watchdog.cancelPendingTimer?.();
+    });
+  }
 
   const runOnce = async (): Promise<void> => {
     if (!isWorkspaceTrusted()) {

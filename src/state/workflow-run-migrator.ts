@@ -35,8 +35,8 @@
  *
  *     Also adds `pauseSource: 'operator' | 'cascade' | null` to each
  *     `QueueRegistryEntry` (default `'operator'` when
- *     `state === 'manually-paused'`, else `null`). Migrated via
- *     `migrateQueueRegistryV4ToV5()`.
+ *     `state === 'manually-paused'`, else `null`), now folded into
+ *     `migrateV12ToV13()` in `src/state/queue-state-migrator.ts`.
  *
  *   repair (feature 056): removes legacy bugfix phases that were
  *     accidentally persisted into the immutable `speckit-new-feature`
@@ -289,11 +289,6 @@ function sanitizePlannedTotal(raw: unknown): WorkflowRun['plannedTotal'] {
   return { phaseCount, iterationCap, maxPhaseInvocations };
 }
 
-/** v7 -> v8 forward migration. Idempotent on v8 records. */
-export function migrateV7ToV8(legacy: unknown): WorkflowRun | null {
-  return migrateLegacyRun(legacy);
-}
-
 export function repairLegacyRunSnapshot(run: WorkflowRun): WorkflowRunRepairResult {
   const pipeline = run.pipeline;
   if (!pipeline || pipeline.id !== 'speckit-new-feature') {
@@ -465,62 +460,6 @@ function normalizeStatus(raw: unknown, delayedRetryCount: number): WorkflowRunSt
     return 'paused';
   }
   return validated;
-}
-
-/**
- * Feature 028 — v4 → v5 forward migration. Idempotent on already-v5 records.
- * Delegates to `migrateLegacyRun()` which has been extended to populate the
- * v5 fields with safe defaults. Exposed as a named alias so the activation
- * code path documents the migration step explicitly.
- */
-export function migrateV4ToV5(legacy: unknown): WorkflowRun | null {
-  return migrateLegacyRun(legacy);
-}
-
-/**
- * Feature 028 — v4 → v5 forward migration for `QueueRegistryEntry` records.
- *
- * Adds `pauseSource: 'operator' | 'cascade' | null` to each entry:
- *   - `state === 'manually-paused'` ⇒ default `'operator'` (preserve any
- *     valid existing value).
- *   - otherwise ⇒ `null`.
- *
- * Idempotent: passes an already-v5 record through unchanged. Returns a
- * shallow-cloned array; non-array input becomes `[]`.
- *
- * FR-R3-011 (T423) — **the result is migration input, never persisted state.**
- * `state` and `pauseSource` are no longer fields of `QueueRegistryEntry`; a
- * queue's pause and its attribution live in that queue's `QueueState`, and the
- * registry's view of both is derived on read by `projectQueueRegistry()`. So
- * this lift no longer has a destination field to fill, and writing its output
- * back would re-add the mirror `migrateV12ToV13()` exists to remove — on every
- * activation, since the collapse would strip it again on the next load.
- *
- * The rule it encodes is not lost, it moved: `legacyRegistryPause()` in
- * `src/state/queue-state-migrator.ts` reads a legacy entry with exactly this
- * defaulting — `manually-paused` with no recorded source attributes to
- * `'operator'` — and feeds the answer into the single value. Same rule, applied
- * where the surviving representation is written rather than into a field that
- * no longer exists. The function stays exported because a v4 workspace's shape
- * is still the thing being read, and its unit tests are what pin that reading.
- */
-export function migrateQueueRegistryV4ToV5(legacy: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(legacy)) return [];
-  const result: Array<Record<string, unknown>> = [];
-  for (const item of legacy) {
-    if (item === null || typeof item !== 'object') continue;
-    const rec = item as Record<string, unknown>;
-    const state = rec.state;
-    if (state === 'manually-paused') {
-      const existing = rec.pauseSource;
-      const pauseSource =
-        existing === 'operator' || existing === 'cascade' ? existing : 'operator';
-      result.push({ ...rec, pauseSource });
-    } else {
-      result.push({ ...rec, pauseSource: null });
-    }
-  }
-  return result;
 }
 
 function parsePendingCause(value: unknown): DelayedRetryCause | null {

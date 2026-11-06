@@ -625,6 +625,33 @@ export class QueueMutationRejected extends Error {
 }
 
 /**
+ * FR-R5-F09 (F-35, NU-02) — deadline for any `memento.update` inside the serialized store chains,
+ * and the typed error raised when a write hangs past it or when subsequent writes hit the
+ * quarantined writer.
+ */
+export const MEMENTO_WRITE_DEADLINE_MS = OWNERSHIP_VERIFY_DEADLINE_MS;
+
+export type StorageWriteFailureReason =
+  | 'storage-write-timeout'
+  | 'storage-write-quarantined';
+
+export class StorageWriteQuarantinedError extends Error {
+  public readonly reason: StorageWriteFailureReason;
+
+  constructor(reason: StorageWriteFailureReason, message: string) {
+    super(message);
+    this.name = 'StorageWriteQuarantinedError';
+    this.reason = reason;
+  }
+}
+
+/**
+ * FR-R5-F09 (NU-03) — maximum number of deleted-queue history partitions retained in
+ * `KEYS.history` alongside live queues' partitions.
+ */
+export const MAX_DELETED_HISTORY_PARTITIONS = MAX_QUEUES;
+
+/**
  * FR-R4-F01 — an `updateRun` refusal that is only a race with another writer: the
  * queue's Run was replaced or removed (`stale-run-id`), or is no longer in a status
  * the writer acts on (`run-status-precondition`). Nothing was written, and for a
@@ -864,10 +891,12 @@ export class WorkspaceStateStore {
     warn: (reason) => this.logger?.warn('run record quarantine failed', { reason })
   });
 
+  private readonly rawMemento: Memento;
   private readonly memento: Memento;
   private readonly chains = new Map<string, Promise<void>>();
   private readonly listeners = new Set<StoreChangeListener>();
   private readonly logger: SanitizedLogger | null;
+  private writerQuarantined = false;
   /** FR-R3-077 — bound at composition; see `bindRunClaimSource`. */
   private runClaimSource: RunClaimSource | null = null;
   /** FR-R5-F08 — bound by `WorkspaceLockManager` when constructed. */
@@ -899,12 +928,68 @@ export class WorkspaceStateStore {
   private readonly scheduler: Scheduler;
 
   constructor(memento: Memento, logger?: SanitizedLogger, scheduler: Scheduler = systemScheduler) {
-    this.memento = memento;
+    this.rawMemento = memento;
+    this.memento = {
+      get: <T>(key: string): T | undefined => this.rawMemento.get<T>(key),
+      update: (key: string, value: unknown): Thenable<void> => this.writeMemento(key, value)
+    };
     this.logger = logger ?? null;
     this.scheduler = scheduler;
     this.ownershipRegistry = new OwnershipRegistry(
       createMementoOwnershipFs(memento),
       MEMENTO_OWNERSHIP_DIR
+    );
+  }
+
+  public isWriterQuarantined(): boolean {
+    return this.writerQuarantined;
+  }
+
+  private async writeMemento(key: string, value: unknown): Promise<void> {
+    if (this.writerQuarantined) {
+      throw new StorageWriteQuarantinedError(
+        'storage-write-quarantined',
+        `Workspace state write refused for ${key}: storage writer is quarantined after an earlier write timed out`
+      );
+    }
+    let handle: { clear(): void } | null = null;
+    const clear = (): void => {
+      if (handle !== null) {
+        handle.clear();
+        handle = null;
+      }
+    };
+    let writeOutcome: Promise<
+      { readonly outcome: 'ok' } | { readonly outcome: 'error'; readonly error: unknown }
+    >;
+    try {
+      writeOutcome = Promise.resolve(this.rawMemento.update(key, value)).then(
+        () => ({ outcome: 'ok' as const }),
+        (error: unknown) => ({ outcome: 'error' as const, error })
+      );
+    } catch (error) {
+      writeOutcome = Promise.resolve({ outcome: 'error' as const, error });
+    }
+    const raced = await Promise.race([
+      writeOutcome,
+      new Promise<{ readonly outcome: 'timeout' }>((resolve) => {
+        handle = this.scheduler.setInterval(() => {
+          clear();
+          resolve({ outcome: 'timeout' });
+        }, MEMENTO_WRITE_DEADLINE_MS);
+      })
+    ]);
+    clear();
+    if (raced.outcome === 'ok') return;
+    if (raced.outcome === 'error') throw raced.error;
+    this.writerQuarantined = true;
+    this.logger?.warn('workspace state write timed out; quarantining state writer', {
+      key,
+      deadlineMs: MEMENTO_WRITE_DEADLINE_MS
+    });
+    throw new StorageWriteQuarantinedError(
+      'storage-write-timeout',
+      `Workspace state write timed out after ${MEMENTO_WRITE_DEADLINE_MS}ms for ${key}; state writer is now quarantined`
     );
   }
 
@@ -1012,6 +1097,33 @@ export class WorkspaceStateStore {
       'ownership-lost',
       `Run mutation refused: this window lost its claim on queue ${queueId}`
     );
+  }
+
+  private async verifyPrimacyForCommit(label: string): Promise<void> {
+    if (this.primacyClaimSource !== null && !(await this.primacyClaimSource.canCommitConnectedRun())) {
+      throw new QueueMutationRejected(
+        'ownership-lost',
+        `${label} mutation refused: this window does not hold workspace primacy`
+      );
+    }
+  }
+
+  private async verifyQueueOwnershipForCommit(
+    queueId: string,
+    label: 'Queue' | 'Run' = 'Queue'
+  ): Promise<void> {
+    this.refuseIfClaimLost(queueId);
+    const claim = this.runClaimSource?.claimFor(queueId) ?? null;
+    if (claim !== null) {
+      const f = await checkCommitFence(
+        this.ownershipRegistry,
+        claim,
+        queueId,
+        label,
+        this.scheduler
+      );
+      if (f !== null) this.refuseCommit(f, claim, queueId);
+    }
   }
 
   /**
@@ -1149,6 +1261,8 @@ export class WorkspaceStateStore {
 
   public async initialize(): Promise<InitializeResult> {
     const persistedNumeric = this.memento.get<number>(KEYS.schemaVersionNumeric);
+    const rawRegistryBeforeInit = this.memento.get<unknown>(KEYS.queueRegistry);
+    const hadPersistedRegistry = rawRegistryBeforeInit !== undefined && rawRegistryBeforeInit !== null;
     // Feature 093 (T014, defect D3) — the forward-only refusal of FR-007, which
     // used to be an inline copy of the check `assertPersistedVersionSupported`
     // already made. Delegating rather than duplicating is what keeps the two
@@ -1161,7 +1275,7 @@ export class WorkspaceStateStore {
       const runRepairEvents = await this.normalizeRunForInitialize(
         WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
       );
-      const migrationEvents = await this.runForwardMigrations(persistedNumeric);
+      const migrationEvents = await this.runForwardMigrations(persistedNumeric, hadPersistedRegistry);
       await this.stampVersion(true);
       return {
         migrated: true,
@@ -1176,7 +1290,7 @@ export class WorkspaceStateStore {
         const runRepairEvents = await this.normalizeRunForInitialize(
           WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
         );
-        const migrationEvents = await this.runForwardMigrations(persistedNumeric);
+        const migrationEvents = await this.runForwardMigrations(persistedNumeric, hadPersistedRegistry);
         await this.stampVersion(false);
         return {
           migrated: true,
@@ -1185,7 +1299,7 @@ export class WorkspaceStateStore {
         };
       }
       const runRepairEvents = await this.normalizeRunForInitialize(false);
-      const migrationEvents = await this.runForwardMigrations(persistedNumeric);
+      const migrationEvents = await this.runForwardMigrations(persistedNumeric, hadPersistedRegistry);
       return {
         migrated: anyForwardMigrationRan(migrationEvents) || runRepairEvents.length > 0,
         ...migrationEvents,
@@ -1198,7 +1312,7 @@ export class WorkspaceStateStore {
       const runRepairEvents = await this.normalizeRunForInitialize(
         WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
       );
-      const migrationEvents = await this.runForwardMigrations(persistedNumeric);
+      const migrationEvents = await this.runForwardMigrations(persistedNumeric, hadPersistedRegistry);
       await this.stampVersion(true);
       return {
         migrated: true,
@@ -1301,7 +1415,8 @@ export class WorkspaceStateStore {
    * This is a single definition of the sequence, not a new abstraction over it.
    */
   private async runForwardMigrations(
-    persistedNumeric: number | undefined
+    persistedNumeric: number | undefined,
+    hadPersistedRegistry = false
   ): Promise<ForwardMigrationEvents> {
     // Derived from InitializeResult rather than declared beside it: a parallel
     // shape would be a second thing to update when a step is added, which is the
@@ -1319,10 +1434,108 @@ export class WorkspaceStateStore {
     // FR-R4-F02 — the v15 step reports no events (it writes a default, it decides nothing), so it
     // sits between the two steps that do rather than inside the literal.
     await this.migrateCreditPauseIfNeeded();
+    const orphanedRunEvents = await this.reconcileOrphanedRunsIfNeeded();
+    if (hadPersistedRegistry) {
+      await this.reconcileDeletedQueueResidueIfNeeded();
+    }
     return {
       ...throughVerdictBasis,
-      orphanedRunEvents: await this.reconcileOrphanedRunsIfNeeded()
+      orphanedRunEvents
     };
+  }
+
+  /**
+   * FR-R5-F09 (F-32, NF-05, NU-03) — reconcile deleted-queue residue on reload when
+   * `KEYS.queueRegistry` was persisted.
+   *
+   * 1. If an earlier `deleteQueueIfNoLiveRun` updated `KEYS.queueRegistry` and failed before
+   *    updating `KEYS.queue`, removes the orphaned `KEYS.queue[queueId]` entry so the deleted
+   *    queue is never resurrected and leaves no orphaned queue state.
+   * 2. Prunes any terminal `KEYS.run[queueId]` entry whose `queueId` is absent from
+   *    `KEYS.queueRegistry` (while `deleteQueueIfNoLiveRun` itself writes no Run per hard rule 58).
+   * 3. Bounds deleted-queue `KEYS.history` partitions at `MAX_DELETED_HISTORY_PARTITIONS`.
+   */
+  private async reconcileDeletedQueueResidueIfNeeded(): Promise<void> {
+    const registeredIds = new Set(this.getQueueRegistry().entries.map((entry) => entry.id));
+    const rawQueues = this.memento.get<unknown>(KEYS.queue);
+    if (
+      rawQueues !== undefined &&
+      rawQueues !== null &&
+      typeof rawQueues === 'object' &&
+      !Array.isArray((rawQueues as QueueState).requests)
+    ) {
+      const nextQueues: QueueStateMap = {};
+      let queuesChanged = false;
+      for (const [queueId, state] of Object.entries(rawQueues as QueueStateMap)) {
+        if (registeredIds.has(queueId)) {
+          nextQueues[queueId] = state;
+        } else {
+          queuesChanged = true;
+        }
+      }
+      if (queuesChanged) {
+        await this.memento.update(KEYS.queue, nextQueues);
+      }
+    }
+
+    const rawRuns = this.memento.get<unknown>(KEYS.run);
+    if (isRunStateMap(rawRuns)) {
+      const nextRuns: RunStateMap = {};
+      let runsChanged = false;
+      for (const [queueId, run] of Object.entries(rawRuns)) {
+        const status = run.status as string;
+        const isTerminal =
+          status === 'completed' || status === 'failed' || status === 'canceled';
+        if (!registeredIds.has(queueId) && isTerminal) {
+          runsChanged = true;
+        } else {
+          nextRuns[queueId] = run;
+        }
+      }
+      if (runsChanged) {
+        await this.memento.update(KEYS.run, nextRuns);
+      }
+    }
+
+    const prunedHistory = this.pruneExcessDeletedHistoryPartitions(
+      this.readHistoryMap(),
+      registeredIds
+    );
+    if (prunedHistory !== null) {
+      await this.memento.update(KEYS.history, prunedHistory);
+    }
+  }
+
+  private pruneExcessDeletedHistoryPartitions(
+    map: PersistedHistoryMap,
+    registeredIds: ReadonlySet<string> = new Set(
+      this.getQueueRegistry().entries.map((entry) => entry.id)
+    )
+  ): PersistedHistoryMap | null {
+    const deletedKeys = Object.keys(map).filter(
+      (queueId) => queueId !== HISTORY_UNATTRIBUTED_QUEUE_ID && !registeredIds.has(queueId)
+    );
+    if (deletedKeys.length <= MAX_DELETED_HISTORY_PARTITIONS) return null;
+    const latestCompletedAt = (queueId: string): number => {
+      const entries = map[queueId] ?? [];
+      let maxTs = 0;
+      for (const item of entries) {
+        const parsed = Date.parse((item as { completedAt?: string }).completedAt ?? '');
+        if (Number.isFinite(parsed) && parsed > maxTs) maxTs = parsed;
+      }
+      return maxTs;
+    };
+    const sortedOldestFirst = deletedKeys
+      .slice()
+      .sort((a, b) => latestCompletedAt(a) - latestCompletedAt(b));
+    const toDrop = new Set(
+      sortedOldestFirst.slice(0, deletedKeys.length - MAX_DELETED_HISTORY_PARTITIONS)
+    );
+    const next: PersistedHistoryMap = {};
+    for (const [queueId, entries] of Object.entries(map)) {
+      if (!toDrop.has(queueId)) next[queueId] = entries;
+    }
+    return next;
   }
 
   /**
@@ -1984,10 +2197,15 @@ export class WorkspaceStateStore {
    * single-queue writer rather than racing it.
    */
   private updateQueueMap<T>(
-    mutate: (current: QueueStateMap) => { readonly queueStates: QueueStateMap; readonly result: T }
+    mutate: (current: QueueStateMap) => { readonly queueStates: QueueStateMap; readonly result: T },
+    touchedQueueIds: readonly string[] = []
   ): Promise<T> {
     let result!: T;
     return this.serialize(KEYS.queue, async () => {
+      await this.verifyPrimacyForCommit('Queue');
+      for (const queueId of touchedQueueIds) {
+        await this.verifyQueueOwnershipForCommit(queueId, 'Queue');
+      }
       const current = this.getQueueStates();
       const mutation = mutate(current);
       const next: QueueStateMap = {};
@@ -2091,6 +2309,38 @@ export class WorkspaceStateStore {
     });
   }
 
+  /**
+   * FR-R5-F09 (F-34, F-39) — serialized and fenced read-modify-write over `KEYS.queueRegistry`.
+   *
+   * Reads the current registry, runs `mutate(current)`, and persists the normalized result inside
+   * one `KEYS.queueRegistry` serialize link after checking workspace primacy and per-queue
+   * ownership claims/fences for `queueIds`.
+   */
+  public async updateQueueRegistry<T>(
+    mutate: (current: QueueRegistry) => { readonly registry: QueueRegistry; readonly result: T },
+    queueIds: readonly string[] = []
+  ): Promise<T> {
+    let result!: T;
+    let updated = false as boolean;
+    await this.serialize(KEYS.queueRegistry, async () => {
+      await this.verifyPrimacyForCommit('Queue registry');
+      for (const queueId of queueIds) {
+        await this.verifyQueueOwnershipForCommit(queueId, 'Queue');
+      }
+      const current = this.getQueueRegistry();
+      const mutation = mutate(current);
+      result = mutation.result;
+      if (mutation.registry === current) return;
+      const normalized = this.normalizedRegistry(mutation.registry);
+      await this.memento.update(KEYS.queueRegistry, normalized);
+      updated = true;
+    });
+    if (updated) {
+      this.notify(KEYS.queueRegistry);
+    }
+    return result;
+  }
+
   /** The validated registry with every derived field stripped; see `setQueueRegistry`. */
   private normalizedRegistry(registry: QueueRegistry): QueueRegistry {
     validateQueueRegistry(registry);
@@ -2130,28 +2380,33 @@ export class WorkspaceStateStore {
     now: number
   ): Promise<I> {
     let impact!: I;
-    let deleted = false as boolean;
-    await this.serializeAcrossKeys([KEYS.queueRegistry, KEYS.run, KEYS.queue], async () => {
-      const registry = this.getQueueRegistry();
-      const requests = findQueue(registry, queueId)
-        ? this.getQueue(queueId)
-            .requests.slice()
-            .sort((a, b) => a.position - b.position)
-        : [];
-      impact = recheck({ registry, run: this.getRun(queueId), requests });
-      if (impact.outcome !== 'deletable') return;
-      await this.memento.update(
-        KEYS.queueRegistry,
-        this.normalizedRegistry(removeQueueEntry(registry, { id: queueId, now }))
-      );
-      const remaining = { ...this.readQueueMap() };
-      delete remaining[queueId];
-      await this.memento.update(KEYS.queue, remaining);
-      deleted = true;
-    });
-    if (deleted) {
-      this.notify(KEYS.queueRegistry);
-      this.notify(KEYS.queue);
+    let registryUpdated = false as boolean;
+    let queueUpdated = false as boolean;
+    try {
+      await this.serializeAcrossKeys([KEYS.queueRegistry, KEYS.run, KEYS.queue], async () => {
+        await this.verifyPrimacyForCommit('Queue');
+        await this.verifyQueueOwnershipForCommit(queueId, 'Queue');
+        const registry = this.getQueueRegistry();
+        const requests = findQueue(registry, queueId)
+          ? this.getQueue(queueId)
+              .requests.slice()
+              .sort((a, b) => a.position - b.position)
+          : [];
+        impact = recheck({ registry, run: this.getRun(queueId), requests });
+        if (impact.outcome !== 'deletable') return;
+        await this.memento.update(
+          KEYS.queueRegistry,
+          this.normalizedRegistry(removeQueueEntry(registry, { id: queueId, now }))
+        );
+        registryUpdated = true;
+        const remaining = { ...this.readQueueMap() };
+        delete remaining[queueId];
+        await this.memento.update(KEYS.queue, remaining);
+        queueUpdated = true;
+      });
+    } finally {
+      if (registryUpdated) this.notify(KEYS.queueRegistry);
+      if (queueUpdated) this.notify(KEYS.queue);
     }
     return impact;
   }
@@ -2496,75 +2751,93 @@ export class WorkspaceStateStore {
       );
     }
     const sameQueue = owner.queueId === params.targetQueueId;
-    // Sorted, because `insertAt` indexes into this below and `getQueue()`
-    // returns rows in array order rather than position order.
-    const targetPending = this.getQueue(params.targetQueueId)
-      .requests.filter((request) => request.status === 'pending')
-      .sort((a, b) => a.position - b.position);
-    if (!sameQueue && targetPending.length >= MAX_PENDING_TASKS_PER_QUEUE) {
-      throw new QueueMutationRejected(
-        'task-cap-reached',
-        `Queue ${params.targetQueueId} already has ${MAX_PENDING_TASKS_PER_QUEUE} pending tasks`
-      );
-    }
-    const maxPosition = sameQueue ? targetPending.length - 1 : targetPending.length;
-    const insertAt = params.position ?? maxPosition;
-    if (!Number.isInteger(insertAt) || insertAt < 0 || insertAt > maxPosition) {
-      throw new QueueMutationRejected(
-        'position-out-of-range',
-        `Position must be in [0, ${maxPosition}] (got ${String(params.position)})`
-      );
-    }
     if (sameQueue) {
+      const targetPending = this.getQueue(params.targetQueueId)
+        .requests.filter((request) => request.status === 'pending')
+        .sort((a, b) => a.position - b.position);
+      const maxPosition = targetPending.length - 1;
+      const insertAt = params.position ?? maxPosition;
+      if (!Number.isInteger(insertAt) || insertAt < 0 || insertAt > maxPosition) {
+        throw new QueueMutationRejected(
+          'position-out-of-range',
+          `Position must be in [0, ${maxPosition}] (got ${String(params.position)})`
+        );
+      }
       return this.reorderPendingRequest(taskId, insertAt);
     }
-    // `insertAt` is a PENDING-ARRAY index; `.position` is a slot in the GLOBAL
-    // sequence `compactRequestPositions()` keeps contiguous over pending and
-    // non-pending rows alike, so using one as the other put an appended Task
-    // second-to-last on any executing queue. Translate: the slot of the row the
-    // Task lands in front of, or one past the last pending row. `.at()`, not
-    // `[...]`, so `T | undefined` makes the guards necessary, not defensive.
-    const last = targetPending.at(-1);
-    const ahead = targetPending.at(insertAt);
-    const insertSlot =
-      ahead?.position ??
-      (last === undefined
-        ? this.getQueue(params.targetQueueId).requests.length
-        : last.position + 1);
-    const now = Date.now();
-    const moved: FeatureRequest = {
-      ...target,
-      queueId: params.targetQueueId,
-      position: insertSlot,
-      updatedAt: now
-    };
-    return this.updateQueueMap((current) => {
-      const source = current[owner.queueId] ?? WorkspaceStateStore.bornEmptyQueue();
-      const destination = current[params.targetQueueId] ?? WorkspaceStateStore.bornEmptyQueue();
-      return {
-        queueStates: {
-          ...current,
-          [owner.queueId]: {
-            ...source,
-            requests: source.requests.filter((request) => request.id !== taskId)
+    return this.updateQueueMap(
+      (current) => {
+        if (!findQueue(this.getQueueRegistry(), params.targetQueueId)) {
+          throw new QueueMutationRejected(
+            'unknown-queue-id',
+            `Unknown queue id: ${params.targetQueueId}`
+          );
+        }
+        const source = current[owner.queueId] ?? WorkspaceStateStore.bornEmptyQueue();
+        const freshTarget = source.requests.find((request) => request.id === taskId);
+        if (!freshTarget) {
+          throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
+        }
+        if (freshTarget.status !== 'pending') {
+          throw new QueueMutationRejected(
+            'task-not-in-pending-state',
+            `Task ${taskId} is not pending`
+          );
+        }
+        const destination = current[params.targetQueueId] ?? WorkspaceStateStore.bornEmptyQueue();
+        const targetPending = destination.requests
+          .filter((request) => request.status === 'pending')
+          .sort((a, b) => a.position - b.position);
+        if (targetPending.length >= MAX_PENDING_TASKS_PER_QUEUE) {
+          throw new QueueMutationRejected(
+            'task-cap-reached',
+            `Queue ${params.targetQueueId} already has ${MAX_PENDING_TASKS_PER_QUEUE} pending tasks`
+          );
+        }
+        const maxPosition = targetPending.length;
+        const insertAt = params.position ?? maxPosition;
+        if (!Number.isInteger(insertAt) || insertAt < 0 || insertAt > maxPosition) {
+          throw new QueueMutationRejected(
+            'position-out-of-range',
+            `Position must be in [0, ${maxPosition}] (got ${String(params.position)})`
+          );
+        }
+        const last = targetPending.at(-1);
+        const ahead = targetPending.at(insertAt);
+        const insertSlot =
+          ahead?.position ??
+          (last === undefined ? destination.requests.length : last.position + 1);
+        const now = Date.now();
+        const moved: FeatureRequest = {
+          ...freshTarget,
+          queueId: params.targetQueueId,
+          position: insertSlot,
+          updatedAt: now
+        };
+        return {
+          queueStates: {
+            ...current,
+            [owner.queueId]: {
+              ...source,
+              requests: source.requests.filter((request) => request.id !== taskId)
+            },
+            [params.targetQueueId]: {
+              ...destination,
+              requests: [
+                ...destination.requests.map((request) =>
+                  request.position >= insertSlot
+                    ? { ...request, position: request.position + 1, updatedAt: now }
+                    : request
+                ),
+                moved
+              ]
+            }
           },
-          [params.targetQueueId]: {
-            ...destination,
-            // Every row at or past the opened slot shifts, pending or not: one
-            // left in place would share a slot with the arriving Task.
-            requests: [
-              ...destination.requests.map((request) =>
-                request.position >= insertSlot
-                  ? { ...request, position: request.position + 1, updatedAt: now }
-                  : request
-              ),
-              moved
-            ]
-          }
-        },
-        result: moved
-      };
-    });
+          result: moved
+        };
+      },
+      [owner.queueId, params.targetQueueId]
+    );
   }
 
   /**
@@ -3063,7 +3336,9 @@ export class WorkspaceStateStore {
       const overflow = next.length - HISTORY_CAP_PER_QUEUE;
       const trimmed = overflow > 0 ? next.slice(overflow) : next;
       evicted = overflow > 0 ? next.slice(0, overflow) : [];
-      await this.memento.update(KEYS.history, { ...map, [queueId]: trimmed });
+      const updatedMap: PersistedHistoryMap = { ...map, [queueId]: trimmed };
+      const prunedMap = this.pruneExcessDeletedHistoryPartitions(updatedMap) ?? updatedMap;
+      await this.memento.update(KEYS.history, prunedMap);
     });
     this.notify(KEYS.history);
     return evicted;
@@ -3331,6 +3606,7 @@ export class WorkspaceStateStore {
    * task description, or anything the operator wrote.
    */
   public async reset(): Promise<number> {
+    this.writerQuarantined = false;
     const generation = nextResetGeneration(this.getResetMarker());
     await this.serializeAcrossKeys([...RESET_CLEARED_KEYS, KEYS.resetMarker], async () => {
       await this.memento.update(KEYS.resetMarker, {
@@ -3370,6 +3646,7 @@ export class WorkspaceStateStore {
   public async completeInterruptedReset(): Promise<number | null> {
     const marker = this.getResetMarker();
     if (!isResetInterrupted(marker)) return null;
+    this.writerQuarantined = false;
     const generation = marker!.generation;
     await this.serializeAcrossKeys([...RESET_CLEARED_KEYS, KEYS.resetMarker], async () => {
       for (const key of RESET_CLEARED_KEYS) {
@@ -3405,18 +3682,48 @@ export class WorkspaceStateStore {
     keys: readonly string[],
     op: () => Thenable<void> | Promise<void>
   ): Promise<void> {
+    if (this.writerQuarantined) {
+      return Promise.reject(
+        new StorageWriteQuarantinedError(
+          'storage-write-quarantined',
+          `Workspace state write refused for ${keys.join(',')}: storage writer is quarantined`
+        )
+      );
+    }
     const predecessors = keys.map((key) => this.chains.get(key) ?? Promise.resolve());
-    const next = Promise.all(predecessors).then(() =>
-      Promise.resolve(op()).then(() => undefined)
-    );
+    const next = Promise.all(predecessors).then(() => {
+      if (this.writerQuarantined) {
+        throw new StorageWriteQuarantinedError(
+          'storage-write-quarantined',
+          `Workspace state write refused for ${keys.join(',')}: storage writer is quarantined`
+        );
+      }
+      return Promise.resolve(op()).then(() => undefined);
+    });
     const stored = next.catch(() => undefined);
     for (const key of keys) this.chains.set(key, stored);
     return next;
   }
 
   private serialize(key: string, op: () => Thenable<void> | Promise<void>): Promise<void> {
+    if (this.writerQuarantined) {
+      return Promise.reject(
+        new StorageWriteQuarantinedError(
+          'storage-write-quarantined',
+          `Workspace state write refused for ${key}: storage writer is quarantined`
+        )
+      );
+    }
     const previous = this.chains.get(key) ?? Promise.resolve();
-    const next = previous.then(() => Promise.resolve(op()).then(() => undefined));
+    const next = previous.then(() => {
+      if (this.writerQuarantined) {
+        throw new StorageWriteQuarantinedError(
+          'storage-write-quarantined',
+          `Workspace state write refused for ${key}: storage writer is quarantined`
+        );
+      }
+      return Promise.resolve(op()).then(() => undefined);
+    });
     this.chains.set(
       key,
       next.catch(() => undefined)
