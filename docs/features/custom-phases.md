@@ -41,9 +41,9 @@ The new-feature example declares Workflow `speckit-new-feature` and includes ele
 | `evidencePolicy` | Optional `required`, `best-effort`, or `none`. **Omitted, or `required`**: a turn that prints no complete audit block does not advance on a completion token, however the token is placed, and the next iteration is told to print the block. **Declaring `required`** also withholds advancement when a block is present but its entry cannot be read, and the record names the missing evidence as the cause. **`best-effort` and `none`** relax only the missing-block report (`best-effort` records an expectation not met, `none` expects no block and says nothing) and keep one fallback: with no complete block, the token on the last non-empty line completes the Phase, labelled as a degraded read. The origin still decides in one place, a block that is present but unparseable: the resolved default was written into every snapshot taken before the setting meant anything, so enforcing on it would retroactively change what advances for authors who said nothing. Enforcement follows the declaration, never the resolved value, so declaring `required` explicitly is not the same as leaving the field out for that case. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/pipeline-snapshot.ts --><!-- Source: src/parser/stdout-parser.ts --> |
 | `loopable` | Optional compatibility boolean for legacy outcome looping. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/controller/phase.ts --> |
 | `retryCondition` | Optional non-empty expression, maximum 512 characters, parsed before the definition becomes effective. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/process-definition-validator.ts --> |
-| `isRequired` | Optional boolean; `false` lets a failed/timeout Phase advance. It also decides how a Pipeline ends: a required last Phase with no `retryCondition` that ends with remaining issues or open questions — including an exit 0 with no contract block — fails the Run instead of completing it, and resuming re-runs that Phase. With `false` the Run completes. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/controller/phase.ts --> |
+| `isRequired` | Optional boolean; `false` lets a failed/timeout Phase advance. It also decides how a Run ends: a required last Phase with no `retryCondition` that ends with remaining issues or open questions — including an exit 0 with no contract block — fails the Run instead of completing it, and resuming re-runs that Phase. With `false` the Run completes. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/controller/phase.ts --> |
 | `onRetryCap` | Optional `fail`, `continue`, or `continue-degraded`; decides what this Phase does when its `retryCondition` is still truthy at the final allowed iteration. `fail` ends the Phase failed with the cap-exhausted cause. `continue` advances with an explicit unverified warning and records nothing durable. `continue-degraded` advances *and* records on the Task that this Phase's condition was never satisfied, so the run stays distinguishable from a clean one after the run itself is gone. Omission inherits the workspace default; an unconfigured workspace resolves to `fail`. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/contracts/retry-cap-outcome.ts --> |
-| `forceContinueOnRetryCap` | **Deprecated by `onRetryCap`, and still loaded.** `true` means `continue`, `false` means `fail` — exactly what those values have always meant — so no pipeline file already on disk needs editing, now or later. The boolean covers two of the three outcomes and cannot reach `continue-degraded`. A Phase declaring both is resolved by `onRetryCap`. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/contracts/retry-cap-outcome.ts --> |
+| `forceContinueOnRetryCap` | **Deprecated by `onRetryCap`, and still loaded.** `true` means `continue`, `false` means `fail` — exactly what those values have always meant — so no definition already on disk needs editing, now or later. The boolean covers two of the three outcomes and cannot reach `continue-degraded`. A Phase declaring both is resolved by `onRetryCap`. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/contracts/retry-cap-outcome.ts --> |
 
 `sideEffects` controls the mutation plan, consent, and rollback checkpoint; it does not restrict the backend. A Phase declaring `sideEffects: git` is refused unless it uses a Git-capable runner, because Codex's `workspace-write` sandbox keeps `.git` read-only.
 
@@ -51,26 +51,41 @@ The new-feature example declares Workflow `speckit-new-feature` and includes ele
 <!-- Source: src/services/run-driver.ts -->
 <!-- Source: src/config/phase-runner-policy.ts -->
 
-## Pipeline definition reference
+## Workflow definition reference
 
-A Pipeline orders Phase identities and declares inputs, outputs, position-addressed bindings, execution defaults, and recommended successors. Execution defaults are advisory: they are stored, exported and imported with the Pipeline, but a Run does not apply them. The Runs launcher shows the settings host policy resolves for each Phase, and lists the authored defaults on a separate line labelled advisory and not applied. A Phase ID may repeat; bindings therefore use `phaseIndex` rather than a bare ID. Pipeline IDs are bounded to 64 characters.
+A Workflow orders **nodes**. A node runs one Phase (`kind: phase` with a `phaseId`) or one child Workflow (`kind: workflow` with a `workflowId`), and its `nodeId` is its address, so two nodes may name the same Phase or the same child Workflow. `startNodeIds` lists the nodes a launch may start at; a launch at any other node is refused. `connections` route control from one node to the next: a connection with no `condition` is the success path, followed after a completed attempt, and the optional `condition`, `priority`, `isDefault` and `handoff` keys add branching and manual hand-offs. A Workflow may also declare public `inputs` and `outputs`, and `bindings` that feed a node's inputs and publish its outputs. Bindings address a node by `nodeId`, never by position. Workflow IDs are bounded to 64 characters. The [Workflow YAML grammar reference](../reference/workflow-yaml-grammar.md) lists every key, its rule and its refusal code.
 
-<!-- Source: src/contracts/pipeline-definitions.ts -->
+`executionDefaults` is advisory: the frozen run snapshot keeps it for provenance and the launch projection never reads it, so a Run does not apply it. The Runs launcher shows the settings host policy resolves for each Phase, and lists the authored defaults on a separate line labelled advisory and not applied.
 
-The physical `speckit-new-feature` example orders these Phase IDs:
+<!-- Source: src/contracts/workflow-definitions.ts -->
+<!-- Source: src/services/process-yaml/workflow-document.ts -->
+
+The `speckit-new-feature` example declares eleven nodes, each running the Phase of the same name, in this order: `speckit-specify`, `speckit-clarify`, `speckit-plan`, `speckit-tasks`, `speckit-checklist`, `speckit-analyze`, `speckit-implement`, `speckit-code-review`, `speckit-security-review`, `finalize` and `integrate`. Ten plain connections chain them in that order, and the document declares no conditions, public ports or `executionDefaults`. This is how it opens; the other nine nodes and nine connections follow the same shape:
 
 ```yaml
-phaseIds:
-  - speckit-specify
-  - speckit-clarify
-  - speckit-plan
-  - speckit-tasks
-  - speckit-checklist
-  - speckit-analyze
-  - speckit-implement
-  - speckit-code-review
-  - speckit-security-review
-  - finalize
+apiVersion: schegent/v1
+kind: Workflow
+metadata:
+  id: speckit-new-feature
+  name: Spec-kit New Feature
+  version: 6
+spec:
+  startNodeIds:
+    - speckit-specify
+  nodes:
+    - nodeId: speckit-specify
+      kind: phase
+      phaseId: speckit-specify
+    - nodeId: speckit-clarify
+      kind: phase
+      phaseId: speckit-clarify
+    # nine more nodes
+  connections:
+    - from:
+        nodeId: speckit-specify
+      to:
+        nodeId: speckit-clarify
+    # nine more connections
 ```
 
 <!-- Source: examples/speckit-new-feature.workflow.yaml -->
@@ -120,7 +135,7 @@ The mark is what separates the two continuing outcomes. It is captured onto the 
 
 ## Author a verification Phase
 
-The host does not verify your Phase. Outcome classification reads the backend's own audit report, and `resolveRunOutputs` checks whether a declared target exists rather than whether its content is correct. An unattended Pipeline therefore needs an ordinary Phase whose instruction runs the repository's real checks and reports their exit status.
+The host does not verify your Phase. Outcome classification reads the backend's own audit report, and `resolveRunOutputs` checks whether a declared target exists rather than whether its content is correct. An unattended Workflow therefore needs an ordinary Phase whose instruction runs the repository's real checks and reports their exit status.
 
 <!-- Source: src/parser/stdout-parser.ts -->
 <!-- Source: src/services/run-output/run-output-resolver.ts -->

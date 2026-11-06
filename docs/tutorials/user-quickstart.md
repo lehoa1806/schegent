@@ -74,7 +74,7 @@ In the new window, open `/tmp/schegent-tutorial` as the folder.
 
 ### Requirements the tutorial cannot supply
 
-This pipeline names no runner and no model, so it runs on the default `claude` runner with the
+No Phase in this Workflow names a runner or a model, so it runs on the default `claude` runner with the
 Claude CLI's own default model. A real run therefore also requires a working Claude CLI with access
 to that model. Schegent does not install or authenticate that CLI for you.
 
@@ -194,7 +194,7 @@ The repository's deterministic integration test, `tests/integration/bugfix-pipel
   this installation, and the backend then runs with no OS-enforced bound and your local user
   authority: that is a risk you accept, not a protection you gain. Cancelling or dismissing the modal
   leaves the Run refused, and nothing starts. The `codex` backend is contained and never asks.
-- **No import controls:** grant Workspace Trust. Pipeline and workflow mutations require it.
+- **No import controls:** grant Workspace Trust. Phase and Workflow mutations require it.
 - **Trigger is disabled:** use the VS Code window whose header says **Workspace Connected**.
 - **Validation feedback appears:** correct the named field and submit again. The extension host, rather than the webview, is authoritative for run-request validation.
 - **The queue or runner fails after admission:** open the task's run detail and **System Log**. `Started connected run …` only proves the host created the run and enqueued its entry node.
