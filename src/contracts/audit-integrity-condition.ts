@@ -28,12 +28,22 @@ export const AUDIT_INTEGRITY_CONDITION_EVENT = 'audit-integrity-condition';
  * (`tests/contract/history-does-not-change-run-path.test.ts` holds that boundary by text).
  */
 export const HISTORY_RESET_CONDITION = 'history-reset';
+export const CHAIN_VERIFIED_CONDITION = 'chain-verified';
+export const CHECKPOINT_REANCHORED_CONDITION = 'checkpoint-reanchored';
 export const HISTORY_SHORTER_CAUSE = 'history-shorter';
 export const HISTORY_MISSING_CAUSE = 'history-missing';
 export type HistoryLossCode = typeof HISTORY_SHORTER_CAUSE | typeof HISTORY_MISSING_CAUSE;
 
-/** The two conditions this release writes. Append only. */
-export const INTEGRITY_CONDITIONS = ['damaged-tail', HISTORY_RESET_CONDITION] as const;
+export const CHECKPOINT_PRIOR_STATUSES = ['active', 'retired', 'absent', 'unreadable'] as const;
+export type CheckpointPriorStatus = (typeof CHECKPOINT_PRIOR_STATUSES)[number];
+
+/** The conditions this release writes. Append only. */
+export const INTEGRITY_CONDITIONS = [
+  'damaged-tail',
+  HISTORY_RESET_CONDITION,
+  CHAIN_VERIFIED_CONDITION,
+  CHECKPOINT_REANCHORED_CONDITION
+] as const;
 
 export type IntegrityCondition = (typeof INTEGRITY_CONDITIONS)[number];
 
@@ -65,4 +75,18 @@ export type AuditIntegrityConditionPayload =
       /** The retired checkpoint's position. */
       readonly retiredPosition: number;
       readonly retiredAtMs: number;
+    }
+  | {
+      readonly condition: 'chain-verified';
+      readonly conditionVersion: 1;
+      readonly entries: number;
+      readonly cuts: number;
+    }
+  | {
+      readonly condition: 'checkpoint-reanchored';
+      readonly conditionVersion: 1;
+      readonly priorStatus: CheckpointPriorStatus;
+      readonly priorPosition: number;
+      readonly newPosition: number;
+      readonly reanchoredAtMs: number;
     };

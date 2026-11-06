@@ -8,11 +8,15 @@ import {
   RawTranscriptWriter,
   type RawTranscriptCapture
 } from '../../../../src/audit/raw-transcript-writer';
+import { VerboseDiagnosticWriter } from '../../../../src/audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import { RuntimeLogSink } from '../../../../src/lib/runtime-log/runtime-log-sink';
+import { createTransportRouter } from '../../../../src/monitor/transport/transport-router';
+import { TransportStoreError, type RunTransportStore } from '../../../../src/monitor/transport/run-transport-store';
 import {
   AUDIT_INTEGRITY_CAUSES,
   AUDIT_WRITE_CAUSES,
+  EVIDENCE_SINK_NAMES,
   EvidenceHealthMonitor,
   normalizeEvidenceFailureCause
 } from '../../../../src/services/evidence-health/evidence-health-monitor';
@@ -338,5 +342,114 @@ describe('EvidenceHealthMonitor, audit causes in two classes', () => {
     monitor.reportFailure('audit', 'history-missing');
     monitor.reset();
     expect(audit(monitor)).toMatchObject({ status: 'healthy', cause: null });
+  });
+});
+
+describe('FR-R5-F13 — complete evidence sink coverage (auditCheckpoint, transport, verboseDiagnostics)', () => {
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-f13-health-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  it('enumerates all eight evidence sinks and normalizes containment/checkpoint causes', () => {
+    expect(EVIDENCE_SINK_NAMES).toEqual([
+      'audit',
+      'rawTranscript',
+      'runtimeLog',
+      'metricsRollup',
+      'historyPointer',
+      'auditCheckpoint',
+      'transport',
+      'verboseDiagnostics'
+    ]);
+    expect(normalizeEvidenceFailureCause('symlink-component')).toBe('path-refused');
+    expect(normalizeEvidenceFailureCause('outside-root')).toBe('path-refused');
+    expect(normalizeEvidenceFailureCause('stage-not-owned')).toBe('path-refused');
+    expect(normalizeEvidenceFailureCause('checkpoint-unavailable')).toBe('checkpoint-unavailable');
+    expect(normalizeEvidenceFailureCause('corrupt')).toBe('checkpoint-unavailable');
+  });
+
+  it('reports transport sink failures and recovery when enabled, while disabled capture stays healthy', async () => {
+    const monitor = new EvidenceHealthMonitor();
+    let mode: 'off' | 'on' = 'off';
+    let failAppend = true;
+    const fakeStore = {
+      openDescriptorCount: 0,
+      narrowLegacy: async () => undefined,
+      stateOf: async () => ({ bytes: 0, oldestMs: null }),
+      compact: async () => ({ outcome: 'kept' as const }),
+      append: async () => {
+        if (failAppend) throw new TransportStoreError('ENOSPC');
+      },
+      dispose: async () => undefined
+    } as unknown as RunTransportStore;
+
+    const router = createTransportRouter({
+      workspaceRoot: () => workspaceRoot,
+      readSetting: () => mode,
+      readRawTranscriptMode: () => 'off',
+      readMaxAgeDays: () => 30,
+      tempRoot: workspaceRoot,
+      runStatus: () => undefined,
+      logger: { warn: () => undefined },
+      store: fakeStore,
+      evidenceHealth: monitor
+    });
+
+    await router.route({ runId: 'r1', stream: 'stdout', line: 'hi', timestamp: '2026-01-01T00:00:00.000Z' }, 'hi\n');
+    expect(monitor.getSnapshot().transport.status).toBe('healthy');
+
+    mode = 'on';
+    await router.route({ runId: 'r1', stream: 'stdout', line: 'hi', timestamp: '2026-01-01T00:00:00.000Z' }, 'hi\n');
+    expect(monitor.getSnapshot().transport).toMatchObject({
+      status: 'degraded',
+      cause: 'disk-full'
+    });
+
+    failAppend = false;
+    await router.route({ runId: 'r1', stream: 'stdout', line: 'hi', timestamp: '2026-01-01T00:00:00.000Z' }, 'hi\n');
+    expect(monitor.getSnapshot().transport).toMatchObject({
+      status: 'healthy',
+      cause: null
+    });
+  });
+
+  it('reports verboseDiagnostics sink refusal and recovery when enabled', async () => {
+    const monitor = new EvidenceHealthMonitor();
+    const segments = ['.schegent', 'sessions', 'r1', 'diagnostics', 'p1', 'ph1', 'iter-1'];
+    const directory = path.join(workspaceRoot, ...segments);
+    const target = {
+      workspaceRoot,
+      segments,
+      directory,
+      debugFile: path.join(directory, 'debug.log'),
+      streamFile: path.join(directory, 'stream.jsonl'),
+      verboseLogFile: path.join(directory, 'verbose.log')
+    };
+
+    const outside = path.join(workspaceRoot, 'outside-dir');
+    await fs.mkdir(outside, { recursive: true });
+    await fs.symlink(outside, path.join(workspaceRoot, '.schegent'));
+
+    const refusedWriter = new VerboseDiagnosticWriter(new SanitizedLogger(), monitor);
+    await refusedWriter.prepare(target);
+    expect(monitor.getSnapshot().verboseDiagnostics).toMatchObject({
+      status: 'degraded',
+      cause: 'path-refused'
+    });
+
+    await fs.rm(path.join(workspaceRoot, '.schegent'), { force: true });
+    const healthyWriter = new VerboseDiagnosticWriter(new SanitizedLogger(), monitor);
+    await healthyWriter.prepare(target);
+    await healthyWriter.teeStream(target, '{"type":"init"}\n');
+    expect(monitor.getSnapshot().verboseDiagnostics).toMatchObject({
+      status: 'healthy',
+      cause: null
+    });
   });
 });

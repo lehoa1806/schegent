@@ -205,7 +205,8 @@ const transportRouter = createTransportRouter({
   readMaxAgeDays: () => readSessionRetentionMaxAgeDays(workspaceRoot),
   tempRoot: os.tmpdir(),
   runStatus: (runId) => Object.values(store.getRunMap()).find((run) => run.id === runId)?.status,
-  logger
+  logger,
+  evidenceHealth
 });
 const transport: BoundedTransport = withDropReporting(
   createCliTransportSink(transportRouter, logger),
@@ -417,7 +418,8 @@ const runnerRegistry = new BackendRunnerRegistry({
   environmentPolicy: processEnvironmentPolicy,
   monitorHook,
   probeTransport: true,
-  logger
+  logger,
+  evidenceHealth
 }, backendKind);
 // FR-R4-F06 (FR-021; S5, S7) -- Stage 2 teardown stops workspace-bound subprocesses, and WAITS for them.
 // This replaces the `cancelAll` disposable, which fired every ladder and let the caller release the

@@ -3,7 +3,10 @@ export type EvidenceSinkName =
   | 'rawTranscript'
   | 'runtimeLog'
   | 'metricsRollup'
-  | 'historyPointer';
+  | 'historyPointer'
+  | 'auditCheckpoint'
+  | 'transport'
+  | 'verboseDiagnostics';
 
 // FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
 // imports them instead of restating them. Re-exported unchanged.
@@ -51,6 +54,24 @@ export interface EvidenceHealthSnapshot {
    */
   readonly historyPointer: EvidenceSinkHealth;
   /**
+   * FR-R5-F13 (NS-07) — head checkpoint tracking in per-user global storage.
+   * `continue-degraded`: ordinary `audit.log` appends continue while checkpoint
+   * tracking is degraded, and `reportSuccess('audit')` never clears this sink.
+   */
+  readonly auditCheckpoint: EvidenceSinkHealth;
+  /**
+   * FR-R5-F13 (NS-05) — CLI transport capture (`TransportRouter`).
+   * `continue-degraded`: disabled capture stays healthy; enabled capture failures
+   * or path refusals surface here without failing the Run.
+   */
+  readonly transport: EvidenceSinkHealth;
+  /**
+   * FR-R5-F13 (NS-05) — opt-in verbose diagnostic capture (`VerboseDiagnosticWriter`).
+   * `continue-degraded`: disabled capture stays healthy; enabled diagnostic directory
+   * or stream failures/refusals surface here without failing the Run.
+   */
+  readonly verboseDiagnostics: EvidenceSinkHealth;
+  /**
    * FR-R3-106 (FR-075) — transport lines refused because the sink's pending queue was
    * already at its bound.
    *
@@ -93,6 +114,7 @@ export interface EvidenceHealthReporter {
    * that has no audit integrity causes need not know it.
    */
   clearAuditIntegrity?(codes: readonly AuditIntegrityCause[]): void;
+  getSnapshot?(): EvidenceHealthSnapshot;
 }
 
 export interface EvidenceHealthDisposable {
@@ -123,7 +145,10 @@ export const EVIDENCE_SINK_NAMES: readonly EvidenceSinkName[] = [
   'rawTranscript',
   'runtimeLog',
   'metricsRollup',
-  'historyPointer'
+  'historyPointer',
+  'auditCheckpoint',
+  'transport',
+  'verboseDiagnostics'
 ];
 
 const POLICIES: Readonly<Record<EvidenceSinkName, EvidenceContinuationPolicy>> = Object.freeze({
@@ -131,7 +156,10 @@ const POLICIES: Readonly<Record<EvidenceSinkName, EvidenceContinuationPolicy>> =
   rawTranscript: 'continue-degraded',
   runtimeLog: 'continue-degraded',
   metricsRollup: 'continue-degraded',
-  historyPointer: 'continue-degraded'
+  historyPointer: 'continue-degraded',
+  auditCheckpoint: 'continue-degraded',
+  transport: 'continue-degraded',
+  verboseDiagnostics: 'continue-degraded'
 });
 
 /**
@@ -179,7 +207,10 @@ function healthySinks(): Record<EvidenceSinkName, EvidenceSinkHealth> {
     rawTranscript: healthySink('rawTranscript'),
     runtimeLog: healthySink('runtimeLog'),
     metricsRollup: healthySink('metricsRollup'),
-    historyPointer: healthySink('historyPointer')
+    historyPointer: healthySink('historyPointer'),
+    auditCheckpoint: healthySink('auditCheckpoint'),
+    transport: healthySink('transport'),
+    verboseDiagnostics: healthySink('verboseDiagnostics')
   };
 }
 
@@ -271,7 +302,10 @@ export class EvidenceHealthMonitor implements EvidenceHealthReporter {
       : this.sinks.rawTranscript.status === 'degraded' ||
           this.sinks.runtimeLog.status === 'degraded' ||
           this.sinks.metricsRollup.status === 'degraded' ||
-          this.sinks.historyPointer.status === 'degraded'
+          this.sinks.historyPointer.status === 'degraded' ||
+          this.sinks.auditCheckpoint.status === 'degraded' ||
+          this.sinks.transport.status === 'degraded' ||
+          this.sinks.verboseDiagnostics.status === 'degraded'
         ? 'degraded'
         : 'healthy';
     // FR-R3-106 (FR-075) — the drop counts ride along, and deliberately do NOT feed
@@ -341,14 +375,25 @@ export function normalizeEvidenceFailureCause(cause: unknown): string {
       // FR-R4-F03 — the three integrity findings, each its own code. `chain-broken` used to fold
       // into `io-error`, so even a broken link had no reason code of its own to report.
       return raw;
+    case 'symlink-component':
+    case 'outside-root':
+    case 'invalid-segment':
+    case 'stage-symlink-component':
+    case 'stage-outside-root':
+    case 'stage-not-owned':
     case 'path-refused':
-      // FR-R3-080 (T1075) — a REFUSAL, not a failure, and the distinction is the
-      // whole point of the round that added it: `io-error` says the write was
-      // attempted and went wrong, and this says the write never ran because the
-      // path could not be proven. Folding the two would tell an operator to look
-      // at their disk when they should be looking at their tree. Carries no path,
-      // like every case here.
-      return raw;
+      // FR-R3-080 (T1075), FR-R5-F13 (NS-05) — a REFUSAL, not a failure, and the
+      // distinction is the whole point of the round that added it: `io-error` says
+      // the write was attempted and went wrong, and this says the write never ran
+      // because the path could not be proven. Folding the two would tell an
+      // operator to look at their disk when they should be looking at their tree.
+      // Carries no path, like every case here.
+      return 'path-refused';
+    case 'checkpoint-unavailable':
+    case 'corrupt':
+    case 'version-unknown':
+    case 'unreachable':
+      return 'checkpoint-unavailable';
     case 'partial-write':
     case 'stream-error':
     case 'cleanup-failed':

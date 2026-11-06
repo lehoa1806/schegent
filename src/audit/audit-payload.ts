@@ -6,6 +6,9 @@ import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { isCompletionProvenance } from '../contracts/completion-provenance';
 import { isFailureCause } from '../contracts/failure-cause';
 import {
+  CHAIN_VERIFIED_CONDITION,
+  CHECKPOINT_PRIOR_STATUSES,
+  CHECKPOINT_REANCHORED_CONDITION,
   DAMAGE_DIGEST_ALG,
   HISTORY_RESET_CONDITION,
   INTEGRITY_CONDITION_VERSION
@@ -534,7 +537,10 @@ export const RECORDABLE_PHASE_END_WARNINGS: ReadonlySet<string> = new Set([
   'evidence-path-refused:rawTranscript',
   'evidence-path-refused:runtimeLog',
   'evidence-path-refused:metricsRollup',
-  'evidence-path-refused:historyPointer'
+  'evidence-path-refused:historyPointer',
+  'evidence-path-refused:auditCheckpoint',
+  'evidence-path-refused:transport',
+  'evidence-path-refused:verboseDiagnostics'
 ]);
 
 interface ProjectedWarnings {
@@ -944,6 +950,32 @@ function projectIntegrityCondition(payload: Record<string, unknown>): Record<str
   if (known && condition === HISTORY_RESET_CONDITION) {
     const retired = [integrityCount(payload.retiredPosition, 0), integrityCount(payload.retiredAtMs, 0)];
     return { condition, conditionVersion, retiredPosition: retired[0], retiredAtMs: retired[1] };
+  }
+  if (known && condition === CHAIN_VERIFIED_CONDITION) {
+    const entries = integrityCount(payload.entries, 0);
+    const cuts = integrityCount(payload.cuts, 0);
+    return { condition, conditionVersion, entries, cuts };
+  }
+  if (known && condition === CHECKPOINT_REANCHORED_CONDITION) {
+    const priorStatus = payload.priorStatus;
+    if (
+      typeof priorStatus !== 'string' ||
+      !(CHECKPOINT_PRIOR_STATUSES as readonly string[]).includes(priorStatus)
+    ) {
+      throw new AuditPayloadValidationError('invalid-integrity-condition-field');
+    }
+    const priorPosition =
+      payload.priorPosition === undefined ? undefined : integrityCount(payload.priorPosition, 0);
+    const newPosition = integrityCount(payload.newPosition, 1);
+    const reanchoredAtMs = integrityCount(payload.reanchoredAtMs, 0);
+    return {
+      condition,
+      conditionVersion,
+      priorStatus,
+      ...(priorPosition !== undefined ? { priorPosition } : {}),
+      newPosition,
+      reanchoredAtMs
+    };
   }
   if (!known || condition !== 'damaged-tail') return projectValue(payload, 0) as Record<string, unknown>;
   if (typeof file !== 'string' || file.length === 0 || /[\\/]/.test(file)

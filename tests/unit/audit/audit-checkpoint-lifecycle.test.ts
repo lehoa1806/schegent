@@ -387,8 +387,101 @@ describe('loss detection over real history (SC-006, SC-007)', () => {
 
       expect((await store().read()).status, 'the walk refused the link, so nothing was adopted').toBe('absent');
       expect(lines.some((line) => line.includes('audit-checkpoint-unavailable'))).toBe(true);
+      expect(monitor.getSnapshot().auditCheckpoint).toMatchObject({
+        status: 'degraded',
+        cause: 'checkpoint-unavailable'
+      });
     } finally {
       await fs.rm(elsewhere, { recursive: true, force: true });
     }
+  });
+
+  it('FR-R5-F13 (FR-006) — clears chain-broken on verified chain after appending a chain-verified row', async () => {
+    const w = writer();
+    await appendRows(w, 3);
+    await checkpointAt(3);
+
+    w.noteChainBreak('simulated break before restore');
+    expect(monitor.getSnapshot().audit).toMatchObject({
+      status: 'unavailable',
+      cause: 'chain-broken'
+    });
+
+    await runVerifyAuditChain({
+      workspaceRoot: workspace,
+      notifier: notifier(),
+      logger: new SanitizedLogger([]),
+      onBreak,
+      onLoss,
+      onVerified: () => w.noteChainVerified(),
+      readCheckpoint: () => w.readCheckpoint()
+    });
+    await checkpointAt(4);
+
+    expect(monitor.getSnapshot().audit).toMatchObject({
+      status: 'healthy',
+      cause: null
+    });
+    const rows = (await rawRows()).map((row) => JSON.parse(row) as Record<string, unknown>);
+    expect(rows.at(-1)).toMatchObject({
+      eventType: 'audit-integrity-condition',
+      payload: {
+        condition: 'chain-verified',
+        conditionVersion: 1,
+        entries: 3,
+        cuts: 0
+      }
+    });
+    expect(verifyAuditChainAt(auditDir())?.verdict).toMatchObject({ ok: true, entries: 4 });
+  });
+
+  it('FR-R5-F13 (FR-007) — re-anchors the checkpoint in-place without deleting or moving .schegent/audit.log', async () => {
+    const w = writer();
+    await appendRows(w, 4);
+    await checkpointAt(4);
+    await removeLastRow();
+    await verify();
+    monitor.reportFailure('audit', 'history-shorter');
+    expect(monitor.getSnapshot().audit.cause).toBe('history-shorter');
+
+    expect(await w.reanchorCheckpoint()).toBe('reanchored');
+    expect(monitor.getSnapshot().audit).toMatchObject({ status: 'healthy', cause: null });
+    expect(monitor.getSnapshot().auditCheckpoint).toMatchObject({ status: 'healthy', cause: null });
+
+    const rows = (await rawRows()).map((row) => JSON.parse(row) as Record<string, unknown>);
+    expect(rows.at(-1)).toMatchObject({
+      eventType: 'audit-integrity-condition',
+      payload: {
+        condition: 'checkpoint-reanchored',
+        conditionVersion: 1,
+        priorStatus: 'active',
+        priorPosition: 4,
+        newPosition: 4
+      }
+    });
+    expectLoss(await verify(), { state: 'consistent', position: 4 });
+  });
+
+  it('FR-R5-F13 (FR-004, FR-007) — recovers from a corrupt checkpoint file when allowOverwriteUnreadable is true', async () => {
+    const w = writer();
+    await appendRows(w, 2);
+    await checkpointAt(2);
+    await fs.writeFile(checkpointFile(), '{ corrupt json');
+
+    // A fresh writer settles in mode 'off' and reports auditCheckpoint degraded
+    const w2 = writer();
+    await appendRows(w2, 1, 'after-corrupt');
+    expect(monitor.getSnapshot().auditCheckpoint).toMatchObject({
+      status: 'degraded',
+      cause: 'checkpoint-unavailable'
+    });
+
+    expect(await w2.reanchorCheckpoint()).toBe('unreadable-refused');
+    expect(await w2.reanchorCheckpoint({ allowOverwriteUnreadable: true })).toBe('reanchored');
+    expect(monitor.getSnapshot().auditCheckpoint).toMatchObject({
+      status: 'healthy',
+      cause: null
+    });
+    expectLoss(await verify(), { state: 'consistent', position: 4 });
   });
 });
