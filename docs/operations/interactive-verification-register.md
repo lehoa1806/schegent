@@ -1,7 +1,7 @@
 # Interactive verification owed: what two specs are still waiting on
 
-**Opened**: 2026-09-06 (`FR-R3-170`, T1733) ·
-**Subjects**: `specs/067-live-mode-rework`, `specs/068-enhance-system-log` ·
+**Opened**: 2026-09-06 (`FR-R3-170`, T1733) · **Updated**: 2026-11-06 (`FR-R5-F18`, T18.4/T18.5) ·
+**Subjects**: `specs/020-phase-level-logs`, `specs/067-live-mode-rework`, `specs/068-enhance-system-log` ·
 **Gates**: `repo/tests/lint/spec-traceability-governance.test.ts` requires each subject to link
 here; `repo/tests/lint/dated-review-records.test.ts` reads the date below.
 
@@ -52,6 +52,21 @@ close → reopen makes entries reappear, and `chmod 000` degrades gracefully rat
 (US3); success and error entries are visually distinguishable (US4). Deviations go in that
 quickstart's DoD checklist. As with `067`, the shipped-bundle path for both System subtabs is
 automated; the interactive persistence and error-display matrix is not.
+
+### `020-phase-level-logs` — Phase 9 SC-011 live check (`FR-R5-F18` T18.4 / T18.5)
+
+All 86 implementation and automated test tasks in `specs/020-phase-level-logs/tasks.md` are ticked,
+and both multi-queue host tailing and multi-iteration (`[3, 2, 1]`) webview live-tail recovery are
+covered by automated Vitest suites. What remains owed is the interactive Phase 9 `SC-011` live
+check in a VS Code dev host:
+
+1. With `schegent.logging.verbose` enabled, run a disposable phase on a queue other than `default`
+   using the `agy` backend and open that queue/task/phase in the Phase Log feed.
+2. Record the `agy` CLI version and invocation arguments, capture a sanitized `stream.jsonl`
+   excerpt to confirm or revise the `event: step_update` / `init` / `result` mapping in
+   `specs/020-phase-level-logs/data-model.md` (which remains explicitly labelled `unconfirmed until
+   the SC-011 live check passes`), and verify `.schegent/audit.log` contains `phase-log-read` with
+   `outcome: success` and `entryCount > 0` followed by `phase-log-tail-started`.
 
 ## What would close this
 

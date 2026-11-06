@@ -1589,3 +1589,337 @@ describe('BUG-002 — an unknown-tuple refusal reads as operator text (FR-028a)'
     expect(text).toContain('Choose again');
   });
 });
+
+describe('FR-R5-F18 — multi-iteration live tail & bounded tail-start recovery (T18.1, T18.2)', () => {
+  it('T18.1: starts live tail on iteration 3 when iterations are descending [3, 2, 1] and stops when stepping to 2 or 1', async () => {
+    readSpy.mockImplementation(async (req: unknown) => {
+      const sel = (req as { selection: { iterationN: number | null } }).selection;
+      const chosen = sel.iterationN ?? 3;
+      return {
+        outcome: 'success',
+        manifest: {
+          iterations: [3, 2, 1],
+          selectedIteration: chosen,
+          entries: [makePushEntry(1, `iter-${chosen}`, 'system')],
+          skippedLines: 0,
+          truncatedCount: 0,
+          verboseDiagnosticsState: { kind: 'entries-present' },
+          isInFlight: chosen === 3
+        }
+      };
+    });
+
+    const store = createPhaseLogStore();
+    render(PhaseLogFeed, {
+      props: { snapshot: buildSnapshot(), store }
+    });
+    await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
+    await tick();
+    await tick();
+
+    expect(startSpy).toHaveBeenCalledTimes(1);
+    expect(startSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 3
+      }
+    });
+
+    // Step to historical iteration 2 -> stops tail and does NOT start a tail for 2.
+    startSpy.mockClear();
+    stopSpy.mockClear();
+    store.setIteration(2);
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    expect(stopSpy).toHaveBeenCalledWith({ sessionId: 'sess-A' });
+    expect(startSpy).not.toHaveBeenCalled();
+
+    // Step to oldest iteration 1 -> still does NOT start a tail (catches the old iters[iters.length - 1] bug).
+    store.setIteration(1);
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    expect(startSpy).not.toHaveBeenCalled();
+
+    // Step back to newest iteration 3 -> starts tail again for 3.
+    store.setIteration(3);
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    expect(startSpy).toHaveBeenCalledTimes(1);
+    expect(startSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 3
+      }
+    });
+  });
+
+  it('T18.1: switches tail once from iteration 1 to iteration 2 when a new iteration is added ([2, 1])', async () => {
+    const store = createPhaseLogStore();
+    const { getByTestId } = render(PhaseLogFeed, {
+      props: { snapshot: buildSnapshot(), store }
+    });
+    await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
+    await tick();
+    await tick();
+
+    expect(startSpy).toHaveBeenCalledTimes(1);
+    expect(startSpy).toHaveBeenLastCalledWith({
+      selection: {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 1
+      }
+    });
+
+    // Host advances to iteration 2 ([2, 1] descending).
+    readSpy.mockResolvedValue({
+      outcome: 'success',
+      manifest: {
+        iterations: [2, 1],
+        selectedIteration: 2,
+        entries: [makePushEntry(1, 'iter-2-init', 'system')],
+        skippedLines: 0,
+        truncatedCount: 0,
+        verboseDiagnosticsState: { kind: 'entries-present' },
+        isInFlight: true
+      }
+    });
+    startSpy.mockResolvedValue({
+      outcome: 'success',
+      sessionId: 'sess-B',
+      mechanism: 'fs.watch'
+    });
+
+    await fireEvent.click(getByTestId('phase-log-jump-current'));
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    expect(stopSpy).toHaveBeenCalledWith({ sessionId: 'sess-A' });
+    expect(startSpy).toHaveBeenCalledTimes(2);
+    expect(startSpy).toHaveBeenLastCalledWith({
+      selection: {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 2
+      }
+    });
+  });
+
+  it('T18.1: tails iteration 3 of [3, 2, 1] across a non-default queue and two simultaneous queues', async () => {
+    readSpy.mockResolvedValue({
+      outcome: 'success',
+      manifest: {
+        iterations: [3, 2, 1],
+        selectedIteration: 3,
+        entries: [makePushEntry(1, 'multi-queue-iter-3', 'system')],
+        skippedLines: 0,
+        truncatedCount: 0,
+        verboseDiagnosticsState: { kind: 'entries-present' },
+        isInFlight: true
+      }
+    });
+
+    const store = createPhaseLogStore();
+    store.setLiveMode(false);
+    render(PhaseLogFeed, {
+      props: {
+        snapshot: withQueueB(buildSnapshot(), queueBInFlight('2026-05-10T11:00:00.000Z')),
+        store
+      }
+    });
+
+    await selectTuple(store, 'q-b', 'b-live', 'speckit-plan');
+    await tick();
+    await tick();
+
+    expect(startSpy).toHaveBeenCalledWith({
+      selection: { ...QUEUE_B_TUPLE, iterationN: 3 }
+    });
+
+    // Switch to q-1's simultaneous in-flight run also on [3, 2, 1].
+    startSpy.mockClear();
+    stopSpy.mockClear();
+    await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
+    await tick();
+    await tick();
+
+    expect(stopSpy).toHaveBeenCalledWith({ sessionId: 'sess-A' });
+    expect(startSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 3
+      }
+    });
+  });
+
+  it('T18.2: recovers on the next snapshot after a transient not-in-flight start refusal and bounds retries to 2 attempts', async () => {
+    startSpy
+      .mockResolvedValueOnce({ outcome: 'failure', reason: 'not-in-flight' })
+      .mockResolvedValueOnce({
+        outcome: 'success',
+        sessionId: 'sess-recovered',
+        mechanism: 'fs.watch'
+      });
+
+    const store = createPhaseLogStore();
+    const snap = buildSnapshot();
+    const { rerender, queryByTestId } = render(PhaseLogFeed, {
+      props: { snapshot: snap, store }
+    });
+
+    await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
+    await tick();
+    await tick();
+
+    // First attempt failed transiently -> LIVE indicator is not shown.
+    expect(startSpy).toHaveBeenCalledTimes(1);
+    expect(queryByTestId('phase-log-live-indicator')).toBeNull();
+
+    // Subsequent snapshot update triggers bounded retry #2, which succeeds.
+    await rerender({ snapshot: { ...snap, producedAt: '2026-05-10T12:00:01.000Z' }, store });
+    await tick();
+    await tick();
+    await tick();
+
+    expect(startSpy).toHaveBeenCalledTimes(2);
+    expect(queryByTestId('phase-log-live-indicator')).not.toBeNull();
+  });
+
+  it('T18.2: does not loop on permanent refusals or after exhausting 2 transient attempts until an explicit reload', async () => {
+    startSpy.mockResolvedValue({ outcome: 'failure', reason: 'permission-denied' });
+
+    const store = createPhaseLogStore();
+    const snap = buildSnapshot();
+    const { rerender } = render(PhaseLogFeed, {
+      props: { snapshot: snap, store }
+    });
+
+    await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
+    await tick();
+    await tick();
+    expect(startSpy).toHaveBeenCalledTimes(1);
+
+    // Duplicate snapshots must NOT auto-retry a permanent refusal.
+    await rerender({ snapshot: { ...snap, producedAt: '2026-05-10T12:00:01.000Z' }, store });
+    await tick();
+    await tick();
+    expect(startSpy).toHaveBeenCalledTimes(1);
+
+    // Explicit operator reload resets the refusal latch and allows a fresh attempt.
+    startSpy.mockResolvedValueOnce({
+      outcome: 'success',
+      sessionId: 'sess-after-reload',
+      mechanism: 'fs.watch'
+    });
+    await store.reload();
+    await tick();
+    await tick();
+    await tick();
+    expect(startSpy).toHaveBeenCalledTimes(2);
+    expect(store.state.tailSessionId).toBe('sess-after-reload');
+  });
+
+  it('T18.2: ignores late startTail resolution after selection changes and stops the superseded session', async () => {
+    let resolvePendingStart: ((res: PhaseLogTailStartResult) => void) | null = null;
+    startSpy.mockImplementationOnce(
+      () =>
+        new Promise<PhaseLogTailStartResult>((resolve) => {
+          resolvePendingStart = resolve;
+        })
+    );
+
+    const store = createPhaseLogStore();
+    const snap = buildSnapshot();
+    const { rerender } = render(PhaseLogFeed, {
+      props: { snapshot: snap, store }
+    });
+
+    await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
+    await tick();
+    await tick();
+    expect(startSpy).toHaveBeenCalledTimes(1);
+
+    // Duplicate snapshot while startTail is still pending must not issue a second startTail.
+    await rerender({ snapshot: { ...snap, producedAt: '2026-05-10T12:00:01.000Z' }, store });
+    await tick();
+    await tick();
+    expect(startSpy).toHaveBeenCalledTimes(1);
+
+    // Operator switches to a historical phase while startTail is still pending.
+    store.setPhase('speckit-specify');
+    await tick();
+    await tick();
+
+    // Now the stale startTail resolves with a sessionId.
+    resolvePendingStart!({
+      outcome: 'success',
+      sessionId: 'sess-stale',
+      mechanism: 'fs.watch'
+    });
+    await tick();
+    await tick();
+
+    // Stale session must NOT become active and must be stopped on the host.
+    expect(store.state.tailSessionId).toBeNull();
+    expect(stopSpy).toHaveBeenCalledWith({ sessionId: 'sess-stale' });
+  });
+
+  it('T18.2: stops a late-resolving pending startTail when the component unmounts mid-request', async () => {
+    let resolvePendingStart: ((res: PhaseLogTailStartResult) => void) | null = null;
+    startSpy.mockImplementationOnce(
+      () =>
+        new Promise<PhaseLogTailStartResult>((resolve) => {
+          resolvePendingStart = resolve;
+        })
+    );
+
+    const store = createPhaseLogStore();
+    const view = render(PhaseLogFeed, {
+      props: { snapshot: buildSnapshot(), store }
+    });
+
+    await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
+    await tick();
+    await tick();
+    expect(startSpy).toHaveBeenCalledTimes(1);
+
+    // Unmount while startTail is still pending.
+    view.unmount();
+    await tick();
+
+    resolvePendingStart!({
+      outcome: 'success',
+      sessionId: 'sess-unmounted',
+      mechanism: 'fs.watch'
+    });
+    await tick();
+    await tick();
+
+    expect(store.state.tailSessionId).toBeNull();
+    expect(stopSpy).toHaveBeenCalledWith({ sessionId: 'sess-unmounted' });
+  });
+});
