@@ -4,6 +4,7 @@ import type {
   MonitorSidecarHook,
   TreeAttribution, TreeTeardownOutcome, RunnerLabel } from '../contracts/backend-runner';
 import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
+import { combineStreamScans, IncrementalFatalScanner } from '../lib/incremental-fatal-scanner';
 import type { SanitizedLogger } from '../lib/logger';
 import { waitForChildCompletion } from './child-completion';
 import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
@@ -164,6 +165,13 @@ export class ProcessLifecycleRunner {
       const deliveryPromise = writePromptToStdin(child, input.stdinPayload ?? request.prompt);
       const stdoutBuffer = new ZippedStreamBuffer();
       const stderrBuffer = new ZippedStreamBuffer();
+      const scanFatal = request.effectiveFatalSignatures !== undefined;
+      const stdoutScanner = scanFatal
+        ? new IncrementalFatalScanner('stdout', request.effectiveFatalSignatures)
+        : null;
+      const stderrScanner = scanFatal
+        ? new IncrementalFatalScanner('stderr', request.effectiveFatalSignatures)
+        : null;
       child.stdout?.setEncoding('utf8');
       child.stderr?.setEncoding('utf8');
       let timedOut = false;
@@ -200,7 +208,7 @@ export class ProcessLifecycleRunner {
       // stop the next one; the writer folds every failure into its warnings.
       let teeChain: Promise<void> = Promise.resolve();
       child.stdout?.on('data', (chunk: string) => {
-        stdoutBuffer.append(chunk); backpressure.write('stdout', child.stdout!, chunk);
+        stdoutBuffer.append(chunk); stdoutScanner?.append(chunk); backpressure.write('stdout', child.stdout!, chunk);
         if (tee) {
           const append = (): Promise<void> => tee.writer.teeStream(tee.target, chunk);
           teeChain = teeChain.then(append, append);
@@ -209,7 +217,7 @@ export class ProcessLifecycleRunner {
         this.emit({ kind: 'stdout-chunk', runId: request.runId ?? null, invocationId, chunk });
       });
       child.stderr?.on('data', (chunk: string) => {
-        stderrBuffer.append(chunk); backpressure.write('stderr', child.stderr!, chunk);
+        stderrBuffer.append(chunk); stderrScanner?.append(chunk); backpressure.write('stderr', child.stderr!, chunk);
         if (!backpressure.isBlocked) reset();
         this.emit({ kind: 'stderr-chunk', runId: request.runId ?? null, invocationId, chunk });
       });
@@ -275,6 +283,7 @@ export class ProcessLifecycleRunner {
         ...(deadlineFired() ? { deadlineExceeded: true } : {})
       });
       stdoutBuffer.finalize(); stderrBuffer.finalize();
+      stdoutScanner?.finalize(); stderrScanner?.finalize();
       return { stdoutBuffer, stderrBuffer, exitCode: completion.exitCode, killed, timedOut,
         ...(deadlineFired() ? { deadlineExceeded: true } : {}),
         durationMs: Date.now() - start, command: input.commandDisplay,
@@ -287,7 +296,10 @@ export class ProcessLifecycleRunner {
           ? { stdinDeliveryFailed: true, stdinErrorCode: delivery.errorCode }
           : {}),
         ...(diagnosticWarnings.length > 0 ? { diagnosticWarnings } : {}),
-        ...(diagnosticsCaptured ? { diagnosticsCaptured: true } : {}) };
+        ...(diagnosticsCaptured ? { diagnosticsCaptured: true } : {}),
+        ...(stdoutScanner && stderrScanner
+          ? { streamFatalMatch: combineStreamScans(stdoutScanner, stderrScanner) }
+          : {}) };
     } finally {
       this.active.delete(invocationId);
     }

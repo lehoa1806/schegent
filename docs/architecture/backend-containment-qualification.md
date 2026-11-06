@@ -267,6 +267,15 @@ reasons:
 The case that would reopen the decision is a support claim tied to a specific build: a promise that *this*
 build behaves a certain way would need to know it was *this* build.
 
+## 9. Completion lifecycle protocol qualification (`FR-R5-F11`)
+
+All three backend adapters (`ClaudeCliRunner`, `CodexCliRunner`, `AgyCliRunner`) share the same observable guarantees for process spawn/error attribution (`processError` when `pid === undefined`), stdin prompt delivery (`writePromptToStdin` / `awaitStdinDelivery`), live-stream fatal diagnostic scanning (`IncrementalFatalScanner` / `combineStreamScans` populating `streamFatalMatch`), post-exit buffered pipe retention (`waitForChildCompletion` with `STDIO_CLOSE_GRACE_MS = 2,000` ms), output sink backpressure (`OutputSinkBackpressure`), idle timeout (`timeoutMs`), non-resetting wall-clock deadline (`maxDurationMs`), and awaited process-tree teardown (`escalateAndReportTree` / `settleTeardowns`).
+
+They intentionally differ in **terminal event decoding**, qualified against the recorded canary versions (`claude` 2.1.302 / captured 2.1.316; `codex-cli` 0.159.2 / captured 0.163.0; `agy` 1.4.2 / captured 1.4.12):
+
+- **`claude`**: Decodes top-level `{"type":"result"}` envelopes via `LineFramer` (including flushing any un-newlined trailing line on stdout `'end'` and after `waitForChildCompletion` settles) and arms `COMPLETION_SETTLE_MS` (15,000 ms) when no background-task hold is open, reporting `sawTerminalResult: true` and `completedAwaitingExit: true` if the CLI lingers after emitting its final result (`Feature 030 BUG-002`).
+- **`codex` and `agy`**: Complete on process `'exit'` plus stdio `'close'`. Stream JSON rows (`{"type":"turn.completed"}` in Codex; `{"event":"result"}` / `{"type":"result"}` in Agy) are retained as stream data rather than process-termination triggers, and `sawTerminalResult` / `completedAwaitingExit` are omitted (`undefined`), as pinned in `tests/unit/runner/{codex-cli,agy-cli}-lifecycle.test.ts` and `tests/lint/result-envelope-unknown-is-unwritten.test.ts`.
+
 <!-- Source: src/services/process-liveness.ts -->
 <!-- Source: src/runner/process-tree.ts -->
 <!-- Source: src/services/capability-confirmed-flags.ts -->
