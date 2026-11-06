@@ -22,7 +22,7 @@ import type { RetryCapOutcome } from './process-definitions';
  * drift, and the webview-facing limits projection imports the state type.
  */
 
-/** The largest accepted value: one under the default iteration cap, so the bound can always fire first. */
+/** The largest accepted value: one under the iteration cap's maximum (50), so it can fire first. */
 export const MAX_UNCHANGED_COMPARISONS = 49;
 
 /**

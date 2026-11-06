@@ -35,8 +35,9 @@ of `repo/tests/a11y/` moves no row in this table. No row above may be marked oth
 was and was not exercised.
 
 **The ordering is not arbitrary and it is not alphabetical.** NVDA, Narrator and Orca follow platform
-verification, not the other way around: this product is qualified on macOS and declares the other
-platforms unobserved
+verification, not the other way around: this product's platform behaviour is verified on macOS
+only, where the VoiceOver row above is still **not observed**, and the other platforms are declared
+unobserved
 ([`docs/operations/platform-observation-record.md`](../operations/platform-observation-record.md),
 `FR-R3-129`). A screen-reader row for a platform whose *filesystem behaviour* is undeclared would be
 the more specific claim resting on the less specific one. macOS/VoiceOver is therefore the only row

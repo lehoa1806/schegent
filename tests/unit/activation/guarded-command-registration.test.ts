@@ -187,7 +187,7 @@ describe('registerGuardedCommand', () => {
 // this file the moment it is classified, and a misclassification shows up as a
 // failure here rather than as a surprise in a real window.
 describe('registerGuardedCommand — over the full inventory', () => {
-  it('refuses all twenty-three mutating ids while untrusted, each naming its own reason', () => {
+  it('refuses every mutating id while untrusted, each naming its own reason', () => {
     expect(MUTATING_COMMAND_ID_LIST.length, 'the inventory is empty').toBeGreaterThan(15);
     for (const id of MUTATING_COMMAND_ID_LIST) {
       registered.clear();
@@ -210,7 +210,7 @@ describe('registerGuardedCommand — over the full inventory', () => {
     }
   });
 
-  it('runs all seven read-only ids while untrusted', () => {
+  it('runs every read-only id while untrusted', () => {
     // The other half of the boundary. Refusing these would be a regression the
     // manifest's `limited` claim promises against, and it would look like safety.
     expect(READ_ONLY_COMMAND_ID_LIST.length).toBeGreaterThan(3);

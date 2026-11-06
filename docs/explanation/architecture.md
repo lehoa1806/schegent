@@ -149,7 +149,7 @@ Each refusal before admission is a wait, not a failed Task. Reservations cover t
 <!-- Source: src/state/execution-lease.ts -->
 <!-- Source: src/state/workspace-state.ts -->
 
-For a new admission, `WorkflowRunFactory` resolves the selected Pipeline against the single `CatalogSession` snapshot. It refuses a missing Pipeline or Phase instead of shortening the plan. A composed Task may already carry a frozen `ExecutionEnvelope`; otherwise the factory expands and freezes the Pipeline, all Phase bodies, the mutation plan, approval receipt, transcript mode, progress denominator, inputs, and default runner into a new `WorkflowRun`. Later catalog or setting changes cannot rewrite that Run's plan.
+For a new admission, `WorkflowRunFactory` resolves the Task's definition ID (host field `pipelineId`) against the single `CatalogSession` snapshot. It refuses a missing definition or Phase instead of shortening the plan. A composed Task may already carry a frozen `ExecutionEnvelope`; otherwise the factory expands and freezes the plan, all Phase bodies, the mutation plan, approval receipt, transcript mode, progress denominator, inputs, and default runner into a new `WorkflowRun`. Later catalog or setting changes cannot rewrite that Run's plan.
 
 <!-- Source: src/services/workflow-run-factory.ts -->
 <!-- Source: src/activation/catalog-loading.ts -->
@@ -247,7 +247,7 @@ No `User`, `Account`, `Organization`, or `Tenant` entity and no authentication s
 <!-- Source: src/state/execution-lease.ts -->
 <!-- Source: src/activation/git-approval.ts -->
 
-Schegent also ships no built-in Phase, Pipeline, or Workflow definitions. An empty effective catalog is valid. Workflow connections describe mutually exclusive branches rather than a parallel fan-out marker, and conditions use structured operands plus a closed operator set rather than a free-text evaluator.
+Schegent also ships no built-in Phase or Workflow definitions. An empty effective catalog is valid. Workflow connections describe mutually exclusive branches rather than a parallel fan-out marker, and conditions use structured operands plus a closed operator set rather than a free-text evaluator.
 
 <!-- Source: src/config/pipeline-config.ts -->
 <!-- Source: src/contracts/workflow-definitions.ts -->
