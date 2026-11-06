@@ -198,7 +198,8 @@ export async function runExportRunEvidenceCommand(
   if (reading.status === 'dismissed') return null;
   if (reading.status === 'invalid') {
     // The operator made a request and it was refused: one row, naming no Run (FR-020, E1).
-    await recordExport(deps, '', { kind: 'run-evidence', outcome: 'refused', included: 0, omitted: 0, refusal: 'invalid-run-id' });
+    const recorded = await recordExport(deps, '', { kind: 'run-evidence', outcome: 'refused', included: 0, omitted: 0, refusal: 'invalid-run-id' });
+    if (!recorded) void deps.notifier.warn(EXPORT_TEXT.notRecorded);
     return null;
   }
   const { runId } = reading;
@@ -211,12 +212,18 @@ export async function runExportRunEvidenceCommand(
     // Two reasons a destination in `.schegent/` is refused, and the second is the one that matters: it is
     // a loop, and it is a way to move unredacted content past a retention sweep by parking a copy where the
     // sweep does not look for archives. The same check refuses a link that RESOLVES there (E3).
-    await recordExport(deps, runId, { kind: 'run-evidence', outcome: 'refused', included: 0, omitted: 0, refusal: destination.refusal });
+    const recorded = await recordExport(deps, runId, { kind: 'run-evidence', outcome: 'refused', included: 0, omitted: 0, refusal: destination.refusal });
     void deps.notifier.warn(`Schegent: export refused. ${EXPORT_TEXT.refusal[destination.refusal]}`);
+    if (!recorded) void deps.notifier.warn(EXPORT_TEXT.notRecorded);
     return null;
   }
 
-  const result = await exportRunEvidence(deps.workspaceRoot, runId, destination.path);
+  let result: ExportResult;
+  try {
+    result = await exportRunEvidence(deps.workspaceRoot, runId, destination.path, undefined, deps.logger);
+  } catch {
+    result = { outcome: 'refused', reason: 'write-failed', detail: 'unexpected-error' };
+  }
   if (result.outcome === 'exported') {
     const recorded = await recordExport(deps, runId, {
       kind: 'run-evidence',
@@ -231,8 +238,9 @@ export async function runExportRunEvidenceCommand(
     if (!recorded) void deps.notifier.warn(EXPORT_TEXT.notRecorded);
   } else {
     const refusal = refusalCodeFor(result.reason);
-    await recordExport(deps, runId, { kind: 'run-evidence', outcome: 'refused', included: 0, omitted: 0, refusal });
+    const recorded = await recordExport(deps, runId, { kind: 'run-evidence', outcome: 'refused', included: 0, omitted: 0, refusal });
     void deps.notifier.warn(`Schegent: export refused. ${EXPORT_TEXT.refusal[refusal]}`);
+    if (!recorded) void deps.notifier.warn(EXPORT_TEXT.notRecorded);
   }
   deps.logger.info(`evidence export for ${runId}: ${result.outcome}`);
   return result;

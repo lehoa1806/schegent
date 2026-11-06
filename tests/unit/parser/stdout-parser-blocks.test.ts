@@ -97,6 +97,34 @@ describe('extractRemainingIssues', () => {
   it('returns an empty array when no heading is present', () => {
     expect(extractRemainingIssues('All good')).toEqual([]);
   });
+
+  it('extracts bullets and tagged bullets with 20,000 and 40,000 interior spaces in linear time (FR-R5-F14, NS-01)', () => {
+    const spaces20k = ' '.repeat(20_000);
+    const spaces40k = ' '.repeat(40_000);
+
+    const start20k = performance.now();
+    const q20k = extractOpenQuestions(`Open questions:\n- first${spaces20k}question?\n- ${spaces20k}second?`);
+    const i20k = extractRemainingIssues(`Remaining issues:\n- [coverage] gap${spaces20k}detail\n- plain${spaces20k}issue`);
+    const elapsed20k = performance.now() - start20k;
+
+    const start40k = performance.now();
+    const q40k = extractOpenQuestions(`Open questions:\n- first${spaces40k}question?\n- ${spaces40k}second?`);
+    const i40k = extractRemainingIssues(`Remaining issues:\n- [coverage] gap${spaces40k}detail\n- plain${spaces40k}issue`);
+    const elapsed40k = performance.now() - start40k;
+
+    expect(q20k).toEqual([`first${spaces20k}question?`, 'second?']);
+    expect(i20k).toEqual([
+      { tag: 'coverage', summary: `gap${spaces20k}detail` },
+      { summary: `plain${spaces20k}issue` }
+    ]);
+    expect(q40k).toEqual([`first${spaces40k}question?`, 'second?']);
+    expect(i40k).toEqual([
+      { tag: 'coverage', summary: `gap${spaces40k}detail` },
+      { summary: `plain${spaces40k}issue` }
+    ]);
+    expect(elapsed20k).toBeLessThan(50);
+    expect(elapsed40k).toBeLessThan(50);
+  });
 });
 
 describe('parseInvocation — block mutual exclusion and edge cases', () => {

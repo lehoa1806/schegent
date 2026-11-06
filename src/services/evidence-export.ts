@@ -186,7 +186,8 @@ export async function exportRunEvidence(
   workspaceRoot: string,
   runId: string,
   destination: string,
-  now: () => Date = () => new Date()
+  now: () => Date = () => new Date(),
+  customLogger?: Pick<SanitizedLogger, 'sanitize'>
 ): Promise<ExportResult> {
   if (!isRunId(runId)) {
     return {
@@ -195,7 +196,7 @@ export async function exportRunEvidence(
       detail: 'run id is not a UUID; refusing rather than matching evidence by substring'
     };
   }
-  const logger = new SanitizedLogger();
+  const baseLogger = new SanitizedLogger();
   const { included, omitted } = await collect(workspaceRoot, runId);
   if (included.length === 0) {
     return {
@@ -212,10 +213,12 @@ export async function exportRunEvidence(
   // FR-R4-F04 (E5) — the destination directory is made through the checked walk, owner-only, beneath its
   // deepest resolved ancestor, and every output below is opened through the same walk with its mode
   // declared (`0600`). An existing directory or file is narrowed by the helper; no `chmod` is added.
-  const directory = await prepareDestination(destination);
-  if (directory === null) {
+  const prepared = await prepareDestination(destination);
+  if (prepared === null) {
     return { outcome: 'refused', reason: 'write-failed', detail: 'the destination could not be prepared' };
   }
+  const { directory, createdDirs } = prepared;
+  const touched: TouchedFile[] = [];
   const auditFiles: { path: string; content: AuditGenerationClass }[] = [];
 
   for (const relative of included) {
@@ -226,6 +229,7 @@ export async function exportRunEvidence(
     // outside the workspace into an artifact an operator is about to hand over.
     const source = await resolveContainedTarget(absolute, [workspaceRoot]);
     if (source.outcome !== 'contained') {
+      await rollbackDestination(touched, createdDirs);
       return {
         outcome: 'refused',
         reason: 'outside-workspace',
@@ -246,13 +250,21 @@ export async function exportRunEvidence(
       }
       raw = await fsp.readFile(source.resolved, 'utf8');
     } catch (error) {
+      await rollbackDestination(touched, createdDirs);
       return { outcome: 'refused', reason: 'write-failed', detail: describe(error) };
     }
     // The redaction floor. The raw transcript is unredacted ON DISK by design;
     // an export crosses a trust boundary the local file does not, so it is
     // redacted on the way out. More redaction than the product's own set is
     // permitted; less is not.
-    const redacted = logger.sanitize(raw);
+    let redacted: string;
+    try {
+      const floorRedacted = baseLogger.sanitize(raw);
+      redacted = customLogger ? customLogger.sanitize(floorRedacted) : floorRedacted;
+    } catch {
+      await rollbackDestination(touched, createdDirs);
+      return { outcome: 'refused', reason: 'write-failed', detail: 'redaction-failed' };
+    }
     const name = relative.replaceAll('/', '__');
     const target = path.join(directory, name);
     // Classified from the bytes as they are on disk, before redaction: a retired stream row is legacy
@@ -263,14 +275,19 @@ export async function exportRunEvidence(
     // not happen is a write escaping the destination through a pre-planted link.
     const writable = await resolveContainedForWrite(target, [directory]);
     if (writable.outcome !== 'contained') {
+      await rollbackDestination(touched, createdDirs);
       return {
         outcome: 'refused',
         reason: 'outside-workspace',
         detail: `${relative}: ${writable.outcome === 'refused' ? writable.reason : writable.outcome}`
       };
     }
+    touched.push(await snapshotTarget(target));
     const wrote = await writeOwnerOnly(directory, name, redacted);
-    if (!wrote.ok) return { outcome: 'refused', reason: wrote.reason, detail: wrote.detail };
+    if (!wrote.ok) {
+      await rollbackDestination(touched, createdDirs);
+      return { outcome: 'refused', reason: wrote.reason, detail: wrote.detail };
+    }
     const digest = sha256(redacted);
     contents.push({ path: path.basename(target), bytes: Buffer.byteLength(redacted), digest });
     chain.push({ entryIndex: chain.length, digest: sha256(`${previousDigest ?? ''}${digest}`), previousDigest });
@@ -286,27 +303,79 @@ export async function exportRunEvidence(
     sharedAuditHistory:
       auditFiles.length === 0 ? null : { statement: SHARED_AUDIT_STATEMENT, files: auditFiles }
   };
-  const manifestPath = await resolveContainedForWrite(path.join(directory, 'manifest.json'), [directory]);
+  const manifestTarget = path.join(directory, 'manifest.json');
+  const manifestPath = await resolveContainedForWrite(manifestTarget, [directory]);
   if (manifestPath.outcome !== 'contained') {
+    await rollbackDestination(touched, createdDirs);
     return { outcome: 'refused', reason: 'outside-workspace', detail: 'manifest path not contained' };
   }
+  touched.push(await snapshotTarget(manifestTarget));
   const wroteManifest = await writeOwnerOnly(directory, 'manifest.json', `${JSON.stringify(manifest, null, 2)}\n`);
-  if (!wroteManifest.ok) return { outcome: 'refused', reason: wroteManifest.reason, detail: wroteManifest.detail };
+  if (!wroteManifest.ok) {
+    await rollbackDestination(touched, createdDirs);
+    return { outcome: 'refused', reason: wroteManifest.reason, detail: wroteManifest.detail };
+  }
   return { outcome: 'exported', directory, manifest };
+}
+
+interface TouchedFile {
+  readonly fullPath: string;
+  readonly existedBefore: boolean;
+  readonly priorBytes: Buffer | null;
+  readonly priorMode: number | null;
+}
+
+async function snapshotTarget(fullPath: string): Promise<TouchedFile> {
+  try {
+    const st = await fsp.lstat(fullPath);
+    if (st.isFile()) {
+      const priorBytes = await fsp.readFile(fullPath);
+      return { fullPath, existedBefore: true, priorBytes, priorMode: st.mode & 0o777 };
+    }
+  } catch {
+    // Target did not exist before this export attempt.
+  }
+  return { fullPath, existedBefore: false, priorBytes: null, priorMode: null };
+}
+
+async function rollbackDestination(
+  touched: readonly TouchedFile[],
+  createdDirs: readonly string[]
+): Promise<void> {
+  for (let index = touched.length - 1; index >= 0; index -= 1) {
+    const entry = touched[index]!;
+    if (entry.existedBefore && entry.priorBytes !== null) {
+      await fsp.writeFile(entry.fullPath, entry.priorBytes).catch(() => undefined);
+      if (entry.priorMode !== null) {
+        await fsp.chmod(entry.fullPath, entry.priorMode).catch(() => undefined);
+      }
+    } else {
+      await fsp.rm(entry.fullPath, { force: true }).catch(() => undefined);
+    }
+  }
+  for (const dir of createdDirs) {
+    await fsp.rmdir(dir).catch(() => undefined);
+  }
 }
 
 /**
  * Make the destination directory and return its canonical path: the deepest existing ancestor resolved, and
  * the missing components created `0700` through the checked walk beneath it. `null` if it cannot be made.
  */
-async function prepareDestination(destination: string): Promise<string | null> {
+async function prepareDestination(
+  destination: string
+): Promise<{ readonly directory: string; readonly createdDirs: readonly string[] } | null> {
   const located = await resolveWritableAnchor(path.resolve(destination));
   if (located === null) return null;
+  const createdDirs: string[] = [];
   if (located.tail.length > 0) {
     const made = await ensureDirWithinRoot(located.anchor, located.tail, 0o700);
     if (made.outcome === 'refused') return null;
+    for (let length = located.tail.length; length >= 1; length -= 1) {
+      createdDirs.push(path.join(located.anchor, ...located.tail.slice(0, length)));
+    }
   }
-  return path.join(located.anchor, ...located.tail);
+  return { directory: path.join(located.anchor, ...located.tail), createdDirs };
 }
 
 type OwnerOnlyWrite =

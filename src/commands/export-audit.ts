@@ -253,14 +253,26 @@ export async function runExportAuditLog(deps: ExportAuditLogDeps): Promise<void>
   if (!picked || picked.fsPath.length === 0) return;
 
   const refuse = async (refusal: Extract<ExportOutcome, { outcome: 'refused' }>['refusal']): Promise<void> => {
-    await recordOutcome(deps, { kind: 'audit-metadata', outcome: 'refused', included: 0, omitted: exported.omitted, refusal });
+    const recorded = await recordOutcome(deps, { kind: 'audit-metadata', outcome: 'refused', included: 0, omitted: exported.omitted, refusal });
     void deps.notifier.warn(`Schegent: export refused. ${EXPORT_TEXT.refusal[refusal]}`);
+    if (!recorded) void deps.notifier.warn(EXPORT_TEXT.notRecorded);
   };
 
   const destination = await resolveExportDestination(picked, deps.workspaceRoot);
   if (!destination.ok) {
     await refuse(destination.refusal);
     return;
+  }
+  let targetExistedBefore = false;
+  let priorBytes: Buffer | null = null;
+  try {
+    const st = await fs.lstat(destination.path);
+    if (st.isFile()) {
+      targetExistedBefore = true;
+      priorBytes = await fs.readFile(destination.path);
+    }
+  } catch {
+    // Target did not exist before this attempt.
   }
   // Opened through the checked walk beneath the destination's resolved parent, `0600` (E5): an existing
   // file is narrowed and truncated, a new one is created owner-only, and a link in any component refuses.
@@ -273,13 +285,23 @@ export async function runExportAuditLog(deps: ExportAuditLogDeps): Promise<void>
     await refuse('write-failed');
     return;
   }
+  let writeSucceeded = false;
   try {
     await opened.handle.write(exported.text, null, 'utf8');
+    writeSucceeded = true;
   } catch {
+    await opened.handle.close().catch(() => undefined);
+    if (targetExistedBefore && priorBytes !== null) {
+      await fs.writeFile(destination.path, priorBytes).catch(() => undefined);
+    } else {
+      await fs.rm(destination.path, { force: true }).catch(() => undefined);
+    }
     await refuse('write-failed');
     return;
   } finally {
-    await opened.handle.close().catch(() => undefined);
+    if (writeSucceeded) {
+      await opened.handle.close().catch(() => undefined);
+    }
   }
 
   const recorded = await recordOutcome(deps, {
