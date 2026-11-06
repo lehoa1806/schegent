@@ -594,6 +594,38 @@ describe('QueueManager.finish extended fields', () => {
     await queue.finish(a.id, 'completed');
     expect(queue.findById(a.id)?.lastError).toBeNull();
   });
+
+  // FR-R5-F19 (FR-006): a retry keeps the earlier failure on the row as history. A row that then fails
+  // with nothing to say has no present error, so it must not show the earlier one as its own.
+  describe('after a retry that kept the earlier failure', () => {
+    async function retriedRow() {
+      const a = await queue.enqueue('A');
+      await queue.markInFlight(a.id, 'run-1');
+      await queue.finish(a.id, 'failed', 'first failure');
+      await queue.retry(a.id);
+      await queue.markInFlight(a.id, 'run-2');
+      return a;
+    }
+
+    it('a failed finish that carries no error leaves the row with no last error', async () => {
+      const a = await retriedRow();
+      await queue.finish(a.id, 'failed');
+      expect(queue.findById(a.id)?.status).toBe('failed');
+      expect(queue.findById(a.id)?.lastError).toBeNull();
+    });
+
+    it('a failed finish that carries an error records that one, not the earlier', async () => {
+      const a = await retriedRow();
+      await queue.finish(a.id, 'failed', 'second failure');
+      expect(queue.findById(a.id)?.lastError).toBe('second failure');
+    });
+
+    it('control: a completed finish keeps the earlier failure as history', async () => {
+      const a = await retriedRow();
+      await queue.finish(a.id, 'completed');
+      expect(queue.findById(a.id)?.lastError).toBe('first failure');
+    });
+  });
 });
 
 describe('QueueManager.setQueuePausedState extended', () => {
