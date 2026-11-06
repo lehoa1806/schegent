@@ -142,7 +142,8 @@ Each finding shows one verdict and every related entry:
   entries, malformed, or another version). The report says why.
 
 The tracked list is [`docs/release/advisory-dispositions.json`](../release/advisory-dispositions.json),
-which starts empty, and `compare --dispositions docs/release/advisory-dispositions.json` reads it. It is
+which started empty and holds the 2026-11-06 review's entries (`FR-R5-F21`), and
+`compare --dispositions docs/release/advisory-dispositions.json` reads it. It is
 the list release preparation reads as well. Its entries may carry a `rationale`, a string of at most 2,000
 characters. This command ignores the field, so a list that carries it reads exactly as before; release
 preparation requires it on every entry and refuses a list where one is missing. The list changes only in

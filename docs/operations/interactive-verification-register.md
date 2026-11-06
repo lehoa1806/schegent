@@ -90,6 +90,21 @@ file. Then replace **not observed** in the row with a link to that record.
 | Clean-install Workflow launch, import and export | [spec 267 quickstart](../../../specs/267-workflow-dispatch-recovery/quickstart.md), which runs `tests/integration/round5-clean-install-journey.test.ts` (the automated host path); filing [F07](../../../docs/features/round_5/DONE_07_FR-R5-F07_pipeline_removal_and_workflow_delivery.md), task T07 | **not observed** in a real editor | maintainer | Install the packaged VSIX into a clean editor profile, then launch one Workflow, import one and export one. |
 | Representative open menu, dialog and keyboard states | No F08 to F19 scenario owns it. Automated evidence only: the opened Workflow-picker state in `tests/a11y/a11y-scan.spec.ts` (`FR-R5-F20`), which reports automated findings, not conformance | **not observed** | maintainer | Follow the procedure in [the accessibility AT matrix](../release/accessibility-at-matrix.md) with the keyboard and a screen reader, opening the Workflow picker and one dialog. |
 
+### Review 2026-11-06
+
+Feature 282 (`FR-R5-F21`) re-read this register ahead of its date.
+
+- **Evidence checked**: every commit since the date was written on 2026-09-06 (`82bb92a8`) to this
+  page: three in this repository. `8043a716` and `ae4ae439` add owed entries (020's Phase 9 live
+  check and the round 5 journeys above). In the planning workspace, the two commits to
+  `specs/067-live-mode-rework` and `specs/068-enhance-system-log` close a bug report and write this
+  register's spec artifacts. Neither ticks 067's T033 or T034, or 068's T036.
+- **Still owed**: every journey this page lists: 067's T033 and T034, 068's T036, 020's Phase 9
+  live check and the six round 5 journeys, each observed by a person in a VS Code dev host. None was
+  observed. The owner is the repository operator named above.
+- **The date stands at 2026-12-06.** Nothing listed here was observed, so the review cannot renew
+  the date.
+
 ## What would close this
 
 Any of these, per subject, and the subject moves to `Complete`:

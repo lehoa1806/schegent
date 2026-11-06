@@ -64,6 +64,11 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   // the ABSENCE of everything not on it, and a shape rule for JSON would admit any
   // future stray config or fixture that happened to be one.
   'extension/schegent-sbom.cdx.json',
+  // FR-R5-F21 (FR-025) -- the notices for the third-party code the bundles carry, with the license
+  // text each package ships. Generated at package time by `scripts/third-party-notices.mjs` from
+  // the same module graphs as the SBOM, so the two agree on what ships. Required, like the SBOM:
+  // every packaging path (`npm run package`, `package:smoke`, the release driver) writes it.
+  'extension/THIRD-PARTY-NOTICES.md',
   // Feature 106 (T590, FR-007 to FR-010) — generated webview output is no
   // longer pinned. Twenty-five literal entries lived here: 15 code-split chunks
   // and 10 numbered stylesheets. They went stale five times, three of them in

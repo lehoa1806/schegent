@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -26,6 +28,7 @@ const BYTES = Buffer.from('the packaged archive');
 type Step =
   | 'fresh'
   | 'sbom'
+  | 'notices'
   | 'tempdir'
   | 'vsce'
   | 'read'
@@ -48,6 +51,7 @@ function fakes(failAt: Step | null = null) {
     deps: {
       assertFresh: () => step('fresh'),
       writeSbom: () => step('sbom'),
+      writeNotices: () => step('notices'),
       makeTempDir: async () => {
         step('tempdir');
         return TEMP;
@@ -85,11 +89,11 @@ function fakes(failAt: Step | null = null) {
 }
 
 describe('smokePackage', () => {
-  it('runs freshness, the SBOM writer, vsce, the inspection, the agreement check and the cleanup, in that order', async () => {
+  it('runs freshness, the SBOM writer, the notices writer, vsce, the inspection, the agreement check and the cleanup, in that order', async () => {
     const { smokePackage } = await loadSmoke();
     const { calls, deps } = fakes();
     await smokePackage(deps);
-    expect(calls).toEqual(['fresh', 'sbom', 'tempdir', 'vsce', 'read', 'inspect', 'agreement', 'remove']);
+    expect(calls).toEqual(['fresh', 'sbom', 'notices', 'tempdir', 'vsce', 'read', 'inspect', 'agreement', 'remove']);
   });
 
   it('packages into the temporary directory and inspects the very bytes it read once', async () => {
@@ -105,11 +109,12 @@ describe('smokePackage', () => {
   it.each<[Step, Step[]]>([
     ['fresh', ['fresh']],
     ['sbom', ['fresh', 'sbom']],
-    ['tempdir', ['fresh', 'sbom', 'tempdir']],
-    ['vsce', ['fresh', 'sbom', 'tempdir', 'vsce', 'remove']],
-    ['read', ['fresh', 'sbom', 'tempdir', 'vsce', 'read', 'remove']],
-    ['inspect', ['fresh', 'sbom', 'tempdir', 'vsce', 'read', 'inspect', 'remove']],
-    ['agreement', ['fresh', 'sbom', 'tempdir', 'vsce', 'read', 'inspect', 'agreement', 'remove']]
+    ['notices', ['fresh', 'sbom', 'notices']],
+    ['tempdir', ['fresh', 'sbom', 'notices', 'tempdir']],
+    ['vsce', ['fresh', 'sbom', 'notices', 'tempdir', 'vsce', 'remove']],
+    ['read', ['fresh', 'sbom', 'notices', 'tempdir', 'vsce', 'read', 'remove']],
+    ['inspect', ['fresh', 'sbom', 'notices', 'tempdir', 'vsce', 'read', 'inspect', 'remove']],
+    ['agreement', ['fresh', 'sbom', 'notices', 'tempdir', 'vsce', 'read', 'inspect', 'agreement', 'remove']]
   ])('a refusal at %s stops every later step', async (failAt, expected) => {
     const { smokePackage } = await loadSmoke();
     const { calls, deps } = fakes(failAt);
@@ -119,7 +124,7 @@ describe('smokePackage', () => {
 
   it('removes the temporary directory after a refusal at vsce or later, and not before it exists', async () => {
     const { smokePackage } = await loadSmoke();
-    for (const failAt of ['fresh', 'sbom'] as const) {
+    for (const failAt of ['fresh', 'sbom', 'notices'] as const) {
       const { calls, deps } = fakes(failAt);
       await expect(smokePackage(deps)).rejects.toThrow();
       expect(calls).not.toContain('remove');
@@ -141,5 +146,24 @@ describe('smokePackage', () => {
       }
     };
     await expect(smokePackage(failing)).rejects.toThrow('refused at inspect');
+  });
+});
+
+describe('FR-R5-F21 (FR-025) — every packaging path writes the notices', () => {
+  it('the package script writes the SBOM, then the notices, then packages', () => {
+    const manifest = JSON.parse(readFileSync(resolve(__dirname, '../../../package.json'), 'utf8')) as {
+      scripts: Record<string, string>;
+    };
+    expect(manifest.scripts).toMatchObject({
+      notices: 'node scripts/third-party-notices.mjs',
+      package: 'npm run sbom && npm run notices && vsce package --no-dependencies'
+    });
+  });
+
+  it('requires the notices file in the archive, under the name the notices step writes', async () => {
+    const { ALLOWED_VSIX_ENTRIES } = await import('../../../scripts/check-vsix-smoke.mjs');
+    const { NOTICES_BASENAME } = await import('../../../scripts/third-party-notices.mjs');
+    expect(ALLOWED_VSIX_ENTRIES).toContain(`extension/${NOTICES_BASENAME}`);
+    expect(ALLOWED_VSIX_ENTRIES).toContain('extension/THIRD-PARTY-NOTICES.md');
   });
 });

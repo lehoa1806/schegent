@@ -56,8 +56,12 @@ export const RELEASE_SCRIPT = 'release';
  * rather than by what it is called. `security:audit` exists as a script; the
  * question an operator asks is whether the gate reaches an `npm audit`, and a
  * name-matched check would pass while a renamed script changed the answer.
+ *
+ * FR-R5-F21 (FR-015) moved `security:audit`'s body into `scripts/security-audit.mjs`, which spawns
+ * npm itself, so the file name is read too: without it, a gate that reached the audit would read
+ * "not reached".
  */
-const RUNS_NPM_AUDIT = /\bnpm\s+(?:--prefix\s+\S+\s+)?audit\b/;
+const RUNS_NPM_AUDIT = /\bnpm\s+(?:--prefix\s+\S+\s+)?audit\b|\bscripts\/security-audit\.mjs\b/;
 
 /** A producer of release checksums. Absent here; present the moment one is added. */
 const EMITS_CHECKSUM = /sha256sum|\bshasum\b|createHash\(\s*['"`]sha(?:256|512)['"`]|checksums?\.txt|\.sha256\b/i;
