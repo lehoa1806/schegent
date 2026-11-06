@@ -1,22 +1,15 @@
 <script lang="ts">
-  // Feature 020 T039 + T053 — top-level Activity Feed wrapper. Composes
-  // the selectors, iteration stepper, empty-state cards, and reading
-  // pane, and wires them to the per-instance phase-log store.
-  //
-  // Tail lifecycle (T053): when the user's selection resolves to
-  //   (a) iteration === the latest known iteration for the tuple, AND
-  //   (b) the selected task is the snapshot's in-flight task, AND
-  //   (c) the selected phase matches the in-flight task's
-  //       `currentPhase`,
-  // the container auto-attaches a tail by calling `store.startTail`.
-  // The `$effect` watches the derived `tailTarget`; on cleanup (target
-  // change to null, selection re-cascade, or component unmount) it
-  // calls `store.stopTail()`. Push messages are routed through the
-  // store's `handlePush` internals — this component is intentionally
-  // unaware of the wire format beyond the start/stop calls.
+  // Feature 020 T039 + T053 + FR-R5-F18 — top-level Activity Feed wrapper.
+  // Composes selectors, iteration stepper, empty-state cards, and reading pane,
+  // and auto-attaches a live tail when the selection resolves to the newest
+  // iteration (`iterations[0]`) of the selected queue's in-flight task/phase.
 
   import type { QueueItem, WorkflowSnapshot } from '../../lib/snapshot-types';
-  import { createPhaseLogStore, type PhaseLogStore } from '../../lib/phase-log-store.svelte';
+  import {
+    createPhaseLogStore,
+    isTransientTailFailure,
+    type PhaseLogStore
+  } from '../../lib/phase-log-store.svelte';
   import PhaseLogSelectors from './PhaseLogSelectors.svelte';
   import PhaseLogIterationStepper from './PhaseLogIterationStepper.svelte';
   import PhaseLogReadingPane from './PhaseLogReadingPane.svelte';
@@ -161,15 +154,8 @@
     return null;
   });
 
-  // T053 — derived tail fingerprint. Encodes the (queueId, taskId,
-  // pipelineId, phaseId, iterationN) tuple as a single string when
-  // the selection resolves to (a) iteration === latest known iteration
-  // AND (b) selected task is the in-flight task AND (c) selected phase
-  // === in-flight task's currentPhase. Returns the empty string when
-  // any condition fails. A string fingerprint (rather than a fresh
-  // object literal) gives the downstream `$effect` a stable identity
-  // so unrelated state changes (e.g., tailSessionId, new entries) do
-  // NOT trip the effect's cleanup and inadvertently call `stopTail`.
+  // T053 + FR-R5-F18 (T18.1) — derived tail fingerprint for the newest
+  // iteration (`iters[0]` in descending manifest order) of the in-flight phase.
   const tailFingerprint = $derived.by(() => {
     const sel = state.selection;
     if (
@@ -187,57 +173,53 @@
     if (inFlight.currentPhase !== sel.phaseId) return '';
     const iters = state.iterations;
     if (iters.length === 0) return '';
-    const latest = iters[iters.length - 1];
+    const latest = iters[0];
     if (latest !== sel.iterationN) return '';
-    return `${sel.queueId}${sel.taskId}${sel.pipelineId}${sel.phaseId}${sel.iterationN}`;
+    return `${sel.queueId}\u0001${sel.taskId}\u0001${sel.pipelineId}\u0001${sel.phaseId}\u0001${sel.iterationN}`;
   });
 
-  // Feature 067 — snapshot observer effect. The store de-duplicates
-  // identity-stable snapshots, so this call is safe on every
-  // re-render. When Live Mode is ON AND the in-flight identity tuple
-  // has changed, the store internally cascades through
-  // `jumpToCurrent({ setLiveModeOn: false, origin: 'cascade' })`. When
-  // Live Mode is OFF or the tuple is stable, the call is a no-op.
+  // Feature 067 — snapshot observer effect.
   $effect(() => {
     if (!autoFollow) return;
     store.applyInFlightIdentityChange({ queue: { inFlight: liveInFlight } });
   });
 
-  // Manually-tracked tail lifecycle. The $effect body re-runs on
-  // any reactive read inside `tailFingerprint`, but most of those
-  // re-runs see no actual change to the tuple — we compare against
-  // `activeTailFingerprint` (kept in untracked module-local state
-  // via the closure on a regular `let`) and only act on a true
-  // transition. The $effect cleanup is reserved for component
-  // unmount, where it always tears down any active tail.
-  let activeTailFingerprint = '';
+  // FR-R5-F18 (T18.2) — separate active, pending, and refused tail states with
+  // bounded transient retry (max 2 attempts per load cycle).
+  let activeTailFp = '', pendingTailFp = '', refusedTailFp = '', transientAttempts = 0;
   $effect(() => {
     const fp = tailFingerprint;
-    if (fp === activeTailFingerprint) return;
-    if (activeTailFingerprint !== '') {
+    void snapshot;
+    if (state.loading) { refusedTailFp = ''; transientAttempts = 0; }
+    if ((activeTailFp !== '' && fp !== activeTailFp) || (pendingTailFp !== '' && fp !== pendingTailFp)) {
       void store.stopTail();
+      activeTailFp = pendingTailFp = refusedTailFp = '';
+      transientAttempts = 0;
     }
-    activeTailFingerprint = fp;
-    if (fp === '') return;
-    const parts = fp.split('');
+    if (fp === '' || state.loading || fp === activeTailFp || fp === pendingTailFp || fp === refusedTailFp) return;
+    pendingTailFp = fp;
+    const [queueId, taskId, pipelineId, phaseId, iterStr] = fp.split('\u0001');
     void store.startTail({
-      selection: {
-        queueId: parts[0],
-        taskId: parts[1],
-        pipelineId: parts[2],
-        phaseId: parts[3],
-        iterationN: Number(parts[4])
+      selection: { queueId, taskId, pipelineId, phaseId, iterationN: Number(iterStr) }
+    }).then((res) => {
+      if (pendingTailFp !== fp) return;
+      pendingTailFp = '';
+      if (res.outcome === 'success') {
+        activeTailFp = fp;
+        refusedTailFp = '';
+        transientAttempts = 0;
+      } else {
+        activeTailFp = '';
+        if (!isTransientTailFailure(res) || ++transientAttempts >= 2) refusedTailFp = fp;
       }
     });
   });
 
-  $effect(() => {
-    return () => {
-      if (activeTailFingerprint !== '') {
-        void store.stopTail();
-        activeTailFingerprint = '';
-      }
-    };
+  $effect(() => () => {
+    if (activeTailFp !== '' || pendingTailFp !== '') {
+      void store.stopTail();
+      activeTailFp = pendingTailFp = '';
+    }
   });
 
   // Feature 021 T044 (BUG-001 Defect A) — cold-start fallback wiring.
