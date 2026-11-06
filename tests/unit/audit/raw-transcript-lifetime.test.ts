@@ -18,6 +18,7 @@ import * as path from 'node:path';
 import { RawTranscriptWriter } from '../../../src/audit/raw-transcript-writer';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { RawTranscriptMode } from '../../../src/state/workflow-run';
+import { createTransportHarness } from '../monitor/transport/transport-harness';
 
 const RUN_ID = 'run-lifetime-251';
 const FAILED_LEG_MARKER = 'SYNTHETIC-MARKER-251-FAILED-LEG';
@@ -96,6 +97,54 @@ describe('errors-only keeps a failed leg and drops it when the resumed Run compl
     const kept = await fs.readFile(retainedPath(RUN_ID), 'utf8');
     expect(kept).toContain(RESUMED_LEG_MARKER);
     expect(await exists(pendingPath(RUN_ID))).toBe(false);
+  });
+
+  it('distinguishes paused vs failed staging for transport and removes both raw transcript and transport when the resumed Run completes (FR-R5-F17)', async () => {
+    const transport = await createTransportHarness({
+      setting: 'errors-only',
+      rawMode: 'errors-only'
+    });
+    const runFile = path.join(
+      transport.workspaceRoot,
+      '.schegent',
+      'sessions',
+      RUN_ID,
+      'transport.log'
+    );
+    try {
+      // Leg 1 pauses: raw transcript promotes on `paused`, while transport stays staged in <temp>.
+      await writeLeg(RUN_ID, 'errors-only', FAILED_LEG_MARKER, 1);
+      transport.record(RUN_ID, FAILED_LEG_MARKER);
+      await transport.flush();
+      await writer.finalizeRun(RUN_ID, 'paused', 'errors-only');
+      await transport.router.finalizeRun(RUN_ID, 'paused', new Set([RUN_ID]));
+
+      expect(await exists(retainedPath(RUN_ID))).toBe(true);
+      expect(await exists(runFile)).toBe(false);
+
+      // Leg 2 fails: raw transcript appends to retained, and transport promotes to the Run file.
+      await writeLeg(RUN_ID, 'errors-only', RESUMED_LEG_MARKER, 1);
+      transport.record(RUN_ID, RESUMED_LEG_MARKER);
+      await transport.flush();
+      await writer.finalizeRun(RUN_ID, 'failed', 'errors-only');
+      await transport.router.finalizeRun(RUN_ID, 'failed', new Set());
+
+      expect(await exists(retainedPath(RUN_ID))).toBe(true);
+      expect(await exists(runFile)).toBe(true);
+
+      // Leg 3 resumes and completes: Run-level `errors-only` removes both the promoted raw transcript and the promoted transport file.
+      await writeLeg(RUN_ID, 'errors-only', 'FINAL-COMPLETED-LEG', 0);
+      transport.record(RUN_ID, 'FINAL-COMPLETED-LEG');
+      await transport.flush();
+      await writer.finalizeRun(RUN_ID, 'completed', 'errors-only');
+      await transport.router.finalizeRun(RUN_ID, 'completed', new Set());
+
+      expect(await exists(retainedPath(RUN_ID))).toBe(false);
+      expect(await exists(pendingPath(RUN_ID))).toBe(false);
+      expect(await exists(runFile)).toBe(false);
+    } finally {
+      await transport.dispose();
+    }
   });
 });
 

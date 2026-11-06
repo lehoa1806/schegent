@@ -40,7 +40,8 @@ export const DELETE_EVIDENCE_TEXT = {
     "Removes, for this Run only: its session directory (transport included), raw transcripts, verbose " +
     'diagnostics, failure records and private recovery checkpoint. Keeps: the shared audit log, the ' +
     'runtime log, the metrics rollup, Run history, and any shared legacy transport file until it ages ' +
-    'out. This cannot be undone.',
+    'out. Backend CLI session stores under your home directory are owned by the CLI and are not modified ' +
+    'by Schegent. This cannot be undone.',
   confirmLabel: 'Delete evidence',
   result: (removed: number, retained: number): string =>
     `Deleted ${removed} item(s) of this Run's evidence. ${retained} item(s) were kept.`,

@@ -133,9 +133,11 @@
     </p>
   {/if}
   <p class="hint" id={DESCRIPTION_ID}>
-    A profile sets four settings and states what it does not change &mdash; the checkpoint store's
-    fixed 14-day bound, the retained redacted audit log, and that <code>.gitignore</code> does not
-    stop backup or sync tooling. See the settings reference for each profile's audience and residual.
+    A profile sets five settings and states what it does not change &mdash; the checkpoint store's
+    fixed 14-day bound, the retained redacted audit log, backend CLI session stores under your home
+    directory (which Schegent's retention, export, and delete controls do not manage), and that
+    <code>.gitignore</code> does not stop backup or sync tooling. See the settings reference for
+    each profile's audience and residual.
   </p>
 </div>
 

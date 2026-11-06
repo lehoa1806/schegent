@@ -284,3 +284,28 @@ describe('privacy profiles state the egress residual (FR-R4-F04, FR-038)', () =>
     }
   });
 });
+
+describe('privacy profiles disclose backend-owned home stores and Run-level errors-only (FR-R5-F17)', () => {
+  const BACKEND_STORE = /^Backend CLIs write their own unredacted session history under your home directory/;
+
+  it.each(['ephemeral', 'diagnostic', 'forensic'] as const)(
+    '%s states the backend-owned home-directory session store residual, once',
+    (name) => {
+      const lines = privacyProfile(name).residual.filter((line) => BACKEND_STORE.test(line));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('<home>/.claude/');
+      expect(lines[0]).toContain('<home>/.codex/');
+      expect(lines[0]).toContain('<home>/.gemini/antigravity/');
+      expect(lines[0]).toContain('Delete Run Evidence');
+    }
+  );
+
+  it('qualifies ephemeral transport capture and diagnostic Run-level errors-only completion', () => {
+    expect(privacyProfile('ephemeral').residual[0]).toContain(
+      "not kept in Schegent's transport capture either"
+    );
+    expect(privacyProfile('diagnostic').residual[0]).toContain(
+      'resuming that same Run to `completed` removes its promoted raw transcript and promoted `errors-only` transport log'
+    );
+  });
+});

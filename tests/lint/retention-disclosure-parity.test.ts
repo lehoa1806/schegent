@@ -14,9 +14,12 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  backendOwnedRetentionDisclosure,
+  renderBackendOwnedRetentionDisclosure,
   renderRetentionDisclosure,
   retentionDisclosure
 } from '../../src/services/retention-disclosure';
+import { SUPPORTED_BACKENDS } from '../../src/contracts/backend-kinds';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 /** The inventory's row count when feature 251 landed it (data-model §11 lists 21 stores; the raw transcript is two rows). */
@@ -79,5 +82,18 @@ describe('FR-R3-085 — the retention disclosure derives from the retention cons
     const perturbed = rendered.replace(/30 days/, '31 days');
     expect(perturbed).not.toBe(rendered);
     expect(document.includes(perturbed)).toBe(false);
+  });
+
+  it('the document contains the separate backend-owned retention table and Run-level errors-only disclosure (FR-R5-F17)', () => {
+    const rows = backendOwnedRetentionDisclosure();
+    expect(rows.map((r) => r.backend).sort()).toEqual([...SUPPORTED_BACKENDS].sort());
+    for (const row of rows) {
+      expect(row.locationPattern).toContain('<home>/');
+      expect(row.locationPattern).not.toMatch(/\/Users\/|\/home\/|\/var\/folders\/|[A-Z]:\\/);
+      expect(row.schegentControl).toContain('Delete Run Evidence');
+    }
+    const renderedBackend = renderBackendOwnedRetentionDisclosure();
+    expect(document.includes(renderedBackend)).toBe(true);
+    expect(document).toContain('Run-level `errors-only` across pause and resume');
   });
 });
