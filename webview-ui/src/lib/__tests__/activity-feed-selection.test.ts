@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   EMPTY_ACTIVITY_FEED_SELECTION,
+  getTaskOptions,
   reconcileActivityFeedSelection,
   resolveColdStartFallback,
   resolveLiveSelection,
@@ -14,10 +15,11 @@ import type {
   PipelineDefinition,
   QueueItem,
   QueueProjection,
+  QueueRuntime,
   QueueSummary,
   WorkflowSnapshot
 } from '../snapshot-types';
-import { foldLegacyRun } from './queue-runtime-fixture';
+import { buildQueueRuntime, foldLegacyRun } from './queue-runtime-fixture';
 
 function phase(name: string, order: number, state: PhaseTile['state']): PhaseTile {
   return Object.freeze({
@@ -65,31 +67,65 @@ function queueSummary(id: string): QueueSummary {
   });
 }
 
+// BUG-002 (T076) — the host lists each queue's rows in that queue's runtime
+// `tasks`, which is where the helpers read a queue's Tasks (FR-018). A case
+// names bucket rows; this files each under the runtime of its own queue.
+function tasksOf(queueId: string, queue: Partial<QueueProjection>): readonly QueueItem[] {
+  const rows = [...(queue.inFlight ? [queue.inFlight] : []), ...(queue.pending ?? []), ...(queue.recent ?? [])];
+  return Object.freeze(rows.filter((row) => (row.queueId ?? 'default') === queueId));
+}
+
+function historyEntry(runId: string, queueId: string): HistoryEntry {
+  return Object.freeze({
+    runId,
+    featureId: runId,
+    descriptionPreview: runId,
+    terminalStatus: 'completed',
+    startedAt: '2026-05-10T09:00:00.000Z',
+    completedAt: '2026-05-10T09:30:00.000Z',
+    durationMs: 1_800_000,
+    lastErrorSummary: null,
+    auditLogPointer: `runId:${runId}`,
+    queueId
+  });
+}
+
+/** `snap` with `runtime` in place of the runtime of the same queue. */
+function withRuntime(snap: WorkflowSnapshot, runtime: QueueRuntime): WorkflowSnapshot {
+  return Object.freeze({
+    ...snap,
+    queues: Object.freeze([...snap.queues.filter((candidate) => candidate.queueId !== runtime.queueId), runtime])
+  });
+}
+
 function snapshot(queue: Partial<QueueProjection>): WorkflowSnapshot {
   return Object.freeze({
     schemaVersion: 4,
     isPrimary: true,
     // Feature 092 — the v3 root run singulars now hang off the queue that owns
     // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
-    // their v3 wording.
-    queues: foldLegacyRun({
-      status: 'running',
-      activeFeature: null,
-      phases: Object.freeze([
-      phase('speckit-specify', 1, 'completed'),
-      phase('speckit-plan', 2, 'active'),
-      phase('speckit-tasks', 3, 'not-started')
-      ]),
-      liveActivity: Object.freeze({
-      summary: null,
-      category: null,
-      lastEventAt: null,
-      freshness: 'idle',
-      staleSeconds: 0
-      }),
-      workflowElapsedMs: 0,
-      activePipeline: Object.freeze({ id: 'standard', name: 'Standard' })
-    }),
+    // their v3 wording. BUG-002 — each runtime also lists its own queue's rows.
+    queues: Object.freeze([
+      ...foldLegacyRun({
+        status: 'running',
+        activeFeature: null,
+        phases: Object.freeze([
+        phase('speckit-specify', 1, 'completed'),
+        phase('speckit-plan', 2, 'active'),
+        phase('speckit-tasks', 3, 'not-started')
+        ]),
+        liveActivity: Object.freeze({
+        summary: null,
+        category: null,
+        lastEventAt: null,
+        freshness: 'idle',
+        staleSeconds: 0
+        }),
+        workflowElapsedMs: 0,
+        activePipeline: Object.freeze({ id: 'standard', name: 'Standard' })
+      }).map((runtime) => Object.freeze({ ...runtime, tasks: tasksOf(runtime.queueId, queue) })),
+      buildQueueRuntime({ queueId: 'work', name: 'work', position: 1, tasks: tasksOf('work', queue) })
+    ]),
     queue: Object.freeze({
       inFlight: null,
       pending: Object.freeze([]) as readonly QueueItem[],
@@ -322,5 +358,105 @@ describe('resolveColdStartFallback (Feature 021 T043 / BUG-001 Defect A)', () =>
     // populated recent list it always picks the ranked winner.
     const fallback = resolveColdStartFallback(snap, () => true);
     expect(fallback?.taskId).toBe('run-with-logs');
+  });
+});
+
+// Feature 020 BUG-002 (T076) — the helpers read every queue, not the default
+// queue's projection alone. `snapshot.queue` carries only the default queue's
+// rows, so a Task on any other queue had no option and no Live selection.
+describe('BUG-002 — Task options and the Live selection cover every queue', () => {
+  it('lists the Tasks of a queue from its runtime and its own history slice (FR-018)', () => {
+    const snap = withRuntime(
+      Object.freeze({
+        ...snapshot({}),
+        history: Object.freeze([historyEntry('work-old', 'work'), historyEntry('default-old', 'default')])
+      }),
+      buildQueueRuntime({
+        queueId: 'work',
+        name: 'work',
+        position: 1,
+        tasks: [
+          item({
+            id: 'work-live',
+            status: 'in-flight',
+            queueId: 'work',
+            currentPhase: 'speckit-plan',
+            currentPipelineId: 'standard'
+          }),
+          item({ id: 'work-next', status: 'pending', queueId: 'work', position: 1 })
+        ]
+      })
+    );
+
+    const work = getTaskOptions(snap, 'work');
+    expect(work.map((option) => option.id)).toEqual(['work-live', 'work-next', 'work-old']);
+    expect(work.find((option) => option.id === 'work-old')).toMatchObject({ queueId: 'work' });
+    expect(getTaskOptions(snap, 'default').map((option) => option.id)).toEqual(['default-old']);
+  });
+
+  it('live selection follows the latest-started in-flight Run across every queue (FR-021)', () => {
+    const snap = withRuntime(
+      snapshot({
+        inFlight: item({
+          id: 'default-live',
+          status: 'in-flight',
+          queueId: 'default',
+          currentPhase: 'speckit-plan',
+          currentPipelineId: 'standard',
+          startedAt: '2026-05-10T11:00:00.000Z'
+        })
+      }),
+      buildQueueRuntime({
+        queueId: 'work',
+        name: 'work',
+        position: 1,
+        tasks: [
+          item({
+            id: 'work-live',
+            status: 'in-flight',
+            queueId: 'work',
+            currentPhase: 'speckit-tasks',
+            currentPipelineId: 'standard',
+            startedAt: '2026-05-10T11:30:00.000Z'
+          })
+        ]
+      })
+    );
+
+    expect(resolveLiveSelection(snap)).toMatchObject({
+      queueId: 'work',
+      taskId: 'work-live',
+      phaseId: 'speckit-tasks',
+      followMode: 'live'
+    });
+  });
+
+  it('picks the same Run on every call when start times tie or are missing (FR-021)', () => {
+    const tied = '2026-05-10T11:00:00.000Z';
+    const live = (queueId: string, startedAt: string | null): QueueItem =>
+      item({
+        id: `${queueId}-live`,
+        status: 'in-flight',
+        queueId,
+        currentPhase: 'speckit-plan',
+        currentPipelineId: 'standard',
+        startedAt
+      });
+    // The array order runs against the position order, so a chooser that took
+    // the first or the last in-flight row would land on alpha or gamma. Beta
+    // wins: it ties alpha on start time and sits at the lower position, and
+    // gamma, with no start time, ranks below both.
+    const snap: WorkflowSnapshot = Object.freeze({
+      ...snapshot({}),
+      queues: Object.freeze([
+        buildQueueRuntime({ queueId: 'alpha', name: 'alpha', position: 2, tasks: [live('alpha', tied)] }),
+        buildQueueRuntime({ queueId: 'beta', name: 'beta', position: 1, tasks: [live('beta', tied)] }),
+        buildQueueRuntime({ queueId: 'gamma', name: 'gamma', position: 0, tasks: [live('gamma', null)] })
+      ])
+    });
+
+    const first = resolveLiveSelection(snap);
+    expect(first).toMatchObject({ queueId: 'beta', taskId: 'beta-live' });
+    expect(resolveLiveSelection(snap)).toEqual(first);
   });
 });

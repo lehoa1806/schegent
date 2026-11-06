@@ -631,8 +631,8 @@ describe('loadCatalog — runner validation (074, T033)', () => {
     );
   });
 
-describe('loadCatalog — composable Workflow synthesis topological ordering (FR-049)', () => {
-  it('orders synthesized PipelineDef phases by startNodeIds and connections rather than raw nodes array order', () => {
+describe('loadCatalog — composable Workflow graph preservation (FR-R5-F08 / NF-01)', () => {
+  it('exposes effective WorkflowDefinitions via workflows and workflowsById without flattening them into pipelinesById', () => {
     const snapshot = snapshotOf({
       phases: REFERENCED_PHASES,
       workflows: [
@@ -640,7 +640,6 @@ describe('loadCatalog — composable Workflow synthesis topological ordering (FR
           workflowId: 'child-wf',
           name: 'Child Workflow',
           version: 1,
-          // Authored in reverse of execution order (FR-049: nodes order carries no execution semantics).
           nodes: [
             { nodeId: 'child-end', kind: 'phase', phaseId: 'finalize' },
             { nodeId: 'child-start', kind: 'phase', phaseId: 'speckit-clarify' }
@@ -654,7 +653,6 @@ describe('loadCatalog — composable Workflow synthesis topological ordering (FR
           workflowId: 'parent-wf',
           name: 'Parent Workflow',
           version: 1,
-          // Authored with child workflow node before the root entry phase node.
           nodes: [
             { nodeId: 'step-2', kind: 'workflow', workflowId: 'child-wf' },
             { nodeId: 'step-1', kind: 'phase', phaseId: 'speckit-specify' }
@@ -669,13 +667,10 @@ describe('loadCatalog — composable Workflow synthesis topological ordering (FR
 
     const result = loadCatalog(snapshot);
     expect(result.errors).toEqual([]);
-    const childSynthesized = result.catalog.pipelinesById.get('child-wf');
-    expect(childSynthesized?.phases).toEqual(['speckit-clarify', 'finalize']);
-    const parentSynthesized = result.catalog.pipelinesById.get('parent-wf');
-    expect(parentSynthesized?.phases).toEqual([
-      'speckit-specify',
-      'speckit-clarify',
-      'finalize'
-    ]);
+    expect(result.catalog.pipelinesById.has('child-wf')).toBe(false);
+    expect(result.catalog.pipelinesById.has('parent-wf')).toBe(false);
+    expect(result.catalog.workflowsById?.get('child-wf')?.workflowId).toBe('child-wf');
+    expect(result.catalog.workflowsById?.get('parent-wf')?.workflowId).toBe('parent-wf');
+    expect(result.catalog.workflows?.map((w) => w.workflowId)).toEqual(['child-wf', 'parent-wf']);
   });
 });

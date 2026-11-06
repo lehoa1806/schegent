@@ -99,6 +99,21 @@ export interface FeatureRequestRerun {
   readonly reason: FeatureRequestRerunReason;
 }
 
+/**
+ * FR-R5-F08 — durable occurrence identity stamped on workflow-dispatched queue
+ * items so pre-dispatch recovery and resume reconciliation can match and
+ * deduplicate an enqueued Phase attempt even when the host crashed before the
+ * post-enqueue CAS bound `queueItemId` onto `NodeAttemptRecord`.
+ */
+export interface WorkflowOccurrenceIdentity {
+  readonly rootRunId: string;
+  readonly invocationId: string;
+  readonly parentInvocationId: string | null;
+  readonly nodePath: string;
+  readonly attemptId: string;
+  readonly attemptIndex: number;
+}
+
 export interface FeatureRequest {
   id: string;
   description: string;
@@ -211,6 +226,11 @@ export interface FeatureRequest {
    * carrying this marker is `completed`.
    */
   completionProvenance?: CompletionProvenance;
+  /**
+   * FR-R5-F08 — optional occurrence identity for workflow-dispatched Phase
+   * items. Additive and optional so pre-feature records read back unchanged.
+   */
+  workflowOccurrence?: WorkflowOccurrenceIdentity;
 }
 
 export interface QueueState {

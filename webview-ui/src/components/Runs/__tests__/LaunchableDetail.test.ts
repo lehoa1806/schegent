@@ -46,7 +46,7 @@ vi.mock('../../../lib/run-launcher-ipc', () => ({
 }));
 
 // Late import so the surface binds to the stubs above.
-import RunsSurface from '../../RunsSurface.svelte';
+import QueueTaskComposer from '../../QueueTaskComposer.svelte';
 
 afterEach(() => {
   cleanup();
@@ -54,7 +54,7 @@ afterEach(() => {
 });
 
 async function selectPipeline() {
-  const view = render(RunsSurface, { snapshot: buildSnapshot() });
+  const view = render(QueueTaskComposer, { snapshot: buildSnapshot() });
   await fireEvent.click(view.getByTestId('launchable-select-pipeline-analysis-pipeline'));
   return view;
 }
@@ -116,52 +116,13 @@ describe('the detail panel for a selected definition (FR-007)', () => {
     // A Workflow's derived ports carry no requiredness (FR-009), and the panel
     // must not invent one: an unmarked port is "not declared required", which is
     // a different claim from "optional".
-    const { getByTestId, queryByTestId } = render(RunsSurface, { snapshot: buildSnapshot() });
+    const { getByTestId, queryByTestId } = render(QueueTaskComposer, { snapshot: buildSnapshot() });
     await fireEvent.click(getByTestId('launchable-select-workflow-analysis-pipeline'));
 
     expect(getByTestId('launchable-detail-name').textContent).toContain(RESEARCH.name);
     expect(getByTestId('launchable-detail-version').textContent).toContain('v2');
     expect(getByTestId('launchable-detail-port-seed').textContent).toContain('Seed');
     expect(queryByTestId('launchable-detail-required-seed')).toBeNull();
-  });
-});
-
-describe('the Builder hand-off preselects a Workflow once (FR-R5-F06)', () => {
-  it('lets the operator pick something else and keeps that pick across later snapshots', async () => {
-    // The host sends a fresh snapshot about once a second while a run executes, and the projection
-    // is structured-cloned each time, so `launchables` is a new object on every one of them. A
-    // hand-off that re-applies whenever the projection changes would put the operator's pick back
-    // on the handed-off Workflow within a second of making it.
-    const view = render(RunsSurface, {
-      snapshot: buildSnapshot(),
-      selectedWorkflowId: 'analysis-pipeline'
-    });
-    expect(view.getByTestId('launchable-detail-name').textContent).toContain(RESEARCH.name);
-
-    await fireEvent.click(view.getByTestId('launchable-select-pipeline-analysis-pipeline'));
-    expect(view.getByTestId('launchable-detail-name').textContent).toContain('Analysis Pipeline');
-
-    await view.rerender({
-      snapshot: buildSnapshot(),
-      selectedWorkflowId: 'analysis-pipeline'
-    });
-
-    expect(view.getByTestId('launchable-detail-name').textContent).toContain('Analysis Pipeline');
-  });
-
-  it('waits for the projection to offer the Workflow, then applies the hand-off', async () => {
-    const view = render(RunsSurface, {
-      snapshot: buildSnapshot({ launchables: undefined }),
-      selectedWorkflowId: 'analysis-pipeline'
-    });
-    expect(view.queryByTestId('launchable-detail')).toBeNull();
-
-    await view.rerender({
-      snapshot: buildSnapshot(),
-      selectedWorkflowId: 'analysis-pipeline'
-    });
-
-    expect(view.getByTestId('launchable-detail-name').textContent).toContain(RESEARCH.name);
   });
 });
 
@@ -172,7 +133,7 @@ describe('a window that cannot start work (FR-015)', () => {
     // question they did not ask. What they cannot do is start work — so the one
     // control that starts work is withheld, and the reason is on screen next to
     // it rather than left to be inferred from a control that does nothing.
-    const { getByTestId, queryByTestId } = render(RunsSurface, {
+    const { getByTestId, queryByTestId } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({ isPrimary: false })
     });
 
@@ -269,7 +230,7 @@ describe('what the panel says about the authority a start will have (FR-R4-F06 F
       backendPostures: POSTURES
     });
     snapshotStore.apply({ type: STATE_SNAPSHOT, payload: snapshot } as never);
-    const view = render(RunsSurface, { snapshot });
+    const view = render(QueueTaskComposer, { snapshot });
     await fireEvent.click(view.getByTestId('launchable-select-pipeline-analysis-pipeline'));
     return view;
   }
@@ -330,7 +291,7 @@ describe('what the panel says about the authority a start will have (FR-R4-F06 F
     const snapshot = buildSnapshot({
       launchables: projection(entries(ANALYSIS), entries(composableEntry))
     });
-    const view = render(RunsSurface, { snapshot });
+    const view = render(QueueTaskComposer, { snapshot });
     await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
 
     expect(view.getByTestId('launchable-detail-required-topic').textContent.toLowerCase()).toContain(
@@ -371,7 +332,7 @@ describe('what the panel says about the authority a start will have (FR-R4-F06 F
     const snapshot = buildSnapshot({
       launchables: projection(entries(ANALYSIS), entries(reusing))
     });
-    const view = render(RunsSurface, { snapshot });
+    const view = render(QueueTaskComposer, { snapshot });
 
     await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
 
@@ -396,7 +357,7 @@ describe('what the panel says about the authority a start will have (FR-R4-F06 F
     const snapshot = buildSnapshot({
       launchables: projection(entries(ANALYSIS), entries(calling))
     });
-    const view = render(RunsSurface, { snapshot });
+    const view = render(QueueTaskComposer, { snapshot });
 
     await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
 

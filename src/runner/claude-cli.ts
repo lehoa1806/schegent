@@ -835,10 +835,13 @@ export class ClaudeCliRunner implements BackendRunner {
       });
 
       let diagnosticWarnings: ReadonlyArray<string> | undefined;
+      // Feature 020 BUG-002 (FR-002a) — what `diagnosticsEnabled` records.
+      let diagnosticsCaptured = false;
       if (diagnosticWriter) {
         await Promise.allSettled(diagnosticWrites);
         const result = diagnosticWriter.result();
         diagnosticWarnings = result.warnings.length > 0 ? result.warnings : undefined;
+        diagnosticsCaptured = result.streamCaptured;
       }
       // FR-R3-047 — a truncated prompt is recorded even when it does not decide
       // the outcome. Narrowing the phase-runner arm to a clean parse was right,
@@ -904,6 +907,7 @@ export class ClaudeCliRunner implements BackendRunner {
         backgroundWorkOpenAtResult,
         durationMs: Date.now() - start,
         diagnosticWarnings,
+        ...(diagnosticsCaptured ? { diagnosticsCaptured: true } : {}),
         command,
         cliSessionId,
         ...(sessionCostBaselineUsd !== undefined ? { sessionCostBaselineUsd } : {}),

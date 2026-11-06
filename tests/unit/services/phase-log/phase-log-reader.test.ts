@@ -11,18 +11,28 @@ import { SanitizedLogger } from '../../../../src/lib/logger';
 import { readIterationManifest } from '../../../../src/services/phase-log/phase-log-reader';
 import type { PhaseProgress } from '../../../../src/services/phase-log/types';
 
-// Feature 203 (T038) — the ONLY seam in this file, and it exists for one return
-// site. Three of the reader's four empty return sites are reachable by building
-// the situation on disk, and are built that way below. The fourth is the race
-// window: discovery listed `iter-N`, the open succeeded, and the stream then went
-// away. Once the descriptor is open no filesystem state can produce an ENOENT
-// through it, so on a POSIX filesystem that branch is unreachable from the public
-// API — the arrangement, not the assertion, is what needs the seam.
+// Feature 203 (T038) — the ONLY seam in this file, and it exists for the race
+// windows. The reader's other empty return sites are reachable by building the
+// situation on disk, and are built that way below. A race is not: discovery
+// listed `iter-N` because its stream was there, and the stream then went away.
 //
-// The MEMBER that branch returns is proven on disk independently, by the missing-
-// leaf case below, which is why mocking here weakens nothing: what is being
-// checked is that the second code path answers with the same member, per D2.
-const race = vi.hoisted(() => ({ armed: false }));
+// Feature 020 BUG-002 (T085, FR-026a) — an `iter-N` with no stream is no longer
+// a recorded iteration, so it cannot stand in for a stream that vanished, and
+// `record-vanished` is reached only by a race (203's FR-037, SC-018). The seam
+// has two modes, one per branch that answers with that member:
+// - `removeThenOpen` removes the listed stream, then calls the REAL open, so the
+//   walk refuses with a real ENOENT. Nothing here is thrown by the test.
+// - `armed` throws ENOENT from the open itself, for the catch after it. Once
+//   the descriptor is open no filesystem state can produce an ENOENT through it,
+//   so on a POSIX filesystem that branch is unreachable from the public API.
+// The first proves the member on a real removal, which is why mocking the
+// second weakens nothing: what it checks is that the second code path answers
+// with the same member, per D2.
+const race = vi.hoisted(() => ({
+  armed: false,
+  removeThenOpen: false,
+  removedPath: null as string | null
+}));
 vi.mock('../../../../src/lib/safe-open', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../../src/lib/safe-open')>();
   return {
@@ -30,6 +40,14 @@ vi.mock('../../../../src/lib/safe-open', async (importOriginal) => {
     openWithinRootByPath: async (
       ...args: Parameters<typeof actual.openWithinRootByPath>
     ): ReturnType<typeof actual.openWithinRootByPath> => {
+      if (race.removeThenOpen) {
+        race.removeThenOpen = false;
+        const [, requestedPath] = args;
+        const { rm } = await import('node:fs/promises');
+        await rm(requestedPath);
+        race.removedPath = requestedPath;
+        return actual.openWithinRootByPath(...args);
+      }
       if (!race.armed) return actual.openWithinRootByPath(...args);
       race.armed = false;
       const vanished: NodeJS.ErrnoException = new Error('stream removed after listing');
@@ -48,6 +66,8 @@ beforeEach(async () => {
   // that armed it failed before reaching the read. Without it that failure
   // would travel into the next test as a second, unexplained one.
   race.armed = false;
+  race.removeThenOpen = false;
+  race.removedPath = null;
 });
 
 afterEach(async () => {
@@ -89,7 +109,11 @@ function phaseDirPath(): string {
   return path.join(tmpDir, '.schegent', 'sessions', 'run-1', 'diagnostics', 'pipe-1', 'phase-1');
 }
 
-/** An `iter-N` directory with no stream inside it, which is a listable record. */
+/**
+ * An `iter-N` directory with no stream inside it. Since BUG-002 (T085, FR-026a)
+ * that is not a recorded iteration; an entry named `stream.jsonl`, of any type,
+ * placed in it later makes it one.
+ */
 async function makeIterationDir(iteration: number): Promise<string> {
   const dir = path.join(phaseDirPath(), `iter-${iteration}`);
   await fs.mkdir(dir, { recursive: true });
@@ -480,11 +504,38 @@ describe('Feature 203 T038 — every reader return site labels its own situation
     expect(absent.iterations).toEqual(empty.iterations);
   });
 
-  it('site B: an iteration whose stream never arrived is record-vanished', async () => {
+  // Feature 020 BUG-002 (T085, FR-026a) — this case was site B and expected
+  // record-vanished. An iteration whose stream never arrived is not a recorded
+  // iteration, so the phase reads as one that recorded none, under 203's
+  // existing members and precedence.
+  it('site A: an iteration whose stream never arrived is no-iteration-recorded', async () => {
     await makeIterationDir(1);
     const manifest = await read({ settingOn: true });
+    expect(manifest.iterations).toEqual([]);
+    expect(manifest.selectedIteration).toBeNull();
+    expect(manifest.entries).toEqual([]);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'no-iteration-recorded' });
+  });
+
+  it('site A: the same iteration while its phase is in progress is phase-running-no-output', async () => {
+    await makeIterationDir(1);
+    const manifest = await read({ settingOn: true, progress: 'running' });
+    expect(manifest.iterations).toEqual([]);
+    expect(manifest.selectedIteration).toBeNull();
+    expect(manifest.entries).toEqual([]);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'phase-running-no-output' });
+  });
+
+  it('site B: a listed stream removed before the open is record-vanished', async () => {
+    await writeStream(1, ['{"type":"system","subtype":"init"}']);
+    race.removeThenOpen = true;
+    const manifest = await read({ settingOn: true });
+    // Control for the seam, as in site C below: an unfired seam would leave the
+    // stream in place and this case asserting an ordinary read.
+    expect(race.removeThenOpen, 'the removal seam did not fire; the branch below was not reached').toBe(false);
+    expect(race.removedPath).toBe(streamPath(1));
     // Unlike site A, this manifest KEEPS the discovered iterations: the record
-    // exists, and the operator can select another one.
+    // was listed, and the operator can select another one.
     expect(manifest.iterations).toEqual([1]);
     expect(manifest.selectedIteration).toBe(1);
     expect(manifest.entries).toEqual([]);
@@ -527,7 +578,7 @@ describe('Feature 203 T038 — every reader return site labels its own situation
     expect(race.armed, 'the race seam did not fire; the branch below was not reached').toBe(false);
     expect(manifest.iterations).toEqual([1]);
     expect(manifest.entries).toEqual([]);
-    // Deliberately the SAME member as the missing-leaf case above: two code
+    // Deliberately the SAME member as the removal case above: two code
     // paths, one operator situation (D2, FR-003).
     expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'record-vanished' });
   });

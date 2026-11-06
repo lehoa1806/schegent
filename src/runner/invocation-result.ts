@@ -396,6 +396,17 @@ export interface RawInvocationOutput {
   durationMs: number;
   diagnosticWarnings?: ReadonlyArray<string>;
   /**
+   * Feature 020 BUG-002 (FR-002a) — `true` iff this invocation wrote at least
+   * one chunk of the CLI's stdout to the verbose-diagnostics `stream.jsonl`.
+   * `cli-invocation`'s `diagnosticsEnabled` records it. A target that was built
+   * but never written to is not a capture: that is how an agy Run came to
+   * record `true` with nothing on disk.
+   *
+   * Set only when `true`. Absent reads as `false`: a request with no target, a
+   * capture that failed, and a runner or fixture that does not tee.
+   */
+  diagnosticsCaptured?: boolean;
+  /**
    * Feature 068 — the assembled CLI command (cliPath + argv) that the
    * runner spawned. Its **content is never persisted**. Audit schema v3
    * (2026-08-02) made `cli-invocation` payloads metadata-only, so

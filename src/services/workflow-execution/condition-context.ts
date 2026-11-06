@@ -130,7 +130,11 @@ export function resolveOperand(
 }
 
 function attemptRecordToFacts(attempt: NodeAttemptRecord): NodeAttemptFacts | null {
-  if (attempt.status === 'in-flight' || attempt.status === 'paused') {
+  if (
+    attempt.status === 'in-flight' ||
+    attempt.status === 'paused' ||
+    attempt.status === 'pending-dispatch'
+  ) {
     return null;
   }
   const outputs: RunOutputRecord[] = Object.entries(attempt.declaredOutputs).map(

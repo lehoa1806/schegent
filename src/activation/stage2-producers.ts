@@ -98,6 +98,7 @@ export interface Stage2ProducerDeps {
   readonly runSafety: {
     readonly replayTerminalTransitions: (selfOwnerId?: string) => Promise<void>;
     readonly sweepCheckpointRetention: () => Promise<unknown>;
+    readonly reconcileComposableWorkflowRuns?: () => Promise<void>;
   };
   /**
    * The backend probe `live-picture-wiring.ts` used to fire at wiring time.
@@ -451,6 +452,9 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
       // were still running, which is the ordering the preamble exists to
       // establish. `running` is the same handle the concurrent-grant case uses.
       if (running) await running;
+      if (result.acquired && !installedRecovery) {
+        await runSafety.reconcileComposableWorkflowRuns?.();
+      }
       await installRecoveryProducers(result);
     }
   };

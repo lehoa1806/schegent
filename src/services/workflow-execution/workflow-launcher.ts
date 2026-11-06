@@ -614,10 +614,10 @@ export async function launchComposableWorkflow(
       {
         connectedRuns: {
           compareAndSetConnectedRun: async (next) =>
-            // A launch whose root already failed was refused, not started: storing it would
-            // list a failed run nothing can finish, cancel or retry. The caller still gets
-            // the step's result, and the refusal travels in `lastFailure`.
-            isRootInvocationFailed(next, snapshot.rootInvocationId)
+            // Before the first phase is enqueued, or when a launch's root already failed,
+            // keep the pre-dispatch state in memory so a refused launch leaves no
+            // connected-run state behind (FR-012).
+            firstQueueItemId === null || isRootInvocationFailed(next, snapshot.rootInvocationId)
               ? { outcome: 'written', run: next }
               : deps.connectedRuns.compareAndSetConnectedRun(next, 0)
         },

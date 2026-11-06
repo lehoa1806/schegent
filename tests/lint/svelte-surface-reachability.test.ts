@@ -54,7 +54,7 @@ const ENTRY_POINTS: readonly string[] = [
  * unreachable and get allowlisted — so the control names one such leaf and
  * requires it in the reachable set.
  */
-const DYNAMIC_ONLY_LEAF = 'webview-ui/src/components/RunsSurface.svelte';
+const DYNAMIC_ONLY_LEAF = 'webview-ui/src/components/HistoryDashboard.svelte';
 
 /** FR-027 — the two components this feature exists to mount. */
 const MUST_NOT_BE_ALLOWLISTED: readonly string[] = [

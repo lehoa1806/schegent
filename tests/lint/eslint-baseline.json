@@ -23,7 +23,7 @@
   "rules": {
     "@typescript-eslint/no-unnecessary-condition": {
       "host": 404,
-      "webview": 238,
+      "webview": 235,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
@@ -222,6 +222,7 @@
         "src/components/PipelineBuilderEditors/workflow-flow-layout.ts": 1,
         "src/components/ProcessImport/process-import-state.ts": 2,
         "src/components/QueueConfigModal.svelte": 1,
+        "src/components/QueueTaskComposer.svelte": 1,
         "src/components/RunLauncher/__tests__/RunLauncher.test.ts": 1,
         "src/components/RunLauncher/__tests__/empty-catalog-guidance.test.ts": 1,
         "src/components/Runs/__tests__/LaunchableDetail.test.ts": 2,
@@ -229,7 +230,6 @@
         "src/components/Runs/__tests__/LaunchableSectionEmptyStates.test.ts": 2,
         "src/components/Runs/__tests__/WorkflowTriggerForm.test.ts": 5,
         "src/components/Runs/__tests__/no-surface-validation.test.ts": 2,
-        "src/components/RunsSurface.svelte": 3,
         "src/components/WorkflowRun/__tests__/WorkflowRun.test.ts": 6,
         "src/components/__tests__/CurrentTask.telemetry.test.ts": 1,
         "src/components/__tests__/CurrentTask.test.ts": 3,
@@ -249,8 +249,8 @@
         "src/components/__tests__/QueueConfigModal.test.ts": 1,
         "src/components/__tests__/QueueItem.reorder.test.ts": 1,
         "src/components/__tests__/QueueItemActions.test.ts": 6,
+        "src/components/__tests__/QueueTaskComposer.test.ts": 1,
         "src/components/__tests__/RunOutputs.test.ts": 1,
-        "src/components/__tests__/RunsSurface.test.ts": 2,
         "src/components/__tests__/ScheduledStartIndicator.test.ts": 4,
         "src/components/__tests__/SettingsSurface.test.ts": 1,
         "src/components/__tests__/StatsStrip.test.ts": 9,

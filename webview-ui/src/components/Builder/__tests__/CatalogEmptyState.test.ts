@@ -22,8 +22,8 @@ vi.mock('../../../lib/snapshot-store.svelte', () => ({
 }));
 
 const COMPONENT = resolve(__dirname, '../CatalogEmptyState.svelte');
-const RUNS_SURFACE = resolve(__dirname, '../../RunsSurface.svelte');
-// Feature 102 (T045) — the Runs half of SC-008 moved down a level. `RunsSurface`
+const RUNS_SURFACE = resolve(__dirname, '../../QueueTaskComposer.svelte');
+// Feature 102 (T045) — the Runs half of SC-008 moved down a level. `QueueTaskComposer`
 // rendered the guidance when Runs had one empty state; it now has two per section
 // and each section states its own, so the import lives with the renderer.
 const RUNS_SECTION = resolve(__dirname, '../../Runs/LaunchableSection.svelte');

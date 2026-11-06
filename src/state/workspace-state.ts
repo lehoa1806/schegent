@@ -470,6 +470,14 @@ export interface RunClaimSource {
 }
 
 /**
+ * FR-R5-F08 — whoever can answer whether this window is authorized to commit or
+ * recover connected workflow runs under workspace primacy.
+ */
+export interface PrimacyClaimSource {
+  canCommitConnectedRun(): Promise<boolean>;
+}
+
+/**
  * FR-R3-077 — what `readRunIfLive` answers.
  *
  * `superseded` carries both generations rather than a bare boolean, because the
@@ -862,6 +870,8 @@ export class WorkspaceStateStore {
   private readonly logger: SanitizedLogger | null;
   /** FR-R3-077 — bound at composition; see `bindRunClaimSource`. */
   private runClaimSource: RunClaimSource | null = null;
+  /** FR-R5-F08 — bound by `WorkspaceLockManager` when constructed. */
+  private primacyClaimSource: PrimacyClaimSource | null = null;
   /** One warn per queue, not one per commit: a stranded lease is not news twice. */
   private readonly unfencedQueuesWarned = new Set<string>();
   /** FR-R3-146 — same rule for an unreadable Git-plan grant; see `getGitPlanGrants`. */
@@ -951,6 +961,14 @@ export class WorkspaceStateStore {
    */
   public bindRunClaimSource(source: RunClaimSource): void {
     this.runClaimSource = source;
+  }
+
+  public bindPrimacyClaimSource(source: PrimacyClaimSource): void {
+    this.primacyClaimSource = source;
+  }
+
+  public canCommitConnectedRun(): Promise<boolean> {
+    return this.primacyClaimSource?.canCommitConnectedRun() ?? Promise.resolve(true);
   }
 
   /**
@@ -3185,6 +3203,47 @@ export class WorkspaceStateStore {
       if (Object.hasOwn(refused, next.connectedRunId)) return;
       const current = runs[next.connectedRunId] ?? null;
       if ((current?.revision ?? 0) !== expectedRevision || next.revision <= expectedRevision) {
+        result = staleConnectedRunWrite(current);
+        return;
+      }
+      // FR-R5-F08 — fence connected-run writes against lost or superseded queue
+      // execution leases and workspace primacy so a non-primary or superseded
+      // window cannot overwrite a rival primary's connected-run state.
+      const boundQueueId = next.queueId;
+      const claimSource = this.runClaimSource;
+      if (
+        boundQueueId !== undefined &&
+        claimSource?.tenureOf?.(boundQueueId).state === 'lost'
+      ) {
+        result = staleConnectedRunWrite(current);
+        return;
+      }
+      if (boundQueueId !== undefined && claimSource !== null) {
+        const queueClaim = claimSource.claimFor(boundQueueId);
+        if (queueClaim !== null) {
+          const f = await checkCommitFence(
+            this.ownershipRegistry,
+            queueClaim,
+            boundQueueId,
+            'Run',
+            this.scheduler
+          );
+          if (f !== null) {
+            if (f.reason === 'fence-superseded') {
+              const currentClaim = claimSource.claimFor(boundQueueId);
+              if (currentClaim?.ownerId === queueClaim.ownerId && currentClaim.fence === queueClaim.fence) {
+                claimSource.markLost?.(boundQueueId, 'superseded');
+              }
+            }
+            result = staleConnectedRunWrite(current);
+            return;
+          }
+        }
+      }
+      if (
+        this.primacyClaimSource !== null &&
+        !(await this.primacyClaimSource.canCommitConnectedRun())
+      ) {
         result = staleConnectedRunWrite(current);
         return;
       }

@@ -1,37 +1,5 @@
-// Feature 091 (T016, US2 — FR-014 to FR-018) — the surface that makes the
-// connected-run view and the Run composer things an operator can actually open.
-//
-// `WorkflowRun.test.ts` and `RunLauncher.test.ts` both pass today, on components
-// no shipped entry point imports. That is the shape of the gap: correctness
-// tested in isolation says nothing about reachability, and a green suite over
-// unmounted code reads exactly like a green suite over mounted code.
-//
-// So what is pinned here is the wrapper's own decisions, which are the only
-// place this slice can go wrong:
-//
-//   * M2 — one view per connected Run, and *none* when there are none. An empty
-//     `connectedRuns` must render no `WorkflowRun` instance at all, not an
-//     instance with nothing in it.
-//   * M3 — a hydrating Run is rendered, not filtered. Skipping it would satisfy
-//     M2's "only when a connected Run exists" reading and silently defeat the
-//     hydration gate the view exists to show; the loading state is a Run the
-//     operator has, not a Run they do not.
-//   * M4 — the composer opens for a Pipeline chosen from the effective catalog.
-//
-// Both children read zero stores, so everything arrives as props and nothing
-// here needs a host. The two IPC seams are stubbed only because mounting the
-// composer would otherwise reach for a `vscode` that jsdom does not have.
-//
-// Feature 102 (US1, T015) — M4 is gone and the launch zone replaced it. The
-// `<select>` offered the effective Pipeline catalog: no Workflows, no version,
-// and no way to tell published from merely present. What is pinned in its place
-// is that both sections mount, that the picker did not survive, and that Runs
-// offers no lifecycle action (FR-004) — the last of which is a claim about what
-// the surface does *not* render, so it is asserted over the whole rendered text
-// rather than against a handful of test ids that a new control would not have.
-
+// Published definitions compose into Tasks addressed to the open Queue.
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
-import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   ConnectedNodeProjection,
@@ -44,6 +12,8 @@ import type {
 } from '../../lib/snapshot-types';
 import { foldLegacyRun, type LegacyRunFields } from '../../lib/__tests__/queue-runtime-fixture';
 
+vi.mock('../../lib/vscode-api', () => ({ postCommand: vi.fn(), onHostMessage: () => () => {} }));
+
 const launchWorkflow = vi.fn();
 const launchPipeline = vi.fn();
 vi.mock('../../lib/workflow-run-ipc', () => ({
@@ -55,10 +25,12 @@ vi.mock('../../lib/run-launcher-ipc', () => ({
 }));
 
 // Late import so the component binds to the stubs above.
-import RunsSurface from '../RunsSurface.svelte';
+import QueueTaskComposer from '../QueueTaskComposer.svelte';
+import { postCommand } from '../../lib/vscode-api';
 
 afterEach(() => {
   cleanup();
+  vi.mocked(postCommand).mockClear();
   launchWorkflow.mockReset();
   launchPipeline.mockReset();
 });
@@ -174,95 +146,6 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> & LegacyRunFields = 
   } as unknown as WorkflowSnapshot;
 }
 
-describe('connected runs on the Runs surface (FR-014, FR-015)', () => {
-  it('renders one connected-run view per projected run (M1)', () => {
-    const { getAllByTestId, getAllByTestId: byId } = render(RunsSurface, {
-      snapshot: buildSnapshot({
-        connectedRuns: [
-          connectedRun(),
-          connectedRun({ connectedRunId: 'connected-run-2', workflowId: 'review-workflow' })
-        ]
-      })
-    });
-    expect(getAllByTestId('workflow-run')).toHaveLength(2);
-    expect(byId('workflow-run-id').map((element) => element.textContent?.trim())).toEqual([
-      'connected-run-1',
-      'connected-run-2'
-    ]);
-  });
-
-  it('renders no connected-run view when the projection carries an empty list (M2)', () => {
-    const { queryByTestId } = render(RunsSurface, {
-      snapshot: buildSnapshot({ connectedRuns: [] })
-    });
-    expect(queryByTestId('workflow-run')).toBeNull();
-  });
-
-  it('renders no connected-run view when the projection omits the field entirely (M2)', () => {
-    // A host bundle predating connected runs, and every workspace that has never
-    // started one. Absent is not the same shape as empty and must not throw.
-    const { queryByTestId } = render(RunsSurface, { snapshot: buildSnapshot() });
-    expect(queryByTestId('workflow-run')).toBeNull();
-  });
-
-  it('threads the queue rows through so a node finds its attempt (M1)', () => {
-    // The reused Run surfaces look an attempt up in `queueItems` by
-    // `latestQueueItemId`. Unthreaded, the lookup misses and the view renders
-    // the "still arriving" branch instead — which is the precise discriminator
-    // asserted here, because both branches render *something*.
-    const { getByTestId, queryByTestId } = render(RunsSurface, {
-      snapshot: buildSnapshot({
-        connectedRuns: [
-          connectedRun({
-            nodes: [
-              node({ state: 'in-flight', actions: [], latestQueueItemId: QUEUE_ITEM.id })
-            ]
-          })
-        ]
-      })
-    });
-    expect(getByTestId('workflow-node-attempt-node-a')).toBeTruthy();
-    expect(queryByTestId('workflow-node-attempt-pending-node-a')).toBeNull();
-    expect(getByTestId('workflow-node-attempt-node-a').textContent).toContain(
-      'Analyse the corpus'
-    );
-  });
-
-  it('threads the effective catalog through so a node can open its composer (M1)', async () => {
-    // Unthreaded, `WorkflowRun` finds no Pipeline for the node and renders its
-    // unresolved-catalog message instead of the continuation composer.
-    const { getByTestId, queryByTestId } = render(RunsSurface, {
-      snapshot: buildSnapshot({ connectedRuns: [connectedRun()] })
-    });
-    await fireEvent.click(getByTestId('workflow-node-action-node-a-start'));
-    await tick();
-    expect(queryByTestId('workflow-run-unresolved-pipeline')).toBeNull();
-  });
-});
-
-describe('a connected run that is still hydrating (FR-016)', () => {
-  it('is rendered with its loading state rather than filtered out (M3)', () => {
-    const { getByTestId } = render(RunsSurface, {
-      snapshot: buildSnapshot({ connectedRuns: [connectedRun({ hydrating: true, nodes: [] })] })
-    });
-    expect(getByTestId('workflow-run')).toBeTruthy();
-    expect(getByTestId('workflow-run-hydrating')).toBeTruthy();
-  });
-
-  it('is counted alongside hydrated runs, not in place of them (M2, M3)', () => {
-    const { getAllByTestId, getByTestId } = render(RunsSurface, {
-      snapshot: buildSnapshot({
-        connectedRuns: [
-          connectedRun({ hydrating: true, nodes: [] }),
-          connectedRun({ connectedRunId: 'connected-run-2' })
-        ]
-      })
-    });
-    expect(getAllByTestId('workflow-run')).toHaveLength(2);
-    expect(getByTestId('workflow-run-hydrating')).toBeTruthy();
-  });
-});
-
 const LAUNCHABLES: LaunchProjection = {
   pipelines: {
     state: 'entries',
@@ -291,13 +174,13 @@ const LAUNCHABLES: LaunchProjection = {
   }
 };
 
-describe('the launch zone on the Runs surface (FR-001, FR-020)', () => {
+describe('the Queue task composer (FR-001, FR-020)', () => {
   it('renders both sections, each listing what the projection offers', () => {
-    const { getByTestId } = render(RunsSurface, {
+    const { getByTestId } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({ connectedRuns: [], launchables: LAUNCHABLES })
     });
 
-    expect(getByTestId('runs-surface-launch-zone')).toBeTruthy();
+    expect(getByTestId('queue-task-composer-launch-zone')).toBeTruthy();
     expect(getByTestId('launchable-row-pipeline-analysis-pipeline').textContent).toContain(
       'Analysis Pipeline'
     );
@@ -307,7 +190,7 @@ describe('the launch zone on the Runs surface (FR-001, FR-020)', () => {
   });
 
   it('renders Workflows in its loading arm and omits empty Pipelines when the field is absent (FR-006)', () => {
-    const { getByTestId, queryByTestId } = render(RunsSurface, {
+    const { getByTestId, queryByTestId } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({ connectedRuns: [] })
     });
 
@@ -319,12 +202,12 @@ describe('the launch zone on the Runs surface (FR-001, FR-020)', () => {
     // The `<select>` listed the effective Pipeline catalog with no version and
     // no Workflows. Asserted on the element as well as the test id, so a picker
     // reintroduced under a different handle is still caught.
-    const { queryByTestId, container } = render(RunsSurface, {
+    const { queryByTestId, container } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({ connectedRuns: [], launchables: LAUNCHABLES })
     });
 
-    expect(queryByTestId('runs-surface-pipeline-select')).toBeNull();
-    expect(queryByTestId('runs-surface-compose')).toBeNull();
+    expect(queryByTestId('queue-task-composer-pipeline-select')).toBeNull();
+    expect(queryByTestId('queue-task-composer-compose')).toBeNull();
     expect(container.querySelector('select')).toBeNull();
   });
 
@@ -333,7 +216,7 @@ describe('the launch zone on the Runs surface (FR-001, FR-020)', () => {
     // editing, publishing, restoring, and deactivating all live in the Builder,
     // and an operator offered them here would be one edit away from changing
     // what the next run freezes.
-    const { container } = render(RunsSurface, {
+    const { container } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({ connectedRuns: [], launchables: LAUNCHABLES })
     });
     const text = (container.textContent ?? '').toLowerCase();
@@ -359,7 +242,7 @@ describe('the launch zone on the Runs surface (FR-001, FR-020)', () => {
 // surface would leave the operator watching nothing.
 describe('the two launch paths stay distinct (FR-019)', () => {
   async function openWorkflowForm(snapshot: WorkflowSnapshot) {
-    const view = render(RunsSurface, { snapshot });
+    const view = render(QueueTaskComposer, { snapshot });
     await fireEvent.click(view.getByTestId('launchable-select-workflow-research-workflow'));
     await fireEvent.click(view.getByTestId('launchable-detail-trigger'));
     return view;
@@ -367,7 +250,7 @@ describe('the two launch paths stay distinct (FR-019)', () => {
 
   it('sends a Pipeline to the queue and opens no connected run', async () => {
     launchPipeline.mockResolvedValue({ outcome: 'enqueued', requestId: 'request-11' });
-    const { getByTestId, queryByTestId } = render(RunsSurface, {
+    const { getByTestId, queryByTestId } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({ connectedRuns: [], launchables: LAUNCHABLES })
     });
 
@@ -407,37 +290,30 @@ describe('the two launch paths stay distinct (FR-019)', () => {
     expect(launchPipeline).not.toHaveBeenCalled();
   });
 
-  it('shows the started run in the connected-runs zone once the host projects it', async () => {
-    launchWorkflow.mockResolvedValue({
-      outcome: 'started',
-      connectedRunId: 'connected-run-9',
-      revision: 2,
-      queueItemId: 'queue-item-9'
-    });
-    const { getByTestId, rerender } = await openWorkflowForm(
-      buildSnapshot({ connectedRuns: [], launchables: LAUNCHABLES })
-    );
-    await fireEvent.click(getByTestId('workflow-trigger-submit'));
-
-    // The surface holds no run state of its own: the run appears because the next
-    // snapshot carries it, which is the only way it could appear correctly.
-    await rerender({
-      snapshot: buildSnapshot({
-        connectedRuns: [connectedRun({ connectedRunId: 'connected-run-9' })],
-        launchables: LAUNCHABLES
-      })
-    });
-
-    expect(getByTestId('workflow-run-id').textContent).toContain('connected-run-9');
+  it('binds Workflow tasks to the selected queue and does not start it', async () => {
+    launchWorkflow.mockResolvedValue({ outcome: 'started', connectedRunId: 'run-9', revision: 1, queueItemId: 'item-9' });
+    const view = render(QueueTaskComposer, { snapshot: buildSnapshot({ launchables: LAUNCHABLES }), queueId: 'queue-beta' });
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-research-workflow'));
+    await fireEvent.click(view.getByTestId('launchable-detail-trigger'));
+    expect(view.getByTestId('workflow-trigger-submit').textContent).toContain('Add task');
+    await fireEvent.click(view.getByTestId('workflow-trigger-submit'));
+    expect(launchWorkflow.mock.calls[0][0]).toMatchObject({ queueId: 'queue-beta', workflowId: 'research-workflow' });
+    expect(view.getByTestId('workflow-trigger-status').textContent).toContain('Added task to queue');
+    expect(postCommand).not.toHaveBeenCalled();
   });
 
-  it('keeps the in-flight zone on screen while a trigger form is open (FR-020)', async () => {
-    const { getByTestId } = await openWorkflowForm(
-      buildSnapshot({ connectedRuns: [connectedRun()], launchables: LAUNCHABLES })
-    );
+  it('binds legacy Pipeline composition to the selected queue', async () => {
+    launchPipeline.mockResolvedValue({ outcome: 'enqueued', requestId: 'item-9' });
+    const view = render(QueueTaskComposer, { snapshot: buildSnapshot({ launchables: LAUNCHABLES }), queueId: 'queue-beta' });
+    await fireEvent.click(view.getByTestId('launchable-select-pipeline-analysis-pipeline'));
+    await fireEvent.click(view.getByTestId('launchable-detail-trigger'));
+    await fireEvent.click(view.getByTestId('run-launcher-submit'));
+    expect(launchPipeline.mock.calls[0][1]).toBe('queue-beta');
+  });
 
-    expect(getByTestId('workflow-trigger')).toBeTruthy();
-    expect(getByTestId('workflow-run')).toBeTruthy();
-    expect(getByTestId('runs-surface-launch-zone')).toBeTruthy();
+  it('keeps execution monitoring in Queue task detail', async () => {
+    const { queryByTestId } = await openWorkflowForm(buildSnapshot({ connectedRuns: [connectedRun()], launchables: LAUNCHABLES }));
+    expect(queryByTestId('workflow-trigger')).toBeTruthy();
+    expect(queryByTestId('workflow-run')).toBeNull();
   });
 });

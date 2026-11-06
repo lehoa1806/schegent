@@ -9,7 +9,7 @@
 // borrowing the neighbour's (FR-053).
 
 import { isTerminalWorkflowStatus } from './snapshot-types';
-import type { QueueRuntime, WorkflowSnapshot } from './snapshot-types';
+import type { QueueItem, QueueRuntime, WorkflowSnapshot } from './snapshot-types';
 
 /**
  * The id the registry gives its always-present first queue. Used only when the
@@ -32,6 +32,28 @@ export function findQueueRuntime(
   queueId: string
 ): QueueRuntime | null {
   return snapshot?.queues?.find((runtime) => runtime.queueId === queueId) ?? null;
+}
+
+/**
+ * BUG-002 (FR-021, FR-022) — the Task a queue has in flight, found among that
+ * queue's own rows (`QueueRuntime.tasks`), or `null` when it has none: an
+ * `in-flight` row, or a `paused` one the system rate-limit pause kept bound.
+ *
+ * The host's copy, `findQueueInFlightRow` in
+ * `src/services/phase-log/phase-log-service.ts`, decides whether a tail may
+ * start, and carries the reasoning; this one decides whether the pane asks for
+ * one. The two must agree, or the pane asks for a tail the host refuses.
+ */
+export function findQueueInFlightRow<T extends Pick<QueueItem, 'status' | 'paused'>>(
+  tasks: readonly T[]
+): T | null {
+  return (
+    tasks.find(
+      (task) =>
+        task.status === 'in-flight' ||
+        (task.status === 'paused' && task.paused?.pauseSource === 'system-paused')
+    ) ?? null
+  );
 }
 
 /**

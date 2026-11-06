@@ -3,8 +3,26 @@
 // specs/020-phase-level-logs/contracts/phase-log-service.md §4 +
 // specs/020-phase-level-logs/research.md §4.
 
-import { describe, expect, it } from 'vitest';
-import { projectStreamJsonlLine } from '../../../../src/services/phase-log/phase-log-display-projector';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { SanitizedLogger } from '../../../../src/lib/logger';
+import {
+  MAX_AGY_STEP_TEXT_LENGTH,
+  MAX_OPEN_AGY_STEPS,
+  projectStreamJsonlLine
+} from '../../../../src/services/phase-log/phase-log-display-projector';
+import { readIterationManifest } from '../../../../src/services/phase-log/phase-log-reader';
+import {
+  PhaseLogTailSession,
+  type PhaseLogEntryPushPayload
+} from '../../../../src/services/phase-log/phase-log-tail-session';
+import type {
+  IterationManifest,
+  PhaseLogDisplayEntry,
+  PhaseLogSelection
+} from '../../../../src/services/phase-log/types';
 
 describe('Feature 020 T015 — projectStreamJsonlLine', () => {
   it('projects assistant text content to assistant-text kind', () => {
@@ -197,5 +215,239 @@ describe('Feature 029 — projectStreamJsonlLine populates toolArguments', () =>
     const e = projectStreamJsonlLine(line);
     expect(e?.body.toolArguments).toBeUndefined();
     expect(e?.body.toolInput).toBe('');
+  });
+});
+
+// Feature 020 BUG-002 (T082, FR-012a, SC-011) — agy keys its lines `event`,
+// not `type`, so the Claude projection dropped every one of them and an agy
+// phase showed an empty feed. A one-shot read and a tail must agree, so these
+// drive the reader and the tail session, not a single projection call.
+//
+// The fixture is synthetic: the six `step_type` values, `init` and `result`
+// that BUG-002 counted in an agy 1.5.0 transcript, with invented values and no
+// captured log content. Grouping fragments by `step_index` and closing a step
+// on `DONE` or `ERROR` is inferred, not documented by agy; the SC-011 live
+// check is what confirms it.
+describe('Feature 020 BUG-002 — agy lines project by their shape', () => {
+  const SELECTION: PhaseLogSelection = {
+    queueId: 'q1',
+    taskId: 'run-1',
+    pipelineId: 'pipe-1',
+    phaseId: 'phase-1',
+    iterationN: 1
+  };
+  const CAPS = { perFieldBytes: 1024 * 1024, maxEntries: 1000 };
+  const logger = new SanitizedLogger();
+  const sanitize = (s: string): string => logger.sanitize(s);
+
+  type KindAndBody = Pick<PhaseLogDisplayEntry, 'kind' | 'body'>;
+
+  let workspaceRoot = '';
+
+  beforeEach(async () => {
+    workspaceRoot = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'phase-log-agy-'))
+    );
+  });
+
+  afterEach(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  function streamPath(): string {
+    return path.join(
+      workspaceRoot, '.schegent', 'sessions', 'run-1', 'diagnostics',
+      'pipe-1', 'phase-1', 'iter-1', 'stream.jsonl'
+    );
+  }
+
+  function serialize(lines: readonly object[]): string {
+    return lines.map((line) => `${JSON.stringify(line)}\n`).join('');
+  }
+
+  async function writeStream(text: string): Promise<void> {
+    await fs.mkdir(path.dirname(streamPath()), { recursive: true });
+    await fs.writeFile(streamPath(), text);
+  }
+
+  async function readStream(): Promise<IterationManifest> {
+    return readIterationManifest({
+      workspaceRoot,
+      selection: SELECTION,
+      isInFlight: false,
+      progress: 'not-running',
+      caps: CAPS,
+      sanitize
+    });
+  }
+
+  function step(
+    stepIndex: number,
+    stepType: string,
+    state: 'ACTIVE' | 'DONE' | 'ERROR',
+    fields: Readonly<Record<string, unknown>> = {}
+  ): object {
+    return {
+      event: 'step_update',
+      step_type: stepType,
+      state,
+      step_index: stepIndex,
+      conversation_id: 'conversation-1',
+      ...fields
+    };
+  }
+
+  function kindAndBody(entries: readonly PhaseLogDisplayEntry[]): KindAndBody[] {
+    return entries.map(({ kind, body }) => ({ kind, body }));
+  }
+
+  function withoutSeq(
+    entries: readonly PhaseLogDisplayEntry[]
+  ): Array<Omit<PhaseLogDisplayEntry, 'seq'>> {
+    return entries.map(({ kind, ts, body, bodyTruncated }) => ({ kind, ts, body, bodyTruncated }));
+  }
+
+  const FIXTURE: readonly object[] = [
+    { event: 'init', conversation_id: 'conversation-1', version: 'v-test' },
+    step(0, 'user_input', 'ACTIVE', { text_delta: 'Write the ' }),
+    step(0, 'user_input', 'DONE', { text_delta: 'plan.' }),
+    step(1, 'system_message', 'DONE', { text_delta: 'Workspace opened.' }),
+    step(2, 'agent_response', 'ACTIVE', { text_delta: 'Reading ' }),
+    step(2, 'agent_response', 'ACTIVE', { text_delta: 'the spec ' }),
+    step(2, 'agent_response', 'DONE', { text_delta: 'first.', usage: { output_tokens: 3 } }),
+    step(3, 'tool', 'ACTIVE', { tool_name: 'read_file', tool_info: { path: 'spec.md' } }),
+    step(3, 'tool', 'DONE', { tool_name: 'read_file', duration_seconds: 1 }),
+    step(4, 'checkpoint', 'DONE', { text_delta: 'Saved a checkpoint.' }),
+    step(5, 'error_message', 'ACTIVE', { text_delta: 'Rate limit ' }),
+    step(5, 'error_message', 'ERROR', { text_delta: 'reached.' }),
+    {
+      event: 'result',
+      conversation_id: 'conversation-1',
+      duration_seconds: 9,
+      usage: { output_tokens: 3 }
+    }
+  ];
+
+  const EXPECTED: readonly KindAndBody[] = [
+    {
+      kind: 'system',
+      body: { systemSubtype: 'init', systemSummary: 'conversation_id=conversation-1 version=v-test' }
+    },
+    { kind: 'system', body: { systemSubtype: 'user_input', systemSummary: 'Write the plan.' } },
+    { kind: 'system', body: { systemSubtype: 'system_message', systemSummary: 'Workspace opened.' } },
+    { kind: 'assistant-text', body: { text: 'Reading the spec first.' } },
+    {
+      kind: 'tool-use',
+      body: { toolName: 'read_file', toolInput: '{"path":"spec.md"}', toolArguments: { path: 'spec.md' } }
+    },
+    { kind: 'system', body: { systemSubtype: 'checkpoint', systemSummary: 'Saved a checkpoint.' } },
+    { kind: 'system', body: { systemSubtype: 'error_message', systemSummary: 'Rate limit reached.' } },
+    {
+      kind: 'result',
+      body: {
+        resultSummary: 'conversation_id=conversation-1 duration_seconds=9 usage={"output_tokens":3}'
+      }
+    }
+  ];
+
+  it('reads a non-empty feed, one entry per step with its text fragments coalesced', async () => {
+    await writeStream(serialize(FIXTURE));
+
+    const manifest = await readStream();
+
+    expect(manifest.verboseDiagnosticsState.kind).toBe('entries-present');
+    expect(manifest.skippedLines).toBe(0);
+    expect(kindAndBody(manifest.entries)).toEqual(EXPECTED);
+  });
+
+  it('yields the same entries from a tail that sees the lines arrive in pieces', async () => {
+    const text = serialize(FIXTURE);
+    // One cut between two fragments of the same step, one inside a line.
+    const betweenFragments = text.indexOf('\n', text.indexOf('Reading ')) + 1;
+    const insideLine = text.indexOf('read_file');
+    expect(insideLine).toBeGreaterThan(betweenFragments);
+    const pieces = [
+      text.slice(0, betweenFragments),
+      text.slice(betweenFragments, insideLine),
+      text.slice(insideLine)
+    ];
+    const pushed: PhaseLogEntryPushPayload[] = [];
+    const session = new PhaseLogTailSession({
+      sessionId: 's1',
+      workspaceRoot,
+      filePath: streamPath(),
+      selection: SELECTION,
+      pushToWebview: (msg) => pushed.push(msg),
+      sanitize,
+      caps: { perFieldBytes: CAPS.perFieldBytes }
+    });
+
+    await writeStream('');
+    for (const piece of pieces) {
+      await fs.appendFile(streamPath(), piece);
+      await session.tick();
+    }
+    const read = await readStream();
+
+    expect(read.entries).toHaveLength(EXPECTED.length);
+    expect(withoutSeq(pushed.map((p) => p.entry))).toEqual(withoutSeq(read.entries));
+  });
+
+  it('holds no step from before the tailed file was truncated', async () => {
+    const pushed: PhaseLogEntryPushPayload[] = [];
+    const session = new PhaseLogTailSession({
+      sessionId: 's1',
+      workspaceRoot,
+      filePath: streamPath(),
+      selection: SELECTION,
+      pushToWebview: (msg) => pushed.push(msg),
+      sanitize,
+      caps: { perFieldBytes: CAPS.perFieldBytes }
+    });
+    await writeStream(serialize([
+      step(2, 'agent_response', 'ACTIVE', { text_delta: 'Held from the first file. ' }),
+      step(3, 'checkpoint', 'DONE', { text_delta: 'Saved a checkpoint.' })
+    ]));
+    await session.tick();
+
+    await writeStream(serialize([step(2, 'agent_response', 'DONE', { text_delta: 'Fresh.' })]));
+    await session.tick();
+
+    expect(kindAndBody(pushed.map((p) => p.entry))).toEqual([
+      { kind: 'system', body: { systemSubtype: 'checkpoint', systemSummary: 'Saved a checkpoint.' } },
+      { kind: 'assistant-text', body: { text: 'Fresh.' } }
+    ]);
+  });
+
+  it('holds at most MAX_OPEN_AGY_STEPS steps open, emitting the oldest when one more opens', async () => {
+    expect(MAX_OPEN_AGY_STEPS).toBeGreaterThan(1);
+    const opened = Array.from({ length: MAX_OPEN_AGY_STEPS + 1 }, (_, i) =>
+      step(i, 'agent_response', 'ACTIVE', { text_delta: `step ${i}` })
+    );
+    const closed = Array.from({ length: MAX_OPEN_AGY_STEPS }, (_, i) =>
+      step(i + 1, 'agent_response', 'DONE')
+    );
+    await writeStream(serialize([...opened, ...closed]));
+
+    const manifest = await readStream();
+
+    expect(manifest.entries.map((entry) => entry.body.text)).toEqual(
+      Array.from({ length: MAX_OPEN_AGY_STEPS + 1 }, (_, i) => `step ${i}`)
+    );
+  });
+
+  it('keeps at most MAX_AGY_STEP_TEXT_LENGTH characters of a step, never half a surrogate pair', async () => {
+    expect(MAX_AGY_STEP_TEXT_LENGTH).toBeGreaterThan(1);
+    const kept = 'a'.repeat(MAX_AGY_STEP_TEXT_LENGTH - 1);
+    const astral = String.fromCodePoint(0x1d400);
+    await writeStream(serialize([
+      step(0, 'agent_response', 'ACTIVE', { text_delta: kept }),
+      step(0, 'agent_response', 'ACTIVE', { text_delta: `${astral} past the cap` }),
+      step(0, 'agent_response', 'DONE', { text_delta: 'more past the cap' })
+    ]));
+
+    const manifest = await readStream();
+
+    expect(manifest.entries.map((entry) => entry.body.text)).toEqual([kept]);
   });
 });

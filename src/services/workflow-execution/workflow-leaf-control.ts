@@ -7,7 +7,10 @@
 
 import { errorMessage } from '../../lib/errors';
 import type { SanitizedLogger } from '../../lib/logger';
+import type { ResolvedPortValue } from '../../contracts/run-request';
+import { isWorkflowNodeTerminalStatus } from '../../contracts/workflow-definitions';
 import { connectedRunOwnsQueueItem } from '../../state/connected-workflow-run';
+import type { WorkflowRun } from '../../state/workflow-run';
 import type { WorkspaceStateStore } from '../../state/workspace-state';
 import type { ExecutionLeasePort } from '../auto-drain-coordinator';
 import { isQueueClaimLostToRival } from '../execution-lease-release';
@@ -25,7 +28,8 @@ export interface WorkflowLeafControlDeps {
   readonly endLeaf: (queueId: string, taskId: string) => Promise<void>;
   readonly executionLease: Pick<ExecutionLeasePort, 'tenureOf' | 'isForeignLeaseHeld'>;
   readonly logger: Pick<SanitizedLogger, 'warn'>;
-  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'getConnectedRun' | 'getQueueRegistry'>;
+  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'getConnectedRun' | 'getQueueRegistry'> &
+    Partial<Pick<WorkspaceStateStore, 'getQueue' | 'getRunMap' | 'getHistory'>>;
 }
 
 export type WorkflowLeafControlHooks = Required<
@@ -37,7 +41,26 @@ export type WorkflowLeafControlHooks = Required<
     | 'verifyLeaseFence'
     | 'isQueuePresent'
   >
->;
+> &
+  Pick<
+    WorkflowControlServiceDeps,
+    'cancelOrphanedQueueItem' | 'isQueueOrTaskPresent' | 'checkDurableAttemptEvidence'
+  >;
+
+function buildDeclaredOutputsFromRun(
+  runOutputs: WorkflowRun['runOutputs']
+): Readonly<Record<string, ResolvedPortValue>> {
+  const out: Record<string, ResolvedPortValue> = {};
+  for (const record of runOutputs ?? []) {
+    if (record.status !== 'resolved' || record.reference === undefined) continue;
+    out[record.name] = Object.freeze({
+      portId: record.name,
+      type: 'file',
+      value: record.reference
+    });
+  }
+  return Object.freeze(out);
+}
 
 /**
  * Offer a queue its work, once. The drain is edge-triggered, so a command that frees a queue or
@@ -83,6 +106,80 @@ export function createWorkflowLeafControlHooks(
 
     isQueuePresent: (queueId) =>
       store.getQueueRegistry().entries.some((entry) => entry.id === queueId),
+
+    cancelOrphanedQueueItem: async (queueId, queueItemId) => {
+      await endLeaf(queueId, queueItemId);
+    },
+
+    isQueueOrTaskPresent: (queueId, taskId) => {
+      if (!store.getQueueRegistry().entries.some((entry) => entry.id === queueId)) {
+        return false;
+      }
+      const currentRun = store.getRun(queueId);
+      if (
+        currentRun !== null &&
+        currentRun.featureId === taskId &&
+        !isWorkflowNodeTerminalStatus(currentRun.status)
+      ) {
+        return true;
+      }
+      if (store.getQueue !== undefined) {
+        return store
+          .getQueue(queueId)
+          .requests.some(
+            (req) =>
+              req.id === taskId &&
+              req.status !== 'canceled' &&
+              req.status !== 'completed' &&
+              req.status !== 'failed'
+          );
+      }
+      return false;
+    },
+
+    checkDurableAttemptEvidence: (_workflowRun, _frame, attempt) => {
+      if (attempt.queueItemId === undefined) return { completed: false };
+      if (store.getRunMap !== undefined) {
+        const liveMatch = Object.values(store.getRunMap()).find(
+          (candidate) => candidate.featureId === attempt.queueItemId
+        );
+        if (liveMatch !== undefined && isWorkflowNodeTerminalStatus(liveMatch.status)) {
+          return {
+            completed: true,
+            status: liveMatch.status,
+            declaredOutputs: buildDeclaredOutputsFromRun(liveMatch.runOutputs),
+            completedAt: liveMatch.lastTransitionAt
+          };
+        }
+      }
+      if (store.getHistory !== undefined) {
+        const historyEntries = store.getHistory() as readonly {
+          readonly featureId?: string;
+          readonly terminalStatus?: string;
+          readonly completedAt?: string;
+          readonly runOutputs?: WorkflowRun['runOutputs'];
+        }[];
+        const historyMatch = historyEntries.find(
+          (entry) => entry.featureId === attempt.queueItemId
+        );
+        if (
+          historyMatch !== undefined &&
+          isWorkflowNodeTerminalStatus(historyMatch.terminalStatus)
+        ) {
+          const parsedCompletedAt =
+            typeof historyMatch.completedAt === 'string'
+              ? Date.parse(historyMatch.completedAt)
+              : Number.NaN;
+          return {
+            completed: true,
+            status: historyMatch.terminalStatus,
+            declaredOutputs: buildDeclaredOutputsFromRun(historyMatch.runOutputs),
+            completedAt: Number.isFinite(parsedCompletedAt) ? parsedCompletedAt : Date.now()
+          };
+        }
+      }
+      return { completed: false };
+    },
 
     // Named for the service's contract: it calls this once, when the root has ended, after the
     // commit. In this window that moment is a wake, and no lease is released here. Leases are held

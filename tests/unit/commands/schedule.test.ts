@@ -290,4 +290,24 @@ describe('runSchedule — the unexpected-failure arm (FR-R4-F05)', () => {
       'Schegent: the task could not be scheduled. See the Schegent log for details.'
     );
   });
+
+  it('directs the operator to Workflow Launch when scheduleOrEnqueue refuses a composable Workflow ID (FR-R5-F08 / NF-01)', async () => {
+    const notifier = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const scheduleOrEnqueue = vi.fn(async () => ({
+      outcome: 'rejected-validation',
+      reason: 'workflow-requires-graph-launch:wf-composable'
+    }));
+    const ctx = {
+      guardedRunService: { scheduleOrEnqueue },
+      getCatalog: () => buildCatalog([], [], NO_MODELS, ''),
+      notifier,
+      logger: new SanitizedLogger()
+    } as unknown as Parameters<typeof runSchedule>[1];
+
+    await runSchedule({ description: 'test workflow schedule', pipelineId: 'wf-composable' }, ctx);
+
+    expect(notifier.warn).toHaveBeenCalledWith(
+      'Schegent: rejected (workflow-requires-graph-launch:wf-composable). Launch composable Workflows from the Workflow Launch view.'
+    );
+  });
 });

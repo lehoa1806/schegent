@@ -111,6 +111,26 @@ function buildPhase(
   });
 }
 
+// BUG-002 (T076) — the host lists every queue's rows in that queue's runtime
+// `tasks`, and the pane reads in-flight Runs from there (FR-021, FR-022). Only
+// the in-flight row is copied: `foldLegacyRun` files its runtime under
+// `default`, not the `q-1` these rows name, and a cold-start case below adds
+// its own `q-1` runtime for the phase strip.
+function withInFlightRuntime(
+  queues: WorkflowSnapshot['queues'],
+  queue: QueueProjection
+): WorkflowSnapshot['queues'] {
+  const row = queue.inFlight;
+  if (row === null) return queues;
+  const queueId = row.queueId ?? 'default';
+  const owner = queues.find((runtime) => runtime.queueId === queueId);
+  const runtime =
+    owner === undefined
+      ? buildQueueRuntime({ queueId, tasks: Object.freeze([row]) })
+      : Object.freeze({ ...owner, tasks: Object.freeze([row]) });
+  return Object.freeze([...queues.filter((candidate) => candidate !== owner), runtime]);
+}
+
 function buildSnapshot(overrides: Partial<WorkflowSnapshot> & LegacyRunFields = {}): WorkflowSnapshot {
   const { status, activeFeature, phases, liveActivity, workflowElapsedMs, ...rest } = overrides;
   const defaultPhases: readonly PhaseTile[] = Object.freeze([
@@ -193,7 +213,8 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> & LegacyRunFields = 
     availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
     availableBackends: Object.freeze(['claude']) as readonly BackendRunnerKind[]
   } as WorkflowSnapshot);
-  return Object.freeze({ ...base, ...rest });
+  const merged: WorkflowSnapshot = Object.freeze({ ...base, ...rest });
+  return Object.freeze({ ...merged, queues: withInFlightRuntime(merged.queues, merged.queue) });
 }
 
 function makePushEntry(
@@ -577,8 +598,7 @@ function buildRecentItem(overrides: Partial<QueueItem> & { id: string }): QueueI
 
 function snapshotWithRecent(recent: readonly QueueItem[]): WorkflowSnapshot {
   const base = buildSnapshot();
-  return Object.freeze({
-    ...base,
+  return buildSnapshot({
     queue: Object.freeze({
       ...base.queue,
       inFlight: null,
@@ -861,8 +881,7 @@ function snapshotWithInFlight(item: Partial<QueueItem> & { id: string }): Workfl
     ...base.queue.inFlight!,
     ...item
   } as QueueItem);
-  return Object.freeze({
-    ...base,
+  return buildSnapshot({
     queue: Object.freeze({
       ...base.queue,
       inFlight
@@ -1356,8 +1375,7 @@ describe('Feature 067 US3 — Live button re-enables auto-following', () => {
     // Snapshot with no in-flight task; preserve queue.queues so the
     // breadcrumb has a queue list to render.
     const base = buildSnapshot();
-    const noInFlight: WorkflowSnapshot = Object.freeze({
-      ...base,
+    const noInFlight: WorkflowSnapshot = buildSnapshot({
       queue: Object.freeze({
         ...base.queue,
         inFlight: null
@@ -1420,5 +1438,154 @@ describe('Feature 067 US3 — Live button re-enables auto-following', () => {
     expect(store.isLiveMode()).toBe(true);
     expect(store.state.selection.taskId).toBe('run-1');
     expect(store.state.selection.phaseId).toBe('speckit-plan');
+  });
+});
+
+// Feature 020 BUG-002 (T076) — with no `liveTarget`, the pane read the default
+// queue's in-flight row for everything live, so a Run on any other queue left
+// the Live button disabled and never attached a tail. Live and the cascade
+// follow the cross-queue chooser (FR-021); a tail reads the in-flight row of the
+// queue the selection names (FR-022). A `liveTarget` keeps both on its Run.
+
+function queueBInFlight(startedAt: string): QueueItem {
+  const row: QueueItem = {
+    id: 'b-live',
+    label: 'feature b',
+    enqueuedAt: '2026-05-10T10:30:00.000Z',
+    startedAt,
+    updatedAt: startedAt,
+    completedAt: null,
+    status: 'in-flight',
+    retryCount: 0,
+    lastErrorSummary: null,
+    pausedReason: null,
+    currentPhase: 'speckit-plan',
+    position: 0,
+    queueId: 'q-b',
+    currentPipelineId: 'standard',
+    phaseProgress: null
+  };
+  return Object.freeze(row);
+}
+
+function withQueueB(snapshot: WorkflowSnapshot, row: QueueItem): WorkflowSnapshot {
+  return Object.freeze({
+    ...snapshot,
+    queues: Object.freeze([
+      ...snapshot.queues,
+      buildQueueRuntime({ queueId: 'q-b', name: 'Queue B', position: 1, tasks: Object.freeze([row]) })
+    ])
+  });
+}
+
+const QUEUE_B_TUPLE = Object.freeze({
+  queueId: 'q-b',
+  taskId: 'b-live',
+  pipelineId: 'standard',
+  phaseId: 'speckit-plan'
+});
+
+describe('BUG-002 — Live and the tail read in-flight Runs on every queue (FR-021, FR-022)', () => {
+  it('enables Live for a Run on another queue and jumps to it', async () => {
+    const store = createPhaseLogStore();
+    store.setLiveMode(false);
+    const { getByTestId } = render(PhaseLogFeed, {
+      props: {
+        snapshot: withQueueB(snapshotWithRecent([]), queueBInFlight('2026-05-10T11:00:00.000Z')),
+        store
+      }
+    });
+    await tick();
+    await tick();
+
+    const jumpBtn = getByTestId('phase-log-jump-current');
+    expect(jumpBtn.getAttribute('aria-disabled')).toBe('false');
+
+    await fireEvent.click(jumpBtn);
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    expect(store.state.selection).toMatchObject(QUEUE_B_TUPLE);
+  });
+
+  it('asks for a tail on the selected queue-B Run while a later Run on q-1 is the Live target', async () => {
+    const store = createPhaseLogStore();
+    store.setLiveMode(false);
+    // run-1 on q-1 started at 11:30, after the 11:00 start of the Run on B, so
+    // Live points at run-1 while the tail follows the selection to B.
+    const { getByTestId } = render(PhaseLogFeed, {
+      props: {
+        snapshot: withQueueB(buildSnapshot(), queueBInFlight('2026-05-10T11:00:00.000Z')),
+        store
+      }
+    });
+
+    await selectTuple(store, 'q-b', 'b-live', 'speckit-plan');
+    await tick();
+    await tick();
+
+    expect(startSpy).toHaveBeenCalledWith({ selection: { ...QUEUE_B_TUPLE, iterationN: 1 } });
+
+    await fireEvent.click(getByTestId('phase-log-jump-current'));
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    expect(store.state.selection).toMatchObject({ queueId: 'q-1', taskId: 'run-1', phaseId: 'speckit-plan' });
+  });
+
+  it('keeps Live and the tail on the liveTarget Run', async () => {
+    const bLive = queueBInFlight('2026-05-10T11:00:00.000Z');
+    const store = createPhaseLogStore();
+    const { getByTestId } = render(PhaseLogFeed, {
+      props: {
+        snapshot: withQueueB(buildSnapshot(), bLive),
+        store,
+        autoFollow: false,
+        liveTarget: { inFlight: bLive }
+      }
+    });
+
+    // run-1 is in flight on q-1, but this instance is pinned to the Run on B,
+    // so selecting run-1 reads its log without attaching a tail to it.
+    await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
+    await tick();
+    await tick();
+    expect(startSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ selection: expect.objectContaining({ taskId: 'run-1' }) })
+    );
+
+    await fireEvent.click(getByTestId('phase-log-jump-current'));
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    expect(store.state.selection).toMatchObject(QUEUE_B_TUPLE);
+    expect(startSpy).toHaveBeenCalledWith({ selection: { ...QUEUE_B_TUPLE, iterationN: 1 } });
+  });
+});
+
+// Feature 020 BUG-002 (T079, FR-028a) — the host refuses a selection it cannot
+// resolve with `unknown-tuple`. Neither of `readPhaseLog`'s ack paths gives that
+// reason refusal text, by design: it is the module's own reason, not a gate's.
+// So the store fell back to the bare code and the pane printed "Could not load
+// logs: unknown-tuple", which names nothing an operator can act on.
+describe('BUG-002 — an unknown-tuple refusal reads as operator text (FR-028a)', () => {
+  it('says the selection matches nothing the host knows, never the reason code', async () => {
+    readSpy.mockResolvedValue({ outcome: 'failure', reason: 'unknown-tuple' });
+    const store = createPhaseLogStore();
+    const { getByTestId } = render(PhaseLogFeed, {
+      props: { snapshot: buildSnapshot(), store }
+    });
+    await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
+
+    const text = getByTestId('phase-log-error').textContent;
+    expect(text).not.toContain('unknown-tuple');
+    expect(text).toContain('does not match a Task, pipeline or phase the host knows');
+    expect(text).toContain('Choose again');
   });
 });

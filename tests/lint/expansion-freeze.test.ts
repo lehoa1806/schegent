@@ -82,7 +82,7 @@ describe('FR-R3-086 §5 — the expansion freeze holds', () => {
     );
     const declared = [...routes.matchAll(/^\s*\|\s*'([a-z-]+)'/gm)].map((match) => match[1] as string);
     expect(declared.sort()).toEqual(
-      ['builder', 'history', 'metrics', 'operations', 'runs', 'settings', 'system'].sort()
+      ['builder', 'history', 'metrics', 'operations', 'settings', 'system'].sort()
     );
   });
 

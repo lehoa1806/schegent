@@ -61,6 +61,13 @@ included:
 - `spec`: required mapping, with the same two codes.
 - `included`: optional mapping (see [`included` section](#included-section)).
 
+### Versioning
+
+The `apiVersion` literal is one marker for the whole process-YAML family, so a change to the keys a document kind admits is a change under that marker. Two rules govern it:
+
+- **Until the first tagged release that contains this format**, the admitted keys of a document kind may change in place and `apiVersion` stays `schegent/v1`. An older build then reads a newer document under its own older keys and lists field defects (`unknown-field`) instead of refusing it once. The [release notes](../operations/release-notes.md) record the effect of each such change.
+- **From that release on**, adding, removing or renaming an admitted key of a document kind needs a new marker (`schegent/v2`), so that an older build refuses the document in one line with `unsupported-version`. The release notes then carry a `Compatibility:` entry that says how an existing document is carried over.
+
 ## `metadata` section
 
 | Key | Required | Rule | Code |

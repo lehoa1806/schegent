@@ -47,7 +47,7 @@ vi.mock('../../../lib/run-launcher-ipc', () => ({
 }));
 
 // Late import so the surface binds to the stubs above.
-import RunsSurface from '../../RunsSurface.svelte';
+import QueueTaskComposer from '../../QueueTaskComposer.svelte';
 
 afterEach(() => {
   cleanup();
@@ -106,7 +106,7 @@ function runsSources(): readonly { readonly file: string; readonly code: string 
 }
 
 async function openForm() {
-  const view = render(RunsSurface, { snapshot: buildSnapshot() });
+  const view = render(QueueTaskComposer, { snapshot: buildSnapshot() });
   await fireEvent.click(view.getByTestId('launchable-select-pipeline-analysis-pipeline'));
   await fireEvent.click(view.getByTestId('launchable-detail-trigger'));
   return view;

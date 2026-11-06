@@ -292,4 +292,101 @@ describe('WorkflowRecoveryService — US3: Deterministic Restart Recovery (FR-R5
     const siblingRun = store.get('run-sibling')!;
     expect(siblingRun.invocations!['run-sibling:root']!.status).toBe('in-flight');
   });
+
+  it('recovers a pending-dispatch Phase attempt by binding an existing enqueued task or re-dispatching (FR-R5-F08)', async () => {
+    const store = createStore();
+    const snap = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'run-pending-disp',
+      workflow: workflowWithManualHandoff,
+      effectiveWorkflows: [workflowWithManualHandoff],
+      effectivePhases: phases,
+      startedAt: 1000,
+      queueId: 'q-1'
+    });
+    if (snap.outcome !== 'created') throw new Error('Snapshot failed');
+    store.seed(snap.run);
+
+    // Simulate crash inside dispatchPhase after pending-dispatch was persisted
+    await expect(
+      dispatchComposableNode(
+        {
+          connectedRuns: store,
+          dispatchPhase: async () => {
+            throw new Error('crash-mid-dispatch');
+          }
+        },
+        {
+          run: snap.run,
+          invocationId: snap.rootInvocationId,
+          nodeId: 'n1',
+          startedAt: 1010
+        }
+      )
+    ).rejects.toThrow('crash-mid-dispatch');
+
+    const crashedRun = store.get('run-pending-disp')!;
+    expect(crashedRun.invocations![snap.rootInvocationId]!.attemptsByNodeId['n1']![0]!.status).toBe(
+      'pending-dispatch'
+    );
+
+    const recovery = new WorkflowRecoveryService({
+      connectedRuns: store,
+      dispatchPhase: async () => ({ outcome: 'dispatched', queueItemId: 'qi-recovered-1' })
+    });
+
+    const reconciled = await recovery.reconcileRun('run-pending-disp', 2000);
+    expect(reconciled!.disposition!.status).toBe('pending-dispatch-recovered');
+    const recoveredAttempt =
+      reconciled!.run.invocations![snap.rootInvocationId]!.attemptsByNodeId['n1']![0]!;
+    expect(recoveredAttempt.status).toBe('in-flight');
+    expect(recoveredAttempt.queueItemId).toBe('qi-recovered-1');
+  });
+
+  it('falls back to paused with recovery-uncertain-effect when accepted-handoff redispatch fails (FR-R5-F08)', async () => {
+    const store = createStore();
+    const { dispatchPhase, rootInvocationId } = await createStartedRun(store);
+
+    await completeComposableNodeAttempt(
+      { connectedRuns: store, dispatchPhase },
+      {
+        run: store.get('run-rec-1')!,
+        invocationId: rootInvocationId,
+        nodeId: 'n1',
+        status: 'completed',
+        completedAt: 1050
+      }
+    );
+
+    const waitingRun = store.get('run-rec-1')!;
+    await continueWaitingHandoff(
+      { connectedRuns: store },
+      {
+        run: waitingRun,
+        expectedRevision: waitingRun.revision,
+        invocationId: rootInvocationId,
+        targetNodeId: 'n2',
+        request: {
+          pipelineId: 'n2',
+          workflowId: 'wf-recovery',
+          inputs: [{ portId: 'promptOverride', type: 'text', value: 'use-persisted-envelope' }],
+          supplemental: [],
+          outputs: []
+        },
+        acceptedAt: 1100,
+        deferDispatch: true
+      }
+    );
+
+    const recovery = new WorkflowRecoveryService({
+      connectedRuns: store,
+      dispatchPhase: async () => ({ outcome: 'rejected', reason: 'launcher-unavailable' })
+    });
+
+    const reconciled = await recovery.reconcileRun('run-rec-1', 2000);
+    expect(reconciled!.disposition!.status).toBe('uncertain-effect-paused');
+    expect(reconciled!.disposition!.reasonCode).toBe('handoff-redispatch-failed');
+    const rootFrame = reconciled!.run.invocations![rootInvocationId]!;
+    expect(rootFrame.status).toBe('paused');
+    expect(rootFrame.controlMarkers?.manualPauseCause).toBe('recovery-uncertain-effect');
+  });
 });

@@ -31,11 +31,10 @@ import {
 const QUEUE_A = 'queue-a';
 const RUN_1 = 'run-1';
 
-describe('Feature 092 T098 — the nav enum is unchanged (FR-061)', () => {
-  it('still has exactly the seven routes, in order', () => {
+describe('Feature 092 T098 — queue-based navigation', () => {
+  it('has six routes with composition under Queues', () => {
     expect(DASHBOARD_ROUTES).toEqual([
       'operations',
-      'runs',
       'history',
       'metrics',
       'system',
@@ -61,8 +60,8 @@ describe('Feature 092 T098 — the nav enum is unchanged (FR-061)', () => {
     expect(DASHBOARD_ROUTE_LABELS.operations).toBe('Queues');
   });
 
-  it('keeps `runs` a nav peer of tier 1 rather than a fourth tier (FR-063)', () => {
-    expect(DASHBOARD_ROUTES.indexOf('runs')).toBe(DASHBOARD_ROUTES.indexOf('operations') + 1);
+  it('has no standalone Runs route', () => {
+    expect(DASHBOARD_ROUTES).not.toContain('runs');
   });
 });
 

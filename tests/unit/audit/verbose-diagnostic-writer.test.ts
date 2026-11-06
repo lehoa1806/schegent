@@ -133,4 +133,29 @@ describe('VerboseDiagnosticWriter (010, T034, US3)', () => {
     const streamWarnings = warnings.filter((w) => /stream/i.test(w));
     expect(streamWarnings).toHaveLength(1);
   });
+
+  // Feature 020 BUG-002 (T084, FR-002a) — what `cli-invocation` records as
+  // `diagnosticsEnabled`: a chunk written to `stream.jsonl`. A prepared
+  // directory, an empty chunk and a verbose-only write capture nothing.
+  it('reports streamCaptured only once a stream write lands', async () => {
+    const writer = new VerboseDiagnosticWriter(new SanitizedLogger());
+    const target = makeTarget();
+    await writer.prepare(target);
+    await writer.teeStream(target, '');
+    await writer.teeVerbose(target, 'verbose-only\n');
+    expect(writer.result().streamCaptured).toBe(false);
+    await writer.teeStream(target, '{"event":"a"}\n');
+    expect(writer.result().streamCaptured).toBe(true);
+  });
+
+  it('a failed stream write captures nothing', async () => {
+    const writer = new VerboseDiagnosticWriter(new SanitizedLogger());
+    const target = makeTarget();
+    await writer.prepare(target);
+    await fs.mkdir(target.streamFile, { recursive: true });
+
+    await writer.teeStream(target, 'will-fail');
+
+    expect(writer.result().streamCaptured).toBe(false);
+  });
 });

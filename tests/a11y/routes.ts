@@ -10,7 +10,6 @@ import type { DashboardRoute } from '../../webview-ui/src/dashboard/routes.js' w
 /** Every route, and the landmark that proves it mounted before the scan runs. */
 export const ROUTE_MOUNT_TARGETS: Readonly<Record<DashboardRoute, string>> = {
   operations: 'queues-tier',
-  runs: 'runs-surface',
   history: 'history-dashboard',
   metrics: 'metrics-section',
   system: 'system-tab',

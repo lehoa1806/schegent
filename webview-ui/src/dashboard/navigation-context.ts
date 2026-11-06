@@ -10,7 +10,7 @@
 // a command would also have to enter `MUTATING_COMMANDS` or be proven read-only (hard rules
 // 11, 12). Opening a route changes no host state, so it is a webview-local act: `App.svelte`
 // publishes this capability with `setContext`, and a surface that wants it reads it with
-// `getContext`. Prop-drilling a `navigate` through `RouteOutlet` and `RunsSurface` would have
+// `getContext`. Prop-drilling a `navigate` through `RouteOutlet` and `QueueTaskComposer` would have
 // edited four components to reach one, and was rejected for that reason (research R9).
 //
 // The capability is never serialized, posted or persisted, and it names no setting key:
@@ -27,8 +27,4 @@ export interface DashboardNavigation {
    * Changes no host state and posts nothing.
    */
   readonly openBackendSettings: () => void;
-  /**
-   * Open the Runs route with the named active Workflow preselected for launch (FR-R5-F05).
-   */
-  readonly openWorkflowLaunch?: (workflowId: string) => void;
 }

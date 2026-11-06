@@ -408,4 +408,27 @@ describe('FR-032 (BUG-001, SC-011) — the window that lost the election recover
       await lockB.release();
     }
   });
+
+  it('refuses connected-workflow recovery and compareAndSetConnectedRun in a window that lost the election (FR-R5-F08)', async () => {
+    const shared = new SharedOwnershipFs();
+    const storeA = new WorkspaceStateStore(new FakeMemento());
+    await storeA.initialize();
+    storeA.useOwnershipStorage(shared, OWNERSHIP_DIR);
+    const lockA = new WorkspaceLockManager(storeA, 'window-a', new ManualClock(), new ManualScheduler());
+    expect((await lockA.tryAcquire()).acquired).toBe(true);
+
+    const storeB = new WorkspaceStateStore(new FakeMemento());
+    await storeB.initialize();
+    storeB.useOwnershipStorage(shared, OWNERSHIP_DIR);
+    const lockB = new WorkspaceLockManager(storeB, 'window-b', new ManualClock(), new ManualScheduler());
+    expect((await lockB.tryAcquire()).acquired).toBe(false);
+
+    try {
+      expect(await storeA.canCommitConnectedRun()).toBe(true);
+      expect(await storeB.canCommitConnectedRun()).toBe(false);
+    } finally {
+      await lockB.release();
+      await lockA.release();
+    }
+  });
 });

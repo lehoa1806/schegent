@@ -49,6 +49,7 @@ import {
   isTerminalInvocationStatus,
   type WorkflowControlRefusalCode
 } from './workflow-control-transition-table';
+import type { DurableAttemptEvidence } from './workflow-recovery-service';
 import type { ConnectedRunWriter } from './workflow-launcher';
 
 export interface ActiveLeafAbortInput {
@@ -81,6 +82,26 @@ export interface WorkflowControlServiceDeps {
   ) => Promise<void> | void;
   readonly verifyLeaseFence?: (queueId: string, runId: string) => boolean;
   readonly isQueuePresent?: (queueId: string) => boolean;
+  /**
+   * FR-R5-F08 — optional evidence probe used during `resume` on a paused leaf Phase
+   * attempt (including `recovery-uncertain-effect`) so an attempt that already
+   * settled on disk is recorded as completed rather than re-dispatched.
+   */
+  readonly checkDurableAttemptEvidence?: (
+    runId: string,
+    invocationId: string,
+    attempt: NodeAttemptRecord
+  ) => DurableAttemptEvidence | null;
+  /**
+   * FR-R5-F08 — optional queue/task presence check used during `resume` so a paused
+   * leaf Phase attempt whose original queue item is still live on the bound queue
+   * is reactivated in place rather than duplicated.
+   */
+  readonly isQueueOrTaskPresent?: (queueId: string, queueItemId?: string) => boolean;
+  readonly cancelOrphanedQueueItem?: (
+    queueItemId: string,
+    queueId: string
+  ) => Promise<void> | void;
 }
 
 export interface WorkflowControlCommandRequest {
@@ -321,7 +342,10 @@ export class WorkflowControlService {
       const result = await completeComposableNodeAttempt(
         {
           connectedRuns: this.deps.connectedRuns,
-          dispatchPhase: this.deps.dispatchPhase
+          dispatchPhase: this.deps.dispatchPhase,
+          ...(this.deps.cancelOrphanedQueueItem !== undefined
+            ? { cancelOrphanedQueueItem: this.deps.cancelOrphanedQueueItem }
+            : {})
         },
         {
           run: currentRun,
@@ -663,7 +687,11 @@ export class WorkflowControlService {
 
       for (const attempts of Object.values(updatedFrame.attemptsByNodeId)) {
         const last = attempts[attempts.length - 1];
-        if (last !== undefined && last.status === 'in-flight' && last.nodeKind === 'phase') {
+        if (
+          last !== undefined &&
+          (last.status === 'in-flight' || last.status === 'pending-dispatch') &&
+          last.nodeKind === 'phase'
+        ) {
           updatedFrame = recordNodeAttempt(updatedFrame, {
             ...last,
             status: 'paused',
@@ -723,9 +751,78 @@ export class WorkflowControlService {
       const leafAttempt = findLatestLeafPhaseAttempt(deepestLeafFrame);
       const nodeToDispatch =
         leafAttempt?.nodeId ?? deepestLeafFrame.activeNodeId ?? deepestLeafFrame.entryNodeId;
+      if (leafAttempt !== undefined && leafAttempt.status === 'paused') {
+        const evidence =
+          this.deps.checkDurableAttemptEvidence?.(
+            run.connectedRunId,
+            deepestLeafFrame.invocationId,
+            leafAttempt
+          ) ?? null;
+        if (
+          evidence !== null &&
+          (evidence.settled === true || evidence.completed === true) &&
+          evidence.status !== undefined
+        ) {
+          const settled = await completeComposableNodeAttempt(
+            {
+              connectedRuns: staging.writer,
+              dispatchPhase: this.deps.dispatchPhase,
+              ...(this.deps.cancelOrphanedQueueItem !== undefined
+                ? { cancelOrphanedQueueItem: this.deps.cancelOrphanedQueueItem }
+                : {})
+            },
+            {
+              run: staging.current(),
+              invocationId: deepestLeafFrame.invocationId,
+              nodeId: leafAttempt.nodeId,
+              attemptIndex: leafAttempt.attemptIndex,
+              status: evidence.status,
+              completedAt: evidence.completedAt ?? now,
+              ...(evidence.declaredOutputs !== undefined
+                ? { declaredOutputs: evidence.declaredOutputs }
+                : {}),
+              ...(evidence.verdict !== undefined ? { verdict: evidence.verdict } : {}),
+              ...(evidence.failureCode !== undefined ? { failureCode: evidence.failureCode } : {})
+            }
+          );
+          if (settled.outcome === 'phase-dispatched') {
+            return { spawnedAttemptId: settled.attemptId };
+          }
+          if (
+            settled.outcome === 'workflow-completed' ||
+            settled.outcome === 'waiting-for-handoff' ||
+            settled.outcome === 'workflow-failed' ||
+            settled.outcome === 'workflow-canceled'
+          ) {
+            return {};
+          }
+          return { undispatched: settled };
+        }
+
+        const boundQueueId = resolveBoundQueueId(run);
+        if (
+          leafAttempt.queueItemId !== undefined &&
+          this.deps.isQueueOrTaskPresent?.(boundQueueId, leafAttempt.queueItemId) === true
+        ) {
+          const { completedAt: _completedAt, ...activeAttemptRest } = leafAttempt;
+          const reactivatedAttempt: NodeAttemptRecord = Object.freeze({
+            ...activeAttemptRest,
+            status: 'in-flight'
+          });
+          const frameWithReactivated = recordNodeAttempt(deepestLeafFrame, reactivatedAttempt);
+          staging.set(upsertInvocationFrame(staging.current(), frameWithReactivated));
+          return {};
+        }
+      }
       if (leafAttempt === undefined || leafAttempt.status === 'paused') {
         const dispatched = await dispatchComposableNode(
-          { connectedRuns: staging.writer, dispatchPhase: this.deps.dispatchPhase },
+          {
+            connectedRuns: staging.writer,
+            dispatchPhase: this.deps.dispatchPhase,
+            ...(this.deps.cancelOrphanedQueueItem !== undefined
+              ? { cancelOrphanedQueueItem: this.deps.cancelOrphanedQueueItem }
+              : {})
+          },
           {
             run: staging.current(),
             invocationId: deepestLeafFrame.invocationId,
@@ -780,7 +877,12 @@ export class WorkflowControlService {
 
       for (const attempts of Object.values(updatedFrame.attemptsByNodeId)) {
         const last = attempts[attempts.length - 1];
-        if (last !== undefined && (last.status === 'in-flight' || last.status === 'paused')) {
+        if (
+          last !== undefined &&
+          (last.status === 'in-flight' ||
+            last.status === 'paused' ||
+            last.status === 'pending-dispatch')
+        ) {
           updatedFrame = recordNodeAttempt(updatedFrame, {
             ...last,
             status: 'canceled',

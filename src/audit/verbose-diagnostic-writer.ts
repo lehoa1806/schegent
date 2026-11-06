@@ -8,6 +8,13 @@ export type { VerboseDiagnosticTarget };
 
 export interface VerboseDiagnosticResult {
   readonly warnings: ReadonlyArray<string>;
+  /**
+   * Feature 020 BUG-002 (FR-002a) — `true` once a chunk of the CLI's stdout was
+   * written to `stream.jsonl`. A prepared directory, an empty chunk, a
+   * verbose-only write and a refused or failed stream write capture nothing.
+   * `cli-invocation`'s `diagnosticsEnabled` records this, through the adapter.
+   */
+  readonly streamCaptured: boolean;
 }
 
 type Slot = 'directory' | 'stream' | 'verbose';
@@ -46,6 +53,7 @@ export class VerboseDiagnosticWriter {
   private readonly preparedDirs = new Set<string>();
   private readonly warnings: string[] = [];
   private readonly warnedSlots = new Map<string, Set<Slot>>();
+  private streamCaptured = false;
 
   constructor(logger: SanitizedLogger) {
     this.logger = logger;
@@ -109,7 +117,7 @@ export class VerboseDiagnosticWriter {
   }
 
   public result(): VerboseDiagnosticResult {
-    return { warnings: [...this.warnings] };
+    return { warnings: [...this.warnings], streamCaptured: this.streamCaptured };
   }
 
   private async appendBestEffort(
@@ -144,6 +152,7 @@ export class VerboseDiagnosticWriter {
       }
       try {
         await opened.handle.write(chunk, null, 'utf8');
+        if (slot === 'stream') this.streamCaptured = true;
       } finally {
         await opened.handle.close().catch(() => undefined);
       }

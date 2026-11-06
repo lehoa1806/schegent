@@ -1012,7 +1012,12 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // `gitPlanGrantProblemsWarned` already applies: one field with its note (two), the compare in the
       // getter (four) and the paragraph that says why (five). The field and the getter are this store's,
       // so the change cannot move; the warning's decision is the set of dropped ids, nothing larger.
-      highWaterMark: 3390
+      //
+      // Feature 267 (FR-R5-F08, 2026-11-06) — 3390 → 3447, +57: `PrimacyClaimSource`
+      // (`bindPrimacyClaimSource`, `canCommitConnectedRun`) and the commit-point ownership and
+      // primacy verification inside `compareAndSetConnectedRun` so a superseded or non-primary
+      // window cannot overwrite a rival primary's connected-run state.
+      highWaterMark: 3447
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1282,9 +1287,19 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // the import of `unexpectedMutationFailureReason`; the two reason helpers each swapped one
       // line, `err.message` for a call. What the closed reason is, and where the detail goes, is
       // decided in `src/queue/unexpected-mutation-failure.ts`, not here.
-      highWaterMark: 2393
+      //
+      // Feature 267 (FR-R5-F08, 2026-11-06) — 2393 → 2413, +20: occurrence-idempotent
+      // admission in `enqueue` (`workflowOccurrence`), returning the existing non-canceled
+      // request when a workflow node attempt (`rootRunId`, `invocationId`, `attemptId`) is
+      // re-dispatched after a crash or retry race.
+      highWaterMark: 2413
     }
   },
+  // Feature 267 (FR-R5-F08, 2026-11-06) — `workflow-control-service.ts` crossed the
+  // 1,000-line entry condition (1,095 lines) with evidence-aware resume reconciliation
+  // (`checkDurableAttemptEvidence` and `isQueueOrTaskPresent` before re-dispatching a
+  // paused leaf Phase node). Budgeted at 1,200 with ~105 lines of headroom.
+  { path: 'src/services/workflow-execution/workflow-control-service.ts', maxLines: 1200 },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
   // built-in phases (speckit-checklist, speckit-review) and enriched
   // skill-aligned instruction text for clarify, analyze, review, and finalize.

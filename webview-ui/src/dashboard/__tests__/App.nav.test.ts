@@ -19,7 +19,6 @@ import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
 import {
   DASHBOARD_ROUTES,
-  DASHBOARD_ROUTE_LABELS,
   DEFAULT_DASHBOARD_ROUTE
 } from '../routes';
 import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
@@ -163,8 +162,7 @@ const BUDGET_SHARE_OF_PER_TEST_TIMEOUT = 0.7;
  * A rename fails the lookup below rather than quietly checking nothing.
  */
 const BUDGETED_TEST_NAMES: readonly string[] = [
-  'keeps the shell structural and exposes exactly one main landmark per route',
-  'loads its surface on demand when the route is opened'
+  'keeps the shell structural and exposes exactly one main landmark per route'
 ];
 
 /** Every test case collected from this file, flattened out of the suite tree. */
@@ -227,8 +225,8 @@ describe('FR-R3-068 — the lazy-route wait budget', () => {
   });
 });
 
-describe('Feature 064 T013 — flat seven-route top-level nav', () => {
-  it('renders seven nav buttons in order with stable data-testids', () => {
+describe('Feature 064 T013 — flat six-route top-level nav', () => {
+  it('renders six nav buttons in order with stable data-testids', () => {
     // Push a ready snapshot so the nav (and routes) render.
     snapshotStore.apply({
       type: 'STATE_SNAPSHOT',
@@ -236,14 +234,11 @@ describe('Feature 064 T013 — flat seven-route top-level nav', () => {
     } as unknown as Parameters<typeof snapshotStore.apply>[0]);
     const { container } = render(App);
     const buttons = container.querySelectorAll('[data-testid^="dashboard-route-"]');
-    expect(buttons.length).toBe(7);
-    expect(buttons[0].getAttribute('data-testid')).toBe('dashboard-route-operations');
-    expect(buttons[1].getAttribute('data-testid')).toBe('dashboard-route-runs');
-    expect(buttons[2].getAttribute('data-testid')).toBe('dashboard-route-history');
-    expect(buttons[3].getAttribute('data-testid')).toBe('dashboard-route-metrics');
-    expect(buttons[4].getAttribute('data-testid')).toBe('dashboard-route-system');
-    expect(buttons[5].getAttribute('data-testid')).toBe('dashboard-route-builder');
-    expect(buttons[6].getAttribute('data-testid')).toBe('dashboard-route-settings');
+    expect(buttons.length).toBe(6);
+    expect(Array.from(buttons, (button) => button.getAttribute('data-testid'))).toEqual([
+      'dashboard-route-operations', 'dashboard-route-history', 'dashboard-route-metrics',
+      'dashboard-route-system', 'dashboard-route-builder', 'dashboard-route-settings'
+    ]);
   });
 
   it('switches the visible surface when each route is clicked', async () => {
@@ -315,66 +310,13 @@ describe('Feature 064 T013 — flat seven-route top-level nav', () => {
   });
 });
 
-// Feature 091 (T017, US2 — FR-018) — the mount, seen from the nav.
-//
-// Two claims, and the second is the one that could quietly cost an operator
-// something. The first is that the surface is genuinely reachable: a button
-// exists, clicking it loads a real component, and the component is the Runs
-// surface rather than the loading placeholder. The second is that adding it
-// moved nobody's landing page — `DEFAULT_DASHBOARD_ROUTE` is asserted directly
-// rather than inferred from what renders first, because a default that changed
-// while the first render happened to agree is exactly the regression a
-// render-only assertion would miss.
-describe('Feature 091 T017 — the Runs route (FR-018)', () => {
-  it('appears in the nav labelled "Runs"', () => {
-    expect(DASHBOARD_ROUTES).toContain('runs');
-    expect(DASHBOARD_ROUTE_LABELS.runs).toBe('Runs');
-
-    snapshotStore.apply({
-      type: 'STATE_SNAPSHOT',
-      payload: buildSnapshot()
-    } as unknown as Parameters<typeof snapshotStore.apply>[0]);
-    const { getByTestId } = render(App);
-    expect(getByTestId('dashboard-route-runs').textContent).toContain('Runs');
-  });
-
-  it('sits directly after operations, before history', () => {
-    expect(DASHBOARD_ROUTES.indexOf('runs')).toBe(DASHBOARD_ROUTES.indexOf('operations') + 1);
-    expect(DASHBOARD_ROUTES.indexOf('runs')).toBeLessThan(DASHBOARD_ROUTES.indexOf('history'));
-  });
-
-  it('loads its surface on demand when the route is opened', async () => {
-    snapshotStore.apply({
-      type: 'STATE_SNAPSHOT',
-      payload: buildSnapshot()
-    } as unknown as Parameters<typeof snapshotStore.apply>[0]);
-    const { container, getByTestId } = render(App);
-
-    // Not loaded until asked for — that is what "on demand" means here, and a
-    // statically imported surface would already be in the DOM's reach.
-    expect(container.querySelector('[data-testid="runs-surface"]')).toBeNull();
-
-    await fireEvent.click(getByTestId('dashboard-route-runs'));
-    await vi.waitFor(
-      () => {
-        expect(container.querySelector('[data-testid="runs-surface"]')).not.toBeNull();
-      },
-      { timeout: LAZY_ROUTE_WAIT_MS }
-    );
-    expect(container.querySelector('[data-testid="dashboard-route-runs"].active')).not.toBeNull();
-  });
-
-  it('leaves the landing surface on operations', () => {
+describe('queue-based navigation', () => {
+  it('has no Runs navigation or standalone composer on the landing page', () => {
+    snapshotStore.apply({ type: 'STATE_SNAPSHOT', payload: buildSnapshot() } as unknown as Parameters<typeof snapshotStore.apply>[0]);
+    const { queryByTestId } = render(App);
+    expect(DASHBOARD_ROUTES).not.toContain('runs');
+    expect(queryByTestId('dashboard-route-runs')).toBeNull();
+    expect(queryByTestId('queue-task-composer')).toBeNull();
     expect(DEFAULT_DASHBOARD_ROUTE).toBe('operations');
-
-    snapshotStore.apply({
-      type: 'STATE_SNAPSHOT',
-      payload: buildSnapshot()
-    } as unknown as Parameters<typeof snapshotStore.apply>[0]);
-    const { container } = render(App);
-    expect(
-      container.querySelector('[data-testid="dashboard-route-operations"].active')
-    ).not.toBeNull();
-    expect(container.querySelector('[data-testid="dashboard-route-runs"].active')).toBeNull();
   });
 });
