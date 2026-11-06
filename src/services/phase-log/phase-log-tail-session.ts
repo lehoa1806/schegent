@@ -4,7 +4,8 @@
 // sequence, and the synthetic `tail-ended` emission on dispose. The
 // watcher mechanism (`fs.watch` vs polling) is decided and owned by
 // the registry (T046); this session only exposes `tick()` (re-read
-// from current offset) and `dispose(reason)` (close + emit terminator).
+// from current offset) and `dispose(reason)` (mark disposed + emit the
+// `tail-ended` terminator; the registry stops the watcher before it).
 //
 // Invariants:
 //   - Body strings ARE sanitized at the IPC boundary (here) before

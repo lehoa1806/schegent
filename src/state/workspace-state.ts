@@ -1568,13 +1568,12 @@ export class WorkspaceStateStore {
    * FR-R4-F01 (FR-016 to FR-019, decision D2, contract V2) — give every frozen Phase its verdict
    * basis, by the shape of what it records, before the version is stamped.
    *
-   * The step that was meant to do this (`migrateV13ToV14`) expects a `record.plans` array and no
-   * persisted key has that shape, so a workspace stamped 14 kept Phases whose ABSENT
-   * `hostVerification` the runtime now reads as the stricter default. This reads the snapshots
-   * execution actually uses, in `KEYS.run` and in the terminal-transition journal, and is keyed on
-   * the Phase's own fields rather than on the persisted number, like the steps above it: it also
-   * repairs a workspace an earlier v14 build stamped without migrating, and a second pass finds
-   * nothing to do.
+   * `migrateV13ToV14` was meant to do this, expected a `record.plans` array no key had, was never
+   * called and was removed (FR-R5-F09); a workspace stamped 14 kept Phases whose ABSENT
+   * `hostVerification` the runtime reads as the stricter default. The live path is this method,
+   * through `migrateRunVerdictBasis`. It reads the snapshots execution uses, in `KEYS.run` and the
+   * terminal-transition journal, keyed on the Phase's own fields like the steps above, so it also
+   * repairs a workspace an earlier v14 build stamped without migrating; a second pass does nothing.
    *
    * ORDER: after `migrateV12ToV13IfNeeded()` and the v10-to-v11 reshape, which make `KEYS.run` a
    * map, and before the orphaned-Run reconcile, which must see the Phases already explicit. One
@@ -2113,7 +2112,8 @@ export class WorkspaceStateStore {
     });
   }
 
-  /** @internal Drop one queue's execution state. Used by queue deletion. */
+  // Production deletion is `deleteQueueIfNoLiveRun`: one commit, nothing written while a Run lives.
+  /** @internal Drop one queue's execution state unconditionally; no production path calls it. */
   public deleteQueueState(queueId: string): Promise<void> {
     return this.serialize(KEYS.queue, () => {
       const map = { ...this.readQueueMap() };

@@ -8,7 +8,7 @@ Schegent's domain model is declared in TypeScript contracts and persisted throug
 <!-- Source: src/state/workspace-state.ts -->
 <!-- Source: src/state/workspace-folder-picker.ts -->
 
-The exact product nouns are Phase, Pipeline, Workflow, Definition version, Catalog lifecycle, Queue, Task (`FeatureRequest` in host code), Run (`WorkflowRun` in host code), Execution Envelope, Connected Workflow Run, History Entry, Audit Entry, Ownership Record, and Execution Lease. “Workflow” and `WorkflowRun` are intentionally different concepts: the first is a reusable graph of Pipelines; the second is one executing Pipeline snapshot.
+The exact product nouns are Phase, Workflow, Definition version, Catalog lifecycle, Queue, Task (`FeatureRequest` in host code), Run (`WorkflowRun` in host code), Execution Envelope, Connected Workflow Run, History Entry, Audit Entry, Ownership Record, and Execution Lease. “Workflow” and `WorkflowRun` are intentionally different concepts: the first is a reusable graph whose nodes target a Phase or a child Workflow; the second is one executing Phase-node snapshot. Phase and Workflow are the only two definition kinds.
 
 <!-- Source: src/contracts/workflow-definitions.ts -->
 <!-- Source: src/state/workflow-run.ts -->
@@ -20,17 +20,15 @@ The exact product nouns are Phase, Pipeline, Workflow, Definition version, Catal
 graph TD
   Manifest[CatalogManifestEntry] -->|lists immutable versions| Version[CatalogVersionRecord]
   Version -->|body is one kind| Phase[PhaseDefinition]
-  Version --> Pipeline[PipelineDefinition]
   Version --> Workflow[WorkflowDefinition]
 
-  Pipeline -->|ordered phaseIds; repeats allowed| Phase
-  Workflow -->|nodes reference pipelineId| Pipeline
-  Workflow -->|connections join node ports| Workflow
+  Workflow -->|Phase node: phaseId| Phase
+  Workflow -->|child Workflow node: workflowId| Workflow
 
   Registry[QueueRegistryEntry] -->|queueId| Queue[QueueState]
   Queue -->|requests| Task[FeatureRequest / Task]
   Queue -->|inFlightId: zero or one| Task
-  Task -->|runId / featureId| Run[WorkflowRun / Pipeline Run]
+  Task -->|runId / featureId| Run[WorkflowRun / Run]
   Task -->|optional frozen plan| Envelope[ExecutionEnvelope]
   Envelope --> Frozen[Frozen WorkflowRunPipeline]
   Run -->|owns frozen snapshot| Frozen
@@ -74,25 +72,9 @@ The `sideEffects` values are `none`, `workspace`, `git`, and `unrestricted`; the
 <!-- Source: src/config/phase-runner-policy.ts -->
 <!-- Source: src/services/mutation-plan.ts -->
 
-### Pipeline
-
-A `PipelineDefinition` is a reusable ordered program of Phase references. `phaseIds` must be nonempty and may repeat a Phase, so every `PhaseBinding` addresses `phaseIndex` rather than assuming a Phase ID occurs once. The definition owns declared input/output ports, bindings, execution defaults, and `recommendedNext` Pipeline IDs. Execution defaults are advisory: they are carried and exported with the definition but are not applied to a Run, and the launcher shows the settings host policy resolves instead.
-
-<!-- Source: src/contracts/pipeline-definitions.ts -->
-<!-- Source: src/config/pipeline-definition-validator.ts -->
-
-Input types are `text`, `source`, `source-list`, `local-file`, `local-folder`, `web-url`, `pipeline-output`, and `repository-context`. Output types are `markdown`, `file`, `file-set`, `structured-data`, `run-request`, and `external-reference`. Port IDs are unique within their input or output namespace. A Phase-output binding must point strictly backward to a Phase position that declares the named output, and `pipeline-output` is the only Phase-to-Phase input bridge. No binding coercion layer exists.
-
-<!-- Source: src/contracts/pipeline-definitions.ts -->
-<!-- Source: src/config/pipeline-binding-validator.ts -->
-
-`recommendedNext` is advisory. An unresolved recommended Pipeline produces a warning but does not invalidate the definition or alter execution.
-
-<!-- Source: src/config/pipeline-catalog.ts -->
-
 ### Workflow
 
-A `WorkflowDefinition` is a reusable acyclic graph whose nodes reference Pipelines. Node IDs are stable within the graph, are unique, and allow several nodes to reference the same Pipeline. Connections have no independent ID; each connects one node/output port to another node/input port. `startNodeIds` is nonempty, every node must be reachable from a start, and a cycle is invalid.
+A `WorkflowDefinition` is a reusable acyclic graph. Each node targets exactly one definition: a Phase through `phaseId`, or a child Workflow through `workflowId`. Node IDs are stable within the graph, are unique, and allow several nodes to target the same definition. Connections have no independent ID; each sequences one node after another and may name the ports it joins. Data moves through bindings, which are separate from connections. The definition may also carry execution defaults and `recommendedNext` Workflow IDs, which are copied into the Run snapshot. `startNodeIds` is nonempty, every node must be reachable from a start, and a cycle is invalid.
 
 <!-- Source: src/contracts/workflow-definitions.ts -->
 <!-- Source: src/config/workflow-definition-validator.ts -->
@@ -103,18 +85,19 @@ Each destination input accepts one producer. Multiple outgoing connections from 
 <!-- Source: src/config/workflow-graph-validator.ts -->
 <!-- Source: src/contracts/workflow-definitions.ts -->
 
-The compatibility matrix is fixed: `markdown` feeds `text` or `source`; `file` feeds `local-file` or `source`; `file-set` feeds `local-folder` or `source-list`; `structured-data` and `run-request` feed `pipeline-output`; and `external-reference` feeds `web-url` or `source`.
+Input types are `text`, `source`, `source-list`, `local-file`, `local-folder`, `web-url`, `pipeline-output`, and `repository-context`. Output types are `markdown`, `file`, `file-set`, `structured-data`, `run-request`, and `external-reference`; host code keeps the historical `Pipeline` names for both lists. Port IDs are unique within their input or output namespace. No binding coercion layer exists. The compatibility matrix is fixed: `markdown` feeds `text` or `source`; `file` feeds `local-file` or `source`; `file-set` feeds `local-folder` or `source-list`; `structured-data` and `run-request` feed `pipeline-output`; and `external-reference` feeds `web-url` or `source`.
 
 <!-- Source: src/config/workflow-graph-validator.ts -->
 
-Conditions are structured data, never free-text expressions. The closed operator set is `equals`, `notEquals`, `in`, `exists`, `greaterThan`, `greaterThanOrEqual`, `lessThan`, and `lessThanOrEqual`. Operands may read the source node or an ancestor, and node-status comparisons accept only `completed`, `failed`, or `canceled`. In v1 every operand is text (a node status, or the location reference an output is recorded as), so the ordering operators and number or boolean literals can never match: a Workflow that uses one is refused with `condition-comparison-unsupported`, at publication, in the catalog and in an import plan. The Builder offers the four operators that compare text, and keeps a typed literal as text. Workflow-level input/output ports are derived from unbound node ports and are not stored as another representation.
+Conditions are structured data, never free-text expressions. The closed operator set is `equals`, `notEquals`, `in`, `exists`, `greaterThan`, `greaterThanOrEqual`, `lessThan`, and `lessThanOrEqual`. Operands may read the source node or an ancestor, and node-status comparisons accept only `completed`, `failed`, or `canceled`. In v1 every operand is text (a node status, or the location reference an output is recorded as), so the ordering operators and number or boolean literals can never match: a Workflow that uses one is refused with `condition-comparison-unsupported`, at publication, in the catalog and in an import plan. The Builder offers the four operators that compare text, and keeps a typed literal as text. A Workflow's own ports are the `inputs` and `outputs` lists its definition declares. An input binding feeds a node input from a declared Workflow input or from another node's output; an output binding publishes a node output as a declared Workflow output. The port surface a launch asks for is projected on read and never stored: the declared ports, plus any port of a child Workflow node that no connection or binding consumes. A Phase node adds none.
 
 <!-- Source: src/contracts/workflow-definitions.ts -->
 <!-- Source: src/config/workflow-graph-validator.ts -->
+<!-- Source: src/config/workflow-derived-ports.ts -->
 
 ## Versioned catalog and lifecycle
 
-The catalog owns exactly three kinds: `phase`, `pipeline`, and `workflow`. `CatalogVersionRecord` stores one immutable authored body under an identity such as `v3`; `CatalogManifestEntry` stores the monotonic oldest-first version list plus `draftVersionId` and `activeVersionId`. Up to 50 versions are retained per definition. The manifest is store format v1 and is the catalog's only mutable file.
+The catalog owns two kinds, `phase` and `workflow`. It still reads records of the retired `pipeline` kind; see [Current limitations](core-concepts.md#current-limitations). `CatalogVersionRecord` stores one immutable authored body under an identity such as `v3`; `CatalogManifestEntry` stores the monotonic oldest-first version list plus `draftVersionId` and `activeVersionId`. Up to 50 versions are retained per definition. The manifest is store format v1 and is the catalog's only mutable file.
 
 <!-- Source: src/contracts/catalog-store.ts -->
 <!-- Source: src/catalog/catalog-paths.ts -->
@@ -132,7 +115,7 @@ Neither pointer means the manifest entry must not exist; there is no fourth life
 <!-- Source: src/config/pipeline-catalog.ts -->
 <!-- Source: src/config/workflow-catalog.ts -->
 
-Save-draft, publish, restore, deactivate, and discard-draft operations use the expected draft token as a compare-and-set boundary for one definition. Within one extension host the store runs its writes in turn, so two writes through it both land, each against the manifest the other left, or one is refused stale. A second process writing the same catalog directory is unsupported: the manifest is replaced by a rename with no compare, so the last rename wins, a definition's pointer update can be lost, and its version record stays on disk as collectable. The primary window is the only writer. Direct active dependencies block deactivation: an active Pipeline blocks its Phase, and an active Workflow blocks its Pipeline. Draft references and a configured default are advisories. Schegent ships no definition records; an absent manifest resolves as a healthy empty catalog.
+Save-draft, publish, restore, deactivate, and discard-draft operations use the expected draft token as a compare-and-set boundary for one definition. Within one extension host the store runs its writes in turn, so two writes through it both land, each against the manifest the other left, or one is refused stale. A second process writing the same catalog directory is unsupported: the manifest is replaced by a rename with no compare, so the last rename wins, a definition's pointer update can be lost, and its version record stays on disk as collectable. The primary window is the only writer. Direct active dependencies block deactivation: an active Workflow blocks a Phase or child Workflow that one of its nodes targets, and a stored legacy Pipeline row still blocks its Phases (see [Current limitations](core-concepts.md#current-limitations)). Draft references and a configured default are advisories. Schegent ships no definition records; an absent manifest resolves as a healthy empty catalog.
 
 <!-- Source: src/contracts/catalog-lifecycle.ts -->
 <!-- Source: src/catalog/catalog-manifest.ts -->
@@ -149,7 +132,7 @@ A `QueueRegistryEntry` gives a Queue its identity, name, ordering position, opti
 <!-- Source: src/queue/feature-request.ts -->
 <!-- Source: src/contracts/state-schema.ts -->
 
-The UI noun Task is the host type `FeatureRequest`. A Task contains a bounded description, Queue association, position and timestamps, status, optional Pipeline ID, Run ID, retry/failure/pause information, and optional rerun provenance. A Queue accepts at most 100 pending Tasks and descriptions are nonempty after trimming and at most 32,000 characters.
+The UI noun Task is the host type `FeatureRequest`. A Task contains a bounded description, Queue association, position and timestamps, status, optional definition ID (host field `pipelineId`), Run ID, retry/failure/pause information, and optional rerun provenance. A Queue accepts at most 100 pending Tasks and descriptions are nonempty after trimming and at most 32,000 characters.
 
 <!-- Source: src/queue/feature-request.ts -->
 <!-- Source: src/queue/queue-manager.ts -->
@@ -159,14 +142,14 @@ Task statuses are `pending`, `in-flight`, `paused`, `completed`, `canceled`, and
 <!-- Source: src/queue/feature-request.ts -->
 <!-- Source: src/contracts/run-request.ts -->
 
-## Execution Envelope and Pipeline Run
+## Execution Envelope and Run
 
-`RunRequest` is a transient, identity-free request to compose execution. It is never itself persisted or placed in a Queue. Successful validation resolves it into an immutable `ExecutionEnvelope`, also named `FrozenRunPlan`, which captures a frozen Pipeline, input bindings, declared effects, policy decisions, and provenance. Persisted Tasks and Runs carry that result, not the mutable request.
+`RunRequest` is a transient, identity-free request to compose execution. It is never itself persisted or placed in a Queue. Successful validation resolves it into an immutable `ExecutionEnvelope`, also named `FrozenRunPlan`, which captures the frozen Workflow closure and the expanded snapshot of the node to run, input bindings, declared effects, policy decisions, and provenance. Persisted Tasks and Runs carry that result, not the mutable request.
 
 <!-- Source: src/contracts/run-request.ts -->
 <!-- Source: src/services/run-request/run-request-validator.ts -->
 
-`WorkflowRun` is the host's historical name for one executing Pipeline Run. `featureId` references its Task. It intentionally carries no `queueId`: the `schegent.run` Memento record is keyed by Queue ID, making the map key the only association. The Run freezes `WorkflowRunPipeline`, which expands the Pipeline to concrete Phase definitions and retains the ports, bindings, defaults, recommendations, and published catalog version when known.
+`WorkflowRun` is the host's historical name for one Run: one executing Phase node. A Run started as a Workflow member is a child Task of a Connected Workflow Run; any other Run is standalone. `featureId` references its Task. It intentionally carries no `queueId`: the `schegent.run` Memento record is keyed by Queue ID, making the map key the only association. The Run freezes `WorkflowRunPipeline` (host code still calls this snapshot a pipeline), which expands its Phase node to concrete Phase definitions and retains the ports, bindings, defaults, recommendations, and published catalog version when known.
 
 <!-- Source: src/state/workflow-run.ts -->
 <!-- Source: src/contracts/state-schema.ts -->
@@ -176,13 +159,13 @@ Run statuses are `running`, `paused`, `failed`, `completed`, and `canceled`. Com
 <!-- Source: src/state/workflow-run.ts -->
 <!-- Source: src/controller/run-session.ts -->
 
-The Run also owns progress, completed Phase results, sanitized failure data, retry timing, manual-pause pairs, breakpoints, per-Run Phase overrides, transcript mode, mutation approval, backend session identity, activity timestamp, resolved outputs, and optional Workflow-member provenance. Overrides express skipped, disabled, or removed Phases without mutating the frozen Pipeline.
+The Run also owns progress, completed Phase results, sanitized failure data, retry timing, manual-pause pairs, breakpoints, per-Run Phase overrides, transcript mode, mutation approval, backend session identity, activity timestamp, resolved outputs, and optional Workflow-member provenance. Overrides express skipped, disabled, or removed Phases without mutating the frozen snapshot.
 
 <!-- Source: src/state/workflow-run.ts -->
 
 ## Connected Workflow Run
 
-`ConnectedWorkflowRun` is a separate aggregate above the Pipeline Runs created for Workflow nodes. It freezes the Workflow graph and each member Pipeline snapshot, records decisions and node attempts, and references each attempt's queued Task ID. It deliberately does not copy a child Run's lifecycle, current Phase, logs, or output body.
+`ConnectedWorkflowRun` is a separate aggregate above the child Runs created for Workflow nodes. It freezes the Workflow graph, the definitions it reaches and each member snapshot, records decisions and node attempts, and references each attempt's queued Task ID. It deliberately does not copy a child Run's lifecycle, current Phase, logs, or output body.
 
 <!-- Source: src/state/connected-workflow-run.ts -->
 
@@ -193,7 +176,7 @@ Nodes are keyed by `nodeId`; attempts are ordered, nonempty once present, and ap
 
 ## Terminal history, audit, and ownership
 
-A `HistoryEntry` is the terminal projection of a Pipeline Run. It records Task and Run IDs, terminal status and timing, an audit pointer, output records, Pipeline identity, the frozen catalog version when known, and whether the Run was standalone or a Workflow member. Like active Runs, entries do not persist `queueId`; the history map partition supplies it on read.
+A `HistoryEntry` is the terminal projection of a Run. It records Task and Run IDs, terminal status and timing, an audit pointer, output records, the definition ID (host field `pipelineId`), the frozen catalog version when known, and whether the Run was standalone or a Workflow member. Like active Runs, entries do not persist `queueId`; the history map partition supplies it on read.
 
 <!-- Source: src/state/history-entry.ts -->
 <!-- Source: src/contracts/state-schema.ts -->

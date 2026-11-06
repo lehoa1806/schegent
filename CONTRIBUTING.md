@@ -25,8 +25,9 @@ the rows your change touches.
 
 ## Read these ten, in this order — then stop
 
-**`FR-R3-121`, 2026-08-27.** This repository carries **16.6 MB of Markdown across 1,377 files**
-and **151 lint gates** against a 99k-line implementation. Almost all of it is reference, and
+**`FR-R3-121`, 2026-08-27.** As of 2026-08-27, this repository carried **16.6 MB of Markdown
+across 1,377 files** and **151 lint gates** against a 99k-line implementation. These are that day's
+figures and are not kept current here. Almost all of it is reference, and
 nothing said so. A contributor who tried to read their way in had no way to know where the
 bottom was, which is a real entry cost and the mechanical half of the single-reviewer problem
 recorded in [`SECURITY.md`](SECURITY.md).

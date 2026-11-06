@@ -14,7 +14,7 @@ activated a process, queued one Task, and found its Run evidence.
 |---|---|
 | 1. Install and open a safe workspace | Schegent is running in a trusted, recoverable folder. |
 | 2. Connect one backend | Schegent can find an authenticated Claude, Codex, or Agy CLI. |
-| 3. Activate a process | At least one Phase and Pipeline are Active. |
+| 3. Activate a process | At least one Phase and Workflow are Active. |
 | 4. Queue and follow a Task | The request enters a Queue and its Run is visible. |
 | 5. Keep only the references you need | You know where to look when the normal path stops. |
 
@@ -101,7 +101,7 @@ Configure it, plus only the differences in your environment:
 | Locate Codex | `schegent.codex.path` | `codex` is not available on `PATH`. |
 | Locate Agy | `schegent.agy.path` | `agy` is not available on `PATH`. |
 | Restrict environment inheritance | `schegent.cli.environmentMode`, `schegent.cli.environmentAllowlist`, `schegent.cli.inheritEnvironment` | Your security or CLI setup needs a non-default environment policy. |
-| Choose an enqueue fallback | `schegent.defaultPipelineId` | A caller may omit the Pipeline ID. It is not required for dashboard launches. |
+| Preselect a row in the older schedule picker | `schegent.defaultPipelineId` | Optional. Only the **Schegent: select pipeline** quick pick reads it; the **Add work** composer does not. See [Current limitations](../explanation/core-concepts.md#current-limitations). |
 
 Set backend selection and environment policy in VS Code **Settings**. Reload
 the VS Code window after changing them because Schegent captures them during
@@ -134,13 +134,13 @@ There is no Schegent server, database, or HTTP API to connect.
 ## 3. Activate a process
 
 Schegent ships with an empty active catalog. Your team must give you a process
-YAML package, or you must author and publish at least one Phase and Pipeline.
+YAML package, or you must author and publish at least one Phase and Workflow.
 
 1. Open **Builder**.
 2. Select **Import…** and choose the supplied YAML document.
 3. Review every preflight row and any blocked dependency.
 4. Select **Confirm import** only when the planned definitions are expected.
-5. Verify that the Pipeline is Active and appears in **Queues → Add work**.
+5. Verify that the Workflow is Active and appears under **Workflows** in **Queues → Add work**.
 
 <!-- Source: ../../src/config/pipeline-config.ts -->
 <!-- Source: ../operations/process-yaml.md -->
@@ -158,7 +158,7 @@ prefer a process package supplied and reviewed by your team.
 ## 4. Queue and follow a Task
 
 1. Open **Queues**, select a Queue, and select **Add work**.
-2. Select a published Workflow and then **Trigger**.
+2. Under **Workflows**, select a published Workflow and then **Trigger**.
 3. Enter the requested inputs and **Instructions**.
 4. Review the effective execution policy and declared side effects.
 5. Select **Add task** and complete any required side-effect approval.
@@ -179,7 +179,7 @@ promotion; it does not stop a subprocess that is already executing.
 The data flow you are connecting is intentionally local:
 
 ```text
-process YAML -> Builder import -> active Phase/Pipeline catalog
+process YAML -> Builder import -> active Phase/Workflow catalog
 operator inputs -> Queue Add work -> host validation -> Queue -> backend CLI
 backend result -> Run detail + History + Audit + workspace-local evidence
 ```

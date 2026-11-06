@@ -184,7 +184,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     min: 1,
     max: 50,
     scope: 'resource',
-    docLabel: 'Loop phase max iterations'
+    docLabel: 'Phase retry-condition max iterations'
   },
   'schegent.loop.maxUnchangedComparisons': {
     key: 'schegent.loop.maxUnchangedComparisons',
@@ -350,7 +350,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     min: 1,
     max: 3650,
     scope: 'resource',
-    docLabel: 'Unredacted session artifact maximum age (days)'
+    docLabel: 'Session artifact maximum age (days)'
   },
   'schegent.logging.sessionRetentionMaxBytes': {
     key: 'schegent.logging.sessionRetentionMaxBytes',

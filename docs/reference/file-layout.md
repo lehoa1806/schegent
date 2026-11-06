@@ -40,7 +40,7 @@ Schegent has no database, ORM, or remote persistence service. Durable product st
     `-- syslog
 ```
 
-The tree is demand-created. In particular, an absent `.schegent/catalog/manifest.json` is the healthy empty catalog, not corruption, and a fresh extension ships no Phase, Pipeline, or Workflow definitions.
+The tree is demand-created. In particular, an absent `.schegent/catalog/manifest.json` is the healthy empty catalog, not corruption, and a fresh extension ships no Phase or Workflow definitions.
 
 <!-- Source: src/host-services/catalog-fs-adapter.ts -->
 <!-- Source: src/catalog/catalog-paths.ts -->

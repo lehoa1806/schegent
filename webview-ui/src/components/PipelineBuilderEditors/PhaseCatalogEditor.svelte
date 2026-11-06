@@ -345,10 +345,11 @@
               <input class="text-input" value={phase.id} readonly={phase.persisted} aria-invalid={phase.sourceErrors.some((error) => error.field === 'phaseId') ? 'true' : undefined} aria-describedby={phaseErrorId(phase)} oninput={(event) => onphasechange(index, { id: event.currentTarget.value })} placeholder="phase-id" />
               {#if phase.persisted}<span class="field-help">Duplicate this Phase to create a new identity.</span>{/if}
             </label>
-            <!-- FR-R5-F10 (NF-11) — Authored `version` is read-only because each
-                 publication writes an immutable versioned snapshot (`v1`, `v2`, …)
-                 in the catalog store; mutable concurrency tokens (`catalog.revision`
-                 and `expectedDraftVersion`) track draft edits separately. -->
+            <!-- FR-R5-F10 (NF-11) — The authored `version` is a field of the
+                 definition, shown read-only. It is not the catalog's version id
+                 (`v1`, `v2`, …), which the catalog store assigns to each record it
+                 writes; `catalog.revision` and `expectedDraftVersion` track draft
+                 edits separately. -->
             <label class="form-field">
               <span class="form-label">Version</span>
               <input class="text-input" value={phase.version} readonly />

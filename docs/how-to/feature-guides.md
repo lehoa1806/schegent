@@ -1,31 +1,37 @@
 # Feature guides
 
-These procedures use only commands and handlers present in the current host. Mutating operations require a trusted workspace and the primary Schegent window; a second window is refused by the filesystem-backed ownership gate. Schegent also needs an active Pipeline in its catalog before a new Task can run.
+These procedures use only commands and handlers present in the current host. Mutating operations require a trusted workspace and the primary Schegent window; a second window is refused by the filesystem-backed ownership gate. Schegent also needs an active Workflow in its catalog before a new Task can run.
 
 <!-- Source: src/ui/sidebar/message-router.ts -->
 <!-- Source: src/state/lock.ts -->
 <!-- Source: src/config/pipeline-config.ts -->
 
-## 1. Enqueue or schedule a Task
+## 1. Add a Task to a Queue
 
-Use this when you have a published Pipeline and want to submit work without constructing a Workflow graph.
+Use this when you have a published Workflow and want to submit work.
 
-1. Open the VS Code Command Palette.
-2. Run **Schegent: Enqueue Feature Request** (`schegent.schedule`).
-3. Select a Pipeline if the command asks. With one available Pipeline and no configured default, the host selects that sole Pipeline; with several, it opens a picker and sorts the configured default first.
-4. Enter a nonempty feature description if the command asks.
-5. Wait for the `Schegent: enqueued …` notification, then open the dashboard with **Schegent: Open Dashboard** (`schegent.openDashboard`) to follow the Queue.
+1. Open the dashboard with **Schegent: Open Dashboard** (`schegent.openDashboard`) and open **Queues**.
+2. Select a Queue, then **Add work**. The composer opens under the heading **Add task**.
+3. Under **Workflows**, select a published Workflow, then **Trigger**.
+4. Enter the requested inputs and **Instructions**, review the effective execution policy and declared side effects, and select **Add task**. The webview posts `CMD_LAUNCH_WORKFLOW`, and the host validates the request before it inserts the Task.
+5. Select **Start Queue** when ready. Adding a task to an idle Queue leaves it waiting for this action.
 
-<!-- Source: package.json -->
-<!-- Source: src/commands/schedule.ts -->
 <!-- Source: src/commands/open-dashboard.ts -->
+<!-- Source: webview-ui/src/components/drilldown/QueueDetailTier.svelte -->
+<!-- Source: webview-ui/src/components/QueueTaskComposer.svelte -->
+<!-- Source: webview-ui/src/components/Runs/LaunchableDetail.svelte -->
+<!-- Source: webview-ui/src/components/Runs/WorkflowTriggerForm.svelte -->
+<!-- Source: src/contracts/sidebar-ipc.ts -->
+<!-- Source: src/ui/sidebar/commands/cmd-launch-workflow.ts -->
 
-With no programmatic arguments, `schegent.schedule` uses the current time as `scheduledStartAt`; the host treats that as ready to start. Automation may invoke the same command with optional `description`, `pipelineId`, `queueId`, `position`, and numeric `scheduledStartAt` fields. A paused Queue, unknown Pipeline/Queue, invalid position, validation failure, or foreign primary lock produces a refusal rather than a partially inserted Task.
+The tutorial [User quickstart](../tutorials/user-quickstart.md#3-compose-and-queue-the-run) walks the same path with a first Workflow, and [Launching work](../explanation/core-concepts.md#launching-work) explains it.
+
+The **Schegent: Enqueue Feature Request** command (`schegent.schedule`) is an older surface, not the way to launch a Workflow. Its picker lists stored Pipeline rows only and refuses a Workflow ID; [Current limitations](../explanation/core-concepts.md#current-limitations) describes it. Automation that still calls it may pass optional `description`, `pipelineId`, `queueId`, `position`, and numeric `scheduledStartAt` fields; with none, it uses the current time as `scheduledStartAt`. A paused Queue, unknown Pipeline/Queue, invalid position, validation failure, or foreign primary lock produces a refusal rather than a partially inserted Task.
 
 <!-- Source: src/commands/schedule.ts -->
 <!-- Source: src/services/guarded-run-service.ts -->
 
-If the Pipeline picker is empty, import and publish definitions first. A fresh Schegent install has no built-in Phase, Pipeline, or Workflow records.
+If **Workflows** is empty, import and publish definitions first. A fresh Schegent install has no built-in Phase or Workflow records.
 
 <!-- Source: src/config/pipeline-config.ts -->
 <!-- Source: src/ui/sidebar/commands/cmd-catalog-lifecycle.ts -->
@@ -105,7 +111,7 @@ Use History when you want a new Task based on a prior terminal Run.
 
 1. Open the dashboard and locate the History row.
 2. Choose **Rerun**. The webview posts `CMD_RERUN_FROM_HISTORY` with the exact `runId`; its host handler invokes `schegent.rerunFromHistory`. The optional `force` flag exists on the programmatic payload but is not added by the ordinary History-row click.
-3. If the entry has its full retained description, the host replays that description and the original Pipeline ID as a new, immediate Task.
+3. If the entry has its full retained description, the host replays that description and the original definition ID (host field `pipelineId`) as a new, immediate Task.
 4. If the full description is unavailable, the safe default is refusal. Only an explicit `force: true` uses the truncated preview, and the runtime log records that divergence.
 5. A successful request reports the new Queue item ID; follow that new Task rather than treating the historical row as live again.
 

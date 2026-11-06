@@ -68,7 +68,7 @@ kind: Workflow
 metadata:
   id: speckit-new-feature
   name: Spec-kit New Feature
-  version: 6
+  version: 8
 spec:
   startNodeIds:
     - speckit-specify

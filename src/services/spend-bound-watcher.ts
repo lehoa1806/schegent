@@ -77,7 +77,11 @@ export interface SpendBoundWatcher {
    * row ids intact, so the next `phase-end` evaluates cumulative spend against the active bound.
    */
   readonly onRunResumed: (runId: string) => void;
-  /** Drop a finished run's tally, its paused flag and its notice keys. */
+  /**
+   * Drop a run's tally, its paused flag and its notice keys. The wiring calls it when a Run reaches
+   * `completed` or `canceled`. A `failed` Run keeps its tally, because Retry, Restart and Resume
+   * can put it back into motion.
+   */
   readonly forget: (runId: string) => void;
   /**
    * Whether the bound in `denomination` can be trusted for this run right now (contract E1 G3):
@@ -95,7 +99,9 @@ export interface SpendBoundWatcher {
  * first, oldest-first among those, and only when every tracked run is still live does it take the
  * oldest of them (FR-R4-F02, contract S2 G9): a run that loses its tally is measured from that
  * point on, which understates spend rather than fabricating it. A restart no longer empties a
- * live run's tally: the seed rebuilds it from the audit log's last window (FR-R3-209).
+ * live run's tally: the seed rebuilds it from `readSpendReplay` (`spend-bound-replay.ts`), a replay
+ * of the live audit log and then its archives, newest first, inside one byte budget. A run the
+ * replay cannot bound comes back marked incomplete, with the reason (FR-R3-209, FR-R4-F02).
  */
 const MAX_TRACKED_RUNS = 64;
 
@@ -136,7 +142,8 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
   /**
    * Live runs whose tally was dropped to stay under `MAX_TRACKED_RUNS`. Their next row re-creates
    * the tally as `incomplete('evicted')` (contract S2 G9), because what was dropped is not coming
-   * back. Cleared with the run's other state at its terminal transition.
+   * back. That row removes the entry (`baseTotal`); otherwise `forget` clears it with the run's
+   * other state, when the run reaches `completed` or `canceled`.
    */
   const evicted = new Set<string>();
 
@@ -160,7 +167,15 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
     clearNotified(runId);
   };
 
-  /** A run that no longer needs its tally: gone from the store, or already terminal. */
+  /**
+   * A run eviction takes first: gone from the store, or in a terminal status (`completed`, `failed`
+   * or `canceled`). This is wider than `forget`, which drops a tally only for `completed` and
+   * `canceled`: a `failed` run counts as finished here although it is resumable, and it is not
+   * added to `evicted`. The restart seed in `run-safety-wiring.ts` skips failed runs the same way.
+   * So a failed run that is resumed after its tally was evicted, or after a restart, is measured
+   * from zero and is not marked incomplete. The predicate is left as it is: the change belongs to
+   * the spend-bounds owner (FR-R5-F22, open dependency OD-1).
+   */
   const isFinished = (runId: string): boolean => {
     const found = deps.findRunById(runId);
     return found === null || isTerminalRunStatus(found.run.status);
