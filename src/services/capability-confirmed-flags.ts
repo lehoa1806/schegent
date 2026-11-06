@@ -7,6 +7,8 @@
 //   claude 2.1.316    codex-cli 0.163.0    agy 1.4.12
 //
 // and the output itself is recorded in specs/253-backend-authority-teardown/measurements.md, section 3.
+// Agy's row was re-captured alone on 2026-11-06 at agy 1.5.2, the same way, after the capture script
+// gained `--mode` (specs/279-agy-accept-edits-mode/measurements.md, "Help capture").
 // A flag is here because that CLI's `--help` listed it, and for no other reason.
 //
 // WHAT IT GATES. The capability planner refuses a withheld capability whose flag is not in this list,
@@ -26,5 +28,5 @@ import type { BackendRunnerKind } from '../contracts/backend-kinds';
 export const CONFIRMED_FLAGS: Readonly<Record<BackendRunnerKind, readonly string[]>> = Object.freeze({
   claude: Object.freeze(['--dangerously-skip-permissions', '--disallowedTools', '--permission-mode']),
   codex: Object.freeze(['--sandbox']),
-  agy: Object.freeze(['--dangerously-skip-permissions', '--sandbox'])
+  agy: Object.freeze(['--dangerously-skip-permissions', '--mode', '--sandbox'])
 });

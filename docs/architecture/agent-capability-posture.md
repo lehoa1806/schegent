@@ -38,7 +38,7 @@ H-01 of the 2026-08-23 principal architecture review — its largest strategic f
 | backend | argv | OS-enforced bound |
 |---|---|---|
 | `claude` (**the default**) | `--dangerously-skip-permissions` | none |
-| `agy` | `--dangerously-skip-permissions` | none — and `FR-R3-125` found the CLI has a `--sandbox` flag Schegent does not request by default (a Phase that withholds `process-spawn` gets it); see [the qualification record](backend-containment-qualification.md) §4 |
+| `agy` | `--dangerously-skip-permissions` | none — and `FR-R3-125` found the CLI has a `--sandbox` flag Schegent does not request by default (a Phase that withholds `process-spawn` gets it, and one that withholds `outside-workspace-write` gets `--mode accept-edits`); see [the qualification record](backend-containment-qualification.md) §4 |
 | `codex` | `exec --json --sandbox workspace-write` | filesystem, `.git` read-only |
 
 `schegent.backend.runner` defaults to `claude`. So a fresh install's default run path reaches
@@ -172,10 +172,13 @@ evidence an operator checks afterwards.
 
 - **The host does not observe tool calls.** It hands the backend a narrowed authority and trusts the
   backend to apply it. That trust is the anchor of this whole mechanism.
-- **`agy` can express only one of the four capabilities.** Its CLI has `--sandbox` and no per-tool
-  flag, so a phase withholding `network`, `workspace-write` or `outside-workspace-write` on `agy` is
-  **refused before it starts** rather than run unbounded. That is an honest outcome, not a working
-  one, and it is the strongest argument for route B later.
+- **`agy` can express only two of the four capabilities.** Its CLI has `--sandbox` for `process-spawn`
+  and, since feature 279, `--mode accept-edits` for `outside-workspace-write`: a tool restriction, not
+  OS isolation, that also refuses a granted shell headless (the `mode-refuses-shell` residual; see
+  [the qualification record](backend-containment-qualification.md) §4.2). It has no per-tool flag, so a
+  phase withholding `network` or `workspace-write` on `agy` is **refused before it starts** rather than
+  run unbounded. That is an honest outcome, not a working one, and it is the strongest argument for
+  route B later.
 - **Nothing here closes `SEC-08` at the default.** A phase that declares no capability set spawns with
   today's argv, byte for byte. Narrowing is opt-in, per phase.
 
@@ -191,7 +194,7 @@ token mediator to close a High is how a High gets relabelled a second time"*, an
 that replaced a working refusal would be strictly worse than the refusal.
 
 **Recorded as the destination.** If a backend's own surface proves insufficient — and `agy`'s already
-is, for three of four capabilities — route B is what closes the gap.
+is, for two of four capabilities — route B is what closes the gap.
 
 ### Route C — a separately enabled expert mode — **rejected**
 
@@ -205,7 +208,7 @@ disclosed one is a High closed or a High relabelled — would stay open on the s
 ### What this does and does not close
 
 **`SEC-08` is not marked closed by this.** The mechanism bounds a phase that opts into a narrower set;
-the default is unchanged and `agy` is bounded in only one dimension. Whether that is enough is a
+the default is unchanged and `agy` is bounded in only two dimensions. Whether that is enough is a
 judgement for the independent review, and `FR-R3-093` §6 says this item does not pre-empt it.
 
 ## What is required to close FR-R3-056

@@ -20,10 +20,12 @@ import { planCapabilityEnforcement, unboundedArgs } from '../../../src/services/
  * `unboundedArgs` (which K7 pins the three no-restriction rows to), and it iterates the POWER SET of
  * capabilities rather than the table, so a deleted row fails by name instead of being skipped.
  *
- * WHAT THE CENSUS SAYS (data-model section 3): 26 cells yield an argv, 3 of them with nothing withheld,
- * and 22 are refused. Claude yields an argv for all 16 sets. Codex yields one only when `network` is
+ * WHAT THE CENSUS SAYS (data-model section 3): 28 cells yield an argv, 3 of them with nothing withheld,
+ * and 20 are refused. Claude yields an argv for all 16 sets. Codex yields one only when `network` is
  * granted (8), because its CLI has no flag for it, and refuses the other 8. Agy yields one only when
- * nothing, or only `process-spawn`, is withheld (2), and refuses the other 14.
+ * nothing, only `process-spawn`, only `outside-workspace-write`, or those two together are withheld (4),
+ * and refuses the other 12. Feature 279 added the two `outside-workspace-write` cells
+ * (`--mode accept-edits`).
  *
  * THE THREE CODEX CELLS OF RESEARCH R14 are the sets that withhold `outside-workspace-write` together with
  * `workspace-write` or `process-spawn`. They used to emit `--sandbox` twice, merged into the value
@@ -58,6 +60,7 @@ type Row = ArgvRow | RefusedRow;
 
 const DISALLOW = '--disallowedTools';
 const MODE = '--permission-mode';
+const AGY_MODE = '--mode';
 const UNBOUNDED_CLAUDE = ['--dangerously-skip-permissions'];
 const UNBOUNDED_CODEX = ['--sandbox', 'workspace-write'];
 
@@ -143,8 +146,9 @@ const GOLDEN: readonly Row[] = [
   codexRefused([P]),
   codexRefused([]),
 
-  // ---- agy: 2 argv cells (nothing withheld, or only `process-spawn`) and 14 refusals, each naming everything
-  //      it cannot express.
+  // ---- agy: 4 argv cells (nothing withheld, `process-spawn`, `outside-workspace-write`, or those two) and
+  //      12 refusals, each naming everything it cannot express. Bare `--sandbox` comes before the valued
+  //      `--mode`. The shell refusal is a residual only while `process-spawn` is granted.
   {
     kind: 'agy',
     granted: [W, O, P, N],
@@ -161,20 +165,34 @@ const GOLDEN: readonly Row[] = [
     enforcement: 'cli-sandbox',
     residuals: ['sandbox-scope-unqualified']
   },
+  {
+    kind: 'agy',
+    granted: [W, P, N],
+    outcome: 'argv',
+    args: [AGY_MODE, 'accept-edits'],
+    enforcement: 'tool-restriction',
+    residuals: ['mode-refuses-shell']
+  },
+  {
+    kind: 'agy',
+    granted: [W, N],
+    outcome: 'argv',
+    args: ['--sandbox', AGY_MODE, 'accept-edits'],
+    enforcement: 'tool-restriction',
+    residuals: ['sandbox-scope-unqualified']
+  },
   agyRefused([W, O, P], [N]),
-  agyRefused([W, P, N], [O]),
   agyRefused([O, P, N], [W]),
   agyRefused([W, O], [N]),
-  agyRefused([W, P], [O, N]),
-  agyRefused([W, N], [O]),
+  agyRefused([W, P], [N]),
   agyRefused([O, P], [W, N]),
   agyRefused([O, N], [W]),
-  agyRefused([P, N], [W, O]),
-  agyRefused([W], [O, N]),
+  agyRefused([P, N], [W]),
+  agyRefused([W], [N]),
   agyRefused([O], [W, N]),
-  agyRefused([P], [W, O, N]),
-  agyRefused([N], [W, O]),
-  agyRefused([], [W, O, N])
+  agyRefused([P], [W, N]),
+  agyRefused([N], [W]),
+  agyRefused([], [W, N])
 ];
 
 const keyOf = (kind: BackendRunnerKind, granted: readonly PhaseCapability[]): string =>
@@ -198,13 +216,13 @@ describe('every capability cell is declared (T10)', () => {
     expect(SUPPORTED_BACKENDS.length * powerSet().length).toBe(48);
   });
 
-  it('has the census of data-model section 3: 26 argv cells, 3 with nothing withheld, and 22 refusals', () => {
+  it('has the census of data-model section 3: 28 argv cells, 3 with nothing withheld, and 20 refusals', () => {
     const argv = GOLDEN.filter((row): row is ArgvRow => row.outcome === 'argv');
-    expect(argv).toHaveLength(26);
+    expect(argv).toHaveLength(28);
     expect(argv.filter((row) => row.enforcement === 'none-withheld')).toHaveLength(3);
-    expect(GOLDEN.filter((row) => row.outcome === 'refused')).toHaveLength(22);
+    expect(GOLDEN.filter((row) => row.outcome === 'refused')).toHaveLength(20);
     for (const kind of SUPPORTED_BACKENDS) {
-      expect(argv.filter((row) => row.kind === kind).length).toBe({ claude: 16, codex: 8, agy: 2 }[kind]);
+      expect(argv.filter((row) => row.kind === kind).length).toBe({ claude: 16, codex: 8, agy: 4 }[kind]);
     }
   });
 
@@ -268,7 +286,7 @@ describe('every capability cell is declared (T10)', () => {
 
   it('refuses Agy and Codex exactly where their CLIs have no flag, and names every one (K9)', () => {
     const agy = planCapabilityEnforcement('agy', declaredCapabilitySet([]));
-    expect(agy.outcome === 'refused' && agy.unenforceable).toEqual([W, O, N]);
+    expect(agy.outcome === 'refused' && agy.unenforceable).toEqual([W, N]);
     const codexNoNetwork = planCapabilityEnforcement('codex', declaredCapabilitySet([W, O, P]));
     expect(codexNoNetwork.outcome === 'refused' && codexNoNetwork.unenforceable).toEqual([N]);
   });
@@ -289,10 +307,16 @@ describe('a flag nobody has seen is refused, and named as unqualified (T10, K3)'
     const all: Record<BackendRunnerKind, readonly string[]> = {
       claude: ['--dangerously-skip-permissions', DISALLOW, MODE],
       codex: ['--sandbox'],
-      agy: ['--dangerously-skip-permissions', '--sandbox']
+      agy: ['--dangerously-skip-permissions', AGY_MODE, '--sandbox']
     };
     return { ...all, [kind]: all[kind].filter((confirmed) => confirmed !== flag) };
   };
+
+  it('refuses the Agy accept-edits cell when --mode was not confirmed, listing outside-workspace-write as both', () => {
+    const plan = planCapabilityEnforcement('agy', declaredCapabilitySet([W, P, N]), without('agy', AGY_MODE));
+    expect(plan.outcome === 'refused' && plan.unenforceable).toEqual([O]);
+    expect(plan.outcome === 'refused' && plan.unqualified).toEqual([O]);
+  });
 
   it('refuses a Claude cell whose --disallowedTools was not confirmed, listing it as both', () => {
     const plan = planCapabilityEnforcement('claude', declaredCapabilitySet([O, P, N]), without('claude', DISALLOW));

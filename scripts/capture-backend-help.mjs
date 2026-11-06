@@ -36,7 +36,7 @@ const USAGE = 'usage: node scripts/capture-backend-help.mjs <claude|codex|agy>..
 const SURFACE_FLAGS = {
   claude: ['--dangerously-skip-permissions', '--disallowedTools', '--permission-mode'],
   codex: ['--sandbox'],
-  agy: ['--dangerously-skip-permissions', '--sandbox']
+  agy: ['--dangerously-skip-permissions', '--mode', '--sandbox']
 };
 
 // src/runner/cli-version-probe.ts: CLI_VERSION_MAX_LEN.

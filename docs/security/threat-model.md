@@ -101,10 +101,10 @@ What it bounds and what it does not, in the same paragraph on purpose:
 
 - **The host does not observe tool calls.** It hands the backend a narrowed authority and trusts the
   backend to apply it. That trust is the anchor of the whole mechanism, and nothing here verifies it.
-- **`agy` can express only `process-spawn`.** Its CLI has a single `--sandbox` switch and no per-tool
-  flag, so a phase withholding `network`, `workspace-write` or `outside-workspace-write` on that
-  backend is **refused before it starts** rather than run unbounded. Refusing is the honest outcome; it
-  is not a working one.
+- **`agy` can express only `process-spawn` and `outside-workspace-write`.** Its CLI has a `--sandbox`
+  switch and a `--mode accept-edits` execution mode, and no per-tool flag, so a phase withholding
+  `network` or `workspace-write` on that backend is **refused before it starts** rather than run
+  unbounded. Refusing is the honest outcome; it is not a working one.
 - **What each cell leaves open is named, not implied** (`FR-R4-F06`). A Claude restriction is a
   tool-access restriction, not OS isolation, and the audit row and the launcher carry the residual codes:
   - `unlisted-tools` — tools the denylist does not name, including tools from configured extensions or MCP servers;
@@ -112,7 +112,10 @@ What it bounds and what it does not, in the same paragraph on purpose:
     still do what the denied tool would have, where the backend's own permission settings let it run;
   - `sandboxed-commands-run` — on Codex, withholding `process-spawn` still lets model-run commands execute,
     inside Codex's read-only sandbox, which also blocks file writes (a granted write is not available);
-  - `sandbox-scope-unqualified` — on Agy, the scope of its `--sandbox` has not been qualified.
+  - `sandbox-scope-unqualified` — on Agy, the scope of its `--sandbox` has not been qualified;
+  - `mode-refuses-shell` — on Agy, withholding `outside-workspace-write` while `process-spawn` stays granted
+    runs `--mode accept-edits`, which refuses shell commands unless Agy's own permission settings allow
+    them, and where they do a shell can still write outside the workspace.
   A restriction whose flag no capture has confirmed the installed CLI lists is refused, not relied on.
 - **The default is unchanged.** A phase that declares no capability set spawns with exactly the argv it
   spawned with before this existed. `SEC-08` is not closed by this: narrowing is opt-in, per phase, and

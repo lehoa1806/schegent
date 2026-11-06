@@ -31,7 +31,9 @@ const CLAUSES: Readonly<Record<CapabilityResidual, string>> = {
     'tools the restriction does not name, including tools from configured extensions or MCP servers, are not covered',
   'sandboxed-commands-run':
     "model-run commands still execute, inside Codex's read-only sandbox, which also blocks file writes",
-  'sandbox-scope-unqualified': "the scope of Agy's sandbox has not been qualified"
+  'sandbox-scope-unqualified': "the scope of Agy's sandbox has not been qualified",
+  'mode-refuses-shell':
+    "a granted shell is refused by Agy's accept-edits mode unless the backend's own permission settings allow it, and where they do it can still write outside the workspace"
 };
 
 const TOOL_RESTRICTION_LEAD = 'A tool-access restriction, not OS isolation';
