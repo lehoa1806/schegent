@@ -131,13 +131,19 @@ const SIGNATURE = 'public async drive(';
  *        against a `tightMargin` of 26: the helper sits in the sequencer the driver already
  *        holds because a private method of the driver would have taken the file to 1,318.
  *
+ *   650  Spec 278 follow-up (U1, 2026-11-06) — the driver now saves the feature directory a
+ *        Phase reports. The nine-line CLI-session capture block became two lines, one a call to
+ *        `withPhaseOutputFacts` in `services/run-phase-facts.ts`, which records both, and its
+ *        comment gained a line, 656 → 650.
+ *        `run-driver.ts` itself moved 1,317 → 1,312 by `wc -l`.
+ *
  * Next candidates, named so the next decrement does not start with a
  * re-measurement: the four pause arms — breakpoint, delayed-retry, rate-limit,
  * verify — are roughly 230 lines between them. The probe-failure arm is NOT a
  * candidate for merging into the shared sequence: its audit emission order differs,
  * and unifying it is an observable change.
  */
-const DRIVE_MAX_LINES = 656;
+const DRIVE_MAX_LINES = 650;
 
 /** Lines from the signature to the closing brace, inclusive. */
 export function methodLineCount(source: string, signature: string): number {
