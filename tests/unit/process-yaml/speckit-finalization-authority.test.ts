@@ -137,6 +137,8 @@ const FINALIZE_PINS: readonly Pin[] = [
   has('step 5 commits nothing on a detached HEAD or the base', 'HEAD is detached or on the base branch'),
   has('step 6 names only the files the fix changed', 'naming only the files it changed'),
   has('step 6 does not apply a fix over a change that is not owned', 'already holds a change that is not owned'),
+  // FR-R5-F19 review: a refused step 5 leaves owned edits uncommitted, and a dependency commit must not carry them.
+  has('step 6 does not apply a fix over an owned change step 5 left uncommitted', 'Nor over uncommitted owned edits'),
   has('step 7 never merges, switches or checks out', '7. Never merge, switch or check out a branch, reset, stash or push: integration is the next Phase\'s.'),
   // FR-R5-F19 FR-017: the untracked-secret and large-binary rejection, in the prompt only (contract: Secret and large-binary check).
   has('step 5 lists the untracked owned paths before committing', 'Before committing, list the untracked owned paths'),

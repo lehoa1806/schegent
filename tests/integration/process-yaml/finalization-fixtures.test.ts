@@ -967,6 +967,7 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
         'by patch or minor versions only, with a targeted command that does not force',
         'Change at most three packages in all',
         'already holds a change that is not owned, do not apply it; report the advisory',
+        'Nor over uncommitted owned edits',
         'If a check that was green before the change now fails, undo the commit with git revert and report the advisory'
       ];
       const bans = [
