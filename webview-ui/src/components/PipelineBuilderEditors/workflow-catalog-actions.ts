@@ -54,6 +54,13 @@ import {
   type WorkflowNodeTarget
 } from './workflow-catalog-state';
 import type { MutableWorkflow } from './types';
+import {
+  boundHistorySnapshots,
+  MAX_BUILDER_HISTORY_BYTES,
+  MAX_BUILDER_HISTORY_ENTRIES
+} from './phase-catalog-actions';
+
+export { MAX_BUILDER_HISTORY_BYTES, MAX_BUILDER_HISTORY_ENTRIES };
 
 export interface WorkflowRemovalRequest {
   /** The row to drop. */
@@ -110,18 +117,27 @@ export function pushWorkflowHistory(
   historyByKey: Readonly<Record<string, WorkflowHistoryTrack>>,
   sourceKey: string,
   baseline: MutableWorkflow,
-  next: MutableWorkflow
+  next: MutableWorkflow,
+  maxEntries = MAX_BUILDER_HISTORY_ENTRIES,
+  maxBytes = MAX_BUILDER_HISTORY_BYTES
 ): Record<string, WorkflowHistoryTrack> {
   const existing =
     sourceKey in historyByKey
       ? historyByKey[sourceKey]
       : { snapshots: [baseline], index: 0 };
   const head = existing.snapshots.slice(0, existing.index + 1);
+  const clone = (row: MutableWorkflow): MutableWorkflow =>
+    JSON.parse(JSON.stringify(row)) as MutableWorkflow;
+  const combined =
+    !(sourceKey in historyByKey) && JSON.stringify(baseline) === JSON.stringify(next)
+      ? [clone(baseline)]
+      : [...head.map(clone), clone(next)];
+  const bounded = boundHistorySnapshots(combined, maxEntries, maxBytes);
   return {
     ...historyByKey,
     [sourceKey]: {
-      snapshots: [...head, next],
-      index: head.length
+      snapshots: bounded,
+      index: bounded.length - 1
     }
   };
 }

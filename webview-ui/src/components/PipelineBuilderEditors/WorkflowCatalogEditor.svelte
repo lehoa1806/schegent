@@ -39,6 +39,11 @@
     type WorkflowDraftError
   } from './workflow-catalog-state';
   import { reselectIndex, type DefinitionIdentity } from '../../lib/builder-selection';
+  import {
+    hydrateWorkflowSlice,
+    readPersistedBuilderState,
+    writePersistedWorkflowSlice
+  } from '../../lib/builder-webview-state';
   import CatalogEmptyState from '../Builder/CatalogEmptyState.svelte';
   import ProcessImportPreflight from '../ProcessImport/ProcessImportPreflight.svelte';
   import {
@@ -59,18 +64,22 @@
   }
 
   const { snapshot, trusted, initialWorkflowId = null, onopenphase }: Props = $props();
-
+  // svelte-ignore state_referenced_locally
+  const initialWfSlice = (() => {
+    const raw = readPersistedBuilderState()?.workflowSlice;
+    return raw ? hydrateWorkflowSlice(raw, snapshot) : null;
+  })();
   /** Rows the operator created but the host has not accepted yet. */
-  let drafts = $state<MutableWorkflow[]>([]);
+  let drafts = $state<MutableWorkflow[]>(initialWfSlice?.drafts ?? []);
   /** In-place edits to persisted Workflows, keyed by `sourceKey`. */
-  let editedByKey = $state<Record<string, MutableWorkflow>>({});
+  let editedByKey = $state<Record<string, MutableWorkflow>>(initialWfSlice?.editedByKey ?? {});
   /** Per-Workflow undo/redo stacks, keyed by `sourceKey`. */
-  let historyByKey = $state<Record<string, WorkflowHistoryTrack>>({});
+  let historyByKey = $state<Record<string, WorkflowHistoryTrack>>(initialWfSlice?.historyByKey ?? {});
   /** Breadcrumb trail when drilling into child Workflows. */
-  let breadcrumbs = $state<WorkflowBreadcrumbEntry[]>([]);
-  let selectedKey = $state<string | null>(null);
-  let selectedId = $state<string | null>(null);
-  let restoredNodeId = $state<string | null>(null);
+  let breadcrumbs = $state<WorkflowBreadcrumbEntry[]>(initialWfSlice?.breadcrumbs ?? []);
+  let selectedKey = $state<string | null>(initialWfSlice?.selectedKey ?? null);
+  let selectedId = $state<string | null>(initialWfSlice?.selectedId ?? null);
+  let restoredNodeId = $state<string | null>(initialWfSlice?.restoredNodeId ?? null);
   let saveError = $state<string | null>(null);
   /** The revision submitted with the in-flight save; null when none is. */
   let submittedRevision = $state<string | null>(null);
@@ -140,6 +149,20 @@
         historyByKey = {};
       }
     }
+  });
+
+  $effect(() => {
+    if (!ready) return;
+    writePersistedWorkflowSlice({
+      adoptedRevision: revision,
+      drafts,
+      editedByKey,
+      historyByKey,
+      selectedKey,
+      selectedId,
+      breadcrumbs,
+      restoredNodeId
+    });
   });
 
   $effect(() => {

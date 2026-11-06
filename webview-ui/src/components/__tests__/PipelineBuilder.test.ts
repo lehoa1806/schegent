@@ -30,8 +30,13 @@ import { saveModels as saveModelsHelper } from '../../lib/save-models';
 import { useConfirm } from '../../lib/use-confirm';
 import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
 
+let mockedWebviewState: unknown = undefined;
 vi.mock('../../lib/vscode-api', () => ({
-  postCommand: vi.fn(() => ({ correlationId: 'corr-test' }))
+  postCommand: vi.fn(() => ({ correlationId: 'corr-test' })),
+  getWebviewState: vi.fn(() => mockedWebviewState),
+  setWebviewState: vi.fn((next: unknown) => {
+    mockedWebviewState = next;
+  })
 }));
 vi.mock('../../lib/snapshot-store.svelte', () => ({
   snapshotStore: {
@@ -59,6 +64,7 @@ vi.mock('../../lib/use-confirm', () => ({
 
 afterEach(() => {
   cleanup();
+  mockedWebviewState = undefined;
   vi.clearAllMocks();
 });
 
@@ -1631,5 +1637,148 @@ describe('PipelineBuilder — Phase and Workflow cross-links', () => {
     await tick();
 
     expect(container.querySelector('[data-testid="phases-editor-speckit-specify"]')).not.toBeNull();
+  });
+});
+
+describe('PipelineBuilder — FR-R5-F10 draft persistence and bounded undo history', () => {
+  const PHASE_ONE: PhaseDefinition = Object.freeze({
+    id: 'phase-one',
+    name: 'Phase One',
+    version: 1,
+    instruction: 'Original instruction.'
+  });
+  const PHASE_TWO: PhaseDefinition = Object.freeze({
+    id: 'phase-two',
+    name: 'Phase Two',
+    version: 1,
+    instruction: 'Second instruction.'
+  });
+
+  it('persists unsaved Phase drafts and selection across unmount/remount while preserving isLiveMode', async () => {
+    mockedWebviewState = { isLiveMode: false };
+    const snap = buildSnapshot([PHASE_ONE, PHASE_TWO]);
+
+    const first = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'phases' }
+    });
+    await tick();
+
+    await fireEvent.click(
+      first.container.querySelector('[data-testid="phases-list-item-phase-one"]') as HTMLButtonElement
+    );
+    await tick();
+
+    const nameInput = first.container.querySelector(
+      '[data-testid="phases-name-phase-one"]'
+    ) as HTMLInputElement;
+    await fireEvent.input(nameInput, { target: { value: 'Phase One Edited' } });
+    await tick();
+
+    // Unmount (simulate webview hide/dispose without retainContextWhenHidden)
+    first.unmount();
+
+    expect((mockedWebviewState as { isLiveMode?: boolean }).isLiveMode).toBe(false);
+
+    // Remount with the same snapshot
+    const second = render(PipelineBuilder, {
+      props: { snapshot: snap }
+    });
+    await tick();
+
+    const restoredName = second.container.querySelector(
+      '[data-testid="phases-name-phase-one"]'
+    ) as HTMLInputElement | null;
+    expect(restoredName).not.toBeNull();
+    expect(restoredName?.value).toBe('Phase One Edited');
+    expect((mockedWebviewState as { isLiveMode?: boolean }).isLiveMode).toBe(false);
+  });
+
+  it('merges dirty Phase drafts onto a newer catalog revision without losing operator edits', async () => {
+    const snapV1 = buildSnapshot([PHASE_ONE, PHASE_TWO]);
+    const first = render(PipelineBuilder, {
+      props: { snapshot: snapV1, initialTab: 'phases' }
+    });
+    await tick();
+
+    await fireEvent.click(
+      first.container.querySelector('[data-testid="phases-list-item-phase-one"]') as HTMLButtonElement
+    );
+    await tick();
+    await fireEvent.input(
+      first.container.querySelector('[data-testid="phases-name-phase-one"]') as HTMLInputElement,
+      { target: { value: 'Dirty Phase One' } }
+    );
+    await tick();
+    first.unmount();
+
+    // Host catalog advances revision and updates PHASE_TWO while PHASE_ONE stays dirty
+    const snapV2Base = buildSnapshot([
+      PHASE_ONE,
+      { ...PHASE_TWO, name: 'Phase Two Updated From Host' }
+    ]);
+    const snapV2: WorkflowSnapshot = {
+      ...snapV2Base,
+      phaseCatalog: {
+        ...snapV2Base.phaseCatalog!,
+        revision: 'rev-2'
+      }
+    };
+
+    const second = render(PipelineBuilder, {
+      props: { snapshot: snapV2 }
+    });
+    await tick();
+
+    const restoredOne = second.container.querySelector(
+      '[data-testid="phases-name-phase-one"]'
+    ) as HTMLInputElement | null;
+    expect(restoredOne?.value).toBe('Dirty Phase One');
+
+    await fireEvent.click(
+      second.container.querySelector('[data-testid="phases-list-item-phase-two"]') as HTMLButtonElement
+    );
+    await tick();
+    const updatedTwo = second.container.querySelector(
+      '[data-testid="phases-name-phase-two"]'
+    ) as HTMLInputElement | null;
+    expect(updatedTwo?.value).toBe('Phase Two Updated From Host');
+  });
+
+  it('bounds Phase undo history at 50 entries and truncates redo tail on branched edit', async () => {
+    const snap = buildSnapshot([PHASE_ONE]);
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'phases' }
+    });
+    await tick();
+
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-list-item-phase-one"]') as HTMLButtonElement
+    );
+    await tick();
+
+    const nameInput = container.querySelector(
+      '[data-testid="phases-name-phase-one"]'
+    ) as HTMLInputElement;
+
+    for (let i = 1; i <= 60; i += 1) {
+      await fireEvent.input(nameInput, { target: { value: `Edit ${i}` } });
+      await tick();
+    }
+
+    const persisted = (mockedWebviewState as {
+      builderState?: { phaseSlice?: { history?: unknown[] } };
+    })?.builderState?.phaseSlice;
+    expect(persisted?.history?.length).toBeLessThanOrEqual(50);
+
+    const buttons = Array.from(container.querySelectorAll('.toolbar button')) as HTMLButtonElement[];
+    const undoBtn = buttons.find((b) => b.textContent?.trim() === 'Undo')!;
+    const redoBtn = buttons.find((b) => b.textContent?.trim() === 'Redo')!;
+    await fireEvent.click(undoBtn);
+    await tick();
+    expect(redoBtn.disabled).toBe(false);
+
+    await fireEvent.input(nameInput, { target: { value: 'Branched Edit' } });
+    await tick();
+    expect(redoBtn.disabled).toBe(true);
   });
 });

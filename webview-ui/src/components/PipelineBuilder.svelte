@@ -8,6 +8,12 @@
     type LifecycleResult
   } from '../lib/catalog-lifecycle';
   import { identityAt, reselectIndex } from '../lib/builder-selection';
+  import {
+    hydratePhaseSlice,
+    readPersistedBuilderState,
+    updatePersistedBuilderState,
+    writePersistedPhaseSlice
+  } from '../lib/builder-webview-state';
   import { saveModels as saveModelsHelper } from '../lib/save-models';
   import ModelCatalogEditor from './PipelineBuilderEditors/ModelCatalogEditor.svelte';
   import PhaseCatalogEditor from './PipelineBuilderEditors/PhaseCatalogEditor.svelte';
@@ -53,27 +59,29 @@
     !showWorkspaceTrustBanner && !trustRetryConditions
   );
   // svelte-ignore state_referenced_locally
-  // Feature 180 (T1554, FR-002) — the default moves with the strip, so `tabs[0]`
-  // is still the tab that carries `tabindex="0"` on open. Held as a literal
-  // rather than read off `BUILDER_TABS[0]`: deriving it would couple the shell
-  // to the strip's internals to save one string.
-  let activeTab = $state<BuilderTab>(initialTab ?? 'phases');
-  let pendingWorkflowId = $state<string | null>(null);
-  let phases = $state<MutablePhase[]>([]);
+  const persistedBuilder = readPersistedBuilderState();
+  // svelte-ignore state_referenced_locally
+  const initialPhaseSlice = persistedBuilder?.phaseSlice
+    ? hydratePhaseSlice(persistedBuilder.phaseSlice, snapshot)
+    : null;
+  // svelte-ignore state_referenced_locally
+  let activeTab = $state<BuilderTab>(initialTab ?? persistedBuilder?.activeTab ?? 'phases');
+  let pendingWorkflowId = $state<string | null>(persistedBuilder?.pendingWorkflowId ?? null);
+  let phases = $state<MutablePhase[]>(initialPhaseSlice?.phases ?? []);
   let models = $state<Record<string, string[]>>({});
-  let initialized = $state(false);
+  let initialized = $state(initialPhaseSlice !== null);
   let lastAdoptedModels: Record<string, readonly string[]> | null = null; // re-sync on snapshot change
   let saveError = $state<string | null>(null);
   let saveErrorTimer: ReturnType<typeof setTimeout> | null = null;
-  let phaseMutation = $state<PhaseCatalogMutation | null>(null);
-  let phaseMutationSourceKey = $state<string | null>(null);
+  let phaseMutation = $state<PhaseCatalogMutation | null>(initialPhaseSlice?.mutation ?? null);
+  let phaseMutationSourceKey = $state<string | null>(initialPhaseSlice?.mutationSourceKey ?? null);
   // Feature 101 (T026) — both handshake flags are booleans now. They were named
   // after the revision string the retired `savePhases` ack carried, and the acks
   // carry no revision: what the effect below has always read out of them is
   // "a write landed" and "the last write was refused as stale".
   let phaseSavePending = $state(false); let phaseSaveAccepted = $state(false); let phaseRebasePending = $state(false);
   /** The revision the visible rows were projected from; '' before the first. */
-  let adoptedPhaseRevision = $state('');
+  let adoptedPhaseRevision = $state(initialPhaseSlice?.adoptedRevision ?? '');
   const phaseCatalogReady = $derived(snapshot.phaseCatalog?.state === 'ready');
   const phaseMutationsAllowed = $derived(
     phaseCatalogReady && snapshot.isPrimary === true && trustPhases && !phaseSavePending
@@ -195,11 +203,11 @@
   function saveModels(): void {
     void saveModelsHelper(JSON.parse(JSON.stringify(models)));
   }
-  let selectedPhaseIndex = $state<number | null>(null);
-  let phaseHistory = $state<MutablePhase[][]>([]);
-  let phaseHistoryIndex = $state(-1);
+  let selectedPhaseIndex = $state<number | null>(initialPhaseSlice?.selectedIndex ?? null);
+  let phaseHistory = $state<MutablePhase[][]>(initialPhaseSlice?.history ?? []);
+  let phaseHistoryIndex = $state(initialPhaseSlice?.historyIndex ?? -1);
   let isPhaseUndoRedoAction = false;
-  let editStateById = $state<Record<string, PhaseEditState>>({});
+  let editStateById = $state<Record<string, PhaseEditState>>(initialPhaseSlice?.editStateById ?? {});
   // Feature 101 (T002) — the row mutations live in `phase-catalog-actions.ts`.
   // Each returns the rows and pending-mutation state its edit leaves behind, or
   // `null` when it refuses; this is the one place that assignment happens.
@@ -223,6 +231,9 @@
     phases = phasesAtHistoryStep(phaseHistory, step);
   }
   $effect(() => {
+    updatePersistedBuilderState({ activeTab, pendingWorkflowId });
+  });
+  $effect(() => {
     if (!initialized) return;
     const currentStr = JSON.stringify(phases);
     if (!isPhaseUndoRedoAction) {
@@ -230,6 +241,18 @@
       if (recorded) { phaseHistory = recorded.history; phaseHistoryIndex = recorded.index; }
     }
     isPhaseUndoRedoAction = false;
+    if (adoptedPhaseRevision !== '') {
+      writePersistedPhaseSlice({
+        adoptedRevision: adoptedPhaseRevision,
+        phases,
+        selectedIndex: selectedPhaseIndex,
+        mutation: phaseMutation,
+        mutationSourceKey: phaseMutationSourceKey,
+        history: phaseHistory,
+        historyIndex: phaseHistoryIndex,
+        editStateById
+      });
+    }
   });
   // Feature 100 (T509b) — the confirmation moved into `deactivateDefinition`,
   // the only function that can post the command it authorises (FR-049). This
