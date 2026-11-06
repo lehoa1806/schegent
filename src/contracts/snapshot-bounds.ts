@@ -85,3 +85,4 @@ export function isSnapshotResyncRequest(
     (typeof candidate.lastRevision === 'number' && Number.isInteger(candidate.lastRevision))
   );
 }
+

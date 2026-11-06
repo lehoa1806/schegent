@@ -128,3 +128,4 @@ export function reconcileSnapshotMessage(
     revision: sync !== undefined ? sync.revision : null
   };
 }
+
