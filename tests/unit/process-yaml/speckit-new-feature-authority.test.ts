@@ -398,6 +398,31 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
     });
   });
 
+  describe('speckit-clarify', () => {
+    // Spec 278 (U1): a drained Run is admitted with no feature directory, and the host learns it
+    // from this Phase's sidecar. The key and the relative-path rule are what the host reads
+    // (`run-phase-facts.ts`); the version bump is how an imported copy learns of the change.
+    const clarify = instructionOf(phaseOf(example, 'speckit-clarify'));
+
+    it('reports the feature directory through the sidecar, under the key the host reads', () => {
+      expect(clarify).toMatch(/write the single line `SCHEGENT_FEATURE_DIR=<dir>` to phase-message\.env/);
+      expect(clarify).toMatch(/relative to the workspace root/);
+      expect(clarify).toMatch(/list that file in the audit log's files_created/);
+    });
+
+    it('writes it only when the prompt carries none, and never as an absolute or parent path', () => {
+      expect(clarify).toMatch(/if this prompt has no SCHEGENT_FEATURE_DIR line/);
+      expect(clarify).toMatch(/Never write an absolute path or one with a `\.\.` segment/);
+    });
+
+    it('keeps its loop condition and ships at the version that carries the report', () => {
+      const phase = phaseOf(example, 'speckit-clarify');
+      expect(phase.spec.retryCondition).toBe('open_questions > 0');
+      expect(phase.metadata.version).toBeGreaterThanOrEqual(3);
+      expect(example.pipelineVersion).toBeGreaterThanOrEqual(8);
+    });
+  });
+
   describe('integrate', () => {
     it('does not loop, and is the last Phase', () => {
       expect(phaseOf(example, 'integrate').spec.retryCondition).toBeUndefined();
