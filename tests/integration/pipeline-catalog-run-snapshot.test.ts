@@ -27,7 +27,7 @@ import { SanitizedLogger } from '../../src/lib/logger';
 import { WorkflowRunFactory } from '../../src/services/workflow-run-factory';
 import type { BackendRunnerKind } from '../../src/contracts/backend-kinds';
 import type { WorkflowRunPipeline } from '../../src/state/workflow-run';
-import { migrateV7ToV8 } from '../../src/state/workflow-run-migrator';
+import { migrateLegacyRun } from '../../src/state/workflow-run-migrator';
 
 /**
  * Feature 098 (T024) — `resolvePipeline` answers with a discriminated resolution
@@ -228,7 +228,7 @@ describe('catalog edits cannot mutate queued or active Run Pipeline contracts (U
       phaseBreakpoints: [], resumeTargetPhaseId: null
     };
 
-    const migrated = migrateV7ToV8(structuredClone(legacy));
+    const migrated = migrateLegacyRun(structuredClone(legacy));
 
     expect(migrated?.pipeline).toEqual(legacy.pipeline);
     for (const key of ['version', 'inputs', 'outputs', 'bindings', 'executionDefaults', 'recommendedNext']) {

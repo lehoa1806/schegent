@@ -164,6 +164,48 @@ claim file (a lock in all but name, which a crash between claim and rename would
 This section states what the writes do and what they cost. It does not claim the catalog survives a power
 cut, because none was cut.
 
+### 5. The ownership registry (`.schegent/ownership/`) — **no barrier applied (decided)**
+
+Added by `FR-R5-F09` (`F-39`, `NF-10`, `NU-05`). The ownership registry (`src/state/ownership-registry.ts` and
+`src/state/ownership-fs.ts`) stores generation-numbered claim records for workspace primacy (`primacy`) and
+per-queue execution leases (`queue-<id>`) under `.schegent/ownership/<resource>/<generation>.json`.
+
+**Why no `fsync` barrier is applied.** Unlike the audit log or catalog store, an ownership claim is an
+ephemeral lease refreshed every `HEARTBEAT_INTERVAL_MS` (`5,000` ms) and valid only while `heartbeatAt` is
+within `STALE_THRESHOLD_MS` (`15,000` ms). Adding a file + directory `fsync` barrier (~7.4 ms to ~15 ms) to
+every primacy and per-queue lease heartbeat across up to 20 concurrent queues would place continuous
+synchronous disk-flush load on the extension host for state that is intentionally invalidated after 15
+seconds of silence.
+
+**Process-crash vs. power-loss guarantees and recovery:**
+
+1. **Exclusive generation claim (`createExclusive` / `open(target, 'wx')`):**
+   - `acquire()` contends for `highestGeneration + 1` using `O_CREAT | O_EXCL` (`'wx'`), writes the JSON
+     record, and closes the file descriptor.
+   - **Process crash or power loss mid-create:** If a process crashes or power is lost after the directory
+     entry for `<generation>.json` is created but before the JSON payload is flushed, the file on disk is
+     empty (`0` bytes) or truncated. `parseRecord()` in `src/state/ownership-registry.ts` treats any empty,
+     truncated, or non-JSON generation file as `null` (`parseRecord` returns `null` when `JSON.parse` fails
+     or required fields are missing). `readLatest()` scans generations from highest to lowest, skips any
+     unreadable generation while still recording `highestGeneration` from the filename, and returns the most
+     recent valid generation record. The next `acquire()` contends for `highestGeneration + 1`, so an
+     aborted generation number is never reused and never wedges election.
+2. **Heartbeat refresh (`writeAtomic` — temp file + `rename`):**
+   - `refresh()` writes `<dir>/.<generation>.json.<pid>.<counter>.tmp` (`mode: 0o600`) and atomically
+     renames it over `<dir>/<generation>.json`.
+   - **Process crash mid-refresh:** Leaves an unrenamed `.<generation>.json.<pid>.<counter>.tmp` sibling
+     while the previous `<generation>.json` remains intact. `generationOf()` in `ownership-registry.ts`
+     matches `/^(\d+)\.json$/`, so hidden `.tmp` files are ignored by all readers and verifiers.
+   - **Power loss after `rename` before data blocks flush:** If the filesystem reorders metadata ahead of
+     data blocks on power cut, `<generation>.json` may come back empty or truncated after reboot. On the
+     next launch after reboot, no process from before the power cut is alive; `readLatest()` skips the
+     truncated generation and the new window acquires `highestGeneration + 1` immediately.
+3. **Temp-file and old-generation cleanup (`pruneBelow`):**
+   - On every successful `acquire()` and `release()`, `pruneBelow(dir, generation)` removes all older
+     `<g>.json` files with `g < generation` **and** sweeps any leftover `.<g>.json.<pid>.<n>.tmp` temp
+     files whose target generation `g < generation` (`TEMP_GENERATION_FILE` in `ownership-registry.ts`).
+     Any `.tmp` file from a failed `writeAtomic` itself is also unlinked in `writeAtomic`'s `catch` block.
+
 ## What is explicitly out of scope
 
 Everything not named above. Transcripts, runtime logs, metrics rollups, session artifacts,

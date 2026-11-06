@@ -556,10 +556,19 @@ export interface RunCanceledTaskRowRemovedPayload {
   readonly priorStatus: 'running' | 'paused';
 }
 
+export const MIGRATION_V10_EVENT_TYPES = [
+  'state-migrated-v9-to-v10'
+] as const;
+
 export const MIGRATION_V11_EVENT_TYPES = [
   'state-migrated-v10-to-v11',
   'run-reassigned-to-default-queue',
   'run-record-repaired'
+] as const;
+
+export const MIGRATION_V13_EVENT_TYPES = [
+  'state-migrated-v12-to-v13',
+  'queue-pause-divergence-resolved'
 ] as const;
 
 // FR-R3-010 — emitted by `WorkspaceStateStore.initialize()` (via
@@ -1017,8 +1026,10 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...RESET_TRANSACTION_EVENT_TYPES,
   ...SCHEDULE_EVENT_TYPES,
   ...MIGRATION_V7_EVENT_TYPES,
+  ...MIGRATION_V10_EVENT_TYPES,
   ...MIGRATION_V11_EVENT_TYPES,
   ...MIGRATION_V12_EVENT_TYPES,
+  ...MIGRATION_V13_EVENT_TYPES,
   ...TASK_EXECUTION_EVENT_TYPES,
   ...OPTIONAL_PHASE_EVENT_TYPES,
   ...BACKEND_PING_EVENT_TYPES,
@@ -1069,8 +1080,10 @@ export type QueueScopedResetEventType = (typeof QUEUE_SCOPED_RESET_EVENT_TYPES)[
 export type ResetTransactionEventType = (typeof RESET_TRANSACTION_EVENT_TYPES)[number];
 export type ScheduleAuditEventType = (typeof SCHEDULE_EVENT_TYPES)[number];
 export type MigrationV7EventType = (typeof MIGRATION_V7_EVENT_TYPES)[number];
+export type MigrationV10EventType = (typeof MIGRATION_V10_EVENT_TYPES)[number];
 export type MigrationV11EventType = (typeof MIGRATION_V11_EVENT_TYPES)[number];
 export type MigrationV12EventType = (typeof MIGRATION_V12_EVENT_TYPES)[number];
+export type MigrationV13EventType = (typeof MIGRATION_V13_EVENT_TYPES)[number];
 export type TaskExecutionEventType = (typeof TASK_EXECUTION_EVENT_TYPES)[number];
 export type BackendPingEventType = (typeof BACKEND_PING_EVENT_TYPES)[number];
 export type BackendPostureEventType = (typeof BACKEND_POSTURE_EVENT_TYPES)[number];
@@ -1552,6 +1565,9 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'state-migrated',
     'workflow-run-repaired',
     'state-migrated-v6-to-v7',
+    'state-migrated-v9-to-v10',
+    'state-migrated-v12-to-v13',
+    'queue-pause-divergence-resolved',
     // Feature FR-R3-006 — the reset transaction. System-scoped without
     // qualification: it is the one event whose subject is the whole workspace
     // state rather than any Run, and it carries no runId to resolve against a

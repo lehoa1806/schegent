@@ -140,6 +140,10 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'system-pause-restore-unavailable': 'system',
   // Feature 065 — v6 → v7 state migration (system)
   'state-migrated-v6-to-v7': 'system',
+  // FR-R5-F09 — v9 → v10 and v12 → v13 state migrations (system)
+  'state-migrated-v9-to-v10': 'system',
+  'state-migrated-v12-to-v13': 'system',
+  'queue-pause-divergence-resolved': 'system',
   // Feature 093 — v10 → v11 Run-record reshape and its repairs (system). The
   // reassign event names a Run, which normally reads as task scope; it is
   // system-scoped anyway because it is emitted during `initialize()`, before any
@@ -385,12 +389,15 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'system-pause-scheduled-restore':
         case 'system-pause-restore-unavailable':
         case 'state-migrated-v6-to-v7':
+        case 'state-migrated-v9-to-v10':
         case 'state-migrated-v10-to-v11':
         case 'run-reassigned-to-default-queue':
         case 'run-record-repaired':
         case 'state-migrated-v11-to-v12':
         case 'history-entries-unattributed':
         case 'history-record-repaired':
+        case 'state-migrated-v12-to-v13':
+        case 'queue-pause-divergence-resolved':
         case 'task-execution-started':
         case 'task-execution-ended':
         case 'task-execution-paused':
