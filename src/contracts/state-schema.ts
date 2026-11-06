@@ -22,9 +22,9 @@
  *       `QueueRegistryEntry.pauseSource: 'operator' | 'cascade' | null`
  *       (defaults to `'operator'` when `state === 'manually-paused'`, else
  *       `null`). Extends `ManualPauseCause` union with `'breakpoint-paused'`.
- *       Legacy v4 records are forward-migrated by `migrateV4ToV5()` and
- *       `migrateQueueRegistryV4ToV5()` in
- *       `src/state/workflow-run-migrator.ts`. Down-migration is unsupported.
+ *       Legacy v4 records are forward-migrated by `migrateLegacyRun()` in
+ *       `src/state/workflow-run-migrator.ts` and `migrateV12ToV13()` in
+ *       `src/state/queue-state-migrator.ts`. Down-migration is unsupported.
  *   6 — feature 030: collapses the multi-queue `QueueRegistry` to a single
  *       entry with `id === 'default'`. Pending tasks across pre-migration
  *       source queues are coalesced into the unified queue, preserving each
@@ -168,7 +168,7 @@
  *       than `'none'`. A snapshot written at v13 or earlier stores the value the
  *       old rule produced, and reading it under the new rule would guess. So the
  *       migrator stamps the RESOLVED value and its provenance into every phase of
- *       every persisted plan snapshot. Migrator: `migrateV13ToV14()` in
+ *       every persisted plan snapshot. Migrator: `migrateRunVerdictBasis()` in
  *       `src/state/host-verification-migrator.ts`. Forward-only.
  *
  *       Note the direction carefully: a v<=13 snapshot's absent `hostVerification`

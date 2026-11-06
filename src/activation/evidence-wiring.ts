@@ -84,8 +84,10 @@ export interface EvidenceWiringDeps {
   readonly completedResetGeneration: number | null;
   readonly v6MigrationEvents: MigrationEvents['v6MigrationEvents'];
   readonly v7MigrationEvents: MigrationEvents['v7MigrationEvents'];
+  readonly v10MigrationEvents?: MigrationEvents['v10MigrationEvents'];
   readonly v11MigrationEvents: MigrationEvents['v11MigrationEvents'];
   readonly v12MigrationEvents: MigrationEvents['v12MigrationEvents'];
+  readonly v13MigrationEvents?: MigrationEvents['v13MigrationEvents'];
   // `NonNullable` because the forwarder declares this one optional — older
   // callers that build a `MigrationAuditEvents` literal predate it — while
   // `initialize()` always reports it. Inheriting the optionality here would put
@@ -189,8 +191,10 @@ export async function wireEvidence(deps: EvidenceWiringDeps): Promise<EvidenceWi
     completedResetGeneration,
     v6MigrationEvents,
     v7MigrationEvents,
+    v10MigrationEvents,
     v11MigrationEvents,
     v12MigrationEvents,
+    v13MigrationEvents,
     orphanedRunEvents,
     runRepairEvents,
     v14MigrationEvents
@@ -276,8 +280,10 @@ const replayEvidenceBacklog = async (): Promise<void> => {
     {
       v6MigrationEvents,
       v7MigrationEvents,
+      ...(v10MigrationEvents === undefined ? {} : { v10MigrationEvents }),
       v11MigrationEvents,
       v12MigrationEvents,
+      ...(v13MigrationEvents === undefined ? {} : { v13MigrationEvents }),
       orphanedRunEvents,
       runRepairEvents,
       // FR-R3-111 — drained where the writer exists; `initialize()` buffers it before that.
