@@ -7,8 +7,8 @@
 // because "a lockfile bump is outside this task and needs your approval", and
 // asked for a go-ahead no headless run can give. Both Phases now say what the
 // agent may settle alone, what it must set aside, and what it must report; the
-// write-up is `docs/audits/implement-stall-on-undecidable-task-2026-10-28.md`
-// in the workspace.
+// retained incident context is in workspace
+// `docs/features/round_5/reconciliation-incidents.md#undecidable-task-recurrence`.
 //
 // This file pins that text. The Phases are prose, so a quiet edit can widen or
 // drop a limit and nothing else goes red: seven other test files load this

@@ -173,6 +173,11 @@
           "name": "completionProvenance",
           "optional": true,
           "type": "CompletionProvenance"
+        },
+        {
+          "name": "workflowOccurrence",
+          "optional": true,
+          "type": "WorkflowOccurrenceIdentity"
         }
       ]
     },

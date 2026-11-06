@@ -74,6 +74,9 @@ function makeStubRunner(opts: {
   const capturedRequests: InvocationRequest[] = [];
   const invoke = vi.fn(async (req: InvocationRequest): Promise<RawInvocationOutput> => {
     capturedRequests.push(req);
+    // Feature 020 BUG-002 (T084) — this stub stands in for the adapter, and the
+    // adapter is what reports a capture, so it reports one only once it wrote.
+    let diagnosticsCaptured = false;
     // When verbose flags are present, also tee chunks into the diagnostic
     // files via direct fs writes — this fakes the real CLI's stream-json
     // and verbose outputs hitting the sibling files.
@@ -82,6 +85,7 @@ function makeStubRunner(opts: {
       try {
         await fs.mkdir(t.directory, { recursive: true });
         await fs.appendFile(t.streamFile, VERBOSE_STDOUT_PAYLOAD, 'utf8');
+        diagnosticsCaptured = true;
         await fs.appendFile(t.verboseLogFile, VERBOSE_STDERR_PAYLOAD, 'utf8');
         // Emulate the CLI's --debug-to-file payload by writing one too.
         await fs.appendFile(t.debugFile, '{"phase":"debug"}\n', 'utf8');
@@ -98,7 +102,8 @@ function makeStubRunner(opts: {
       killed: false,
       timedOut: false,
       durationMs: 1,
-      ...(diagnosticWarnings ? { diagnosticWarnings } : {})
+      ...(diagnosticWarnings ? { diagnosticWarnings } : {}),
+      ...(diagnosticsCaptured ? { diagnosticsCaptured: true } : {})
     };
   });
   const runner = {
@@ -340,5 +345,18 @@ describe('Verbose diagnostic logging end-to-end (010, T037, US3)', () => {
     expect(ends.every((e) => !Object.hasOwn(e.payload, 'warnings'))).toBe(true);
     // Run still successfully completed (status 'completed').
     expect(lines.some((l) => l.eventType === 'phase-end' && l.outcome === 'success')).toBe(true);
+  });
+
+  // Feature 020 BUG-002 (T084, FR-002a, SC-011) — the flag used to say that a
+  // target was built. An agy Run recorded `true` while its adapter wrote
+  // nothing. It now says whether the adapter captured.
+  it('records diagnosticsEnabled false when a target was built and nothing was captured', async () => {
+    const { capturedRequests } = await runOnce({ verbose: true, workspaceRoot: tmpRoot });
+    expect(capturedRequests.at(0)?.verboseDiagnostics).toBeDefined();
+    const log = await readAuditLog(tmpRoot);
+    const lines = log.trim().split('\n').map((l) => JSON.parse(l));
+    const invocations = lines.filter((l) => l.eventType === 'cli-invocation');
+    expect(invocations).not.toHaveLength(0);
+    expect(invocations.every((l) => l.payload.diagnosticsEnabled === false)).toBe(true);
   });
 });

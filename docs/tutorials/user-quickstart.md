@@ -74,7 +74,7 @@ In the new window, open `/tmp/schegent-tutorial` as the folder.
 
 ### Requirements the tutorial cannot supply
 
-This pipeline names no runner and no model, so it runs on the default `claude` runner with the
+No Phase in this Workflow names a runner or a model, so it runs on the default `claude` runner with the
 Claude CLI's own default model. A real run therefore also requires a working Claude CLI with access
 to that model. Schegent does not install or authenticate that CLI for you.
 
@@ -86,10 +86,10 @@ capture settings say: [egress and the raw transcript's lifetime](../concepts/loc
 <!-- Source: examples/speckit-bugfix.workflow.yaml -->
 <!-- Source: src/runner/claude-cli.ts -->
 
-Grant VS Code Workspace Trust to the disposable folder. In an untrusted workspace, Schegent displays `Workspace is not trusted` and disables catalog edits; the Runs surface also explains that launching is unavailable.
+Grant VS Code Workspace Trust to the disposable folder. In an untrusted workspace, Schegent displays `Workspace is not trusted` and disables catalog edits; the Queue task composer also explains that launching is unavailable.
 <!-- Source: webview-ui/src/components/TrustBanner.svelte -->
 <!-- Source: webview-ui/src/components/PipelineBuilder.svelte -->
-<!-- Source: webview-ui/src/components/RunsSurface.svelte -->
+<!-- Source: webview-ui/src/components/QueueTaskComposer.svelte -->
 
 ### Record your backend grant list
 
@@ -109,7 +109,7 @@ before.
 2. In the sidebar, select **Open Dashboard**.
 3. Confirm that the dashboard header says **Workspace Connected**. If it says **Read-only Window**, return to the primary VS Code window for this workspace; only that window can launch a run.
 
-The dashboard opens on **Queues** and also exposes **Runs**, **History**, **Metrics**, **System Log**, **Builder**, and **Settings** as sibling views.
+The dashboard opens on **Queues** and also exposes **History**, **Metrics**, **System Log**, **Builder**, and **Settings** as sibling views.
 <!-- Source: webview-ui/src/components/DashboardLink.svelte -->
 <!-- Source: webview-ui/src/dashboard/App.svelte -->
 <!-- Source: webview-ui/src/dashboard/routes.ts -->
@@ -146,7 +146,7 @@ experience.
 
 ## 3. Compose and queue the run
 
-1. Open **Runs**, where published **Workflows** are listed.
+1. Open **Queues**, select a Queue (or create one), and select **Add work**. Published **Workflows** are listed in the task composer.
 2. Select the active row named **Spec-kit Bugfix**.
 3. Select **Trigger**.
 4. The sample declares no input ports, so the form says it can run as-is. Under **Additional context**, enter `e2e happy path` in **Instructions**.
@@ -158,10 +158,11 @@ experience.
    4. Spec-kit Implement (bugfix) (Phase `bugfix-implement`)
    5. Spec-kit Bugfix Verify (post) (Phase `bugfix-verify-post`)
 
-6. Select **Run Workflow**.
+6. Select **Add task**.
+7. Select **Start Queue** when you are ready to execute the queued work.
 
-Success at this step means the host created the connected run and enqueued its entry node onto the target queue. The form reports it as `Started connected run <run-id>.`.
-<!-- Source: webview-ui/src/components/RunsSurface.svelte -->
+Success at this step means the host created the connected run and enqueued its entry node onto the target queue. The form reports `Added task to queue. Run <run-id>.` while it remains open. Adding work leaves an idle Queue waiting for its explicit start; an already running Queue continues draining normally.
+<!-- Source: webview-ui/src/components/QueueTaskComposer.svelte -->
 <!-- Source: webview-ui/src/components/Runs/LaunchableDetail.svelte -->
 <!-- Source: webview-ui/src/components/Runs/WorkflowTriggerForm.svelte -->
 <!-- Source: webview-ui/src/components/RunLauncher/SupplementalInputs.svelte -->
@@ -187,17 +188,17 @@ The repository's deterministic integration test, `tests/integration/bugfix-pipel
 
 - **The first Run is refused until you allow the backend:** with the shipped defaults (the `claude`
   backend and an empty `schegent.backend.uncontainedBackends` list), the first Run is refused when it
-  starts, after `Started connected run …` has appeared. A modal reads "Schegent cannot start the '<id>' backend
+  starts, after the task has been added and the Queue is started. A modal reads "Schegent cannot start the '<id>' backend
   without your approval." (`<id>` is `claude` on the default backend). Its only approving button is
   **Enable '<id>' for This Installation**. Approving adds that one backend to
   `schegent.backend.uncontainedBackends` in your User settings, so it applies to every workspace on
   this installation, and the backend then runs with no OS-enforced bound and your local user
   authority: that is a risk you accept, not a protection you gain. Cancelling or dismissing the modal
   leaves the Run refused, and nothing starts. The `codex` backend is contained and never asks.
-- **No import controls:** grant Workspace Trust. Pipeline and workflow mutations require it.
+- **No import controls:** grant Workspace Trust. Phase and Workflow mutations require it.
 - **Trigger is disabled:** use the VS Code window whose header says **Workspace Connected**.
 - **Validation feedback appears:** correct the named field and submit again. The extension host, rather than the webview, is authoritative for run-request validation.
-- **The queue or runner fails after admission:** open the task's run detail and **System Log**. `Started connected run …` only proves the host created the run and enqueued its entry node.
+- **The queue or runner fails after admission:** open the task's run detail and **System Log**. Adding the task only proves the host created the run and enqueued its entry node.
 
 <!-- Source: webview-ui/src/components/PipelineBuilder.svelte -->
 <!-- Source: webview-ui/src/components/Runs/LaunchableDetail.svelte -->

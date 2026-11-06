@@ -737,4 +737,106 @@ describe('WorkflowControlService — a re-dispatch the queue refuses is a refusa
     expect(store.get('run-ctrl-2')).toBe(waitingRun);
     expect(waitingRun.invocations![snap.rootInvocationId]!.status).toBe('waiting-for-handoff');
   });
+
+  it('reconciles durable attempt evidence on resume from recovery-uncertain-effect without re-dispatching the settled node (FR-R5-F08)', async () => {
+    const { store, dispatchPhase, childInvocationId } = await setupActiveChildAtC2();
+    const pauser = new WorkflowControlService({ connectedRuns: store, dispatchPhase });
+    const paused = await pauser.executeCommand({
+      runId: 'run-ctrl-1',
+      commandId: 'cmd-pause-uncertain',
+      expectedRevision: store.get('run-ctrl-1')!.revision,
+      operation: 'pause',
+      targetInvocationId: childInvocationId,
+      pauseCause: 'recovery-uncertain-effect',
+      now: 2000
+    });
+    expect(paused.accepted).toBe(true);
+    if (!paused.accepted) return;
+    expect(paused.projection.invocations[childInvocationId]!.pauseExplanation).toContain(
+      'restart recovery'
+    );
+    expect(paused.projection.invocations[childInvocationId]!.pauseGuidance).toContain('Resume');
+
+    const dispatchedNodes: string[] = [];
+    const resumer = new WorkflowControlService({
+      connectedRuns: store,
+      dispatchPhase: async (input) => {
+        dispatchedNodes.push(input.node.nodeId);
+        return (dispatchPhase as (arg: typeof input) => ReturnType<typeof dispatchPhase>)(input);
+      },
+      checkDurableAttemptEvidence: (_runId, invId, attempt) => {
+        if (invId === childInvocationId && attempt.nodeId === 'c2') {
+          return {
+            completed: true,
+            settled: true,
+            status: 'completed',
+            completedAt: 2050,
+            declaredOutputs: {
+              childOut: { portId: 'childOut', type: 'text', value: 'settled-c2-output' }
+            }
+          };
+        }
+        return null;
+      }
+    });
+
+    const resumed = await resumer.executeCommand({
+      runId: 'run-ctrl-1',
+      commandId: 'cmd-resume-uncertain-settled',
+      expectedRevision: paused.run.revision,
+      operation: 'resume',
+      targetInvocationId: childInvocationId,
+      now: 2100
+    });
+    expect(resumed.accepted).toBe(true);
+    if (!resumed.accepted) return;
+    // c2 was NOT re-dispatched; instead it settled from evidence and returned to parent!
+    expect(dispatchedNodes).not.toContain('c2');
+    expect(resumed.run.invocations![childInvocationId]!.attemptsByNodeId['c2']).toHaveLength(1);
+    expect(
+      resumed.run.invocations![childInvocationId]!.attemptsByNodeId['c2']![0]!.status
+    ).toBe('completed');
+  });
+
+  it('reactivates a paused leaf attempt in place when its original queue item is still present on the bound queue (FR-R5-F08)', async () => {
+    const { store, dispatchPhase, childInvocationId } = await setupActiveChildAtC2();
+    const pauser = new WorkflowControlService({ connectedRuns: store, dispatchPhase });
+    const paused = await pauser.executeCommand({
+      runId: 'run-ctrl-1',
+      commandId: 'cmd-pause-live-queue',
+      expectedRevision: store.get('run-ctrl-1')!.revision,
+      operation: 'pause',
+      targetInvocationId: childInvocationId,
+      pauseCause: 'recovery-uncertain-effect',
+      now: 2000
+    });
+    expect(paused.accepted).toBe(true);
+    if (!paused.accepted) return;
+
+    const dispatchedNodes: string[] = [];
+    const resumer = new WorkflowControlService({
+      connectedRuns: store,
+      dispatchPhase: async (input) => {
+        dispatchedNodes.push(input.node.nodeId);
+        return (dispatchPhase as (arg: typeof input) => ReturnType<typeof dispatchPhase>)(input);
+      },
+      isQueueOrTaskPresent: (queueId) => queueId === 'q-main'
+    });
+
+    const resumed = await resumer.executeCommand({
+      runId: 'run-ctrl-1',
+      commandId: 'cmd-resume-live-queue',
+      expectedRevision: paused.run.revision,
+      operation: 'resume',
+      targetInvocationId: childInvocationId,
+      now: 2100
+    });
+    expect(resumed.accepted).toBe(true);
+    if (!resumed.accepted) return;
+    expect(dispatchedNodes).toEqual([]);
+    const childAfter = resumed.run.invocations![childInvocationId]!;
+    expect(childAfter.status).toBe('in-flight');
+    expect(childAfter.attemptsByNodeId['c2']).toHaveLength(1);
+    expect(childAfter.attemptsByNodeId['c2']![0]!.status).toBe('in-flight');
+  });
 });

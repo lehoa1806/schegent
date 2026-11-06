@@ -1,8 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { Readable, Writable } from 'stream';
 import type { ChildProcess, SpawnOptions } from 'child_process';
 import { ClaudeCliRunner, type SpawnFn } from '../../../src/runner/claude-cli';
+import { composeVerboseDiagnosticPath } from '../../../src/audit/verbose-diagnostic-path';
 
 interface FakeChild extends EventEmitter {
   stdout: Readable;
@@ -438,6 +442,47 @@ describe('ClaudeCliRunner.invoke', () => {
     expect(seen.args).toContain('--output-format');
     expect(seen.args).toContain('stream-json');
     expect(seen.args).toContain('--verbose');
+  });
+
+  // Feature 020 BUG-002 (T084, FR-002a) — what `cli-invocation` records as
+  // `diagnosticsEnabled`: a stdout chunk written to `stream.jsonl`, not a
+  // target handed in. A real directory, because the claim is what was written.
+  it('reports diagnosticsCaptured only once stdout reached stream.jsonl', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'schegent-claude-tee-')));
+    const target = composeVerboseDiagnosticPath({
+      workspaceRoot: root,
+      runId: 'run-x',
+      pipelineId: 'standard',
+      phaseId: 'speckit-specify',
+      iterationN: 1
+    });
+    const invokeEmitting = (stdout: readonly string[]) => {
+      const child = makeFakeChild();
+      const spawnFn: SpawnFn = () => {
+        setImmediate(() => {
+          for (const chunk of stdout) child.stdout.emit('data', chunk);
+          child.emit('exit', 0, null);
+          child.emit('close', 0, null);
+        });
+        return child as unknown as ChildProcess;
+      };
+      return new ClaudeCliRunner(spawnFn).invoke({
+        phase: 'speckit-specify',
+        iteration: 1,
+        prompt: 'p',
+        timeoutMs: 5_000,
+        cliPath: 'claude',
+        cwd: root,
+        verboseDiagnostics: target
+      });
+    };
+    try {
+      expect((await invokeEmitting([])).diagnosticsCaptured).toBeUndefined();
+      expect((await invokeEmitting(['{"type":"system"}\n'])).diagnosticsCaptured).toBe(true);
+      expect(readFileSync(target.streamFile, 'utf8')).toBe('{"type":"system"}\n');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

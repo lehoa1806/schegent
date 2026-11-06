@@ -147,3 +147,44 @@ describe('ClaudeCliRunner close() while an invocation awaits its diagnostics dir
     expect(spawnFn).not.toHaveBeenCalled();
   });
 });
+
+// Feature 020 BUG-002 (FR-002a) — the agy and codex adapters now tee stdout
+// through the same writer, so their shared lifecycle runner awaits the same
+// `prepare()` before it spawns, and the same window opens for them.
+describe.each(RUNNERS.filter(({ label }) => label !== 'claude-cli'))(
+  '$label close() while an invocation awaits its diagnostics directory',
+  ({ make }) => {
+    let root = '';
+
+    beforeEach(() => {
+      root = realpathSync(mkdtempSync(join(tmpdir(), 'schegent-runner-close-')));
+    });
+
+    afterEach(() => {
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it('refuses the spawn that await was leading to', async () => {
+      const segments = ['.schegent', 'sessions', 'run-x', 'diagnostics'];
+      const directory = join(root, ...segments);
+      const spawnFn = vi.fn<SpawnFn>(() => exitingChild());
+      const runner = make(spawnFn);
+
+      const pending = runner.invoke({
+        ...REQUEST,
+        verboseDiagnostics: {
+          directory,
+          debugFile: join(directory, 'debug.json'),
+          streamFile: join(directory, 'stream.jsonl'),
+          verboseLogFile: join(directory, 'verbose.log'),
+          workspaceRoot: root,
+          segments
+        }
+      });
+      runner.close();
+
+      await expect(pending).rejects.toBeInstanceOf(SpawnRefusedAfterCloseError);
+      expect(spawnFn).not.toHaveBeenCalled();
+    });
+  }
+);

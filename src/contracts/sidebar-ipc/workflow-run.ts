@@ -118,6 +118,8 @@ export interface ConnectedInvocationProjection {
   readonly allowedActions: readonly WorkflowControlAction[];
   readonly waitingReason: string | null;
   readonly pauseCause: string | null;
+  readonly pauseExplanation?: string | null;
+  readonly pauseGuidance?: string | null;
   readonly failureReason: string | null;
   readonly pendingRetryAt: number | null;
   readonly pendingRetryCause: string | null;

@@ -118,6 +118,12 @@ export class WorkspaceLockManager {
    * claim. Guarded operations carry it; a rejected check clears it.
    */
   private fence: number | null = null;
+  /**
+   * FR-R5-F08 — whether this window has participated in a primacy election via
+   * `tryAcquire()`. Once true, connected-run writes and recovery sweeps require
+   * authoritative primacy (`hasPrimacy()`).
+   */
+  private electionAttempted = false;
 
   constructor(
     store: WorkspaceStateStore,
@@ -131,6 +137,9 @@ export class WorkspaceLockManager {
     this.ownerId = ownerId;
     this.clock = clock;
     this.scheduler = scheduler;
+    if ('bindPrimacyClaimSource' in this.store) {
+      this.store.bindPrimacyClaimSource(this);
+    }
   }
 
   public get id(): string {
@@ -162,6 +171,7 @@ export class WorkspaceLockManager {
    * notification because `tick()` is the only site where a gain is news.
    */
   public async tryAcquire(): Promise<{ acquired: boolean; ownerId: string }> {
+    this.electionAttempted = true;
     const now = this.clock.now();
     const outcome = await this.store.ownership.acquire(
       PRIMACY_RESOURCE,
@@ -222,6 +232,18 @@ export class WorkspaceLockManager {
     if (claim === null) return false;
     const verdict = await this.store.verifyClaim(claim);
     return verdict.outcome === 'valid';
+  }
+
+  /**
+   * FR-R5-F08 — whether this window is authorized to commit or recover
+   * connected workflow runs. Before any election attempt (single-window test
+   * harnesses that never elect), connected-run writes stay allowed; once an
+   * election has been attempted via `tryAcquire()`, authoritative primacy is
+   * required.
+   */
+  public canCommitConnectedRun(): Promise<boolean> {
+    if (!this.electionAttempted) return Promise.resolve(true);
+    return this.hasPrimacy();
   }
 
   /** This window's claim, or `null` when it holds none. */

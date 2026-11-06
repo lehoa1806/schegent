@@ -31,6 +31,7 @@ import { AUTHORED_PIPELINE_FIELDS, validatePipelineDefinition } from './pipeline
 // FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
 // imports it instead of restating it. Re-exported unchanged.
 import type { PipelineDef } from '../contracts/snapshot-vocabulary';
+import type { WorkflowDefinition } from '../contracts/workflow-definitions';
 
 export type { PipelineDef };
 
@@ -106,6 +107,8 @@ export interface PipelineCatalog {
   readonly defaultPipelineId: string;
   readonly phasesById: ReadonlyMap<string, PhaseDef>;
   readonly pipelinesById: ReadonlyMap<string, PipelineDef>;
+  readonly workflows?: readonly WorkflowDefinition[];
+  readonly workflowsById?: ReadonlyMap<string, WorkflowDefinition>;
 }
 export interface ValidationError {
   readonly source: 'phase' | 'pipeline' | 'defaultPipelineId';
@@ -323,7 +326,8 @@ export function buildCatalog(
   phases: readonly PhaseDef[],
   pipelines: readonly PipelineDef[],
   models: Record<BackendRunnerKind, readonly string[]>,
-  defaultPipelineId: string
+  defaultPipelineId: string,
+  workflows: readonly WorkflowDefinition[] = []
 ): PipelineCatalog {
   const phasesById = new Map<string, PhaseDef>();
   const normalizedPhases = phases.map((phase) =>
@@ -336,13 +340,19 @@ export function buildCatalog(
   for (const pl of pipelines) {
     pipelinesById.set(pl.id, pl);
   }
+  const workflowsById = new Map<string, WorkflowDefinition>();
+  for (const wf of workflows) {
+    workflowsById.set(wf.workflowId, wf);
+  }
   return Object.freeze({
     phases: Object.freeze(normalizedPhases),
     pipelines: Object.freeze([...pipelines]),
     models: Object.freeze(models),
     defaultPipelineId,
     phasesById,
-    pipelinesById
+    pipelinesById,
+    workflows: Object.freeze([...workflows]),
+    workflowsById
   });
 }
 

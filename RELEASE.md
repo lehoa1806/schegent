@@ -135,7 +135,8 @@ single-node execution substrates.
 - **Shipped Workflow examples (`FR-R5-F07`, `266`).** All shipped examples under `examples/`
   are authored as `kind: Workflow` packages (`speckit-new-feature.workflow.yaml`,
   `speckit-bugfix.workflow.yaml`, `example-two-node.workflow.yaml`,
-  `example-nested-delivery.workflow.yaml`) and remain excluded from the packaged VSIX.
+  `example-nested-delivery.workflow.yaml`). They ship in the packaged VSIX as plain files and
+  nothing loads them into the catalog: an operator imports them at runtime.
 
 **Where to look.** [`docs/how-to/product-workflows.md`](docs/how-to/product-workflows.md) and
 [`docs/how-to/developer-workflows.md`](docs/how-to/developer-workflows.md).

@@ -121,8 +121,7 @@
   >
     <p class="title">This phase began and recorded nothing</p>
     <p class="hint">
-      Its log directory is here and holds no iteration. What went wrong is in
-      the phase, not in this log.
+      Its log directory is here and holds no iteration with a log.
     </p>
   </div>
 {:else if banner?.kind === 'record-path-refused'}

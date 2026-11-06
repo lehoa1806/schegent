@@ -10,8 +10,7 @@ Open the Dashboard with `Schegent: Open Dashboard` (`schegent.openDashboard`). S
 
 | Label | Route | Main purpose |
 |---|---|---|
-| Queues | `operations` | Queue overview, Queue detail, and Run detail drill-down |
-| Runs | `runs` | Run composition and connected Workflow Runs |
+| Queues | `operations` | Queue overview, task composition, Queue detail, and Run detail drill-down |
 | History | `history` | Terminal Run records and rerun entry points |
 | Metrics | `metrics` | Projected operational metrics |
 | System Log | `system` | System-scoped projected log and audit events |
@@ -24,6 +23,17 @@ Open the Dashboard with `Schegent: Open Dashboard` (`schegent.openDashboard`). S
 `operations` is the default route. Queue detail and Run detail are nested locations rather than top-level navigation entries; Back moves Run → Queue → all Queues.
 
 <!-- Source: webview-ui/src/dashboard/routes.ts -->
+
+Task composition is part of Queue detail: choose or create a Queue, select
+**Add work**, choose a published Workflow, review its execution policy, and
+supply inputs, additional context and output targets. **Add task** submits work
+to that Queue. An idle Queue waits for **Start Queue**; an already running Queue
+continues draining. Connected Workflow progress and controls are available by
+selecting its row in the Queue. There is no standalone Runs page.
+
+<!-- Source: webview-ui/src/components/drilldown/QueueDetailTier.svelte -->
+<!-- Source: webview-ui/src/components/QueueTaskComposer.svelte -->
+<!-- Source: webview-ui/src/components/Runs/WorkflowTriggerForm.svelte -->
 
 ## State and commands
 

@@ -127,9 +127,8 @@ export async function createRunSafetyWiring(input: {
     boundGuardedRun = guardedRun;
     boundDefaultRunnerKind = defaultRunnerKind;
   };
-  const replayTerminalTransitions = async (selfOwnerId?: string): Promise<void> => {
-    await terminalTransitions.replay(selfOwnerId);
-    await reconcileComposableWorkflowRuns({
+  const runComposableWorkflowRecovery = (): Promise<void> =>
+    reconcileComposableWorkflowRuns({
       workspaceRoot: input.workspaceRoot,
       store: input.store,
       historyStore: input.historyStore,
@@ -137,6 +136,9 @@ export async function createRunSafetyWiring(input: {
       getGuardedRun: () => boundGuardedRun,
       getDefaultRunnerKind: () => boundDefaultRunnerKind
     });
+  const replayTerminalTransitions = async (selfOwnerId?: string): Promise<void> => {
+    await terminalTransitions.replay(selfOwnerId);
+    await runComposableWorkflowRecovery();
   };
   // Feature 093 (T053, FR-022a) — Runs that could hold uncommitted work in the
   // shared worktree. Counted as **non-terminal**, which is wider than
@@ -275,6 +277,7 @@ export async function createRunSafetyWiring(input: {
     spendWatcher,
     checkpointRetention,
     replayTerminalTransitions,
+    reconcileComposableWorkflowRuns: runComposableWorkflowRecovery,
     sweepCheckpointRetention,
     bindGuardedRun,
     checkpoints: new RunCheckpointService(
@@ -445,13 +448,29 @@ export async function reconcileComposableWorkflowRuns(input: {
       next: ConnectedWorkflowRun,
       expectedRevision: number
     ): Promise<ConnectedRunWriteResult>;
+    canCommitConnectedRun?(): Promise<boolean>;
+    getQueueRegistry?(): { readonly entries: readonly { readonly id: string }[] };
+    getQueue?(queueId: string): {
+      readonly requests: readonly {
+        readonly id: string;
+        readonly status: string;
+        readonly workflowOccurrence?: { readonly attemptId: string };
+      }[];
+    };
   };
   readonly historyStore?: Pick<HistoryStore, 'list' | 'outputsFor'>;
   readonly logger: SanitizedLogger;
   readonly getGuardedRun?: () => NodeRunStartDeps['guardedRun'] | undefined;
   readonly getDefaultRunnerKind?: () => BackendRunnerKind | undefined;
+  readonly isQueueOrTaskPresent?: (queueId: string, rootRunId: string) => boolean;
 }): Promise<void> {
   try {
+    if (
+      input.store.canCommitConnectedRun !== undefined &&
+      !(await input.store.canCommitConnectedRun())
+    ) {
+      return;
+    }
     const allRuns = Object.values(input.store.getConnectedRuns()).filter(
       (run) => run.invocations !== undefined
     );
@@ -467,6 +486,57 @@ export async function reconcileComposableWorkflowRuns(input: {
           input.store.compareAndSetConnectedRun(next, rev)
       },
       dispatchPhase: makePhaseDispatcher(input),
+      isQueueOrTaskPresent: (queueId, rootRunId) => {
+        if (
+          input.isQueueOrTaskPresent !== undefined &&
+          !input.isQueueOrTaskPresent(queueId, rootRunId)
+        ) {
+          return false;
+        }
+        if (
+          input.store.getQueueRegistry !== undefined &&
+          !input.store.getQueueRegistry().entries.some((entry) => entry.id === queueId)
+        ) {
+          return false;
+        }
+        if (input.store.getQueue !== undefined) {
+          const wfRun = input.store.getConnectedRuns()[rootRunId] as
+            | ConnectedWorkflowRun
+            | undefined;
+          const requests = input.store.getQueue(queueId).requests;
+          for (const frame of Object.values(wfRun?.invocations ?? {})) {
+            if (frame.status !== 'in-flight' && frame.status !== 'paused') continue;
+            for (const attempts of Object.values(frame.attemptsByNodeId)) {
+              const last = attempts[attempts.length - 1] as
+                | (typeof attempts)[number]
+                | undefined;
+              if (
+                last !== undefined &&
+                last.queueItemId !== undefined &&
+                (last.status === 'in-flight' || last.status === 'paused') &&
+                requests.some(
+                  (req) => req.id === last.queueItemId && req.status === 'canceled'
+                )
+              ) {
+                return false;
+              }
+            }
+          }
+        }
+        return true;
+      },
+      ...(input.store.getQueue !== undefined
+        ? {
+            findMatchingEnqueuedAttempt: (queueId, attempt) =>
+              input.store
+                .getQueue!(queueId)
+                .requests.find(
+                  (req) =>
+                    req.status !== 'canceled' &&
+                    req.workflowOccurrence?.attemptId === attempt.attemptId
+                )?.id
+          }
+        : {}),
       checkDurableAttemptEvidence: (_workflowRun, _frame, attempt): DurableAttemptEvidenceResult => {
         if (attempt.queueItemId === undefined) return { completed: false };
         const liveMatch = Object.values(input.store.getRunMap()).find(

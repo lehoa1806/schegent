@@ -61,16 +61,6 @@ export interface ChildWorkflowPreview {
   readonly truncatedReason?: 'cycle' | 'max-depth' | 'missing';
 }
 
-export type WorkflowPublicationStatus = 'active' | 'draft' | 'invalid';
-
-export interface SelectedWorkflowLaunchHandoff {
-  readonly workflowId: string;
-  readonly label: string;
-  readonly publicationStatus: WorkflowPublicationStatus;
-  readonly hasUnsavedChanges: boolean;
-  readonly launchEligible: boolean;
-}
-
 /**
  * Shared with the Pipeline and Phase families on purpose — a Workflow id is
  * spelled the same way, and the host reuses one pattern across all three so
@@ -1228,49 +1218,6 @@ export function buildChildWorkflowPreview(
     };
   });
   return { nodes };
-}
-
-export function deriveSelectedWorkflowLaunchHandoff(
-  selected: MutableWorkflow | null,
-  record: WorkflowCatalogSourceProjection | null | undefined,
-  hasUnsavedChanges = false
-): SelectedWorkflowLaunchHandoff | null {
-  if (!selected) return null;
-  if (!selected.persisted || !record) {
-    return {
-      workflowId: selected.workflowId,
-      label: selected.name || selected.workflowId,
-      publicationStatus: 'draft',
-      hasUnsavedChanges: true,
-      launchEligible: false
-    };
-  }
-  if (record.status === 'invalid') {
-    return {
-      workflowId: selected.workflowId,
-      label: selected.name || selected.workflowId,
-      publicationStatus: 'invalid',
-      hasUnsavedChanges,
-      launchEligible: false
-    };
-  }
-  const lifecycleState = record.lifecycle?.state;
-  if (lifecycleState === 'draft') {
-    return {
-      workflowId: selected.workflowId,
-      label: selected.name || selected.workflowId,
-      publicationStatus: 'draft',
-      hasUnsavedChanges,
-      launchEligible: false
-    };
-  }
-  return {
-    workflowId: selected.workflowId,
-    label: selected.name || selected.workflowId,
-    publicationStatus: 'active',
-    hasUnsavedChanges,
-    launchEligible: true
-  };
 }
 
 export type { PortablePhaseDefinition };

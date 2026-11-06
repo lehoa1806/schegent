@@ -249,6 +249,11 @@
           "type": "ReadonlyArray<string>"
         },
         {
+          "name": "diagnosticsCaptured",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
           "name": "command",
           "optional": true,
           "type": "string"

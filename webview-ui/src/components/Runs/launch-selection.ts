@@ -14,7 +14,7 @@
 
 import type { Launchable, LaunchProjection, LaunchSection } from '../../lib/snapshot-types';
 
-/** What the operator has chosen, or nothing. Held once, by `RunsSurface`. */
+/** What the operator has chosen, or nothing. Held once, by `QueueTaskComposer`. */
 export type LaunchSelection = {
   readonly kind: 'pipeline' | 'workflow';
   readonly id: string;

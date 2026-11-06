@@ -399,3 +399,20 @@ describe('Feature 203 T060 — an unknown progress is stated, not guessed', () =
     }
   });
 });
+
+// Feature 020 BUG-002 (T085, FR-026a) — a phase whose iteration directory holds
+// no stream now reaches this card. The card says what is on disk and MUST NOT
+// say the phase failed: nothing on disk shows that it did.
+describe('Feature 020 BUG-002 T085 — no-iteration-recorded copy', () => {
+  it('says the log directory holds no iteration with a log', () => {
+    expect(cardText('no-iteration-recorded')).toMatch(/holds no iteration with a log/i);
+  });
+
+  it('does not say the phase failed', () => {
+    const text = cardText('no-iteration-recorded');
+    expect(text).not.toMatch(/went wrong/i);
+    expect(text).not.toMatch(/\bfail(?:ed|ure|s)?\b/i);
+    // Non-vacuity: the text read is the card under test, not an empty node.
+    expect(text).toMatch(/recorded nothing/i);
+  });
+});

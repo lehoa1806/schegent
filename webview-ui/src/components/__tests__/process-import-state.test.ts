@@ -1981,3 +1981,17 @@ describe('Feature 254 — a late outcome re-runs the fan-out for every layer (P9
     expect(late.results).toEqual([]);
   });
 });
+
+// BUG-001 (FR-008, SC-005) — the Skip reason names the status of the row the catalog
+// already holds, so its article has to agree with that word. One fixed article read
+// "a effective row" in the preview; which rows are skipped was never in question.
+describe('BUG-001 — the Skip reason agrees in article with the presence status (FR-008, SC-005)', () => {
+  it.each([
+    ['draft', 'in the catalog as a draft row'],
+    ['effective', 'in the catalog as an effective row'],
+    ['invalid', 'in the catalog as an invalid row']
+  ] as const)('reads a row held as %s with the article that word takes', (presentRowStatus, wording) => {
+    const skipped: ImportPlanRow = { ...SKIP_ROW, presentRowStatus };
+    expect(reasonLines(skipped).at(0)).toContain(wording);
+  });
+});

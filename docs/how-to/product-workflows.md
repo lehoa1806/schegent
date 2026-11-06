@@ -6,7 +6,7 @@ These workflows use only operator surfaces that are registered by the extension 
 
 ## 1. Add work, then choose when its queue starts
 
-Use this path when you want enqueueing and execution to be separate decisions.
+Use this path when you want enqueueing and execution to be separate decisions. If the catalog has no Workflow yet, import one of the `.workflow.yaml` packages in [`examples/`](../../examples/README.md) first: each package is one import and includes the Phases it needs, and [the quickstart](../tutorials/user-quickstart.md) walks the whole path.
 
 1. Open the dashboard, select **Queues**, then open the target queue card.
 2. Select **Add work**.
@@ -25,6 +25,7 @@ An enqueued task does not itself carry a start intent. On an otherwise empty act
 <!-- Source: webview-ui/src/components/drilldown/QueueIdlePendingPanel.svelte -->
 <!-- Source: webview-ui/src/components/StartModeChooser.svelte -->
 <!-- Source: src/commands/start-queue.ts -->
+<!-- Source: examples/README.md -->
 
 After scheduling, the queue shows its resolved local fire time. Use **Cancel** to remove the schedule while retaining the pending work, **Change** to replace it, or **Start now** to run immediately.
 <!-- Source: webview-ui/src/components/ScheduledStartIndicator.svelte -->
@@ -85,11 +86,11 @@ When a run fails, its notice names a cause and the action worth taking. What eac
 2. Locate a terminal run and select **Rerun**, or open its detail and select **Run again**.
 3. Read the **Repeat this run** notices before editing the form. The panel explicitly reports:
 
-   - when the Active Pipeline version differs from the version frozen by the old run;
-   - when the old run was a Workflow member and only that Pipeline will be repeated;
+   - when the Active version differs from the version frozen by the old run;
+   - when the old run was one step inside a Workflow, so only that step is repeated and the Workflow is not restarted;
    - whether the same queue will be used or the deleted queue was replaced by the default.
 
-4. Review the pre-filled **Instructions**, provide any required Pipeline inputs and outputs, then select **Run Pipeline**.
+4. Review the pre-filled **Instructions**, provide any required inputs and outputs, then select **Run Workflow**.
 
 The repeat form uses the recorded description preview and has no prior input-port values to restore. Only that preview is pre-filled; if it was truncated, the panel reports the retained and original character counts. A repeat always passes through the current launch form and host validation, and it resolves the currently Active definition rather than resurrecting an inactive catalog body.
 <!-- Source: webview-ui/src/components/HistoryDashboard.svelte -->

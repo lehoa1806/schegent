@@ -175,7 +175,6 @@ const ROUTE_MOUNT_TARGETS: Readonly<Record<DashboardRoute, string>> = {
   // that used to be here is a click deeper and is covered by the `queues`
   // surface below.
   operations: 'queues-tier',
-  runs: 'runs-surface',
   history: 'history-dashboard',
   metrics: 'metrics-section',
   system: 'system-tab',
@@ -681,6 +680,44 @@ const PHOTOGRAPHED_SURFACES: readonly SurfaceName[] = [
 // contract row, and this is a failure until it has baselines. Both halves of
 // "photographed, not only mounted" then hold by construction rather than by
 // someone remembering. No `page` fixture, so this costs no browser.
+test('Workflow tasks are composed inside their Queue', async ({ page }) => {
+  await installDeterministicHost(page);
+  await page.goto('/dashboard.html');
+  const workflow = workflowSnapshot.workflowCatalog.effective[0];
+  const snapshot = inlineJson({
+    ...workflowSnapshot,
+    launchables: {
+      pipelines: { state: 'no-definitions' },
+      workflows: {
+        state: 'entries',
+        entries: [{
+          kind: 'workflow',
+          id: workflow.workflowId,
+          name: workflow.name,
+          activeVersionId: 'v1',
+          inputs: [],
+          outputs: [],
+          startNodeIds: workflow.startNodeIds
+        }]
+      }
+    }
+  });
+  await page.evaluate(
+    `window.dispatchEvent(new MessageEvent('message', { data: { type: 'STATE_SNAPSHOT', payload: ${snapshot} } }))`
+  );
+  await expect(page.getByTestId('dashboard-route-runs')).toHaveCount(0);
+  await page.getByTestId(`queue-card-${FIXTURE_QUEUE_ID}`).click();
+  await page.getByTestId('queue-composer-open').click();
+  await page.getByTestId(`launchable-select-workflow-${workflow.workflowId}`).click();
+  await page.getByTestId('launchable-detail-trigger').click();
+  await expect(page.getByTestId('workflow-trigger-submit')).toHaveText('Add task');
+  await expect(page.getByTestId('queue-detail-title')).toBeVisible();
+  await expect(page.locator('main')).toHaveCount(1);
+  await page.getByTestId('queue-composer-cancel').click();
+  await expect(page.getByTestId('queue-task-composer')).toHaveCount(0);
+  assertNoPageErrors(page, 'Queue task composition');
+});
+
 test('every surface with a contract is photographed', () => {
   expect(
     [...PHOTOGRAPHED_SURFACES].sort(),

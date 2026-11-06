@@ -30,7 +30,6 @@
   import {
     anchorWorkflowDefects,
     boundFieldErrors,
-    deriveSelectedWorkflowLaunchHandoff,
     formatWorkflowSaveRejection,
     makeDuplicateWorkflowDraft,
     makeNewWorkflowDraft,
@@ -46,8 +45,6 @@
     importDisabledReason,
     storedWritableLayers
   } from '../ProcessImport/process-exchange-entry';
-  import { getContext } from 'svelte';
-  import { DASHBOARD_NAVIGATION, type DashboardNavigation } from '../../dashboard/navigation-context';
   import WorkflowFlowBuilder from './WorkflowFlowBuilder.svelte';
   import WorkflowFlowTopBar, { type WorkflowBreadcrumbEntry } from './WorkflowFlowTopBar.svelte';
   import WorkflowToolbar from './WorkflowToolbar.svelte';
@@ -58,12 +55,10 @@
     /** Workspace Trust, resolved host-side; the host re-checks on save. */
     trusted: boolean;
     initialWorkflowId?: string | null;
-    onlaunch?: (workflowId: string) => void;
     onopenphase?: (phaseId: string) => void;
   }
 
-  const { snapshot, trusted, initialWorkflowId = null, onlaunch, onopenphase }: Props = $props();
-  const dashboardNav = getContext<DashboardNavigation | undefined>(DASHBOARD_NAVIGATION);
+  const { snapshot, trusted, initialWorkflowId = null, onopenphase }: Props = $props();
 
   /** Rows the operator created but the host has not accepted yet. */
   let drafts = $state<MutableWorkflow[]>([]);
@@ -111,16 +106,8 @@
   const noBuildingBlocks = $derived(!hasBuildingBlocks);
   const rows = $derived<MutableWorkflow[]>(mergeWorkflowRows(persisted, editedByKey, drafts));
   const selected = $derived(rows.find((row) => row.sourceKey === selectedKey) ?? null);
-  const selectedRecord = $derived(
-    selected && catalog?.state === 'ready'
-      ? (catalog.records.find((candidate) => candidate.key === selected.sourceKey) ?? null)
-      : null
-  );
   const isSelectedDirty = $derived(
     selected !== null && (!selected.persisted || selected.sourceKey in editedByKey)
-  );
-  const selectedLaunchHandoff = $derived(
-    deriveSelectedWorkflowLaunchHandoff(selected, selectedRecord, isSelectedDirty)
   );
   const selectedHistory = $derived(
     selected && selected.sourceKey in historyByKey ? historyByKey[selected.sourceKey] : null
@@ -386,9 +373,7 @@
 {:else}
   <div
     data-testid="workflow-catalog-editor"
-    data-selected-workflow-id={selectedLaunchHandoff?.workflowId ?? undefined}
-    data-launch-eligible={selectedLaunchHandoff ? String(selectedLaunchHandoff.launchEligible) : undefined}
-    data-publication-status={selectedLaunchHandoff?.publicationStatus ?? undefined}
+    data-selected-workflow-id={selected?.workflowId ?? undefined}
   >
     <WorkflowFlowTopBar
       {rows}
@@ -411,7 +396,6 @@
       {canUndo}
       {canRedo}
       {canReset}
-      launchEligible={selectedLaunchHandoff?.launchEligible ?? false}
       {selected}
       onadd={addWorkflow}
       onduplicate={duplicateWorkflow}
@@ -420,11 +404,6 @@
       onundo={undoSelected}
       onredo={redoSelected}
       onreset={resetSelected}
-      onlaunch={() => {
-        if (!selectedLaunchHandoff?.launchEligible) return;
-        onlaunch?.(selectedLaunchHandoff.workflowId);
-        dashboardNav?.openWorkflowLaunch?.(selectedLaunchHandoff.workflowId);
-      }}
     />
 
     {#if catalog.warnings.length > 0}

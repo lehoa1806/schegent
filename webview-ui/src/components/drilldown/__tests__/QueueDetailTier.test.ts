@@ -17,6 +17,7 @@ import { disposeIntentLedger } from '../../../lib/intent-ledger';
 const LEDGER_IDENTITY = expect.objectContaining({ correlationId: expect.any(String) });
 
 import QueueDetailTier from '../QueueDetailTier.svelte';
+import { buildSnapshot as launchSnapshot } from '../../Runs/__tests__/launch-fixture';
 import {
   CMD_ACK,
   CMD_CLEAR_QUEUE,
@@ -1467,5 +1468,50 @@ describe('QueueDetailTier — a failed start on this queue', () => {
     });
 
     expect(getByTestId('queue-start-failure-q-beta')).toBeTruthy();
+  });
+});
+
+
+describe('QueueDetailTier — published Workflow task composition', () => {
+  function snapshot(): WorkflowSnapshot {
+    const launch = launchSnapshot();
+    return { ...buildSnapshot([], { lifecycle: 'active-empty' }),
+      launchables: launch.launchables, workflowCatalog: launch.workflowCatalog,
+      availablePipelines: launch.availablePipelines };
+  }
+
+  it('adds a Workflow to this Queue through the existing host boundary, then offers an explicit Queue start', async () => {
+    const state = snapshot();
+    const view = mount(state);
+    expect(view.queryByTestId('queue-task-composer')).toBeNull();
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
+    await fireEvent.click(view.getByTestId('launchable-detail-trigger'));
+    await fireEvent.click(view.getByTestId('workflow-trigger-submit'));
+    expect(postCommandSpy).toHaveBeenCalledTimes(1);
+    expect(postCommandSpy.mock.calls[0]?.[1]).toMatchObject({
+      queueId: 'q-beta', workflowId: 'analysis-pipeline', startNodeId: 'node-a'
+    });
+    ack(0, 'accepted', undefined, { outcome: 'started', connectedRunId: 'cr-new', revision: 1, queueItemId: 'new-task' });
+    await vi.waitFor(() => expect(view.getByTestId('workflow-trigger-status').textContent).toContain('Added task to queue'));
+    expect(postCommandSpy.mock.calls.some(([type]) => type === CMD_START_QUEUE)).toBe(false);
+    const queued = buildSnapshot([task('new-task')], { lifecycle: 'idle-pending' });
+    await view.rerender({ snapshot: { ...queued, launchables: state.launchables, workflowCatalog: state.workflowCatalog } });
+    expect(view.queryByTestId('queue-composer')).toBeNull();
+    expect(view.getByTestId('idle-pending-start-queue-button')).toBeTruthy();
+  });
+
+  it('shows the trust explanation and no launch form in an untrusted workspace', async () => {
+    const view = mount({ ...snapshot(), workspaceTrust: false });
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    expect(view.getByTestId('queue-task-composer').textContent).toContain('Workspace is not trusted');
+    expect(view.queryByTestId('launchable-select-workflow-analysis-pipeline')).toBeNull();
+    expect(postCommandSpy).not.toHaveBeenCalled();
+  });
+
+  it('offers no Add work control to a secondary window', () => {
+    const view = mount({ ...snapshot(), isPrimary: false }, { isPrimary: false });
+    expect(view.queryByTestId('queue-composer-open')).toBeNull();
+    expect(view.queryByTestId('queue-task-composer')).toBeNull();
   });
 });

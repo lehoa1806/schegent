@@ -1,32 +1,11 @@
 <script lang="ts">
-  // Feature 092 (T108, FR-057, FR-064, FR-047, FR-065) — tier 2 of the drill-down.
-  //
-  // Feature 097 gave this tier its own `<main>` landmark and retired the
-  // `Dashboard` embed it used to reuse the operations route's chrome through:
-  // that embed duplicated the Task list already extracted into
-  // `QueueDetailRows.svelte`, kept a composer permanently open, and showed a
-  // "recent runs" tab scoped to the wrong queue. This file now owns
-  // everything the queue detail view renders directly — identity, a
-  // throughput reading, the configuration affordance, and the row list.
-  //
-  // Mockup: docs/mockup/schegent_mockup.html `view-queue-detail` and
-  // `modal-queue-config`.
-
-  // Feature 095 (US1, US2, US4) — the tier gained three per-queue controls
-  // feature 092 registered commands for and never wired up: delete the queue,
-  // arm/disarm its scheduled start, and move a pending Task off it. All three
-  // posted through `queue-control-ipc.ts` and none of them reached for a `CMD_`
-  // constant; the workspace-scoped settings live a tier up, in `QueuesTier`.
-  //
-  // Feature 097 removes the second of those, the scheduled-start control,
-  // along with its command handlers and validators. The third, the per-Task
-  // move, lives with the row list in `QueueDetailRows.svelte` — it acts on a
-  // Task, not on the queue — and the list went with it (T040). This file
-  // kept the one remaining queue-level control (delete) and the refusal line
-  // it shares with the child, which reports its own refusals up to it.
+  // Queue detail owns its task composer, scheduling, controls and row list.
+  // Published Workflows use the same validated composition forms as before;
+  // every submitted task explicitly targets this Queue.
 
   import QueueDetailRows from './QueueDetailRows.svelte';
   import QueueInputForm from '../QueueInputForm.svelte';
+  import QueueTaskComposer from '../QueueTaskComposer.svelte';
   import QueueControls from '../QueueControls.svelte';
   import QueueIdlePendingPanel from './QueueIdlePendingPanel.svelte';
   import QueueStartFailureNotice from './QueueStartFailureNotice.svelte';
@@ -400,7 +379,11 @@
 
   {#if isPrimary && composerOpen}
     <div class="composer-row" data-testid="queue-composer">
-      <QueueInputForm {availablePipelines} {defaultPipelineId} {pendingCount} {queueId} />
+      {#if snapshot.launchables !== undefined || snapshot.workflowCatalog !== undefined}
+        <QueueTaskComposer {snapshot} {queueId} />
+      {:else}
+        <QueueInputForm {availablePipelines} {defaultPipelineId} {pendingCount} {queueId} />
+      {/if}
       <button type="button" data-testid="queue-composer-cancel" onclick={closeComposer}>
         Cancel
       </button>

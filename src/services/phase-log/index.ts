@@ -31,7 +31,7 @@ export { truncateDisplayEntryBody } from './phase-log-truncator';
 // filesystem work it no longer does.
 export { classifyEmptyKind } from './verbose-diagnostics-detector';
 export { readIterationManifest, readPhaseLog } from './phase-log-reader';
-export { createPhaseLogService } from './phase-log-service';
+export { createPhaseLogService, findQueueInFlightRow } from './phase-log-service';
 export type {
   PhaseLogService,
   PhaseLogServiceDeps,

@@ -43,7 +43,7 @@
    */
   const DEFINITION_REFUSALS: Record<string, string> = {
     "workflow-not-found":
-      "This Workflow is no longer in the catalog. Close the form and reopen Runs to see what is published now.",
+      "This Workflow is no longer in the catalog. Close the form and reopen Add work to see what is published now.",
     'workflow-invalid':
       "This Workflow could not be read as a graph. Open it in the Builder, fix what it reports there, and publish it again.",
     "node-not-startable":
@@ -62,9 +62,10 @@
     /** The effective Pipeline catalog, read for the start node's output ports. */
     readonly pipelines: readonly PipelineDefinition[];
     readonly onClose?: () => void;
+    readonly queueId?: string;
   }
 
-  const { entry, graph, pipelines, onClose }: Props = $props();
+  const { entry, graph, pipelines, onClose, queueId }: Props = $props();
 
   let chosenStartNodeId = $state<string | null>(null);
   let inputValues = $state<Record<string, string>>({});
@@ -218,7 +219,9 @@
     }
     if (result.outcome === "started") {
       fieldErrors = [];
-      statusMessage = `Started connected run ${result.connectedRunId}.`;
+      statusMessage = queueId === undefined
+        ? `Started connected run ${result.connectedRunId}.`
+        : `Added task to queue. Run ${result.connectedRunId}.`;
       return;
     }
     if (result.outcome === 'rejected-validation') {
@@ -258,7 +261,12 @@
     submission = controller;
     try {
       const result = await launchWorkflow(
-        { workflowId: entry.id, startNodeId: node.nodeId, request },
+        {
+          workflowId: entry.id,
+          startNodeId: node.nodeId,
+          request,
+          ...(queueId === undefined ? {} : { queueId })
+        },
         {
           signal: controller.signal,
           // O4 — the outcome of a send whose wait ran out, shown once through the same text path.
@@ -281,7 +289,7 @@
 <section class="workflow-trigger" data-testid="workflow-trigger">
   <header class="trigger-header">
     <h4 class="trigger-title" data-testid="workflow-trigger-title">
-      Run {entry.name}
+      {queueId === undefined ? "Run" : "Add task:"} {entry.name}
     </h4>
     {#if onClose}
       <button
@@ -298,7 +306,7 @@
   {#if startNodes.length === 0}
     <p class="trigger-note" data-testid="workflow-trigger-unresolved">
       This Workflow's graph has not resolved in this window, so its starting
-      nodes cannot be named yet. Reopen Runs once the catalog has loaded.
+      nodes cannot be named yet. Reopen Add work once the catalog has loaded.
     </p>
   {:else}
     {#if startNodes.length > 1}
@@ -380,7 +388,7 @@
           disabled={pending}
           onclick={() => submitRequest()}
         >
-          {pending ? "Starting…" : "Run Workflow"}
+          {pending ? "Submitting…" : queueId === undefined ? "Run Workflow" : "Add task"}
         </button>
         {#if statusMessage}
           <p

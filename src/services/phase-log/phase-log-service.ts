@@ -18,20 +18,52 @@ import type { PhaseProgress } from './types';
 // service → ui direction and `dependency-direction.test.ts`, which governs value
 // imports, is unaffected. Precedent: `continuation-service.ts` imports
 // `ChildRunStateReader` from `../../ui/sidebar/connected-run-projector` the same
-// way. `Pick` rather than the whole interface: the service reads two fields and
+// way. `Pick` rather than the whole interface: the service reads four fields and
 // the type should say so.
 import type { QueueItem } from '../../ui/sidebar/snapshot';
 
 export interface PhaseLogSnapshotView {
-  readonly queue: {
-    readonly inFlight: Pick<QueueItem, 'id' | 'currentPhase'> | null;
-    readonly pending: readonly { readonly id: string }[];
-    readonly recent: readonly { readonly id: string }[];
-    readonly queues: readonly { readonly id: string }[];
-  };
-  readonly history: readonly { readonly runId: string }[];
+  /**
+   * BUG-002 (FR-008) — each queue's own rows, active and historical
+   * (`QueueRuntime.tasks`), so a selection resolves on the queue it names. The
+   * view used to read `snapshot.queue`, which projects the default queue only,
+   * and so refused every Task on any other queue as `unknown-tuple`.
+   */
+  readonly queues: readonly {
+    readonly queueId: string;
+    readonly tasks: readonly Pick<QueueItem, 'id' | 'status' | 'currentPhase' | 'paused'>[];
+  }[];
+  /** BUG-002 (FR-008) — with its partition, so an entry answers under its own queue only. */
+  readonly history: readonly { readonly runId: string; readonly queueId: string }[];
   readonly availablePipelines: readonly { readonly id: string }[];
   readonly availablePhases: readonly { readonly id: string }[];
+}
+
+/**
+ * BUG-002 (FR-008, FR-022) — the Task a queue has in flight, found among that
+ * queue's own rows, or `null` when it has none.
+ *
+ * The snapshot does not publish a queue's `inFlightId`, so this restates the
+ * rule `queue-projector.ts` routes rows by: an `in-flight` row, or a `paused`
+ * one whose in-flight binding the system rate-limit pause kept (BUG-006,
+ * FR-026), which the row's `paused.pauseSource` names `system-paused`. An
+ * operator pause clears the binding, so an operator-paused row is not in
+ * flight. One case reads differently from the binding: a row paused with the
+ * binding kept but no rate-limit schedule (between the two writes of the
+ * restore path, or after the operator cancels the schedule) is not in flight
+ * here. The webview's copy, in `webview-ui/src/lib/queue-runtime-view.ts`, must
+ * agree with this one, or the pane asks for a tail the host refuses.
+ */
+export function findQueueInFlightRow<T extends Pick<QueueItem, 'status' | 'paused'>>(
+  tasks: readonly T[]
+): T | null {
+  return (
+    tasks.find(
+      (task) =>
+        task.status === 'in-flight' ||
+        (task.status === 'paused' && task.paused?.pauseSource === 'system-paused')
+    ) ?? null
+  );
 }
 
 export interface PhaseLogServiceDeps {
@@ -120,7 +152,7 @@ type SelectionValidation =
  * reader would be in no position to make.
  */
 function derivePhaseProgress(
-  inFlight: PhaseLogSnapshotView['queue']['inFlight'],
+  inFlight: Pick<QueueItem, 'currentPhase'> | null,
   inFlightMatch: boolean,
   phaseId: string
 ): PhaseProgress {
@@ -141,14 +173,19 @@ function validateSelection(
   ) {
     return { outcome: 'failure', reason: 'unknown-tuple' };
   }
-  const queueKnown = snapshot.queue.queues.some((q) => q.id === selection.queueId);
-  if (!queueKnown) return { outcome: 'failure', reason: 'unknown-tuple' };
+  // BUG-002 (FR-008) — the queue the selection names, by the lookup
+  // `findQueueRuntime` (`ui/sidebar/snapshot.ts`) performs. Restated, not
+  // imported: the D7 note above keeps the service → ui direction type-only.
+  const runtime = snapshot.queues.find((q) => q.queueId === selection.queueId);
+  if (runtime === undefined) return { outcome: 'failure', reason: 'unknown-tuple' };
 
-  const inFlightMatch = snapshot.queue.inFlight?.id === selection.taskId;
-  const pendingMatch = snapshot.queue.pending.some((t) => t.id === selection.taskId);
-  const recentMatch = snapshot.queue.recent.some((t) => t.id === selection.taskId);
-  const historyMatch = snapshot.history.some((h) => h.runId === selection.taskId);
-  if (!inFlightMatch && !pendingMatch && !recentMatch && !historyMatch) {
+  const inFlight = findQueueInFlightRow(runtime.tasks);
+  const inFlightMatch = inFlight?.id === selection.taskId;
+  const taskMatch = runtime.tasks.some((t) => t.id === selection.taskId);
+  const historyMatch = snapshot.history.some(
+    (h) => h.runId === selection.taskId && h.queueId === selection.queueId
+  );
+  if (!taskMatch && !historyMatch) {
     return { outcome: 'failure', reason: 'unknown-tuple' };
   }
 
@@ -167,7 +204,7 @@ function validateSelection(
   return {
     outcome: 'success',
     isInFlight: inFlightMatch,
-    progress: derivePhaseProgress(snapshot.queue.inFlight, inFlightMatch, selection.phaseId)
+    progress: derivePhaseProgress(inFlight, inFlightMatch, selection.phaseId)
   };
 }
 

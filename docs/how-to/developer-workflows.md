@@ -87,6 +87,23 @@ The root coverage floors are 80% statements, 75% branches, 80% functions, and 80
 <!-- Source: webview-ui/package.json -->
 <!-- Source: webview-ui/vitest.config.ts -->
 
+## Change a shipped example
+
+The importable examples are the `.workflow.yaml` packages in `examples/`, listed in [the examples README](../../examples/README.md). A package defines a root Workflow and includes every Phase and child Workflow definition it references, so one file is one import, and no `kind: Pipeline` document is shipped there. The examples are documentation: the catalog ships empty, and these files reach a catalog only through the process-YAML import path.
+
+Adding or removing a file is a decision, not a silent change, because `tests/integration/examples-import.test.ts` pins the set. After editing an example, run the suites that sweep the directory:
+
+```bash
+npm run test:host -- tests/integration/examples-import.test.ts tests/integration/process-yaml/shipped-examples-compatibility.test.ts tests/integration/process-yaml/examples-round-trip.test.ts
+```
+
+Other suites read individual examples, so finish with the full `npm run test:host` from the loop above.
+<!-- Source: examples/README.md -->
+<!-- Source: package.json -->
+<!-- Source: tests/integration/examples-import.test.ts -->
+<!-- Source: tests/integration/process-yaml/shipped-examples-compatibility.test.ts -->
+<!-- Source: tests/integration/process-yaml/examples-round-trip.test.ts -->
+
 ## Change an IPC or JSON-schema contract
 
 After editing a contract source, regenerate the checked-in boundary artifacts:

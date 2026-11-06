@@ -232,6 +232,21 @@
                 {#if inv.pauseCause} · Paused: {inv.pauseCause}{/if}
                 {#if inv.failureReason} · Failed: {inv.failureReason}{/if}
               </p>
+              {#if inv.pauseExplanation || inv.pauseGuidance || inv.pauseCause === 'recovery-uncertain-effect'}
+                <p
+                  class="invocation-diagnostic"
+                  data-testid={`workflow-invocation-pause-guidance-${inv.invocationId}`}
+                >
+                  {inv.pauseExplanation ??
+                    (inv.pauseCause === 'recovery-uncertain-effect'
+                      ? 'Paused during restart recovery because the active Phase attempt had no live queue task or verified settlement evidence.'
+                      : '')}
+                  {inv.pauseGuidance ??
+                    (inv.pauseCause === 'recovery-uncertain-effect'
+                      ? ' Inspect workspace outputs, then choose Resume (reconciles evidence before re-dispatching), Retry Phase, or Cancel.'
+                      : '')}
+                </p>
+              {/if}
             {/if}
 
             {#if !isCollapsed}
