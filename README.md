@@ -51,6 +51,24 @@ The [documentation path selector](docs/README.md) routes maintainers, release en
 <!-- Source: docs/courses/use-schegent.md -->
 <!-- Source: docs/courses/develop-schegent.md -->
 
+## Support matrix
+
+One platform has been observed. The others ship but are **unqualified**: nobody has run them for this
+project. That is a statement about evidence, not about quality. The declared support surface is
+[the platform observation record](docs/operations/platform-observation-record.md#the-declared-support-surface),
+and this table defers to it.
+
+| Platform | Status | The observation that is still owed |
+|---|---|---|
+| macOS, arm64 | **observed**: `npm run gate` exited 0 under Node v24.19.0 at `5a8af6b0` on 2026-11-01 | Node 22 on macOS, in the [qualification matrix](docs/release/qualification-matrix.md); the VoiceOver row in the [assistive-technology matrix](docs/release/accessibility-at-matrix.md) |
+| Linux | **unqualified** | The Linux rows in the [qualification matrix](docs/release/qualification-matrix.md); the Orca row in the [assistive-technology matrix](docs/release/accessibility-at-matrix.md) |
+| Windows | **unqualified** | The Windows rows in the [qualification matrix](docs/release/qualification-matrix.md); the NVDA and Narrator rows in the [assistive-technology matrix](docs/release/accessibility-at-matrix.md). The Windows safety paths in the source still apply. |
+| Remote hosts (Remote SSH, Dev Container) | **unqualified** | [Remote development is unqualified](docs/operations/backends.md#remote-development-is-unqualified), and the remote extension-host row in [Backend containment qualification](docs/architecture/backend-containment-qualification.md) |
+
+<!-- Source: docs/operations/platform-observation-record.md -->
+<!-- Source: docs/release/qualification-matrix.md -->
+<!-- Source: docs/release/accessibility-at-matrix.md -->
+
 ## Backend permission posture
 
 Claude is the default backend. Claude and Agy run with CLI approval prompts off and act without asking through `--dangerously-skip-permissions`; Schegent supplies neither with an OS-enforced filesystem bound, and both are therefore **refused by default** — `schegent.backend.uncontainedBackends` (application-scoped, default `[]`) is the explicit opt-in that unlocks them, **one backend at a time**: allowing `agy` does not allow `claude`. The refusal offers that opt-in where it happens, as a dialog answered before anything is spawned; approving writes the refused id and no other, dismissing denies, and the setting stays the one place the grant lives and is withdrawn. What OS-enforced containment each backend actually has is qualified in [Backend containment qualification](docs/architecture/backend-containment-qualification.md), and when naming a backend is and is not acceptable is owned by [Running Schegent on a repository you do not trust](docs/operations/untrusted-repositories.md). Codex is the exception: it runs non-interactively with the `--sandbox workspace-write` sandbox, which permits workspace writes while leaving `.git` read-only. Point Schegent only at a checkout you can recover, and review [Backend operations](docs/operations/backends.md) plus the [operator threat model](docs/security/threat-model.md) before unattended execution.

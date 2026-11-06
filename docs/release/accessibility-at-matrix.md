@@ -1,6 +1,6 @@
 # Assistive-technology matrix
 
-**Captured**: 2026-08-25 · **Updated**: 2026-08-28 (`FR-R3-131`) · **Target**: WCAG 2.1 Level AA
+**Captured**: 2026-08-25 · **Updated**: 2026-11-06 (`FR-R5-F20`) · **Target**: WCAG 2.1 Level AA
 **Features**: 155 (`FR-R3-091`), 167 (`FR-R3-131`)
 
 <!-- at-matrix-review-date: 2026-11-27 -->
@@ -21,14 +21,17 @@ looked**.
 
 | OS | Screen reader | Version | Exercised | Result | Trigger |
 |---|---|---|---|---|---|
-| macOS | VoiceOver | — | **Nothing** | **UNTESTED** | 2026-11-27 — the procedure below is runnable today; see *Why the macOS row is still untested* |
+| macOS | VoiceOver | — | **Nothing** | **UNTESTED**: **not observed** as of 2026-11-06 (`FR-R5-F20`) | 2026-11-27, owner `maintainer`: run [the procedure below](#the-procedure); see *Why it is untested* |
 | Windows | NVDA | — | **Nothing** | **UNTESTED** | Windows platform verification (`FR-R3-129`) |
 | Windows | Narrator | — | **Nothing** | **UNTESTED** | Windows platform verification (`FR-R3-129`) |
 | Linux | Orca | — | **Nothing** | **UNTESTED** | Linux platform verification (`FR-R3-129`) |
 
 **Every supported platform is untested.** That is the truth as of this date, and it is written down in
 the form `FR-R3-054` established when it recorded its Windows half as *unrun* rather than reporting it
-met. No row above may be marked otherwise without naming the technology, its version, the OS, and what
+met. On 2026-11-06 (`FR-R5-F20`) the macOS row was re-read and is still **not observed**: that cycle
+had no person at a Mac with VoiceOver on. The NVDA, Narrator and Orca rows stay unobserved, for the
+reason given below. **An automated scan pass is an automated finding, not conformance.** A clean run
+of `repo/tests/a11y/` moves no row in this table. No row above may be marked otherwise without naming the technology, its version, the OS, and what
 was and was not exercised.
 
 **The ordering is not arbitrary and it is not alphabetical.** NVDA, Narrator and Orca follow platform

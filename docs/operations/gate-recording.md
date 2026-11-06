@@ -149,9 +149,10 @@ pause the bot, not to write a stronger sentence.
 
 ### What it does not do
 
-- **It is not enforced.** Merging a proposal in GitHub's interface bypasses it. Nothing in this
-  repository runs a check on a proposal where it is opened: `.github/` has held no workflow
-  definitions since `FR-R3-099` retired them by decision on 2026-08-26.
+- **It is not enforced at the merge.** Merging a proposal in GitHub's interface bypasses it. Nothing in
+  this repository runs a check on a proposal where it is opened: `.github/` has held no workflow
+  definitions since `FR-R3-099` retired them by decision on 2026-08-26. Since 2026-11-06 the
+  workspace refuses a push that carries such a merge without a valid record; see [Enforcement at workspace push](#enforcement-at-workspace-push--2026-11-06-fr-r5-f20).
 - **It covers the branch head, not the merge.** If `develop` moved after the branch was cut, the merge
   commit's tree was never gated. `npm run release:preflight` demands a record at the release commit
   itself, and that covers the combination at a release. Before then, only a recording after the merge
@@ -192,8 +193,8 @@ share the merge line.
 
 **The rule, in one sentence.** Every change reaches `develop` as a `git merge --no-ff` of a commit
 that carries a passing `npm run gate:record` record naming that commit, and the merge message ends
-`Gate-record: PASS at <commit>`; nothing checks it, so it holds only as far as the operator follows
-it.
+`Gate-record: PASS at <commit>`. Until 2026-11-06 nothing checked it, so it held only as far as the
+operator followed it; [Enforcement at workspace push](#enforcement-at-workspace-push--2026-11-06-fr-r5-f20) records what checks it now.
 
 **Decision.** Manual, at a stated point: the merge into `develop`. Of the three cadences the filing
 offered, this is the manual one, with a merge as its interval rather than a period of time. Recording
@@ -216,8 +217,11 @@ its own commit, as [RELEASE.md](../../RELEASE.md) §2a requires.
 - **Merges.** First-parent merges into `develop`, by ISO week: 81 in the week from 2026-08-24, 35 in
   the week from 08-31, 5 from 09-07 and 3 from 09-14. Nothing has landed on `develop` since
   2026-09-17.
-- **Hooks.** This repository has none. `core.hooksPath` is unset, and `.git/hooks` holds only the
+- **Hooks.** This repository had none. `core.hooksPath` is unset, and `.git/hooks` holds only the
   samples git installs. A push hook would be new machinery, installed separately in every clone.
+  *Corrected 2026-11-06:* `scripts/hooks/pre-commit` has existed since `25e14442` (2026-11-01,
+  `FR-R4-F10`). It is opt-in, through `git config core.hooksPath scripts/hooks`, and on 2026-11-06
+  this checkout had not opted in. The measurement above stands as of its date.
 - **The tree is often dirty.** The refusal run above found 56 uncommitted changes, and both of
   feature 217's runs had to set uncommitted changes aside before they could start.
 
@@ -271,7 +275,8 @@ It lists both kinds of skipped change: a merge that did not carry the line, and 
 
 ### What it does not do
 
-- **It is not enforced.** Nothing refuses a merge without the line. The listing finds one afterwards.
+- **It is not enforced at the merge.** Nothing refuses a merge without the line, and the listing finds
+  one afterwards. The workspace push refuses it later, before it leaves the machine; see [Enforcement at workspace push](#enforcement-at-workspace-push--2026-11-06-fr-r5-f20).
 - **It names the branch head, not the merge.** Right after the merge, `npm run gate:distance` reads 1
   commit behind: the merge commit itself. If `develop` had not moved since the branch was cut, the
   merge commit's tree is the branch head's, so the record covers it. If it had moved, the distance
@@ -292,7 +297,8 @@ decision it descends from. It adds no check and removes none.
 
 **The decision.** Verification stays local. There are no hosted or paid checks, and the full gate is
 recorded at each integration merge into `develop` and before each release preparation. Nothing
-enforces it: the record is a local file, and the rule holds as far as the operator follows it.
+enforced it on that date: the record is a local file, and the rule held as far as the operator
+followed it. [Enforcement at workspace push](#enforcement-at-workspace-push--2026-11-06-fr-r5-f20) adds a local check, and leaves this decision unchanged.
 
 **The reason.** Budget. The hosted workflows were retired on 2026-08-26 by operator decision for
 budget reasons (`FR-R3-099`), and a recorded gate run is what stands where they ran. The decision is
@@ -330,3 +336,56 @@ record shows `nodeMatchesDeclared: true` or it does not.
 <!-- Source: scripts/gate-observation.mjs -->
 <!-- Source: scripts/gate-attestation.mjs -->
 <!-- Source: scripts/gate-recorder.mjs -->
+
+## Enforcement at workspace push — 2026-11-06 (FR-R5-F20)
+
+`FR-R5-F20` (`FR-005` to `FR-013`). The merge line above is now read. The planning workspace's
+pre-push hook runs `scripts/merge-record-status.sh`, a workspace script, for every pushed ref. It
+refuses a push whose `Repo-head:` trailers move this repository past a first-parent merge into
+`develop` that has no valid record. Records are archived in the workspace, under
+`docs/gate-records/<commit>.json`. They are read from the commit being pushed, not from the working
+tree, so a record counts only once it is committed.
+
+**Two ways to pass.** A merge passes in one of two ways.
+
+1. **The merge record.** `docs/gate-records/<merge>.json` is a valid, clean, passing record of the
+   merge commit itself. When this record exists, it decides the result: a failing record of the
+   merge cannot be rescued by a passing record of the branch.
+2. **The branch record.** All three of these hold:
+   - The merge message ends with `Gate-record: PASS at <P2>`, where P2 is the merge's second parent.
+   - A valid record of P2 is archived.
+   - The merge's tree is the same tree object as P2's.
+
+   The last condition means that what was verified is what landed. If `develop` moved after the
+   branch was cut, the trees differ and the reason is `tree-unverified`. Fix it by recording the
+   merge itself, or by merging `develop` into the branch and recording again.
+
+**Valid record.** A record is valid when all of these hold:
+
+- It is JSON, at most 65536 bytes.
+- `version` is 3 and `command` is `npm run gate`.
+- `head` equals its file name, `treeClean` is `true` and `exitCode` is 0.
+
+A record whose `nodeMatchesDeclared` is `false` passes with a note, as at the release preflight.
+
+**Archiving.** After `npm run gate:record`, run `scripts/merge-record-status.sh --archive` from the
+workspace, then commit `docs/gate-records/`. The script copies this repository's
+`.gate-attestation.json` byte for byte, never stages anything, and never rewrites an archived record.
+A failing or dirty record is kept and reported as `does not qualify`.
+
+**Documentation-only merges are not exempt.** `npm run gate` runs `docs:check`, so a Markdown
+change can turn the gate red. A merge whose gate never ran is unverified, whatever it touches.
+
+**Bypass.** The check does not run in three cases:
+
+- `git push --no-verify` skips it.
+- A clone that has not activated the workspace hook (`core.hooksPath` unset) never runs it.
+- A planning-only clone with no checkout of this repository reports it as skipped.
+
+It is a local gate, not an authority. The workspace script `scripts/hooks-preflight.sh` reports
+whether the hooks are active in each repository.
+
+**The activation bound.** Merges at or behind the bound commit predate the check. They are counted
+as `exempt` in its summary line, not silently dropped. The default is in the script, and
+`MERGE_RECORD_START` overrides it. The full contract, with every reason code and its remedy, is in the
+workspace at `specs/281-verification-evidence-qualification/contracts/merge-record-check.md`.
