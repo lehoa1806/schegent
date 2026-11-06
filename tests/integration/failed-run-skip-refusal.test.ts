@@ -202,7 +202,7 @@ function buildRun(
 
 /** Rewrites the stored Run's status in place, leaving every other field as the last write set it. */
 async function reshapeStoredRun(status: WorkflowRunStatus): Promise<void> {
-  const stored = memento.get<Record<string, WorkflowRun>>(KEYS.run) ?? {};
+  const stored = memento.get<Record<string, WorkflowRun | undefined>>(KEYS.run) ?? {};
   const current = stored[DEFAULT_QUEUE_ID];
   if (current === undefined) throw new Error('reshapeStoredRun: no stored Run to reshape');
   await memento.update(KEYS.run, { ...stored, [DEFAULT_QUEUE_ID]: { ...current, status } });
