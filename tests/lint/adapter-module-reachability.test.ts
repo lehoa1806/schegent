@@ -45,8 +45,9 @@
 // `src/host-services/` alone. `src/headless/` was the other candidate and is
 // excluded on measurement: three of its five modules have no consumer in this
 // repository *by design*, because `ARCHITECTURE.md` makes them VS Code-independent
-// public adapters for callers outside it. Including it would mean three standing
-// exemptions on the day the gate landed and a majority-exempted gate. The
+// headless adapters: internal module boundaries, with nothing published. Including
+// it would mean three standing exemptions on the day the gate landed and a
+// majority-exempted gate. The
 // question this gate asks is the wrong question for that directory, and the
 // honest response to a wrong question is not to allowlist the answer.
 //

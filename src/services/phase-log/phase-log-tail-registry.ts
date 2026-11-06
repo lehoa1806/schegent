@@ -102,8 +102,8 @@ export class PhaseLogTailRegistry {
     this.deps = deps;
     this.subscription = deps.onTaskNoLongerInFlight((runId) => {
       this.handleTaskLeftInFlight(runId).catch(() => {
-        // Audit failures inside dispose are non-fatal; the session
-        // map is still cleared.
+        // Audit failures are non-fatal: `disposeCurrent` clears the one
+        // session slot before the audit append runs.
       });
     });
   }

@@ -1,12 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 // @ts-expect-error -- .mjs script, typed by use rather than by declaration
-import { checkSectionReferences, identityKey, renderedText, sectionReferencesIn } from '../../scripts/check-doc-links.mjs';
+import { checkSectionReferences, checkSourceCitations, GENERATED_OUTPUT_PREFIXES, identityKey, LIVE_CITATION_DOCUMENTS, renderedText, sectionReferencesIn, sourceCitationsIn } from '../../scripts/check-doc-links.mjs';
 
 /** The CommonJS face of `node:fs`, whose functions a spy can replace; the script's named imports follow it once re-synchronised. */
 const fs = createRequire(__filename)('node:fs') as typeof import('node:fs');
@@ -88,12 +88,28 @@ function check(root: string, repo = join(root, 'repo')): Result {
   return checkSectionReferences({ repoRoot: repo, wsRoot: root });
 }
 
-/** The script copied into a fixture's `repo/scripts/`, so its roots are the fixture's. */
+/**
+ * The three files the source citation check requires (FR-R5-F22), each with no citation. A fixture
+ * the script runs in carries them, because a registered file that is missing fails the check.
+ */
+const REGISTERED: Record<string, string> = {
+  'repo/ARCHITECTURE.md': '# Architecture\n',
+  'repo/README.md': '# Readme\n',
+  'repo/CONTRIBUTING.md': '# Contributing\n'
+};
+
+/**
+ * The script copied into a fixture's `repo/scripts/`, so its roots are the fixture's. The registered
+ * files are written too, where the fixture has none of its own.
+ */
 function installScript(root: string): string {
   const script = join(root, 'repo', 'scripts', 'check-doc-links.mjs');
   mkdirSync(dirname(script), { recursive: true });
   copyFileSync(SCRIPT, script);
   copyFileSync(join(REPO, 'scripts', 'invoked-as-script.mjs'), join(dirname(script), 'invoked-as-script.mjs'));
+  for (const [path, body] of Object.entries(REGISTERED)) {
+    if (!existsSync(join(root, path))) writeFileSync(join(root, path), body);
+  }
   return script;
 }
 
@@ -1106,7 +1122,7 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     const script = installScript(root);
     const run = spawnSync('node', [script], { encoding: 'utf8' });
     expect(run.status).toBe(0);
-    expect(run.stdout).toContain('Documentation links checked: 1 across 2 files (repository only, 1 outside this tree skipped).');
+    expect(run.stdout).toContain('Documentation links checked: 1 across 5 files (repository only, 1 outside this tree skipped).');
     expect(run.stdout).toContain(
       'Section references checked: 1 in live documents, 1 skipped as outside this tree or unreadable, 2 passages too long or too dense to read.'
     );
@@ -1133,13 +1149,15 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     rmSync(join(root, 'repo', 'docs', 'broken.md'));
     const run = spawnSync('node', [join(root, 'repo', 'scripts', 'check-doc-links.mjs')], { encoding: 'utf8' });
     expect(run.status).toBe(0);
-    expect(run.stdout).toContain('Documentation links checked: 2 across 5 files (repository + planning envelope).\n');
+    expect(run.stdout).toContain('Documentation links checked: 2 across 8 files (repository + planning envelope).\n');
     expect(run.stdout).toContain('Section references checked: 1 in live documents, 1 passage too long or too dense to read.');
     writeFileSync(join(root, 'repo', 'docs', 'citing.md'), '[in](target.md#present-heading)\n');
     const clean = spawnSync('node', [script], { encoding: 'utf8' });
     expect([clean.status, clean.stdout]).toEqual([
       0,
-      'Documentation links checked: 1 across 5 files (repository + planning envelope).\nSection references checked: 1 in live documents.\n'
+      'Documentation links checked: 1 across 8 files (repository + planning envelope).\n' +
+        'Section references checked: 1 in live documents.\n' +
+        'Source citations checked: 0 in 3 live documents.\n'
     ]);
   });
 
@@ -1575,6 +1593,188 @@ describe('FR-R3-184 — a section a live document names in another file exists',
   it('finds section references in the real tree, and none of them is unresolved', () => {
     // The vacuity control: an extractor that matched nothing would pass every other case here.
     const { checked, failures } = checkSectionReferences({ repoRoot: REPO, wsRoot: resolve(REPO, '..') });
+    expect(checked).toBeGreaterThan(0);
+    expect(failures).toEqual([]);
+  });
+});
+
+/**
+ * FR-R5-F22 (feature 283, US3) — a source path that a current document cites in an inline code span
+ * names a file or directory that exists.
+ *
+ * WHY THIS EXISTS. `ARCHITECTURE.md` described admission through two files that no longer existed,
+ * and `docs:check` passed, because it read Markdown links and headings, not code spans. The check
+ * reads only the registered documents, `LIVE_CITATION_DOCUMENTS`; records and every other file are
+ * never read. The contract is `specs/283-current-docs-contract-truth/contracts/source-citation-check.md`
+ * in the planning envelope.
+ *
+ * Every path in a fixture body is built from parts, so the literal-path gate in
+ * `tests/lint/lint-anchor-grounding.test.ts` never reads one as a claim about this tree.
+ */
+describe('FR-R5-F22 — a source path a current document cites exists', () => {
+  const pathOf = (...parts: string[]): string => parts.join('/');
+  const spanOf = (...parts: string[]): string => `\`${pathOf(...parts)}\``;
+  const MISSING = pathOf('src', 'missing.ts');
+  const PRESENT = pathOf('src', 'present.ts');
+
+  interface CitationFailure {
+    readonly file: string;
+    readonly line: number;
+    readonly path: string;
+  }
+
+  interface CitationResult {
+    readonly hasEnvelope: boolean;
+    readonly documents: number;
+    readonly checked: number;
+    readonly unverifiable: number;
+    readonly generated: number;
+    readonly failures: CitationFailure[];
+  }
+
+  /** A fixture `repo/` with the registered files, one present source file and `files` on top. */
+  function citingTree(files: Record<string, string>, envelope = true): string {
+    return tree({ ...(envelope ? ENVELOPE : {}), ...REGISTERED, [`repo/${PRESENT}`]: 'export {};\n', ...files });
+  }
+
+  function cite(root: string): CitationResult {
+    return checkSourceCitations({ repoRoot: join(root, 'repo'), wsRoot: root });
+  }
+
+  it('registers exactly the three root files and five trees the contract names, and one generated-output prefix', () => {
+    expect(LIVE_CITATION_DOCUMENTS).toEqual({
+      files: ['ARCHITECTURE.md', 'README.md', 'CONTRIBUTING.md'],
+      trees: ['docs/explanation', 'docs/reference', 'docs/how-to', 'docs/courses', 'docs/tutorials']
+    });
+    expect(GENERATED_OUTPUT_PREFIXES).toEqual([`${pathOf('tests', 'soak', '.artifacts')}/`]);
+  });
+
+  it('fails a registered document that cites a missing source file, naming the file, line and path', () => {
+    const root = citingTree({ 'repo/ARCHITECTURE.md': `# Architecture\n\nAdmission starts in ${spanOf('src', 'missing.ts')}.\n` });
+    expect(cite(root)).toMatchObject({ checked: 1, failures: [{ file: 'ARCHITECTURE.md', line: 3, path: MISSING }] });
+  });
+
+  it('passes the same document citing a file or a directory that exists', () => {
+    const root = citingTree({ 'repo/ARCHITECTURE.md': `# Architecture\n\nSee ${spanOf('src', 'present.ts')} under ${spanOf('src')}/.\n` });
+    expect(cite(root)).toMatchObject({ documents: 3, checked: 1, failures: [] });
+    const directory = citingTree({ 'repo/ARCHITECTURE.md': `See \`${pathOf('src', '')}\`.\n` });
+    expect(cite(directory)).toMatchObject({ checked: 1, failures: [] });
+  });
+
+  it('reads no record-marked registered document and no document outside the registry', () => {
+    const root = citingTree({
+      'repo/README.md': `${RECORD_MARKER}\n\n# Readme\n\nOnce in ${spanOf('src', 'missing.ts')}.\n`,
+      'repo/docs/development/notes.md': `Gone: ${spanOf('src', 'missing.ts')}.\n`,
+      'docs/notes.md': `Gone: ${spanOf('src', 'missing.ts')}.\n`
+    });
+    expect(cite(root)).toMatchObject({ documents: 2, checked: 0, failures: [] });
+  });
+
+  it('counts no glob, placeholder, command or rootless span as a citation', () => {
+    const body = [
+      spanOf('src', '**', '*.ts'),
+      spanOf('src', '<name>.ts'),
+      spanOf('src', '{a,b}.ts'),
+      spanOf('src', '[id].ts'),
+      spanOf('src', 'a?.ts'),
+      `\`node ${pathOf('scripts', 'missing.mjs')} --flag\``,
+      '`schegent.logging.runtimeLog`',
+      '`missing.ts`'
+    ].join(' and ');
+    expect(sourceCitationsIn(body)).toEqual([]);
+    expect(cite(citingTree({ 'repo/ARCHITECTURE.md': `${body}\n` }))).toMatchObject({ checked: 0, failures: [] });
+  });
+
+  it('resolves a citation with a line, a column, a range, a list, a symbol or trailing punctuation on its path part', () => {
+    const spans = [
+      `${PRESENT}:12`,
+      `${PRESENT}:12:4`,
+      `${PRESENT}:439-451`,
+      `${PRESENT}:272,282`,
+      `${PRESENT}:wireStage2`,
+      `${PRESENT}#startRun`,
+      `${PRESENT}.`,
+      `${PRESENT}:12,`,
+      `${PRESENT};`
+    ];
+    const body = spans.map((span) => `\`${span}\``).join(' then ');
+    expect(sourceCitationsIn(body).map((citation: { path: string }) => citation.path)).toEqual(spans.map(() => PRESENT));
+    expect(sourceCitationsIn(body).at(0)).toEqual({ line: 1, span: `${PRESENT}:12`, path: PRESENT });
+    expect(cite(citingTree({ 'repo/README.md': `${body}\n` }))).toMatchObject({ checked: 9, failures: [] });
+  });
+
+  it('counts a path under a generated-output prefix as generated and never reports it', () => {
+    const root = citingTree({ 'repo/docs/reference/soak.md': `Written to ${spanOf('tests', 'soak', '.artifacts', 'run-1', 'report.json')}.\n` });
+    expect(cite(root)).toMatchObject({ checked: 0, generated: 1, failures: [] });
+  });
+
+  it('with the envelope absent, skips a missing scripts/ citation as unverifiable and still fails a missing src/ one', () => {
+    const body = `${spanOf('scripts', 'only-in-envelope.sh')} and ${spanOf('src', 'missing.ts')}\n`;
+    const absent = citingTree({ 'repo/CONTRIBUTING.md': body }, false);
+    expect(cite(absent)).toMatchObject({
+      hasEnvelope: false,
+      checked: 1,
+      unverifiable: 1,
+      failures: [{ file: 'CONTRIBUTING.md', line: 1, path: MISSING }]
+    });
+    const present = citingTree({ 'repo/CONTRIBUTING.md': body, [pathOf('scripts', 'only-in-envelope.sh')]: '#!/bin/sh\n' });
+    expect(cite(present)).toMatchObject({ hasEnvelope: true, checked: 2, unverifiable: 0, failures: [{ path: MISSING }] });
+  });
+
+  it('fails a missing webview-ui/ or tests/ citation, envelope or not', () => {
+    const body = `${spanOf('webview-ui', 'src', 'gone.ts')} and ${spanOf('tests', 'unit', 'gone.test.ts')}\n`;
+    for (const envelope of [true, false]) {
+      expect(cite(citingTree({ 'repo/README.md': body }, envelope)).failures).toHaveLength(2);
+    }
+  });
+
+  it('reads no span inside a fenced block', () => {
+    const fenced = `\`\`\`text\n${spanOf('src', 'missing.ts')}\n\`\`\`\n\n~~~\n${spanOf('src', 'missing.ts')}\n~~~\n`;
+    expect(sourceCitationsIn(fenced)).toEqual([]);
+    expect(sourceCitationsIn(`${fenced}After: ${spanOf('src', 'missing.ts')}\n`)).toEqual([{ line: 8, span: MISSING, path: MISSING }]);
+  });
+
+  it('reads every Markdown file under a registered tree, at any depth, outside the skipped directories', () => {
+    const root = citingTree({
+      'repo/docs/explanation/deep/er/page.md': `Gone: ${spanOf('src', 'missing.ts')}.\n`,
+      'repo/docs/explanation/node_modules/vendored.md': `Gone: ${spanOf('src', 'missing.ts')}.\n`,
+      'repo/docs/tutorials/notes.txt': `Gone: ${spanOf('src', 'missing.ts')}.\n`
+    });
+    expect(cite(root)).toMatchObject({ documents: 4, failures: [{ file: 'docs/explanation/deep/er/page.md', line: 1, path: MISSING }] });
+  });
+
+  it('fails a registered file that is missing, at line 0', () => {
+    const root = tree({ ...ENVELOPE, 'repo/ARCHITECTURE.md': '# A\n', 'repo/README.md': '# R\n' });
+    expect(cite(root)).toMatchObject({ documents: 2, failures: [{ file: 'CONTRIBUTING.md', line: 0, path: 'registered document missing' }] });
+  });
+
+  it('runs as a command: exit 1 with the failure block after a dead citation, the third summary line when clean', () => {
+    const root = citingTree({ 'repo/ARCHITECTURE.md': `# A\n\nSee ${spanOf('src', 'missing.ts')} and \`${pathOf('src', 'bad\u001bx\u202e.ts')}\`.\n` });
+    const script = installScript(root);
+    const run = spawnSync('node', [script], { encoding: 'utf8' });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain(`Unresolved source citations in live documents (2):\n  ARCHITECTURE.md:3 -> ${MISSING}\n`);
+    expect(run.stderr).toContain(`  ARCHITECTURE.md:3 -> ${pathOf('src', 'bad?x?.ts')}\n`);
+    expect(run.stderr).toContain('Repoint the citation at the file that holds the code today, or, when the code\nis gone, say so in words');
+    for (const hidden of ['\u001b', '\u202e']) expect(run.stderr).not.toContain(hidden);
+    expect(run.stdout).toBe('');
+    writeFileSync(join(root, 'repo', 'ARCHITECTURE.md'), `# A\n\nSee ${spanOf('src', 'present.ts')} and ${spanOf('tests', 'soak', '.artifacts', 'x.json')}.\n`);
+    const clean = spawnSync('node', [script], { encoding: 'utf8' });
+    expect(clean.status).toBe(0);
+    expect(clean.stdout).toContain('Source citations checked: 1 in 3 live documents, 1 generated output skipped.\n');
+  });
+
+  it('says how many scripts/ citations it skipped with the envelope absent', () => {
+    const root = citingTree({ 'repo/README.md': `${spanOf('scripts', 'a.sh')} ${spanOf('scripts', 'b.sh')}\n` }, false);
+    const run = spawnSync('node', [installScript(root)], { encoding: 'utf8' });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('Source citations checked: 0 in 3 live documents, 2 scripts/ citations skipped with the envelope absent.\n');
+  });
+
+  it('finds source citations in the real registered documents, and none of them is unresolved', () => {
+    // The vacuity control: an extractor that matched nothing would pass every other case here.
+    const { checked, documents, failures } = checkSourceCitations({}) as CitationResult;
+    expect(documents).toBeGreaterThan(3);
     expect(checked).toBeGreaterThan(0);
     expect(failures).toEqual([]);
   });

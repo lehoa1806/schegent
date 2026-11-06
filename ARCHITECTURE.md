@@ -135,7 +135,7 @@ table is an ownership map, not permission for cross-layer shortcuts.
 | `src/config/` | Settings schemas, effective catalog projections, Pipeline snapshots, and definition validators. |
 | `src/contracts/` | Shared host/webview, runner, state, audit, and catalog types plus validators. |
 | `src/controller/` | Run and Phase orchestration, retries, pause/resume controls, and terminal transitions. |
-| `src/headless/` | VS Code-independent public adapters over process and run services. |
+| `src/headless/` | VS Code-independent headless adapters over process and run services: internal module boundaries for parity tests and non-editor callers. Nothing is published from them. |
 | `src/host-services/` | The catalog filesystem adapter, on the checked `safe-open` path. Not a general host facade: every other host facility is constructed where it is used. |
 | `src/lib/` | Cross-cutting redaction, path-safety, runtime-log, and small utility modules. |
 | `src/metrics/` | Read-only derivation of task, phase, cost, and coverage metrics from retained evidence. |
@@ -203,25 +203,47 @@ be edited apart without a `contracts:check` failure that names the stale file.
 The public catalog and Builder surface expose two definition kinds: Phase and
 composable Workflow (Feature 260 / Round 5 retired Pipeline as a user-facing
 third kind, while `loadCatalog` retains `'pipeline'` as an internal execution
-and migration compatibility substrate). Each kind has versioned published
+and migration compatibility substrate; a few older user-facing Pipeline surfaces remain, listed in
+[Current limitations](docs/explanation/core-concepts.md#current-limitations)). Each kind has versioned published
 content, an optional draft, and lifecycle state. The effective projection
 supplies only runtime-eligible definitions. Lifecycle writes use expected
 versions or revisions so stale editors are rejected rather than overwriting a
 newer decision.
 
 A composable `Workflow` DAG contains nodes whose `target.kind` is either
-`'phase'` or `'workflow'` (nested child workflow invocation). At Run admission,
-`freezeWorkflowClosure` (`src/services/workflow-closure-freezer.ts`) snapshots
-the root Workflow, every transitively referenced child Workflow, and every
-referenced Phase into an immutable `FrozenWorkflowClosure`, and runtime graph
-traversal records per-node `WorkflowInvocationFrame` entries on `WorkflowRun`.
-For direct Phase/Pipeline execution and per-node Phase dispatch
-(`src/controller/workflow/node-run-starter.ts`), a transient `RunRequest` is
-validated into an immutable `ExecutionEnvelope` containing the expanded
-`PipelineDef` snapshot, frozen inputs, supplemental inputs, outputs,
-instructions, timestamp, and published catalog version. In both paths, the
-enqueue boundary persists the frozen snapshot and execution consumes that frozen
-value instead of re-reading a changed live catalog.
+`'phase'` or `'workflow'` (nested child workflow invocation). A Workflow Run
+passes through these hops, in order. Files are under
+`src/services/workflow-execution/` unless a full path is given.
+
+1. `launchWorkflow` (`workflow-launcher.ts`) calls `validateRunRequest`
+   (`src/services/run-request/run-request-validator.ts`).
+2. Validation calls `createFrozenWorkflowClosure`
+   (`src/config/pipeline-snapshot.ts`). It snapshots the root Workflow, every
+   transitively referenced child Workflow and every referenced Phase into an
+   immutable `FrozenWorkflowClosure`. `launchComposableWorkflow`
+   (`workflow-launcher.ts`) then starts the connected run.
+3. `dispatchComposableNode` (`connected-run-coordinator.ts`) dispatches each
+   ready node. It claims the node with a compare-and-set on the connected-run
+   record, then calls its `dispatchPhase` dependency.
+4. For a Phase node, `startPhaseAttempt` (`phase-attempt-start.ts`) builds the
+   attempt's transient `RunRequest` (`buildPhaseAttemptRequest`) and calls
+   `startPhaseNodeRun` (`node-run-starter.ts`). That synthesizes the Phase's
+   snapshot, adds it to the request and calls `startPipelineRun` in the same
+   file, which validates the request into an immutable `ExecutionEnvelope`. The envelope holds the expanded
+   snapshot, the frozen inputs, supplemental inputs, outputs, instructions,
+   timestamp and published catalog version.
+5. `GuardedRunService.scheduleOrEnqueue`
+   (`src/services/guarded-run-service.ts`) hands the attempt to
+   `QueueManager.enqueue` (`src/queue/queue-manager.ts`).
+6. `WorkspaceStateStore` (`src/state/workspace-state.ts`) holds the queue under
+   `schegent.queue`, and the `ConnectedWorkflowRun` records with their per-node
+   `WorkflowInvocationFrame` entries under `schegent.connectedRuns`. Its
+   `compareAndSetConnectedRun` is the claim in hop 3.
+7. Evidence is written by `AuditLogWriter` (`src/audit/audit-log-writer.ts`)
+   and `RawTranscriptWriter` (`src/audit/raw-transcript-writer.ts`).
+
+The enqueue boundary persists the frozen snapshot, and execution consumes that
+frozen value instead of re-reading a changed live catalog.
 
 A Phase definition's `sideEffects` declaration selects mutation planning,
 operator consent, rollback checkpoint behavior, and the refusal of a
@@ -448,7 +470,8 @@ record is informational and terminal-adjacent only in subject: it changes no
 status, stops nothing, and the deadline it observes is unchanged.
 
 Workflows compose Phase and child Workflow nodes (`FR-R5-F02`). At run admission,
-`validateRunRequest()` freezes the complete transitive `FrozenWorkflowClosure`
+`validateRunRequest()` freezes the complete transitive `FrozenWorkflowClosure`,
+through `createFrozenWorkflowClosure()`,
 (`workflowsById`, `phasesById`, `definitionDigestsById`, `catalogVersionsById`)
 into the `ExecutionEnvelope` (`FrozenRunPlan`). Connected-run state tracks
 hierarchical `WorkflowInvocationFrame` call/return occurrences, per-node
@@ -513,7 +536,7 @@ Precedence runs the Phase's own `onRetryCap`, then its deprecated boolean
 `forceContinueOnRetryCap` under the mapping that boolean always had
 (`true` → `continue`, `false` → `fail`), then the workspace default
 `schegent.retry.forceContinueOnCap` under the same mapping, then `fail`; so
-every pipeline file already on disk keeps its behaviour and none needs editing,
+every definition file already on disk keeps its behaviour and none needs editing,
 now or later. The resolver is the **only** reader of either spelling, and
 `tests/lint/retry-cap-resolution-site.test.ts` fails on a second one, because a
 second reader would disagree with the first exactly on a Phase declaring both.
@@ -537,7 +560,7 @@ backgrounded task open at its last result (FR-R3-198) — halts the Run
 `failed` with `currentPhase` still on it, so a resume re-runs it. It used to
 advance to `done` like a clean Phase: the Run read `completed`, the queue
 started its next Task, and `errors-only` retention deleted the transcript. A
-verify Phase that ends the bugfix pipeline still pauses instead.
+verify Phase that ends the bugfix Workflow still pauses instead.
 
 <!-- Source: src/controller/phase.ts -->
 <!-- Source: src/controller/workflow-controller.ts -->

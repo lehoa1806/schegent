@@ -108,9 +108,10 @@ the overclaim this feature was filed against.
 **`src/headless/` is deliberately outside the gate.** It was the other candidate. Three of its five
 modules — `pipeline-run-api.ts`, `process-definition-api.ts`, `workflow-run-api.ts` — have no
 consumer in this repository *by design*, because `ARCHITECTURE.md` makes them VS Code-independent
-public adapters for callers outside it. Including that directory would have meant three standing
-exemptions on the day the gate landed, a majority-exempted gate, and a fourth genuinely dead public
-API module inheriting a fourth exemption by precedent. The gate asks the wrong question of that
+headless adapters: internal module boundaries for parity tests and non-editor callers, with nothing
+published. Including that directory would have meant three standing exemptions on the day the gate
+landed, a majority-exempted gate, and a fourth genuinely dead module inheriting a fourth exemption
+by precedent. The gate asks the wrong question of that
 directory, and the honest response to a wrong question is not to allowlist the answer.
 
 ## What this decision does not say

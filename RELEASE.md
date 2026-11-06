@@ -109,6 +109,24 @@ while `schegent.defaultPipelineId` and internal `PipelineDef` / `ExecutionEnvelo
 representations in `loadCatalog` and `node-run-starter.ts` remain as internal configuration and
 single-node execution substrates.
 
+**Correction (2026-11-06).** The entry above calls `Pipeline` retired as a resource kind and as a
+launch route. On that date the source still carries four Pipeline surfaces:
+
+- the `schegent.schedule` picker, titled **Schegent: select pipeline**, which lists stored Pipeline
+  rows only and refuses a Workflow ID;
+- the **Pipelines** section of the task composer, shown when stored Pipeline rows exist, which
+  posts `CMD_LAUNCH_PIPELINE`;
+- the `schegent.defaultPipelineId` key, which is not only internal configuration: the Settings tab
+  shows it as **Default Workflow**, and the picker reads it;
+- the validator default `allowLegacyPipelineId = true`, under which Workflow nodes that target a
+  Pipeline, and catalog records of kind `pipeline`, are still read.
+
+None of them is the way to launch a Workflow.
+[Current limitations](docs/explanation/core-concepts.md#current-limitations) describes each one.
+The F07 delivery evidence is recorded in
+`specs/281-verification-evidence-qualification/backfill-f01-f07.md` (workspace), and feature 283
+measured the four surfaces.
+
 - **Composable Workflows and explicit public interfaces (`FR-R5-F01`, `260`).** A Workflow node
   targets either `phaseId` or `workflowId`. Workflows declare explicit public `inputs` and
   `outputs` with internal `bindings`, and dependency validation enforces acyclic inclusion
