@@ -146,7 +146,8 @@ not what else the document contains.
 ### Why the `*-review-date` marker is not reused
 
 The obvious candidate is the existing `<!-- <name>-review-date: YYYY-MM-DD -->` marker read by
-`tests/lint/review-dates.ts`. It is not reused, and the reason is structural rather than stylistic.
+`scripts/review-cadence.mjs` (the gates load it through `tests/lint/review-dates.ts`). It is not
+reused, and the reason is structural rather than stylistic.
 
 **That marker encodes an obligation that expires.** `reviewIsDue()` returns true once today is on or
 after the date, and `dated-review-records.test.ts` goes red on the day. It was built for a dated

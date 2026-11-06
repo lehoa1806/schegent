@@ -70,9 +70,10 @@ describe('the real tree', () => {
     expect(controlFacts(REPO_ROOT).releaseReachesSbom).toBe(true);
   });
 
-  it('lists the build before the SBOM, because the SBOM reads the build\'s module graphs', () => {
-    expect([...childScripts]).toEqual(['build', 'sbom']);
+  it('lists the build before the SBOM and the SBOM before the notices, because each reads the build\'s module graphs', () => {
+    expect([...childScripts]).toEqual(['build', 'sbom', 'notices']);
     expect(childScripts.indexOf('build')).toBeLessThan(childScripts.indexOf('sbom'));
+    expect(childScripts.indexOf('sbom')).toBeLessThan(childScripts.indexOf('notices'));
   });
 
   it('names exactly one checksum producer, the release digest module', () => {

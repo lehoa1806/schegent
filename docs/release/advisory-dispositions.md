@@ -1,7 +1,9 @@
 # Advisory dispositions
 
 `docs/release/advisory-dispositions.json` is the tracked list of recorded decisions about
-dependency advisories. It starts empty, so no finding is pre-decided. Two commands read it and
+dependency advisories. It started empty. Its first entries record the 2026-11-06 review
+(`FR-R5-F21`): one `accepted` entry per finding of that day's captures of both trees, 86 in all,
+each expiring 2027-02-04. A finding with no entry is not pre-decided. Two commands read it and
 nothing writes it:
 
 - `npm run security:advisory-diff -- compare --dispositions docs/release/advisory-dispositions.json`

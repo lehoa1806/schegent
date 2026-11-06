@@ -290,6 +290,9 @@ neither listed nor excluded.
 - [Qualification matrix](release/qualification-matrix.md) — Node 22 and 24 on macOS, Linux and Windows:
   each cell is either observed, with the five facts of an observation, or `unobserved` with its
   prerequisite. Never a bare "passed" (FR-R4-F09).
+- [Node 22 floor record](release/node-floor-record.md) — the last run of the plain-Node toolchain on
+  the declared Node 22 floor, its failures, and what that run does not show. It is not a
+  qualification cell (FR-R5-F21).
 - [GitHub Actions: terminal record](release/actions-terminal-record.md) — retired by operator decision on 2026-08-26 (FR-R3-099)
 - [Backend qualification log](release/backend-qualification-log.md) — whether the canary has ever produced a result, and what it said
 - [Withdrawn CI-dependent controls](release/withdrawn-ci-controls.md) — what each control was, and what replaced it (FR-R3-099)

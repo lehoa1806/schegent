@@ -47,7 +47,7 @@ export { RELEASE_ADVISORY_BUDGET_DAYS };
  * reaches the SBOM although the driver, not an `npm run` chain, does it. A test asserts the
  * driver spawns exactly this list, so the list and the spawned scripts cannot drift.
  */
-export const RELEASE_CHILD_SCRIPTS = Object.freeze(['build', 'sbom']);
+export const RELEASE_CHILD_SCRIPTS = Object.freeze(['build', 'sbom', 'notices']);
 
 /** The last line of every outcome, accepted or refused (FR-005). */
 export const NOTHING_PUBLISHED = 'Nothing was tagged, published or uploaded.';
@@ -244,12 +244,13 @@ export function releaseCandidate(deps) {
   }
 
   // Step 3 -- remove every existing output (research R2). The set is closed: the build output, the
-  // root SBOM, the staging directory, and the candidate and record this run would write. Each is
-  // resolved under the repository root and checked BEFORE anything is removed, so a path that
-  // leaves the root refuses the run with nothing touched. `node_modules` is never in the set.
+  // root SBOM and notices, the staging directory, and the candidate and record this run would
+  // write. Each is resolved under the repository root and checked BEFORE anything is removed, so a
+  // path that leaves the root refuses the run with nothing touched. `node_modules` is never in it.
   const outputsToRemove = [
     'dist',
     'schegent-sbom.cdx.json',
+    'THIRD-PARTY-NOTICES.md',
     paths.stagingDirectory,
     paths.candidate,
     paths.record
@@ -278,7 +279,7 @@ export function releaseCandidate(deps) {
   }
 
   // Step 4 -- build. A non-zero status refuses, and nothing later runs.
-  const [buildScript, sbomScript] = RELEASE_CHILD_SCRIPTS;
+  const [buildScript, sbomScript, noticesScript] = RELEASE_CHILD_SCRIPTS;
   if (deps.runScript(buildScript) !== 0) {
     return refuse('build-failed', `\`npm run ${buildScript}\` exited non-zero.\nFix the build, then run this again.`);
   }
@@ -323,6 +324,15 @@ export function releaseCandidate(deps) {
   // Step 6 -- the SBOM, from this run's graphs.
   if (deps.runScript(sbomScript) !== 0) {
     return refuse('sbom-failed', `\`npm run ${sbomScript}\` exited non-zero.\nRead its output, then run this again.`);
+  }
+
+  // Step 6b -- the third-party notices, from the same graphs (FR-R5-F21). The archive requires
+  // them, so a failure here refuses before anything is packaged.
+  if (deps.runScript(noticesScript) !== 0) {
+    return refuse(
+      'notices-failed',
+      `\`npm run ${noticesScript}\` exited non-zero.\nRead its output: it names each package or module it could not license.`
+    );
   }
 
   // Step 7 -- package once, into staging.

@@ -47,6 +47,19 @@ HTML, JavaScript, and CSS files. A missing pin and an additional unrecognized
 file are both policy failures.
 <!-- Source: scripts/check-vsix-smoke.mjs -->
 
+Two pinned entries are generated at package time rather than tracked:
+`extension/schegent-sbom.cdx.json`, the SBOM (`FR-R3-120`), and
+`extension/THIRD-PARTY-NOTICES.md`, the notices for the third-party code the
+bundles carry, with the license text each package ships (`FR-R5-F21`,
+FR-025). Both are written from the same module graphs, so they agree on what
+ships. Both are required, so every packaging path writes both:
+`npm run package` runs `sbom` then `notices`, `package:smoke` calls the two
+writers before `vsce`, and the release driver runs both scripts and refuses with
+`sbom-failed` or `notices-failed`.
+<!-- Source: scripts/third-party-notices.mjs -->
+<!-- Source: scripts/package-vsix-smoke.mjs -->
+<!-- Source: scripts/release-candidate.mjs -->
+
 `.vscodeignore` is the packaging-side boundary. It excludes source, tests,
 internal documentation, contracts, scripts, dependency trees, local Schegent
 state, test scratch roots, TypeScript, and source maps while retaining the

@@ -25,7 +25,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { readReviewDate, reviewIsDue } from './review-dates';
+import { loadReviewCadence } from './review-dates';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const MATRIX_PATH = 'docs/release/accessibility-at-matrix.md';
@@ -245,7 +245,8 @@ describe('FR-R3-131 — the AT matrix records observation, not inference', () =>
     }
   });
 
-  it('carries a review date that has not passed', () => {
+  it('carries a review date that has not passed', async () => {
+    const { readReviewDate, reviewIsDue } = await loadReviewCadence();
     const reviewDate = readReviewDate(matrix, REVIEW_MARKER);
     // Vacuity control first: a removed marker makes the date null, and a gate
     // comparing null to today would pass — the owed row silently losing the only

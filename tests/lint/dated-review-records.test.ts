@@ -31,131 +31,26 @@ import { readFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { filesUnder } from './source-scan';
-import { readReviewDate, reviewDateMarkerNames, reviewIsDue } from './review-dates';
+import { loadReviewCadence } from './review-dates';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const read = (path: string): string => readFileSync(resolve(REPO_ROOT, path), 'utf8');
 
-interface DatedRecord {
-  /** The document carrying the date. */
-  readonly document: string;
-  /** The HTML-comment marker the date is authored under. */
-  readonly marker: string;
-  /** What is deferred, for the failure message. */
-  readonly defers: string;
-  /** Phrases the record must keep, so its unwatched conditions cannot vanish. */
-  readonly mustMention: readonly string[];
-}
+// FR-R5-F21 (FR-011): the registry (`RECORDS`) and `NOT_A_RECORD` moved to
+// `scripts/review-cadence.mjs`, so the `review:due` report reads the same set
+// this gate does. The entries moved verbatim, with their comments. Each describe
+// loads the module before it collects, because `it.each(RECORDS)` needs the
+// registry at collection time.
 
-/**
- * Every deferral in this repository that carries a dated review.
- *
- * Adding a deferral WITHOUT a date is what `assertsCompleteRegistry` cannot
- * catch — it only sees markers that exist. Adding one with a date and not
- * registering it here is what it does catch.
- */
-const RECORDS: readonly DatedRecord[] = [
-  {
-    document: 'docs/operations/platform-observation-record.md',
-    marker: 'decline-review-date',
-    defers: 'the Windows and Linux verification routes (FR-R3-115, FR-R3-129)',
-    mustMention: ['What would change this', 'Windows machine', 'container runtime', 'contributor']
-  },
-  {
-    document: 'docs/release/accessibility-at-matrix.md',
-    marker: 'at-matrix-review-date',
-    defers: 'the macOS/VoiceOver task matrix (FR-R3-131)',
-    mustMention: ['The VoiceOver procedure', 'Do not mark a row from an automated result']
-  },
-  {
-    document: 'docs/development/devcontainer-declination.md',
-    marker: 'devcontainer-review-date',
-    defers: 'the contributor reference environment (FR-R3-132)',
-    mustMention: ['What would reopen it', 'second regular maintainer', 'contributor report', 'cannot see']
-  },
-  {
-    // FR-R3-134 — THE ONE THE THREE-FILE ARRANGEMENT LET THROUGH. `FR-R3-129`
-    // recorded the first live canary run as owed and gave it three EVENT
-    // triggers and no date, while every sibling deferral it wrote the same week
-    // got one. Its first trigger also named a mechanism that does not exist:
-    // `npm run release:preflight` contains zero occurrences of "canary".
-    document: 'docs/operations/live-canary-cadence.md',
-    marker: 'canary-review-date',
-    defers: 'the first live backend canary run (FR-R3-129)',
-    mustMention: ['is OWED', 'Trigger for the first run', 'version-drift']
-  },
-  {
-    // FR-R3-169 — the first entry here that is not a deferral. The CSP
-    // supply-chain policy was DECIDED, and the build-time check it was chosen
-    // for went unwritten from 2026-05-10 to 2026-09-06. It is registered for the
-    // same reason the four above are: its three reversal conditions are events
-    // no gate can observe, so the date is the only thing that makes anyone
-    // re-read them. A decision whose reversal conditions have quietly lapsed is
-    // as much a posture nobody chose as an expired deferral is.
-    document: 'docs/security/csp-supply-chain-record.md',
-    marker: 'csp-supply-chain-review-date',
-    defers: 'the reject-at-build option and the remote-asset ban it rests on (FR-R3-169)',
-    mustMention: [
-      'What would reverse this',
-      'remote font, stylesheet or script',
-      'vscode-webview://',
-      'reject-at-build Vite plugin',
-      'cannot see'
-    ]
-  },
-  {
-    // FR-R3-170 — the first entry that is neither a deferral nor a decision. It
-    // is a DEBT: two specs are built and waiting on an operator at a dev host,
-    // and until this record existed the wait had no owner and no end. The status
-    // word `Verification Pending` was the whole of the claim, and it obliged
-    // nothing — `014-wake-up` held it for 25 days after its capability was
-    // deleted from the product, with two governance rules passing over it in
-    // silence.
-    //
-    // It is registered here rather than dated in the specs themselves because
-    // this scan reads `repo/docs/**` and cannot see `specs/`. A date authored in
-    // a spec would be watched by nothing and registered nowhere — the sixth
-    // marker home, which is the shape FR-R3-134 built this registry to remove.
-    document: 'docs/operations/interactive-verification-register.md',
-    marker: 'interactive-verification-review-date',
-    defers: 'the interactive dev-host evidence owed by specs 067 and 068 (FR-R3-170)',
-    mustMention: [
-      'Who owes this',
-      'What would close this',
-      'Whether anybody actually looked',
-      'T036 is not owed',
-      'cannot see'
-    ]
-  },
-  {
-    // FR-R3-185 — a DECISION, registered for the reason FR-R3-169's CSP record is.
-    // English-only was decided on 2026-08-22 (FR-R3-030) with one reversal
-    // condition and no date. Its reopen events — a non-English-speaking operator, a
-    // marketplace listing aimed at one, an offered translation — are facts about
-    // the world that no gate can observe, so the date is the only thing that makes
-    // anyone re-read them. The posture gate beside it watches the TREE for a
-    // localization mechanism; this entry watches the CALENDAR for the audience.
-    document: 'docs/concepts/english-only-not-localizable.md',
-    marker: 'localization-review-date',
-    defers: "localizing the extension's user-visible strings (FR-R3-030, re-taken by FR-R3-185)",
-    mustMention: [
-      'The condition that would reopen this',
-      'non-English-speaking operator',
-      'distribution posture',
-      'offers a translation',
-      'cannot see'
-    ]
-  }
-];
+describe('FR-R3-134 — every dated deferral is watched, and the registry is complete', async () => {
+  const {
+    DATED_REVIEW_RECORDS: RECORDS,
+    NOT_A_RECORD,
+    readReviewDate,
+    reviewDateMarkerNames,
+    reviewIsDue
+  } = await loadReviewCadence();
 
-/** Documents excluded from the completeness scan, with the reason. */
-const NOT_A_RECORD: readonly string[] = [
-  // The gates themselves quote the markers they read.
-  'tests/lint/dated-review-records.test.ts',
-  'tests/lint/review-dates.ts'
-];
-
-describe('FR-R3-134 — every dated deferral is watched, and the registry is complete', () => {
   it('registers at least the deferrals this round produced', () => {
     // The control. Every assertion below is a per-record loop; an emptied
     // registry would make all of them vacuous and report green.
@@ -229,5 +124,35 @@ describe('FR-R3-134 — every dated deferral is watched, and the registry is com
         'of date", and that is exactly how the live-canary deferral came to carry three event ' +
         'triggers and no date at all.'
     ).toEqual([]);
+  });
+});
+
+describe('FR-R5-F21 (FR-008): a review marker whose date is not a real day is malformed', async () => {
+  const { DATED_REVIEW_RECORDS: RECORDS, readReviewDate, readReviewMarker } = await loadReviewCadence();
+  const MARKER = 'x-review-date';
+
+  it.each([
+    ['a month and day that do not exist', '2026-13-45'],
+    ['a day that does not exist in February', '2026-02-30']
+  ])('reads %s as malformed, not absent', (_label, date) => {
+    const marker = readReviewMarker(`<!-- ${MARKER}: ${date} -->`, MARKER);
+    expect(marker.state).toBe('malformed');
+    // The old reader returned null here, and a gate comparing against null passed.
+    expect(readReviewDate(`<!-- ${MARKER}: ${date} -->`, MARKER)).toBeNull();
+  });
+
+  it('reads a real day as dated', () => {
+    expect(readReviewMarker(`<!-- ${MARKER}: 2026-11-27 -->`, MARKER)).toEqual({
+      state: 'dated',
+      date: '2026-11-27'
+    });
+  });
+
+  it('reads a document without the marker as absent', () => {
+    expect(readReviewMarker('no marker here', MARKER)).toEqual({ state: 'absent' });
+  });
+
+  it.each(RECORDS)('$document carries a marker dated on a real day', (record) => {
+    expect(readReviewMarker(read(record.document), record.marker).state).toBe('dated');
   });
 });

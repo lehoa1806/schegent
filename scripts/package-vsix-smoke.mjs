@@ -30,18 +30,20 @@ import {
 } from './check-vsix-smoke.mjs';
 import { formatSbomCountsLine, writeSbom } from './generate-sbom.mjs';
 import { invokedAsScript } from './invoked-as-script.mjs';
+import { formatNoticesLine, writeNotices } from './third-party-notices.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SMOKE_ARCHIVE = 'schegent-smoke.vsix';
 
 /**
  * Package into a temporary directory and inspect the result, in a fixed order: freshness, the
- * SBOM, `vsce`, the archive inspection over the bytes read once, the SBOM-to-archive comparison,
- * and the removal of the temporary directory. A refusal at any step stops every later one, and
+ * SBOM, the notices, `vsce`, the archive inspection over the bytes read once, the SBOM-to-archive
+ * comparison, and the removal of the temporary directory. A refusal at any step stops every later one, and
  * the directory is removed after a refusal at `vsce` or later, because it exists from then on.
  * When the removal itself fails, the refusal that stopped the run is the one reported.
  *
- * @param {{ assertFresh: () => void, writeSbom: () => void, makeTempDir: () => Promise<string>,
+ * @param {{ assertFresh: () => void, writeSbom: () => void, writeNotices: () => void,
+ *   makeTempDir: () => Promise<string>,
  *   runVsce: (outPath: string) => Promise<void>, readFile: (path: string) => Buffer,
  *   inspectVsixBytes: (bytes: Buffer, label: string) => void,
  *   assertSbomMatchesArchive: (bytes: Buffer, label: string) => unknown,
@@ -52,6 +54,9 @@ export async function smokePackage(deps) {
   // never produced, or fails naming files nobody wrote (FR-019 of feature 106).
   deps.assertFresh();
   deps.writeSbom();
+  // FR-R5-F21 (FR-025): the archive requires the notices, so the smoke writes its own, as it does
+  // the SBOM, rather than packaging whatever an earlier run left.
+  deps.writeNotices();
 
   const directory = await deps.makeTempDir();
   const vsixPath = join(directory, SMOKE_ARCHIVE);
@@ -107,6 +112,7 @@ if (invokedAsScript(import.meta.url)) {
     await smokePackage({
       assertFresh: () => assertBuildOutputIsFresh(),
       writeSbom: () => console.log(formatSbomCountsLine(writeSbom(REPO_ROOT).counts)),
+      writeNotices: () => console.log(formatNoticesLine(writeNotices(REPO_ROOT))),
       makeTempDir: () => mkdtemp(join(tmpdir(), 'schegent-vsix-smoke-')),
       runVsce: (outPath) => runVsce(vscePath, outPath),
       readFile: (path) => readFileSync(path),

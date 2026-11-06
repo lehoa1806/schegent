@@ -5,7 +5,7 @@
 // real ones and are injected by tests so the exact buffer they receive is observable.
 
 /** The npm scripts the driver spawns, in order. `controlFacts` adds their closures. */
-export declare const RELEASE_CHILD_SCRIPTS: readonly ['build', 'sbom'];
+export declare const RELEASE_CHILD_SCRIPTS: readonly ['build', 'sbom', 'notices'];
 
 /** The release freshness budget in days, re-exported from `release-advisory.mjs`. */
 export declare const RELEASE_ADVISORY_BUDGET_DAYS: 7;
