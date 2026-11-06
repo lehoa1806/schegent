@@ -157,7 +157,7 @@ interface Options {
   head?: string;
   treeStates?: Array<{ head: string; treeClean: boolean }>;
   readTreeStateThrows?: boolean;
-  status?: Partial<Record<'build' | 'sbom' | 'vsce', number>>;
+  status?: Partial<Record<'build' | 'sbom' | 'notices' | 'vsce', number>>;
   build?: (files: Files) => void;
   captures?: Partial<Record<Tree, Buffer | undefined>>;
   dispositions?: Buffer | undefined;
@@ -250,9 +250,10 @@ function world(options: Options = {}) {
     runScript: (name: string) => {
       events.push(`runScript:${name}`);
       seen.runScripts.push(name);
-      const status = options.status?.[name as 'build' | 'sbom'] ?? 0;
+      const status = options.status?.[name as 'build' | 'sbom' | 'notices'] ?? 0;
       if (status === 0 && name === 'build') (options.build ?? freshBuild)(files);
       if (status === 0 && name === 'sbom') files.set('schegent-sbom.cdx.json', asBuffer('{"sbom":true}'));
+      if (status === 0 && name === 'notices') files.set('THIRD-PARTY-NOTICES.md', Buffer.from('# Third-party notices'));
       return status;
     },
     runVsce: (outPath: string) => {
@@ -354,9 +355,9 @@ async function run(options: Options = {}) {
 const lastLine = (lines: string[]) => lines.at(-1);
 
 describe('exports', () => {
-  it('names exactly the two child scripts the controls page walks, in order, frozen', async () => {
+  it('names exactly the three child scripts the controls page walks, in order, frozen', async () => {
     const { RELEASE_CHILD_SCRIPTS } = await loadDriver();
-    expect([...RELEASE_CHILD_SCRIPTS]).toEqual(['build', 'sbom']);
+    expect([...RELEASE_CHILD_SCRIPTS]).toEqual(['build', 'sbom', 'notices']);
     expect(Object.isFrozen(RELEASE_CHILD_SCRIPTS)).toBe(true);
   });
 
@@ -372,7 +373,7 @@ describe('an accepted candidate (RP3, RP5)', () => {
   it('runs the steps in order and builds, generates the SBOM and packages exactly once', async () => {
     const { events, seen, result } = await run();
     expect(result.exitCode).toBe(0);
-    expect(seen.runScripts).toEqual(['build', 'sbom']);
+    expect(seen.runScripts).toEqual(['build', 'sbom', 'notices']);
     expect(seen.vsceOut).toEqual([STAGING]);
     const at = (prefix: string, from = 0) => events.findIndex((e, i) => i >= from && e.startsWith(prefix));
     const order = [
@@ -677,6 +678,14 @@ describe('refusals (RP4)', () => {
     expect(outcome.seen.vsceOut).toEqual([]);
   });
 
+  it('notices-failed: the notices step exits non-zero, and nothing is packaged (FR-R5-F21)', async () => {
+    const outcome = await run({ status: { notices: 1 } });
+    expectRefused(outcome, 'notices-failed');
+    expect(outcome.errors.join('\n')).toContain('`npm run notices` exited non-zero.');
+    expect(outcome.seen.runScripts).toEqual(['build', 'sbom', 'notices']);
+    expect(outcome.seen.vsceOut).toEqual([]);
+  });
+
   it('package-failed: vsce exits non-zero, and no candidate or record exists', async () => {
     const outcome = await run({ status: { vsce: 1 } });
     expectRefused(outcome, 'package-failed');
@@ -963,6 +972,7 @@ describe('output is never reused (RP3 step 3, research R2, SC-003)', () => {
     const outcome = await run({
       seedFiles: [
         ['schegent-sbom.cdx.json', Buffer.from('an SBOM from an earlier run')],
+        ['THIRD-PARTY-NOTICES.md', Buffer.from('notices from an earlier run')],
         [STAGING, Buffer.from('an earlier staging file')],
         [CANDIDATE, Buffer.from('an earlier candidate')],
         [RECORD, Buffer.from('an earlier record')]
@@ -972,6 +982,7 @@ describe('output is never reused (RP3 step 3, research R2, SC-003)', () => {
     expect(outcome.removed).toEqual([
       'dist',
       'schegent-sbom.cdx.json',
+      'THIRD-PARTY-NOTICES.md',
       '.release/staging',
       CANDIDATE,
       RECORD
@@ -982,6 +993,7 @@ describe('output is never reused (RP3 step 3, research R2, SC-003)', () => {
     expect(outcome.files.get(CANDIDATE)).toBe(VSIX_BYTES);
     expect(outcome.files.get(RECORD)?.toString()).not.toBe('an earlier record');
     expect(outcome.files.get('schegent-sbom.cdx.json')?.toString()).toBe('{"sbom":true}');
+    expect(outcome.files.get('THIRD-PARTY-NOTICES.md')?.toString()).toBe('# Third-party notices');
   });
 
   it('never passes node_modules, the root or a source path to removePath', async () => {

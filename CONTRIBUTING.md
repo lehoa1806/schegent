@@ -68,7 +68,17 @@ The Master Workspace and this execution repository may be separate Git repositor
 
 ## Prepare a checkout
 
-Use Node `24.19.0` for the repository's pinned development runtime. Node `^22` and `^24` are declared compatible in `package.json`, and that declaration is the whole of the floor: the job that used to exercise Node 22 was retired with the workflows on 2026-08-26 (`FR-R3-099`), `.npmrc` does not set `engine-strict`, and no check reads `engines`. A change that breaks Node 22 will not be caught here.
+Use Node `24.19.0` for the repository's pinned development runtime. Node `^22` and `^24` are declared compatible in `package.json`. The job that used to exercise Node 22 was retired with the workflows on 2026-08-26 (`FR-R3-099`), `.npmrc` does not set `engine-strict`, and no gate reads `engines`, so a change that breaks Node 22 is caught only by running the floor by hand.
+
+**The Node floor run.** At each held-major review and before each release, run these one after another, with no other test tier running, and replace the [Node 22 floor record](docs/release/node-floor-record.md) with the result:
+
+```bash
+fnm exec --using=22 -- npm run test:host
+fnm exec --using=22 -- npm run build
+fnm exec --using=22 -- npm run sbom
+```
+
+Compare the failures against the record's tables: a failure that also fails under `24.19.0` is not about the floor. The macOS extension-host integration tier is not evidence for this floor: it runs inside the editor's bundled Node, not under Node 22.
 
 For a local checkout:
 
@@ -236,6 +246,16 @@ The practical consequence for a contributor: the three-OS matrix is gone and sin
 stated permanent limit, so a Windows-only or macOS-only regression will reach `develop`. Run
 `npm run gate` locally; it is the only gate there is.
 <!-- Source: docs/release/actions-terminal-record.md -->
+
+**Dated obligations.** Two lint gates fail on a date: a held major upgrade more than 90 days after
+its review ([held majors](docs/release/held-major-upgrades.md)), and a registered review once its
+day arrives. `npm run review:due` lists every such obligation, with the instant it starts failing,
+before either gate does. It exits 0 when all are current, 1 when one is due, overdue, malformed or
+unregistered, and 2 when a record cannot be read. It is advisory: no gate, tier, release or package
+script runs it (`tests/lint/review-due-is-report-only.test.ts`), and the two gates remain the
+enforcement. It writes nothing.
+<!-- Source: package.json -->
+<!-- Source: scripts/review-due-report.mjs -->
 
 **`.vscode/launch.json` exists** — `FR-R3-073` added it, and this sentence denied it until
 2026-08-26 (`FR-R3-101`). Its single `Run Extension` configuration is the interactive F5 path,

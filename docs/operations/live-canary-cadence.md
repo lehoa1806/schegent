@@ -120,6 +120,21 @@ already fired: every installed CLI had moved past the versions qualified on 2026
 so does this page's entry in `dated-review-records.test.ts`: whether the run discharges the deferral
 is the operator's call at that review.
 
+### Review 2026-11-06
+
+Feature 282 (`FR-R5-F21`) re-read this deferral ahead of its date.
+
+- **Evidence checked**: every commit since the date was written on 2026-08-28 (`a2f97115`) to this
+  page and to `scripts/backend-canary*`: eight. Two of them are the live run: `80abb7d4` adopts the
+  2026-10-19 recordings of every corpus case, and `bedb6aa4` qualifies claude 2.1.302, codex
+  0.159.2 and agy 1.4.2. The run is the 2026-10-19 entry in
+  [the qualification log](../release/backend-qualification-log.md).
+- **Still owed**: the operator's decision, at the review on or before 2026-11-27, on whether that
+  run discharges this deferral, and the next live backend canary run when a trigger above fires. The
+  owner is the operator, who is the maintainer.
+- **The date stands at 2026-11-27.** The amendment above leaves the decision to the operator, and
+  this review is not that decision, so it does not renew the date.
+
 ## 6. What this page does not claim
 
 - It does not claim a canary run happened. §5.

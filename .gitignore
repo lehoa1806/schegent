@@ -59,6 +59,11 @@ empty/
 # committing it would put a timestamp in every release diff.
 schegent-sbom.cdx.json
 
+# FR-R5-F21 (FR-025) -- the third-party notices, generated at package time from the module graphs
+# and the installed packages' license files, and packaged inside the VSIX. Not tracked for the
+# reason the SBOM is not: it is fully derived and carries a timestamp.
+/THIRD-PARTY-NOTICES.md
+
 # FR-R4-F09 (research R27) -- the release driver's outputs: the staging VSIX, the candidate, its
 # release record and the advisory captures an operator makes. Local, untracked, and anchored for
 # the same reason `/build/` and `/.tmp/` above are.
