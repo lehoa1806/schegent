@@ -4,7 +4,7 @@ import { getEffectiveSignatures } from '../../../src/lib/fatal-signature-registr
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { DEFAULT_MAX_LINE_UNITS } from '../../../src/lib/line-framer';
 import { ClaudeCliRunner } from '../../../src/runner/claude-cli';
-import type { RawInvocationOutput } from '../../../src/runner/invocation-result';
+import type { InvocationOutputSink, RawInvocationOutput } from '../../../src/runner/invocation-result';
 import {
   capturedText,
   createFakeBackendChild,
@@ -71,12 +71,13 @@ interface Started {
 
 function start(
   script: FakeChildScript,
-  request: Partial<Parameters<ClaudeCliRunner['invoke']>[0]> = {}
+  request: Partial<Parameters<ClaudeCliRunner['invoke']>[0]> = {},
+  outputSink?: InvocationOutputSink
 ): Started {
   const child = createFakeBackendChild(script);
   const logger = quietLogger();
   const runner = new ClaudeCliRunner(scriptedSpawn(child), null, undefined, logger);
-  const result = runner.invoke({ ...baseRequest, ...request });
+  const result = runner.invoke({ ...baseRequest, ...request }, outputSink);
   return { child, runner, logger, result };
 }
 
@@ -307,5 +308,142 @@ describe('ClaudeCliRunner lifecycle, in its own protocol (T27)', () => {
     expect(raw.sawTerminalResult, 'only the real terminal line sets it').toBe(true);
     expect(raw.completedAwaitingExit).toBe(false);
     expectReaped(s);
+  });
+
+  it('F9. split/chunked terminal result and fatal diagnostic across chunks are reassembled', async () => {
+    const s = start(
+      {
+        stdout: [
+          { at: 1, chunk: '{"type":"system","subtype":"init","ses' },
+          { at: 5, chunk: 'sion_id":"sess-split"}\n' },
+          { at: 10, chunk: '{"type":"res' },
+          { at: 15, chunk: 'ult","subtype":"success",' },
+          { at: 20, chunk: '"result":"done"}\n' }
+        ],
+        stderr: [
+          { at: 12, chunk: 'error: unknown ' },
+          { at: 18, chunk: "option '--bogus'\n" }
+        ],
+        exitAt: 30,
+        exitCode: 1
+      },
+      { effectiveFatalSignatures: getEffectiveSignatures([]) }
+    );
+    await vi.advanceTimersByTimeAsync(40);
+    const raw = await s.result;
+    await drainLadder();
+
+    expect(raw.sawTerminalResult).toBe(true);
+    expect(raw.cliSessionId).toBe('sess-split');
+    expect(raw.streamFatalMatch).toMatchObject({ matched: true, stream: 'stderr' });
+    expectReaped(s);
+  });
+
+  it('F10. stdout close after exit retains post-exit buffered chunks, and close-grace expiry flushes an un-newlined final result', async () => {
+    const bufferedAfterExit = start({
+      stdout: [
+        { at: 5, chunk: INIT },
+        { at: 50, chunk: RESULT + '\n' }
+      ],
+      exitAt: 20,
+      closeAfterExitMs: 80
+    });
+    await vi.advanceTimersByTimeAsync(120);
+    const bufferedRaw = await bufferedAfterExit.result;
+    await drainLadder();
+
+    expect(bufferedRaw.sawTerminalResult).toBe(true);
+    expect(bufferedRaw.exitCode).toBe(0);
+    expect(capturedText(bufferedRaw.stdoutBuffer).endsWith(RESULT + '\n')).toBe(true);
+    expectReaped(bufferedAfterExit);
+
+    const heldPipe = start({
+      stdout: [
+        { at: 5, chunk: INIT },
+        { at: 10, chunk: RESULT }
+      ],
+      exitAt: 20,
+      holdStdioOpenAfterExit: true
+    });
+    await vi.advanceTimersByTimeAsync(2_100);
+    const heldRaw = await heldPipe.result;
+    await drainLadder();
+
+    expect(heldRaw.sawTerminalResult).toBe(true);
+    expect(heldRaw.exitCode).toBe(0);
+    expect(
+      vi
+        .mocked(heldPipe.logger.warn)
+        .mock.calls.some(([msg]) => String(msg).includes('close grace expired'))
+    ).toBe(true);
+    expectReaped(heldPipe);
+  });
+
+  it('F11. output sink backpressure pauses child streams and suspends the settle timer until drain', async () => {
+    let drainStdout: (() => void) | undefined;
+    const sink: InvocationOutputSink = {
+      write: vi.fn(() => false),
+      onceDrain: (stream, cb) => {
+        if (stream === 'stdout') drainStdout = cb;
+      }
+    };
+    const s = start(
+      {
+        stdout: [
+          { at: 1, chunk: INIT },
+          { at: 10, chunk: RESULT + '\n' }
+        ]
+      },
+      {},
+      sink
+    );
+
+    await vi.advanceTimersByTimeAsync(PAST_SETTLE_MS * 2);
+    expect(s.child.signalsReceived, 'blocked sink suspends settle expiry').toEqual([]);
+    expect(s.runner.hasActiveProcess).toBe(true);
+
+    drainStdout?.();
+    await vi.advanceTimersByTimeAsync(PAST_SETTLE_MS);
+    const raw = await s.result;
+    await drainLadder();
+
+    expect(raw.completedAwaitingExit).toBe(true);
+    expect(raw.timedOut).toBe(false);
+    expectReaped(s);
+  });
+
+  it('F12. absolute maxDurationMs deadline terminates a chatty child that resets the idle timer', async () => {
+    const s = start(
+      {
+        stdout: [
+          { at: 100, chunk: INIT },
+          { at: 200, chunk: DECOY },
+          { at: 300, chunk: DECOY },
+          { at: 400, chunk: DECOY }
+        ]
+      },
+      { timeoutMs: 1_000, maxDurationMs: 350 }
+    );
+
+    await vi.advanceTimersByTimeAsync(400);
+    const raw = await s.result;
+    await drainLadder();
+
+    expect(raw.deadlineExceeded).toBe(true);
+    expect(raw.timedOut).toBe(false);
+    expect(raw.exitCode).toBeNull();
+    expectReaped(s);
+  });
+
+  it('F13. a spawn error (ENOENT with pid undefined) settles without misreporting stdinDeliveryFailed', async () => {
+    const s = start({ spawnError: { code: 'ENOENT' } });
+    await vi.advanceTimersByTimeAsync(20);
+    const raw = await s.result;
+    await drainLadder();
+
+    expect(raw.exitCode).toBeNull();
+    expect(raw.stdinDeliveryFailed).toBeUndefined();
+    expect(raw.diagnosticWarnings ?? []).not.toContain('stdin-delivery-failed');
+    expect(s.runner.hasActiveProcess).toBe(false);
   });
 });

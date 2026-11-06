@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { classifyFatal } from '../../../src/lib/fatal-signature-registry';
+import { classifyFatal, getEffectiveSignatures } from '../../../src/lib/fatal-signature-registry';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { CodexCliRunner } from '../../../src/runner/codex-cli';
-import type { RawInvocationOutput } from '../../../src/runner/invocation-result';
+import type { InvocationOutputSink, RawInvocationOutput } from '../../../src/runner/invocation-result';
 import {
   capturedText,
   createFakeBackendChild,
@@ -50,21 +50,24 @@ function quietLogger(): SanitizedLogger {
 interface Started {
   readonly child: ReturnType<typeof createFakeBackendChild>;
   readonly runner: CodexCliRunner;
+  readonly logger: SanitizedLogger;
   readonly result: Promise<RawInvocationOutput>;
   readonly done: () => boolean;
 }
 
 function start(
   script: FakeChildScript,
-  request: Partial<Parameters<CodexCliRunner['invoke']>[0]> = {}
+  request: Partial<Parameters<CodexCliRunner['invoke']>[0]> = {},
+  outputSink?: InvocationOutputSink
 ): Started {
   const child = createFakeBackendChild(script);
-  const runner = new CodexCliRunner(scriptedSpawn(child), null, quietLogger());
+  const logger = quietLogger();
+  const runner = new CodexCliRunner(scriptedSpawn(child), null, logger);
   let finished = false;
-  const result = runner.invoke({ ...baseRequest, ...request }).finally(() => {
+  const result = runner.invoke({ ...baseRequest, ...request }, outputSink).finally(() => {
     finished = true;
   });
-  return { child, runner, result, done: () => finished };
+  return { child, runner, logger, result, done: () => finished };
 }
 
 async function drainLadder(): Promise<void> {
@@ -182,19 +185,27 @@ describe('CodexCliRunner lifecycle, in its own protocol (T28)', () => {
     const envelope =
       JSON.stringify({ type: 'item.completed', item: { text: diagnostic } }) + '\n';
 
-    const onStderr = start({ stderr: [{ at: 10, chunk: diagnostic + '\n' }], exitAt: 20, exitCode: 1 });
+    const onStderr = start(
+      { stderr: [{ at: 10, chunk: diagnostic + '\n' }], exitAt: 20, exitCode: 1 },
+      { effectiveFatalSignatures: getEffectiveSignatures([]) }
+    );
     await vi.advanceTimersByTimeAsync(30);
     const stderrRaw = await onStderr.result;
     await drainLadder();
     expect(stderrRaw.stderrBuffer.getTrailingLines(5)).toContain(diagnostic);
+    expect(stderrRaw.streamFatalMatch).toMatchObject({ matched: true, stream: 'stderr' });
     expect(
       classifyFatal(capturedText(stderrRaw.stdoutBuffer), capturedText(stderrRaw.stderrBuffer))
     ).toMatchObject({ matched: true, stream: 'stderr' });
 
-    const inEnvelope = start({ stdout: [{ at: 10, chunk: envelope }], exitAt: 20 });
+    const inEnvelope = start(
+      { stdout: [{ at: 10, chunk: envelope }], exitAt: 20 },
+      { effectiveFatalSignatures: getEffectiveSignatures([]) }
+    );
     await vi.advanceTimersByTimeAsync(30);
     const envelopeRaw = await inEnvelope.result;
     await drainLadder();
+    expect(envelopeRaw.streamFatalMatch).toEqual({ matched: false });
     expect(
       classifyFatal(capturedText(envelopeRaw.stdoutBuffer), capturedText(envelopeRaw.stderrBuffer))
     ).toEqual({ matched: false });
@@ -246,5 +257,121 @@ describe('CodexCliRunner lifecycle, in its own protocol (T28)', () => {
       result: 'group-gone'
     });
     expectReaped(s);
+  });
+
+  it('F9. split/chunked stdout records and split stderr fatal diagnostics are reassembled', async () => {
+    const s = start(
+      {
+        stdout: [
+          { at: 5, chunk: '{"type":"turn.' },
+          { at: 10, chunk: 'completed","usage":{"input_tokens":1,"output_tokens":1}}\n' }
+        ],
+        stderr: [
+          { at: 12, chunk: 'error: unknown ' },
+          { at: 18, chunk: "option '--bogus'\n" }
+        ],
+        exitAt: 25,
+        exitCode: 1
+      },
+      { effectiveFatalSignatures: getEffectiveSignatures([]) }
+    );
+    await vi.advanceTimersByTimeAsync(35);
+    const raw = await s.result;
+    await drainLadder();
+
+    expect(capturedText(raw.stdoutBuffer)).toBe(TERMINAL_ROW + '\n');
+    expect(raw.streamFatalMatch).toMatchObject({ matched: true, stream: 'stderr' });
+    expectReaped(s);
+  });
+
+  it('F10. stdout close after exit retains post-exit buffered chunks, and close-grace expiry bounds a held pipe', async () => {
+    const bufferedAfterExit = start({
+      stdout: [{ at: 50, chunk: TERMINAL_ROW + '\n' }],
+      exitAt: 20,
+      closeAfterExitMs: 80
+    });
+    await vi.advanceTimersByTimeAsync(120);
+    const bufferedRaw = await bufferedAfterExit.result;
+    await drainLadder();
+
+    expect(capturedText(bufferedRaw.stdoutBuffer)).toBe(TERMINAL_ROW + '\n');
+    expect(bufferedRaw.exitCode).toBe(0);
+    expectReaped(bufferedAfterExit);
+
+    const heldPipe = start({
+      stdout: [{ at: 10, chunk: TERMINAL_ROW }],
+      exitAt: 20,
+      holdStdioOpenAfterExit: true
+    });
+    await vi.advanceTimersByTimeAsync(2_100);
+    const heldRaw = await heldPipe.result;
+    await drainLadder();
+
+    expect(capturedText(heldRaw.stdoutBuffer)).toBe(TERMINAL_ROW);
+    expect(heldRaw.exitCode).toBe(0);
+    expect(
+      vi
+        .mocked(heldPipe.logger.warn)
+        .mock.calls.some(([msg]) => String(msg).includes('stdio close grace expired'))
+    ).toBe(true);
+    expectReaped(heldPipe);
+  });
+
+  it('F11. output sink backpressure pauses child streams and suspends the idle timer until drain', async () => {
+    let drainStdout: (() => void) | undefined;
+    const sink: InvocationOutputSink = {
+      write: vi.fn(() => false),
+      onceDrain: (stream, cb) => {
+        if (stream === 'stdout') drainStdout = cb;
+      }
+    };
+    const s = start({ stdout: [{ at: 10, chunk: TERMINAL_ROW + '\n' }] }, {}, sink);
+
+    await vi.advanceTimersByTimeAsync(IDLE_MS * 2);
+    expect(s.child.signalsReceived, 'blocked sink suspends idle expiry').toEqual([]);
+    expect(s.done()).toBe(false);
+
+    drainStdout?.();
+    await vi.advanceTimersByTimeAsync(IDLE_MS + 10);
+    const raw = await s.result;
+    await drainLadder();
+
+    expect(raw.timedOut).toBe(true);
+    expectReaped(s);
+  });
+
+  it('F12. absolute maxDurationMs deadline terminates a chatty child that resets the idle timer', async () => {
+    const s = start(
+      {
+        stdout: [
+          { at: 100, chunk: 'tick\n' },
+          { at: 200, chunk: 'tick\n' },
+          { at: 300, chunk: 'tick\n' },
+          { at: 400, chunk: 'tick\n' }
+        ]
+      },
+      { timeoutMs: 1_000, maxDurationMs: 350 }
+    );
+
+    await vi.advanceTimersByTimeAsync(400);
+    const raw = await s.result;
+    await drainLadder();
+
+    expect(raw.deadlineExceeded).toBe(true);
+    expect(raw.timedOut).toBe(false);
+    expect(raw.exitCode).toBeNull();
+    expectReaped(s);
+  });
+
+  it('F13. a spawn error (ENOENT with pid undefined) settles without misreporting stdinDeliveryFailed', async () => {
+    const s = start({ spawnError: { code: 'ENOENT' } });
+    await vi.advanceTimersByTimeAsync(20);
+    const raw = await s.result;
+    await drainLadder();
+
+    expect(raw.exitCode).toBeNull();
+    expect(raw.stdinDeliveryFailed).toBeUndefined();
+    expect(raw.diagnosticWarnings ?? []).not.toContain('stdin-delivery-failed');
+    expect(s.runner.hasActiveProcess).toBe(false);
   });
 });
