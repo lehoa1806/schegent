@@ -126,7 +126,7 @@ it changes no halt, counter, cap or resume behavior.
 
 | Cause | Label | What happened | What the notice advises |
 |---|---|---|---|
-| `cap_exhausted` | Iteration cap reached | The phase's retry condition was still true at its iteration cap, and the cap outcome is to fail (the default). | A Resume gives the phase one more attempt, and it fails the same way unless the blocker is resolved first. Work finished by hand is recorded with "Mark '…' as completed". |
+| `cap_exhausted` | Iteration cap reached | The phase's retry condition was still true at its iteration cap, and the cap outcome is to fail (the default). | A Resume gives the phase one more attempt, and it fails the same way unless the blocker is resolved first. When the run admits Restart, the notice adds that Restart runs the phase again from iteration 1 with a fresh iteration budget. Work finished by hand is recorded with "Mark '…' as completed". |
 | `last_phase_issues_remain` | Last phase ended with issues open | The last required phase ended with issues still open, so the run failed instead of completing. (A bugfix verify phase pauses instead.) | Fix the issues first, then Resume to run the phase again, or record work finished by hand. |
 | `incomplete_turn_unresolved` | Phase turn left unfinished | The phase's turn ended unfinished, with work still open in the background or no contract block, and the automatic resumes of that turn did not finish it. | A Resume runs the phase again. |
 | `fatal_signature` | Fatal error pattern matched | The backend's output matched a fatal error pattern. | Find the error in the run's transcript or the runtime log and fix its cause before a Resume. |
@@ -161,6 +161,35 @@ failure that reaches the Run before any Run exists has no cause: there is nothin
 
 <!-- Source: src/queue/queue-manager.ts -->
 <!-- Source: src/controller/resume-pause-fields.ts -->
+
+**Recovery actions by run state.** The decider for Resume, Restart and Skip is `decidePhaseControl`; the
+row Retry is gated by `decideTaskTransition`. What each action does to a run, from the source at the
+time of FR-R5-F19:
+
+| Action | Failed run | Manually paused run | Resets the iteration counter |
+|---|---|---|---|
+| Resume | Refused `run-not-paused` unless a manual pause, a retry countdown or a credit pause is also recorded on the run. A resume of a failed run resets the delayed-retry count, not the iteration. | Available. | No. The phase runs again at the iteration it stopped on. |
+| Restart | Available at the run's current phase (`phase-not-active` for any other). | Available at the current phase. | Yes, to 1. It also zeroes the delayed-retry count and clears that phase's override. It is the only action that resets the iteration. |
+| Skip | Refused `run-failed`. | Available. | No. |
+| Retry of the task row | Available. The drain resumes the same run when the queue still holds it as failed or paused, otherwise it starts a fresh run. | Available from a row recorded as `paused`; which row state a manual pause leaves was not established when this was written. | No when the same run resumes. A fresh run starts at iteration 0. |
+| Retry now (delayed retry) | Refused: it needs a pending delayed retry. | Refused for the same reason. | No. |
+
+A terminal run (`completed` or `canceled`) refuses Restart and Skip as `run-terminal`.
+
+**The "three exits" and explicit retries.** Feature 195's queue halt names three exits for a failed
+task: Retry, Mark completed and Remove. They act on the task row. Retry is one of them, so it stays
+available; nothing here disables it. They are separate from the automatic budget (`DELAYED_RETRY_CAP`
+in "Where automatic attempts stop"), which bounds the attempts the host makes on its own, and from
+Resume and Restart, which act on the run.
+
+**A previous failure stays on the task.** When a failed task is retried or resumed, its last error is
+kept as historical evidence. Wherever it is shown it is labelled "Previous failure", and a task that is
+not currently failed never presents it as a current failure. A new failure replaces it.
+
+<!-- Source: src/controller/phase-control-decision.ts -->
+<!-- Source: src/controller/phase-control-service.ts -->
+<!-- Source: src/queue/task-transition-decision.ts -->
+<!-- Source: src/controller/manual-retry-override.ts -->
 
 **Recording work finished by hand.** "Mark '…' as completed" on a queue row records a Task as
 completed without running anything. The cap and last-phase notices name it, with the Task's title

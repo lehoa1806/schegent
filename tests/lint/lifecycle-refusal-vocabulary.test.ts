@@ -36,6 +36,9 @@
 // operator-facing. Disable, Enable and the two breakpoint actions remain
 // outside, for the same reason Skip was: they still discard theirs, or answer
 // through a path of their own.
+//
+// FR-R5-F19 (US3) — Disable and Enable joined as well, and the trust gate's own token
+// (`UNTRUSTED_REJECT`) with them. The two breakpoint actions remain outside.
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -125,8 +128,12 @@ const lifecycleIpc = read('webview-ui', 'src', 'lib', 'lifecycle-control-ipc.ts'
 function derivedReasons(): readonly string[] {
   const found = new Set<string>();
 
-  // 1. The router's primacy gate, ahead of every handler.
-  for (const match of routerConstants.matchAll(/SECONDARY_REJECT = '([a-z][a-z0-9-]*)'/g)) {
+  // 1. The router's primacy and trust gates, ahead of every handler. FR-R5-F19 (US3) — the trust
+  //    gate's token is `UNTRUSTED_REJECT`, a different string from the `workspace-not-trusted` the
+  //    ACK layer synthesises, and the one a refused Disable in an untrusted workspace carries.
+  for (const match of routerConstants.matchAll(
+    /(?:SECONDARY|UNTRUSTED)_REJECT = '([a-z][a-z0-9-]*)'/g
+  )) {
     found.add(match[1]!);
   }
 
@@ -146,8 +153,9 @@ function derivedReasons(): readonly string[] {
   //    refusal verbatim, so the whole module is the slice.
   for (const reason of reasonsIn(soleRunResolver)) found.add(reason);
 
-  // 4. Eligibility — only the four arms these controls dispatch.
-  for (const operation of ['pause', 'resume', 'restart', 'skip']) {
+  // 4. Eligibility — only the six arms these controls dispatch (Disable and Enable joined under
+  //    FR-R5-F19).
+  for (const operation of ['pause', 'resume', 'restart', 'skip', 'disable', 'enable']) {
     for (const reason of rejectsIn(switchArm(decision, operation))) found.add(reason);
   }
 
@@ -234,6 +242,9 @@ describe('FR-R3-154 (T1646) — lifecycle refusal vocabulary matches the hosts t
     expect(derived).toContain('run-already-paused'); // eligibility classifier
     expect(derived).toContain('run-failed'); // Skip's eligibility arm (FR-R4-F20)
     expect(derived).toContain('phase-ops-unavailable'); // Skip's route guard (FR-R4-F20)
+    expect(derived).toContain('untrusted-workspace'); // trust gate token (FR-R5-F19)
+    expect(derived).toContain('phase-already-started'); // Disable's eligibility arm (FR-R5-F19)
+    expect(derived).toContain('no-disabled-override'); // Enable's eligibility arm (FR-R5-F19)
     expect(derived).toContain('no-run-in-flight'); // service guard
     expect(derived).toContain('not-pending-retry'); // retry override
     expect(derived).toContain('rejected-horizon'); // start intent

@@ -60,6 +60,8 @@ vi.mock('vscode', () => {
       get workspaceFolders() {
         return mocks.state.workspaceFolders;
       },
+      // FR-R5-F19: Stage 2 registers the read-only decision-record document provider.
+      registerTextDocumentContentProvider: () => ({ dispose: () => undefined }),
       onDidChangeWorkspaceFolders: (
         listener: (event: { added: readonly unknown[]; removed: readonly unknown[] }) => void | Promise<void>
       ) => {

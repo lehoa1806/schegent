@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   AGENT_ISSUE_TAGS,
+  BLOCKING_ISSUE_TAGS,
   FAILURE_RECORD_MAX_BYTES,
   FAILURE_RECORD_MAX_ENTRIES,
   FAILURE_RECORD_MAX_METRICS,
@@ -82,6 +83,26 @@ describe('contract R - tag normalization (R4.1, R4.2)', () => {
 
   it('R4.2 a missing agent tag is unclassified', () => {
     expect(normalizeIssueTag(undefined, 'agent')).toBe('unclassified');
+  });
+});
+
+describe('contract R - the blocking tags (FR-R5-F19 T004)', () => {
+  it('the blocking tags are the two operator-decision tags and nothing else', () => {
+    expect([...BLOCKING_ISSUE_TAGS].sort()).toEqual(['needs-approval', 'needs-decision']);
+  });
+
+  it('every blocking tag is a member of the agent tag set', () => {
+    const agentTags: readonly string[] = AGENT_ISSUE_TAGS;
+    for (const tag of BLOCKING_ISSUE_TAGS) expect(agentTags).toContain(tag);
+  });
+
+  it('an unknown, unclassified or host-only tag normalizes outside the blocking set', () => {
+    const blocking: readonly string[] = BLOCKING_ISSUE_TAGS;
+    for (const tag of ['blocker', 'needs_decision', 'Needs-Decision', 'constitution', '']) {
+      expect(blocking).not.toContain(normalizeIssueTag(tag, 'agent'));
+    }
+    expect(blocking).not.toContain(normalizeIssueTag(undefined, 'agent'));
+    expect(blocking).not.toContain(normalizeIssueTag('needs-decision', 'host'));
   });
 });
 

@@ -7,6 +7,9 @@ import { EXPORT_TEXT } from '../../../src/commands/evidence-commands';
 import { FAILURE_CAUSES } from '../../../src/contracts/failure-cause';
 import type { Notifier } from '../../../src/ui/notifications';
 import { removeTempRoot } from '../../temp-root-cleanup';
+import type { EpisodeDraft } from '../../../src/services/failed-row-census/census-episodes';
+import type { Episode, QueueSnapshot, SnapshotRow } from '../../../src/services/failed-row-census/census-model';
+import { decideOutcome, indexSnapshot } from '../../../src/services/failed-row-census/census-outcome';
 
 function row(schemaVersion: number, payload: Record<string, unknown>): string {
   return JSON.stringify({
@@ -485,5 +488,176 @@ describe('runExportAuditLog (FR-R4-F04, T15)', () => {
     expect(await fs.readFile(target, 'utf8')).toBe(createCountsOnlyAuditExport(`${FIXTURE}\n`));
     expect(notices.join(' ')).toContain(EXPORT_TEXT.notRecorded);
     expect(notices.join(' '), 'the error message does not reach the operator').not.toContain('disk full');
+  });
+});
+
+// FR-R5-F19 (spec 278, T19.6, FR-024 and FR-026; task T045) — the counts-only export keeps its allowlist, and
+// an operator-accepted failure never shares a class with completed work.
+//
+// `COUNT_KEYS` is private to the exporter, so the pin is read from what the exporter writes: the set of
+// payload keys that survive a row carrying every admitted key and a spread of free-form ones. A key added
+// to the allowlist changes that set and fails the first case; a free-form field that gets admitted puts its
+// sentinel text into the output and fails the second.
+describe('FR-R5-F19 FR-026 — the counts-only export allowlist', () => {
+  const PINNED_KEYS = [
+    'attemptId',
+    'cause',
+    'exitCode',
+    'failureCause',
+    'fileChangeCounts',
+    'metrics',
+    'omittedFileEvidenceCount',
+    'omittedToolEvidenceCount',
+    'outcome',
+    'resultEnvelope',
+    'stalled',
+    'terminationReason',
+    'toolCategoryCounts'
+  ];
+
+  const ADMITTED_PAYLOAD = {
+    attemptId: 'attempt-1',
+    cause: 'cap_exhausted',
+    exitCode: 1,
+    failureCause: 'rate_limit',
+    fileChangeCounts: {},
+    metrics: {},
+    omittedFileEvidenceCount: 0,
+    omittedToolEvidenceCount: 0,
+    outcome: 'failed',
+    resultEnvelope: 'present',
+    stalled: 0,
+    terminationReason: 'exit',
+    toolCategoryCounts: {}
+  };
+
+  const FREE_FORM_KEYS = [
+    'message',
+    'error',
+    'errorMessage',
+    'summary',
+    'lastErrorSummary',
+    'reason',
+    'detail',
+    'note',
+    'text',
+    'prompt',
+    'instruction',
+    'description',
+    'status',
+    'provenance',
+    'completionProvenance',
+    'sessionCleanupRefusal'
+  ];
+
+  const sentinelFor = (key: string): string => `SENTINEL TEXT FOR ${key}`;
+
+  function exportedPayload(extra: Record<string, unknown>): { payload: Record<string, unknown>; text: string } {
+    const text = createCountsOnlyAuditExport(row(3, { ...ADMITTED_PAYLOAD, ...extra }));
+    const first = text.split('\n').at(0) ?? '';
+    return { payload: (JSON.parse(first) as { payload: Record<string, unknown> }).payload, text };
+  }
+
+  const freeFormPayload = (): Record<string, unknown> =>
+    Object.fromEntries(FREE_FORM_KEYS.map((key) => [key, sentinelFor(key)]));
+
+  it('writes exactly the pinned keys of a row that also carries free-form ones', () => {
+    const { payload } = exportedPayload(freeFormPayload());
+
+    expect(Object.keys(payload).sort()).toEqual([...PINNED_KEYS].sort());
+  });
+
+  it('never lets the text of a free-form field into the export', () => {
+    const { text } = exportedPayload(freeFormPayload());
+
+    for (const key of FREE_FORM_KEYS) {
+      expect(text, `${key} reached the export`).not.toContain(sentinelFor(key));
+    }
+  });
+
+  it('control: the same scan finds an admitted key, so an empty export would not pass', () => {
+    const { text, payload } = exportedPayload({});
+
+    expect(text).toContain('"exitCode":1');
+    expect(Object.keys(payload).length).toBe(PINNED_KEYS.length);
+    // And a probe that does reach the output is seen: a key in the allowlist carrying a sentinel.
+    const leaked = createCountsOnlyAuditExport(row(3, { ...ADMITTED_PAYLOAD, terminationReason: sentinelFor('x') }));
+    expect(leaked).toContain(sentinelFor('x'));
+  });
+});
+
+describe('FR-R5-F19 FR-024 — a failed row the operator accepted is not completed work', () => {
+  const QUEUE = 'default';
+  const RUN = 'run-1';
+  const TASK = 'task-1';
+
+  function draftEndedBy(priorStatus: string, provenance: 'absent' | 'null' | 'attested'): EpisodeDraft {
+    return {
+      runId: RUN,
+      position: 0,
+      taskId: TASK,
+      seq: 1,
+      failedAtMs: 0,
+      cause: 'not-recorded',
+      queueId: QUEUE,
+      end: { kind: 'removed', seq: 2, stampMs: 1, taskId: TASK, queueId: QUEUE, runId: RUN, priorStatus, provenance },
+      gapped: false,
+      laterStartsInQueue: 0
+    };
+  }
+
+  function draftOpenAtCutoff(): EpisodeDraft {
+    return { ...draftEndedBy('failed', 'absent'), end: null };
+  }
+
+  const snapshotWith = (rows: readonly SnapshotRow[]): ReturnType<typeof indexSnapshot> =>
+    indexSnapshot({
+      cutoffMs: 10,
+      queues: [{ queueId: QUEUE, storedPolicy: null, rows }],
+      workspaceDefaultPolicy: 'halt-on-failure'
+    } satisfies QueueSnapshot);
+
+  /** The class an episode lands in: its disposition, or `unknown:<reason>`. */
+  function classOf(draft: EpisodeDraft, rows: readonly SnapshotRow[] = []): string {
+    const { outcome } = decideOutcome(draft, snapshotWith(rows));
+    const episodeOutcome: Episode['outcome'] = outcome;
+    return episodeOutcome.kind === 'disposition' ? episodeOutcome.disposition : `unknown:${episodeOutcome.reason}`;
+  }
+
+  const PROVENANCES = ['absent', 'null', 'attested'] as const;
+
+  it('removing a failed row and removing a completed task never land in one class, under every provenance', () => {
+    const failedClasses = new Set(PROVENANCES.map((provenance) => classOf(draftEndedBy('failed', provenance))));
+    const completedClasses = new Set(PROVENANCES.map((provenance) => classOf(draftEndedBy('completed', provenance))));
+
+    expect([...failedClasses].filter((cls) => completedClasses.has(cls))).toEqual([]);
+    expect([...failedClasses]).toEqual(['removed-failed']);
+  });
+
+  it('a row left in place at the cutoff is still-failed when failed and attested-kept only when attested', () => {
+    const failedRow: SnapshotRow = { taskId: TASK, status: 'failed', runId: RUN, attested: false };
+    const attestedRow: SnapshotRow = { taskId: TASK, status: 'completed', runId: RUN, attested: true };
+    const unattestedCompleted: SnapshotRow = { taskId: TASK, status: 'completed', runId: RUN, attested: false };
+
+    expect(classOf(draftOpenAtCutoff(), [failedRow])).toBe('still-failed');
+    expect(classOf(draftOpenAtCutoff(), [attestedRow])).toBe('attested-kept');
+    // A `completed` status alone is not completed work here: without the attestation it is no class at all.
+    expect(classOf(draftOpenAtCutoff(), [unattestedCompleted])).toBe('unknown:snapshot-mismatch');
+  });
+
+  it('a completed task with no attestation is an unknown, never counted as an accepted failure', () => {
+    expect(classOf(draftEndedBy('completed', 'null'))).toBe('unknown:completed-without-attestation');
+    expect(classOf(draftEndedBy('completed', 'absent'))).toBe('unknown:provenance-not-recorded');
+    expect(classOf(draftEndedBy('completed', 'attested'))).toBe('attested-removed');
+  });
+
+  it('control: the classes compared are not all one value, so the disjointness above is not vacuous', () => {
+    const classes = new Set([
+      classOf(draftEndedBy('failed', 'absent')),
+      classOf(draftEndedBy('completed', 'attested')),
+      classOf(draftEndedBy('completed', 'null'))
+    ]);
+
+    expect(classes.size).toBe(3);
   });
 });

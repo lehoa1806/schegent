@@ -799,7 +799,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // registrations of headroom FR-R3-144 sized for, on the same terms: when it
   // runs out again, the question is still whether the barrel should split, not
   // whichever feature adds the next command.
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1150 },
+  // Feature 278 (FR-R5-F19, 2026-11-06) — 1150 -> 1165: the open-decision-record command (its
+  // constant, the barrel re-exports, the union member, the guard and the validator-table row)
+  // adds 16 lines, which put the file inside `tightMargin`'s band. Measurement plus 26, the same
+  // rule as the entries above.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1165 },
   // Waived, not budgeted. Feature 063's operator decision retired the ceiling
   // on this file and on queue-manager.ts below; it did not set a large one. The
   // entries used to say `maxLines: 10_000` against files of 2,500 and 1,821,
@@ -1023,7 +1027,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // fenced `updateQueueRegistry`, multi-queue fenced `updateQueueMap` / `movePendingRequest`,
       // fenced `deleteQueueIfNoLiveRun`, and reload-time `reconcileDeletedQueueResidueIfNeeded` and
       // `pruneExcessDeletedHistoryPartitions`.
-      highWaterMark: 3754
+      //
+      // Feature 278 (FR-R5-F19, 2026-11-06) — 3754 → 3757, +3: `validateRunInvariants` takes the
+      // stored Run and calls `assertPendingRetryShape` (the check itself lives in
+      // `pending-retry-shape.ts`); the two write sites pass the Run they replace.
+      highWaterMark: 3757
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1302,7 +1310,10 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // Feature 268 (FR-R5-F09, 2026-11-06) — 2413 → 2434, +21: routing `createQueue`,
       // `renameQueue`, and `fireDueSchedules` through `store.updateQueueRegistry` and preserving
       // typed `QueueMutationRejected` reasons in `registryErrorReason`.
-      highWaterMark: 2434
+      //
+      // Feature 278 (FR-R5-F19, 2026-11-06) — 2434 → 2435, +1: the retry keeps the failure it came
+      // from, so one `lastError: null` line became a two-line comment saying why it stays.
+      highWaterMark: 2435
     }
   },
   // Feature 267 (FR-R5-F08, 2026-11-06) — `workflow-control-service.ts` crossed the
@@ -1490,7 +1501,12 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // than one stale key. Deliberately NOT spent as a fourth raise in one
   // uncommitted change — the file is at 1,303 and the next change here should
   // reduce it or split it, not ratchet again.
-  { path: 'src/services/run-driver.ts', maxLines: 1_330 },
+  // Feature 278 (FR-R5-F19, 2026-11-06) — 1,330 -> 1,345: the first-blocker notice hook (the
+  // `BlockerNoticeLedger` field, the `emitBlockerNotice` call in the post-phase side effects and the
+  // two parameters that carry the result to it; the logic is in `blocker-notice.ts`), +15 net.
+  // Raised because the margin rule left no choice; the note above stands: the next change here
+  // reduces or splits the file.
+  { path: 'src/services/run-driver.ts', maxLines: 1_345 },
   // FR-R3-128 — the extraction's destination is governed in the same change. An
   // extraction that shrinks one method and adds an ungoverned file has moved the
   // debt, not reduced it. 182 lines measured; 210 carries the 25-line margin this

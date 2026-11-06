@@ -65,6 +65,7 @@ import {
   CMD_RESOLVE_AUDIT_POINTER,
   CMD_RESOLVE_HISTORY_DESCRIPTION,
   CMD_READ_FAILURE_RECORD,
+  CMD_OPEN_DECISION_RECORD,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE, CMD_READ_METRICS,
@@ -89,6 +90,7 @@ import { validateReadMetrics } from './validators/metrics';
 import { validateResolveAuditPointer } from './validators/history-evidence';
 import { validateResolveHistoryDescription } from './validators/history-description';
 import { validateReadFailureRecord } from './validators/failure-record';
+import { validateOpenDecisionRecord } from './validators/decision-record';
 import {
   validateExportProcessYaml,
   validatePreflightProcessYaml
@@ -283,6 +285,8 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateResolveHistoryDescription(obj, correlationId);
     case CMD_READ_FAILURE_RECORD:
       return validateReadFailureRecord(obj, correlationId);
+    case CMD_OPEN_DECISION_RECORD:
+      return validateOpenDecisionRecord(obj, correlationId);
     case CMD_SET_PHASE_BREAKPOINT:
       return validatePhaseBreakpointPayload(CMD_SET_PHASE_BREAKPOINT, obj, correlationId);
     case CMD_CLEAR_PHASE_BREAKPOINT:

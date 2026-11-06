@@ -177,7 +177,13 @@ interface DeclaredOptions {
   readonly betaChanged: boolean;
   /** An undeclared gitlink `gamma`, pinned on `develop`, whose only change is an untracked file. */
   readonly gamma: boolean;
-  /** The declared entries; `alpha` and `beta` when absent. */
+  /**
+   * A declared gitlink `delta` whose nested repository has a real commit the root has not re-pinned,
+   * so the gitlink's recorded SHA differs from the nested `HEAD`: a tracked-content change, where
+   * `gamma` is an untracked one (FR-R5-F19, FR-016).
+   */
+  readonly delta?: boolean;
+  /** The declared entries; `alpha` and `beta` when absent (`alpha`, `beta` and `delta` with `delta`). */
   readonly entries?: readonly string[];
 }
 
@@ -187,7 +193,8 @@ function buildDeclared(label: string, options: DeclaredOptions): Workspace {
   const alpha = join(root, 'alpha');
   const beta = join(root, 'beta');
   const gamma = join(root, 'gamma');
-  const nested = options.gamma ? [alpha, beta, gamma] : [alpha, beta];
+  const delta = join(root, 'delta');
+  const nested = [alpha, beta, ...(options.gamma ? [gamma] : []), ...(options.delta ? [delta] : [])];
 
   // Everything `develop` already holds is committed on `feature` first, then settled as the base.
   initRepo(root);
@@ -202,8 +209,10 @@ function buildDeclared(label: string, options: DeclaredOptions): Workspace {
   commitFile(root, 'specs/feature.md', 'a change to the plan\n');
   commitFile(alpha, 'src/alpha.ts', 'export const alpha = 1;\n');
   if (options.betaChanged) commitFile(beta, 'src/beta.ts', 'export const beta = 1;\n');
-  if (options.gamma) {
-    writeFile(gamma, 'scratch.txt', 'untracked\n');
+  if (options.gamma) writeFile(gamma, 'scratch.txt', 'untracked\n');
+  // A commit in `delta` that the root's index does not record: the gitlink is modified, not just dirty.
+  if (options.delta) commitFile(delta, 'src/delta.ts', 'export const delta = 1;\n');
+  if (options.gamma || options.delta) {
     // F2 W7: with this set in the root, only the explicit flag shows the change (contract P2, B3).
     git(root, ['config', 'diff.ignoreSubmodules', 'all']);
     if (git(root, ['config', 'diff.ignoreSubmodules']).trim() !== 'all') {
@@ -211,7 +220,7 @@ function buildDeclared(label: string, options: DeclaredOptions): Workspace {
     }
   }
 
-  declare(root, options.entries ?? ['alpha', 'beta']);
+  declare(root, options.entries ?? ['alpha', 'beta', ...(options.delta ? ['delta'] : [])]);
   return { root, repositories: [root, ...nested] };
 }
 
@@ -228,6 +237,15 @@ export function buildW6(): Workspace {
 /** W7: as W5, plus an undeclared gitlink `gamma` with one untracked file, and the root's config. */
 export function buildW7(): Workspace {
   return buildDeclared('w7', { betaChanged: true, gamma: true });
+}
+
+/**
+ * W8 (FR-R5-F19, FR-016): as W5, plus a declared gitlink `delta` whose nested repository holds a
+ * new commit the root has not re-pinned. W7's change is untracked content in a gitlink; this one is
+ * tracked content, so the recorded SHA and the nested `HEAD` differ.
+ */
+export function buildW8(): Workspace {
+  return buildDeclared('w8', { betaChanged: true, gamma: false, delta: true });
 }
 
 // Rows W1 to W4 (contract F2; US2): the layouts the Phases supported before the declaration, and

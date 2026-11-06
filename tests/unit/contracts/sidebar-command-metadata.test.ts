@@ -49,7 +49,7 @@ describe('sidebar command metadata', () => {
       const missing = COMMAND_TYPES.filter((type) => !keys.includes(type));
       const extra = keys.filter((key) => !declared.has(key));
 
-      expect(COMMAND_TYPES.length, 'the 62 commands were parsed').toBe(62);
+      expect(COMMAND_TYPES.length, 'the 63 commands were parsed').toBe(63);
       expect(missing, `commands with no authority entry: ${missing.join(', ')}`).toEqual([]);
       expect(extra, `keys that are not commands: ${extra.join(', ')}`).toEqual([]);
       expect(keys).toHaveLength(COMMAND_TYPES.length);
@@ -88,10 +88,10 @@ describe('sidebar command metadata', () => {
       }
     });
 
-    it('counts 53 gated and 9 read-only commands over 62', () => {
+    it('counts 53 gated and 10 read-only commands over 63', () => {
       expect(MUTATING_COMMAND_TYPES).toHaveLength(53);
-      expect(READ_ONLY_COMMAND_TYPES).toHaveLength(9);
-      expect(MUTATING_COMMAND_TYPES.length + READ_ONLY_COMMAND_TYPES.length).toBe(62);
+      expect(READ_ONLY_COMMAND_TYPES).toHaveLength(10);
+      expect(MUTATING_COMMAND_TYPES.length + READ_ONLY_COMMAND_TYPES.length).toBe(63);
     });
 
     it('treats a type outside the union as gated and serialized (fail-closed)', () => {

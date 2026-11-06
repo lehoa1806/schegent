@@ -73,6 +73,11 @@ export type FailureNoticeInput =
       readonly stalledCount?: number | undefined;
       /** FR-R4-F15 (D13) — a failure record was written, so "Show last error" has something to show. */
       readonly recordWritten?: boolean | undefined;
+      /**
+       * FR-R5-F19 (FR-007) — the subject Run exposes Restart. The caller derives it from the legal-action
+       * authority (`isRestartExposed`); this notice holds no rule of its own. Absent reads as `false`.
+       */
+      readonly restartExposed?: boolean | undefined;
     })
   | (PhaseNotice & {
       readonly cause: 'last_phase_issues_remain';
@@ -136,6 +141,11 @@ function withRecordPointer(message: string, recordWritten: boolean | undefined):
   return recordWritten === true ? `${message} ${SHOW_LAST_ERROR_SENTENCE}` : message;
 }
 
+/** ` Restart runs {phase} again from iteration 1 with a fresh iteration budget.`, only when Restart is exposed. */
+function restartClause(phase: string, restartExposed: boolean | undefined): string {
+  return restartExposed === true ? ` Restart runs ${phase} again from iteration 1 with a fresh iteration budget.` : '';
+}
+
 /** ` Its metrics were unchanged across the last {n} comparisons.`, only for a count above one. */
 function stalledClause(stalledCount: number | undefined): string {
   if (stalledCount === undefined || !Number.isFinite(stalledCount) || stalledCount <= 1) return '';
@@ -179,7 +189,8 @@ function messageFor(input: FailureNoticeInput): string {
         `Schegent: ${phase} reached its iteration cap (iteration ${input.iteration} of ` +
           `${input.iterationCap}) with its retry condition still unmet, so the run failed.` +
           `${stalledClause(input.stalledCount)} ${RESUME} gives ${phase} one more attempt, and it ` +
-          `fails the same way unless the blocker is resolved first. If you finished the work by hand, ` +
+          `fails the same way unless the blocker is resolved first.${restartClause(phase, input.restartExposed)} ` +
+          `If you finished the work by hand, ` +
           `record it with "${markCompletedTitle(input.taskTitle, sanitize)}".`,
         input.recordWritten
       );
