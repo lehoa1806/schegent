@@ -9,6 +9,23 @@ This file is maintained by hand: neither the version field nor any script can de
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### A failed row can restart its Phase, and a drained Run can open its decision record (FR-R5-F19 follow-up, 2026-11-06)
+
+- **Restart on a failed row.** A failed row whose Run is still its queue's current Run now shows a restart
+  control, labelled "Restart failed phase <phase> of '<task>'". It sends the same Restart the palette command
+  `schegent.restartPhase` sends. The host already admitted that Restart for a failed Run, and the row offered no
+  way to ask for it. A refusal shows its sentence beside the control. Like the Phase menu's Restart, it asks for
+  no confirmation.
+- **Open decision record works for drained Runs.** A Run admitted from the queue used to record no feature
+  directory, so **Open decision record** refused every such Run as outside the workspace. The clarify Phase of
+  `speckit-new-feature` (workflow version 8, `speckit-clarify` version 3) now reports the feature directory
+  through its phase-message sidecar. The host accepts only a relative path of plain name segments, at most 256
+  characters, and keeps the first one a Run reports. Import and publish the revised example to get it. Work
+  queued earlier keeps its frozen plan and still refuses.
+- **No Resume during a retry countdown, by decision.** The Phase menu offers **Retry now** during a
+  delayed-retry countdown and no Resume, because both would end the same countdown and start the same Phase.
+  Resume appears once the Run is paused.
+
 ### An older build can preview a current Workflow example as Invalid (FR-R5-F07, 2026-11-06)
 
 A build older than the checkout reads a current example with its own, older rules. The Process Import preview

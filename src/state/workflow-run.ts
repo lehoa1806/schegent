@@ -156,8 +156,9 @@ export type RunPatch = { [K in keyof WorkflowRun]?: WorkflowRun[K] | undefined }
  * on its in-memory Run when an invocation returns (`RunDriver`, after `dispatchObserved`)
  * and lets the NEXT transition carry it to the store, so by the time `persist` is
  * called `prev` already holds them and a diff against it would never write them. No
- * concurrent writer touches these fields, so writing them from `next` cannot clobber
- * anything; every other field keeps the changed-since-`prev` rule.
+ * concurrent writer touches these fields (`featureDir` is set once at admission and
+ * otherwise only by the driver), so writing them from `next` cannot clobber anything;
+ * every other field keeps the changed-since-`prev` rule.
  */
 export function changedRunFields(prev: WorkflowRun, next: WorkflowRun): RunPatch {
   const before = prev as unknown as Record<string, unknown>;
@@ -173,12 +174,14 @@ export function changedRunFields(prev: WorkflowRun, next: WorkflowRun): RunPatch
 /**
  * FR-R4-F01 — the fields only the driver writes, and writes on its in-memory Run
  * before the transition that persists them: the three CLI-session fields
- * (`NO_CLI_SESSION` is the same trio, cleared together).
+ * (`NO_CLI_SESSION` is the same trio, cleared together), and the feature directory a
+ * phase reported (spec 278, U1; `run-phase-facts.ts`).
  */
 export const DRIVER_OWNED_RUN_FIELDS = [
   'lastCliSessionId',
   'lastCliSessionRunnerKind',
-  'lastCliSessionCostUsd'
+  'lastCliSessionCostUsd',
+  'featureDir'
 ] as const;
 
 /**

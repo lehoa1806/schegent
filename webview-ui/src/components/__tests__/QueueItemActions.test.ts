@@ -162,6 +162,20 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       expect(container.querySelectorAll('button').length).toBe(3);
     });
 
+    // Spec 278 (OD-2) — a failed row whose Run is still the queue's stored Run carries that
+    // Run's phase, and gains a fourth control: Restart of that phase. The row above carries no
+    // phase, which is why it still counts three.
+    it('failed row with a stored Run phase also renders Restart phase', () => {
+      const { container, queryByTestId } = render(QueueItemActions, {
+        props: { item: buildItem({ status: 'failed', currentPhase: 'implement' }), isPrimary: true }
+      });
+      expect(queryByTestId('queue-item-restart-phase-q-1')).not.toBeNull();
+      expect(queryByTestId('queue-item-retry-q-1')).not.toBeNull();
+      expect(queryByTestId('queue-item-attest-q-1')).not.toBeNull();
+      expect(queryByTestId('queue-item-remove-q-1')).not.toBeNull();
+      expect(container.querySelectorAll('button').length).toBe(4);
+    });
+
     // Feature 065 BUG-009 T080 (FR-026) — Retry (↻) is also available for
     // paused rows so the operator can resurrect a stuck task without
     // removing + re-enqueueing it.

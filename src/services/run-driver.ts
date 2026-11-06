@@ -57,6 +57,7 @@ import type { PhaseMutationReport, RunMutationLedger } from './run-mutation-ledg
 import type { RunOutputRecord } from '../contracts/run-results';
 import { resolveRunOutputs } from './run-output/run-output-resolver';
 import { createBoundedOutputProbe } from './run-output/run-output-probe';
+import { withPhaseOutputFacts } from './run-phase-facts';
 
 /**
  * FR-R3-004 — a phase's own account of what it wrote, taken from the audit
@@ -703,16 +704,10 @@ export class RunDriver {
         // Capture the backend-owned session before any pause/breakpoint
         // branch persists and exits. A completed invocation can disclose
         // its exact session ID even when the controller immediately pauses;
-        // that ID is what makes a later resume safe and deterministic.
-        if (output.cliSessionId !== undefined) {
-          run = {
-            ...run,
-            lastCliSessionId: output.cliSessionId,
-            lastCliSessionRunnerKind: effectiveRunnerKind,
-            lastCliSessionCostUsd: output.cliSessionCostUsd
-          };
-          pendingSessionReuse = true;
-        }
+        // that ID is what makes a later resume safe and deterministic. The reported feature directory
+        // (spec 278, U1) rides the same capture.
+        if (output.cliSessionId !== undefined) pendingSessionReuse = true;
+        run = withPhaseOutputFacts(run, output, effectiveRunnerKind);
 
         const postDecision = this.sequencer.decideAfterPhase({
           run,
