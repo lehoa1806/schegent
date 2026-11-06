@@ -114,6 +114,9 @@ describe('the host sentence for a capability outcome (T12)', () => {
 
   it('keeps the Agy shell-refusal clause conditional on the backend settings (feature 279)', () => {
     expect(CLAUSES['mode-refuses-shell']).toContain("unless the backend's own permission settings allow it");
+    const plan = planOf('agy', ['workspace-write', 'process-spawn', 'network']);
+    const sentence = describeCapabilityOutcome(plan, NAME) ?? '';
+    expect(sentence).toContain("unless the backend's own permission settings allow it");
   });
 
   it('gives the two Agy accept-edits cells the contract sentences (feature 279, FR-010)', () => {
