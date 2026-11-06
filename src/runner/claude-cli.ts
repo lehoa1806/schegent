@@ -39,8 +39,7 @@ import { processTreeSpawnOptions, escalateAndReportTree, trackGroupAtExit } from
 import { nextInvocationId } from './invocation-identity';
 import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
 import { TeardownLedger } from './teardown-ledger';
-
-// Feature 030 BUG-002 — after the invocation's terminal stream-json result line
+import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 // (`{"type":"result"}`) appears in stdout, the runner waits at most this long
 // for the process to exit on its own before grace-terminating it. Short enough
 // that a lingering process does not stall the queue; long enough for a
@@ -350,11 +349,9 @@ export class ClaudeCliRunner implements BackendRunner {
     spawnFn: SpawnFn = spawn as unknown as SpawnFn,
     monitorHook: MonitorSidecarHook | null = null,
     _options: { probeTransport?: boolean } = {},
-    private readonly _logger: SanitizedLogger = new SanitizedLogger()
-  ) {
-    this.spawnFn = spawnFn;
-    this.monitorHook = monitorHook;
-  }
+    private readonly _logger: SanitizedLogger = new SanitizedLogger(),
+    private readonly _evidenceHealth?: EvidenceHealthReporter
+  ) { this.spawnFn = spawnFn; this.monitorHook = monitorHook; }
 
   public get hasActiveProcess(): boolean {
     return this.active.size > 0;
@@ -424,7 +421,7 @@ export class ClaudeCliRunner implements BackendRunner {
     let diagnosticWriter: VerboseDiagnosticWriter | null = null;
     if (verboseTarget) {
       args.push('--debug-file', verboseTarget.debugFile);
-      diagnosticWriter = new VerboseDiagnosticWriter(new SanitizedLogger());
+      diagnosticWriter = new VerboseDiagnosticWriter(new SanitizedLogger(), this._evidenceHealth);
       await diagnosticWriter.prepare(verboseTarget);
     }
 

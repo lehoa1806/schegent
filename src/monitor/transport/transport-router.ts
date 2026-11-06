@@ -27,6 +27,7 @@
 
 import type { TransportUsage } from '../../contracts/sidebar-ipc/transport-usage';
 import type { SanitizedLogger } from '../../lib/logger';
+import type { EvidenceHealthReporter } from '../../services/evidence-health/evidence-health-monitor';
 import type { RawTranscriptMode, WorkflowRunStatus } from '../../state/workflow-run';
 import type { CliTransportRecord } from '../cli-transport-sink';
 import {
@@ -70,6 +71,8 @@ export interface TransportRouterDeps {
    * a real filesystem, to prove a failure is reported once and never reaches the Run.
    */
   readonly store?: RunTransportStore;
+  /** FR-R5-F13 (FR-008, NS-05) — optional evidence-health reporter for the `transport` sink. */
+  readonly evidenceHealth?: EvidenceHealthReporter;
 }
 
 /** What a maintenance pass did, as counts only. */
@@ -172,6 +175,9 @@ export class TransportRouter {
   /** One warning per (operation, cause), never naming a path. */
   private report(operation: 'record' | 'retention', error: unknown): void {
     const cause = causeOf(error);
+    if (cause !== 'disposed' || !this.closed) {
+      this.deps.evidenceHealth?.reportFailure('transport', cause);
+    }
     const key = `${operation}:${cause}`;
     if (this.reported.has(key)) return;
     this.reported.add(key);
@@ -215,6 +221,8 @@ export class TransportRouter {
     const data = Buffer.byteLength(line, 'utf8') > TRANSPORT_FILE_MAX_BYTES ? transportPlaceholder(line) : line;
     await this.applyBounds(target, Buffer.byteLength(data, 'utf8'));
     await this.store.append(target, data);
+    this.reported.clear();
+    this.deps.evidenceHealth?.reportSuccess('transport');
   }
 
   /**
@@ -255,6 +263,8 @@ export class TransportRouter {
         await this.applyEnd(root, runId, status, this.mode(), counters);
         await this.enforceTotal(root, activeRunIds, counters);
         await this.measureNow(root);
+        this.reported.clear();
+        this.deps.evidenceHealth?.reportSuccess('transport');
       } catch (error) {
         this.report('retention', error);
       } finally {
@@ -401,10 +411,12 @@ export class TransportRouter {
     const done = this.enqueue(async () => {
       const root = this.deps.workspaceRoot();
       if (root === null || this.closed) return;
+      let hadFailure = false;
       const step = async (operation: () => Promise<void>): Promise<void> => {
         try {
           await operation();
         } catch (error) {
+          hadFailure = true;
           this.report('retention', error);
         }
       };
@@ -414,6 +426,10 @@ export class TransportRouter {
       await step(() => this.enforceTotal(root, activeRunIds, counters));
       await step(() => this.store.narrowLegacy(root));
       await step(() => this.measureNow(root));
+      if (!hadFailure) {
+        this.reported.clear();
+        this.deps.evidenceHealth?.reportSuccess('transport');
+      }
     });
     return done.then(() => ({ ...counters }));
   }

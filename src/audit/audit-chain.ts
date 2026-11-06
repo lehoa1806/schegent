@@ -98,53 +98,78 @@ export interface AuditCutRecord {
   readonly legacyTail?: string;
 }
 
+export interface AuditCutAccumulator {
+  removedFrom: string | null;
+  removedTo: string | null;
+  removedCount: number;
+  removedChained: number;
+  removedLegacy: number;
+  legacyTail: string | null;
+}
+
+export function createAuditCutAccumulator(): AuditCutAccumulator {
+  return {
+    removedFrom: null,
+    removedTo: null,
+    removedCount: 0,
+    removedChained: 0,
+    removedLegacy: 0,
+    legacyTail: null
+  };
+}
+
+export function appendCutLine(acc: AuditCutAccumulator, line: string): void {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return;
+  // An unparseable line in a file being deleted is not a boundary and not a chained
+  // entry. It is counted, because the count describes what left.
+  acc.removedCount += 1;
+  const prev = prevDigestOf(trimmed);
+  if (prev === undefined) return;
+  if (prev === null) {
+    acc.removedLegacy += 1;
+    acc.legacyTail = digestOf(trimmed);
+    return;
+  }
+  acc.removedChained += 1;
+  if (acc.removedFrom === null) acc.removedFrom = prev;
+  acc.removedTo = digestOf(trimmed);
+}
+
 /**
- * The cut record a prune should write for a removed range, or `null` when none is owed.
- *
- * `null` HAS ONE MEANING NOW: nothing was removed that the chain needs to account for. An empty
- * removal owes nothing, and neither does one of only unparseable lines (counted nowhere a link or a
- * position could use). A removal of only PRE-CHAIN entries used to owe nothing too, on the argument
- * that writing a cut for them would move `expected` off genesis and make form A look broken. The
- * verifier no longer moves `expected` for such a cut (contract V2): it writes a LEGACY-ONLY cut,
- * `genesis`/`genesis`, which an older verifier reads as a no-op and the current one reads as "these
- * legacy rows were pruned, and the last of them was `legacyTail`". Without it, a prune that removed
- * the last legacy row left a form-B history linking to a digest no retained byte produces.
- *
- * The boundaries come from the removed lines themselves: `removedFrom` is what the chain was at
- * before the first removed chained entry (that entry's own `prevDigest`), and `removedTo` is the
- * digest of the last removed chained entry's bytes, which is exactly what the first surviving
- * entry links to. Derived, never assumed — a cut record whose boundaries were computed from
- * anything other than the bytes being deleted would verify a gap it had not actually measured.
- *
- * @param removedLines every line being removed, oldest first, across all files in one prune.
+ * Scan a multi-line archive body in oldest-first line order without spreading
+ * or allocating a full-file line array on the call stack (FR-R5-F13, FR-002).
  */
-export function cutRecordFor(
-  removedLines: readonly string[],
+export function appendCutText(acc: AuditCutAccumulator, text: string): void {
+  let start = 0;
+  for (;;) {
+    const nl = text.indexOf('\n', start);
+    const end = nl === -1 ? text.length : nl;
+    appendCutLine(acc, text.slice(start, end));
+    if (nl === -1) break;
+    start = nl + 1;
+  }
+}
+
+export function mergeAuditCutAccumulator(
+  target: AuditCutAccumulator,
+  next: Readonly<AuditCutAccumulator>
+): void {
+  target.removedCount += next.removedCount;
+  target.removedChained += next.removedChained;
+  target.removedLegacy += next.removedLegacy;
+  if (next.legacyTail !== null) target.legacyTail = next.legacyTail;
+  if (target.removedFrom === null && next.removedFrom !== null) {
+    target.removedFrom = next.removedFrom;
+  }
+  if (next.removedTo !== null) target.removedTo = next.removedTo;
+}
+
+export function finalizeAuditCutRecord(
+  acc: Readonly<AuditCutAccumulator>,
   cutAtMs: number
 ): AuditCutRecord | null {
-  let removedFrom: string | null = null;
-  let removedTo: string | null = null;
-  let removedCount = 0;
-  let removedChained = 0;
-  let removedLegacy = 0;
-  let legacyTail: string | null = null;
-  for (const line of removedLines) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) continue;
-    // An unparseable line in a file being deleted is not a boundary and not a chained
-    // entry. It is counted, because the count describes what left.
-    removedCount += 1;
-    const prev = prevDigestOf(trimmed);
-    if (prev === undefined) continue;
-    if (prev === null) {
-      removedLegacy += 1;
-      legacyTail = digestOf(trimmed);
-      continue;
-    }
-    removedChained += 1;
-    if (removedFrom === null) removedFrom = prev;
-    removedTo = digestOf(trimmed);
-  }
+  const { removedFrom, removedTo, removedCount, removedChained, removedLegacy, legacyTail } = acc;
   if (removedFrom === null || removedTo === null) {
     if (removedLegacy === 0 || legacyTail === null) return null;
     return {
@@ -170,6 +195,37 @@ export function cutRecordFor(
     removedLegacy,
     ...(removedLegacy > 0 && legacyTail !== null ? { legacyTail } : {})
   };
+}
+
+/**
+ * The cut record a prune should write for a removed range, or `null` when none is owed.
+ *
+ * `null` HAS ONE MEANING NOW: nothing was removed that the chain needs to account for. An empty
+ * removal owes nothing, and neither does one of only unparseable lines (counted nowhere a link or a
+ * position could use). A removal of only PRE-CHAIN entries used to owe nothing too, on the argument
+ * that writing a cut for them would move `expected` off genesis and make form A look broken. The
+ * verifier no longer moves `expected` for such a cut (contract V2): it writes a LEGACY-ONLY cut,
+ * `genesis`/`genesis`, which an older verifier reads as a no-op and the current one reads as "these
+ * legacy rows were pruned, and the last of them was `legacyTail`". Without it, a prune that removed
+ * the last legacy row left a form-B history linking to a digest no retained byte produces.
+ *
+ * The boundaries come from the removed lines themselves: `removedFrom` is what the chain was at
+ * before the first removed chained entry (that entry's own `prevDigest`), and `removedTo` is the
+ * digest of the last removed chained entry's bytes, which is exactly what the first surviving
+ * entry links to. Derived, never assumed — a cut record whose boundaries were computed from
+ * anything other than the bytes being deleted would verify a gap it had not actually measured.
+ *
+ * @param removedLines every line being removed, oldest first, across all files in one prune.
+ */
+export function cutRecordFor(
+  removedLines: readonly string[],
+  cutAtMs: number
+): AuditCutRecord | null {
+  const acc = createAuditCutAccumulator();
+  for (const line of removedLines) {
+    appendCutLine(acc, line);
+  }
+  return finalizeAuditCutRecord(acc, cutAtMs);
 }
 
 /**

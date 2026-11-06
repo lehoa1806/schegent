@@ -16,6 +16,7 @@ import { processTreeSpawnOptions, escalateAndReportTree, trackGroupAtExit } from
 import { nextInvocationId } from './invocation-identity';
 import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
 import { TeardownLedger } from './teardown-ledger';
+import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 
 export type ProcessSpawnFn = (
   command: string,
@@ -86,7 +87,8 @@ export class ProcessLifecycleRunner {
     private readonly spawnFn: ProcessSpawnFn = spawn as unknown as ProcessSpawnFn,
     private readonly monitorHook: MonitorSidecarHook | null,
     private readonly logger: SanitizedLogger,
-    private readonly label: RunnerLabel
+    private readonly label: RunnerLabel,
+    private readonly evidenceHealth?: EvidenceHealthReporter
   ) {}
 
   public get hasActiveProcess(): boolean { return this.active.size > 0; }
@@ -120,7 +122,10 @@ export class ProcessLifecycleRunner {
     // CLI's stdout is teed into it, unaltered, through the writer that adapter
     // uses. Built per invocation from the request, never held on this runner.
     const tee = request.verboseDiagnostics
-      ? { target: request.verboseDiagnostics, writer: new VerboseDiagnosticWriter(this.logger) }
+      ? {
+          target: request.verboseDiagnostics,
+          writer: new VerboseDiagnosticWriter(this.logger, this.evidenceHealth)
+        }
       : null;
     if (tee) await tee.writer.prepare(tee.target);
     // After the last await, so a `close()` that lands while `prepare()` runs

@@ -57,7 +57,7 @@ export interface AuditCheckpointPort {
   /** The key this port's file is stored under, which every record it writes carries as `workspaceKey`. */
   readonly key: string;
   read(): Promise<CheckpointRead>;
-  write(next: AuditHeadCheckpointV1): Promise<void>;
+  write(next: AuditHeadCheckpointV1, options?: { readonly force?: boolean }): Promise<void>;
 }
 
 /** A write was refused because the stored file could not be read, and so must not be overwritten (R15). */

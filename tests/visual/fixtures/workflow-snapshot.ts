@@ -851,6 +851,27 @@ export const workflowSnapshot = {
       "failureCount": 0,
       "lastFailureAt": null,
       "cause": null
+    },
+    "auditCheckpoint": {
+      "status": "healthy",
+      "continuationPolicy": "continue-degraded",
+      "failureCount": 0,
+      "lastFailureAt": null,
+      "cause": null
+    },
+    "transport": {
+      "status": "healthy",
+      "continuationPolicy": "continue-degraded",
+      "failureCount": 0,
+      "lastFailureAt": null,
+      "cause": null
+    },
+    "verboseDiagnostics": {
+      "status": "healthy",
+      "continuationPolicy": "continue-degraded",
+      "failureCount": 0,
+      "lastFailureAt": null,
+      "cause": null
     }
   },
   "confirmationsEnabled": true,

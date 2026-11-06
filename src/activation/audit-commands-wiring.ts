@@ -53,6 +53,7 @@ export function registerAuditChainCommands(
         logger: deps.logger,
         onBreak: (detail) => auditWriter.noteChainBreak(detail),
         onLoss: (code, detail) => auditWriter.noteHistoryLoss(code, detail),
+        onVerified: () => auditWriter.noteChainVerified(),
         readCheckpoint: () => auditWriter.readCheckpoint()
       })
     ),
