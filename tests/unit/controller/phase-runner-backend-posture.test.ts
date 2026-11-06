@@ -512,7 +512,8 @@ describe('PhaseRunner — a throw out of invoke() (feature 212)', () => {
     // catch retracts it. Without that retraction an operator censusing
     // `cause == pre_spawn_refusal` never sees this population at all.
     // A refusal the enforcement plan actually produces: `agy` expresses only
-    // `process-spawn`, so a phase withholding `network` is refused
+    // `process-spawn` and `outside-workspace-write`, so a phase withholding
+    // `network` is refused
     // (`capability-enforcement-plan.ts` SURFACES.agy).
     const { written } = await drive(new CapabilityNotEnforceableError('agy', ['network']));
     const payload = endOf(written);

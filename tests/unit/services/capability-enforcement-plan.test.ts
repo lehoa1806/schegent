@@ -291,8 +291,9 @@ describe('FR-R3-086 — an applied bound is observable, not just an enforced one
   });
 
   it('records the refusal, and not a grant, when the backend cannot enforce', async () => {
-    // `agy` expresses only `process-spawn`, so withholding anything else is
-    // refused before the phase starts. The two events are mutually exclusive.
+    // `agy` expresses only `process-spawn` and `outside-workspace-write`, so
+    // withholding anything else is refused before the phase starts. The two
+    // events are mutually exclusive.
     const { recorded, threw } = await runWith(['process-spawn'], 'agy');
     expect(threw).toBe(true);
     expect(recorded.map((entry) => entry.eventType)).toEqual(['capability-refused']);
@@ -484,7 +485,7 @@ describe('FR-R4-F06 — the audit rows carry the enforcement class, the residual
     expect(seen.map((entry) => entry.step), 'the append precedes the throw').toEqual(['append', 'threw']);
     expect(seen[0]?.eventType).toBe('capability-refused');
     expect(seen[0]?.outcome).toBe('failure');
-    expect(seen[0]?.payload?.unenforceable).toEqual(['workspace-write', 'outside-workspace-write', 'network']);
+    expect(seen[0]?.payload?.unenforceable).toEqual(['workspace-write', 'network']);
     expect(seen[0]?.payload?.unqualified).toEqual([]);
     expect(Object.keys(seen[0]?.payload ?? {}).sort()).toEqual([
       'kind',
