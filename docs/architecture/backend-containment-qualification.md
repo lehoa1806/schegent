@@ -64,7 +64,7 @@ mechanism for every backend, failing in **both** directions.
 | `codex` | darwin | `codex exec --sandbox workspace-write`, enforced by macOS Seatbelt | `codex-sandbox-workspace-write` | **Verified**: `codex exec --help` declares `-s/--sandbox` with `read-only \| workspace-write \| danger-full-access`; `codex sandbox --help` states its arguments run *"under seatbelt"*; `/usr/bin/sandbox-exec` is present. `backend-containment-policy.test.ts` reads the adapter's argv and confirms Schegent passes `workspace-write`. |
 | `codex` | linux | Expected to be the same mode under Landlock/seccomp rather than Seatbelt | `codex-sandbox-workspace-write` | **Unverified.** Probe: run `codex exec --sandbox workspace-write` on a Linux host and attempt a write outside the workspace; the mode is qualified when the write is refused by the kernel. |
 | `codex` | win32 | Unknown | `codex-sandbox-workspace-write` | **Unverified.** Probe: as above on Windows. Codex's own help names Seatbelt, which is macOS-only, so the Windows mechanism is not merely unverified but **unnamed** — the strongest statement available today is that Schegent passes the flag and does not know what enforces it. |
-| `claude` | all | **None.** | `none` | **Verified, and it is a verified absence.** `claude --help` at 2.1.247 offers `--allowedTools`, `--disallowedTools`, `--permission-mode` and `--dangerously-skip-permissions`. Every one is a decision the model's own harness makes about its own tools. The only occurrence of the word is advisory — *"Recommended only for sandboxes with no internet access"* — the CLI asking to be **placed** in a sandbox it does not provide. |
+| `claude` | all | **None.** | `none` | **Verified that Schegent requests none; Claude's settings-based shell sandbox is unverified and not adopted.** `src/runner/claude-cli.ts` passes no sandbox flag or settings override, and `claude --help` offers `--allowedTools`, `--disallowedTools`, `--permission-mode`, `--settings` and `--dangerously-skip-permissions`. Claude Code's settings-based `sandbox` configuration confines Bash/shell subcommands rather than built-in file tools, MCP servers, hooks or all network traffic, and is not qualified under Schegent's print/stream/resume invocation (see §4.1). |
 | `agy` | all | **None requested by default.** `--sandbox` exists, and a Phase that withholds `process-spawn` gets it (§7), unqualified and not counted here; see §4. | `none` | **Verified that the flag exists; its enforcement is unverified.** See §4, which is the substantive part of this record. |
 
 ## 4. Agy's `--sandbox`: available, not requested by default, and why
@@ -132,6 +132,23 @@ Until then `agy` maps to `none` in the one table, is refused by default, and req
 per-backend grant. **A reader who disagrees with this decision has, above, everything needed to
 overturn it.**
 
+### 4.1 Claude's settings-based shell sandbox: shell-only scope and qualification criteria (`FR-R5-F16`)
+
+Earlier revisions of §3 described `claude` as having a "verified absence" of any sandbox mechanism based on `claude --help` alone. That phrasing overstated what `--help` proves: what is verified from `src/runner/claude-cli.ts` is the narrower fact that **Schegent currently requests none** (`mechanism: 'none'`).
+
+Claude Code exposes a settings-based shell sandbox (`sandbox` in settings files or passed via `--settings`). It is **not** adopted as whole-process `os-enforced` containment, and `claude` remains `mechanism: 'none'` under default-deny grant enforcement, for three reasons:
+
+1. **Shell-only versus whole-process authority.** No shell-only sandbox may be labelled as confining built-in file tools (`Read`, `Edit`, `Write`, `NotebookEdit`), MCP servers, hooks, or all network traffic. Even when Bash subcommands run inside a shell sandbox, `--dangerously-skip-permissions` leaves built-in file tools, MCP servers, and hooks executing with the extension host's OS user authority.
+2. **Adverse project/user configuration and list merging.** Settings-based configuration merges across user, project (`.claude/settings.json`), and local scopes. Excluded-command lists (`sandbox.excludedCommands`), network allowlists, or `allowUnsandboxedCommands` (`dangerouslyDisableSandbox`) in project or user settings can widen or bypass the shell boundary unless precedence and list-merging behavior are closed.
+3. **Unverified print/stream/resume and fail-closed behavior.** Qualifying Claude's settings-based shell sandbox for any narrowed capability claim requires testing under the real `--print --output-format stream-json --verbose` and `--resume` invocation paths and adverse project/user configuration, checking:
+   - missing sandbox dependencies (verifying the CLI fails closed rather than running unsandboxed);
+   - attempted unsandboxed retry (`allowUnsandboxedCommands` / `dangerouslyDisableSandbox`);
+   - excluded-command and list merging across user, project, and `--settings` scopes;
+   - filesystem writes using disposable paths (workspace vs `/tmp` and a disposable path outside the workspace);
+   - network egress against a controlled endpoint.
+
+Until those checks are qualified and represented with accurate shell-only vs whole-process semantics, unverified integration leaves the current default-deny grant posture (`mechanism: 'none'`) intact.
+
 ## 5. What Schegent does with this
 
 - The classification (`os-enforced` / `none`) drives the refusal at `createBackendRunner`. Unchanged
@@ -140,6 +157,11 @@ overturn it.**
   (`containmentMechanism`), so an operator reading evidence after the fact can see which boundary
   applied — including `none`, which is a value and not an absent field.
 - The per-backend grant means accepting `agy`'s absence of a boundary does not accept `claude`'s.
+
+### 5.1 Host confirmation authority and per-workspace reminder disposition (`FR-R5-F16`)
+
+- **Host confirmation authority (`NS-03`, `S-02`).** Both the run-refusal consent requester (`src/activation/uncontained-consent.ts`) and the Settings grant handler (`CMD_SET_UNCONTAINED_BACKEND_GRANT` via `setUncontainedGrant` in `src/services/uncontained-grant-writer.ts` and `src/activation/sidebar-router-wiring.ts`) route `false -> true` transitions through a blocking host modal (`vscode.window.showWarningMessage(..., { modal: true })`) before writing `schegent.backend.uncontainedBackends` at `ConfigurationTarget.Global`. A direct or forged webview IPC message cannot persist a new grant without host modal approval; revoking a grant (`true -> false`) remains immediate and unconfirmed.
+- **Disposition on per-workspace acknowledgement versus visible authority reminder.** Because `schegent.backend.uncontainedBackends` is `application`-scoped, a repository cannot grant uncontained execution to itself via `.vscode/settings.json` or `configurationDefaults`. Requiring repeated blocking modal prompts per workspace or per queued run is not adopted: Schegent's primary operating mode is autonomous multi-phase queue execution, where repeated prompts train reflexive click-through rather than stronger review. Instead, authority remains visible without modal fatigue through two mechanisms that already ship: every Run emits `backend-posture-admitted` to the tamper-evident audit log, and the launch surface projects the visible `uncontainedGrantNotice` authority reminder whenever an uncontained backend is active under an installation grant.
 
 ## 6. What this record does not claim
 
