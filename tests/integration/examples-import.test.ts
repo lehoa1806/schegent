@@ -137,4 +137,37 @@ describe('FR-R3-132 / FR-R5-F07 — the shipped examples import through the real
       'the quickstart must name the workflow example too, now that one exists'
     ).toContain(WORKFLOW);
   });
+
+  it('tells the reader the examples track this checkout, what an older build does with them, and the remedy (FR-007, SC-004)', () => {
+    // BUG-001. The examples in a checkout can be newer than the build a reader has installed,
+    // and an older build can report a valid example as broken. The README is where that reader
+    // looks, so the statement is held there, under the heading that explains what these files
+    // are and are not. It states three things and chooses no versioning policy: that is the
+    // maintainers' decision, not this file's.
+    //
+    // The README is hard-wrapped, so whitespace is collapsed before matching. A phrase that
+    // crosses a line break would otherwise never match, and the miss would read as the
+    // statement being absent.
+    const heading = '## This is documentation, not shipped state';
+    const readme = read('README.md');
+    const start = readme.indexOf(heading);
+    expect(start, `README.md has no "${heading}" section`).toBeGreaterThanOrEqual(0);
+    const afterHeading = readme.slice(start + heading.length);
+    const nextHeading = afterHeading.search(/^## /m);
+    const section = (nextHeading === -1 ? afterHeading : afterHeading.slice(0, nextHeading))
+      .replace(/\s+/g, ' ')
+      .toLowerCase();
+
+    expect(section, 'the examples track this checkout').toContain('track this checkout');
+    expect(section, 'a build older than the checkout can refuse them').toMatch(
+      /build older than (this|the) checkout can refuse/
+    );
+    expect(section, 'or report field defects on a file that is valid').toContain(
+      'field defects on a valid file'
+    );
+    expect(section, 'the remedy is the matching build').toContain(
+      'install the build that matches this checkout'
+    );
+    expect(section, 'and a reload before importing').toContain('reload the window before importing');
+  });
 });
