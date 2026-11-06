@@ -148,7 +148,9 @@ const GOLDEN: readonly Row[] = [
 
   // ---- agy: 4 argv cells (nothing withheld, `process-spawn`, `outside-workspace-write`, or those two) and
   //      12 refusals, each naming everything it cannot express. Bare `--sandbox` comes before the valued
-  //      `--mode`. The shell refusal is a residual only while `process-spawn` is granted.
+  //      `--mode`. The shell refusal is a residual only while `process-spawn` is granted. Withholding
+  //      `process-spawn` adds `--mode accept-edits` too (follow-up probes i and j: `--sandbox` alone writes
+  //      nothing), so the mode's outside-write refusal is a residual only while that write is granted.
   {
     kind: 'agy',
     granted: [W, O, P, N],
@@ -161,9 +163,9 @@ const GOLDEN: readonly Row[] = [
     kind: 'agy',
     granted: [W, O, N],
     outcome: 'argv',
-    args: ['--sandbox'],
-    enforcement: 'cli-sandbox',
-    residuals: ['sandbox-scope-unqualified']
+    args: ['--sandbox', AGY_MODE, 'accept-edits'],
+    enforcement: 'tool-restriction',
+    residuals: ['mode-refuses-outside-write', 'sandbox-scope-unqualified']
   },
   {
     kind: 'agy',
@@ -316,6 +318,13 @@ describe('a flag nobody has seen is refused, and named as unqualified (T10, K3)'
     const plan = planCapabilityEnforcement('agy', declaredCapabilitySet([W, P, N]), without('agy', AGY_MODE));
     expect(plan.outcome === 'refused' && plan.unenforceable).toEqual([O]);
     expect(plan.outcome === 'refused' && plan.unqualified).toEqual([O]);
+  });
+
+  it('refuses the Agy process-spawn cell when --mode was not confirmed, though --sandbox was', () => {
+    // The declaration names two flags; it is never applied with only some of them.
+    const plan = planCapabilityEnforcement('agy', declaredCapabilitySet([W, O, N]), without('agy', AGY_MODE));
+    expect(plan.outcome === 'refused' && plan.unenforceable).toEqual([P]);
+    expect(plan.outcome === 'refused' && plan.unqualified).toEqual([P]);
   });
 
   it('refuses a Claude cell whose --disallowedTools was not confirmed, listing it as both', () => {
