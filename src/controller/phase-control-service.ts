@@ -114,6 +114,7 @@ interface PhaseControlServiceDeps {
   readonly armIsContinue: (queueId: string) => void;
   readonly cancelActive: (queueId: string) => void;
   readonly resumeExisting: (queueId: string, customPrompt?: string) => Promise<boolean>;
+  readonly onRunResumed?: (runId: string) => void;
   readonly auditor: PhaseControlAuditor;
 }
 
@@ -224,6 +225,7 @@ export class PhaseControlService {
     });
     if (!outcome.ok) return outcome;
     const updated = outcome.run;
+    this.deps.onRunResumed?.(updated.id);
     await this.deps.auditor.appendPhaseControl('phase-resumed', updated, {
       runId: updated.id,
       phaseId: updated.currentPhase,
@@ -276,6 +278,7 @@ export class PhaseControlService {
     });
     if (!outcome.ok) return outcome;
     const updated = outcome.run;
+    this.deps.onRunResumed?.(updated.id);
     if (hadPendingRetry || run.delayedRetryCount > 0) {
       // Feature 093 (T035) — the retry-cap pause is recorded on the queue that
       // exhausted it, so the read is queue-addressed for the same reason the
