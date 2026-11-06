@@ -52,10 +52,14 @@ type DashboardBridgeSink = {
  * Feature 020 — phase-log tail wiring (T049).
  *
  * The PhaseLogTailRegistry owns the cap-of-1 invariant per host and the
- * watcher mechanism (fs.watch vs polling) chosen at start time. Three
- * dispose paths converge here:
- *   1. webview-stop      — explicit CMD_STOP_PHASE_LOG_TAIL (handled in router)
- *   2. webview-dispose   — extension teardown via the returned `dispose()`
+ * watcher mechanism (fs.watch vs polling) chosen at start time. A tail ends
+ * with one of three reasons, by five paths:
+ *   1. webview-stop      — explicit CMD_STOP_PHASE_LOG_TAIL (handled in router),
+ *                          or the next start replacing it (cap of 1, registry)
+ *   2. webview-dispose   — the dashboard panel closing, through the
+ *                          `setOnPanelDispose` hook `bindDashboardBridge` sets
+ *                          (`releaseConsumer('dashboard')`), or extension
+ *                          teardown through the returned `dispose()`
  *   3. phase-complete    — the in-flight task transitioned out
  *
  * Path (3) is derived from a projector subscription that keeps one cursor

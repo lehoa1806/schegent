@@ -31,12 +31,12 @@
   };
 
   const CONTINUE_TEXT =
-    'At the retry cap this Phase advances with its condition unverified; the retry cap still applies.';
+    'At the iteration cap this Phase advances with its condition unverified; the delayed-retry cap still applies.';
   const CONTINUE_DEGRADED_TEXT =
-    'At the retry cap this Phase advances and the Run is marked degraded; the retry cap still applies.';
+    'At the iteration cap this Phase advances and the Run is marked degraded; the delayed-retry cap still applies.';
   // FR-R4-F17 (contract L2) — the unchanged-metrics bound's two reasons for not applying. Fixed text, so
   // the only interpolated value in that row is the integer.
-  const INERT_CAP_OUTCOME_TEXT = 'This Phase advances at the retry cap, so the early stop does not apply.';
+  const INERT_CAP_OUTCOME_TEXT = 'This Phase advances at the iteration cap, so the early stop does not apply.';
   const INERT_NO_CONDITION_TEXT = 'This Phase has no retry condition, so there is nothing to compare.';
   const NO_SPEND_TEXT = "No spend bound applies to this Phase's backend.";
   const NOT_TRUSTWORTHY_TEXT =
@@ -86,13 +86,13 @@
       <span class="origin" data-testid="run-limits-wall-clock-origin-{queueId}">{ORIGIN_TEXT[effectiveLimits.maxDurationSeconds.origin]}</span>
     </dd>
 
-    <dt>Retry cap</dt>
+    <dt>Delayed-retry cap</dt>
     <dd data-testid="run-limits-retry-cap-{queueId}">
       {effectiveLimits.retryCap.value}
       <span class="origin" data-testid="run-limits-retry-cap-origin-{queueId}">{ORIGIN_TEXT[effectiveLimits.retryCap.origin]}</span>
     </dd>
 
-    <dt>At the retry cap</dt>
+    <dt>At the iteration cap</dt>
     <dd data-testid="run-limits-retry-outcome-{queueId}">
       {OUTCOME_TEXT[effectiveLimits.onRetryCap.value]}
       <span class="origin" data-testid="run-limits-retry-outcome-origin-{queueId}">{ORIGIN_TEXT[effectiveLimits.onRetryCap.origin]}</span>

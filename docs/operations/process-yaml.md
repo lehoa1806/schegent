@@ -290,14 +290,14 @@ To bring a catalog that already holds these Phases to this version, see
 
 ## Bring an existing catalog to a revised example
 
-A catalog that already holds an example's ids does not pick up a later revision of that
+A catalog that already holds an example's ids does not pick up a later version of that
 example on its own. This section walks through the new-feature example's version 3, which
 revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the Workflow
 `speckit-new-feature`. Each numbered step is one thing you do, or one thing that follows.
 
 1. **An import skips what you already have.** Inspecting the revised example plans every id
    the catalog already holds as **Skip**, at any status, and confirming writes nothing for
-   them. An import cannot deliver a revision, and deleting a row to import it again is not
+   them. An import cannot deliver a changed definition, and deleting a row to import it again is not
    the route: a deactivated row still claims its id.
 2. **Publish each changed definition by hand.** Open it in the catalog editor, replace its
    fields with the revised document's, save a draft (**Save Phase**, for a Phase), then choose
@@ -311,7 +311,7 @@ revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the W
    id, so the Phases carry the behavior. Saving a Phase that declares `retryCondition`, as
    `speckit-implement` does, needs the `retryConditions` capability.
 
-   Version 6 is the first revision that adds a Phase. Inspecting the revised example plans
+   Version 6 is the first version of the example that adds a Phase. Inspecting the revised example plans
    `integrate` as an **Import** row, because its id is new, and confirming writes it as a Draft;
    every other id is still **Skip**. Publish in this order:
 

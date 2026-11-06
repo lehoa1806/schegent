@@ -85,11 +85,11 @@ describe('the numbers and units (US8-2)', () => {
 });
 
 describe('the special cases render the contract\'s sentences (E3 G11; US8-3, US8-4)', () => {
-  it('onRetryCap continue: the unverified-advance sentence, and the retry cap is still shown', () => {
+  it('onRetryCap continue: the unverified-advance sentence, and the delayed-retry cap is still shown', () => {
     const { getByTestId } = mount(limits({ onRetryCap: { value: 'continue', origin: 'workspace' } }));
 
     expect(getByTestId(`run-limits-continue-note-${QUEUE_ID}`).textContent).toBe(
-      'At the retry cap this Phase advances with its condition unverified; the retry cap still applies.'
+      'At the iteration cap this Phase advances with its condition unverified; the delayed-retry cap still applies.'
     );
     expect(getByTestId(`run-limits-retry-cap-${QUEUE_ID}`).textContent).toContain('5');
   });
@@ -168,7 +168,7 @@ describe('the unchanged-metrics stop row (L2, L4.2)', () => {
 
     expect(valueText(view)).toContain('2, not applied');
     expect(view.getByTestId(`run-limits-unchanged-note-${QUEUE_ID}`).textContent).toBe(
-      'This Phase advances at the retry cap, so the early stop does not apply.'
+      'This Phase advances at the iteration cap, so the early stop does not apply.'
     );
   });
 

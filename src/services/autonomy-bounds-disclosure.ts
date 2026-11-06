@@ -19,6 +19,7 @@
 // column states which figure applies where, and the value comes from the same
 // vocabulary table the usage parser reads.
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
+import { MAX_UNCHANGED_COMPARISONS } from '../contracts/unchanged-comparison-bound';
 import { APPROACH_THRESHOLD_FRACTION } from '../contracts/monitor-events';
 import { SUPPORTED_BACKENDS } from '../contracts/backend-kinds';
 import {
@@ -71,6 +72,14 @@ export function autonomyBounds(): readonly AutonomyBoundEntry[] {
       bound: `${numberDefault('loop.maxIterations')} iterations`,
       onCrossing: 'force-advance or fail, per the phase',
       source: '`schegent.loop.maxIterations`'
+    },
+    {
+      // FR-R5-F22 item 4: the opt-in early stop for a loop whose judged figures never move.
+      risk: 'Unchanged retries repeating the same judged metrics',
+      bound: `off (${schemaDefault('schegent.loop.maxUnchangedComparisons')}); opt-in, 1 to ${MAX_UNCHANGED_COMPARISONS}`,
+      onCrossing:
+        'the Phase fails before its iteration cap (`judged_metrics_unchanged`); a Phase that advances at its cap is never failed by it',
+      source: '`schegent.loop.maxUnchangedComparisons`'
     },
     {
       risk: 'A failure that repeats',

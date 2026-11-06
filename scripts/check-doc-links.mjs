@@ -12,6 +12,11 @@
 // named in free prose are not checked. The decision, the count it rests on and
 // what would reopen it are in docs/development/section-reference-check.md.
 //
+// Source citations (FR-R5-F22, feature 283): in the registered current documents only,
+// `LIVE_CITATION_DOCUMENTS`, a path cited in an inline code span under `src/`, `scripts/`, `tests/`
+// or `webview-ui/` must name a file or directory that exists. Records and every other file are not
+// read. `checkSourceCitations` says how a span becomes a path and where it is looked for.
+//
 // Why this exists: `docs:check` was a version-and-required-string gate, so a doc
 // link could rot through `verify:all` unobserved. Eleven had, by 2026-08-18.
 //
@@ -785,6 +790,123 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
 }
 
 /**
+ * The current documents whose source citations are checked, relative to the `repo/` root: three
+ * files, and every Markdown file under five trees, `SKIP_DIRS` applied. A file here that is missing
+ * fails the check, so a rename cannot drop a document from it unseen. Add a tree only when its
+ * citations all resolve; the feature 283 record counts the candidates.
+ */
+export const LIVE_CITATION_DOCUMENTS = Object.freeze({
+  files: Object.freeze(['ARCHITECTURE.md', 'README.md', 'CONTRIBUTING.md']),
+  trees: Object.freeze(['docs/explanation', 'docs/reference', 'docs/how-to', 'docs/courses', 'docs/tutorials'])
+});
+
+/** Paths that a run writes, so a document may name one that no checkout holds. Counted, never reported. */
+export const GENERATED_OUTPUT_PREFIXES = Object.freeze(['tests/soak/.artifacts/']);
+
+const CITATION_ROOTS = ['src/', 'scripts/', 'tests/', 'webview-ui/'];
+// A glob, a placeholder, a command with arguments: a span holding any of these names no one path.
+const NOT_ONE_PATH = /[\s*?[\]{}<>]/;
+const CODE_SPAN = /`([^`]+)`/g;
+// Everything from the first `:` or `#` on is a position or a symbol: `:12`, `:12:4`, `:439-451`,
+// `:272,282`, `:wireStage2`, `#startRun`. No tracked path holds either character.
+const SUFFIX_START = /[:#]/;
+const TRAILING_PUNCTUATION = /[.,;]+$/;
+const REGISTERED_MISSING = 'registered document missing';
+
+/** A span's path part: what precedes its first `:` or `#`, trailing `.`, `,` or `;` removed. */
+function citedPath(span) {
+  return span.split(SUFFIX_START, 1)[0].replace(TRAILING_PUNCTUATION, '');
+}
+
+/**
+ * The source citations in one Markdown body, with their line numbers: each inline code span outside
+ * a fenced block that starts with a citation root and holds no whitespace and none of
+ * `* ? [ ] { } < >`. Lines are read one at a time, as `linksIn` reads them.
+ */
+export function sourceCitationsIn(body) {
+  const found = [];
+  let inFence = false;
+  body.split(/\r?\n/).forEach((line, index) => {
+    if (FENCE.test(line)) {
+      inFence = !inFence;
+      return;
+    }
+    if (inFence) return;
+    for (const match of line.matchAll(CODE_SPAN)) {
+      const span = match[1];
+      if (!CITATION_ROOTS.some((root) => span.startsWith(root)) || NOT_ONE_PATH.test(span)) continue;
+      found.push({ line: index + 1, span, path: citedPath(span) });
+    }
+  });
+  return found;
+}
+
+function isFile(path) {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve every source citation in the registered documents under `repoRoot`. A citation resolves
+ * when an entry exists at its path joined to the citing document's directory, to `repoRoot`, or,
+ * when `wsRoot` holds the planning envelope, to `wsRoot`. Nothing is read but the registered
+ * documents: existence is all a citation is tested for. Returns the number of documents read, the
+ * number of citations checked, those under a generated-output prefix, those under `scripts/` left
+ * unverifiable because the envelope, which has a `scripts/` of its own, is absent, and each failure,
+ * its file relative to `repoRoot`. `registry` is for a measurement of other trees; `docs:check`
+ * passes none.
+ */
+export function checkSourceCitations({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT, registry = LIVE_CITATION_DOCUMENTS } = {}) {
+  const hasEnvelope = envelopePresent(wsRoot);
+  const failures = [];
+  const files = [];
+  for (const name of registry.files) {
+    if (isFile(join(repoRoot, name))) files.push(join(repoRoot, name));
+    else failures.push({ file: name, line: 0, path: REGISTERED_MISSING });
+  }
+  for (const tree of registry.trees) {
+    if (isDir(join(repoRoot, tree))) collectMarkdown(join(repoRoot, tree), files);
+  }
+  const roots = hasEnvelope ? [repoRoot, wsRoot] : [repoRoot];
+  let documents = 0;
+  let checked = 0;
+  let unverifiable = 0;
+  let generated = 0;
+  for (const file of files) {
+    let body;
+    try {
+      body = readFileSync(file, 'utf8');
+    } catch (error) {
+      // Removed since it was listed; any other failure is the check's.
+      if (error.code !== 'ENOENT') throw error;
+      continue;
+    }
+    if (isRecord(file, body, repoRoot, wsRoot)) continue;
+    documents += 1;
+    for (const citation of sourceCitationsIn(body)) {
+      if (GENERATED_OUTPUT_PREFIXES.some((prefix) => citation.path.startsWith(prefix))) {
+        generated += 1;
+        continue;
+      }
+      if ([dirname(file), ...roots].some((root) => existsSync(resolve(root, citation.path)))) {
+        checked += 1;
+        continue;
+      }
+      if (!hasEnvelope && citation.path.startsWith('scripts/')) {
+        unverifiable += 1;
+        continue;
+      }
+      checked += 1;
+      failures.push({ file: relative(repoRoot, file).split(sep).join('/'), line: citation.line, path: citation.path });
+    }
+  }
+  return { hasEnvelope, documents, checked, unverifiable, generated, failures };
+}
+
+/**
  * Text from a document with its control, format and separator characters shown as `?`: escape
  * sequences, bidirectional overrides and zero-width characters never reach the terminal.
  */
@@ -841,8 +963,18 @@ function main() {
         `is in docs/development/section-reference-check.md.`
     );
   }
+  const citations = checkSourceCitations();
+  if (citations.failures.length) {
+    console.error(`Unresolved source citations in live documents (${citations.failures.length}):`);
+    for (const failure of citations.failures) console.error(printable(`  ${failure.file}:${failure.line} -> ${failure.path}`));
+    console.error(
+      `\nRepoint the citation at the file that holds the code today, or, when the code\n` +
+        `is gone, say so in words rather than in a path. Records are not checked; the\n` +
+        `registered documents are listed in scripts/check-doc-links.mjs.`
+    );
+  }
   // Set, not called: `process.exit` does not wait for a pipe to drain, and cut what it had not taken.
-  if (broken.length || sections.failures.length) {
+  if (broken.length || sections.failures.length || citations.failures.length) {
     process.exitCode = 1;
     return;
   }
@@ -856,6 +988,13 @@ function main() {
     sections.unread > 0 ? `, ${sections.unread} ${sections.unread === 1 ? 'passage' : 'passages'} too long or too dense to read` : ''
   ].join('');
   console.log(`Section references checked: ${sections.checked} in live documents${sectionNotes}.`);
+  const citationNotes = [
+    citations.unverifiable > 0
+      ? `, ${citations.unverifiable} scripts/ ${citations.unverifiable === 1 ? 'citation' : 'citations'} skipped with the envelope absent`
+      : '',
+    citations.generated > 0 ? `, ${citations.generated} generated ${citations.generated === 1 ? 'output' : 'outputs'} skipped` : ''
+  ].join('');
+  console.log(`Source citations checked: ${citations.checked} in ${citations.documents} live documents${citationNotes}.`);
 }
 
 // Run as a script; imported (by its gate's test), only the functions above are used.

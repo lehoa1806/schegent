@@ -91,7 +91,7 @@ All adapters spawn with `shell: false`, prompts on stdin, an explicit `cwd`, bou
 <!-- Source: src/runner/process-lifecycle-runner.ts -->
 <!-- Source: src/runner/claude-cli.ts -->
 
-Environment forwarding defaults to `allowlist`, which includes bootstrap variables plus explicitly named entries. `minimal` narrows further; `inherit` restores the ambient extension-host environment, and only the exact string `inherit` selects it: a missing, misspelled or otherwise malformed mode resolves to `allowlist`. The Phase runner, the session compactor, the credit watchdog's status call, the capability probe and the CLI version probe all build their child environment from that one policy.
+Environment forwarding defaults to `allowlist`, which includes bootstrap variables plus explicitly named entries. `minimal` narrows further; `inherit` restores the ambient extension-host environment, and only the exact string `inherit` selects it: a missing, misspelled or otherwise malformed mode resolves to `allowlist`. The Phase runner, the session compactor, the credit watchdog's status call, the capability probe and the CLI version probe all build their child environment from that one policy. The allowlist limits what a child process receives at spawn; it is not an operating-system boundary. On the qualification host a same-user child could still read its parent's environment from the OS, and an uncontained backend still acts with the operator's own user authority ([backends](../operations/backends.md), [threat model](threat-model.md), [the sentinel row](../architecture/backend-containment-qualification.md)).
 
 <!-- Source: package.json -->
 <!-- Source: src/runner/spawn-env.ts -->
@@ -142,7 +142,7 @@ Two workspace-local stores also deserve separate treatment. The CLI transport is
 
 - Leave a workspace untrusted to keep workspace-bound execution inactive. <!-- Source: src/extension.ts -->
 - Choose Codex when its `workspace-write` filesystem bound fits the Phase; Git-writing Phases cannot use it. <!-- Source: src/runner/codex-cli.ts --><!-- Source: src/config/phase-runner-policy.ts -->
-- Keep `schegent.cli.environmentMode` at `allowlist` or select `minimal`; add only required variable names. <!-- Source: package.json -->
+- Keep `schegent.cli.environmentMode` at `allowlist` or select `minimal`; add only required variable names. This narrows what a backend child is given at spawn. It is not an operating-system boundary: a secret kept out of the child's environment is not thereby out of its reach ([the sentinel row](../architecture/backend-containment-qualification.md)). <!-- Source: package.json -->
 - Keep raw transcript mode at `errors-only` or set `off`; leave verbose diagnostics disabled unless actively diagnosing. <!-- Source: package.json -->
 - Set the global queue concurrency cap to `1` to avoid simultaneous Runs in one checkout. <!-- Source: package.json --><!-- Source: src/services/auto-drain-coordinator.ts -->
 - Export metadata-only audit evidence with `schegent.exportAuditLog`; do not share raw sessions. <!-- Source: package.json --><!-- Source: src/commands/export-audit.ts -->

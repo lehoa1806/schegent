@@ -27,6 +27,7 @@ bounded is visible rather than inferred.
 | Runaway | Default bound | On crossing | Derived from |
 |---|---|---|---|
 | A phase that never converges | 10 iterations | force-advance or fail, per the phase | `schegent.loop.maxIterations` |
+| Unchanged retries repeating the same judged metrics | off (0); opt-in, 1 to 49 | the Phase fails before its iteration cap (`judged_metrics_unchanged`); a Phase that advances at its cap is never failed by it | `schegent.loop.maxUnchangedComparisons` |
 | A failure that repeats | 5 delayed retries | pause, resumable by the operator | `DELAYED_RETRY_CAP` in src/contracts/retry-bounds.ts |
 | A child that stops producing output | 1.5 h idle | the invocation is terminated | `schegent.invocation.idleTimeoutSeconds` |
 | A chatty child the idle window never catches | 6.0 h wall clock | an approach is recorded at 80% of it, then the invocation is terminated | `schegent.invocation.maxDurationSeconds` |
@@ -143,13 +144,14 @@ settings (the two spend bounds are read for the workspace as a whole, so a folde
 apply to them). **That is accepted behaviour:** a workspace you have chosen to trust may tighten or
 loosen the bounds a Run is held to, and the page you are reading cannot say which it did.
 
-So each Run shows the limits it actually runs under, in the Run's detail view: the iteration cap, the
-idle and wall-clock timeouts, the retry cap and what happens at it, and the spend bound with its unit.
+So each Run shows the limits it actually runs under, in the Run's detail view: the iteration cap and
+what happens at it, the idle and wall-clock timeouts, the delayed-retry cap, and the spend bound with
+its unit.
 Beside each is where it came from, in one of five fixed phrases: **default**, **user settings**,
 **workspace settings**, **folder settings** or **this Phase**. The value shown is the value execution
 uses: it is worked out by the same functions, from the same settings reads, and from the Phase as it
-was frozen when the Run started, so a Phase edited afterwards does not change it. The retry cap is a
-constant in the product and is always shown as **default**. A Phase that sets no spend bound in its
+was frozen when the Run started, so a Phase edited afterwards does not change it. The delayed-retry cap is
+a constant in the product and is always shown as **default**. A Phase that sets no spend bound in its
 backend's unit shows "No spend bound applies to this Phase's backend." A bound whose spend cannot be
 fully measured is shown with a warning that it is not trustworthy. Nothing a setting says reaches that
 view as text: only numbers and the five phrases do, so a setting cannot put a path, a secret or markup
