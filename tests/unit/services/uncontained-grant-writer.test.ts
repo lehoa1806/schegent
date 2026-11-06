@@ -24,10 +24,13 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   GRANT_WRITE_FAILED_REASON,
   setUncontainedGrant,
+  uncontainedConsentApproveLabel,
+  uncontainedConsentHeadline,
   type UncontainedConsentConfig
 } from '../../../src/services/uncontained-grant-writer';
 import {
   ALLOW_UNCONTAINED_SETTING,
+  judgeBackendContainment,
   mechanismOf,
   resolveUncontainedGrant
 } from '../../../src/services/backend-containment-policy';
@@ -400,5 +403,82 @@ describe('FR-R3-144 T039 — the grant list is not a general setting (C7-1, FR-0
     // would pass for every key in existence and prove nothing. A sibling under
     // the same `backend.` namespace is the cheapest witness.
     expect(Object.keys(KEY_SPECS)).toContain('backend.probeTimeoutSeconds');
+  });
+});
+
+describe('FR-R5-F16 — host confirmation authority on false -> true transitions', () => {
+  it('prompts via confirm with the policy refusal message and writes only when approved', async () => {
+    const c = stubConfig([]);
+    const confirm = vi.fn().mockResolvedValue(uncontainedConsentApproveLabel('claude'));
+    const verdict = judgeBackendContainment('claude', new Set());
+    if (verdict.outcome !== 'refused') throw new Error('expected refusal');
+
+    const outcome = await setUncontainedGrant({ ...c.deps, confirm }, 'claude', true);
+
+    expect(outcome).toEqual({ decision: 'granted' });
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).toHaveBeenCalledWith(
+      uncontainedConsentHeadline('claude'),
+      verdict.message,
+      uncontainedConsentApproveLabel('claude')
+    );
+    expect(c.read()).toEqual(['claude']);
+  });
+
+  it('writes nothing and returns denied on cancel, dismissal, or confirm failure', async () => {
+    for (const confirm of [
+      vi.fn().mockResolvedValue('Cancel'),
+      vi.fn().mockResolvedValue(undefined),
+      vi.fn().mockRejectedValue(new Error('no UI host'))
+    ]) {
+      const c = stubConfig([]);
+      const outcome = await setUncontainedGrant({ ...c.deps, confirm }, 'claude', true);
+      expect(outcome).toEqual({ decision: 'denied' });
+      expect(c.update).not.toHaveBeenCalled();
+      expect(c.read()).toEqual([]);
+    }
+  });
+
+  it('re-reads the setting after confirm resolves so a concurrent grant is preserved', async () => {
+    let stored: unknown = [];
+    const update = vi.fn(async (_key: string, value: unknown) => {
+      stored = value;
+    });
+    const confirm = vi.fn(async () => {
+      stored = ['agy'];
+      return uncontainedConsentApproveLabel('claude');
+    });
+    const logger = { info: vi.fn(), warn: vi.fn() };
+
+    const outcome = await setUncontainedGrant(
+      {
+        config: { get: <T>(): T | undefined => stored as T | undefined, update },
+        logger,
+        confirm
+      },
+      'claude',
+      true
+    );
+
+    expect(outcome).toEqual({ decision: 'granted' });
+    expect(stored).toEqual(['agy', 'claude']);
+  });
+
+  it('does not prompt on revocation, already-granted, or not-applicable', async () => {
+    const confirm = vi.fn();
+    const granted = stubConfig(['claude']);
+
+    await expect(
+      setUncontainedGrant({ ...granted.deps, confirm }, 'claude', true)
+    ).resolves.toEqual({ decision: 'granted' });
+    await expect(
+      setUncontainedGrant({ ...granted.deps, confirm }, 'codex', true)
+    ).resolves.toMatchObject({ decision: 'not-applicable' });
+    await expect(
+      setUncontainedGrant({ ...granted.deps, confirm }, 'claude', false)
+    ).resolves.toEqual({ decision: 'denied' });
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(granted.read()).toEqual([]);
   });
 });

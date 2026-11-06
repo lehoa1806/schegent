@@ -48,6 +48,8 @@ import type {
 } from '../controller/uncontained-consent-gate';
 import {
   setUncontainedGrant,
+  uncontainedConsentApproveLabel,
+  uncontainedConsentHeadline,
   type UncontainedConsentConfig
 } from '../services/uncontained-grant-writer';
 import { errorMessage } from '../lib/errors';
@@ -65,23 +67,8 @@ import { errorMessage } from '../lib/errors';
 // is re-exported under its own name so callers and tests that already import it
 // from here keep working. Aliasing it to a new name here would create the two-names
 // problem the paragraph above is about.
+export { uncontainedConsentApproveLabel, uncontainedConsentHeadline };
 export type { UncontainedConsentConfig };
-
-/** The modal's headline. One line: which backend, and that nothing has started. */
-export function uncontainedConsentHeadline(kind: BackendRunnerKind): string {
-  return `Schegent cannot start the '${kind}' backend without your approval.`;
-}
-
-/**
- * The affirmative action. Anything else — including dismissal — denies.
- *
- * It names the backend and the scope of what it is about to write, because that is
- * what the button actually does: `ConfigurationTarget.Global` is this installation,
- * every workspace in it. A label reading "Allow" would claim less than the grant.
- */
-export function uncontainedConsentApproveLabel(kind: BackendRunnerKind): string {
-  return `Enable '${kind}' for This Installation`;
-}
 
 export function createUncontainedConsentRequester(deps: {
   readonly confirm: ModalConfirm;

@@ -323,6 +323,10 @@ export function createSidebarRouter(deps: SidebarRouterWiringDeps): MessageRoute
             update: (key, value, target) =>
               vscode.workspace.getConfiguration().update(key, value, target)
           },
+          confirm: (message, detail, approveLabel) =>
+            Promise.resolve(
+              vscode.window.showWarningMessage(message, { modal: true, detail }, approveLabel)
+            ),
           logger
         },
         kind,

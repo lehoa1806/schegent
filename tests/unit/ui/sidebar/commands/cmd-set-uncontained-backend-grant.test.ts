@@ -20,8 +20,16 @@ import { describe, it, expect, vi } from 'vitest';
 
 import { handler as setGrantHandler } from '../../../../../src/ui/sidebar/commands/cmd-set-uncontained-backend-grant';
 import { handler as saveGeneralSettingsHandler } from '../../../../../src/ui/sidebar/commands/cmd-save-general-settings';
-import { setUncontainedGrant } from '../../../../../src/services/uncontained-grant-writer';
-import { ALLOW_UNCONTAINED_SETTING } from '../../../../../src/services/backend-containment-policy';
+import {
+  setUncontainedGrant,
+  uncontainedConsentApproveLabel,
+  uncontainedConsentHeadline,
+  type UncontainedGrantConfirm
+} from '../../../../../src/services/uncontained-grant-writer';
+import {
+  ALLOW_UNCONTAINED_SETTING,
+  judgeBackendContainment
+} from '../../../../../src/services/backend-containment-policy';
 import {
   CMD_SET_UNCONTAINED_BACKEND_GRANT,
   CMD_SAVE_GENERAL_SETTINGS
@@ -45,6 +53,7 @@ function buildHarness(
     grantWriteRejects?: unknown;
     generalSettingsRejects?: string;
     omitGrantPort?: boolean;
+    confirm?: UncontainedGrantConfirm;
   } = {}
 ) {
   const store: Record<string, unknown> = {
@@ -80,10 +89,14 @@ function buildHarness(
     }
   );
 
+  const confirm =
+    opts.confirm ??
+    vi.fn(async (_message: string, _detail: string, approveLabel: string) => approveLabel);
+
   const deps: Record<string, unknown> = { logger, writeGeneralSettings };
   if (!opts.omitGrantPort) {
     deps.setUncontainedBackendGrant = (kind: BackendRunnerKind, granted: boolean) =>
-      setUncontainedGrant({ config, logger }, kind, granted);
+      setUncontainedGrant({ config, logger, confirm }, kind, granted);
   }
 
   const ctx = {
@@ -99,6 +112,7 @@ function buildHarness(
     ctx,
     acks,
     logger,
+    confirm,
     writeGeneralSettings,
     grants: (): unknown => store[ALLOW_UNCONTAINED_SETTING],
     verbose: (): unknown => store[VERBOSE_KEY],
@@ -238,5 +252,62 @@ describe('FR-R3-144 T018 — the grant is not routed through the general-setting
 
     expect(h.writeGeneralSettings).not.toHaveBeenCalled();
     expect(h.grants()).toEqual(['agy']);
+  });
+});
+
+describe('FR-R5-F16 — direct or forged CMD_SET_UNCONTAINED_BACKEND_GRANT requires host confirmation', () => {
+  it('invokes host confirmation on false -> true before persisting the grant', async () => {
+    const confirm = vi.fn(async () => uncontainedConsentApproveLabel('claude'));
+    const h = buildHarness({ confirm });
+    const verdict = judgeBackendContainment('claude', new Set());
+    if (verdict.outcome !== 'refused') throw new Error('expected refusal');
+
+    await setGrantHandler(h.ctx, grantCmd('claude', true));
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).toHaveBeenCalledWith(
+      uncontainedConsentHeadline('claude'),
+      verdict.message,
+      uncontainedConsentApproveLabel('claude')
+    );
+    expect(h.grants()).toEqual(['claude']);
+    expect(h.lastAck()).toEqual({
+      type: 'CMD_ACK',
+      correlationId: 'test-grant-1',
+      status: 'accepted',
+      result: { decision: 'granted', kind: 'claude' }
+    });
+  });
+
+  it('leaves configuration unchanged when host confirmation is cancelled or dismissed', async () => {
+    const confirm = vi.fn(async () => undefined);
+    const h = buildHarness({ confirm });
+
+    await setGrantHandler(h.ctx, grantCmd('claude', true));
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(h.grants()).toEqual([]);
+    expect(h.lastAck()).toEqual({
+      type: 'CMD_ACK',
+      correlationId: 'test-grant-1',
+      status: 'accepted',
+      result: { decision: 'denied', kind: 'claude' }
+    });
+  });
+
+  it('revokes immediately without prompting host confirmation', async () => {
+    const confirm = vi.fn(async () => uncontainedConsentApproveLabel('claude'));
+    const h = buildHarness({ initialGrants: ['claude'], confirm });
+
+    await setGrantHandler(h.ctx, grantCmd('claude', false));
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(h.grants()).toEqual([]);
+    expect(h.lastAck()).toEqual({
+      type: 'CMD_ACK',
+      correlationId: 'test-grant-1',
+      status: 'accepted',
+      result: { decision: 'denied', kind: 'claude' }
+    });
   });
 });
