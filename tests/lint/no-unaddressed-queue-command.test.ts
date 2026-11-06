@@ -162,6 +162,9 @@ const NOT_QUEUE_ADDRESSED: ReadonlyMap<string, string> = new Map([
   ['CMD_REORDER_TASK', TASK_ADDRESSED],
   ['CMD_REMOVE_TASK_PHASE', TASK_ADDRESSED],
   ['CMD_RESTART_CANCELED_TASK', TASK_ADDRESSED],
+  // Feature 278 (T19.1) — the request names the row and the host reads the row's own `queueId` to find the
+  // Run whose feature directory holds the record, so a queue id on the wire could only disagree with it.
+  ['CMD_OPEN_DECISION_RECORD', TASK_ADDRESSED],
   [
     'CMD_MOVE_TASK',
     `${TASK_ADDRESSED} The destination is the one queue it cannot resolve that way, and it ` +

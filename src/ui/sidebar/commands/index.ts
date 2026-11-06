@@ -25,6 +25,7 @@ import {
   CMD_OPEN_VERBOSE_SETTING,
   CMD_OPEN_TRUST_SETTINGS,
   CMD_PAUSE_PHASE,
+  CMD_OPEN_DECISION_RECORD,
   CMD_PAUSE_QUEUE,
   CMD_PING_BACKEND,
   CMD_PREFLIGHT_PROCESS_YAML,
@@ -95,6 +96,7 @@ import { handler as pingBackend } from './cmd-ping-backend';
 import { handler as preflightProcessYaml } from './cmd-preflight-process-yaml';
 import { handler as readDefinitionVersion } from './cmd-read-definition-version';
 import { handler as readMetrics } from './cmd-read-metrics';
+import { handler as openDecisionRecord } from './cmd-open-decision-record';
 import { handler as readFailureRecord } from './cmd-read-failure-record';
 import { handler as readPhaseLog } from './cmd-read-phase-log';
 import { handler as removeQueueItem } from './cmd-remove-queue-item';
@@ -174,6 +176,7 @@ export const HANDLER_TABLE: CommandHandlerTable = Object.freeze({
   [CMD_PREFLIGHT_PROCESS_YAML]: preflightProcessYaml,
   [CMD_READ_DEFINITION_VERSION]: readDefinitionVersion,
   [CMD_READ_METRICS]: readMetrics,
+  [CMD_OPEN_DECISION_RECORD]: openDecisionRecord,
   [CMD_READ_FAILURE_RECORD]: readFailureRecord,
   [CMD_READ_PHASE_LOG]: readPhaseLog,
   [CMD_REMOVE_QUEUE_ITEM]: removeQueueItem,

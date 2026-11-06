@@ -32,6 +32,7 @@ import {
   CMD_PUBLISH_PACKAGE,
   CMD_READ_DEFINITION_VERSION,
   CMD_READ_FAILURE_RECORD,
+  CMD_OPEN_DECISION_RECORD,
   CMD_READ_METRICS,
   CMD_READ_PHASE_LOG,
   CMD_REMOVE_QUEUE_ITEM,
@@ -282,6 +283,9 @@ export const COMMAND_AUTHORITY = Object.freeze({
   ),
   [CMD_READ_FAILURE_RECORD]: readOnly(
     'reads a queue item and its newest failure record; starts no process, writes no persisted state or file and appends no audit row'
+  ),
+  [CMD_OPEN_DECISION_RECORD]: readOnly(
+    'reads one decision record file under the workspace root and shows it in a read-only document; starts no process, writes no persisted state or file and appends no audit row; refuses itself when the workspace is untrusted'
   )
 } satisfies Record<CommandType, CommandAuthority>);
 

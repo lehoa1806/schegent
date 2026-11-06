@@ -689,7 +689,8 @@ describe('QueueManager.retry', () => {
     const reset = queue.findById(a.id)!;
     expect(reset.status).toBe('pending');
     expect(reset.retryCount).toBe(1);
-    expect(reset.lastError).toBeNull();
+    // FR-R5-F19 (FR-006): the failure is retained; surfaces label it "Previous failure" while the row is not failed.
+    expect(reset.lastError).toBe('boom');
     expect(reset.completedAt).toBeNull();
     expect(reset.runId).toBeNull(); // 2026-09-06 coincidental: a queue task, not the audit envelope
   });

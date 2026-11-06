@@ -2,7 +2,9 @@
   import { untrack } from 'svelte';
   import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
   import { panelStateFor, readFailureRecord, type FailureRecordPanelState } from '../lib/failure-record-ipc';
+  import { lastErrorLabel } from '../lib/last-error-label';
   import type { QueueItem } from '../lib/snapshot-types';
+  import DecisionRecordAction from './DecisionRecordAction.svelte';
   import FailureRecordPanel from './FailureRecordPanel.svelte';
 
   interface Props {
@@ -13,6 +15,9 @@
   }
 
   const { item, showLastError, open, onToggle }: Props = $props();
+
+  // FR-R5-F19 (FR-006) — a row that is not failed holds an error from an attempt already over.
+  const label = $derived(lastErrorLabel(item.status));
 
   // FR-R4-F15 (contract P2) — the region asks the host for the row's retained failure record each time
   // it opens, and only then: a record the retention sweep removed since the last look must not be
@@ -50,15 +55,19 @@
     aria-expanded={open ? 'true' : 'false'}
     aria-controls="queue-item-error-{item.id}"
     onclick={onToggle}
-  >{open ? 'Hide error' : 'Show last error'}</button>
+  >{open ? label.hideToggle : label.showToggle}</button>
+  <DecisionRecordAction rowId={item.id} />
   {#if open}
     <div
       id="queue-item-error-{item.id}"
       class="error-body"
       data-testid="queue-item-error-{item.id}"
       role="region"
-      aria-label="Last error for {item.label}"
+      aria-label="{label.regionName} for {item.label}"
     >
+      {#if label.heading !== null}
+        <div class="error-heading" data-testid="queue-item-error-heading-{item.id}">{label.heading}</div>
+      {/if}
       <div class="error-text" data-testid="queue-item-error-text-{item.id}">{item.lastErrorSummary}</div>
       <hr class="error-separator" aria-hidden="true" />
       <FailureRecordPanel itemId={item.id} label={item.label} state={panelState} />
@@ -93,6 +102,12 @@
     color: var(--schegent-error-text);
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 0.85em;
+  }
+
+  .error-heading {
+    margin-bottom: 2px;
+    color: var(--schegent-muted-fg);
+    font-weight: 600;
   }
 
   .error-text {

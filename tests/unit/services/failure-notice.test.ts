@@ -17,6 +17,7 @@ import {
   failureNotice,
   markCompletedTitle,
   ROW_TITLE_HINT_LENGTH,
+  SHOW_LAST_ERROR_SENTENCE,
   RESUME_FAILED_WORKFLOW_TITLE,
   type FailureNoticeInput
 } from '../../../src/services/failure-notice';
@@ -207,6 +208,61 @@ describe('failureNotice — the cap notice (FR-014, D10)', () => {
   it('offers the hand-finished route by the exact title of the row button', () => {
     expect(cap()).toContain(markCompletedTitle(TITLE, sanitize));
     expect(markCompletedTitle(TITLE, sanitize)).toBe(`Mark '${TITLE}' as completed`);
+  });
+});
+
+// FR-R5-F19 (spec 278, T19.2, FR-007) — the cap notice names a fresh-budget Restart only when the caller
+// says the subject Run exposes that action. The caller derives the flag from the legal-action authority
+// (`decidePhaseControl`), so this notice never carries a rule of its own; here the flag is plain input.
+describe('failureNotice — the cap notice and Restart (FR-007)', () => {
+  const RESTART_SENTENCE = `Restart runs ${PHASE} again from iteration 1 with a fresh iteration budget.`;
+  const cap = (extra: { restartExposed?: boolean; recordWritten?: boolean } = {}): string =>
+    failureNotice({
+      cause: 'cap_exhausted',
+      phase: PHASE,
+      taskTitle: TITLE,
+      iteration: 10,
+      iterationCap: 10,
+      ...extra,
+      sanitize
+    }).message;
+
+  it('states the fresh-budget Restart once when the subject Run exposes it', () => {
+    const message = cap({ restartExposed: true });
+    expect(message).toContain(RESTART_SENTENCE);
+    expect(message.split(RESTART_SENTENCE)).toHaveLength(2);
+  });
+
+  it('puts the Restart sentence after the Resume advice and before the hand-finished route', () => {
+    const message = cap({ restartExposed: true });
+    expect(message.indexOf('unless the blocker is resolved first')).toBeLessThan(message.indexOf(RESTART_SENTENCE));
+    expect(message.indexOf(RESTART_SENTENCE)).toBeLessThan(message.indexOf(MARK_COMPLETED));
+  });
+
+  it('names no Restart when the Run does not expose it', () => {
+    expect(cap({ restartExposed: false })).not.toContain('Restart');
+  });
+
+  it('is byte-identical to the not-exposed notice when the flag is omitted, so no caller drifts silently', () => {
+    expect(cap()).toBe(cap({ restartExposed: false }));
+    expect(cap()).not.toContain('Restart');
+  });
+
+  it('keeps the record pointer last when both the Restart sentence and a record are present', () => {
+    const message = cap({ restartExposed: true, recordWritten: true });
+    expect(message.endsWith(SHOW_LAST_ERROR_SENTENCE)).toBe(true);
+    expect(message).toContain(RESTART_SENTENCE);
+  });
+
+  it('stays one line of single spaces with the Restart sentence present', () => {
+    const message = cap({ restartExposed: true });
+    expect(message).not.toMatch(/[\r\n\t]/);
+    expect(message).not.toMatch(/ {2}/);
+  });
+
+  it('can fail: the exposed and not-exposed notices differ by exactly the Restart sentence', () => {
+    expect(cap({ restartExposed: true })).not.toBe(cap({ restartExposed: false }));
+    expect(cap({ restartExposed: true }).replace(` ${RESTART_SENTENCE}`, '')).toBe(cap({ restartExposed: false }));
   });
 });
 

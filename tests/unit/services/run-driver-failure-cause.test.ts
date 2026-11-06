@@ -284,10 +284,13 @@ describe('RunDriver — a cap failure records cap_exhausted and says what a Resu
       taskTitle: DESCRIPTION,
       iteration: 2,
       iterationCap: 2,
-      stalledCount: 2
+      stalledCount: 2,
+      // FR-R5-F19 (FR-007): the Run the driver just failed admits Restart, so the notice says what it does.
+      restartExposed: true
     });
     expect(h.notifier.warn).toHaveBeenCalledTimes(1);
     expect(h.notifier.warn).toHaveBeenCalledWith(expected.message);
+    expect(expected.message).toContain('Restart runs implement again from iteration 1');
     expect(expected.message).toContain('(iteration 2 of 2)');
     expect(expected.message).toContain('unchanged across the last 2 comparisons');
     expect(expected.message).toContain(`"Mark '${DESCRIPTION}' as completed"`);

@@ -26,7 +26,7 @@ import {
 } from '../../../../src/services/failure-record/failed-phase-notice';
 import { createFailureRecorder } from '../../../../src/services/failure-record/failure-record-service';
 
-const RUN = { id: 'run-1', featureId: 'task-1', currentPhase: 'implement' };
+const RUN = { id: 'run-1', featureId: 'task-1', currentPhase: 'implement', status: 'failed' } as const;
 const RESULT = { kind: 'remaining_issues', issues: [], auditEntry: null, warnings: [] } as InvocationResult;
 const OPTIONS = { iterationCap: 3 };
 const TITLE = 'Add the export button';
@@ -69,7 +69,8 @@ describe('failedPhaseNotice', () => {
         iteration: ITERATION,
         iterationCap: 3,
         stalledCount: 3,
-        recordWritten: true
+        recordWritten: true,
+        restartExposed: true
       })
     );
     expect(notice.message).toContain(SHOW_LAST_ERROR_SENTENCE);
@@ -97,9 +98,21 @@ describe('failedPhaseNotice', () => {
         taskTitle: TITLE,
         iteration: ITERATION,
         iterationCap: 3,
-        recordWritten: false
+        recordWritten: false,
+        restartExposed: true
       })
     );
+  });
+
+  it('names Restart on a cap notice only when the Run admits it', async () => {
+    const { recorder } = recorderAnswering(true);
+    const admitted = await failedPhaseNotice(recorder, OPTIONS, failed('cap_exhausted', 3));
+    const refused = await failedPhaseNotice(recorder, OPTIONS, {
+      ...failed('cap_exhausted', 3),
+      run: { ...RUN, status: 'canceled' }
+    });
+    expect(admitted.message).toContain('Restart runs implement again from iteration 1');
+    expect(refused.message).not.toContain('Restart runs');
   });
 
   it('builds the notice a driver without a recorder always built, and does not throw', async () => {
@@ -111,7 +124,8 @@ describe('failedPhaseNotice', () => {
         taskTitle: TITLE,
         iteration: ITERATION,
         iterationCap: 3,
-        stalledCount: 3
+        stalledCount: 3,
+        restartExposed: true
       })
     );
     expect(cap.message).not.toContain(SHOW_LAST_ERROR_SENTENCE);
@@ -204,7 +218,7 @@ describe('failedPhaseNotice — the unchanged-metrics stop, with the real record
 
   function stop(cause: SequencerFailureCause, runId = 'run-stop'): FailedPhase {
     return {
-      run: { id: runId, featureId: 'task-stop', currentPhase: 'implement' },
+      run: { id: runId, featureId: 'task-stop', currentPhase: 'implement', status: 'failed' },
       decision: { failureCause: cause, stalledCount: 2 },
       result: stopResult(),
       taskTitle: TITLE,

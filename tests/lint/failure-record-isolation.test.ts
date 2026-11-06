@@ -53,7 +53,11 @@ const ALLOWED_IMPORTERS: ReadonlyArray<RegExp> = [
   // the text pipeline's path scrub, to include one Run's records in a file the operator asked for. Neither is a
   // decision site (L4.2 still names none of the five areas), and neither feeds a record back into any state.
   /^src\/services\/retention-disclosure\.ts$/,
-  /^src\/services\/diagnostics-bundle\/bundle-collect\.ts$/
+  /^src\/services\/diagnostics-bundle\/bundle-collect\.ts$/,
+  // FR-R5-F19 (feature 278) — the blocker notice reads only the record module's tag constant
+  // (`BLOCKING_ISSUE_TAGS`) and its tag normaliser to say which two tags block work. It never reads a
+  // failure record and feeds nothing back into a decision (L4.2 still names none of the five areas).
+  /^src\/services\/blocker-notice\.ts$/
 ];
 
 /** L4.2 — the places a decision is made. A violation here is named as such. */

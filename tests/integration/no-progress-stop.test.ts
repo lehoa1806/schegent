@@ -332,7 +332,9 @@ describe('Nothing changes unless the bound applies (US2)', () => {
         iterationCap: 10,
         stalledCount: 9,
         // The controller path writes F15's failure record, so the notice points at it.
-        recordWritten: true
+        recordWritten: true,
+        // FR-R5-F19: a failed Run exposes Restart, so the cap notice names it with the Resume wording.
+        restartExposed: true
       }).message
     );
   });

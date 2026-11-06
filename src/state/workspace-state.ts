@@ -63,6 +63,7 @@ import {
   reconcileOrphanedRuns,
   type OrphanedRunCanceledAuditEvent
 } from './orphaned-run-reconciler';
+import { assertPendingRetryShape } from './pending-retry-shape';
 import { assertCreditPauseShape, assertWatchdogShape, migrateV14ToV15 } from './credit-pause-state';
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
 import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../contracts/queue-identity';
@@ -720,7 +721,7 @@ function asTerminalTransitionIntent(raw: unknown): TerminalTransitionIntent | nu
   return intent as TerminalTransitionIntent;
 }
 
-function validateRunInvariants(run: WorkflowRun): void {
+function validateRunInvariants(run: WorkflowRun, previous: WorkflowRun | null = null): void {
   if (
     run.rawTranscriptMode !== undefined &&
     run.rawTranscriptMode !== 'always' &&
@@ -736,6 +737,8 @@ function validateRunInvariants(run: WorkflowRun): void {
       `WorkflowRun invariant violation: pendingRetryAt (${run.pendingRetryAt}) and pendingRetryCause (${run.pendingRetryCause}) must be both null or both non-null`
     );
   }
+  // FR-R5-F19 (FR-010) — a retry countdown sits on a paused Run only; stored legacy shapes are not refused.
+  assertPendingRetryShape(run, previous);
   // When the cap is reached, the run must be paused or failed. Use >= to
   // tolerate a dynamic cap that may have been lowered after the count
   // was already persisted.
@@ -3009,7 +3012,7 @@ export class WorkspaceStateStore {
     claim: RunCommitClaim
   ): Promise<void> {
     if (run !== null) {
-      validateRunInvariants(run);
+      validateRunInvariants(run, this.getRun(queueId));
       if (!findQueue(this.getQueueRegistry(), queueId)) {
         throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
       }
@@ -3114,7 +3117,7 @@ export class WorkspaceStateStore {
       for (const key of Object.keys(patch) as Array<keyof WorkflowRun>) {
         if (patch[key] === undefined) delete merged[key];
       }
-      validateRunInvariants(merged);
+      validateRunInvariants(merged, current);
       written = isFencedClaim(claim) ? { ...merged, writtenAtFence: claim.fence } : merged;
       await this.memento.update(KEYS.run, { ...this.readRunMap(), [queueId]: written });
     }).then(() => {

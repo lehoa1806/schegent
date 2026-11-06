@@ -61,6 +61,14 @@ export const AGENT_ISSUE_TAGS = [
   'needs-approval',
   'needs-decision'
 ] as const;
+/**
+ * The agent tags that name a decision only the operator can make. A subset of `AGENT_ISSUE_TAGS`, so
+ * the blocker notice reads the same closed set the record does and never a second spelling list.
+ */
+export const BLOCKING_ISSUE_TAGS = [
+  'needs-approval',
+  'needs-decision'
+] as const satisfies readonly (typeof AGENT_ISSUE_TAGS)[number][];
 /** D6 — the one label only the host's own substituted issues carry. */
 export const HOST_ISSUE_TAGS = ['constitution'] as const;
 export type RecordTag =
