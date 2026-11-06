@@ -48,7 +48,11 @@ const CLAUSES = {
   // command, inside the workspace or not, with agy settings that hold no allow-rule for it. An allow-rule
   // would let the shell run, so the clause stays conditional on the backend's own settings.
   'mode-refuses-shell':
-    "a granted shell is refused by Agy's accept-edits mode unless the backend's own permission settings allow it, and where they do it can still write outside the workspace"
+    "a granted shell is refused by Agy's accept-edits mode unless the backend's own permission settings allow it, and where they do it can still write outside the workspace",
+  // Feature 280 (FR-004) -- withholding process-spawn on agy adds `--mode accept-edits`, which also refuses a
+  // write outside the workspace that the Phase granted (279's case d), unless an allow-rule lets it through.
+  'mode-refuses-outside-write':
+    "a granted write outside the workspace is refused by Agy's accept-edits mode unless the backend's own permission settings allow it"
 } as const;
 
 const NAME = 'Implement the plan';
@@ -127,6 +131,21 @@ describe('the host sentence for a capability outcome (T12)', () => {
     const outsideAndShell = planOf('agy', ['workspace-write', 'network']);
     expect(describeCapabilityOutcome(outsideAndShell, NAME)).toBe(
       `A tool-access restriction, not OS isolation applies to phase "${NAME}": ${CLAUSES['sandbox-scope-unqualified']}.`
+    );
+  });
+
+  it('keeps the Agy outside-write refusal clause conditional on the backend settings (feature 280)', () => {
+    expect(CLAUSES['mode-refuses-outside-write']).toContain("unless the backend's own permission settings allow it");
+    const plan = planOf('agy', ['workspace-write', 'outside-workspace-write', 'network']);
+    const sentence = describeCapabilityOutcome(plan, NAME) ?? '';
+    expect(sentence).toContain(CLAUSES['mode-refuses-outside-write']);
+  });
+
+  it('gives the Agy process-spawn cell the contract sentence (feature 280, US2)', () => {
+    const shellOnly = planOf('agy', ['workspace-write', 'outside-workspace-write', 'network']);
+    expect(describeCapabilityOutcome(shellOnly, NAME)).toBe(
+      `A tool-access restriction, not OS isolation applies to phase "${NAME}": ` +
+        `${CLAUSES['mode-refuses-outside-write']}; ${CLAUSES['sandbox-scope-unqualified']}.`
     );
   });
 

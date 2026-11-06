@@ -20,11 +20,11 @@
 // no translation ever emits one.
 //
 // FR-R4-F06 (FR-011 to FR-014; contract K; data-model section 3) — EVERY cell is declared. Each backend
-// states, per capability it can withhold, the flag, HOW that flag enforces (a tool restriction the CLI
+// states, per capability it can withhold, the flags, HOW they enforce (a tool restriction the CLI
 // applies to itself, or the vendor's own sandbox) and what it leaves open (residuals). A cell's outcome is
 // composed from those declarations by one rule, and `capability-cell-declarations.test.ts` checks all 48
-// cells against a table written out by hand. A withheld capability whose flag no capture has confirmed the
-// installed CLI lists is refused and named `unqualified`; a flag nobody has seen is never relied on.
+// cells against a table written out by hand. A withheld capability with any flag no capture has confirmed
+// the installed CLI lists is refused and named `unqualified`; a flag nobody has seen is never relied on.
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import {
   ALL_PHASE_CAPABILITIES,
@@ -55,10 +55,13 @@ export type CapabilityEnforcementPlan =
       readonly unqualified: readonly PhaseCapability[];
     };
 
-/** One capability a backend can withhold: the flag, how it enforces, and what it leaves open. */
+/** A flag name, with its value when it takes one. Pairing them means no token is judged a flag by its `-`. */
+type FlagEntry = readonly [flag: string] | readonly [flag: string, value: string];
+
+/** One capability a backend can withhold: the flags, how it enforces, and what it leaves open. */
 interface WithholdDeclaration {
-  /** The flag name first, then its value if it takes one. */
-  readonly flags: readonly string[];
+  /** Every flag the withholding needs. It applies all of them or, when one is unconfirmed, none. */
+  readonly flags: readonly FlagEntry[];
   readonly enforcement: Exclude<CapabilityEnforcement, 'none-withheld'>;
   /** Left open whenever this capability is withheld. */
   readonly residuals: readonly CapabilityResidual[];
@@ -92,13 +95,13 @@ const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
       // `Bash` is the tool that spawns processes; denying it is the CLI's own
       // way of withholding that authority, and it refuses non-interactively.
       'process-spawn': {
-        flags: ['--disallowedTools', 'Bash'],
+        flags: [['--disallowedTools', 'Bash']],
         enforcement: 'tool-restriction',
         residuals: ['unlisted-tools']
       },
       // The network-reaching tools. A shell that stays granted reaches the network anyway.
       network: {
-        flags: ['--disallowedTools', 'WebFetch,WebSearch'],
+        flags: [['--disallowedTools', 'WebFetch,WebSearch']],
         enforcement: 'tool-restriction',
         residuals: ['unlisted-tools'],
         residualsIfGranted: { 'process-spawn': ['shell-network'] }
@@ -107,13 +110,13 @@ const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
       // stops. `acceptEdits` is non-interactive, so this does not become a
       // prompt — which principle I forbids.
       'outside-workspace-write': {
-        flags: ['--permission-mode', 'acceptEdits'],
+        flags: [['--permission-mode', 'acceptEdits']],
         enforcement: 'tool-restriction',
         residuals: ['unlisted-tools'],
         residualsIfGranted: { 'process-spawn': ['shell-outside-workspace-write'] }
       },
       'workspace-write': {
-        flags: ['--disallowedTools', 'Edit,Write,NotebookEdit'],
+        flags: [['--disallowedTools', 'Edit,Write,NotebookEdit']],
         enforcement: 'tool-restriction',
         residuals: ['unlisted-tools'],
         residualsIfGranted: { 'process-spawn': ['shell-workspace-write'] }
@@ -124,11 +127,17 @@ const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
     unbounded: ['--dangerously-skip-permissions'],
     withhold: {
       // Agy's sandbox is documented as "terminal restrictions enabled", which is
-      // the process-spawn boundary.
+      // the process-spawn boundary. Feature 280: headless at agy 1.5.2, `--sandbox`
+      // alone also refused a file-tool write inside the workspace (follow-up probe
+      // i), and adding `--mode accept-edits` let it through (j). A shell write was
+      // refused by headless permissions (k), which says nothing about what the
+      // sandbox confines, so its scope stays unqualified. This argv refused an
+      // outside write (279's case d), a residual only while that write is granted.
       'process-spawn': {
-        flags: ['--sandbox'],
-        enforcement: 'cli-sandbox',
-        residuals: ['sandbox-scope-unqualified']
+        flags: [['--sandbox'], ['--mode', 'accept-edits']],
+        enforcement: 'tool-restriction',
+        residuals: ['sandbox-scope-unqualified'],
+        residualsIfGranted: { 'outside-workspace-write': ['mode-refuses-outside-write'] }
       },
       // Feature 279: a non-bypass execution mode, like claude's `acceptEdits`.
       // Probed headless at agy 1.5.2 (specs/279-agy-accept-edits-mode/
@@ -140,7 +149,7 @@ const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
       // either is refused rather than run unbounded;
       // `docs/architecture/agent-capability-posture.md` records that gap.
       'outside-workspace-write': {
-        flags: ['--mode', 'accept-edits'],
+        flags: [['--mode', 'accept-edits']],
         enforcement: 'tool-restriction',
         residuals: [],
         residualsIfGranted: { 'process-spawn': ['mode-refuses-shell'] }
@@ -153,17 +162,17 @@ const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
     unbounded: ['--sandbox', 'workspace-write'],
     withhold: {
       'outside-workspace-write': {
-        flags: ['--sandbox', 'workspace-write'],
+        flags: [['--sandbox', 'workspace-write']],
         enforcement: 'cli-sandbox',
         residuals: []
       },
       'process-spawn': {
-        flags: ['--sandbox', 'read-only'],
+        flags: [['--sandbox', 'read-only']],
         enforcement: 'cli-sandbox',
         residuals: ['sandboxed-commands-run']
       },
       'workspace-write': {
-        flags: ['--sandbox', 'read-only'],
+        flags: [['--sandbox', 'read-only']],
         enforcement: 'cli-sandbox',
         residuals: []
       }
@@ -224,9 +233,10 @@ export function planCapabilityEnforcement(
 
   // A capability the backend cannot express, and one it could express with a flag nobody has confirmed, are
   // different findings: the second is `unqualified`, and both are refused rather than run unbounded.
+  // Every flag a declaration names, not only its first: one applied without the rest is not what was declared.
   const unqualified = withheld.filter((capability) => {
-    const flag = surface.withhold[capability]?.flags.at(0);
-    return flag !== undefined && !confirmed[kind].includes(flag);
+    const declaration = surface.withhold[capability];
+    return declaration !== undefined && declaration.flags.some(([flag]) => !confirmed[kind].includes(flag));
   });
   const unenforceable = withheld.filter(
     (capability) => surface.withhold[capability] === undefined || unqualified.includes(capability)
@@ -267,25 +277,21 @@ export function planCapabilityEnforcement(
       }
     }
 
-    // `.at(0)` rather than destructuring: the head of a readonly array is TYPED as present while an empty
-    // declaration genuinely yields `undefined`, and `at` is the read whose type says so. A declaration with
-    // no flag narrows nothing, and skipping it is the correct answer.
-    const flag = declaration.flags.at(0);
-    if (flag === undefined) continue;
-    const value = declaration.flags.at(1);
-    if (value === undefined) {
-      if (!bare.includes(flag)) bare.push(flag);
-      continue;
+    for (const [flag, value] of declaration.flags) {
+      if (value === undefined) {
+        if (!bare.includes(flag)) bare.push(flag);
+        continue;
+      }
+      if (!valuedOrder.includes(flag)) valuedOrder.push(flag);
+      if (COMMA_LIST_FLAGS.has(flag)) {
+        const existing = commaValues.get(flag) ?? [];
+        for (const part of value.split(',')) if (!existing.includes(part)) existing.push(part);
+        commaValues.set(flag, existing);
+        continue;
+      }
+      const current = singleValue.get(flag);
+      singleValue.set(flag, current === undefined ? value : strictest(flag, current, value));
     }
-    if (!valuedOrder.includes(flag)) valuedOrder.push(flag);
-    if (COMMA_LIST_FLAGS.has(flag)) {
-      const existing = commaValues.get(flag) ?? [];
-      for (const part of value.split(',')) if (!existing.includes(part)) existing.push(part);
-      commaValues.set(flag, existing);
-      continue;
-    }
-    const current = singleValue.get(flag);
-    singleValue.set(flag, current === undefined ? value : strictest(flag, current, value));
   }
 
   const args: string[] = [...bare];

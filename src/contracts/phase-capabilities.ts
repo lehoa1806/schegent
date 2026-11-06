@@ -121,4 +121,10 @@ export type CapabilityResidual =
    * denies shell commands headless unless agy's own permission settings allow them. A stricter side
    * effect, disclosed like codex's `sandboxed-commands-run`.
    */
-  | 'mode-refuses-shell';
+  | 'mode-refuses-shell'
+  /**
+   * `process-spawn` withheld on agy while `outside-workspace-write` is granted: the cell adds
+   * `--mode accept-edits` so file tools can write inside the workspace, and that mode refuses a write
+   * outside it unless agy's own permission settings allow it. Stricter than the Phase asked.
+   */
+  | 'mode-refuses-outside-write';
