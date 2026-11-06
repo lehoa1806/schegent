@@ -161,6 +161,18 @@ describe('the containment qualification record agrees with the product (FR-R3-12
     expect(body).toMatch(/entry condition/i);
   });
 
+  it('states the narrower observed fact for Claude and forbids labelling a shell-only sandbox as whole-process (FR-R5-F16)', () => {
+    const body = readFileSync(resolve(REPO_ROOT, RECORD_PATH), 'utf8');
+    const matrixSection = sectionOf(body, '3.');
+    expect(matrixSection).not.toMatch(/verified absence/i);
+    expect(matrixSection).toMatch(/Verified that Schegent requests none/i);
+    expect(body).toMatch(/No shell-only sandbox may be labelled as confining built-in file tools/i);
+    expect(body).toMatch(/missing sandbox dependencies/i);
+    expect(body).toMatch(/attempted unsandboxed retry/i);
+    expect(body).toMatch(/excluded-command and list merging/i);
+    expect(body).toMatch(/Host confirmation authority and per-workspace reminder disposition/i);
+  });
+
   it('is red on a wrong row and green on the real one — proved, not assumed', () => {
     // FR-004a's shape for this gate. Every assertion above is "the disagreement
     // list is empty", and the way that fails silently is a parse that finds

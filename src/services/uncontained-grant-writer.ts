@@ -40,11 +40,34 @@ import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import type { UncontainedConsentOutcome } from '../controller/uncontained-consent-gate';
 import {
   ALLOW_UNCONTAINED_SETTING,
+  judgeBackendContainment,
   resolveUncontainedGrant,
   type UncontainedEntryProblem
 } from './backend-containment-policy';
 import { CONFIGURATION_TARGET_GLOBAL } from '../config/general-settings';
 import { errorMessage } from '../lib/errors';
+
+export type UncontainedGrantConfirm = (
+  message: string,
+  detail: string,
+  approveLabel: string
+) => Promise<string | undefined>;
+
+/** The modal's headline. One line: which backend, and that nothing has started. */
+export function uncontainedConsentHeadline(kind: BackendRunnerKind): string {
+  return `Schegent cannot start the '${kind}' backend without your approval.`;
+}
+
+/**
+ * The affirmative action. Anything else — including dismissal — denies.
+ *
+ * It names the backend and the scope of what it is about to write, because that is
+ * what the button actually does: `ConfigurationTarget.Global` is this installation,
+ * every workspace in it. A label reading "Allow" would claim less than the grant.
+ */
+export function uncontainedConsentApproveLabel(kind: BackendRunnerKind): string {
+  return `Enable '${kind}' for This Installation`;
+}
 
 /**
  * The configuration seam. Full dotted keys, so the caller supplies
@@ -134,6 +157,7 @@ export async function setUncontainedGrant(
   deps: {
     readonly config: UncontainedConsentConfig;
     readonly logger: Pick<SanitizedLogger, 'info' | 'warn'>;
+    readonly confirm?: UncontainedGrantConfirm;
   },
   kind: BackendRunnerKind,
   granted: boolean
@@ -146,7 +170,7 @@ export async function setUncontainedGrant(
     return { decision: 'not-applicable', problem: problem.problem, message: problem.message };
   }
 
-  const current = readGrantedIds(deps.config);
+  let current = readGrantedIds(deps.config);
   const present = current.includes(kind);
   // Nothing to write. The state asked for is the state that holds — the operator
   // granted it in another window while this surface was open, or by hand, or is
@@ -157,6 +181,39 @@ export async function setUncontainedGrant(
       `backend.uncontained-consent already-${granted ? 'granted' : 'absent'} kind=${kind}`
     );
     return { decision: granted ? 'granted' : 'denied' };
+  }
+
+  // FR-R5-F16 (NS-03, S-02) — `false -> true` grants arriving across the IPC
+  // boundary must obtain host modal confirmation before persisting to global
+  // configuration. Revocation (`true -> false`) remains immediate and unconfirmed.
+  if (granted && deps.confirm !== undefined) {
+    const verdict = judgeBackendContainment(kind, new Set());
+    if (verdict.outcome !== 'refused') {
+      return { decision: 'denied' };
+    }
+    const approveLabel = uncontainedConsentApproveLabel(kind);
+    let choice: string | undefined;
+    try {
+      choice = await deps.confirm(
+        uncontainedConsentHeadline(kind),
+        verdict.message,
+        approveLabel
+      );
+    } catch (error) {
+      deps.logger.warn(
+        `backend.uncontained-consent unavailable kind=${kind} reason=${errorMessage(error)}`
+      );
+      return { decision: 'denied' };
+    }
+    if (choice !== approveLabel) {
+      deps.logger.info(`backend.uncontained-consent denied kind=${kind}`);
+      return { decision: 'denied' };
+    }
+    current = readGrantedIds(deps.config);
+    if (current.includes(kind)) {
+      deps.logger.info(`backend.uncontained-consent already-granted kind=${kind}`);
+      return { decision: 'granted' };
+    }
   }
 
   // `filter`, not an index removal: a hand-edited `settings.json` can hold the same
