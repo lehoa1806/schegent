@@ -36,7 +36,10 @@ import {
 } from './phase-log-ipc';
 import { getWebviewState, setWebviewState } from './vscode-api';
 import { PHASE_LOG_WINDOW_MAX_ENTRIES, appendToWindow } from './phase-log-window';
-import type { IntentWaitOptions } from './intent-ledger';
+import {
+  OUTCOME_NOT_YET_KNOWN_TEXT,
+  type IntentWaitOptions
+} from './intent-ledger';
 
 export type PhaseLogSelectionDraft = {
   readonly queueId: string | null;
@@ -119,7 +122,9 @@ export interface PhaseLogStore {
   // listener. Both are idempotent: a duplicate start replaces the
   // prior session (the host's cap-of-1 invariant matches), and stop
   // is a no-op when no session is active.
-  startTail(req: StartPhaseLogTailRequest): Promise<PhaseLogTailStartResult>;
+  startTail(
+    req: StartPhaseLogTailRequest
+  ): Promise<WithRefusalText<PhaseLogTailStartResult>>;
   stopTail(): Promise<PhaseLogTailStopResult | null>;
   // Feature 020 T056 — atomic "Jump to current phase" cascade.
   // Reads `snapshot.queue.inFlight` and, if present, sets all five
@@ -210,6 +215,26 @@ export function __resetLiveModeForTests(): void {
 }
 
 /**
+ * FR-R5-F18 (T18.2) — classify whether a failed `startTail` result is a
+ * transient start race (`not-in-flight` or `internal-error` without a router
+ * gate refusal sentence) that may be retried once on a subsequent snapshot, vs
+ * a permanent refusal (`unknown-tuple`, `permission-denied`, or workspace trust
+ * refusal) that must not auto-retry on duplicate snapshots.
+ */
+export function isTransientTailFailure(
+  res: WithRefusalText<PhaseLogTailStartResult>
+): boolean {
+  if (res.outcome === 'success') return false;
+  if (
+    res.refusalText !== undefined &&
+    res.refusalText !== OUTCOME_NOT_YET_KNOWN_TEXT
+  ) {
+    return false;
+  }
+  return res.reason === 'not-in-flight' || res.reason === 'internal-error';
+}
+
+/**
  * Project the in-flight identity tuple onto a stable string. Returns
  * `null` when there is no in-flight task. Missing fields fall through
  * to empty-string components so distinct missing-field combinations
@@ -288,6 +313,12 @@ export function createPhaseLogStore(
   // the current token; on resolution it only applies if the token is
   // still the latest.
   let loadToken = 0;
+  let tailToken = 0;
+  let pendingStopSessionId: string | null = null;
+  function rememberTailForStop(): void {
+    const cur = getState().tailSessionId;
+    if (cur !== null) pendingStopSessionId = cur;
+  }
   // T051 — push-listener handle. The subscription owns its own
   // lifecycle: dispose on `stopTail()`, dispose on a duplicate
   // `startTail()`, dispose on `reset()`.
@@ -344,6 +375,9 @@ export function createPhaseLogStore(
   }
 
   function resetEntries(): void {
+    tailToken++;
+    rememberTailForStop();
+    teardownPush();
     const cur = getState();
     setState({
       ...cur,
@@ -466,6 +500,8 @@ export function createPhaseLogStore(
       return ref.current;
     },
     setSelection(selection, options) {
+      tailToken++;
+      rememberTailForStop();
       maybeFlipLiveModeOff(options);
       setState({
         ...getState(),
@@ -507,6 +543,8 @@ export function createPhaseLogStore(
       resetEntries();
     },
     setPhase(phaseId, options) {
+      tailToken++;
+      teardownPush();
       maybeFlipLiveModeOff(options);
       // Cascade-clear: pick a phase → wipe iter (latest-by-default
       // wins on next reload).
@@ -514,6 +552,8 @@ export function createPhaseLogStore(
       void loadIfComplete();
     },
     setIteration(iterationN, options) {
+      tailToken++;
+      teardownPush();
       maybeFlipLiveModeOff(options);
       patchSelection({ iterationN });
       void loadIfComplete();
@@ -551,6 +591,8 @@ export function createPhaseLogStore(
     },
     reset() {
       loadToken++;
+      tailToken++;
+      pendingStopSessionId = null;
       teardownPush();
       // Preserve `isLiveMode` across `reset()` — the operator's intent
       // is independent of the in-memory cache; resetting the cache MUST
@@ -561,18 +603,28 @@ export function createPhaseLogStore(
       }));
     },
     async startTail(req) {
-      // Cap-of-1 mirror: tear down any existing subscription before
-      // starting a new one. The host enforces the same invariant at
-      // the registry; doing it here too keeps the LIVE indicator
-      // accurate even if a stale push arrives between requests.
+      // Cap-of-1 mirror + FR-R5-F18 (T18.2) request-token supersession:
+      // tear down any existing subscription before starting a new one and
+      // ignore late responses if the selection moved or stopTail/reset ran.
+      const token = ++tailToken;
+      pendingStopSessionId = null;
       teardownPush();
       const prior = getState().tailSessionId;
       if (prior !== null) {
-        // Drop the prior session id eagerly so any in-flight push
-        // for it is dropped by `handlePush`.
         setState({ ...getState(), tailSessionId: null });
       }
-      const result = await tail.start(req);
+      let result: WithRefusalText<PhaseLogTailStartResult>;
+      try {
+        result = await tail.start(req);
+      } catch {
+        return { outcome: 'failure', reason: 'internal-error' };
+      }
+      if (token !== tailToken) {
+        if (result.outcome === 'success') {
+          void tail.stop({ sessionId: result.sessionId }).catch(() => {});
+        }
+        return result;
+      }
       if (result.outcome === 'success') {
         setState({ ...getState(), tailSessionId: result.sessionId });
         pushUnsubscribe = tail.subscribe(handlePush);
@@ -580,7 +632,9 @@ export function createPhaseLogStore(
       return result;
     },
     async stopTail() {
-      const sessionId = getState().tailSessionId;
+      tailToken++;
+      const sessionId = getState().tailSessionId ?? pendingStopSessionId;
+      pendingStopSessionId = null;
       teardownPush();
       if (sessionId === null) return null;
       // Clear locally first so a late `tail-ended` push for this
@@ -590,6 +644,8 @@ export function createPhaseLogStore(
       return tail.stop({ sessionId });
     },
     async jumpToCurrent(snapshot, options) {
+      tailToken++;
+      rememberTailForStop();
       const setLiveModeOn = options?.setLiveModeOn ?? true;
       // Feature 067 — call `setLiveMode(true)` BEFORE the early-return
       // path so the no-inFlight case still sets intent ON for the next
