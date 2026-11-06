@@ -3,6 +3,7 @@ export * from './state-schema';
 export * from './monitor-events';
 export * from './queue-snapshot';
 export * from './sidebar-ipc';
+export * from './snapshot-bounds';
 export * from './runtime-validators';
 export type {
   BackendRunner,

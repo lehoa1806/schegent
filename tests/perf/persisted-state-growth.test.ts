@@ -24,16 +24,22 @@ import { describe, expect, it } from 'vitest';
 import { unfencedCommit } from '../../src/state/ownership-claim';
 import {
   KEYS,
+  MAX_DELETED_HISTORY_PARTITIONS,
   WorkspaceStateStore,
   type Memento,
   type PersistedHistoryEntry
 } from '../../src/state/workspace-state';
 import { HistoryStore } from '../../src/state/history-store';
 import { StateProjector } from '../../src/ui/sidebar/state-projector';
+import { SnapshotTransport } from '../../src/ui/sidebar/snapshot-transport';
 import type { FeatureRequest, QueueState } from '../../src/queue/feature-request';
 import type { WorkflowRun } from '../../src/state/workflow-run';
 import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { MAX_QUEUES } from '../../src/contracts/queue-bounds';
+import {
+  MAX_RETAINED_HISTORY_PARTITIONS,
+  ROUTINE_SNAPSHOT_BYTE_BUDGET
+} from '../../src/contracts/snapshot-bounds';
 
 /** The completion counts at which the records are measured (data model section 7). */
 const POINTS = [0, 100, 1_000, 5_000] as const;
@@ -150,6 +156,9 @@ interface GrowthPoint {
     readonly history: number;
     readonly runs: number;
     readonly snapshot: number;
+    readonly routineSnapshot: number;
+    readonly heapUsed: number;
+    readonly rss: number;
   };
   readonly historyPartitions: number;
   /** Partitions that no registered queue owns: deleted queues' history. */
@@ -185,13 +194,21 @@ describe('persisted-state growth over a synthetic long-lived workspace (FR-018)'
       const historyMap = store.getHistoryMap();
       const liveIds = new Set(store.getQueueRegistry().entries.map((entry) => entry.id));
       const partitions = Object.keys(historyMap);
+      const snap = projector.project();
+      const transport = new SnapshotTransport();
+      transport.preparePost(snap);
+      const routinePost = transport.preparePost(snap);
+      const mem = process.memoryUsage();
       points.push({
         completions,
         bytes: {
           tasks: bytesOfValue(memento.get(KEYS.queue)),
           history: bytesOfValue(memento.get(KEYS.history)),
           runs: bytesOfValue(memento.get(KEYS.run)),
-          snapshot: bytesOfValue(projector.project())
+          snapshot: bytesOfValue(snap),
+          routineSnapshot: bytesOfValue(routinePost.message),
+          heapUsed: mem.heapUsed,
+          rss: mem.rss
         },
         historyPartitions: partitions.length,
         deletedPartitions: partitions.filter((id) => !liveIds.has(id)).length,
@@ -257,13 +274,16 @@ describe('persisted-state growth over a synthetic long-lived workspace (FR-018)'
     }
     expect(fourth.bytes.runs, 'runs at 5,000 are no larger than at 0').toBeLessThanOrEqual(first.bytes.runs);
 
-    // History is capped per live partition, so it grows only through deleted queues' partitions.
+    // History is capped per live partition, and deleted partitions are capped at MAX_DELETED_HISTORY_PARTITIONS (F09).
     for (const point of points) {
       expect(point.liveHistoryEntries, `live history at ${point.completions}`).toBeLessThanOrEqual(MAX_QUEUES * HISTORY_CAP_PER_PARTITION);
+      expect(point.deletedPartitions, `deleted partitions bounded at ${point.completions}`).toBeLessThanOrEqual(MAX_DELETED_HISTORY_PARTITIONS);
+      expect(point.historyPartitions, `total history partitions bounded at ${point.completions}`).toBeLessThanOrEqual(MAX_RETAINED_HISTORY_PARTITIONS);
     }
     expect(fourth.bytes.history, 'history at 5,000 above 1,000').toBeGreaterThan(third.bytes.history);
     expect(fourth.deletedPartitions, 'deleted partitions at 5,000 above 1,000').toBeGreaterThan(third.deletedPartitions);
     expect(fourth.historyPartitions, 'partitions at 5,000 above 1,000').toBeGreaterThan(third.historyPartitions);
+    expect(third.bytes.routineSnapshot, 'routine snapshot at 1,000 within 512 KiB budget').toBeLessThanOrEqual(ROUTINE_SNAPSHOT_BYTE_BUDGET);
 
     // The snapshot projects every partition, so it grows with them.
     expect(fourth.bytes.snapshot, 'snapshot at 5,000 above 1,000').toBeGreaterThan(third.bytes.snapshot);

@@ -1,5 +1,8 @@
 import type { CommandAckMessage, HostMessage } from './messages';
 import { CMD_ACK, STATE_SNAPSHOT } from './messages';
+import type { SnapshotSyncMeta } from '../../../src/contracts/snapshot-bounds.js';
+import { getHostTransport } from './host-transport';
+import { reconcileSnapshotMessage } from './snapshot-merge';
 import { IDLE_DELAYED_RETRY, IDLE_GENERAL_SETTINGS, IDLE_QUEUE_SETTINGS } from './snapshot-types';
 import { defaultQueueRuntime, findQueueRuntime } from './queue-runtime-view';
 import type {
@@ -50,11 +53,34 @@ export type AckListener = (ack: AckResult) => void;
 class SnapshotStore {
   private _snapshot = $state<WorkflowSnapshot | null>(null);
   private _lastSchemaWarning = false;
+  private _lastRevision: number | null = null;
+  private _resyncCount = 0;
+  private _droppedStaleCount = 0;
   private _pending = $state<Set<string>>(new Set());
   private _ackListeners = new Map<string, AckListener>();
 
   get snapshot(): WorkflowSnapshot | null {
     return this._snapshot;
+  }
+
+  get lastRevision(): number | null {
+    return this._lastRevision;
+  }
+
+  get resyncCount(): number {
+    return this._resyncCount;
+  }
+
+  get droppedStaleCount(): number {
+    return this._droppedStaleCount;
+  }
+
+  resetSyncState(): void {
+    this._snapshot = null;
+    this._lastRevision = null;
+    this._resyncCount = 0;
+    this._droppedStaleCount = 0;
+    this._lastSchemaWarning = false;
   }
 
   get isReady(): boolean {
@@ -214,7 +240,7 @@ class SnapshotStore {
 
   apply(message: HostMessage<WorkflowSnapshot>): void {
     if (message.type === STATE_SNAPSHOT) {
-      this.applySnapshot(message.payload);
+      this.applySnapshot(message.payload, message.sync);
       return;
     }
     if (message.type === CMD_ACK) {
@@ -240,26 +266,39 @@ class SnapshotStore {
     this._pending = next;
   }
 
-  private applySnapshot(snap: WorkflowSnapshot): void {
-    if (!snap || typeof snap !== 'object') return;
-    if (snap.schemaVersion !== 4) {
+  private applySnapshot(snap: WorkflowSnapshot, sync?: SnapshotSyncMeta): void {
+    const reconciled = reconcileSnapshotMessage(
+      this._snapshot,
+      this._lastRevision,
+      snap,
+      sync
+    );
+    if (reconciled.outcome === 'ignore-malformed') return;
+    if (reconciled.outcome === 'unknown-schema') {
       if (!this._lastSchemaWarning) {
-        console.warn('[schegent] dropping snapshot with unknown schemaVersion', snap.schemaVersion);
+        console.warn('[schegent] dropping snapshot with unknown schemaVersion', reconciled.schemaVersion);
         this._lastSchemaWarning = true;
       }
       return;
     }
-    // Feature 092 — `queues` replaces the root `phases` array as the structural
-    // field worth sanity-checking: a malformed one would leave every run-scoped
-    // read with no place to resolve against.
-    if (!Array.isArray(snap.queues)) {
+    if (reconciled.outcome === 'malformed-queues') {
       if (!this._lastSchemaWarning) {
         console.warn('[schegent] dropping snapshot with malformed queues');
         this._lastSchemaWarning = true;
       }
       return;
     }
-    this._snapshot = snap;
+    if (reconciled.outcome === 'ignore-stale') {
+      this._droppedStaleCount += 1;
+      return;
+    }
+    if (reconciled.outcome === 'resync-needed') {
+      this._resyncCount += 1;
+      getHostTransport().postMessage(reconciled.request);
+      return;
+    }
+    this._snapshot = reconciled.snapshot;
+    this._lastRevision = reconciled.revision;
     // FR-R3-106 (FR-071) — a snapshot clears NOTHING by itself.
     //
     // THE DEFECT. This used to be `if (this._pending.size > 0) this._pending = new Set();`

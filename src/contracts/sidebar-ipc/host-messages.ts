@@ -1,9 +1,11 @@
 import type { CMD_ACK, MSG_PHASE_LOG_ENTRY, STATE_SNAPSHOT } from '../sidebar-ipc';
 import type { CommandAckOutcome } from '../command-outcome';
+import type { SnapshotSyncMeta } from '../snapshot-bounds';
 
 export interface StateSnapshotMessage<S> {
   readonly type: typeof STATE_SNAPSHOT;
   readonly payload: S;
+  readonly sync?: SnapshotSyncMeta;
 }
 
 export interface CommandAckMessage {
