@@ -110,11 +110,20 @@ describe('FR-R3-105 — no capability set emits a flag twice', () => {
   });
 
   it('a bare flag with no value is still emitted once', () => {
-    // agy's `process-spawn` maps to `--sandbox` with no value; the merge path must not
-    // drop it or pair it with an empty string.
+    // agy's `process-spawn` maps to bare `--sandbox` plus `--mode accept-edits` (feature 280);
+    // the merge path must not drop the bare flag or pair it with an empty string.
     const plan = planFor('agy', CAPS.filter((c) => c !== 'process-spawn'));
     expect(plan.outcome).toBe('argv');
     if (plan.outcome !== 'argv') return;
-    expect(plan.args).toEqual(['--sandbox']);
+    expect(plan.args).toEqual(['--sandbox', '--mode', 'accept-edits']);
+  });
+
+  it('a valued flag two declarations both name is emitted once', () => {
+    // agy withholding `process-spawn` and `outside-workspace-write`: both declarations name
+    // `--mode accept-edits`, and the argv carries it once.
+    const plan = planFor('agy', CAPS.filter((c) => c !== 'process-spawn' && c !== 'outside-workspace-write'));
+    expect(plan.outcome).toBe('argv');
+    if (plan.outcome !== 'argv') return;
+    expect(plan.args).toEqual(['--sandbox', '--mode', 'accept-edits']);
   });
 });

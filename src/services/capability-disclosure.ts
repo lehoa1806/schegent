@@ -33,7 +33,9 @@ const CLAUSES: Readonly<Record<CapabilityResidual, string>> = {
     "model-run commands still execute, inside Codex's read-only sandbox, which also blocks file writes",
   'sandbox-scope-unqualified': "the scope of Agy's sandbox has not been qualified",
   'mode-refuses-shell':
-    "a granted shell is refused by Agy's accept-edits mode unless the backend's own permission settings allow it, and where they do it can still write outside the workspace"
+    "a granted shell is refused by Agy's accept-edits mode unless the backend's own permission settings allow it, and where they do it can still write outside the workspace",
+  'mode-refuses-outside-write':
+    "a granted write outside the workspace is refused by Agy's accept-edits mode unless the backend's own permission settings allow it"
 };
 
 const TOOL_RESTRICTION_LEAD = 'A tool-access restriction, not OS isolation';
