@@ -16,7 +16,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import { resolveDiffBase } from '../lib/git-diff-base';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
-import { isTerminalRunStatus, LIVE_RUN_STATUSES } from '../state/workflow-run';
+import { isOperableRunStatus, isTerminalRunStatus, LIVE_RUN_STATUSES } from '../state/workflow-run';
 import { createGitApprovalRequester, createPersistentGitApproval } from './git-approval';
 import { UNRECORDED_PIPELINE_ID } from '../state/git-plan-grants';
 import { createUncontainedConsentRequester } from './uncontained-consent';
@@ -82,6 +82,11 @@ export async function createRunSafetyWiring(input: {
     logger: input.logger,
     evidenceHealth: input.evidenceHealth
   });
+  const terminalRollupRecorder = new TerminalRunRollupRecorder({
+    writer: metricsRollupWriter,
+    logger: input.logger,
+    workspaceRoot: input.workspaceRoot
+  });
   const terminalTransitions = new TerminalTransitionCoordinator(
     input.store,
     input.queue,
@@ -93,11 +98,14 @@ export async function createRunSafetyWiring(input: {
       workspaceRoot: input.workspaceRoot
     }),
     input.logger,
-    new TerminalRunRollupRecorder({
-      writer: metricsRollupWriter,
-      logger: input.logger,
-      workspaceRoot: input.workspaceRoot
-    })
+    {
+      recordTerminalRun: async (run) => {
+        if (!isOperableRunStatus(run.status)) {
+          spendWatcher.forget(run.id);
+        }
+        await terminalRollupRecorder.recordTerminalRun(run);
+      }
+    }
   );
   // FR-R3-136 (FR-011) — NOT called here any more, and this was a find rather
   // than a listed task. `replay()` walks the journalled terminal-transition
@@ -336,6 +344,9 @@ export async function createRunSafetyWiring(input: {
       logger: input.logger
     }),
     onRunTerminal: async (run: import('../state/workflow-run').WorkflowRun) => {
+      if (!isOperableRunStatus(run.status)) {
+        spendWatcher.forget(run.id);
+      }
       // FR-R4-F04 (X5) — transport first, in its own `try`, so a failure here never stops the raw
       // transcript's finalize or the retention sweep below. `finalizeRun` reports its own failures and
       // does not throw; this guards the call, not the contract.

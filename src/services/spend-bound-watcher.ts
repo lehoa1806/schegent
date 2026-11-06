@@ -72,6 +72,11 @@ export interface SpendBoundWatcher {
   readonly seedFrom: (replay: Promise<SpendReplay>) => Promise<void>;
   /** Observed spend for a run, for the disclosure and for tests. */
   readonly observedFor: (runId: string) => RunSpendTotal;
+  /**
+   * Clear a resumed run's pause and notice latches while keeping its accumulated spend and counted
+   * row ids intact, so the next `phase-end` evaluates cumulative spend against the active bound.
+   */
+  readonly onRunResumed: (runId: string) => void;
   /** Drop a finished run's tally, its paused flag and its notice keys. */
   readonly forget: (runId: string) => void;
   /**
@@ -135,14 +140,24 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
    */
   const evicted = new Set<string>();
 
-  const forget = (runId: string): void => {
-    observed.delete(runId);
-    paused.delete(runId);
-    evicted.delete(runId);
+  const clearNotified = (runId: string): void => {
     const prefix = `${runId}${NOTICE_KEY_SEPARATOR}`;
     for (const key of [...notified]) {
       if (key.startsWith(prefix)) notified.delete(key);
     }
+  };
+
+  const onRunResumed = (runId: string): void => {
+    if (runId === '') return;
+    paused.delete(runId);
+    clearNotified(runId);
+  };
+
+  const forget = (runId: string): void => {
+    observed.delete(runId);
+    paused.delete(runId);
+    evicted.delete(runId);
+    clearNotified(runId);
   };
 
   /** A run that no longer needs its tally: gone from the store, or already terminal. */
@@ -207,6 +222,10 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
   };
 
   const onAuditEntry = (entry: AuditEntry): void => {
+    if (entry.eventType === 'phase-resumed' || entry.eventType === 'phase-restarted') {
+      onRunResumed(entry.runId);
+      return;
+    }
     if (entry.eventType !== 'phase-end') return;
     // `AuditEntry.runId` is typed as a string, so the only unusable value it can hold is the
     // empty one — a run-less entry, which no bound applies to.
@@ -302,6 +321,7 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
     onAuditEntry,
     seedFrom,
     observedFor: (runId) => observed.get(runId) ?? NO_SPEND_OBSERVED,
+    onRunResumed,
     forget,
     trustFor: (runId, denomination) => {
       const total = observed.get(runId) ?? NO_SPEND_OBSERVED;

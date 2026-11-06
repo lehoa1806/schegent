@@ -69,7 +69,12 @@ export function shouldContinueConversation(run: WorkflowRun): boolean {
 export function clearedPauseFieldsOnResume(
   run: WorkflowRun
 ): Partial<Pick<WorkflowRun, 'manualPauseAt' | 'manualPauseCause'>> {
-  if (run.manualPauseCause !== 'verify-paused') return {};
+  if (
+    run.manualPauseCause !== 'verify-paused' &&
+    run.manualPauseCause !== 'spend-bound-reached'
+  ) {
+    return {};
+  }
   return { manualPauseAt: null, manualPauseCause: null };
 }
 

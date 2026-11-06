@@ -129,23 +129,14 @@ export interface WorkflowControllerDeps {
   startFailures?: QueueStartFailurePort | null;
   /** Feature 195 (FR-001) — read per drain attempt, like `getForceContinueOnRetryCap`. Absent falls back to `'halt-on-failure'`. */
   getQueueFailurePolicyDefault?: () => QueueFailurePolicy;
+  spendWatcher?: { readonly onRunResumed: (runId: string) => void };
 }
 
-export interface StartNewOptions {
-  pipelineId?: string;
-}
+export interface StartNewOptions { pipelineId?: string; }
 
 // Feature 093 (T049a) — the admission contract lives in its own module; see
 // `./run-admission` for why the drain waits for admission and not completion.
-import {
-  NOTHING_TO_DRIVE,
-  NOT_RESUMED,
-  NOT_RESUMED_INELIGIBLE,
-  NOT_RESUMED_LEASE_DECLINED,
-  type RunAdmission,
-  type ResumeAdmission,
-  type ResumeOptions
-} from './run-admission';
+import { NOTHING_TO_DRIVE, NOT_RESUMED, NOT_RESUMED_INELIGIBLE, NOT_RESUMED_LEASE_DECLINED, type RunAdmission, type ResumeAdmission, type ResumeOptions } from './run-admission';
 
 export type { RunAdmission, ResumeAdmission } from './run-admission';
 export type { MutationResult } from './phase-control-service';
@@ -182,6 +173,7 @@ export class SchegentWorkflowController {
   private readonly lifecycleAuditor: WorkflowLifecycleAuditor;
   private readonly terminalTransitions: WorkflowControllerDeps['terminalTransitions'];
   private readonly requestGitApproval: WorkflowControllerDeps['requestGitApproval'];
+  private readonly spendWatcher: WorkflowControllerDeps['spendWatcher'];
   /** FR-R3-146 — window-lived, because its bound is one grant per kind per window. */
   private readonly consent: UncontainedConsentGate;
   private readonly runFactory: WorkflowRunFactory;
@@ -209,6 +201,7 @@ export class SchegentWorkflowController {
     this.sessionCleanup = deps.sessionCleanup ?? cleanupSessionArtifacts;
     this.terminalTransitions = deps.terminalTransitions;
     this.requestGitApproval = deps.requestGitApproval;
+    this.spendWatcher = deps.spendWatcher;
     this.consent = new UncontainedConsentGate(deps.requestUncontainedConsent, (r) => logger.sanitize(r));
     this.runFactory = new WorkflowRunFactory({
       getCatalog: () => this.catalog,
@@ -346,6 +339,7 @@ export class SchegentWorkflowController {
       armIsContinue: (queueId) => this.sessions.acquire(queueId).isContinueGate.arm(),
       cancelActive: (queueId) => this.cancelActive(queueId),
       resumeExisting: (queueId, customPrompt) => this.resumeExisting(queueId, customPrompt),
+      onRunResumed: (runId) => this.spendWatcher?.onRunResumed(runId),
       auditor: {
         appendPhaseControl: (eventType, run, payload) =>
           this.lifecycleAuditor.appendPhaseControl(eventType, run, payload),
@@ -782,6 +776,7 @@ export class SchegentWorkflowController {
     );
     if (next === 'ineligible') return NOT_RESUMED_INELIGIBLE;
     if (next === null) return NOT_RESUMED;
+    this.spendWatcher?.onRunResumed(next.id);
     await this.queue.markInFlight(feature.id, next.id, true);
     // Admitted. `driveSession` carries its own `finally` disposal, so the drive
     // is handed back rather than awaited (T049a). FR-R3-146 (FR-002, FR-005): a

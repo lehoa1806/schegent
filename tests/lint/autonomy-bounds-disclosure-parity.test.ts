@@ -78,4 +78,12 @@ describe('FR-R3-112 — the autonomy-bounds disclosure derives from the bounds',
   it('says the spend bound ships unset rather than leaving it to be assumed', () => {
     expect(document).toMatch(/ships unset|no bound by default/);
   });
+
+  it('reconciles the 8 MiB archive-aware replay, post-resume re-evaluation, and codex --json vs /status disclosure (FR-R5-F15)', () => {
+    expect(document).not.toMatch(/last 2 MiB of `\.schegent\/audit\.log`/);
+    expect(document).toContain('up to 8 MiB in\nall (`SPEND_REPLAY_MAX_BYTES`)');
+    expect(document).toContain('does **not** grant a permanent waiver');
+    expect(document).toContain('non-interactive\n`codex exec --json`');
+    expect(document).toContain('supplementary, best-effort fallback');
+  });
 });

@@ -64,7 +64,14 @@ saying "the bound is denomination-aware".
    raising the bound and investigating the run is informed.
 3. **Nothing is cancelled and nothing is discarded.** There is no terminal transition: an
    operator returning to a paused run has lost time; to a failed one, possibly work.
-4. Resume from the dashboard or `Schegent: Resume`, exactly as for any other pause.
+4. Resume from the dashboard or `Schegent: Resume`, exactly as for any other pause. Resuming a
+   spend-paused Run clears the current pause latch while preserving the Run's cumulative spend
+   and counted `phase-end` row IDs; it does **not** grant a permanent waiver for the rest of the
+   Run. On the next `phase-end` evaluation after resume, cumulative spend is checked again
+   against the currently effective workspace or Phase bound: if you raised the bound, the Run
+   continues until cumulative spend reaches the new bound (and pauses again on crossing); if you
+   resumed without raising the bound above cumulative spend, the Run pauses again at the next
+   `phase-end` boundary.
 
 The bound is evaluated at a phase boundary, against the `phase-end` audit record that
 carries the usage — the same record an operator reads and `npm run audit:verify` chains.
@@ -72,15 +79,15 @@ Spend cannot be observed mid-turn, because no backend reports it until the turn 
 the overshoot is at most the phase that crossed the bound.
 
 A host restart does not hand a run its whole bound again. At activation the tally of every live
-run is rebuilt from the `phase-end` rows in the last 2 MiB of `.schegent/audit.log`. Nothing is
-evaluated or paused while it is rebuilt, so a tally the rebuild leaves over the bound pauses its
-run at the run's next phase boundary. Rows before that window, or in an archived log, are not
-counted, which understates. A run the operator resumed past its bound before a restart pauses
-once more at its next phase boundary. A resumed Claude session's first row after a restart
-records only its own cost, because the run keeps the session's cumulative cost beside its id.
-Rows written before this release, by a resume after a restart, count a session's earlier cost
-again, and so does the first resume of a run persisted before it. Such a run can pause early,
-once per host session.
+Run is rebuilt from `.schegent/audit.log` and its rotated archives, newest first, up to 8 MiB in
+all (`SPEND_REPLAY_MAX_BYTES`), stopping once a record from before the Run's `startedAt` is
+reached. Nothing is evaluated or paused during the replay itself, so a tally that is already at
+or over the bound pauses its Run at the next `phase-end` boundary, and rows seen by both the
+replay seed and the live audit subscription are counted once by entry `id`. A resumed Claude
+session's first row after a restart records only its own cost, because the Run keeps the
+session's cumulative cost beside its id. Rows written before this release, by a resume after a
+restart, count a session's earlier cost again, and so does the first resume of a Run persisted
+before it. Such a Run can pause early, once per host session.
 
 ## What the spend bound reads, and the period it did not
 
@@ -91,10 +98,14 @@ crossed it, and nothing stops an invocation partway.
 
 **The denomination is the backend's, not the figures'.** The bound compares a Run's total with the
 limit in the unit the ended phase's backend reports: USD for `claude`, tokens for `codex` and `agy`
-(the table above). A limit in that unit with no recorded figure in it is **not measurable**, and an
-unmeasurable Run is never read as within its bound. The operator is told once per Run per unit in a
-host session, in a notice that names the unit and says the usage is not reported by that backend,
-with no amount. No price is inferred and nothing is converted between cost and tokens.
+(the table above). On `codex`, structured token counts come primarily from non-interactive
+`codex exec --json` (`turn.completed` usage events); interactive PTY `/status` probing is a
+supplementary, best-effort fallback when applicable and is not part of the headless qualification
+baseline. On `agy`, token counts come from the JSON envelope (`stats.models[*].tokens`). A limit in
+that unit with no recorded figure in it is **not measurable**, and an unmeasurable Run is never read
+as within its bound. The operator is told once per Run per unit in a host session, in a notice that
+names the unit and says the usage is not reported by that backend, with no amount. No price is
+inferred and nothing is converted between cost and tokens.
 
 **The period in which a configured bound did not act.** The audit writer has recorded a phase's
 usage nested under `metrics` since 2026-08-02 (`159ba0cd`). The spend bound was added on 2026-08-27

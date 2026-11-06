@@ -547,8 +547,24 @@ describe('FR-R3-209 (T1895) — the seed rebuilds the tally after a restart', ()
     expect(watcher.observedFor('run-1').costUsd, 'a new row folds').toBe(0.875);
   });
 
-  it('S5: remembers a Run seeded as paused for spend, so its next row writes no second pause', async () => {
-    const { runs, writes, watcher } = seedHarness({ limitUsd: 1, limitTokens: null });
+  it('S5: remembers a Run seeded as paused for spend while paused, then re-evaluates against a raised bound after resume and pauses a second time on crossing', async () => {
+    let limitUsd = 1;
+    const runs = new Map<string, WorkflowRun>();
+    const writes: Written[] = [];
+    const notices: string[] = [];
+    const watcher = createSpendBoundWatcher({
+      config: () => ({ limitUsd, limitTokens: null }),
+      findRunById: (runId) => {
+        const found = runs.get(runId);
+        return found ? { queueId: 'default', run: found } : null;
+      },
+      pause: async (queueId, written) => {
+        writes.push({ queueId, run: written });
+      },
+      notify: (message) => notices.push(message),
+      logger,
+      now: () => 1_700_000_000_000
+    });
     runs.set(
       'run-1',
       runFixture({
@@ -559,11 +575,30 @@ describe('FR-R3-209 (T1895) — the seed rebuilds the tally after a restart', ()
     );
     await watcher.seedFrom(Promise.resolve(replayOf([row('e-1', 'run-1', { totalCostUsd: 1.5 })])));
 
-    // The operator's resume clears the pair, as `PhaseControlService` does.
-    runs.set('run-1', runFixture({ manualPauseAt: null, manualPauseCause: null }));
-    watcher.onAuditEntry(row('e-2', 'run-1', { totalCostUsd: 0.5 }));
+    // While still paused, a late row folds into the tally without stacking a second pause write.
+    watcher.onAuditEntry(row('e-2', 'run-1', { totalCostUsd: 0.25 }));
     await settle();
     expect(writes).toEqual([]);
+    expect(watcher.observedFor('run-1').costUsd).toBe(1.75);
+
+    // Operator raises the bound to $2.50 and resumes the Run.
+    limitUsd = 2.5;
+    runs.set('run-1', runFixture({ status: 'running', manualPauseAt: null, manualPauseCause: null }));
+    watcher.onRunResumed('run-1');
+
+    // First post-resume phase ($0.50 -> cumulative $2.25) is within the raised $2.50 bound.
+    watcher.onAuditEntry(row('e-3', 'run-1', { totalCostUsd: 0.5 }));
+    await settle();
+    expect(writes).toEqual([]);
+    expect(watcher.observedFor('run-1').costUsd).toBe(2.25);
+
+    // Second post-resume phase ($0.50 -> cumulative $2.75) crosses $2.50 and pauses a second time.
+    watcher.onAuditEntry(row('e-4', 'run-1', { totalCostUsd: 0.5 }));
+    await settle();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.run.manualPauseCause).toBe('spend-bound-reached');
+    expect(notices[0]).toContain('$2.75');
+    expect(notices[0]).toContain('$2.50');
   });
 
   it('S6: evaluates nothing at the seed, and pauses at the next live row', async () => {
@@ -1032,6 +1067,114 @@ describe('FR-R4-F02 (contract S2 G8) — the watcher is subscribed before any dr
     const seedAt = wiring.indexOf('spendWatcher.seedFrom(');
     expect(subscribeAt, 'the subscription is in the wiring').toBeGreaterThan(-1);
     expect(seedAt, 'the seed is in the wiring').toBeGreaterThan(subscribeAt);
+  });
+});
+
+describe('FR-R5-F15 — post-resume spend bound evaluation and lifecycle state', () => {
+  it('re-pauses on the next phase-end when resumed without raising the bound, and supports repeated raise -> resume -> pause cycles', async () => {
+    let limitUsd = 1.0;
+    const runs = new Map<string, WorkflowRun>([['run-1', runFixture()]]);
+    const writes: Written[] = [];
+    const notices: string[] = [];
+    const watcher = createSpendBoundWatcher({
+      config: () => ({ limitUsd, limitTokens: null }),
+      findRunById: (runId) => {
+        const found = runs.get(runId);
+        return found ? { queueId: 'default', run: found } : null;
+      },
+      pause: async (queueId, written) => {
+        writes.push({ queueId, run: written });
+        runs.set(written.id, { ...written, status: 'paused' });
+      },
+      notify: (message) => notices.push(message),
+      logger,
+      now: () => 1_700_000_000_000
+    });
+
+    // Crossing 1: $1.20 >= $1.00
+    watcher.onAuditEntry(phaseEnd({ totalCostUsd: 1.2 }));
+    await settle();
+    expect(writes).toHaveLength(1);
+
+    // Resume without raising the bound: next phase-end ($0.10 -> $1.30 >= $1.00) pauses again.
+    runs.set('run-1', runFixture({ status: 'running', manualPauseAt: null, manualPauseCause: null }));
+    watcher.onRunResumed('run-1');
+    watcher.onAuditEntry(phaseEnd({ totalCostUsd: 0.1 }));
+    await settle();
+    expect(writes).toHaveLength(2);
+    expect(watcher.observedFor('run-1').costUsd).toBeCloseTo(1.3, 6);
+
+    // Raise bound to $2.00 and resume via phase-resumed audit entry:
+    limitUsd = 2.0;
+    runs.set('run-1', runFixture({ status: 'running', manualPauseAt: null, manualPauseCause: null }));
+    watcher.onAuditEntry({
+      ...phaseEnd({}),
+      eventType: 'phase-resumed',
+      runId: 'run-1'
+    } as unknown as AuditEntry);
+
+    // Next phase-end ($0.40 -> $1.70 < $2.00) stays running.
+    watcher.onAuditEntry(phaseEnd({ totalCostUsd: 0.4 }));
+    await settle();
+    expect(writes).toHaveLength(2);
+
+    // Next phase-end ($0.50 -> $2.20 >= $2.00) pauses a third time.
+    watcher.onAuditEntry(phaseEnd({ totalCostUsd: 0.5 }));
+    await settle();
+    expect(writes).toHaveLength(3);
+    expect(notices.at(-1)).toContain('$2.20');
+    expect(notices.at(-1)).toContain('$2.00');
+  });
+
+  it('preserves countedRowIds across resume so duplicate audit rows are never double-counted, and isolates two concurrent Runs', async () => {
+    let limitTokens = 1_000;
+    const runs = new Map<string, WorkflowRun>([
+      ['run-a', runFixture({ id: 'run-a', defaultRunnerKind: 'codex' })],
+      ['run-b', runFixture({ id: 'run-b', defaultRunnerKind: 'codex' })]
+    ]);
+    const writes: Written[] = [];
+    const watcher = createSpendBoundWatcher({
+      config: () => ({ limitUsd: null, limitTokens }),
+      findRunById: (runId) => {
+        const found = runs.get(runId);
+        return found ? { queueId: `q-${runId}`, run: found } : null;
+      },
+      pause: async (queueId, written) => {
+        writes.push({ queueId, run: written });
+        runs.set(written.id, { ...written, status: 'paused' });
+      },
+      notify: () => undefined,
+      logger,
+      now: () => 1_700_000_000_000
+    });
+
+    const firstRowA = { ...phaseEnd({ inputTokens: 1_200 }, 'run-a'), id: 'dup-row-a1' } as AuditEntry;
+    watcher.onAuditEntry(firstRowA);
+    watcher.onAuditEntry(phaseEnd({ inputTokens: 400 }, 'run-b'));
+    await settle();
+    expect(writes.map((w) => w.run.id)).toEqual(['run-a']);
+    expect(watcher.observedFor('run-b').totalTokens).toBe(400);
+
+    // Raise token bound to 2,000 and resume run-a; replay of dup-row-a1 must NOT add another 1,200 tokens.
+    limitTokens = 2_000;
+    runs.set('run-a', runFixture({ id: 'run-a', defaultRunnerKind: 'codex', status: 'running' }));
+    watcher.onRunResumed('run-a');
+    watcher.onAuditEntry(firstRowA);
+    await settle();
+    expect(watcher.observedFor('run-a').totalTokens).toBe(1_200);
+    expect(writes).toHaveLength(1);
+
+    // Run B crosses 2,000 independently while Run A stays at 1,200.
+    watcher.onAuditEntry(phaseEnd({ inputTokens: 1_700 }, 'run-b'));
+    await settle();
+    expect(writes.map((w) => w.run.id)).toEqual(['run-a', 'run-b']);
+    expect(watcher.observedFor('run-a').totalTokens).toBe(1_200);
+    expect(watcher.observedFor('run-b').totalTokens).toBe(2_100);
+
+    // Terminal cleanup (`forget`) drops run-a's state without touching run-b.
+    watcher.forget('run-a');
+    expect(watcher.observedFor('run-a')).toEqual(NO_SPEND_OBSERVED);
+    expect(watcher.observedFor('run-b').totalTokens).toBe(2_100);
   });
 });
 
