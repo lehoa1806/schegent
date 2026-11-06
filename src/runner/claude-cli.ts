@@ -773,6 +773,7 @@ export class ClaudeCliRunner implements BackendRunner {
       idleTimerActive = false;
       clearTimeout(timer);
       if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+      for (const line of stdoutFramer.flush().lines) handleStdoutLine(line); // FR-R5-F11: flush if stdioCloseTimedOut skipped 'end'
       // FR-R3-198 (H11) — so a ceiling cannot fire, and log, after completion.
       clearTimeout(holdCeiling);
       // FR-R3-075 — exactly one termination reason: the deadline wins over the
