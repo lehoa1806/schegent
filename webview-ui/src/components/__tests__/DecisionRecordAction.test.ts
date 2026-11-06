@@ -98,7 +98,7 @@ describe('a refusal and a silence', () => {
 
   it('never shows free text from a refusal reason', async () => {
     const view = await clickAndAnswer({ status: 'rejected', reason: 'failed at /Users/someone/specs/x' });
-    const text = view.getByTestId(STATUS).textContent ?? '';
+    const text = view.getByTestId(STATUS).textContent;
     expect(text).toBe('The host refused this action.');
     expect(text).not.toContain('/Users');
   });
