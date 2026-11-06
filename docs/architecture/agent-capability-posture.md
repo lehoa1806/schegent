@@ -38,7 +38,7 @@ H-01 of the 2026-08-23 principal architecture review — its largest strategic f
 | backend | argv | OS-enforced bound |
 |---|---|---|
 | `claude` (**the default**) | `--dangerously-skip-permissions` | none |
-| `agy` | `--dangerously-skip-permissions` | none — and `FR-R3-125` found the CLI has a `--sandbox` flag Schegent does not request by default (a Phase that withholds `process-spawn` gets it, and one that withholds `outside-workspace-write` gets `--mode accept-edits`); see [the qualification record](backend-containment-qualification.md) §4 |
+| `agy` | `--dangerously-skip-permissions` | none — and `FR-R3-125` found the CLI has a `--sandbox` flag Schegent does not request by default (a Phase that withholds `process-spawn` gets it with `--mode accept-edits`, and one that withholds `outside-workspace-write` gets `--mode accept-edits`); see [the qualification record](backend-containment-qualification.md) §4 |
 | `codex` | `exec --json --sandbox workspace-write` | filesystem, `.git` read-only |
 
 `schegent.backend.runner` defaults to `claude`. So a fresh install's default run path reaches
@@ -175,7 +175,11 @@ evidence an operator checks afterwards.
 - **`agy` can express only two of the four capabilities.** Its CLI has `--sandbox` for `process-spawn`
   and, since feature 279, `--mode accept-edits` for `outside-workspace-write`: a tool restriction, not
   OS isolation, that also refuses a granted shell headless (the `mode-refuses-shell` residual; see
-  [the qualification record](backend-containment-qualification.md) §4.2). It has no per-tool flag, so a
+  [the qualification record](backend-containment-qualification.md) §4.2). Since feature 280 withholding
+  `process-spawn` passes both, `--sandbox --mode accept-edits`, because `--sandbox` alone also refused
+  file-tool writes inside the workspace; that cell is a tool restriction too, and while
+  `outside-workspace-write` stays granted the mode refuses it (the `mode-refuses-outside-write` residual).
+  It has no per-tool flag, so a
   phase withholding `network` or `workspace-write` on `agy` is **refused before it starts** rather than
   run unbounded. That is an honest outcome, not a working one, and it is the strongest argument for
   route B later.

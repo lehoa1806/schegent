@@ -66,7 +66,7 @@ mechanism for every backend, failing in **both** directions.
 | `codex` | linux | Expected to be the same mode under Landlock/seccomp rather than Seatbelt | `codex-sandbox-workspace-write` | **Unverified.** Probe: run `codex exec --sandbox workspace-write` on a Linux host and attempt a write outside the workspace; the mode is qualified when the write is refused by the kernel. |
 | `codex` | win32 | Unknown | `codex-sandbox-workspace-write` | **Unverified.** Probe: as above on Windows. Codex's own help names Seatbelt, which is macOS-only, so the Windows mechanism is not merely unverified but **unnamed** — the strongest statement available today is that Schegent passes the flag and does not know what enforces it. |
 | `claude` | all | **None.** | `none` | **Verified that Schegent requests none; Claude's settings-based shell sandbox is unverified and not adopted.** `src/runner/claude-cli.ts` passes no sandbox flag or settings override, and `claude --help` offers `--allowedTools`, `--disallowedTools`, `--permission-mode`, `--settings` and `--dangerously-skip-permissions`. Claude Code's settings-based `sandbox` configuration confines Bash/shell subcommands rather than built-in file tools, MCP servers, hooks or all network traffic, and is not qualified under Schegent's print/stream/resume invocation (see §4.1). |
-| `agy` | all | **None requested by default.** `--sandbox` exists, and a Phase that withholds `process-spawn` gets it (§7), unqualified and not counted here; see §4. A Phase that withholds `outside-workspace-write` gets `--mode accept-edits`, a tool restriction rather than OS isolation (§4.2). | `none` | **Verified that the flag exists; its enforcement is unverified.** See §4, which is the substantive part of this record. |
+| `agy` | all | **None requested by default.** `--sandbox` exists, and a Phase that withholds `process-spawn` gets it with `--mode accept-edits` (§7), unqualified and not counted here; see §4. A Phase that withholds `outside-workspace-write` gets `--mode accept-edits`, a tool restriction rather than OS isolation (§4.2). | `none` | **Verified that the flag exists; its enforcement is unverified.** See §4, which is the substantive part of this record. |
 
 ## 4. Agy's `--sandbox`: available, not requested by default, and why
 
@@ -82,9 +82,10 @@ and Schegent does not request it by default. That is the finding; recording it i
 acting on it, and it is recorded here rather than folded into a code comment nobody would find.
 
 The one case where it is requested is a Phase's own: when a Phase withholds `process-spawn`, the
-capability planner passes `--sandbox` (§7). That is a restriction the Phase asked for, with its scope
-unqualified (`sandbox-scope-unqualified`), not a containment claim, so the mechanism above stays
-`none`.
+capability planner passes `--sandbox`, together with `--mode accept-edits` so file tools can still write
+inside the workspace (§4.2, §7). That is a restriction the Phase asked for, classed `tool-restriction`, with
+the sandbox's scope unqualified (`sandbox-scope-unqualified`), not a containment claim, so the mechanism
+above stays `none`.
 
 **It is not requested by default, and the reasons are in descending order of weight.**
 
@@ -177,11 +178,32 @@ allowlist with the operator's own home and agy settings, and a disposable worksp
 `command`. Where they do, the shell can run and can write outside the workspace, which is why the
 `mode-refuses-shell` clause is conditional on the backend's own permission settings. A `write_file` allow-rule
 would likewise let the file tool write outside the workspace. No residual names that, which is the same
-operator-configuration assumption the claude `--permission-mode acceptEdits` cell rests on. **Not observed:** an
-inside write under `--sandbox --mode accept-edits`; whether a settings file inside the workspace can add an
-allow-rule; outside paths reached through `..` or a symlink; a resumed `--conversation` turn; tools other than
+operator-configuration assumption the claude `--permission-mode acceptEdits` cell rests on. **Not observed:**
+whether a settings file inside the workspace can add an allow-rule; outside paths reached through `..` or a symlink; a resumed `--conversation` turn; tools other than
 `write_file` and `command`, MCP and browser tools included; and any of this on linux or win32.
 `workspace-write` and `network` remain refused on `agy`: no flag in the planner's table expresses them.
+
+**The `process-spawn` cell (feature 280).** A follow-up probe on 2026-11-06 (14:43:56Z to 14:44:46Z), the
+same launch shape and settings, one fresh workspace per case
+(`specs/280-agy-sandbox-accept-edits/measurements.md`):
+
+- Case i, `--sandbox`: a file-tool write inside the workspace was not written; agy auto-denied `write_file`
+  and reported "no output produced". Exit 0 after 16.5 s.
+- Case j, `--sandbox --mode accept-edits`: the same write was written. Exit 0 after 19.4 s.
+- Case k, `--sandbox`: a shell write inside the workspace was not written; agy auto-denied `command`. Exit 0
+  after 11.8 s.
+
+So a Phase that withheld only `process-spawn` and ran `--sandbox` alone could not edit a file, and exited 0
+as if it had finished. That cell now runs `--sandbox --mode accept-edits`, classed `tool-restriction`. Case k
+shows the shell refused by headless permissions, not by anything `--sandbox` was shown to do, so
+`sandbox-scope-unqualified` stays. The mode also refuses a write outside the workspace (case d above, under
+this exact argv), which the Phase granted: that is disclosed as `mode-refuses-outside-write`, a residual only
+while `outside-workspace-write` is granted, and conditional on agy's own permission settings like
+`mode-refuses-shell`. Case d does not show which layer refused it, because control f denied the same write
+with no `--mode`. **Not observed** for this cell: a shell command under the exact `--sandbox --mode
+accept-edits` argv (its refusal is inferred from case k and 279's case g, each with one of the two flags), and
+whether a settings file the Phase now writes inside the workspace can add an allow-rule that a later launch
+honours. Before this change the cell could write no file, so that second route is new to it.
 
 ## 5. What Schegent does with this
 
@@ -249,7 +271,7 @@ every capability flag below was listed by the CLI's own `--help`. `agy`'s rows w
 | `codex` | `outside-workspace-write` | `--sandbox workspace-write` | `cli-sandbox` | none | `--help` lists `--sandbox` | observed | codex-cli 0.163.0 |
 | `codex` | `process-spawn` | `--sandbox read-only` | `cli-sandbox` | `sandboxed-commands-run` | `--help` lists `--sandbox` | observed | codex-cli 0.163.0 |
 | `codex` | `network` | none | `refused` | none | no flag in the planner's table expresses it | unsupported | codex-cli 0.163.0 |
-| `agy` | `process-spawn` | `--sandbox` | `cli-sandbox` | `sandbox-scope-unqualified` | `--help` lists `--sandbox` ("Run in a sandbox with terminal restrictions enabled") | observed | agy 1.5.2 |
+| `agy` | `process-spawn` | `--sandbox --mode accept-edits` | `tool-restriction` | `mode-refuses-outside-write` (when outside-workspace-write is granted), `sandbox-scope-unqualified` | `--help` lists `--sandbox` ("Run in a sandbox with terminal restrictions enabled") and `--mode`; headless probe in §4.2 (cases i to k) | observed | agy 1.5.2 |
 | `agy` | `workspace-write` | none | `refused` | none | no flag in the planner's table expresses it | unsupported | agy 1.5.2 |
 | `agy` | `outside-workspace-write` | `--mode accept-edits` | `tool-restriction` | `mode-refuses-shell` (when process-spawn is granted) | `--help` lists `--mode` ("Set the agent execution mode for this session (accept-edits, auto, plan)"); headless probe in §4.2 | observed | agy 1.5.2 |
 | `agy` | `network` | none | `refused` | none | no flag in the planner's table expresses it | unsupported | agy 1.5.2 |
