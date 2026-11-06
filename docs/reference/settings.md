@@ -206,9 +206,9 @@ because an operator reads the profile they are choosing:
   all.
 - **A profile is not a permission boundary.** An uncontained backend runs under your local authority
   and can read the evidence store whatever profile is selected (`FR-R3-125`).
+- **Backend CLIs write their own session stores under your home directory (`<home>/.claude/`, `<home>/.codex/`, `<home>/.gemini/antigravity/`).** Schegent does not pass `--no-session-persistence` or `exec --ephemeral` because session continuation, retry, compaction and manual resume require persisted backend session IDs (and `agy --help` exposes no no-persistence flag). Schegent's privacy profiles, retention sweeps, `Export Run Evidence` and `Delete Run Evidence` manage `.schegent/` and Schegent's checkpoints only — they never delete, redact or age vendor-owned home-directory files.
 
-`ephemeral` also gives up the thing `diagnostic` exists for: with raw capture `off`, a failed Run
-leaves no transcript to diagnose from.
+`ephemeral` also gives up the thing `diagnostic` exists for: with raw capture `off` and transport capture `off`, a failed Run leaves no transcript or Schegent transport log to diagnose from (though the backend CLI may still retain its own session history under `<home>/`). Under `diagnostic` (`errors-only`), a failed, canceled or paused Run retains an unredacted raw transcript (and a failed or canceled Run retains its redacted transport log, while a paused Run's transport stays in the temp stage), and resuming that same Run to `completed` removes both its promoted raw transcript and its promoted `errors-only` transport log.
 
 Nothing here is encrypted at rest, and that is a recorded decision rather than an omission — see
 [the evidence-encryption declination](../architecture/evidence-encryption-declination.md).

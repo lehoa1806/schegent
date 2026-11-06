@@ -115,7 +115,13 @@ const COMMON_RESIDUALS: readonly string[] = Object.freeze([
   // content on the machine; a profile that listed only what Schegent keeps would read as "nothing leaves".
   "Claude Code sends repository content and prompts to the model vendor, whatever Schegent's local " +
     'capture settings are. Schegent makes no network call of its own, but that does not keep that content ' +
-    "on the machine: it leaves through the CLI's own requests, and no profile changes that."
+    "on the machine: it leaves through the CLI's own requests, and no profile changes that.",
+  // FR-R5-F17 (NS-10, NU-20, S-19..S-22) — backend-owned session stores under the operator's home directory
+  // are outside Schegent's retention and deletion controls.
+  'Backend CLIs write their own unredacted session history under your home directory (`<home>/.claude/`, ' +
+    '`<home>/.codex/`, `<home>/.gemini/antigravity/`) to support session continuation and resume. ' +
+    "Schegent's privacy profiles, retention sweeps, Export Run Evidence and Delete Run Evidence control " +
+    '`.schegent/` and Schegent checkpoints only — they never delete, redact or age backend-owned home-directory stores.'
 ]);
 
 /**
@@ -144,8 +150,9 @@ export function privacyProfiles(): readonly PrivacyProfile[] {
       }),
       residual: Object.freeze([
         'Raw capture is OFF, so a failed Run leaves no transcript to diagnose from, and its transport mode ' +
-          'is `off`, so the CLI\'s own output is not kept either. That is the trade this profile makes, ' +
-          'and it is the whole reason `diagnostic` is the default.',
+          "is `off`, so the CLI's own output is not kept in Schegent's transport capture either (the backend " +
+          'CLI may still write its own session history under your home directory). That is the trade this ' +
+          'profile makes, and it is the whole reason `diagnostic` is the default.',
         ...COMMON_RESIDUALS
       ])
     }),
@@ -169,7 +176,9 @@ export function privacyProfiles(): readonly PrivacyProfile[] {
       }),
       residual: Object.freeze([
         'A failed, canceled or paused Run retains an UNREDACTED transcript — operator prompts, source, ' +
-          'and model output — for the session-retention window above.',
+          'and model output — for the session-retention window above; because `errors-only` is evaluated at ' +
+          'the Run level, resuming that same Run to `completed` removes its promoted raw transcript and ' +
+          'promoted `errors-only` transport log.',
         ...COMMON_RESIDUALS
       ])
     }),
