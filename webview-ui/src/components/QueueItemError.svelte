@@ -19,6 +19,13 @@
   // FR-R5-F19 (FR-006) — a row that is not failed holds an error from an attempt already over.
   const label = $derived(lastErrorLabel(item.status));
 
+  // FR-R5-F19 (FR-003) — the blocker notice sends the operator to the row, so a failed row offers the
+  // decision-record action whether or not it holds a last-error summary. A row that is not failed keeps
+  // the action beside the toggle, as before.
+  const showDecisionRecord = $derived(
+    item.status === 'failed' || (showLastError && Boolean(item.lastErrorSummary))
+  );
+
   // FR-R4-F15 (contract P2) — the region asks the host for the row's retained failure record each time
   // it opens, and only then: a record the retention sweep removed since the last look must not be
   // shown from a cache. The button's own rule is unchanged, so a row with no last error asks nothing.
@@ -56,7 +63,11 @@
     aria-controls="queue-item-error-{item.id}"
     onclick={onToggle}
   >{open ? label.hideToggle : label.showToggle}</button>
+{/if}
+{#if showDecisionRecord}
   <DecisionRecordAction rowId={item.id} />
+{/if}
+{#if showLastError && item.lastErrorSummary}
   {#if open}
     <div
       id="queue-item-error-{item.id}"
