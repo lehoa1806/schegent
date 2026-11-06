@@ -363,13 +363,13 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     rotationSizeMB,
     rotationMaxAgeDays,
     completedResetGeneration,
-    v6MigrationEvents: migrationEvents.v6MigrationEvents,
-    v7MigrationEvents: migrationEvents.v7MigrationEvents,
-    v11MigrationEvents: migrationEvents.v11MigrationEvents,
-    v12MigrationEvents: migrationEvents.v12MigrationEvents,
-    orphanedRunEvents: migrationEvents.orphanedRunEvents,
-    runRepairEvents: migrationEvents.runRepairEvents,
-    v14MigrationEvents: migrationEvents.v14MigrationEvents
+    // FR-R5-F09 — spread the full `InitializeResult` bundle so `v10MigrationEvents`
+    // and `v13MigrationEvents` (along with v6, v7, v11, v12, v14, orphaned-run, and
+    // run-repair events) reach `wireEvidence` without per-field omission drift.
+    // Keeping this comment block preserves `wireStage2` within its ratchet window.
+    // Every field of `InitializeResult` matches `EvidenceWiringDeps`.
+    // See `src/state/migration-audit-forwarder.ts`.
+    ...migrationEvents
   });
   // FR-R3-119 — extracted to `src/activation/backend-execution-wiring.ts`.
   // The `bind*` setters replace `let x = null` closures so late bindings are

@@ -114,54 +114,11 @@ export function needsHostVerificationMigration(schemaVersion: number): boolean {
 
 export const HOST_VERIFICATION_MIGRATION_TARGET = STATE_SCHEMA_VERSION_V14;
 
-/**
- * The migration-ladder entry point, named to the convention the ladder gate and
- * `state-schema.ts`'s version history both use.
- *
- * A persisted workspace record holds many snapshots; this maps the per-snapshot
- * step over all of them and reports how many phases acquired an explicit value,
- * so the activation path can record a real number rather than "migrated".
- */
-export interface WorkspaceRecordV13 {
-  readonly plans?: readonly PersistedPlanSnapshot[];
-  readonly [key: string]: unknown;
-}
-
-export interface LadderMigrationResult {
-  readonly record: WorkspaceRecordV13;
-  readonly migrated: boolean;
-  readonly phasesStamped: number;
-  readonly plansTouched: number;
-}
-
-export function migrateV13ToV14(record: WorkspaceRecordV13): LadderMigrationResult {
-  const plans = record.plans;
-  if (plans === undefined) {
-    return { record, migrated: false, phasesStamped: 0, plansTouched: 0 };
-  }
-  let phasesStamped = 0;
-  let plansTouched = 0;
-  const next = plans.map((snapshot) => {
-    const result = migrateSnapshotV13ToV14(snapshot);
-    if (result.migrated) plansTouched += 1;
-    phasesStamped += result.stamped;
-    return result.snapshot;
-  });
-  return {
-    record: { ...record, plans: next },
-    migrated: plansTouched > 0,
-    phasesStamped,
-    plansTouched
-  };
-}
-
 // ---------------------------------------------------------------------------------------------
 // FR-R4-F01 (spec 239, US4, contract V1) — migrate a frozen RUN by the shape of its Phases.
 //
-// `migrateV13ToV14` above is correct per snapshot and was never called: it expects a
-// `record.plans` array, and no persisted key has that shape. The snapshots execution reads are
-// `WorkflowRun.pipeline.phases` and `WorkflowRun.envelope.pipeline.phases`. What dates a frozen
-// Phase is the PAIR of fields it carries, because the commit that stamped schema v14 also
+// The snapshots execution reads are `WorkflowRun.pipeline.phases` and `WorkflowRun.envelope.pipeline.phases`.
+// What dates a frozen Phase is the PAIR of fields it carries, because the commit that stamped schema v14 also
 // introduced `hostVerificationDeclaredAt`, and every production freeze (`snapshotPhaseDef`)
 // writes both. So the shape shows which build froze it:
 //

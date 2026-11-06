@@ -1017,7 +1017,13 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // (`bindPrimacyClaimSource`, `canCommitConnectedRun`) and the commit-point ownership and
       // primacy verification inside `compareAndSetConnectedRun` so a superseded or non-primary
       // window cannot overwrite a rival primary's connected-run state.
-      highWaterMark: 3447
+      //
+      // Feature 268 (FR-R5-F09, 2026-11-06) — 3447 → 3754, +307: bounded `writeMemento` deadline
+      // and quarantine (`MEMENTO_WRITE_DEADLINE_MS`, `StorageWriteQuarantinedError`), serialized and
+      // fenced `updateQueueRegistry`, multi-queue fenced `updateQueueMap` / `movePendingRequest`,
+      // fenced `deleteQueueIfNoLiveRun`, and reload-time `reconcileDeletedQueueResidueIfNeeded` and
+      // `pruneExcessDeletedHistoryPartitions`.
+      highWaterMark: 3754
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1292,7 +1298,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // admission in `enqueue` (`workflowOccurrence`), returning the existing non-canceled
       // request when a workflow node attempt (`rootRunId`, `invocationId`, `attemptId`) is
       // re-dispatched after a crash or retry race.
-      highWaterMark: 2413
+      //
+      // Feature 268 (FR-R5-F09, 2026-11-06) — 2413 → 2434, +21: routing `createQueue`,
+      // `renameQueue`, and `fireDueSchedules` through `store.updateQueueRegistry` and preserving
+      // typed `QueueMutationRejected` reasons in `registryErrorReason`.
+      highWaterMark: 2434
     }
   },
   // Feature 267 (FR-R5-F08, 2026-11-06) — `workflow-control-service.ts` crossed the
@@ -1616,7 +1626,12 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // the type-only import of `PromptIdentity` (one) and the additive optional field
       // `PhaseStartPayload.promptIdentity` with its two-line note (three). No other payload, event
       // type or constant changed, and `AUDIT_SCHEMA_VERSION` stays 3.
-      highWaterMark: 1631
+      //
+      // Feature 268 (FR-R5-F09, 2026-11-06) — 1631 → 1646, +15: `MIGRATION_V10_EVENT_TYPES`
+      // (`state-migrated-v9-to-v10`) and `MIGRATION_V13_EVENT_TYPES` (`state-migrated-v12-to-v13`,
+      // `queue-pause-divergence-resolved`) added to `ALL_AUDIT_EVENT_TYPES` and
+      // `SYSTEM_SCOPED_EVENT_TYPES`.
+      highWaterMark: 1646
     }
   },
   // The second file of the same 2026-10-01 decision; see the waiver above.

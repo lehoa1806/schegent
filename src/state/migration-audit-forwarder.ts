@@ -13,8 +13,10 @@
 // warn — best-effort, never blocks activation.
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type {
+  QueuePauseCollapseAuditEvent,
   StateMigratedV5ToV6AuditEvent,
-  StateMigratedV6ToV7AuditEvent
+  StateMigratedV6ToV7AuditEvent,
+  StateMigratedV9ToV10AuditEvent
 } from './queue-state-migrator';
 import type { RunStateMigrationAuditEvent } from './run-state-migrator';
 import type { HistoryStateMigrationAuditEvent } from './history-state-migrator';
@@ -51,6 +53,7 @@ export interface QuarantineAuditEvent {
 export interface MigrationAuditEvents {
   readonly v6MigrationEvents: readonly StateMigratedV5ToV6AuditEvent[];
   readonly v7MigrationEvents: readonly StateMigratedV6ToV7AuditEvent[];
+  readonly v10MigrationEvents?: readonly StateMigratedV9ToV10AuditEvent[];
   // Feature 093 — the v10 → v11 reshape, plus every repair it made on the way.
   // A migration nobody can audit is a migration nobody can debug, which is why
   // this field exists at the same time as the events that fill it rather than
@@ -62,6 +65,7 @@ export interface MigrationAuditEvents {
   // because a migrator that reaches the audit writer is a migrator that can fail
   // activation on an I/O error.
   readonly v12MigrationEvents: readonly HistoryStateMigrationAuditEvent[];
+  readonly v13MigrationEvents?: readonly QueuePauseCollapseAuditEvent[];
   /**
    * Runs ended at load because their Task row was gone from every queue.
    *
@@ -156,6 +160,32 @@ function historyMigrationPayload(event: HistoryStateMigrationAuditEvent): Record
   }
 }
 
+/** The audit payload for one v12 → v13 pause-collapse or divergence event. */
+function pauseCollapsePayload(event: QueuePauseCollapseAuditEvent): Record<string, unknown> {
+  switch (event.type) {
+    case 'state-migrated-v12-to-v13':
+      return {
+        fromVersion: event.fromVersion,
+        toVersion: event.toVersion,
+        occurredAt: event.occurredAt,
+        queueIds: event.queueIds,
+        pausedQueueCount: event.pausedQueueCount,
+        divergentQueueCount: event.divergentQueueCount
+      };
+    case 'queue-pause-divergence-resolved':
+      return {
+        occurredAt: event.occurredAt,
+        queueId: event.queueId,
+        registryPaused: event.registryPaused,
+        lifecyclePaused: event.lifecyclePaused,
+        mirrorPaused: event.mirrorPaused,
+        resolvedPaused: event.resolvedPaused,
+        resolvedPauseSource: event.resolvedPauseSource,
+        reason: event.reason
+      };
+  }
+}
+
 export async function forwardMigrationAuditEvents(
   events: MigrationAuditEvents,
   auditWriter: AuditAppender,
@@ -202,6 +232,27 @@ export async function forwardMigrationAuditEvents(
       logger.warn(`state-migrated-v6-to-v7 audit append failed: ${(err as Error).message}`);
     }
   }
+  for (const event of events.v10MigrationEvents ?? []) {
+    try {
+      await auditWriter.append({
+        runId: '',
+        phase: 'state-migration',
+        iteration: 0,
+        eventType: event.type,
+        payload: {
+          fromVersion: event.fromVersion,
+          toVersion: event.toVersion,
+          occurredAt: event.occurredAt,
+          queueIds: event.queueIds,
+          pendingTaskCount: event.pendingTaskCount,
+          inFlightTaskCount: event.inFlightTaskCount
+        },
+        outcome: 'success'
+      });
+    } catch (err) {
+      logger.warn(`state-migrated-v9-to-v10 audit append failed: ${errorMessage(err)}`);
+    }
+  }
   for (const event of events.v11MigrationEvents) {
     try {
       await auditWriter.append({
@@ -236,6 +287,20 @@ export async function forwardMigrationAuditEvents(
       });
     } catch (err) {
       logger.warn(`state-migrated-v11-to-v12 audit append failed: ${(err as Error).message}`);
+    }
+  }
+  for (const event of events.v13MigrationEvents ?? []) {
+    try {
+      await auditWriter.append({
+        runId: '',
+        phase: 'state-migration',
+        iteration: 0,
+        eventType: event.type,
+        payload: pauseCollapsePayload(event),
+        outcome: 'success'
+      });
+    } catch (err) {
+      logger.warn(`${event.type} audit append failed: ${errorMessage(err)}`);
     }
   }
   // A Run ended because the Task row addressing it was gone. `runId` IS carried
