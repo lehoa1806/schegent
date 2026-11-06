@@ -185,6 +185,10 @@ export function toSavePhaseRow(phase: MutablePhase): SavePhaseRow {
  * forwards exactly those. Nothing about a new row field needs to be remembered here.
  */
 export function authoredPhaseDocument(phase: MutablePhase): Record<string, unknown> {
+  // FR-R5-F10 (NF-11) — `version` is the published definition version (read-only
+  // in the form editor, incremented by the catalog lifecycle store on publish or
+  // preserved from a portable YAML import), distinct from `catalog.revision` and
+  // `expectedDraftVersion` which govern concurrent draft/catalog writes.
   const row: Record<string, unknown> = {
     id: phase.id,
     name: phase.name,

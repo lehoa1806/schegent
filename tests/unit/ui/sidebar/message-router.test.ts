@@ -5,7 +5,8 @@ import {
   type RouterDeps
 } from '../../../../src/ui/sidebar/message-router';
 import { SanitizedLogger } from '../../../../src/lib/logger';
-import { HANDLERS } from '../../../../src/ui/sidebar/commands';
+import { HANDLERS, HANDLER_TABLE } from '../../../../src/ui/sidebar/commands';
+import { COMMAND_TYPES } from '../../../../src/contracts/sidebar-ipc';
 import type { CommandHandler } from '../../../../src/ui/sidebar/commands/handler-contract';
 import { ack } from '../../../../src/ui/sidebar/commands/handler-helpers';
 import type { CommandAckMessage, SidebarCommand } from '../../../../src/ui/sidebar/messages';
@@ -1008,5 +1009,39 @@ describe('MessageRouter catch-all (T9, F1 to F5)', () => {
     expect(detail).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789');
     expect(detail).not.toContain('add login');
     expect(detail).not.toMatch(/\n\s+at /);
+  });
+
+  it('registers a handler in HANDLER_TABLE for every COMMAND_TYPES member and acks command-dispatch-failed if a lookup misses (FR-R5-F10)', async () => {
+    expect(Object.keys(HANDLER_TABLE).sort()).toEqual([...COMMAND_TYPES].sort());
+    for (const type of COMMAND_TYPES) {
+      expect(typeof HANDLERS.get(type)).toBe('function');
+    }
+
+    const { router, logs } = routerWithRecordingLogger();
+    const handlers = HANDLERS as unknown as Map<string, CommandHandler>;
+    const spy = vi.spyOn(handlers, 'get').mockReturnValueOnce(undefined);
+    try {
+      const acks: CapturedAck[] = [];
+      await dispatch(router, START, acks);
+
+      expect(acks).toHaveLength(1);
+      expect(acks[0]?.msg).toEqual({
+        type: 'CMD_ACK',
+        correlationId: 'fixed-ack',
+        status: 'rejected',
+        outcome: 'failed',
+        reason: 'command-dispatch-failed'
+      });
+      const warnings = logs.filter(
+        (l) => l.level === 'warn' && l.message === 'sidebar router: missing command handler'
+      );
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]?.context).toEqual({
+        type: CMD_START,
+        correlationId: 'fixed-ack'
+      });
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

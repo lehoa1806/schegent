@@ -11,13 +11,19 @@ import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QueuesTier from '../QueuesTier.svelte';
-import { CMD_CREATE_QUEUE } from '../../../lib/messages';
+import { CMD_ACK, CMD_CREATE_QUEUE } from '../../../lib/messages';
+import { snapshotStore } from '../../../lib/snapshot-store.svelte';
 import { buildInFlightRun, buildQueueRuntime } from '../../../lib/__tests__/queue-runtime-fixture';
 import type { QueueItem, QueueRuntime } from '../../../lib/snapshot-types';
 
-const postCommandSpy = vi.fn((..._args: readonly unknown[]) => ({ correlationId: 'corr-1' }));
+const postCommandSpy = vi.fn(
+  (_type: unknown, _payload?: unknown, opts?: { correlationId?: string }) => ({
+    correlationId: opts?.correlationId ?? 'corr-1'
+  })
+);
 vi.mock('../../../lib/vscode-api', () => ({
-  postCommand: (...args: unknown[]) => postCommandSpy(...args),
+  postCommand: (type: unknown, payload?: unknown, opts?: { correlationId?: string }) =>
+    postCommandSpy(type, payload, opts),
   onHostMessage: () => () => {},
   getWebviewState: () => undefined,
   setWebviewState: () => {}
@@ -203,7 +209,14 @@ describe('QueuesTier — creating a queue (FR-056)', () => {
     await fireEvent.input(input, { target: { value: '  release train  ' } });
     await fireEvent.click(getByTestId('queue-create-submit'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CREATE_QUEUE, { name: 'release train' });
+    expect(postCommandSpy).toHaveBeenCalledWith(
+      CMD_CREATE_QUEUE,
+      { name: 'release train' },
+      expect.objectContaining({ correlationId: expect.any(String) })
+    );
+    const correlationId = postCommandSpy.mock.calls[0]?.[2]?.correlationId ?? 'corr-1';
+    snapshotStore.apply({ type: CMD_ACK, correlationId, status: 'accepted' });
+    await tick();
   });
 
   it('refuses to post a blank name', async () => {
@@ -229,8 +242,64 @@ describe('QueuesTier — creating a queue (FR-056)', () => {
     await fireEvent.input(input, { target: { value: 'one' } });
     await fireEvent.click(getByTestId('queue-create-submit'));
 
+    // Still open and disabled until the host acknowledges acceptance
+    expect(container.querySelector('[data-testid="queue-create-name"]')).not.toBeNull();
+    expect((getByTestId('queue-create-submit') as HTMLButtonElement).disabled).toBe(true);
+
+    const correlationId = postCommandSpy.mock.calls[0]?.[2]?.correlationId ?? 'corr-1';
+    snapshotStore.apply({ type: CMD_ACK, correlationId, status: 'accepted' });
+    await tick();
+    await tick();
+
     expect(container.querySelector('[data-testid="queue-create-name"]')).toBeNull();
   });
+
+  it.each([
+    ['duplicate-queue-name', 'A queue with that name already exists.'],
+    [
+      'queue-cap-reached',
+      'The maximum number of queues (20) has been reached. Delete an unused queue first.'
+    ],
+    [
+      'invalid-queue-name',
+      'Queue names must be 1–48 characters using letters, numbers, spaces, hyphens, or underscores.'
+    ],
+    [
+      'storage-write-failed',
+      'The queue could not be saved to workspace state. Check the Schegent log and try again.'
+    ]
+  ])(
+    'keeps the form open with the typed draftName and surfaces the fixed refusal on %s (FR-R5-F10)',
+    async (reason, expectedSentence) => {
+      const { container, getByTestId } = render(QueuesTier, {
+        props: { queues: QUEUES, isPrimary: true }
+      });
+
+      await fireEvent.click(getByTestId('queue-create'));
+      const input = container.querySelector('[data-testid="queue-create-name"]') as HTMLInputElement;
+      await fireEvent.input(input, { target: { value: '  nightly  ' } });
+      await fireEvent.click(getByTestId('queue-create-submit'));
+
+      const correlationId = postCommandSpy.mock.calls[0]?.[2]?.correlationId ?? 'corr-1';
+      snapshotStore.apply({
+        type: CMD_ACK,
+        correlationId,
+        status: 'rejected',
+        reason
+      });
+      await tick();
+      await tick();
+
+      const retainedInput = container.querySelector(
+        '[data-testid="queue-create-name"]'
+      ) as HTMLInputElement | null;
+      expect(retainedInput).not.toBeNull();
+      expect(retainedInput?.value).toBe('  nightly  ');
+      expect(retainedInput?.disabled).toBe(false);
+      const errorBanner = container.querySelector('[data-testid="queue-create-error"]');
+      expect(errorBanner?.textContent).toContain(expectedSentence);
+    }
+  );
 });
 
 // Feature 095 (T027, US3) — the workspace queue settings open from tier 1,

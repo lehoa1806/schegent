@@ -145,7 +145,14 @@ export class MessageRouter {
       }
     }
     const handler = HANDLERS.get(command.type);
-    if (!handler) return;
+    if (!handler) {
+      this.deps.logger.warn('sidebar router: missing command handler', {
+        type: command.type,
+        correlationId: command.correlationId
+      });
+      await ackCommandOutcome(ctx, failed(DISPATCH_FAILED_REASON));
+      return;
+    }
     try {
       await handler(ctx, command);
     } catch (err) {

@@ -47,6 +47,38 @@ export interface PhaseHistoryEdit {
 }
 
 /**
+ * FR-R5-F10 (NF-14) — bounded undo/redo history policy for Phase and Workflow
+ * editors. Caps both entry count and total serialized JSON bytes so long
+ * authoring sessions stay within webview `setState` memory bounds while
+ * preserving branching after undo, at least the newest step, and a coherent
+ * cursor index when oldest snapshots are evicted.
+ */
+export const MAX_BUILDER_HISTORY_ENTRIES = 50;
+export const MAX_BUILDER_HISTORY_BYTES = 262_144;
+
+function utf8ByteLength(text: string): number {
+  return typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(text).length : text.length;
+}
+
+export function boundHistorySnapshots<T>(
+  snapshots: readonly T[],
+  maxEntries = MAX_BUILDER_HISTORY_ENTRIES,
+  maxBytes = MAX_BUILDER_HISTORY_BYTES
+): T[] {
+  if (snapshots.length === 0) return [];
+  const entryCap = Math.max(1, maxEntries);
+  let start = Math.max(0, snapshots.length - entryCap);
+  const sizes = snapshots.map((item) => utf8ByteLength(JSON.stringify(item)));
+  let totalBytes = 0;
+  for (let i = start; i < sizes.length; i++) totalBytes += sizes[i] ?? 0;
+  while (start < snapshots.length - 1 && totalBytes > maxBytes) {
+    totalBytes -= sizes[start] ?? 0;
+    start++;
+  }
+  return snapshots.slice(start);
+}
+
+/**
  * The edit-state record with `id`'s raw-JSON mode flipped, seeding an entry for
  * a row that has never been touched. The seed and the flip were two functions
  * in the component (`ensureEditState`, `toggleRawJson`) because the seed had a
@@ -204,13 +236,21 @@ export function retryConditionToggle(phase: MutablePhase): Partial<MutablePhase>
 export function withPhaseHistoryEntry(
   history: readonly MutablePhase[][],
   index: number,
-  serializedPhases: string
+  serializedPhases: string,
+  maxEntries = MAX_BUILDER_HISTORY_ENTRIES,
+  maxBytes = MAX_BUILDER_HISTORY_BYTES
 ): PhaseHistoryEdit | null {
-  const top = index >= 0 ? JSON.stringify(history[index]) : null;
+  const top = index >= 0 && index < history.length ? JSON.stringify(history[index]) : null;
   if (serializedPhases === top) return null;
+  const head = history.slice(0, index + 1);
+  const bounded = boundHistorySnapshots(
+    [...head, JSON.parse(serializedPhases) as MutablePhase[]],
+    maxEntries,
+    maxBytes
+  );
   return {
-    history: [...history.slice(0, index + 1), JSON.parse(serializedPhases)],
-    index: index + 1
+    history: bounded,
+    index: bounded.length - 1
   };
 }
 

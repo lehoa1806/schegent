@@ -196,8 +196,8 @@
 {:else}
 <div class="toolbar">
   <button class="btn btn-primary" data-testid="phases-add" onclick={onadd} disabled={!trusted || savePending || mutationActive}>Add Phase</button>
-  <button class="btn" disabled={!trusted || savePending || mutationActive || historyIndex <= 0} onclick={onundo}>Undo</button>
-  <button class="btn" disabled={!trusted || savePending || mutationActive || historyIndex >= historyLength - 1} onclick={onredo}>Redo</button>
+  <button class="btn" disabled={!trusted || savePending || historyIndex <= 0} onclick={onundo}>Undo</button>
+  <button class="btn" disabled={!trusted || savePending || historyIndex >= historyLength - 1} onclick={onredo}>Redo</button>
   <button class="btn btn-secondary push-right" data-testid="phases-save-all" onclick={onsave} disabled={!trusted || savePending || !mutationActive}>{savePending ? 'Saving…' : 'Save Phase'}</button>
 </div>
 {#if snapshot.phaseCatalog.warnings.length > 0}
@@ -345,9 +345,10 @@
               <input class="text-input" value={phase.id} readonly={phase.persisted} aria-invalid={phase.sourceErrors.some((error) => error.field === 'phaseId') ? 'true' : undefined} aria-describedby={phaseErrorId(phase)} oninput={(event) => onphasechange(index, { id: event.currentTarget.value })} placeholder="phase-id" />
               {#if phase.persisted}<span class="field-help">Duplicate this Phase to create a new identity.</span>{/if}
             </label>
-            <!-- Feature 099 (T494a, FR-043) — no target-scope picker. A save has
-                 one destination, so there was nothing left for this control to
-                 choose between. -->
+            <!-- FR-R5-F10 (NF-11) — Authored `version` is read-only because each
+                 publication writes an immutable versioned snapshot (`v1`, `v2`, …)
+                 in the catalog store; mutable concurrency tokens (`catalog.revision`
+                 and `expectedDraftVersion`) track draft edits separately. -->
             <label class="form-field">
               <span class="form-label">Version</span>
               <input class="text-input" value={phase.version} readonly />
