@@ -11,7 +11,10 @@ statement and makes the two agree — and `a11y-policy-parity.test.ts` is what k
 
 ## The surface
 
-Seven routes plus the sidebar surface, × three themes = **24 combinations**.
+Six routes, one opened state and the sidebar surface, × three themes = **24 combinations**. The run
+prints the count, which is the authority; this line said seven routes until 2026-11-06, after the
+route list had shrunk to six. The opened state (`FR-R5-F20`) is the Builder's Workflow picker with its
+list open, so the scan covers one interaction state, not only mounted routes.
 
 - Routes come from `webview-ui/src/dashboard/routes.ts`, so a new route is a compile-time error here
   rather than a silently unscanned surface.

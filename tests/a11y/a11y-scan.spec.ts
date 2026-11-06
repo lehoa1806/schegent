@@ -1,9 +1,12 @@
 // FR-R3-091 — the whole-app accessibility scan.
 //
 // TARGET: **WCAG 2.1 Level AA**, over every shipped dashboard route in every
-// shipped theme. Seven routes plus the sidebar surface, x three themes = 24
-// combinations -- the sidebar was added 2026-08-28 (`FR-R3-131`), and this line
-// and the test title below both went on saying 21. The level is not
+// shipped theme, plus one opened interaction state. The run prints the
+// combination count it computed; this line no longer states one, because it
+// said 21 after the sidebar was added 2026-08-28 (`FR-R3-131`) and said 24 after
+// the route list had shrunk to six. The opened state was added 2026-11-06
+// (`FR-R5-F20`): every earlier combination was a resting page, so no opened
+// menu, dialog or popover had ever been scanned. The level is not
 // chosen here; the product already claims AA in `PRODUCT.md` and 2.1 AA in
 // `docs/prd-metrics-dashboard.md`, and `tests/lint/a11y-policy-parity.test.ts`
 // binds all three so the restored policy statement cannot drift back into an
@@ -127,6 +130,36 @@ async function scanRendered(page: Page, route: string, theme: ThemeName): Promis
   };
 }
 
+/**
+ * FR-R5-F20 — one opened interaction state, labelled as its own surface.
+ *
+ * The Builder's Workflow picker is a popover, and the visual suite already opens
+ * it. It opens by itself while no Workflow is selected, so the resting Builder
+ * scan may already include it in that state. This scans the other state: a
+ * Workflow selected, its editor showing, and the picker reopened from its toggle
+ * on top of it.
+ *
+ * Visibility is asserted before the scan. A scan of a popover that never opened
+ * reports the same automated findings as the closed page, and would claim
+ * coverage it does not have.
+ */
+const OPENED_STATE_SURFACE = 'builder+workflow-picker-open';
+
+async function scanOpenedPicker(page: Page, theme: ThemeName): Promise<ScanResult> {
+  await page.getByTestId('dashboard-route-builder').click();
+  await page.getByTestId('pipeline-builder-root').waitFor({ state: 'visible', timeout: 15_000 });
+  await page.getByRole('tab', { name: 'Workflows' }).click();
+  const picker = page.getByTestId('workflow-picker-toggle');
+  if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
+  await page.getByTestId('workflows-list-item-dev-new-feature').click();
+  await expect(page.getByTestId('workflow-field-name')).toBeVisible();
+  await expect(picker).toHaveAttribute('aria-expanded', 'false');
+  await picker.click();
+  await expect(picker).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByTestId('workflow-picker-list')).toBeVisible();
+  return scanRendered(page, OPENED_STATE_SURFACE, theme);
+}
+
 async function scanRoute(page: Page, route: string, theme: ThemeName): Promise<ScanResult> {
   const target = ROUTE_MOUNT_TARGETS[route as keyof typeof ROUTE_MOUNT_TARGETS];
   // `dashboard-route-<id>` is the nav control the app renders per route, and it
@@ -153,19 +186,22 @@ async function scanSidebar(page: Page, theme: ThemeName): Promise<ScanResult> {
 }
 
 test.describe('FR-R3-091 — WCAG 2.1 AA scan over every route and theme', () => {
-  test('scans 24 combinations and holds them to the ratcheting baseline', async ({ page }) => {
+  test('scans every route, the sidebar and one opened state per theme against the ratcheting baseline', async ({
+    page
+  }) => {
     test.setTimeout(180_000);
 
     const routes = Object.keys(ROUTE_MOUNT_TARGETS).filter(
       (route) => !EXCLUDED_ROUTES.some((entry) => entry.route === route)
     );
-    const surfaces = routes.length + 1; // + the sidebar webview
+    const surfaces = routes.length + 2; // + the opened picker state + the sidebar webview
 
     // The exclusion list is printed EVERY run, including when it is empty. An
     // undeclared limit gets read as full coverage.
     process.stdout.write(
       `\n[a11y] target: WCAG 2.1 Level AA (axe tags ${WCAG_21_AA_TAGS.join(', ')})\n` +
-        `[a11y] surface: ${routes.length} dashboard route(s) + the sidebar webview = ` +
+        `[a11y] surface: ${routes.length} dashboard route(s) + 1 opened state (${OPENED_STATE_SURFACE}) + ` +
+          `the sidebar webview = ` +
           `${surfaces} surface(s) x ${THEMES.length} theme(s) = ` +
           `${surfaces * THEMES.length} combination(s)\n` +
         `[a11y] excluded routes: ${
@@ -173,7 +209,7 @@ test.describe('FR-R3-091 — WCAG 2.1 AA scan over every route and theme', () =>
             ? '(none)'
             : EXCLUDED_ROUTES.map((entry) => `${entry.route} — ${entry.reason}`).join('; ')
         }\n` +
-        `[a11y] AN AUTOMATED SCAN IS NOT CONFORMANCE. It finds what a rule engine can see in a\n` +
+        `[a11y] These are automated findings. AN AUTOMATED SCAN IS NOT CONFORMANCE. It finds what a rule engine can see in a\n` +
         `[a11y] rendered tree. Assistive-technology evidence lives in\n` +
         `[a11y] docs/release/accessibility-at-matrix.md, including the platforms recorded untested.\n`
     );
@@ -187,6 +223,9 @@ test.describe('FR-R3-091 — WCAG 2.1 AA scan over every route and theme', () =>
         found.push(...result.findings);
         examined.push({ combination: `${route}|${theme}`, nodes: result.examined });
       }
+      const opened = await scanOpenedPicker(page, theme);
+      found.push(...opened.findings);
+      examined.push({ combination: `${OPENED_STATE_SURFACE}|${theme}`, nodes: opened.examined });
       // Last, because it navigates away from the dashboard document.
       const sidebar = await scanSidebar(page, theme);
       found.push(...sidebar.findings);
