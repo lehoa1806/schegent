@@ -31,6 +31,7 @@ import { reportUnexpectedStartFailure } from './unexpected-start-failure';
 import { UncontainedConsentGate, driveUnderConsent } from './uncontained-consent-gate';
 import type { UncontainedConsentPort } from './uncontained-consent-gate';
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
+import { BlockerNoticeLedger } from '../services/blocker-notice';
 import { RunDriver } from '../services/run-driver';
 import {
   BackoffHandOff,
@@ -285,7 +286,11 @@ export class SchegentWorkflowController {
     // factory. Every dep below is unchanged and still shared by reference; what
     // is now per-queue is the driver instance itself, and with it the private
     // run-loop state its re-entrancy guard protects.
+    // FR-R5-F19 (FR-001): the one exception is the first-blocker ledger. A failed Run's session ends and
+    // its resume builds a new driver, so the ledger lives here, above every session, to keep "once per Run".
+    const blockerNoticeLedger = new BlockerNoticeLedger();
     this.sessions = new RunSessionRegistry((isContinueGate) => new RunDriver({
+      blockerNoticeLedger,
       runner,
       store,
       queue,
