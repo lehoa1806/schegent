@@ -76,9 +76,9 @@ export type LifecycleControlResult =
  *   - `controller/sole-run-resolver.ts` (`resolveControlTarget`) — the
  *     queue-addressing refusals every phase control passes through first
  *   - `controller/phase-control-decision.ts` (`decidePhaseControl`) — the
- *     'pause' / 'resume' / 'restart' / 'skip' eligibility branches, and only
- *     those four: the other operations in that classifier are posted by
- *     controls this module does not dispatch
+ *     'pause' / 'resume' / 'restart' / 'skip' / 'disable' / 'enable' eligibility
+ *     branches, and only those six: the other operations in that classifier are
+ *     posted by controls this module does not dispatch
  *   - `ui/sidebar/commands/cmd-skip-phase.ts` — the Skip route's own guard
  *     (FR-R4-F20), and its answer to a throw, which is a code from the
  *     transport group below rather than the thrown message
@@ -94,7 +94,8 @@ export type LifecycleControlResult =
  *     report rather than from a second predicate
  *   - `contracts/command-outcome.ts` — the three transport reasons it
  *     synthesises, and `commands/*.ts`'s five `*-failed` codes
- *   - `ui/sidebar/message-router.ts` — the primacy gate
+ *   - `ui/sidebar/message-router.ts` — the primacy gate and the trust gate
+ *     (`commands/constants.ts`: `SECONDARY_REJECT`, `UNTRUSTED_REJECT`)
  * `timeout` is the one this module synthesises itself.
  */
 const LIFECYCLE_REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
@@ -122,6 +123,12 @@ const LIFECYCLE_REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
   // are one sentence and cannot drift apart.
   'run-failed': 'A failed task cannot be skipped: retry it, mark it completed, or remove it.',
   'phase-id-not-in-pipeline-snapshot': "That phase is not part of this Run's workflow.",
+  // FR-R5-F19 (US3) — Disable and Enable read their ACK now, so the three refusals only their
+  // `decidePhaseControl` arms answer are operator-facing. Each says what the phase is, not what the
+  // operator did wrong: all three are the Run having moved on while the control was on screen.
+  'phase-already-started': 'That phase has already started, so it can no longer be disabled.',
+  'no-disabled-override': 'That phase is not disabled, so there is nothing to enable.',
+  'phase-not-future': 'That phase has already started, so it can no longer be enabled.',
   // Retry now — `applyManualRetryOverride` and the command's own guard.
   'no-active-run': 'There is no active Run to retry.',
   'not-pending-retry': 'This phase is not waiting for a retry, so there is nothing to bring forward.',
@@ -144,6 +151,10 @@ const LIFECYCLE_REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
     'A run with no task is holding this queue. Reload the window to release it.',
   // Transport — `command-outcome.ts` and the router's primacy gate.
   'workspace-not-trusted': 'The workspace is not trusted, so this control is unavailable.',
+  // FR-R5-F19 (US3, FR-013) — the router's own gate token (`UNTRUSTED_REJECT`), which no map here
+  // held: a refused Disable in an untrusted workspace read as the shared boundary text, a different
+  // sentence from the one every other control gives for the same refusal. One sentence, two codes.
+  'untrusted-workspace': 'The workspace is not trusted, so this control is unavailable.',
   'command-dispatch-failed': 'The control could not be carried out. Check the log and try again.',
   'command-result-unrecognized':
     'The host answered in a way this view could not read, and nothing was changed.',

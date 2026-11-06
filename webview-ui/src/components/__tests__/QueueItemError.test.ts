@@ -252,3 +252,69 @@ describe('a failed read says so, in one sentence (P5.5)', () => {
     expect(view.getByTestId('queue-item-error-text-task-1').textContent).toBe(ERROR_TEXT);
   });
 });
+
+describe('the decision-record action does not wait for a last error (FR-R5-F19, FR-003)', () => {
+  const ACTION = 'queue-item-decision-record-task-1';
+
+  function mountWith(status: QueueItem['status'], lastErrorSummary: string | null) {
+    const item = { ...ITEM, status, lastErrorSummary } as unknown as QueueItem;
+    return render(QueueItemError, { props: { item, showLastError: lastErrorSummary !== null, open: false, onToggle: vi.fn() } });
+  }
+
+  it('is offered on a failed row that holds no last-error summary, with no toggle beside it', () => {
+    const view = mountWith('failed', null);
+
+    expect(view.queryByTestId(ACTION)).not.toBeNull();
+    expect(view.queryByTestId('queue-item-error-toggle-task-1')).toBeNull();
+    expect(posted).toHaveLength(0);
+  });
+
+  it('is offered on a failed row that holds a summary, after the toggle', () => {
+    const view = mountWith('failed', ERROR_TEXT);
+
+    const toggle = view.getByTestId('queue-item-error-toggle-task-1');
+    const action = view.getByTestId(ACTION);
+    expect(toggle.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('control: a row that is not failed and holds no summary offers neither', () => {
+    const view = mountWith('pending', null);
+
+    expect(view.queryByTestId(ACTION)).toBeNull();
+    expect(view.queryByTestId('queue-item-error-toggle-task-1')).toBeNull();
+  });
+});
+
+describe('a retained error is a previous failure unless the row is failed (FR-R5-F19, FR-006)', () => {
+  function mountStatus(status: QueueItem['status'], open: boolean) {
+    const item = { ...ITEM, status } as unknown as QueueItem;
+    return render(QueueItemError, { props: { item, showLastError: true, open, onToggle: vi.fn() } });
+  }
+
+  it('keeps the failed row\'s toggle and region name unchanged', () => {
+    const view = mountStatus('failed', true);
+
+    expect(view.getByTestId('queue-item-error-toggle-task-1').textContent).toBe('Hide error');
+    expect(view.getByTestId('queue-item-error-task-1').getAttribute('aria-label')).toBe(
+      'Last error for Add the export button'
+    );
+    expect(view.queryByTestId('queue-item-error-heading-task-1')).toBeNull();
+  });
+
+  it.each(['pending', 'in-flight', 'paused', 'completed', 'canceled'] as const)(
+    'names the toggle, the region and a heading "Previous failure" on a %s row',
+    (status) => {
+      const closed = mountStatus(status, false);
+      expect(closed.getByTestId('queue-item-error-toggle-task-1').textContent).toBe('Show previous failure');
+      cleanup();
+
+      const open = mountStatus(status, true);
+      expect(open.getByTestId('queue-item-error-toggle-task-1').textContent).toBe('Hide previous failure');
+      expect(open.getByTestId('queue-item-error-task-1').getAttribute('aria-label')).toBe(
+        'Previous failure for Add the export button'
+      );
+      expect(open.getByTestId('queue-item-error-heading-task-1').textContent).toBe('Previous failure');
+      expect(open.getByTestId('queue-item-error-text-task-1').textContent).toBe(ERROR_TEXT);
+    }
+  );
+});

@@ -24,6 +24,7 @@ import { basename, dirname, join } from 'node:path';
 import type { FixtureInputs } from './finalization-harness';
 import {
   addGitlink,
+  buildW8,
   commitFile,
   git,
   headOf,
@@ -528,4 +529,24 @@ export function buildR1(): FeatureWorkspace {
   settleBase(workspace.root);
   applyOwnedChanges(workspace.root);
   return { ...workspace, repositories: [workspace.root, outside], dirs: { outside } };
+}
+
+// FR-R5-F19 (spec 278, T036, US4; FR-015 to FR-019): rows for the finalization prompt conflicts.
+
+/** Where the untracked credential and oversize files sit: inside `specs/`, the owned set of W8's root. */
+export const SECRET_PATHS = { credential: 'specs/id_rsa', oversize: 'specs/blob.bin' } as const;
+
+/** One byte over the size default the finalize instruction names (1 MiB). */
+export const OVERSIZE_BYTES = 1024 * 1024 + 1;
+
+/**
+ * The secret row: W8, whose declared gitlink `delta` carries a tracked-content change, plus two
+ * untracked files in the owned set: one named like a credential and one over the size default. An
+ * owned gitlink change must not excuse committing them. The credential file holds no key material.
+ */
+export function buildSecretBesideGitlink(): Workspace {
+  const workspace = buildW8();
+  writeFileSync(join(workspace.root, SECRET_PATHS.credential), 'placeholder, not key material\n');
+  writeFileSync(join(workspace.root, SECRET_PATHS.oversize), Buffer.alloc(OVERSIZE_BYTES));
+  return workspace;
 }

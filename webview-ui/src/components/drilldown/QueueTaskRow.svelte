@@ -15,6 +15,7 @@
   } from '../../lib/snapshot-types';
   import type { TaskTimingLabel } from '../../lib/task-row-view';
   import { formatDuration } from '../../lib/format-duration';
+  import { isHistoricalError, PREVIOUS_FAILURE_LABEL } from '../../lib/last-error-label';
   import { formatTimeOfDay } from '../../lib/format-time-of-day';
 
   // ---------- Phase bar segment ----------
@@ -161,7 +162,11 @@
     <span class="prompt-id" data-testid="queue-task-id-{task.id}">{task.id}</span>
     {#if task.lastErrorSummary !== null}
       <span class="prompt-error" data-testid="queue-task-error-{task.id}">
-        ⚠ {task.lastErrorSummary}
+        {#if isHistoricalError(task.status)}
+          {PREVIOUS_FAILURE_LABEL}: {task.lastErrorSummary}
+        {:else}
+          ⚠ {task.lastErrorSummary}
+        {/if}
       </span>
     {/if}
   </span>

@@ -584,7 +584,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     phaseLogTail,
     runtimeLogSink,
     runtimeLogAccessor,
-    refreshCatalog
+    refreshCatalog, registerDisposable: (disposable) => context.subscriptions.push(disposable)
   });
 
   const uiWiring = registerStage2Ui({

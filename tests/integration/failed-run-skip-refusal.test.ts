@@ -28,7 +28,7 @@ import { QueueManager } from '../../src/queue/queue-manager';
 import { evaluateQueueHalt, type QueueHaltVerdict } from '../../src/queue/queue-halt-policy';
 import type { WorkspaceLockManager } from '../../src/state/lock';
 import { unfencedCommit } from '../../src/state/ownership-claim';
-import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
+import { KEYS, WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import type { WorkflowRun, WorkflowRunStatus } from '../../src/state/workflow-run';
 import type { Notifier } from '../../src/ui/notifications';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
@@ -100,6 +100,7 @@ interface Sent {
 }
 
 let store: WorkspaceStateStore;
+let memento: FakeMemento;
 let queue: QueueManager;
 let router: MessageRouter;
 let skipPhaseSpy: MockInstance;
@@ -109,7 +110,8 @@ let cancelPendingTimer: MockInstance;
 
 beforeEach(async () => {
   const logger = new SanitizedLogger();
-  store = new WorkspaceStateStore(new FakeMemento());
+  memento = new FakeMemento();
+  store = new WorkspaceStateStore(memento);
   await store.initialize();
   queue = new QueueManager(store);
   const controller = new SchegentWorkflowController(
@@ -198,6 +200,14 @@ function buildRun(
   } as unknown as WorkflowRun;
 }
 
+/** Rewrites the stored Run's status in place, leaving every other field as the last write set it. */
+async function reshapeStoredRun(status: WorkflowRunStatus): Promise<void> {
+  const stored = memento.get<Record<string, WorkflowRun | undefined>>(KEYS.run) ?? {};
+  const current = stored[DEFAULT_QUEUE_ID];
+  if (current === undefined) throw new Error('reshapeStoredRun: no stored Run to reshape');
+  await memento.update(KEYS.run, { ...stored, [DEFAULT_QUEUE_ID]: { ...current, status } });
+}
+
 interface SeedOptions {
   readonly pendingRetry?: boolean;
   readonly policy?: QueueFailurePolicy;
@@ -219,11 +229,16 @@ async function seedQueue(
     await queue.markInFlight(row.id, runId);
     const end = ROW_END[status];
     if (end !== undefined) await queue.finish(row.id, end);
+    const pendingRetry = options.pendingRetry ?? false;
+    // A new write may not leave a retry countdown beside a status other than `paused` (FR-R5-F19), so
+    // the legacy shape this case needs is stored as a paused Run and then reshaped in storage, which
+    // is how an older build left it.
     await store.setRun(
       DEFAULT_QUEUE_ID,
-      buildRun(runId, row.id, status, options.pendingRetry ?? false),
+      buildRun(runId, row.id, pendingRetry ? 'paused' : status, pendingRetry),
       unfencedCommit('test-fixture')
     );
+    if (pendingRetry) await reshapeStoredRun(status);
   }
   await queue.setFailurePolicy(DEFAULT_QUEUE_ID, options.policy ?? 'halt-on-failure');
   return { rowId: row.id };

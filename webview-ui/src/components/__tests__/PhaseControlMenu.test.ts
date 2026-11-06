@@ -155,7 +155,7 @@ describe('PhaseControlMenu', () => {
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_DISABLE_PHASE, {
       queueId: TEST_QUEUE_ID,
       phaseId: 'speckit-implement'
-    });
+    }, LEDGER_IDENTITY);
   });
 
   // FR-R3-154 (T1646) — the four lifecycle controls in this menu report what
@@ -257,7 +257,9 @@ describe('PhaseControlMenu', () => {
     // the two breakpoint actions — so a refusal from one of the four stayed on
     // screen, in a `role="alert"`, beside whichever of the six the operator
     // used next and which had just committed. (Skip reports from FR-R4-F20 on;
-    // the other five still do not, and Disable stands in for them here.)
+    // the other five did not then, and Disable stood in for them here. Disable reports from FR-R5-F19
+    // on, so the case still holds for the same reason: its first dispatch clears the line before the
+    // host has answered, and Delete and the breakpoint pair remain non-reporting.)
     it('clears a previous control’s refusal when a non-reporting control dispatches', async () => {
       const { getByTestId, queryByTestId } = render(PhaseControlMenu, {
         props: {
@@ -281,9 +283,9 @@ describe('PhaseControlMenu', () => {
       expect(postCommandSpy).toHaveBeenCalledWith(CMD_DISABLE_PHASE, {
         queueId: TEST_QUEUE_ID,
         phaseId: 'speckit-implement'
-      });
-      // Disable cannot write this line; it must still not leave Pause's answer
-      // attributed to it.
+      }, LEDGER_IDENTITY);
+      // Disable has not been answered, so the line is empty; it must not leave Pause's answer
+      // attributed to it while it waits.
       expect(queryByTestId('phase-control-message')).toBeNull();
     });
 
@@ -404,7 +406,7 @@ describe('PhaseControlMenu', () => {
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_ENABLE_PHASE, {
       queueId: TEST_QUEUE_ID,
       phaseId: 'speckit-plan'
-    });
+    }, LEDGER_IDENTITY);
   });
 
   // FR-R3-151 (FR-006) — a stale `skipped` override must not leave Enable
@@ -771,6 +773,75 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_DISABLE_PHASE, {
       queueId: TEST_QUEUE_ID,
       phaseId: 'speckit-implement'
+    }, LEDGER_IDENTITY);
+  });
+
+  // FR-R5-F19 (US3, T032) — Disable and Enable show what the host answered, on the menu's alert line.
+  describe('reporting the host answer for Disable and Enable', () => {
+    const DISABLE_PROPS = {
+      targetsSubjectRun: true,
+      queueId: TEST_QUEUE_ID,
+      currentPhase: 'speckit-plan',
+      selectedPhase: 'speckit-implement',
+      selectedPhaseState: 'not-started' as const,
+      isPrimary: true,
+      manualPauseAt: null
+    };
+
+    it('shows the refusal sentence for a Disable the host refused', async () => {
+      const { getByTestId } = render(PhaseControlMenu, { props: DISABLE_PROPS });
+
+      await fireEvent.click(getByTestId('phase-control-disable'));
+      ack(0, 'rejected', 'phase-already-started', 'refused');
+
+      await waitFor(() =>
+        expect(getByTestId('phase-control-message').textContent).toContain(
+          'That phase has already started, so it can no longer be disabled.'
+        )
+      );
+    });
+
+    it('shows an untrusted-workspace refusal of Enable as the workspace-not-trusted sentence', async () => {
+      const { getByTestId } = render(PhaseControlMenu, {
+        props: {
+          ...DISABLE_PROPS,
+          selectedPhaseState: 'disabled' as const,
+          selectedPhaseIsFuture: true,
+          phaseOverrides: [{ phaseId: 'speckit-implement', action: 'disabled' as const }]
+        }
+      });
+
+      await fireEvent.click(getByTestId('phase-control-enable'));
+      ack(0, 'rejected', 'untrusted-workspace', 'refused');
+
+      await waitFor(() =>
+        expect(getByTestId('phase-control-message').textContent).toContain(
+          'The workspace is not trusted, so this control is unavailable.'
+        )
+      );
+    });
+
+    it('posts once for a double click on Disable', async () => {
+      const { getByTestId } = render(PhaseControlMenu, { props: DISABLE_PROPS });
+
+      await fireEvent.click(getByTestId('phase-control-disable'));
+      await fireEvent.click(getByTestId('phase-control-disable'));
+
+      const disables = postCommandSpy.mock.calls.filter((call) => call[0] === CMD_DISABLE_PHASE);
+      expect(disables).toHaveLength(1);
+    });
+
+    it('drops the answer once another tile is selected', async () => {
+      const { getByTestId, queryByTestId, rerender } = render(PhaseControlMenu, { props: DISABLE_PROPS });
+
+      await fireEvent.click(getByTestId('phase-control-disable'));
+      await rerender({ ...DISABLE_PROPS, selectedPhase: 'speckit-tasks' });
+      ack(0, 'rejected', 'phase-already-started', 'refused');
+      // Let the answer's microtasks settle before asserting an absence.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(queryByTestId('phase-control-message')).toBeNull();
     });
   });
 
@@ -793,7 +864,7 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_ENABLE_PHASE, {
       queueId: TEST_QUEUE_ID,
       phaseId: 'speckit-implement'
-    });
+    }, LEDGER_IDENTITY);
   });
 
   // Feature 201 (FR-006, FR-007, FR-035) — the other origin of `disabled`, at

@@ -14,7 +14,7 @@
 // mechanics: the status reading, the column test, the claims by directory and by `tasks.md`, the
 // pointer file, the commit, the preflight, the guard and the apply. Nothing here runs a live agent.
 
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -37,6 +37,7 @@ import {
 } from '../../fixtures/finalization-harness';
 import {
   buildFailedCommit,
+  buildSecretBesideGitlink,
   buildH1,
   buildH2,
   buildI1,
@@ -68,7 +69,9 @@ import {
   buildU5,
   moveBranch,
   moveImplementationHead,
+  OVERSIZE_BYTES,
   S1_OWNED,
+  SECRET_PATHS,
   seedStatDirty,
   snapshot,
   worktreeCount,
@@ -96,6 +99,7 @@ import {
   buildW5,
   buildW6,
   buildW7,
+  buildW8,
   git,
   headOf,
   type Snapshot,
@@ -298,6 +302,7 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
       ['W5', buildW5],
       ['W6', buildW6],
       ['W7', buildW7],
+      ['W8', buildW8],
       ['R1', buildReviewR1],
       ['R2', buildR2],
       ['R3', buildR3],
@@ -855,6 +860,136 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
       const integrated = runRow(buildN2EnvelopeOnly());
       expect(integrated.record.repositories.find(({ path }) => path === '.')!.checks).toBe('no check set');
       expect(integrated.record.state).toBe('integrated');
+    });
+  });
+
+  // FR-R5-F19 (spec 278, T036, US4; FR-015 to FR-022). The harness is deterministic: it runs the
+  // shipped commands, and the classification and refusal decisions are this file's reading of the
+  // prose. So these rows build the workspace the clause is about, check that it is what it claims,
+  // and then check that the shipped text says what the row needs it to say; each has a control that
+  // removes the clause and must fail the same check.
+  describe('prompt conflicts are resolved without relaxing commit safety (FR-R5-F19, US4)', () => {
+    const PHASES = ['finalize', 'integrate'] as const;
+    const GITLINK_ALTERNATIVE = 'the changed gitlink of a repository with feature work';
+    const NO_FEATURE_CLAUSE = 'or claimed by no feature, other than the changed gitlink of a repository with feature work.';
+    const STATUS_ARGS = ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'] as const;
+
+    const bulletOf = (text: string, name: 'ambiguous' | 'owned'): string => {
+      const lines = text.split('\n').map((line) => line.trim()).filter((line) => line.startsWith(`- ${name}:`));
+      expect(lines, `exactly one "${name}" bullet`).toHaveLength(1);
+      return lines.at(0) ?? '';
+    };
+
+    /** Whether the bullet that runs first sends the changed gitlink of a repository with feature work to `ambiguous`. */
+    const gitlinkIsAmbiguous = (text: string): boolean => {
+      const ambiguous = bulletOf(text, 'ambiguous');
+      const clause = ambiguous.slice(ambiguous.indexOf('claimed by no feature'));
+      return !clause.includes(GITLINK_ALTERNATIVE);
+    };
+
+    const recordedSha = (root: string, path: string): string => git(root, ['ls-files', '--stage', '--', path]).split(/\s+/).at(1) ?? '';
+
+    it.each(PHASES)('%s: the first-match order no longer sends the changed gitlink of a repository with feature work to ambiguous (FR-015)', (phaseId) => {
+      const text = shipped(phaseId);
+
+      expect(bulletOf(text, 'owned')).toContain(GITLINK_ALTERNATIVE);
+      expect(bulletOf(text, 'ambiguous')).toContain(NO_FEATURE_CLAUSE);
+      expect(gitlinkIsAmbiguous(text), `${phaseId}: the gitlink reaches owned`).toBe(false);
+    });
+
+    it('control: the clause as it stood sends the changed gitlink to ambiguous, so the reading above can fail', () => {
+      const before = replaced(shipped('finalize'), NO_FEATURE_CLAUSE, 'or claimed by no feature.');
+      expect(gitlinkIsAmbiguous(before)).toBe(true);
+    });
+
+    it('W8: a declared gitlink with a real new commit is a changed gitlink only the explicit flag shows', () => {
+      const { root } = buildW8();
+      const resolution = resolveRepositories(shipped('finalize'), root);
+      const delta = join(root, 'delta');
+
+      expect(resolution.findings).toEqual([]);
+      expect(resolution.repositories.map(({ path }) => path)).toContain('delta');
+      // The recorded SHA is the old commit; the nested HEAD is the new one: tracked content changed.
+      expect(recordedSha(root, 'delta')).not.toBe(headOf(delta));
+      expect(git(root, [...STATUS_ARGS]).split('\n')).toContain(' M delta');
+      // The root's `diff.ignoreSubmodules=all` hides it from a plain status, as in W7.
+      expect(git(root, ['status', '--porcelain']).split('\n')).not.toContain(' M delta');
+    });
+
+    it('control: W7\'s gitlink changed only by an untracked file, so its recorded SHA is still the nested HEAD', () => {
+      const { root } = buildW7();
+      expect(recordedSha(root, 'gamma')).toBe(headOf(join(root, 'gamma')));
+    });
+
+    it('S-gitlink: an untracked credential and an oversize file beside an owned gitlink change are refused by the shipped text (FR-017)', () => {
+      const { root } = buildSecretBesideGitlink();
+      const lines = git(root, [...STATUS_ARGS]).split('\n');
+
+      expect(lines).toContain(' M delta');
+      expect(lines).toContain(`?? ${SECRET_PATHS.credential}`);
+      expect(lines).toContain(`?? ${SECRET_PATHS.oversize}`);
+      expect(statSync(join(root, SECRET_PATHS.oversize)).size).toBe(OVERSIZE_BYTES);
+
+      const refuses = (text: string): boolean =>
+        text.includes('Before committing, list the untracked owned paths') &&
+        text.includes('any that looks like a credential, key or token file') &&
+        text.includes('or exceeds 1 MiB') &&
+        text.includes('an owned gitlink change does not excuse it');
+      expect(refuses(shipped('finalize'))).toBe(true);
+      for (const clause of ['a credential, key or token file', 'or exceeds 1 MiB', 'an owned gitlink change does not excuse it']) {
+        expect(refuses(replaced(shipped('finalize'), clause, 'x')), `without "${clause}"`).toBe(false);
+      }
+    });
+
+    it('S-gitlink: the size default is written once, and the mechanism is stated as prompt-only with its backstop', () => {
+      const text = shipped('finalize');
+
+      expect(text.split('1 MiB')).toHaveLength(2);
+      expect(text).toContain('Prompt-only');
+      expect(text).toContain('the post-commit tracked-files scan is the backstop');
+      // Integrate never commits, so it carries no copy of the clause.
+      expect(shipped('integrate')).not.toContain('1 MiB');
+    });
+
+    it('C1: a test that pins behavior the requirements now change is handed off, not edited to pass (FR-019)', () => {
+      const clause = 'A test that pins behavior the requirements now change is not edited to pass';
+      const text = shipped('finalize');
+
+      expect(text).toContain(clause);
+      expect(text).toContain('Do NOT mask failures');
+      expect(replaced(text, clause, 'x')).not.toContain(clause);
+    });
+
+    it('D1: a dependency advisory gets only the limited repair, or is reported (FR-019, FR-020, FR-022)', () => {
+      const text = shipped('finalize');
+      const bounds = [
+        'a dependency the feature did not add or change',
+        'by patch or minor versions only, with a targeted command that does not force',
+        'Change at most three packages in all',
+        'already holds a change that is not owned, do not apply it; report the advisory',
+        'Nor over uncommitted owned edits',
+        'If a check that was green before the change now fails, undo the commit with git revert and report the advisory'
+      ];
+      const bans = [
+        'a major version bump',
+        'an overrides, resolutions or constraints entry',
+        'a forced or blanket update, such as `npm audit fix`',
+        'any change to the audit command, its threshold, its ignore list or a waiver',
+        'Do not edit unrelated code to silence it'
+      ];
+
+      for (const phrase of [...bounds, ...bans]) expect(text, phrase).toContain(phrase);
+      for (const phrase of bans) expect(replaced(text, phrase, 'x'), phrase).not.toContain(phrase);
+    });
+
+    it('the mixed, partially staged and shared-path refusals keep their clauses beside the new exception', () => {
+      for (const phaseId of PHASES) {
+        const ambiguous = bulletOf(shipped(phaseId), 'ambiguous');
+        for (const clause of ['claimed by this feature and another', 'both status columns letters (partially staged)', 'mixing a change tied to this feature with one that is not', 'a rename with one side not owned']) {
+          expect(ambiguous, `${phaseId}: ${clause}`).toContain(clause);
+        }
+        expect(shipped(phaseId), `${phaseId}: shared pointers`).toContain('.specify/feature.json and other shared pointers are owned only while naming <feature_dir>');
+      }
     });
   });
 });

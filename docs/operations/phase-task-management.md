@@ -48,6 +48,33 @@ Every state a Phase tile can be projected into, and what an operator can still d
 
 <!-- Source: src/ui/sidebar/phase-projector.ts --> <!-- Source: src/controller/phase-control-decision.ts --> <!-- Source: webview-ui/src/lib/phase-control-eligibility.ts -->
 
+### What Disable and Enable tell the operator
+
+Disable and Enable used to post a command and walk away: a refusal cleared the button's pending state and
+showed nothing, so a refused control looked as if it had worked. They now travel the same acknowledgement
+path as Pause, Resume, Restart and Skip (FR-R5-F19, T19.3), and the control that was invoked shows one
+sentence for the outcome:
+
+| Outcome | Sentence the control shows |
+|---|---|
+| Accepted | Nothing; any earlier sentence on the control is cleared. |
+| `run-terminal` | This Run has already finished, so its phases can no longer be changed. |
+| `phase-already-started` (Disable) | That phase has already started, so it can no longer be disabled. |
+| `no-disabled-override` (Enable) | That phase is not disabled, so there is nothing to enable. |
+| `phase-not-future` (Enable) | That phase has already started, so it can no longer be enabled. |
+| `workspace-not-trusted`, `untrusted-workspace` | The workspace is not trusted, so this control is unavailable. |
+| `secondary-window-readonly` | This window is not the primary one, so it cannot change the Run. |
+| No answer within the wait | The host has not answered yet. The change may still happen; this view will update when it does. |
+
+A wait that ran out is not a failure and not an invitation to click again: the host may still run the
+command. If its answer arrives later it replaces the interim sentence on the same control, and it is dropped
+when the selection has moved to another phase, so one control never shows another control's outcome. A
+repeat click while the first is unanswered sends nothing, and a click after a timeout reuses the identity
+the first send had. Disable and Enable use the one acknowledgement ledger the other controls use; there is
+no second one.
+
+<!-- Source: webview-ui/src/lib/phase-selection-control.ts --> <!-- Source: webview-ui/src/lib/lifecycle-control-ipc.ts --> <!-- Source: webview-ui/src/lib/phase-control.ts -->
+
 ### What a refused removal means
 
 `CMD_REMOVE_TASK_PHASE` names the condition it actually observed, so a refusal identifies which fact to go and check:

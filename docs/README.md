@@ -200,13 +200,13 @@ neither listed nor excluded.
 - [Live-canary cadence](operations/live-canary-cadence.md) — **declared 2026-08-27**: when the live backend canary must run, who owns it, and the cost bound. A live run was made on 2026-10-19; the dated deferral stays open until the operator's review
 - [Merge-gate observation](operations/merge-gate-observation.md)
 - [Multi-queue concurrency](operations/multi-queue-concurrency.md)
-- [Phase and task management](operations/phase-task-management.md)
+- [Phase and task management](operations/phase-task-management.md) — the Phase controls, what each refusal means, and what Disable and Enable now say when the host refuses them (FR-R5-F19)
 - [Platform observation record](operations/platform-observation-record.md)
 - [Process YAML](operations/process-yaml.md)
 - [Recovery from an interrupted run](operations/recovery-checkpoints.md)
 - [Release notes](operations/release-notes.md)
 - [Release provenance observation](operations/release-provenance-observation.md)
-- [Retry contract](operations/retry-contract.md) — **written 2026-10-28**: which failures retry, pause or fail, where each delay comes from, where automatic attempts stop, and how the watchdog handles them
+- [Retry contract](operations/retry-contract.md) — **written 2026-10-28**: which failures retry, pause or fail, where each delay comes from, where automatic attempts stop, and how the watchdog handles them, and what Resume, Restart, Skip and a row Retry each do to a failed run
 - [Runtime log](operations/runtime-log.md)
 - [Single-task queue migration](operations/single-task-queue-migration.md)
 - [Trust scopes](operations/trust-scopes.md)

@@ -2,7 +2,7 @@
 // SC-001, SC-003) — the router gates what the declaration says it gates, for every
 // webview command, and the review of the 17 commands the old table left out holds.
 //
-// WHY ALL 62. The old table was partial, so a command nobody had decided about
+// WHY ALL 63. The old table was partial, so a command nobody had decided about
 // ran with no gate and no record. A unit test of any one command cannot show that
 // the rest are covered. This one sends every `COMMAND_TYPES` member, as a raw
 // command with the smallest payload its own runtime guard accepts, through the
@@ -15,7 +15,7 @@
 // `executeCommand`. A read-only command that fails inside its handler on a missing
 // dependency is fine here: the assertion is only that no gate refused it.
 //
-// TWO SOURCES OF TRUTH, ON PURPOSE. For all 62 the expectation is the declaration's,
+// TWO SOURCES OF TRUTH, ON PURPOSE. For all 63 the expectation is the declaration's,
 // which proves the router matches it. For the 17 commands research R5 reviewed, the
 // expected verdict is ALSO written out below by hand, so that reclassifying one in
 // the declaration, in either direction, is a visible edit here and not a silent one.
@@ -207,8 +207,8 @@ const gatedByDeclaration = (type: CommandType): boolean =>
   commandAuthorityOf(type).authority === 'gated';
 
 describe('every webview command is routed as the declaration says (T4)', () => {
-  it('parses 62 commands, each with a payload its own guard accepts', () => {
-    expect(COMMAND_TYPES).toHaveLength(62);
+  it('parses 63 commands, each with a payload its own guard accepts', () => {
+    expect(COMMAND_TYPES).toHaveLength(63);
     const rejected = COMMAND_TYPES.filter((type) => !COMMAND_GUARDS[type](minimalCommand(type)));
     expect(rejected, `commands whose minimal payload their guard refuses: ${rejected.join(', ')}`).toEqual([]);
   });

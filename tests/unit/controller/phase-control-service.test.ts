@@ -859,7 +859,7 @@ describe('FR-R5-F15 — PhaseControlService + SpendBoundWatcher resume lifecycle
 
     const service = new PhaseControlService({
       store: {
-        getRun: () => currentRun,
+        getRun: (_queueId: string) => currentRun,
         updateRun: async (
           _queueId: string,
           update: { patch: (current: WorkflowRun) => Partial<WorkflowRun> }
@@ -867,7 +867,7 @@ describe('FR-R5-F15 — PhaseControlService + SpendBoundWatcher resume lifecycle
           currentRun = { ...currentRun, ...update.patch(currentRun) };
           return currentRun;
         },
-        getQueue: () => ({ queueLifecycle: 'active', pausedReason: null }),
+        getQueue: (_queueId: string) => ({ queueLifecycle: 'active', pausedReason: null }),
         setWatchdog: async () => {},
         runCommitClaim: () => unfencedCommit('test-fixture')
       },

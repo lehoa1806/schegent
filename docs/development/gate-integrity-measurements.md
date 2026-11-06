@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 133
+    vacuity-census-denominator: 134
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **133** |
+| Gates the detector calls **controlled** (the denominator) | **134** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1659,3 +1659,17 @@ and they pass with the entrant in the set.
 | Gate | Seeded case that must fail | Result |
 |---|---|---|
 | `license-check-descriptions.test.ts` (L8) | the live tree as it stood before the correction, with nothing planted | named exactly `docs/how-to/developer-workflows.md` and `CONTRIBUTING.md`, the two pages the filing and the plan found, and nothing else among the live pages |
+
+**Denominator movement 133 → 134 (2026-11-06, feature 278 / `FR-R5-F19`).** One gate joined, and the feature
+added no gate-shaped file under `tests/lint/`. Attribution is by census membership, measured rather than assumed:
+the controlled set was computed with the detector's own two predicates (`isScanningGate` and `looksControlled`)
+over `tests/lint/` at the `repo/` commit this feature branched from and over the working tree that held the
+feature, and the only name in the second set that is not in the first is the one below. None left.
+`single-intent-ledger.test.ts`, the one new file under `tests/lint/`, is outside the denominator: the detector
+does not read it as a scanning gate.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `queue-halt-not-persisted.test.ts` (133 → 134) | Joined (`FR-027`, task T050). The file already existed; it gained a walk over every production source file and a control case that feeds both halt patterns a stored-halt shape, which is what the detector reads |
+
+The rate stays **0.0%**: all 134 still read as uncontrolled once their controls are stripped.

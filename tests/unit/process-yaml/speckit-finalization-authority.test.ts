@@ -72,7 +72,8 @@ const AMBIGUOUS_CLAUSES: ReadonlyArray<readonly [label: string, phrase: string]>
   ['ambiguous: both status columns letters', 'both status columns letters (partially staged)'],
   ['ambiguous: a change tied to this feature mixed with one that is not', 'mixing a change tied to this feature with one that is not'],
   ['ambiguous: a rename with one side not owned', 'a rename with one side not owned'],
-  ['ambiguous: claimed by no feature', 'or claimed by no feature.'],
+  // FR-R5-F19 FR-015: the bullet runs before `owned`, so without the exception it took the changed gitlink of a repository with feature work.
+  ['ambiguous: claimed by no feature, except a changed gitlink with feature work', 'or claimed by no feature, other than the changed gitlink of a repository with feature work.'],
   ['changing never makes a path owned', 'Changing never makes a path owned'],
   ['a shared pointer is owned only while it names the feature directory', '.specify/feature.json and other shared pointers are owned only while naming <feature_dir>'],
   ['unrelated and ambiguous paths are left exactly as found', 'Leave unrelated and ambiguous paths exactly as found: never stage, format, commit or restore them.'],
@@ -136,7 +137,18 @@ const FINALIZE_PINS: readonly Pin[] = [
   has('step 5 commits nothing on a detached HEAD or the base', 'HEAD is detached or on the base branch'),
   has('step 6 names only the files the fix changed', 'naming only the files it changed'),
   has('step 6 does not apply a fix over a change that is not owned', 'already holds a change that is not owned'),
+  // FR-R5-F19 review: a refused step 5 leaves owned edits uncommitted, and a dependency commit must not carry them.
+  has('step 6 does not apply a fix over an owned change step 5 left uncommitted', 'Nor over uncommitted owned edits'),
   has('step 7 never merges, switches or checks out', '7. Never merge, switch or check out a branch, reset, stash or push: integration is the next Phase\'s.'),
+  // FR-R5-F19 FR-017: the untracked-secret and large-binary rejection, in the prompt only (contract: Secret and large-binary check).
+  has('step 5 lists the untracked owned paths before committing', 'Before committing, list the untracked owned paths'),
+  has('step 5 refuses a credential, key or token file', 'any that looks like a credential, key or token file'),
+  has('step 5 refuses a file over the size default', 'or exceeds 1 MiB'),
+  has('an owned gitlink change does not excuse an untracked secret', 'an owned gitlink change does not excuse it'),
+  has('the rejection is stated as prompt-only, with its backstop', 'Prompt-only'),
+  has('the tracked-files scan after the commit is the backstop', 'the post-commit tracked-files scan is the backstop'),
+  // FR-R5-F19 FR-019: a failing test that pins what the requirements now change is not decided by editing it.
+  has('step 3 hands a test that pins changed requirements off', 'A test that pins behavior the requirements now change is not edited to pass'),
   has('CLEAR needs green checks, every owned path committed and no hand-off', 'If all checks are green, every owned path is committed and nothing is handed off → emit [SCHEGENT_STATUS: CLEAR]')
 ];
 

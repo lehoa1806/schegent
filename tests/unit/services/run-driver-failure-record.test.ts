@@ -626,6 +626,13 @@ describe('a recorder that cannot write changes nothing else (C7.9, FR-014, D12)'
       store: new FailureRecordStore({ workspaceRoot: root, logger: { warn: vi.fn() }, fs: THROWING_STORE_SEAM })
     });
 
+  // FR-R5-F19 (278, FR-001): this fixture's issues carry `needs-approval`, so the first-blocker notice is
+  // also raised. These cases are about the failure notice, so they read the warnings without it.
+  const failureNoticesOf = (warn: { mock: { calls: unknown[][] } }): string[] =>
+    warn.mock.calls
+      .map((call) => String(call.at(0)))
+      .filter((message) => !message.includes('waiting on a decision'));
+
   it('a recorder that returns false leaves the Run, the queue, the audit and the notice as with no recorder', async () => {
     const bare = await failLastPhase('none');
     const refusing = await failLastPhase({ record: async () => false });
@@ -644,9 +651,9 @@ describe('a recorder that cannot write changes nothing else (C7.9, FR-014, D12)'
     const expected = failureNotice({ cause: 'last_phase_issues_remain', phase: 'finalize', taskTitle: DESCRIPTION });
     for (const recorder of ['none', { record: async () => false }, unwritableRecorder()] as const) {
       const h = await failLastPhase(recorder);
-      expect(h.notifier.warn).toHaveBeenCalledTimes(1);
-      expect(h.notifier.warn).toHaveBeenCalledWith(expected.message);
-      expect(String(h.notifier.warn.mock.calls[0]?.[0])).not.toContain('Show last error');
+      const failureNotices = failureNoticesOf(h.notifier.warn);
+      expect(failureNotices).toEqual([expected.message]);
+      expect(failureNotices.at(0)).not.toContain('Show last error');
     }
   });
 
@@ -660,7 +667,7 @@ describe('a recorder that cannot write changes nothing else (C7.9, FR-014, D12)'
       recordWritten: true
     });
     expect(written.notifier.warn).toHaveBeenCalledWith(expected.message);
-    expect(String(written.notifier.warn.mock.calls[0]?.[0])).toMatch(/ "Show last error" lists what was open\.$/);
+    expect(failureNoticesOf(written.notifier.warn).at(0)).toMatch(/ "Show last error" lists what was open\.$/);
     const { notices: writtenNotices, ...writtenRest } = outcomeOf(written);
     const { notices: bareNotices, ...bareRest } = outcomeOf(bare);
     expect(writtenRest).toEqual(bareRest);
