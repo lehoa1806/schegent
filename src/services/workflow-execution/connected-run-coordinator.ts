@@ -220,6 +220,16 @@ export interface ComposableWorkflowCoordinatorDeps {
   readonly dispatchPhase: (
     input: PhaseAttemptDispatchInput
   ) => Promise<PhaseAttemptDispatchResult>;
+  /**
+   * FR-R5-F08 — optional compensating hook invoked when `dispatchPhase` enqueued
+   * a queue item but the post-dispatch CAS was rejected as stale and the run/invocation
+   * is now terminal (`canceled` or `failed`) or missing, so no untracked orphan queue
+   * item drains after the workflow stopped.
+   */
+  readonly cancelOrphanedQueueItem?: (
+    queueItemId: string,
+    queueId: string
+  ) => Promise<void> | void;
 }
 
 export type ComposableWorkflowStepResult =
@@ -413,59 +423,122 @@ async function dispatchNodeInternal(
       );
     }
 
-    const previewAttempt = createNodeAttemptRecord({
-      frame,
-      nodeId,
-      nodeKind: 'phase',
-      targetDefinitionId: phaseId,
-      inputEnvelope,
-      startedAt
-    });
-
-    const dispatched = await deps.dispatchPhase({
-      run,
-      frame,
-      node,
-      phase,
-      boundInputs,
-      inputEnvelope,
-      nodePath: previewAttempt.nodePath,
-      attemptId: previewAttempt.attemptId,
-      attemptIndex: previewAttempt.attemptIndex,
-      queueId: resolveBoundQueueId(run),
-      startedAt
-    });
-    if (dispatched.outcome === 'rejected') {
-      return failFrameAndPropagate(
-        deps,
-        run,
-        expectedRevision,
-        frame,
-        startedAt,
-        dispatched.reason,
-        dispatched.detail
-      );
-    }
-
-    const attempt = createNodeAttemptRecord({
+    const pendingAttempt = createNodeAttemptRecord({
       frame,
       nodeId,
       nodeKind: 'phase',
       targetDefinitionId: phaseId,
       inputEnvelope,
       startedAt,
+      status: 'pending-dispatch'
+    });
+    const frameWithPending = recordNodeAttempt(frame, pendingAttempt);
+    const preDispatchRun = upsertInvocationFrame(run, frameWithPending);
+    const preWritten = await deps.connectedRuns.compareAndSetConnectedRun(
+      preDispatchRun,
+      expectedRevision
+    );
+    if (preWritten.outcome === 'stale') {
+      return { outcome: 'rejected-stale', current: preWritten.current };
+    }
+
+    const boundQueueId = resolveBoundQueueId(preWritten.run);
+    const dispatched = await deps.dispatchPhase({
+      run: preWritten.run,
+      frame: frameWithPending,
+      node,
+      phase,
+      boundInputs,
+      inputEnvelope,
+      nodePath: pendingAttempt.nodePath,
+      attemptId: pendingAttempt.attemptId,
+      attemptIndex: pendingAttempt.attemptIndex,
+      queueId: boundQueueId,
+      startedAt
+    });
+    if (dispatched.outcome === 'rejected') {
+      const failedAttempt: NodeAttemptRecord = Object.freeze({
+        ...pendingAttempt,
+        status: 'failed',
+        completedAt: startedAt,
+        failureCode: dispatched.reason,
+        ...(dispatched.detail !== undefined ? { failureMessage: dispatched.detail } : {})
+      });
+      const frameWithFailed = recordNodeAttempt(frameWithPending, failedAttempt);
+      return failFrameAndPropagate(
+        deps,
+        preWritten.run,
+        preWritten.run.revision,
+        frameWithFailed,
+        startedAt,
+        dispatched.reason,
+        dispatched.detail
+      );
+    }
+
+    const attempt: NodeAttemptRecord = Object.freeze({
+      ...pendingAttempt,
+      status: 'in-flight',
       queueItemId: dispatched.queueItemId
     });
-    const updatedFrame = recordNodeAttempt(frame, attempt);
-    const nextRun = upsertInvocationFrame(run, updatedFrame);
-    return persistRunStep(deps.connectedRuns, nextRun, expectedRevision, (persisted) => ({
-      outcome: 'phase-dispatched',
-      run: persisted,
-      invocationId,
-      nodeId,
-      attemptId: attempt.attemptId,
-      queueItemId: dispatched.queueItemId
-    }));
+    const updatedFrame = recordNodeAttempt(frameWithPending, attempt);
+    const nextRun = upsertInvocationFrame(preWritten.run, updatedFrame);
+    const written = await deps.connectedRuns.compareAndSetConnectedRun(
+      nextRun,
+      preWritten.run.revision
+    );
+    if (written.outcome === 'written') {
+      return {
+        outcome: 'phase-dispatched',
+        run: written.run,
+        invocationId,
+        nodeId,
+        attemptId: attempt.attemptId,
+        queueItemId: dispatched.queueItemId
+      };
+    }
+
+    // FR-R5-F08 — a concurrent mutation advanced `revision` while `dispatchPhase`
+    // was awaiting. If the invocation is still active or paused and holds our
+    // `pending-dispatch` attempt, bind `queueItemId` onto the latest record so
+    // the enqueued item is never orphaned. If the invocation is now terminal or
+    // gone, cancel the newly enqueued orphan queue item immediately.
+    const latestRun = written.current;
+    const latestFrame = latestRun?.invocations?.[invocationId];
+    if (
+      latestRun !== null &&
+      latestFrame !== undefined &&
+      (latestFrame.status === 'in-flight' || latestFrame.status === 'paused')
+    ) {
+      const latestAttempts = attemptsForNode(latestFrame, nodeId);
+      const matchingPending = latestAttempts.find((a) => a.attemptId === pendingAttempt.attemptId);
+      if (matchingPending !== undefined) {
+        const reboundAttempt: NodeAttemptRecord = Object.freeze({
+          ...matchingPending,
+          status: latestFrame.status === 'paused' ? 'paused' : 'in-flight',
+          queueItemId: dispatched.queueItemId
+        });
+        const reboundFrame = recordNodeAttempt(latestFrame, reboundAttempt);
+        const reboundRun = upsertInvocationFrame(latestRun, reboundFrame);
+        const retried = await deps.connectedRuns.compareAndSetConnectedRun(
+          reboundRun,
+          latestRun.revision
+        );
+        if (retried.outcome === 'written') {
+          return {
+            outcome: 'phase-dispatched',
+            run: retried.run,
+            invocationId,
+            nodeId,
+            attemptId: attempt.attemptId,
+            queueItemId: dispatched.queueItemId
+          };
+        }
+      }
+    }
+
+    await deps.cancelOrphanedQueueItem?.(dispatched.queueItemId, boundQueueId);
+    return { outcome: 'rejected-stale', current: written.current };
   }
 
   // Child workflow node call (`nodeKind === 'workflow'`):

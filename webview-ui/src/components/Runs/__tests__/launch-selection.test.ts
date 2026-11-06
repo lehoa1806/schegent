@@ -43,7 +43,7 @@ vi.mock('../../../lib/workflow-run-ipc', () => ({
 vi.mock('../../../lib/run-launcher-ipc', () => ({ launchPipeline: vi.fn() }));
 
 // Late import so the surface binds to the stubs above.
-import RunsSurface from '../../RunsSurface.svelte';
+import QueueTaskComposer from '../../QueueTaskComposer.svelte';
 
 afterEach(() => cleanup());
 
@@ -111,7 +111,7 @@ describe('a selection the next projection no longer offers (FR-013)', () => {
 
 describe('the surface holds one selection across both sections (FR-014)', () => {
   it('shows the detail for the selected entry and only that entry', async () => {
-    const { getByTestId, queryAllByTestId } = render(RunsSurface, {
+    const { getByTestId, queryAllByTestId } = render(QueueTaskComposer, {
       snapshot: buildSnapshot()
     });
 
@@ -124,7 +124,7 @@ describe('the surface holds one selection across both sections (FR-014)', () => 
     // One selection, so selecting in Workflows must un-select in Pipelines. Two
     // detail panels open at once would let an operator Run one while reading the
     // other's ports.
-    const { getByTestId, queryAllByTestId } = render(RunsSurface, {
+    const { getByTestId, queryAllByTestId } = render(QueueTaskComposer, {
       snapshot: buildSnapshot()
     });
 
@@ -139,7 +139,7 @@ describe('the surface holds one selection across both sections (FR-014)', () => 
   });
 
   it('drops the selection and closes the open form on the next projection (FR-013)', async () => {
-    const { getByTestId, queryByTestId, rerender } = render(RunsSurface, {
+    const { getByTestId, queryByTestId, rerender } = render(QueueTaskComposer, {
       snapshot: buildSnapshot()
     });
 

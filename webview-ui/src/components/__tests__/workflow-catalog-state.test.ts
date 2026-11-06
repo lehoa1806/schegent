@@ -35,7 +35,6 @@ import {
   buildChildWorkflowPreview,
   dependentWorkflowsForPhase,
   dependentWorkflowsForWorkflow,
-  deriveSelectedWorkflowLaunchHandoff,
   insertWorkflowNodeAfter,
   spliceWorkflowNodeIntoConnection,
   conditionRightArity,
@@ -916,32 +915,6 @@ describe('canvas composite edits', () => {
       expect(preview.nodes[1]?.children[0]?.truncatedReason).toBe('cycle');
     });
 
-    it('derives launch handoff eligibility from persistence, status, and lifecycle state', () => {
-      const draft = makeNewWorkflowDraft([]);
-      expect(deriveSelectedWorkflowLaunchHandoff(draft, null)?.launchEligible).toBe(false);
 
-      const stored = { ...draft, persisted: true, workflowId: 'live-wf', name: 'Live WF' };
-      const activeRecord = {
-        key: 'live-wf::0',
-        workflowId: 'live-wf',
-        status: 'effective',
-        definition: null,
-        display: {},
-        errors: [],
-        derivedInputs: [],
-        derivedOutputs: [],
-        lifecycle: {
-          state: 'active',
-          createdAt: 0,
-          updatedAt: 0,
-          activeVersionId: 'v1',
-          expectedDraftVersion: 'no-draft',
-          versions: []
-        }
-      } as unknown as WorkflowCatalogSourceProjection;
-      expect(deriveSelectedWorkflowLaunchHandoff(stored, activeRecord, false)?.launchEligible).toBe(
-        true
-      );
-    });
   });
 });

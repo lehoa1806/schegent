@@ -91,6 +91,12 @@ export async function runSchedule(
         ctx.notifier.info('Schegent: another window holds the workspace lock.');
         return;
       case 'rejected-validation':
+        if (result.reason?.startsWith('workflow-requires-graph-launch:')) {
+          ctx.notifier.warn(
+            `Schegent: rejected (${result.reason}). Launch composable Workflows from the Workflow Launch view.`
+          );
+          return;
+        }
         ctx.notifier.warn(`Schegent: rejected (${result.reason ?? 'validation-failed'}).`);
         return;
       // FR-R4-F05 (F8) — one fixed sentence; `reason` is a code and is not echoed.

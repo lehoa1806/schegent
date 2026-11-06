@@ -8,6 +8,7 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
 import {
+  findQueueInFlightRow,
   PhaseLogTailRegistry,
   type PhaseLogTailSubscriptionToken,
   type PhaseLogTailRegistryAuditEvent
@@ -19,6 +20,7 @@ import type {
   StopPhaseLogTailRequest,
   StopPhaseLogTailResponse
 } from '../contracts/sidebar-ipc';
+import { findQueueRuntime, type WorkflowSnapshot } from '../ui/sidebar/snapshot';
 import type { StateProjector } from '../ui/sidebar/state-projector';
 
 /**
@@ -52,14 +54,17 @@ type DashboardBridgeSink = { postPhaseLogEntry(envelope: PhaseLogEntryPushMessag
  *   2. webview-dispose   — extension teardown via the returned `dispose()`
  *   3. phase-complete    — the in-flight task transitioned out
  *
- * Path (3) is derived from a projector subscription that watches
- * `queue.inFlight.id` transitions and fires every registered
- * listener exactly once with the leaving runId.
+ * Path (3) is derived from a projector subscription that keeps one cursor
+ * per queue, on the Run id of that queue's in-flight row, and fires every
+ * registered listener exactly once with the Run id that left. BUG-002
+ * (FR-006): the cursor watched the default queue's row and held its Task
+ * id, so a tail on any other queue was never torn down, and the default
+ * queue's never matched the Run id the registry keys a tail by.
  *
  * Extracted from `extension.ts` rather than left inline because the whole block
  * has exactly two outward references — the service the router reads and the
- * bridge binding — and its registry, task-leave listener set and previous-id
- * cursor are otherwise private to it. Keeping them in the activation function
+ * bridge binding — and its registry, task-leave listener set and per-queue
+ * cursors are otherwise private to it. Keeping them in the activation function
  * put three mutable locals in scope for the 300 lines that follow, where
  * nothing may touch them.
  */
@@ -77,24 +82,35 @@ export function createPhaseLogTailWiring(input: {
 }): PhaseLogTailWiring {
   const { workspaceRoot, projector, queue, auditWriter, isWorkspaceTrusted, logger } = input;
 
-  let previousInFlightTaskId: string | null =
-    projector.getCurrentSnapshot().queue.inFlight?.id ?? null;
+  // Queue id → the Run id of that queue's in-flight row. The Run id, because
+  // the registry keys a tail by the Run id `start` below resolves.
+  const inFlightRunIds = (snapshot: WorkflowSnapshot): ReadonlyMap<string, string> => {
+    const next = new Map<string, string>();
+    for (const runtime of snapshot.queues) {
+      const row = findQueueInFlightRow(runtime.tasks);
+      if (row !== null) next.set(runtime.queueId, queue.findById(row.id)?.runId ?? row.id);
+    }
+    return next;
+  };
+  let previousInFlightRunIds = inFlightRunIds(projector.getCurrentSnapshot());
   const taskLeaveListeners = new Set<(runId: string) => void>();
-  const taskLeaveProjectorSub = projector.subscribe((snapshot) => {
-    const nextId = snapshot.queue.inFlight?.id ?? null;
-    if (previousInFlightTaskId !== null && previousInFlightTaskId !== nextId) {
-      const leavingId = previousInFlightTaskId;
-      for (const listener of taskLeaveListeners) {
-        try {
-          listener(leavingId);
-        } catch (err) {
-          logger.debug(
-            `phase-log-tail: task-leave listener threw: ${(err as Error).message}`
-          );
-        }
+  const notifyTaskLeave = (leavingRunId: string): void => {
+    for (const listener of taskLeaveListeners) {
+      try {
+        listener(leavingRunId);
+      } catch (err) {
+        logger.debug(
+          `phase-log-tail: task-leave listener threw: ${(err as Error).message}`
+        );
       }
     }
-    previousInFlightTaskId = nextId;
+  };
+  const taskLeaveProjectorSub = projector.subscribe((snapshot) => {
+    const next = inFlightRunIds(snapshot);
+    for (const [queueId, leavingRunId] of previousInFlightRunIds) {
+      if (next.get(queueId) !== leavingRunId) notifyTaskLeave(leavingRunId);
+    }
+    previousInFlightRunIds = next;
   });
 
   // Forward reference: the registry pushes through `dashboardBridge`,
@@ -188,8 +204,10 @@ export function createPhaseLogTailWiring(input: {
       start: async (
         req: StartPhaseLogTailRequest
       ): Promise<StartPhaseLogTailResponse> => {
-        const snap = projector.getCurrentSnapshot();
-        const inFlight = snap.queue.inFlight;
+        // BUG-002 (FR-022) — the in-flight row of the queue the selection
+        // names. Reading the default queue's refused a tail on any other.
+        const runtime = findQueueRuntime(projector.getCurrentSnapshot(), req.selection.queueId);
+        const inFlight = runtime === null ? null : findQueueInFlightRow(runtime.tasks);
         if (inFlight === null || inFlight.id !== req.selection.taskId) {
           return { outcome: 'failure', reason: 'not-in-flight' };
         }

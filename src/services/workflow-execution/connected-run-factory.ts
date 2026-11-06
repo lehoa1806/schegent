@@ -384,6 +384,7 @@ export interface CreateNodeAttemptInput {
   readonly targetDefinitionId: string;
   readonly inputEnvelope: InvocationInputEnvelope;
   readonly startedAt: number;
+  readonly status?: 'pending-dispatch' | 'in-flight';
   readonly queueItemId?: string;
   readonly childInvocationId?: string;
 }
@@ -412,7 +413,7 @@ export function createNodeAttemptRecord(input: CreateNodeAttemptInput): NodeAtte
     nodeId: input.nodeId,
     nodeKind: input.nodeKind,
     targetDefinitionId: input.targetDefinitionId,
-    status: 'in-flight',
+    status: input.status ?? 'in-flight',
     startedAt: input.startedAt,
     ...(input.queueItemId !== undefined ? { queueItemId: input.queueItemId } : {}),
     ...(input.childInvocationId !== undefined

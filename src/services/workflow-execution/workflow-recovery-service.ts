@@ -49,13 +49,16 @@ import {
 import type { ConnectedRunWriter } from './workflow-launcher';
 
 export interface DurableAttemptEvidenceResult {
-  readonly completed: boolean;
+  readonly completed?: boolean;
+  readonly settled?: boolean;
   readonly status?: WorkflowNodeTerminalStatus;
   readonly declaredOutputs?: Readonly<Record<string, ResolvedPortValue>>;
   readonly verdict?: 'pass' | 'fail' | null;
   readonly failureCode?: string;
   readonly completedAt?: number;
 }
+
+export type DurableAttemptEvidence = DurableAttemptEvidenceResult;
 
 export interface WorkflowRecoveryStore extends ConnectedRunWriter {
   get(connectedRunId: string): ConnectedWorkflowRun | null;
@@ -68,6 +71,10 @@ export interface WorkflowRecoveryServiceDeps {
     input: PhaseAttemptDispatchInput
   ) => Promise<PhaseAttemptDispatchResult>;
   readonly isQueueOrTaskPresent?: (queueId: string, rootRunId: string) => boolean;
+  readonly findMatchingEnqueuedAttempt?: (
+    queueId: string,
+    attempt: NodeAttemptRecord
+  ) => string | undefined;
   readonly checkDurableAttemptEvidence?: (
     run: ConnectedWorkflowRun,
     frame: WorkflowInvocationFrame,
@@ -161,7 +168,11 @@ function findInterruptedLeafAttempt(
     if (frame.status !== 'in-flight') continue;
     for (const attempts of Object.values(frame.attemptsByNodeId)) {
       const last = attempts[attempts.length - 1];
-      if (last !== undefined && last.status === 'in-flight' && last.nodeKind === 'phase') {
+      if (
+        last !== undefined &&
+        (last.status === 'in-flight' || last.status === 'pending-dispatch') &&
+        last.nodeKind === 'phase'
+      ) {
         if (best === undefined || frame.depth >= best.frame.depth) {
           best = { frame, attempt: last };
         }
@@ -239,7 +250,12 @@ export class WorkflowRecoveryService {
         };
         for (const attempts of Object.values(updatedFrame.attemptsByNodeId)) {
           const last = attempts[attempts.length - 1];
-          if (last !== undefined && (last.status === 'in-flight' || last.status === 'paused')) {
+          if (
+            last !== undefined &&
+            (last.status === 'in-flight' ||
+              last.status === 'pending-dispatch' ||
+              last.status === 'paused')
+          ) {
             updatedFrame = recordNodeAttempt(updatedFrame, {
               ...last,
               status: 'canceled',
@@ -301,7 +317,7 @@ export class WorkflowRecoveryService {
         });
         staging.set(nextRun);
 
-        await dispatchComposableNode(
+        const dispatched = await dispatchComposableNode(
           {
             connectedRuns: staging.writer,
             dispatchPhase: this.deps.dispatchPhase
@@ -314,15 +330,73 @@ export class WorkflowRecoveryService {
           }
         );
 
+        if (
+          dispatched.outcome === 'phase-dispatched' ||
+          dispatched.outcome === 'waiting-for-handoff' ||
+          dispatched.outcome === 'workflow-completed'
+        ) {
+          const disposition: RecoveryDispositionRecord = Object.freeze({
+            status: 'pending-dispatch-recovered',
+            invocationId: waitingFrame.invocationId,
+            nodeId: targetNodeId,
+            reconciledAt: now,
+            reasonCode: 'recovered-accepted-input-envelope'
+          });
+          const withDisposition = setRecoveryDisposition(
+            { ...staging.current(), revision: run.revision },
+            disposition
+          );
+          const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
+            withDisposition,
+            run.revision
+          );
+          const finalRun =
+            written.outcome === 'written' ? written.run : written.current ?? withDisposition;
+          return {
+            runId: finalRun.connectedRunId,
+            mutated: true,
+            disposition,
+            run: finalRun,
+            projection: buildWorkflowRunControlProjection(finalRun)
+          };
+        }
+
+        // Handoff redispatch failed: fall back to paused with recovery-uncertain-effect
+        // rather than falsely stamping pending-dispatch-recovered.
+        let fallbackRun = run;
+        const pausedHandoffFrame: WorkflowInvocationFrame = {
+          ...waitingFrame,
+          status: 'paused',
+          activeNodeId: targetNodeId,
+          controlMarkers: pauseInvocationControlMarkers(
+            waitingFrame.controlMarkers,
+            now,
+            'recovery-uncertain-effect'
+          )
+        };
+        fallbackRun = upsertInvocationFrame(fallbackRun, pausedHandoffFrame);
+        for (const ancId of collectAncestorInvocationIds(fallbackRun, waitingFrame.invocationId)) {
+          const anc = fallbackRun.invocations?.[ancId];
+          if (anc === undefined || isTerminalInvocationStatus(anc.status)) continue;
+          fallbackRun = upsertInvocationFrame(fallbackRun, {
+            ...anc,
+            status: 'paused',
+            controlMarkers: pauseInvocationControlMarkers(
+              anc.controlMarkers,
+              now,
+              'recovery-uncertain-effect'
+            )
+          });
+        }
         const disposition: RecoveryDispositionRecord = Object.freeze({
-          status: 'pending-dispatch-recovered',
+          status: 'uncertain-effect-paused',
           invocationId: waitingFrame.invocationId,
           nodeId: targetNodeId,
           reconciledAt: now,
-          reasonCode: 'recovered-accepted-input-envelope'
+          reasonCode: 'handoff-redispatch-failed'
         });
         const withDisposition = setRecoveryDisposition(
-          { ...staging.current(), revision: run.revision },
+          { ...fallbackRun, revision: run.revision },
           disposition
         );
         const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
@@ -429,6 +503,75 @@ export class WorkflowRecoveryService {
           run: finalRun,
           projection: buildWorkflowRunControlProjection(finalRun)
         };
+      }
+
+      if (attempt.status === 'pending-dispatch') {
+        let resolvedQueueItemId = this.deps.findMatchingEnqueuedAttempt?.(queueId, attempt);
+        if (resolvedQueueItemId === undefined) {
+          const workflowDef = run.frozenClosure?.workflowsById[frame.workflowId] ?? run.graph;
+          const phaseNode = workflowDef.nodes.find((candidate) => candidate.nodeId === attempt.nodeId);
+          if (phaseNode !== undefined && phaseNode.kind === 'phase') {
+            const phaseDef = run.frozenClosure?.phasesById[phaseNode.phaseId ?? ''] ?? {
+              phaseId: phaseNode.phaseId ?? attempt.nodeId,
+              name: phaseNode.label ?? attempt.nodeId,
+              version: 1,
+              instruction: ''
+            };
+            const phaseResult = await this.deps.dispatchPhase({
+              run,
+              frame,
+              node: phaseNode,
+              phase: phaseDef,
+              boundInputs: attempt.inputEnvelope.inputsByPort,
+              inputEnvelope: attempt.inputEnvelope,
+              attemptId: attempt.attemptId,
+              attemptIndex: attempt.attemptIndex,
+              queueId,
+              startedAt: attempt.startedAt
+            });
+            if (phaseResult.outcome === 'dispatched') {
+              resolvedQueueItemId = phaseResult.queueItemId;
+            }
+          }
+        }
+        if (resolvedQueueItemId !== undefined) {
+          const boundAttempt: NodeAttemptRecord = {
+            ...attempt,
+            status: 'in-flight',
+            queueItemId: resolvedQueueItemId
+          };
+          const updatedFrame: WorkflowInvocationFrame = {
+            ...recordNodeAttempt(frame, boundAttempt),
+            status: 'in-flight',
+            activeNodeId: attempt.nodeId
+          };
+          const recoveredRun = upsertInvocationFrame(run, updatedFrame);
+          const disposition: RecoveryDispositionRecord = Object.freeze({
+            status: 'pending-dispatch-recovered',
+            invocationId: frame.invocationId,
+            nodeId: attempt.nodeId,
+            attemptId: attempt.attemptId,
+            reconciledAt: now,
+            reasonCode: 'recovered-pending-dispatch-attempt'
+          });
+          const withDisposition = setRecoveryDisposition(
+            { ...recoveredRun, revision: run.revision },
+            disposition
+          );
+          const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
+            withDisposition,
+            run.revision
+          );
+          const finalRun =
+            written.outcome === 'written' ? written.run : written.current ?? withDisposition;
+          return {
+            runId: finalRun.connectedRunId,
+            mutated: true,
+            disposition,
+            run: finalRun,
+            projection: buildWorkflowRunControlProjection(finalRun)
+          };
+        }
       }
 
       // No durable completion evidence: transition to 'paused' with 'recovery-uncertain-effect'.

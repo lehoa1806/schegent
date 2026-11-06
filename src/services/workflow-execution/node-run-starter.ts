@@ -396,6 +396,7 @@ export async function startPipelineRun(
       pipelineId: plan.pipeline.id,
       ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
       ...(input.continuesWorkflow === true ? { continuesWorkflow: true } : {}),
+      ...(input.occurrence !== undefined ? { workflowOccurrence: input.occurrence } : {}),
       runPlan: plan
     });
   } catch (err) {

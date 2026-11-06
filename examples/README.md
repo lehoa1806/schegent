@@ -42,6 +42,12 @@ installed, and a fresh workspace starts with an empty Builder and the guidance t
 files arrive the way your own definitions do — through the process-YAML import boundary — which is the
 point. An example that bypassed the import path would demonstrate a product nobody runs.
 
+The examples in this directory track this checkout, which can be newer than the build you have
+installed. A build older than this checkout can refuse them, or report field defects on a valid file,
+because it reads them with its own, older grammar. The remedy is to install the build that matches this
+checkout and reload the window before importing; a window that was already open keeps running the build
+it loaded.
+
 ## They cannot rot
 
 Three suites sweep this directory:

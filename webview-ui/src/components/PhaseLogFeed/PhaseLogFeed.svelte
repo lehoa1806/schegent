@@ -24,6 +24,8 @@
   import { phaseLogEntriesToText } from '../../lib/activity-feed/phase-log-text-export';
   import {
     resolveLiveSelection,
+    currentInFlightRow,
+    queueInFlightRow,
     getPhaseOptions,
     queueIdForItem,
     TERMINAL_PHASE_SENTINEL
@@ -51,9 +53,9 @@
      * The in-flight reading this instance treats as "currently executing":
      * what the Live button jumps to, whether it renders enabled, whether a
      * live tail attaches, and which task the breadcrumb resolves a label
-     * against. Omitted means the workspace-wide `snapshot.queue.inFlight`,
-     * which is the right reading for an embed whose subject *is* the
-     * workspace — so every existing caller is unchanged.
+     * against. Omitted (BUG-002), Live and the breadcrumb read the in-flight
+     * Run that started last across every queue (FR-021), and a tail reads
+     * the in-flight row of the queue the selection names (FR-022).
      *
      * `RunDetailTier` passes its own Run. Its embed is pinned to one Run on
      * one queue, and the workspace singular is whatever the *default* queue
@@ -88,18 +90,19 @@
 
   const state = $derived(store.state);
 
-  // The single in-flight reading everything "live" on this instance resolves
-  // through — see `liveTarget` above for why a per-subject override exists.
+  // The in-flight readings, split by BUG-002. Live, the cascade and the selectors
+  // read the cross-queue chooser's Run (FR-021), so the button's enabled state
+  // cannot disagree with what it does; a tail reads the selected queue's own
+  // row (FR-022). A `liveTarget` pins both to its Run — see its note above.
   const liveInFlight = $derived(
-    liveTarget !== undefined ? liveTarget.inFlight : snapshot.queue.inFlight
+    liveTarget !== undefined ? liveTarget.inFlight : currentInFlightRow(snapshot)
   );
-  // The selectors read the same reading, so the header's breadcrumb and the
-  // Live button's enabled state cannot disagree with what the button does.
-  const selectorsQueue = $derived(
+  const tailInFlight = $derived(
     liveTarget !== undefined
-      ? { ...snapshot.queue, inFlight: liveInFlight }
-      : snapshot.queue
+      ? liveTarget.inFlight
+      : queueInFlightRow(snapshot, state.selection.queueId)
   );
+  const selectorsQueue = $derived({ ...snapshot.queue, inFlight: liveInFlight });
 
   const availablePhases = $derived(snapshot.availablePhases ?? []);
   const hasNoEntries = $derived(
@@ -178,7 +181,7 @@
     ) {
       return '';
     }
-    const inFlight = liveInFlight;
+    const inFlight = tailInFlight;
     if (inFlight === null) return '';
     if (inFlight.id !== sel.taskId) return '';
     if (inFlight.currentPhase !== sel.phaseId) return '';
@@ -197,7 +200,7 @@
   // Live Mode is OFF or the tuple is stable, the call is a no-op.
   $effect(() => {
     if (!autoFollow) return;
-    store.applyInFlightIdentityChange(snapshot);
+    store.applyInFlightIdentityChange({ queue: { inFlight: liveInFlight } });
   });
 
   // Manually-tracked tail lifecycle. The $effect body re-runs on
@@ -240,7 +243,7 @@
   // Feature 021 T044 (BUG-001 Defect A) — cold-start fallback wiring.
   //
   // After VSCode restart, the Activity Feed selection store is empty
-  // and `snapshot.queue.inFlight === null`, so `resolveLiveSelection`
+  // and no queue has a Run in flight, so `resolveLiveSelection`
   // returns null and the operator sees "No selection" even when recent
   // tasks have on-disk phase logs. This effect runs at most once per
   // mount: when the first snapshot arrives, if the live selection is

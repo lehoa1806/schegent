@@ -98,6 +98,12 @@ const READ_ALLOWED: ReadonlyMap<string, string> = new Map([
     'src/queue/queue-manager.ts',
     'reads `WatchdogState.paused` when clear-all decides whether the watchdog ' +
       'needs clearing; the queue pause on the line below it reads `queueLifecycle`'
+  ],
+  [
+    'src/services/phase-log/phase-log-service.ts',
+    'reads `QueueItem.paused` — the per-Task pause record the queue projector ' +
+      'derives into the wire snapshot, not a persisted field — to tell a ' +
+      'system-paused row still in flight from an operator-paused one'
   ]
 ]);
 

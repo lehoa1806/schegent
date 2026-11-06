@@ -205,7 +205,7 @@ Both are gone.
    never merges, switches or checks out a branch, resets, stashes or pushes. `integrate` merges the
    committed work into each target and reports how far it got. It reads everything again from the
    repositories and nothing `finalize` said. An operator who integrates another way, for example
-   through pull requests, can remove `integrate` from the pipeline; `finalize` still commits only the
+   through pull requests, can remove `integrate` from the Workflow; `finalize` still commits only the
    feature's paths.
 2. **Ownership.** Each changed path, read with a status that writes no index, is *ambiguous*,
    *owned* or *unrelated*, first match winning. A path is owned when it lies in the feature's
@@ -292,7 +292,7 @@ To bring a catalog that already holds these Phases to this version, see
 
 A catalog that already holds an example's ids does not pick up a later revision of that
 example on its own. This section walks through the new-feature example's version 3, which
-revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the pipeline
+revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the Workflow
 `speckit-new-feature`. Each numbered step is one thing you do, or one thing that follows.
 
 1. **An import skips what you already have.** Inspecting the revised example plans every id
@@ -302,12 +302,12 @@ revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the p
 2. **Publish each changed definition by hand.** Open it in the catalog editor, replace its
    fields with the revised document's, save a draft (**Save Phase**, for a Phase), then choose
    **Publish**. For version 3 these are `speckit-tasks`, `speckit-implement` and `finalize`,
-   and the pipeline `speckit-new-feature` for its record. For version 4: `speckit-analyze`,
+   and the Workflow `speckit-new-feature` for its record. For version 4: `speckit-analyze`,
    `speckit-implement`, `speckit-code-review`, `speckit-security-review` and `finalize`, which
    ask for issue tags. For version 5: `speckit-code-review` and `speckit-security-review`, which
    resolve the repositories to review (see
    [Choose the repositories the two reviews read](#choose-the-repositories-the-two-reviews-read)),
-   and the pipeline `speckit-new-feature` for its record. The pipeline names its Phases by
+   and the Workflow `speckit-new-feature` for its record. The Workflow names its Phases by
    id, so the Phases carry the behavior. Saving a Phase that declares `retryCondition`, as
    `speckit-implement` does, needs the `retryConditions` capability.
 
@@ -318,11 +318,11 @@ revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the p
    1. `integrate`;
    2. `finalize`, saved from the revised text (version 5), which now commits only the feature's
       paths and no longer merges;
-   3. the pipeline `speckit-new-feature`, saved from the revised text (version 6).
+   3. the Workflow `speckit-new-feature`, saved from the revised text (version 6).
 
-   The pipeline's Phase list changed, so "for its record" does not apply to it: publishing it is
-   what makes a newly composed item run `integrate`, and publishing it after `integrate` lets its
-   Phase reference resolve. An item composed before the publish keeps its frozen snapshot and still
+   The Workflow's node list changed, so "for its record" does not apply to it: publishing it is
+   what makes a newly composed item run `integrate`, and publishing it after `integrate` lets the
+   new node's Phase reference resolve. An item composed before the publish keeps its frozen snapshot and still
    merges the version-4 way (see step 5). What the two Phases do is in
    [Finalize and integrate across repositories](#finalize-and-integrate-across-repositories).
 3. **The version number does not move.** The editor shows **Version** read-only, and a save
@@ -334,7 +334,7 @@ revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the p
    and the old text: compose it again and enqueue it again if you want the new text. An item
    enqueued without a plan resolves when its Run is created, so it runs whatever is active
    then.
-6. **Existing Runs do not change.** A Run keeps the pipeline snapshot it was created with,
+6. **Existing Runs do not change.** A Run keeps the frozen snapshot it was created with,
    including when it is resumed. A Run that failed at its retry cap under the old text runs
    the old text again when resumed, so it can fail at the cap again.
 7. **Removing an old row deletes its session data.** Removing a Task deletes its Run's session

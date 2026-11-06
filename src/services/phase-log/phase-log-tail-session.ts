@@ -9,11 +9,15 @@
 // Invariants:
 //   - Body strings ARE sanitized at the IPC boundary (here) before
 //     `pushToWebview`. On-disk bytes are NEVER altered.
-//   - Entries are projected via `projectStreamJsonlLine`, then
+//   - Entries are projected via `StreamLineProjector`, then
 //     truncated via `truncateDisplayEntryBody`, then sanitized via
 //     `sanitizeDisplayEntryBody`. Order matters: projection first
 //     (drops framing), then truncation (bounds size), then sanitization
 //     (final boundary scrub).
+//   - Feature 020 BUG-002 (T083, FR-012a) — one projector for the life of
+//     the session, so an agy step whose lines span two ticks is emitted
+//     once, as a one-shot read of the same lines emits it. It is replaced,
+//     with the offset, when the file is truncated.
 //   - Feature 098 (PRIV-01): that last step is the SHARED sanitizer,
 //     not a local field loop. This session held its own five-field list
 //     that omitted `toolName`, `systemSubtype` and the nested
@@ -34,7 +38,7 @@ import type {
   PhaseLogSelection
 } from './types';
 import { parseStreamJsonlBytes } from './phase-log-jsonl-parser';
-import { projectStreamJsonlLine } from './phase-log-display-projector';
+import { StreamLineProjector } from './phase-log-display-projector';
 import { sanitizeDisplayEntryBody } from './phase-log-sanitizer';
 import { truncateDisplayEntryBody } from './phase-log-truncator';
 import { readBoundedRange, readBoundedTail } from '../../lib/bounded-read';
@@ -77,6 +81,8 @@ export class PhaseLogTailSession {
 
   private offset = 0;
   private partial = '';
+  // Feature 020 BUG-002 (T083) — holds an agy step open across ticks.
+  private projector = new StreamLineProjector();
   /**
    * FR-R3-052 — bytes never read because the file exceeded the bound. Reported,
    * not swallowed: a tail that silently starts 4 GiB in looks like a short log.
@@ -141,6 +147,9 @@ export class PhaseLogTailSession {
           // re-emit already-emitted entries via partial-line confusion.
           this.offset = 0;
           this.partial = '';
+          // Feature 020 BUG-002 (T083) — an agy step held from the old file
+          // must not absorb the new file's lines.
+          this.projector = new StreamLineProjector();
         }
         if (stat.size === this.offset) {
           // No new bytes; the partial buffer (if any) stays in place.
@@ -166,9 +175,7 @@ export class PhaseLogTailSession {
           parseStreamJsonlBytes(slice, this.partial);
         this.partial = partialTrailingBuffer;
         this.skipped += skippedLines;
-        for (const line of parsedLines) {
-          const projected = projectStreamJsonlLine(line);
-          if (!projected) continue; // framing kinds dropped
+        for (const projected of parsedLines.flatMap((line) => this.projector.project(line))) {
           const truncated = truncateDisplayEntryBody(projected, this.caps);
           const sanitized = sanitizeDisplayEntryBody(truncated, this.sanitize);
           this.seq += 1;

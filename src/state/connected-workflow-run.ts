@@ -109,7 +109,11 @@ export interface InvocationInputEnvelope {
   readonly acceptedAt: number;
 }
 
-export type NodeAttemptStatus = 'in-flight' | 'paused' | WorkflowNodeTerminalStatus;
+export type NodeAttemptStatus =
+  | 'pending-dispatch'
+  | 'in-flight'
+  | 'paused'
+  | WorkflowNodeTerminalStatus;
 
 export type WorkflowPauseCause =
   | 'operator-pause'
@@ -559,6 +563,22 @@ export function assertConnectedRunInvariants(
       if (frame.controlMarkers !== undefined) {
         assertInvocationControlMarkers(frame);
       }
+      for (const attempts of Object.values(frame.attemptsByNodeId)) {
+        for (const attempt of attempts) {
+          if (attempt.status === 'pending-dispatch') {
+            if (attempt.completedAt !== undefined) {
+              fail(
+                `pending-dispatch attempt ${attempt.attemptId} in invocation ${invId} must not set completedAt`
+              );
+            }
+            if (attempt.queueItemId !== undefined) {
+              fail(
+                `pending-dispatch attempt ${attempt.attemptId} in invocation ${invId} must not bind queueItemId`
+              );
+            }
+          }
+        }
+      }
     }
   }
   if (run.inputEnvelopes !== undefined && !Object.isFrozen(run.inputEnvelopes)) {
@@ -806,7 +826,12 @@ export function workflowAttemptEndedForQueueItem(
 ): boolean {
   return Object.values(run.invocations ?? {}).some((frame) =>
     Object.values(frame.attemptsByNodeId).some((attempts) =>
-      attempts.some((attempt) => attempt.queueItemId === queueItemId && attempt.status !== 'in-flight')
+      attempts.some(
+        (attempt) =>
+          attempt.queueItemId === queueItemId &&
+          attempt.status !== 'in-flight' &&
+          attempt.status !== 'pending-dispatch'
+      )
     )
   );
 }

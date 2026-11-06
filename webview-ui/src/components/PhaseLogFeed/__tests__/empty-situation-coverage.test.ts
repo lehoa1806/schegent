@@ -348,7 +348,9 @@ describe('Feature 203 T005 — every reachable empty situation reaches the opera
   it('situation 3 — iteration whose stream is missing', async () => {
     const manifest = await manifestFor(await buildStreamMissing());
     expect(manifest.entries).toEqual([]);
-    expect(manifest.iterations).toEqual([1]);
+    // Feature 020 BUG-002 (T085, FR-026a): an iteration counts only when it
+    // holds an entry named stream.jsonl, so this one is not listed at all.
+    expect(manifest.iterations).toEqual([]);
     const outcome = await renderWithManifest(manifest);
     expect(outcome.cardTestIds.length).toBeGreaterThan(0);
   });

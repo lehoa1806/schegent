@@ -58,9 +58,50 @@ export interface InvocationControlProjection {
   readonly allowedActions: readonly WorkflowControlOperation[];
   readonly waitingReason: string | null;
   readonly pauseCause: WorkflowPauseCause | null;
+  readonly pauseExplanation?: string | null;
+  readonly pauseGuidance?: string | null;
   readonly failureReason: string | null;
   readonly pendingRetryAt: number | null;
   readonly pendingRetryCause: WorkflowDelayedRetryCause | null;
+}
+
+export interface WorkflowPauseCauseDescription {
+  readonly explanation: string;
+  readonly guidance: string;
+}
+
+/**
+ * FR-R5-F08 — deterministic human-readable explanation and operator guidance
+ * for each `WorkflowPauseCause`.
+ */
+export function describeWorkflowPauseCause(
+  cause: WorkflowPauseCause | null | undefined
+): WorkflowPauseCauseDescription | null {
+  if (cause === null || cause === undefined) return null;
+  switch (cause) {
+    case 'recovery-uncertain-effect':
+      return Object.freeze({
+        explanation:
+          'Paused during restart recovery because the active Phase attempt had no live queue task or verified settlement evidence.',
+        guidance:
+          'Inspect workspace outputs, then choose Resume (reconciles evidence before re-dispatching), Retry Phase, or Cancel.'
+      });
+    case 'credit-exhausted':
+      return Object.freeze({
+        explanation: 'Paused because backend provider credit or quota was exhausted during execution.',
+        guidance: 'Restore provider credit or wait for quota reset, then choose Resume or Cancel.'
+      });
+    case 'spend-bound-exceeded':
+      return Object.freeze({
+        explanation: 'Paused because cumulative invocation spend reached the configured spend bound.',
+        guidance: 'Review invocation spend and outputs, then choose Resume or Cancel.'
+      });
+    case 'operator-pause':
+      return Object.freeze({
+        explanation: 'Paused by operator request.',
+        guidance: 'Choose Resume to continue or Cancel to stop this workflow.'
+      });
+  }
 }
 
 export interface WorkflowRunControlProjection {
@@ -146,6 +187,7 @@ export function buildInvocationControlProjection(
   const latestAttempt = findLatestAttemptForFrame(frame);
   const allowedActions = computeAllowedControlActions(run, frame.invocationId);
   const pauseCause = frame.controlMarkers?.manualPauseCause ?? null;
+  const pauseDescription = describeWorkflowPauseCause(pauseCause);
   const pendingRetryAt = frame.controlMarkers?.pendingRetryAt ?? null;
   const pendingRetryCause = frame.controlMarkers?.pendingRetryCause ?? null;
   const failureReason =
@@ -166,6 +208,8 @@ export function buildInvocationControlProjection(
     allowedActions,
     waitingReason: deriveWaitingReason(frame),
     pauseCause,
+    pauseExplanation: pauseDescription?.explanation ?? null,
+    pauseGuidance: pauseDescription?.guidance ?? null,
     failureReason,
     pendingRetryAt,
     pendingRetryCause
@@ -300,6 +344,8 @@ export function projectConnectedInvocations(
         allowedActions: ctrl.allowedActions,
         waitingReason: ctrl.waitingReason,
         pauseCause: ctrl.pauseCause,
+        pauseExplanation: ctrl.pauseExplanation ?? null,
+        pauseGuidance: ctrl.pauseGuidance ?? null,
         failureReason: ctrl.failureReason,
         pendingRetryAt: ctrl.pendingRetryAt,
         pendingRetryCause: ctrl.pendingRetryCause,

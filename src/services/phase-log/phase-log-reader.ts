@@ -6,7 +6,7 @@
 import { openWithinRootByPath } from '../../lib/safe-open';
 import { discoverIterations } from './phase-log-iteration-discovery';
 import { parseStreamJsonlBytes } from './phase-log-jsonl-parser';
-import { projectStreamJsonlLine } from './phase-log-display-projector';
+import { StreamLineProjector } from './phase-log-display-projector';
 import { resolvePhaseDirPath, resolveStreamJsonlPath } from './phase-log-path';
 // Feature 098 (PRIV-01) — the boundary scrub is shared with the live
 // tail session so a reopened phase and a watched one redact identically.
@@ -196,12 +196,13 @@ export async function readIterationManifest(
   }
 
   const { parsedLines, skippedLines } = parseStreamJsonlBytes(bytes, '');
+  // Feature 020 BUG-002 (T083, FR-012a) — one projector for the whole read: an
+  // agy step spans several lines and is emitted once, when a line closes it.
+  const projector = new StreamLineProjector();
 
   let entries: PhaseLogDisplayEntry[] = [];
   let truncatedCount = 0;
-  for (const parsed of parsedLines) {
-    const projected = projectStreamJsonlLine(parsed);
-    if (!projected) continue;
+  for (const projected of parsedLines.flatMap((parsed) => projector.project(parsed))) {
     const truncated = truncateDisplayEntryBody(projected, {
       perFieldBytes: args.caps.perFieldBytes
     });

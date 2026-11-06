@@ -90,8 +90,15 @@ function harness(isWorkspaceTrusted: () => boolean): Harness {
   const lines: string[] = [];
   const logger = new SanitizedLogger([{ appendLine: (line: string) => lines.push(line) }]);
 
+  // BUG-002 (FR-022) — the wiring reads the in-flight row of the queue the
+  // selection names, from `snapshot.queues`.
   const snapshot = {
-    queue: { inFlight: { id: SELECTION.taskId, currentPhase: SELECTION.phaseId } }
+    queues: [
+      {
+        queueId: SELECTION.queueId,
+        tasks: [{ id: SELECTION.taskId, status: 'in-flight', currentPhase: SELECTION.phaseId }]
+      }
+    ]
   };
   const projector = {
     getCurrentSnapshot: () => snapshot,

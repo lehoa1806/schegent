@@ -63,7 +63,6 @@
     canUndo?: boolean;
     canRedo?: boolean;
     canReset?: boolean;
-    launchEligible?: boolean;
     /** The Library row in focus, or null when nothing is selected. */
     selected: MutableWorkflow | null;
     onadd: () => void;
@@ -73,7 +72,6 @@
     onundo?: () => void;
     onredo?: () => void;
     onreset?: () => void;
-    onlaunch?: () => void;
   }
 
   const {
@@ -86,7 +84,6 @@
     canUndo = false,
     canRedo = false,
     canReset = false,
-    launchEligible = false,
     selected,
     onadd,
     onduplicate,
@@ -94,8 +91,7 @@
     onsave,
     onundo,
     onredo,
-    onreset,
-    onlaunch
+    onreset
   }: Props = $props();
 
   /**
@@ -235,16 +231,6 @@
   >
     Export Workflow
   </button>
-  {#if onlaunch}
-    <button
-      class="btn btn-secondary"
-      data-testid="workflows-launch-in-runs"
-      disabled={!launchEligible}
-      onclick={onlaunch}
-    >
-      Launch in Runs
-    </button>
-  {/if}
   <button
     class="btn btn-secondary push-right"
     data-testid="workflows-save-all"

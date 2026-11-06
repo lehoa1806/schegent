@@ -2,13 +2,8 @@
   // Feature 092 (T112, T113, T115, FR-058..FR-062, FR-065) — the `operations`
   // route's owner, and the only thing that holds a `DashboardLocation`.
   //
-  // `App.svelte` still routes to exactly one component here; which of the three
-  // tiers that component shows is a location, and the location lives in this
-  // file. Keeping it here rather than in `App.svelte` is what lets
-  // `DashboardRoute` stay the seven flat siblings it has always been (FR-061):
-  // the tiers are sub-locations beneath `operations`, not nav peers of Settings,
-  // and `runs` remains a peer of tier 1 rather than becoming a fourth tier
-  // (FR-063).
+  // `App.svelte` routes here for Queues. Queue detail owns task composition,
+  // and task detail owns execution monitoring; neither needs a navigation peer.
   //
   // Two things are owned here and nowhere else:
   //

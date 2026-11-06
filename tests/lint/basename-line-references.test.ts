@@ -205,6 +205,10 @@ const SKIP = ['repo', 'out', '.tmp', '.vscode-test', 'test-results', 'playwright
  */
 const KNOWN_ABSENT: ReadonlyMap<string, string> = new Map([
   [
+    'RunsSurface.svelte',
+    'retired by the 2026-11-05 remove-runs-interface decision; QueueTaskComposer.svelte owns composition in Queue detail and RunDetailTier.svelte owns monitoring'
+  ],
+  [
     'release.yml',
     'retired by ce6cb180 "ci: retire the seven workflows still on master" — this project has no .github/workflows at all'
   ],

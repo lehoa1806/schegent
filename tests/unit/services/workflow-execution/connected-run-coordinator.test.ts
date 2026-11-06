@@ -5,6 +5,11 @@ import {
   dispatchComposableNode
 } from '../../../../src/services/workflow-execution/connected-run-coordinator';
 import type { ConnectedWorkflowRun } from '../../../../src/state/connected-workflow-run';
+import {
+  clearInvocationControlMarkers,
+  pauseInvocationControlMarkers,
+  upsertInvocationFrame
+} from '../../../../src/state/connected-workflow-run';
 import type { PhaseDefinition } from '../../../../src/contracts/process-definitions';
 import type { WorkflowDefinition } from '../../../../src/contracts/workflow-definitions';
 
@@ -349,5 +354,128 @@ describe('connected-run-coordinator — composable nested Workflow call/return (
       completedAt: 2000
     });
     expect(settled.outcome).toBe('workflow-completed');
+  });
+
+  it('persists pending-dispatch attempt before dispatchPhase and reconciles queueItemId when a concurrent pause advances revision during dispatch (FR-R5-F08)', async () => {
+    const created = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'crun-f08-pause',
+      workflow: PROTOTYPE_NAMED_NODE_WF,
+      entryNodeId: 'constructor',
+      effectiveWorkflows: [PROTOTYPE_NAMED_NODE_WF],
+      effectivePhases: [PHASE_SPEC],
+      boundInputs: {},
+      startedAt: 1000,
+      queueId: 'q-f08'
+    });
+    expect(created.outcome).toBe('created');
+    if (created.outcome !== 'created') return;
+
+    let currentRun = created.run;
+    const rootInvocationId = created.rootInvocationId;
+    let statusObservedDuringDispatch: string | undefined;
+    const canceledOrphans: Array<{ queueItemId: string; queueId: string }> = [];
+
+    const deps = {
+      connectedRuns: {
+        compareAndSetConnectedRun: async (next: ConnectedWorkflowRun, expectedRevision: number) => {
+          if (currentRun.revision !== expectedRevision) {
+            return { outcome: 'stale' as const, current: currentRun };
+          }
+          currentRun = next;
+          return { outcome: 'written' as const, run: next };
+        }
+      },
+      dispatchPhase: async () => {
+        const latestAttempt =
+          currentRun.invocations?.[rootInvocationId]?.attemptsByNodeId['constructor']?.at(-1);
+        statusObservedDuringDispatch = latestAttempt?.status;
+        // Simulate a concurrent pause command landing while dispatchPhase is awaiting
+        const rootFrame = currentRun.invocations![rootInvocationId]!;
+        currentRun = upsertInvocationFrame(currentRun, {
+          ...rootFrame,
+          status: 'paused',
+          controlMarkers: pauseInvocationControlMarkers(
+            rootFrame.controlMarkers,
+            1500,
+            'operator-pause'
+          )
+        });
+        return { outcome: 'dispatched' as const, queueItemId: 'qitem-paused-race' };
+      },
+      cancelOrphanedQueueItem: async (queueItemId: string, queueId: string) => {
+        canceledOrphans.push({ queueItemId, queueId });
+      }
+    };
+
+    const result = await dispatchComposableNode(deps, {
+      run: currentRun,
+      invocationId: rootInvocationId,
+      nodeId: 'constructor',
+      startedAt: 1000
+    });
+
+    expect(statusObservedDuringDispatch).toBe('pending-dispatch');
+    expect(result.outcome).toBe('phase-dispatched');
+    expect(canceledOrphans).toEqual([]);
+    const finalAttempt =
+      currentRun.invocations?.[rootInvocationId]?.attemptsByNodeId['constructor']?.at(-1);
+    expect(finalAttempt?.queueItemId).toBe('qitem-paused-race');
+    expect(finalAttempt?.status).toBe('paused');
+  });
+
+  it('cancels newly enqueued orphan queue item when a concurrent cancel advances revision while dispatchPhase is awaiting (FR-R5-F08)', async () => {
+    const created = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'crun-f08-cancel',
+      workflow: PROTOTYPE_NAMED_NODE_WF,
+      entryNodeId: 'constructor',
+      effectiveWorkflows: [PROTOTYPE_NAMED_NODE_WF],
+      effectivePhases: [PHASE_SPEC],
+      boundInputs: {},
+      startedAt: 1000,
+      queueId: 'q-f08'
+    });
+    expect(created.outcome).toBe('created');
+    if (created.outcome !== 'created') return;
+
+    let currentRun = created.run;
+    const rootInvocationId = created.rootInvocationId;
+    const canceledOrphans: Array<{ queueItemId: string; queueId: string }> = [];
+
+    const deps = {
+      connectedRuns: {
+        compareAndSetConnectedRun: async (next: ConnectedWorkflowRun, expectedRevision: number) => {
+          if (currentRun.revision !== expectedRevision) {
+            return { outcome: 'stale' as const, current: currentRun };
+          }
+          currentRun = next;
+          return { outcome: 'written' as const, run: next };
+        }
+      },
+      dispatchPhase: async () => {
+        // Simulate a concurrent cancel command landing while dispatchPhase is awaiting
+        const rootFrame = currentRun.invocations![rootInvocationId]!;
+        currentRun = upsertInvocationFrame(currentRun, {
+          ...rootFrame,
+          activeNodeId: null,
+          status: 'canceled',
+          completedAt: 1600,
+          controlMarkers: clearInvocationControlMarkers(rootFrame.controlMarkers)
+        });
+        return { outcome: 'dispatched' as const, queueItemId: 'qitem-canceled-race' };
+      },
+      cancelOrphanedQueueItem: async (queueItemId: string, queueId: string) => {
+        canceledOrphans.push({ queueItemId, queueId });
+      }
+    };
+
+    const result = await dispatchComposableNode(deps, {
+      run: currentRun,
+      invocationId: rootInvocationId,
+      nodeId: 'constructor',
+      startedAt: 1000
+    });
+
+    expect(result.outcome).toBe('rejected-stale');
+    expect(canceledOrphans).toEqual([{ queueItemId: 'qitem-canceled-race', queueId: 'q-f08' }]);
   });
 });

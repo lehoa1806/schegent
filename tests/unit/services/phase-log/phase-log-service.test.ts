@@ -47,13 +47,8 @@ async function writeHistoryStream(): Promise<void> {
 
 function historyOnlySnapshot() {
   return {
-    queue: {
-      inFlight: null,
-      pending: [],
-      recent: [],
-      queues: [{ id: 'default' }]
-    },
-    history: [{ runId: HISTORY_SELECTION.taskId }],
+    queues: [{ queueId: 'default', tasks: [] }],
+    history: [{ runId: HISTORY_SELECTION.taskId, queueId: 'default' }],
     availablePipelines: [{ id: HISTORY_SELECTION.pipelineId }],
     availablePhases: [{ id: HISTORY_SELECTION.phaseId }]
   } as const;
@@ -138,12 +133,12 @@ const EXECUTING_PHASE = 'speckit-implement';
 
 function inFlightSnapshot(currentPhase: string | null): PhaseLogSnapshotView {
   return {
-    queue: {
-      inFlight: { id: IN_FLIGHT_SELECTION.taskId, currentPhase },
-      pending: [],
-      recent: [],
-      queues: [{ id: IN_FLIGHT_SELECTION.queueId }]
-    },
+    queues: [
+      {
+        queueId: IN_FLIGHT_SELECTION.queueId,
+        tasks: [{ id: IN_FLIGHT_SELECTION.taskId, status: 'in-flight', currentPhase }]
+      }
+    ],
     history: [],
     availablePipelines: [{ id: IN_FLIGHT_SELECTION.pipelineId }],
     availablePhases: [{ id: IN_FLIGHT_SELECTION.phaseId }, { id: EXECUTING_PHASE }]
