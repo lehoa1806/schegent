@@ -151,8 +151,8 @@ describe('the presenter', () => {
     it('shows the record text through the provider under the dedicated scheme', async () => {
       await expect(wireOver().opener.open('row-1')).resolves.toEqual({ outcome: 'opened' });
 
-      expect(opened).toEqual([{ scheme: DECISION_RECORD_SCHEME, path: '/decisions-1.md' }]);
-      expect(contentAt('/decisions-1.md')).toBe(RECORD_TEXT);
+      expect(opened).toEqual([{ scheme: DECISION_RECORD_SCHEME, path: '/decisions-1.txt' }]);
+      expect(contentAt('/decisions-1.txt')).toBe(RECORD_TEXT);
       expect(shown).toHaveLength(1);
     });
 
@@ -164,10 +164,10 @@ describe('the presenter', () => {
       }
 
       expect(opened).toHaveLength(opens);
-      expect(contentAt('/decisions-1.md')).toBe('');
-      expect(contentAt('/decisions-2.md')).toBe('');
-      expect(contentAt('/decisions-3.md')).toBe(RECORD_TEXT);
-      expect(contentAt(`/decisions-${opens}.md`)).toBe(RECORD_TEXT);
+      expect(contentAt('/decisions-1.txt')).toBe('');
+      expect(contentAt('/decisions-2.txt')).toBe('');
+      expect(contentAt('/decisions-3.txt')).toBe(RECORD_TEXT);
+      expect(contentAt(`/decisions-${opens}.txt`)).toBe(RECORD_TEXT);
     });
   });
 

@@ -60,7 +60,10 @@ export function createDecisionRecordWiring(deps: DecisionRecordWiringDeps): Deci
 
   async function present(text: string): Promise<void> {
     counter += 1;
-    const key = `/decisions-${counter}.md`;
+    // The editor picks a document's language from the extension of the URI path, so a Markdown extension
+    // would open the record in Markdown mode (and offer a preview that renders its markup). A text
+    // extension keeps it plain text without any code having to set a language.
+    const key = `/decisions-${counter}.txt`;
     documents.set(key, text);
     while (documents.size > DECISION_RECORD_DOCUMENTS_MAX) {
       const oldest = documents.keys().next();
