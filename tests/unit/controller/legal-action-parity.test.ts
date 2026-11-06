@@ -332,16 +332,16 @@ const PHASE_CONTROL_ACTIONS = ACTIONS.filter(
 );
 
 /**
- * Cells the host admits on an in-flight row that the Phase-control menu does not offer, each with its
- * owner (FR-011, FR-033). A cell listed here must be a real gap: a stale entry fails below.
+ * Cells the host admits on an in-flight row that the Phase-control menu deliberately does not offer, each
+ * with the decision behind it (FR-011, FR-033). A cell listed here must be a real exclusion: a stale entry
+ * fails below.
  *
- * OD-1: during a delayed-retry countdown the host admits Resume (a recorded `pendingRetryAt`), while the
- * menu offers "Retry now", which ends the same countdown. Offering Resume too needs `pendingRetryAt` and
- * `creditPause` inputs on `phaseControlEligibility`, which reaches `PhaseControlMenu.svelte` (499 of 500
- * lines), so the refactor-only extraction of T029 comes first. Owner: follow-up filing named in the final
- * report; not decided by this feature.
+ * OD-1, decided 2026-11-06 (spec 278 measurements.md): during a delayed-retry countdown the host admits
+ * Resume (a recorded `pendingRetryAt`), and the menu offers "Retry now" only. Both end the same countdown
+ * and start the same Phase, so a second button would be two names for one effect. The menu still offers
+ * Resume once the operator has paused the Run (`manualPauseAt`, `phase-control-eligibility.ts`).
  */
-const PHASE_MENU_OPEN_GAPS: Readonly<Record<string, string>> = {
+const PHASE_MENU_DECIDED_EXCLUSIONS: Readonly<Record<string, string>> = {
   'retry-countdown:Resume': 'OD-1'
 };
 
@@ -352,11 +352,11 @@ function gapKey(state: RunState, action: PhaseControlAction): string {
 /**
  * What the menu should offer: only an executing (`in-flight`) row is the surface's subject, so a `paused`,
  * `failed` or `completed` row offers nothing here (its recovery is the row's Retry, which the host admits
- * from `failed` and `paused` alike) and an in-flight row offers what the host admits less the open gaps.
+ * from `failed` and `paused` alike) and an in-flight row offers what the host admits less the decided exclusions.
  */
 function expectedOffered(state: RunState, action: PhaseControlAction): boolean {
   if (state.rowStatus !== 'in-flight') return false;
-  if (gapKey(state, action) in PHASE_MENU_OPEN_GAPS) return false;
+  if (gapKey(state, action) in PHASE_MENU_DECIDED_EXCLUSIONS) return false;
   return state.expected[action] === 'legal';
 }
 
@@ -376,7 +376,7 @@ describe('the sidebar never offers more than the host admits', () => {
   });
 });
 
-describe('the sidebar offers what the host admits on the executing Run, less the owned gaps', () => {
+describe('the sidebar offers what the host admits on the executing Run, less the decided exclusions', () => {
   for (const state of STATES) {
     for (const action of PHASE_CONTROL_ACTIONS) {
       it(`${state.describe}: ${action} is ${expectedOffered(state, action) ? 'offered' : 'not offered'}`, () => {
@@ -385,8 +385,8 @@ describe('the sidebar offers what the host admits on the executing Run, less the
     }
   }
 
-  it('every open gap is a real one: the host admits the cell and the menu does not offer it', () => {
-    const keys = Object.keys(PHASE_MENU_OPEN_GAPS);
+  it('every decided exclusion is a real one: the host admits the cell and the menu does not offer it', () => {
+    const keys = Object.keys(PHASE_MENU_DECIDED_EXCLUSIONS);
     expect(keys.length).toBeGreaterThan(0);
     for (const key of keys) {
       const [stateId, action] = key.split(':') as [string, PhaseControlAction];
