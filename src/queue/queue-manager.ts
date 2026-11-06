@@ -686,7 +686,7 @@ export class QueueManager {
                   status,
                   completedAt: now,
                   updatedAt: now,
-                  lastError: status === 'failed' ? lastError ?? r.lastError : r.lastError,
+                  lastError: status === 'failed' ? lastError ?? null : r.lastError, // retry keeps old text as history (FR-R5-F19, FR-006)
                   ...captured
                 }
               : r
