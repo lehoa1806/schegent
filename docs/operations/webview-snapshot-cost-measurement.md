@@ -14,6 +14,8 @@ is listed as pending qualification and is never marked passed.
 <!-- Source: tests/perf/persisted-state-growth.test.ts -->
 <!-- Source: tests/visual/actual-policy.visual.spec.ts -->
 <!-- Source: src/ui/sidebar/csp.ts -->
+<!-- Source: src/contracts/snapshot-bounds.ts -->
+<!-- Source: src/ui/sidebar/snapshot-transport.ts -->
 
 ## 1. The adoption threshold
 
@@ -204,3 +206,20 @@ Each item needs an environment this feature could not run unattended. None is ma
   or NVDA, including opening Queue Settings with a real key press.
 - **Any figure here on another machine.** Prerequisite: the same three measuring files run on that machine.
   Every figure above is darwin/arm64, Chromium 151.0.7922.34, Node v24.19.0.
+
+## 8. Follow-up closure (`FR-R5-F12`, 2026-11-06)
+
+`FR-R5-F12` (`271-measured-snapshot-bounds`) implemented the per-slice revision / unchanged-slice suppression follow-up justified in section 3, coordinated with `FR-R5-F09` (`MAX_DELETED_HISTORY_PARTITIONS = 20`) and `FR-R5-F10` (`MAX_BUILDER_HISTORY_ENTRIES = 50`, `MAX_BUILDER_HISTORY_BYTES = 262,144`):
+
+1. **Contract (`src/contracts/snapshot-bounds.ts`)**: Declares `ROUTINE_SNAPSHOT_BYTE_BUDGET = 524_288` (512 KiB), `FULL_RESYNC_SNAPSHOT_BYTE_CEILING = 1_048_576` (1 MiB), `MAX_RETAINED_HISTORY_PARTITIONS = 40`, `MAX_RETAINED_HISTORY_ENTRIES = 2_000`, `SUPPRESSIBLE_SNAPSHOT_SLICES`, `SnapshotSyncMeta`, and `SNAPSHOT_RESYNC_REQUEST`.
+2. **Host & Webview Synchronization (`src/ui/sidebar/snapshot-transport.ts`, `webview-ui/src/lib/snapshot-merge.ts`)**:
+   - `HistoryStore.list()` and `projectHistory()` memoize the frozen history projection while partitions are unchanged.
+   - `SidebarViewProvider` and `DashboardPanel` deliver `mode: 'full'` on initial resolve, `hidden → visible` reveal, projector replacement, post failure, and `SNAPSHOT_RESYNC_REQUEST`, while omitting unchanged slices in `SUPPRESSIBLE_SNAPSHOT_SLICES` on `mode: 'routine'` updates to continuously visible consumers.
+   - `SnapshotStore` reconstructs omitted slices from the verified `baseRevision`, preserves object reference identity for unchanged slices across both `full` and `routine` updates, drops out-of-order (`revision <= lastRevision`) frames, and requests a full resync if a routine frame arrives with a missing or mismatched `baseRevision`.
+3. **Measured Results (2026-11-06, `darwin/arm64`, Node `v24.21.0`)**:
+   - `large-history` (`2,000` entries): full-resync `780,316` B (`<= 1,048,576` B ceiling), routine update **`16,817` B** (`<= 524,288` B budget), `project()` p50 `0.5021` ms, routine `JSON.stringify` p50 `0.0625` ms / p95 `0.3447` ms.
+   - `large-history-2x` (60 deleted partitions attempted via `appendHistory`): bounded by F09 to `40` partitions (`2,000` entries), full-resync `780,316` B, routine update **`16,817` B**.
+   - Phase-log 500-row window (2,000 appends): retained `500` rows (`trimmedCount = 1,501`), `86,591` B, append p50 `0.0252` ms / p95 `0.2500` ms (non-virtualized bounded window retained).
+   - F10 Builder undo/redo bounds (200 edits): retained `31` entries (`<= 50`) and `261,206` B (`<= 262,144` B), push p50 `0.2302` ms / p95 `1.6453` ms.
+   - Cold host activation CPU (`45.30` ms) is recorded separately from the browser two-animation-frame floor (`33.33` ms at 60 Hz); 500 sustained ticks on `large-history` showed zero unbounded heap growth (`heapUsed` `54.4` MiB → `46.1` MiB, `rss` `270.3` MiB).
+   - Platforms `linux` and `win32` and live desktop VS Code / AT screen-reader sessions remain listed under section 7's pending qualification.

@@ -4,8 +4,9 @@ import type { SanitizedLogger } from '../../lib/logger';
 import type { ProjectorHandle } from '../sidebar/projector-handle';
 import type { InboundDispatch } from '../sidebar/sidebar-view-provider';
 import type { WorkflowSnapshot } from '../sidebar/snapshot';
-import { STATE_SNAPSHOT } from '../sidebar/messages';
 import type { PhaseLogEntryPushMessage } from '../../contracts/sidebar-ipc';
+import { isSnapshotResyncRequest } from '../../contracts/snapshot-bounds';
+import { SnapshotTransport } from '../sidebar/snapshot-transport';
 import { validateInboundMessage } from '../sidebar/ipc-validator';
 import { generateNonce } from '../sidebar/csp';
 import { renderDashboardHtml } from './dashboard-html';
@@ -29,6 +30,7 @@ export class DashboardPanel {
   private onDispose?: () => void;
   private projectorSub: Disposable | null = null;
   private latestSnapshot: WorkflowSnapshot | null = null;
+  private readonly transport = new SnapshotTransport();
   private disposed = false;
 
   public static open(opts: DashboardOpenOptions): DashboardPanel {
@@ -97,6 +99,9 @@ export class DashboardPanel {
     });
 
     panel.onDidChangeViewState(() => {
+      if (this.panel.visible) {
+        this.transport.forceFullResync();
+      }
       void this.postIfVisible();
     });
 
@@ -113,18 +118,23 @@ export class DashboardPanel {
     if (this.disposed) return;
     if (!this.panel.visible) return;
     if (!this.latestSnapshot) return;
+    const prepared = this.transport.preparePost(this.latestSnapshot);
     try {
-      await this.panel.webview.postMessage({
-        type: STATE_SNAPSHOT,
-        payload: this.latestSnapshot
-      });
+      const delivered = await this.panel.webview.postMessage(prepared.message);
+      if (delivered === false) prepared.markFailed();
     } catch (err) {
+      prepared.markFailed();
       this.logger.debug(`dashboard: postMessage failed: ${(err as Error).message}`);
     }
   }
 
   private handleInbound(raw: unknown): void {
     if (this.disposed) return;
+    if (isSnapshotResyncRequest(raw)) {
+      this.transport.forceFullResync();
+      void this.postIfVisible();
+      return;
+    }
     const result = validateInboundMessage(raw);
     if (!result.ok) {
       // Feature 020 BUG-001 T071: surface type + correlationId so a
@@ -167,6 +177,7 @@ export class DashboardPanel {
   public dispose(opts: { skipPanelDispose?: boolean } = {}): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.transport.reset();
     this.projectorSub?.dispose();
     this.projectorSub = null;
     if (DashboardPanel.currentPanel === this) {

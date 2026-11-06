@@ -36,18 +36,42 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type * as vscode from 'vscode';
 import { unfencedCommit } from '../../src/state/ownership-claim';
-import { WorkspaceStateStore, type Memento, type PersistedHistoryEntry } from '../../src/state/workspace-state';
+import {
+  MAX_DELETED_HISTORY_PARTITIONS,
+  WorkspaceStateStore,
+  type Memento,
+  type PersistedHistoryEntry
+} from '../../src/state/workspace-state';
 import { HistoryStore } from '../../src/state/history-store';
 import { MAX_QUEUES } from '../../src/contracts/queue-bounds';
+import { PHASE_LOG_MAX_ENTRIES } from '../../src/contracts/phase-log-bounds';
+import {
+  FULL_RESYNC_SNAPSHOT_BYTE_CEILING,
+  MAX_RETAINED_HISTORY_ENTRIES,
+  MAX_RETAINED_HISTORY_PARTITIONS,
+  ROUTINE_SNAPSHOT_BYTE_BUDGET
+} from '../../src/contracts/snapshot-bounds';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { WebviewLogSink, DEBUG_LOG_TAIL_MAX } from '../../src/lib/webview-log-sink';
 import { StateProjector, type ProjectorTimer } from '../../src/ui/sidebar/state-projector';
 import { SidebarViewProvider } from '../../src/ui/sidebar/sidebar-view-provider';
+import { SnapshotTransport } from '../../src/ui/sidebar/snapshot-transport';
 import { STATE_SNAPSHOT } from '../../src/ui/sidebar/messages';
 import type { AuditTailEntry, WorkflowSnapshot } from '../../src/ui/sidebar/snapshot';
 import type { WorkflowRun } from '../../src/state/workflow-run';
 import type { PhaseDef } from '../../src/config/pipeline-config';
 import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
+import {
+  appendToWindow,
+  hiddenEntryCount,
+  PHASE_LOG_WINDOW_MAX_ENTRIES
+} from '../../webview-ui/src/lib/phase-log-window';
+import {
+  boundHistorySnapshots,
+  MAX_BUILDER_HISTORY_BYTES,
+  MAX_BUILDER_HISTORY_ENTRIES
+} from '../../webview-ui/src/components/PipelineBuilderEditors/phase-catalog-actions';
+import type { PhaseLogDisplayEntry } from '../../src/services/phase-log/types';
 
 /** Phases the active workload's Run carries. */
 const ACTIVE_PHASE_COUNT = 5;
@@ -267,8 +291,10 @@ async function buildWorkload(spec: WorkloadSpec): Promise<Workload> {
   });
   projector.start();
   if (spec.auditTail > 0) projector.seedAuditTail(auditTail(spec.auditTail));
+  const retainedPartitions =
+    spec.liveQueues + Math.min(spec.deletedPartitions, MAX_DELETED_HISTORY_PARTITIONS);
   const history = partitionIds.length > 0 && (spec.liveQueues > 1 || spec.deletedPartitions > 0)
-    ? partitions * HISTORY_PER_PARTITION
+    ? retainedPartitions * HISTORY_PER_PARTITION
     : 0;
   return { clock, projector, queues: spec.liveQueues, history };
 }
@@ -369,23 +395,36 @@ describe('webview snapshot cost: the four host workloads', () => {
   async function measure(spec: WorkloadSpec) {
     const workload = await buildWorkload(spec);
     live.push(workload.projector);
+    const transport = new SnapshotTransport();
+    // Seed initial full snapshot on the transport so subsequent samples measure routine updates
+    transport.preparePost(workload.projector.project());
     const projectMs: number[] = [];
     const serializeMs: number[] = [];
+    const routineSerializeMs: number[] = [];
     const bytes: number[] = [];
+    const routineBytes: number[] = [];
     let last: WorkflowSnapshot | null = null;
     for (let sample = 0; sample < WARM_UP_SAMPLES + SAMPLES; sample += 1) {
+      workload.clock.now += TICK_MS;
       const projectStart = performance.now();
       const snapshot = workload.projector.project();
       const projectEnd = performance.now();
       const json = JSON.stringify(snapshot);
       const serializeEnd = performance.now();
+      const routineStart = performance.now();
+      const prepared = transport.preparePost(snapshot);
+      const routineJson = JSON.stringify(prepared.message);
+      const routineEnd = performance.now();
       last = snapshot;
       if (sample < WARM_UP_SAMPLES) continue;
       projectMs.push(projectEnd - projectStart);
       serializeMs.push(serializeEnd - projectEnd);
+      routineSerializeMs.push(routineEnd - routineStart);
       bytes.push(Buffer.byteLength(json, 'utf8'));
+      routineBytes.push(Buffer.byteLength(routineJson, 'utf8'));
     }
     if (last === null) throw new Error('no sample was taken');
+    const mem = process.memoryUsage();
     const line = {
       workload: spec.name,
       environment,
@@ -396,19 +435,38 @@ describe('webview snapshot cost: the four host workloads', () => {
         debugTail: last.debugLogTail.length
       },
       snapshotBytes: distributionOf(bytes),
+      routineSnapshotBytes: distributionOf(routineBytes),
       projectMs: distributionOf(projectMs),
-      serializeMs: distributionOf(serializeMs)
+      serializeMs: distributionOf(serializeMs),
+      routineSerializeMs: distributionOf(routineSerializeMs),
+      memoryBytes: {
+        heapUsed: mem.heapUsed,
+        rss: mem.rss
+      }
     };
     process.stdout.write(`SNAPSHOT_COST ${JSON.stringify(line)}\n`);
-    // A measurement asserts that it ran, never a timing: what the workload holds, and each sample count.
+    // Assert fixture cardinality, sample counts, and deterministic byte bounds (FR-R5-F12).
     expect(line.fixture.queues, `${spec.name}: queues`).toBe(workload.queues);
     expect(line.fixture.history, `${spec.name}: history entries`).toBe(workload.history);
+    expect(line.fixture.history, `${spec.name}: history bounded by F09`).toBeLessThanOrEqual(
+      MAX_RETAINED_HISTORY_ENTRIES
+    );
     expect(line.fixture.auditTail, `${spec.name}: audit tail`).toBe(spec.auditTail);
     expect(line.fixture.debugTail, `${spec.name}: debug tail`).toBe(spec.debugTail);
+    expect(
+      line.snapshotBytes.max,
+      `${spec.name}: full-resync bytes within ceiling`
+    ).toBeLessThanOrEqual(FULL_RESYNC_SNAPSHOT_BYTE_CEILING);
+    expect(
+      line.routineSnapshotBytes.max,
+      `${spec.name}: routine update bytes within 512 KiB budget`
+    ).toBeLessThanOrEqual(ROUTINE_SNAPSHOT_BYTE_BUDGET);
     for (const [name, distribution] of Object.entries({
       snapshotBytes: line.snapshotBytes,
+      routineSnapshotBytes: line.routineSnapshotBytes,
       projectMs: line.projectMs,
-      serializeMs: line.serializeMs
+      serializeMs: line.serializeMs,
+      routineSerializeMs: line.routineSerializeMs
     })) {
       expect(distribution.samples, `${spec.name}: ${name} samples`).toBe(SAMPLES);
     }
@@ -426,15 +484,18 @@ describe('webview snapshot cost: the four host workloads', () => {
     expect(line.fixture.auditTail).toBe(ACTIVE_AUDIT_TAIL);
   });
 
-  it('large-history: 20 queues and 20 deleted partitions, 2,000 history entries', async () => {
+  it('large-history: 20 queues and 20 deleted partitions, 2,000 history entries; routine update meets 512 KiB budget', async () => {
     const line = await measure(LARGE_HISTORY);
     expect(line.fixture.history).toBe((MAX_QUEUES + DELETED_PARTITIONS_LARGE) * HISTORY_PER_PARTITION);
     expect(line.fixture.history).toBe(2_000);
+    expect(line.routineSnapshotBytes.max).toBeLessThanOrEqual(ROUTINE_SNAPSHOT_BYTE_BUDGET);
   });
 
-  it('large-history-2x: 4,000 history entries', async () => {
+  it('large-history-2x: 60 deleted partitions attempted via appendHistory are bounded by F09 to 40 total partitions (2,000 entries)', async () => {
     const line = await measure(LARGE_HISTORY_2X);
-    expect(line.fixture.history).toBe(4_000);
+    expect(line.fixture.history).toBe(MAX_RETAINED_HISTORY_PARTITIONS * HISTORY_PER_PARTITION);
+    expect(line.fixture.history).toBe(2_000);
+    expect(line.routineSnapshotBytes.max).toBeLessThanOrEqual(ROUTINE_SNAPSHOT_BYTE_BUDGET);
   });
 });
 
@@ -510,5 +571,135 @@ describe('webview snapshot cost: the hidden workload', () => {
     // The red half until the provider gates on visibility.
     expect(postsWhileHidden, 'STATE_SNAPSHOT posts while hidden').toBe(0);
     expect(onReveal, 'STATE_SNAPSHOT posts caused by the reveal').toBe(1);
+  });
+});
+
+describe('webview snapshot cost: phase-log window, Builder bounds, activation & memory (FR-R5-F12)', () => {
+  const live: Disposable[] = [];
+  afterEach(() => {
+    for (const item of live.splice(0)) item.dispose();
+  });
+
+  it('bounds the 500-row phase-log live window with trim marker across 2,000 appends', () => {
+    let entries: readonly PhaseLogDisplayEntry[] = [];
+    const appendMs: number[] = [];
+    const totalAppends = 2_000;
+
+    for (let seq = 1; seq <= totalAppends; seq += 1) {
+      const entry: PhaseLogDisplayEntry = {
+        seq,
+        kind: seq % 3 === 0 ? 'tool-use' : 'assistant-text',
+        ts: new Date(EPOCH_MS + seq * 100).toISOString(),
+        body:
+          seq % 3 === 0
+            ? { toolName: 'read_file', toolArguments: '{"path":"src/index.ts"}', toolId: `t-${seq}` }
+            : { text: `phase log line ${seq} with representative assistant output text` },
+        bodyTruncated: null
+      };
+      const start = performance.now();
+      entries = appendToWindow(entries, entry, PHASE_LOG_WINDOW_MAX_ENTRIES);
+      const end = performance.now();
+      if (seq > 500) {
+        appendMs.push(end - start);
+      }
+    }
+
+    const windowBytes = Buffer.byteLength(JSON.stringify(entries), 'utf8');
+    const marker = entries[0];
+    const trimmedCount = hiddenEntryCount(entries);
+    const line = {
+      workload: 'phase-log-window',
+      environment,
+      totalAppends,
+      retainedRows: entries.length,
+      maxAllowedRows: PHASE_LOG_MAX_ENTRIES,
+      trimmedCount,
+      windowBytes,
+      appendMs: distributionOf(appendMs)
+    };
+    process.stdout.write(`SNAPSHOT_COST ${JSON.stringify(line)}\n`);
+
+    expect(entries.length).toBe(PHASE_LOG_MAX_ENTRIES);
+    expect(marker?.kind).toBe('truncated-head');
+    expect(trimmedCount).toBe(totalAppends - PHASE_LOG_WINDOW_MAX_ENTRIES);
+  });
+
+  it('enforces F10 Builder undo/redo entry-count (50) and byte (256 KiB) bounds across 200 edits', () => {
+    let stack: Array<readonly PhaseDef[]> = [];
+    const pushMs: number[] = [];
+
+    // 100 standard edits followed by 100 large instruction edits (~8 KiB each)
+    for (let edit = 0; edit < 200; edit += 1) {
+      const pad = edit >= 100 ? 'x'.repeat(1_600) : 'short instruction';
+      const draft: readonly PhaseDef[] = Array.from({ length: 5 }, (_, p) => ({
+        id: `phase-${p + 1}`,
+        name: `Phase ${p + 1} (edit ${edit})`,
+        instruction: `${pad}-${edit}-${p}`,
+        loopable: false
+      }));
+      const start = performance.now();
+      stack = boundHistorySnapshots([...stack, draft]);
+      const end = performance.now();
+      pushMs.push(end - start);
+    }
+
+    const totalBytes = stack.reduce(
+      (sum, entry) => sum + Buffer.byteLength(JSON.stringify(entry), 'utf8'),
+      0
+    );
+    const line = {
+      workload: 'builder-history-bounds',
+      environment,
+      totalEdits: 200,
+      retainedEntries: stack.length,
+      maxEntries: MAX_BUILDER_HISTORY_ENTRIES,
+      retainedBytes: totalBytes,
+      maxBytes: MAX_BUILDER_HISTORY_BYTES,
+      pushMs: distributionOf(pushMs)
+    };
+    process.stdout.write(`SNAPSHOT_COST ${JSON.stringify(line)}\n`);
+
+    expect(stack.length).toBeLessThanOrEqual(MAX_BUILDER_HISTORY_ENTRIES);
+    expect(totalBytes).toBeLessThanOrEqual(MAX_BUILDER_HISTORY_BYTES);
+  });
+
+  it('measures cold activation path vs 2-rAF browser floor and sustained long-session host memory', async () => {
+    const activationStart = performance.now();
+    const workload = await buildWorkload(LARGE_HISTORY);
+    live.push(workload.projector);
+    const transport = new SnapshotTransport();
+    const initialPost = transport.preparePost(workload.projector.getCurrentSnapshot());
+    const initialWireBytes = Buffer.byteLength(JSON.stringify(initialPost.message), 'utf8');
+    const activationCpuMs = performance.now() - activationStart;
+
+    const memBefore = process.memoryUsage();
+    const tickRoutineBytes: number[] = [];
+    for (let tick = 0; tick < 500; tick += 1) {
+      workload.clock.advance(TICK_MS);
+      const snap = workload.projector.getCurrentSnapshot();
+      const post = transport.preparePost(snap);
+      tickRoutineBytes.push(Buffer.byteLength(JSON.stringify(post.message), 'utf8'));
+    }
+    const memAfter = process.memoryUsage();
+
+    const line = {
+      workload: 'activation-and-sustained-memory',
+      environment,
+      activationHostCpuMs: activationCpuMs,
+      browserTwoAnimationFrameFloorMs: 33.33,
+      initialFullResyncBytes: initialWireBytes,
+      sustainedTicks: 500,
+      routineWireBytes: distributionOf(tickRoutineBytes),
+      memoryBytes: {
+        heapUsedBefore: memBefore.heapUsed,
+        heapUsedAfter: memAfter.heapUsed,
+        heapDelta: memAfter.heapUsed - memBefore.heapUsed,
+        rssAfter: memAfter.rss
+      }
+    };
+    process.stdout.write(`SNAPSHOT_COST ${JSON.stringify(line)}\n`);
+
+    expect(initialWireBytes).toBeLessThanOrEqual(FULL_RESYNC_SNAPSHOT_BYTE_CEILING);
+    expect(line.routineWireBytes.max).toBeLessThanOrEqual(ROUTINE_SNAPSHOT_BYTE_BUDGET);
   });
 });
