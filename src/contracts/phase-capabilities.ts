@@ -115,4 +115,10 @@ export type CapabilityResidual =
   /** `process-spawn` withheld on codex: model-run commands still execute, inside its sandbox. */
   | 'sandboxed-commands-run'
   /** `process-spawn` withheld on agy: the scope of its sandbox has not been qualified. */
-  | 'sandbox-scope-unqualified';
+  | 'sandbox-scope-unqualified'
+  /**
+   * `outside-workspace-write` withheld on agy while `process-spawn` is granted: `--mode accept-edits`
+   * denies shell commands headless unless agy's own permission settings allow them. A stricter side
+   * effect, disclosed like codex's `sandboxed-commands-run`.
+   */
+  | 'mode-refuses-shell';

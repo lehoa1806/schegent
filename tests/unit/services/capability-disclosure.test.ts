@@ -43,7 +43,12 @@ const CLAUSES = {
   // The clause says so, because the sentence is the only place an operator at the launcher would see it.
   'sandboxed-commands-run':
     "model-run commands still execute, inside Codex's read-only sandbox, which also blocks file writes",
-  'sandbox-scope-unqualified': "the scope of Agy's sandbox has not been qualified"
+  'sandbox-scope-unqualified': "the scope of Agy's sandbox has not been qualified",
+  // Feature 279 (FR-011; research R4) -- the headless probe saw `--mode accept-edits` deny every shell
+  // command, inside the workspace or not, with agy settings that hold no allow-rule for it. An allow-rule
+  // would let the shell run, so the clause stays conditional on the backend's own settings.
+  'mode-refuses-shell':
+    "a granted shell is refused by Agy's accept-edits mode unless the backend's own permission settings allow it, and where they do it can still write outside the workspace"
 } as const;
 
 const NAME = 'Implement the plan';
@@ -107,6 +112,21 @@ describe('the host sentence for a capability outcome (T12)', () => {
     }
   });
 
+  it('keeps the Agy shell-refusal clause conditional on the backend settings (feature 279)', () => {
+    expect(CLAUSES['mode-refuses-shell']).toContain("unless the backend's own permission settings allow it");
+  });
+
+  it('gives the two Agy accept-edits cells the contract sentences (feature 279, FR-010)', () => {
+    const outsideOnly = planOf('agy', ['workspace-write', 'process-spawn', 'network']);
+    expect(describeCapabilityOutcome(outsideOnly, NAME)).toBe(
+      `A tool-access restriction, not OS isolation applies to phase "${NAME}": ${CLAUSES['mode-refuses-shell']}.`
+    );
+    const outsideAndShell = planOf('agy', ['workspace-write', 'network']);
+    expect(describeCapabilityOutcome(outsideAndShell, NAME)).toBe(
+      `A tool-access restriction, not OS isolation applies to phase "${NAME}": ${CLAUSES['sandbox-scope-unqualified']}.`
+    );
+  });
+
   it('puts the clauses in residual order, one each', () => {
     const plan = planOf('claude', ['process-spawn']);
     const sentence = describeCapabilityOutcome(plan, NAME) ?? '';
@@ -150,9 +170,12 @@ describe('the host sentence for a capability outcome (T12)', () => {
     it('lists every unenforceable capability', () => {
       const plan = planOf('agy', []);
       const sentence = describeCapabilityOutcome(plan, NAME) ?? '';
-      for (const capability of ['workspace-write', 'outside-workspace-write', 'network']) {
+      expect(plan.outcome === 'refused' && plan.unenforceable).toEqual(['workspace-write', 'network']);
+      for (const capability of ['workspace-write', 'network']) {
         expect(sentence).toContain(capability);
       }
+      // Feature 279: `--mode accept-edits` withholds it, so the refusal no longer names it.
+      expect(sentence).not.toContain('outside-workspace-write');
     });
   });
 
