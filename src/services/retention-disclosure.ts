@@ -192,7 +192,7 @@ export function retentionDisclosure(): readonly RetentionInventoryRow[] {
       location: '.schegent/sessions/raw-<runId>.log',
       contentClass: 'unredacted content',
       redacted: false,
-      bounds: `kept for \`always\`, or promoted for a non-clean Run under \`errors-only\`; removed ${SESSION_BOUND}`,
+      bounds: `kept for \`always\`, or promoted for a non-clean Run under \`errors-only\` (removed if that same Run is later resumed to \`completed\`); removed ${SESSION_BOUND}`,
       sweptBy: ['run-end', 'activation', 'settings-change', 'periodic'],
       liveProtection: ACTIVE_RUN_PROTECTION,
       onDelete: 'removed',
@@ -204,7 +204,7 @@ export function retentionDisclosure(): readonly RetentionInventoryRow[] {
       location: '.schegent/sessions/.pending/raw-<runId>.log',
       contentClass: 'unredacted content',
       redacted: false,
-      bounds: `holds an \`errors-only\` Run's transcript until it ends: promoted to the retained name if the Run failed, was canceled or paused, removed if it completed; otherwise swept ${SESSION_BOUND}`,
+      bounds: `holds an \`errors-only\` Run's transcript until it ends: promoted to the retained name if the Run failed, was canceled or paused, removed (along with any earlier promoted leg for the same Run) if it completed; otherwise swept ${SESSION_BOUND}`,
       sweptBy: ['run-end', 'activation', 'settings-change', 'periodic'],
       liveProtection: ACTIVE_RUN_PROTECTION,
       onDelete: 'removed',
@@ -243,7 +243,7 @@ export function retentionDisclosure(): readonly RetentionInventoryRow[] {
       location: `.schegent/sessions/<runId>/${TRANSPORT_RUN_FILE_NAME}`,
       contentClass: 'redacted content',
       redacted: true,
-      bounds: `kept when the transport mode keeps it; at most ${mib(TRANSPORT_FILE_MAX_BYTES)} MiB per Run and ${mib(
+      bounds: `kept when the transport mode keeps it (removed under \`errors-only\` if the same Run is later resumed to \`completed\`); at most ${mib(TRANSPORT_FILE_MAX_BYTES)} MiB per Run and ${mib(
         TRANSPORT_WORKSPACE_MAX_BYTES
       )} MiB across all Run files and legacy generations, with records older than the session retention age removed; secret patterns redacted, otherwise CLI content as sent`,
       sweptBy: ['append', 'run-end', 'periodic'],
@@ -258,7 +258,7 @@ export function retentionDisclosure(): readonly RetentionInventoryRow[] {
       location: `<temp>/${TRANSPORT_SPOOL_PREFIX}<key>/<runId>.log`,
       contentClass: 'redacted content',
       redacted: true,
-      bounds: `holds an \`errors-only\` Run's transport until it ends: promoted to its Run file if the Run failed or was canceled, removed if it completed; at most ${mib(
+      bounds: `holds an \`errors-only\` Run's transport until it ends (remaining staged while \`paused\`): promoted to its Run file if the Run failed or was canceled, removed if it completed; at most ${mib(
         TRANSPORT_FILE_MAX_BYTES
       )} MiB per Run, outside the workspace and outside the total`,
       sweptBy: ['run-end', 'periodic'],
@@ -446,5 +446,81 @@ export function renderRetentionDisclosure(): string {
     rows,
     '',
     stallThresholdNote()
+  ].join('\n');
+}
+
+/**
+ * FR-R5-F17 (NS-10, NU-20, S-19..S-22) — backend-owned session stores in the
+ * operator's home directory, kept separate from `retentionDisclosure()` because
+ * Schegent neither writes nor sweeps them.
+ */
+export interface BackendOwnedRetentionRow {
+  readonly backend: 'claude' | 'codex' | 'agy';
+  readonly store: string;
+  readonly locationPattern: string;
+  readonly contentClass: string;
+  readonly noPersistenceFlag: string;
+  readonly requestedBySchegent: string;
+  readonly schegentControl: string;
+  readonly source: string;
+}
+
+export function backendOwnedRetentionDisclosure(): readonly BackendOwnedRetentionRow[] {
+  return Object.freeze([
+    {
+      backend: 'claude',
+      store: 'Claude Code CLI session store',
+      locationPattern: '<home>/.claude/projects/<project-slug>/<sessionId>.jsonl <home>/.claude/',
+      contentClass:
+        'unredacted prompts, tool calls, model output and session state (vendor-owned; exact file modes and vendor retention duration are controlled by Claude Code)',
+      noPersistenceFlag:
+        '`--no-session-persistence` (observed in `claude --help` at 2.1.316; disables session persistence and prevents `--resume`)',
+      requestedBySchegent:
+        'not passed — Schegent relies on backend session ids for same-session retry, phase continuation, pre-phase compaction and manual resume',
+      schegentControl:
+        'none — Schegent privacy profiles, session-retention sweeps, Export Run Evidence and Delete Run Evidence do not delete, export, redact or age files under `<home>/.claude/`',
+      source: 'src/runner/claude-cli.ts; docs/architecture/backend-containment-qualification.md'
+    },
+    {
+      backend: 'codex',
+      store: 'Codex CLI session store',
+      locationPattern: '<home>/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-<stamp>-<sessionId>.jsonl <home>/.codex/',
+      contentClass:
+        'unredacted prompts, rollout events, tool output and session state (vendor-owned; exact file modes and vendor retention duration are controlled by Codex CLI)',
+      noPersistenceFlag:
+        '`exec --ephemeral` (observed in `codex exec --help` at 0.163.0; suppresses rollout session files and prevents `exec resume`)',
+      requestedBySchegent:
+        'not passed — Schegent relies on persisted rollout sessions for same-session retry, phase continuation and manual resume',
+      schegentControl:
+        'none — Schegent privacy profiles, session-retention sweeps, Export Run Evidence and Delete Run Evidence do not delete, export, redact or age files under `<home>/.codex/`',
+      source: 'src/runner/codex-cli.ts; docs/architecture/backend-containment-qualification.md'
+    },
+    {
+      backend: 'agy',
+      store: 'Antigravity CLI session store',
+      locationPattern: '<home>/.gemini/antigravity/',
+      contentClass:
+        'unredacted conversation history and agent state (vendor-owned; exact store layout, file modes and vendor retention duration are unverified from `agy --help` at 1.4.12)',
+      noPersistenceFlag: 'none observed in `agy --help` at 1.4.12',
+      requestedBySchegent:
+        'not applicable — no no-persistence flag is exposed in `agy --help`, and conversation resume depends on backend-owned state',
+      schegentControl:
+        'none — Schegent privacy profiles, session-retention sweeps, Export Run Evidence and Delete Run Evidence do not delete, export, redact or age files under `<home>/.gemini/antigravity/`',
+      source: 'src/runner/agy-cli.ts; docs/architecture/backend-containment-qualification.md'
+    }
+  ]);
+}
+
+export function renderBackendOwnedRetentionDisclosure(): string {
+  const rows = backendOwnedRetentionDisclosure()
+    .map(
+      (row) =>
+        `| ${code(row.backend)} (${row.store}) | ${row.locationPattern.split(/\s+/).map(code).join(', ')} | ${row.contentClass} | ${row.noPersistenceFlag} | ${row.requestedBySchegent} | ${row.schegentControl} | ${code(row.source)} |`
+    )
+    .join('\n');
+  return [
+    '| Backend store | Location pattern | Content | Vendor no-persistence switch | Requested by Schegent? | Schegent control | Derived from |',
+    '|---|---|---|---|---|---|---|',
+    rows
   ].join('\n');
 }
