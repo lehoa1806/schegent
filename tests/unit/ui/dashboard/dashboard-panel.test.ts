@@ -287,4 +287,40 @@ describe('DashboardPanel (T053)', () => {
     // until DashboardPanel.open() was called explicitly. Reset expectations.
     expect(mocks.state.createWebviewPanel).not.toHaveBeenCalled();
   });
+
+  it('(g) suppresses postPhaseLogEntry while hidden and invokes onDispose exactly once when closed (FR-R5-F10)', async () => {
+    const onDispose = vi.fn();
+    const opts = { ...buildOpts(), onDispose };
+    const dashboard = DashboardPanel.open(opts);
+    const panel = mocks.state.panels[0];
+    await Promise.resolve();
+    panel.webview.postMessage.mockClear();
+
+    const envelope = {
+      type: 'MSG_PHASE_LOG_ENTRY' as const,
+      payload: {
+        tailSessionId: 'tail-1',
+        entrySeq: 0,
+        entry: {
+          seq: 0,
+          kind: 'assistant-text' as const,
+          ts: null,
+          body: { text: 'hello' },
+          bodyTruncated: null
+        }
+      }
+    };
+
+    dashboard.postPhaseLogEntry(envelope);
+    expect(panel.webview.postMessage).toHaveBeenCalledWith(envelope);
+
+    panel.webview.postMessage.mockClear();
+    panel.__triggerVisibilityChange(false);
+    dashboard.postPhaseLogEntry(envelope);
+    expect(panel.webview.postMessage).not.toHaveBeenCalled();
+
+    panel.__triggerDispose();
+    dashboard.dispose();
+    expect(onDispose).toHaveBeenCalledTimes(1);
+  });
 });

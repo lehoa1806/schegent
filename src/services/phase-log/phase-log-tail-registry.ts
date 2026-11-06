@@ -73,6 +73,7 @@ interface SessionEntry {
   readonly stop: () => void;
   readonly runId: string;
   readonly mechanism: 'fs.watch' | 'polling';
+  readonly consumerId: string;
   readonly auditMeta: {
     readonly queueId: string;
     readonly taskId: string;
@@ -83,10 +84,18 @@ interface SessionEntry {
   disposing: boolean;
 }
 
+interface InFlightStartToken {
+  readonly seq: number;
+  readonly consumerId: string;
+  cancelled: boolean;
+}
+
 export class PhaseLogTailRegistry {
   private readonly deps: PhaseLogTailRegistryDeps;
   private readonly subscription: PhaseLogTailSubscriptionToken;
   private current: SessionEntry | null = null;
+  private activeStart: InFlightStartToken | null = null;
+  private nextStartSeq = 0;
   private disposed = false;
 
   constructor(deps: PhaseLogTailRegistryDeps) {
@@ -106,6 +115,7 @@ export class PhaseLogTailRegistry {
   async start(req: {
     readonly workspaceRoot: string;
     readonly selection: PhaseLogSelection;
+    readonly consumerId?: string;
   }): Promise<PhaseLogTailStartResult> {
     if (this.disposed) {
       return { outcome: 'failure', reason: 'internal-error' };
@@ -127,10 +137,29 @@ export class PhaseLogTailRegistry {
       return { outcome: 'failure', reason: 'unknown-tuple' };
     }
 
+    const consumerId = req.consumerId ?? 'dashboard';
+    if (this.activeStart !== null) {
+      this.activeStart.cancelled = true;
+    }
+    const startToken: InFlightStartToken = {
+      seq: ++this.nextStartSeq,
+      consumerId,
+      cancelled: false
+    };
+    this.activeStart = startToken;
+    const isStartCancelled = (): boolean =>
+      this.disposed || startToken.cancelled || this.activeStart !== startToken;
+
     try {
       await fsPromises.access(filePath, fsPromises.constants.R_OK);
     } catch {
+      if (this.activeStart === startToken) {
+        this.activeStart = null;
+      }
       return { outcome: 'failure', reason: 'unknown-tuple' };
+    }
+    if (isStartCancelled()) {
+      return { outcome: 'failure', reason: 'internal-error' };
     }
 
     // Cap-of-1: dispose the previous session (if any) before creating
@@ -138,6 +167,9 @@ export class PhaseLogTailRegistry {
     // reason 'webview-stop'.
     if (this.current !== null) {
       await this.disposeCurrent('webview-stop');
+    }
+    if (isStartCancelled()) {
+      return { outcome: 'failure', reason: 'internal-error' };
     }
 
     const sessionId = randomUUID();
@@ -147,7 +179,7 @@ export class PhaseLogTailRegistry {
       filePath,
       selection: sel,
       pushToWebview: (raw) => {
-        if (this.disposed) return;
+        if (this.disposed || startToken.cancelled) return;
         this.deps.pushToWebview({
           type: MSG_PHASE_LOG_ENTRY,
           payload: raw
@@ -163,6 +195,14 @@ export class PhaseLogTailRegistry {
     } catch {
       // Initial-read errors are non-fatal; subsequent ticks may
       // succeed. The session preserves its offset/skipped state.
+    }
+    if (isStartCancelled()) {
+      try {
+        await session.dispose('webview-dispose');
+      } catch {
+        /* best-effort */
+      }
+      return { outcome: 'failure', reason: 'internal-error' };
     }
 
     let mechanism: 'fs.watch' | 'polling';
@@ -201,6 +241,7 @@ export class PhaseLogTailRegistry {
       stop: stopWatcher,
       runId: sel.taskId,
       mechanism,
+      consumerId,
       auditMeta: {
         queueId: sel.queueId,
         taskId: sel.taskId,
@@ -210,6 +251,9 @@ export class PhaseLogTailRegistry {
       },
       disposing: false
     };
+    if (this.activeStart === startToken) {
+      this.activeStart = null;
+    }
 
     await this.safeAudit({
       type: 'phase-log-tail-started',
@@ -257,9 +301,45 @@ export class PhaseLogTailRegistry {
     return { outcome: 'success', sessionId };
   }
 
+  async releaseConsumer(
+    consumerId = 'dashboard',
+    reason: TailEndedReason = 'webview-dispose'
+  ): Promise<boolean> {
+    let released = false;
+    if (this.activeStart !== null && this.activeStart.consumerId === consumerId) {
+      this.activeStart.cancelled = true;
+      this.activeStart = null;
+      released = true;
+    }
+    if (this.current === null || this.current.consumerId !== consumerId) {
+      return released;
+    }
+    const meta = this.current.auditMeta;
+    const sessionId = this.current.session.sessionId;
+    await this.disposeCurrent(reason);
+    await this.safeAudit({
+      type: 'phase-log-tail-stopped',
+      payload: {
+        sessionId,
+        queueId: meta.queueId,
+        taskId: meta.taskId,
+        pipelineId: meta.pipelineId,
+        phaseId: meta.phaseId,
+        iterationN: meta.iterationN,
+        reason,
+        outcome: 'success'
+      }
+    });
+    return true;
+  }
+
   async disposeAll(reason: TailEndedReason): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.activeStart !== null) {
+      this.activeStart.cancelled = true;
+      this.activeStart = null;
+    }
     if (this.current !== null) {
       await this.disposeCurrent(reason);
     }

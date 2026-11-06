@@ -260,4 +260,54 @@ describe('Feature 020 T042 — PhaseLogTailRegistry lifecycle', () => {
     void registry.disposeAll('webview-dispose');
     expect(disposeFn).toHaveBeenCalled();
   });
+
+  it('releaseConsumer: stops only a tail owned by the matching consumerId and emits webview-dispose (FR-R5-F10)', async () => {
+    await writeStream('run-1', '{"type":"system","subtype":"init"}\n');
+    const h = makeHarness();
+    const started = await h.registry.start({
+      workspaceRoot: tmpDir,
+      selection: makeSelection('run-1'),
+      consumerId: 'dashboard'
+    });
+    expect(started.outcome).toBe('success');
+    if (started.outcome !== 'success') throw new Error('start failed');
+
+    // Releasing a different consumer leaves the dashboard tail active
+    const ignored = await h.registry.releaseConsumer('other-panel', 'webview-dispose');
+    expect(ignored).toBe(false);
+    expect(h.registry.activeSessionCount).toBe(1);
+
+    // Releasing 'dashboard' disposes the tail and emits phase-log-tail-stopped with webview-dispose
+    const released = await h.registry.releaseConsumer('dashboard', 'webview-dispose');
+    expect(released).toBe(true);
+    expect(h.registry.activeSessionCount).toBe(0);
+    const tailEnded = h.pushes.find(
+      (p) => p.tailSessionId === started.sessionId && p.entry.kind === 'tail-ended'
+    );
+    expect(tailEnded?.entry.body.reason).toBe('webview-dispose');
+    const stoppedAudit = h.audits.find(
+      (a) =>
+        a.type === 'phase-log-tail-stopped' &&
+        (a.payload as { reason?: string }).reason === 'webview-dispose'
+    );
+    expect(stoppedAudit).toBeDefined();
+    await h.registry.disposeAll('webview-dispose');
+  });
+
+  it('releaseConsumer: aborts an in-flight start when the owning panel disposes mid-start (FR-R5-F10)', async () => {
+    await writeStream('run-1', '{"type":"system","subtype":"init"}\n');
+    const h = makeHarness();
+    const startPromise = h.registry.start({
+      workspaceRoot: tmpDir,
+      selection: makeSelection('run-1'),
+      consumerId: 'dashboard'
+    });
+    const released = await h.registry.releaseConsumer('dashboard', 'webview-dispose');
+    const startResult = await startPromise;
+    expect(released).toBe(true);
+    expect(startResult.outcome).toBe('failure');
+    expect(h.registry.activeSessionCount).toBe(0);
+    expect(h.audits.find((a) => a.type === 'phase-log-tail-started')).toBeUndefined();
+    await h.registry.disposeAll('webview-dispose');
+  });
 });

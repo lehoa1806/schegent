@@ -1062,4 +1062,78 @@ describe('Unified Workflow Authoring (FR-R5-F05)', () => {
     const testIds = Array.from(steps, (step) => step.getAttribute('data-testid'));
     expect(new Set(testIds).size).toBe(4);
   });
+
+  it('persists unsaved Workflow drafts across unmount/remount while preserving isLiveMode and bounding undo history (FR-R5-F10)', async () => {
+    const { setHostTransport } = await import('../../lib/host-transport');
+    let storedState: unknown = { isLiveMode: false };
+    const restoreTransport = setHostTransport({
+      postMessage() {},
+      onMessage() {
+        return () => {};
+      },
+      getState<T = unknown>() {
+        return storedState as T | undefined;
+      },
+      setState(next: unknown) {
+        storedState = next;
+      }
+    });
+
+    try {
+      const snap = unifiedSnapshot();
+      const first = render(WorkflowCatalogEditor, {
+        props: { snapshot: snap, trusted: true }
+      });
+      await fireEvent.click(rowFor(first.container, 'parent-wf'));
+
+      const nameInput = first.getByTestId('workflow-field-name') as HTMLInputElement;
+      for (let i = 1; i <= 55; i += 1) {
+        await fireEvent.input(nameInput, { target: { value: `Workflow Edit ${i}` } });
+      }
+      await tick();
+
+      const persistedBeforeUnmount = (storedState as {
+        isLiveMode?: boolean;
+        builderState?: {
+          workflowSlice?: {
+            historyByKey?: Record<string, { snapshots?: unknown[] }>;
+          };
+        };
+      });
+      expect(persistedBeforeUnmount.isLiveMode).toBe(false);
+      expect(
+        persistedBeforeUnmount.builderState?.workflowSlice?.historyByKey?.['parent-wf::0']
+          ?.snapshots?.length
+      ).toBeLessThanOrEqual(50);
+
+      first.unmount();
+
+      const second = render(WorkflowCatalogEditor, {
+        props: { snapshot: snap, trusted: true }
+      });
+      await tick();
+
+      const restoredName = second.getByTestId('workflow-field-name') as HTMLInputElement;
+      expect(restoredName.value).toBe('Workflow Edit 55');
+      expect((storedState as { isLiveMode?: boolean }).isLiveMode).toBe(false);
+
+      // Discard clears persisted workflow edits and history for the discarded row
+      await fireEvent.click(second.getByTestId('workflows-discard'));
+      await tick();
+      const afterDiscard = (storedState as {
+        builderState?: {
+          workflowSlice?: {
+            editedByKey?: Record<string, unknown>;
+            historyByKey?: Record<string, unknown>;
+            drafts?: unknown[];
+          };
+        };
+      }).builderState?.workflowSlice;
+      expect(afterDiscard?.editedByKey).toEqual({});
+      expect(afterDiscard?.historyByKey).toEqual({});
+      expect(afterDiscard?.drafts).toEqual([]);
+    } finally {
+      restoreTransport();
+    }
+  });
 });

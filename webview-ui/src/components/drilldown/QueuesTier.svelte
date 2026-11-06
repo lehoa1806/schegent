@@ -21,6 +21,7 @@
 
   import { postCommand } from '../../lib/vscode-api';
   import { CMD_CREATE_QUEUE } from '../../lib/messages';
+  import { sendCreateQueueIntent, type CreateQueueOutcome } from '../../lib/queue-create-ipc';
   import { queueRuntimeLabel } from '../../lib/queue-lifecycle-label';
   import { haltedStartFailure } from '../../lib/queue-runtime-view';
   import { snapshotStore } from '../../lib/snapshot-store.svelte';
@@ -56,10 +57,14 @@
 
   let creating = $state(false);
   let draftName = $state('');
+  let createPending = $state(false);
+  let createError = $state<string | null>(null);
   let configuring = $state(false);
   let configOpener: HTMLElement | null = $state(null);
   // FR-R4-F08 (K8) — the tier's own root, offered to the dialog as its focus fallback.
   let tierRoot: HTMLElement | null = $state(null);
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
 
   function openConfig(event: MouseEvent): void {
     configOpener = event.currentTarget as HTMLElement;
@@ -73,20 +78,44 @@
   function openCreate(): void {
     creating = true;
     draftName = '';
+    createError = null;
+    createPending = false;
   }
 
   function cancelCreate(): void {
     creating = false;
     draftName = '';
+    createError = null;
+    createPending = false;
   }
 
-  function submitCreate(): void {
+  function applyCreateOutcome(outcome: CreateQueueOutcome): void {
+    if (outcome.status === 'accepted') {
+      cancelCreate();
+    } else if (outcome.status === 'refused') {
+      createError = outcome.message;
+    }
+  }
+
+  async function submitCreate(): Promise<void> {
     // The host owns every bound and the uniqueness rule; the webview only
     // refuses the one input it can judge without a catalog read.
+    if (createPending) return;
     const name = draftName.trim();
     if (name.length === 0) return;
-    postCommand(CMD_CREATE_QUEUE, { name });
-    cancelCreate();
+    createError = null;
+    createPending = true;
+    const outcome = await sendCreateQueueIntent({
+      type: CMD_CREATE_QUEUE,
+      name,
+      post: (correlationId, payload) => {
+        postCommand(CMD_CREATE_QUEUE, payload, { correlationId });
+      },
+      signal: lifetime.signal,
+      onLateOutcome: applyCreateOutcome
+    });
+    createPending = false;
+    applyCreateOutcome(outcome);
   }
 
   function onCardKeyDown(event: KeyboardEvent, queueId: string): void {
@@ -150,13 +179,23 @@
         data-testid="queue-create-name"
         placeholder="Queue name"
         aria-label="New queue name"
+        disabled={createPending}
         bind:value={draftName}
       />
-      <button type="button" class="primary" data-testid="queue-create-submit" onclick={submitCreate}>
-        Create
+      <button
+        type="button"
+        class="primary"
+        data-testid="queue-create-submit"
+        disabled={createPending}
+        onclick={submitCreate}
+      >
+        {createPending ? 'Creating…' : 'Create'}
       </button>
       <button type="button" data-testid="queue-create-cancel" onclick={cancelCreate}>Cancel</button>
     </div>
+    {#if createError !== null}
+      <p class="create-error" role="alert" data-testid="queue-create-error">{createError}</p>
+    {/if}
   {/if}
 
   {#if ordered.length === 0}

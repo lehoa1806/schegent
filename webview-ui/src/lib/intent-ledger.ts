@@ -16,7 +16,11 @@
 //
 // WHAT IT IS NOT. Risk reduction, not exactly-once delivery. The ledger is per webview realm, so a
 // reload, a different panel and a host restart each start a new action, and so does the reuse
-// window (the host forgets an identity at the same bound, `src/contracts/ack-retention.ts`).
+// window (the host forgets an identity at the same bound, `src/contracts/ack-retention.ts`:
+// 60 minutes / 1,000 entries). FR-R5-F10 (F-20, U-16): same-panel retries while an entry is
+// unresolved reuse the original `correlationId` and payload; reload, new panel, restart, or
+// window expiry intentionally mints a new intent rather than claiming universal durable
+// deduplication.
 //
 // It never calls `postCommand`: the adopting module passes a `post` callback, so every
 // `postCommand(CMD_…)` stays in the module that holds it today (hard rules 11 and 30), and a

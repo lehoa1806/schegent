@@ -276,6 +276,8 @@ The host allowlist and the webview `ActionKey` union are one set rather than two
 
 ### Known boundary mismatches
 
+- In the Builder (`PhaseCatalogEditor` and `WorkflowCatalogEditor`), a definition's authored `version` integer (`v1`, `v2`, ...) is read-only in the form editor and represents the immutable published record version managed by the catalog lifecycle store (or preserved on portable YAML import), whereas concurrent draft and catalog writes are arbitrated by `expectedDraftVersion` and `catalog.revision`.
+- Same-panel retries of unresolved commands sent through `sendIntent` (`intent-ledger.ts`) reuse the original `correlationId` and payload within the 60-minute / 1,000-entry `ACK_RETENTION` window so `MutationCommandExecutor` replays the original outcome without re-running the effect; webview reload, opening a new panel, host restart, or retention-window expiry starts a new intent by design (risk reduction, not universal durable deduplication).
 - The TypeScript `ResumeQueueCommand` permits `{ queueId?, prompt? }`, but runtime validation accepts only `queueId`; `prompt` is rejected as unexpected. Both `CMD_PAUSE_QUEUE` and `CMD_RESUME_QUEUE` also accept an array such as `[]` as a payload and normalize it to no payload because their validators check for an object but not for an array.
 - `CMD_SAVE_MODELS` requires a valid `models` map, but ignores unexpected payload keys, silently omits malformed optional `expectedRevision` or `mutation` fields, and does not enforce coupling between revision and mutation metadata.
 - The declared enqueue `startIntent.source` union includes `system-rate-limit-recovery`, but `CMD_START` ingress deliberately rejects that host-internal source.
