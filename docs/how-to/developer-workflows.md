@@ -159,7 +159,9 @@ npm run security:secrets:staged
 git config core.hooksPath scripts/hooks
 ```
 
-The hook is local and opt-in, and `git commit --no-verify` bypasses it. Git does not run it for a
+The hook is local and opt-in, and `git commit --no-verify` bypasses it. To check whether it is active,
+run `bash scripts/hooks-preflight.sh` from the planning workspace root, not from `repo/`. It is a
+workspace script that reads both repositories, writes nothing, and exits 1 while this hook is inactive. Git does not run it for a
 conflict-free merge, and there is no server-side check, so the tree-mode gate above remains the check that
 covers what was merged. [The security notes](../../SECURITY.md) list what the scan detects and what it does not.
 <!-- Source: package.json -->

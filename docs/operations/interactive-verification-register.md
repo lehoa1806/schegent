@@ -1,6 +1,6 @@
 # Interactive verification owed: what two specs are still waiting on
 
-**Opened**: 2026-09-06 (`FR-R3-170`, T1733) · **Updated**: 2026-11-06 (`FR-R5-F18`, T18.4/T18.5) ·
+**Opened**: 2026-09-06 (`FR-R3-170`, T1733) · **Updated**: 2026-11-06 (`FR-R5-F18`, T18.4/T18.5; `FR-R5-F20`, the round 5 journeys) ·
 **Subjects**: `specs/020-phase-level-logs`, `specs/067-live-mode-rework`, `specs/068-enhance-system-log` ·
 **Gates**: `repo/tests/lint/spec-traceability-governance.test.ts` requires each subject to link
 here; `repo/tests/lint/dated-review-records.test.ts` reads the date below.
@@ -67,6 +67,28 @@ check in a VS Code dev host:
    `specs/020-phase-level-logs/data-model.md` (which remains explicitly labelled `unconfirmed until
    the SC-011 live check passes`), and verify `.schegent/audit.log` contains `phase-log-read` with
    `outcome: success` and `entryCount > 0` followed by `phase-log-tail-started`.
+
+### Round 5 journeys owed a person (`FR-R5-F20`, 2026-11-06)
+
+These six journeys come out of round 5. Each row links the scenario that already owns it. The
+scenario is not restated here, and no second acceptance list is written. None of the six was
+observed when this section was written: that cycle ran with no person at a real editor and no
+screen reader. Each row therefore reads **not observed**. The owner is the repository operator
+named above, recorded as `maintainer`.
+
+The procedure is the same for every row. Build the integrated revision, then run the linked
+scenario by hand in a VS Code dev host. Record the date, the editor version, the operating system
+and the observer, together with what was seen, in the owning spec's quickstart or measurements
+file. Then replace **not observed** in the row with a link to that record.
+
+| Journey | Owning scenario | Observation | Owner | What a person would do |
+|---|---|---|---|---|
+| Acknowledgement latency under load | [spec 269](../../../specs/269-builder-command-lifecycle/spec.md), User Story 2, scenarios 1 and 2 (queue creation waits for the host's acknowledgement, bounded at 5 seconds); filing [F10](../../../docs/features/round_5/DONE_10_FR-R5-F10_builder_persistence_and_command_feedback.md) | **not observed** | maintainer | With phases running on other queues, submit `New Queue` and time the acknowledgement against the 5-second bound. |
+| Multi-window recovery | [spec 267](../../../specs/267-workflow-dispatch-recovery/spec.md), User Story 3, its Independent Test (a second window on the same workspace); filing [F08](../../../docs/features/round_5/DONE_08_FR-R5-F08_workflow_dispatch_and_recovery_integrity.md) | **not observed** | maintainer | Perform that Independent Test in two real editor windows open on one workspace. |
+| Dashboard hide/restore | [spec 269](../../../specs/269-builder-command-lifecycle/spec.md), User Story 1 (drafts, tab, selection and undo history survive a hidden panel); filing [F10](../../../docs/features/round_5/DONE_10_FR-R5-F10_builder_persistence_and_command_feedback.md) | **not observed** | maintainer | Edit a Phase and a Workflow draft, switch away from the Dashboard panel, return, and compare. |
+| Current phase-log journey | The `020-phase-level-logs` section above; filing [F18](../../../docs/features/round_5/DONE_18_FR-R5-F18_phase_log_live_tail_and_qualification.md) | **not observed** | maintainer | Steps 1 and 2 of that section. |
+| Clean-install Workflow launch, import and export | [spec 267 quickstart](../../../specs/267-workflow-dispatch-recovery/quickstart.md), which runs `tests/integration/round5-clean-install-journey.test.ts` (the automated host path); filing [F07](../../../docs/features/round_5/DONE_07_FR-R5-F07_pipeline_removal_and_workflow_delivery.md), task T07 | **not observed** in a real editor | maintainer | Install the packaged VSIX into a clean editor profile, then launch one Workflow, import one and export one. |
+| Representative open menu, dialog and keyboard states | No F08 to F19 scenario owns it. Automated evidence only: the opened Workflow-picker state in `tests/a11y/a11y-scan.spec.ts` (`FR-R5-F20`), which reports automated findings, not conformance | **not observed** | maintainer | Follow the procedure in [the accessibility AT matrix](../release/accessibility-at-matrix.md) with the keyboard and a screen reader, opening the Workflow picker and one dialog. |
 
 ## What would close this
 
