@@ -13,7 +13,9 @@ import { beforeAll, describe, expect, it } from 'vitest';
  * become a verdict, and a comparison that is deliberately never a waiver would become one by
  * accident. This gate keeps four things true:
  *
- *   1. `security:audit`, the absolute audit, still has the body it had before the command existed.
+ *   1. `security:audit` is the absolute audit. FR-R5-F21 (FR-015 to FR-017) moved its body into
+ *      `scripts/security-audit.mjs`, which forces the capture's argv and refuses an empty report;
+ *      it is still absolute and still never reaches the comparison.
  *   2. No chain reaches the command: the closure of each script that gives a verdict names neither
  *      `security:advisory-diff` nor `advisory-diff.mjs`.
  *   3. No file under `examples/` names it, so no Phase or pipeline runs it.
@@ -36,8 +38,9 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 const COMMAND = 'security:advisory-diff';
 const ENTRY_FILE = 'advisory-diff.mjs';
 
-/** `security:audit` as it was when the command was added: the absolute audit, unchanged. */
-const ABSOLUTE_AUDIT = 'npm audit --audit-level=low && npm --prefix webview-ui audit --audit-level=low';
+/** `security:audit`: the absolute audit, both trees, with the capture's argv (FR-R5-F21, FR-015). */
+const ABSOLUTE_AUDIT = 'node scripts/security-audit.mjs';
+const ABSOLUTE_AUDIT_FILE = 'scripts/security-audit.mjs';
 
 /** The scripts that give a verdict, a release or a package. None may reach the command. */
 const CHAINS = [
@@ -132,9 +135,16 @@ function factViolations(facts: Facts): string[] {
 
 const real = (): Scripts => scriptsOf(REPO_ROOT);
 
-describe('1. security:audit is the absolute audit, untouched', () => {
-  it('has the body it had before the advisory comparison existed', () => {
+describe('1. security:audit is the absolute audit', () => {
+  it('runs the absolute audit script', () => {
     expect(real()['security:audit']).toBe(ABSOLUTE_AUDIT);
+  });
+
+  it('forces the capture argv and decision, and never reaches the comparison', () => {
+    const body = readFileSync(resolve(REPO_ROOT, ABSOLUTE_AUDIT_FILE), 'utf8');
+    expect(body).toContain('AUDIT_ARGV');
+    expect(body).toContain('decideOutcome');
+    expect(body).not.toContain('advisory-diff');
   });
 
   it('is a different script from the comparison', () => {
@@ -226,6 +236,17 @@ describe('4. the advisory command adds no release control to the derived facts',
   it('NON-VACUITY: an advisory-* module that hashes is reported as an advisory producer', () => {
     const root = plantedRoot('advisory-planted.mjs');
     expect(factViolations(controlFacts(root))).toContain('an advisory module is a checksum producer');
+  });
+
+  it('NON-VACUITY: a gate that reaches the audit script is reported, whatever runs it', () => {
+    // FR-R5-F21: the audit body is now a script file, so the detector reads the file name as well
+    // as `npm audit`. Without it, adding `security:audit` to the gate would read "not reached".
+    const root = mkdtempSync(join(tmpdir(), 'advisory-report-only-'));
+    writeFileSync(
+      join(root, 'package.json'),
+      JSON.stringify({ scripts: { gate: 'npm run security:audit', 'security:audit': ABSOLUTE_AUDIT } })
+    );
+    expect(factViolations(controlFacts(root))).toContain('the audit is reached by the gate');
   });
 
   it('NON-VACUITY: the sanctioned producer alone is not reported', () => {

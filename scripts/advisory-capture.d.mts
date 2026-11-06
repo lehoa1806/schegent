@@ -7,6 +7,7 @@
 import type {
   BoundName,
   CaptureFile,
+  CaptureOutcome,
   CaptureFinding,
   RejectedReason,
   TreeName
@@ -77,3 +78,13 @@ export declare function captureTree(
   subject: { readonly tree: TreeName; readonly commit: string },
   seams: CaptureSeams
 ): CaptureFile;
+
+/**
+ * The outcome of one audit, from what it printed and never from its exit status, and the findings
+ * of a succeeded one. Exported for FR-R5-F21 (`security-audit.mjs`).
+ */
+export declare function decideOutcome(
+  audit: Pick<AuditResult, 'stdout'> & Partial<Pick<AuditResult, 'spawnError' | 'timedOut' | 'overflow'>>,
+  lockfile: unknown,
+  rootManifest: unknown
+): { readonly outcome: CaptureOutcome; readonly findings: readonly CaptureFinding[] };

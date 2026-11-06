@@ -62,6 +62,19 @@ This is the same declination
 recorded for the live backend canary: the work is owed, the trigger is dated, and the procedure is
 written out so that executing it is a session's work rather than a design exercise.
 
+### Review 2026-11-06
+
+Feature 282 (`FR-R5-F21`) re-read this matrix ahead of its date.
+
+- **Evidence checked**: every commit since the date was written on 2026-08-28 (`5af5e4e3`) to this
+  page and to `repo/tests/a11y/`: five. They change the automated scan (its routes, the contrast
+  baseline, the harness) and this page's text. `FR-R5-F20` (`ae4ae439`) re-read the VoiceOver row on
+  the same day and left it **not observed**. No commit records a VoiceOver run.
+- **Still owed**: one run of [the procedure below](#the-procedure) by a person at a Mac with
+  VoiceOver on. The owner is the maintainer.
+- **The date stands at 2026-11-27.** Only that run can move the row, and it has not happened, so the
+  review cannot renew the date. A clean automated scan would not change this either.
+
 ### The procedure
 
 Run the operator journey from

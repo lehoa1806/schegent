@@ -116,6 +116,21 @@ sentence recording what was re-read. Deleting the marker to make the gate pass i
 that is not available — it converts the decline into the permanent posture this date exists to
 prevent.
 
+### Review 2026-11-06
+
+Feature 282 (`FR-R5-F21`) re-read this decline ahead of its date.
+
+- **Evidence checked**: every commit since the date was written on 2026-08-28 (`9789b49e`) to this
+  page and to the [qualification matrix](../release/qualification-matrix.md): seven, which change
+  wording, the release-candidate record and the shape of the matrix. All four Linux and Windows cells
+  of the matrix still read `unobserved`. A wider search of `tests/integration` finds no run on
+  another platform either.
+- **Still owed**: a `npm run test:host` run on Windows and one on Linux, each by a person, by any of
+  the routes under "What would change this". The owner is the operator, who is the maintainer.
+- **The date stands at 2026-11-27.** No route below has arrived, and closing this decline needs an
+  observation that nobody has made, so the review cannot renew the date. The 2026-11-06 floor run
+  under Node 22 was on macOS and changes nothing here.
+
 ### What would change this
 
 Any one of these, and this heading is rewritten rather than amended:

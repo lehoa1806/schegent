@@ -472,7 +472,8 @@ changed only in a reviewed commit.
 <!-- Source: scripts/prepare-release.mjs -->
 <!-- Source: scripts/release-advisory.mjs -->
 
-`npm run package` is `npm run sbom && vsce package --no-dependencies`. It is **local-trial packaging**
+`npm run package` is `npm run sbom && npm run notices && vsce package --no-dependencies`, so it also
+writes and packages `THIRD-PARTY-NOTICES.md` (`FR-R5-F21`). It is **local-trial packaging**
 of the current `dist/`: it inspects nothing, produces no candidate and no record, and its output must
 not be handed to anyone as a release. It still emits `schegent-sbom.cdx.json` (CycloneDX 1.5) beside
 the VSIX **and packages it inside** (`FR-R3-120`), and since `FR-R4-F09` it refuses to when the module

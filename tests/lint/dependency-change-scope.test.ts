@@ -29,6 +29,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { pinMismatchMessage } from './dependency-scope-message';
+
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const read = (relPath: string): string => readFileSync(resolve(REPO_ROOT, relPath), 'utf8');
 
@@ -162,15 +164,19 @@ describe('FR-R3-090 §5 — no dependency is bumped, and the scanners are untouc
 
   it('every pinned range is unchanged', () => {
     const drifted: string[] = [];
+    const procedure: string[] = [];
     for (const [pkg, range] of PINNED) {
       const actual = root.devDependencies?.[pkg];
-      if (actual !== undefined && actual !== range) drifted.push(`${pkg}: ${range} -> ${actual}`);
+      if (actual === undefined || actual === range) continue;
+      drifted.push(`${pkg}: ${range} -> ${actual}`);
+      procedure.push(pinMismatchMessage(pkg, range, actual));
     }
     expect(
       drifted,
       'A dependency range moved. If the bump is intended it is its OWN change with its own ' +
         'verification — bundling it here hides it inside a hardening change, which FR-R3-090 §5 ' +
-        'forbids by name.'
+        'forbids by name.\n' +
+        procedure.join('\n')
     ).toEqual([]);
   });
 
@@ -292,5 +298,45 @@ describe('FR-R3-090 §5 — no dependency is bumped, and the scanners are untouc
     const declared = new Set([...PINNED.keys(), ...PERMITTED_ADDITIONS.keys()]);
     expect(declared.has('some-new-package')).toBe(false);
     expect(declared.has('axe-core')).toBe(true);
+  });
+});
+
+describe('FR-R5-F21 (FR-005, FR-006) — a moved pin names the procedure that moves it', () => {
+  const message = pinMismatchMessage('globals', '^14.0.0', '^17.0.0');
+
+  it('names the package, the pinned range and the range now declared', () => {
+    expect(message).toContain('globals');
+    expect(message).toContain('^14.0.0');
+    expect(message).toContain('^17.0.0');
+  });
+
+  it.each([
+    'tests/lint/dependency-change-scope.test.ts',
+    'PINNED',
+    '.github/dependabot.yml',
+    'docs/operations/gate-recording.md',
+    'docs/release/held-major-upgrades.md',
+    'Intentional dependency change',
+    'webview-ui/package.json',
+    'webview-ui/package-lock.json'
+  ])('names %s', (needle) => {
+    expect(message).toContain(needle);
+  });
+
+  it('names the root manifest and lockfile, not only the webview pair', () => {
+    const withoutWebview = message
+      .split('webview-ui/package-lock.json')
+      .join('')
+      .split('webview-ui/package.json')
+      .join('');
+    expect(withoutWebview).toContain('package.json');
+    expect(withoutWebview).toContain('package-lock.json');
+  });
+
+  it('NON-VACUITY: the message is built from its arguments, not a fixed string', () => {
+    const other = pinMismatchMessage('jsdom', '^25.0.0', '^31.0.0');
+    expect(other).toContain('jsdom');
+    expect(other).not.toContain('globals');
+    expect(other).not.toEqual(message);
   });
 });

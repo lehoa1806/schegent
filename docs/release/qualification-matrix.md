@@ -23,6 +23,11 @@ and `tests/lint/qualification-matrix-shape.test.ts` reports it by name.
 | Windows | 24 | unobserved | — | — | — | — | — | a Windows host running Node 24; Windows is a stated permanent limit of this repository |
 | Windows | 22 | unobserved | — | — | — | — | — | a Windows host running Node 22; Windows is a stated permanent limit of this repository |
 
+The macOS / Node 22 cell stays `unobserved` even though the floor was exercised on 2026-11-06. The
+[Node 22 floor record](node-floor-record.md) covers a plain-Node run of `test:host`, `build` and
+`sbom` under Node 22.23.2. It is not a gate observation: `npm run gate` did not run, and
+`npm run gate:record` recorded nothing. A cell holds only what a gate record says.
+
 ## What the one observed cell is, and is not
 
 The macOS / Node 24 cell quotes a version-3 gate record made on this machine: `npm run gate`,

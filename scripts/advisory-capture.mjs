@@ -311,8 +311,15 @@ function rejected(reason, bound) {
  * Decide the outcome from what the audit printed, never from its exit status (FR-004). A report is
  * a capture whatever npm's exit code was; an npm error is a failed capture that keeps only its
  * status code.
+ *
+ * Exported for FR-R5-F21 (FR-015): `security-audit.mjs` classifies the working tree's audit with
+ * this same decision, so the two cannot disagree about what a usable report is.
+ *
+ * @param {import('./advisory-capture.d.mts').AuditResult} audit
+ * @param {unknown} lockfile
+ * @param {unknown} rootManifest
  */
-function decideOutcome(audit, lockfile, rootManifest) {
+export function decideOutcome(audit, lockfile, rootManifest) {
   if (audit.spawnError) return { outcome: failed('tool-unavailable'), findings: [] };
   if (audit.timedOut) return { outcome: failed('audit-timeout'), findings: [] };
   if (audit.overflow || Buffer.byteLength(audit.stdout) > BOUNDS.reportBytes) {

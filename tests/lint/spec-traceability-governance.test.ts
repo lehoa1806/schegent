@@ -11,7 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, resolve, sep } from 'node:path';
 import { resolveGovernanceScope } from './envelope-presence';
-import { reviewDateMarkerNames } from './review-dates';
+import { loadReviewCadence } from './review-dates';
 
 const EXECUTION_REPO_ROOT = resolve(__dirname, '..', '..');
 const ENVELOPE_ROOT = resolve(EXECUTION_REPO_ROOT, '..');
@@ -64,7 +64,8 @@ function readArtifacts(): readonly SpecArtifact[] {
     });
 }
 
-describe('spec traceability governance', () => {
+describe('spec traceability governance', async () => {
+  const { reviewDateMarkerNames } = await loadReviewCadence();
   const artifacts = readArtifacts();
 
   // Vacuity control. Every assertion below filters `artifacts` and expects

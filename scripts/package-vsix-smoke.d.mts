@@ -10,6 +10,8 @@
 export interface SmokePackageDeps {
   readonly assertFresh: () => void;
   readonly writeSbom: () => void;
+  /** FR-R5-F21: writes `THIRD-PARTY-NOTICES.md`, after the SBOM and before `vsce`. */
+  readonly writeNotices: () => void;
   readonly makeTempDir: () => Promise<string>;
   readonly runVsce: (outPath: string) => Promise<void>;
   readonly readFile: (path: string) => Buffer;
@@ -19,8 +21,8 @@ export interface SmokePackageDeps {
 }
 
 /**
- * Package into a temporary directory and inspect the result: freshness, the SBOM, `vsce`, the
- * archive inspection, the SBOM-to-archive comparison, then the removal. A refusal at any step
- * stops every later one, and the directory is removed after a refusal at `vsce` or later.
+ * Package into a temporary directory and inspect the result: freshness, the SBOM, the notices,
+ * `vsce`, the archive inspection, the SBOM-to-archive comparison, then the removal. A refusal at
+ * any step stops every later one, and the directory is removed after a refusal at `vsce` or later.
  */
 export declare function smokePackage(deps: SmokePackageDeps): Promise<void>;
