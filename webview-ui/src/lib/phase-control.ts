@@ -83,12 +83,29 @@ export function skipPhase(
   );
 }
 
-export function disablePhase(phaseId: string, queueId: string): void {
-  postCommand(CMD_DISABLE_PHASE, { queueId, phaseId });
+// FR-R5-F19 (US3, FR-012) — Disable and Enable return what the host answered, as the five above do.
+// They were the two that discarded it: a refusal (a Run that moved past the phase, an untrusted
+// workspace, a secondary window) cleared the pending flag and left a control that looked as if it
+// had worked. Neither is gated by a `useConfirm`, so neither is bound to its component by the
+// destructive-actions lint, and both belong here with Pause.
+export function disablePhase(
+  phaseId: string,
+  queueId: string,
+  wait?: IntentWaitOptions<LifecycleControlResult>
+): Promise<LifecycleControlResult> {
+  return correlatedLifecycle(CMD_DISABLE_PHASE, { queueId, phaseId }, (correlationId, payload) => {
+    postCommand(CMD_DISABLE_PHASE, payload, { correlationId });
+  }, wait);
 }
 
-export function enablePhase(phaseId: string, queueId: string): void {
-  postCommand(CMD_ENABLE_PHASE, { queueId, phaseId });
+export function enablePhase(
+  phaseId: string,
+  queueId: string,
+  wait?: IntentWaitOptions<LifecycleControlResult>
+): Promise<LifecycleControlResult> {
+  return correlatedLifecycle(CMD_ENABLE_PHASE, { queueId, phaseId }, (correlationId, payload) => {
+    postCommand(CMD_ENABLE_PHASE, payload, { correlationId });
+  }, wait);
 }
 
 // Retry-now is deliberately absent from this module. It is one of the fifteen

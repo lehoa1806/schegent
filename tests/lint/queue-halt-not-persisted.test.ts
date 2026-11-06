@@ -70,3 +70,62 @@ describe('feature 195 (T025) — the halt is derived, never persisted', () => {
     expect(/halt/i.test(coordinatorSource)).toBe(true);
   });
 });
+
+// FR-R5-F19 (spec 278, FR-027; task T050) — the same claim, widened from one file to the whole of `src/`.
+//
+// Feature 278 adds a decision-blocker notice and a decision-record command that read a Run's blocked
+// state. The risk is that one of them keeps its own "this queue is halted" marker so it need not
+// recompute. Claim 2 above looks at one file, so it would not see a second site. These cases look at
+// every production source file: none reads or writes a halt-shaped property of a queue's persisted
+// state, and none declares a halt-shaped key a state could store. The modules this feature added name
+// no halt at all, which is checked by name so a later edit that adds one has to answer here.
+describe('FR-R5-F19 FR-027 — no second site stores or reads a queue halt', () => {
+  const srcRoot = path.resolve(process.cwd(), 'src');
+  const STORED_HALT_ACCESS = /queueStates?(\.|\[[^\]]*\]\.)\w*halt\w*/i;
+  const STORED_HALT_KEY = /\b(isHalted|halted|queueHalted|haltedAt|haltReason)\??\s*:/;
+  const FEATURE_278_MODULES = [
+    'src/services/blocker-notice.ts',
+    'src/state/pending-retry-shape.ts',
+    'src/activation/decision-record-wiring.ts',
+    'src/contracts/decision-record.ts'
+  ];
+
+  function productionSources(dir: string): string[] {
+    return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) return productionSources(full);
+      return entry.name.endsWith('.ts') ? [full] : [];
+    });
+  }
+
+  const sources = productionSources(srcRoot).map((file) => ({ file, text: fs.readFileSync(file, 'utf8') }));
+
+  it('no production file reads or writes a halt-shaped property of queue state', () => {
+    const offenders = sources.filter(({ text }) => STORED_HALT_ACCESS.test(text)).map(({ file }) => file);
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('no production file declares a halt-shaped key a persisted state could carry', () => {
+    const offenders = sources.filter(({ text }) => STORED_HALT_KEY.test(text)).map(({ file }) => file);
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('the modules feature 278 added name no halt', () => {
+    for (const rel of FEATURE_278_MODULES) {
+      const text = fs.readFileSync(path.resolve(process.cwd(), rel), 'utf8');
+      expect(/halt/i.test(text), `${rel} names a halt`).toBe(false);
+    }
+  });
+
+  it('control: both patterns match a stored-halt shape, and the scan reads the derivation', () => {
+    expect(STORED_HALT_ACCESS.test('const h = queueState.halted;')).toBe(true);
+    expect(STORED_HALT_ACCESS.test('queueStates[id].haltReason = 1;')).toBe(true);
+    expect(STORED_HALT_KEY.test('interface S { halted?: boolean }')).toBe(true);
+    // The scan is not reading an empty tree: the one legitimate site, the derivation, is in it.
+    const withDerivation = sources.filter(({ text }) => text.includes('evaluateQueueHalt')).map(({ file }) => path.basename(file));
+    expect(withDerivation).toContain('auto-drain-coordinator.ts');
+    expect(sources.length).toBeGreaterThan(100);
+  });
+});

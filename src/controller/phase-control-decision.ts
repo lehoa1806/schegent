@@ -153,6 +153,29 @@ function isPhaseFuture(run: WorkflowRun, phaseId: string): boolean {
   return true;
 }
 
+/** The two reasons Restart is refused once a Run exists; `null` is admitted. One rule, read twice below. */
+function restartRefusal(
+  run: Pick<WorkflowRun, 'status' | 'currentPhase'>,
+  targetPhaseId: string
+): 'run-terminal' | 'phase-not-active' | null {
+  if (!isOperableRunStatus(run.status)) return 'run-terminal';
+  if (targetPhaseId !== run.currentPhase) return 'phase-not-active';
+  return null;
+}
+
+/**
+ * FR-R5-F19 (FR-007) — whether Restart is admitted on `run` at its own current Phase, which is the Phase
+ * a Restart addresses. The cap notice names a fresh-budget Restart only when this holds. It reads the
+ * same `restartRefusal` the `'restart'` arm of {@link decidePhaseControl} decides with, so the notice
+ * carries no rule of its own; a test pins the two answers equal for every Run status.
+ *
+ * "Exposed" here means admitted by the host. A failed Run has a Restart through the palette command
+ * `schegent.restartPhase`; its row in the sidebar offers none (measurements.md, OD-2).
+ */
+export function isRestartExposed(run: Pick<WorkflowRun, 'status' | 'currentPhase'>): boolean {
+  return restartRefusal(run, run.currentPhase) === null;
+}
+
 export function decidePhaseControl(input: PhaseControlDecisionInput): PhaseControlDecisionResult {
   const { operation, run, targetPhaseId } = input;
 
@@ -184,9 +207,8 @@ export function decidePhaseControl(input: PhaseControlDecisionInput): PhaseContr
       // FR-R4-F20 (2026-10-29): Skip no longer acts on a failed Run, so this
       // stays operable for Restart, Resume and Retry, and the 'skip' arm below
       // refuses it `run-failed`.
-      if (!isOperableRunStatus(run.status)) return reject('run-terminal');
-      if (targetPhaseId !== run.currentPhase) return reject('phase-not-active');
-      return ELIGIBLE;
+      const refusal = restartRefusal(run, targetPhaseId);
+      return refusal === null ? ELIGIBLE : reject(refusal);
     }
 
     case 'skip': {

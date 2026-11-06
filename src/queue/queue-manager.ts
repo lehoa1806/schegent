@@ -1771,7 +1771,8 @@ export class QueueManager {
           ...retained,
           status: 'pending',
           retryCount: target.retryCount + 1,
-          lastError: null,
+          // FR-R5-F19 (FR-006): the failure this retry came from stays on the row. Every surface names it
+          // "Previous failure" unless the row is failed again, so it is never read as the row's present state.
           pausedReason: null,
           completedAt: null,
           startedAt: canResume ? target.startedAt : null,

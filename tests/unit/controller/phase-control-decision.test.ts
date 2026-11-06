@@ -13,8 +13,8 @@
 // or not through the service layer — is asserted here.
 
 import { describe, expect, it } from 'vitest';
-import { decidePhaseControl } from '../../../src/controller/phase-control-decision';
-import type { WorkflowRun } from '../../../src/state/workflow-run';
+import { decidePhaseControl, isRestartExposed } from '../../../src/controller/phase-control-decision';
+import { ALL_RUN_STATUSES, type WorkflowRun } from '../../../src/state/workflow-run';
 
 const PIPELINE = {
   id: 'abc-flow',
@@ -445,5 +445,20 @@ describe('decidePhaseControl — clear-breakpoint', () => {
     expect(decidePhaseControl({ operation: 'clear-breakpoint', run, targetPhaseId: 'gamma' })).toEqual({
       eligible: true
     });
+  });
+});
+
+describe('isRestartExposed — the one rule the cap notice reads (FR-R5-F19, FR-007)', () => {
+  it.each(ALL_RUN_STATUSES)('agrees with decidePhaseControl restart for a %s Run at its current Phase', (status) => {
+    const run = makeRun({ status });
+    const decided = decidePhaseControl({ operation: 'restart', run, targetPhaseId: run.currentPhase });
+
+    expect(isRestartExposed(run)).toBe(decided.eligible);
+  });
+
+  it('is true for a failed Run and false for a completed or canceled one (control: the table is not all one value)', () => {
+    expect(isRestartExposed(makeRun({ status: 'failed' }))).toBe(true);
+    expect(isRestartExposed(makeRun({ status: 'completed' }))).toBe(false);
+    expect(isRestartExposed(makeRun({ status: 'canceled' }))).toBe(false);
   });
 });

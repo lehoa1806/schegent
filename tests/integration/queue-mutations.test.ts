@@ -136,7 +136,8 @@ describe('Queue mutations integration (T044)', () => {
     aRow = sys.queue.findById(a.id);
     expect(aRow?.status).toBe('pending');
     expect(aRow?.retryCount).toBe(1);
-    expect(aRow?.lastError).toBeNull();
+    // FR-R5-F19 (FR-008): the failure the retry came from stays on the row as historical evidence.
+    expect(aRow?.lastError).toBe('simulated stub failure');
     // A must be at head of pending (no in-flight, so position 0)
     expect(sys.queue.list()[0].id).toBe(a.id);
 

@@ -16,6 +16,10 @@ import { MessageRouter, type RouterDeps, type PhaseOps } from '../../../../src/u
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import type { CommandAckMessage, SidebarCommand } from '../../../../src/ui/sidebar/messages';
 import { CMD_REMOVE_QUEUE_ITEM } from '../../../../src/ui/sidebar/messages';
+import {
+  deleteTaskWithSessionCleanup,
+  type TaskDeletionDeps
+} from '../../../../src/controller/task-deletion';
 
 interface CapturedAck {
   msg: CommandAckMessage;
@@ -269,5 +273,93 @@ describe('FR-R4-F16 — task-removed payload carries completionProvenance', () =
         'stateTransition'
       ].sort()
     );
+  });
+});
+
+// FR-R5-F19 (spec 278, T19.6, FR-022; task T044) — a refused session cleanup reaches the audit event as a
+// bounded code, field by field.
+//
+// The refusal is produced by `deleteTaskWithSessionCleanup` (it copies the cleanup runner's `refusal` onto
+// the outcome only when one was given) and written by `cmd-remove-queue-item.ts` as
+// `sessionCleanupRefusal`. The path-containment and sweep tests pin the runner and the sweep's own payload;
+// nothing pinned this hand-off, so a change that dropped the field, renamed it, or put the refused path in
+// it would pass every test. Here the real deletion function runs with a runner that refuses, and its
+// outcome goes through the real router, so both ends of the hand-off are exercised.
+describe('FR-R5-F19 FR-022 — a refused session cleanup is audited as a bounded code', () => {
+  const REFUSED_PATH = '/outside/workspace/.schegent/sessions/run-refused';
+
+  async function removeThroughDeletion(
+    cleanup: { cleaned: boolean; refusal?: 'not-contained' | 'resolve-failed' }
+  ): Promise<CapturedAuditEntry> {
+    const logger = new SanitizedLogger();
+    const sessionCleanup = vi.fn(async () => cleanup);
+    const { router, acks, auditEntries } = makeRouter({
+      phaseOpsDeleteTask: (id) =>
+        deleteTaskWithSessionCleanup(
+          {
+            logger,
+            queue: {
+              findById: () => undefined,
+              queueIdForTask: () => 'default',
+              removeTask: async () => ({
+                ok: true,
+                taskId: id,
+                queueId: 'default',
+                priorStatus: 'failed',
+                runId: 'run-refused'
+              })
+            } as unknown as TaskDeletionDeps['queue'],
+            store: {} as unknown as TaskDeletionDeps['store'],
+            cancelActive: () => undefined,
+            releaseExecutionLeaseForRun: async () => undefined,
+            sessionCleanup,
+            workspaceRoot: '/workspace'
+          },
+          id
+        )
+    });
+    await dispatch(
+      router,
+      { type: CMD_REMOVE_QUEUE_ITEM, correlationId: 'rm-R', payload: { id: 'task-r', confirmed: true } },
+      acks
+    );
+    expect(sessionCleanup).toHaveBeenCalledTimes(1);
+    const removed = auditEntries.filter((entry) => entry.eventType === 'task-removed');
+    expect(removed).toHaveLength(1);
+    return removed.at(0) as CapturedAuditEntry;
+  }
+
+  it.each(['not-contained', 'resolve-failed'] as const)(
+    'carries %s as the bounded code, beside sessionCleaned false and the unchanged identity fields',
+    async (refusal) => {
+      const entry = await removeThroughDeletion({ cleaned: false, refusal });
+
+      expect(entry.payload).toMatchObject({
+        taskId: 'task-r',
+        queueId: 'default',
+        priorStatus: 'failed',
+        runId: 'run-refused',
+        cause: 'operator',
+        sessionCleaned: false,
+        sessionCleanupRefusal: refusal
+      });
+      expect(JSON.stringify(entry)).not.toContain(REFUSED_PATH);
+      assertPayloadIsPathsFree(entry.payload);
+    }
+  );
+
+  it('control: a cleanup that was allowed writes the key as null and sessionCleaned true', async () => {
+    const entry = await removeThroughDeletion({ cleaned: true });
+
+    expect(entry.payload.sessionCleaned).toBe(true);
+    expect(entry.payload.sessionCleanupRefusal).toBeNull();
+    expect(Object.keys(entry.payload)).toContain('sessionCleanupRefusal');
+  });
+
+  it('control: a cleanup that failed without a refusal is not reported as one', async () => {
+    const entry = await removeThroughDeletion({ cleaned: false });
+
+    expect(entry.payload.sessionCleaned).toBe(false);
+    expect(entry.payload.sessionCleanupRefusal).toBeNull();
   });
 });

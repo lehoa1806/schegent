@@ -16,6 +16,7 @@
 // ---------------------------------------------------------------------------
 
 import type { SequencerFailureCause } from '../../controller/fail-decision-cause';
+import { isRestartExposed } from '../../controller/phase-control-decision';
 import type { InvocationResult } from '../../parser/stdout-parser';
 import type { WorkflowRun } from '../../state/workflow-run';
 import { failureNotice, type FailureNotice } from '../failure-notice';
@@ -25,7 +26,7 @@ export type { FailureRecorder } from './failure-record-service';
 
 /** What the driver holds when the sequencer's decision after a phase is `fail`. */
 export interface FailedPhase {
-  readonly run: Pick<WorkflowRun, 'id' | 'featureId' | 'currentPhase'>;
+  readonly run: Pick<WorkflowRun, 'id' | 'featureId' | 'currentPhase' | 'status'>;
   readonly decision: {
     readonly failureCause: SequencerFailureCause;
     readonly stalledCount?: number | undefined;
@@ -45,5 +46,17 @@ export async function failedPhaseNotice(
   const { failureCause: cause, stalledCount } = decision;
   const { iterationCap } = options;
   const recordWritten = (await recorder?.record({ run, cause, result, iteration, iterationCap, stalledCount })) === true;
-  return failureNotice({ cause, phase: run.currentPhase, taskTitle, iteration, iterationCap, stalledCount, recordWritten });
+  // FR-R5-F19 (FR-007): the cap notice names Restart only when the legal-action authority admits it for this
+  // Run. The rule is `isRestartExposed`'s; nothing here restates it.
+  const restartExposed = isRestartExposed(run);
+  return failureNotice({
+    cause,
+    phase: run.currentPhase,
+    taskTitle,
+    iteration,
+    iterationCap,
+    stalledCount,
+    recordWritten,
+    restartExposed
+  });
 }

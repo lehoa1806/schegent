@@ -10,6 +10,7 @@ import { createHostCatalogStore, createHostCatalogLifecycle } from './catalog-st
 import { createCatalogSettingsWriter } from './catalog-settings-wiring';
 import { createConnectedRunService } from './ui-wiring';
 import { createPhaseLogTailWiring } from './phase-log-tail-wiring';
+import { createDecisionRecordWiring } from './decision-record-wiring';
 import { createBackendDiagnosticsWiring } from './backend-wiring';
 import { closedErrorCode, readChosenProcessDocument } from './process-yaml-document-read';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
@@ -111,6 +112,8 @@ export interface SidebarRouterWiringDeps {
   readonly runtimeLogAccessor: ReturnType<typeof createRuntimeLogAccessor>;
   /** Declared in `wireStage2` and referenced by the catalog handlers. */
   readonly refreshCatalog: () => Promise<void>;
+  /** Hands the extension a disposable to release on deactivation (the decision-record content provider). */
+  readonly registerDisposable: (disposable: { dispose(): void }) => void;
 }
 
 export function createSidebarRouter(deps: SidebarRouterWiringDeps): MessageRouter {
@@ -141,8 +144,12 @@ export function createSidebarRouter(deps: SidebarRouterWiringDeps): MessageRoute
     phaseLogTail,
     runtimeLogSink,
     runtimeLogAccessor,
-    refreshCatalog
+    refreshCatalog,
+    registerDisposable
   } = deps;
+  // FR-R5-F19 (contract decision-record-open.md) — "Open decision record", read-only, over this window's state.
+  const decisionRecord = createDecisionRecordWiring({ workspaceRoot, store, logger });
+  registerDisposable(decisionRecord.disposable);
   // FR-R4-F15 (contract Q4) — the "Show last error" read, over THIS window's queue state and history,
   // so a queue id and task id taken from another workspace's snapshot name no row here. The age is the
   // one the session sweep applies: same setting, same normalization, read when the request arrives.
@@ -462,6 +469,7 @@ export function createSidebarRouter(deps: SidebarRouterWiringDeps): MessageRoute
       }
     },
     readFailureRecord: (request) => failureRecordAnswerer.answer(request),
+    openDecisionRecord: (request) => decisionRecord.opener.open(request.rowId),
     // Feature 073 — existing session-scoped correlation id, reused (not
     // newly minted) for the metrics-view-opened audit payload
     // (contracts/metrics-view-opened-event.md).

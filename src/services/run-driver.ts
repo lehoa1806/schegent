@@ -17,6 +17,8 @@ import { advancedRun } from './run-advance';
 import { terminalSettler } from './run-terminal-effects';
 import { emitTerminalOutcomeAudit } from './terminal-outcome-audit';
 import { failureNotice } from './failure-notice';
+import { BlockerNoticeLedger, emitBlockerNotice } from './blocker-notice';
+import type { InvocationResult } from '../parser/stdout-parser';
 import { failedPhaseNotice, type FailureRecorder } from './failure-record/failed-phase-notice';
 import {
   cliSessionOf,
@@ -216,6 +218,8 @@ export class RunDriver {
   private carriedIssues: Array<{ tag?: string; summary: string }> | string[] = [];
   private readonly overriddenActivePhaseAborts = new Set<string>();
   private readonly sequencer = new PhaseSequencer();
+  /** FR-R5-F19 (FR-001) — Runs already told about a blocking decision; in memory, so a host restart forgets it. */
+  private readonly blockerNotices = new BlockerNoticeLedger();
   /** FR-R3-175 (SC-010) — per-drive; cleared in `endOfDriveReset()`. */
   private sessionDisposition: SessionDispositionReporter;
   private logger: SanitizedLogger; // FR-R4-F04 (C1, FR-033): the window logger between drives, `{ runId }` during one
@@ -719,7 +723,7 @@ export class RunDriver {
           now: Date.now(),
           ...this.sequencer.liveRetryPolicyOf(this.deps.options)
         });
-        this.handlePostPhaseDecisionSideEffects(run, postDecision);
+        this.handlePostPhaseDecisionSideEffects(run, postDecision, output.result, description);
 
         if (postDecision.kind === 'pause-breakpoint') {
           const consumedPhaseId = postDecision.consumedPhaseId;
@@ -1084,9 +1088,20 @@ export class RunDriver {
    */
   private handlePostPhaseDecisionSideEffects(
     run: WorkflowRun,
-    postDecision: PostPhaseDecision
+    postDecision: PostPhaseDecision,
+    result: InvocationResult,
+    description: string
   ): void {
     for (const w of postDecision.warnings) this.logger.warn(w);
+    // FR-R5-F19 (FR-001): every branch passes here, so the first blocking report notifies once per Run.
+    emitBlockerNotice(
+      { runId: run.id, runLabel: description, result },
+      {
+        ledger: this.blockerNotices,
+        notifier: this.deps.notifier,
+        logger: this.logger
+      }
+    );
     if (postDecision.evictStagnationTracker) {
       // Same phaseId key `maybeEmit()` uses (`phaseDef?.id ?? phase`), and it
       // cannot differ: `decideBeforePhase()` resolves the def by that id.

@@ -3,6 +3,7 @@ import type { AuditEventType } from '../../../contracts/audit-events';
 import type { BackendPingService } from '../../../services/backend-ping-service';
 import type { HistoryEvidenceResolution } from '../../../services/history/history-evidence-service';
 import type { DescriptionResolution } from '../../../services/history/history-description-resolver';
+import type { DecisionRecordOpener } from '../../../services/decision-record/decision-record-open';
 import type { FailureRecordAnswerer } from '../../../services/failure-record/failure-record-service';
 import type { CatalogLifecycleOps, CatalogStore } from '../../../catalog';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
@@ -511,6 +512,13 @@ export interface RouterDeps {
    * over the requesting window's own queue state, so a pair it does not hold is an unknown row.
    */
   readonly readFailureRecord?: FailureRecordAnswerer['answer'];
+  /**
+   * FR-R5-F19 (feature 278, contract decision-record-open.md) — opens a blocked row's `decisions.md`
+   * read-only. Absent in a harness that builds no opener; the handler then answers `internal-error`.
+   * The opener checks workspace trust itself, because this command is read-only and so passes no
+   * router trust gate.
+   */
+  readonly openDecisionRecord?: (request: { readonly rowId: string }) => ReturnType<DecisionRecordOpener['open']>;
   readonly backendPingService?: Pick<BackendPingService, 'ping'>;
   /**
    * Feature 073 — existing session-scoped correlation id reused (not newly

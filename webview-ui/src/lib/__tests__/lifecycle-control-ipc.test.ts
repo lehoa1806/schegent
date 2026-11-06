@@ -262,9 +262,15 @@ describe('lifecycleRefusalText — one sentence per reason the host emits', () =
 // FR-R4-F05 (T11; contract O, O1; data-model §5) — the lifecycle family's own map wins; the
 // shared boundary text answers for what it lacks.
 describe('lifecycleRefusalText — the shared boundary fallback (T11)', () => {
-  it('maps untrusted-workspace, the router gate token, to the boundary sentence', () => {
+  // FR-R5-F19 (US3, FR-013) — the family now holds the router gate token itself, and gives it the
+  // sentence it gives `workspace-not-trusted`, so one refusal reads one way across the lifecycle
+  // controls. It used to fall through to the boundary text, which words it for an "action".
+  it('maps untrusted-workspace, the router gate token, to the sentence workspace-not-trusted has', () => {
     expect(lifecycleRefusalText('untrusted-workspace')).toBe(
-      'The workspace is not trusted, so this action is unavailable.'
+      'The workspace is not trusted, so this control is unavailable.'
+    );
+    expect(lifecycleRefusalText('untrusted-workspace')).toBe(
+      lifecycleRefusalText('workspace-not-trusted')
     );
   });
 
