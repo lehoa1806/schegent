@@ -169,8 +169,9 @@ function restartRefusal(
  * same `restartRefusal` the `'restart'` arm of {@link decidePhaseControl} decides with, so the notice
  * carries no rule of its own; a test pins the two answers equal for every Run status.
  *
- * "Exposed" here means admitted by the host. A failed Run has a Restart through the palette command
- * `schegent.restartPhase`; its row in the sidebar offers none (measurements.md, OD-2).
+ * "Exposed" here means admitted by the host. A failed Run's Restart is reached through the palette
+ * command `schegent.restartPhase` and, since spec 278 decided OD-2, through its failed sidebar row
+ * (`QueueItemRestartPhase.svelte`), which posts the same command.
  */
 export function isRestartExposed(run: Pick<WorkflowRun, 'status' | 'currentPhase'>): boolean {
   return restartRefusal(run, run.currentPhase) === null;
