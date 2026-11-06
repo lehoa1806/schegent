@@ -33,7 +33,16 @@ const SECRET_NAMES = [
   'dbPwd',
   'access_token',
   'refresh-token',
-  'passwd'
+  'passwd',
+  'AWS_SECRET_ACCESS_KEY',
+  'aws_secret_access_key',
+  'MY_ACCESS_KEY',
+  'PRIVATE_KEY',
+  'SIGNING_KEY',
+  'api_key',
+  'session_id',
+  'sessionId',
+  'connect.sid'
 ];
 const NOT_SECRET_NAMES = [
   'input_tokens',
@@ -46,6 +55,12 @@ const NOT_SECRET_NAMES = [
   'OLDPWD',
   'username',
   'path',
+  'key',
+  'primaryKey',
+  'sortKey',
+  'cacheKey',
+  'publicKey',
+  'secret_key_base',
   ''
 ];
 

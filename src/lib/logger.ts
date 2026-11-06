@@ -50,9 +50,9 @@ export const PRIVATE_KEY_ARMOR_LABELS: ReadonlyArray<string> = Object.freeze([
 const ARMOR_LABEL_ALTERNATION =
   `(?:(?:${PRIVATE_KEY_ARMOR_LABELS.join('|')}) )?PRIVATE KEY(?: BLOCK)?`;
 
-/** A complete block: BEGIN through the next END. Non-greedy on purpose. */
+/** A complete block: BEGIN through the next END. Non-greedy and bounded to 64 KiB so a 16 MiB unterminated body cannot overflow V8's RegExp backtrack stack. */
 const PRIVATE_KEY_BLOCK_RE = new RegExp(
-  `-----BEGIN ${ARMOR_LABEL_ALTERNATION}-----[\\s\\S]*?-----END ${ARMOR_LABEL_ALTERNATION}-----`,
+  `-----BEGIN ${ARMOR_LABEL_ALTERNATION}-----[\\s\\S]{0,65536}?-----END ${ARMOR_LABEL_ALTERNATION}-----`,
   'g'
 );
 
@@ -174,8 +174,40 @@ const SUFFIX_ONLY_KEY_WORDS: ReadonlyArray<string> = Object.freeze(['pwd']);
 const CLIENT_SECRET_KEY = 'client_secret';
 
 /**
+ * FR-R5-F14 (NS-09) — qualifier words before `key` (`*_key` / `*_KEY` / `*Key`) that denote a
+ * credential (`AWS_SECRET_ACCESS_KEY`, `aws_secret_access_key`, `MY_ACCESS_KEY`, `PRIVATE_KEY`,
+ * `SIGNING_KEY`, `api_key`, etc.) without treating ordinary identifier fields (`primaryKey`,
+ * `sortKey`, `cacheKey`, bare `key`) as secrets.
+ */
+const QUALIFIED_SECRET_KEY_PREFIXES: ReadonlyArray<string> = Object.freeze([
+  'access',
+  'api',
+  'auth',
+  'client',
+  'encryption',
+  'hmac',
+  'master',
+  'private',
+  'secret',
+  'service',
+  'session',
+  'signing',
+  'webhook'
+]);
+
+/** Session-cookie key names recognized in structured records (`sanitizeRecord`). */
+const SESSION_COOKIE_KEY_NAMES: ReadonlyArray<string> = Object.freeze([
+  'session_id',
+  'sessionid',
+  'connect_sid',
+  'jsessionid',
+  'phpsessid'
+]);
+
+/**
  * True when `key` names a secret: split on camelCase and on `-`, `.`, space and `_`, lowercased, its
- * last segment (or its last two joined by `_`) is one of `SECRET_KEY_NAME_WORDS` or `client_secret`.
+ * last segment (or its last two joined by `_`) is one of `SECRET_KEY_NAME_WORDS`, `client_secret`,
+ * a qualified `*_key` credential name, or a session-cookie identifier.
  * `pwd` counts only when it is not the whole name. The structured walkers use it to remove a string
  * leaf whose own key names a secret, which the string patterns cannot see.
  *
@@ -197,7 +229,16 @@ export function isSecretKeyName(key: string): boolean {
   if (SECRET_KEY_NAME_WORDS.includes(last)) {
     return !(SUFFIX_ONLY_KEY_WORDS.includes(last) && segments.length === 1);
   }
-  return segments.slice(-2).join('_') === CLIENT_SECRET_KEY;
+  const prev = segments.at(-2);
+  if (last === 'key' && prev !== undefined && QUALIFIED_SECRET_KEY_PREFIXES.includes(prev)) {
+    return true;
+  }
+  const tailPair = segments.slice(-2).join('_');
+  return (
+    tailPair === CLIENT_SECRET_KEY ||
+    SESSION_COOKIE_KEY_NAMES.includes(tailPair) ||
+    SESSION_COOKIE_KEY_NAMES.includes(last)
+  );
 }
 
 /**
@@ -211,16 +252,16 @@ export function isSecretKeyName(key: string): boolean {
  * must abut its separator, so `tokens=` never matches `token`. No duplicate named groups: the module
  * must parse on Node 22 (research R9).
  *
- * The value never ends in a backslash that escapes the quote after it: in a JSON string holding JSON,
- * the closing quote is `\"`, and removing its backslash with the value would end the outer string
- * early, so a transport or export line would no longer parse. The greedy loop gives back that one
- * character, which leaves every backslash pair before the quote balanced. Any other trailing
- * backslash is part of the value and is removed with it, so `password=Pa55wd!\` is not left readable.
+ * FR-R5-F14 (NS-08): the trailing quote-escape backslash check runs in `replaceUnionMatch` in O(1)
+ * rather than via a trailing regex lookahead `(?!(?<=\\)["'])`, which caused V8's Irregexp engine to
+ * push one backtrack frame per character and throw `RangeError` on 6-16 MiB values.
  */
 const KEYED_SECRET_VALUE_RE = new RegExp(
   `(?<=(?:${SECRET_KEY_NAME_WORDS.filter((word) => !SUFFIX_ONLY_KEY_WORDS.includes(word)).join('|')}` +
-    `${SUFFIX_ONLY_KEY_WORDS.map((word) => `|(?<=[_.-])${word}`).join('')})` +
-    `\\\\?["']?[ \\t]{0,8}[:=][ \\t]{0,8}\\\\?["']?)[^\\s"'\`,;&]{8,}(?!(?<=\\\\)["'])`,
+    `${SUFFIX_ONLY_KEY_WORDS.map((word) => `|(?<=[_.-])${word}`).join('')}` +
+    `|(?:${QUALIFIED_SECRET_KEY_PREFIXES.join('|')})[_.-]?key` +
+    `|${SESSION_COOKIE_KEY_NAMES.map((name) => name.replace('_', '[_.-]?')).join('|')})` +
+    `\\\\?["']?[ \\t]{0,8}[:=][ \\t]{0,8}\\\\?["']?)[^\\s"'\`,;&]{8,}`,
   'gi'
 );
 
@@ -252,8 +293,12 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
   // npm automation and publish tokens (`npm_` and 36 alphanumerics)
   /\bnpm_[A-Za-z0-9]{36}\b/g,
-  // Slack bot/user/app/refresh/legacy tokens
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
+  // Slack bot/user/app/refresh/legacy and xapp- app-level tokens
+  /\b(?:xox[baprs]|xapp)-[A-Za-z0-9-]{10,}\b/g,
+  // GitLab personal access tokens
+  /\bglpat-[A-Za-z0-9_-]{20,}\b/g,
+  // Hugging Face access tokens
+  /\bhf_[A-Za-z0-9]{30,}\b/g,
   // AWS access key IDs (long-lived IAM user credentials)
   /\bAKIA[0-9A-Z]{16}\b/g,
   // AWS temporary session access key IDs (STS / assumed-role). Same
@@ -281,7 +326,7 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   // armored block inside it. The armor labels are bounded as well, and so is the body (64 Ki units, many
   // times the size of any key): a lazy loop keeps one backtrack frame per character, and an unbounded one
   // threw "Maximum call stack size exceeded" on a 16 MiB body.
-  /"private_key"\s*:\s*"-----BEGIN [A-Za-z0-9 ]{1,40}-----(?:[^"\\]|\\.){0,65536}?-----END [A-Za-z0-9 ]{1,40}-----(?:\\n)?"/g,
+  /"private_key"\s*:\s*"-----BEGIN [A-Za-z0-9 ]{1,40}-----[^"]{0,65536}?-----END [A-Za-z0-9 ]{1,40}-----(?:\\n)?"/g,
   // Standalone PEM private-key blocks — SSH, PGP and the rest, leaking into
   // stdout without the JSON envelope above.
   //
@@ -305,9 +350,12 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   // still a key.
   PRIVATE_KEY_BLOCK_RE,
   PRIVATE_KEY_UNTERMINATED_RE,
-  // Bearer / Authorization headers
-  /Bearer\s+[A-Za-z0-9_\-.=]{16,}/gi,
+  // Bearer / Basic / Authorization / Proxy-Authorization headers
+  /Bearer\s+[A-Za-z0-9_\-.+/=]{16,}/gi,
+  /(?<=\b(?:Proxy-)?Authorization["'\s:=]+)(?:(?:Basic|Bearer|Digest|Token)\s+[A-Za-z0-9+/=._~-]{8,}|[A-Za-z0-9_\-.+/=]{16,})/gi,
   /authorization["'\s:=]+[A-Za-z0-9_\-.=]{16,}/gi,
+  // Cookie and Set-Cookie session values
+  /(?<=\b(?:[A-Za-z0-9_.-]*?(?:sess(?:ion)?(?:[_-]?id)?|connect\.sid|jsessionid|phpsessid)|(?<=\b(?:Set-)?Cookie[^\r\n]{0,256}?\b)sid)\s*=\s*)[^\s;,"']{8,}/gi,
   // api_key / apikey / api-key
   /api[_-]?key["'\s:=]+[A-Za-z0-9_-]{16,}/gi,
   // X-API-Key / X_API_KEY header style — common AWS API Gateway and
@@ -363,6 +411,123 @@ function compileUnion(caseInsensitive: boolean): RegExp | null {
 
 const SECRET_UNION_CS: RegExp | null = compileUnion(false);
 const SECRET_UNION_CI: RegExp | null = compileUnion(true);
+
+function replaceUnionMatch(match: string, ...args: unknown[]): string {
+  const source = args.at(-1) as string;
+  const offset = args.at(-2) as number;
+  const nextChar = source[offset + match.length];
+  if (match.endsWith('\\') && (nextChar === '"' || nextChar === "'")) {
+    return match.length > 8 ? `${REDACTION_SENTINEL}\\` : match;
+  }
+  return REDACTION_SENTINEL;
+}
+
+const MAX_SINGLE_TOKEN_RUN_CHARS = 65_536;
+const TOKEN_RUN_SAMPLE_EDGE = 1_024;
+
+function isTokenStopChar(code: number): boolean {
+  // Whitespace, quotes, backtick, comma, semicolon, ampersand.
+  return (
+    code === 0x20 ||
+    code === 0x09 ||
+    code === 0x0a ||
+    code === 0x0d ||
+    code === 0x0b ||
+    code === 0x0c ||
+    code === 0x22 ||
+    code === 0x27 ||
+    code === 0x60 ||
+    code === 0x2c ||
+    code === 0x3b ||
+    code === 0x26
+  );
+}
+
+/**
+ * FR-R5-F14 (NS-08) — redact armored private-key blocks without unbounded `[\s\S]*` regex matches
+ * that overflow V8's RegExp backtrack stack on multi-megabyte unterminated blocks.
+ */
+function redactPrivateKeyBlocks(input: string): string {
+  const beginRe = new RegExp(PRIVATE_KEY_BEGIN_RE.source, 'g');
+  const endRe = new RegExp(PRIVATE_KEY_END_RE.source, 'g');
+  let cursor = 0;
+  const parts: string[] = [];
+  while (cursor < input.length) {
+    beginRe.lastIndex = cursor;
+    const beginMatch = beginRe.exec(input);
+    if (!beginMatch) {
+      if (cursor === 0) return input;
+      parts.push(input.slice(cursor));
+      break;
+    }
+    if (beginMatch.index > cursor) {
+      parts.push(input.slice(cursor, beginMatch.index));
+    }
+    parts.push(REDACTION_SENTINEL);
+    endRe.lastIndex = beginMatch.index + beginMatch[0].length;
+    const endMatch = endRe.exec(input);
+    if (!endMatch) {
+      // Unterminated block: everything through end of input is redacted.
+      cursor = input.length;
+      break;
+    }
+    cursor = endMatch.index + endMatch[0].length;
+  }
+  return parts.join('');
+}
+
+function applyUnions(text: string): string {
+  let out = text;
+  if (SECRET_UNION_CS !== null) out = out.replace(SECRET_UNION_CS, REDACTION_SENTINEL);
+  if (SECRET_UNION_CI !== null) out = out.replace(SECRET_UNION_CI, replaceUnionMatch);
+  return out;
+}
+
+/**
+ * FR-R5-F14 (NS-08) — V8's Irregexp engine pushes one backtrack frame per character when a
+ * character-class quantifier (`[^\s"'\`,;&]{8,}`, `[A-Za-z0-9_-]{20,}`) sits at the end of a
+ * regex branch, overflowing the RegExp stack around ~5-6M contiguous characters. When an input
+ * exceeds 64 KiB and contains a single non-delimiter run over 64 KiB, fold the interior of any
+ * run whose prefix/suffix sample is redacted as a single token so `applyUnions` runs in bounded
+ * stack space.
+ */
+function collapseOversizedTokenRuns(input: string): string {
+  let runStart = -1;
+  let pieces: string[] | null = null;
+  let lastCopied = 0;
+
+  const flushRun = (start: number, end: number): void => {
+    if (end - start <= MAX_SINGLE_TOKEN_RUN_CHARS) return;
+    const ctxStart = Math.max(0, start - 256);
+    const ctxEnd = Math.min(input.length, end + 256);
+    const sampleRun =
+      input.slice(start, start + TOKEN_RUN_SAMPLE_EDGE) +
+      input.slice(end - TOKEN_RUN_SAMPLE_EDGE, end);
+    const probe = input.slice(ctxStart, start) + sampleRun + input.slice(end, ctxEnd);
+    if (applyUnions(probe) !== probe) {
+      pieces ??= [];
+      pieces.push(input.slice(lastCopied, start), sampleRun);
+      lastCopied = end;
+    }
+  };
+
+  for (let i = 0; i < input.length; i += 1) {
+    if (isTokenStopChar(input.charCodeAt(i))) {
+      if (runStart !== -1) {
+        flushRun(runStart, i);
+        runStart = -1;
+      }
+    } else if (runStart === -1) {
+      runStart = i;
+    }
+  }
+  if (runStart !== -1) {
+    flushRun(runStart, input.length);
+  }
+  if (pieces === null) return input;
+  pieces.push(input.slice(lastCopied));
+  return pieces.join('');
+}
 
 /**
  * The one own key that `out[key] = value` cannot create.
@@ -466,11 +631,14 @@ export class SanitizedLogger {
     // `PRIVATE_KEY_ANY_RE`: leftmost-match lets an earlier-starting pattern
     // (`SECRET_KEY=…`, `sk-…`) eat the BEGIN marker and leave the body behind.
     if (out.includes(PRIVATE_KEY_MARKER_PREFIX)) {
-      out = out.replace(PRIVATE_KEY_ANY_RE, REDACTION_SENTINEL);
+      out = out.length > MAX_SINGLE_TOKEN_RUN_CHARS
+        ? redactPrivateKeyBlocks(out)
+        : out.replace(PRIVATE_KEY_ANY_RE, REDACTION_SENTINEL);
     }
-    if (SECRET_UNION_CS !== null) out = out.replace(SECRET_UNION_CS, REDACTION_SENTINEL);
-    if (SECRET_UNION_CI !== null) out = out.replace(SECRET_UNION_CI, REDACTION_SENTINEL);
-    return out;
+    if (out.length > MAX_SINGLE_TOKEN_RUN_CHARS) {
+      out = collapseOversizedTokenRuns(out);
+    }
+    return applyUnions(out);
   }
 
   /**
