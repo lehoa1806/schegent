@@ -30,6 +30,7 @@ import type { StateProjector } from '../ui/sidebar/state-projector';
 export interface PhaseLogTailService {
   start(req: StartPhaseLogTailRequest): Promise<StartPhaseLogTailResponse>;
   stop(req: StopPhaseLogTailRequest): Promise<StopPhaseLogTailResponse>;
+  releaseConsumer?(consumerId?: string): Promise<boolean>;
 }
 
 export interface PhaseLogTailWiring {
@@ -38,11 +39,14 @@ export interface PhaseLogTailWiring {
    * Closes the forward reference described below. Called once, after
    * `registerStage2Ui` returns; pushes before it are dropped, not queued.
    */
-  bindDashboardBridge(bridge: Pick<DashboardBridgeSink, 'postPhaseLogEntry'>): void;
+  bindDashboardBridge(bridge: DashboardBridgeSink): void;
   dispose(): void;
 }
 
-type DashboardBridgeSink = { postPhaseLogEntry(envelope: PhaseLogEntryPushMessage): void };
+type DashboardBridgeSink = {
+  postPhaseLogEntry(envelope: PhaseLogEntryPushMessage): void;
+  setOnPanelDispose?(onPanelDispose: (() => void) | undefined): void;
+};
 
 /**
  * Feature 020 — phase-log tail wiring (T049).
@@ -231,10 +235,15 @@ export function createPhaseLogTailWiring(input: {
       stop: async (
         req: StopPhaseLogTailRequest
       ): Promise<StopPhaseLogTailResponse> =>
-        phaseLogTailRegistry.stop(req.sessionId, 'webview-stop')
+        phaseLogTailRegistry.stop(req.sessionId, 'webview-stop'),
+      releaseConsumer: async (consumerId = 'dashboard'): Promise<boolean> =>
+        phaseLogTailRegistry.releaseConsumer(consumerId, 'webview-dispose')
     },
     bindDashboardBridge: (bridge) => {
       dashboardBridgeRef = bridge;
+      bridge.setOnPanelDispose?.(() => {
+        void phaseLogTailRegistry.releaseConsumer('dashboard', 'webview-dispose');
+      });
     },
     dispose: () => {
       taskLeaveProjectorSub.dispose();

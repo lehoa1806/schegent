@@ -15,6 +15,7 @@ export interface DashboardOpenOptions {
   readonly projector: ProjectorHandle;
   readonly dispatch: InboundDispatch;
   readonly logger: SanitizedLogger;
+  readonly onDispose?: () => void;
 }
 
 export class DashboardPanel {
@@ -25,12 +26,16 @@ export class DashboardPanel {
   private readonly panel: vscode.WebviewPanel;
   private readonly logger: SanitizedLogger;
   private readonly dispatch: InboundDispatch;
+  private onDispose?: () => void;
   private projectorSub: Disposable | null = null;
   private latestSnapshot: WorkflowSnapshot | null = null;
   private disposed = false;
 
   public static open(opts: DashboardOpenOptions): DashboardPanel {
     if (DashboardPanel.currentPanel && !DashboardPanel.currentPanel.disposed) {
+      if (opts.onDispose) {
+        DashboardPanel.currentPanel.onDispose = opts.onDispose;
+      }
       DashboardPanel.currentPanel.panel.reveal();
       return DashboardPanel.currentPanel;
     }
@@ -71,6 +76,7 @@ export class DashboardPanel {
     this.panel = panel;
     this.logger = opts.logger;
     this.dispatch = opts.dispatch;
+    this.onDispose = opts.onDispose;
 
     panel.webview.html = renderDashboardHtml({
       webview: panel.webview,
@@ -141,13 +147,14 @@ export class DashboardPanel {
   }
 
   /**
-   * Feature 020 — push a phase-log tail entry to the dashboard webview.
-   * The registry owns sanitization + truncation; the panel only relays.
-   * No-op when the panel is disposed (the tail registry tears down on
-   * webview-dispose so this is a safety net for late posts).
+   * Feature 020 / FR-R5-F10 — push a phase-log tail entry to the dashboard
+   * webview. The registry owns sanitization + truncation; the panel only relays
+   * while visible and not disposed. Closing the panel triggers `onDispose`,
+   * which releases any dashboard-owned tail session with `webview-dispose`.
    */
   public postPhaseLogEntry(envelope: PhaseLogEntryPushMessage): void {
     if (this.disposed) return;
+    if (!this.panel.visible) return;
     void this.panel.webview.postMessage(envelope).then(
       undefined,
       (err: Error) =>
@@ -164,6 +171,13 @@ export class DashboardPanel {
     this.projectorSub = null;
     if (DashboardPanel.currentPanel === this) {
       DashboardPanel.currentPanel = null;
+    }
+    const onDispose = this.onDispose;
+    this.onDispose = undefined;
+    try {
+      onDispose?.();
+    } catch {
+      /* disposal callbacks must not block panel teardown */
     }
     if (!opts.skipPanelDispose) {
       try {
