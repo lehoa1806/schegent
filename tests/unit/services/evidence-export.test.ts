@@ -314,4 +314,59 @@ describe('FR-R4-F04 T16 — owner-only outputs and the shared-audit statement', 
     await exportRunEvidence(workspace, RUN, destination);
     expect(await verifyExport(destination)).toMatchObject({ ok: true, unlisted: [], missing: [], altered: [], chainBroken: false });
   });
+
+  it('rolls back partial export files and preserves pre-existing operator files when redaction or writing fails mid-export (FR-R5-F14, NS-08)', async () => {
+    const preExisting = path.join(destination, 'operator-notes.txt');
+    await fsp.writeFile(preExisting, 'keep me intact\n');
+
+    let calls = 0;
+    const throwingLogger = {
+      sanitize: (text: string): string => {
+        calls += 1;
+        if (calls >= 2) throw new RangeError('simulated sanitizer stack overflow on second artifact');
+        return text;
+      }
+    };
+
+    const result = await exportRunEvidence(workspace, RUN, destination, () => new Date(), throwingLogger);
+    expect(result).toEqual({
+      outcome: 'refused',
+      reason: 'write-failed',
+      detail: 'redaction-failed'
+    });
+    const remaining = await fsp.readdir(destination);
+    expect(remaining).toEqual(['operator-notes.txt']);
+    expect(await fsp.readFile(preExisting, 'utf8')).toBe('keep me intact\n');
+  });
+
+  it('restores a pre-existing target file and removes newly created subdirectories when a later artifact fails (FR-R5-F14)', async () => {
+    const priorAuditCopy = path.join(destination, '.schegent__audit.log');
+    await fsp.writeFile(priorAuditCopy, 'prior exported audit bytes\n');
+
+    let calls = 0;
+    const throwingLogger = {
+      sanitize: (text: string): string => {
+        calls += 1;
+        if (calls >= 2) throw new Error('second artifact failed after first was written');
+        return text;
+      }
+    };
+
+    const result = await exportRunEvidence(workspace, RUN, destination, () => new Date(), throwingLogger);
+    expect(result.outcome).toBe('refused');
+    expect(await fsp.readFile(priorAuditCopy, 'utf8')).toBe('prior exported audit bytes\n');
+    expect(await fsp.readdir(destination)).toEqual(['.schegent__audit.log']);
+
+    const nestedDest = path.join(destination, 'fresh-subdir', 'nested');
+    let nestedCalls = 0;
+    const nestedResult = await exportRunEvidence(workspace, RUN, nestedDest, () => new Date(), {
+      sanitize: (text: string): string => {
+        nestedCalls += 1;
+        if (nestedCalls >= 2) throw new Error('fail inside newly created directory');
+        return text;
+      }
+    });
+    expect(nestedResult.outcome).toBe('refused');
+    await expect(fsp.stat(path.join(destination, 'fresh-subdir'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 });

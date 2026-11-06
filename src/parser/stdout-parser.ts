@@ -95,9 +95,10 @@ export type IncompleteTurnCause = 'background-work-open' | 'no-contract-block';
 const OPEN_HEADING_REGEX = /^\s*(Open|Remaining)\s+(questions|clarifications):\s*$/i;
 const ISSUES_HEADING_REGEX =
   /^\s*(Remaining issues|Failed with \d+ errors?|Failing with \d+ issues?):?\s*$/i;
-const BULLET_REGEX = /^\s*(?:[-*]|\d+\.)\s+(.+?)\s*$/;
-const TAGGED_BULLET_REGEX =
-  /^\s*(?:[-*]|\d+\.)\s+(?:\[([a-z][a-z0-9-]*)\]\s+)?(.+?)\s*$/;
+// FR-R5-F14 (NS-01) — linear-time bullet prefix and tag prefix matchers.
+// Disjoint adjacent character classes avoid quadratic backtracking across interior whitespace.
+const BULLET_PREFIX_REGEX = /^\s*(?:[-*]|\d+\.)\s+/;
+const TAG_PREFIX_REGEX = /^\[([a-z][a-z0-9-]*)\]\s+/;
 
 export function detectTerminationToken(stdout: string): boolean {
   const lines = stdout.split(/\r?\n/);
@@ -322,6 +323,21 @@ function detectTermination(
   return { matched: count > 0, ignored: 'none' };
 }
 
+function parseBulletLine(line: string): string | null {
+  const prefix = BULLET_PREFIX_REGEX.exec(line);
+  if (!prefix) return null;
+  const summary = line.slice(prefix[0].length).trimEnd();
+  return summary.length > 0 ? summary : null;
+}
+
+function parseTaggedBulletLine(line: string): { tag?: string; summary: string } | null {
+  const body = parseBulletLine(line);
+  if (body === null) return null;
+  const tagMatch = TAG_PREFIX_REGEX.exec(body);
+  if (!tagMatch) return { summary: body };
+  return { tag: tagMatch[1], summary: body.slice(tagMatch[0].length) };
+}
+
 export function extractOpenQuestions(stdout: string): string[] {
   return extractBulletsAfter(stdout, OPEN_HEADING_REGEX);
 }
@@ -336,14 +352,12 @@ export function extractRemainingIssues(
   for (let i = headingIndex + 1; i < lines.length; i++) {
     const line = lines[i];
     if (line.trim() === '') break;
-    const match = TAGGED_BULLET_REGEX.exec(line);
-    if (!match) {
-      if (BULLET_REGEX.test(line)) continue;
+    const parsed = parseTaggedBulletLine(line);
+    if (!parsed) {
+      if (BULLET_PREFIX_REGEX.test(line)) continue;
       break;
     }
-    const tag = match[1];
-    const summary = match[2];
-    items.push(tag ? { tag, summary } : { summary });
+    items.push(parsed);
   }
   return items;
 }
@@ -356,9 +370,9 @@ function extractBulletsAfter(stdout: string, headingRegex: RegExp): string[] {
   for (let i = headingIndex + 1; i < lines.length; i++) {
     const line = lines[i];
     if (line.trim() === '') break;
-    const match = BULLET_REGEX.exec(line);
-    if (!match) break;
-    items.push(match[1]);
+    const summary = parseBulletLine(line);
+    if (summary === null) break;
+    items.push(summary);
   }
   return items;
 }

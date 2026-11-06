@@ -370,4 +370,40 @@ describe('FR-R4-F04 T8 — the Run export records one outcome', () => {
     expect(warnings.join(' ')).not.toContain('disk full');
     expect(existsSync(join(destination, 'manifest.json')), 'the output is not deleted').toBe(true);
   });
+
+  it('refuses cleanly, rolls back partial files, records write-failed, and warns when sanitization fails mid-export (FR-R5-F14, NU-10)', async () => {
+    seedEvidence();
+    writeFileSync(join(workspaceRoot, '.schegent', 'audit.log'), '{"eventType":"run-started"}\n');
+    let sanitizeCount = 0;
+    const result = await runExportRunEvidenceCommand(
+      deps({
+        logger: {
+          info: () => {},
+          warn: () => {},
+          sanitize: (value: string) => {
+            sanitizeCount += 1;
+            if (sanitizeCount >= 2) throw new RangeError('sanitizer failure');
+            return value;
+          }
+        } as unknown as SanitizedLogger
+      })
+    );
+
+    expect(result).toEqual({
+      outcome: 'refused',
+      reason: 'write-failed',
+      detail: 'redaction-failed'
+    });
+    expect(exportRows).toHaveLength(1);
+    expect(exportRows[0]).toMatchObject({
+      kind: 'run-evidence',
+      outcome: 'refused',
+      included: 0,
+      omitted: 0,
+      refusal: 'write-failed'
+    });
+    expect(warnings.join(' ')).toContain(EXPORT_TEXT.refusal['write-failed']);
+    expect(existsSync(join(destination, '.schegent__audit.log'))).toBe(false);
+    expect(existsSync(join(destination, 'manifest.json'))).toBe(false);
+  });
 });
