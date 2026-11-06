@@ -824,3 +824,122 @@ describe('a phase override carries the operator pseudonym (FR-R4-F04, FR-026)', 
     expect(stampedOverride(updateRun, run, 'gamma')?.actor).toBe(UNKNOWN_OPERATOR);
   });
 });
+
+describe('FR-R5-F15 — PhaseControlService + SpendBoundWatcher resume lifecycle wiring', () => {
+  it('clears the spend-pause latch on successful resumeActivePhase so the next phase-end evaluates against a raised bound, and keeps the latch on refused resume', async () => {
+    const { createSpendBoundWatcher } = await import('../../../src/services/spend-bound-watcher.js');
+    const { SanitizedLogger } = await import('../../../src/lib/logger.js');
+
+    let limitUsd = 1.0;
+    let currentRun = makeRun({
+      id: 'run-spend-1',
+      status: 'running',
+      currentPhase: 'alpha',
+      pipeline: {
+        id: 'ab-flow',
+        name: 'A then B',
+        phases: [
+          { id: 'alpha', name: 'Alpha', instruction: 'a' },
+          { id: 'beta', name: 'Beta', instruction: 'b' }
+        ]
+      } as unknown as WorkflowRun['pipeline']
+    });
+    const pauseNotices: string[] = [];
+
+    const watcher = createSpendBoundWatcher({
+      config: () => ({ limitUsd, limitTokens: null }),
+      findRunById: (runId) => (runId === currentRun.id ? { queueId: QUEUE_ID, run: currentRun } : null),
+      pause: async (_queueId, pausedRun) => {
+        currentRun = { ...pausedRun, status: 'paused' };
+      },
+      notify: (msg) => pauseNotices.push(msg),
+      logger: new SanitizedLogger(),
+      now: () => 1_700_000_000_000
+    });
+
+    const service = new PhaseControlService({
+      store: {
+        getRun: () => currentRun,
+        updateRun: async (
+          _queueId: string,
+          update: { patch: (current: WorkflowRun) => Partial<WorkflowRun> }
+        ): Promise<WorkflowRun> => {
+          currentRun = { ...currentRun, ...update.patch(currentRun) };
+          return currentRun;
+        },
+        getQueue: () => ({ queueLifecycle: 'active', pausedReason: null }),
+        setWatchdog: async () => {},
+        runCommitClaim: () => unfencedCommit('test-fixture')
+      },
+      queue: {
+        cascadedPause: async () => {},
+        cascadedResume: async () => {},
+        setQueuePausedState: async () => {}
+      },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      retryCoordinator: { cancelPendingTimer: vi.fn() },
+      isDriving: () => false,
+      noteActivePhaseOverrideAbort: vi.fn(),
+      armIsContinue: vi.fn(),
+      cancelActive: vi.fn(),
+      resumeExisting: async () => true,
+      onRunResumed: (runId) => watcher.onRunResumed(runId),
+      auditor: {
+        appendPhaseControl: async () => {},
+        emitTaskPaused: async () => {},
+        emitPhaseJumped: async () => {},
+        appendBreakpoint: async () => {}
+      }
+    } as unknown as ConstructorParameters<typeof PhaseControlService>[0]);
+
+    // 1. First phase-end crosses $1.00 ($1.50 spent) and pauses the Run.
+    watcher.onAuditEntry({
+      id: 'row-1',
+      timestamp: '2026-11-06T00:00:00.000Z',
+      runId: 'run-spend-1',
+      phase: 'alpha',
+      iteration: 1,
+      eventType: 'phase-end',
+      payload: { totalCostUsd: 1.5 },
+      outcome: 'success',
+      schemaVersion: 1
+    } as never);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(currentRun.status).toBe('paused');
+    expect(currentRun.manualPauseCause).toBe('spend-bound-reached');
+    expect(pauseNotices).toHaveLength(1);
+
+    // 2. Operator raises bound to $2.50 and resumes via PhaseControlService.resumeActivePhase.
+    limitUsd = 2.5;
+    const resumed = await service.resumeActivePhase(QUEUE_ID);
+    expect(resumed).toEqual({ ok: true });
+    expect(currentRun.status).toBe('running');
+    expect(currentRun.manualPauseAt).toBeNull();
+    expect(currentRun.manualPauseCause).toBeNull();
+
+    // 3. A second resumeActivePhase while already running is refused and does not corrupt state.
+    const refusedResume = await service.resumeActivePhase(QUEUE_ID);
+    expect(refusedResume.ok).toBe(false);
+
+    // 4. Next phase-end ($1.20 -> cumulative $2.70 >= $2.50) pauses the Run a second time.
+    watcher.onAuditEntry({
+      id: 'row-2',
+      timestamp: '2026-11-06T00:01:00.000Z',
+      runId: 'run-spend-1',
+      phase: 'beta',
+      iteration: 1,
+      eventType: 'phase-end',
+      payload: { totalCostUsd: 1.2 },
+      outcome: 'success',
+      schemaVersion: 1
+    } as never);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(currentRun.status).toBe('paused');
+    expect(currentRun.manualPauseCause).toBe('spend-bound-reached');
+    expect(pauseNotices).toHaveLength(2);
+    expect(pauseNotices[1]).toContain('$2.70');
+    expect(pauseNotices[1]).toContain('$2.50');
+  });
+});
