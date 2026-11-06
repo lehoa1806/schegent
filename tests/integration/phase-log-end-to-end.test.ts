@@ -104,12 +104,18 @@ function makeService(h: Harness, isInFlight: boolean) {
     sanitize: (s) => h.logger.sanitize(s),
     readVerboseSetting: () => true,
     getSnapshot: () => ({
-      queue: {
-        inFlight: isInFlight ? { id: RUN_ID, currentPhase: PHASE_ID } : null,
-        pending: [],
-        recent: isInFlight ? [] : [{ id: RUN_ID }],
-        queues: [{ id: QUEUE_ID }]
-      },
+      queues: [
+        {
+          queueId: QUEUE_ID,
+          tasks: [
+            {
+              id: RUN_ID,
+              status: isInFlight ? 'in-flight' : 'completed',
+              currentPhase: isInFlight ? PHASE_ID : null
+            }
+          ]
+        }
+      ],
       history: [],
       availablePipelines: [{ id: PIPELINE_ID }],
       availablePhases: [{ id: PHASE_ID }]
@@ -134,12 +140,18 @@ function makeServiceWithSplitIds(h: Harness, isInFlight: boolean) {
     sanitize: (s) => h.logger.sanitize(s),
     readVerboseSetting: () => true,
     getSnapshot: () => ({
-      queue: {
-        inFlight: isInFlight ? { id: TASK_ID, currentPhase: PHASE_ID } : null,
-        pending: [],
-        recent: isInFlight ? [] : [{ id: TASK_ID }],
-        queues: [{ id: QUEUE_ID }]
-      },
+      queues: [
+        {
+          queueId: QUEUE_ID,
+          tasks: [
+            {
+              id: TASK_ID,
+              status: isInFlight ? 'in-flight' : 'completed',
+              currentPhase: isInFlight ? PHASE_ID : null
+            }
+          ]
+        }
+      ],
       history: [],
       availablePipelines: [{ id: PIPELINE_ID }],
       availablePhases: [{ id: PHASE_ID }]

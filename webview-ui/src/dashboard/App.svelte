@@ -20,7 +20,6 @@
   // `'operations' | 'settings'` shape; the inner two-tier `Operations |
   // Pipeline Builder` pair under `Dashboard.svelte` is gone (T033).
   let route = $state<DashboardRoute>(DEFAULT_DASHBOARD_ROUTE);
-  let selectedWorkflowId = $state<string | null>(null);
 
   // Feature 105 (T588h) — the loader is created here and handed down because both
   // sides of the split need the same cache: the nav warms it on hover, the outlet
@@ -60,10 +59,6 @@
     openBackendSettings: () => {
       navigate('settings');
       void scrollToBackendHealth();
-    },
-    openWorkflowLaunch: (workflowId: string) => {
-      selectedWorkflowId = workflowId;
-      navigate('runs');
     }
   };
   setContext(DASHBOARD_NAVIGATION, navigation);
@@ -98,8 +93,6 @@
             <svg class="nav-icon" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               {#if r === 'operations'}
                 <path d="m12 3 8 4-8 4-8-4 8-4Z"></path><path d="m4 11 8 4 8-4"></path><path d="m4 15 8 4 8-4"></path>
-              {:else if r === 'runs'}
-                <path d="M5 3v18"></path><path d="M19 3v18"></path><path d="M5 8h14"></path><path d="M5 16h14"></path>
               {:else if r === 'history'}
                 <path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path><path d="M12 7v5l3 2"></path>
               {:else if r === 'metrics'}
@@ -122,7 +115,7 @@
       </div>
     </header>
     <div id="dashboard-content" class="dashboard-route" data-testid="dashboard-route">
-      <RouteOutlet {route} {snapshot} {loader} {selectedWorkflowId} />
+      <RouteOutlet {route} {snapshot} {loader} />
     </div>
   {:else}
     <main class="dashboard-loading" data-testid="dashboard-empty-state" role="status">

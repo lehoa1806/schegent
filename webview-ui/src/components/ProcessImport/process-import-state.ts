@@ -245,6 +245,29 @@ function dependencyLabel(dependency: BlockedDependency): string {
 }
 
 /**
+ * The status a skipped Phase or Workflow row says the catalog already holds it
+ * at. Derived from the row rather than imported, so the host contract stays the
+ * one place the vocabulary is written.
+ */
+type PresentRowStatus = Extract<ImportPlanRow, { presentRowStatus: string }>['presentRowStatus'];
+
+/**
+ * The indefinite article each presence status takes in the Skip reason
+ * (BUG-001, FR-008). One fixed article read "a effective row" and "a invalid
+ * row" in the preview: the sentence names a status, and the article belongs to
+ * the word that follows it, not to the sentence.
+ *
+ * A total lookup, for the reason `RESOURCE_KIND_LABELS` is one: keyed on the
+ * status union, so a status added to the contract fails to typecheck here
+ * instead of reading wrong in front of the operator.
+ */
+const PRESENT_ROW_STATUS_ARTICLES: Readonly<Record<PresentRowStatus, 'a' | 'an'>> = {
+  draft: 'a',
+  effective: 'an',
+  invalid: 'an'
+};
+
+/**
  * FR-054 — `skip`, `blocked`, and `invalid` must state the reason without the
  * operator opening the file. An `import` row has no reason to state beyond the
  * advisory that it declares a retry condition, whose capability gate is
@@ -284,8 +307,9 @@ export function reasonLines(row: ImportPlanRow): readonly string[] {
     // the skip: a stored row exists, and at what status. The presence PROPERTY is
     // unchanged — a scan of stored rows at every status, never the effective
     // catalog — so an `invalid` row still skips and still says so.
+    const article = PRESENT_ROW_STATUS_ARTICLES[row.presentRowStatus];
     return [
-      `Already present in the catalog as a ${row.presentRowStatus} row, so this import would not change it.`
+      `Already present in the catalog as ${article} ${row.presentRowStatus} row, so this import would not change it.`
     ];
   }
   if (row.outcome === 'blocked') {

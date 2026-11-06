@@ -144,7 +144,7 @@ function targetsOfEarlierAttempts(run: ConnectedWorkflowRun): ReadonlySet<string
   const told = Object.values(run.invocations ?? {}).flatMap((frame) =>
     Object.values(frame.attemptsByNodeId)
       .flat()
-      .filter((attempt) => attempt.nodeKind === 'phase')
+      .filter((attempt) => attempt.nodeKind === 'phase' && attempt.queueItemId !== undefined)
       .flatMap((attempt) => {
         const overrides = attempt.inputEnvelope.outputTargetOverrides;
         const targets = attemptTargets(run, frame, attempt.nodeId, overrides);

@@ -121,7 +121,7 @@ Use these interfaces for the normal operator path:
 |---|---|
 | VS Code **Settings** | Backend choice, executable paths, and environment policy. |
 | Dashboard **Builder** | Import, inspect, and publish process definitions. |
-| Dashboard **Runs** | Select a Pipeline and compose a Task. |
+| Dashboard **Queues → Add work** | Select a published Workflow, supply its inputs, and add a Task to the selected Queue. |
 | Dashboard **Queues** and Run detail | Start, pause, monitor, retry, or inspect work. |
 | **History**, **Audit Log**, and **System Log** | Evidence and diagnosis when needed. |
 
@@ -140,7 +140,7 @@ YAML package, or you must author and publish at least one Phase and Pipeline.
 2. Select **Import…** and choose the supplied YAML document.
 3. Review every preflight row and any blocked dependency.
 4. Select **Confirm import** only when the planned definitions are expected.
-5. Verify that the Pipeline is Active and appears in **Runs**.
+5. Verify that the Pipeline is Active and appears in **Queues → Add work**.
 
 <!-- Source: ../../src/config/pipeline-config.ts -->
 <!-- Source: ../operations/process-yaml.md -->
@@ -157,17 +157,16 @@ prefer a process package supplied and reviewed by your team.
 
 ## 4. Queue and follow a Task
 
-1. Open **Runs** and keep **Pipelines** selected.
-2. Select an Active Pipeline and then **Trigger**.
+1. Open **Queues**, select a Queue, and select **Add work**.
+2. Select a published Workflow and then **Trigger**.
 3. Enter the requested inputs and **Instructions**.
-4. Review the process preview and declared side effects.
-5. Select **Run Pipeline** and complete any Git side-effect approval.
-6. When the form reports `Queued as <request-id>.`, open **Queues**.
-7. Open the Queue card, select the Task, and follow its Run detail.
-8. Inspect **Phase log**, **Run outputs**, and **Context** until the Run reaches a
-   terminal state.
+4. Review the effective execution policy and declared side effects.
+5. Select **Add task** and complete any required side-effect approval.
+6. Select **Start Queue** when ready. Adding a task to an idle Queue leaves it waiting for this action.
+7. Select the task row and follow its execution detail.
+8. Inspect **Phase log**, **Run outputs**, and **Context** until execution finishes.
 
-`Queued as …` confirms admission only; it does not mean that execution
+Admission confirms that the task was added; it does not mean that execution
 completed. A process's declared side effects support consent and recovery, but
 they are not an operating-system sandbox. Pausing a Queue prevents future
 promotion; it does not stop a subprocess that is already executing.
@@ -181,7 +180,7 @@ The data flow you are connecting is intentionally local:
 
 ```text
 process YAML -> Builder import -> active Phase/Pipeline catalog
-operator inputs -> Runs -> host validation -> Queue -> backend CLI
+operator inputs -> Queue Add work -> host validation -> Queue -> backend CLI
 backend result -> Run detail + History + Audit + workspace-local evidence
 ```
 

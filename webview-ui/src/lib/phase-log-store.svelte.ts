@@ -182,6 +182,16 @@ const IDLE_FRAGMENT = Object.freeze({
   errorReason: null as string | null
 });
 
+/**
+ * BUG-002 (FR-028a) — what the pane says when the host refuses a selection as
+ * `unknown-tuple`. Neither of `readPhaseLog`'s ack paths gives that reason
+ * refusal text, since it is the phase-log module's own reason and not a gate
+ * refusal, so without this sentence the read fallback showed the bare code. The
+ * audit row keeps the code (FR-029).
+ */
+const UNKNOWN_TUPLE_TEXT =
+  'This selection does not match a Task, pipeline or phase the host knows. Choose again.';
+
 // Feature 067 — module-level snapshot of the last observed in-flight
 // identity tuple. Used by `applyInFlightIdentityChange` to short-circuit
 // on identity-stable snapshots (heartbeat updates that change only
@@ -416,7 +426,10 @@ export function createPhaseLogStore(
         skippedLines: 0,
         truncatedCount: 0,
         // FR-R4-F05 (O1, O7) — a refusal is shown as its sentence, not as `internal-error`.
-        errorReason: result.refusalText ?? result.reason
+        // BUG-002 (FR-028a) — and `unknown-tuple`, which has no refusal text, as its own.
+        errorReason:
+          result.refusalText ??
+          (result.reason === 'unknown-tuple' ? UNKNOWN_TUPLE_TEXT : result.reason)
       });
     }
   }

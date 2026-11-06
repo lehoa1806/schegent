@@ -9,6 +9,43 @@ This file is maintained by hand: neither the version field nor any script can de
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### An older build can preview a current Workflow example as Invalid (FR-R5-F07, 2026-11-06)
+
+A build older than the checkout reads a current example with its own, older rules. The Process Import preview
+then marks a Workflow row Invalid, with a list of node-field defects, for a file that the current build accepts
+with none. This records what the older build does, what to do about it, and the rule the format follows from now on.
+
+- **A build that predates the unified node keys lists field defects on a valid Workflow.** `examples/` is the
+  checkout's copy of the process content, and an installed build is a separate artifact. The node keys `kind`,
+  `phaseId` and `workflowId` were added under `schegent/v1` on 2026-11-02, so an older reader finds them unknown.
+  Measured with that reader on `speckit-new-feature.workflow.yaml`: 54 field defects (`unknown-field` on `kind`
+  and `phaseId`, a `pipelineId` pattern message once per node, and endpoint and start-node lines). The preview
+  lists the first twenty and ends "and 34 more not shown"; the twenty shown are all node lines, so the endpoint
+  and start-node lines are not shown at all. The 11 Phase rows in the same document classify as valid, and the
+  current build reads the whole file with no defects.
+- **Install the matching build, then reload the window.** An open window keeps running the build it started
+  with until it is reloaded, so a reinstall alone does not change what that window reads. Run Developer: Reload
+  Window before importing. [The examples README](../../examples/README.md) now says this.
+- **The Skip reason reads correctly.** A row already in the catalog was reported "as a effective row". The
+  article now follows the status: "as a draft row", "as an effective row", "as an invalid row". Which rows are
+  skipped is unchanged.
+
+Compatibility:
+
+- Format version: unchanged. `apiVersion` is `schegent/v1`.
+- Until the first tagged release that contains the Process YAML exchange: the keys a document kind admits may
+  change in place under `schegent/v1`. An older build then lists field defects (`unknown-field`) on a newer
+  document, as above, instead of refusing it once.
+- From that release on: adding, removing or renaming an admitted key of a document kind needs a new marker,
+  `schegent/v2`. An older build then refuses the whole document in one line (`unsupported-version`: "Unsupported
+  apiVersion 'schegent/v2'; this build reads schegent/v1"), and that release's notes carry a `Compatibility:`
+  entry that says how an existing document is carried over.
+  [The grammar reference](../reference/workflow-yaml-grammar.md) states the same rule.
+- Tagged builds: none contains the format. The only tag, `v0.1.0`, predates the process-YAML exchange, so no
+  tagged build reads it, with either set of node keys.
+- The examples: unchanged by this entry, and read with no defects under this checkout.
+- Schema versions: none changes with this entry, which changes one webview sentence and documentation.
+
 ### Completion tokens without an audit block no longer advance a Phase (FR-R4-F12, 2026-11-01)
 
 A completion token now counts only when it follows a complete audit block, as the prompt asks. A

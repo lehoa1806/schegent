@@ -57,6 +57,7 @@ import {
   type FeatureRequestStatus,
   type QueueState,
   type TerminalRequestStatus,
+  type WorkflowOccurrenceIdentity,
   validateDescription
 } from './feature-request';
 import { terminalCapture, withoutTerminalCapture } from './terminal-capture';
@@ -473,9 +474,28 @@ export class QueueManager {
       // Pipeline already frozen at validation. The manager carries the plan
       // through verbatim; it never inspects or re-expands it.
       runPlan?: FrozenRunPlan;
+      // FR-R5-F08 — occurrence identity for workflow-dispatched Phase attempts.
+      workflowOccurrence?: WorkflowOccurrenceIdentity;
     } = {}
   ): Promise<FeatureRequest> {
     const validated = validateDescription(description);
+    const targetQueueId = options.queueId ?? this.store.getDefaultQueueId();
+    if (options.workflowOccurrence !== undefined) {
+      const occ = options.workflowOccurrence;
+      const existing = this.store
+        .getQueue(targetQueueId)
+        .requests.find(
+          (r) =>
+            r.status !== 'canceled' &&
+            r.workflowOccurrence !== undefined &&
+            r.workflowOccurrence.rootRunId === occ.rootRunId &&
+            r.workflowOccurrence.invocationId === occ.invocationId &&
+            r.workflowOccurrence.attemptId === occ.attemptId
+        );
+      if (existing !== undefined) {
+        return existing;
+      }
+    }
     const now = Date.now();
     const request: FeatureRequest = {
       id: randomUUID(),
@@ -486,7 +506,7 @@ export class QueueManager {
       updatedAt: now,
       completedAt: null,
       status: 'pending',
-      queueId: options.queueId ?? this.store.getDefaultQueueId(),
+      queueId: targetQueueId,
       position: options.position ?? 0,
       pauseCause: null,
       runId: null,
@@ -497,7 +517,8 @@ export class QueueManager {
       ...(options.rerun ? { rerun: options.rerun } : {}),
       // Written only when supplied, so an item enqueued by any pre-existing
       // path serializes exactly as it did before this feature (T034).
-      ...(options.runPlan ? { runPlan: options.runPlan } : {})
+      ...(options.runPlan ? { runPlan: options.runPlan } : {}),
+      ...(options.workflowOccurrence ? { workflowOccurrence: options.workflowOccurrence } : {})
     };
     const inserted = await this.store.insertPendingRequest(request, {
       queueId: options.queueId,

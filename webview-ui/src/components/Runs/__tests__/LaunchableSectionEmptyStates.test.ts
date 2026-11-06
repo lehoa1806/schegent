@@ -26,12 +26,12 @@ import {
   NONE_ACTIVE_GUIDANCE
 } from '../../../../../src/contracts/empty-catalog-guidance';
 import LaunchableSection from '../LaunchableSection.svelte';
-import RunsSurface from '../../RunsSurface.svelte';
+import QueueTaskComposer from '../../QueueTaskComposer.svelte';
 import { ANALYSIS, buildSnapshot, entries, projection } from './launch-fixture';
 import type { LaunchSection } from '../../../lib/snapshot-types';
 
 const SECTION_SOURCE = resolve(__dirname, '../LaunchableSection.svelte');
-const SURFACE_SOURCE = resolve(__dirname, '../../RunsSurface.svelte');
+const SURFACE_SOURCE = resolve(__dirname, '../../QueueTaskComposer.svelte');
 
 afterEach(() => cleanup());
 
@@ -133,9 +133,9 @@ describe('LaunchableSection — loading is neither empty arm (FR-006)', () => {
 // FR-031 — the two sections conclude independently
 // ---------------------------------------------------------------------------
 
-describe('RunsSurface — one section may list while the other explains (FR-031)', () => {
+describe('QueueTaskComposer — one section may list while the other explains (FR-031)', () => {
   it('lists Pipelines while Workflows shows the publish guidance', () => {
-    const { container } = render(RunsSurface, {
+    const { container } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({
         launchables: projection(entries(ANALYSIS), { state: 'none-active' })
       })
@@ -147,7 +147,7 @@ describe('RunsSurface — one section may list while the other explains (FR-031)
   });
 
   it('lists Workflows while omitting empty Pipelines', () => {
-    const { container } = render(RunsSurface, {
+    const { container } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({
         launchables: projection({ state: 'no-definitions' }, entries({ ...ANALYSIS, kind: 'workflow' }))
       })
@@ -159,7 +159,7 @@ describe('RunsSurface — one section may list while the other explains (FR-031)
   });
 
   it('shows Workflows empty reason while omitting empty Pipelines', () => {
-    const { container } = render(RunsSurface, {
+    const { container } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({
         launchables: projection({ state: 'no-definitions' }, { state: 'none-active' })
       })
@@ -174,13 +174,13 @@ describe('RunsSurface — one section may list while the other explains (FR-031)
 // FR-032 — an untrusted workspace is told about trust, not about the catalog
 // ---------------------------------------------------------------------------
 
-describe('RunsSurface — an untrusted workspace gets the trust explanation (FR-032)', () => {
+describe('QueueTaskComposer — an untrusted workspace gets the trust explanation (FR-032)', () => {
   it('shows the trust explanation instead of either guidance', () => {
     // No catalog activates in an untrusted workspace, so "import a process
     // document" names an action that cannot succeed and "publish one" names a
     // surface that will refuse. Neither is the operator's next step; granting
     // trust is.
-    const { container } = render(RunsSurface, {
+    const { container } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({
         workspaceTrust: false,
         launchables: projection({ state: 'no-definitions' }, { state: 'no-definitions' })
@@ -193,7 +193,7 @@ describe('RunsSurface — an untrusted workspace gets the trust explanation (FR-
   });
 
   it('suppresses the sections rather than leaving them empty beneath the banner', () => {
-    const { container } = render(RunsSurface, {
+    const { container } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({
         workspaceTrust: false,
         launchables: projection({ state: 'none-active' }, { state: 'none-active' })
@@ -205,7 +205,7 @@ describe('RunsSurface — an untrusted workspace gets the trust explanation (FR-
   });
 
   it('leaves a trusted workspace alone', () => {
-    const { container } = render(RunsSurface, { snapshot: buildSnapshot({ workspaceTrust: true }) });
+    const { container } = render(QueueTaskComposer, { snapshot: buildSnapshot({ workspaceTrust: true }) });
 
     expect(testid(container, 'trust-banner-workspace-trust')).toBeNull();
     expect(testid(container, 'launch-section-pipeline')).not.toBeNull();
@@ -219,7 +219,7 @@ describe('RunsSurface — an untrusted workspace gets the trust explanation (FR-
     const snapshot = buildSnapshot();
     delete (snapshot as { workspaceTrust?: boolean }).workspaceTrust;
 
-    const { container } = render(RunsSurface, { snapshot });
+    const { container } = render(QueueTaskComposer, { snapshot });
 
     expect(testid(container, 'trust-banner-workspace-trust')).toBeNull();
     expect(testid(container, 'launch-section-pipeline')).not.toBeNull();

@@ -207,7 +207,7 @@
       <!-- FR-055 — the row names one run, not a start node. -->
       <p class="note" data-testid="history-rerun-workflow-notice" role="status">
         This run was one step inside the Workflow {target.workflowMemberOf}. Repeating it runs
-        that step alone; the Workflow is not restarted. Start the Workflow from Runs instead.
+        that step alone; the Workflow is not restarted. Add the Workflow as new work from its Queue instead.
       </p>
     {/if}
 

@@ -30,13 +30,13 @@ the process design. It covers only the necessary connections:
 VSIX + trusted workspace + authenticated backend CLI
                          |
 process YAML -> Builder -> active catalog
-operator input -> Runs -> Queue -> backend CLI
+operator input -> Queue Add work -> Queue -> backend CLI
 backend result -> Run detail + History + Audit
 ```
 
 Schegent has no hosted control plane, database, or HTTP API to configure. The
 normal operator interfaces are VS Code **Settings**, dashboard **Builder**,
-**Runs**, **Queues**, and Run detail. Configuration is conditional: the default
+**Queues**, Add work, and task detail. Configuration is conditional: the default
 Claude runner needs no Schegent setting when an authenticated `claude`
 executable is already on `PATH`; other backends, executable locations, or
 environment policies need their corresponding settings.

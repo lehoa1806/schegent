@@ -747,7 +747,7 @@ export class PhaseRunner {
       sessionReused: effectiveSessionReuse,
       ...(inputs.phaseDef?.model ? { modelId: inputs.phaseDef.model } : {}),
       ...(inputs.phaseDef?.effort ? { effortId: inputs.phaseDef.effort } : {}),
-      diagnosticsEnabled: verboseDiagnostics !== undefined
+      diagnosticsEnabled: raw.diagnosticsCaptured === true
     }));
     await this.rawTranscript?.appendEnd({
       runId: inputs.runId,

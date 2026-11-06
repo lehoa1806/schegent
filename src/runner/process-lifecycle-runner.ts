@@ -3,6 +3,7 @@ import type {
   MonitorSidecarEvent,
   MonitorSidecarHook,
   TreeAttribution, TreeTeardownOutcome, RunnerLabel } from '../contracts/backend-runner';
+import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import type { SanitizedLogger } from '../lib/logger';
 import { waitForChildCompletion } from './child-completion';
 import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
@@ -113,6 +114,16 @@ export class ProcessLifecycleRunner {
   }): Promise<RawInvocationOutput> {
     const start = Date.now();
     const { request, outputSink } = input;
+    // Feature 020 BUG-002 (FR-002a) — the Phase Log reads an iteration's
+    // `stream.jsonl`, and only the claude adapter wrote one. With a target, the
+    // CLI's stdout is teed into it, unaltered, through the writer that adapter
+    // uses. Built per invocation from the request, never held on this runner.
+    const tee = request.verboseDiagnostics
+      ? { target: request.verboseDiagnostics, writer: new VerboseDiagnosticWriter(this.logger) }
+      : null;
+    if (tee) await tee.writer.prepare(tee.target);
+    // After the last await, so a `close()` that lands while `prepare()` runs
+    // still refuses this spawn (feature-228 security review, S1).
     if (this.closed) throw new SpawnRefusedAfterCloseError(this.label);
     const child = this.spawnFn(request.cliPath, input.args, {
       stdio: ['pipe', 'pipe', 'pipe'], shell: false, cwd: request.cwd, env: input.env,
@@ -184,8 +195,16 @@ export class ProcessLifecycleRunner {
           ? setTimeout(() => { deadlineExceeded = true; this.terminate(child, attribution); }, deadlineBoundMs)
           : null;
       const backpressure = new OutputSinkBackpressure(outputSink, () => clearTimeout(timer), reset);
+      // FR-002a — chained, never side by side: each append opens and closes the
+      // file, so two in flight could land out of order. A failed link does not
+      // stop the next one; the writer folds every failure into its warnings.
+      let teeChain: Promise<void> = Promise.resolve();
       child.stdout?.on('data', (chunk: string) => {
         stdoutBuffer.append(chunk); backpressure.write('stdout', child.stdout!, chunk);
+        if (tee) {
+          const append = (): Promise<void> => tee.writer.teeStream(tee.target, chunk);
+          teeChain = teeChain.then(append, append);
+        }
         if (!backpressure.isBlocked) reset();
         this.emit({ kind: 'stdout-chunk', runId: request.runId ?? null, invocationId, chunk });
       });
@@ -237,6 +256,16 @@ export class ProcessLifecycleRunner {
       if (stdinDeliveryFailed) {
         this.logger.warn(`${this.label}: prompt delivery failed (${delivery.errorCode ?? 'unknown'})`, { ...attribution });
       }
+      // FR-002a — every append settles before the result reports the writer's
+      // warnings. Here, once the timers are disarmed and the abort listener is
+      // detached, so this wait can neither time out nor cancel a finished child.
+      if (tee) await Promise.allSettled([teeChain]);
+      // Feature 020 BUG-002 (FR-002a) — what `diagnosticsEnabled` records.
+      const diagnosticsCaptured = tee !== null && tee.writer.result().streamCaptured;
+      const diagnosticWarnings = [
+        ...(tee ? tee.writer.result().warnings : []),
+        ...(stdinDeliveryFailed ? ['stdin-delivery-failed'] : [])
+      ];
       if (completion.signal && completion.exitCode === null) killed = true;
       if (completion.stdioCloseTimedOut) this.logger.warn(`${this.label}: stdio close grace expired`, { ...attribution });
       const signal = completion.signal ?? (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
@@ -252,14 +281,13 @@ export class ProcessLifecycleRunner {
         // FR-R3-047 — see the note in claude-cli.ts: the allowlisted code rides
         // `diagnosticWarnings` so a truncated prompt is recorded even on a
         // non-clean invocation, where the phase-runner arm deliberately does not
-        // fire. Without it the cause would live only in the transient log.
+        // fire. Without it the cause would live only in the transient log. The
+        // tee's warnings come first, in the order the claude adapter uses.
         ...(stdinDeliveryFailed
-          ? {
-              stdinDeliveryFailed: true,
-              stdinErrorCode: delivery.errorCode,
-              diagnosticWarnings: ['stdin-delivery-failed']
-            }
-          : {}) };
+          ? { stdinDeliveryFailed: true, stdinErrorCode: delivery.errorCode }
+          : {}),
+        ...(diagnosticWarnings.length > 0 ? { diagnosticWarnings } : {}),
+        ...(diagnosticsCaptured ? { diagnosticsCaptured: true } : {}) };
     } finally {
       this.active.delete(invocationId);
     }

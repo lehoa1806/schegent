@@ -9,7 +9,7 @@
 // `tests/lint/svelte-surface-reachability.test.ts` names in
 // `MUST_NOT_BE_ALLOWLISTED` for exactly that reason.
 //
-// The component mounted here is `RunsSurface.svelte`, not `RunLauncher.svelte`.
+// The component mounted here is `QueueTaskComposer.svelte`, not `RunLauncher.svelte`.
 // The task names the launcher, and this file sits in the launcher's own
 // `__tests__` directory because that is where the task puts it — but
 // `RunLauncher` takes a required `pipeline: PipelineDefinition` prop, so on an
@@ -44,7 +44,7 @@ vi.mock('../../../lib/run-launcher-ipc', () => ({
 }));
 
 // Late import so the surface binds to the stubs above.
-import RunsSurface from '../../RunsSurface.svelte';
+import QueueTaskComposer from '../../QueueTaskComposer.svelte';
 
 afterEach(() => cleanup());
 
@@ -58,15 +58,15 @@ function emptyWorkspace(): WorkflowSnapshot {
 
 describe('Feature 098 (T053) — the launch surface stays mounted on an empty catalog', () => {
   it('keeps the launch zone rendered with nothing imported', () => {
-    const { getByTestId } = render(RunsSurface, { snapshot: emptyWorkspace() });
+    const { getByTestId } = render(QueueTaskComposer, { snapshot: emptyWorkspace() });
 
     // The zone itself, not merely the page around it: FR-030a forbids hiding,
     // removing, or making the launch surface unreachable.
-    expect(getByTestId('runs-surface-launch-zone')).toBeTruthy();
+    expect(getByTestId('queue-task-composer-launch-zone')).toBeTruthy();
   });
 
   it('shows the shared guidance in place of the choices, in the Workflows section', () => {
-    const { getByTestId, queryByTestId } = render(RunsSurface, { snapshot: emptyWorkspace() });
+    const { getByTestId, queryByTestId } = render(QueueTaskComposer, { snapshot: emptyWorkspace() });
 
     expect(queryByTestId('launch-section-no-definitions-pipeline')).toBeNull();
     const guidance = getByTestId('launch-section-no-definitions-workflow');
@@ -78,7 +78,7 @@ describe('Feature 098 (T053) — the launch surface stays mounted on an empty ca
 
 describe('Feature 098 (T053) — a non-empty catalog restores the choices', () => {
   it('lists what is published once something is imported', () => {
-    const { getByTestId } = render(RunsSurface, { snapshot: buildSnapshot() });
+    const { getByTestId } = render(QueueTaskComposer, { snapshot: buildSnapshot() });
 
     expect(getByTestId('launch-section-list-pipeline')).toBeTruthy();
     expect(getByTestId('launch-section-list-workflow')).toBeTruthy();
@@ -88,7 +88,7 @@ describe('Feature 098 (T053) — a non-empty catalog restores the choices', () =
     // The reachability half, stated as the operator's path rather than as a
     // rendered handle: select, Trigger, launcher. A picker that renders and opens
     // nothing would satisfy the assertion above and none of the requirement.
-    const { getByTestId } = render(RunsSurface, { snapshot: buildSnapshot() });
+    const { getByTestId } = render(QueueTaskComposer, { snapshot: buildSnapshot() });
 
     await fireEvent.click(getByTestId('launchable-select-pipeline-analysis-pipeline'));
     await fireEvent.click(getByTestId('launchable-detail-trigger'));
@@ -97,7 +97,7 @@ describe('Feature 098 (T053) — a non-empty catalog restores the choices', () =
   });
 
   it('withholds the guidance when there is something to choose (FR-032)', () => {
-    const { queryByTestId, container } = render(RunsSurface, { snapshot: buildSnapshot() });
+    const { queryByTestId, container } = render(QueueTaskComposer, { snapshot: buildSnapshot() });
 
     expect(queryByTestId('launch-section-no-definitions-pipeline')).toBeNull();
     expect(queryByTestId('launch-section-no-definitions-workflow')).toBeNull();

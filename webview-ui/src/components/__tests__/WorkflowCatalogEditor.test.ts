@@ -937,10 +937,10 @@ describe('Unified Workflow Authoring (FR-R5-F05)', () => {
 
     await fireEvent.click(rowFor(container, 'parent-wf'));
 
-    // Launch handoff state on editor root
+    // Selected Workflow identity on editor root
     const editorRoot = getByTestId('workflow-catalog-editor');
     expect(editorRoot.getAttribute('data-selected-workflow-id')).toBe('parent-wf');
-    expect(editorRoot.getAttribute('data-launch-eligible')).toBe('true');
+    expect(container.querySelector('[data-testid="workflows-launch-in-runs"]')).toBeNull();
 
     // Edit parent name so parent has dirty local state
     await fireEvent.input(getByTestId('workflow-field-name'), {

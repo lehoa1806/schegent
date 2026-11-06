@@ -3,11 +3,12 @@ import type {
   PhaseName,
   PhaseTile,
   QueueItem,
+  QueueRuntime,
   QueueSummary,
   WorkflowSnapshot
 } from './snapshot-types';
 import type { PhaseLogSelectionDraft } from './phase-log-store.svelte';
-import { defaultQueueId, findQueueRuntime } from './queue-runtime-view';
+import { defaultQueueId, findQueueInFlightRow, findQueueRuntime } from './queue-runtime-view';
 
 /**
  * Bug "the phase log that asked for a phase named done" (2026-09-02) — the
@@ -116,32 +117,34 @@ export function getTaskOptions(
   const fromQueueItem = (item: QueueItem): ActivityFeedTaskOption => ({
     id: item.id,
     label: item.label,
-    queueId: queueIdForItem(item),
-    pipelineId: item.currentPipelineId ?? fallbackPipelineId(snapshot, queueIdForItem(item)),
+    queueId,
+    pipelineId: item.currentPipelineId ?? fallbackPipelineId(snapshot, queueId),
     currentPhase: item.currentPhase,
     status: item.status,
     updatedAt: item.completedAt ?? item.updatedAt ?? item.startedAt ?? item.enqueuedAt
   });
 
-  const matchesQueue = (item: QueueItem): boolean => queueIdForItem(item) === queueId;
-  if (snapshot.queue.inFlight && matchesQueue(snapshot.queue.inFlight)) {
-    add(fromQueueItem(snapshot.queue.inFlight));
-  }
-  for (const item of snapshot.queue.pending.filter(matchesQueue)) add(fromQueueItem(item));
-  for (const item of snapshot.queue.recent.filter(matchesQueue)) add(fromQueueItem(item));
+  // BUG-002 (FR-018) — the queue's own rows, from its runtime. `snapshot.queue`
+  // projects the default queue only, so every other queue listed no Task. The
+  // in-flight row still leads; the rest keep the host's position order.
+  const rows = findQueueRuntime(snapshot, queueId)?.tasks ?? [];
+  const inFlight = findQueueInFlightRow(rows);
+  if (inFlight !== null) add(fromQueueItem(inFlight));
+  for (const item of rows) add(fromQueueItem(item));
 
-  if (queueId === 'default') {
-    for (const entry of snapshot.history) {
-      add({
-        id: entry.runId,
-        label: entry.descriptionPreview,
-        queueId: 'default',
-        pipelineId: fallbackPipelineId(snapshot, 'default'),
-        currentPhase: null,
-        status: entry.terminalStatus,
-        updatedAt: entry.completedAt ?? entry.startedAt
-      });
-    }
+  // Its own history slice, matched on the entry's queue the way the host
+  // matches it (FR-008), so every Task offered here is one the host accepts.
+  for (const entry of snapshot.history) {
+    if (entry.queueId !== queueId) continue;
+    add({
+      id: entry.runId,
+      label: entry.descriptionPreview,
+      queueId,
+      pipelineId: fallbackPipelineId(snapshot, queueId),
+      currentPhase: null,
+      status: entry.terminalStatus,
+      updatedAt: entry.completedAt ?? entry.startedAt
+    });
   }
 
   return options;
@@ -214,8 +217,52 @@ export function selectActivityFeedPhase(
   };
 }
 
+/**
+ * BUG-002 (FR-021) — the Run "Live" means, chosen among the in-flight row of
+ * every queue: the latest `startedAt` wins, a Run with a start time outranks one
+ * without, and a tie goes to the queue with the lower `position`, so one
+ * snapshot answers the same Run on every call. `null` when no queue has a Run in
+ * flight. The row comes back carrying the queue it was found on, because the
+ * store keys its identity tuple and its jump on `queueId`.
+ */
+export function currentInFlightRow(snapshot: Pick<WorkflowSnapshot, 'queues'>): QueueItem | null {
+  let best: InFlightCandidate | null = null;
+  for (const runtime of snapshot.queues) {
+    const row = findQueueInFlightRow(runtime.tasks);
+    if (row === null) continue;
+    const candidate: InFlightCandidate = { row, runtime };
+    if (best === null || outranks(candidate, best)) best = candidate;
+  }
+  if (best === null) return null;
+  const { row, runtime } = best;
+  return row.queueId === runtime.queueId ? row : { ...row, queueId: runtime.queueId };
+}
+
+/**
+ * BUG-002 (FR-022) — the in-flight row of the queue `queueId` names, which is
+ * the row a tail check reads. The host's start check reads the same row.
+ */
+export function queueInFlightRow(
+  snapshot: Pick<WorkflowSnapshot, 'queues'>,
+  queueId: string | null
+): QueueItem | null {
+  if (queueId === null) return null;
+  return findQueueInFlightRow(findQueueRuntime(snapshot, queueId)?.tasks ?? []);
+}
+
+interface InFlightCandidate {
+  readonly row: QueueItem;
+  readonly runtime: Pick<QueueRuntime, 'queueId' | 'position'>;
+}
+
+function outranks(candidate: InFlightCandidate, incumbent: InFlightCandidate): boolean {
+  const started = timeValue(candidate.row.startedAt) - timeValue(incumbent.row.startedAt);
+  if (started !== 0) return started > 0;
+  return candidate.runtime.position < incumbent.runtime.position;
+}
+
 export function resolveLiveSelection(snapshot: WorkflowSnapshot): ActivityFeedSelection | null {
-  const inFlight = snapshot.queue.inFlight;
+  const inFlight = currentInFlightRow(snapshot);
   if (inFlight === null || inFlight.currentPhase === null) return null;
   const queueId = queueIdForItem(inFlight);
   const task = getTaskOptions(snapshot, queueId).find((candidate) => candidate.id === inFlight.id);

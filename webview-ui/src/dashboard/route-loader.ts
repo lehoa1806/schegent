@@ -29,7 +29,6 @@ export type LazyRoute = Exclude<DashboardRoute, 'operations'>;
 export type LazyRouteProps = {
   active?: boolean;
   snapshot?: WorkflowSnapshot;
-  selectedWorkflowId?: string | null;
 };
 
 export type LazyRouteComponent = Component<LazyRouteProps>;
@@ -44,11 +43,6 @@ export type RouteLoader = {
 };
 
 const routeLoaders: Record<LazyRoute, () => Promise<unknown>> = {
-  // Feature 091 T020 (FR-014, FR-017, FR-022) — the mount for the connected-run
-  // view and the Run composer. Loaded on demand like every other non-default
-  // route, which also makes the reachability walker's dynamic-import support
-  // exercised by production code rather than only by a fixture.
-  runs: () => import('../components/RunsSurface.svelte'),
   history: () => import('../components/HistoryDashboard.svelte'),
   metrics: () => import('../components/MetricsDashboard/MetricsDashboard.svelte'),
   system: () => import('../components/SystemTab.svelte'),

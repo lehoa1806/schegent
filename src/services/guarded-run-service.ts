@@ -28,7 +28,8 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type {
   FeatureRequestRerun,
   QueueLifecycle,
-  ScheduledStartSource
+  ScheduledStartSource,
+  WorkflowOccurrenceIdentity
 } from '../queue/feature-request';
 import { MAX_DESCRIPTION_LENGTH } from '../queue/feature-request';
 import type { WorkspaceStateStore } from '../state/workspace-state';
@@ -97,6 +98,8 @@ export interface GuardedScheduleRequest {
   // this row too; a paused queue stays paused, with this row waiting behind the
   // pause. No webview value reaches it: only the host's Workflow dispatchers set it.
   continuesWorkflow?: true;
+  // FR-R5-F08 — optional occurrence identity for workflow-dispatched Phase attempts.
+  workflowOccurrence?: WorkflowOccurrenceIdentity;
 }
 
 export interface GuardedScheduleResult {
@@ -255,7 +258,8 @@ export class GuardedRunService {
         ...(req.queueId ? { queueId: req.queueId } : {}),
         ...(req.position !== null && req.position !== undefined ? { position: req.position } : {}),
         ...(req.rerun ? { rerun: req.rerun } : {}),
-        ...(req.runPlan ? { runPlan: req.runPlan } : {})
+        ...(req.runPlan ? { runPlan: req.runPlan } : {}),
+        ...(req.workflowOccurrence ? { workflowOccurrence: req.workflowOccurrence } : {})
       });
     } catch (err) {
       const failure = classifyEnqueueFailure(err);
@@ -859,6 +863,12 @@ export class GuardedRunService {
     const catalog =
       this.deps.catalogProvider?.() ?? this.deps.controller.getCatalog();
     if (!catalog.pipelinesById.has(pipelineId)) {
+      if (catalog.workflowsById?.has(pipelineId)) {
+        return {
+          kind: 'invalid',
+          reason: `workflow-requires-graph-launch:${this.deps.logger.sanitize(pipelineId)}`
+        };
+      }
       return {
         kind: 'invalid',
         reason: `pipeline-id-unknown:${this.deps.logger.sanitize(pipelineId)}`

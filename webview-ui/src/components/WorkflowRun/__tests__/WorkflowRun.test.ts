@@ -528,4 +528,30 @@ describe('WorkflowRun — hierarchical invocation tree and controls (FR-R5-F06)'
       operation: 'pause'
     });
   });
+
+  it('renders pause explanation and guidance when an invocation is paused for recovery-uncertain-effect (FR-R5-F08)', () => {
+    const { getByTestId } = mount(
+      run({
+        revision: 15,
+        rootInvocationId: 'inv-root',
+        invocations: [
+          inv({
+            invocationId: 'inv-root',
+            status: 'paused',
+            currentNodeId: 'node-a',
+            pauseCause: 'recovery-uncertain-effect',
+            pauseExplanation:
+              'Paused during restart recovery because the active Phase attempt had no live queue task or verified settlement evidence.',
+            pauseGuidance:
+              'Inspect workspace outputs, then choose Resume (reconciles evidence before re-dispatching), Retry Phase, or Cancel.',
+            allowedActions: ['resume', 'retry-phase', 'cancel']
+          })
+        ]
+      })
+    );
+
+    const guidanceEl = getByTestId('workflow-invocation-pause-guidance-inv-root');
+    expect(guidanceEl.textContent).toContain('Paused during restart recovery');
+    expect(guidanceEl.textContent).toContain('Inspect workspace outputs');
+  });
 });

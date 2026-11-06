@@ -21,7 +21,8 @@ const DIAGNOSTICS_ROOT_SEGMENTS = ['.schegent', 'sessions'] as const;
 const DIAGNOSTICS_LEAF_SEGMENT = 'diagnostics';
 const RAW_TRANSCRIPT_PREFIX = 'raw-';
 const RAW_TRANSCRIPT_SUFFIX = '.log';
-const STREAM_FILE = 'stream.jsonl';
+/** The stream file's name inside an `iter-<N>` directory; discovery checks for it. */
+export const STREAM_FILE = 'stream.jsonl';
 
 interface SessionAddress {
   readonly workspaceRoot: string;
