@@ -25,6 +25,7 @@
 // is the more precise wording anyway: what the gate tests is the absence of a
 // terminal state, not the presence of any particular one.
 
+import type { ExecutionDecisionObservation } from '../execution-decision-observation';
 import type { CMD_CONTINUE_WORKFLOW, CMD_LAUNCH_WORKFLOW, CommandBase } from '../sidebar-ipc';
 import type { RunRequest, RunRequestFieldError } from '../run-request';
 import { validRunRequest } from '../validators/run-request-shape';
@@ -142,6 +143,7 @@ export interface ConnectedNodeProjection {
   readonly label?: string;
   readonly frozenVersionId?: string;
   readonly childInvocationIds?: readonly string[];
+  readonly decisionObservation?: ExecutionDecisionObservation;
 }
 
 /**
@@ -175,6 +177,7 @@ export interface ConnectedRunProjection {
     readonly targetAttemptId?: string;
   } | null;
   readonly invocations?: readonly ConnectedInvocationProjection[];
+  readonly decisionObservations?: readonly ExecutionDecisionObservation[];
 }
 
 // -- CMD_LAUNCH_WORKFLOW -----------------------------------------------------

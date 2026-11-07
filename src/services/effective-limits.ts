@@ -19,6 +19,7 @@ import { effectivePhaseTimeoutMs, authoredPhaseTimeoutMs } from '../controller/e
 import { effectiveRunnerKindForPhase } from '../config/pipeline-snapshot';
 import { spendDenominationOf, type SpendDenomination } from '../contracts/backend-spend-denomination';
 import { resolveRetryCapOutcome, statesRetryCapOutcome } from '../contracts/retry-cap-outcome';
+import type { ExecutionDecisionSettingSources } from '../contracts/execution-decision-observation';
 import {
   normalizeMaxUnchangedComparisons,
   unchangedComparisonBoundState
@@ -59,6 +60,31 @@ export interface EffectiveLimitsInput {
 const originOrPhase = (phaseStates: boolean, fallback: LimitOrigin): LimitOrigin =>
   phaseStates ? 'phase' : fallback;
 
+/**
+ * FR-R5-F23 (F23-T02, F23-T03) — resolve the setting-source provenance for the active
+ * Phase's iteration cap, retry-cap outcome, and unchanged-comparison threshold.
+ */
+export function resolvePhaseIterationSources(
+  input: Pick<EffectiveLimitsInput, 'settings' | 'live' | 'run'>
+): ExecutionDecisionSettingSources {
+  const { settings, live, run } = input;
+  const phase = run.pipeline?.phases.find((candidate) => candidate.id === run.currentPhase);
+  const capOrigin = originOrPhase(
+    statesRetryCapOutcome(phase),
+    live.forceContinueOnCap.origin
+  );
+  const normalizedUnchanged = normalizeMaxUnchangedComparisons(
+    live.maxUnchangedComparisons.value
+  );
+  return Object.freeze({
+    maxIterations: settings.iterationCap.origin,
+    capOutcome: capOrigin,
+    ...(normalizedUnchanged > 0
+      ? { noProgressThreshold: live.maxUnchangedComparisons.origin }
+      : {})
+  });
+}
+
 export function resolveEffectiveLimits(input: EffectiveLimitsInput): EffectiveLimitsProjection {
   const { settings, live, run } = input;
   const phase = run.pipeline?.phases.find((candidate) => candidate.id === run.currentPhase);
@@ -78,6 +104,10 @@ export function resolveEffectiveLimits(input: EffectiveLimitsInput): EffectiveLi
   const phaseLimit = denomination === 'usd' ? phase?.spendBoundUsd : phase?.spendBoundTokens;
   // One resolution, used for the outcome shown and for the early stop's state (FR-R4-F17 L1.2).
   const capOutcome = resolveRetryCapOutcome(phase, live.forceContinueOnCap.value);
+  const capOrigin = originOrPhase(statesRetryCapOutcome(phase), live.forceContinueOnCap.origin);
+  const normalizedUnchanged = normalizeMaxUnchangedComparisons(live.maxUnchangedComparisons.value);
+  const retrySource = phase?.retryCondition?.trim() ?? '';
+  const settingSources = resolvePhaseIterationSources(input);
 
   return {
     iterationCap: settings.iterationCap,
@@ -90,16 +120,22 @@ export function resolveEffectiveLimits(input: EffectiveLimitsInput): EffectiveLi
     retryCap: { value: DELAYED_RETRY_CAP, origin: 'default' },
     onRetryCap: {
       value: capOutcome,
-      origin: originOrPhase(statesRetryCapOutcome(phase), live.forceContinueOnCap.origin)
+      origin: capOrigin
     },
     unchangedComparisons: {
-      value: normalizeMaxUnchangedComparisons(live.maxUnchangedComparisons.value),
+      value: normalizedUnchanged,
       origin: live.maxUnchangedComparisons.origin,
       state: unchangedComparisonBoundState({
         bound: live.maxUnchangedComparisons.value,
         capOutcome,
         retryCondition: phase?.retryCondition
       })
+    },
+    phaseRetryPolicy: {
+      retryCondition: retrySource.length > 0 ? retrySource : 'single-pass',
+      capOutcome,
+      ...(normalizedUnchanged > 0 ? { noProgressThreshold: normalizedUnchanged } : {}),
+      settingSources
     },
     spend:
       limit === null

@@ -6,6 +6,12 @@ import {
 import type { DegradedPhaseEntry } from '../contracts/snapshot-projections';
 import { CAP_EXHAUSTED_CAUSE } from '../audit/audit-payload';
 import { stopsOnUnchangedMetrics } from '../contracts/unchanged-comparison-bound';
+import {
+  EXECUTION_DECISION_OBSERVATION_VERSION,
+  type ExecutionDecisionExitReason,
+  type ExecutionDecisionObservation,
+  type ExecutionDecisionSettingSources
+} from '../contracts/execution-decision-observation';
 
 /**
  * Prefix on the system-log line emitted when a phase is forced past its
@@ -493,4 +499,125 @@ function evaluateRetryCondition(
     );
   }
   return result.evaluation.value;
+}
+
+export interface PhaseTransitionObservationInput extends TransitionInput {
+  readonly runId: string;
+  readonly evaluatedAt: number;
+  readonly decisionId?: string;
+  readonly attemptId?: string;
+  readonly settingSources?: ExecutionDecisionSettingSources;
+}
+
+export interface PhaseTransitionWithObservation {
+  readonly decision: TransitionResult;
+  readonly observation: ExecutionDecisionObservation;
+}
+
+function derivePhaseExitReason(
+  decision: TransitionResult
+): ExecutionDecisionExitReason {
+  if (decision.kind === 'loop') {
+    return 'repeat';
+  }
+  if (decision.kind === 'advance') {
+    if (decision.degraded !== undefined) {
+      return 'cap-degraded';
+    }
+    if (
+      decision.warnings.some(
+        (warning) =>
+          warning.startsWith(FORCE_CONTINUE_NOTIFY_TAG) ||
+          warning.includes('force-advancing')
+      )
+    ) {
+      return 'cap-continued';
+    }
+    return 'condition-cleared';
+  }
+  if (decision.cause === CAP_EXHAUSTED_CAUSE) {
+    return 'cap-failed';
+  }
+  if (decision.cause === JUDGED_METRICS_UNCHANGED_CAUSE) {
+    return 'no-progress';
+  }
+  if (
+    decision.cause === LAST_PHASE_ISSUES_REMAIN_CAUSE ||
+    decision.cause === INCOMPLETE_TURN_UNRESOLVED_CAUSE
+  ) {
+    return 'missing-evidence';
+  }
+  return 'host-control';
+}
+
+/**
+ * FR-R5-F23 (F23-T02, D1) — construct a deterministic `ExecutionDecisionObservation`
+ * alongside `transition(input)` so Phase repetition provenance (`iteration`,
+ * `maxIterations`, `retryCondition`, `capOutcome`, `noProgressThreshold`,
+ * `settingSources`, `observedValues`, `exitReason`) is inspectable without
+ * mutating `transition()` return semantics.
+ */
+export function buildPhaseTransitionObservation(
+  input: PhaseTransitionObservationInput,
+  precomputedDecision?: TransitionResult
+): PhaseTransitionWithObservation {
+  const decision = precomputedDecision ?? transition(input);
+  const retrySource = input.phaseDef?.retryCondition?.trim() ?? '';
+  const retryCondition =
+    retrySource.length > 0
+      ? retrySource
+      : isLoopPhase(input.phase, input.phaseDef)
+        ? 'outcome == issues_remain'
+        : 'single-pass';
+
+  const observedValues: Record<string, string | number | boolean> = {
+    outcome: input.outcome
+  };
+  if (input.stalledCount !== undefined && Number.isFinite(input.stalledCount)) {
+    observedValues.stalledCount = input.stalledCount;
+  }
+  if (input.metrics !== undefined) {
+    for (const [key, val] of Object.entries(input.metrics)) {
+      if (Object.keys(observedValues).length >= 32) break;
+      if (typeof val === 'number' && Number.isFinite(val)) {
+        observedValues[key] = val;
+      }
+    }
+  }
+
+  const hasThreshold =
+    input.maxUnchangedComparisons !== undefined &&
+    Number.isInteger(input.maxUnchangedComparisons) &&
+    input.maxUnchangedComparisons >= 0;
+
+  const settingSources: ExecutionDecisionSettingSources =
+    input.settingSources ?? {
+      maxIterations: 'default',
+      capOutcome: 'default',
+      ...(hasThreshold ? { noProgressThreshold: 'default' } : {})
+    };
+
+  const observation: ExecutionDecisionObservation = Object.freeze({
+    version: EXECUTION_DECISION_OBSERVATION_VERSION,
+    decisionId:
+      input.decisionId ??
+      `${input.runId}:${input.phase}:iter-${input.iteration}:${input.evaluatedAt}`,
+    runId: input.runId,
+    nodeId: input.phase,
+    ...(input.attemptId !== undefined ? { attemptId: input.attemptId } : {}),
+    evaluatedAt: input.evaluatedAt,
+    iteration: Math.max(1, input.iteration),
+    maxIterations: Math.max(1, input.iterationCap),
+    retryCondition,
+    capOutcome: input.capOutcome ?? 'fail',
+    ...(hasThreshold && input.maxUnchangedComparisons !== undefined
+      ? { noProgressThreshold: input.maxUnchangedComparisons }
+      : {}),
+    settingSources: Object.freeze({ ...settingSources }),
+    observedValues: Object.freeze(observedValues),
+    exitReason: derivePhaseExitReason(decision),
+    branches: Object.freeze([])
+  });
+
+  return { decision, observation };
 }
