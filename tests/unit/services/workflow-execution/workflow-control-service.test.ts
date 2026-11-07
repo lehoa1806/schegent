@@ -798,6 +798,54 @@ describe('WorkflowControlService — a re-dispatch the queue refuses is a refusa
     ).toBe('completed');
   });
 
+  it('does not settle a paused leaf from a canceled child on resume; it dispatches a new attempt (FR-R5-F08)', async () => {
+    // Pause cancels the leaf's child Run, so the child's `canceled` status is the pause's own
+    // effect, not an outcome. Taking it as evidence ended the Workflow canceled on Resume.
+    const { store, dispatchPhase, childInvocationId } = await setupActiveChildAtC2();
+    const pauser = new WorkflowControlService({ connectedRuns: store, dispatchPhase });
+    const paused = await pauser.executeCommand({
+      runId: 'run-ctrl-1',
+      commandId: 'cmd-pause-canceled-child',
+      expectedRevision: store.get('run-ctrl-1')!.revision,
+      operation: 'pause',
+      targetInvocationId: childInvocationId,
+      now: 2000
+    });
+    expect(paused.accepted).toBe(true);
+    if (!paused.accepted) return;
+
+    const dispatchedNodes: string[] = [];
+    const resumer = new WorkflowControlService({
+      connectedRuns: store,
+      dispatchPhase: async (input) => {
+        dispatchedNodes.push(input.node.nodeId);
+        return (dispatchPhase as (arg: typeof input) => ReturnType<typeof dispatchPhase>)(input);
+      },
+      checkDurableAttemptEvidence: () => ({
+        completed: true,
+        settled: true,
+        status: 'canceled',
+        completedAt: 2050
+      })
+    });
+
+    const resumed = await resumer.executeCommand({
+      runId: 'run-ctrl-1',
+      commandId: 'cmd-resume-canceled-child',
+      expectedRevision: paused.run.revision,
+      operation: 'resume',
+      targetInvocationId: childInvocationId,
+      now: 2100
+    });
+    expect(resumed.accepted).toBe(true);
+    if (!resumed.accepted) return;
+    expect(dispatchedNodes).toEqual(['c2']);
+    const childFrame = resumed.run.invocations?.[childInvocationId];
+    expect(childFrame?.status).toBe('in-flight');
+    const attempts = childFrame?.attemptsByNodeId['c2'] ?? [];
+    expect(attempts.map((attempt) => attempt.status)).not.toContain('canceled');
+  });
+
   it('reactivates a paused leaf attempt in place when its original queue item is still present on the bound queue (FR-R5-F08)', async () => {
     const { store, dispatchPhase, childInvocationId } = await setupActiveChildAtC2();
     const pauser = new WorkflowControlService({ connectedRuns: store, dispatchPhase });
