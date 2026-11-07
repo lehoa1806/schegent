@@ -81,8 +81,9 @@ the overshoot is at most the phase that crossed the bound.
 
 A host restart does not hand a run its whole bound again. At activation the tally of every Run
 that can still move is rebuilt: a live Run, and a `failed` one, which Retry, Restart and Resume
-can put back into motion. It is read from `.schegent/audit.log` and its rotated archives, newest
-first, up to 8 MiB in all (`SPEND_REPLAY_MAX_BYTES`), stopping once a record from before the Run's `startedAt` is
+can put back into motion. Each is read from `.schegent/audit.log` and its rotated archives,
+newest first, up to 8 MiB in
+all (`SPEND_REPLAY_MAX_BYTES`), stopping once a record from before the Run's `startedAt` is
 reached. Nothing is evaluated or paused during the replay itself, so a tally that is already at
 or over the bound pauses its Run at the next `phase-end` boundary, and rows seen by both the
 replay seed and the live audit subscription are counted once by entry `id`. A resumed Claude
