@@ -70,7 +70,7 @@
       "source": {
         "from": "node-output",
         "nodeId": "planning-subworkflow",
-        "outputKey": "implementation-plan"
+        "portId": "implementation-plan"
       }
     },
     {
