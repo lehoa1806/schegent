@@ -493,7 +493,7 @@ function applyUnions(text: string): string {
  */
 function collapseOversizedTokenRuns(input: string): string {
   let runStart = -1;
-  let pieces: string[] | null = null;
+  const pieces: string[] = [];
   let lastCopied = 0;
 
   const flushRun = (start: number, end: number): void => {
@@ -505,7 +505,6 @@ function collapseOversizedTokenRuns(input: string): string {
       input.slice(end - TOKEN_RUN_SAMPLE_EDGE, end);
     const probe = input.slice(ctxStart, start) + sampleRun + input.slice(end, ctxEnd);
     if (applyUnions(probe) !== probe) {
-      pieces ??= [];
       pieces.push(input.slice(lastCopied, start), sampleRun);
       lastCopied = end;
     }
@@ -524,7 +523,7 @@ function collapseOversizedTokenRuns(input: string): string {
   if (runStart !== -1) {
     flushRun(runStart, input.length);
   }
-  if (pieces === null) return input;
+  if (pieces.length === 0) return input;
   pieces.push(input.slice(lastCopied));
   return pieces.join('');
 }
