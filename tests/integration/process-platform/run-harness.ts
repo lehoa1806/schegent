@@ -73,7 +73,10 @@ export function importedCatalog(): ReturnType<typeof loadCatalog> {
     }),
     {
       getModels: () => undefined,
-      getDefaultPipelineId: (scope) =>
+      // Feature 285 (FR-007): a deprecated key naming a Pipeline no longer sources the linear
+      // default; it is kept here so the fixture still carries the value an operator may have.
+      getDefaultWorkflowId: () => undefined,
+      getDeprecatedDefaultPipelineId: (scope) =>
         scope === 'workspace' ? FIXTURE_PIPELINE_IDS.single : undefined
     }
   );

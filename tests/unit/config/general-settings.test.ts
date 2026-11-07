@@ -106,7 +106,7 @@ describe('Feature 011 — general-settings allowlist', () => {
         'watchdog.pollIntervalMinutes',
         'audit.rotation.sizeMB',
         'audit.rotation.maxAgeDays',
-        'defaultPipelineId',
+        'defaultWorkflowId',
         'fatalSignatures',
         'claude.autoCompactPctOverride',
         'logging.runtimeLogLevel',
@@ -340,7 +340,7 @@ describe('Feature 011 — readGeneralSettings projects current values + scopes',
         'watchdog.pollIntervalMinutes': 30,
         'audit.rotation.sizeMB': 5,
         'audit.rotation.maxAgeDays': 30,
-        'defaultPipelineId': 'speckit-new-feature',
+        'defaultWorkflowId': 'speckit-new-feature',
         'fatalSignatures': [],
       }
     });
@@ -1224,8 +1224,11 @@ describe('Feature 019 — writeGeneralSettings hook onRuntimeLogSettingChanged',
 //      than silently doing nothing.
 // ---------------------------------------------------------------------------
 
-describe('Feature 098 (T043) — the default-Pipeline setting ships unset', () => {
-  const SETTING_KEY = 'schegent.defaultPipelineId';
+// Feature 285 (OD-2, FR-001): the setting is `schegent.defaultWorkflowId` now, and the four
+// declarations below hold for it. The deprecated key is pinned at the end of the block.
+describe('Feature 098 (T043) — the default-Workflow setting ships unset', () => {
+  const SETTING_KEY = 'schegent.defaultWorkflowId';
+  const DEPRECATED_KEY = 'schegent.defaultPipelineId';
 
   it('reads as the empty string in all four declarations on a fresh install', async () => {
     // 1 — the package manifest, the surface VS Code renders in its Settings UI.
@@ -1243,22 +1246,22 @@ describe('Feature 098 (T043) — the default-Pipeline setting ships unset', () =
 
     // 3 — the settings accessor, asserted through what it answers rather than
     // through `KEY_SPECS`: a config that holds nothing is a fresh install.
-    expect(readGeneralSettings(makeConfig()).defaultPipelineId).toBe('');
+    expect(readGeneralSettings(makeConfig()).defaultWorkflowId).toBe('');
 
     // 4 — the idle view, both halves. The host projection and the webview
     // projection are separate literals and `settings-defaults-parity.test.ts`
     // exists because they have drifted before.
     const hostIdle = await import('../../../src/ui/sidebar/snapshot.js');
     const webviewIdle = await import('../../../webview-ui/src/lib/snapshot-types.js');
-    expect(hostIdle.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('');
-    expect(webviewIdle.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('');
+    expect(hostIdle.IDLE_GENERAL_SETTINGS.defaultWorkflowId).toBe('');
+    expect(webviewIdle.IDLE_GENERAL_SETTINGS.defaultWorkflowId).toBe('');
   });
 
   it('keeps the declared type `string`, so the unset value crosses the boundary as a value', () => {
     // FR-033a. "Unset" is deliberately not `undefined` or a missing key: the
     // field is non-optional in the IPC contract, and making it optional to
     // express absence would have every consumer handle two shapes of nothing.
-    expect(typeof readGeneralSettings(makeConfig()).defaultPipelineId).toBe('string');
+    expect(typeof readGeneralSettings(makeConfig()).defaultWorkflowId).toBe('string');
     expect(SETTINGS_SCHEMA[SETTING_KEY].type).toBe('string');
   });
 
@@ -1301,5 +1304,24 @@ describe('Feature 098 (T043) — the default-Pipeline setting ships unset', () =
     expect(describePipelineRefusal(resolution.refusal)).toBe(
       "pipeline '' is not in the effective catalog"
     );
+  });
+
+  it('keeps the old key as a deprecated alias that names its replacement (FR-002)', () => {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '..', '..', '..', 'package.json'), 'utf8')
+    ) as {
+      contributes: {
+        configuration: {
+          properties: Record<string, { deprecationMessage?: string; default?: unknown }>;
+        };
+      };
+    };
+    const deprecated = manifest.contributes.configuration.properties[DEPRECATED_KEY];
+    expect(deprecated.default).toBe('');
+    expect(deprecated.deprecationMessage).toContain(SETTING_KEY);
+    expect(SETTINGS_SCHEMA[DEPRECATED_KEY].default).toBe('');
+    // The Settings tab edits the new key only, so the old one is no General settings key.
+    expect(ALLOWED_KEYS).not.toContain('defaultPipelineId');
+    expect(ALLOWED_KEYS).toContain('defaultWorkflowId');
   });
 });

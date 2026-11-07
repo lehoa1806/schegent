@@ -170,7 +170,7 @@ function catalogBoundary(condition: Record<string, unknown>): {
   };
 }
 
-const semantics = createDefinitionSemantics({ defaultPipelineId: () => '' });
+const semantics = createDefinitionSemantics({ defaultWorkflowId: () => '' });
 
 /** The sidebar publish path: the whole document is validated before any write. */
 async function publishBoundary(condition: Record<string, unknown>): Promise<{

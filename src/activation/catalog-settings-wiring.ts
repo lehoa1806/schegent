@@ -1,21 +1,25 @@
 // FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
-// Two configuration reads and no I/O.
+// Configuration reads (models, the default Workflow and its deprecated key) and no I/O.
 
 // Feature 099 (T496f, FR-054, FR-056) — the settings half of the catalog wiring.
 //
 // `catalog-store-wiring.ts` pairs the versioned store with VS Code; this pairs
 // what the store does NOT own with VS Code. Two keys survive the collapse: the
 // Model Catalog, which stays exactly as feature 096 left it, and the default
-// Pipeline id, which names a definition rather than holding one. Both the read
+// Workflow id, which names a definition rather than holding one. Both the read
 // and the write of those keys live here, together, so a reader that inspects one
 // scope and a writer that updates another cannot drift apart across two files.
+//
+// Feature 285 (OD-2, D2): the default is `schegent.defaultWorkflowId`, with the deprecated
+// `schegent.defaultPipelineId` read as a fallback. Both reads return explicitly set values
+// only, never the package default, and nothing here writes either key (FR-006).
 
 import * as vscode from 'vscode';
 
 import type { CatalogConfigReader } from '../config/pipeline-config-loader';
 
 /**
- * Read the two configuration-backed keys the catalog store does not hold.
+ * Read the configuration-backed keys the catalog store does not hold.
  *
  * Feature 099 (T494, FR-054) — `getPhases` and `getPipelines` are gone with the
  * three retired definition settings keys.
@@ -27,12 +31,11 @@ export function createCatalogReader(workspaceRoot: string): CatalogConfigReader 
       if (!inspect) return undefined;
       return scope === 'workspace' ? inspect.workspaceValue : inspect.globalValue;
     },
-    getDefaultPipelineId(scope) {
-      const inspect = configFor(workspaceRoot).inspect<string>('defaultPipelineId');
-      if (!inspect) return undefined;
-      return scope === 'workspace'
-        ? inspect.workspaceValue
-        : inspect.globalValue ?? inspect.defaultValue;
+    getDefaultWorkflowId(scope) {
+      return explicitValue(workspaceRoot, 'defaultWorkflowId', scope);
+    },
+    getDeprecatedDefaultPipelineId(scope) {
+      return explicitValue(workspaceRoot, 'defaultPipelineId', scope);
     }
   };
 }
@@ -52,6 +55,17 @@ export function createCatalogSettingsWriter(
   return async (key, value) => {
     await configFor(workspaceRoot).update(key, value, vscode.ConfigurationTarget.Workspace);
   };
+}
+
+/** The value set at one scope, or `undefined` where that scope does not set it. */
+function explicitValue(
+  workspaceRoot: string,
+  key: 'defaultWorkflowId' | 'defaultPipelineId',
+  scope: 'user' | 'workspace'
+): unknown {
+  const inspect = configFor(workspaceRoot).inspect<unknown>(key);
+  if (!inspect) return undefined;
+  return scope === 'workspace' ? inspect.workspaceValue : inspect.globalValue;
 }
 
 function configFor(workspaceRoot: string): vscode.WorkspaceConfiguration {

@@ -4,7 +4,7 @@
     GENERAL_SETTINGS_DESCRIPTIONS,
     type GeneralSettingsControlId
   } from '../GeneralSettingsTab.descriptions';
-  import type { PipelineDefinition } from '../../../lib/snapshot-types';
+  import type { PortableWorkflowDefinition } from '../../../lib/snapshot-types';
   // FR-R3-144 (T031) — a VALUE import, from `src/contracts/` as the import-direction
   // rule requires. See `onEnumChange` for why a predicate rather than a cast.
   import { isBackendRunnerKind } from '../../../../../src/contracts/backend-kinds';
@@ -55,7 +55,7 @@
     status: FieldStatus | undefined;
     changed: boolean;
     scopeLabel: string;
-    pipelines: readonly PipelineDefinition[];
+    workflows: readonly PortableWorkflowDefinition[];
     /** FR-R4-F04 (FR-003) — only the transport mode row is given one; absent means nothing is shown. */
     transportUsage?: TransportUsage;
     onSave: () => void;
@@ -68,7 +68,7 @@
     status,
     changed,
     scopeLabel,
-    pipelines,
+    workflows,
     transportUsage,
     onSave,
     onReset,
@@ -184,28 +184,29 @@
         }}
         bind:value={draft[spec.key as NumberKey]}
       />
-    {:else if spec.kind === 'pipeline-select'}
+    {:else if spec.kind === 'workflow-select'}
       <select
         class="select-input"
         aria-labelledby={fieldLabelId(spec.key)}
         data-testid="general-settings-input-{spec.key}"
-        bind:value={draft.defaultPipelineId}
+        bind:value={draft.defaultWorkflowId}
         use:hoverTextAnchor={{
           controlId: spec.key,
           description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
         }}
       >
         <!-- Feature 098 (T049, FR-033a) — the current value needs a row of its
-             own whenever no Pipeline carries it, or the bound value and the
+             own whenever no Workflow carries it, or the bound value and the
              displayed one diverge. Unset is the common case now, and it reads
-             as a named state rather than a blank line. -->
-        {#if !pipelines.some((p) => p.id === draft.defaultPipelineId)}
-          <option value={draft.defaultPipelineId}>
-            {draft.defaultPipelineId === '' ? 'No default' : draft.defaultPipelineId}
+             as a named state rather than a blank line. Feature 285 (FR-003):
+             the rows are the effective Workflows, never Pipelines. -->
+        {#if !workflows.some((w) => w.workflowId === draft.defaultWorkflowId)}
+          <option value={draft.defaultWorkflowId}>
+            {draft.defaultWorkflowId === '' ? 'No default' : draft.defaultWorkflowId}
           </option>
         {/if}
-        {#each pipelines as p (p.id)}
-          <option value={p.id}>{p.name} ({p.id})</option>
+        {#each workflows as w (w.workflowId)}
+          <option value={w.workflowId}>{w.name} ({w.workflowId})</option>
         {/each}
       </select>
     {:else if spec.kind === 'number-optional'}

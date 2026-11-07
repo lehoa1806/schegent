@@ -65,7 +65,7 @@ const BUILD = { id: 'build', body: phaseBody('build') };
 const PHASES = [PLAN, BUILD];
 const PIPELINE = { id: 'ship-it', body: pipelineBody('ship-it', ['plan', 'build']) };
 
-const semantics = createDefinitionSemantics({ defaultPipelineId: () => '' });
+const semantics = createDefinitionSemantics({ defaultWorkflowId: () => '' });
 
 let workspaceRoot: string;
 

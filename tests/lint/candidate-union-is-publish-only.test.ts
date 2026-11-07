@@ -140,7 +140,7 @@ describe('Feature 100 T500c — only the publish gate builds a candidate union',
 });
 
 describe('Feature 100 T500c — the union is persisted nowhere (FR-018)', () => {
-  const semantics = createDefinitionSemantics({ defaultPipelineId: () => '' });
+  const semantics = createDefinitionSemantics({ defaultWorkflowId: () => '' });
 
   const ACTIVE_PHASE = 'specify';
   const CANDIDATE_PHASE = 'plan';

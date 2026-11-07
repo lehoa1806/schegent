@@ -173,16 +173,30 @@ describe('a reference held only by a Draft advises, and does not block (FR-025a)
   });
 });
 
-describe('a configured default is reported and never edited (FR-059, FR-060)', () => {
-  it('deactivates the Pipeline the setting names, and says so', async () => {
+// Feature 285 (FR-006b): the configured default names a Workflow, so the advisory is about
+// Workflows only. These cases pinned it on a Pipeline until the default moved to
+// `schegent.defaultWorkflowId`; the last case pins that a Pipeline now gets none.
+function phaseFlow(id: string, phaseId: string): unknown {
+  return {
+    id,
+    name: `Workflow ${id}`,
+    version: 1,
+    nodes: [{ nodeId: 'step-1', kind: 'phase', phaseId }],
+    connections: [],
+    startNodeIds: ['step-1']
+  };
+}
+
+describe('a configured default is reported and never edited (FR-059, FR-060, FR-006b)', () => {
+  it('deactivates the Workflow the setting names, and says so', async () => {
     await seedActive(harness, 'phase', 'plan', phaseBody('plan'));
-    await seedActive(harness, 'pipeline', 'ship-it', pipelineBody('ship-it', ['plan']));
+    await seedActive(harness, 'workflow', 'ship-it', phaseFlow('ship-it', 'plan'));
     // Set *after* the service was built, which is the ordering the port's getter
     // exists for (T509c): captured as a value, a default set after the window
     // opened would produce no advisory at all.
-    harness.setDefaultPipelineId('ship-it');
+    harness.setDefaultWorkflowId('ship-it');
 
-    const outcome = await deactivate('pipeline', 'ship-it');
+    const outcome = await deactivate('workflow', 'ship-it');
 
     expect(outcome.outcome).toBe('deactivated');
     if (outcome.outcome !== 'deactivated') return;
@@ -193,10 +207,10 @@ describe('a configured default is reported and never edited (FR-059, FR-060)', (
 
   it('leaves the setting exactly as it found it', async () => {
     await seedActive(harness, 'phase', 'plan', phaseBody('plan'));
-    await seedActive(harness, 'pipeline', 'ship-it', pipelineBody('ship-it', ['plan']));
-    harness.setDefaultPipelineId('ship-it');
+    await seedActive(harness, 'workflow', 'ship-it', phaseFlow('ship-it', 'plan'));
+    harness.setDefaultWorkflowId('ship-it');
 
-    expect((await deactivate('pipeline', 'ship-it')).outcome).toBe('deactivated');
+    expect((await deactivate('workflow', 'ship-it')).outcome).toBe('deactivated');
 
     // Still named, so the operator's configuration was reported rather than
     // rewritten — a silent edit to a setting in a different store is the surprising
@@ -204,16 +218,28 @@ describe('a configured default is reported and never edited (FR-059, FR-060)', (
     // is about the value the host would read next, not about a local variable.
     const snapshot = await harness.store.read();
     if (snapshot.outcome !== 'read') throw new Error('store unreadable');
-    expect(harness.semantics.advisoriesFor(snapshot.snapshot, 'pipeline', 'ship-it')).toEqual([
+    expect(harness.semantics.advisoriesFor(snapshot.snapshot, 'workflow', 'ship-it')).toEqual([
       { advisory: 'configured-default', kind: null, id: 'ship-it' }
     ]);
   });
 
-  it('says nothing about a default naming some other Pipeline', async () => {
+  it('says nothing about a default naming some other Workflow', async () => {
+    await seedActive(harness, 'phase', 'plan', phaseBody('plan'));
+    await seedActive(harness, 'workflow', 'ship-it', phaseFlow('ship-it', 'plan'));
+    await seedActive(harness, 'workflow', 'hotfix', phaseFlow('hotfix', 'plan'));
+    harness.setDefaultWorkflowId('hotfix');
+
+    const outcome = await deactivate('workflow', 'ship-it');
+
+    expect(outcome.outcome).toBe('deactivated');
+    if (outcome.outcome !== 'deactivated') return;
+    expect(outcome.advisories).toEqual([]);
+  });
+
+  it('says nothing about a Pipeline whose id the default happens to hold (FR-006b)', async () => {
     await seedActive(harness, 'phase', 'plan', phaseBody('plan'));
     await seedActive(harness, 'pipeline', 'ship-it', pipelineBody('ship-it', ['plan']));
-    await seedActive(harness, 'pipeline', 'hotfix', pipelineBody('hotfix', ['plan']));
-    harness.setDefaultPipelineId('hotfix');
+    harness.setDefaultWorkflowId('ship-it');
 
     const outcome = await deactivate('pipeline', 'ship-it');
 

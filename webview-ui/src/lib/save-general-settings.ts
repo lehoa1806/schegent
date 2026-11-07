@@ -38,7 +38,7 @@ export interface GeneralSettingsPayload {
   readonly 'watchdog.pollIntervalMinutes'?: number;
   readonly 'audit.rotation.sizeMB'?: number;
   readonly 'audit.rotation.maxAgeDays'?: number;
-  readonly 'defaultPipelineId'?: string;
+  readonly 'defaultWorkflowId'?: string;
   readonly 'fatalSignatures'?: readonly string[];
   readonly 'claude.autoCompactPctOverride'?: number | null;
   // Feature 019 — runtime debug log sink controls.
@@ -106,7 +106,7 @@ export const GENERAL_SETTINGS_PAYLOAD_KEYS = [
   'watchdog.pollIntervalMinutes',
   'audit.rotation.sizeMB',
   'audit.rotation.maxAgeDays',
-  'defaultPipelineId',
+  'defaultWorkflowId',
   'fatalSignatures',
   'claude.autoCompactPctOverride',
   'logging.runtimeLogLevel',

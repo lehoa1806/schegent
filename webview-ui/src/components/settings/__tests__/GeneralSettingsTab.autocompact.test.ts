@@ -138,3 +138,55 @@ describe('Feature 012 — GeneralSettingsTab autoCompactPctOverride field', () =
     expect(payload).toEqual({ updates: { 'claude.autoCompactPctOverride': null } });
   });
 });
+
+// Feature 285 (OD-2, FR-003) — the default select lists the effective Workflows, never a
+// Pipeline row, and saves `defaultWorkflowId`. This file renders GeneralSettingsTab already.
+describe('Feature 285 — GeneralSettingsTab default Workflow select', () => {
+  function snapshotWith(defaultWorkflowId: string): WorkflowSnapshot {
+    const gs = Object.freeze({ ...IDLE_GENERAL_SETTINGS, defaultWorkflowId }) as GeneralSettings;
+    return Object.freeze({
+      ...buildSnapshot(gs),
+      availablePipelines: Object.freeze([{ id: 'legacy-pipe', name: 'Legacy Pipe' }]),
+      workflowCatalog: Object.freeze({
+        effective: Object.freeze([{ workflowId: 'wf-ship', name: 'Ship It' }])
+      })
+    }) as unknown as WorkflowSnapshot;
+  }
+
+  function selectOf(container: HTMLElement): HTMLSelectElement {
+    const select = container.querySelector(
+      '[data-testid="general-settings-input-defaultWorkflowId"]'
+    );
+    expect(select).not.toBeNull();
+    return select as HTMLSelectElement;
+  }
+
+  it('lists the effective Workflows and no Pipeline row', () => {
+    const { container } = render(GeneralSettingsTab, { props: { snapshot: snapshotWith('') } });
+    const labels = Array.from(selectOf(container).options).map((o) => o.textContent.trim());
+    expect(labels).toEqual(['No default', 'Ship It (wf-ship)']);
+  });
+
+  it('keeps a stored value no effective Workflow carries as its own row', () => {
+    const { container } = render(GeneralSettingsTab, {
+      props: { snapshot: snapshotWith('legacy-pipe') }
+    });
+    const select = selectOf(container);
+    expect(select.value).toBe('legacy-pipe');
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['legacy-pipe', 'wf-ship']);
+  });
+
+  it('saves the choice under `defaultWorkflowId`', async () => {
+    const { container } = render(GeneralSettingsTab, { props: { snapshot: snapshotWith('') } });
+    const select = selectOf(container);
+    select.value = 'wf-ship';
+    await fireEvent.change(select);
+    const saveBtn = container.querySelector(
+      '[data-testid="general-settings-save-defaultWorkflowId"]'
+    ) as HTMLButtonElement;
+    await fireEvent.click(saveBtn);
+    expect(postCommandSpy).toHaveBeenCalledOnce();
+    const call = postCommandSpy.mock.calls.at(0);
+    expect(call?.at(1)).toEqual({ updates: { defaultWorkflowId: 'wf-ship' } });
+  });
+});

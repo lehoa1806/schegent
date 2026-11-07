@@ -1134,7 +1134,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   // Feature 098 (T048, FR-033) — unset, matching the manifest, the settings
   // schema and the webview idle snapshot. `settings-defaults-parity` compares
   // this object against the manifest, so the four have to move together.
-  defaultPipelineId: '',
+  defaultWorkflowId: '',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
   runtimeLogLevel: 'INFO',
@@ -1176,7 +1176,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     watchdogPollIntervalMinutes: 'default',
     auditRotationSizeMB: 'default',
     auditRotationMaxAgeDays: 'default',
-    defaultPipelineId: 'default',
+    defaultWorkflowId: 'default',
     fatalSignatures: 'default',
     claudeAutoCompactPctOverride: 'default',
     runtimeLogLevel: 'default',
