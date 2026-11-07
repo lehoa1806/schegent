@@ -1,10 +1,13 @@
 <script lang="ts">
   // Queue task composition reuses the validated launch forms and binds every submission
   // to the Queue being viewed. Execution monitoring lives in Queue task detail.
+  //
+  // Feature 285 (OD-2, FR-001): Workflows only. The Pipeline section and its RunLauncher arm
+  // are retired; `pipelines` is still read for a stored Workflow whose start node names a
+  // legacy Pipeline (FR-011), whose output ports and name come from that Pipeline.
   import TrustBanner from './TrustBanner.svelte';
   import LaunchableSection from './Runs/LaunchableSection.svelte';
   import LaunchableDetail from './Runs/LaunchableDetail.svelte';
-  import RunLauncher from './RunLauncher/RunLauncher.svelte';
   import WorkflowTriggerForm from './Runs/WorkflowTriggerForm.svelte';
   import {
     isSelected,
@@ -48,18 +51,6 @@
   const untrusted = $derived(snapshot.workspaceTrust === false);
 
   /**
-   * The effective-catalog definition the form is composed against. The effective
-   * catalog *is* the set of Active versions, so it and the projection name the
-   * same Pipeline; resolving here rather than carrying a definition on the
-   * projection keeps one source for the contract the run is validated against.
-   */
-  const selectedPipeline = $derived(
-    selection?.kind === 'pipeline'
-      ? pipelines.find((pipeline) => pipeline.id === selection?.id)
-      : undefined
-  );
-
-  /**
    * The active graph behind a selected Workflow, read from the same field the
    * Builder reads.
    *
@@ -77,6 +68,24 @@
       : undefined
   );
 
+  /**
+   * Feature 285 (FR-006a) — the default Workflow is preselected once, the first time the
+   * projection offers it while nothing is selected. Once it has been applied, or the operator
+   * has chosen, it is not applied again: a cleared selection stays cleared. Preselection
+   * opens no form and submits nothing.
+   */
+  let defaultApplied = false;
+
+  $effect(() => {
+    if (defaultApplied || selection !== null) return;
+    const defaultId = snapshot.defaultWorkflowId;
+    if (defaultId === undefined || defaultId === '') return;
+    const candidate: LaunchSelection = { kind: 'workflow', id: defaultId };
+    if (selectedEntry(launchables, candidate) === undefined) return;
+    defaultApplied = true;
+    selection = candidate;
+  });
+
   $effect(() => {
     // FR-013 — a selection the next projection no longer offers is let go of,
     // along with any form open over it. The predicate is absence, and the surface
@@ -88,6 +97,7 @@
   });
 
   function onSelect(entry: Launchable): void {
+    defaultApplied = true;
     selection = isSelected(entry, selection) ? null : { kind: entry.kind, id: entry.id };
     triggered = false;
   }
@@ -107,15 +117,6 @@
     {#if untrusted}
       <TrustBanner variant="workspace-trust" />
     {:else}
-      {#if launchables !== undefined && launchables.pipelines.state === 'entries'}
-        <LaunchableSection
-          name="Pipelines"
-          kind="pipeline"
-          section={launchables.pipelines}
-          {selection}
-          {onSelect}
-        />
-      {/if}
       <LaunchableSection
         name="Workflows"
         kind="workflow"
@@ -125,9 +126,6 @@
       />
       {#if selected}
         <LaunchableDetail entry={selected} {canLaunch} {onTrigger} />
-      {/if}
-      {#if triggered && selectedPipeline}
-        <RunLauncher pipeline={selectedPipeline} {queueId} onClose={() => (triggered = false)} />
       {/if}
       {#if triggered && selected?.kind === 'workflow'}
         <WorkflowTriggerForm
@@ -140,6 +138,10 @@
       {/if}
     {/if}
   </section>
+
+  <p class="network-notice" data-testid="dashboard-network-dependence-note">
+    Local-first, not offline: running this queue may contact configured backend providers.
+  </p>
 </section>
 
 <style>
@@ -156,6 +158,12 @@
     flex-direction: column;
     gap: 8px;
     min-width: 0;
+  }
+  .network-notice {
+    margin: 0;
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-caption);
+    line-height: 1.35;
   }
   .zone-title {
     font-size: 0.9em;

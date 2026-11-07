@@ -211,6 +211,8 @@ const projector = new StateProjector({
   // the Library and Builder. Re-resolved with the Pipeline catalog it was
   // validated against, so a Pipeline catalog change refreshes both.
   getWorkflowCatalog: () => catalogSession.workflowCatalog,
+  // Feature 285 (FR-006a, D4) — resolved with that catalog, so the two cannot disagree.
+  getDefaultWorkflowId: () => catalogSession.defaultWorkflowId,
   // Feature 101 (FR-005, FR-007) — the lifecycle facts behind those three
   // resolutions. Rebuilt on every compose from the session's current snapshot,
   // which is the same read the resolutions came from, so a row and its badge

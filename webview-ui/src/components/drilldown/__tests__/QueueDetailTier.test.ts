@@ -543,18 +543,20 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
     expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('enqueues added work onto THIS queue', async () => {
-    const { getByTestId } = mount(buildSnapshot([]));
+  it('mounts the task composer, loading, before either catalog has resolved (FR-002)', async () => {
+    // Feature 285 (OD-2): the Queue input form that listed Pipeline rows here is retired. The
+    // composer renders its loading arm instead, and adding work onto this queue is pinned by
+    // 'published Workflow task composition' below.
+    const { getByTestId, queryByTestId } = mount(buildSnapshot([]));
 
     await fireEvent.click(getByTestId('queue-composer-open'));
-    const textarea = getByTestId('dashboard-queue-input-textarea');
-    await fireEvent.input(textarea, { target: { value: 'ship the release' } });
-    await fireEvent.click(getByTestId('dashboard-queue-input-submit'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(
-      CMD_START,
-      expect.objectContaining({ description: 'ship the release', queueId: 'q-beta' })
-    , LEDGER_IDENTITY);
+    expect(getByTestId('queue-task-composer')).toBeTruthy();
+    expect(getByTestId('launch-section-loading-workflow')).toBeTruthy();
+    expect(getByTestId('dashboard-network-dependence-note')).toBeTruthy();
+    expect(queryByTestId('dashboard-queue-input-textarea')).toBeNull();
+    expect(getByTestId('queue-composer').querySelector('select')).toBeNull();
+    expect(getByTestId('queue-composer').textContent).not.toContain('Standard');
   });
 });
 
@@ -566,7 +568,7 @@ describe('QueueDetailTier — on-demand composer (T008, FR-009)', () => {
     const { queryByTestId } = mount(buildSnapshot([]));
 
     expect(queryByTestId('queue-composer')).toBeNull();
-    expect(queryByTestId('dashboard-queue-input-textarea')).toBeNull();
+    expect(queryByTestId('queue-task-composer')).toBeNull();
   });
 
   it('opens the composer on "Add work" and hides the trigger while it is open', async () => {
@@ -582,17 +584,12 @@ describe('QueueDetailTier — on-demand composer (T008, FR-009)', () => {
     const { getByTestId, queryByTestId, rerender } = mount(buildSnapshot([]));
 
     await fireEvent.click(getByTestId('queue-composer-open'));
-    await fireEvent.input(getByTestId('dashboard-queue-input-textarea'), {
-      target: { value: 'ship the release' }
-    });
-    await fireEvent.click(getByTestId('dashboard-queue-input-submit'));
-
     expect(getByTestId('queue-composer')).not.toBeNull();
 
     // The host accepted the Task; the next snapshot poll reflects it in this
     // queue's pending count, which is the only signal the parent has, since
-    // `QueueInputForm` posts its own submission command internally and exposes
-    // no event-handler props (research.md R3).
+    // the composer posts its own submission internally and exposes no
+    // event-handler props (research.md R3).
     await rerender({ snapshot: buildSnapshot([task('new-task')]) });
 
     expect(queryByTestId('queue-composer')).toBeNull();
@@ -647,9 +644,6 @@ describe('QueueDetailTier — on-demand composer (T008, FR-009)', () => {
     const { getByTestId, queryByTestId } = mount(buildSnapshot([]));
 
     await fireEvent.click(getByTestId('queue-composer-open'));
-    await fireEvent.input(getByTestId('dashboard-queue-input-textarea'), {
-      target: { value: 'discard me' }
-    });
     await fireEvent.click(getByTestId('queue-composer-cancel'));
 
     expect(queryByTestId('queue-composer')).toBeNull();

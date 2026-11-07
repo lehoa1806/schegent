@@ -263,6 +263,11 @@
           "type": "LaunchProjection"
         },
         {
+          "name": "defaultWorkflowId",
+          "optional": true,
+          "type": "string"
+        },
+        {
           "name": "connectedRuns",
           "optional": true,
           "type": "readonly ConnectedRunProjection[]"

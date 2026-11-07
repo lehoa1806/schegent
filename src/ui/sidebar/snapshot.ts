@@ -851,6 +851,13 @@ export interface WorkflowSnapshot {
    */
   readonly launchables?: LaunchProjection;
   /**
+   * Feature 285 (FR-006a, research D4) — the resolved default Workflow ID, which the Queue
+   * composer preselects when the launch projection offers it. `''` means no default. Absent
+   * while the Workflow catalog is unresolved. Kept out of `launchables`, which is built from
+   * catalog projections only.
+   */
+  readonly defaultWorkflowId?: string;
+  /**
    * Feature 088 — the connected runs the operator can act on, each already
    * folded to per-node state, legal actions, and `hydrating` by
    * `connected-run-projector.ts`. Derived on read from the stored aggregate and

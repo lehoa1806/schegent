@@ -67,7 +67,8 @@ const SIDEBAR_REQUIRED_TESTIDS: ReadonlyArray<string> = [
 // (QueueControls.svelte, QueueDetailRows.svelte, PhaseLogFeed.svelte), mirroring
 // dashboard-activation.host.test.ts's LAYOUT_ZONE_TESTIDS.
 const DASHBOARD_REQUIRED_TESTIDS: ReadonlyArray<string> = [
-  'dashboard-queue-input',
+  // Feature 285 (OD-2, FR-002): the Queue input form is retired; the task composer succeeds it.
+  'queue-task-composer',
   'dashboard-queue-action',
   'queue-detail-rows',
   'dashboard-phase-progression',

@@ -246,9 +246,10 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/contracts/snapshot-vocabulary.ts',
   'src/ui/sidebar/projector-bookkeeping.ts',
   'src/ui/status-bar.ts',
-  // Feature 065 — comment-only references to the `running` queue lifecycle
-  // describing the chooser dispatch rules. No pinned status literal.
-  'webview-ui/src/components/QueueInputForm.svelte',
+  // Feature 285 (OD-2, FR-002) — the composer's boundary note, "running this queue may contact
+  // configured backend providers", quoted verbatim in docs/concepts/local-first-not-offline.md.
+  // Prose, not a status literal; it moved here with the note from the retired Queue input form.
+  'webview-ui/src/components/QueueTaskComposer.svelte',
   'webview-ui/src/components/StatusBar.svelte',
   // Feature 103 — one CSS selector, `.status-running .status-badge`, one of the
   // six that colour a row's status badge from the `status-{row.status}` class

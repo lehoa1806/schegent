@@ -158,6 +158,11 @@ export interface StateProjectorDeps {
     readonly idleTimeoutSeconds: EffectiveLimit<number>;
     readonly maxDurationSeconds: EffectiveLimit<number>;
   };
+  /**
+   * Feature 285 (FR-006a, D4) — the resolved default Workflow ID, `''` for none, read from the
+   * catalog session. Absent publishes no default.
+   */
+  readonly getDefaultWorkflowId?: () => string;
   readonly getDebugLogTail?: () => readonly DebugLogEntry[];
   readonly getAvailableModels?: () => Record<BackendRunnerKind, readonly string[]>;
   readonly getAvailableBackends?: () => readonly BackendRunnerKind[];

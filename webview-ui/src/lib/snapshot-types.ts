@@ -1153,6 +1153,11 @@ export interface WorkflowSnapshot {
    */
   readonly launchables?: LaunchProjection;
   /**
+   * Feature 285 (FR-006a) — the resolved default Workflow ID, `''` for none. Absent while
+   * the Workflow catalog is unresolved. The Queue composer preselects it when offered.
+   */
+  readonly defaultWorkflowId?: string;
+  /**
    * Feature 088 — the connected runs the operator can act on, already folded to
    * per-node state, legal actions, and `hydrating` host-side. Additive and
    * optional: a host with no connected-run wiring omits it, so the view treats
