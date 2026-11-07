@@ -26,7 +26,7 @@ Use this when you have a published Workflow and want to submit work.
 
 The tutorial [User quickstart](../tutorials/user-quickstart.md#3-compose-and-queue-the-run) walks the same path with a first Workflow, and [Launching work](../explanation/core-concepts.md#launching-work) explains it.
 
-The **Schegent: Enqueue Feature Request** command (`schegent.schedule`) is an older surface, not the way to launch a Workflow. Its picker lists stored Pipeline rows only and refuses a Workflow ID; [Current limitations](../explanation/core-concepts.md#current-limitations) describes it. Automation that still calls it may pass optional `description`, `pipelineId`, `queueId`, `position`, and numeric `scheduledStartAt` fields; with none, it uses the current time as `scheduledStartAt`. A paused Queue, unknown Pipeline/Queue, invalid position, validation failure, or foreign primary lock produces a refusal rather than a partially inserted Task.
+The **Schegent: Enqueue Feature Request** command (`schegent.schedule`) is not the way to launch a Workflow. Run with no `pipelineId`, it opens no picker: it reveals the Schegent view and says to add work from a Queue's **Add work** composer. Given a Workflow ID, it refuses; [Current limitations](../explanation/core-concepts.md#current-limitations) describes it. Automation that still calls it with a `pipelineId` may pass optional `description`, `pipelineId`, `queueId`, `position`, and numeric `scheduledStartAt` fields; with none, it uses the current time as `scheduledStartAt`. A paused Queue, unknown Pipeline/Queue, invalid position, validation failure, or foreign primary lock produces a refusal rather than a partially inserted Task.
 
 <!-- Source: src/commands/schedule.ts -->
 <!-- Source: src/services/guarded-run-service.ts -->
