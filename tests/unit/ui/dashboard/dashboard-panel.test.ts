@@ -292,7 +292,8 @@ describe('DashboardPanel (T053)', () => {
     const onDispose = vi.fn();
     const opts = { ...buildOpts(), onDispose };
     const dashboard = DashboardPanel.open(opts);
-    const panel = mocks.state.panels[0];
+    const panel = mocks.state.panels.at(0);
+    if (!panel) throw new Error('expected the dashboard panel to be created');
     await Promise.resolve();
     panel.webview.postMessage.mockClear();
 
