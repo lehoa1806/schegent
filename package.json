@@ -369,6 +369,7 @@
           "scope": "resource",
           "pattern": "^$|^[a-z][a-z0-9-]{0,63}$",
           "deprecationMessage": "Renamed: use schegent.defaultWorkflowId, which holds Workflow ids only. An explicit value here is still read while the new key is unset, and only when it names an effective Workflow; a stored Pipeline id is ignored.",
+          "markdownDeprecationMessage": "Renamed: use `schegent.defaultWorkflowId`, which holds Workflow ids only. An explicit value here is still read while the new key is unset, and only when it names an effective Workflow; a stored Pipeline id is ignored.",
           "description": "Deprecated alias of schegent.defaultWorkflowId."
         },
         "schegent.retry.maxAttempts": {
