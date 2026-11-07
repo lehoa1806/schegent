@@ -285,8 +285,21 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   // are deleted, not drained. Definitions live in the
   // versioned store; a settings key that still declared them would be a second
   // place to author a definition from, which is the thing the store replaces.
-  // The keys that remain here name what a Pipeline may select and which Pipeline
+  // The keys that remain here name what a Phase may select and which Workflow
   // a surface opens on — neither is a definition.
+  //
+  // Feature 285 (OD-2, FR-001): the default is `schegent.defaultWorkflowId`, which holds Workflow
+  // ids only. `schegent.defaultPipelineId` below is its deprecated alias: present because this
+  // schema mirrors the MANIFEST, read only as a fallback, and omitted from KEY_SPECS.
+  'schegent.defaultWorkflowId': {
+    key: 'schegent.defaultWorkflowId',
+    type: 'string',
+    // Unset is the empty string, which the pattern admits, as for the alias below.
+    default: '',
+    scope: 'resource',
+    pattern: '^$|^[a-z][a-z0-9-]{0,63}$',
+    docLabel: 'Default Workflow id'
+  },
   'schegent.defaultPipelineId': {
     key: 'schegent.defaultPipelineId',
     type: 'string',
@@ -299,7 +312,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     default: '',
     scope: 'resource',
     pattern: '^$|^[a-z][a-z0-9-]{0,63}$',
-    docLabel: 'Default pipeline id'
+    docLabel: 'Default Workflow id — deprecated alias'
   },
   'schegent.retry.maxAttempts': {
     key: 'schegent.retry.maxAttempts',

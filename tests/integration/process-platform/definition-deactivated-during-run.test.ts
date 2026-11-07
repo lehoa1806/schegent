@@ -74,7 +74,7 @@ const DEACTIVATED_PHASE = 'speckit-plan';
 const PHASE_IDS: readonly string[] = ['speckit-specify', 'speckit-plan', 'done'];
 
 /** `''` for the configured default, so a deactivation reports no `configured-default`. */
-const semantics = createDefinitionSemantics({ defaultPipelineId: () => '' });
+const semantics = createDefinitionSemantics({ defaultWorkflowId: () => '' });
 
 /** No ports declared, so a launch that binds nothing is a complete request. */
 function pipelineRow(id: string, phases: readonly string[]): unknown {

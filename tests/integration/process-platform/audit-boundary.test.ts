@@ -728,7 +728,11 @@ const LAUNCH_PIPELINE = Object.freeze({
 
 const LAUNCH_CATALOG = loadCatalog(
   storedCatalog({ phases: [LAUNCH_PHASE], pipelines: [LAUNCH_PIPELINE] }),
-  { getModels: () => undefined, getDefaultPipelineId: () => undefined }
+  {
+    getModels: () => undefined,
+    getDefaultWorkflowId: () => undefined,
+    getDeprecatedDefaultPipelineId: () => undefined
+  }
 ).catalog;
 
 function launchDeps(store: Store, audit: Recorder, queue: RecordingQueue): RouterDeps {

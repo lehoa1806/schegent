@@ -62,7 +62,7 @@ export interface GeneralSettings {
   readonly watchdogPollIntervalMinutes: number;
   readonly auditRotationSizeMB: number;
   readonly auditRotationMaxAgeDays: number;
-  readonly defaultPipelineId: string;
+  readonly defaultWorkflowId: string;
   readonly fatalSignatures: readonly string[];
   readonly claudeAutoCompactPctOverride: number | undefined;
   readonly runtimeLogLevel: string;
@@ -106,7 +106,7 @@ export interface GeneralSettings {
     readonly watchdogPollIntervalMinutes: SettingScope;
     readonly auditRotationSizeMB: SettingScope;
     readonly auditRotationMaxAgeDays: SettingScope;
-    readonly defaultPipelineId: SettingScope;
+    readonly defaultWorkflowId: SettingScope;
     readonly fatalSignatures: SettingScope;
     readonly claudeAutoCompactPctOverride: SettingScope;
     readonly runtimeLogLevel: SettingScope;
@@ -143,7 +143,7 @@ export type AllowedKey =
   | 'watchdog.pollIntervalMinutes'
   | 'audit.rotation.sizeMB'
   | 'audit.rotation.maxAgeDays'
-  | 'defaultPipelineId'
+  | 'defaultWorkflowId'
   | 'fatalSignatures'
   | 'claude.autoCompactPctOverride'
   | 'logging.runtimeLogLevel'
@@ -247,12 +247,14 @@ export const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     defaultValue: 30,
     min: 1
   },
-  defaultPipelineId: { scope: 'resource',
+  defaultWorkflowId: { scope: 'resource',
     type: 'string',
-    typedField: 'defaultPipelineId',
+    typedField: 'defaultWorkflowId',
     // Feature 056 Track 3 (FR-013..FR-017) — Align host default with the
     // package.json contribution default so a fresh workspace and the webview
     // idle snapshot agree. Feature 098 (T047, FR-033a) — that value is unset.
+    // Feature 285 (OD-2) — renamed from `defaultPipelineId`, which stays in the manifest as a
+    // read-only deprecated alias with no entry here.
     defaultValue: ''
   },
   fatalSignatures: { scope: 'resource',

@@ -12,6 +12,7 @@ import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend
 import { resolvePhaseCatalog, type ResolvedPhaseCatalog } from './process-catalog';
 import { resolvePipelineCatalog, type ResolvedPipelineCatalog } from './pipeline-catalog';
 import { resolveWorkflowCatalog } from './workflow-catalog';
+import { resolveDefaultWorkflowId, type DefaultWorkflowReader } from './default-workflow';
 import { storedDraftOnlyRows, storedRows } from '../catalog';
 import type { CatalogSnapshot } from '../contracts/catalog-store';
 
@@ -24,21 +25,25 @@ import type { CatalogSnapshot } from '../contracts/catalog-store';
  * to migrate, so a read-once path would be a migration for nobody that outlives
  * the release it was written for (FR-055).
  *
- * `schegent.models` and `schegent.defaultPipelineId` are **not** retired keys and
- * keep both scopes. Neither is a definition — one names what a Pipeline may
- * select, the other which Pipeline the surfaces open on — so neither belongs in a
- * store of versioned definitions.
+ * `schegent.models` and the default-Workflow keys are **not** retired keys and
+ * keep both scopes. Neither is a definition — one names what a Phase may select,
+ * the other which Workflow the surfaces open on — so neither belongs in a store of
+ * versioned definitions. Feature 285 (D2): the default is `schegent.defaultWorkflowId`
+ * with the deprecated `schegent.defaultPipelineId` as a read-only fallback, and the
+ * reader has no write method for either.
  */
-export interface CatalogConfigReader {
+export interface CatalogConfigReader extends DefaultWorkflowReader {
   getModels(scope: 'user' | 'workspace'): readonly unknown[] | undefined;
-  getDefaultPipelineId(scope: 'user' | 'workspace'): string | undefined;
 }
 
 export interface LoadCatalogResult {
   readonly catalog: PipelineCatalog;
   readonly errors: readonly ValidationError[];
   readonly warnings: readonly ValidationWarning[];
+  /** Always `''`: the settings no longer source the linear default (feature 285, FR-007). */
   readonly defaultPipelineId: string;
+  /** The resolved default Workflow ID, `''` for none (feature 285, FR-005). */
+  readonly defaultWorkflowId: string;
   readonly usedFallback: boolean;
   readonly phaseCatalog: ResolvedPhaseCatalog;
   /**
@@ -182,23 +187,21 @@ export function loadCatalog(
   // branch. It used to be one because it answered with a constant catalog — there
   // were no definitions without a reader to hold them. There are: they came out of
   // the store above, before this line, and all the reader still decides is which
-  // models a Pipeline may select and which Pipeline the surfaces open on. Its
+  // models a Pipeline may select and which Workflow the surfaces open on. Its
   // absence must move those two answers and nothing else, and a second return path
   // is how it would come to move a third — the branch this replaces returned
   // `errors: []` without validating the catalog at all.
+  //
+  // Feature 285 (FR-007, D3): no `defaultPipelineId` is passed, so the linear catalog's default is
+  // `''`, and the settings name a default Workflow only.
   const policy = mergeRuntimePolicy(
-    {
-      models: coerceModels(reader?.getModels('user')),
-      defaultPipelineId: reader?.getDefaultPipelineId('user')
-    },
-    {
-      models: coerceModels(reader?.getModels('workspace')),
-      defaultPipelineId: reader?.getDefaultPipelineId('workspace')
-    }
+    { models: coerceModels(reader?.getModels('user')) },
+    { models: coerceModels(reader?.getModels('workspace')) }
   );
 
   const effectivePipelineDefs: PipelineDef[] = [...pipelineCatalog.effectivePipelineDefs];
   const effectiveWorkflows = workflowCatalog?.effective ?? [];
+  const defaultWorkflowId = resolveDefaultWorkflowId(reader, effectiveWorkflows);
 
   const merged = buildCatalog(
     phaseCatalog.effectivePhaseDefs,
@@ -236,6 +239,7 @@ export function loadCatalog(
       errors: report.errors,
       warnings: allWarnings,
       defaultPipelineId: '',
+      defaultWorkflowId: '',
       usedFallback: true,
       phaseCatalog,
       pipelineCatalog
@@ -262,6 +266,7 @@ export function loadCatalog(
     errors: [],
     warnings: allWarnings,
     defaultPipelineId: resolvedDefaultId,
+    defaultWorkflowId,
     usedFallback: false,
     phaseCatalog,
     pipelineCatalog

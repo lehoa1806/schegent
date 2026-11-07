@@ -356,12 +356,20 @@
             }
           }
         },
+        "schegent.defaultWorkflowId": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "pattern": "^$|^[a-z][a-z0-9-]{0,63}$",
+          "markdownDescription": "Workflow id used when a feature is enqueued without an explicit selection. Empty means no default: the extension ships no workflows, so until you import one there is nothing for this to name. Set it to the id of a workflow you have imported. Only a Workflow id counts; a value that names no effective Workflow gives no default."
+        },
         "schegent.defaultPipelineId": {
           "type": "string",
           "default": "",
           "scope": "resource",
           "pattern": "^$|^[a-z][a-z0-9-]{0,63}$",
-          "markdownDescription": "Workflow id used when a feature is enqueued without an explicit selection. Empty means no default: the extension ships no workflows, so until you import one there is nothing for this to name. Set it to the id of a workflow you have imported."
+          "deprecationMessage": "Renamed: use schegent.defaultWorkflowId, which holds Workflow ids only. An explicit value here is still read while the new key is unset, and only when it names an effective Workflow; a stored Pipeline id is ignored.",
+          "description": "Deprecated alias of schegent.defaultWorkflowId."
         },
         "schegent.retry.maxAttempts": {
           "type": "integer",

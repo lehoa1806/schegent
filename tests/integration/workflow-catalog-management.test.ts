@@ -980,7 +980,8 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
 
   const CATALOG_READER: CatalogConfigReader = {
     getModels: () => [],
-    getDefaultPipelineId: () => undefined
+    getDefaultWorkflowId: () => undefined,
+    getDeprecatedDefaultPipelineId: () => undefined
   };
 
   const REFERENCED_PIPELINE_IDS = [DESIGN_PIPELINE.id, BUILD_PIPELINE.id] as const;

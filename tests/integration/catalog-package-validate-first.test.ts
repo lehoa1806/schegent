@@ -20,7 +20,7 @@ import type { PackagePublishRequest } from '../../src/contracts/catalog-lifecycl
 import { FakeCatalogStore } from '../fixtures/fake-catalog-store';
 import { phaseBody, pipelineBody, workflowBody } from '../fixtures/catalog-lifecycle-harness';
 
-const semantics = createDefinitionSemantics({ defaultPipelineId: () => '' });
+const semantics = createDefinitionSemantics({ defaultWorkflowId: () => '' });
 
 /** The fixture store behind a decorator that counts the two calls that write. */
 function countingStore(inner: FakeCatalogStore): {

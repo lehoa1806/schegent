@@ -66,7 +66,7 @@ import {
   treeOf
 } from '../fixtures/catalog-real-fs';
 
-const semantics = createDefinitionSemantics({ defaultPipelineId: () => '' });
+const semantics = createDefinitionSemantics({ defaultWorkflowId: () => '' });
 
 let workspaceRoot: string;
 

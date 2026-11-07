@@ -335,7 +335,8 @@ if (typeof vscode.workspace.onDidChangeConfiguration === 'function') {
       // write and re-resolves through `refreshCatalog` below. The two survivors
       // are still configuration and still reload here.
       if (
-        event.affectsConfiguration('schegent.defaultPipelineId') ||
+        event.affectsConfiguration('schegent.defaultWorkflowId') || // 285 — the default Workflow
+        event.affectsConfiguration('schegent.defaultPipelineId') || // 285 — its deprecated key
         event.affectsConfiguration('schegent.models') // 096 — reload models
       ) {
         void refreshCatalog();

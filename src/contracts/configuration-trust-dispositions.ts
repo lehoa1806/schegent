@@ -155,7 +155,7 @@ export const CONFIGURATION_SENSITIVITY = Object.freeze({
     reason: 'same rotation, bounded by size instead of age'
   },
 
-  // ---- run-shape (14) ----
+  // ---- run-shape (16) ----
   'schegent.claude.autoCompactPctOverride': {
     sensitivity: 'run-shape',
     reason: 'a compaction percentage consulted while a run is in flight'
@@ -165,6 +165,12 @@ export const CONFIGURATION_SENSITIVITY = Object.freeze({
     reason:
       'names a catalog id, and the catalog does not activate untrusted at all ' +
       '(feature 099 isCatalogActivationTrusted)'
+  },
+  'schegent.defaultWorkflowId': {
+    sensitivity: 'run-shape',
+    reason:
+      'names a catalog id, and the catalog does not activate untrusted at all ' +
+      '(feature 099 isCatalogActivationTrusted); renamed from defaultPipelineId (feature 285)'
   },
   'schegent.fatalSignatures': {
     sensitivity: 'run-shape',

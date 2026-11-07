@@ -118,7 +118,8 @@
   // composer's own prop sources, mirroring `Dashboard.svelte`'s prior
   // derivation byte-for-byte (research.md R3).
   const availablePipelines = $derived(snapshot.availablePipelines ?? []);
-  const defaultPipelineId = $derived(snapshot.generalSettings?.defaultPipelineId ?? '');
+  // Feature 285 (FR-007): the settings name a default Workflow only, never a Pipeline.
+  const defaultPipelineId = '';
 
   // US1 — the default queue is not deletable. Resolved from the projection the
   // operator can actually change, never from the `'default'` literal.

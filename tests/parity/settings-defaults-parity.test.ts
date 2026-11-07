@@ -90,9 +90,10 @@ describe('Feature 056 Track 3 — settings defaults parity', () => {
     expect(props['schegent.workflows']).toBeUndefined();
   });
 
-  it('package.json default pipeline id matches the host KEY_SPECS default', () => {
+  it('package.json default Workflow id matches the host KEY_SPECS default', () => {
     const pkg = readPackageJson();
-    const contrib = pkg.contributes.configuration.properties['schegent.defaultPipelineId'];
+    // Feature 285 (OD-2): renamed from `schegent.defaultPipelineId`, a deprecated alias now.
+    const contrib = pkg.contributes.configuration.properties['schegent.defaultWorkflowId'];
     expect(contrib).toBeDefined();
     // Feature 098 (T046/T047/T048, FR-033) — the shared default is unset. It
     // named the built-in Pipeline; the built-in layer is empty, so all four
@@ -166,7 +167,7 @@ describe('Feature 056 Track 3 — host validator agrees with package.json', () =
       }
     };
     const settings = mod.readGeneralSettings(fakeConfig);
-    expect(settings.defaultPipelineId).toBe('');
+    expect(settings.defaultWorkflowId).toBe('');
     expect(settings.retryMaxAttempts).toBe(5);
     // FR-R3-145 (T1570) — the concurrency cap is no longer read here. It was
     // never enforced against configuration: both drain predicates read the
@@ -204,7 +205,7 @@ describe('Feature 056 Track 3 — host validator agrees with package.json', () =
 describe('Feature 056 Track 3 — webview idle snapshot agrees with host defaults', () => {
   it('host IDLE_GENERAL_SETTINGS uses the corrected defaults', async () => {
     const mod = await import('../../src/ui/sidebar/snapshot.js');
-    expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('');
+    expect(mod.IDLE_GENERAL_SETTINGS.defaultWorkflowId).toBe('');
     expect(mod.IDLE_GENERAL_SETTINGS.retryMaxAttempts).toBe(5);
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxBytes).toBe(5 * 1024 * 1024);
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxGenerations).toBe(3);
@@ -212,7 +213,7 @@ describe('Feature 056 Track 3 — webview idle snapshot agrees with host default
 
   it('webview IDLE_GENERAL_SETTINGS uses the corrected defaults', async () => {
     const mod = await import('../../webview-ui/src/lib/snapshot-types.js');
-    expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('');
+    expect(mod.IDLE_GENERAL_SETTINGS.defaultWorkflowId).toBe('');
     expect(mod.IDLE_GENERAL_SETTINGS.retryMaxAttempts).toBe(5);
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxBytes).toBe(5 * 1024 * 1024);
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxGenerations).toBe(3);
@@ -381,7 +382,8 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     // never written through the IPC settings surface, so it deliberately has
     // no KEY_SPECS validator — adding one would give two keys one typed field
     // and let the unset alias's default clobber an explicit new-key value.
-    const deprecatedAliasKeys = new Set<string>(['invocation.timeoutSeconds']);
+    // Feature 285 (OD-2) — `defaultPipelineId`, read-only fallback for `defaultWorkflowId`.
+    const deprecatedAliasKeys = new Set<string>(['invocation.timeoutSeconds', 'defaultPipelineId']);
     // FR-R3-112 — the per-run spend bound. Nullable numbers read at evaluation time by
     // `src/activation/run-safety-wiring.ts` through `getConfiguration()`, re-read on every
     // evaluation so an operator who sets a limit mid-run means it for that run. Deliberately NOT

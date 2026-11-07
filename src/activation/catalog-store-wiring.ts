@@ -194,16 +194,16 @@ function catalogStoreAnchor(): { workspaceRoot: string; storeRoot: string } | nu
  * wired together and never apart.
  *
  * @param store             The host store, or `null` in an untrusted workspace.
- * @param defaultPipelineId Reads `schegent.defaultPipelineId` fresh per call, so
+ * @param defaultWorkflowId Reads the resolved default Workflow ID fresh per call, so
  *                          the FR-059 advisory cannot go stale (see
- *                          `DefinitionSemanticsOptions`).
+ *                          `DefinitionSemanticsOptions`, Feature 285).
  */
 export function createHostCatalogLifecycle(
   store: CatalogStore | null,
-  defaultPipelineId: () => string
+  defaultWorkflowId: () => string
 ): CatalogLifecycleOps | null {
   if (store === null) return null;
-  const semantics = createDefinitionSemantics({ defaultPipelineId });
+  const semantics = createDefinitionSemantics({ defaultWorkflowId });
   const service = createLifecycleService({ store, semantics });
   return {
     ...service,

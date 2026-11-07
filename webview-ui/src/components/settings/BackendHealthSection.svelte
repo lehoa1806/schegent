@@ -21,7 +21,7 @@
     BackendPingState,
     BackendPosture,
     BackendRunnerKind,
-    PipelineDefinition,
+    PortableWorkflowDefinition,
     WorkflowSnapshot
   } from '../../lib/snapshot-types';
   import BackendSection from './general/BackendSection.svelte';
@@ -47,7 +47,7 @@
     statusByKey: StatusByKey;
     fieldChanged: (key: ScalarKey) => boolean;
     fieldScopeLabel: (key: ScalarKey) => string;
-    pipelines: readonly PipelineDefinition[];
+    workflows: readonly PortableWorkflowDefinition[];
     saveOne: (spec: FieldSpec) => void;
     resetField: (key: ScalarKey) => void;
   }
@@ -58,7 +58,7 @@
     statusByKey,
     fieldChanged,
     fieldScopeLabel,
-    pipelines,
+    workflows,
     saveOne,
     resetField
   }: Props = $props();
@@ -88,7 +88,7 @@
         {busy}
         bind:draft
         {statusByKey}
-        {pipelines}
+        {workflows}
         {fieldChanged}
         {fieldScopeLabel}
         {saveOne}

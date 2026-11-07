@@ -6,7 +6,7 @@
     fields,
     draft = $bindable(),
     statusByKey,
-    pipelines,
+    workflows,
     fieldChanged,
     fieldScopeLabel,
     saveOne,
@@ -30,7 +30,7 @@
         status={statusByKey[spec.key]}
         changed={fieldChanged(spec.key)}
         scopeLabel={fieldScopeLabel(spec.key)}
-        {pipelines}
+        {workflows}
         onSave={() => saveOne(spec)}
         onReset={() => resetField(spec.key)}
       />
