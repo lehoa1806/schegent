@@ -64,7 +64,6 @@
   }
 
   const { snapshot, trusted, initialWorkflowId = null, onopenphase }: Props = $props();
-  // svelte-ignore state_referenced_locally
   const initialWfSlice = (() => {
     const raw = readPersistedBuilderState()?.workflowSlice;
     return raw ? hydrateWorkflowSlice(raw, snapshot) : null;

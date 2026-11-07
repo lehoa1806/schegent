@@ -67,7 +67,8 @@ function slicesEqual(prev: unknown, next: unknown): boolean {
 export function reconcileSnapshotMessage(
   current: WorkflowSnapshot | null,
   lastRevision: number | null,
-  incoming: WorkflowSnapshot,
+  // The wire may carry anything; the guard below refuses a payload that is not an object.
+  incoming: WorkflowSnapshot | null | undefined,
   sync?: SnapshotSyncMeta
 ): ReconcileSnapshotOutcome {
   if (!incoming || typeof incoming !== 'object') {

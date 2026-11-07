@@ -411,12 +411,13 @@ export class TransportRouter {
     const done = this.enqueue(async () => {
       const root = this.deps.workspaceRoot();
       if (root === null || this.closed) return;
-      let hadFailure = false;
+      // A count, not a boolean: the closure's assignment is invisible to narrowing.
+      let failedSteps = 0;
       const step = async (operation: () => Promise<void>): Promise<void> => {
         try {
           await operation();
         } catch (error) {
-          hadFailure = true;
+          failedSteps += 1;
           this.report('retention', error);
         }
       };
@@ -426,7 +427,7 @@ export class TransportRouter {
       await step(() => this.enforceTotal(root, activeRunIds, counters));
       await step(() => this.store.narrowLegacy(root));
       await step(() => this.measureNow(root));
-      if (!hadFailure) {
+      if (failedSteps === 0) {
         this.reported.clear();
         this.deps.evidenceHealth?.reportSuccess('transport');
       }

@@ -1767,12 +1767,12 @@ describe('PipelineBuilder — FR-R5-F10 draft persistence and bounded undo histo
 
     const persisted = (mockedWebviewState as {
       builderState?: { phaseSlice?: { history?: unknown[] } };
-    })?.builderState?.phaseSlice;
+    } | undefined)?.builderState?.phaseSlice;
     expect(persisted?.history?.length).toBeLessThanOrEqual(50);
 
     const buttons = Array.from(container.querySelectorAll('.toolbar button')) as HTMLButtonElement[];
-    const undoBtn = buttons.find((b) => b.textContent?.trim() === 'Undo')!;
-    const redoBtn = buttons.find((b) => b.textContent?.trim() === 'Redo')!;
+    const undoBtn = buttons.find((b) => b.textContent.trim() === 'Undo')!;
+    const redoBtn = buttons.find((b) => b.textContent.trim() === 'Redo')!;
     await fireEvent.click(undoBtn);
     await tick();
     expect(redoBtn.disabled).toBe(false);
