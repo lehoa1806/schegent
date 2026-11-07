@@ -1495,11 +1495,11 @@ export interface TaskReorderedPayload {
 // an exported constant. Closed is the property that matters here, not the count;
 // a passthrough would break the argument above whatever its arity.
 
-// Feature 073 — payload for `metrics-view-opened` (FR-022 adoption
-// tracking). Bounded to a single session identifier — no workspace root
-// path, no operator-authored content (contracts/metrics-view-opened-event.md).
+// Feature 073 — payload for `metrics-view-opened` (FR-022 adoption tracking): one session id, no
+// workspace root path, no operator-authored content (contracts/metrics-view-opened-event.md).
+// Not `sessionId` since 284: the FR-R5-F14 sanitizer redacts that key, so the writer refused it.
 export interface MetricsViewOpenedPayload {
-  readonly sessionId: string;
+  readonly viewCorrelationId: string;
 }
 
 export type AuditOutcome = 'success' | 'failure' | 'info';

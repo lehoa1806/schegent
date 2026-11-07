@@ -552,6 +552,206 @@ export const workflowSnapshot = {
     "revision": "visual-pipeline-revision",
     "warnings": []
   },
+  "phaseCatalog": {
+    "state": "ready",
+    "records": [
+      {
+        "key": "speckit-specify::0",
+        "phaseId": "speckit-specify",
+        "status": "effective",
+        "definition": {
+          "phaseId": "speckit-specify",
+          "name": "Specify",
+          "version": 1,
+          "instruction": "Define scope and acceptance criteria.",
+          "model": "claude-sonnet-5-5",
+          "effort": "high",
+          "timeoutSeconds": 1800,
+          "loopable": false,
+          "runner": "claude"
+        },
+        "display": {},
+        "errors": []
+      },
+      {
+        "key": "speckit-clarify::0",
+        "phaseId": "speckit-clarify",
+        "status": "effective",
+        "definition": {
+          "phaseId": "speckit-clarify",
+          "name": "Clarify",
+          "version": 1,
+          "instruction": "Resolve material ambiguity.",
+          "model": "claude-sonnet-5-5",
+          "effort": "medium",
+          "timeoutSeconds": 1200,
+          "loopable": true,
+          "retryCondition": "ambiguities_remain",
+          "runner": "claude"
+        },
+        "display": {},
+        "errors": []
+      },
+      {
+        "key": "speckit-plan::0",
+        "phaseId": "speckit-plan",
+        "status": "effective",
+        "definition": {
+          "phaseId": "speckit-plan",
+          "name": "Plan",
+          "version": 1,
+          "instruction": "Create an implementation plan.",
+          "model": "gpt-5.6-codex",
+          "effort": "high",
+          "timeoutSeconds": 1800,
+          "loopable": false,
+          "runner": "codex"
+        },
+        "display": {},
+        "errors": []
+      },
+      {
+        "key": "speckit-tasks::0",
+        "phaseId": "speckit-tasks",
+        "status": "effective",
+        "definition": {
+          "phaseId": "speckit-tasks",
+          "name": "Tasks",
+          "version": 1,
+          "instruction": "Break the plan into tasks.",
+          "timeoutSeconds": 1200,
+          "loopable": false,
+          "runner": "claude"
+        },
+        "display": {},
+        "errors": []
+      },
+      {
+        "key": "speckit-analyze::0",
+        "phaseId": "speckit-analyze",
+        "status": "effective",
+        "definition": {
+          "phaseId": "speckit-analyze",
+          "name": "Analyze",
+          "version": 1,
+          "instruction": "Check consistency and risk.",
+          "timeoutSeconds": 1200,
+          "loopable": true,
+          "retryCondition": "issues_remain",
+          "runner": "claude"
+        },
+        "display": {},
+        "errors": []
+      },
+      {
+        "key": "speckit-implement::0",
+        "phaseId": "speckit-implement",
+        "status": "effective",
+        "definition": {
+          "phaseId": "speckit-implement",
+          "name": "Implement",
+          "version": 1,
+          "instruction": "Implement and verify the approved plan.",
+          "timeoutSeconds": 5400,
+          "loopable": false,
+          "runner": "claude"
+        },
+        "display": {},
+        "errors": []
+      },
+      {
+        "key": "finalize::0",
+        "phaseId": "finalize",
+        "status": "effective",
+        "definition": {
+          "phaseId": "finalize",
+          "name": "Finalize",
+          "version": 1,
+          "instruction": "Review, commit, and integrate the result.",
+          "timeoutSeconds": 1800,
+          "loopable": false,
+          "runner": "claude"
+        },
+        "display": {},
+        "errors": []
+      }
+    ],
+    "effective": [
+      {
+        "phaseId": "speckit-specify",
+        "name": "Specify",
+        "version": 1,
+        "instruction": "Define scope and acceptance criteria.",
+        "model": "claude-sonnet-5-5",
+        "effort": "high",
+        "timeoutSeconds": 1800,
+        "loopable": false,
+        "runner": "claude"
+      },
+      {
+        "phaseId": "speckit-clarify",
+        "name": "Clarify",
+        "version": 1,
+        "instruction": "Resolve material ambiguity.",
+        "model": "claude-sonnet-5-5",
+        "effort": "medium",
+        "timeoutSeconds": 1200,
+        "loopable": true,
+        "retryCondition": "ambiguities_remain",
+        "runner": "claude"
+      },
+      {
+        "phaseId": "speckit-plan",
+        "name": "Plan",
+        "version": 1,
+        "instruction": "Create an implementation plan.",
+        "model": "gpt-5.6-codex",
+        "effort": "high",
+        "timeoutSeconds": 1800,
+        "loopable": false,
+        "runner": "codex"
+      },
+      {
+        "phaseId": "speckit-tasks",
+        "name": "Tasks",
+        "version": 1,
+        "instruction": "Break the plan into tasks.",
+        "timeoutSeconds": 1200,
+        "loopable": false,
+        "runner": "claude"
+      },
+      {
+        "phaseId": "speckit-analyze",
+        "name": "Analyze",
+        "version": 1,
+        "instruction": "Check consistency and risk.",
+        "timeoutSeconds": 1200,
+        "loopable": true,
+        "retryCondition": "issues_remain",
+        "runner": "claude"
+      },
+      {
+        "phaseId": "speckit-implement",
+        "name": "Implement",
+        "version": 1,
+        "instruction": "Implement and verify the approved plan.",
+        "timeoutSeconds": 5400,
+        "loopable": false,
+        "runner": "claude"
+      },
+      {
+        "phaseId": "finalize",
+        "name": "Finalize",
+        "version": 1,
+        "instruction": "Review, commit, and integrate the result.",
+        "timeoutSeconds": 1800,
+        "loopable": false,
+        "runner": "claude"
+      }
+    ],
+    "revision": "visual-phase-revision",
+    "warnings": []
+  },
   "workflowCatalog": {
     "state": "ready",
     "records": [

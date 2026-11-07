@@ -79,8 +79,10 @@ carries the usage — the same record an operator reads and `npm run audit:verif
 Spend cannot be observed mid-turn, because no backend reports it until the turn ends, so
 the overshoot is at most the phase that crossed the bound.
 
-A host restart does not hand a run its whole bound again. At activation the tally of every live
-Run is rebuilt from `.schegent/audit.log` and its rotated archives, newest first, up to 8 MiB in
+A host restart does not hand a run its whole bound again. At activation the tally of every Run
+that can still move is rebuilt: a live Run, and a `failed` one, which Retry, Restart and Resume
+can put back into motion. Each is read from `.schegent/audit.log` and its rotated archives,
+newest first, up to 8 MiB in
 all (`SPEND_REPLAY_MAX_BYTES`), stopping once a record from before the Run's `startedAt` is
 reached. Nothing is evaluated or paused during the replay itself, so a tally that is already at
 or over the bound pauses its Run at the next `phase-end` boundary, and rows seen by both the

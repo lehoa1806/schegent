@@ -27,7 +27,7 @@ export class DashboardPanel {
   private readonly panel: vscode.WebviewPanel;
   private readonly logger: SanitizedLogger;
   private readonly dispatch: InboundDispatch;
-  private onDispose?: () => void;
+  private onDispose: (() => void) | undefined;
   private projectorSub: Disposable | null = null;
   private latestSnapshot: WorkflowSnapshot | null = null;
   private readonly transport = new SnapshotTransport();

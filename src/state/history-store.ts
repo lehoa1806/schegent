@@ -180,9 +180,10 @@ export class HistoryStore {
   ): boolean {
     if (keys.length !== cached.length) return false;
     for (let i = 0; i < keys.length; i += 1) {
-      const snap = cached[i];
+      const snap = cached.at(i);
       if (!snap || snap.queueId !== keys[i]) return false;
-      const raws = map[snap.queueId];
+      // A missing partition reads undefined; the cast keeps the guard below meaningful.
+      const raws = map[snap.queueId] as readonly PersistedHistoryEntry[] | undefined;
       if (!raws || raws !== snap.raws || raws.length !== snap.length) return false;
       if (raws[0] !== snap.first || raws[raws.length - 1] !== snap.last) return false;
     }

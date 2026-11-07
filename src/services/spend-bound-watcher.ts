@@ -34,8 +34,8 @@ import type { AuditEntry } from '../audit/audit-entry';
 import { effectiveRunnerKindForPhase } from '../config/pipeline-snapshot';
 import { spendDenominationOf } from '../contracts/backend-spend-denomination';
 import type { SanitizedLogger } from '../lib/logger';
-import { isTerminalRunStatus, type WorkflowRun } from '../state/workflow-run';
-import type { SpendReplay } from './spend-bound-replay';
+import { isOperableRunStatus, type WorkflowRun } from '../state/workflow-run';
+import type { ReplayRun, SpendReplay } from './spend-bound-replay';
 import {
   accumulateSpend,
   effectiveSpendBound,
@@ -168,17 +168,15 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
   };
 
   /**
-   * A run eviction takes first: gone from the store, or in a terminal status (`completed`, `failed`
-   * or `canceled`). This is wider than `forget`, which drops a tally only for `completed` and
-   * `canceled`: a `failed` run counts as finished here although it is resumable, and it is not
-   * added to `evicted`. The restart seed in `run-safety-wiring.ts` skips failed runs the same way.
-   * So a failed run that is resumed after its tally was evicted, or after a restart, is measured
-   * from zero and is not marked incomplete. The predicate is left as it is: the change belongs to
-   * the spend-bounds owner (FR-R5-F22, open dependency OD-1).
+   * A run whose tally nothing will add to again: gone from the store, or `completed` or
+   * `canceled`, the same line `forget` draws. A `failed` run is NOT finished: Retry, Restart and
+   * Resume can put it back into motion, so dropping its tally loses spend that run will be
+   * measured against (feature 284, closing FR-R5-F22 OD-1). Eviction, the live rows and the
+   * restart seed all use this one predicate.
    */
   const isFinished = (runId: string): boolean => {
     const found = deps.findRunById(runId);
-    return found === null || isTerminalRunStatus(found.run.status);
+    return found === null || !isOperableRunStatus(found.run.status);
   };
 
   /** The tracked run to drop: the oldest finished one, else the oldest of all. */
@@ -193,12 +191,18 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
 
   const remember = (runId: string, spend: RunSpendTotal): void => {
     observed.set(runId, spend);
+    if (observed.size <= MAX_TRACKED_RUNS) return;
     while (observed.size > MAX_TRACKED_RUNS) {
       const victim = evictionVictim();
       if (victim === null) break;
       const live = !isFinished(victim);
       forget(victim);
       if (live) evicted.add(victim);
+    }
+    // An evicted mark whose run has left the store is answered by nothing, and a failed run that
+    // is never resumed can leave that way. Pruned on each eviction, so the set stays bounded.
+    for (const runId of [...evicted]) {
+      if (deps.findRunById(runId) === null) evicted.delete(runId);
     }
   };
 
@@ -312,8 +316,9 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
       if (entry.eventType !== 'phase-end' || entry.runId === '' || foldedLive.has(entry.id)) {
         continue;
       }
+      if (isFinished(entry.runId)) continue;
       const found = deps.findRunById(entry.runId);
-      if (found === null || isTerminalRunStatus(found.run.status)) continue;
+      if (found === null) continue;
 
       remember(entry.runId, accumulateSpend(baseTotal(entry.runId), entry.payload, entry.id));
       seeded.add(entry.id);
@@ -326,8 +331,7 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
     // the replay never covered is not in the map and is not created.
     for (const [runId, completeness] of read.completeness) {
       if (completeness.kind === 'complete') continue;
-      const found = deps.findRunById(runId);
-      if (found === null || isTerminalRunStatus(found.run.status)) continue;
+      if (isFinished(runId)) continue;
       remember(runId, { ...baseTotal(runId), completeness });
     }
   };
@@ -346,4 +350,15 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
         : 'enforced';
     }
   };
+}
+
+/**
+ * The Runs the restart seed replays: every Run that can still be put back into motion, which
+ * includes a `failed` one (feature 284, closing FR-R5-F22 OD-1). A `completed` or `canceled` Run's
+ * tally is never read again, so it is not rebuilt.
+ */
+export function spendSeedTargets(runs: readonly WorkflowRun[]): ReplayRun[] {
+  return runs
+    .filter((run) => isOperableRunStatus(run.status))
+    .map((run) => ({ runId: run.id, startedAt: run.startedAt }));
 }
