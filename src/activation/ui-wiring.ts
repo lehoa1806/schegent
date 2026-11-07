@@ -51,7 +51,6 @@ import type { OperatorAttribution } from '../lib/operator-attribution';
 import type { RuntimeLogAccessor } from '../lib/runtime-log/runtime-log-settings';
 import { registerQueueItemExitCommands } from './queue-item-exit-wiring';
 import { readQueueFailurePolicyDefault } from './uncached-settings-accessors';
-import type { PipelineCatalog } from '../config/pipeline-config';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import { errorMessage } from '../lib/errors';
 import type { SanitizedLogger } from '../lib/logger';
@@ -87,7 +86,6 @@ interface Stage2UiWiringDeps {
   readonly auditWriter: AuditLogWriter;
   readonly notifier: Notifier;
   readonly logger: SanitizedLogger;
-  readonly getCatalog: () => PipelineCatalog;
   readonly controller: SchegentWorkflowController;
   readonly queue: QueueManager;
   readonly lock: WorkspaceLockManager;
@@ -321,7 +319,6 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     registerGuardedCommand(guard, 'schegent.schedule', (args: ScheduleCommandArgs | undefined) =>
       runSchedule(args, {
         guardedRunService: deps.guardedRunService,
-        getCatalog: deps.getCatalog,
         notifier: deps.notifier,
         logger: deps.logger
       })
