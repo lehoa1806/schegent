@@ -69,6 +69,25 @@ const TYPE_ONLY_ALLOWLIST: ReadonlyArray<{ readonly module: string; readonly rea
       'exists to remove, so a hand-written one would encode the belief under test. Tests are ' +
       'not bundled, so nothing reaches the untrusted surface. Not a contracts candidate — it ' +
       'is a filesystem reader, not a shape'
+  },
+  {
+    // Assembled for the reason given above CONTRACTS_QUEUE_IDENTITY.
+    module: ['src', 'ui', 'sidebar', 'snapshot-transport'].join('/'),
+    reason:
+      '2026-11-07 — feature 284, for FR-R5-F12 (feature 271). Imported by ONE webview test, ' +
+      'as a value, so the store-sync case drives the REAL host transport across the boundary: ' +
+      'the resync and slice-suppression contract is a property of both sides together, and a ' +
+      'hand-written sender would encode the belief under test. Tests are not bundled, so ' +
+      'nothing reaches the untrusted surface. Not a contracts candidate: it is host code'
+  },
+  {
+    // Assembled for the reason given above CONTRACTS_QUEUE_IDENTITY.
+    module: ['src', 'ui', 'sidebar', 'snapshot'].join('/'),
+    reason:
+      '2026-11-07 — feature 284, for FR-R5-F12 (feature 271). Imported by the same ONE webview ' +
+      'test, as a value, for `buildIdleSnapshot`, so its fixture is the snapshot the host ' +
+      'really builds rather than a copy that drifts from it. Tests are not bundled, so nothing ' +
+      'reaches the untrusted surface. Not a contracts candidate: it is the host builder'
   }
 ];
 
