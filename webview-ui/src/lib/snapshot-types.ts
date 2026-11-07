@@ -283,6 +283,22 @@ export type {
   ConnectedRunProjection,
   WorkflowControlAction
 } from '../../../src/contracts/sidebar-ipc/workflow-run.js';
+export {
+  describeBranchDisposition,
+  describeExitReason,
+  EXECUTION_BRANCH_DISPOSITIONS,
+  EXECUTION_DECISION_CAP_OUTCOMES,
+  EXECUTION_DECISION_EXIT_REASONS,
+  EXECUTION_DECISION_OBSERVATION_VERSION,
+  formatConditionSummary,
+  formatPhaseRetrySummary,
+  type ExecutionBranchDisposition,
+  type ExecutionDecisionBranchRecord,
+  type ExecutionDecisionCapOutcome,
+  type ExecutionDecisionExitReason,
+  type ExecutionDecisionObservation,
+  type ExecutionDecisionSettingSources
+} from '../../../src/contracts/execution-decision-observation.js';
 export type {
   PhaseSourceStatus
 } from '../../../src/contracts/process-definitions.js';

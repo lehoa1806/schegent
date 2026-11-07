@@ -214,6 +214,9 @@ export function projectConnectedRun(
     const childInvocationIds = invocationFrames
       .filter((f) => f.parentInvocationId === rootId && f.parentCallNodeId === node.nodeId)
       .map((f) => f.invocationId);
+    const decisionObservation = run.decisionObservations
+      ?.filter((obs) => obs.nodeId === node.nodeId)
+      .at(-1);
     return {
       nodeId: node.nodeId,
       pipelineId: targetId,
@@ -228,6 +231,7 @@ export function projectConnectedRun(
       ...(reading.latestQueueItemId !== undefined
         ? { latestQueueItemId: reading.latestQueueItemId }
         : {}),
+      ...(decisionObservation !== undefined ? { decisionObservation } : {}),
       ...(hasInvocations
         ? {
             nodeKind,
@@ -247,6 +251,9 @@ export function projectConnectedRun(
     revision: run.revision,
     hydrating,
     nodes: Object.freeze(nodes),
+    ...(run.decisionObservations !== undefined && run.decisionObservations.length > 0
+      ? { decisionObservations: run.decisionObservations }
+      : {}),
     ...(control !== undefined
       ? {
           queueId: control.queueId,

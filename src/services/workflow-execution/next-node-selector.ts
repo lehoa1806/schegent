@@ -27,13 +27,23 @@ import type {
   WorkflowHandoffMode,
   WorkflowNodeTerminalStatus
 } from '../../contracts/workflow-definitions';
+import type { RetryCapOutcome } from '../../contracts/process-definitions';
+import {
+  EXECUTION_DECISION_OBSERVATION_VERSION,
+  formatConditionSummary,
+  type ExecutionBranchDisposition,
+  type ExecutionDecisionBranchRecord,
+  type ExecutionDecisionExitReason,
+  type ExecutionDecisionObservation,
+  type ExecutionDecisionSettingSources
+} from '../../contracts/execution-decision-observation';
 import type {
   ConnectionOutcome,
   OperandResolution,
   RoutingDecision
 } from '../../state/connected-workflow-run';
 import { evaluateCondition } from './condition-evaluator';
-import type { ConditionContext } from './condition-context';
+import { resolveOperand, type ConditionContext } from './condition-context';
 
 export interface SelectNextNodesInput {
   readonly graph: WorkflowDefinition;
@@ -246,4 +256,203 @@ export function selectNextTransition(
     outcome: 'no-eligible-transition',
     decision
   };
+}
+
+export interface BuildRoutingDecisionObservationInput extends SelectNextTransitionInput {
+  readonly runId: string;
+  readonly decisionId?: string;
+  readonly attemptId?: string;
+  readonly iteration?: number;
+  readonly maxIterations?: number;
+  readonly retryCondition?: string;
+  readonly capOutcome?: RetryCapOutcome;
+  readonly noProgressThreshold?: number;
+  readonly settingSources?: ExecutionDecisionSettingSources;
+  readonly exitReason?: ExecutionDecisionExitReason;
+  /**
+   * When `true` (default, matching `selectNextTransition`), only the highest-ranked
+   * eligible arm is marked `'selected'` / `'fallback'` / `'manual-handoff'` and any
+   * remaining eligible arms are marked `'priority-lost'`. When `false` (matching
+   * `selectNextNodes` multi-offer mode), all eligible arms keep their selected
+   * disposition.
+   */
+  readonly selectSingleWinner?: boolean;
+}
+
+function resolveAttemptStatus(input: SelectNextTransitionInput): WorkflowNodeTerminalStatus {
+  if (input.attemptStatus !== undefined) {
+    return input.attemptStatus;
+  }
+  if (Object.hasOwn(input.context.nodes, input.nodeId)) {
+    return input.context.nodes[input.nodeId].status;
+  }
+  return 'completed';
+}
+
+/**
+ * FR-R5-F23 (F23-T04, D1) — compute per-branch `ExecutionBranchDisposition` records
+ * for every outgoing connection leaving `input.nodeId`, or a synthetic `'no-route'`
+ * record when the node has no outgoing connections.
+ */
+export function evaluateBranchDispositions(
+  input: SelectNextTransitionInput,
+  precomputedDecision?: RoutingDecision,
+  selectSingleWinner = true
+): readonly ExecutionDecisionBranchRecord[] {
+  const attemptStatus = resolveAttemptStatus(input);
+  const recoveryOnly = attemptStatus !== 'completed';
+  const decision = precomputedDecision ?? decideNextNodes(input, recoveryOnly);
+
+  const outgoing: Candidate[] = [];
+  input.graph.connections.forEach((connection, index) => {
+    if (connection.from.nodeId === input.nodeId) outgoing.push({ index, connection });
+  });
+
+  if (outgoing.length === 0) {
+    return Object.freeze([
+      Object.freeze({
+        connectionIndex: -1,
+        isDefault: false,
+        disposition: 'no-route' as const,
+        summary: 'No outgoing connections'
+      })
+    ]);
+  }
+
+  const eligibleSet = new Set(decision.eligible);
+  const explicitMatched = decision.connections.some(
+    (outcome) => outcome.matched && !outcome.isDefault
+  );
+
+  const records: ExecutionDecisionBranchRecord[] = outgoing.map(({ index, connection }) => {
+    const isDefault = connection.isDefault === true;
+    const targetNodeId =
+      connection.to.kind === 'return' ? 'return' : connection.to.nodeId;
+    const summary = formatConditionSummary(connection.condition, isDefault);
+
+    let observedValue: string | number | boolean | undefined;
+    let operandResolved = true;
+    let conditionMatched = true;
+
+    if (connection.condition !== undefined) {
+      const lookup = resolveOperand(connection.condition.left, input.context);
+      operandResolved = lookup.resolved;
+      if (lookup.resolved && lookup.value !== undefined) {
+        observedValue = lookup.value;
+      }
+      conditionMatched = evaluateCondition(connection.condition, input.context).matched;
+    }
+
+    let disposition: ExecutionBranchDisposition;
+    if (recoveryOnly && connection.condition === undefined) {
+      disposition = 'failure-excluded';
+    } else if (isDefault && explicitMatched) {
+      disposition = 'priority-lost';
+    } else if (connection.condition !== undefined && !conditionMatched) {
+      disposition = operandResolved ? 'condition-false' : 'unresolved';
+    } else if (
+      selectSingleWinner &&
+      eligibleSet.has(index) &&
+      decision.eligible.length > 0 &&
+      index !== decision.eligible[0]
+    ) {
+      disposition = 'priority-lost';
+    } else if (eligibleSet.has(index)) {
+      if (connection.handoff === 'manual') {
+        disposition = 'manual-handoff';
+      } else if (isDefault) {
+        disposition = 'fallback';
+      } else {
+        disposition = 'selected';
+      }
+    } else {
+      disposition = 'condition-false';
+    }
+
+    return Object.freeze({
+      connectionIndex: index,
+      targetNodeId,
+      isDefault,
+      ...(connection.priority !== undefined ? { priority: connection.priority } : {}),
+      disposition,
+      summary,
+      ...(observedValue !== undefined ? { observedValue } : {})
+    });
+  });
+
+  return Object.freeze(records);
+}
+
+/**
+ * FR-R5-F23 (F23-T04, F23-T05, D1) — build a closed-shape `ExecutionDecisionObservation`
+ * (`version: 1`) for a node's routing evaluation.
+ */
+export function buildRoutingDecisionObservation(
+  input: BuildRoutingDecisionObservationInput,
+  precomputedDecision?: RoutingDecision
+): ExecutionDecisionObservation {
+  const attemptStatus = resolveAttemptStatus(input);
+  const recoveryOnly = attemptStatus !== 'completed';
+  const decision = precomputedDecision ?? decideNextNodes(input, recoveryOnly);
+  const branches = evaluateBranchDispositions(
+    input,
+    decision,
+    input.selectSingleWinner ?? true
+  );
+
+  const observedValues: Record<string, string | number | boolean> = {
+    [`${input.nodeId}.status`]: attemptStatus
+  };
+  for (const op of decision.operands) {
+    if (Object.keys(observedValues).length >= 32) break;
+    const key =
+      op.source === 'node-output' && op.field !== undefined
+        ? `${op.nodeId}.${op.field}`
+        : `${op.nodeId}.status`;
+    if (op.resolved && op.compared !== undefined) {
+      observedValues[key] = op.compared;
+    }
+  }
+
+  const iteration = Math.max(1, input.iteration ?? input.attemptIndex + 1);
+  const maxIterations = Math.max(1, input.maxIterations ?? iteration);
+  const hasThreshold =
+    input.noProgressThreshold !== undefined &&
+    Number.isInteger(input.noProgressThreshold) &&
+    input.noProgressThreshold >= 0;
+
+  const settingSources: ExecutionDecisionSettingSources =
+    input.settingSources ?? {
+      maxIterations: 'default',
+      capOutcome: 'default',
+      ...(hasThreshold ? { noProgressThreshold: 'default' } : {})
+    };
+
+  const exitReason: ExecutionDecisionExitReason =
+    input.exitReason ??
+    (recoveryOnly && decision.eligible.length === 0
+      ? 'host-control'
+      : 'condition-cleared');
+
+  return Object.freeze({
+    version: EXECUTION_DECISION_OBSERVATION_VERSION,
+    decisionId:
+      input.decisionId ??
+      `${input.runId}:${input.nodeId}:attempt-${input.attemptIndex}:${input.decidedAt}`,
+    runId: input.runId,
+    nodeId: input.nodeId,
+    ...(input.attemptId !== undefined ? { attemptId: input.attemptId } : {}),
+    evaluatedAt: input.decidedAt,
+    iteration,
+    maxIterations,
+    retryCondition: input.retryCondition?.trim() || 'single-pass',
+    capOutcome: input.capOutcome ?? 'fail',
+    ...(hasThreshold
+      ? { noProgressThreshold: input.noProgressThreshold }
+      : {}),
+    settingSources: Object.freeze({ ...settingSources }),
+    observedValues: Object.freeze(observedValues),
+    exitReason,
+    branches
+  });
 }
