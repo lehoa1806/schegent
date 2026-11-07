@@ -81,7 +81,7 @@ const DEFAULTS: Record<string, unknown> = {
   'watchdog.pollIntervalMinutes': 30,
   'audit.rotation.sizeMB': 5,
   'audit.rotation.maxAgeDays': 30,
-  defaultPipelineId: 'speckit-new-feature',
+  defaultWorkflowId: 'speckit-new-feature',
   fatalSignatures: []
 };
 
@@ -111,7 +111,7 @@ describe('Feature 011 — Settings surface (US2)', () => {
     expect(typeof snap.watchdogPollIntervalMinutes).toBe('number');
     expect(typeof snap.auditRotationSizeMB).toBe('number');
     expect(typeof snap.auditRotationMaxAgeDays).toBe('number');
-    expect(typeof snap.defaultPipelineId).toBe('string');
+    expect(typeof snap.defaultWorkflowId).toBe('string');
     expect(Array.isArray(snap.fatalSignatures)).toBe(true);
 
     // Every accepted key must reach the `scopes` map, and every value in it must
@@ -259,7 +259,7 @@ function svelteFilesUnder(dir: string): string[] {
 /**
  * A field spec declares the setting it writes as `ipcKey: 'audit.rotation.sizeMB'`,
  * or — when the wire name and the typed field name coincide, as they do for
- * `defaultPipelineId` — as a bare `key: '…'`. Both forms are collected and then
+ * `defaultWorkflowId` — as a bare `key: '…'`. Both forms are collected and then
  * intersected with the declared set, which drops the camelCase `key:` halves
  * (`cliPath`, `loopMaxIterations`) without needing to model the component's
  * `ipcKey ?? key` fallback.
@@ -356,6 +356,17 @@ const EXEMPTIONS: ReadonlyMap<string, Exemption> = new Map<string, Exemption>([
         'read-only to the host and has no `KEY_SPECS` entry on purpose: giving it a ' +
         'control would put two keys on one typed field and let the unset alias default ' +
         'clobber an explicit value of the renamed key.',
+      reviewBy: PERMANENT
+    }
+  ],
+  [
+    'defaultPipelineId',
+    {
+      owner: 'Feature 285 (OD-2) — deprecated manifest alias',
+      reason:
+        'Renamed to `defaultWorkflowId`, which the Settings tab edits. The old key is ' +
+        'read only as a fallback while the new key is unset, and only when it names an ' +
+        'effective Workflow; a control for it would put two keys on one choice.',
       reviewBy: PERMANENT
     }
   ],
@@ -571,7 +582,7 @@ describe('FR-R3-145 (T1570) — every declared schegent.* setting is rendered or
     // that differs from the typed field, and a bare `key` that does not.
     expect(rendered.has('cli.path')).toBe(true);
     expect(rendered.has('logging.verbose')).toBe(true);
-    expect(rendered.has('defaultPipelineId')).toBe(true);
+    expect(rendered.has('defaultWorkflowId')).toBe(true);
 
     // And the negative control on the extractor: it must not be matching the
     // whole manifest. `models`, `fatalSignatures` and `invocation.timeoutSeconds`

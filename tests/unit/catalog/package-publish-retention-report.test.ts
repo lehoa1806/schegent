@@ -34,7 +34,7 @@ const PHASE_ID = 'plan';
 const PIPELINE_ID = 'ship-it';
 const PUBLISHED_AT = 1_700_000_000_000;
 
-const semantics = createDefinitionSemantics({ defaultPipelineId: () => '' });
+const semantics = createDefinitionSemantics({ defaultWorkflowId: () => '' });
 
 /** A self-contained document: one Phase, and the Pipeline that binds it (FR-017). */
 function documentFor(store: FakeCatalogStore) {

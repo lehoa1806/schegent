@@ -4,7 +4,6 @@
   // every submitted task explicitly targets this Queue.
 
   import QueueDetailRows from './QueueDetailRows.svelte';
-  import QueueInputForm from '../QueueInputForm.svelte';
   import QueueTaskComposer from '../QueueTaskComposer.svelte';
   import QueueControls from '../QueueControls.svelte';
   import QueueIdlePendingPanel from './QueueIdlePendingPanel.svelte';
@@ -114,12 +113,6 @@
       !cleanAllContext.hasSchedule
   );
 
-  // T008 (FR-009, data-model.md `ComposerVisibility`) — the add-work
-  // composer's own prop sources, mirroring `Dashboard.svelte`'s prior
-  // derivation byte-for-byte (research.md R3).
-  const availablePipelines = $derived(snapshot.availablePipelines ?? []);
-  const defaultPipelineId = $derived(snapshot.generalSettings?.defaultPipelineId ?? '');
-
   // US1 — the default queue is not deletable. Resolved from the projection the
   // operator can actually change, never from the `'default'` literal.
   const isDefaultQueue = $derived(queueId === defaultQueueId(snapshot));
@@ -137,7 +130,7 @@
   }
   const wait = { signal: lifetime.signal, onLateOutcome: showOutcome };
 
-  // T008 (FR-009) — closed by default, opened on demand. `QueueInputForm`
+  // T008 (FR-009) — closed by default, opened on demand. The composer
   // posts its own submission command internally and exposes no
   // event-handler props (research.md R3): it is mounted unmodified, so
   // "successful submission" is observed the only way the parent can — a rise
@@ -379,11 +372,9 @@
 
   {#if isPrimary && composerOpen}
     <div class="composer-row" data-testid="queue-composer">
-      {#if snapshot.launchables !== undefined || snapshot.workflowCatalog !== undefined}
-        <QueueTaskComposer {snapshot} {queueId} />
-      {:else}
-        <QueueInputForm {availablePipelines} {defaultPipelineId} {pendingCount} {queueId} />
-      {/if}
+      <!-- Feature 285 (OD-2, FR-002): always the composer. Its sections render their own
+           loading arm until the catalogs resolve; the Pipeline-listing form is retired. -->
+      <QueueTaskComposer {snapshot} {queueId} />
       <button type="button" data-testid="queue-composer-cancel" onclick={closeComposer}>
         Cancel
       </button>

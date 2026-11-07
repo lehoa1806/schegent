@@ -13,6 +13,7 @@ import { CMD_SAVE_GENERAL_SETTINGS } from '../../../lib/messages';
 import type { WorkflowSnapshot, GeneralSettings } from '../../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
 import { foldLegacyRun } from '../../../lib/__tests__/queue-runtime-fixture';
+import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
 
 const postCommandSpy = vi.fn(
   (_cmd: string, _payload: unknown) => ({ correlationId: 'corr-test' })
@@ -136,5 +137,65 @@ describe('Feature 012 — GeneralSettingsTab autoCompactPctOverride field', () =
     expect(postCommandSpy).toHaveBeenCalledOnce();
     const [, payload] = postCommandSpy.mock.calls[0];
     expect(payload).toEqual({ updates: { 'claude.autoCompactPctOverride': null } });
+  });
+});
+
+// Feature 285 (OD-2, FR-003) — the default select lists the effective Workflows, never a
+// Pipeline row, and saves `defaultWorkflowId`. This file renders GeneralSettingsTab already.
+describe('Feature 285 — GeneralSettingsTab default Workflow select', () => {
+  function snapshotWith(defaultWorkflowId: string): WorkflowSnapshot {
+    const gs = Object.freeze({ ...IDLE_GENERAL_SETTINGS, defaultWorkflowId }) as GeneralSettings;
+    return Object.freeze({
+      ...buildSnapshot(gs),
+      availablePipelines: Object.freeze([{ id: 'legacy-pipe', name: 'Legacy Pipe' }]),
+      workflowCatalog: Object.freeze({
+        effective: Object.freeze([{ workflowId: 'wf-ship', name: 'Ship It' }])
+      })
+    }) as unknown as WorkflowSnapshot;
+  }
+
+  function selectOf(container: HTMLElement): HTMLSelectElement {
+    const select = container.querySelector(
+      '[data-testid="general-settings-input-defaultWorkflowId"]'
+    );
+    expect(select).not.toBeNull();
+    return select as HTMLSelectElement;
+  }
+
+  it('lists the effective Workflows and no Pipeline row', () => {
+    const { container } = render(GeneralSettingsTab, { props: { snapshot: snapshotWith('') } });
+    const labels = Array.from(selectOf(container).options).map((o) => o.textContent.trim());
+    expect(labels).toEqual(['No default', 'Ship It (wf-ship)']);
+  });
+
+  it('keeps a stored value no effective Workflow carries as its own row', () => {
+    const { container } = render(GeneralSettingsTab, {
+      props: { snapshot: snapshotWith('legacy-pipe') }
+    });
+    const select = selectOf(container);
+    expect(select.value).toBe('legacy-pipe');
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['legacy-pipe', 'wf-ship']);
+  });
+
+  it('saves the choice under `defaultWorkflowId`', async () => {
+    const { container } = render(GeneralSettingsTab, { props: { snapshot: snapshotWith('') } });
+    const select = selectOf(container);
+    select.value = 'wf-ship';
+    await fireEvent.change(select);
+    const saveBtn = container.querySelector(
+      '[data-testid="general-settings-save-defaultWorkflowId"]'
+    ) as HTMLButtonElement;
+    await fireEvent.click(saveBtn);
+    expect(postCommandSpy).toHaveBeenCalledOnce();
+    const call = postCommandSpy.mock.calls.at(0);
+    expect(call?.at(1)).toEqual({ updates: { defaultWorkflowId: 'wf-ship' } });
+  });
+
+  it('describes the composer preselection and the deprecated fallback (FR-004, FR-006a)', () => {
+    // The tab shows the new key only, so its text names the old key that can still answer.
+    const body = GENERAL_SETTINGS_DESCRIPTIONS.defaultWorkflowId.body;
+    expect(body).toContain('Add work');
+    expect(body).toContain('schegent.defaultPipelineId');
+    expect(body).not.toContain('/speckit-auto');
   });
 });

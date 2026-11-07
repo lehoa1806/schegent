@@ -49,7 +49,7 @@ const mockProps = {
   statusByKey: {},
   fieldChanged: () => false,
   fieldScopeLabel: () => 'default',
-  pipelines: [],
+  workflows: [],
   saveOne: () => {},
   resetField: () => {}
 };

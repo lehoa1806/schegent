@@ -10,8 +10,8 @@ Use this path when you want enqueueing and execution to be separate decisions. I
 
 1. Open the dashboard, select **Queues**, then open the target queue card.
 2. Select **Add work**.
-3. Choose a published Workflow or process, enter a description of at most 4,096 characters, and select **Add task**.
-4. Wait for `Enqueued to <queue-name>`.
+3. Select a published Workflow under **Workflows**, select **Trigger**, fill in its inputs, and select **Add task**.
+4. Wait for `Added task to queue. Run <run-id>.`
 5. If the queue was empty, use the inline **Start the queue** chooser. Choose one of:
 
    - **Start now**.
@@ -21,7 +21,8 @@ Use this path when you want enqueueing and execution to be separate decisions. I
 
 An enqueued task does not itself carry a start intent. On an otherwise empty active queue, the host leaves it `idle-pending` for this separate choice. A scheduled start must be no more than seven days away.
 <!-- Source: webview-ui/src/components/drilldown/QueueDetailTier.svelte -->
-<!-- Source: webview-ui/src/components/QueueInputForm.svelte -->
+<!-- Source: webview-ui/src/components/QueueTaskComposer.svelte -->
+<!-- Source: webview-ui/src/components/Runs/WorkflowTriggerForm.svelte -->
 <!-- Source: webview-ui/src/components/drilldown/QueueIdlePendingPanel.svelte -->
 <!-- Source: webview-ui/src/components/StartModeChooser.svelte -->
 <!-- Source: src/commands/start-queue.ts -->

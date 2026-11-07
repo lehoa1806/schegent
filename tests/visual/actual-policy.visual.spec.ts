@@ -34,7 +34,6 @@ import {
   POLICY_SMOKE_QUEUE_ID,
   POLICY_SMOKE_ROUTES,
   POLICY_SMOKE_WORKFLOW_ID,
-  policySmokeQueueFallbackSnapshot,
   policySmokeSnapshot,
   type PolicySmokeRoute
 } from './fixtures/policy-smoke-snapshot';
@@ -561,19 +560,10 @@ test.describe('actual policy smoke', () => {
     const sidebar = await mountSidebar(context);
     const dashboard = await mountDashboard(context);
     const submitted: string[] = [];
-    // The queue's detail tier holds QueueInputForm behind the composer toggle, and
-    // mounts it only when no launch catalog is present (FR-R5-F08).
-    await publishSnapshot(page, policySmokeQueueFallbackSnapshot);
+    // Feature 285 (OD-2, FR-002): the Queue input form is retired and the task composer holds no
+    // `<form>`, so the first form the webview mounts is a pending Task's inline edit form, behind
+    // its Edit control in that Task's Run Detail tier.
     await page.getByTestId(`queue-card-${POLICY_SMOKE_QUEUE_ID}`).click();
-    await page.getByTestId('queue-composer-open').click();
-    const textarea = page.getByTestId('dashboard-queue-input-textarea');
-    await expect(textarea, 'QueueInputForm must be present before it is submitted').toBeVisible();
-    await textarea.fill('policy smoke submission');
-    await page.locator('[data-testid="queue-composer"] form button[type="submit"]').click();
-    submitted.push('QueueInputForm');
-    await publishSnapshot(page);
-    // The third form the webview mounts: a pending Task's inline edit form, behind its Edit control
-    // in that Task's Run Detail tier.
     await page.getByTestId(`queue-task-row-${POLICY_SMOKE_PENDING_TASK_ID}`).click();
     await expect(page.getByTestId('run-detail-tier'), 'the Run Detail tier must open').toBeVisible();
     const editToggle = page.locator('button[data-testid^="queue-item-edit-"][aria-label^="Edit "]').first();

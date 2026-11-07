@@ -101,7 +101,7 @@ Configure it, plus only the differences in your environment:
 | Locate Codex | `schegent.codex.path` | `codex` is not available on `PATH`. |
 | Locate Agy | `schegent.agy.path` | `agy` is not available on `PATH`. |
 | Restrict environment inheritance | `schegent.cli.environmentMode`, `schegent.cli.environmentAllowlist`, `schegent.cli.inheritEnvironment` | Your security or CLI setup needs a non-default environment policy. |
-| Preselect a row in the older schedule picker | `schegent.defaultPipelineId` | Optional. Only the **Schegent: select pipeline** quick pick reads it; the **Add work** composer does not. See [Current limitations](../explanation/core-concepts.md#current-limitations). |
+| Preselect a Workflow in **Add work** | `schegent.defaultWorkflowId` | Optional. A Workflow id; the composer preselects it when it is launchable and nothing is selected. It replaces the deprecated `schegent.defaultPipelineId`. |
 
 Set backend selection and environment policy in VS Code **Settings**. Reload
 the VS Code window after changing them because Schegent captures them during

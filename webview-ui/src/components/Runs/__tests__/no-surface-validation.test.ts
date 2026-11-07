@@ -37,21 +37,19 @@ import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildSnapshot } from './launch-fixture';
 
-const launchPipeline = vi.fn();
+const launchWorkflow = vi.fn();
 vi.mock('../../../lib/workflow-run-ipc', () => ({
   continueWorkflow: vi.fn(),
-  launchWorkflow: vi.fn()
+  launchWorkflow: (...args: readonly unknown[]) => launchWorkflow(...args)
 }));
-vi.mock('../../../lib/run-launcher-ipc', () => ({
-  launchPipeline: (...args: readonly unknown[]) => launchPipeline(...args)
-}));
+vi.mock('../../../lib/run-launcher-ipc', () => ({ launchPipeline: vi.fn() }));
 
 // Late import so the surface binds to the stubs above.
 import QueueTaskComposer from '../../QueueTaskComposer.svelte';
 
 afterEach(() => {
   cleanup();
-  launchPipeline.mockReset();
+  launchWorkflow.mockReset();
 });
 
 const RUNS_DIR = resolve(__dirname, '..');
@@ -105,9 +103,11 @@ function runsSources(): readonly { readonly file: string; readonly code: string 
     }));
 }
 
+// Feature 285 (OD-2, FR-001): the composer lists Workflows only, so the behavioural cases open
+// the Workflow trigger form. Its refusal arms are the host's vocabulary for a Workflow start.
 async function openForm() {
   const view = render(QueueTaskComposer, { snapshot: buildSnapshot() });
-  await fireEvent.click(view.getByTestId('launchable-select-pipeline-analysis-pipeline'));
+  await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
   await fireEvent.click(view.getByTestId('launchable-detail-trigger'));
   return view;
 }
@@ -115,7 +115,7 @@ async function openForm() {
 describe('the Run control is never withheld for want of a value (FR-011)', () => {
   it('is present and live over a form with nothing typed into it', async () => {
     const { getByTestId } = await openForm();
-    const submit = getByTestId('run-launcher-submit') as HTMLButtonElement;
+    const submit = getByTestId('workflow-trigger-submit') as HTMLButtonElement;
 
     expect(submit.disabled).toBe(false);
   });
@@ -125,18 +125,23 @@ describe('the Run control is never withheld for want of a value (FR-011)', () =>
     // queue a second run. It is a fact about the request, not a verdict on the
     // values, and it lifts the moment the host answers.
     let answer: (result: unknown) => void = () => {};
-    launchPipeline.mockReturnValue(
+    launchWorkflow.mockReturnValue(
       new Promise((resolve) => {
         answer = resolve;
       })
     );
     const { getByTestId } = await openForm();
-    const submit = getByTestId('run-launcher-submit') as HTMLButtonElement;
+    const submit = getByTestId('workflow-trigger-submit') as HTMLButtonElement;
 
     await fireEvent.click(submit);
     expect(submit.disabled).toBe(true);
 
-    answer({ outcome: 'enqueued', requestId: 'request-3' });
+    answer({
+      outcome: 'started',
+      connectedRunId: 'connected-run-3',
+      revision: 1,
+      queueItemId: 'queue-item-3'
+    });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(submit.disabled).toBe(false);
   });
@@ -144,44 +149,46 @@ describe('the Run control is never withheld for want of a value (FR-011)', () =>
   it('sends the incomplete submission rather than dropping it', async () => {
     // Enabled but inert would satisfy the assertion above and defeat the point:
     // the operator would be told nothing by a control that did nothing.
-    launchPipeline.mockResolvedValue({
+    launchWorkflow.mockResolvedValue({
       outcome: 'rejected-validation',
-      errors: [{ field: 'inputs.topic', message: 'Topic is required.' }]
+      errors: [{ field: 'inputs.seed', code: 'missing-required-input', message: 'Seed is required.' }]
     });
     const { getByTestId } = await openForm();
 
-    await fireEvent.click(getByTestId('run-launcher-submit'));
+    await fireEvent.click(getByTestId('workflow-trigger-submit'));
 
-    expect(launchPipeline).toHaveBeenCalledTimes(1);
-    expect(getByTestId('run-launcher-error-inputs.topic').textContent).toContain(
-      'Topic is required.'
+    expect(launchWorkflow).toHaveBeenCalledTimes(1);
+    expect(getByTestId('run-launcher-error-inputs.seed').textContent).toContain(
+      'Seed is required.'
     );
   });
 });
 
 describe('the refusal an operator reads is the host (FR-012)', () => {
   it('renders the reason the host gave, worded as the host worded it', async () => {
-    launchPipeline.mockResolvedValue({
+    // A reason the form has no sentence for is named as the host spelled it, inside the shared
+    // boundary sentence, rather than replaced by a verdict of the surface's own.
+    launchWorkflow.mockResolvedValue({
       outcome: 'rejected-definition',
-      reason: 'the active version was withdrawn mid-flight'
+      reason: 'active-version-withdrawn'
     });
     const { getByTestId } = await openForm();
 
-    await fireEvent.click(getByTestId('run-launcher-submit'));
+    await fireEvent.click(getByTestId('workflow-trigger-submit'));
 
-    expect(getByTestId('run-launcher-status').textContent).toContain(
-      'the active version was withdrawn mid-flight'
+    expect(getByTestId('workflow-trigger-status').textContent).toContain(
+      'active-version-withdrawn'
     );
   });
 
   it('replaces the previous refusal rather than stacking a second one beside it', async () => {
     // Two refusals on screen is one refusal too many: the operator cannot tell
     // which one describes the attempt they just made.
-    launchPipeline.mockResolvedValueOnce({
+    launchWorkflow.mockResolvedValueOnce({
       outcome: 'rejected-definition',
-      reason: 'the active version was withdrawn mid-flight'
+      reason: 'active-version-withdrawn'
     });
-    launchPipeline.mockResolvedValueOnce({
+    launchWorkflow.mockResolvedValueOnce({
       outcome: 'rejected-queue',
       reason: 'queue-refused',
       // FR-R4-F05 (O1; TA9) — the guard's detail is a code, named inside the boundary sentence.
@@ -189,23 +196,23 @@ describe('the refusal an operator reads is the host (FR-012)', () => {
     });
     const { getByTestId } = await openForm();
 
-    await fireEvent.click(getByTestId('run-launcher-submit'));
-    await fireEvent.click(getByTestId('run-launcher-submit'));
+    await fireEvent.click(getByTestId('workflow-trigger-submit'));
+    await fireEvent.click(getByTestId('workflow-trigger-submit'));
 
-    const status = getByTestId('run-launcher-status').textContent ?? '';
+    const status = getByTestId('workflow-trigger-status').textContent ?? '';
     expect(status).toContain('queue-paused');
-    expect(status).not.toContain('withdrawn mid-flight');
+    expect(status).not.toContain('active-version-withdrawn');
   });
 
   it('shows no stack trace or bare error identifier', async () => {
-    launchPipeline.mockResolvedValue({
+    launchWorkflow.mockResolvedValue({
       outcome: 'rejected-queue',
       reason: 'queue-refused',
       detail: 'no-host-response'
     });
     const { container, getByTestId } = await openForm();
 
-    await fireEvent.click(getByTestId('run-launcher-submit'));
+    await fireEvent.click(getByTestId('workflow-trigger-submit'));
     const text = container.textContent ?? '';
 
     expect(text).not.toContain('Error:');

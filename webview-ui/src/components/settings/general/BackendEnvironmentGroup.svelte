@@ -237,7 +237,7 @@
     snapshot,
     draft = $bindable(),
     statusByKey,
-    pipelines,
+    workflows,
     fieldChanged,
     fieldScopeLabel,
     saveOne,
@@ -340,7 +340,7 @@
       status={statusByKey[RUNNER_FIELD.key]}
       changed={fieldChanged(RUNNER_FIELD.key)}
       scopeLabel={fieldScopeLabel(RUNNER_FIELD.key)}
-      {pipelines}
+      {workflows}
       onSave={() => saveOne(RUNNER_FIELD)}
       onReset={() => resetField(RUNNER_FIELD.key)}
     />
@@ -350,7 +350,7 @@
       status={statusByKey[spendField.key]}
       changed={fieldChanged(spendField.key)}
       scopeLabel={fieldScopeLabel(spendField.key)}
-      {pipelines}
+      {workflows}
       onSave={() => saveOne(spendField)}
       onReset={() => resetField(spendField.key)}
     />
@@ -371,7 +371,7 @@
     {statusByKey}
     {fieldChanged}
     {fieldScopeLabel}
-    {pipelines}
+    {workflows}
     {saveOne}
     {resetField}
   />
@@ -383,7 +383,7 @@
         status={statusByKey[spec.key]}
         changed={fieldChanged(spec.key)}
         scopeLabel={fieldScopeLabel(spec.key)}
-        {pipelines}
+        {workflows}
         onSave={() => saveOne(spec)}
         onReset={() => resetField(spec.key)}
       />

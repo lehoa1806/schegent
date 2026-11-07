@@ -31,9 +31,10 @@ const PROJECTION_REVISION = 'lifecycle-projection';
 
 export interface DefinitionSemanticsOptions {
   /**
-   * `schegent.defaultPipelineId` (or default Workflow id), or `''` where none is set.
+   * The resolved default Workflow ID (`schegent.defaultWorkflowId`, Feature 285), or `''`
+   * where none is set. Read per call, so the FR-059 advisory sees the value in force.
    */
-  readonly defaultPipelineId: () => string;
+  readonly defaultWorkflowId: () => string;
 }
 
 export function createDefinitionSemantics(
@@ -43,7 +44,7 @@ export function createDefinitionSemantics(
     defectsOf: (snapshot, candidates) => defectsOf(snapshot, candidates),
     referencesTo: (snapshot, kind, id) => referencesTo(snapshot, kind, id),
     advisoriesFor: (snapshot, kind, id) =>
-      advisoriesFor(snapshot, kind, id, options.defaultPipelineId())
+      advisoriesFor(snapshot, kind, id, options.defaultWorkflowId())
   };
 }
 
@@ -368,7 +369,7 @@ function advisoriesFor(
   snapshot: CatalogSnapshot,
   kind: CatalogKind,
   id: string,
-  defaultPipelineId: string
+  defaultWorkflowId: string
 ): readonly LifecycleAdvisory[] {
   const advisories: LifecycleAdvisory[] = [];
 
@@ -386,11 +387,8 @@ function advisoriesFor(
     }
   }
 
-  if (
-    (kind === 'workflow' || kind === 'pipeline') &&
-    defaultPipelineId !== '' &&
-    defaultPipelineId === id
-  ) {
+  // Feature 285 (FR-006b): the configured default names a Workflow, so only a Workflow can be it.
+  if (kind === 'workflow' && defaultWorkflowId !== '' && defaultWorkflowId === id) {
     advisories.push({ advisory: 'configured-default', kind: null, id });
   }
 

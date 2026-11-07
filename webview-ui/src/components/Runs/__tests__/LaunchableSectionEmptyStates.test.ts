@@ -130,20 +130,23 @@ describe('LaunchableSection — loading is neither empty arm (FR-006)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// FR-031 — the two sections conclude independently
+// FR-031 — the Workflows section concludes on its own state
 // ---------------------------------------------------------------------------
+//
+// Feature 285 (OD-2, FR-001): the composer renders no Pipelines section, so an offered Pipeline
+// neither lists nor stands in for an empty Workflows section.
 
-describe('QueueTaskComposer — one section may list while the other explains (FR-031)', () => {
-  it('lists Pipelines while Workflows shows the publish guidance', () => {
+describe('QueueTaskComposer — the Workflows section concludes on its own state (FR-031)', () => {
+  it('shows the Workflows publish guidance and no Pipelines section while Pipelines are offered', () => {
     const { container } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({
         launchables: projection(entries(ANALYSIS), { state: 'none-active' })
       })
     });
 
-    expect(testid(container, 'launch-section-list-pipeline')).not.toBeNull();
     expect(testid(container, 'launch-section-none-active-workflow')).not.toBeNull();
-    expect(testid(container, 'launch-section-none-active-pipeline')).toBeNull();
+    expect(testid(container, 'launch-section-pipeline')).toBeNull();
+    expect(testid(container, 'launch-section-list-pipeline')).toBeNull();
   });
 
   it('lists Workflows while omitting empty Pipelines', () => {
@@ -208,7 +211,7 @@ describe('QueueTaskComposer — an untrusted workspace gets the trust explanatio
     const { container } = render(QueueTaskComposer, { snapshot: buildSnapshot({ workspaceTrust: true }) });
 
     expect(testid(container, 'trust-banner-workspace-trust')).toBeNull();
-    expect(testid(container, 'launch-section-pipeline')).not.toBeNull();
+    expect(testid(container, 'launch-section-workflow')).not.toBeNull();
   });
 
   it('treats an absent trust field as trusted, not as untrusted', () => {
@@ -222,7 +225,7 @@ describe('QueueTaskComposer — an untrusted workspace gets the trust explanatio
     const { container } = render(QueueTaskComposer, { snapshot });
 
     expect(testid(container, 'trust-banner-workspace-trust')).toBeNull();
-    expect(testid(container, 'launch-section-pipeline')).not.toBeNull();
+    expect(testid(container, 'launch-section-workflow')).not.toBeNull();
   });
 });
 

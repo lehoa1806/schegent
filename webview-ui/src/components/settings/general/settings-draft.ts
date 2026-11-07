@@ -57,7 +57,7 @@ export function snapshotToDraft(s: GeneralSettings): Draft {
     watchdogPollIntervalMinutes: s.watchdogPollIntervalMinutes,
     auditRotationSizeMB: s.auditRotationSizeMB,
     auditRotationMaxAgeDays: s.auditRotationMaxAgeDays,
-    defaultPipelineId: s.defaultPipelineId,
+    defaultWorkflowId: s.defaultWorkflowId,
     claudeAutoCompactPctOverride: s.claudeAutoCompactPctOverride ?? null,
     runtimeLogLevel: s.runtimeLogLevel,
     runtimeLogFilePath: s.runtimeLogFilePath,

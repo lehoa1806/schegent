@@ -180,8 +180,11 @@ describe('restrictedConfigurations parity (FR-R3-136 T1526c)', () => {
     // FR-R4-F04 (feature 251, 2026-10-31) — 29 -> 30, and the restricted list 14 -> 15.
     // `schegent.logging.transportCaptureMode` arrived, classified `evidence`: it decides whether and
     // when the CLI's own output is kept, so a workspace value must not vote on it in an untrusted window.
-    expect(workspaceSettableKeys()).toHaveLength(30);
-    expect(Object.keys(CONFIGURATION_SENSITIVITY)).toHaveLength(30);
+    // Feature 285 (OD-2, 2026-11-07) — 30 -> 31. `schegent.defaultWorkflowId` arrived as the
+    // rename of `schegent.defaultPipelineId`, classified `run-shape` as its deprecated alias still
+    // is. The restricted list stays at 15.
+    expect(workspaceSettableKeys()).toHaveLength(31);
+    expect(Object.keys(CONFIGURATION_SENSITIVITY)).toHaveLength(31);
     expect(derivedRestrictedConfigurations()).toHaveLength(15);
     expect(EXECUTABLE_AUTHORITY_PROPERTIES).toHaveLength(9);
 
@@ -193,7 +196,7 @@ describe('restrictedConfigurations parity (FR-R3-136 T1526c)', () => {
       capability: 2,
       'operator-signal': 4,
       evidence: 9,
-      'run-shape': 15
+      'run-shape': 16
     });
     // The classes that produce the list, stated once so a reclassification of the
     // POLICY (rather than of a property) is also a visible edit.

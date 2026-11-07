@@ -24,6 +24,10 @@
 // section, and "the choices come back" is asserted by launching: the row, the
 // Trigger, and the launcher that opens behind it are what the picker used to be.
 //
+// Feature 285 (OD-2, FR-001) — the composer lists Workflows only, so the restored choice is a
+// Workflow row and the form behind its Trigger is the Workflow trigger form. `RunLauncher` stays
+// reachable through the History rerun panel, which is what the reachability lint holds.
+//
 // The guidance text is asserted against the shared source rather than restated
 // as a literal here: a test carrying its own copy of the message would pass while
 // the two surfaces drifted apart, which is the exact defect FR-030a's "one shared
@@ -78,10 +82,11 @@ describe('Feature 098 (T053) — the launch surface stays mounted on an empty ca
 
 describe('Feature 098 (T053) — a non-empty catalog restores the choices', () => {
   it('lists what is published once something is imported', () => {
-    const { getByTestId } = render(QueueTaskComposer, { snapshot: buildSnapshot() });
+    const { getByTestId, queryByTestId } = render(QueueTaskComposer, { snapshot: buildSnapshot() });
 
-    expect(getByTestId('launch-section-list-pipeline')).toBeTruthy();
     expect(getByTestId('launch-section-list-workflow')).toBeTruthy();
+    // FR-001: the offered Pipeline is not a choice the composer restores.
+    expect(queryByTestId('launch-section-list-pipeline')).toBeNull();
   });
 
   it('reaches the launcher through the restored choices (SC-010)', async () => {
@@ -90,10 +95,10 @@ describe('Feature 098 (T053) — a non-empty catalog restores the choices', () =
     // nothing would satisfy the assertion above and none of the requirement.
     const { getByTestId } = render(QueueTaskComposer, { snapshot: buildSnapshot() });
 
-    await fireEvent.click(getByTestId('launchable-select-pipeline-analysis-pipeline'));
+    await fireEvent.click(getByTestId('launchable-select-workflow-analysis-pipeline'));
     await fireEvent.click(getByTestId('launchable-detail-trigger'));
 
-    expect(getByTestId('run-launcher')).toBeTruthy();
+    expect(getByTestId('workflow-trigger')).toBeTruthy();
   });
 
   it('withholds the guidance when there is something to choose (FR-032)', () => {

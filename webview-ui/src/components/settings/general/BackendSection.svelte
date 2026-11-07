@@ -24,7 +24,7 @@
     BackendPingState,
     BackendPosture,
     BackendRunnerKind,
-    PipelineDefinition
+    PortableWorkflowDefinition
   } from '../../../lib/snapshot-types';
   import { hoverTextAnchor } from '../../hover-text/hover-text-anchor-action';
   import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
@@ -58,7 +58,7 @@
     busy: boolean;
     draft: Draft;
     statusByKey: StatusByKey;
-    pipelines: readonly PipelineDefinition[];
+    workflows: readonly PortableWorkflowDefinition[];
     fieldChanged: (key: ScalarKey) => boolean;
     fieldScopeLabel: (key: ScalarKey) => string;
     saveOne: (spec: FieldSpec) => void;
@@ -75,7 +75,7 @@
     busy,
     draft = $bindable(),
     statusByKey,
-    pipelines,
+    workflows,
     fieldChanged,
     fieldScopeLabel,
     saveOne,
@@ -174,7 +174,7 @@
     status={statusByKey[section.path.key]}
     changed={fieldChanged(section.path.key)}
     scopeLabel={fieldScopeLabel(section.path.key)}
-    {pipelines}
+    {workflows}
     onSave={() => saveOne(section.path)}
     onReset={() => resetField(section.path.key)}
   >
@@ -256,7 +256,7 @@
           status={statusByKey[spec.key]}
           changed={fieldChanged(spec.key)}
           scopeLabel={fieldScopeLabel(spec.key)}
-          {pipelines}
+          {workflows}
           onSave={() => saveOne(spec)}
           onReset={() => resetField(spec.key)}
         />

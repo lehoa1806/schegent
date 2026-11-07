@@ -22,7 +22,7 @@ Backend selection and the CLI environment policy are captured during extension a
 
 The three executable-path settings are read through configuration-backed path resolvers, so subsequent capability probes and invocations see their current values. Runtime log settings are also resolved by the logging sink when it emits, and the watchdog updates its timer when its poll interval changes. <!-- Source: src/activation/backend-wiring.ts --> <!-- Source: src/lib/runtime-log/runtime-log-sink.ts --> <!-- Source: src/watchdog/credit-watchdog.ts -->
 
-Changing session-retention limits requests a new retention sweep. Changing `schegent.defaultPipelineId` or `schegent.models` refreshes the in-memory catalog projection used by the extension. <!-- Source: src/extension.ts -->
+Changing session-retention limits requests a new retention sweep. Changing `schegent.defaultWorkflowId`, its deprecated alias `schegent.defaultPipelineId`, or `schegent.models` refreshes the in-memory catalog projection used by the extension. <!-- Source: src/extension.ts -->
 
 `schegent.queue.haltOnTaskFailure` needs no reload. It is a `window`-scoped enum of
 `halt-on-failure` (the default) and `continue`, naming the workspace-wide default for whether a

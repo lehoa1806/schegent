@@ -109,33 +109,33 @@ describe('a selection the next projection no longer offers (FR-013)', () => {
   });
 });
 
-describe('the surface holds one selection across both sections (FR-014)', () => {
+describe('the surface holds one selection (FR-014)', () => {
   it('shows the detail for the selected entry and only that entry', async () => {
     const { getByTestId, queryAllByTestId } = render(QueueTaskComposer, {
       snapshot: buildSnapshot()
     });
 
-    await fireEvent.click(getByTestId('launchable-select-pipeline-analysis-pipeline'));
+    await fireEvent.click(getByTestId('launchable-select-workflow-analysis-pipeline'));
     expect(queryAllByTestId('launchable-detail')).toHaveLength(1);
-    expect(getByTestId('launchable-detail-name').textContent).toContain('Analysis Pipeline');
+    expect(getByTestId('launchable-detail-name').textContent).toContain('Research Workflow');
   });
 
-  it('clears the other section when a selection is made in one', async () => {
-    // One selection, so selecting in Workflows must un-select in Pipelines. Two
-    // detail panels open at once would let an operator Run one while reading the
-    // other's ports.
-    const { getByTestId, queryAllByTestId } = render(QueueTaskComposer, {
+  it('offers no row for a Pipeline that shares the selected Workflow id (FR-001)', async () => {
+    // Feature 285 (OD-2): the composer lists Workflows only. The projection still offers the
+    // Pipeline `ANALYSIS` under the Workflow's id, and the composer must neither render it nor
+    // let it share the one selection, which is the identity rule above seen from the surface.
+    const { getByTestId, queryAllByTestId, queryByTestId } = render(QueueTaskComposer, {
       snapshot: buildSnapshot()
     });
+    expect(queryByTestId('launchable-select-pipeline-analysis-pipeline')).toBeNull();
 
-    await fireEvent.click(getByTestId('launchable-select-pipeline-analysis-pipeline'));
     await fireEvent.click(getByTestId('launchable-select-workflow-analysis-pipeline'));
 
     expect(queryAllByTestId('launchable-detail')).toHaveLength(1);
     expect(getByTestId('launchable-detail-name').textContent).toContain('Research Workflow');
     expect(
-      getByTestId('launchable-select-pipeline-analysis-pipeline').getAttribute('aria-pressed')
-    ).toBe('false');
+      getByTestId('launchable-select-workflow-analysis-pipeline').getAttribute('aria-pressed')
+    ).toBe('true');
   });
 
   it('drops the selection and closes the open form on the next projection (FR-013)', async () => {
@@ -143,15 +143,17 @@ describe('the surface holds one selection across both sections (FR-014)', () => 
       snapshot: buildSnapshot()
     });
 
-    await fireEvent.click(getByTestId('launchable-select-pipeline-analysis-pipeline'));
+    await fireEvent.click(getByTestId('launchable-select-workflow-analysis-pipeline'));
     await fireEvent.click(getByTestId('launchable-detail-trigger'));
-    expect(queryByTestId('run-launcher')).toBeTruthy();
+    expect(queryByTestId('workflow-trigger')).toBeTruthy();
 
     await rerender({
-      snapshot: buildSnapshot({ launchables: projection({ state: 'none-active' }) })
+      snapshot: buildSnapshot({
+        launchables: projection(entries(ANALYSIS), { state: 'no-definitions' })
+      })
     });
 
     expect(queryByTestId('launchable-detail')).toBeNull();
-    expect(queryByTestId('run-launcher')).toBeNull();
+    expect(queryByTestId('workflow-trigger')).toBeNull();
   });
 });

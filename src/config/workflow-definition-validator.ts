@@ -127,9 +127,12 @@ export interface WorkflowDefinitionValidationResult {
 
 export interface WorkflowDefinitionValidationOptions {
   readonly allowLegacyId?: boolean;
+  /** Read a node `pipelineId` and a binding `outputKey`. Default false: refused (feature 285). */
   readonly allowLegacyPipelineId?: boolean;
   readonly defaultVersion?: number;
 }
+
+const LEGACY_PIPELINE_FIELD = { code: 'legacy-pipeline-field', pipelineId: "Retired Pipeline field 'pipelineId': a Workflow node references a Phase with 'phaseId' or a child Workflow with 'workflowId'", outputKey: "Retired Pipeline field 'outputKey': a binding source names its port with 'portId'" } as const;
 
 function bounded(value: string, max: number): string {
   return value.length <= max ? value : value.slice(0, max);
@@ -286,7 +289,7 @@ function readNodes(
   value: Record<string, unknown>,
   workflowId: string,
   errors: WorkflowFieldError[],
-  allowLegacyPipelineId = true
+  allowLegacyPipelineId = false
 ): readonly WorkflowNode[] {
   if (!Array.isArray(value.nodes) || value.nodes.length === 0) {
     errors.push(fieldError(workflowId, 'nodes', 'non-empty-required', 'Workflow nodes must be a non-empty array'));
@@ -302,8 +305,8 @@ function readNodes(
     }
     let unknownNodeField = false;
     for (const key of Object.keys(raw)) {
-      if (!AUTHORED_NODE_FIELDS.has(key) && !(allowLegacyPipelineId && key === 'pipelineId')) {
-        errors.push(fieldError(workflowId, `nodes[${index}].${key}`, 'unknown-field', `Unknown authored node field '${bounded(key, WORKFLOW_ERROR_FIELD_MAX)}'`));
+      if (key === 'pipelineId' ? !allowLegacyPipelineId : !AUTHORED_NODE_FIELDS.has(key)) {
+        errors.push(key === 'pipelineId' ? fieldError(workflowId, `nodes[${index}].pipelineId`, LEGACY_PIPELINE_FIELD.code, LEGACY_PIPELINE_FIELD.pipelineId) : fieldError(workflowId, `nodes[${index}].${key}`, 'unknown-field', `Unknown authored node field '${bounded(key, WORKFLOW_ERROR_FIELD_MAX)}'`));
         unknownNodeField = true;
       }
     }
@@ -344,7 +347,8 @@ function readNodes(
       }
       targetWorkflowId = readIdentifier(raw.workflowId, workflowId, `nodes[${index}].workflowId`, 'Node workflowId', errors);
       kind = 'workflow';
-    } else if (allowLegacyPipelineId) {
+    } else if (hasPipelineId) {
+      // Feature 285: a node with no target at all is `missing-node-target` in both modes.
       pipelineId = readIdentifier(raw.pipelineId, workflowId, `nodes[${index}].pipelineId`, 'Node pipelineId', errors);
     } else if (!unknownNodeField && raw.kind === undefined) {
       errors.push(fieldError(workflowId, `nodes[${index}]`, 'missing-node-target', 'Node must reference a phaseId or workflowId'));
@@ -627,7 +631,7 @@ function readInputBindingSource(
   workflowId: string,
   field: string,
   errors: WorkflowFieldError[],
-  allowLegacyPipelineId = true
+  allowLegacyPipelineId = false
 ): WorkflowInputBindingSource | null {
   if (!isPlainObject(raw)) {
     errors.push(fieldError(workflowId, field, 'object-required', 'Binding source must be an object'));
@@ -639,8 +643,8 @@ function readInputBindingSource(
   }
   let sourceOk = true;
   for (const key of Object.keys(raw)) {
-    if (key !== 'from' && key !== 'nodeId' && key !== 'portId' && !(allowLegacyPipelineId && key === 'outputKey')) {
-      errors.push(fieldError(workflowId, `${field}.${key}`, 'unknown-field', `Unknown authored binding source field '${bounded(key, WORKFLOW_ERROR_FIELD_MAX)}'`));
+    if (key === 'outputKey' ? !allowLegacyPipelineId : key !== 'from' && key !== 'nodeId' && key !== 'portId') {
+      errors.push(key === 'outputKey' ? fieldError(workflowId, `${field}.outputKey`, LEGACY_PIPELINE_FIELD.code, LEGACY_PIPELINE_FIELD.outputKey) : fieldError(workflowId, `${field}.${key}`, 'unknown-field', `Unknown authored binding source field '${bounded(key, WORKFLOW_ERROR_FIELD_MAX)}'`));
       sourceOk = false;
     }
   }
@@ -671,7 +675,7 @@ function readBindings(
   value: Record<string, unknown>,
   workflowId: string,
   errors: WorkflowFieldError[],
-  allowLegacyPipelineId = true
+  allowLegacyPipelineId = false
 ): readonly WorkflowBinding[] | undefined {
   if (value.bindings === undefined) return undefined;
   if (!Array.isArray(value.bindings)) {
@@ -951,9 +955,9 @@ export function validateWorkflowDefinition(
 
   const inputs = readInputPorts(value, workflowId, errors);
   const outputs = readOutputPorts(value, workflowId, errors);
-  const nodes = readNodes(value, workflowId, errors, options.allowLegacyPipelineId !== false);
+  const nodes = readNodes(value, workflowId, errors, options.allowLegacyPipelineId === true);
   const connections = readConnections(value, workflowId, errors);
-  const bindings = readBindings(value, workflowId, errors, options.allowLegacyPipelineId !== false);
+  const bindings = readBindings(value, workflowId, errors, options.allowLegacyPipelineId === true);
   const startNodeIds = readStartNodeIds(value, workflowId, nodes, errors);
   const executionDefaults = readExecutionDefaults(value, workflowId, errors);
   const recommendedNext = readRecommendedNext(value, workflowId, errors);

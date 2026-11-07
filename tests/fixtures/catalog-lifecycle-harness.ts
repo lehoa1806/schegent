@@ -12,7 +12,7 @@
 // the tests honest about the seam: the service reaches semantics only through the
 // port, so a test that passes here passes for the host wiring too.
 //
-// `defaultPipelineId` is a mutable box read through the getter the port requires
+// `defaultWorkflowId` is a mutable box read through the getter the port requires
 // (T509c), so a suite can set the configured default *after* the service is built —
 // which is the ordering the advisory of FR-059 actually has to survive.
 
@@ -48,12 +48,12 @@ export interface LifecycleHarness {
   readonly clock: ManualClock;
   readonly ports: CatalogStorePorts;
   /**
-   * `schegent.defaultPipelineId`, settable after construction.
+   * The resolved `schegent.defaultWorkflowId`, settable after construction (Feature 285).
    *
    * The port takes a getter for exactly this reason: the semantics object is built
    * once at activation and the setting changes under it (T509c).
    */
-  setDefaultPipelineId(id: string): void;
+  setDefaultWorkflowId(id: string): void;
 }
 
 export function createLifecycleHarness(
@@ -61,7 +61,7 @@ export function createLifecycleHarness(
     readonly fs?: MemoryCatalogFs;
     readonly clock?: ManualClock;
     readonly provenance?: RunProvenance;
-    readonly defaultPipelineId?: string;
+    readonly defaultWorkflowId?: string;
   } = {}
 ): LifecycleHarness {
   const fs = overrides.fs ?? new MemoryCatalogFs();
@@ -73,8 +73,8 @@ export function createLifecycleHarness(
     provenance: overrides.provenance ?? provenanceReferencing([])
   };
   const store = createCatalogStore(ports);
-  let defaultPipelineId = overrides.defaultPipelineId ?? '';
-  const semantics = createDefinitionSemantics({ defaultPipelineId: () => defaultPipelineId });
+  let defaultWorkflowId = overrides.defaultWorkflowId ?? '';
+  const semantics = createDefinitionSemantics({ defaultWorkflowId: () => defaultWorkflowId });
   return {
     service: createLifecycleService({ store, semantics }),
     store,
@@ -82,8 +82,8 @@ export function createLifecycleHarness(
     fs,
     clock,
     ports,
-    setDefaultPipelineId: (id) => {
-      defaultPipelineId = id;
+    setDefaultWorkflowId: (id) => {
+      defaultWorkflowId = id;
     }
   };
 }

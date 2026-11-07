@@ -209,6 +209,10 @@ const KNOWN_ABSENT: ReadonlyMap<string, string> = new Map([
     'retired by the 2026-11-05 remove-runs-interface decision; QueueTaskComposer.svelte owns composition in Queue detail and RunDetailTier.svelte owns monitoring'
   ],
   [
+    'QueueInputForm.svelte',
+    'retired by feature 285 (OD-2, FR-002) "feat(queue)": the Queue detail tier always mounts QueueTaskComposer.svelte, which lists Workflows only and carries the network note'
+  ],
+  [
     'release.yml',
     'retired by ce6cb180 "ci: retire the seven workflows still on master" — this project has no .github/workflows at all'
   ],

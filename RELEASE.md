@@ -122,10 +122,24 @@ launch route. On that date the source still carries four Pipeline surfaces:
   Pipeline, and catalog records of kind `pipeline`, are still read.
 
 None of them is the way to launch a Workflow.
-[Current limitations](docs/explanation/core-concepts.md#current-limitations) describes each one.
 The F07 delivery evidence is recorded in
 `specs/281-verification-evidence-qualification/backfill-f01-f07.md` (workspace), and feature 283
 measured the four surfaces.
+
+**Resolved (2026-11-07, feature 285).** The four surfaces above are retired:
+
+- `schegent.schedule` with no `pipelineId` opens no picker. It reveals the Schegent view and says
+  to add work from a Queue's **Add work** composer. An explicit `pipelineId` keeps the linear path;
+- the task composer lists Workflows only and sends no `CMD_LAUNCH_PIPELINE`. The Queue's older
+  input form, with its Pipeline selector, is deleted;
+- the setting is renamed to `schegent.defaultWorkflowId`, which holds Workflow ids only. The
+  deprecated `schegent.defaultPipelineId` is read as a fallback only when it names an effective
+  Workflow, and the Settings **Default Workflow** select lists Workflows only;
+- the validator default is now `allowLegacyPipelineId = false`, which refuses a legacy field with
+  `legacy-pipeline-field`. Only the Workflow catalog's read of stored rows opts in.
+
+[Current limitations](docs/explanation/core-concepts.md#current-limitations) lists the Pipeline
+paths that remain.
 
 - **Composable Workflows and explicit public interfaces (`FR-R5-F01`, `260`).** A Workflow node
   targets either `phaseId` or `workflowId`. Workflows declare explicit public `inputs` and

@@ -45,6 +45,11 @@ export interface LoadedCatalog {
    */
   readonly workflowCatalog: WorkflowCatalogResolution;
   /**
+   * Feature 285 (FR-005, D1) — the default Workflow ID the settings resolve to against the
+   * effective Workflows, or `''`. Carried from the same load so it cannot outlive a reload.
+   */
+  readonly defaultWorkflowId: string;
+  /**
    * Feature 099 (T493a, FR-027) — the store's integrity findings, carried
    * alongside the resolution rather than thrown or logged and dropped.
    *
@@ -124,6 +129,7 @@ export function loadAndReportCatalog(
     phaseCatalog,
     pipelineCatalog,
     workflowCatalog,
+    defaultWorkflowId: result.defaultWorkflowId,
     faults: snapshot.faults,
     collectable: snapshot.collectable
   };
@@ -133,7 +139,7 @@ export function loadAndReportCatalog(
 export interface CatalogSessionPorts {
   /** `null` in an untrusted workspace, where no catalog activates at all (FR-051). */
   readonly store: CatalogStore | null;
-  /** The two settings that stayed: `schegent.models` and `schegent.defaultPipelineId`. */
+  /** The settings that stayed: `schegent.models` and the default Workflow keys (Feature 285). */
   readonly reader: CatalogConfigReader | undefined;
   readonly digest: Digest;
   readonly logger: Pick<SanitizedLogger, 'debug'>;
@@ -193,6 +199,11 @@ export class CatalogSession {
 
   get workflowCatalog(): WorkflowCatalogResolution {
     return this.loaded.workflowCatalog;
+  }
+
+  /** Feature 285 (FR-005) — the resolved default Workflow ID, or `''` where none is set. */
+  get defaultWorkflowId(): string {
+    return this.loaded.defaultWorkflowId;
   }
 
   /**

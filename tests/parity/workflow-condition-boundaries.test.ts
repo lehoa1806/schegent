@@ -13,9 +13,11 @@
 //   * headless `validateProcessDefinition`,
 //   * a YAML import preflight row, which is `invalid` and carries the defect.
 //
-// The YAML cases ship their Pipelines: the import's graph pass runs only when every node of the
-// Workflow resolves (`package-resolver.ts`), and a Workflow whose Pipelines are absent is `blocked`
-// first, as it always was.
+// The YAML cases ship their child Workflows: the import's graph pass runs only when every node
+// of the Workflow resolves (`package-resolver.ts`), and a Workflow whose children are absent is
+// `blocked` first, as it always was. Feature 285 (FR-010): the other three boundaries use the
+// same child-Workflow graph. They used Pipeline nodes, a retired field the headless boundary now
+// refuses by default.
 //
 // Two controls keep the corpus honest. A valid `equals` string is reported by no boundary, so a rule
 // that refused everything would fail. And a node status compared with a number keeps its existing
@@ -28,7 +30,9 @@ import { publishPackage, type CatalogStore } from '../../src/catalog';
 import { resolveWorkflowCatalog } from '../../src/config/workflow-catalog';
 import { createDefinitionSemantics } from '../../src/config/definition-semantics';
 import type { PackagePublishRequest } from '../../src/contracts/catalog-lifecycle';
-import type { PipelineDefinition } from '../../src/contracts/pipeline-definitions';
+import { resolvePhaseCatalog } from '../../src/config/process-catalog';
+import { validateWorkflowDefinition } from '../../src/config/workflow-definition-validator';
+import type { WorkflowDefinition } from '../../src/contracts/workflow-definitions';
 import { validateProcessDefinition } from '../../src/headless/process-definition-api';
 import { previewProcessDocument } from '../../src/headless/process-yaml-api';
 import { FakeCatalogStore } from '../fixtures/fake-catalog-store';
@@ -43,30 +47,47 @@ const RIGHT_INVALID = 'condition-right-invalid';
 const OUTPUT_LEFT = { source: 'node-output', nodeId: 'draft', field: 'verdict' } as const;
 const STATUS_LEFT = { source: 'node-status', nodeId: 'draft' } as const;
 
-/** The node-output operand needs a structured output on its node's Pipeline; `spec-document` feeds the edge. */
-const DRAFT_PIPELINE: PipelineDefinition = {
-  pipelineId: 'cond-draft',
+const PHASE_ROW = {
+  id: 'cond-specify',
+  name: 'Cond Specify',
+  version: 1,
+  instruction: 'Write the spec.'
+};
+const PHASES = resolvePhaseCatalog({ rows: [PHASE_ROW], revision: 'rev-1' });
+
+/**
+ * The node-output operand needs a structured output on its node's child Workflow; `spec-document`
+ * feeds the edge. These are the YAML document's `included.workflows`, as stored rows.
+ */
+const DRAFT_CHILD_ROW = {
+  id: 'cond-draft',
   name: 'Cond Draft',
   version: 1,
-  phaseIds: ['cond-specify'],
-  inputs: [],
   outputs: [
     { portId: 'spec-document', label: 'Spec', type: 'markdown' },
     { portId: 'verdict-data', label: 'Verdict', type: 'structured-data' }
   ],
-  bindings: [],
-  recommendedNext: []
+  nodes: [{ nodeId: 'step', kind: 'phase', phaseId: 'cond-specify' }],
+  bindings: [
+    { kind: 'output', nodeId: 'step', portId: 'spec-document', outputKey: 'spec-document' },
+    { kind: 'output', nodeId: 'step', portId: 'verdict-data', outputKey: 'verdict-data' }
+  ],
+  startNodeIds: ['step']
 };
-const REVIEW_PIPELINE: PipelineDefinition = {
-  pipelineId: 'cond-review',
+const REVIEW_CHILD_ROW = {
+  id: 'cond-review',
   name: 'Cond Review',
   version: 1,
-  phaseIds: ['cond-specify'],
-  inputs: [{ portId: 'spec', label: 'Spec', type: 'text' }],
-  outputs: [],
-  bindings: [],
-  recommendedNext: []
+  inputs: [{ portId: 'spec', label: 'Spec', type: 'text', required: false }],
+  nodes: [{ nodeId: 'step', kind: 'phase', phaseId: 'cond-specify' }],
+  startNodeIds: ['step']
 };
+
+function childDefinition(row: Record<string, unknown>): WorkflowDefinition {
+  const result = validateWorkflowDefinition(row);
+  if (result.definition === null) throw new Error(`fixture child ${String(row['id'])} is invalid`);
+  return result.definition;
+}
 interface Case {
   readonly label: string;
   readonly condition: Record<string, unknown>;
@@ -99,8 +120,8 @@ const STATUS_NUMBER_CASE: Case = {
 function graphOf(condition: Record<string, unknown>) {
   return {
     nodes: [
-      { nodeId: 'draft', pipelineId: 'cond-draft' },
-      { nodeId: 'review', pipelineId: 'cond-review' }
+      { nodeId: 'draft', kind: 'workflow', workflowId: 'cond-draft' },
+      { nodeId: 'review', kind: 'workflow', workflowId: 'cond-review' }
     ],
     connections: [
       {
@@ -131,23 +152,17 @@ function catalogBoundary(condition: Record<string, unknown>): {
   readonly effective: boolean;
   readonly reported: readonly Reported[];
 } {
-  const pipelineRecord = (definition: PipelineDefinition) => ({
-    key: `${definition.pipelineId}::0`,
-    pipelineId: definition.pipelineId,
-    status: 'effective' as const,
-    definition,
-    display: {},
-    errors: []
-  });
   const resolution = resolveWorkflowCatalog({
-    rows: [{ id: 'cond-flow', name: 'Cond Flow', version: 1, ...graphOf(condition) }],
+    rows: [
+      DRAFT_CHILD_ROW,
+      REVIEW_CHILD_ROW,
+      { id: 'cond-flow', name: 'Cond Flow', version: 1, ...graphOf(condition) }
+    ],
     revision: 'rev-1',
-    pipelineCatalog: {
-      effective: [DRAFT_PIPELINE, REVIEW_PIPELINE],
-      records: [pipelineRecord(DRAFT_PIPELINE), pipelineRecord(REVIEW_PIPELINE)]
-    } as never
+    phaseCatalog: PHASES,
+    pipelineCatalog: { effective: [], records: [] }
   });
-  const record = resolution.records.at(0);
+  const record = resolution.records.find((candidate) => candidate.workflowId === 'cond-flow');
   const errors = record?.errors ?? [];
   return {
     effective: record?.status === 'effective',
@@ -155,7 +170,7 @@ function catalogBoundary(condition: Record<string, unknown>): {
   };
 }
 
-const semantics = createDefinitionSemantics({ defaultPipelineId: () => '' });
+const semantics = createDefinitionSemantics({ defaultWorkflowId: () => '' });
 
 /** The sidebar publish path: the whole document is validated before any write. */
 async function publishBoundary(condition: Record<string, unknown>): Promise<{
@@ -172,29 +187,19 @@ async function publishBoundary(condition: Record<string, unknown>): Promise<{
     listVersions: (kind, id) => inner.listVersions(kind, id),
     listDefinitions: (kind) => inner.listDefinitions(kind)
   };
-  const asRow = (definition: PipelineDefinition) => {
-    const { pipelineId, phaseIds, ...rest } = definition;
-    return { id: pipelineId, phases: [...phaseIds], ...rest };
-  };
   const request: PackagePublishRequest = {
     layers: [
       {
         kind: 'phase',
         expectedRevision: inner.revisionOf('phase'),
-        definitions: [{ id: 'cond-specify', body: { id: 'cond-specify', name: 'Cond Specify', version: 1, instruction: 'Write the spec.' } }]
-      },
-      {
-        kind: 'pipeline',
-        expectedRevision: inner.revisionOf('pipeline'),
-        definitions: [
-          { id: 'cond-draft', body: asRow(DRAFT_PIPELINE) },
-          { id: 'cond-review', body: asRow(REVIEW_PIPELINE) }
-        ]
+        definitions: [{ id: 'cond-specify', body: PHASE_ROW }]
       },
       {
         kind: 'workflow',
         expectedRevision: inner.revisionOf('workflow'),
         definitions: [
+          { id: 'cond-draft', body: DRAFT_CHILD_ROW },
+          { id: 'cond-review', body: REVIEW_CHILD_ROW },
           { id: 'cond-flow', body: { id: 'cond-flow', name: 'Cond Flow', version: 1, ...graphOf(condition) } }
         ]
       }
@@ -215,7 +220,10 @@ function headlessBoundary(condition: Record<string, unknown>): readonly Reported
   const verdict = validateProcessDefinition({
     kind: 'workflow',
     definition: { workflowId: 'cond-flow', name: 'Cond Flow', version: 1, ...graphOf(condition) },
-    catalog: { pipelines: [DRAFT_PIPELINE, REVIEW_PIPELINE] }
+    catalog: {
+      phases: PHASES.effective,
+      workflows: [childDefinition(DRAFT_CHILD_ROW), childDefinition(REVIEW_CHILD_ROW)]
+    }
   });
   if (!('kind' in verdict) || verdict.kind !== 'workflow') throw new Error('expected a Workflow verdict');
   return relevant(verdict.errors.map((e) => ({ code: e.code, field: e.field })));

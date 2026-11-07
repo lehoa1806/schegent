@@ -218,6 +218,7 @@ export const SETTINGS_KEYS = [
   "schegent.cli.path",
   "schegent.codex.path",
   "schegent.defaultPipelineId",
+  "schegent.defaultWorkflowId",
   "schegent.fatalSignatures",
   "schegent.invocation.idleTimeoutSeconds",
   "schegent.invocation.maxDurationSeconds",

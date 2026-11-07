@@ -23,7 +23,8 @@ const EXTENSION_ID = 'schegent.schegent';
 // `QueueDetailRows.svelte`, `PhaseLogFeed.svelte`) rather than the deleted
 // file's own testids.
 const LAYOUT_ZONE_TESTIDS = [
-  'dashboard-queue-input',
+  // Feature 285 (OD-2, FR-002): the Queue input form is retired; the task composer succeeds it.
+  'queue-task-composer',
   'dashboard-queue-action',
   'queue-detail-rows',
   'dashboard-phase-progression',

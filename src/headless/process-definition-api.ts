@@ -141,8 +141,10 @@ export function validateProcessDefinition(
  * definition returns its own defects and the graph is not walked (the spec's edge case: a connection
  * to an unknown node is a graph defect, and is reported only when the shape gives a graph to read).
  *
- * The shape validator is called with no options, as the catalog calls it: a Workflow `version` the
- * author left out is a defect here and there.
+ * The shape validator is called with no options. The catalog passes only `allowLegacyPipelineId`
+ * (feature 285), so a Workflow `version` the author left out is a defect here and there. A
+ * legacy Pipeline field is refused here with `legacy-pipeline-field`; the stored-row catalog
+ * still reads it.
  */
 function validateWorkflow(
   definition: unknown,

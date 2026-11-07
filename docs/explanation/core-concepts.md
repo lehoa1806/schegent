@@ -216,17 +216,20 @@ That local-first boundary explains the hierarchy: authored definitions describe 
 
 ## Current limitations
 
-The Pipeline definition kind is retired, but four Pipeline surfaces remain in the source. None of them is the way to launch a Workflow; use [Launching work](#launching-work). Their removal is an open dependency of the Pipeline-removal work (OD-2 in feature 283's record).
+The Pipeline definition kind is retired. Feature 285 removed the Pipeline surfaces that work left behind (OD-2 in feature 283's record): the `schegent.schedule` picker, the composer's **Pipelines** section, the Queue's older input form with its Pipeline selector, and the Settings select that listed Pipeline rows. Four Pipeline paths remain in the source. None of them is the way to launch a Workflow; use [Launching work](#launching-work).
 
-- **The `schegent.schedule` command.** It opens a quick pick titled **Schegent: select pipeline** that lists stored Pipeline rows only. Given a Workflow id, it refuses with `workflow-requires-graph-launch` and a warning to launch composable Workflows from the Workflow launch view.
-- **The composer's Pipelines section.** The **Add task** composer shows a **Pipelines** section above **Workflows** only when stored Pipeline rows exist. Selecting one opens the older Pipeline launcher, which posts `CMD_LAUNCH_PIPELINE`, not the Workflow trigger form.
-- **The `schegent.defaultPipelineId` setting.** The key keeps its old name. The Settings tab labels it **Default Workflow**, and its manifest description calls it a Workflow id, but the Settings control offers the stored Pipeline rows. The `schegent.schedule` quick pick reads it to sort and preselect a row. The **Workflows** section of the **Add task** composer does not read it: you choose the Workflow there.
-- **Legacy node targets.** When the store reads a saved Workflow, the validator by default (`allowLegacyPipelineId = true`) still accepts a node that targets a `pipelineId`, and the store still accepts version records of kind `pipeline`. Importing a process YAML file refuses such a node.
+- **`schegent.schedule` with an explicit `pipelineId`.** Automation that passes a `pipelineId` keeps the linear enqueue path. Given a Workflow id, the command refuses with `workflow-requires-graph-launch` and a warning to launch composable Workflows from the Workflow launch view. Run with no `pipelineId`, it opens no picker: it reveals the Schegent view and says to add work from a Queue's **Add work** composer.
+- **History rerun of a Pipeline Run.** Rerunning an older Pipeline Run from History mounts the older Pipeline launcher, which posts `CMD_LAUNCH_PIPELINE`. The **Add work** composer never sends it.
+- **The deprecated `schegent.defaultPipelineId` key.** It is renamed to `schegent.defaultWorkflowId`, which holds Workflow ids only. The old key is read only while the new key is unset at every scope, and only when its value names an effective Workflow; a stored Pipeline id is ignored. Schegent writes neither key on its own.
+- **Legacy node targets in stored Workflows.** By default the validator refuses a node `pipelineId` or a binding source `outputKey` with the code `legacy-pipeline-field` and a message that names the replacement field. Only the Workflow catalog's read of stored rows opts in with `allowLegacyPipelineId: true`, so a Workflow saved before the retirement still loads; the export selection and the headless process-definition API refuse. The store still accepts version records of kind `pipeline`. Importing a process YAML file refuses such a node.
 
 <!-- Source: src/commands/schedule.ts -->
 <!-- Source: src/services/guarded-run-service.ts -->
 <!-- Source: webview-ui/src/components/QueueTaskComposer.svelte -->
 <!-- Source: webview-ui/src/lib/run-launcher-ipc.ts -->
+<!-- Source: webview-ui/src/components/HistoryRerunPanel.svelte -->
+<!-- Source: src/config/default-workflow.ts -->
+<!-- Source: src/config/workflow-catalog.ts -->
 <!-- Source: src/config/settings-schema.ts -->
 <!-- Source: src/config/workflow-definition-validator.ts -->
 <!-- Source: src/services/process-yaml/workflow-document.ts -->
