@@ -15,7 +15,7 @@
 // This module value-imports only from `src/contracts/` (the one direction the
 // webview may reach the host) and takes the entry type as a type only.
 
-import type { PhaseLogDisplayEntry } from '../../../src/services/phase-log/types';
+import type { PhaseLogDisplayEntry } from '../../../src/services/phase-log/types.js';
 import { PHASE_LOG_MAX_ENTRIES } from '../../../src/contracts/phase-log-bounds.js';
 
 /** Entries the window keeps, the marker excluded: a full window is `PHASE_LOG_MAX_ENTRIES` rows. */
