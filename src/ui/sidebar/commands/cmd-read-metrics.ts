@@ -93,7 +93,7 @@ async function emitViewOpenedOnce(ctx: HandlerContext): Promise<void> {
       phase: 'metrics',
       iteration: 0,
       eventType: 'metrics-view-opened',
-      payload: { sessionId: ctx.deps.sessionId },
+      payload: { viewCorrelationId: ctx.deps.sessionId },
       outcome: 'info',
       correlationId: ctx.correlationId
     });

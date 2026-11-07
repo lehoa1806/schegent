@@ -13,6 +13,7 @@ import { AUDIT_SCHEMA_VERSION } from '../../../src/contracts/audit-events';
 import { FAILURE_CAUSES } from '../../../src/contracts/failure-cause';
 import type { PhaseOutcome } from '../../../src/controller/phase';
 import { createStateTransitionAuditEnvelope } from '../../../src/lib/audit-event-envelope';
+import { SanitizedLogger } from '../../../src/lib/logger';
 
 describe('audit payload schema v3', () => {
   it('projects CLI invocations to bounded execution metadata', () => {
@@ -117,9 +118,21 @@ describe('audit payload schema v3', () => {
 
   it('retains only the bounded ephemeral identifier for metrics adoption', () => {
     expect(projectAuditPayload('metrics-view-opened', {
-      sessionId: 'metrics-session-123',
+      viewCorrelationId: 'metrics-session-123',
       workspaceRoot: '/private/workspace/secret'
-    })).toEqual({ sessionId: 'metrics-session-123' });
+    })).toEqual({ viewCorrelationId: 'metrics-session-123' });
+  });
+
+  // The writer appends only when the sanitized payload stringifies as the projected one does.
+  // FR-R5-F14 (0227a28e) made the sanitizer read a `sessionId` key as a session cookie, so a
+  // payload keyed that way was refused as `secret-detected` on every append.
+  it('projects a metrics-view-opened payload the sanitizer leaves unchanged', () => {
+    const projected = projectAuditPayload('metrics-view-opened', {
+      viewCorrelationId: 'metrics-session-123'
+    });
+    expect(new SanitizedLogger([]).sanitizeRecord({ payload: projected })).toEqual({
+      payload: projected
+    });
   });
 });
 

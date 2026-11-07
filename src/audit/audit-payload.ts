@@ -261,8 +261,12 @@ export interface MonitorInvocationSummaryPayloadV3 {
 }
 
 export interface MetricsViewOpenedPayloadV3 {
-  /** Ephemeral UI-session correlation identifier; never a backend conversation ID. */
-  readonly sessionId: string;
+  /**
+   * Ephemeral UI-session correlation identifier; never a backend conversation ID. Not named
+   * `sessionId`: since FR-R5-F14 the sanitizer redacts that key as a session cookie, and the
+   * writer refuses a payload its sanitizer changes as `secret-detected`.
+   */
+  readonly viewCorrelationId: string;
 }
 
 // FR-R4-F04 — the class lives in `audit-payload-error.ts` so a sibling projector can throw it without
@@ -854,10 +858,11 @@ function projectCatalogLifecycle(payload: Record<string, unknown>): CatalogLifec
 function projectMetricsViewOpened(
   payload: Record<string, unknown>
 ): MetricsViewOpenedPayloadV3 {
-  if (typeof payload.sessionId !== 'string' || payload.sessionId.length === 0) {
+  const id = payload.viewCorrelationId;
+  if (typeof id !== 'string' || id.length === 0) {
     throw new AuditPayloadValidationError('invalid-metrics-session-id');
   }
-  return Object.freeze({ sessionId: projectValue(payload.sessionId, 0) as string });
+  return Object.freeze({ viewCorrelationId: projectValue(id, 0) as string });
 }
 
 /**
