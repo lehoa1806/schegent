@@ -44,6 +44,22 @@ export interface RunScheduleCtx {
   readonly logger: SanitizedLogger;
 }
 
+/**
+ * The no-`pipelineId` answer (FR-009): the guidance first, then the view. The guidance is the
+ * answer and the reveal a convenience beside it, so a failed reveal is logged and leaves the
+ * guidance standing rather than reaching the "could not be scheduled" toast.
+ */
+async function pointAtTheComposer(ctx: RunScheduleCtx): Promise<void> {
+  ctx.notifier.info(SCHEDULE_NEEDS_A_WORKFLOW_GUIDANCE);
+  try {
+    await vscode.commands.executeCommand(SCHEGENT_VIEW_COMMAND);
+  } catch (err) {
+    ctx.logger.warn('schedule: the Schegent view could not be revealed', {
+      error: describeFailure(err, (value) => ctx.logger.sanitize(value))
+    });
+  }
+}
+
 export async function runSchedule(
   args: ScheduleCommandArgs | undefined,
   ctx: RunScheduleCtx
@@ -51,8 +67,7 @@ export async function runSchedule(
   try {
     const pipelineId = args?.pipelineId;
     if (!pipelineId) {
-      await vscode.commands.executeCommand(SCHEGENT_VIEW_COMMAND);
-      ctx.notifier.info(SCHEDULE_NEEDS_A_WORKFLOW_GUIDANCE);
+      await pointAtTheComposer(ctx);
       return;
     }
 

@@ -15,7 +15,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mocks = vi.hoisted(() => ({
   quickPickCalls: 0,
   inputBoxCalls: 0,
-  executed: [] as string[]
+  executed: [] as string[],
+  revealFails: false
 }));
 
 vi.mock('vscode', () => ({
@@ -32,6 +33,7 @@ vi.mock('vscode', () => ({
   commands: {
     executeCommand: async (command: string) => {
       mocks.executed.push(command);
+      if (mocks.revealFails) throw new Error('view container is not registered');
       return undefined;
     }
   }
@@ -64,6 +66,7 @@ beforeEach(() => {
   mocks.quickPickCalls = 0;
   mocks.inputBoxCalls = 0;
   mocks.executed.length = 0;
+  mocks.revealFails = false;
   vi.spyOn(SanitizedLogger.prototype, 'error').mockImplementation(() => undefined);
 });
 
@@ -88,6 +91,28 @@ describe('Feature 285 (FR-009) — schegent.schedule with no pipelineId', () => 
       expect(notifier.error).not.toHaveBeenCalled();
     });
   }
+
+  it('still shows the guidance when the view reveal fails, and logs the failure', async () => {
+    // The guidance is the answer; revealing the view is a convenience beside it. A failed
+    // reveal must not replace the guidance with "the task could not be scheduled", because
+    // nothing was being scheduled.
+    const { ctx, scheduleOrEnqueue, notifier } = makeCtx();
+    const warnLog = vi.spyOn(ctx.logger, 'warn');
+    mocks.revealFails = true;
+
+    await runSchedule(undefined, ctx);
+
+    expect(notifier.info).toHaveBeenCalledTimes(1);
+    expect(notifier.info).toHaveBeenCalledWith(SCHEDULE_NEEDS_A_WORKFLOW_GUIDANCE);
+    expect(notifier.error).not.toHaveBeenCalled();
+    expect(scheduleOrEnqueue).not.toHaveBeenCalled();
+    expect(warnLog).toHaveBeenCalledWith(
+      'schedule: the Schegent view could not be revealed',
+      expect.objectContaining({
+        error: expect.stringContaining('view container is not registered')
+      })
+    );
+  });
 
   it('words the guidance as fixed text naming the composer, not a Pipeline picker', () => {
     expect(SCHEDULE_NEEDS_A_WORKFLOW_GUIDANCE).toBe(
