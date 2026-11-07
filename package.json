@@ -361,7 +361,7 @@
           "default": "",
           "scope": "resource",
           "pattern": "^$|^[a-z][a-z0-9-]{0,63}$",
-          "markdownDescription": "Workflow id used when a feature is enqueued without an explicit selection. Empty means no default: the extension ships no workflows, so until you import one there is nothing for this to name. Set it to the id of a workflow you have imported. Only a Workflow id counts; a value that names no effective Workflow gives no default."
+          "markdownDescription": "The Workflow the Queue's **Add work** composer preselects when nothing is selected; preselecting opens and submits nothing. Empty means no default: the extension ships no workflows, so until you import one there is nothing for this to name. Only a Workflow id counts; a value that names no effective Workflow gives no default. While this key is unset at every scope, the deprecated `schegent.defaultPipelineId` is read instead, and only when it names an effective Workflow."
         },
         "schegent.defaultPipelineId": {
           "type": "string",

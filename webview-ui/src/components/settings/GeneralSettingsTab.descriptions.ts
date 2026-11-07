@@ -369,8 +369,9 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
     body:
       // Feature 285 (OD-2, FR-003) — `schegent.defaultWorkflowId`. The list is the
       // effective Workflows the store holds; no Pipeline row is offered.
-      'Workflow used when /speckit-auto runs without an explicit selection. ' +
-      'The list reflects the Workflows in the catalog.'
+      'Workflow the Queue Add work composer preselects when nothing is selected. ' +
+      'The list reflects the Workflows in the catalog. While this is unset, the ' +
+      'deprecated schegent.defaultPipelineId is read when it names a Workflow.'
   },
   'defaultWorkflowId-save': {
     body:
