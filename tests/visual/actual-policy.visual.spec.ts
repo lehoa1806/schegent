@@ -34,6 +34,7 @@ import {
   POLICY_SMOKE_QUEUE_ID,
   POLICY_SMOKE_ROUTES,
   POLICY_SMOKE_WORKFLOW_ID,
+  policySmokeQueueFallbackSnapshot,
   policySmokeSnapshot,
   type PolicySmokeRoute
 } from './fixtures/policy-smoke-snapshot';
@@ -300,12 +301,12 @@ function assertServedPagesAreReal(context: PolicyContext): void {
   }
 }
 
-async function publishSnapshot(page: Page): Promise<void> {
+async function publishSnapshot(page: Page, snapshot: unknown = policySmokeSnapshot): Promise<void> {
   await page.evaluate((payload) => {
     // `globalThis` is the page's window; this tsconfig carries no DOM lib.
     const host = globalThis as unknown as { dispatchEvent(event: unknown): boolean };
     host.dispatchEvent(new MessageEvent('message', { data: { type: 'STATE_SNAPSHOT', payload } }));
-  }, JSON.parse(JSON.stringify(policySmokeSnapshot)) as unknown);
+  }, JSON.parse(JSON.stringify(snapshot)) as unknown);
 }
 
 async function collectViolations(page: Page): Promise<readonly PolicyViolationRecord[]> {
@@ -560,7 +561,9 @@ test.describe('actual policy smoke', () => {
     const sidebar = await mountSidebar(context);
     const dashboard = await mountDashboard(context);
     const submitted: string[] = [];
-    // The queue's detail tier holds QueueInputForm behind the composer toggle.
+    // The queue's detail tier holds QueueInputForm behind the composer toggle, and
+    // mounts it only when no launch catalog is present (FR-R5-F08).
+    await publishSnapshot(page, policySmokeQueueFallbackSnapshot);
     await page.getByTestId(`queue-card-${POLICY_SMOKE_QUEUE_ID}`).click();
     await page.getByTestId('queue-composer-open').click();
     const textarea = page.getByTestId('dashboard-queue-input-textarea');
@@ -568,6 +571,7 @@ test.describe('actual policy smoke', () => {
     await textarea.fill('policy smoke submission');
     await page.locator('[data-testid="queue-composer"] form button[type="submit"]').click();
     submitted.push('QueueInputForm');
+    await publishSnapshot(page);
     // The third form the webview mounts: a pending Task's inline edit form, behind its Edit control
     // in that Task's Run Detail tier.
     await page.getByTestId(`queue-task-row-${POLICY_SMOKE_PENDING_TASK_ID}`).click();
