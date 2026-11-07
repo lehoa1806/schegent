@@ -417,4 +417,33 @@ describe('readonly withholds every editing affordance', () => {
     expect(spies.onselect).toHaveBeenCalledWith({ kind: 'node', index: 0 });
     expect(spies.onselect).toHaveBeenCalledWith({ kind: 'connection', index: 0 });
   });
+
+  it('renders phase repetition policy summary on Phase-kind node cards (FR-R5-F23)', () => {
+    const rendered = render(WorkflowFlowCanvas, {
+      props: {
+        nodes: [{ nodeId: 'verify-step', kind: 'phase', phaseId: 'phase-verify' }],
+        connections: [],
+        startNodeIds: ['verify-step'],
+        pipelines: PIPELINES,
+        phases: [
+          {
+            phaseId: 'phase-verify',
+            name: 'Verify Phase',
+            description: 'Verify',
+            prompt: 'Check',
+            retryCondition: 'failures > 0',
+            onRetryCap: 'continue-degraded'
+          } as never
+        ],
+        nodeDefects: [],
+        connectionDefects: [],
+        readonly: false,
+        selection: null,
+        ...handlers()
+      }
+    });
+    expect(rendered.getByTestId('workflow-node-retry-policy-0').textContent.trim()).toBe(
+      'Repeats on failures > 0 · on cap: continue-degraded'
+    );
+  });
 });

@@ -35,6 +35,7 @@ import type { QueueFailurePolicy } from './queue-failure-policy';
 import type { SpendDenomination } from './backend-spend-denomination';
 import type { RetryCapOutcome } from './process-definitions';
 import type { UnchangedComparisonBoundState } from './unchanged-comparison-bound';
+import type { ExecutionDecisionSettingSources } from './execution-decision-observation';
 
 /**
  * Feature 083 — Workflow catalog projection. Contract:
@@ -470,6 +471,15 @@ export interface EffectiveLimitsProjection {
   readonly retryCap: EffectiveLimit<number>;
   readonly onRetryCap: EffectiveLimit<RetryCapOutcome>;
   readonly unchangedComparisons: EffectiveLimit<number> & { readonly state: UnchangedComparisonBoundState };
+  /**
+   * FR-R5-F23 (F23-T02, F23-T03) — active Phase repetition policy summary and setting sources.
+   */
+  readonly phaseRetryPolicy?: {
+    readonly retryCondition: string;
+    readonly capOutcome: RetryCapOutcome;
+    readonly noProgressThreshold?: number;
+    readonly settingSources: ExecutionDecisionSettingSources;
+  };
   readonly spend:
     | { readonly kind: 'none' }
     | {

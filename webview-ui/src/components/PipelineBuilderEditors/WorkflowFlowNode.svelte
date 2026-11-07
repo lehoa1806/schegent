@@ -9,13 +9,18 @@
   import {
     nodeTargetSummary,
     nodeTitle,
+    phaseOfNode,
     type WorkflowFlowView,
   } from "./workflow-flow-view";
   import {
     buildChildWorkflowPreview,
     type ChildWorkflowPreviewNode,
   } from "./workflow-catalog-state";
-  import type { WorkflowNode } from "../../lib/snapshot-types";
+  import {
+    formatPhaseRetrySummary,
+    type WorkflowNode,
+  } from "../../lib/snapshot-types";
+  import { resolveRetryCapOutcome } from "../../../../src/contracts/retry-cap-outcome";
   import WorkflowRowDefects from "./WorkflowRowDefects.svelte";
 
   interface Props {
@@ -29,6 +34,15 @@
   const node = $derived<WorkflowNode | undefined>(view.nodes[index]);
   const defects = $derived(view.nodeDefects[index] ?? []);
   const target = $derived(node ? nodeTargetSummary(view, node) : null);
+  const phaseDef = $derived(node ? phaseOfNode(view, node) : null);
+  const phaseRetrySummary = $derived(
+    phaseDef
+      ? formatPhaseRetrySummary({
+          retryCondition: phaseDef.retryCondition,
+          capOutcome: resolveRetryCapOutcome(phaseDef, undefined),
+        })
+      : null,
+  );
   const selected = $derived(
     view.selection?.kind === "node" && view.selection.index === index,
   );
@@ -123,6 +137,14 @@
           </span>
           {#if node.label?.trim()}
             <span class="wf-badge">{node.nodeId}</span>
+          {/if}
+          {#if phaseRetrySummary}
+            <span
+              class="wf-badge"
+              data-testid="workflow-node-retry-policy-{index}"
+            >
+              {phaseRetrySummary}
+            </span>
           {/if}
           {#if !target.resolved}
             <span
