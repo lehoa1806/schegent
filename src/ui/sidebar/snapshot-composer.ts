@@ -310,6 +310,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     // Spread: `TrustProjection`'s members ARE the snapshot's trust members.
     ...trust,
     ...(launchables !== undefined ? { launchables } : {}),
+    ...(workflowCatalog !== undefined && deps.getDefaultWorkflowId ? { defaultWorkflowId: deps.getDefaultWorkflowId() } : {}), // Feature 285 (FR-006a, D4)
     ...(phaseCatalogProjection !== undefined ? { phaseCatalog: phaseCatalogProjection } : {}),
     ...(pipelineCatalogProjection !== undefined ? { pipelineCatalog: pipelineCatalogProjection } : {}),
     ...(workflowCatalog !== undefined ? { workflowCatalog } : {}),

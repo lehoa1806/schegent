@@ -37,9 +37,10 @@ import type { BackendPosture, CapabilityNotice, Launchable } from '../../../lib/
 import { ANALYSIS, RESEARCH, buildSnapshot, entries, projection } from './launch-fixture';
 
 const launchPipeline = vi.fn();
+const launchWorkflow = vi.fn();
 vi.mock('../../../lib/workflow-run-ipc', () => ({
   continueWorkflow: vi.fn(),
-  launchWorkflow: vi.fn()
+  launchWorkflow: (...args: readonly unknown[]) => launchWorkflow(...args)
 }));
 vi.mock('../../../lib/run-launcher-ipc', () => ({
   launchPipeline: (...args: readonly unknown[]) => launchPipeline(...args)
@@ -51,31 +52,57 @@ import QueueTaskComposer from '../../QueueTaskComposer.svelte';
 afterEach(() => {
   cleanup();
   launchPipeline.mockReset();
+  launchWorkflow.mockReset();
 });
 
-async function selectPipeline() {
-  const view = render(QueueTaskComposer, { snapshot: buildSnapshot() });
-  await fireEvent.click(view.getByTestId('launchable-select-pipeline-analysis-pipeline'));
+// Feature 285 (OD-2, FR-001): the composer lists Workflows only, so the panel's cases select a
+// Workflow that declares its inputs. A declared input carries `required` and `description` into
+// the projection the way a Pipeline port did, and the panel reads both without regard to kind.
+// The projection still offers the Pipeline `ANALYSIS`, which the composer must ignore.
+const DECLARED: Launchable = {
+  ...RESEARCH,
+  description: 'Reads a corpus and writes the findings up.',
+  inputs: [
+    {
+      portId: 'topic',
+      label: 'Topic',
+      type: 'text',
+      required: true,
+      description: 'What to look at.',
+      nodeId: 'node-a'
+    },
+    { portId: 'notes', label: 'Notes', type: 'text', nodeId: 'node-a' }
+  ]
+};
+
+async function selectDeclared(overrides: Parameters<typeof buildSnapshot>[0] = {}) {
+  const view = render(QueueTaskComposer, {
+    snapshot: buildSnapshot({
+      launchables: projection(entries(ANALYSIS), entries(DECLARED)),
+      ...overrides
+    })
+  });
+  await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
   return view;
 }
 
 describe('the detail panel for a selected definition (FR-007)', () => {
   it('states the description, the input ports, and the active version', async () => {
-    const { getByTestId } = await selectPipeline();
+    const { getByTestId } = await selectDeclared();
     const detail = getByTestId('launchable-detail');
 
-    expect(getByTestId('launchable-detail-name').textContent).toContain('Analysis Pipeline');
+    expect(getByTestId('launchable-detail-name').textContent).toContain('Research Workflow');
     expect(getByTestId('launchable-detail-description').textContent).toContain(
       'Reads a corpus and writes the findings up.'
     );
-    expect(getByTestId('launchable-detail-version').textContent).toContain('v3');
+    expect(getByTestId('launchable-detail-version').textContent).toContain('v2');
     expect(getByTestId('launchable-detail-port-topic').textContent).toContain('Topic');
     expect(getByTestId('launchable-detail-port-notes').textContent).toContain('Notes');
     expect(detail.textContent).toContain('Reads a corpus');
   });
 
   it('marks the ports the definition declares required by a readable text marker (FR-009)', async () => {
-    const { getByTestId, queryByTestId } = await selectPipeline();
+    const { getByTestId, queryByTestId } = await selectDeclared();
 
     expect(getByTestId('launchable-detail-required-topic').textContent?.toLowerCase()).toContain(
       'required'
@@ -84,7 +111,7 @@ describe('the detail panel for a selected definition (FR-007)', () => {
   });
 
   it('offers no editable field of its own', async () => {
-    const { getByTestId } = await selectPipeline();
+    const { getByTestId } = await selectDeclared();
     const detail = getByTestId('launchable-detail');
 
     expect(detail.querySelectorAll('input, textarea, select')).toHaveLength(0);
@@ -96,15 +123,15 @@ describe('the detail panel for a selected definition (FR-007)', () => {
     // follow the projection, because the run will freeze what the projection now
     // offers and not what the panel happened to capture.
     const republished: Launchable = {
-      ...ANALYSIS,
+      ...DECLARED,
       activeVersionId: 'v4',
-      inputs: [{ portId: 'corpus', label: 'Corpus', type: 'text', required: true }]
+      inputs: [{ portId: 'corpus', label: 'Corpus', type: 'text', required: true, nodeId: 'node-a' }]
     };
-    const { getByTestId, queryByTestId, rerender } = await selectPipeline();
+    const { getByTestId, queryByTestId, rerender } = await selectDeclared();
     expect(getByTestId('launchable-detail-port-topic')).toBeTruthy();
 
     await rerender({
-      snapshot: buildSnapshot({ launchables: projection(entries(republished)) })
+      snapshot: buildSnapshot({ launchables: projection(entries(ANALYSIS), entries(republished)) })
     });
 
     expect(queryByTestId('launchable-detail-port-topic')).toBeNull();
@@ -133,41 +160,38 @@ describe('a window that cannot start work (FR-015)', () => {
     // question they did not ask. What they cannot do is start work — so the one
     // control that starts work is withheld, and the reason is on screen next to
     // it rather than left to be inferred from a control that does nothing.
-    const { getByTestId, queryByTestId } = render(QueueTaskComposer, {
-      snapshot: buildSnapshot({ isPrimary: false })
-    });
+    const { getByTestId, queryByTestId } = await selectDeclared({ isPrimary: false });
 
-    await fireEvent.click(getByTestId('launchable-select-pipeline-analysis-pipeline'));
-
-    expect(getByTestId('launchable-detail-name').textContent).toContain('Analysis Pipeline');
+    expect(getByTestId('launchable-detail-name').textContent).toContain('Research Workflow');
     expect(getByTestId('launchable-detail-port-topic')).toBeTruthy();
     expect((getByTestId('launchable-detail-trigger') as HTMLButtonElement).disabled).toBe(true);
     expect(getByTestId('launchable-detail-read-only').textContent).toContain('cannot start runs');
 
     await fireEvent.click(getByTestId('launchable-detail-trigger'));
-    expect(queryByTestId('run-launcher')).toBeNull();
+    expect(queryByTestId('workflow-trigger')).toBeNull();
+    expect(launchWorkflow).not.toHaveBeenCalled();
     expect(launchPipeline).not.toHaveBeenCalled();
   });
 
   it('states nothing about the window when it can start work', async () => {
-    const { queryByTestId } = await selectPipeline();
+    const { queryByTestId } = await selectDeclared();
     expect(queryByTestId('launchable-detail-read-only')).toBeNull();
   });
 });
 
 describe('Trigger and Run are distinct controls (FR-008)', () => {
   it('opens the form on Trigger without reaching the host', async () => {
-    const { getByTestId, queryByTestId } = await selectPipeline();
-    expect(queryByTestId('run-launcher')).toBeNull();
+    const { getByTestId, queryByTestId } = await selectDeclared();
+    expect(queryByTestId('workflow-trigger')).toBeNull();
 
     await fireEvent.click(getByTestId('launchable-detail-trigger'));
 
-    expect(getByTestId('run-launcher')).toBeTruthy();
-    expect(launchPipeline).not.toHaveBeenCalled();
+    expect(getByTestId('workflow-trigger')).toBeTruthy();
+    expect(launchWorkflow).not.toHaveBeenCalled();
   });
 
   it('presents exactly the selected definition ports in the form, with the required one marked (FR-009)', async () => {
-    const { getByTestId, queryByTestId } = await selectPipeline();
+    const { getByTestId, queryByTestId } = await selectDeclared();
     await fireEvent.click(getByTestId('launchable-detail-trigger'));
 
     expect(getByTestId('run-input-topic')).toBeTruthy();
@@ -180,14 +204,24 @@ describe('Trigger and Run are distinct controls (FR-008)', () => {
   });
 
   it('submits only on Run', async () => {
-    launchPipeline.mockResolvedValue({ outcome: 'enqueued', requestId: 'request-9' });
-    const { getByTestId } = await selectPipeline();
+    launchWorkflow.mockResolvedValue({
+      outcome: 'started',
+      connectedRunId: 'connected-run-9',
+      revision: 2,
+      queueItemId: 'queue-item-9'
+    });
+    const { getByTestId } = await selectDeclared();
     await fireEvent.click(getByTestId('launchable-detail-trigger'));
+    expect(launchWorkflow).not.toHaveBeenCalled();
 
-    await fireEvent.click(getByTestId('run-launcher-submit'));
+    await fireEvent.click(getByTestId('workflow-trigger-submit'));
 
-    expect(launchPipeline).toHaveBeenCalledTimes(1);
-    expect(launchPipeline.mock.calls[0][0]).toMatchObject({ pipelineId: 'analysis-pipeline' });
+    expect(launchWorkflow).toHaveBeenCalledTimes(1);
+    expect(launchWorkflow.mock.calls.at(0)?.at(0)).toMatchObject({
+      workflowId: 'analysis-pipeline',
+      startNodeId: 'node-a'
+    });
+    expect(launchPipeline).not.toHaveBeenCalled();
   });
 });
 
@@ -223,26 +257,26 @@ describe('what the panel says about the authority a start will have (FR-R4-F06 F
     snapshotStore.apply({ type: STATE_SNAPSHOT, payload: buildSnapshot() } as never);
   });
 
-  /** Offers `entry` as the only Pipeline, applies the host's postures, and selects it. */
+  /** Offers `entry` as the only Workflow, applies the host's postures, and selects it. */
   async function selectOffered(entry: Launchable) {
     const snapshot = buildSnapshot({
-      launchables: projection(entries(entry)),
+      launchables: projection(entries(ANALYSIS), entries(entry)),
       backendPostures: POSTURES
     });
     snapshotStore.apply({ type: STATE_SNAPSHOT, payload: snapshot } as never);
     const view = render(QueueTaskComposer, { snapshot });
-    await fireEvent.click(view.getByTestId('launchable-select-pipeline-analysis-pipeline'));
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
     return view;
   }
 
   it('shows the host notice for a definition that runs on a granted uncontained backend', async () => {
-    const { getByTestId } = await selectOffered({ ...ANALYSIS, backends: ['claude'] });
+    const { getByTestId } = await selectOffered({ ...RESEARCH, backends: ['claude'] });
 
     expect(getByTestId('launch-authority-notice-text-claude').textContent).toBe(CLAUDE_TEXT);
   });
 
   it('puts the notice above the control that starts the work', async () => {
-    const { getByTestId } = await selectOffered({ ...ANALYSIS, backends: ['claude'] });
+    const { getByTestId } = await selectOffered({ ...RESEARCH, backends: ['claude'] });
 
     const notice = getByTestId('launch-authority-notice');
     const trigger = getByTestId('launchable-detail-trigger');
@@ -252,7 +286,7 @@ describe('what the panel says about the authority a start will have (FR-R4-F06 F
   it('shows nothing for a definition that runs only on a contained backend', async () => {
     // The postures still carry Claude's notice. A panel that rendered every posture's notice, or read
     // the window default in place of the entry's own backends, would show it here.
-    const { getByTestId, queryByTestId } = await selectOffered({ ...ANALYSIS, backends: ['codex'] });
+    const { getByTestId, queryByTestId } = await selectOffered({ ...RESEARCH, backends: ['codex'] });
 
     expect(getByTestId('launchable-detail-trigger')).toBeTruthy();
     expect(queryByTestId('launch-authority-notice')).toBeNull();
@@ -261,7 +295,7 @@ describe('what the panel says about the authority a start will have (FR-R4-F06 F
 
   it('shows the entry capability notices, even where no posture notice applies', async () => {
     const { getByTestId, queryByTestId } = await selectOffered({
-      ...ANALYSIS,
+      ...RESEARCH,
       backends: ['codex'],
       capabilityNotices: CAPABILITY_NOTICES
     });
