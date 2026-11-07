@@ -1329,4 +1329,30 @@ describe('Feature 098 (T043) — the default-Workflow setting ships unset', () =
     expect(ALLOWED_KEYS).not.toContain('defaultPipelineId');
     expect(ALLOWED_KEYS).toContain('defaultWorkflowId');
   });
+
+  it('describes what the default does and when the old key still counts (FR-004, FR-006a)', async () => {
+    // The default preselects a Workflow in the Queue's Add work composer, and nothing else
+    // launches from it. Both descriptions say so, and both name the deprecated key, because the
+    // Settings tab shows the new key only while the old one can still be the answer.
+    const manifest = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '..', '..', '..', 'package.json'), 'utf8')
+    ) as {
+      contributes: {
+        configuration: { properties: Record<string, { markdownDescription?: string }> };
+      };
+    };
+    const manifestText =
+      manifest.contributes.configuration.properties[SETTING_KEY].markdownDescription;
+    expect(manifestText).toContain('**Add work**');
+    expect(manifestText).toContain(`\`${DEPRECATED_KEY}\``);
+    expect(manifestText).not.toContain('enqueued without');
+
+    const { GENERAL_SETTINGS_DESCRIPTIONS } = await import(
+      '../../../webview-ui/src/components/settings/GeneralSettingsTab.descriptions.js'
+    );
+    const tabText = GENERAL_SETTINGS_DESCRIPTIONS.defaultWorkflowId.body;
+    expect(tabText).toContain('Add work');
+    expect(tabText).toContain(DEPRECATED_KEY);
+    expect(tabText).not.toContain('/speckit-auto');
+  });
 });
