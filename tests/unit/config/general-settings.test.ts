@@ -1306,19 +1306,24 @@ describe('Feature 098 (T043) — the default-Workflow setting ships unset', () =
     );
   });
 
-  it('keeps the old key as a deprecated alias that names its replacement (FR-002)', () => {
+  it('keeps the old key as a deprecated alias that names its replacement (FR-004)', () => {
     const manifest = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '..', '..', '..', 'package.json'), 'utf8')
     ) as {
       contributes: {
         configuration: {
-          properties: Record<string, { deprecationMessage?: string; default?: unknown }>;
+          properties: Record<
+            string,
+            { deprecationMessage?: string; markdownDeprecationMessage?: string; default?: unknown }
+          >;
         };
       };
     };
     const deprecated = manifest.contributes.configuration.properties[DEPRECATED_KEY];
     expect(deprecated.default).toBe('');
     expect(deprecated.deprecationMessage).toContain(SETTING_KEY);
+    // The settings editor renders the Markdown message where one is given (FR-004).
+    expect(deprecated.markdownDeprecationMessage).toContain(`\`${SETTING_KEY}\``);
     expect(SETTINGS_SCHEMA[DEPRECATED_KEY].default).toBe('');
     // The Settings tab edits the new key only, so the old one is no General settings key.
     expect(ALLOWED_KEYS).not.toContain('defaultPipelineId');
