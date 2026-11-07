@@ -1330,10 +1330,11 @@ describe('Feature 098 (T043) — the default-Workflow setting ships unset', () =
     expect(ALLOWED_KEYS).toContain('defaultWorkflowId');
   });
 
-  it('describes what the default does and when the old key still counts (FR-004, FR-006a)', async () => {
+  it('describes what the default does and when the old key still counts (FR-004, FR-006a)', () => {
     // The default preselects a Workflow in the Queue's Add work composer, and nothing else
-    // launches from it. Both descriptions say so, and both name the deprecated key, because the
-    // Settings tab shows the new key only while the old one can still be the answer.
+    // launches from it. The manifest says so and names the deprecated key, because the Settings
+    // tab shows the new key only while the old one can still be the answer. The Settings tab's
+    // own text is pinned in the webview tests (GeneralSettingsTab.autocompact.test.ts).
     const manifest = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '..', '..', '..', 'package.json'), 'utf8')
     ) as {
@@ -1346,13 +1347,5 @@ describe('Feature 098 (T043) — the default-Workflow setting ships unset', () =
     expect(manifestText).toContain('**Add work**');
     expect(manifestText).toContain(`\`${DEPRECATED_KEY}\``);
     expect(manifestText).not.toContain('enqueued without');
-
-    const { GENERAL_SETTINGS_DESCRIPTIONS } = await import(
-      '../../../webview-ui/src/components/settings/GeneralSettingsTab.descriptions.js'
-    );
-    const tabText = GENERAL_SETTINGS_DESCRIPTIONS.defaultWorkflowId.body;
-    expect(tabText).toContain('Add work');
-    expect(tabText).toContain(DEPRECATED_KEY);
-    expect(tabText).not.toContain('/speckit-auto');
   });
 });
