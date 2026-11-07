@@ -145,7 +145,9 @@ const MIN_SHARED_LINES = 20;
  *      membership is a property of the pair.
  *
  * Each entry carries its reason, and `an entry whose duplication is gone must
- * leave` below fails on a stale one.
+ * leave` below fails on a stale one. The `agent skill trees` family left on
+ * 2026-11-07 (feature 284): workspace commit 4ffb57a made `.agents` a symlink out
+ * of the tree, so one tracked skill tree remains and no pair needs it.
  */
 interface DuplicateFamily {
   readonly name: string;
@@ -159,20 +161,6 @@ function skillName(path: string): string | null {
   return m ? m[1] : null;
 }
 
-/**
- * `.agents|.claude/skills/<name>/<rest>.md` -> `<name>/<rest>.md`; null otherwise.
- *
- * The whole tree-relative path rather than only `SKILL.md`, because a skill
- * package ships `references/*.md` beside its definition and mirroring one of
- * those into both trees is the same deliberate duplication for the same reason.
- * The byte-identity version keyed this family on `/skills/` appearing in both
- * paths; narrowing it to `SKILL.md` would report such a mirror as unexplained.
- */
-function skillTreePath(path: string): string | null {
-  const m = /(?:^|\/)(?:\.agents|\.claude)\/skills\/(.+\.md)$/.exec(path);
-  return m ? m[1] : null;
-}
-
 /** `.specify/extensions/<ext>/commands/speckit.<a>.<b>.md` -> `speckit-<a>-<b>`. */
 function extensionCommandName(path: string): string | null {
   const m = /(?:^|\/)\.specify\/extensions\/[^/]+\/commands\/(.+)\.md$/.exec(path);
@@ -180,20 +168,6 @@ function extensionCommandName(path: string): string | null {
 }
 
 const FAMILIES: readonly DuplicateFamily[] = [
-  {
-    name: 'agent skill trees',
-    why:
-      'The same skill definition read by two agent runtimes from two fixed paths. One file cannot serve ' +
-      'both, and drift between them is a functional bug rather than a documentation one. ' +
-      'RE-EXAMINED under substantive-line overlap (FR-R3-066): still live, 13 pairs at 0.822-1.000, and ' +
-      'still justified for the same reason the byte-identity version gave.',
-    covers: (a, b) => {
-      const sa = skillTreePath(a);
-      const sb = skillTreePath(b);
-      // Equal tree-relative paths on two distinct files means two trees.
-      return sa !== null && sa === sb;
-    }
-  },
   {
     name: 'extension commands against the skill trees',
     why:

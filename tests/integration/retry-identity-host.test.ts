@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
+import { ManualScheduler } from '../fixtures/state/ownership-harness';
 import { MessageRouter } from '../../src/ui/sidebar/message-router';
 import type { CommandAckMessage, SidebarCommand } from '../../src/ui/sidebar/messages';
 
@@ -59,7 +60,10 @@ interface Harness {
 
 async function build(): Promise<Harness> {
   const memento = new HoldableMemento();
-  const store = new WorkspaceStateStore(memento);
+  // FR-R5-F09 arms a 5 s memento-write deadline on the store's scheduler. This test holds the
+  // write past 5 s on purpose, so the deadline runs on a scheduler that never fires; the
+  // deadline itself is pinned in tests/unit/state/queue-ownership-recovery.test.ts.
+  const store = new WorkspaceStateStore(memento, undefined, new ManualScheduler());
   await store.initialize();
   const queue = new QueueManager(store);
   const created = await queue.createQueue('Second queue');

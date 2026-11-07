@@ -1005,9 +1005,11 @@ describe('composable Workflow launch (FR-R5-F06)', () => {
     );
 
     const res = only(harness).result;
+    // FR-R5-F08 (feature 267) records the entry attempt as `pending-dispatch` before the
+    // dispatch, so the launch takes one more revision; it is still one durable write.
     expect(res).toMatchObject({
       outcome: 'started',
-      revision: 2
+      revision: 3
     });
     expect(harness.writes).toHaveLength(1);
     const writtenRun = harness.writes[0]!.run;
