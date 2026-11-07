@@ -51,11 +51,11 @@ interface CapturedAck {
 
 /** Records the queue each PhaseOps entry point was handed, or `undefined`. */
 class RecordingPhaseOps {
-  skipCalls: Array<{ runId: string; phaseId: string; queueId?: string }> = [];
-  disableCalls: Array<{ phaseId: string; queueId?: string }> = [];
-  enableCalls: Array<{ phaseId: string; queueId?: string }> = [];
-  setBreakpointCalls: Array<{ runId: string; phaseId: string; queueId?: string }> = [];
-  clearBreakpointCalls: Array<{ runId: string; phaseId: string; queueId?: string }> = [];
+  skipCalls: Array<{ runId: string; phaseId: string; queueId: string | undefined }> = [];
+  disableCalls: Array<{ phaseId: string; queueId: string | undefined }> = [];
+  enableCalls: Array<{ phaseId: string; queueId: string | undefined }> = [];
+  setBreakpointCalls: Array<{ runId: string; phaseId: string; queueId: string | undefined }> = [];
+  clearBreakpointCalls: Array<{ runId: string; phaseId: string; queueId: string | undefined }> = [];
 
   async skipPhase(runId: string, phaseId: string, queueId?: string): Promise<{ ok: boolean }> {
     this.skipCalls.push({ runId, phaseId, queueId });

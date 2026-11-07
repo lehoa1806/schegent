@@ -161,8 +161,9 @@ describe('migrateV12ToV13 pauseSource normalization (feature 028 / FR-R5-F09)', 
       updatedAt: 1
     } as unknown as QueueRegistry;
     const out = migrateV12ToV13({ q1: makeQueueState() }, registry, 200);
-    expect(out.queueStates.q1.pauseSource).toBe('operator');
-    expect(out.queueStates.q1.queueLifecycle).toBe('operator-paused');
+    const q1 = new Map(Object.entries(out.queueStates)).get('q1');
+    expect(q1?.pauseSource).toBe('operator');
+    expect(q1?.queueLifecycle).toBe('operator-paused');
   });
 
   it('sets pauseSource: null for active queues', () => {
@@ -171,7 +172,7 @@ describe('migrateV12ToV13 pauseSource normalization (feature 028 / FR-R5-F09)', 
       updatedAt: 1
     } as unknown as QueueRegistry;
     const out = migrateV12ToV13({ q1: makeQueueState() }, registry, 200);
-    expect(out.queueStates.q1.pauseSource).toBeNull();
+    expect(new Map(Object.entries(out.queueStates)).get('q1')?.pauseSource).toBeNull();
   });
 
   it("preserves an existing valid pauseSource of 'cascade'", () => {
@@ -180,7 +181,7 @@ describe('migrateV12ToV13 pauseSource normalization (feature 028 / FR-R5-F09)', 
       updatedAt: 1
     } as unknown as QueueRegistry;
     const out = migrateV12ToV13({ q1: makeQueueState() }, registry, 200);
-    expect(out.queueStates.q1.pauseSource).toBe('cascade');
+    expect(new Map(Object.entries(out.queueStates)).get('q1')?.pauseSource).toBe('cascade');
   });
 
   it('is idempotent on already-v13 data', () => {
