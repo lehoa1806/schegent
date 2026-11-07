@@ -1,4 +1,5 @@
 export * from './audit-events';
+export * from './execution-decision-observation';
 export * from './state-schema';
 export * from './monitor-events';
 export * from './queue-snapshot';

@@ -25,6 +25,10 @@ import type {
   WorkflowNodeKind,
   WorkflowNodeTerminalStatus
 } from '../contracts/workflow-definitions';
+import {
+  validateExecutionDecisionObservation,
+  type ExecutionDecisionObservation
+} from '../contracts/execution-decision-observation';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import type { WorkflowRunPipeline } from './workflow-run';
 
@@ -352,6 +356,8 @@ export interface ConnectedWorkflowRun {
   readonly commandReceipts?: readonly CommittedCommandReceipt[];
   /** FR-R5-F03 — latest restart recovery reconciliation disposition, if any. */
   readonly recoveryDisposition?: RecoveryDispositionRecord | null;
+  /** FR-R5-F23 (F23-T05, D1) — durable decision observation records for phase repetition and branch evaluation. */
+  readonly decisionObservations?: readonly ExecutionDecisionObservation[];
 }
 
 export class ConnectedRunInvariantError extends Error {
@@ -364,6 +370,7 @@ export class ConnectedRunInvariantError extends Error {
 const AGGREGATE_KEYS: readonly string[] = [
   'commandReceipts',
   'connectedRunId',
+  'decisionObservations',
   'decisions',
   'frozenClosure',
   'graph',
@@ -595,6 +602,13 @@ export function assertConnectedRunInvariants(
       fail(`commandReceipts exceeds ${MAX_COMMAND_RECEIPTS} entries`);
     }
   }
+  if (run.decisionObservations !== undefined) {
+    if (!Object.isFrozen(run.decisionObservations)) fail('the decisionObservations list must be frozen');
+    for (const obs of run.decisionObservations) {
+      const checked = validateExecutionDecisionObservation(obs);
+      if (!checked.valid) fail(`invalid decisionObservation: ${checked.errors[0]?.message ?? 'invalid shape'}`);
+    }
+  }
   const nodeIds = new Set(run.graph.nodes.map((node) => node.nodeId));
   for (const [key, record] of Object.entries(run.nodes)) {
     assertKeys(record, NODE_KEYS, 'node record');
@@ -716,15 +730,35 @@ export function appendAttempt(
   return Object.freeze(next);
 }
 
-/** Append one routing decision. Decisions are chronological and never rewritten. */
+/** Append one routing decision (and optional `ExecutionDecisionObservation`). Decisions are chronological and never rewritten. */
 export function appendDecision(
   run: ConnectedWorkflowRun,
-  decision: RoutingDecision
+  decision: RoutingDecision,
+  observation?: ExecutionDecisionObservation
 ): ConnectedWorkflowRun {
   const frozen = deepFreeze(deepCopy(decision));
+  const frozenObs = observation !== undefined ? deepFreeze(deepCopy(observation)) : undefined;
   const next: ConnectedWorkflowRun = {
     ...run,
     decisions: Object.freeze([...run.decisions, frozen]),
+    ...(frozenObs !== undefined
+      ? { decisionObservations: Object.freeze([...(run.decisionObservations ?? []), frozenObs]) }
+      : {}),
+    revision: run.revision + 1
+  };
+  assertConnectedRunInvariants(next);
+  return Object.freeze(next);
+}
+
+/** Append one `ExecutionDecisionObservation` record to `run.decisionObservations`. */
+export function appendDecisionObservation(
+  run: ConnectedWorkflowRun,
+  observation: ExecutionDecisionObservation
+): ConnectedWorkflowRun {
+  const frozenObs = deepFreeze(deepCopy(observation));
+  const next: ConnectedWorkflowRun = {
+    ...run,
+    decisionObservations: Object.freeze([...(run.decisionObservations ?? []), frozenObs]),
     revision: run.revision + 1
   };
   assertConnectedRunInvariants(next);

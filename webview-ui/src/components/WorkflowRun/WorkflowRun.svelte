@@ -21,12 +21,14 @@
   import WorkflowContinuation from './WorkflowContinuation.svelte';
   import { continueWorkflow } from '../../lib/workflow-run-ipc';
   import type { ContinueWorkflowResult, WorkflowControlAction } from '../../lib/messages';
-  import type {
-    ConnectedInvocationProjection,
-    ConnectedNodeProjection,
-    ConnectedRunProjection,
-    PipelineDefinition,
-    QueueItem
+  import {
+    describeBranchDisposition,
+    describeExitReason,
+    type ConnectedInvocationProjection,
+    type ConnectedNodeProjection,
+    type ConnectedRunProjection,
+    type PipelineDefinition,
+    type QueueItem
   } from '../../lib/snapshot-types';
 
   interface Props {
@@ -321,6 +323,28 @@
       disabled={openNode !== undefined}
       onAct={(node) => onAct(node)}
     />
+
+    {#if run.decisionObservations && run.decisionObservations.length > 0}
+      <ul class="invocation-attempts" data-testid="workflow-decision-observations">
+        {#each run.decisionObservations as obs (obs.decisionId)}
+          <li
+            class="invocation-attempt-row"
+            data-testid={`workflow-decision-observation-${obs.nodeId}`}
+          >
+            <span>{obs.nodeId} (#{obs.iteration}/{obs.maxIterations})</span>
+            <span>{obs.retryCondition} · {describeExitReason(obs.exitReason)} (cap: {obs.capOutcome})</span>
+            {#each obs.branches as branch (branch.connectionIndex)}
+              <span
+                class="run-badge"
+                data-testid={`workflow-decision-branch-${obs.nodeId}-${branch.connectionIndex}`}
+              >
+                {branch.summary}: {describeBranchDisposition(branch.disposition)}
+              </span>
+            {/each}
+          </li>
+        {/each}
+      </ul>
+    {/if}
 
     {#if openNode}
       {#if openPipeline}

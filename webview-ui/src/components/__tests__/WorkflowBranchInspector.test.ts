@@ -400,6 +400,17 @@ describe('branch metadata the canvas renders', () => {
     });
     expect(spies.onpatch).toHaveBeenLastCalledWith(0, { selection: undefined });
   });
+
+  it('renders a human-readable branch rule summary banner (FR-R5-F23)', () => {
+    const { getByTestId } = mount({
+      ...conditional(STATUS_CONDITION),
+      priority: 2,
+      handoff: 'manual'
+    });
+    expect(getByTestId('workflow-branch-rule-summary-0').textContent.trim()).toBe(
+      'draft status = completed · priority 2 · manual handoff'
+    );
+  });
 });
 
 describe('readonly withholds every affordance', () => {

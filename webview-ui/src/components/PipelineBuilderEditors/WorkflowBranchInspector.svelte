@@ -26,6 +26,7 @@
   // come from `workflow-catalog-state.ts`.
   import { WORKFLOW_TEXT_COMPARISON_OPERATORS } from "../../../../src/contracts/workflow-definitions";
   import {
+    formatConditionSummary,
     WORKFLOW_NODE_TERMINAL_STATUSES,
     WORKFLOW_SELECTION_RULES,
     type PortablePipelineDefinition,
@@ -97,6 +98,20 @@
   const isList = $derived(
     condition ? conditionRightArity(condition.operator) === "list" : false,
   );
+  const ruleSummary = $derived.by((): string => {
+    const base = formatConditionSummary(condition, p.connection.isDefault === true);
+    const details: string[] = [base];
+    if (p.connection.isDefault === true && condition !== undefined) {
+      details.push("fallback");
+    }
+    if (p.connection.priority !== undefined) {
+      details.push(`priority ${p.connection.priority}`);
+    }
+    if (p.connection.handoff === "manual") {
+      details.push("manual handoff");
+    }
+    return details.join(" · ");
+  });
 
   /** The declared ports of the node one end currently names, for that end's select. */
   function portsFor(
@@ -117,6 +132,9 @@
   data-testid="workflow-branch-inspector-{p.index}"
 >
   <h3>Branch {p.index + 1}</h3>
+  <div class="wf-badge" data-testid="workflow-branch-rule-summary-{p.index}">
+    {ruleSummary}
+  </div>
   <WorkflowRowDefects
     id="workflow-connection-defects-{p.index}"
     defects={p.defects}
