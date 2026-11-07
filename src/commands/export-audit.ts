@@ -7,7 +7,8 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import { exportOutcomePayload, type ExportOutcome } from '../contracts/evidence-export-outcome';
 import { isFailureCause } from '../contracts/failure-cause';
 import { openWithinRoot } from '../lib/safe-open';
-import { resolveWritableAnchor } from '../lib/path-containment';
+import { resolveContainedLink, resolveWritableAnchor } from '../lib/path-containment';
+import { restoreOwnerOnly } from '../services/evidence-export';
 import { resolveExportDestination, type ExportDestinationUri } from '../services/export-destination';
 import type { Notifier } from '../ui/notifications';
 import { EXPORT_TEXT } from './evidence-commands';
@@ -277,11 +278,13 @@ export async function runExportAuditLog(deps: ExportAuditLogDeps): Promise<void>
   // Opened through the checked walk beneath the destination's resolved parent, `0600` (E5): an existing
   // file is narrowed and truncated, a new one is created owner-only, and a link in any component refuses.
   const located = await resolveWritableAnchor(path.dirname(destination.path));
-  const opened =
-    located === null || located.tail.length > 0
-      ? null
-      : await openWithinRoot(located.anchor, [path.basename(destination.path)], { flags: 'w', fileMode: 0o600 });
-  if (opened === null || opened.outcome === 'refused') {
+  if (located === null || located.tail.length > 0) {
+    await refuse('write-failed');
+    return;
+  }
+  const leaf = path.basename(destination.path);
+  const opened = await openWithinRoot(located.anchor, [leaf], { flags: 'w', fileMode: 0o600 });
+  if (opened.outcome === 'refused') {
     await refuse('write-failed');
     return;
   }
@@ -291,10 +294,15 @@ export async function runExportAuditLog(deps: ExportAuditLogDeps): Promise<void>
     writeSucceeded = true;
   } catch {
     await opened.handle.close().catch(() => undefined);
+    // The undo goes through the checked walk and the containment oracle, as the write did, so a
+    // link planted since cannot aim it outside the destination's directory.
     if (targetExistedBefore && priorBytes !== null) {
-      await fs.writeFile(destination.path, priorBytes).catch(() => undefined);
+      await restoreOwnerOnly(located.anchor, leaf, priorBytes);
     } else {
-      await fs.rm(destination.path, { force: true }).catch(() => undefined);
+      const created = await resolveContainedLink(destination.path, [located.anchor]);
+      if (created.outcome === 'contained') {
+        await fs.rm(created.resolved, { force: true }).catch(() => undefined);
+      }
     }
     await refuse('write-failed');
     return;
