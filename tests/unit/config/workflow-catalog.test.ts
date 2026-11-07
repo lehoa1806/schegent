@@ -469,3 +469,13 @@ describe('a stored Workflow with an unreachable condition (C-T4, FR-031)', () =>
     ]);
   });
 });
+
+// Feature 285 (OD-2, FR-011, SC-004): the validator refuses a node `pipelineId` by default, and the
+// catalog's read of stored rows opts in, because a stored row may predate FR-R5-F08.
+describe('a stored row with a retired Pipeline node', () => {
+  it('is admitted by the catalog read, which opts in to the field', () => {
+    const record = forId(resolve({ rows: [row('stored-legacy')] }), 'stored-legacy').at(0);
+    expect(record?.status).toBe('effective');
+    expect(codes(record)).not.toContain('legacy-pipeline-field');
+  });
+});

@@ -1333,3 +1333,26 @@ describe('Feature 254 C9 — the unsupported corpus conditions are refused on im
     }
   });
 });
+
+// Feature 285 (OD-2, FR-011): export takes the validator default. A stored row with a retired
+// Pipeline node cannot be parsed for export, so it is never selected. The refusal is the
+// selection's own `does-not-resolve` reason, as before the default changed; the field-level
+// reason (`legacy-pipeline-field`) is what the headless surface reports.
+describe('a stored Workflow with a retired Pipeline node (feature 285)', () => {
+  it('is not selected for export', () => {
+    const selection = selectWorkflowForExport({
+      rows: [
+        {
+          id: 'legacy-export',
+          name: 'Legacy Export',
+          version: 1,
+          nodes: [{ nodeId: 'a', pipelineId: 'standard' }],
+          connections: [],
+          startNodeIds: ['a']
+        }
+      ],
+      workflowId: 'legacy-export'
+    });
+    expect(selection).toEqual({ outcome: 'unavailable', reason: 'does-not-resolve' });
+  });
+});
