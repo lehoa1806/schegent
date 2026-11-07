@@ -17,7 +17,7 @@ export class DashboardBridge {
   private readonly logger: SanitizedLogger;
   private projector: ProjectorHandle;
   private dispatch: InboundDispatch;
-  private onPanelDispose?: () => void;
+  private onPanelDispose: (() => void) | undefined;
 
   constructor(opts: DashboardBridgeOptions) {
     this.extensionRoot = opts.extensionRoot;

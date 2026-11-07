@@ -70,7 +70,7 @@ describe('SnapshotStore synchronization, slice reconstruction, and resync (FR-R5
     const snap2 = makeSnapshot({ history, producedAt: '2026-11-06T00:00:02.000Z' });
     const post2 = transport.preparePost(snap2);
     expect(post2.sync.mode).toBe('routine');
-    expect('history' in (post2.message.payload as Record<string, unknown>)).toBe(false);
+    expect('history' in (post2.message.payload as unknown as Record<string, unknown>)).toBe(false);
 
     snapshotStore.apply(post2.message as HostMessage<WorkflowSnapshot>);
     expect(snapshotStore.lastRevision).toBe(2);

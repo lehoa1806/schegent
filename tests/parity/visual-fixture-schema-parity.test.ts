@@ -17,7 +17,7 @@
  * Four things must therefore agree on one number:
  *   1. the host producer, `src/ui/sidebar/snapshot.ts` (`SCHEMA_VERSION`);
  *   2. the webview mirror, `webview-ui/src/lib/snapshot-types.ts`;
- *   3. the store's accept gate in `webview-ui/src/lib/snapshot-store.svelte.ts`;
+ *   3. the store's accept gate, in `webview-ui/src/lib/snapshot-merge.ts` since FR-R5-F12;
  *   4. the visual fixture.
  *
  * This runs under `npm run test`, so the next reshape fails in seconds rather
@@ -41,13 +41,9 @@ import { SCHEMA_VERSION } from '../../src/ui/sidebar/snapshot';
 import { workflowSnapshot } from '../visual/fixtures/workflow-snapshot';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const STORE_PATH = path.join(
-  REPO_ROOT,
-  'webview-ui',
-  'src',
-  'lib',
-  'snapshot-store.svelte.ts'
-);
+// FR-R5-F12 (feature 271) moved the gate out of `snapshot-store.svelte.ts` into the pure
+// merge the store calls, `reconcileSnapshotMessage`.
+const STORE_GATE_PATH = path.join(REPO_ROOT, 'webview-ui', 'src', 'lib', 'snapshot-merge.ts');
 
 /** The v3 root singulars feature 092 folded under `queues[]`. */
 const V3_ROOT_RUN_FIELDS = [
@@ -77,11 +73,11 @@ function readFixture(): Record<string, unknown> {
  * stale is itself a finding.
  */
 function readStoreGateVersion(): number {
-  const source = fs.readFileSync(STORE_PATH, 'utf8');
-  const match = /snap\.schemaVersion\s*!==\s*(\d+)/.exec(source);
+  const source = fs.readFileSync(STORE_GATE_PATH, 'utf8');
+  const match = /merged\.schemaVersion\s*!==\s*(\d+)/.exec(source);
   expect(
     match,
-    'snapshot-store.svelte.ts no longer gates on `snap.schemaVersion !== <n>`; update this anchor'
+    'snapshot-merge.ts no longer gates on `merged.schemaVersion !== <n>`; update this anchor'
   ).not.toBeNull();
   return Number((match as RegExpExecArray)[1]);
 }

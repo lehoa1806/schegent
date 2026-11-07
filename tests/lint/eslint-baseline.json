@@ -23,7 +23,7 @@
   "rules": {
     "@typescript-eslint/no-unnecessary-condition": {
       "host": 404,
-      "webview": 235,
+      "webview": 233,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
@@ -279,8 +279,7 @@
         "src/lib/phase-log-ipc.ts": 3,
         "src/lib/phase-log-store.svelte.ts": 1,
         "src/lib/queue-runtime-view.ts": 2,
-        "src/lib/run-composition.ts": 1,
-        "src/lib/snapshot-store.svelte.ts": 2
+        "src/lib/run-composition.ts": 1
       }
     },
     "@typescript-eslint/no-unused-vars": {

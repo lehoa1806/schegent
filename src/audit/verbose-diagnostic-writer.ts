@@ -111,7 +111,7 @@ export class VerboseDiagnosticWriter {
       this.preparedDirs.add(target.directory);
     } catch (err) {
       this.hadFailure = true;
-      const code = (err as { code?: unknown })?.code;
+      const code = (err as { code?: unknown } | null)?.code;
       this.evidenceHealth?.reportFailure(
         'verboseDiagnostics',
         typeof code === 'string' ? code : 'write-failed'
@@ -182,7 +182,7 @@ export class VerboseDiagnosticWriter {
       }
     } catch (err) {
       this.hadFailure = true;
-      const code = (err as { code?: unknown })?.code;
+      const code = (err as { code?: unknown } | null)?.code;
       this.evidenceHealth?.reportFailure(
         'verboseDiagnostics',
         typeof code === 'string' ? code : 'write-failed'

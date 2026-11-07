@@ -758,10 +758,12 @@ export class WorkflowControlService {
             deepestLeafFrame.invocationId,
             leafAttempt
           ) ?? null;
+        // A canceled child is the pause's own effect, not an outcome: Resume starts a new attempt.
         if (
           evidence !== null &&
           (evidence.settled === true || evidence.completed === true) &&
-          evidence.status !== undefined
+          evidence.status !== undefined &&
+          evidence.status !== 'canceled'
         ) {
           const settled = await completeComposableNodeAttempt(
             {

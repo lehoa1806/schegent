@@ -124,6 +124,11 @@ Phase evidence fields come from model-authored audit blocks. When a structured C
 model text, its raw-stream fallback supplies neither file-change counts nor authored metrics, even if
 tool output contains audit markers. Missing evidence remains absent rather than becoming measured zeros.
 
+`metrics-view-opened` carries one field, `viewCorrelationId`: an ephemeral UI-session correlation
+identifier, never a backend conversation ID. Rows written before FR-R5-F14 name it `sessionId`.
+From FR-R5-F14 until feature 284 the record sanitizer redacted a `sessionId` key as a session
+cookie, so the writer refused every such append as `secret-detected` and none was written.
+
 Two classification fields are worth naming, because both are narrowed rather
 than passed through (feature 194):
 

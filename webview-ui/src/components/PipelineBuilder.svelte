@@ -58,7 +58,6 @@
   const showRetryConditionsBanner = $derived(
     !showWorkspaceTrustBanner && !trustRetryConditions
   );
-  // svelte-ignore state_referenced_locally
   const persistedBuilder = readPersistedBuilderState();
   // svelte-ignore state_referenced_locally
   const initialPhaseSlice = persistedBuilder?.phaseSlice

@@ -118,8 +118,8 @@ async function verifyNoMutationAndAdoptionEvent(): Promise<void> {
 
     const entry = JSON.parse(lines[0]!) as AuditEntry;
     assert.equal(entry.eventType, 'metrics-view-opened');
-    assert.deepEqual(Object.keys(entry.payload).sort(), ['sessionId']);
-    assert.equal(entry.payload.sessionId, sessionId);
+    assert.deepEqual(Object.keys(entry.payload).sort(), ['viewCorrelationId']);
+    assert.equal(entry.payload.viewCorrelationId, sessionId);
   } finally {
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   }

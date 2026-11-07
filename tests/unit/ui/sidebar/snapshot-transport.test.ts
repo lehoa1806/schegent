@@ -189,7 +189,7 @@ describe('SnapshotTransport & History Memoization (FR-R5-F12)', () => {
     expect(post2.sync.revision).toBe(2);
     expect(post2.sync.baseRevision).toBe(1);
     expect(post2.sync.omittedSlices).toContain('history');
-    expect('history' in (post2.message.payload as Record<string, unknown>)).toBe(false);
+    expect('history' in (post2.message.payload as unknown as Record<string, unknown>)).toBe(false);
 
     // Tick 3: history changes (restored/appended entry) -> history is included on the wire
     const updatedHistory = Object.freeze([
@@ -246,7 +246,7 @@ describe('SnapshotTransport & History Memoization (FR-R5-F12)', () => {
     });
 
     const posts: Array<{ type: string; payload: unknown; sync?: { mode: string; revision: number } }> = [];
-    let inboundHandler: ((raw: unknown) => void) | null = null;
+    let inboundHandler: ((raw: unknown) => void) | undefined;
     const visibilityListeners = new Set<() => void>();
     const fakeView = {
       visible: true,
@@ -357,7 +357,7 @@ describe('SnapshotTransport & History Memoization (FR-R5-F12)', () => {
       dispatch: vi.fn(),
       logger
     });
-    const panel = mocks.panels[0];
+    const panel = mocks.panels.at(0);
     if (!panel) throw new Error('expected panel');
     await Promise.resolve();
 

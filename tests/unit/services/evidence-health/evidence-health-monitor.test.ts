@@ -401,18 +401,18 @@ describe('FR-R5-F13 — complete evidence sink coverage (auditCheckpoint, transp
       evidenceHealth: monitor
     });
 
-    await router.route({ runId: 'r1', stream: 'stdout', line: 'hi', timestamp: '2026-01-01T00:00:00.000Z' }, 'hi\n');
+    await router.route({ runId: 'r1', phase: 'p1', stream: 'stdout', line: 'hi' }, 'hi\n');
     expect(monitor.getSnapshot().transport.status).toBe('healthy');
 
     mode = 'on';
-    await router.route({ runId: 'r1', stream: 'stdout', line: 'hi', timestamp: '2026-01-01T00:00:00.000Z' }, 'hi\n');
+    await router.route({ runId: 'r1', phase: 'p1', stream: 'stdout', line: 'hi' }, 'hi\n');
     expect(monitor.getSnapshot().transport).toMatchObject({
       status: 'degraded',
       cause: 'disk-full'
     });
 
     failAppend = false;
-    await router.route({ runId: 'r1', stream: 'stdout', line: 'hi', timestamp: '2026-01-01T00:00:00.000Z' }, 'hi\n');
+    await router.route({ runId: 'r1', phase: 'p1', stream: 'stdout', line: 'hi' }, 'hi\n');
     expect(monitor.getSnapshot().transport).toMatchObject({
       status: 'healthy',
       cause: null

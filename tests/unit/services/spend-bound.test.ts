@@ -35,7 +35,7 @@ import {
   spendPauseMessage,
   type RunSpendTotal
 } from '../../../src/services/spend-bound';
-import { createSpendBoundWatcher } from '../../../src/services/spend-bound-watcher';
+import { createSpendBoundWatcher, spendSeedTargets } from '../../../src/services/spend-bound-watcher';
 import type { SpendReplay } from '../../../src/services/spend-bound-replay';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
@@ -763,6 +763,44 @@ describe('FR-R3-209 (T1895) — the seed rebuilds the tally after a restart', ()
     watcher.onAuditEntry(row('late-0', 'r-0', { totalCostUsd: 2 }));
 
     expect(watcher.observedFor('r-0').completeness).toEqual({ kind: 'complete' });
+  });
+
+  it('S15a: a failed Run evicted to stay under the cap is incomplete(evicted) at its next row (OD-1)', async () => {
+    // A failed Run can be put back into motion by Retry, Restart or Resume, so a dropped tally
+    // is lost spend, exactly as for a live Run, and its next row must say so.
+    const { runs, watcher } = seedHarness({ limitUsd: 100, limitTokens: null });
+    const ids = Array.from({ length: 65 }, (_, index) => `f-${index}`);
+    for (const id of ids) runs.set(id, runFixture({ id }));
+    runs.set('f-0', runFixture({ id: 'f-0', status: 'failed' }));
+    ids.forEach((id, index) => watcher.onAuditEntry(row(`first-${index}`, id, { totalCostUsd: 1 })));
+
+    watcher.onAuditEntry(row('resumed-0', 'f-0', { totalCostUsd: 2 }));
+
+    expect(watcher.observedFor('f-0').completeness).toEqual({ kind: 'incomplete', reason: 'evicted' });
+  });
+
+  it('S15b: the restart seed keeps a failed Run\'s replayed spend, so a resume counts from it (OD-1)', async () => {
+    const { runs, watcher } = seedHarness({ limitUsd: 100, limitTokens: null });
+    runs.set('run-1', runFixture({ status: 'failed' }));
+    await watcher.seedFrom(Promise.resolve(replayOf([row('e-1', 'run-1', { totalCostUsd: 0.5 })])));
+
+    watcher.onAuditEntry(row('live-1', 'run-1', { totalCostUsd: 0.25 }));
+
+    expect(watcher.observedFor('run-1').costUsd).toBe(0.75);
+  });
+
+  it('S15c: the restart seed replays every operable Run, failed included, and no finished one (OD-1)', () => {
+    const targets = spendSeedTargets([
+      runFixture({ id: 'running', startedAt: 1 }),
+      runFixture({ id: 'failed', status: 'failed', startedAt: 2 }),
+      runFixture({ id: 'completed', status: 'completed', startedAt: 3 }),
+      runFixture({ id: 'canceled', status: 'canceled', startedAt: 4 })
+    ]);
+
+    expect(targets).toEqual([
+      { runId: 'running', startedAt: 1 },
+      { runId: 'failed', startedAt: 2 }
+    ]);
   });
 
   it('S16: forget at the terminal transition removes the Run\'s state, its notice keys and its evicted mark', async () => {

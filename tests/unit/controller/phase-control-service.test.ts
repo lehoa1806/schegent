@@ -883,7 +883,7 @@ describe('FR-R5-F15 — PhaseControlService + SpendBoundWatcher resume lifecycle
       armIsContinue: vi.fn(),
       cancelActive: vi.fn(),
       resumeExisting: async () => true,
-      onRunResumed: (runId) => watcher.onRunResumed(runId),
+      onRunResumed: (runId: string) => watcher.onRunResumed(runId),
       auditor: {
         appendPhaseControl: async () => {},
         emitTaskPaused: async () => {},

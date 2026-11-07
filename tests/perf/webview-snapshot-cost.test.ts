@@ -61,16 +61,6 @@ import type { AuditTailEntry, WorkflowSnapshot } from '../../src/ui/sidebar/snap
 import type { WorkflowRun } from '../../src/state/workflow-run';
 import type { PhaseDef } from '../../src/config/pipeline-config';
 import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
-import {
-  appendToWindow,
-  hiddenEntryCount,
-  PHASE_LOG_WINDOW_MAX_ENTRIES
-} from '../../webview-ui/src/lib/phase-log-window';
-import {
-  boundHistorySnapshots,
-  MAX_BUILDER_HISTORY_BYTES,
-  MAX_BUILDER_HISTORY_ENTRIES
-} from '../../webview-ui/src/components/PipelineBuilderEditors/phase-catalog-actions';
 import type { PhaseLogDisplayEntry } from '../../src/services/phase-log/types';
 
 /** Phases the active workload's Run carries. */
@@ -580,7 +570,10 @@ describe('webview snapshot cost: phase-log window, Builder bounds, activation & 
     for (const item of live.splice(0)) item.dispose();
   });
 
-  it('bounds the 500-row phase-log live window with trim marker across 2,000 appends', () => {
+  it('bounds the 500-row phase-log live window with trim marker across 2,000 appends', async () => {
+    // The webview is an ES module; this CommonJS test loads it with a dynamic import.
+    const { appendToWindow, hiddenEntryCount, PHASE_LOG_WINDOW_MAX_ENTRIES } =
+      await import('../../webview-ui/src/lib/phase-log-window.js');
     let entries: readonly PhaseLogDisplayEntry[] = [];
     const appendMs: number[] = [];
     const totalAppends = 2_000;
@@ -592,7 +585,7 @@ describe('webview snapshot cost: phase-log window, Builder bounds, activation & 
         ts: new Date(EPOCH_MS + seq * 100).toISOString(),
         body:
           seq % 3 === 0
-            ? { toolName: 'read_file', toolArguments: '{"path":"src/index.ts"}', toolId: `t-${seq}` }
+            ? { toolName: 'read_file', toolArguments: '{"path":"src/index.ts"}' }
             : { text: `phase log line ${seq} with representative assistant output text` },
         bodyTruncated: null
       };
@@ -605,7 +598,7 @@ describe('webview snapshot cost: phase-log window, Builder bounds, activation & 
     }
 
     const windowBytes = Buffer.byteLength(JSON.stringify(entries), 'utf8');
-    const marker = entries[0];
+    const marker = entries.at(0);
     const trimmedCount = hiddenEntryCount(entries);
     const line = {
       workload: 'phase-log-window',
@@ -624,7 +617,9 @@ describe('webview snapshot cost: phase-log window, Builder bounds, activation & 
     expect(trimmedCount).toBe(totalAppends - PHASE_LOG_WINDOW_MAX_ENTRIES);
   });
 
-  it('enforces F10 Builder undo/redo entry-count (50) and byte (256 KiB) bounds across 200 edits', () => {
+  it('enforces F10 Builder undo/redo entry-count (50) and byte (256 KiB) bounds across 200 edits', async () => {
+    const { boundHistorySnapshots, MAX_BUILDER_HISTORY_BYTES, MAX_BUILDER_HISTORY_ENTRIES } =
+      await import('../../webview-ui/src/lib/builder-history-bound.js');
     let stack: Array<readonly PhaseDef[]> = [];
     const pushMs: number[] = [];
 

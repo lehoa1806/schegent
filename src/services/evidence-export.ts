@@ -24,7 +24,12 @@ import { createHash } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 import { SanitizedLogger } from '../lib/logger';
-import { resolveContainedForWrite, resolveContainedTarget, resolveWritableAnchor } from '../lib/path-containment';
+import {
+  resolveContainedForWrite,
+  resolveContainedLink,
+  resolveContainedTarget,
+  resolveWritableAnchor
+} from '../lib/path-containment';
 import { ensureDirWithinRoot, openWithinRoot } from '../lib/safe-open';
 import { classifyAuditGeneration, type AuditGenerationClass } from '../audit/audit-generation-classify';
 
@@ -217,7 +222,7 @@ export async function exportRunEvidence(
   if (prepared === null) {
     return { outcome: 'refused', reason: 'write-failed', detail: 'the destination could not be prepared' };
   }
-  const { directory, createdDirs } = prepared;
+  const { directory } = prepared;
   const touched: TouchedFile[] = [];
   const auditFiles: { path: string; content: AuditGenerationClass }[] = [];
 
@@ -229,7 +234,7 @@ export async function exportRunEvidence(
     // outside the workspace into an artifact an operator is about to hand over.
     const source = await resolveContainedTarget(absolute, [workspaceRoot]);
     if (source.outcome !== 'contained') {
-      await rollbackDestination(touched, createdDirs);
+      await rollbackDestination(touched, prepared);
       return {
         outcome: 'refused',
         reason: 'outside-workspace',
@@ -250,7 +255,7 @@ export async function exportRunEvidence(
       }
       raw = await fsp.readFile(source.resolved, 'utf8');
     } catch (error) {
-      await rollbackDestination(touched, createdDirs);
+      await rollbackDestination(touched, prepared);
       return { outcome: 'refused', reason: 'write-failed', detail: describe(error) };
     }
     // The redaction floor. The raw transcript is unredacted ON DISK by design;
@@ -262,7 +267,7 @@ export async function exportRunEvidence(
       const floorRedacted = baseLogger.sanitize(raw);
       redacted = customLogger ? customLogger.sanitize(floorRedacted) : floorRedacted;
     } catch {
-      await rollbackDestination(touched, createdDirs);
+      await rollbackDestination(touched, prepared);
       return { outcome: 'refused', reason: 'write-failed', detail: 'redaction-failed' };
     }
     const name = relative.replaceAll('/', '__');
@@ -275,7 +280,7 @@ export async function exportRunEvidence(
     // not happen is a write escaping the destination through a pre-planted link.
     const writable = await resolveContainedForWrite(target, [directory]);
     if (writable.outcome !== 'contained') {
-      await rollbackDestination(touched, createdDirs);
+      await rollbackDestination(touched, prepared);
       return {
         outcome: 'refused',
         reason: 'outside-workspace',
@@ -285,7 +290,7 @@ export async function exportRunEvidence(
     touched.push(await snapshotTarget(target));
     const wrote = await writeOwnerOnly(directory, name, redacted);
     if (!wrote.ok) {
-      await rollbackDestination(touched, createdDirs);
+      await rollbackDestination(touched, prepared);
       return { outcome: 'refused', reason: wrote.reason, detail: wrote.detail };
     }
     const digest = sha256(redacted);
@@ -306,13 +311,13 @@ export async function exportRunEvidence(
   const manifestTarget = path.join(directory, 'manifest.json');
   const manifestPath = await resolveContainedForWrite(manifestTarget, [directory]);
   if (manifestPath.outcome !== 'contained') {
-    await rollbackDestination(touched, createdDirs);
+    await rollbackDestination(touched, prepared);
     return { outcome: 'refused', reason: 'outside-workspace', detail: 'manifest path not contained' };
   }
   touched.push(await snapshotTarget(manifestTarget));
   const wroteManifest = await writeOwnerOnly(directory, 'manifest.json', `${JSON.stringify(manifest, null, 2)}\n`);
   if (!wroteManifest.ok) {
-    await rollbackDestination(touched, createdDirs);
+    await rollbackDestination(touched, prepared);
     return { outcome: 'refused', reason: wroteManifest.reason, detail: wroteManifest.detail };
   }
   return { outcome: 'exported', directory, manifest };
@@ -322,7 +327,6 @@ interface TouchedFile {
   readonly fullPath: string;
   readonly existedBefore: boolean;
   readonly priorBytes: Buffer | null;
-  readonly priorMode: number | null;
 }
 
 async function snapshotTarget(fullPath: string): Promise<TouchedFile> {
@@ -330,41 +334,72 @@ async function snapshotTarget(fullPath: string): Promise<TouchedFile> {
     const st = await fsp.lstat(fullPath);
     if (st.isFile()) {
       const priorBytes = await fsp.readFile(fullPath);
-      return { fullPath, existedBefore: true, priorBytes, priorMode: st.mode & 0o777 };
+      return { fullPath, existedBefore: true, priorBytes };
     }
   } catch {
     // Target did not exist before this export attempt.
   }
-  return { fullPath, existedBefore: false, priorBytes: null, priorMode: null };
+  return { fullPath, existedBefore: false, priorBytes: null };
 }
 
+/**
+ * Undo a failed export: restore each file it overwrote, remove each it created, then the
+ * directories it made, deepest first. Every step goes through the checked walk or the
+ * containment oracle, so a link planted during the export cannot aim the undo outside the
+ * destination. A restored file keeps the owner-only mode the export gave it; its prior mode
+ * is never widened back (FR-007).
+ */
 async function rollbackDestination(
   touched: readonly TouchedFile[],
-  createdDirs: readonly string[]
+  prepared: PreparedDestination
 ): Promise<void> {
   for (let index = touched.length - 1; index >= 0; index -= 1) {
-    const entry = touched[index]!;
+    const entry = touched.at(index);
+    if (entry === undefined) continue;
     if (entry.existedBefore && entry.priorBytes !== null) {
-      await fsp.writeFile(entry.fullPath, entry.priorBytes).catch(() => undefined);
-      if (entry.priorMode !== null) {
-        await fsp.chmod(entry.fullPath, entry.priorMode).catch(() => undefined);
-      }
-    } else {
-      await fsp.rm(entry.fullPath, { force: true }).catch(() => undefined);
+      await restoreOwnerOnly(prepared.directory, path.basename(entry.fullPath), entry.priorBytes);
+      continue;
+    }
+    const created = await resolveContainedLink(entry.fullPath, [prepared.directory]);
+    if (created.outcome === 'contained') {
+      await fsp.rm(created.resolved, { force: true }).catch(() => undefined);
     }
   }
-  for (const dir of createdDirs) {
-    await fsp.rmdir(dir).catch(() => undefined);
+  for (const dir of prepared.createdDirs) {
+    const made = await resolveContainedLink(dir, [prepared.anchor]);
+    if (made.outcome === 'contained') {
+      await fsp.rmdir(made.resolved).catch(() => undefined);
+    }
   }
+}
+
+/** Put a file's prior bytes back through the checked walk, `0600`. A failed undo is silent. */
+export async function restoreOwnerOnly(directory: string, name: string, bytes: Buffer): Promise<void> {
+  const opened = await openWithinRoot(directory, [name], { flags: 'w', fileMode: 0o600 });
+  if (opened.outcome === 'refused') return;
+  try {
+    await opened.handle.write(bytes);
+  } catch {
+    // The export is already refused; the undo has nothing further to report.
+  } finally {
+    await opened.handle.close().catch(() => undefined);
+  }
+}
+
+interface PreparedDestination {
+  /** The canonical export directory. */
+  readonly directory: string;
+  /** The deepest existing ancestor, resolved: the root of every directory this export made. */
+  readonly anchor: string;
+  /** Directories this export created, deepest first. */
+  readonly createdDirs: readonly string[];
 }
 
 /**
  * Make the destination directory and return its canonical path: the deepest existing ancestor resolved, and
  * the missing components created `0700` through the checked walk beneath it. `null` if it cannot be made.
  */
-async function prepareDestination(
-  destination: string
-): Promise<{ readonly directory: string; readonly createdDirs: readonly string[] } | null> {
+async function prepareDestination(destination: string): Promise<PreparedDestination | null> {
   const located = await resolveWritableAnchor(path.resolve(destination));
   if (located === null) return null;
   const createdDirs: string[] = [];
@@ -375,7 +410,8 @@ async function prepareDestination(
       createdDirs.push(path.join(located.anchor, ...located.tail.slice(0, length)));
     }
   }
-  return { directory: path.join(located.anchor, ...located.tail), createdDirs };
+  const directory = path.join(located.anchor, ...located.tail);
+  return { directory, anchor: located.anchor, createdDirs };
 }
 
 type OwnerOnlyWrite =

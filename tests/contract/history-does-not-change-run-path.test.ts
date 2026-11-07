@@ -207,7 +207,11 @@ describe('the queue model is unchanged by this feature (T083, FR-050)', () => {
       'runPlan',
       'startedAt',
       'status',
-      'updatedAt'
+      'updatedAt',
+      // FR-R5-F08 — added by feature 267, not by a History surface. The occurrence identity
+      // makes a Workflow's Phase dispatch idempotent: a re-dispatch of the same attempt finds
+      // the queue item it already made. History neither reads nor writes it.
+      'workflowOccurrence'
     ]);
   });
 
