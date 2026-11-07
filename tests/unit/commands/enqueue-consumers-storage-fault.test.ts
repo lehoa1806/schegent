@@ -93,7 +93,6 @@ describe('enqueue consumers handle failed-storage (T14)', () => {
       { description: 'a feature', pipelineId: 'a-pipeline' },
       {
         guardedRunService: failingGuarded() as never,
-        getCatalog: () => ({ pipelines: [], defaultPipelineId: '' }) as never,
         notifier: n as never,
         logger: new SanitizedLogger()
       }
