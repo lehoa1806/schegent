@@ -13,6 +13,7 @@ import { CMD_SAVE_GENERAL_SETTINGS } from '../../../lib/messages';
 import type { WorkflowSnapshot, GeneralSettings } from '../../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
 import { foldLegacyRun } from '../../../lib/__tests__/queue-runtime-fixture';
+import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
 
 const postCommandSpy = vi.fn(
   (_cmd: string, _payload: unknown) => ({ correlationId: 'corr-test' })
@@ -188,5 +189,13 @@ describe('Feature 285 — GeneralSettingsTab default Workflow select', () => {
     expect(postCommandSpy).toHaveBeenCalledOnce();
     const call = postCommandSpy.mock.calls.at(0);
     expect(call?.at(1)).toEqual({ updates: { defaultWorkflowId: 'wf-ship' } });
+  });
+
+  it('describes the composer preselection and the deprecated fallback (FR-004, FR-006a)', () => {
+    // The tab shows the new key only, so its text names the old key that can still answer.
+    const body = GENERAL_SETTINGS_DESCRIPTIONS.defaultWorkflowId.body;
+    expect(body).toContain('Add work');
+    expect(body).toContain('schegent.defaultPipelineId');
+    expect(body).not.toContain('/speckit-auto');
   });
 });
