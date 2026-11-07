@@ -78,19 +78,28 @@ const INDIRECT_DISPATCH: readonly IndirectDispatch[] = [
 /**
  * A command with no webview sender at all, and why that is the intended state.
  *
- * Empty, and that is the finding rather than an accident: the lifecycle
- * round-check resolved Finding D by deleting the five commands nothing sent
- * rather than by exempting them, and Finding C by rebuilding the dispatcher.
- * The mechanism stays because the next such command needs somewhere to argue
- * its case in writing, and because an allowlist that has never been used is
- * cheaper to keep honest than one invented under pressure.
+ * Empty until feature 285, and that was the finding rather than an accident:
+ * the lifecycle round-check resolved Finding D by deleting the five commands
+ * nothing sent rather than by exempting them, and Finding C by rebuilding the
+ * dispatcher. The mechanism stayed so that the next such command had somewhere
+ * to argue its case in writing; `CMD_START` is that command.
  */
 interface Exemption {
   readonly command: string;
   readonly why: string;
 }
 
-const EXEMPT: readonly Exemption[] = [];
+const EXEMPT: readonly Exemption[] = [
+  {
+    command: 'CMD_START',
+    why:
+      'Feature 285 (OD-2, FR-002) deleted its one sender, the Queue input form, whose definition ' +
+      'selector listed Pipeline rows; the composer enqueues through CMD_LAUNCH_WORKFLOW. The arm ' +
+      'stays because it is a validated contract that integration probes and the command ' +
+      'reference still name, and deleting a contract command is its own decision, not a side ' +
+      'effect of retiring one surface.'
+  }
+];
 
 const MIN_REASON_LENGTH = 40;
 

@@ -73,9 +73,9 @@ export type GeneralSettingsControlId =
   | 'runtimeLogMaxGenerations'
   | 'runtimeLogMaxGenerations-save'
   | 'runtimeLogMaxGenerations-reset'
-  | 'defaultPipelineId'
-  | 'defaultPipelineId-save'
-  | 'defaultPipelineId-reset'
+  | 'defaultWorkflowId'
+  | 'defaultWorkflowId-save'
+  | 'defaultWorkflowId-reset'
   | 'claudeAutoCompactPctOverride'
   | 'claudeAutoCompactPctOverride-save'
   | 'claudeAutoCompactPctOverride-reset'
@@ -364,20 +364,21 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
       'unsaved changes on this field.'
   },
 
-  defaultPipelineId: {
+  defaultWorkflowId: {
     title: 'Default workflow',
     body:
-      // Feature 099 (T494a, FR-054) — the retired Pipeline settings key is
-      // deleted, not drained. The list is the Workflow catalog the store holds.
-      'Workflow used when /speckit-auto runs without an explicit selection. ' +
-      'The list reflects the Workflows in the catalog.'
+      // Feature 285 (OD-2, FR-003) — `schegent.defaultWorkflowId`. The list is the
+      // effective Workflows the store holds; no Pipeline row is offered.
+      'Workflow the Queue Add work composer preselects when nothing is selected. ' +
+      'The list reflects the Workflows in the catalog. While this is unset, the ' +
+      'deprecated schegent.defaultPipelineId is read when it names a Workflow.'
   },
-  'defaultPipelineId-save': {
+  'defaultWorkflowId-save': {
     body:
       'Save the default workflow selection. Disabled until the value differs ' +
       'from the saved projection.'
   },
-  'defaultPipelineId-reset': {
+  'defaultWorkflowId-reset': {
     body:
       'Restore the projected default workflow. Disabled when there are no ' +
       'unsaved changes on this field.'

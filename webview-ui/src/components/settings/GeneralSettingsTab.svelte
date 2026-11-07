@@ -129,7 +129,7 @@
     { key: 'invocationIdleTimeoutSeconds', ipcKey: 'invocation.idleTimeoutSeconds', label: 'Invocation Idle Timeout (seconds)', kind: 'number', min: 60, max: 7200 },
     { key: 'invocationMaxDurationSeconds', ipcKey: 'invocation.maxDurationSeconds', label: 'Invocation Max Duration (seconds)', kind: 'number', min: 60, max: 86400 },
     { key: 'watchdogPollIntervalMinutes', ipcKey: 'watchdog.pollIntervalMinutes', label: 'Watchdog Poll Interval (minutes)', kind: 'number', min: 1, max: 240 },
-    { key: 'defaultPipelineId', ipcKey: 'defaultPipelineId', label: 'Default Workflow', kind: 'pipeline-select' },
+    { key: 'defaultWorkflowId', ipcKey: 'defaultWorkflowId', label: 'Default Workflow', kind: 'workflow-select' },
     // FR-R3-143 (T047) — `1, 5`, from the manifest. T012 wrote `0, 20` and the
     // hover text explained that zero disables retries; the host's minimum is 1,
     // so that was an instruction to enter a value it would reject.
@@ -303,7 +303,8 @@
     FIELDS.some((spec) => fieldChanged(spec.key))
   );
 
-  const pipelines = $derived(snapshot.availablePipelines ?? []);
+  // Feature 285 (OD-2, FR-003) — the default select lists the effective Workflows only.
+  const workflows = $derived(snapshot.workflowCatalog?.effective ?? []);
 </script>
 
 <section class="general-settings" data-testid="general-settings-tab">
@@ -319,7 +320,7 @@
     {snapshot}
     bind:draft
     {statusByKey}
-    {pipelines}
+    {workflows}
     {fieldChanged}
     {fieldScopeLabel}
     {saveOne}
@@ -330,7 +331,7 @@
     fields={EXECUTION_RETRY_FIELDS}
     bind:draft
     {statusByKey}
-    {pipelines}
+    {workflows}
     {fieldChanged}
     {fieldScopeLabel}
     {saveOne}
@@ -342,7 +343,7 @@
     transportUsage={snapshot.generalSettings?.transportUsage}
     bind:draft
     {statusByKey}
-    {pipelines}
+    {workflows}
     {fieldChanged}
     {fieldScopeLabel}
     {saveOne}
@@ -354,7 +355,7 @@
     fields={UI_TRUST_FIELDS}
     bind:draft
     {statusByKey}
-    {pipelines}
+    {workflows}
     {fieldChanged}
     {fieldScopeLabel}
     {saveOne}

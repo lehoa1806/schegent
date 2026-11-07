@@ -18,7 +18,7 @@
 //     which is all the settings coverage gate scans
 //     (`tests/integration/settings-surface.integration.test.ts:252`).
 
-import type { BackendRunnerKind, PipelineDefinition } from '../../../lib/snapshot-types';
+import type { BackendRunnerKind, PortableWorkflowDefinition } from '../../../lib/snapshot-types';
 
 export type ScalarKey =
   | 'cliPath'
@@ -31,7 +31,7 @@ export type ScalarKey =
   | 'watchdogPollIntervalMinutes'
   | 'auditRotationSizeMB'
   | 'auditRotationMaxAgeDays'
-  | 'defaultPipelineId'
+  | 'defaultWorkflowId'
   | 'claudeAutoCompactPctOverride'
   | 'runtimeLogLevel'
   | 'runtimeLogFilePath'
@@ -66,7 +66,7 @@ export type FieldKind =
   | 'string'
   | 'boolean'
   | 'number'
-  | 'pipeline-select'
+  | 'workflow-select'
   | 'number-optional'
   | 'level-select'
   | 'raw-transcript-select'
@@ -151,7 +151,7 @@ export type Draft = {
   watchdogPollIntervalMinutes: number;
   auditRotationSizeMB: number;
   auditRotationMaxAgeDays: number;
-  defaultPipelineId: string;
+  defaultWorkflowId: string;
   // Feature 012: `null` is the "clear / use CLI default" sentinel; the
   // host translates a payload of `null` to `config.update(key, undefined)`.
   claudeAutoCompactPctOverride: number | null;
@@ -242,7 +242,8 @@ export interface SettingsGroupProps {
   transportUsage?: import('../../../../../src/contracts/sidebar-ipc/transport-usage').TransportUsage;
   draft: Draft;
   statusByKey: StatusByKey;
-  pipelines: readonly PipelineDefinition[];
+  /** Feature 285 (FR-003) — the effective Workflows the default select lists. */
+  workflows: readonly PortableWorkflowDefinition[];
   fieldChanged: (key: ScalarKey) => boolean;
   fieldScopeLabel: (key: ScalarKey) => string;
   saveOne: (spec: FieldSpec) => void;

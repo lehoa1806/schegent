@@ -20,7 +20,7 @@ import { createDefinitionSemantics } from '../../../src/config/definition-semant
 import { validatePipelineDefinition } from '../../../src/config/pipeline-definition-validator';
 import type { CatalogKind, CatalogSnapshot, StoredDefinition } from '../../../src/contracts/catalog-store';
 
-const NO_DEFAULT_PIPELINE = { defaultPipelineId: () => '' };
+const NO_DEFAULT_WORKFLOW = { defaultWorkflowId: () => '' };
 
 function storedDefinition(kind: CatalogKind, id: string, body: unknown): StoredDefinition {
   return {
@@ -70,7 +70,7 @@ const PHASE = { id: 'plan', name: 'Plan', version: 1, instruction: 'Plan it.' };
 
 describe('a Phase referenced only by an invalid Pipeline cannot be deleted', () => {
   it('names the invalid Pipeline as a blocker, with the position of the reference', () => {
-    const semantics = createDefinitionSemantics(NO_DEFAULT_PIPELINE);
+    const semantics = createDefinitionSemantics(NO_DEFAULT_WORKFLOW);
     const snapshot = snapshotOf(
       storedDefinition('phase', 'plan', PHASE),
       storedDefinition('pipeline', 'ship-it', INVALID_PIPELINE)
@@ -89,7 +89,7 @@ describe('a Phase referenced only by an invalid Pipeline cannot be deleted', () 
   });
 
   it('reports the same blocker whether the Pipeline validates or not', () => {
-    const semantics = createDefinitionSemantics(NO_DEFAULT_PIPELINE);
+    const semantics = createDefinitionSemantics(NO_DEFAULT_WORKFLOW);
     const blockersFor = (body: unknown) =>
       semantics.referencesTo(
         snapshotOf(
@@ -106,7 +106,7 @@ describe('a Phase referenced only by an invalid Pipeline cannot be deleted', () 
   });
 
   it('reads the position out of the authored list, not the order of the rows', () => {
-    const semantics = createDefinitionSemantics(NO_DEFAULT_PIPELINE);
+    const semantics = createDefinitionSemantics(NO_DEFAULT_WORKFLOW);
     const snapshot = snapshotOf(
       storedDefinition('phase', 'plan', PHASE),
       storedDefinition('pipeline', 'ship-it', {
@@ -123,7 +123,7 @@ describe('a Phase referenced only by an invalid Pipeline cannot be deleted', () 
   });
 
   it('reads the portable `phaseIds` spelling as well as the legacy `phases`', () => {
-    const semantics = createDefinitionSemantics(NO_DEFAULT_PIPELINE);
+    const semantics = createDefinitionSemantics(NO_DEFAULT_WORKFLOW);
     const snapshot = snapshotOf(
       storedDefinition('phase', 'plan', PHASE),
       // `phaseIds` is the portable key and the one the validator prefers. This scan
@@ -143,7 +143,7 @@ describe('a Phase referenced only by an invalid Pipeline cannot be deleted', () 
   });
 
   it('blocks on a reference held only by the losing key of an ambiguous body', () => {
-    const semantics = createDefinitionSemantics(NO_DEFAULT_PIPELINE);
+    const semantics = createDefinitionSemantics(NO_DEFAULT_WORKFLOW);
     const snapshot = snapshotOf(
       storedDefinition('phase', 'plan', PHASE),
       // Both spellings is `sequence-ambiguous`, and the operator resolves it by
@@ -164,7 +164,7 @@ describe('a Phase referenced only by an invalid Pipeline cannot be deleted', () 
   });
 
   it('blocks nothing for a Pipeline too malformed to recover a phase list from', () => {
-    const semantics = createDefinitionSemantics(NO_DEFAULT_PIPELINE);
+    const semantics = createDefinitionSemantics(NO_DEFAULT_WORKFLOW);
     const snapshot = snapshotOf(
       storedDefinition('phase', 'plan', PHASE),
       // A `phases` of objects is not a list of ids. `display` declines to answer

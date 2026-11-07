@@ -8,7 +8,8 @@ const read = (path: string): string => readFileSync(resolve(ROOT, path), 'utf8')
 describe('accepted product-boundary decisions', () => {
   it('keeps offline execution outside the current promise and visible before submission', () => {
     const decision = read('docs/concepts/local-first-not-offline.md');
-    const composer = read('webview-ui/src/components/QueueInputForm.svelte');
+    // Feature 285 (OD-2, FR-002): the Queue task composer carries the note the retired form did.
+    const composer = read('webview-ui/src/components/QueueTaskComposer.svelte');
     expect(decision).toContain('Offline AI execution is not a supported promise');
     expect(decision).toContain('Capability-discovery prototype');
     expect(decision).toContain('Queue-only/no-execution behavior');

@@ -188,18 +188,28 @@ const PIPELINE_ROWS: readonly Row[] = [
   }
 ];
 
+// Feature 285 (FR-010): the Workflow cases use Phase nodes. A node `pipelineId` is a retired
+// field that the headless surface refuses by default and the stored-row catalog still reads;
+// that divergence is pinned on its own at the end of this file, not carried by every case.
 const WORKFLOW_VALID: Row = {
   workflowId: 'parity-workflow',
   name: 'Parity Workflow',
   version: 1,
   nodes: [
+    { nodeId: 'source', kind: 'phase', phaseId: 'parity-draft' },
+    { nodeId: 'target', kind: 'phase', phaseId: 'parity-review' }
+  ],
+  connections: [{ from: { nodeId: 'source' }, to: { nodeId: 'target' } }],
+  startNodeIds: ['source']
+};
+
+/** The pre-FR-R5-F08 shape: two Pipeline nodes. Only the divergence pin at the end reads it. */
+const WORKFLOW_LEGACY_PIPELINE_NODES: Row = {
+  ...WORKFLOW_VALID,
+  nodes: [
     { nodeId: 'source', pipelineId: 'parity-source' },
     { nodeId: 'target', pipelineId: 'parity-target' }
-  ],
-  connections: [
-    { from: { nodeId: 'source', portId: 'notes' }, to: { nodeId: 'target', portId: 'brief' } }
-  ],
-  startNodeIds: ['source']
+  ]
 };
 
 /**
@@ -217,9 +227,7 @@ const PIPELINE_UNKNOWN_PHASE: Row = {
 /** T031's second named case: the connection's source names a node the graph never declares. */
 const WORKFLOW_MISSING_NODE: Row = {
   ...WORKFLOW_VALID,
-  connections: [
-    { from: { nodeId: 'ghost', portId: 'notes' }, to: { nodeId: 'target', portId: 'brief' } }
-  ]
+  connections: [{ from: { nodeId: 'ghost' }, to: { nodeId: 'target' } }]
 };
 
 const PHASE_VALID: Row = {
@@ -268,10 +276,11 @@ const PIPELINE_NO_VERSION: Row = (() => {
  */
 const SEEDED = new FakeCatalogStore();
 
-const EFFECTIVE_PHASES = resolvePhaseCatalog({
+const PHASE_RESOLUTION = resolvePhaseCatalog({
   rows: PHASE_ROWS,
   revision: SEEDED.revisionOf('phase')
-}).effective;
+});
+const EFFECTIVE_PHASES = PHASE_RESOLUTION.effective;
 
 const PIPELINE_RESOLUTION = resolvePipelineCatalog({
   rows: PIPELINE_ROWS,
@@ -601,14 +610,21 @@ describe('a malformed Workflow is defects and never an exception (H-T1, H-T2, FR
     { label: 'nodes holding a number', row: { ...WORKFLOW_VALID, nodes: [1] } },
     { label: 'nodes holding an empty object', row: { ...WORKFLOW_VALID, nodes: [{}] } },
     {
-      label: 'a node missing its pipelineId',
-      row: { ...WORKFLOW_VALID, nodes: [{ nodeId: 'source' }, { nodeId: 'target', pipelineId: 'parity-target' }] }
+      // Feature 285: data-model §7 names this case for `pipelineId`; Phase nodes carry `phaseId`.
+      label: 'a node missing its phaseId',
+      row: {
+        ...WORKFLOW_VALID,
+        nodes: [
+          { nodeId: 'source', kind: 'phase' },
+          { nodeId: 'target', kind: 'phase', phaseId: 'parity-review' }
+        ]
+      }
     },
     { label: 'connections that is an object', row: { ...WORKFLOW_VALID, connections: {} } },
     { label: 'connections holding null', row: { ...WORKFLOW_VALID, connections: [null] } },
     {
       label: 'a connection missing its to',
-      row: { ...WORKFLOW_VALID, connections: [{ from: { nodeId: 'source', portId: 'notes' } }] }
+      row: { ...WORKFLOW_VALID, connections: [{ from: { nodeId: 'source' } }] }
     },
     {
       label: 'a condition that is an expression string (hard rule 40)',
@@ -653,8 +669,8 @@ describe('a malformed Workflow is defects and never an exception (H-T1, H-T2, FR
       row: {
         ...WORKFLOW_VALID,
         nodes: [
-          { nodeId: 'source', pipelineId: 'parity-source' },
-          { nodeId: 'source', pipelineId: 'parity-target' }
+          { nodeId: 'source', kind: 'phase', phaseId: 'parity-draft' },
+          { nodeId: 'source', kind: 'phase', phaseId: 'parity-review' }
         ]
       }
     },
@@ -666,6 +682,7 @@ describe('a malformed Workflow is defects and never an exception (H-T1, H-T2, FR
     const resolution = resolveWorkflowCatalog({
       rows: [row],
       revision: SEEDED.revisionOf('workflow'),
+      phaseCatalog: PHASE_RESOLUTION,
       pipelineCatalog: PIPELINE_RESOLUTION
     });
     const record = resolution.records.at(0);
@@ -711,6 +728,19 @@ describe('a malformed Workflow is defects and never an exception (H-T1, H-T2, FR
     // reported, and it is the same one the sidebar reports.
     const defects = headlessDefects(WORKFLOW_MISSING_NODE);
     expect(defects.some((defect) => defect.endsWith('|unresolved-endpoint'))).toBe(true);
+  });
+
+  // Feature 285 (OD-2, FR-010, FR-011): the one intended divergence. A stored row may predate
+  // FR-R5-F08, so the catalog's read opts in to a node `pipelineId`; the headless surface takes the
+  // validator default and refuses it with its own code.
+  it('refuses a legacy Pipeline node headlessly; the stored-row catalog still reads it', () => {
+    expect(headlessDefects(WORKFLOW_LEGACY_PIPELINE_NODES)).toEqual([
+      'nodes[0].pipelineId|legacy-pipeline-field',
+      'nodes[1].pipelineId|legacy-pipeline-field',
+      // No node is usable, so the start set names none of them.
+      'startNodeIds[0]|invalid-start-set'
+    ]);
+    expect(sidebarDefects(WORKFLOW_LEGACY_PIPELINE_NODES)).toEqual([]);
   });
 
   // H-T3 -- the existing boundary refusal is unchanged. A non-object `definition` is refused `wrong-type`

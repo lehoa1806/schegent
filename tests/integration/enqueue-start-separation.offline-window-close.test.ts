@@ -19,10 +19,10 @@
 //       VS Code re-activation against the persisted state).
 //   (d) assert pending head-of-queue invariant, lifecycle is
 //       `idle-pending`, `scheduledStartAt === null`.
-//   (e) the webview re-renders; the chooser is NOT auto-opened — the
-//       `QueueInputForm.svelte` only mounts the chooser when there is an
-//       in-flight draft (`pendingDraft !== null`), and across reloads the
-//       draft is not persisted. Instead the queue panel exposes the
+//   (e) the webview re-renders; the chooser is NOT auto-opened — no
+//       submission surface mounts it (BUG-001, FR-018; the Queue form that
+//       once did was retired by feature 285), and across reloads no
+//       draft is persisted. Instead the queue panel exposes the
 //       `Start queue` affordance via `ScheduledStartIndicator` (when
 //       `scheduledStartAt != null`) or a `Start queue` button (when
 //       `scheduledStartAt === null`, per T051).
@@ -153,10 +153,8 @@ describe('Feature 065 (T050 / Q12 / FR-018) — offline window-close', () => {
     // live only on the webview component. Across a workspace reload,
     // the queue's pending draft is gone (it was the textarea, not the
     // queue), and the queue's persisted state has no marker that would
-    // cause the chooser to auto-mount. The webview only mounts the
-    // chooser when `pendingDraft !== null && lifecycle === 'active-empty'`
-    // (per QueueInputForm.svelte), and `idle-pending` fails that gate.
-    // We assert the host-side contract: the persisted state has nothing
+    // cause the chooser to auto-mount. No submission surface mounts the
+    // chooser (BUG-001, FR-018). We assert the host-side contract: the persisted state has nothing
     // that would force the webview to surface the chooser.
     expect(queue.queueLifecycle).not.toBe('active-empty');
   });

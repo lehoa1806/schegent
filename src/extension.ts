@@ -599,7 +599,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     operatorAttribution,
     notifier,
     logger,
-    getCatalog: () => catalogSession.catalog,
     controller,
     queue,
     lock,

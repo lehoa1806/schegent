@@ -731,7 +731,7 @@ export interface GeneralSettings {
   readonly watchdogPollIntervalMinutes: number;
   readonly auditRotationSizeMB: number;
   readonly auditRotationMaxAgeDays: number;
-  readonly defaultPipelineId: string;
+  readonly defaultWorkflowId: string;
   readonly fatalSignatures: readonly string[];
   readonly claudeAutoCompactPctOverride: number | undefined;
   readonly runtimeLogLevel: RuntimeLogLevel;
@@ -784,7 +784,7 @@ export interface GeneralSettings {
     readonly watchdogPollIntervalMinutes: SettingScope;
     readonly auditRotationSizeMB: SettingScope;
     readonly auditRotationMaxAgeDays: SettingScope;
-    readonly defaultPipelineId: SettingScope;
+    readonly defaultWorkflowId: SettingScope;
     readonly fatalSignatures: SettingScope;
     readonly claudeAutoCompactPctOverride: SettingScope;
     readonly runtimeLogLevel: SettingScope;
@@ -849,7 +849,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   // unset. It named the built-in `speckit-new-feature` Pipeline, which no
   // installation has any more. The type stays `string`: the empty string is
   // how "no default" is spelled across the boundary, not a missing field.
-  defaultPipelineId: '',
+  defaultWorkflowId: '',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
   runtimeLogLevel: 'INFO',
@@ -886,7 +886,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     watchdogPollIntervalMinutes: 'default',
     auditRotationSizeMB: 'default',
     auditRotationMaxAgeDays: 'default',
-    defaultPipelineId: 'default',
+    defaultWorkflowId: 'default',
     fatalSignatures: 'default',
     claudeAutoCompactPctOverride: 'default',
     runtimeLogLevel: 'default',
@@ -1152,6 +1152,11 @@ export interface WorkflowSnapshot {
    * a loading state (FR-006). That is why `LaunchSection` has no `loading` arm.
    */
   readonly launchables?: LaunchProjection;
+  /**
+   * Feature 285 (FR-006a) — the resolved default Workflow ID, `''` for none. Absent while
+   * the Workflow catalog is unresolved. The Queue composer preselects it when offered.
+   */
+  readonly defaultWorkflowId?: string;
   /**
    * Feature 088 — the connected runs the operator can act on, already folded to
    * per-node state, legal actions, and `hydrating` host-side. Additive and

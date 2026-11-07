@@ -136,7 +136,9 @@ const EMPTY_PIPELINE_CATALOG: WorkflowPipelineContext = Object.freeze({
 
 function parseShapeRows(rows: readonly unknown[]): MutableSourceRecord[] {
   return rows.map((row, index) => {
-    const result = validateWorkflowDefinition(row);
+    // Stored rows may predate FR-R5-F08, so this read opts in to the legacy Pipeline fields that
+    // the validator refuses by default (feature 285 FR-011).
+    const result = validateWorkflowDefinition(row, { allowLegacyPipelineId: true });
     const workflowId = workflowSourceIdentity(row, index);
     return {
       key: `${workflowId}::${index}`,

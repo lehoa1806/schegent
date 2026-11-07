@@ -861,9 +861,8 @@ writes only what is still missing.
 ### New built-in pipeline: `speckit-bugfix` (spec 026)
 
 The new-task pipeline selector, relocated by feature 097 to
-[`QueueInputForm.svelte:128-146`](src/components/QueueInputForm.svelte)
-(mounted in `drilldown/QueueDetailTier.svelte`'s on-demand composer; see
-"Feature 017 queue and phase-task IPC" above), listed two built-in
+`QueueInputForm.svelte` (mounted in `drilldown/QueueDetailTier.svelte`'s
+on-demand composer; see "Feature 017 queue and phase-task IPC" above), listed two built-in
 pipelines (`speckit-new-feature`, `speckit-bugfix`) and defaulted to the
 first. Feature 098 ships neither: the selector lists whatever
 `availablePipelines` carries, which is empty until the operator imports a
@@ -873,8 +872,10 @@ none, so an unset default preselects the first row rather than an id the
 operator cannot see. There was a second, shortcut form in
 `ControlPanel.svelte` that did NOT include the selector and fell back to the
 controller's default pipeline (research Decision 6). FR-R3-140 deleted that
-component as unreachable, so the selector-less path is gone with it and the
-composer above is the only form that starts a task.
+component as unreachable, so the selector-less path is gone with it. Feature
+285 deleted `QueueInputForm.svelte` too: the Queue detail tier always mounts
+[`QueueTaskComposer.svelte`](src/components/QueueTaskComposer.svelte), which
+lists Workflows only and is the form that starts a task.
 
 ### IPC additions (spec 028 — Advanced phase pausing)
 

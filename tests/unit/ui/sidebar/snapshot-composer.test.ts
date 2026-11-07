@@ -475,3 +475,52 @@ describe('launchables projection — the launch limits reach the launcher (FR-02
     expect(entry).not.toHaveProperty('runSettings');
   });
 });
+
+// Feature 285 (FR-006a, research D4): the resolved default Workflow rides on the snapshot so the
+// Queue composer can preselect it. Absent while the Workflow catalog is unresolved, `''` for no
+// default, and never re-resolved here: the value is the catalog session's.
+describe('defaultWorkflowId projection (FR-006a)', () => {
+  function snapshotWith(deps: {
+    readonly getDefaultWorkflowId?: () => string;
+    readonly resolved: boolean;
+  }) {
+    const pipelineCatalog = resolvePipelineCatalog({
+      rows: [],
+      revision: SEEDED_PIPELINE_REVISION,
+      phaseCatalog: PHASE_CATALOG.effective
+    });
+    const projector = new StateProjector({
+      store,
+      audit,
+      ownerId: 'this-window',
+      sanitize: (value) => value ?? '',
+      getPhaseCatalog: () => PHASE_CATALOG,
+      getPipelineCatalog: () => pipelineCatalog,
+      ...(deps.resolved
+        ? {
+            getWorkflowCatalog: () =>
+              resolveWorkflowCatalog({ rows: [], revision: 'rev-wf-default', pipelineCatalog })
+          }
+        : {}),
+      ...(deps.getDefaultWorkflowId ? { getDefaultWorkflowId: deps.getDefaultWorkflowId } : {})
+    });
+    projector.start();
+    const snapshot = projector.getCurrentSnapshot();
+    projector.dispose();
+    return snapshot;
+  }
+
+  it('carries the resolved default once the Workflow catalog has resolved', () => {
+    expect(snapshotWith({ resolved: true, getDefaultWorkflowId: () => 'wf-ship' }).defaultWorkflowId).toBe(
+      'wf-ship'
+    );
+    expect(snapshotWith({ resolved: true, getDefaultWorkflowId: () => '' }).defaultWorkflowId).toBe('');
+  });
+
+  it('is absent while the Workflow catalog is unresolved, or with no source', () => {
+    expect(
+      snapshotWith({ resolved: false, getDefaultWorkflowId: () => 'wf-ship' })
+    ).not.toHaveProperty('defaultWorkflowId');
+    expect(snapshotWith({ resolved: true })).not.toHaveProperty('defaultWorkflowId');
+  });
+});

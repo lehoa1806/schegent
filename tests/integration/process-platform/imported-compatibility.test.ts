@@ -54,14 +54,18 @@ const IMPORTED_PIPELINES = [
 ] as const;
 
 describe('an imported Pipeline still resolves (T023, T024, FR-018)', () => {
-  it('names the default the authoring scope named, and nothing when none is authored', () => {
+  it('names no linear default, even where the deprecated key names an imported Pipeline', () => {
     // Feature 098 (T027, FR-027) — the predecessor asserted that a workspace
     // which had authored nothing still named `speckit-new-feature`, on the
     // reasoning that an operator who opens a fresh workspace and hits run gets
     // that Pipeline. There is no such Pipeline to name now: a catalog assembled
     // from nothing names nothing, and the only default that exists is one an
     // operator authored.
-    expect(importedCatalog().defaultPipelineId).toBe(FIXTURE_PIPELINE_IDS.single);
+    //
+    // Feature 285 (FR-007): the settings no longer source a linear default at all. The fixture's
+    // deprecated `schegent.defaultPipelineId` names `FIXTURE_PIPELINE_IDS.single`, a Pipeline,
+    // so it is ignored and the catalog names nothing.
+    expect(importedCatalog().defaultPipelineId).toBe('');
   });
 
   it.each(IMPORTED_PIPELINES)('resolves %s effective, with no errors', (_label, id) => {

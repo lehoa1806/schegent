@@ -13,6 +13,15 @@ const codes = (result: { readonly errors: readonly { readonly code: string }[] }
 const fields = (result: { readonly errors: readonly { readonly field: string }[] }): string[] =>
   result.errors.map((error) => error.field);
 
+// These cases use the pre-FR-R5-F08 node `pipelineId` shape, which the validator now refuses by
+// default (feature 285 FR-010). They pin the stored-row read, which opts in as the Workflow catalog
+// does (FR-011); the default is pinned in the legacy-fields block at the end of this file.
+const validateStored = (
+  raw: unknown,
+  options: Parameters<typeof validateWorkflowDefinition>[1] = {}
+): ReturnType<typeof validateWorkflowDefinition> =>
+  validateWorkflowDefinition(raw, { allowLegacyPipelineId: true, ...options });
+
 const validRow = (): Record<string, unknown> => ({
   id: 'design-then-implement',
   name: 'Design then implement',
@@ -32,7 +41,7 @@ const validRow = (): Record<string, unknown> => ({
 
 describe('identity and grammar (FR-005)', () => {
   it('accepts a well-formed row and normalizes the authored id', () => {
-    const result = validateWorkflowDefinition(validRow());
+    const result = validateStored(validRow());
     expect(result.errors).toEqual([]);
     expect(result.ok).toBe(true);
     expect(result.definition?.workflowId).toBe('design-then-implement');
@@ -40,20 +49,20 @@ describe('identity and grammar (FR-005)', () => {
 
   it('accepts the portable workflowId key and normalizes it to the same internal shape', () => {
     const { id: _id, ...rest } = validRow();
-    const portable = validateWorkflowDefinition({ workflowId: 'design-then-implement', ...rest });
-    const legacy = validateWorkflowDefinition(validRow());
+    const portable = validateStored({ workflowId: 'design-then-implement', ...rest });
+    const legacy = validateStored(validRow());
     expect(portable.errors).toEqual([]);
     expect(portable.definition).toEqual(legacy.definition);
   });
 
   it('rejects a row that authors both id and workflowId', () => {
-    const result = validateWorkflowDefinition({ ...validRow(), workflowId: 'design-then-implement' });
+    const result = validateStored({ ...validRow(), workflowId: 'design-then-implement' });
     expect(codes(result)).toContain('identity-ambiguous');
   });
 
   it('rejects a workflowId outside the portable grammar', () => {
     for (const bad of ['Design', '1design', 'design_then', 'design then', '-design', '']) {
-      const result = validateWorkflowDefinition({ ...validRow(), id: bad });
+      const result = validateStored({ ...validRow(), id: bad });
       expect(codes(result)).toContain('invalid-pattern');
     }
   });
@@ -61,19 +70,19 @@ describe('identity and grammar (FR-005)', () => {
   it('rejects a workflowId longer than 64 characters', () => {
     const long = `a${'b'.repeat(WORKFLOW_ID_MAX_LEN)}`;
     expect(long.length).toBe(WORKFLOW_ID_MAX_LEN + 1);
-    const result = validateWorkflowDefinition({ ...validRow(), id: long });
+    const result = validateStored({ ...validRow(), id: long });
     expect(codes(result)).toContain('invalid-pattern');
   });
 
   it('accepts a workflowId of exactly 64 characters', () => {
     const exact = `a${'b'.repeat(WORKFLOW_ID_MAX_LEN - 1)}`;
     expect(exact.length).toBe(WORKFLOW_ID_MAX_LEN);
-    const result = validateWorkflowDefinition({ ...validRow(), id: exact });
+    const result = validateStored({ ...validRow(), id: exact });
     expect(result.errors).toEqual([]);
   });
 
   it('rejects a nodeId outside the portable grammar or over 64 characters', () => {
-    const badPattern = validateWorkflowDefinition({
+    const badPattern = validateStored({
       ...validRow(),
       nodes: [{ nodeId: 'Design', pipelineId: 'design-review' }],
       startNodeIds: ['Design']
@@ -82,7 +91,7 @@ describe('identity and grammar (FR-005)', () => {
     expect(fields(badPattern)).toContain('nodes[0].nodeId');
 
     const tooLong = `a${'b'.repeat(WORKFLOW_ID_MAX_LEN)}`;
-    const badLength = validateWorkflowDefinition({
+    const badLength = validateStored({
       ...validRow(),
       nodes: [{ nodeId: tooLong, pipelineId: 'design-review' }],
       startNodeIds: [tooLong]
@@ -91,7 +100,7 @@ describe('identity and grammar (FR-005)', () => {
   });
 
   it('bounds the reported field path so a deep connection path still fits the projection cap', () => {
-    const result = validateWorkflowDefinition({ ...validRow(), nodes: 'nope' });
+    const result = validateStored({ ...validRow(), nodes: 'nope' });
     for (const field of fields(result)) {
       expect(field.length).toBeLessThanOrEqual(WORKFLOW_ERROR_FIELD_MAX);
     }
@@ -102,26 +111,26 @@ describe('identity and grammar (FR-005)', () => {
 describe('name and version (FR-001)', () => {
   it('rejects an empty or whitespace-only name', () => {
     for (const bad of ['', '   ', '\t']) {
-      const result = validateWorkflowDefinition({ ...validRow(), name: bad });
+      const result = validateStored({ ...validRow(), name: bad });
       expect(codes(result)).toContain('invalid-length');
     }
   });
 
   it('rejects a non-string name', () => {
-    const result = validateWorkflowDefinition({ ...validRow(), name: 42 });
+    const result = validateStored({ ...validRow(), name: 42 });
     expect(codes(result)).toContain('invalid-length');
   });
 
   it('rejects a version that is not a positive integer', () => {
     for (const bad of [0, -1, 1.5, Number.NaN, '1']) {
-      const result = validateWorkflowDefinition({ ...validRow(), version: bad });
+      const result = validateStored({ ...validRow(), version: bad });
       expect(codes(result)).toContain('positive-integer-required');
     }
   });
 
   it('defaults an absent version to 1', () => {
     const { version: _version, ...rest } = validRow();
-    const result = validateWorkflowDefinition(rest);
+    const result = validateStored(rest);
     expect(result.errors).toEqual([]);
     expect(result.definition?.version).toBe(1);
   });
@@ -129,7 +138,7 @@ describe('name and version (FR-001)', () => {
 
 describe('nodes (FR-002, FR-009)', () => {
   it('rejects a duplicate nodeId and names the duplicate', () => {
-    const result = validateWorkflowDefinition({
+    const result = validateStored({
       ...validRow(),
       nodes: [
         { nodeId: 'design', pipelineId: 'design-review' },
@@ -142,23 +151,27 @@ describe('nodes (FR-002, FR-009)', () => {
     expect(duplicate?.field).toBe('nodes[1].nodeId');
   });
 
-  it('rejects a node carrying no pipelineId', () => {
-    const missing = validateWorkflowDefinition({
+  // Feature 285: a node with no target used to be read as a Pipeline node missing its
+  // `pipelineId`. It is now `missing-node-target` even on the stored-row read, so the reason
+  // names the current fields.
+  it('rejects a node carrying no target as missing-node-target', () => {
+    const missing = validateStored({
       ...validRow(),
       nodes: [{ nodeId: 'design' }],
       startNodeIds: ['design']
     });
-    expect(codes(missing)).toContain('invalid-pattern');
-    expect(fields(missing)).toContain('nodes[0].pipelineId');
+    expect(codes(missing)).toContain('missing-node-target');
+    expect(fields(missing)).toContain('nodes[0]');
+    expect(fields(missing)).not.toContain('nodes[0].pipelineId');
   });
 
   it('rejects an empty node list', () => {
-    const result = validateWorkflowDefinition({ ...validRow(), nodes: [], startNodeIds: [] });
+    const result = validateStored({ ...validRow(), nodes: [], startNodeIds: [] });
     expect(codes(result)).toContain('non-empty-required');
   });
 
   it('accepts two nodes referencing the same Pipeline (FR-003)', () => {
-    const result = validateWorkflowDefinition({
+    const result = validateStored({
       ...validRow(),
       nodes: [
         { nodeId: 'first', pipelineId: 'standard' },
@@ -176,25 +189,25 @@ describe('nodes (FR-002, FR-009)', () => {
 
 describe('allowed starts (FR-015)', () => {
   it('rejects an empty start set', () => {
-    const result = validateWorkflowDefinition({ ...validRow(), startNodeIds: [] });
+    const result = validateStored({ ...validRow(), startNodeIds: [] });
     expect(codes(result)).toContain('invalid-start-set');
   });
 
   it('rejects an absent start set', () => {
     const { startNodeIds: _starts, ...rest } = validRow();
-    const result = validateWorkflowDefinition(rest);
+    const result = validateStored(rest);
     expect(codes(result)).toContain('invalid-start-set');
   });
 
   it('rejects a start naming a node that does not exist', () => {
-    const result = validateWorkflowDefinition({ ...validRow(), startNodeIds: ['ghost'] });
+    const result = validateStored({ ...validRow(), startNodeIds: ['ghost'] });
     expect(codes(result)).toContain('invalid-start-set');
     const error = result.errors.find((entry) => entry.code === 'invalid-start-set');
     expect(error?.message).toContain('ghost');
   });
 
   it('accepts several allowed starts', () => {
-    const result = validateWorkflowDefinition({
+    const result = validateStored({
       ...validRow(),
       startNodeIds: ['design', 'implement']
     });
@@ -205,7 +218,7 @@ describe('allowed starts (FR-015)', () => {
 
 describe('unrecognized authored fields round-trip (FR-007, SC-013)', () => {
   it('preserves unknown top-level keys without interpreting them, and keeps them out of display', () => {
-    const result = validateWorkflowDefinition({
+    const result = validateStored({
       ...validRow(),
       futureField: { nested: true },
       anotherOne: 'kept'
@@ -220,12 +233,12 @@ describe('unrecognized authored fields round-trip (FR-007, SC-013)', () => {
   });
 
   it('reports no unrecognized keys for a row that authors only known fields', () => {
-    const result = validateWorkflowDefinition(validRow());
+    const result = validateStored(validRow());
     expect(result.unrecognized).toEqual({});
   });
 
   it('exposes only scalar recognized fields through display', () => {
-    const result = validateWorkflowDefinition(validRow());
+    const result = validateStored(validRow());
     expect(result.display.name).toBe('Design then implement');
     expect(result.display.id).toBe('design-then-implement');
     // Structural fields are read from `definition`, not re-flattened into `display`.
@@ -235,7 +248,7 @@ describe('unrecognized authored fields round-trip (FR-007, SC-013)', () => {
 
 describe('defect accumulation (FR-019)', () => {
   it('reports every independent field defect in one pass rather than returning at the first', () => {
-    const result = validateWorkflowDefinition({
+    const result = validateStored({
       id: 'Bad Id',
       name: '',
       version: 0,
@@ -262,7 +275,7 @@ describe('defect accumulation (FR-019)', () => {
 
   it('rejects a non-object entry without throwing', () => {
     for (const bad of [null, undefined, 42, 'row', []]) {
-      const result = validateWorkflowDefinition(bad);
+      const result = validateStored(bad);
       expect(result.ok).toBe(false);
       expect(codes(result)).toContain('object-required');
     }
@@ -381,5 +394,87 @@ describe('unified Workflow definition contract (FR-R5-F01-T01, T02, T03)', () =>
       expect(result.errors, file).toEqual([]);
       expect(result.ok, file).toBe(true);
     }
+  });
+});
+
+describe('legacy Pipeline fields are refused by default (OD-2, feature 285 FR-010)', () => {
+  const phaseRow = (): Record<string, unknown> => ({
+    id: 'phase-flow',
+    name: 'Phase flow',
+    version: 1,
+    nodes: [
+      { nodeId: 'design', kind: 'phase', phaseId: 'design' },
+      { nodeId: 'implement', kind: 'phase', phaseId: 'implement' }
+    ],
+    connections: [{ from: { nodeId: 'design' }, to: { nodeId: 'implement' } }],
+    bindings: [
+      {
+        kind: 'input',
+        nodeId: 'implement',
+        inputKey: 'brief',
+        source: { from: 'node-output', nodeId: 'design', portId: 'decision' }
+      }
+    ],
+    startNodeIds: ['design']
+  });
+
+  const legacyNodeRow = (): Record<string, unknown> => ({
+    ...phaseRow(),
+    nodes: [
+      { nodeId: 'design', pipelineId: 'design-review' },
+      { nodeId: 'implement', kind: 'phase', phaseId: 'implement' }
+    ]
+  });
+
+  const legacyBindingRow = (): Record<string, unknown> => ({
+    ...phaseRow(),
+    bindings: [
+      {
+        kind: 'input',
+        nodeId: 'implement',
+        inputKey: 'brief',
+        source: { from: 'node-output', nodeId: 'design', outputKey: 'decision' }
+      }
+    ]
+  });
+
+  const errorFor = (
+    result: ReturnType<typeof validateWorkflowDefinition>,
+    field: string
+  ): { readonly code: string; readonly message: string } | undefined =>
+    result.errors.find((error) => error.field === field);
+
+  it('refuses a node pipelineId with legacy-pipeline-field and names its replacement', () => {
+    const result = validateWorkflowDefinition(legacyNodeRow());
+    expect(result.ok).toBe(false);
+    const error = errorFor(result, 'nodes[0].pipelineId');
+    expect(error?.code).toBe('legacy-pipeline-field');
+    expect(error?.message).toContain('pipelineId');
+    expect(error?.message).toContain('phaseId');
+    expect(error?.message).toContain('workflowId');
+    expect(codes(result)).not.toContain('unknown-field');
+    expect(codes(result)).not.toContain('missing-node-target');
+  });
+
+  it('refuses a binding source outputKey with legacy-pipeline-field and names portId', () => {
+    const result = validateWorkflowDefinition(legacyBindingRow());
+    expect(result.ok).toBe(false);
+    const error = result.errors.find((entry) => entry.field.endsWith('.outputKey'));
+    expect(error?.code).toBe('legacy-pipeline-field');
+    expect(error?.message).toContain('outputKey');
+    expect(error?.message).toContain('portId');
+    expect(codes(result)).not.toContain('unknown-field');
+  });
+
+  it('still reads both fields when a caller opts in explicitly (FR-011)', () => {
+    const node = validateWorkflowDefinition(legacyNodeRow(), { allowLegacyPipelineId: true });
+    expect(node.errors).toEqual([]);
+    expect(node.definition?.nodes.at(0)?.pipelineId).toBe('design-review');
+    const binding = validateWorkflowDefinition(legacyBindingRow(), { allowLegacyPipelineId: true });
+    expect(binding.errors).toEqual([]);
+  });
+
+  it('accepts a Phase-only row with no options', () => {
+    expect(validateWorkflowDefinition(phaseRow()).errors).toEqual([]);
   });
 });

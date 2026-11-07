@@ -174,7 +174,8 @@ describe('Dashboard render integration (T062)', () => {
     ]
       .map((file) => fs.readFileSync(file, 'utf8'))
       .join('\n');
-    expect(bundleSource).toContain('dashboard-queue-input');
+    // Feature 285 (OD-2, FR-002): the Queue input form is retired; the task composer succeeds it.
+    expect(bundleSource).toContain('queue-task-composer');
     expect(bundleSource).toContain('dashboard-queue-action');
     expect(bundleSource).toContain('queue-detail-rows');
     expect(bundleSource).toContain('dashboard-phase-progression');

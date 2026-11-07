@@ -7,9 +7,9 @@
 // element exist: a Phase selectable in form mode, a Pipeline, a Workflow whose
 // first node forks (so `WorkflowFlowSubtree` sets `--wf-arms` to a known count),
 // and a Model Catalog with at least one model per backend (so every row the
-// Models editor renders exists). Since FR-R5-F08 a queue's detail tier mounts
-// `QueueInputForm` only when the snapshot carries neither launch catalog, so the
-// queue step publishes `policySmokeQueueFallbackSnapshot` instead.
+// Models editor renders exists). Feature 285 (OD-2, FR-002) retired the Queue
+// input form, so a queue's detail tier holds no `<form>` and the smoke has no
+// queue step.
 //
 // Built from the exports of `workflow-snapshot.ts` without editing that file, so
 // the visual suite's screenshots are unaffected. `satisfies WorkflowSnapshot`
@@ -31,7 +31,7 @@ export const POLICY_SMOKE_PHASE_ID = 'speckit-specify';
 /** The Pipeline the smoke selects. */
 export const POLICY_SMOKE_PIPELINE_ID = 'dev-new-feature';
 
-/** The queue whose detail tier holds `QueueInputForm`. */
+/** The queue whose detail tier lists the pending Task below. */
 export const POLICY_SMOKE_QUEUE_ID = 'default';
 
 /** The base fixture's pending Task, whose Run Detail tier holds the inline edit form behind Edit. */
@@ -108,15 +108,4 @@ export const policySmokeSnapshot = {
     revision: 'policy-smoke-workflow-revision',
     warnings: []
   }
-} as const satisfies WorkflowSnapshot;
-
-/**
- * The smoke snapshot without the Workflow catalog. `QueueDetailTier` renders
- * `QueueTaskComposer`, which holds no `<form>`, whenever `launchables` or
- * `workflowCatalog` is present (FR-R5-F08, `ef77d5609`), and `QueueInputForm`
- * otherwise. P-T4 publishes this for its queue step so that form still mounts.
- */
-export const policySmokeQueueFallbackSnapshot = {
-  ...policySmokeSnapshot,
-  workflowCatalog: undefined
 } as const satisfies WorkflowSnapshot;

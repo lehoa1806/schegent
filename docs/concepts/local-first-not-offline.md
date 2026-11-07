@@ -27,7 +27,7 @@ providers.”
 
 <!-- Source: src/runner/backend-runner-factory.ts -->
 <!-- Source: src/services/backend-capability-service.ts -->
-<!-- Source: webview-ui/src/components/QueueInputForm.svelte -->
+<!-- Source: webview-ui/src/components/QueueTaskComposer.svelte -->
 <!-- Source: tests/lint/product-boundary-decisions.test.ts -->
 
 ## Egress and the raw transcript's lifetime
@@ -126,4 +126,4 @@ around loss of connectivity. Until then, “local-first” describes ownership o
 state and orchestration, not the network behavior of the configured AI CLI.
 
 <!-- Source: src/runner/backend-runner-factory.ts -->
-<!-- Source: webview-ui/src/components/QueueInputForm.svelte -->
+<!-- Source: webview-ui/src/components/QueueTaskComposer.svelte -->

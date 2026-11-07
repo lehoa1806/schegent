@@ -58,7 +58,11 @@ function makeSnapshot(
 
 function makeReader(): CatalogConfigReader {
   return {
-    getDefaultPipelineId(scope) {
+    // Feature 285 (D2): the deprecated key still resolves, now against Workflows only.
+    getDefaultWorkflowId() {
+      return undefined;
+    },
+    getDeprecatedDefaultPipelineId(scope) {
       return scope === 'workspace' ? 'pipeline-00' : undefined;
     },
     getModels() {

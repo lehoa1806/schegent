@@ -147,10 +147,10 @@ const catalogSession = await CatalogSession.open({
 // built once beside the store it operates on. The default is read through the
 // session rather than captured, so the FR-059 advisory sees the value in force
 // at the moment of a deactivation; `refreshCatalog` already re-resolves the
-// session when `schegent.defaultPipelineId` changes.
+// session when `schegent.defaultWorkflowId` or its deprecated key changes (Feature 285).
 const catalogLifecycle = createHostCatalogLifecycle(
   catalogStore,
-  () => catalogSession.catalog.defaultPipelineId
+  () => catalogSession.defaultWorkflowId
 );
 // Feature FR-R3-003 (T295) — point both leases at storage two extension hosts
 // can both see, now that the workspace root is known. Until this call the store
