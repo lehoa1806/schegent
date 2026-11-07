@@ -258,7 +258,7 @@ a count named `TOKEN_COUNT` is removed although it is benign, by a pattern that 
 **The process-definition export is written without redaction:** the exported document's body does not pass through
 the redactor; only the export's audit row does. Treat an exported definition as you would the file it was made from.
 
-**The corpus is the statement.** `tests/fixtures/redaction-corpus.ts` lists 71 synthetic cases (the floor is 40), each with its
+**The corpus is the statement.** `tests/fixtures/redaction-corpus.ts` lists 87 synthetic cases (the floor is 40), each with its
 category, its expected outcome (redacted, preserved, over-redacted, or unsupported with a reason) and the sinks it
 applies to; five tests drive every applicable case through the real writer of each sink and read what it wrote.
 
