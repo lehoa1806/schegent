@@ -50,10 +50,15 @@ export const handler: CommandHandler<ContinueWorkflowCommand> = async (ctx, comm
     }
   );
 
+  const accepted =
+    result.outcome === 'started' ||
+    (result.outcome === 'control-acknowledged' &&
+      result.acknowledgement.outcome === 'accepted');
+
   await ack(
     ctx,
-    result.outcome === 'started' ? 'accepted' : 'rejected',
-    result.outcome === 'started' ? undefined : result.outcome,
+    accepted ? 'accepted' : 'rejected',
+    accepted ? undefined : result.outcome,
     result
   );
 };

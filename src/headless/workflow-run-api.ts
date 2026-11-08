@@ -45,10 +45,16 @@ import {
 } from '../services/workflow-execution/workflow-recovery-service';
 import {
   buildAncestryEvidenceMetadata,
+  buildControlProjection,
   buildWorkflowRunControlProjection,
   type AncestryEvidenceMetadata,
+  type BuildControlProjectionInput,
   type WorkflowRunControlProjection
 } from '../services/workflow-execution/workflow-control-projector';
+import {
+  ControlCommandService,
+  type ControlCommandServiceDeps
+} from '../services/workflow-execution/control-command-service';
 import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
 import {
   launchComposableWorkflow,
@@ -60,7 +66,11 @@ import {
   type EffectiveWorkflowSource
 } from '../services/run-request/run-request-validator';
 import type { WorkflowRunRequest } from '../contracts/run-request';
-import type { ContinueWorkflowResult } from '../contracts/sidebar-ipc';
+import type {
+  ContinueWorkflowResult,
+  ControlCommandAcknowledgement,
+  ControlProjection
+} from '../contracts/sidebar-ipc';
 import {
   checkContinuationArgs,
   checkQueueId,
@@ -269,4 +279,30 @@ export function buildComposableWorkflowAncestryEvidence(
   nodeId?: string | undefined
 ): AncestryEvidenceMetadata | undefined {
   return buildAncestryEvidenceMetadata(run, invocationId, nodeId);
+}
+
+// ---------------------------------------------------------------------------
+// FR-R5-F31 (T006) — Headless candidate-block control commands & projection
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a version-1 `ControlCommandEnvelope` against the shared
+ * `ControlCommandService`, enforcing identical validation, receipt deduplication,
+ * fencing, and state transitions as the editor IPC boundary.
+ */
+export async function executeWorkflowControlCommand(
+  deps: ControlCommandServiceDeps,
+  rawCommand: unknown
+): Promise<ControlCommandAcknowledgement> {
+  const service = new ControlCommandService(deps);
+  return service.executeControlCommand(rawCommand);
+}
+
+/**
+ * Compute the version-1 `ControlProjection` for a candidate-block `ControlFrame`.
+ */
+export function getCandidateBlockControlProjection(
+  input: BuildControlProjectionInput
+): ControlProjection {
+  return buildControlProjection(input);
 }

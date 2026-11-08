@@ -29,6 +29,11 @@ import {
   findLatestLeafPhaseAttempt
 } from './workflow-control-transition-table';
 
+export {
+  buildControlProjection,
+  type BuildControlProjectionInput
+} from './control-command-service';
+
 export const MAX_EVIDENCE_SUMMARY_CHARS = 256;
 
 /**

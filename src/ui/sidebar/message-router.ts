@@ -233,8 +233,9 @@ export class MessageRouter {
 /**
  * Feature 012 T050 — module-level helper so the MUTATING_COMMANDS
  * pinned-list regression test can assert each command is still gated
- * without instantiating a router. FR-R4-F05: the router itself no longer
- * asks this question; `dispatch` reads `commandAuthorityOf`.
+ * without instantiating a router. FR-R4-F05 & FR-R5-F31: the router itself
+ * no longer asks this question; `dispatch` reads `commandAuthorityOf` from
+ * `COMMAND_AUTHORITY` (single source of truth).
  */
 export function isMutatingCommand(type: string): boolean {
   return MUTATING_COMMANDS.has(type);

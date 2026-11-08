@@ -268,6 +268,11 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
     expect(PINNED_MUTATING_COMMANDS).toContain(CMD_PREFLIGHT_PROCESS_YAML);
     expect(PINNED_MUTATING_COMMANDS).toHaveLength(53);
   });
+
+  it('keeps CMD_CONTINUE_WORKFLOW gated for workflow continuation and candidate-block control actions (FR-R5-F31)', () => {
+    expect(isMutatingCommand(CMD_CONTINUE_WORKFLOW)).toBe(true);
+    expect(PINNED_MUTATING_COMMANDS).toContain(CMD_CONTINUE_WORKFLOW);
+  });
 });
 
 // Feature 089 (T026, US5, FR-026, FR-027) — the complement.

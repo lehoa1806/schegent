@@ -17,9 +17,21 @@ import {
   CMD_LAUNCH_WORKFLOW,
   type SidebarCommand
 } from '../sidebar-ipc';
-import { CONTROL_ID_MAX, WORKFLOW_CONTROL_ACTIONS } from '../sidebar-ipc/workflow-run';
+import {
+  CONTROL_ID_MAX,
+  WORKFLOW_CONTROL_ACTIONS,
+  isControlCommandEnvelope,
+  validateControlCommandEnvelope,
+  type ControlCommandEnvelopeValidationResult
+} from '../sidebar-ipc/workflow-run';
 import { validRunRequest } from './run-request-shape';
 import { QUEUE_ID_MAX, fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
+
+export {
+  isControlCommandEnvelope,
+  validateControlCommandEnvelope,
+  type ControlCommandEnvelopeValidationResult
+};
 
 const ID_MAX = 64;
 /** A connected run identifier is host-minted, so this is a sanity bound, not a contract. */
@@ -83,6 +95,7 @@ export function validateContinueWorkflow(
   const invocationId = payload.invocationId;
   const operation = payload.operation;
   const commandId = payload.commandId;
+  const controlCommand = payload.controlCommand;
   if (
     hasUnexpectedKeys(payload, [
       'connectedRunId',
@@ -91,7 +104,8 @@ export function validateContinueWorkflow(
       'request',
       'invocationId',
       'operation',
-      'commandId'
+      'commandId',
+      'controlCommand'
     ]) ||
     !boundedId(payload.connectedRunId, RUN_ID_MAX) ||
     !Number.isInteger(revision) ||
@@ -102,6 +116,7 @@ export function validateContinueWorkflow(
       (typeof operation !== 'string' ||
         !(WORKFLOW_CONTROL_ACTIONS as readonly string[]).includes(operation))) ||
     (commandId !== undefined && !boundedId(commandId, CONTROL_ID_MAX)) ||
+    (controlCommand !== undefined && !isControlCommandEnvelope(controlCommand)) ||
     !validRunRequest(payload.request)
   ) {
     return fail('invalid-payload', { type: CMD_CONTINUE_WORKFLOW, correlationId });
@@ -116,7 +131,8 @@ export function validateContinueWorkflow(
       request: payload.request,
       ...(invocationId !== undefined ? { invocationId } : {}),
       ...(operation !== undefined ? { operation } : {}),
-      ...(commandId !== undefined ? { commandId } : {})
+      ...(commandId !== undefined ? { commandId } : {}),
+      ...(controlCommand !== undefined ? { controlCommand } : {})
     }
   } as SidebarCommand);
 }

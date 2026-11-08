@@ -1031,7 +1031,10 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // Feature 278 (FR-R5-F19, 2026-11-06) — 3754 → 3757, +3: `validateRunInvariants` takes the
       // stored Run and calls `assertPendingRetryShape` (the check itself lives in
       // `pending-retry-shape.ts`); the two write sites pass the Run they replace.
-      highWaterMark: 3757
+      //
+      // Feature 289 (FR-R5-F26, 2026-11-08) — 3757 → 3795, +38: `KEYS.controlLedger` memento
+      // registration and the read/write seam that `ControlLedgerStore` delegates to.
+      highWaterMark: 3795
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1320,7 +1323,9 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // 1,000-line entry condition (1,095 lines) with evidence-aware resume reconciliation
   // (`checkDurableAttemptEvidence` and `isQueueOrTaskPresent` before re-dispatching a
   // paused leaf Phase node). Budgeted at 1,200 with ~105 lines of headroom.
-  { path: 'src/services/workflow-execution/workflow-control-service.ts', maxLines: 1200 },
+  // Feature 294 (FR-R5-F31, 2026-11-08) — 1,200 -> 1,260 for `executeCandidateControlCommand`
+  // and generic `retry-phase` redirection to `ControlCommandService`, keeping ~49 lines of headroom.
+  { path: 'src/services/workflow-execution/workflow-control-service.ts', maxLines: 1260 },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
   // built-in phases (speckit-checklist, speckit-review) and enriched
   // skill-aligned instruction text for clarify, analyze, review, and finalize.
@@ -1652,9 +1657,25 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // (`state-migrated-v9-to-v10`) and `MIGRATION_V13_EVENT_TYPES` (`state-migrated-v12-to-v13`,
       // `queue-pause-divergence-resolved`) added to `ALL_AUDIT_EVENT_TYPES` and
       // `SYSTEM_SCOPED_EVENT_TYPES`.
-      highWaterMark: 1646
+      //
+      // Feature 293 (FR-R5-F30, 2026-11-08) — 1646 → 1674, +28: `CANDIDATE_BLOCK_EVENT_TYPES`
+      // (`candidate-attempt-settled`, `candidate-block-settled`, `candidate-block-paused`,
+      // `control-notification-recorded`) and their metadata-only payload interfaces.
+      highWaterMark: 1674
     }
   },
+  // Round 5 workflow control-flow, backend recovery, and admission modules (FR-R5-F26..F31, 2026-11-08) —
+  // each crosses the 1,000-line entry condition and carries a plain ceiling with ~50 lines of headroom
+  // above `tightMargin`.
+  { path: 'src/services/backend-availability-service.ts', maxLines: 1_420 },
+  { path: 'src/services/workflow-execution/candidate-block-executor.ts', maxLines: 1_980 },
+  { path: 'src/services/workflow-execution/connected-run-coordinator.ts', maxLines: 1_100 },
+  { path: 'src/services/workflow-execution/control-attempt-admission.ts', maxLines: 1_860 },
+  { path: 'src/services/workflow-execution/control-command-service.ts', maxLines: 1_380 },
+  { path: 'src/services/workflow-execution/control-usage-accounting.ts', maxLines: 1_220 },
+  { path: 'src/services/workflow-execution/control-wakeup-planner.ts', maxLines: 1_330 },
+  { path: 'src/services/workflow-execution/quota-permit-arbiter.ts', maxLines: 1_840 },
+  { path: 'src/state/connected-workflow-run.ts', maxLines: 1_070 },
   // The second file of the same 2026-10-01 decision; see the waiver above.
   {
     path: 'src/controller/phase-runner.ts',
