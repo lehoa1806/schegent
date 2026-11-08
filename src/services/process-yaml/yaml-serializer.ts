@@ -26,6 +26,13 @@ import {
   type PhaseYamlDocumentBody,
   type PhaseYamlSpec
 } from './types';
+import {
+  isTypedLeafTest,
+  type DecisionField,
+  type ResultContract,
+  type TypedCondition,
+  type TypedLeaf
+} from '../../contracts/decision-results';
 
 export const DOCUMENT_KEY_ORDER = Object.freeze([
   'apiVersion',
@@ -101,7 +108,42 @@ export const SPEC_KEY_ORDER = Object.freeze([
   // boolean breaks a reader that predates this key, dropping `onRetryCap`
   // silently reverts the author's decision to the boolean's two-valued answer.
   'onRetryCap',
-  'retryCondition'
+  'retryCondition',
+  'resultContract'
+] as const);
+
+export const RESULT_CONTRACT_KEY_ORDER = Object.freeze([
+  'version',
+  'operator',
+  'operatorVersion',
+  'fields',
+  'source',
+  'completion'
+] as const);
+
+export const RESULT_CONTRACT_SOURCE_KEY_ORDER = Object.freeze([
+  'kind',
+  'outputKey',
+  'recordType'
+] as const);
+
+export const DECISION_FIELD_KEY_ORDER = Object.freeze([
+  'fieldId',
+  'type',
+  'required',
+  'selector'
+] as const);
+
+export const TYPED_OPERAND_KEY_ORDER = Object.freeze([
+  'source',
+  'nodeId',
+  'fieldId'
+] as const);
+
+export const TYPED_LEAF_KEY_ORDER = Object.freeze([
+  'left',
+  'operator',
+  'right'
 ] as const);
 
 // --- Workflow package document orders (contracts/workflow-yaml-grammar.md §2) -
@@ -348,6 +390,73 @@ export function emitMappingSequence<T>(
   return out;
 }
 
+function emitTypedLeaf(indent: string, leaf: TypedLeaf): string {
+  const nestedIndent = `${indent}${PHASE_YAML_INDENT}`;
+  let out = emitKey(indent, 'left');
+  out += emitMapping(nestedIndent, TYPED_OPERAND_KEY_ORDER, leaf.left);
+  out += emitEntry(indent, 'operator', leaf.operator);
+  if (leaf.right !== undefined) {
+    out += Array.isArray(leaf.right)
+      ? emitSequence(indent, 'right', leaf.right as readonly ScalarValue[])
+      : emitEntry(indent, 'right', leaf.right as ScalarValue);
+  }
+  return out;
+}
+
+export function emitTypedCondition(indent: string, condition: TypedCondition): string {
+  const nestedIndent = `${indent}${PHASE_YAML_INDENT}`;
+  let out = emitEntry(indent, 'version', condition.version);
+  out += emitEntry(indent, 'kind', condition.kind);
+  out += emitKey(indent, 'test');
+  const { test } = condition;
+  if (isTypedLeafTest(test)) {
+    out += emitTypedLeaf(nestedIndent, test);
+  } else if ('all' in test) {
+    out += emitMappingSequence(nestedIndent, 'all', test.all, emitTypedLeaf);
+  } else {
+    out += emitMappingSequence(nestedIndent, 'any', test.any, emitTypedLeaf);
+  }
+  return out;
+}
+
+function renderDecisionField(bodyIndent: string, field: DecisionField): string {
+  let out = '';
+  for (const key of DECISION_FIELD_KEY_ORDER) {
+    if (key === 'selector') {
+      out += emitSequence(bodyIndent, 'selector', field.selector);
+      continue;
+    }
+    out += emitMapping(bodyIndent, [key], field);
+  }
+  return out;
+}
+
+export function emitResultContract(indent: string, contract: ResultContract): string {
+  const nestedIndent = `${indent}${PHASE_YAML_INDENT}`;
+  let out = '';
+  for (const key of RESULT_CONTRACT_KEY_ORDER) {
+    switch (key) {
+      case 'version':
+      case 'operator':
+      case 'operatorVersion':
+        out += emitMapping(indent, [key], contract);
+        break;
+      case 'fields':
+        out += emitMappingSequence(indent, 'fields', contract.fields, renderDecisionField);
+        break;
+      case 'source':
+        out += emitKey(indent, 'source');
+        out += emitMapping(nestedIndent, RESULT_CONTRACT_SOURCE_KEY_ORDER, contract.source);
+        break;
+      case 'completion':
+        out += emitKey(indent, 'completion');
+        out += emitTypedCondition(nestedIndent, contract.completion);
+        break;
+    }
+  }
+  return out;
+}
+
 /**
  * A Phase's two body mappings, at any indent.
  *
@@ -359,11 +468,17 @@ export function emitMappingSequence<T>(
  */
 export function emitPhaseDocumentBody(indent: string, body: PhaseYamlDocumentBody): string {
   const fieldIndent = `${indent}${PHASE_YAML_INDENT}`;
+  const resultContractBlock =
+    body.spec.resultContract !== undefined
+      ? emitKey(fieldIndent, 'resultContract') +
+        emitResultContract(`${fieldIndent}${PHASE_YAML_INDENT}`, body.spec.resultContract)
+      : '';
   return (
     emitKey(indent, 'metadata') +
     emitMapping(fieldIndent, METADATA_KEY_ORDER, body.metadata) +
     emitKey(indent, 'spec') +
-    emitMapping(fieldIndent, SPEC_KEY_ORDER, scalarSpecView(body.spec))
+    emitMapping(fieldIndent, SPEC_KEY_ORDER, scalarSpecView(body.spec)) +
+    resultContractBlock
   );
 }
 
@@ -379,9 +494,13 @@ export const CAPABILITY_SEPARATOR = ',';
  * carried verbatim. Encoding is a writer concern and lives with the writer.
  */
 function scalarSpecView(spec: PhaseYamlSpec): object {
-  const { capabilities } = spec;
-  if (capabilities === undefined) return spec;
-  return { ...spec, capabilities: capabilities.join(CAPABILITY_SEPARATOR) };
+  const { capabilities, resultContract } = spec;
+  if (capabilities === undefined && resultContract === undefined) return spec;
+  return {
+    ...spec,
+    ...(capabilities !== undefined ? { capabilities: capabilities.join(CAPABILITY_SEPARATOR) } : {}),
+    resultContract: undefined
+  };
 }
 
 /**

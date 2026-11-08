@@ -13,6 +13,7 @@
 // contract-controlled and pass through unchanged.
 
 import type { PipelineExecutionDefaults } from '../../contracts/pipeline-definitions';
+import { isTypedCondition, isTypedLeafTest, type TypedCondition, type TypedLeaf } from '../../contracts/decision-results';
 import type {
   WorkflowBinding,
   WorkflowCondition,
@@ -88,7 +89,34 @@ function projectLiteral(
   return typeof value === 'string' ? text(value, sanitize, MESSAGE_MAX) : value;
 }
 
-function projectCondition(condition: WorkflowCondition, sanitize: Sanitize): WorkflowCondition {
+function projectTypedLeaf(leaf: TypedLeaf, sanitize: Sanitize): TypedLeaf {
+  const left =
+    leaf.left.source === 'result-field'
+      ? Object.freeze({ source: 'result-field' as const, fieldId: text(leaf.left.fieldId, sanitize, ID_MAX) })
+      : Object.freeze({
+          source: 'node-result' as const,
+          nodeId: text(leaf.left.nodeId, sanitize, ID_MAX),
+          fieldId: text(leaf.left.fieldId, sanitize, ID_MAX)
+        });
+  return Object.freeze({
+    left,
+    operator: leaf.operator,
+    ...(leaf.right !== undefined ? { right: projectLiteral(leaf.right, sanitize) } : {})
+  });
+}
+
+function projectCondition(
+  condition: WorkflowCondition | TypedCondition,
+  sanitize: Sanitize
+): WorkflowCondition | TypedCondition {
+  if (isTypedCondition(condition)) {
+    const test = isTypedLeafTest(condition.test)
+      ? projectTypedLeaf(condition.test, sanitize)
+      : 'all' in condition.test
+        ? Object.freeze({ all: Object.freeze(condition.test.all.map((l) => projectTypedLeaf(l, sanitize))) })
+        : Object.freeze({ any: Object.freeze(condition.test.any.map((l) => projectTypedLeaf(l, sanitize))) });
+    return Object.freeze({ version: 1 as const, kind: 'typed' as const, test });
+  }
   return Object.freeze({
     left: projectOperand(condition.left, sanitize),
     operator: condition.operator,

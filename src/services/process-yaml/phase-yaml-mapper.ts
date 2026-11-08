@@ -75,6 +75,9 @@ export function documentFromPhaseDefinition(definition: PhaseDefinition): PhaseY
     ...(definition.onRetryCap !== undefined ? { onRetryCap: definition.onRetryCap } : {}),
     ...(definition.retryCondition !== undefined
       ? { retryCondition: definition.retryCondition }
+      : {}),
+    ...(definition.resultContract !== undefined
+      ? { resultContract: definition.resultContract }
       : {})
   };
   const spec: PhaseYamlSpec =
@@ -126,7 +129,8 @@ export function phaseDefinitionFromDocument(document: PhaseYamlDocument): PhaseD
     ...(spec.hostVerification !== undefined
       ? { hostVerification: spec.hostVerification }
       : {}),
-    ...(spec.capabilities !== undefined ? { capabilities: spec.capabilities } : {})
+    ...(spec.capabilities !== undefined ? { capabilities: spec.capabilities } : {}),
+    ...(spec.resultContract !== undefined ? { resultContract: spec.resultContract } : {})
   };
   return spec.instruction !== undefined
     ? { ...common, instruction: spec.instruction }

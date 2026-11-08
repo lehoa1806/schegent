@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { PhaseBinding } from '../contracts/pipeline-definitions';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { DEFAULT_BACKEND } from '../contracts/backend-kinds';
+import { freezeResultContract } from '../contracts/decision-results';
 import type { EvidencePolicyOrigin, PhaseDefinition } from '../contracts/process-definitions';
 import type { FrozenWorkflowClosure } from '../contracts/run-request';
 import type {
@@ -64,6 +65,9 @@ export function snapshotPhaseDef(
     // writing the full list into every snapshot would make an untouched phase's
     // frozen contract change shape for no behavioural reason.
     capabilities: phase.capabilities === undefined ? undefined : Object.freeze([...phase.capabilities]),
+    ...(phase.resultContract !== undefined
+      ? { resultContract: freezeResultContract(phase.resultContract) }
+      : {}),
     evidencePolicy: phase.evidencePolicy ?? 'required',
     // FR-R3-096 — the provenance the value alone cannot carry. `?? 'required'`
     // above has filled in every Phase that declared nothing since the field

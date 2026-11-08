@@ -82,7 +82,12 @@
     "node-status": "run status",
   };
 
-  const condition = $derived(p.connection.condition);
+  const rawCondition = $derived(p.connection.condition);
+  const condition = $derived(
+    rawCondition !== undefined && "left" in rawCondition
+      ? rawCondition
+      : undefined,
+  );
   // FR-R4-F07 (FR-027; contract C, C8) -- v1 operands are text, so the picker offers the operators that
   // compare text. A condition already carrying another operator (a stored Workflow the host reports as
   // unsupported) keeps it in the list, so opening it shows what it really holds instead of silently
@@ -99,9 +104,9 @@
     condition ? conditionRightArity(condition.operator) === "list" : false,
   );
   const ruleSummary = $derived.by((): string => {
-    const base = formatConditionSummary(condition, p.connection.isDefault === true);
+    const base = formatConditionSummary(rawCondition, p.connection.isDefault === true);
     const details: string[] = [base];
-    if (p.connection.isDefault === true && condition !== undefined) {
+    if (p.connection.isDefault === true && rawCondition !== undefined) {
       details.push("fallback");
     }
     if (p.connection.priority !== undefined) {
@@ -248,7 +253,7 @@
       type="checkbox"
       data-testid="workflow-condition-enabled-{p.index}"
       aria-label="Branch {p.index + 1} is conditional"
-      checked={condition !== undefined}
+      checked={rawCondition !== undefined}
       disabled={p.readonly}
       onchange={(event) =>
         p.onconditiontoggle(p.index, event.currentTarget.checked)}

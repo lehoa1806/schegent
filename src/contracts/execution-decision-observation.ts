@@ -10,6 +10,12 @@
 import type { RetryCapOutcome } from './process-definitions';
 import type { LimitOrigin } from './snapshot-projections';
 import type { WorkflowCondition } from './workflow-definitions';
+import {
+  isTypedCondition,
+  isTypedLeafTest,
+  type TypedCondition,
+  type TypedLeaf
+} from './decision-results';
 
 export const EXECUTION_DECISION_OBSERVATION_VERSION = 1 as const;
 
@@ -565,14 +571,43 @@ const OPERATOR_SYMBOLS: Readonly<Record<WorkflowCondition['operator'], string>> 
   lessThanOrEqual: '<='
 };
 
+function formatTypedLeafSummary(leaf: TypedLeaf): string {
+  const left =
+    leaf.left.source === 'node-result'
+      ? `${leaf.left.nodeId}.${leaf.left.fieldId}`
+      : leaf.left.fieldId;
+  if (leaf.operator === 'exists') {
+    return `${left} exists`;
+  }
+  const op = OPERATOR_SYMBOLS[leaf.operator];
+  const right = Array.isArray(leaf.right)
+    ? `[${leaf.right.map(String).join(', ')}]`
+    : String(leaf.right ?? '');
+  return `${left} ${op} ${right}`;
+}
+
+function formatTypedConditionTree(condition: TypedCondition): string {
+  const { test } = condition;
+  if (isTypedLeafTest(test)) {
+    return formatTypedLeafSummary(test);
+  }
+  if ('all' in test) {
+    return `(${test.all.map(formatTypedLeafSummary).join(' AND ')})`;
+  }
+  return `(${test.any.map(formatTypedLeafSummary).join(' OR ')})`;
+}
+
 /**
  * Deterministic human-readable summary for a branch condition or fallback/unconditional arm.
  */
 export function formatConditionSummary(
-  condition: WorkflowCondition | undefined,
+  condition: WorkflowCondition | TypedCondition | undefined,
   isDefault?: boolean
 ): string {
   if (condition !== undefined) {
+    if (isTypedCondition(condition)) {
+      return formatTypedConditionTree(condition);
+    }
     const left =
       condition.left.source === 'node-status'
         ? `${condition.left.nodeId} status`

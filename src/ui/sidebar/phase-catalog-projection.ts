@@ -16,6 +16,7 @@ import {
   type PhaseDefinition,
   type PhaseSourceRecord
 } from '../../contracts/process-definitions';
+import { freezeResultContract } from '../../contracts/decision-results';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
 import { NO_BUILDER_LIFECYCLE, type BuilderLifecycleLookup } from './builder-lifecycle';
@@ -122,7 +123,10 @@ function projectPhaseDefinition(
     // bound. Carried beside the boolean rather than in place of it, because the
     // Builder serializes what it was shown: a projection that dropped either
     // form would silently rewrite the author's phase on the next save.
-    ...(definition.onRetryCap !== undefined ? { onRetryCap: definition.onRetryCap } : {})
+    ...(definition.onRetryCap !== undefined ? { onRetryCap: definition.onRetryCap } : {}),
+    ...(definition.resultContract !== undefined
+      ? { resultContract: freezeResultContract(definition.resultContract) }
+      : {})
   };
   return Object.freeze(
     definition.instruction !== undefined

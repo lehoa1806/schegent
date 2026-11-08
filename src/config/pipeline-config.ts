@@ -1,6 +1,7 @@
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
 import type { PhaseCapability } from '../contracts/phase-capabilities';
+import type { ResultContract } from '../contracts/decision-results';
 import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../contracts/backend-kinds';
 // One declaration serves the authored contract and the runtime shape. These were
 // duplicated string unions here; a Phase now declares its own containment class,
@@ -98,6 +99,8 @@ export interface PhaseDef {
    * snapshot with the rest of the plan.
    */
   readonly capabilities?: readonly PhaseCapability[];
+  /** FR-R5-F24 (D2) — bounded typed result contract for this phase. */
+  readonly resultContract?: ResultContract;
 }
 
 export interface PipelineCatalog {

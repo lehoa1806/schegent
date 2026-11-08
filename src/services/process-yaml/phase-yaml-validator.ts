@@ -74,6 +74,7 @@ import {
   type PhaseYamlMetadata,
   type PhaseYamlSpec,
   type YamlMappingNode,
+  type YamlNode,
   type YamlScalarNode
 } from './types';
 import {
@@ -87,6 +88,10 @@ import {
   isPhaseCapability,
   type PhaseCapability
 } from '../../contracts/phase-capabilities';
+import {
+  validateResultContract,
+  type ResultContract
+} from '../../contracts/decision-results';
 
 /**
  * How long a defect's field path may be.
@@ -670,6 +675,20 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     }
   }
 
+  let resultContract: ResultContract | undefined;
+  const resultContractEntry = section.entries.find((candidate) => candidate.key === 'resultContract');
+  if (resultContractEntry !== undefined) {
+    const rawResultContract = plainYamlValue(resultContractEntry.value);
+    const rcValidated = validateResultContract(rawResultContract, 'resultContract');
+    if (!rcValidated.ok) {
+      for (const rcError of rcValidated.errors) {
+        defects.push(defect(rcError.field, rcError.code, rcError.message));
+      }
+    } else {
+      resultContract = rcValidated.value;
+    }
+  }
+
   if (defects.length !== before) return null;
 
   const common = {
@@ -687,11 +706,34 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     ...(isRequired !== undefined ? { isRequired } : {}),
     ...(forceContinueOnRetryCap !== undefined ? { forceContinueOnRetryCap } : {}),
     ...(onRetryCap !== undefined ? { onRetryCap } : {}),
-    ...(retryCondition !== undefined ? { retryCondition } : {})
+    ...(retryCondition !== undefined ? { retryCondition } : {}),
+    ...(resultContract !== undefined ? { resultContract } : {})
   };
   return hasInstruction
     ? { instruction: instruction as string, ...common }
     : { skill: skill as string, ...common };
+}
+
+function plainYamlValue(node: YamlNode): unknown {
+  if (node.kind === 'scalar') {
+    if (node.quoted) return node.value;
+    if (/^[+-]?\d+$/.test(node.value)) {
+      const parsed = Number(node.value);
+      if (Number.isSafeInteger(parsed)) return parsed;
+    }
+    const numeric = Number(node.value);
+    if (Number.isFinite(numeric) && String(numeric) === node.value) return numeric;
+    if (node.value === 'true') return true;
+    if (node.value === 'false') return false;
+    return node.value;
+  }
+  if (node.kind === 'sequence') return node.items.map(plainYamlValue);
+  const mapping = Object.create(null) as Record<string, unknown>;
+  for (const entry of node.entries) {
+    if (Object.prototype.hasOwnProperty.call(mapping, entry.key)) continue;
+    mapping[entry.key] = plainYamlValue(entry.value);
+  }
+  return mapping;
 }
 
 function readOptionalBoolean(

@@ -213,7 +213,8 @@ afterAll(async () => {
 describe('FR-R4-F07 C-T5 — a Run frozen with an unreachable condition continues from its own graph (FR-031)', () => {
   it('has the unreachable condition in its frozen graph (the fixture is what it claims)', () => {
     const run = frozenRunWithUnreachableCondition();
-    expect(run.graph.connections[0]?.condition?.operator).toBe('greaterThan');
+    const cond = run.graph.connections[0]?.condition;
+    expect(cond !== undefined && 'left' in cond ? cond.operator : undefined).toBe('greaterThan');
   });
 
   it('continues: the offered node starts, the attempt is recorded and a row is queued', async () => {

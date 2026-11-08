@@ -32,6 +32,7 @@ const REQUIRED_FILES: readonly string[] = [
   'src/contracts/audit-events.ts',
   'src/state/workflow-run.ts',
   'src/contracts/state-schema.ts',
+  'src/contracts/decision-results.ts',
   'src/contracts/queue-snapshot.ts',
   'src/queue/feature-request.ts',
   'src/runner/invocation-result.ts',

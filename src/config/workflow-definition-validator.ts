@@ -35,6 +35,11 @@ import {
   type WorkflowSelectionRule
 } from '../contracts/workflow-definitions';
 import {
+  isTypedConditionCandidate,
+  validateTypedCondition,
+  type TypedCondition
+} from '../contracts/decision-results';
+import {
   AUTHORED_EXECUTION_DEFAULT_FIELDS,
   PIPELINE_ID_PATTERN,
   PIPELINE_TIMEOUT_MAX,
@@ -58,62 +63,18 @@ const ERROR_CODE_MAX = 64;
 const ERROR_MESSAGE_MAX = 512;
 
 export const AUTHORED_WORKFLOW_FIELDS: ReadonlySet<string> = new Set([
-  'id',
-  'workflowId',
-  'name',
-  'description',
-  'version',
-  'inputs',
-  'outputs',
-  'nodes',
-  'connections',
-  'bindings',
-  'startNodeIds',
-  'executionDefaults',
-  'recommendedNext'
+  'id', 'workflowId', 'name', 'description', 'version', 'inputs', 'outputs',
+  'nodes', 'connections', 'bindings', 'startNodeIds', 'executionDefaults', 'recommendedNext'
 ]);
 
 /** Closed set of fields a Workflow node may carry (feature 254, FR-042, V3; compared with `WORKFLOW_NODE_KEY_ORDER`). */
-export const AUTHORED_NODE_FIELDS: ReadonlySet<string> = new Set([
-  'nodeId',
-  'kind',
-  'phaseId',
-  'workflowId',
-  'label'
-]);
-
-const AUTHORED_CONNECTION_FIELDS: ReadonlySet<string> = new Set([
-  'from',
-  'to',
-  'handoff',
-  'condition',
-  'priority',
-  'isDefault',
-  'selection'
-]);
-
+export const AUTHORED_NODE_FIELDS: ReadonlySet<string> = new Set(['nodeId', 'kind', 'phaseId', 'workflowId', 'label']);
+const AUTHORED_CONNECTION_FIELDS: ReadonlySet<string> = new Set(['from', 'to', 'handoff', 'condition', 'priority', 'isDefault', 'selection']);
 const AUTHORED_ENDPOINT_FIELDS: ReadonlySet<string> = new Set(['nodeId', 'portId', 'kind']);
 const AUTHORED_CONDITION_FIELDS: ReadonlySet<string> = new Set(['left', 'operator', 'right']);
-const AUTHORED_PORT_FIELDS: ReadonlySet<string> = new Set([
-  'portId',
-  'label',
-  'type',
-  'required',
-  'description'
-]);
+const AUTHORED_PORT_FIELDS: ReadonlySet<string> = new Set(['portId', 'label', 'type', 'required', 'description']);
 const AUTHORED_BINDING_FIELDS: ReadonlySet<string> = new Set([
-  'kind',
-  'nodeId',
-  'inputKey',
-  'portId',
-  'outputKey',
-  'sourcePortId',
-  'type',
-  'required',
-  'label',
-  'source',
-  'selection',
-  'phaseIndex'
+  'kind', 'nodeId', 'inputKey', 'portId', 'outputKey', 'sourcePortId', 'type', 'required', 'label', 'source', 'selection', 'phaseIndex'
 ]);
 
 export interface WorkflowDefinitionValidationResult {
@@ -138,12 +99,7 @@ function bounded(value: string, max: number): string {
   return value.length <= max ? value : value.slice(0, max);
 }
 
-function fieldError(
-  workflowId: string,
-  field: string,
-  code: string,
-  message: string
-): WorkflowFieldError {
+function fieldError(workflowId: string, field: string, code: string, message: string): WorkflowFieldError {
   return Object.freeze({
     workflowId: bounded(workflowId || '?', WORKFLOW_ID_MAX_LEN),
     field: bounded(field, WORKFLOW_ERROR_FIELD_MAX),
@@ -160,11 +116,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function objectRequiredResult(): WorkflowDefinitionValidationResult {
   return {
-    ok: false,
-    workflowId: '?',
-    definition: null,
-    display: Object.freeze({}),
-    unrecognized: Object.freeze({}),
+    ok: false, workflowId: '?', definition: null,
+    display: Object.freeze({}), unrecognized: Object.freeze({}),
     errors: Object.freeze([fieldError('?', 'entry', 'object-required', 'Workflow entry must be an object')])
   };
 }
@@ -176,20 +129,12 @@ function recognizedDisplay(raw: Record<string, unknown>): Readonly<Record<string
 function unrecognizedFields(raw: Record<string, unknown>): Readonly<Record<string, unknown>> {
   const kept: Record<string, unknown> = {};
   for (const key of Object.keys(raw)) {
-    if (!AUTHORED_WORKFLOW_FIELDS.has(key) && key !== 'derivedInputs' && key !== 'derivedOutputs') {
-      kept[key] = raw[key];
-    }
+    if (!AUTHORED_WORKFLOW_FIELDS.has(key) && key !== 'derivedInputs' && key !== 'derivedOutputs') kept[key] = raw[key];
   }
   return Object.freeze(kept);
 }
 
-function readIdentifier(
-  raw: unknown,
-  workflowId: string,
-  field: string,
-  label: string,
-  errors: WorkflowFieldError[]
-): string | null {
+function readIdentifier(raw: unknown, workflowId: string, field: string, label: string, errors: WorkflowFieldError[]): string | null {
   const value = typeof raw === 'string' ? raw.trim() : '';
   if (!PIPELINE_ID_PATTERN.test(value)) {
     errors.push(fieldError(workflowId, field, 'invalid-pattern', `${label} must match ${PIPELINE_ID_PATTERN.source}`));
@@ -497,10 +442,20 @@ function readCondition(
   workflowId: string,
   field: string,
   errors: WorkflowFieldError[]
-): WorkflowCondition | null {
+): WorkflowCondition | TypedCondition | null {
   if (!isPlainObject(raw)) {
     errors.push(fieldError(workflowId, field, 'unsupported-condition', 'Condition must be structured data, not an expression'));
     return null;
+  }
+  if (isTypedConditionCandidate(raw)) {
+    const typed = validateTypedCondition(raw, field);
+    if (!typed.ok) {
+      for (const defect of typed.errors) {
+        errors.push(fieldError(workflowId, defect.field, defect.code, defect.message));
+      }
+      return null;
+    }
+    return typed.value;
   }
   let ok = true;
   for (const key of Object.keys(raw)) {
@@ -529,9 +484,7 @@ function readCondition(
   return Object.freeze({
     left,
     operator: raw.operator,
-    ...(right !== undefined
-      ? { right: (Array.isArray(right) ? Object.freeze([...right]) : right) as WorkflowCondition['right'] }
-      : {})
+    ...(right !== undefined ? { right: (Array.isArray(right) ? Object.freeze([...right]) : right) as WorkflowCondition['right'] } : {})
   });
 }
 
@@ -573,7 +526,7 @@ function readConnections(
       }
     }
 
-    let condition: WorkflowCondition | undefined;
+    let condition: WorkflowCondition | TypedCondition | undefined;
     if (raw.condition !== undefined) {
       const parsed = readCondition(raw.condition, workflowId, `connections[${index}].condition`, errors);
       if (parsed === null) ok = false;
@@ -611,17 +564,15 @@ function readConnections(
     }
 
     if (!ok || from === null || to === null) return;
-    connections.push(
-      Object.freeze({
-        from,
-        to,
-        ...(handoff !== undefined ? { handoff } : {}),
-        ...(condition !== undefined ? { condition } : {}),
-        ...(priority !== undefined ? { priority } : {}),
-        ...(isDefault !== undefined ? { isDefault } : {}),
-        ...(selection !== undefined ? { selection } : {})
-      })
-    );
+    connections.push(Object.freeze({
+      from,
+      to,
+      ...(handoff !== undefined ? { handoff } : {}),
+      ...(condition !== undefined ? { condition } : {}),
+      ...(priority !== undefined ? { priority } : {}),
+      ...(isDefault !== undefined ? { isDefault } : {}),
+      ...(selection !== undefined ? { selection } : {})
+    }));
   });
   return connections;
 }

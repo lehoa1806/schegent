@@ -704,7 +704,8 @@ async function settleAttemptInternal(
 
   if (
     transition.outcome === 'unhandled-node-failure' ||
-    transition.outcome === 'no-eligible-transition'
+    transition.outcome === 'no-eligible-transition' ||
+    transition.outcome === 'unresolved-condition'
   ) {
     if (status === 'canceled' && transition.outcome === 'unhandled-node-failure') {
       return cancelFrameAndPropagate(

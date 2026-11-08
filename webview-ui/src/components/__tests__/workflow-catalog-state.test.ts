@@ -459,7 +459,10 @@ describe('formatWorkflowSaveRejection', () => {
 describe('condition authoring (T048)', () => {
   const conditional = (condition: WorkflowCondition) =>
     updateWorkflowConnection(row(), 0, { condition });
-  const conditionOf = (workflow: MutableWorkflow) => workflow.connections[0].condition;
+  const conditionOf = (workflow: MutableWorkflow): WorkflowCondition | undefined => {
+    const condition = workflow.connections[0].condition;
+    return condition !== undefined && 'left' in condition ? condition : undefined;
+  };
 
   const OUTPUT_EQUALS: WorkflowCondition = {
     left: { source: 'node-output', nodeId: 'draft', field: 'risk' },
