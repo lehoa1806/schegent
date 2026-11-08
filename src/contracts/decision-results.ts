@@ -468,8 +468,8 @@ function validateOperand(
   }
   if (source === 'node-result') {
     if (!checkUnknownKeys(raw, NODE_RESULT_OPERAND_KEYS, fieldPath, defects)) return null;
-    if (scope === 'result-contract') {
-      pushDefect(defects, `${fieldPath}.source`, 'condition-operand-scope', 'node-result not allowed in completion');
+    if (scope === 'result-contract' || scope === 'repeat-until') {
+      pushDefect(defects, `${fieldPath}.source`, 'condition-operand-scope', 'node-result not allowed in completion or repeat-until');
       return null;
     }
     const nodeId = typeof raw.nodeId === 'string' ? raw.nodeId : '';

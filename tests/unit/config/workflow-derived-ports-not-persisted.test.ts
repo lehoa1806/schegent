@@ -36,6 +36,7 @@ import { describe, expect, it } from 'vitest';
 import { draftTokenOf, NO_DRAFT } from '../../../src/contracts/catalog-lifecycle';
 import type { PipelineDefinition } from '../../../src/contracts/pipeline-definitions';
 import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
+import { validateWorkflowDefinition } from '../../../src/config/workflow-definition-validator';
 import { deriveWorkflowPorts } from '../../../src/config/workflow-derived-ports';
 import { createTestStore, type TestStore } from '../../fixtures/catalog-memory-fs';
 
@@ -173,6 +174,25 @@ describe('what a published Workflow leaves on disk (FR-018)', () => {
     // are not, `repo` among them on both nodes.
     expect(written).not.toContain('"unsatisfied"');
     expect(written).not.toContain('"ports"');
+  });
+
+  it('rejects derivedInputs and derivedOutputs on candidate-block and control workflows (FR-R5-F25)', () => {
+    const controlGraph = {
+      ...GRAPH,
+      nodes: [{ nodeId: 'c1', kind: 'phase', phaseId: 'plan' }],
+      connections: [],
+      startNodeIds: ['c1'],
+      control: {
+        version: 1,
+        kind: 'candidate-block',
+        candidates: [{ candidateId: 'cand-1', nodeId: 'c1' }]
+      },
+      derivedInputs: [],
+      derivedOutputs: []
+    };
+    const validated = validateWorkflowDefinition(controlGraph);
+    expect(validated.definition).toBeNull();
+    expect(validated.errors.filter((e) => e.code === 'derived-ports-not-storable')).toHaveLength(2);
   });
 
   it('records the same bytes however many times the ports are derived', async () => {

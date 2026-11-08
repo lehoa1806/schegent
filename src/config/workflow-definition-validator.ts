@@ -29,16 +29,25 @@ import {
   type WorkflowInputBindingSource,
   type WorkflowInputPort,
   type WorkflowNode,
+  type WorkflowNodeControl,
   type WorkflowNodeKind,
   type WorkflowOutputBinding,
   type WorkflowOutputPort,
-  type WorkflowSelectionRule
+  type WorkflowSelectionRule,
+  type CandidateBlockControl,
+  type WorkflowDecisionResults
 } from '../contracts/workflow-definitions';
 import {
   isTypedConditionCandidate,
   validateTypedCondition,
   type TypedCondition
 } from '../contracts/decision-results';
+import {
+  validateCandidateBlockControl,
+  validateCandidateBlockGraphStructure,
+  validateWorkflowDecisionResults,
+  validateWorkflowNodeControl
+} from './workflow-control-validator';
 import {
   AUTHORED_EXECUTION_DEFAULT_FIELDS,
   PIPELINE_ID_PATTERN,
@@ -64,11 +73,12 @@ const ERROR_MESSAGE_MAX = 512;
 
 export const AUTHORED_WORKFLOW_FIELDS: ReadonlySet<string> = new Set([
   'id', 'workflowId', 'name', 'description', 'version', 'inputs', 'outputs',
-  'nodes', 'connections', 'bindings', 'startNodeIds', 'executionDefaults', 'recommendedNext'
+  'nodes', 'connections', 'bindings', 'startNodeIds', 'executionDefaults', 'recommendedNext',
+  'control', 'decisionResults'
 ]);
 
 /** Closed set of fields a Workflow node may carry (feature 254, FR-042, V3; compared with `WORKFLOW_NODE_KEY_ORDER`). */
-export const AUTHORED_NODE_FIELDS: ReadonlySet<string> = new Set(['nodeId', 'kind', 'phaseId', 'workflowId', 'label']);
+export const AUTHORED_NODE_FIELDS: ReadonlySet<string> = new Set(['nodeId', 'kind', 'phaseId', 'workflowId', 'label', 'control']);
 const AUTHORED_CONNECTION_FIELDS: ReadonlySet<string> = new Set(['from', 'to', 'handoff', 'condition', 'priority', 'isDefault', 'selection']);
 const AUTHORED_ENDPOINT_FIELDS: ReadonlySet<string> = new Set(['nodeId', 'portId', 'kind']);
 const AUTHORED_CONDITION_FIELDS: ReadonlySet<string> = new Set(['left', 'operator', 'right']);
@@ -308,6 +318,23 @@ function readNodes(
       }
     }
 
+    let nodeControl: WorkflowNodeControl | undefined;
+    let nodeControlOk = true;
+    if (raw.control !== undefined) {
+      if (kind !== 'workflow') {
+        errors.push(fieldError(workflowId, `nodes[${index}].control`, 'control-requires-workflow-node', 'Repeat and ForEach controls are allowed only on child-Workflow nodes'));
+        nodeControlOk = false;
+      } else {
+        const parsedControl = validateWorkflowNodeControl(raw.control, workflowId, `nodes[${index}].control`);
+        if (!parsedControl.ok || parsedControl.value === null) {
+          errors.push(...parsedControl.errors);
+          nodeControlOk = false;
+        } else {
+          nodeControl = parsedControl.value;
+        }
+      }
+    }
+
     if (nodeId !== null) {
       if (seen.has(nodeId)) {
         errors.push(fieldError(workflowId, `nodes[${index}].nodeId`, 'duplicate-node-id', `Node id '${bounded(nodeId, WORKFLOW_ID_MAX_LEN)}' is declared more than once`));
@@ -318,6 +345,7 @@ function readNodes(
 
     const hasValidTarget =
       !unknownNodeField &&
+      nodeControlOk &&
       targetCount <= 1 &&
       (phaseId !== null || targetWorkflowId !== null || pipelineId !== null);
     if (nodeId === null || !hasValidTarget) return;
@@ -329,7 +357,8 @@ function readNodes(
         ...(phaseId !== null ? { phaseId } : {}),
         ...(targetWorkflowId !== null ? { workflowId: targetWorkflowId } : {}),
         ...(pipelineId !== null ? { pipelineId } : {}),
-        ...(label !== undefined ? { label } : {})
+        ...(label !== undefined ? { label } : {}),
+        ...(nodeControl !== undefined ? { control: nodeControl } : {})
       })
     );
   });
@@ -913,14 +942,38 @@ export function validateWorkflowDefinition(
   const executionDefaults = readExecutionDefaults(value, workflowId, errors);
   const recommendedNext = readRecommendedNext(value, workflowId, errors);
 
+  let control: CandidateBlockControl | undefined;
+  if (value.control !== undefined) {
+    const parsedControl = validateCandidateBlockControl(value.control, workflowId, 'control');
+    if (!parsedControl.ok || parsedControl.value === null) {
+      errors.push(...parsedControl.errors);
+    } else {
+      control = parsedControl.value;
+      if (errors.length === 0) {
+        validateCandidateBlockGraphStructure(workflowId, control, nodes, connections, startNodeIds, errors);
+      }
+      (bindings ?? []).forEach((binding, index) => {
+        if (binding.kind === 'input' && binding.source.from === 'node-output') {
+          errors.push(fieldError(workflowId, `bindings[${index}].source`, 'cross-candidate-input-binding', 'Candidate-block input bindings must read from workflow-input, never node-output'));
+        }
+      });
+    }
+  }
+
+  let decisionResults: WorkflowDecisionResults | undefined;
+  if (value.decisionResults !== undefined) {
+    const parsedDecisionResults = validateWorkflowDecisionResults(value.decisionResults, workflowId, value.control !== undefined, 'decisionResults');
+    if (!parsedDecisionResults.ok || parsedDecisionResults.value === null) {
+      errors.push(...parsedDecisionResults.errors);
+    } else {
+      decisionResults = parsedDecisionResults.value;
+    }
+  }
+
   if (errors.length > 0) {
     return {
-      ok: false,
-      workflowId,
-      definition: null,
-      display,
-      unrecognized,
-      errors: Object.freeze(errors)
+      ok: false, workflowId, definition: null,
+      display, unrecognized, errors: Object.freeze(errors)
     };
   }
 
@@ -936,14 +989,9 @@ export function validateWorkflowDefinition(
     ...(bindings !== undefined ? { bindings: Object.freeze(bindings) } : {}),
     startNodeIds: Object.freeze(startNodeIds),
     ...(executionDefaults !== undefined ? { executionDefaults } : {}),
-    ...(recommendedNext !== undefined ? { recommendedNext } : {})
+    ...(recommendedNext !== undefined ? { recommendedNext } : {}),
+    ...(control !== undefined ? { control } : {}),
+    ...(decisionResults !== undefined ? { decisionResults } : {})
   });
-  return {
-    ok: true,
-    workflowId,
-    definition,
-    display,
-    unrecognized,
-    errors: Object.freeze([])
-  };
+  return { ok: true, workflowId, definition, display, unrecognized, errors: Object.freeze([]) };
 }

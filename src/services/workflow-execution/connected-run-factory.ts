@@ -186,7 +186,8 @@ export interface ComposableWorkflowRunFactoryInput {
 
 export type ComposableWorkflowRunFactoryRejection =
   | { readonly reason: 'invalid-entry-node'; readonly detail: string }
-  | { readonly reason: 'workflow-closure-invalid'; readonly detail: string };
+  | { readonly reason: 'workflow-closure-invalid'; readonly detail: string }
+  | { readonly reason: 'unsupported-control-version'; readonly detail: string };
 
 export type ComposableWorkflowRunFactoryResult =
   | {
