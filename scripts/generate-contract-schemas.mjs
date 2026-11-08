@@ -451,6 +451,7 @@ const audit = new SourceExtractor('src/contracts/audit-events.ts');
 const state = new SourceExtractor('src/state/workflow-run.ts');
 const stateSchema = new SourceExtractor('src/contracts/state-schema.ts');
 const decisionResults = new SourceExtractor('src/contracts/decision-results.ts');
+const workflowControls = new SourceExtractor('src/contracts/workflow-controls.ts');
 const queueSnapshot = new SourceExtractor('src/contracts/queue-snapshot.ts');
 const featureRequest = new SourceExtractor('src/queue/feature-request.ts');
 const runner = new SourceExtractor('src/runner/invocation-result.ts');
@@ -473,6 +474,11 @@ const delayedRetryCauses = state.stringUnion('DelayedRetryCause');
 const attemptOutcomeStatuses = decisionResults.stringArray('ATTEMPT_OUTCOME_STATUSES');
 const attemptOutcomeReasons = decisionResults.stringArray('ATTEMPT_OUTCOME_REASONS');
 const attemptOutcomeRecoveries = decisionResults.stringArray('ATTEMPT_OUTCOME_RECOVERIES');
+const workflowControlKinds = workflowControls.stringArray('WORKFLOW_CONTROL_KINDS');
+const candidateAvailabilityPolicies = workflowControls.stringArray('CANDIDATE_AVAILABILITY_POLICIES');
+const candidateBudgetModes = workflowControls.stringArray('CANDIDATE_BUDGET_MODES');
+const repeatOnExhaustedPolicies = workflowControls.stringArray('REPEAT_ON_EXHAUSTED_POLICIES');
+const forEachOnItemErrorPolicies = workflowControls.stringArray('FOR_EACH_ON_ITEM_ERROR_POLICIES');
 
 const schemas = {
   'src/contracts/generated/schemas/sidebar-ipc.schema.json': makeSchema(
@@ -543,7 +549,7 @@ const schemas = {
   'src/contracts/generated/schemas/state.schema.json': makeSchema(
     'state',
     'Schegent Workflow State Contract',
-    ['src/contracts/state-schema.ts', 'src/state/workflow-run.ts', 'src/contracts/decision-results.ts'],
+    ['src/contracts/state-schema.ts', 'src/state/workflow-run.ts', 'src/contracts/decision-results.ts', 'src/contracts/workflow-controls.ts'],
     {
       stateSchemaVersion: { type: 'integer', const: stateSchema.numberConst('STATE_SCHEMA_VERSION') },
       workflowRunStatuses: enumProperty(workflowRunStatuses),
@@ -552,7 +558,12 @@ const schemas = {
       workflowRunFields: interfaceProperty(state.interfaceProperties('WorkflowRun')),
       attemptOutcomeStatuses: enumProperty(attemptOutcomeStatuses),
       attemptOutcomeReasons: enumProperty(attemptOutcomeReasons),
-      attemptOutcomeRecoveries: enumProperty(attemptOutcomeRecoveries)
+      attemptOutcomeRecoveries: enumProperty(attemptOutcomeRecoveries),
+      workflowControlKinds: enumProperty(workflowControlKinds),
+      candidateAvailabilityPolicies: enumProperty(candidateAvailabilityPolicies),
+      candidateBudgetModes: enumProperty(candidateBudgetModes),
+      repeatOnExhaustedPolicies: enumProperty(repeatOnExhaustedPolicies),
+      forEachOnItemErrorPolicies: enumProperty(forEachOnItemErrorPolicies)
     }
   ),
   'src/contracts/generated/schemas/backend-runner.schema.json': makeSchema(
@@ -598,7 +609,7 @@ const contractFamilies = [
     family: 'workflow-state',
     status: 'generated',
     description: 'Workflow run status, pause causes, retry causes, and state schema version.',
-    sourceFiles: ['src/contracts/state-schema.ts', 'src/state/workflow-run.ts', 'src/contracts/decision-results.ts'],
+    sourceFiles: ['src/contracts/state-schema.ts', 'src/state/workflow-run.ts', 'src/contracts/decision-results.ts', 'src/contracts/workflow-controls.ts'],
     schemaFiles: ['src/contracts/generated/schemas/state.schema.json'],
     typescriptBinding: 'src/contracts/generated/boundary-contracts.ts',
     reviewPolicy: 'Regenerate with every persisted workflow state shape change.'

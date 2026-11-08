@@ -285,4 +285,131 @@ describe('createFrozenWorkflowClosure — transitive Workflow & Phase closure fr
     expect(result.code).toBe('workflow-closure-invalid');
     expect(result.errors.some((e) => e.code === 'workflow-depth-exceeded')).toBe(true);
   });
+
+  it('freezes CandidateBlockControl, RepeatControl, ForEachControl, and rootBudget defaults and isolates from post-freeze edits (FR-R5-F25)', () => {
+    const candPhase1: PhaseDefinition = {
+      phaseId: 'cand-p1',
+      name: 'Cand P1',
+      version: 1,
+      instruction: 'Run P1'
+    };
+    const candPhase2: PhaseDefinition = {
+      phaseId: 'cand-p2',
+      name: 'Cand P2',
+      version: 1,
+      instruction: 'Run P2'
+    };
+    const candidateBlockWf: WorkflowDefinition = {
+      workflowId: 'wf-cand-block',
+      name: 'Candidate Block',
+      version: 1,
+      nodes: [
+        { nodeId: 'c1', kind: 'phase', phaseId: 'cand-p1' },
+        { nodeId: 'c2', kind: 'phase', phaseId: 'cand-p2' }
+      ],
+      connections: [],
+      startNodeIds: ['c1', 'c2'],
+      control: {
+        version: 1,
+        kind: 'candidate-block',
+        candidates: [
+          { candidateId: 'first', nodeId: 'c1' },
+          { candidateId: 'second', nodeId: 'c2', maxAttempts: 4 }
+        ],
+        budget: { mode: 'strict-usd', limitMicrousd: 2_500_000 }
+      }
+    };
+    const parentWf: WorkflowDefinition = {
+      workflowId: 'wf-control-root',
+      name: 'Control Root',
+      version: 1,
+      nodes: [
+        {
+          nodeId: 'rep-call',
+          kind: 'workflow',
+          workflowId: 'wf-cand-block',
+          control: {
+            version: 1,
+            kind: 'repeat',
+            maxIterations: 5,
+            until: {
+              version: 1,
+              kind: 'typed',
+              test: {
+                left: { source: 'result-field', fieldId: 'done' },
+                operator: 'equals',
+                right: true
+              }
+            },
+            carry: []
+          }
+        },
+        {
+          nodeId: 'fe-call',
+          kind: 'workflow',
+          workflowId: 'wf-cand-block',
+          control: {
+            version: 1,
+            kind: 'for-each',
+            collection: { source: 'workflow-input', portId: 'items' },
+            itemInputPortId: 'item'
+          }
+        }
+      ],
+      connections: [{ from: { nodeId: 'rep-call' }, to: { kind: 'node', nodeId: 'fe-call' } }],
+      startNodeIds: ['rep-call']
+    };
+
+    const result = createFrozenWorkflowClosure({
+      rootWorkflow: parentWf,
+      effectiveWorkflows: [candidateBlockWf],
+      effectivePhases: [candPhase1, candPhase2]
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.closure.rootBudget).toEqual({ mode: 'strict-usd', limitMicrousd: 2_500_000 });
+    expect(result.closure.closureMetrics.maxControlDepth).toBe(1);
+
+    const frozenCandControl = result.closure.controlDefaultsByWorkflowId?.['wf-cand-block'];
+    expect(frozenCandControl).toEqual({
+      version: 1,
+      kind: 'candidate-block',
+      candidates: [
+        {
+          candidateId: 'first',
+          nodeId: 'c1',
+          priority: 1,
+          maxAttempts: 3,
+          retry: { initialDelayMs: 5_000, multiplier: 2, maxDelayMs: 60_000 },
+          allowUnverifiedTrial: false
+        },
+        {
+          candidateId: 'second',
+          nodeId: 'c2',
+          priority: 2,
+          maxAttempts: 4,
+          retry: { initialDelayMs: 5_000, multiplier: 2, maxDelayMs: 60_000 },
+          allowUnverifiedTrial: false
+        }
+      ],
+      availabilityPolicy: 'first-ready',
+      maxDispatches: 7,
+      monitoringWindowMs: 86_400_000,
+      budget: { mode: 'strict-usd', limitMicrousd: 2_500_000 }
+    });
+
+    expect(result.closure.nodeControlDefaultsByNodeKey?.['wf-control-root:rep-call']).toMatchObject({
+      kind: 'repeat',
+      maxIterations: 5,
+      onExhausted: 'pause'
+    });
+    expect(result.closure.nodeControlDefaultsByNodeKey?.['wf-control-root:fe-call']).toMatchObject({
+      kind: 'for-each',
+      maxItems: 50,
+      onItemError: 'stop'
+    });
+    expect(Object.isFrozen(frozenCandControl)).toBe(true);
+  });
 });

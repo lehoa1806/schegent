@@ -5,6 +5,16 @@ import { DEFAULT_BACKEND } from '../contracts/backend-kinds';
 import { freezeResultContract } from '../contracts/decision-results';
 import type { EvidencePolicyOrigin, PhaseDefinition } from '../contracts/process-definitions';
 import type { FrozenWorkflowClosure } from '../contracts/run-request';
+import {
+  deriveRootControlBudget,
+  resolveCandidateBlockDefaults,
+  resolveForEachControlDefaults,
+  resolveRepeatControlDefaults,
+  WORKFLOW_CONTROL_SCHEMA_VERSION,
+  type ResolvedCandidateBlockControl,
+  type ResolvedForEachControl,
+  type ResolvedRepeatControl
+} from '../contracts/workflow-controls';
 import type {
   WorkflowDefinition,
   WorkflowFieldError
@@ -264,11 +274,24 @@ export function snapshotPhaseDefinition(
  * keeping it strictly advisory.
  */
 export function snapshotWorkflowDefinition(workflow: WorkflowDefinition): WorkflowDefinition {
+  const frozenNodes = workflow.nodes.map((node) => {
+    if (node.control === undefined) {
+      return node;
+    }
+    const resolvedControl =
+      node.control.kind === 'repeat'
+        ? resolveRepeatControlDefaults(node.control)
+        : resolveForEachControlDefaults(node.control);
+    return {
+      ...node,
+      control: resolvedControl
+    };
+  });
   return deepCloneAndFreeze({
     workflowId: workflow.workflowId,
     name: workflow.name,
     version: workflow.version,
-    nodes: workflow.nodes,
+    nodes: frozenNodes,
     connections: workflow.connections,
     startNodeIds: workflow.startNodeIds,
     ...(workflow.description !== undefined ? { description: workflow.description } : {}),
@@ -280,6 +303,12 @@ export function snapshotWorkflowDefinition(workflow: WorkflowDefinition): Workfl
       : {}),
     ...(workflow.recommendedNext !== undefined
       ? { recommendedNext: [...workflow.recommendedNext] }
+      : {}),
+    ...(workflow.control !== undefined
+      ? { control: resolveCandidateBlockDefaults(workflow.control) }
+      : {}),
+    ...(workflow.decisionResults !== undefined
+      ? { decisionResults: workflow.decisionResults }
       : {})
   });
 }
@@ -301,14 +330,18 @@ export type CreateFrozenWorkflowClosureResult =
     }
   | {
       readonly ok: false;
-      readonly code: 'invalid-entry-node' | 'workflow-closure-invalid';
+      readonly code:
+        | 'invalid-entry-node'
+        | 'workflow-closure-invalid'
+        | 'unsupported-control-version';
       readonly message: string;
       readonly errors: readonly WorkflowFieldError[];
     };
 
 /**
- * FR-R5-F02 — resolve, bound-check, and deep-freeze the complete transitive
- * closure of a composable Workflow before admission.
+ * FR-R5-F02 / FR-R5-F25 — resolve, bound-check, and deep-freeze the complete
+ * transitive closure of a composable Workflow before admission, including
+ * resolved candidate-block, Repeat, ForEach, and root budget defaults.
  */
 export function createFrozenWorkflowClosure(
   input: CreateFrozenWorkflowClosureInput
@@ -371,6 +404,11 @@ export function createFrozenWorkflowClosure(
   const workflowsById: Record<string, WorkflowDefinition> = {};
   const phasesById: Record<string, PhaseDefinition> = {};
   const definitionDigestsById: Record<string, string> = {};
+  const controlDefaultsByWorkflowId: Record<string, ResolvedCandidateBlockControl> = {};
+  const nodeControlDefaultsByNodeKey: Record<
+    string,
+    ResolvedRepeatControl | ResolvedForEachControl
+  > = {};
 
   const reachableWorkflowIds = new Set<string>([
     input.rootWorkflow.workflowId,
@@ -380,6 +418,63 @@ export function createFrozenWorkflowClosure(
   for (const wfId of reachableWorkflowIds) {
     const wf = workflowsByIdSource.get(wfId);
     if (wf === undefined) continue;
+    const wfControlVersion: number | undefined = wf.control?.version;
+    if (wfControlVersion !== undefined && wfControlVersion !== WORKFLOW_CONTROL_SCHEMA_VERSION) {
+      return {
+        ok: false,
+        code: 'unsupported-control-version',
+        message: `Workflow '${wfId}' declares unsupported control version '${String(wfControlVersion)}'.`,
+        errors: [
+          {
+            workflowId: wfId,
+            field: 'control.version',
+            code: 'unsupported-control-version',
+            message: `Workflow '${wfId}' control.version must be ${WORKFLOW_CONTROL_SCHEMA_VERSION}.`
+          }
+        ]
+      };
+    }
+    const wfDecisionVersion: number | undefined = wf.decisionResults?.version;
+    if (
+      wfDecisionVersion !== undefined &&
+      wfDecisionVersion !== WORKFLOW_CONTROL_SCHEMA_VERSION
+    ) {
+      return {
+        ok: false,
+        code: 'unsupported-control-version',
+        message: `Workflow '${wfId}' declares unsupported decisionResults version '${String(wfDecisionVersion)}'.`,
+        errors: [
+          {
+            workflowId: wfId,
+            field: 'decisionResults.version',
+            code: 'unsupported-control-version',
+            message: `Workflow '${wfId}' decisionResults.version must be ${WORKFLOW_CONTROL_SCHEMA_VERSION}.`
+          }
+        ]
+      };
+    }
+    for (const [nodeIndex, node] of wf.nodes.entries()) {
+      const nodeControlVersion: number | undefined = node.control?.version;
+      if (
+        nodeControlVersion !== undefined &&
+        nodeControlVersion !== WORKFLOW_CONTROL_SCHEMA_VERSION
+      ) {
+        return {
+          ok: false,
+          code: 'unsupported-control-version',
+          message: `Node '${node.nodeId}' in Workflow '${wfId}' declares unsupported control version '${String(nodeControlVersion)}'.`,
+          errors: [
+            {
+              workflowId: wfId,
+              field: `nodes[${nodeIndex}].control.version`,
+              code: 'unsupported-control-version',
+              message: `Node '${node.nodeId}' control.version must be ${WORKFLOW_CONTROL_SCHEMA_VERSION}.`
+            }
+          ]
+        };
+      }
+    }
+
     const childEntry = wf.startNodeIds[0];
     const wfNodeIds = new Set(wf.nodes.map((node) => node.nodeId));
     if (childEntry === undefined || !wfNodeIds.has(childEntry)) {
@@ -402,6 +497,18 @@ export function createFrozenWorkflowClosure(
     workflowsById[wfId] = frozenWf;
     definitionDigestsById[wfId] = digest;
     definitionDigestsById[`workflow:${wfId}`] = digest;
+
+    if (wf.control !== undefined) {
+      controlDefaultsByWorkflowId[wfId] = resolveCandidateBlockDefaults(wf.control);
+    }
+    for (const node of wf.nodes) {
+      if (node.control !== undefined) {
+        nodeControlDefaultsByNodeKey[`${wfId}:${node.nodeId}`] =
+          node.control.kind === 'repeat'
+            ? resolveRepeatControlDefaults(node.control)
+            : resolveForEachControlDefaults(node.control);
+      }
+    }
   }
 
   for (const phaseId of closureResult.referencedPhaseIds) {
@@ -414,6 +521,10 @@ export function createFrozenWorkflowClosure(
     definitionDigestsById[`phase:${phaseId}`] = digest;
   }
 
+  const rootBudget = deriveRootControlBudget(Object.values(workflowsById));
+  const hasControlDefaults = Object.keys(controlDefaultsByWorkflowId).length > 0;
+  const hasNodeControlDefaults = Object.keys(nodeControlDefaultsByNodeKey).length > 0;
+
   return {
     ok: true,
     closure: Object.freeze({
@@ -425,8 +536,18 @@ export function createFrozenWorkflowClosure(
       closureMetrics: Object.freeze({
         maxDepth: closureResult.maxDepthReached,
         definitionCount: closureResult.closureSize,
-        expandedNodeCount: closureResult.expandedNodeCount
-      })
+        expandedNodeCount: closureResult.expandedNodeCount,
+        ...(closureResult.maxControlDepthReached > 0
+          ? { maxControlDepth: closureResult.maxControlDepthReached }
+          : {})
+      }),
+      rootBudget,
+      ...(hasControlDefaults
+        ? { controlDefaultsByWorkflowId: Object.freeze(controlDefaultsByWorkflowId) }
+        : {}),
+      ...(hasNodeControlDefaults
+        ? { nodeControlDefaultsByNodeKey: Object.freeze(nodeControlDefaultsByNodeKey) }
+        : {})
     })
   };
 }

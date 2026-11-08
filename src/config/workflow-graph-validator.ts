@@ -28,6 +28,7 @@ import {
   type TypedCondition
 } from '../contracts/decision-results';
 import { resolveWorkflowClosure } from './workflow-closure-resolver';
+import { validateWorkflowControlsInGraph } from './workflow-control-validator';
 import { workflowFieldError } from './workflow-definition-validator';
 import {
   ancestorSets,
@@ -117,6 +118,9 @@ export function validateWorkflowGraph(
   validateReachability(context, acyclic);
   validateConditions(context, acyclic);
   validateBindingsAndOutputs(context, acyclic);
+  const phasesById = new Map((options.effectivePhases ?? []).map((entry) => [entry.phaseId, entry]));
+  const workflowsById = new Map((options.effectiveWorkflows ?? []).map((entry) => [entry.workflowId, entry]));
+  errors.push(...validateWorkflowControlsInGraph({ definition, acyclic, edges, phasesById, workflowsById }));
   return errors;
 }
 
@@ -465,8 +469,15 @@ function validateTypedConnectionCondition(
         )
       );
     }
+    const wfDecisionFields = resolved.workflow?.decisionResults?.fields.map((f) => ({
+      fieldId: f.fieldId,
+      type: f.type,
+      required: f.required,
+      selector: [f.fieldId]
+    }));
     const declaredFields: readonly DecisionField[] | undefined =
       resolved.phase?.resultContract?.fields ??
+      wfDecisionFields ??
       (resolved.workflow as { readonly decisionResults?: readonly DecisionField[] } | null)?.decisionResults;
     const declaredField = declaredFields?.find((entry) => entry.fieldId === leaf.left.fieldId);
     if (!declaredField) {
@@ -695,8 +706,9 @@ function validateBindingsAndOutputs(context: GraphContext, acyclic: boolean): vo
 
   for (const resolved of nodes.values()) {
     if (resolved.target?.kind !== 'workflow') continue;
+    const forEachItemPort = resolved.node.control?.kind === 'for-each' ? resolved.node.control.itemInputPortId : undefined;
     for (const inputPort of resolved.target.inputs) {
-      if (inputPort.required === false) continue;
+      if (inputPort.required === false || inputPort.portId === forEachItemPort) continue;
       if (!boundChildInputs.has(`${resolved.node.nodeId}.${inputPort.portId}`)) {
         context.errors.push(
           error(

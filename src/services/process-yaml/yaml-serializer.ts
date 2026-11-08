@@ -33,6 +33,15 @@ import {
   type TypedCondition,
   type TypedLeaf
 } from '../../contracts/decision-results';
+import type {
+  CandidateBlockControl,
+  CandidateSpec,
+  DecisionResultBinding,
+  RepeatCarryMapping,
+  WorkflowDecisionResultField,
+  WorkflowDecisionResults,
+  WorkflowNodeControl
+} from '../../contracts/workflow-controls';
 
 export const DOCUMENT_KEY_ORDER = Object.freeze([
   'apiVersion',
@@ -175,7 +184,9 @@ export const WORKFLOW_SPEC_KEY_ORDER = Object.freeze([
   'bindings',
   'startNodeIds',
   'executionDefaults',
-  'recommendedNext'
+  'recommendedNext',
+  'control',
+  'decisionResults'
 ] as const);
 
 export const WORKFLOW_PORT_KEY_ORDER = Object.freeze([
@@ -191,7 +202,91 @@ export const WORKFLOW_NODE_KEY_ORDER = Object.freeze([
   'kind',
   'phaseId',
   'workflowId',
-  'label'
+  'label',
+  'control'
+] as const);
+
+export const CANDIDATE_BLOCK_CONTROL_KEY_ORDER = Object.freeze([
+  'version',
+  'kind',
+  'candidates',
+  'availabilityPolicy',
+  'maxDispatches',
+  'monitoringWindowMs',
+  'budget'
+] as const);
+
+export const CANDIDATE_SPEC_KEY_ORDER = Object.freeze([
+  'candidateId',
+  'nodeId',
+  'priority',
+  'maxAttempts',
+  'retry',
+  'allowUnverifiedTrial'
+] as const);
+
+export const CANDIDATE_RETRY_KEY_ORDER = Object.freeze([
+  'initialDelayMs',
+  'multiplier',
+  'maxDelayMs'
+] as const);
+
+export const CANDIDATE_BUDGET_KEY_ORDER = Object.freeze([
+  'mode',
+  'limitMicrousd'
+] as const);
+
+export const WORKFLOW_DECISION_RESULTS_KEY_ORDER = Object.freeze([
+  'version',
+  'fields',
+  'bindings'
+] as const);
+
+export const WORKFLOW_DECISION_FIELD_KEY_ORDER = Object.freeze([
+  'fieldId',
+  'type',
+  'required'
+] as const);
+
+export const WORKFLOW_DECISION_BINDING_KEY_ORDER = Object.freeze([
+  'fieldId',
+  'source'
+] as const);
+
+export const WORKFLOW_DECISION_BINDING_SOURCE_KEY_ORDER = Object.freeze([
+  'kind',
+  'nodeId',
+  'fieldId'
+] as const);
+
+export const REPEAT_CONTROL_KEY_ORDER = Object.freeze([
+  'version',
+  'kind',
+  'maxIterations',
+  'until',
+  'carry',
+  'onExhausted'
+] as const);
+
+export const REPEAT_CARRY_MAPPING_KEY_ORDER = Object.freeze([
+  'fieldId',
+  'inputPortId'
+] as const);
+
+export const FOR_EACH_CONTROL_KEY_ORDER = Object.freeze([
+  'version',
+  'kind',
+  'collection',
+  'itemKeyField',
+  'itemInputPortId',
+  'maxItems',
+  'onItemError'
+] as const);
+
+export const FOR_EACH_COLLECTION_SOURCE_KEY_ORDER = Object.freeze([
+  'source',
+  'nodeId',
+  'portId'
 ] as const);
 
 export const WORKFLOW_CONNECTION_KEY_ORDER = Object.freeze([
@@ -451,6 +546,160 @@ export function emitResultContract(indent: string, contract: ResultContract): st
       case 'completion':
         out += emitKey(indent, 'completion');
         out += emitTypedCondition(nestedIndent, contract.completion);
+        break;
+    }
+  }
+  return out;
+}
+
+function renderCandidateSpec(bodyIndent: string, candidate: CandidateSpec): string {
+  const nestedIndent = `${bodyIndent}${PHASE_YAML_INDENT}`;
+  let out = '';
+  for (const key of CANDIDATE_SPEC_KEY_ORDER) {
+    if (key === 'retry') {
+      if (candidate.retry !== undefined) {
+        const retryBody = emitMapping(nestedIndent, CANDIDATE_RETRY_KEY_ORDER, candidate.retry);
+        if (retryBody.length > 0) {
+          out += emitKey(bodyIndent, 'retry') + retryBody;
+        }
+      }
+      continue;
+    }
+    out += emitMapping(bodyIndent, [key], candidate);
+  }
+  return out;
+}
+
+export function emitCandidateBlockControl(
+  indent: string,
+  control: CandidateBlockControl
+): string {
+  const nestedIndent = `${indent}${PHASE_YAML_INDENT}`;
+  let out = '';
+  for (const key of CANDIDATE_BLOCK_CONTROL_KEY_ORDER) {
+    switch (key) {
+      case 'candidates':
+        out += emitMappingSequence(indent, 'candidates', control.candidates, renderCandidateSpec);
+        break;
+      case 'budget':
+        if (control.budget !== undefined) {
+          out += emitKey(indent, 'budget');
+          out += emitMapping(nestedIndent, CANDIDATE_BUDGET_KEY_ORDER, control.budget);
+        }
+        break;
+      case 'version':
+      case 'kind':
+      case 'availabilityPolicy':
+      case 'maxDispatches':
+      case 'monitoringWindowMs':
+        out += emitMapping(indent, [key], control);
+        break;
+    }
+  }
+  return out;
+}
+
+function renderWorkflowDecisionField(
+  bodyIndent: string,
+  field: WorkflowDecisionResultField
+): string {
+  return emitMapping(bodyIndent, WORKFLOW_DECISION_FIELD_KEY_ORDER, field);
+}
+
+function renderWorkflowDecisionBinding(
+  bodyIndent: string,
+  binding: DecisionResultBinding
+): string {
+  const nestedIndent = `${bodyIndent}${PHASE_YAML_INDENT}`;
+  let out = '';
+  for (const key of WORKFLOW_DECISION_BINDING_KEY_ORDER) {
+    if (key === 'source') {
+      out += emitKey(bodyIndent, 'source');
+      out += emitMapping(
+        nestedIndent,
+        WORKFLOW_DECISION_BINDING_SOURCE_KEY_ORDER,
+        binding.source
+      );
+      continue;
+    }
+    out += emitMapping(bodyIndent, [key], binding);
+  }
+  return out;
+}
+
+export function emitWorkflowDecisionResults(
+  indent: string,
+  decisionResults: WorkflowDecisionResults
+): string {
+  let out = '';
+  for (const key of WORKFLOW_DECISION_RESULTS_KEY_ORDER) {
+    switch (key) {
+      case 'version':
+        out += emitMapping(indent, [key], decisionResults);
+        break;
+      case 'fields':
+        out += emitMappingSequence(
+          indent,
+          'fields',
+          decisionResults.fields,
+          renderWorkflowDecisionField
+        );
+        break;
+      case 'bindings':
+        out += emitMappingSequence(
+          indent,
+          'bindings',
+          decisionResults.bindings,
+          renderWorkflowDecisionBinding
+        );
+        break;
+    }
+  }
+  return out;
+}
+
+function renderRepeatCarryMapping(bodyIndent: string, mapping: RepeatCarryMapping): string {
+  return emitMapping(bodyIndent, REPEAT_CARRY_MAPPING_KEY_ORDER, mapping);
+}
+
+export function emitWorkflowNodeControl(indent: string, control: WorkflowNodeControl): string {
+  const nestedIndent = `${indent}${PHASE_YAML_INDENT}`;
+  if (control.kind === 'repeat') {
+    let out = '';
+    for (const key of REPEAT_CONTROL_KEY_ORDER) {
+      switch (key) {
+        case 'until':
+          out += emitKey(indent, 'until');
+          out += emitTypedCondition(nestedIndent, control.until);
+          break;
+        case 'carry':
+          out += emitMappingSequence(indent, 'carry', control.carry, renderRepeatCarryMapping);
+          break;
+        case 'version':
+        case 'kind':
+        case 'maxIterations':
+        case 'onExhausted':
+          out += emitMapping(indent, [key], control);
+          break;
+      }
+    }
+    return out;
+  }
+
+  let out = '';
+  for (const key of FOR_EACH_CONTROL_KEY_ORDER) {
+    switch (key) {
+      case 'collection':
+        out += emitKey(indent, 'collection');
+        out += emitMapping(nestedIndent, FOR_EACH_COLLECTION_SOURCE_KEY_ORDER, control.collection);
+        break;
+      case 'version':
+      case 'kind':
+      case 'itemKeyField':
+      case 'itemInputPortId':
+      case 'maxItems':
+      case 'onItemError':
+        out += emitMapping(indent, [key], control);
         break;
     }
   }

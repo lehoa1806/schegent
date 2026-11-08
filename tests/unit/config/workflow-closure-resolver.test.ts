@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_CONTROL_NESTING_DEPTH,
   MAX_WORKFLOW_CLOSURE_DEFINITIONS,
   MAX_WORKFLOW_EXPANDED_NODES,
   MAX_WORKFLOW_NESTING_DEPTH,
@@ -244,5 +245,102 @@ describe('workflow-closure-resolver (FR-R5-F01-T04)', () => {
       (item) => item.childIds
     );
     expect(ordered.map((item) => item.id)).toEqual(['leaf', 'child-a', 'child-b', 'parent']);
+  });
+
+  it('enforces MAX_CONTROL_NESTING_DEPTH = 2 (control depth 2 passes, control depth 3 fails with control-nesting-depth-exceeded)', () => {
+    expect(MAX_CONTROL_NESTING_DEPTH).toBe(2);
+    const effectivePhases = [phase('p1')];
+    const until = {
+      version: 1 as const,
+      kind: 'typed' as const,
+      test: {
+        left: { source: 'result-field' as const, fieldId: 'ok' },
+        operator: 'equals' as const,
+        right: true
+      }
+    };
+
+    const leaf = phaseWorkflow('wf-leaf', ['p1']);
+    const level2: WorkflowDefinition = {
+      workflowId: 'wf-level-2',
+      name: 'Level 2',
+      version: 1,
+      nodes: [
+        {
+          nodeId: 'for-each-leaf',
+          kind: 'workflow',
+          workflowId: 'wf-leaf',
+          control: {
+            version: 1,
+            kind: 'for-each',
+            collection: { source: 'workflow-input', portId: 'items' },
+            itemInputPortId: 'item'
+          }
+        }
+      ],
+      connections: [],
+      startNodeIds: ['for-each-leaf']
+    };
+    const level1: WorkflowDefinition = {
+      workflowId: 'wf-level-1',
+      name: 'Level 1',
+      version: 1,
+      nodes: [
+        {
+          nodeId: 'repeat-l2',
+          kind: 'workflow',
+          workflowId: 'wf-level-2',
+          control: {
+            version: 1,
+            kind: 'repeat',
+            maxIterations: 3,
+            until,
+            carry: []
+          }
+        }
+      ],
+      connections: [],
+      startNodeIds: ['repeat-l2']
+    };
+
+    const depth2Result = resolveWorkflowClosure(level1, {
+      effectivePhases,
+      effectiveWorkflows: [leaf, level2, level1]
+    });
+    expect(depth2Result.ok).toBe(true);
+    expect(depth2Result.maxControlDepthReached).toBe(2);
+    expect(depth2Result.errors).toEqual([]);
+
+    const level0: WorkflowDefinition = {
+      workflowId: 'wf-level-0',
+      name: 'Level 0 (Depth 3)',
+      version: 1,
+      nodes: [
+        {
+          nodeId: 'repeat-l1',
+          kind: 'workflow',
+          workflowId: 'wf-level-1',
+          control: {
+            version: 1,
+            kind: 'repeat',
+            maxIterations: 2,
+            until,
+            carry: []
+          }
+        }
+      ],
+      connections: [],
+      startNodeIds: ['repeat-l1']
+    };
+    const depth3Result = resolveWorkflowClosure(level0, {
+      effectivePhases,
+      effectiveWorkflows: [leaf, level2, level1, level0]
+    });
+    expect(depth3Result.ok).toBe(false);
+    expect(depth3Result.errors).toContainEqual(
+      expect.objectContaining({
+        code: 'control-nesting-depth-exceeded'
+      })
+    );
   });
 });

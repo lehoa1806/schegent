@@ -14,16 +14,10 @@
 
 import type { PipelineExecutionDefaults } from '../../contracts/pipeline-definitions';
 import { isTypedCondition, isTypedLeafTest, type TypedCondition, type TypedLeaf } from '../../contracts/decision-results';
+import type { CandidateBlockControl, WorkflowDecisionResults, WorkflowNodeControl } from '../../contracts/workflow-controls';
 import type {
-  WorkflowBinding,
-  WorkflowCondition,
-  WorkflowConditionOperand,
-  WorkflowConnection,
-  WorkflowDefinition,
-  WorkflowDerivedPort,
-  WorkflowInputPort,
-  WorkflowNode,
-  WorkflowOutputPort
+  WorkflowBinding, WorkflowCondition, WorkflowConditionOperand, WorkflowConnection,
+  WorkflowDefinition, WorkflowDerivedPort, WorkflowInputPort, WorkflowNode, WorkflowOutputPort
 } from '../../contracts/workflow-definitions';
 
 export const ID_MAX = 64;
@@ -43,32 +37,48 @@ export function text(value: string, sanitize: Sanitize, max: number): string {
   return sanitize(value).slice(0, max);
 }
 
+function projectNodeControl(control: WorkflowNodeControl, sanitize: Sanitize): WorkflowNodeControl {
+  if (control.kind === 'repeat') {
+    return Object.freeze({
+      version: 1 as const,
+      kind: 'repeat' as const,
+      maxIterations: control.maxIterations,
+      until: projectCondition(control.until, sanitize) as TypedCondition,
+      carry: Object.freeze(control.carry.map((e) => Object.freeze({ fieldId: text(e.fieldId, sanitize, ID_MAX), inputPortId: text(e.inputPortId, sanitize, ID_MAX) }))),
+      ...(control.onExhausted !== undefined ? { onExhausted: control.onExhausted } : {})
+    });
+  }
+  return Object.freeze({
+    version: 1 as const,
+    kind: 'for-each' as const,
+    collection: Object.freeze(
+      control.collection.source === 'workflow-input'
+        ? { source: 'workflow-input' as const, portId: text(control.collection.portId, sanitize, ID_MAX) }
+        : { source: 'node-output' as const, nodeId: text(control.collection.nodeId, sanitize, ID_MAX), portId: text(control.collection.portId, sanitize, ID_MAX) }
+    ),
+    ...(control.itemKeyField !== undefined ? { itemKeyField: text(control.itemKeyField, sanitize, LABEL_MAX) } : {}),
+    itemInputPortId: text(control.itemInputPortId, sanitize, ID_MAX),
+    ...(control.maxItems !== undefined ? { maxItems: control.maxItems } : {}),
+    ...(control.onItemError !== undefined ? { onItemError: control.onItemError } : {})
+  });
+}
+
 function projectNode(node: WorkflowNode, sanitize: Sanitize): WorkflowNode {
   return Object.freeze({
     nodeId: text(node.nodeId, sanitize, ID_MAX),
     ...(node.kind !== undefined ? { kind: node.kind } : {}),
     ...(node.phaseId !== undefined ? { phaseId: text(node.phaseId, sanitize, ID_MAX) } : {}),
-    ...(node.workflowId !== undefined
-      ? { workflowId: text(node.workflowId, sanitize, ID_MAX) }
-      : {}),
-    ...(node.pipelineId !== undefined
-      ? { pipelineId: text(node.pipelineId, sanitize, ID_MAX) }
-      : {}),
-    ...(node.label !== undefined ? { label: text(node.label, sanitize, LABEL_MAX) } : {})
+    ...(node.workflowId !== undefined ? { workflowId: text(node.workflowId, sanitize, ID_MAX) } : {}),
+    ...(node.pipelineId !== undefined ? { pipelineId: text(node.pipelineId, sanitize, ID_MAX) } : {}),
+    ...(node.label !== undefined ? { label: text(node.label, sanitize, LABEL_MAX) } : {}),
+    ...(node.control !== undefined ? { control: projectNodeControl(node.control, sanitize) } : {})
   });
 }
 
-function projectOperand(
-  operand: WorkflowConditionOperand,
-  sanitize: Sanitize
-): WorkflowConditionOperand {
+function projectOperand(operand: WorkflowConditionOperand, sanitize: Sanitize): WorkflowConditionOperand {
   return Object.freeze(
     operand.source === 'node-output'
-      ? {
-        source: 'node-output' as const,
-        nodeId: text(operand.nodeId, sanitize, ID_MAX),
-        field: text(operand.field, sanitize, FIELD_MAX)
-      }
+      ? { source: 'node-output' as const, nodeId: text(operand.nodeId, sanitize, ID_MAX), field: text(operand.field, sanitize, FIELD_MAX) }
       : { source: 'node-status' as const, nodeId: text(operand.nodeId, sanitize, ID_MAX) }
   );
 }
@@ -77,14 +87,9 @@ function projectOperand(
  * A literal is operator-authored, so its string form is sanitized too; numbers and
  * booleans carry nothing to redact and pass through unchanged.
  */
-function projectLiteral(
-  value: WorkflowCondition['right'],
-  sanitize: Sanitize
-): WorkflowCondition['right'] {
+function projectLiteral(value: WorkflowCondition['right'], sanitize: Sanitize): WorkflowCondition['right'] {
   if (Array.isArray(value)) {
-    return Object.freeze(
-      value.map((entry) => (typeof entry === 'string' ? text(entry, sanitize, MESSAGE_MAX) : entry))
-    );
+    return Object.freeze(value.map((entry) => (typeof entry === 'string' ? text(entry, sanitize, MESSAGE_MAX) : entry)));
   }
   return typeof value === 'string' ? text(value, sanitize, MESSAGE_MAX) : value;
 }
@@ -93,11 +98,7 @@ function projectTypedLeaf(leaf: TypedLeaf, sanitize: Sanitize): TypedLeaf {
   const left =
     leaf.left.source === 'result-field'
       ? Object.freeze({ source: 'result-field' as const, fieldId: text(leaf.left.fieldId, sanitize, ID_MAX) })
-      : Object.freeze({
-          source: 'node-result' as const,
-          nodeId: text(leaf.left.nodeId, sanitize, ID_MAX),
-          fieldId: text(leaf.left.fieldId, sanitize, ID_MAX)
-        });
+      : Object.freeze({ source: 'node-result' as const, nodeId: text(leaf.left.nodeId, sanitize, ID_MAX), fieldId: text(leaf.left.fieldId, sanitize, ID_MAX) });
   return Object.freeze({
     left,
     operator: leaf.operator,
@@ -105,10 +106,7 @@ function projectTypedLeaf(leaf: TypedLeaf, sanitize: Sanitize): TypedLeaf {
   });
 }
 
-function projectCondition(
-  condition: WorkflowCondition | TypedCondition,
-  sanitize: Sanitize
-): WorkflowCondition | TypedCondition {
+function projectCondition(condition: WorkflowCondition | TypedCondition, sanitize: Sanitize): WorkflowCondition | TypedCondition {
   if (isTypedCondition(condition)) {
     const test = isTypedLeafTest(condition.test)
       ? projectTypedLeaf(condition.test, sanitize)
@@ -128,49 +126,29 @@ function projectConnection(connection: WorkflowConnection, sanitize: Sanitize): 
   return Object.freeze({
     from: Object.freeze({
       nodeId: text(connection.from.nodeId, sanitize, ID_MAX),
-      ...(connection.from.portId !== undefined
-        ? { portId: text(connection.from.portId, sanitize, ID_MAX) }
-        : {})
+      ...(connection.from.portId !== undefined ? { portId: text(connection.from.portId, sanitize, ID_MAX) } : {})
     }),
     to: Object.freeze({
       nodeId: text(connection.to.nodeId, sanitize, ID_MAX),
-      ...(connection.to.portId !== undefined
-        ? { portId: text(connection.to.portId, sanitize, ID_MAX) }
-        : {}),
+      ...(connection.to.portId !== undefined ? { portId: text(connection.to.portId, sanitize, ID_MAX) } : {}),
       ...(connection.to.kind !== undefined ? { kind: connection.to.kind } : {})
     }),
     ...(connection.handoff !== undefined ? { handoff: connection.handoff } : {}),
-    ...(connection.condition !== undefined
-      ? { condition: projectCondition(connection.condition, sanitize) }
-      : {}),
+    ...(connection.condition !== undefined ? { condition: projectCondition(connection.condition, sanitize) } : {}),
     ...(connection.priority !== undefined ? { priority: connection.priority } : {}),
     ...(connection.isDefault !== undefined ? { isDefault: connection.isDefault } : {}),
     ...(connection.selection !== undefined ? { selection: connection.selection } : {})
   });
 }
 
-function projectInputPort(port: WorkflowInputPort, sanitize: Sanitize): WorkflowInputPort {
+function projectDeclaredPort<T extends WorkflowInputPort | WorkflowOutputPort>(port: T, sanitize: Sanitize): T {
   return Object.freeze({
     portId: text(port.portId, sanitize, ID_MAX),
     label: text(port.label, sanitize, LABEL_MAX),
     type: port.type,
     ...(port.required !== undefined ? { required: port.required } : {}),
-    ...(port.description !== undefined
-      ? { description: text(port.description, sanitize, DESCRIPTION_MAX) }
-      : {})
-  });
-}
-
-function projectOutputPort(port: WorkflowOutputPort, sanitize: Sanitize): WorkflowOutputPort {
-  return Object.freeze({
-    portId: text(port.portId, sanitize, ID_MAX),
-    label: text(port.label, sanitize, LABEL_MAX),
-    type: port.type,
-    ...(port.required !== undefined ? { required: port.required } : {}),
-    ...(port.description !== undefined
-      ? { description: text(port.description, sanitize, DESCRIPTION_MAX) }
-      : {})
-  });
+    ...(port.description !== undefined ? { description: text(port.description, sanitize, DESCRIPTION_MAX) } : {})
+  }) as T;
 }
 
 /**
@@ -183,12 +161,8 @@ function projectBinding(binding: WorkflowBinding, sanitize: Sanitize): WorkflowB
       kind: 'output' as const,
       nodeId: text(binding.nodeId, sanitize, ID_MAX),
       portId: text(binding.portId, sanitize, ID_MAX),
-      ...(binding.outputKey !== undefined
-        ? { outputKey: text(binding.outputKey, sanitize, ID_MAX) }
-        : {}),
-      ...(binding.sourcePortId !== undefined
-        ? { sourcePortId: text(binding.sourcePortId, sanitize, ID_MAX) }
-        : {}),
+      ...(binding.outputKey !== undefined ? { outputKey: text(binding.outputKey, sanitize, ID_MAX) } : {}),
+      ...(binding.sourcePortId !== undefined ? { sourcePortId: text(binding.sourcePortId, sanitize, ID_MAX) } : {}),
       ...(binding.type !== undefined ? { type: binding.type } : {}),
       ...(binding.label !== undefined ? { label: text(binding.label, sanitize, LABEL_MAX) } : {}),
       ...(binding.selection !== undefined ? { selection: binding.selection } : {})
@@ -202,10 +176,7 @@ function projectBinding(binding: WorkflowBinding, sanitize: Sanitize): WorkflowB
     ...(binding.required !== undefined ? { required: binding.required } : {}),
     source: Object.freeze(
       binding.source.from === 'workflow-input'
-        ? {
-            from: 'workflow-input' as const,
-            portId: text(binding.source.portId, sanitize, ID_MAX)
-          }
+        ? { from: 'workflow-input' as const, portId: text(binding.source.portId, sanitize, ID_MAX) }
         : {
             from: 'node-output' as const,
             nodeId: text(binding.source.nodeId, sanitize, ID_MAX),
@@ -216,10 +187,7 @@ function projectBinding(binding: WorkflowBinding, sanitize: Sanitize): WorkflowB
   });
 }
 
-function projectExecutionDefaults(
-  defaults: PipelineExecutionDefaults,
-  sanitize: Sanitize
-): PipelineExecutionDefaults {
+function projectExecutionDefaults(defaults: PipelineExecutionDefaults, sanitize: Sanitize): PipelineExecutionDefaults {
   return Object.freeze({
     ...(defaults.runner !== undefined ? { runner: text(defaults.runner, sanitize, ID_MAX) } : {}),
     ...(defaults.model !== undefined ? { model: text(defaults.model, sanitize, MODEL_MAX) } : {}),
@@ -228,57 +196,75 @@ function projectExecutionDefaults(
   });
 }
 
-/** C12: `nodes` and `connections` keep authored order — the projection performs no sort. */
-export function projectWorkflowDefinition(
-  definition: WorkflowDefinition,
-  sanitize: Sanitize
-): WorkflowDefinition {
+function projectCandidateBlockControl(control: CandidateBlockControl, sanitize: Sanitize): CandidateBlockControl {
   return Object.freeze({
-    workflowId: text(definition.workflowId, sanitize, ID_MAX),
-    name: text(definition.name, sanitize, NAME_MAX),
-    ...(definition.description !== undefined
-      ? { description: text(definition.description, sanitize, DESCRIPTION_MAX) }
-      : {}),
-    version: definition.version,
-    ...(definition.inputs !== undefined
-      ? { inputs: Object.freeze(definition.inputs.map((port) => projectInputPort(port, sanitize))) }
-      : {}),
-    ...(definition.outputs !== undefined
-      ? {
-          outputs: Object.freeze(
-            definition.outputs.map((port) => projectOutputPort(port, sanitize))
-          )
-        }
-      : {}),
-    nodes: Object.freeze(definition.nodes.map((node) => projectNode(node, sanitize))),
-    connections: Object.freeze(
-      definition.connections.map((connection) => projectConnection(connection, sanitize))
+    version: 1 as const,
+    kind: 'candidate-block' as const,
+    candidates: Object.freeze(
+      control.candidates.map((c) =>
+        Object.freeze({
+          candidateId: text(c.candidateId, sanitize, ID_MAX),
+          nodeId: text(c.nodeId, sanitize, ID_MAX),
+          ...(c.priority !== undefined ? { priority: c.priority } : {}),
+          ...(c.maxAttempts !== undefined ? { maxAttempts: c.maxAttempts } : {}),
+          ...(c.retry !== undefined ? { retry: Object.freeze({ ...c.retry }) } : {}),
+          ...(c.allowUnverifiedTrial !== undefined ? { allowUnverifiedTrial: c.allowUnverifiedTrial } : {})
+        })
+      )
     ),
-    ...(definition.bindings !== undefined
-      ? {
-          bindings: Object.freeze(
-            definition.bindings.map((binding) => projectBinding(binding, sanitize))
-          )
-        }
-      : {}),
-    startNodeIds: Object.freeze(definition.startNodeIds.map((id) => text(id, sanitize, ID_MAX))),
-    ...(definition.executionDefaults !== undefined
-      ? { executionDefaults: projectExecutionDefaults(definition.executionDefaults, sanitize) }
-      : {}),
-    ...(definition.recommendedNext !== undefined
-      ? {
-          recommendedNext: Object.freeze(
-            definition.recommendedNext.map((id) => text(id, sanitize, ID_MAX))
-          )
-        }
-      : {})
+    ...(control.availabilityPolicy !== undefined ? { availabilityPolicy: control.availabilityPolicy } : {}),
+    ...(control.maxDispatches !== undefined ? { maxDispatches: control.maxDispatches } : {}),
+    ...(control.monitoringWindowMs !== undefined ? { monitoringWindowMs: control.monitoringWindowMs } : {}),
+    ...(control.budget !== undefined ? { budget: Object.freeze({ ...control.budget }) } : {})
   });
 }
 
-export function projectWorkflowPort(
-  port: WorkflowDerivedPort,
-  sanitize: Sanitize
-): WorkflowDerivedPort {
+function projectWorkflowDecisionResults(dr: WorkflowDecisionResults, sanitize: Sanitize): WorkflowDecisionResults {
+  return Object.freeze({
+    version: 1 as const,
+    fields: Object.freeze(
+      dr.fields.map((f) => Object.freeze({ fieldId: text(f.fieldId, sanitize, ID_MAX), type: f.type, required: f.required }))
+    ),
+    bindings: Object.freeze(
+      dr.bindings.map((b) =>
+        Object.freeze({
+          fieldId: text(b.fieldId, sanitize, ID_MAX),
+          source: Object.freeze(
+            b.source.kind === 'selected-candidate'
+              ? { kind: 'selected-candidate' as const, fieldId: text(b.source.fieldId, sanitize, ID_MAX) }
+              : {
+                  kind: 'node-result' as const,
+                  nodeId: text(b.source.nodeId, sanitize, ID_MAX),
+                  fieldId: text(b.source.fieldId, sanitize, ID_MAX)
+                }
+          )
+        })
+      )
+    )
+  });
+}
+
+/** C12: `nodes` and `connections` keep authored order — the projection performs no sort. */
+export function projectWorkflowDefinition(definition: WorkflowDefinition, sanitize: Sanitize): WorkflowDefinition {
+  return Object.freeze({
+    workflowId: text(definition.workflowId, sanitize, ID_MAX),
+    name: text(definition.name, sanitize, NAME_MAX),
+    ...(definition.description !== undefined ? { description: text(definition.description, sanitize, DESCRIPTION_MAX) } : {}),
+    version: definition.version,
+    ...(definition.inputs !== undefined ? { inputs: Object.freeze(definition.inputs.map((p) => projectDeclaredPort(p, sanitize))) } : {}),
+    ...(definition.outputs !== undefined ? { outputs: Object.freeze(definition.outputs.map((p) => projectDeclaredPort(p, sanitize))) } : {}),
+    nodes: Object.freeze(definition.nodes.map((node) => projectNode(node, sanitize))),
+    connections: Object.freeze(definition.connections.map((c) => projectConnection(c, sanitize))),
+    ...(definition.bindings !== undefined ? { bindings: Object.freeze(definition.bindings.map((b) => projectBinding(b, sanitize))) } : {}),
+    startNodeIds: Object.freeze(definition.startNodeIds.map((id) => text(id, sanitize, ID_MAX))),
+    ...(definition.executionDefaults !== undefined ? { executionDefaults: projectExecutionDefaults(definition.executionDefaults, sanitize) } : {}),
+    ...(definition.recommendedNext !== undefined ? { recommendedNext: Object.freeze(definition.recommendedNext.map((id) => text(id, sanitize, ID_MAX))) } : {}),
+    ...(definition.control !== undefined ? { control: projectCandidateBlockControl(definition.control, sanitize) } : {}),
+    ...(definition.decisionResults !== undefined ? { decisionResults: projectWorkflowDecisionResults(definition.decisionResults, sanitize) } : {})
+  });
+}
+
+export function projectWorkflowPort(port: WorkflowDerivedPort, sanitize: Sanitize): WorkflowDerivedPort {
   return Object.freeze({
     nodeId: text(port.nodeId, sanitize, ID_MAX),
     portId: text(port.portId, sanitize, ID_MAX),
