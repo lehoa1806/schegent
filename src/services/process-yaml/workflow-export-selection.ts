@@ -23,6 +23,7 @@ import type {
   PipelineOutputPortType
 } from '../../contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../../contracts/process-definitions';
+import { isTypedCondition } from '../../contracts/decision-results';
 import type {
   WorkflowDefinition,
   WorkflowInputPort,
@@ -152,7 +153,11 @@ function deriveNeeds(
       }
     }
 
-    if (connection.condition?.left.source === 'node-output') {
+    if (
+      connection.condition !== undefined &&
+      !isTypedCondition(connection.condition) &&
+      connection.condition.left.source === 'node-output'
+    ) {
       const absentOperand = absentWorkflowOf(connection.condition.left.nodeId);
       if (absentOperand !== null) needFor(workflowNeeds, absentOperand).structured = true;
     }

@@ -1,5 +1,6 @@
 import type { PhaseCapability } from './phase-capabilities';
 import type { BackendRunnerKind } from './backend-kinds';
+import type { ResultContract } from './decision-results';
 
 /**
  * How long a Phase id may be (feature 089, FR-037).
@@ -252,7 +253,8 @@ export const AUTHORED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   // path and refused by the save path on the same field is the defect this set
   // exists to prevent.
   'hostVerification',
-  'capabilities'
+  'capabilities',
+  'resultContract'
 ]);
 
 interface PhaseDefinitionBase {
@@ -354,6 +356,11 @@ interface PhaseDefinitionBase {
    */
   readonly onRetryCap?: RetryCapOutcome;
   readonly runner?: BackendRunnerKind;
+  /**
+   * FR-R5-F24 (D2) — bounded typed result contract (`structured-result` or
+   * `diagnostic-result`) evaluated in a terminable worker after an attempt.
+   */
+  readonly resultContract?: ResultContract;
 }
 
 export interface InstructionPhaseDefinition extends PhaseDefinitionBase {

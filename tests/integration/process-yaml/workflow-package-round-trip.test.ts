@@ -700,26 +700,31 @@ describe('Feature 086 T063 / Feature 263 — a document survives being read and 
     });
   }
 
+  type LegacyCondition = Extract<NonNullable<WorkflowConnection['condition']>, { readonly left: unknown }>;
+  const legacyCond = (c: WorkflowConnection['condition']): LegacyCondition | undefined =>
+    c !== undefined && 'left' in c ? c : undefined;
+
   it('carries every operator through, not a representative one', () => {
     const read = readPackage(documentFor(CORPUS[0]!));
-    const operators = read.workflow.connections.flatMap((connection) =>
-      connection.condition === undefined ? [] : [connection.condition.operator]
-    );
+    const operators = read.workflow.connections.flatMap((connection) => {
+      const cond = legacyCond(connection.condition);
+      return cond === undefined ? [] : [cond.operator];
+    });
     expect(new Set(operators)).toEqual(new Set(WORKFLOW_CONDITION_OPERATORS));
   });
 
   it('carries both operand sources and all three `right` arities', () => {
     const conditions = readPackage(documentFor(CORPUS[0]!))
-      .workflow.connections.map((connection) => connection.condition)
-      .filter((condition) => condition !== undefined);
-    expect(new Set(conditions.map((condition) => condition!.left.source))).toEqual(
+      .workflow.connections.map((connection) => legacyCond(connection.condition))
+      .filter((condition): condition is LegacyCondition => condition !== undefined);
+    expect(new Set(conditions.map((condition) => condition.left.source))).toEqual(
       new Set(['node-output', 'node-status'])
     );
-    expect(conditions.some((condition) => condition!.right === undefined)).toBe(true);
-    expect(conditions.some((condition) => Array.isArray(condition!.right))).toBe(true);
+    expect(conditions.some((condition) => condition.right === undefined)).toBe(true);
+    expect(conditions.some((condition) => Array.isArray(condition.right))).toBe(true);
     expect(
       conditions.some(
-        (condition) => condition!.right !== undefined && !Array.isArray(condition!.right)
+        (condition) => condition.right !== undefined && !Array.isArray(condition.right)
       )
     ).toBe(true);
   });
@@ -735,17 +740,19 @@ describe('Feature 086 T063 / Feature 263 — a document survives being read and 
   it('keeps a literal typed as authored — a number a number, a boolean a boolean', () => {
     const read = readPackage(documentFor(CORPUS[0]!));
     const rightOf = (operator: string): unknown =>
-      read.workflow.connections.find((connection) => connection.condition?.operator === operator)
-        ?.condition?.right;
+      legacyCond(
+        read.workflow.connections.find((connection) => legacyCond(connection.condition)?.operator === operator)
+          ?.condition
+      )?.right;
     expect(rightOf('greaterThan')).toBe(3);
     expect(rightOf('lessThan')).toBe(9);
     expect(rightOf('notEquals')).toBe('failed');
-    expect(read.workflow.connections[9]?.condition?.right).toBe(true);
+    expect(legacyCond(read.workflow.connections[9]?.condition)?.right).toBe(true);
   });
 
   it('keeps a fractional literal a number, not the text that spells it', () => {
     const read = readPackage(documentFor(CORPUS[0]!));
-    const right = read.workflow.connections[4]?.condition?.right;
+    const right = legacyCond(read.workflow.connections[4]?.condition)?.right;
     expect(right).toBe(0.75);
     expect(typeof right).toBe('number');
   });
@@ -763,7 +770,7 @@ describe('Feature 086 T063 / Feature 263 — a document survives being read and 
       if (root === undefined || !root.ok || root.resourceKind !== 'workflow') {
         throw new Error('root Workflow did not validate');
       }
-      return root.definition.connections[0]?.condition?.right;
+      return legacyCond(root.definition.connections[0]?.condition)?.right;
     };
 
     expect(conditionRight('0.75')).toBe(0.75);
@@ -1157,13 +1164,14 @@ describe('Feature 086 T066 — a condition survives intact (FR-006, SC-021)', ()
 
   it('keeps a list literal a list of the same length and order', () => {
     const imported = importAndSelect(readPackage(documentFor(IMPORT_CORPUS[0]!)), 'closure');
-    expect(imported.workflow.connections[5]?.condition?.right).toEqual(['completed', 'canceled']);
+    const cond = imported.workflow.connections[5]?.condition;
+    expect(cond !== undefined && 'left' in cond ? cond.right : undefined).toEqual(['completed', 'canceled']);
   });
 
   it('leaves `exists` with no right operand rather than a falsy one', () => {
     const imported = importAndSelect(readPackage(documentFor(IMPORT_CORPUS[0]!)), 'closure');
     const condition = imported.workflow.connections[6]?.condition;
-    expect(condition?.operator).toBe('exists');
+    expect(condition !== undefined && 'left' in condition ? condition.operator : undefined).toBe('exists');
     expect(condition).not.toHaveProperty('right');
   });
 
@@ -1354,5 +1362,94 @@ describe('a stored Workflow with a retired Pipeline node (feature 285)', () => {
       workflowId: 'legacy-export'
     });
     expect(selection).toEqual({ outcome: 'unavailable', reason: 'does-not-resolve' });
+  });
+});
+
+describe('FR-R5-F24 (D2) — Phase resultContract and Workflow TypedCondition YAML round-trip', () => {
+  it('round-trips a Workflow package with Phase resultContract and connection TypedCondition losslessly', () => {
+    const phaseWithContract: PhaseDefinition = Object.freeze({
+      phaseId: 'verify-step',
+      name: 'Verify Step',
+      version: 1,
+      instruction: 'Verify the changes.',
+      resultContract: Object.freeze({
+        version: 1,
+        operator: 'structured-result',
+        operatorVersion: 1,
+        fields: Object.freeze([
+          Object.freeze({
+            fieldId: 'verdict',
+            type: 'string',
+            required: true,
+            selector: Object.freeze(['summary', 'verdict'])
+          }),
+          Object.freeze({
+            fieldId: 'open_issues',
+            type: 'number',
+            required: true,
+            selector: Object.freeze(['metrics', 'openIssues'])
+          })
+        ]),
+        source: Object.freeze({
+          kind: 'declared-output',
+          outputKey: '.schegent/results/verify.json'
+        }),
+        completion: Object.freeze({
+          version: 1,
+          kind: 'typed',
+          test: Object.freeze({
+            left: Object.freeze({ source: 'result-field', fieldId: 'verdict' }),
+            operator: 'equals',
+            right: 'pass'
+          })
+        })
+      })
+    });
+
+    const workflowWithTyped: WorkflowDefinition = Object.freeze({
+      workflowId: 'typed-round-trip',
+      name: 'Typed Round Trip',
+      version: 1,
+      nodes: Object.freeze([
+        Object.freeze({ nodeId: 'verify', kind: 'phase', phaseId: 'verify-step' }),
+        Object.freeze({ nodeId: 'ship', kind: 'phase', phaseId: 'ship' })
+      ]),
+      connections: Object.freeze([
+        Object.freeze({
+          from: Object.freeze({ nodeId: 'verify' }),
+          to: Object.freeze({ nodeId: 'ship' }),
+          priority: 1,
+          condition: Object.freeze({
+            version: 1,
+            kind: 'typed',
+            test: Object.freeze({
+              all: Object.freeze([
+                Object.freeze({
+                  left: Object.freeze({ source: 'node-result', nodeId: 'verify', fieldId: 'verdict' }),
+                  operator: 'equals',
+                  right: 'pass'
+                }),
+                Object.freeze({
+                  left: Object.freeze({ source: 'node-result', nodeId: 'verify', fieldId: 'open_issues' }),
+                  operator: 'lessThanOrEqual',
+                  right: 0
+                })
+              ])
+            })
+          })
+        })
+      ]),
+      startNodeIds: Object.freeze(['verify'])
+    }) as WorkflowDefinition;
+
+    const doc = documentFromWorkflowDefinition(workflowWithTyped, {
+      phases: [phaseWithContract, ...PHASES]
+    });
+    const yamlText = serializeWorkflowDocument(doc);
+    const parsedBack = readPackage(yamlText);
+
+    expect(parsedBack.workflow).toEqual(workflowWithTyped);
+    const readVerifyPhase = parsedBack.phases.find((p) => p.phaseId === 'verify-step');
+    expect(readVerifyPhase).toEqual(phaseWithContract);
   });
 });

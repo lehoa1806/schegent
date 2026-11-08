@@ -21,6 +21,7 @@ import {
   type PhaseCapability
 } from '../contracts/phase-capabilities';
 import { ARGV_VALUE_MAX_LEN, ARGV_VALUE_PATTERN } from '../contracts/argv-value';
+import { validateResultContract, type ResultContract } from '../contracts/decision-results';
 import { recognizedAuthoredDisplay } from './authored-display';
 
 export const PHASE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
@@ -655,6 +656,18 @@ export function validatePhaseDefinition(
     }
   }
 
+  let resultContract: ResultContract | undefined;
+  if (value.resultContract !== undefined) {
+    const validatedContract = validateResultContract(value.resultContract, 'resultContract');
+    if (!validatedContract.ok) {
+      for (const defect of validatedContract.defects) {
+        errors.push(fieldError(phaseId, defect.field, defect.code, defect.message));
+      }
+    } else {
+      resultContract = validatedContract.contract;
+    }
+  }
+
   if (errors.length > 0) {
     return {
       ok: false,
@@ -684,7 +697,8 @@ export function validatePhaseDefinition(
     ...(sideEffects !== undefined ? { sideEffects } : {}),
     ...(evidencePolicy !== undefined ? { evidencePolicy } : {}),
     ...(hostVerification !== undefined ? { hostVerification } : {}),
-    ...(capabilities !== undefined ? { capabilities } : {})
+    ...(capabilities !== undefined ? { capabilities } : {}),
+    ...(resultContract !== undefined ? { resultContract } : {})
   };
   const definition: PhaseDefinition = hasInstruction
     ? { ...common, instruction: instruction as string }

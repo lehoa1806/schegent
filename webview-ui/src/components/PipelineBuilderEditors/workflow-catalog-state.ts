@@ -1236,17 +1236,20 @@ function copyConnection(connection: WorkflowConnection): WorkflowConnection {
     ...(connection.handoff !== undefined ? { handoff: connection.handoff } : {}),
     ...(connection.condition !== undefined
       ? {
-        condition: {
-          left: { ...connection.condition.left },
-          operator: connection.condition.operator,
-          ...(connection.condition.right !== undefined
+        condition:
+          'left' in connection.condition
             ? {
-              right: Array.isArray(connection.condition.right)
-                ? [...connection.condition.right]
-                : connection.condition.right
+              left: { ...connection.condition.left },
+              operator: connection.condition.operator,
+              ...(connection.condition.right !== undefined
+                ? {
+                  right: Array.isArray(connection.condition.right)
+                    ? [...connection.condition.right]
+                    : connection.condition.right
+                }
+                : {})
             }
-            : {})
-        }
+            : structuredClone(connection.condition)
       }
       : {}),
     ...(connection.priority !== undefined ? { priority: connection.priority } : {}),
@@ -1262,7 +1265,8 @@ function inRange(index: number, length: number): boolean {
 /** The condition on connection `index`, or null when there is no such condition. */
 function conditionAt(workflow: MutableWorkflow, index: number): WorkflowCondition | null {
   if (!inRange(index, workflow.connections.length)) return null;
-  return workflow.connections[index].condition ?? null;
+  const condition = workflow.connections[index].condition;
+  return condition !== undefined && 'left' in condition ? condition : null;
 }
 
 /** Write a condition back with its right operand reconciled to operator and source. */

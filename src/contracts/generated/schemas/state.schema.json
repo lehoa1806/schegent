@@ -6,7 +6,8 @@
   "x-generatedSchemaVersion": 1,
   "x-generatedFrom": [
     "src/contracts/state-schema.ts",
-    "src/state/workflow-run.ts"
+    "src/state/workflow-run.ts",
+    "src/contracts/decision-results.ts"
   ],
   "type": "object",
   "additionalProperties": false,
@@ -15,7 +16,10 @@
     "workflowRunStatuses",
     "manualPauseCauses",
     "delayedRetryCauses",
-    "workflowRunFields"
+    "workflowRunFields",
+    "attemptOutcomeStatuses",
+    "attemptOutcomeReasons",
+    "attemptOutcomeRecoveries"
   ],
   "properties": {
     "stateSchemaVersion": {
@@ -275,6 +279,60 @@
           "type": "readonly RunOutputRecord[]"
         }
       ]
+    },
+    "attemptOutcomeStatuses": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "done",
+          "incomplete",
+          "failed",
+          "temporarily-unavailable",
+          "invalid-result"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "attemptOutcomeReasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "work-remaining",
+          "credits",
+          "rate-limit",
+          "authentication",
+          "top-up-required",
+          "incompatible-backend",
+          "process-failure",
+          "startup-failure",
+          "missing-evidence",
+          "malformed-evidence",
+          "unattributed-evidence",
+          "conflicting-evidence",
+          "operator-timeout",
+          "evidence-too-large",
+          "unresolved-condition"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "attemptOutcomeRecoveries": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "none",
+          "retry-current",
+          "reselect",
+          "retire",
+          "candidate-intervention",
+          "block-intervention"
+        ]
+      },
+      "uniqueItems": true
     }
   }
 }

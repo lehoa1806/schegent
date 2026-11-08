@@ -25,11 +25,12 @@
 // therefore draws the order the run engine will actually offer, which is the
 // whole reason to draw it top-to-bottom rather than in authored array order.
 
-import type {
-  WorkflowCondition,
-  WorkflowConditionOperator,
-  WorkflowConnection,
-  WorkflowNode
+import {
+  formatConditionSummary,
+  type WorkflowCondition,
+  type WorkflowConditionOperator,
+  type WorkflowConnection,
+  type WorkflowNode
 } from '../../lib/snapshot-types';
 import { conditionValues, formatWorkflowConditionLiteral } from './workflow-catalog-state';
 
@@ -123,7 +124,10 @@ export function describeWorkflowBranch(
 }
 
 /** `a status = completed`, `a.verdict ≠ fail`, `a.tag in [x, y]`, `a.report exists`. */
-function describeCondition(condition: WorkflowCondition): string {
+function describeCondition(condition: NonNullable<WorkflowConnection['condition']>): string {
+  if (!('left' in condition)) {
+    return formatConditionSummary(condition, false);
+  }
   const operand =
     condition.left.source === 'node-status'
       ? `${condition.left.nodeId} status`

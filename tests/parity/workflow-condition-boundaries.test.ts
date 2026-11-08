@@ -418,4 +418,99 @@ describe('FR-R4-F07 C-T1 — the same defect at every boundary (FR-026, FR-027, 
       expect((await importBoundary(condition)).reported).toEqual(RIGHT_FIELD);
     });
   });
+
+  describe('FR-R5-F24 (D2) — TypedCondition parity across catalog, publish, and headless boundaries', () => {
+    const TYPED_PHASE_ROW = {
+      id: 'cond-specify',
+      name: 'Cond Specify',
+      version: 1,
+      instruction: 'Write the spec.',
+      resultContract: {
+        version: 1,
+        operator: 'structured-result',
+        operatorVersion: 1,
+        fields: [
+          {
+            fieldId: 'verdict',
+            type: 'string',
+            required: true,
+            selector: ['verdict']
+          }
+        ],
+        source: {
+          kind: 'declared-output',
+          outputKey: '.schegent/results/spec.json'
+        },
+        completion: {
+          version: 1,
+          kind: 'typed',
+          test: {
+            left: { source: 'result-field', fieldId: 'verdict' },
+            operator: 'equals',
+            right: 'ship'
+          }
+        }
+      }
+    };
+    const TYPED_PHASES = resolvePhaseCatalog({ rows: [TYPED_PHASE_ROW], revision: 'rev-typed' });
+
+    const TYPED_GRAPH = (condition: Record<string, unknown>) => ({
+      nodes: [
+        { nodeId: 'draft', kind: 'phase', phaseId: 'cond-specify' },
+        { nodeId: 'review', kind: 'phase', phaseId: 'cond-specify' }
+      ],
+      connections: [
+        {
+          from: { nodeId: 'draft' },
+          to: { nodeId: 'review' },
+          condition
+        }
+      ],
+      startNodeIds: ['draft']
+    });
+
+    it('accepts a valid TypedCondition at catalog and headless boundaries and rejects an invalid type literal', () => {
+      const validTyped = {
+        version: 1,
+        kind: 'typed',
+        test: {
+          left: { source: 'node-result', nodeId: 'draft', fieldId: 'verdict' },
+          operator: 'equals',
+          right: 'ship'
+        }
+      };
+      const catValid = resolveWorkflowCatalog({
+        rows: [{ id: 'typed-flow', name: 'Typed Flow', version: 1, ...TYPED_GRAPH(validTyped) }],
+        revision: 'rev-1',
+        phaseCatalog: TYPED_PHASES,
+        pipelineCatalog: { effective: [], records: [] }
+      });
+      expect(catValid.records[0]?.status).toBe('effective');
+
+      const headlessValid = validateProcessDefinition({
+        kind: 'workflow',
+        definition: { workflowId: 'typed-flow', name: 'Typed Flow', version: 1, ...TYPED_GRAPH(validTyped) },
+        catalog: { phases: TYPED_PHASES.effective, workflows: [] }
+      });
+      expect('errors' in headlessValid && headlessValid.errors).toEqual([]);
+
+      const badTyped = {
+        version: 1,
+        kind: 'typed',
+        test: {
+          left: { source: 'node-result', nodeId: 'draft', fieldId: 'verdict' },
+          operator: 'equals',
+          right: 123
+        }
+      };
+      const catBad = resolveWorkflowCatalog({
+        rows: [{ id: 'typed-flow', name: 'Typed Flow', version: 1, ...TYPED_GRAPH(badTyped) }],
+        revision: 'rev-1',
+        phaseCatalog: TYPED_PHASES,
+        pipelineCatalog: { effective: [], records: [] }
+      });
+      expect(catBad.records[0]?.status).toBe('invalid');
+      expect(catBad.records[0]?.errors.map((e) => e.code)).toContain('condition-right-invalid');
+    });
+  });
 });
