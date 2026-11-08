@@ -26,6 +26,7 @@ import type {
   ControlAdmissionPort,
   ExecutionFence
 } from '../../contracts/control-ledger';
+import type { DecisionFieldValue } from '../../contracts/decision-results';
 import type { ResolvedPortValue } from '../../contracts/run-request';
 import type { RunOutputRecord } from '../../contracts/run-results';
 import type {
@@ -67,6 +68,12 @@ import {
   createNodeAttemptRecord
 } from './connected-run-factory';
 import { selectNextNodes, selectNextTransition } from './next-node-selector';
+import {
+  handleRepeatChildCompletion,
+  resolveFrozenRepeatControl,
+  settleFailedOrCanceledRepeatChild,
+  type RepeatExecutor
+} from './repeat-executor';
 
 /** What one finished child run contributes. Read from the child, never stored here. */
 export interface ChildRunFacts {
@@ -225,21 +232,12 @@ export interface ComposableWorkflowCoordinatorDeps {
   readonly dispatchPhase: (
     input: PhaseAttemptDispatchInput
   ) => Promise<PhaseAttemptDispatchResult>;
-  /**
-   * FR-R5-F26 (SPEC-04, D4) — optional durable control admission port used when
-   * `run.controlState` links the run to `schegent.controlLedger`.
-   */
   readonly controlAdmission?: ControlAdmissionPort;
+  readonly repeatExecutor?: RepeatExecutor;
   readonly resolveExecutionFence?: (
     run: ConnectedWorkflowRun,
     queueId: string
   ) => ExecutionFence;
-  /**
-   * FR-R5-F08 — optional compensating hook invoked when `dispatchPhase` enqueued
-   * a queue item but the post-dispatch CAS was rejected as stale and the run/invocation
-   * is now terminal (`canceled` or `failed`) or missing, so no untracked orphan queue
-   * item drains after the workflow stopped.
-   */
   readonly cancelOrphanedQueueItem?: (
     queueItemId: string,
     queueId: string
@@ -261,6 +259,12 @@ export type ComposableWorkflowStepResult =
       readonly invocationId: string;
       readonly fromNodeId: string;
       readonly toNodeId: string;
+    }
+  | {
+      readonly outcome: 'workflow-paused';
+      readonly run: ConnectedWorkflowRun;
+      readonly invocationId: string;
+      readonly pauseCause: string;
     }
   | {
       readonly outcome: 'workflow-completed';
@@ -378,38 +382,27 @@ async function dispatchNodeInternal(
   }
   if (workflow.control !== undefined) {
     const controlVersion: number = workflow.control.version;
-    const code =
-      controlVersion !== 1
-        ? 'unsupported-control-version'
-        : 'unsupported-control-execution';
-    return failFrameAndPropagate(
-      deps,
-      run,
-      expectedRevision,
-      frame,
-      startedAt,
-      code,
-      `Workflow '${frame.workflowId}' control '${workflow.control.kind}' execution is not supported on this path.`
-    );
+    if (controlVersion !== 1 || workflow.control.kind !== 'candidate-block') {
+      const code =
+        controlVersion !== 1 ? 'unsupported-control-version' : 'unsupported-control-execution';
+      return failFrameAndPropagate(
+        deps, run, expectedRevision, frame, startedAt, code,
+        `Workflow '${frame.workflowId}' control '${workflow.control.kind}' execution is not supported on this path.`
+      );
+    }
   }
+  const nodeKind = node.kind ?? (node.phaseId !== undefined ? 'phase' : 'workflow');
   if (node.control !== undefined) {
     const nodeControlVersion: number = node.control.version;
-    const code =
-      nodeControlVersion !== 1
-        ? 'unsupported-control-version'
-        : 'unsupported-control-execution';
-    return failFrameAndPropagate(
-      deps,
-      run,
-      expectedRevision,
-      frame,
-      startedAt,
-      code,
-      `Node '${nodeId}' control '${node.control.kind}' execution is not supported on this path.`
-    );
+    if (nodeControlVersion !== 1 || node.control.kind !== 'repeat' || nodeKind !== 'workflow') {
+      const code =
+        nodeControlVersion !== 1 ? 'unsupported-control-version' : 'unsupported-control-execution';
+      return failFrameAndPropagate(
+        deps, run, expectedRevision, frame, startedAt, code,
+        `Node '${nodeId}' control '${node.control.kind}' execution is not supported on this path.`
+      );
+    }
   }
-
-  const nodeKind = node.kind ?? (node.phaseId !== undefined ? 'phase' : 'workflow');
   const handoffEnvelope = latestInputEnvelopeForTarget(run, invocationId, nodeId);
 
   const targetPorts =
@@ -645,45 +638,42 @@ async function dispatchNodeInternal(
   const childEntryNodeId = childWorkflow?.startNodeIds[0];
   if (childWorkflow === undefined || childEntryNodeId === undefined) {
     return failFrameAndPropagate(
-      deps,
-      run,
-      expectedRevision,
-      frame,
-      startedAt,
-      'invalid-entry-node',
+      deps, run, expectedRevision, frame, startedAt, 'invalid-entry-node',
       `Child workflow '${childWorkflowId}' has no valid entry node.`
     );
   }
-
   const parentAttemptId = `${invocationId}:${nodeId}:attempt-${nextAttemptIndex}`;
   const childFrame = createChildWorkflowInvocationFrame({
-    parentFrame: frame,
-    callNodeId: nodeId,
-    parentAttemptId,
-    childWorkflow,
-    boundInputs,
-    startedAt
+    parentFrame: frame, callNodeId: nodeId, parentAttemptId, childWorkflow, boundInputs, startedAt
   });
+  if (node.control?.kind === 'repeat') {
+    const resolvedRepeat = resolveFrozenRepeatControl(run, workflow, node);
+    if (!resolvedRepeat.ok) {
+      return failFrameAndPropagate(
+        deps, run, expectedRevision, frame, startedAt, resolvedRepeat.code, resolvedRepeat.message
+      );
+    }
+    if (deps.repeatExecutor !== undefined) {
+      const boundQueueId = resolveBoundQueueId(run);
+      const fence = deps.resolveExecutionFence?.(run, boundQueueId) ?? {
+        primacyClaim: `primacy:${run.connectedRunId}`, queueClaim: `queue:${boundQueueId}`, rootGeneration: 1
+      };
+      await deps.repeatExecutor.initializeRepeatFrame({
+        rootRunId: run.controlState?.ledgerRunId ?? run.connectedRunId, parentInvocationId: frame.invocationId,
+        workflowId: workflow.workflowId, nodeId, control: resolvedRepeat.control,
+        initialChildInvocationId: childFrame.invocationId, initialBoundInputs: boundInputs, fence
+      });
+    }
+  }
   const parentAttempt = createNodeAttemptRecord({
-    frame,
-    nodeId,
-    nodeKind: 'workflow',
-    targetDefinitionId: childWorkflow.workflowId,
-    inputEnvelope,
-    startedAt,
-    childInvocationId: childFrame.invocationId
+    frame, nodeId, nodeKind: 'workflow', targetDefinitionId: childWorkflow.workflowId,
+    inputEnvelope, startedAt, childInvocationId: childFrame.invocationId
   });
-
   const updatedParentFrame = recordNodeAttempt(frame, parentAttempt);
   let nextRun = upsertInvocationFrame(run, updatedParentFrame);
   nextRun = upsertInvocationFrame(nextRun, childFrame);
   return dispatchNodeInternal(
-    deps,
-    nextRun,
-    expectedRevision,
-    childFrame.invocationId,
-    childEntryNodeId,
-    startedAt
+    deps, nextRun, expectedRevision, childFrame.invocationId, childEntryNodeId, startedAt
   );
 }
 
@@ -703,22 +693,15 @@ export async function completeComposableNodeAttempt(
     readonly status: WorkflowNodeTerminalStatus;
     readonly completedAt: number;
     readonly declaredOutputs?: Readonly<Record<string, ResolvedPortValue>>;
+    readonly decisionResults?: Readonly<Record<string, DecisionFieldValue>>;
     readonly verdict?: 'pass' | 'fail' | null;
     readonly failureCode?: string;
   }
 ): Promise<ComposableWorkflowStepResult> {
   return settleAttemptInternal(
-    deps,
-    input.run,
-    input.run.revision,
-    input.invocationId,
-    input.nodeId,
-    input.attemptIndex,
-    input.status,
-    input.completedAt,
-    input.declaredOutputs,
-    input.verdict,
-    input.failureCode
+    deps, input.run, input.run.revision, input.invocationId, input.nodeId,
+    input.attemptIndex, input.status, input.completedAt, input.declaredOutputs,
+    input.verdict, input.failureCode, input.decisionResults
   );
 }
 
@@ -733,7 +716,8 @@ async function settleAttemptInternal(
   completedAt: number,
   declaredOutputs?: Readonly<Record<string, ResolvedPortValue>>,
   verdict?: 'pass' | 'fail' | null,
-  failureCode?: string
+  failureCode?: string,
+  decisionResults?: Readonly<Record<string, DecisionFieldValue>>
 ): Promise<ComposableWorkflowStepResult> {
   const closure = run.frozenClosure;
   const frame = run.invocations?.[invocationId];
@@ -857,21 +841,54 @@ async function settleAttemptInternal(
       completedFrame.parentCallNodeId !== null
     ) {
       const parentFrame = nextRun.invocations?.[completedFrame.parentInvocationId];
+      const parentWorkflow = parentFrame !== undefined
+        ? closure.workflowsById[parentFrame.workflowId]
+        : undefined;
+      const parentNode = parentWorkflow?.nodes.find(
+        (n) => n.nodeId === completedFrame.parentCallNodeId
+      );
       const parentNodeAttempts = attemptsForNode(parentFrame, completedFrame.parentCallNodeId);
       const parentAttempt = parentNodeAttempts.find(
         (a) => a.childInvocationId === completedFrame.invocationId
       );
       if (parentFrame !== undefined && parentAttempt !== undefined) {
+        if (parentWorkflow !== undefined && parentNode?.control?.kind === 'repeat') {
+          const boundQueueId = resolveBoundQueueId(nextRun);
+          const fence = deps.resolveExecutionFence?.(nextRun, boundQueueId);
+          const repeatRes = await handleRepeatChildCompletion({
+            run: nextRun, parentFrame, parentWorkflow, parentNode, parentAttempt,
+            completedChildFrame: completedFrame, childWorkflow: workflow,
+            childOutputs: publicOutputs.resolvedByPort, completedAt,
+            explicitDecisionResults: decisionResults, repeatExecutor: deps.repeatExecutor, fence
+          });
+          if (repeatRes.kind === 'accepted') {
+            return settleAttemptInternal(
+              deps, repeatRes.run, expectedRevision, parentFrame.invocationId,
+              parentAttempt.nodeId, parentAttempt.attemptIndex, 'completed',
+              completedAt, repeatRes.exportedOutputs
+            );
+          }
+          if (repeatRes.kind === 'advance') {
+            return dispatchNodeInternal(
+              deps, repeatRes.run, expectedRevision, repeatRes.nextChildInvocationId,
+              repeatRes.childEntryNodeId, completedAt
+            );
+          }
+          if (repeatRes.kind === 'paused') {
+            return persistRunStep(deps.connectedRuns, repeatRes.run, expectedRevision, (persisted) => ({
+              outcome: 'workflow-paused', run: persisted,
+              invocationId: parentFrame.invocationId, pauseCause: repeatRes.pauseCause
+            }));
+          }
+          return failFrameAndPropagate(
+            deps, repeatRes.run, expectedRevision, repeatRes.settledParentFrame,
+            completedAt, repeatRes.failureCode, repeatRes.detail
+          );
+        }
         return settleAttemptInternal(
-          deps,
-          nextRun,
-          expectedRevision,
-          parentFrame.invocationId,
-          parentAttempt.nodeId,
-          parentAttempt.attemptIndex,
-          'completed',
-          completedAt,
-          publicOutputs.resolvedByPort
+          deps, nextRun, expectedRevision, parentFrame.invocationId,
+          parentAttempt.nodeId, parentAttempt.attemptIndex, 'completed',
+          completedAt, publicOutputs.resolvedByPort
         );
       }
     }
@@ -895,7 +912,7 @@ async function settleAttemptInternal(
     const targetPorts =
       targetKind === 'phase'
         ? undefined
-        : closure.workflowsById[targetNode?.workflowId ?? '']?.inputs;
+        : lookupRecord(closure.workflowsById, targetNode?.workflowId ?? '')?.inputs;
     const prefilled = resolveNodeInputBindings({
       workflow,
       frame: updatedFrame,
@@ -964,18 +981,14 @@ async function failFrameAndPropagate(
       (a) => a.childInvocationId === failedFrame.invocationId
     );
     if (parentFrame !== undefined && parentAttempt !== undefined) {
+      await settleFailedOrCanceledRepeatChild({
+        run: nextRun, parentFrame, childFrame: failedFrame, status: 'failed',
+        failureCode, repeatExecutor: deps.repeatExecutor
+      });
       return settleAttemptInternal(
-        deps,
-        nextRun,
-        expectedRevision,
-        parentFrame.invocationId,
-        parentAttempt.nodeId,
-        parentAttempt.attemptIndex,
-        'failed',
-        completedAt,
-        undefined,
-        undefined,
-        failureCode
+        deps, nextRun, expectedRevision, parentFrame.invocationId,
+        parentAttempt.nodeId, parentAttempt.attemptIndex, 'failed',
+        completedAt, undefined, undefined, failureCode
       );
     }
   }
@@ -1016,15 +1029,13 @@ async function cancelFrameAndPropagate(
       (a) => a.childInvocationId === canceledFrame.invocationId
     );
     if (parentFrame !== undefined && parentAttempt !== undefined) {
+      await settleFailedOrCanceledRepeatChild({
+        run: nextRun, parentFrame, childFrame: canceledFrame, status: 'canceled',
+        repeatExecutor: deps.repeatExecutor
+      });
       return settleAttemptInternal(
-        deps,
-        nextRun,
-        expectedRevision,
-        parentFrame.invocationId,
-        parentAttempt.nodeId,
-        parentAttempt.attemptIndex,
-        'canceled',
-        completedAt
+        deps, nextRun, expectedRevision, parentFrame.invocationId,
+        parentAttempt.nodeId, parentAttempt.attemptIndex, 'canceled', completedAt
       );
     }
   }

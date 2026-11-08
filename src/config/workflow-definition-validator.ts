@@ -513,7 +513,7 @@ function readCondition(
   return Object.freeze({
     left,
     operator: raw.operator,
-    ...(right !== undefined ? { right: (Array.isArray(right) ? Object.freeze([...right]) : right) as WorkflowCondition['right'] } : {})
+    ...(right !== undefined ? { right: (Array.isArray(right) ? Object.freeze([...right]) : right) as NonNullable<WorkflowCondition['right']> } : {})
   });
 }
 

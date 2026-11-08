@@ -24,6 +24,7 @@
   import DefinitionLifecyclePanel from "../Builder/DefinitionLifecyclePanel.svelte";
   import CandidateBlockEditor from "./CandidateBlockEditor.svelte";
   import WorkflowBranchInspector from "./WorkflowBranchInspector.svelte";
+  import WorkflowNodeControlEditor from "./WorkflowNodeControlEditor.svelte";
   import WorkflowPortsAndBindingsEditor from "./WorkflowPortsAndBindingsEditor.svelte";
   import WorkflowRowDefects from "./WorkflowRowDefects.svelte";
 
@@ -123,11 +124,11 @@
 
   function switchNodeKind(index: number, kind: "phase" | "workflow" | "pipeline"): void {
     if (kind === "phase") {
-      p.onnodepatch(index, { kind: "phase", phaseId: phases[0]?.phaseId ?? "", workflowId: undefined, pipelineId: undefined });
+      p.onnodepatch(index, { kind: "phase", phaseId: phases[0]?.phaseId ?? "", workflowId: undefined, pipelineId: undefined, control: undefined });
     } else if (kind === "workflow") {
       p.onnodepatch(index, { kind: "workflow", workflowId: childWorkflowOptions[0]?.workflowId ?? "", phaseId: undefined, pipelineId: undefined });
     } else {
-      p.onnodepatch(index, { kind: undefined, pipelineId: p.pipelines[0]?.pipelineId ?? "", phaseId: undefined, workflowId: undefined });
+      p.onnodepatch(index, { kind: undefined, pipelineId: p.pipelines[0]?.pipelineId ?? "", phaseId: undefined, workflowId: undefined, control: undefined });
     }
   }
 </script>
@@ -268,6 +269,14 @@
             Open child Workflow definition
           </button>
         {/if}
+
+        <WorkflowNodeControlEditor
+          {index}
+          {node}
+          childWorkflow={nodeChildWorkflow}
+          {readonly}
+          onnodepatch={p.onnodepatch}
+        />
       {/if}
 
       <label class="wf-field">

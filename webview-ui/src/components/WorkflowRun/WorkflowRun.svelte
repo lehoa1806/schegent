@@ -417,90 +417,18 @@
     word-break: break-word;
   }
   .run-badges,
-  .invocation-head,
-  .invocation-actions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-  }
-  .run-badge,
-  .invocation-version,
-  .invocation-status,
-  .invocation-path {
-    font-size: 0.78em;
-    opacity: 0.85;
-  }
-  .invocation-id {
-    font-size: 0.75em;
-    opacity: 0.7;
-  }
-  .recovery-banner {
-    padding: 6px 8px;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--schegent-radius);
-    font-size: 0.82em;
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-  .invocation-tree,
-  .invocation-attempts {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .invocation-item {
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--schegent-radius);
-    padding: 6px 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .invocation-depth-1 {
-    margin-left: 14px;
-  }
-  .invocation-depth-2 {
-    margin-left: 28px;
-  }
-  .invocation-depth-3 {
-    margin-left: 42px;
-  }
-  .invocation-depth-4 {
-    margin-left: 56px;
-  }
-  .invocation-depth-5 {
-    margin-left: 70px;
-  }
-  .invocation-toggle {
-    background: transparent;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-    font-weight: 600;
-    padding: 0;
-    text-align: left;
-  }
-  .invocation-diagnostic,
-  .invocation-outputs,
-  .invocation-attempt-row {
-    margin: 0;
-    font-size: 0.8em;
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-  .invocation-action-btn {
-    padding: 3px 8px;
-    font-size: 0.8em;
-    background: var(--vscode-button-secondaryBackground, transparent);
-    color: var(--vscode-button-secondaryForeground, inherit);
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--schegent-radius);
-    cursor: pointer;
-  }
+  .invocation-head, .invocation-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .run-badge, .invocation-version, .invocation-status, .invocation-path { font-size: 0.78em; opacity: 0.85; }
+  .invocation-id { font-size: 0.75em; opacity: 0.7; }
+  .recovery-banner { padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); font-size: 0.82em; display: flex; gap: 6px; flex-wrap: wrap; }
+  .invocation-tree, .invocation-attempts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .invocation-item { border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+  .invocation-depth-1 { margin-left: 14px; }
+  .invocation-depth-2 { margin-left: 28px; }
+  .invocation-depth-3 { margin-left: 42px; }
+  .invocation-depth-4 { margin-left: 56px; }
+  .invocation-depth-5 { margin-left: 70px; }
+  .invocation-toggle { background: transparent; border: none; color: inherit; cursor: pointer; font-weight: 600; padding: 0; text-align: left; }
+  .invocation-diagnostic, .invocation-outputs, .invocation-attempt-row { margin: 0; font-size: 0.8em; display: flex; gap: 6px; flex-wrap: wrap; }
+  .invocation-action-btn { padding: 3px 8px; font-size: 0.8em; background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, inherit); border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); cursor: pointer; }
 </style>

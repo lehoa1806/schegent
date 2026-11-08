@@ -112,28 +112,64 @@ export interface CandidateRuntimeSlot {
   readonly allowUnverifiedTrial?: boolean | undefined;
 }
 
+export type RepeatConditionResult = 'true' | 'false' | 'unresolved' | 'not-evaluated';
+
+export interface RepeatCompletedPassEntry {
+  readonly iteration: number;
+  readonly invocationId: string;
+  readonly status: 'completed' | 'failed' | 'canceled';
+  readonly resultRef?: string | undefined;
+}
+
 export interface RepeatRuntimeState {
+  readonly iteration?: number | undefined;
   readonly currentPass: number;
   readonly maxIterations: number;
-  readonly carryValues?: Readonly<Record<string, DecisionFieldValue>>;
-  readonly lastPassAccepted?: boolean;
-  readonly exhaustionReason?: string;
+  readonly currentChildInvocationId?: string | null | undefined;
+  readonly completedPasses?: readonly RepeatCompletedPassEntry[] | undefined;
+  readonly conditionResult?: RepeatConditionResult | undefined;
+  readonly carryEnvelopeRef?: string | undefined;
+  readonly onExhausted?: 'pause' | 'fail' | undefined;
+  readonly carryValues?: Readonly<Record<string, DecisionFieldValue>> | undefined;
+  readonly lastPassAccepted?: boolean | undefined;
+  readonly exhaustionReason?: string | undefined;
+}
+
+export type ForEachSlotErrorCode =
+  | 'child-failed'
+  | 'invalid-child-result'
+  | 'dispatch-budget-exhausted';
+
+export interface ForEachSlotError {
+  readonly code: ForEachSlotErrorCode;
+  readonly message: string;
 }
 
 export interface ForEachItemRuntimeSlot {
+  readonly index?: number | undefined;
   readonly itemIndex: number;
   readonly itemKey: string;
-  readonly status: 'pending' | 'in-flight' | 'completed' | 'failed' | 'skipped';
+  readonly state?: 'pending' | 'executing' | 'completed' | 'failed' | undefined;
+  readonly status: 'in-flight' | 'pending' | 'completed' | 'failed' | 'skipped';
+  readonly invocationId?: string | undefined;
   readonly childInvocationId?: string;
   readonly attemptId?: string;
+  readonly resultRef?: string | undefined;
+  readonly error?: ForEachSlotError | undefined;
   readonly failureCode?: string;
   readonly decisionResults?: Readonly<Record<string, DecisionFieldValue>>;
 }
 
 export interface ForEachRuntimeState {
+  readonly collectionRef?: string | undefined;
+  readonly collectionSha256?: string | undefined;
+  readonly itemCount?: number | undefined;
   readonly totalItems: number;
   readonly currentIndex: number;
   readonly hasErrors: boolean;
+  readonly errorCount?: number | undefined;
+  readonly onItemError?: 'stop' | 'continue' | undefined;
+  readonly refusalCode?: string | undefined;
   readonly resultIndexArtifactPath?: string;
   readonly slots: readonly ForEachItemRuntimeSlot[];
 }

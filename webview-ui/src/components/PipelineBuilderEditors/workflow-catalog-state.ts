@@ -28,7 +28,7 @@ import {
   WORKFLOW_NODE_TERMINAL_STATUSES,
   type CandidateAvailabilityPolicy,
   type CandidateBlockControl,
-  type CandidateDefinition,
+  type CandidateSpec,
   type CandidateRetryPolicy,
   type PipelineExecutionDefaults,
   type PortablePhaseDefinition,
@@ -1291,7 +1291,7 @@ export function enableCandidateBlockControl(
     nodes = [{ nodeId: 'cand-node-1', kind: 'phase', phaseId: defaultPhaseId }];
   }
   const phaseNodes = nodes.filter((n) => n.kind === 'phase' || n.phaseId !== undefined).slice(0, MAX_CANDIDATES_PER_BLOCK);
-  const candidates: CandidateDefinition[] = (phaseNodes.length > 0 ? phaseNodes : [nodes[0]!]).map((n, idx) => ({
+  const candidates: CandidateSpec[] = (phaseNodes.length > 0 ? phaseNodes : [nodes[0]!]).map((n, idx) => ({
     candidateId: freeIdentifier(`candidate-${idx + 1}`, []),
     nodeId: n.nodeId,
     priority: idx + 1,
@@ -1344,7 +1344,7 @@ export function addCandidateRow(
     targetNodeId = freeIdentifier(`cand-node-${control.candidates.length + 1}`, takenNodeIds);
     nodes = [...workflow.nodes, { nodeId: targetNodeId, kind: 'phase', phaseId }];
   }
-  const nextCandidate: CandidateDefinition = {
+  const nextCandidate: CandidateSpec = {
     candidateId,
     nodeId: targetNodeId,
     priority: control.candidates.length + 1,
@@ -1445,7 +1445,7 @@ export function updateCandidateRow(
         : n
     );
   }
-  const updated: CandidateDefinition = {
+  const updated: CandidateSpec = {
     candidateId: patch.candidateId ?? current.candidateId,
     nodeId: targetNodeId,
     ...(patch.priority !== undefined

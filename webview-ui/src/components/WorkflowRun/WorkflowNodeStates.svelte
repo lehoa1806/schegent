@@ -31,6 +31,7 @@
   import type {
     ConnectedNodeAction,
     ConnectedNodeProjection,
+    ConnectedRepeatNodeProjection,
     ControlCandidateProjection,
     ControlProjection,
     QueueItem
@@ -60,6 +61,10 @@
 
   function candidateOf(node: ConnectedNodeProjection): ControlCandidateProjection | undefined {
     return controlProjection?.candidates?.find((c) => c.nodeId === node.nodeId);
+  }
+
+  function repeatOf(node: ConnectedNodeProjection): ConnectedRepeatNodeProjection | undefined {
+    return node.repeatProjection ?? (controlProjection?.nodeId === node.nodeId ? controlProjection.repeatProjection : undefined);
   }
 </script>
 
@@ -95,6 +100,55 @@
           {/if}
         {/if}
       </p>
+
+      {#if repeatOf(node)}
+        {@const rep = repeatOf(node)}
+        {#if rep}
+          <div class="node-repeat-panel" data-testid={`repeat-node-projection-${node.nodeId}`}>
+            <div class="repeat-row">
+              <span class="repeat-pass-counter" data-testid={`repeat-pass-counter-${node.nodeId}`}>
+                Pass {rep.iteration} of {rep.maxIterations}
+              </span>
+              ·
+              <span class="repeat-leaf-attempts" data-testid={`repeat-leaf-attempts-${node.nodeId}`}>
+                {rep.leafAttemptCount} {rep.leafAttemptCount === 1 ? 'leaf attempt' : 'leaf attempts'}
+              </span>
+              ·
+              <span class="repeat-condition-result" data-testid={`repeat-condition-result-${node.nodeId}`}>
+                Until: {rep.conditionResult}
+              </span>
+              ·
+              <span class="repeat-on-exhausted" data-testid={`repeat-on-exhausted-${node.nodeId}`}>
+                onExhausted: {rep.onExhausted}
+              </span>
+            </div>
+            {#if rep.currentChildInvocationId}
+              <div class="repeat-row" data-testid={`repeat-current-child-${node.nodeId}`}>
+                Active child: {rep.currentChildInvocationId}
+              </div>
+            {/if}
+            {#if rep.carryEnvelopeRef}
+              <div class="repeat-row" data-testid={`repeat-carry-ref-${node.nodeId}`}>
+                Carry envelope: {rep.carryEnvelopeRef}
+              </div>
+            {/if}
+            {#if rep.exhaustionReason}
+              <div class="repeat-exhaustion" data-testid={`repeat-exhaustion-reason-${node.nodeId}`}>
+                Exhaustion: {rep.exhaustionReason} ({rep.onExhausted === 'pause' ? 'Paused — resume cannot extend maxIterations' : 'Failed'})
+              </div>
+            {/if}
+            {#if rep.completedPasses.length > 0}
+              <div class="repeat-passes" data-testid={`repeat-completed-passes-${node.nodeId}`}>
+                {#each rep.completedPasses as passEntry (passEntry.iteration)}
+                  <span class="repeat-pass-chip" data-testid={`repeat-pass-chip-${node.nodeId}-${passEntry.iteration}`}>
+                    #{passEntry.iteration}: {passEntry.status}
+                  </span>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+      {/if}
 
       {#if node.actions.length > 0}
         <div class="node-actions">
@@ -196,5 +250,35 @@
     margin: 0;
     font-size: 0.85em;
     opacity: 0.8;
+  }
+  .node-repeat-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 8px;
+    border-left: 2px solid var(--vscode-focusBorder, currentColor);
+    font-size: 0.85em;
+  }
+  .repeat-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .repeat-pass-counter {
+    font-weight: 600;
+  }
+  .repeat-exhaustion {
+    font-weight: 600;
+  }
+  .repeat-passes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .repeat-pass-chip {
+    padding: 1px 6px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: var(--schegent-radius);
+    font-size: 0.9em;
   }
 </style>
