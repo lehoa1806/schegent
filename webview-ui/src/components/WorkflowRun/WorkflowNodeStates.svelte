@@ -31,6 +31,8 @@
   import type {
     ConnectedNodeAction,
     ConnectedNodeProjection,
+    ControlCandidateProjection,
+    ControlProjection,
     QueueItem
   } from '../../lib/snapshot-types';
 
@@ -38,12 +40,13 @@
     readonly nodes: readonly ConnectedNodeProjection[];
     /** The queue rows a node's latest attempt is looked up in (FR-056). */
     readonly queueItems: readonly QueueItem[];
+    readonly controlProjection?: ControlProjection;
     /** True while a submission is in flight; the host, not the view, decides legality. */
     readonly disabled?: boolean;
     readonly onAct?: (node: ConnectedNodeProjection, action: ConnectedNodeAction) => void;
   }
 
-  const { nodes, queueItems, disabled = false, onAct }: Props = $props();
+  const { nodes, queueItems, controlProjection, disabled = false, onAct }: Props = $props();
 
   const ACTION_LABELS: Record<ConnectedNodeAction, string> = {
     start: 'Start',
@@ -53,6 +56,10 @@
   function attemptOf(node: ConnectedNodeProjection): QueueItem | undefined {
     if (node.latestQueueItemId === undefined) return undefined;
     return queueItems.find((item) => item.id === node.latestQueueItemId);
+  }
+
+  function candidateOf(node: ConnectedNodeProjection): ControlCandidateProjection | undefined {
+    return controlProjection?.candidates?.find((c) => c.nodeId === node.nodeId);
   }
 </script>
 
@@ -79,6 +86,14 @@
         {/if}
         · {node.attemptCount}
         {node.attemptCount === 1 ? 'attempt' : 'attempts'}
+        {#if candidateOf(node)}
+          {@const cand = candidateOf(node)}
+          {#if cand}
+            · <span class="node-candidate-badge" data-testid={`workflow-node-candidate-state-${node.nodeId}`}>
+              Candidate {cand.candidateId}: {cand.eligibility} ({cand.attemptsUsed}/{cand.maxAttempts})
+            </span>
+          {/if}
+        {/if}
       </p>
 
       {#if node.actions.length > 0}

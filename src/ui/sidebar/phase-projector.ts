@@ -82,29 +82,8 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
   const completedPhaseIds = new Set<string>(run.phasesCompleted.map((entry) => entry.phase));
 
   // Feature 201 (FR-002, FR-003) — carry the runner's own notion of "not yet
-  // reached" onto every tile, so the surface can tell a Phase still ahead of
-  // the runner from one it reached and bypassed. `state` cannot: both project
-  // `disabled`, and only the first may be re-enabled.
-  //
-  // The three clauses are the three clauses of the host's `isPhaseFuture`
-  // (`src/controller/phase-control-decision.ts` — cited by symbol, not by line:
-  // this feature's own dated comment in that file moved the predicate 28 lines
-  // and made a line-pinned citation point at the wrong code), spelled out
-  // rather than approximated, because the whole point is that the surface stops
-  // guessing at a fact the host already decides. The third is vacuous today —
-  // `:56` above already filters removed Phases out of the tile array, so no
-  // tile can be carrying a `removed` override by the time this runs — and it
-  // is spelled anyway so the echo survives a change to that filter.
-  //
-  // Deliberately NOT derived from tile `order`, `lastResult`, iteration count,
-  // or a comparison against the active tile's index: a tile-order comparison
-  // is the specific wrong answer the residual comment in
-  // `webview-ui/src/lib/phase-control-eligibility.ts` names, because it breaks
-  // on a pipeline where the same Phase name appears at two positions.
-  //
-  // This pass runs over every tile unconditionally and before any state pass,
-  // so the member is present on all of them regardless of what state they end
-  // up in (FR-002).
+  // reached" (`isPhaseFuture` in `src/controller/phase-control-decision.ts`)
+  // onto every tile before any state pass (FR-002).
   for (const tile of tiles) {
     tile.isFuture =
       tile.name !== run.currentPhase &&
@@ -113,17 +92,7 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
   }
 
   // FR-R3-151 (FR-012) — a future Phase carrying a disabled override projects
-  // `disabled` as soon as the override is set, not only once the runner
-  // reaches and bypasses it. Applied per-tile, over the tiles array itself
-  // rather than through `phaseOrder`/`phaseIndex` (which resolve one index
-  // per Phase name and so cannot distinguish two same-named occurrences at
-  // different positions): every tile whose name carries a disabled override
-  // defaults to `disabled` here, before the loops below run. The completed-
-  // phase loop still runs after this and is the one that can tell a
-  // disabled-bypass (`disabledPhaseIds` still holds the id when it completes
-  // with `result: 'skipped'`) from an ordinary skip reached and skipped
-  // while active (FR-014) — this default only covers the Phase's the runner
-  // has not reached yet.
+  // `disabled` per-tile as soon as the override is set.
   for (const tile of tiles) {
     if (disabledPhaseIds.has(tile.name)) {
       tile.state = 'disabled';
@@ -245,20 +214,10 @@ export function mapPhaseOutcome(outcome: PhaseOutcome): PhaseResultState | null 
  * The bar under one Phase tile: counted tasks if any were observed, otherwise
  * the iteration count if the Phase is one that loops, otherwise nothing.
  *
- * Feature 098 (FR-008) — both halves of the iteration branch used to be
- * hardcoded. `isRecursivePhase` recognised exactly `speckit-clarify` and
- * `speckit-analyze`, two ids of a built-in catalog that no longer exists, so an
- * imported looping Phase showed no bar and a Phase merely *named* one of those
- * two showed one it had not earned. And its denominator was a local literal 10,
- * standing where the Run has already frozen the cap the controller will enforce.
- * Both now read the Run: the tile's own definition says whether it loops (the
- * same `retryCondition` `transition()` consults), and `plannedTotal` says how far.
- *
- * The task/iteration order is the other half of that change. Re-keying brings
- * every looping Phase into a branch that two ids used to have to themselves —
- * including the implement Phase of the example pipeline, which is the one that
- * reports task counts. Counted tasks measure the same work more finely, so they
- * take precedence, and the iteration bar is what a looping Phase falls back to.
+ * Feature 098 (FR-008) — both halves of the iteration branch read the Run:
+ * the tile's own definition says whether it loops (the same `retryCondition`
+ * `transition()` consults), and `plannedTotal` says how far. Counted tasks
+ * measure the same work more finely, so they take precedence.
  */
 export function computeSubProgressForTile(
   tile: PhaseTile,
@@ -282,5 +241,44 @@ export function computeSubProgressForTile(
     current: Math.min(Math.floor(current), cap),
     total: cap,
     label: 'iteration' as const
+  });
+}
+
+export interface CandidatePhaseIdentityProjection {
+  readonly phaseId: string;
+  readonly phaseName: string;
+  readonly runner?: string;
+  readonly model?: string;
+  readonly instructionSummary?: string;
+  readonly operatorKind?: string;
+}
+
+/** FR-R5-F32 (F32-T01, F32-T02) — read-only Phase identity for a candidate row, preserving absence. */
+export function projectCandidatePhaseIdentity(
+  phase: {
+    readonly phaseId?: string;
+    readonly id?: string;
+    readonly name?: string;
+    readonly runner?: string;
+    readonly model?: string;
+    readonly instruction?: string;
+    readonly resultContract?: {
+      readonly operator?: string | { readonly kind?: string };
+    };
+  } | null | undefined
+): CandidatePhaseIdentityProjection | null {
+  if (!phase) return null;
+  const phaseId = phase.phaseId ?? phase.id;
+  if (!phaseId) return null;
+  const instruction = phase.instruction?.trim();
+  const op = phase.resultContract?.operator;
+  const operatorKind = typeof op === 'string' ? op : op?.kind;
+  return Object.freeze({
+    phaseId,
+    phaseName: phase.name || phaseId,
+    ...(phase.runner !== undefined ? { runner: phase.runner } : {}),
+    ...(phase.model !== undefined ? { model: phase.model } : {}),
+    ...(instruction ? { instructionSummary: instruction.slice(0, 120) } : {}),
+    ...(operatorKind !== undefined ? { operatorKind } : {})
   });
 }

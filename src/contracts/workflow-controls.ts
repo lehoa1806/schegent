@@ -16,12 +16,15 @@ export const MIN_CANDIDATES_PER_BLOCK = 1;
 export const MAX_CANDIDATES_PER_BLOCK = 8;
 
 export const MIN_CANDIDATE_MAX_ATTEMPTS = 1;
+export const MIN_CANDIDATE_ATTEMPTS = MIN_CANDIDATE_MAX_ATTEMPTS;
 export const MAX_CANDIDATE_MAX_ATTEMPTS = 20;
 export const MAX_CANDIDATE_ATTEMPTS = MAX_CANDIDATE_MAX_ATTEMPTS;
 export const DEFAULT_CANDIDATE_MAX_ATTEMPTS = 3;
+export const DEFAULT_CANDIDATE_ATTEMPTS = DEFAULT_CANDIDATE_MAX_ATTEMPTS;
 
 export const MIN_CANDIDATE_BLOCK_DISPATCHES = 1;
 export const MAX_CANDIDATE_BLOCK_DISPATCHES = 40;
+export const DEFAULT_CANDIDATE_BLOCK_DISPATCHES = MAX_CANDIDATE_BLOCK_DISPATCHES;
 export const MAX_CANDIDATE_BLOCK_ATTEMPTS = MAX_CANDIDATE_BLOCK_DISPATCHES;
 
 export const MIN_CANDIDATE_PRIORITY = 1;
@@ -140,6 +143,10 @@ export interface CandidateSpec {
   readonly retry?: CandidateRetryConfig;
   readonly allowUnverifiedTrial?: boolean; // default false
 }
+
+export type CandidateRetryPolicy = CandidateRetryConfig;
+export type CandidateBudgetControl = CandidateBlockBudget;
+export type CandidateDefinition = CandidateSpec;
 
 export interface ResolvedCandidateSpec {
   readonly candidateId: string;
