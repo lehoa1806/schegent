@@ -221,3 +221,18 @@ export function effectiveSpendBound(
     limitTokens: phase?.spendBoundTokens ?? workspace.limitTokens
   };
 }
+
+/**
+ * FR-R5-F30 (SPEC-08, D6) — preserve cumulative USD and token spend totals across
+ * candidate backend switches without clearing or downgrading either denomination.
+ */
+export function preserveSpendTotalAcrossBackendSwitch(
+  prev: RunSpendTotal
+): RunSpendTotal {
+  return {
+    costUsd: prev.costUsd,
+    totalTokens: prev.totalTokens,
+    completeness: prev.completeness,
+    countedRowIds: new Set(prev.countedRowIds)
+  };
+}

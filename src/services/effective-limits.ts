@@ -148,3 +148,38 @@ export function resolveEffectiveLimits(input: EffectiveLimitsInput): EffectiveLi
           }
   };
 }
+
+/**
+ * FR-R5-F30 (SPEC-08, D6) — resolve the effective root control budget limits,
+ * allowing a live workspace USD cap to tighten (never increase) the frozen root
+ * `strict-usd` cap.
+ */
+export function resolveRootControlBudgetLimits(input: {
+  readonly maxPhaseAttempts: number;
+  readonly budgetMode?: 'count-only' | 'strict-usd' | undefined;
+  readonly frozenLimitMicrousd?: number | undefined;
+  readonly liveLimitMicrousd?: number | null | undefined;
+}): {
+  readonly maxPhaseAttempts: number;
+  readonly budgetMode: 'count-only' | 'strict-usd';
+  readonly effectiveLimitMicrousd?: number | undefined;
+} {
+  const budgetMode =
+    input.budgetMode ??
+    (input.frozenLimitMicrousd !== undefined ? 'strict-usd' : 'count-only');
+  const liveCap =
+    typeof input.liveLimitMicrousd === 'number' &&
+    Number.isSafeInteger(input.liveLimitMicrousd) &&
+    input.liveLimitMicrousd > 0
+      ? input.liveLimitMicrousd
+      : undefined;
+  const effectiveLimitMicrousd =
+    input.frozenLimitMicrousd !== undefined && liveCap !== undefined
+      ? Math.min(input.frozenLimitMicrousd, liveCap)
+      : input.frozenLimitMicrousd ?? liveCap;
+  return Object.freeze({
+    maxPhaseAttempts: input.maxPhaseAttempts,
+    budgetMode,
+    ...(effectiveLimitMicrousd !== undefined ? { effectiveLimitMicrousd } : {})
+  });
+}

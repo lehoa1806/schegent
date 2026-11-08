@@ -17,10 +17,12 @@ export const MAX_CANDIDATES_PER_BLOCK = 8;
 
 export const MIN_CANDIDATE_MAX_ATTEMPTS = 1;
 export const MAX_CANDIDATE_MAX_ATTEMPTS = 20;
+export const MAX_CANDIDATE_ATTEMPTS = MAX_CANDIDATE_MAX_ATTEMPTS;
 export const DEFAULT_CANDIDATE_MAX_ATTEMPTS = 3;
 
 export const MIN_CANDIDATE_BLOCK_DISPATCHES = 1;
 export const MAX_CANDIDATE_BLOCK_DISPATCHES = 40;
+export const MAX_CANDIDATE_BLOCK_ATTEMPTS = MAX_CANDIDATE_BLOCK_DISPATCHES;
 
 export const MIN_CANDIDATE_PRIORITY = 1;
 export const MAX_CANDIDATE_PRIORITY = 1_000;
@@ -76,10 +78,12 @@ export const CANDIDATE_AVAILABILITY_POLICIES = Object.freeze([
   'stop-on-unavailability'
 ] as const);
 export type CandidateAvailabilityPolicy = (typeof CANDIDATE_AVAILABILITY_POLICIES)[number];
+export type CandidateSelectionPolicy = CandidateAvailabilityPolicy;
 export const DEFAULT_CANDIDATE_AVAILABILITY_POLICY: CandidateAvailabilityPolicy = 'first-ready';
 
 export const CANDIDATE_BUDGET_MODES = Object.freeze(['count-only', 'strict-usd'] as const);
 export type CandidateBudgetMode = (typeof CANDIDATE_BUDGET_MODES)[number];
+export type ControlBudgetMode = CandidateBudgetMode;
 
 export const REPEAT_ON_EXHAUSTED_POLICIES = Object.freeze(['pause', 'fail'] as const);
 export type RepeatExhaustedPolicy = (typeof REPEAT_ON_EXHAUSTED_POLICIES)[number];
@@ -121,7 +125,11 @@ export type CandidateBlockBudget =
 export interface RootControlBudget {
   readonly version: typeof WORKFLOW_CONTROL_SCHEMA_VERSION;
   readonly maxPhaseAttempts: number;
-  readonly strictUsdBudget?: Extract<CandidateBlockBudget, { readonly mode: 'strict-usd' }>;
+  readonly strictUsdBudget?:
+    | Extract<CandidateBlockBudget, { readonly mode: 'strict-usd' }>
+    | undefined;
+  readonly budgetMode?: CandidateBudgetMode | undefined;
+  readonly maxMicrousd?: number | undefined;
 }
 
 export interface CandidateSpec {

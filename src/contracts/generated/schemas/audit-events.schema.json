@@ -149,7 +149,13 @@
           "evidence-deleted",
           "evidence-exported",
           "audit-integrity-condition",
-          "operator-pseudonym-reset"
+          "operator-pseudonym-reset",
+          "control-decision",
+          "control-attempt-admitted",
+          "control-wait",
+          "control-return",
+          "control-notice",
+          "control-command"
         ]
       },
       "uniqueItems": true

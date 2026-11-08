@@ -158,6 +158,12 @@ export type TransitionInput = {
    * exactly the behavior this function had before the field existed.
    */
   maxUnchangedComparisons?: number;
+  /**
+   * FR-R5-F30 (SPEC-08, D5) — when true, this leaf Phase run is owned by a
+   * Candidate block coordinator; `rate_limited` and `transient_error` outcomes
+   * return immediately as classified halts without scheduling inner delayed retries.
+   */
+  blockOwnedRetry?: boolean;
 };
 
 export type TransitionResult =
@@ -312,11 +318,17 @@ export function transition(input: TransitionInput): TransitionResult {
     return { kind: 'halt', status: 'failed', warnings };
   }
   if (outcome === 'rate_limited') {
+    if (input.blockOwnedRetry === true) {
+      return { kind: 'halt', status: 'failed', warnings, cause: 'rate_limit' };
+    }
     // Feature 011 — FR-003: rate-limit halts to paused with explicit cause so
     // the controller can schedule a 60-min delayed retry.
     return { kind: 'halt', status: 'paused', warnings, cause: 'rate_limit' };
   }
   if (outcome === 'transient_error') {
+    if (input.blockOwnedRetry === true) {
+      return { kind: 'halt', status: 'failed', warnings, cause: 'transient_error' };
+    }
     // Feature 011 — FR-002: non-zero exit with no fatal-signature and no
     // rate-limit match halts to paused with explicit cause so the controller
     // can schedule a 15-min delayed retry.
