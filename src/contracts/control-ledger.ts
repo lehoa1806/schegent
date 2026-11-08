@@ -85,6 +85,8 @@ export interface CandidateRuntimeSlot {
   readonly nodeId: string;
   readonly backend: BackendRunnerKind;
   readonly priority: number;
+  readonly authoredOrder?: number | undefined;
+  readonly candidateOccurrenceId?: string | undefined;
   readonly maxAttempts: number;
   readonly dispatchedAttempts: number;
   readonly status:
@@ -96,6 +98,11 @@ export interface CandidateRuntimeSlot {
     | 'succeeded'
     | 'failed'
     | 'disabled';
+  readonly retirementReason?:
+    | 'attempts-exhausted'
+    | 'permanent-failure'
+    | 'disabled'
+    | undefined;
   readonly nextEligibleAt?: number | undefined;
   readonly lastAttemptId?: string | undefined;
   readonly lastFailureCode?: string | undefined;
@@ -154,6 +161,16 @@ export interface ControlFrame {
   readonly lastClockWallMs?: number | undefined;
   readonly lastClockMonotonicMs?: number | undefined;
   readonly lastClockHostEpoch?: string | undefined;
+  readonly selectionPolicy?:
+    | 'first-ready'
+    | 'wait-for-selected'
+    | 'stop-on-unavailability'
+    | undefined;
+  readonly returnCommitId?: string | undefined;
+  readonly winningCandidateId?: string | undefined;
+  readonly winningAttemptId?: string | undefined;
+  readonly winningOutputs?: Readonly<Record<string, string>> | undefined;
+  readonly waitStateReleasedSlot?: boolean | undefined;
   readonly candidateSlots?: readonly CandidateRuntimeSlot[] | undefined;
   readonly repeatState?: RepeatRuntimeState | undefined;
   readonly forEachState?: ForEachRuntimeState | undefined;
@@ -286,6 +303,91 @@ export interface ExecutionPermitRecord {
   readonly uncertainReason?: string | undefined;
 }
 
+export interface ControlUsageRecord {
+  readonly attemptId?: string | undefined;
+  readonly checkId?: string | undefined;
+  readonly backend: BackendRunnerKind;
+  readonly modelId?: string | undefined;
+  readonly denomination: 'usd' | 'tokens';
+  readonly quality: 'verified' | 'estimated' | 'unavailable';
+  readonly inputTokens?: number | undefined;
+  readonly outputTokens?: number | undefined;
+  readonly cachedTokens?: number | undefined;
+  readonly costMicrousd?: number | undefined;
+  readonly upperBoundMicrousd?: number | undefined;
+  readonly sharedObservation?: boolean | undefined;
+}
+
+export interface ControlBackendTokenUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cachedTokens: number;
+}
+
+export interface ControlRootUsageRollup {
+  readonly verifiedMicrousd: number;
+  readonly estimatedMicrousd: number;
+  readonly unpricedAttemptCount: number;
+  readonly reservedMicrousd: number;
+  readonly uncertainReservationCount: number;
+  readonly sharedCheckMicrousd: number;
+  readonly tokensByBackend: Readonly<Record<string, ControlBackendTokenUsage>>;
+  readonly usageRecordsByRef: Readonly<Record<string, ControlUsageRecord>>;
+}
+
+export type ControlNotificationReason =
+  | 'candidate-switched'
+  | 'waiting-availability'
+  | 'monitoring-expired'
+  | 'spend-limit-reached'
+  | 'spend-unverifiable'
+  | 'spend-bound-exceeded'
+  | 'intervention-required'
+  | 'repeat-exhausted'
+  | 'foreach-item-failed';
+
+export interface ControlNotificationRecord {
+  readonly notificationId: string;
+  readonly rootRunId: string;
+  readonly invocationId: string;
+  readonly generation: number;
+  readonly reason: ControlNotificationReason;
+  readonly createdAt: number;
+  readonly delivery: 'pending' | 'claimed';
+  readonly summary?: string | undefined;
+}
+
+export interface ControlDecisionSummaryRecord {
+  readonly summaryId: string;
+  readonly rootRunId: string;
+  readonly invocationId: string;
+  readonly frameKey: string;
+  readonly generation: number;
+  readonly eventKind:
+    | 'candidate-selected'
+    | 'candidate-switched'
+    | 'candidate-retired'
+    | 'candidate-waiting'
+    | 'candidate-returned'
+    | 'notice-created'
+    | 'control-paused';
+  readonly candidateId?: string | undefined;
+  readonly attemptId?: string | undefined;
+  readonly reason?: string | undefined;
+  readonly createdAt: number;
+}
+
+export interface ControlSettledCheckSummaryRecord {
+  readonly checkId: string;
+  readonly observationId: string;
+  readonly backend: BackendRunnerKind;
+  readonly sponsorRootRunId: string;
+  readonly sharedObservation: boolean;
+  readonly status: 'completed' | 'failed' | 'aborted';
+  readonly costMicrousd: number;
+  readonly settledAt: number;
+}
+
 export interface RootControlState {
   readonly version: typeof CONTROL_LEDGER_VERSION;
   readonly ledgerRunId: string;
@@ -301,6 +403,12 @@ export interface RootControlState {
   readonly reservedMicrousd: number;
   readonly sharedCheckMicrousd?: number;
   readonly uncertainSpendCount?: number;
+  readonly usageRollup?: ControlRootUsageRollup | undefined;
+  readonly notificationsById?: Readonly<Record<string, ControlNotificationRecord>> | undefined;
+  readonly decisionSummaries?: readonly ControlDecisionSummaryRecord[] | undefined;
+  readonly settledCheckSummaries?: readonly ControlSettledCheckSummaryRecord[] | undefined;
+  readonly archivedHistoryCursor?: string | undefined;
+  readonly archivedSummaryCount?: number | undefined;
   readonly framesByKey: Readonly<Record<string, ControlFrame>>;
   readonly attemptsById: Readonly<Record<string, ControlAttemptRecord>>;
   readonly createdAt: number;

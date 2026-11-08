@@ -238,7 +238,14 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // the row is precisely what is gone — that is the event — so a task-scoped
   // entry would hang off nothing, which is the failure mode both notes above
   // call true and unattributable.
-  'run-canceled-task-row-removed': 'system'
+  'run-canceled-task-row-removed': 'system',
+  // FR-R5-F30 — control-flow audit events (task)
+  'control-decision': 'task',
+  'control-attempt-admitted': 'task',
+  'control-wait': 'task',
+  'control-return': 'task',
+  'control-notice': 'task',
+  'control-command': 'task'
 };
 
 function assertExhaustive(value: never): never {
@@ -426,7 +433,13 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'evidence-deleted': // FR-R3-127 — an operator action on a Run's evidence
         case 'evidence-exported': // FR-R3-127
         case 'run-record-quarantined': // FR-R3-111 — a corrupt record preserved, not destroyed
-        case 'run-canceled-task-row-removed': { // a Run ended at load, its Task row gone
+        case 'run-canceled-task-row-removed': // a Run ended at load, its Task row gone
+        case 'control-decision':
+        case 'control-attempt-admitted':
+        case 'control-wait':
+        case 'control-return':
+        case 'control-notice':
+        case 'control-command': {
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);
           break;

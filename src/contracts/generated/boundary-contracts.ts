@@ -201,7 +201,13 @@ export const AUDIT_EVENT_TYPES = [
   "evidence-deleted",
   "evidence-exported",
   "audit-integrity-condition",
-  "operator-pseudonym-reset"
+  "operator-pseudonym-reset",
+  "control-decision",
+  "control-attempt-admitted",
+  "control-wait",
+  "control-return",
+  "control-notice",
+  "control-command"
 ] as const;
 
 export const SETTINGS_KEYS = [

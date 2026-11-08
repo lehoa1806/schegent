@@ -19,6 +19,8 @@ import type { ResolvedPortValue } from '../../contracts/run-request';
 import type { ExecutionFence } from '../../contracts/control-ledger';
 import type { WorkflowNodeTerminalStatus } from '../../contracts/workflow-definitions';
 import type { ControlAttemptAdmissionService } from './control-attempt-admission';
+import type { ControlNotificationService } from './control-notification-service';
+import type { ControlUsageAccountingService } from './control-usage-accounting';
 import type { QuotaPermit, QuotaPermitArbiter } from './quota-permit-arbiter';
 import { fromPermitRecord } from './quota-permit-arbiter';
 import {
@@ -90,6 +92,8 @@ export interface WorkflowRecoveryServiceDeps {
   ) => Promise<void> | void;
   readonly controlAdmission?: ControlAttemptAdmissionService | undefined;
   readonly quotaPermitArbiter?: QuotaPermitArbiter | undefined;
+  readonly notificationService?: ControlNotificationService | undefined;
+  readonly usageAccounting?: ControlUsageAccountingService | undefined;
   readonly resolveRecoveryFence?: (
     run: ConnectedWorkflowRun,
     queueId: string
@@ -103,6 +107,7 @@ export interface ReconcileConnectedRunResult {
   readonly run: ConnectedWorkflowRun;
   readonly projection: WorkflowRunControlProjection;
   readonly retainedUncertainPermits?: readonly QuotaPermit[] | undefined;
+  readonly claimedNotificationIds?: readonly string[] | undefined;
 }
 
 function createStagingWriter(initial: ConnectedWorkflowRun): {
@@ -229,6 +234,7 @@ export class WorkflowRecoveryService {
     const rootFrame = run.invocations?.[rootId];
 
     let retainedUncertainPermits: readonly QuotaPermit[] | undefined;
+    let claimedNotificationIds: readonly string[] | undefined;
     if (run.controlState !== undefined && this.deps.controlAdmission !== undefined) {
       const recoveryFence =
         this.deps.resolveRecoveryFence?.(run, queueId) ?? {
@@ -256,6 +262,14 @@ export class WorkflowRecoveryService {
         }
         retainedUncertainPermits = Object.freeze(uncertainList);
       }
+      if (this.deps.notificationService !== undefined) {
+        const flushed = await this.deps.notificationService.flushPendingNotifications(
+          run.controlState.ledgerRunId
+        );
+        claimedNotificationIds = Object.freeze(
+          flushed.map((n) => n.notificationId)
+        );
+      }
     }
 
     // 1. Terminal runs: no-op, ensure lease is released.
@@ -266,7 +280,11 @@ export class WorkflowRecoveryService {
         mutated: false,
         disposition: run.recoveryDisposition ?? null,
         run,
-        projection: buildWorkflowRunControlProjection(run)
+        projection: buildWorkflowRunControlProjection(run),
+        ...(retainedUncertainPermits !== undefined
+          ? { retainedUncertainPermits }
+          : {}),
+        ...(claimedNotificationIds !== undefined ? { claimedNotificationIds } : {})
       };
     }
 
@@ -328,7 +346,11 @@ export class WorkflowRecoveryService {
         mutated: true,
         disposition,
         run: finalRun,
-        projection: buildWorkflowRunControlProjection(finalRun)
+        projection: buildWorkflowRunControlProjection(finalRun),
+        ...(retainedUncertainPermits !== undefined
+          ? { retainedUncertainPermits }
+          : {}),
+        ...(claimedNotificationIds !== undefined ? { claimedNotificationIds } : {})
       };
     }
 
@@ -478,7 +500,11 @@ export class WorkflowRecoveryService {
         mutated: true,
         disposition,
         run: finalRun,
-        projection: buildWorkflowRunControlProjection(finalRun)
+        projection: buildWorkflowRunControlProjection(finalRun),
+        ...(retainedUncertainPermits !== undefined
+          ? { retainedUncertainPermits }
+          : {}),
+        ...(claimedNotificationIds !== undefined ? { claimedNotificationIds } : {})
       };
     }
 

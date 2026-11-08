@@ -1001,6 +1001,16 @@ export const EVIDENCE_LIFECYCLE_EVENT_TYPES = ['evidence-deleted', 'evidence-exp
 /** FR-R4-F04 (FR-028) — the operator reset their attribution pseudonym; the row carries neither value. */
 export const OPERATOR_ATTRIBUTION_EVENT_TYPES = ['operator-pseudonym-reset'] as const;
 
+/** FR-R5-F30 (SPEC-08, D7) — metadata-only workflow control-flow events (IDs, enums, counts, generation, timestamps only). */
+export const CONTROL_FLOW_EVENT_TYPES = [
+  'control-decision',
+  'control-attempt-admitted',
+  'control-wait',
+  'control-return',
+  'control-notice',
+  'control-command'
+] as const;
+
 export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_EVENT_TYPES,
   ...RUNNER_EVENT_TYPES,
@@ -1053,7 +1063,9 @@ export const ALL_AUDIT_EVENT_TYPES = [
   // FR-R4-F03 — the audit writer's own record of a damaged tail or a history reset.
   'audit-integrity-condition',
   // FR-R4-F04 — the operator reset their attribution pseudonym.
-  ...OPERATOR_ATTRIBUTION_EVENT_TYPES
+  ...OPERATOR_ATTRIBUTION_EVENT_TYPES,
+  // FR-R5-F30 — metadata-only workflow control-flow events.
+  ...CONTROL_FLOW_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -1093,6 +1105,22 @@ export type MetricsEventType = (typeof METRICS_EVENT_TYPES)[number];
 export type ProcessExchangeEventType = (typeof PROCESS_EXCHANGE_EVENT_TYPES)[number];
 export type CatalogLifecycleEventType = (typeof CATALOG_LIFECYCLE_EVENT_TYPES)[number];
 export type EvidenceLifecycleEventType = (typeof EVIDENCE_LIFECYCLE_EVENT_TYPES)[number];
+export type ControlFlowEventType = (typeof CONTROL_FLOW_EVENT_TYPES)[number];
+
+export interface ControlFlowAuditPayload {
+  readonly rootRunId: string;
+  readonly invocationId: string;
+  readonly frameKey?: string;
+  readonly generation: number;
+  readonly candidateId?: string;
+  readonly attemptId?: string;
+  readonly attemptOrdinal?: number;
+  readonly backend?: BackendRunnerKind;
+  readonly reasonCode?: string;
+  readonly commandKind?: string;
+  readonly returnCommitId?: string;
+  readonly timestampMs: number;
+}
 
 /**
  * FR-R3-127 — the closed payload for both evidence-lifecycle events.

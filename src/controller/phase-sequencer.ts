@@ -206,6 +206,11 @@ export interface PostPhaseInputs {
    * is consulted.
    */
   readonly maxUnchangedComparisons?: number;
+  /**
+   * FR-R5-F30 (SPEC-08, D5) — when true, suppresses inner delayed-retry pause
+   * classification so the Candidate block coordinator owns retry/fallback decisions.
+   */
+  readonly blockOwnedRetry?: boolean;
 }
 
 export interface OptionalTerminalFailureInputs {
@@ -402,7 +407,8 @@ export class PhaseSequencer {
       // computation of it.
       ...(output.stalledCount !== undefined ? { stalledCount: output.stalledCount } : {}),
       // FR-R4-F17 (D4.1) — absent when the caller read none, which `transition()` reads as off.
-      ...(maxUnchangedComparisons !== undefined ? { maxUnchangedComparisons } : {})
+      ...(maxUnchangedComparisons !== undefined ? { maxUnchangedComparisons } : {}),
+      ...(inputs.blockOwnedRetry === true ? { blockOwnedRetry: true } : {})
     });
     const warnings = [...output.warnings, ...decision.warnings];
 
