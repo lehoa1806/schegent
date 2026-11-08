@@ -4,6 +4,15 @@ import {
   SUPPORTED_BACKENDS,
   type BackendRunnerKind
 } from '../contracts/backend-kinds';
+import {
+  BACKEND_AVAILABILITY_VERSION,
+  UNKNOWN_LOCAL_QUOTA_ID,
+  validateQuotaContext,
+  type BackendAvailabilityAdapter,
+  type FrozenPhaseQuotaTarget,
+  type QuotaContext,
+  type QuotaStatusCheckSupport
+} from '../contracts/backend-availability';
 
 export const DEFAULT_BACKEND_PROBE_TIMEOUT_SECONDS = 5;
 export const MIN_BACKEND_PROBE_TIMEOUT_SECONDS = 1;
@@ -76,6 +85,9 @@ export interface BackendCapabilityServiceDeps {
   readonly spawnFn?: SpawnFn;
   /** Test seam; production always uses the complete closed registry. */
   readonly backendKinds?: readonly BackendRunnerKind[];
+  readonly availabilityAdapters?:
+    | Partial<Record<BackendRunnerKind, BackendAvailabilityAdapter>>
+    | undefined;
 }
 
 const EMPTY_MODELS: Record<BackendRunnerKind, readonly string[]> = Object.freeze({
@@ -104,6 +116,7 @@ export function normalizeBackendProbeTimeoutSeconds(value: unknown): number {
 export class BackendCapabilityService implements BackendAvailabilityProbe {
   private readonly spawnFn: SpawnFn;
   private readonly backendKinds: readonly BackendRunnerKind[];
+  private readonly availabilityAdapters = new Map<BackendRunnerKind, BackendAvailabilityAdapter>();
   private readonly activeChildren = new Set<ChildProcess>();
   private readonly killTimers = new Map<ChildProcess, ReturnType<typeof setTimeout>>();
   private requestedGeneration = 0;
@@ -117,6 +130,47 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
   constructor(private readonly deps: BackendCapabilityServiceDeps) {
     this.spawnFn = deps.spawnFn ?? (spawn as unknown as SpawnFn);
     this.backendKinds = deps.backendKinds ?? SUPPORTED_BACKENDS;
+    if (deps.availabilityAdapters !== undefined) {
+      for (const kind of SUPPORTED_BACKENDS) {
+        const adapter = deps.availabilityAdapters[kind];
+        if (adapter !== undefined) {
+          this.availabilityAdapters.set(kind, adapter);
+        }
+      }
+    }
+  }
+
+  public registerAvailabilityAdapter(
+    kind: BackendRunnerKind,
+    adapter: BackendAvailabilityAdapter
+  ): void {
+    this.availabilityAdapters.set(kind, adapter);
+  }
+
+  public getStatusCheckSupport(kind: BackendRunnerKind): QuotaStatusCheckSupport {
+    const adapter = this.availabilityAdapters.get(kind);
+    return adapter?.statusCheck ?? 'unsupported';
+  }
+
+  public resolveQuotaContext(frozenPhase: FrozenPhaseQuotaTarget): QuotaContext {
+    const adapter = this.availabilityAdapters.get(frozenPhase.runner);
+    if (adapter !== undefined) {
+      const validated = validateQuotaContext(adapter.resolveQuotaContext(frozenPhase));
+      if (!validated.ok) {
+        throw new Error(validated.message);
+      }
+      return validated.value;
+    }
+    const adapterId = `${frozenPhase.runner}-cli`;
+    return Object.freeze({
+      version: BACKEND_AVAILABILITY_VERSION,
+      adapterId,
+      adapterVersion: BACKEND_AVAILABILITY_VERSION,
+      quotaIds: Object.freeze([UNKNOWN_LOCAL_QUOTA_ID]),
+      identity: 'unknown',
+      statusCheck: 'unsupported',
+      capacity: 1
+    });
   }
 
   public getSnapshot(): BackendCapabilitySnapshot {

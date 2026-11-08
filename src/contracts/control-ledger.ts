@@ -52,9 +52,15 @@ export type ControlFrameKind =
 
 export type ControlFrameStatus =
   | 'in-flight'
+  | 'selecting'
+  | 'dispatch-pending'
+  | 'executing'
+  | 'retry-delayed'
   | 'waiting-availability'
   | 'waiting-permit'
   | 'waiting-handoff'
+  | 'monitoring-expired'
+  | 'intervention-required'
   | 'paused'
   | 'completed'
   | 'failed'
@@ -90,9 +96,12 @@ export interface CandidateRuntimeSlot {
     | 'succeeded'
     | 'failed'
     | 'disabled';
-  readonly nextEligibleAt?: number;
-  readonly lastAttemptId?: string;
-  readonly lastFailureCode?: string;
+  readonly nextEligibleAt?: number | undefined;
+  readonly lastAttemptId?: string | undefined;
+  readonly lastFailureCode?: string | undefined;
+  readonly quotaIds?: readonly string[] | undefined;
+  readonly observationIds?: readonly string[] | undefined;
+  readonly allowUnverifiedTrial?: boolean | undefined;
 }
 
 export interface RepeatRuntimeState {
@@ -136,12 +145,19 @@ export interface ControlFrame {
   readonly selectedCandidateId?: string | undefined;
   readonly dispatchedCount: number;
   readonly maxDispatches?: number;
-  readonly pauseCause?: string;
-  readonly failureCode?: string;
-  readonly candidateSlots?: readonly CandidateRuntimeSlot[];
-  readonly repeatState?: RepeatRuntimeState;
-  readonly forEachState?: ForEachRuntimeState;
-  readonly decisionResults?: Readonly<Record<string, DecisionFieldValue>>;
+  readonly pauseCause?: string | undefined;
+  readonly failureCode?: string | undefined;
+  readonly frameGeneration?: number | undefined;
+  readonly monitoringStartedAt?: number | undefined;
+  readonly monitoringExpiresAt?: number | undefined;
+  readonly monitoringRenewals?: number | undefined;
+  readonly lastClockWallMs?: number | undefined;
+  readonly lastClockMonotonicMs?: number | undefined;
+  readonly lastClockHostEpoch?: string | undefined;
+  readonly candidateSlots?: readonly CandidateRuntimeSlot[] | undefined;
+  readonly repeatState?: RepeatRuntimeState | undefined;
+  readonly forEachState?: ForEachRuntimeState | undefined;
+  readonly decisionResults?: Readonly<Record<string, DecisionFieldValue>> | undefined;
 }
 
 export interface ControlAttemptRecord {
@@ -177,27 +193,57 @@ export interface ControlAttemptRecord {
 
 export interface QuotaObservationRecord {
   readonly quotaKey: string;
+  readonly observationId?: string | undefined;
+  readonly quotaId?: string | undefined;
+  readonly generation?: number | undefined;
   readonly backend: BackendRunnerKind;
-  readonly accountId?: string;
-  readonly status: 'ready' | 'rate-limited' | 'credit-exhausted' | 'unknown' | 'unsupported';
+  readonly accountId?: string | undefined;
+  readonly status:
+    | 'ready'
+    | 'cooldown-known'
+    | 'cooldown-unknown'
+    | 'unreachable'
+    | 'top-up-required'
+    | 'check-unsupported'
+    | 'rate-limited'
+    | 'credit-exhausted'
+    | 'unknown'
+    | 'unsupported';
+  readonly source?:
+    | 'qualified-status'
+    | 'canonical-diagnostic'
+    | 'counted-trial'
+    | undefined;
   readonly observedAt: number;
-  readonly resetAt?: number;
-  readonly nextCheckAt?: number;
+  readonly observedMonotonicAt?: number | undefined;
+  readonly hostEpoch?: string | undefined;
+  readonly resetAt?: number | undefined;
+  readonly notBefore?: number | undefined;
+  readonly nextCheckAt?: number | undefined;
+  readonly pollIndex?: number | undefined;
+  readonly capacity?: number | undefined;
   readonly checkAttempts: number;
-  readonly detail?: string;
+  readonly lastCheckStartedAt?: number | undefined;
+  readonly detail?: string | undefined;
 }
 
 export interface AvailabilityCheckRecord {
   readonly checkId: string;
   readonly quotaKey: string;
+  readonly observationId?: string | undefined;
   readonly backend: BackendRunnerKind;
   readonly sponsorLedgerRunId: string;
+  readonly sponsorRootRunId?: string | undefined;
+  readonly generation?: number | undefined;
   readonly status: 'running' | 'completed' | 'failed' | 'aborted';
+  readonly stage?: 'pending' | 'started' | 'settled' | 'uncertain' | undefined;
   readonly startedAt: number;
   readonly deadlineAt: number;
-  readonly completedAt?: number;
-  readonly costMicrousd?: number;
-  readonly costUncertain?: boolean;
+  readonly completedAt?: number | undefined;
+  readonly reservedMicrousd?: number | undefined;
+  readonly costMicrousd?: number | undefined;
+  readonly costUncertain?: boolean | undefined;
+  readonly usageRef?: string | undefined;
 }
 
 export interface QuotaWaiterRecord {
