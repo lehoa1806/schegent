@@ -453,6 +453,7 @@ const stateSchema = new SourceExtractor('src/contracts/state-schema.ts');
 const decisionResults = new SourceExtractor('src/contracts/decision-results.ts');
 const workflowControls = new SourceExtractor('src/contracts/workflow-controls.ts');
 const recoveryEnvelope = new SourceExtractor('src/contracts/recovery-envelope.ts');
+const backendAvailability = new SourceExtractor('src/contracts/backend-availability.ts');
 const queueSnapshot = new SourceExtractor('src/contracts/queue-snapshot.ts');
 const featureRequest = new SourceExtractor('src/queue/feature-request.ts');
 const runner = new SourceExtractor('src/runner/invocation-result.ts');
@@ -483,6 +484,10 @@ const forEachOnItemErrorPolicies = workflowControls.stringArray('FOR_EACH_ON_ITE
 const recoveryWorkspaceCoverages = recoveryEnvelope.stringArray('RECOVERY_WORKSPACE_COVERAGE_VALUES');
 const recoveryWorkspaceAttributions = recoveryEnvelope.stringArray('RECOVERY_WORKSPACE_ATTRIBUTION_VALUES');
 const recoveryEffectCertainties = recoveryEnvelope.stringArray('RECOVERY_EFFECT_CERTAINTY_VALUES');
+const quotaIdentityKinds = backendAvailability.stringArray('QUOTA_IDENTITY_KINDS');
+const quotaStatusCheckSupports = backendAvailability.stringArray('QUOTA_STATUS_CHECK_SUPPORTS');
+const quotaObservationStatuses = backendAvailability.stringArray('QUOTA_OBSERVATION_STATUSES');
+const quotaObservationSources = backendAvailability.stringArray('QUOTA_OBSERVATION_SOURCES');
 
 const schemas = {
   'src/contracts/generated/schemas/sidebar-ipc.schema.json': makeSchema(
@@ -576,10 +581,14 @@ const schemas = {
   'src/contracts/generated/schemas/backend-runner.schema.json': makeSchema(
     'backend-runner',
     'Schegent Backend Runner Contract',
-    ['src/contracts/backend-runner.ts', 'src/runner/invocation-result.ts'],
+    ['src/contracts/backend-runner.ts', 'src/runner/invocation-result.ts', 'src/contracts/backend-availability.ts'],
     {
       invocationRequestFields: interfaceProperty(runner.interfaceProperties('InvocationRequest')),
-      rawInvocationOutputFields: interfaceProperty(runner.interfaceProperties('RawInvocationOutput'))
+      rawInvocationOutputFields: interfaceProperty(runner.interfaceProperties('RawInvocationOutput')),
+      quotaIdentityKinds: enumProperty(quotaIdentityKinds),
+      quotaStatusCheckSupports: enumProperty(quotaStatusCheckSupports),
+      quotaObservationStatuses: enumProperty(quotaObservationStatuses),
+      quotaObservationSources: enumProperty(quotaObservationSources)
     }
   )
 };
@@ -634,7 +643,7 @@ const contractFamilies = [
     family: 'backend-runner',
     status: 'generated',
     description: 'Backend runner request and raw invocation result field names.',
-    sourceFiles: ['src/contracts/backend-runner.ts', 'src/runner/invocation-result.ts'],
+    sourceFiles: ['src/contracts/backend-runner.ts', 'src/runner/invocation-result.ts', 'src/contracts/backend-availability.ts'],
     schemaFiles: ['src/contracts/generated/schemas/backend-runner.schema.json'],
     typescriptBinding: 'src/contracts/generated/boundary-contracts.ts',
     reviewPolicy: 'Regenerate with every runner request/result boundary change.'

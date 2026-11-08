@@ -6,13 +6,18 @@
   "x-generatedSchemaVersion": 1,
   "x-generatedFrom": [
     "src/contracts/backend-runner.ts",
-    "src/runner/invocation-result.ts"
+    "src/runner/invocation-result.ts",
+    "src/contracts/backend-availability.ts"
   ],
   "type": "object",
   "additionalProperties": false,
   "required": [
     "invocationRequestFields",
-    "rawInvocationOutputFields"
+    "rawInvocationOutputFields",
+    "quotaIdentityKinds",
+    "quotaStatusCheckSupports",
+    "quotaObservationStatuses",
+    "quotaObservationSources"
   ],
   "properties": {
     "invocationRequestFields": {
@@ -269,6 +274,55 @@
           "type": "FatalClassification"
         }
       ]
+    },
+    "quotaIdentityKinds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "qualified",
+          "unknown"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "quotaStatusCheckSupports": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "supported",
+          "unsupported"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "quotaObservationStatuses": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "ready",
+          "cooldown-known",
+          "cooldown-unknown",
+          "unreachable",
+          "top-up-required",
+          "check-unsupported"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "quotaObservationSources": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "qualified-status",
+          "canonical-diagnostic",
+          "counted-trial"
+        ]
+      },
+      "uniqueItems": true
     }
   }
 }

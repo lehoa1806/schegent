@@ -29,9 +29,19 @@ import {
   BackendCapabilityService,
   normalizeBackendProbeTimeoutSeconds
 } from '../services/backend-capability-service';
+import {
+  BackendAvailabilityService,
+  type AvailabilityClockPort
+} from '../services/backend-availability-service';
 import { BackendPingService } from '../services/backend-ping-service';
 import { EvidenceHealthMonitor } from '../services/evidence-health/evidence-health-monitor';
+import { ControlLedgerStore } from '../services/workflow-execution/control-ledger-store';
+import {
+  ControlWakeupPlanner,
+  type ControlWakeupEvent
+} from '../services/workflow-execution/control-wakeup-planner';
 import { getCanonicalWorkspaceRoot } from '../state/workspace-folder-picker';
+import type { WorkspaceStateStore } from '../state/workspace-state';
 
 const unrestrictedEnvironmentWarnedWorkspaces = new Set<string>();
 
@@ -46,6 +56,54 @@ export interface BackendDiagnosticsWiring {
   readonly capabilities: BackendCapabilityService;
   readonly ping: BackendPingService;
   dispose(): void;
+}
+
+export interface BackendAvailabilityWiring {
+  readonly availabilityService: BackendAvailabilityService;
+  readonly wakeupPlanner: ControlWakeupPlanner;
+  dispose(): void;
+}
+
+/**
+ * FR-R5-F28 (SPEC-06, D7) — Compose the backend availability service and durable
+ * control wakeup planner over the workspace's `ControlLedgerStore`.
+ */
+export function createBackendAvailabilityWiring(input: {
+  readonly store: WorkspaceStateStore;
+  readonly capabilities: BackendCapabilityService;
+  readonly hostEpoch: string;
+  readonly clock?: AvailabilityClockPort;
+  readonly onWakeupDue?: (event: ControlWakeupEvent) => void | Promise<void>;
+}): BackendAvailabilityWiring {
+  const ledgerStore = new ControlLedgerStore(input.store);
+  const clock: AvailabilityClockPort = input.clock ?? {
+    hostEpoch: input.hostEpoch,
+    nowWallMs: () => Date.now(),
+    nowMonotonicMs: () => Math.trunc(performance.now())
+  };
+  const availabilityService = new BackendAvailabilityService({
+    ledgerStore,
+    clock,
+    getAdapter: (kind) => ({
+      adapterId: `${kind}-cli`,
+      adapterVersion: 1,
+      backend: kind,
+      statusCheck: input.capabilities.getStatusCheckSupport(kind),
+      resolveQuotaContext: (frozenPhase) =>
+        input.capabilities.resolveQuotaContext(frozenPhase)
+    })
+  });
+  const wakeupPlanner = new ControlWakeupPlanner({
+    ledgerStore,
+    availabilityService,
+    clock,
+    ...(input.onWakeupDue !== undefined ? { onWakeupDue: input.onWakeupDue } : {})
+  });
+  return {
+    availabilityService,
+    wakeupPlanner,
+    dispose: () => wakeupPlanner.dispose()
+  };
 }
 
 /** Workspace-scoped backend discovery and operator Ping composition. */

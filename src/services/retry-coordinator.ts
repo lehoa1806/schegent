@@ -210,6 +210,25 @@ export class RetryCoordinator {
   }
 
   /**
+   * FR-R5-F28 (SPEC-06, D7) — Return the persisted/armed not-before retry deadline for `queueId`,
+   * or `null` when no delayed-retry floor is active.
+   */
+  public getPendingRetryDeadline(queueId: string): number | null {
+    const entry = this.pendingRetries.get(queueId);
+    return entry !== undefined ? entry.firesAt : null;
+  }
+
+  /**
+   * FR-R5-F28 (SPEC-06, D7) — True when `queueId` has no unexpired delayed-retry dispatch floor
+   * at `atMs`. Status polling never shortens an active dispatch floor.
+   */
+  public isNotBeforeSatisfied(queueId: string, atMs: number = this.now()): boolean {
+    const entry = this.pendingRetries.get(queueId);
+    if (entry === undefined) return true;
+    return atMs >= entry.firesAt;
+  }
+
+  /**
    * Remove and return every queue whose delayed-retry deadline has elapsed, then re-arm the
    * next-earliest. Destructive by design: the elapsed deadlines are consumed, so a second read does
    * not resume them twice. A queue whose deadline is still in the future keeps its entry.
