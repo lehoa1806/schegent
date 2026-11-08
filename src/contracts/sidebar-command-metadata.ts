@@ -180,13 +180,16 @@ export const COMMAND_AUTHORITY = Object.freeze({
   // naming-convention lint would not have caught the omission — the entry is
   // deliberate, not incidental.
   [CMD_LAUNCH_PIPELINE]: gated('run enqueue'),
-  // Feature 088 (T032) — connected Workflow runs. The launch creates the
-  // aggregate and enqueues its first child; the continuation enqueues a child
-  // and increments the run's revision. Both create durable state, and neither
-  // name carries a mutating verb prefix, so the naming-convention lint would
-  // not have caught an omission here.
+  // Feature 088 (T032) & FR-R5-F31 (T006/T007) — connected Workflow runs and
+  // version-1 candidate-block control envelopes. The launch creates the
+  // aggregate and enqueues its first child; the continuation enqueues a child,
+  // increments the run's revision, or executes a candidate-block `controlCommand`
+  // (`check-now`, `try-now`, `select-candidate`, `set-policy`,
+  // `set-allowed-candidates`, `renew-monitoring`, `pause`, `resume`, `cancel`).
+  // Both create durable state, and neither name carries a mutating verb prefix,
+  // so the naming-convention lint would not have caught an omission here.
   [CMD_LAUNCH_WORKFLOW]: gated('connected run enqueue'),
-  [CMD_CONTINUE_WORKFLOW]: gated('connected run enqueue'),
+  [CMD_CONTINUE_WORKFLOW]: gated('connected run enqueue and workflow control'),
   // Feature 092 (T030, US1, FR-021) — the seven reinstated multi-queue
   // commands. Only four of the names carry a verb the
   // `mutating-command-name-gate` lint recognises (`SAVE_`, `SET_`, `CLEAR_`,

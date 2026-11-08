@@ -357,7 +357,15 @@ export function selectNextCandidateAction(input: {
     };
   }
 
-  const nonRetired = orderedSlots.filter((s) => !isCandidateRetired(s));
+  const allowedSet =
+    frame.allowedCandidateIds !== undefined
+      ? new Set(frame.allowedCandidateIds)
+      : undefined;
+  const nonRetired = orderedSlots.filter(
+    (s) =>
+      !isCandidateRetired(s) &&
+      (allowedSet === undefined || allowedSet.has(s.candidateId))
+  );
   if (nonRetired.length === 0) {
     return {
       kind: 'fail-exhausted',
@@ -390,6 +398,56 @@ export function selectNextCandidateAction(input: {
           monCheck.reason === 'clock-anomaly'
             ? 'clock-trust-lost'
             : 'monitoring-window-expired'
+      };
+    }
+  }
+
+  // D8 one-admission manualSelectionCandidateId override:
+  // Next admission considers only that eligible candidate, waiting for its
+  // readiness and deadlines instead of silently picking another under first-ready.
+  if (frame.manualSelectionCandidateId !== undefined) {
+    const manualTarget = nonRetired.find(
+      (s) => s.candidateId === frame.manualSelectionCandidateId
+    );
+    if (manualTarget !== undefined) {
+      if (
+        manualTarget.nextEligibleAt !== undefined &&
+        manualTarget.nextEligibleAt > nowWallMs
+      ) {
+        return {
+          kind: 'wait-backoff',
+          candidate: manualTarget,
+          nextEligibleAt: manualTarget.nextEligibleAt
+        };
+      }
+      const readiness = input.isSlotReady(manualTarget);
+      if (readiness.topUpRequired) {
+        return {
+          kind: 'pause-intervention',
+          pauseCause: 'credit-top-up-required',
+          candidateId: manualTarget.candidateId
+        };
+      }
+      if (readiness.ready) {
+        const prevSelected = frame.selectedCandidateId;
+        return {
+          kind: 'dispatch-candidate',
+          candidate: manualTarget,
+          attemptOrdinal: manualTarget.dispatchedAttempts + 1,
+          ...(prevSelected !== undefined &&
+          prevSelected !== manualTarget.candidateId
+            ? { switchedFromCandidateId: prevSelected }
+            : {})
+        };
+      }
+      return {
+        kind: 'wait-availability',
+        candidateIds: Object.freeze([manualTarget.candidateId]),
+        ...(readiness.nextCheckAt !== undefined
+          ? { nextCheckAt: readiness.nextCheckAt }
+          : {}),
+        monitoringExpiresAt:
+          frame.monitoringExpiresAt ?? nowWallMs + MONITORING_WINDOW_DURATION_MS
       };
     }
   }
@@ -937,6 +995,45 @@ export class CandidateBlockExecutor {
         });
       }
 
+      // Clear one-admission manualSelectionCandidateId override upon admitted dispatch (D8)
+      if (frame.manualSelectionCandidateId !== undefined) {
+        await this.store.mutate({}, ({ ledger }) => {
+          const r = lookupRecord(ledger.roots, input.rootRunId);
+          const f = r !== undefined ? lookupRecord(r.framesByKey, input.frameKey) : undefined;
+          if (r === undefined || f === undefined) {
+            return {
+              commit: false,
+              code: 'control-ledger-corrupt',
+              message: 'Target root or frame disappeared while clearing manualSelectionCandidateId.'
+            };
+          }
+          const { manualSelectionCandidateId: _cleared, ...restF } = f;
+          const nextF: ControlFrame = Object.freeze({ ...restF });
+          const nextR: RootControlState = Object.freeze({
+            ...r,
+            framesByKey: Object.freeze({
+              ...r.framesByKey,
+              [input.frameKey]: nextF
+            })
+          });
+          return {
+            commit: true,
+            plan: {
+              nextLedger: {
+                ...ledger,
+                roots: {
+                  ...ledger.roots,
+                  [input.rootRunId]: nextR
+                }
+              },
+              targetRootId: input.rootRunId,
+              expectedFence: input.fence,
+              result: nextF
+            }
+          };
+        });
+      }
+
       const updatedRoot = this.store.getRoot(input.rootRunId) ?? commitOutcome.root;
       const updatedFrame =
         lookupRecord(updatedRoot.framesByKey, input.frameKey) ??
@@ -1377,9 +1474,23 @@ export class CandidateBlockExecutor {
           nextFrameStatus = 'selecting';
         }
 
-        const { activeAttemptId: _cleared, ...restFrame } = frame;
+        const settledSlot = nextSlots.find(
+          (s) => s.candidateId === input.candidateId
+        );
+        const clearManualSelection =
+          settledSlot !== undefined &&
+          isCandidateRetired(settledSlot) &&
+          frame.manualSelectionCandidateId === input.candidateId;
+        const {
+          activeAttemptId: _cleared,
+          manualSelectionCandidateId: existingManualSelection,
+          ...restFrame
+        } = frame;
         const nextFrame: ControlFrame = Object.freeze({
           ...restFrame,
+          ...(existingManualSelection !== undefined && !clearManualSelection
+            ? { manualSelectionCandidateId: existingManualSelection }
+            : {}),
           status: nextFrameStatus,
           candidateSlots: Object.freeze(nextSlots),
           ...(nextPauseCause !== undefined ? { pauseCause: nextPauseCause } : {}),

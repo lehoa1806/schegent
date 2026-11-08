@@ -22,6 +22,7 @@ import {
   type CommandType,
   type ContinueWorkflowPayload,
   type ContinueWorkflowResult,
+  type ControlCommandEnvelope,
   type LaunchWorkflowPayload,
   type LaunchWorkflowResult,
   type WorkflowControlAction
@@ -69,6 +70,7 @@ const LAUNCH_OUTCOMES: ReadonlySet<string> = new Set<LaunchWorkflowResult['outco
 
 const CONTINUE_OUTCOMES: ReadonlySet<string> = new Set<ContinueWorkflowResult['outcome']>([
   'started',
+  'control-acknowledged',
   'rejected-run',
   'rejected-stale',
   'rejected-state',
@@ -204,6 +206,36 @@ export function controlWorkflowRun(
       invocationId: input.invocationId,
       operation: input.operation,
       ...(input.commandId !== undefined ? { commandId: input.commandId } : {}),
+      request: {
+        pipelineId: nodeId,
+        inputs: [],
+        supplemental: [],
+        outputs: []
+      }
+    },
+    options
+  );
+}
+
+/**
+ * Dispatch a version-1 candidate-block `ControlCommandEnvelope` (`check-now`,
+ * `try-now`, `select-candidate`, `set-policy`, `set-allowed-candidates`,
+ * `renew-monitoring`, `pause`, `resume`, `cancel`) over `CMD_CONTINUE_WORKFLOW`
+ * (FR-R5-F31-T06).
+ */
+export function sendWorkflowControlCommand(
+  command: ControlCommandEnvelope,
+  options?: IntentWaitOptions<ContinueWorkflowResult | NotYetKnown>
+): Promise<ContinueWorkflowResult | NotYetKnown> {
+  const nodeId = command.invocationId;
+  return continueWorkflow(
+    {
+      connectedRunId: command.rootRunId,
+      expectedRevision: command.expectedGeneration,
+      nodeId,
+      invocationId: command.invocationId,
+      commandId: command.commandId,
+      controlCommand: command,
       request: {
         pipelineId: nodeId,
         inputs: [],

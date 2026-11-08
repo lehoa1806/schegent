@@ -37,6 +37,10 @@ import {
 } from './continuation-composer';
 import type { NodeRunStartDeps } from './node-run-starter';
 import { phaseDispatchResultOf, startPhaseAttempt } from './phase-attempt-start';
+import {
+  ControlCommandService,
+  type ControlCommandServiceDeps
+} from './control-command-service';
 import { WorkflowControlService } from './workflow-control-service';
 import type { WorkflowLeafControlHooks } from './workflow-leaf-control';
 import { continueWorkflow, type ConnectedRunWriter } from './workflow-launcher';
@@ -109,6 +113,13 @@ export interface ContinuationDeps extends NodeRunStartDeps {
     nodeId: string,
     readChildState: ChildRunStateReader
   ) => boolean;
+  /**
+   * FR-R5-F31 — optional candidate-block control command service (or deps)
+   * shared between the editor `CMD_CONTINUE_WORKFLOW` handler and the headless
+   * workflow-run adapter.
+   */
+  readonly controlCommandService?: ControlCommandService;
+  readonly controlCommandServiceDeps?: ControlCommandServiceDeps;
 }
 
 export interface ContinuationInput {
@@ -155,6 +166,23 @@ export async function continueConnectedRun(
   deps: ContinuationDeps,
   input: ContinuationInput
 ): Promise<ContinueWorkflowResult> {
+  if (input.payload.controlCommand !== undefined) {
+    const commandService =
+      deps.controlCommandService ??
+      (deps.controlCommandServiceDeps !== undefined
+        ? new ControlCommandService(deps.controlCommandServiceDeps)
+        : undefined);
+    if (commandService !== undefined) {
+      const acknowledgement = await commandService.executeControlCommand(
+        input.payload.controlCommand
+      );
+      return {
+        outcome: 'control-acknowledged',
+        acknowledgement
+      };
+    }
+  }
+
   const runs = deps.connectedRuns;
   if (runs === undefined) return LAUNCHER_UNAVAILABLE;
 

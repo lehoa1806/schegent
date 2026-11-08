@@ -161,6 +161,13 @@
       statusMessage = `This node could not be started. ${boundaryRefusalText(result.reason)}`;
       return;
     }
+    if (result.outcome === 'control-acknowledged') {
+      statusMessage =
+        result.acknowledgement.outcome === 'refused'
+          ? `Control command refused (${result.acknowledgement.reason ?? 'unknown'}).`
+          : `Control command ${result.acknowledgement.outcome}.`;
+      return;
+    }
     // FR-R4-F05 (O1) — neither the code `queue-refused` nor the guard's detail is shown raw.
     statusMessage = result.detail
       ? `The queue refused this node. ${boundaryRefusalText(result.detail)}`

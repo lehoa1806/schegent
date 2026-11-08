@@ -21,6 +21,7 @@ export const MAX_ACTIVE_AVAILABILITY_CHECKS = 3 as const;
 export const MAX_FRAMES_PER_ROOT = 1024 as const;
 export const MAX_ROOT_LEDGER_BYTES = 2_097_152 as const;
 export const ROOT_SETTLEMENT_RESERVE_BYTES = 16_384 as const;
+export const MAX_CONTROL_COMMAND_RECEIPTS_PER_ROOT = 256 as const;
 
 /**
  * Execution fence triple required on every control-ledger write and child spawn:
@@ -166,6 +167,9 @@ export interface ControlFrame {
     | 'wait-for-selected'
     | 'stop-on-unavailability'
     | undefined;
+  readonly manualSelectionCandidateId?: string | undefined;
+  readonly allowedCandidateIds?: readonly string[] | undefined;
+  readonly policyOverrides?: readonly ControlPolicyOverrideRecord[] | undefined;
   readonly returnCommitId?: string | undefined;
   readonly winningCandidateId?: string | undefined;
   readonly winningAttemptId?: string | undefined;
@@ -388,6 +392,35 @@ export interface ControlSettledCheckSummaryRecord {
   readonly settledAt: number;
 }
 
+export interface ControlPolicyOverrideRecord {
+  readonly commandId: string;
+  readonly generation: number;
+  readonly appliedAt: number;
+  readonly availabilityPolicy?:
+    | 'first-ready'
+    | 'wait-for-selected'
+    | 'stop-on-unavailability'
+    | undefined;
+  readonly allowedCandidateIds?: readonly string[] | undefined;
+  readonly manualSelectionCandidateId?: string | undefined;
+  readonly monitoringDurationMs?: number | undefined;
+}
+
+export interface ControlCommandReceiptRecord {
+  readonly commandId: string;
+  readonly payloadDigest: string;
+  readonly invocationId: string;
+  readonly generation: number;
+  readonly acceptedAt: number;
+  readonly acknowledgement: {
+    readonly version: 1;
+    readonly commandId: string;
+    readonly outcome: 'accepted' | 'refused';
+    readonly generation: number;
+    readonly reason?: string | undefined;
+  };
+}
+
 export interface RootControlState {
   readonly version: typeof CONTROL_LEDGER_VERSION;
   readonly ledgerRunId: string;
@@ -407,6 +440,8 @@ export interface RootControlState {
   readonly notificationsById?: Readonly<Record<string, ControlNotificationRecord>> | undefined;
   readonly decisionSummaries?: readonly ControlDecisionSummaryRecord[] | undefined;
   readonly settledCheckSummaries?: readonly ControlSettledCheckSummaryRecord[] | undefined;
+  readonly commandReceipts?: readonly ControlCommandReceiptRecord[] | undefined;
+  readonly receiptHighWaterGeneration?: number | undefined;
   readonly archivedHistoryCursor?: string | undefined;
   readonly archivedSummaryCount?: number | undefined;
   readonly framesByKey: Readonly<Record<string, ControlFrame>>;
@@ -440,6 +475,7 @@ export interface ConnectedRunControlLink {
 export interface ControlClockPort {
   nowWallMs(): number;
   nowMonotonicMs(): number;
+  readonly hostEpoch?: string | undefined;
 }
 
 /**

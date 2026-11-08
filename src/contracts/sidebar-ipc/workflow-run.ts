@@ -28,6 +28,14 @@
 import type { ExecutionDecisionObservation } from '../execution-decision-observation';
 import type { CMD_CONTINUE_WORKFLOW, CMD_LAUNCH_WORKFLOW, CommandBase } from '../sidebar-ipc';
 import type { RunRequest, RunRequestFieldError } from '../run-request';
+import {
+  CANDIDATE_AVAILABILITY_POLICIES,
+  MAX_CANDIDATES_PER_BLOCK,
+  MAX_MONITORING_WINDOW_MS,
+  MIN_CANDIDATES_PER_BLOCK,
+  MIN_MONITORING_WINDOW_MS,
+  type CandidateAvailabilityPolicy
+} from '../workflow-controls';
 import { validRunRequest } from '../validators/run-request-shape';
 import { QUEUE_ID_MAX, hasUnexpectedKeys } from '../validators/shared';
 
@@ -84,6 +92,153 @@ export const WORKFLOW_CONTROL_ACTIONS: readonly WorkflowControlAction[] = Object
   'continue-handoff'
 ]);
 
+// -- FR-R5-F31 (SPEC-09, D8) — Versioned candidate/workflow control contracts --
+
+export const CONTROL_COMMAND_VERSION = 1 as const;
+
+export const CONTROL_ACTION_KINDS = Object.freeze([
+  'check-now',
+  'try-now',
+  'select-candidate',
+  'set-policy',
+  'set-allowed-candidates',
+  'renew-monitoring',
+  'pause',
+  'resume',
+  'cancel'
+] as const);
+
+export type ControlActionKind = (typeof CONTROL_ACTION_KINDS)[number];
+
+export type ControlAction =
+  | { readonly kind: 'check-now'; readonly candidateId?: string }
+  | { readonly kind: 'try-now'; readonly candidateId: string }
+  | { readonly kind: 'select-candidate'; readonly candidateId: string }
+  | {
+      readonly kind: 'set-policy';
+      readonly availabilityPolicy: CandidateAvailabilityPolicy;
+    }
+  | {
+      readonly kind: 'set-allowed-candidates';
+      readonly candidateIds: readonly string[];
+    }
+  | { readonly kind: 'renew-monitoring'; readonly durationMs: number }
+  | { readonly kind: 'pause' }
+  | { readonly kind: 'resume' }
+  | { readonly kind: 'cancel' };
+
+export interface ControlCommandEnvelope {
+  readonly version: 1;
+  readonly commandId: string;
+  readonly rootRunId: string;
+  readonly queueId: string;
+  readonly invocationId: string;
+  readonly expectedGeneration: number;
+  readonly action: ControlAction;
+}
+
+export const CONTROL_COMMAND_REFUSAL_REASONS = Object.freeze([
+  'stale-generation',
+  'unknown-target',
+  'illegal-state',
+  'candidate-ineligible',
+  'not-before',
+  'check-rate-limited',
+  'monitoring-expired',
+  'trust-denied',
+  'spend-limit-reached',
+  'spend-unverifiable',
+  'uncertain-effect',
+  'unsupported-control-version',
+  'invalid-command'
+] as const);
+
+export type ControlCommandRefusalReason =
+  (typeof CONTROL_COMMAND_REFUSAL_REASONS)[number];
+
+export interface ControlLegalActionEntry {
+  readonly kind: ControlActionKind;
+  readonly allowed: boolean;
+  readonly reason?: ControlCommandRefusalReason;
+  readonly candidateId?: string;
+}
+
+export interface ControlCandidateProjection {
+  readonly candidateId: string;
+  readonly nodeId: string;
+  readonly backend: string;
+  readonly priority: number;
+  readonly authoredOrder: number;
+  readonly attemptsUsed: number;
+  readonly maxAttempts: number;
+  readonly eligibility: 'eligible' | 'intervention' | 'retired';
+  readonly retirementReason?: 'attempts-exhausted' | 'permanent-failure';
+  readonly policyExcluded: boolean;
+  readonly availabilityStatus?: string;
+  readonly availabilitySource?: string;
+  readonly fresh?: boolean;
+  readonly resetAt?: number;
+  readonly nextCheckAt?: number;
+  readonly notBefore?: number;
+}
+
+export interface ControlProjection {
+  readonly version: 1;
+  readonly rootRunId: string;
+  readonly queueId: string;
+  readonly invocationId: string;
+  readonly workflowId: string;
+  readonly nodeId?: string;
+  readonly generation: number;
+  readonly frameKind:
+    | 'root-workflow'
+    | 'child-workflow'
+    | 'candidate-block'
+    | 'repeat'
+    | 'for-each';
+  readonly state: string;
+  readonly availabilityPolicy?: CandidateAvailabilityPolicy;
+  readonly selectedCandidateId?: string;
+  readonly manualSelectionCandidateId?: string;
+  readonly allowedCandidateIds?: readonly string[];
+  readonly candidates?: readonly ControlCandidateProjection[];
+  readonly attemptsUsed: number;
+  readonly maxDispatches: number;
+  readonly rootDispatchesUsed: number;
+  readonly rootMaxDispatches: number;
+  readonly monitoringStartedAt?: number;
+  readonly monitoringExpiresAt?: number;
+  readonly monitoringRenewals?: number;
+  readonly resultStatus?: string;
+  readonly resultReason?: string;
+  readonly recoveryCoverage?: 'complete' | 'partial' | 'unavailable';
+  readonly effectCertainty?: 'safe' | 'uncertain' | 'unknown';
+  readonly spendMode: 'count-only' | 'strict-usd';
+  readonly spendEnforcementQuality:
+    | 'verified'
+    | 'estimated'
+    | 'unavailable'
+    | 'count-only';
+  readonly verifiedMicrousd?: number;
+  readonly estimatedMicrousd?: number;
+  readonly unpricedAttemptCount?: number;
+  readonly maxMicrousd?: number;
+  readonly policyObservations?: readonly Readonly<
+    Record<string, string | number | boolean>
+  >[];
+  readonly legalActions: readonly ControlLegalActionEntry[];
+  readonly evidenceRefs: readonly string[];
+}
+
+export interface ControlCommandAcknowledgement {
+  readonly version: 1;
+  readonly commandId: string;
+  readonly outcome: 'accepted' | 'refused';
+  readonly generation: number;
+  readonly reason?: ControlCommandRefusalReason;
+  readonly projection?: ControlProjection;
+}
+
 export interface ConnectedInvocationAttemptProjection {
   readonly attemptId: string;
   readonly attemptIndex: number;
@@ -127,6 +282,7 @@ export interface ConnectedInvocationProjection {
   readonly pendingHandoff?: ConnectedPendingHandoffProjection | null;
   readonly outputPortIds: readonly string[];
   readonly attempts: readonly ConnectedInvocationAttemptProjection[];
+  readonly controlProjection?: ControlProjection;
 }
 
 export interface ConnectedNodeProjection {
@@ -178,6 +334,7 @@ export interface ConnectedRunProjection {
   } | null;
   readonly invocations?: readonly ConnectedInvocationProjection[];
   readonly decisionObservations?: readonly ExecutionDecisionObservation[];
+  readonly controlProjection?: ControlProjection;
 }
 
 // -- CMD_LAUNCH_WORKFLOW -----------------------------------------------------
@@ -268,6 +425,8 @@ export interface ContinueWorkflowPayload {
   readonly invocationId?: string;
   readonly operation?: WorkflowControlAction;
   readonly commandId?: string;
+  /** FR-R5-F31 (SPEC-09, D8) — version-1 candidate/workflow control command envelope. */
+  readonly controlCommand?: ControlCommandEnvelope;
 }
 
 export interface ContinueWorkflowCommand extends CommandBase<typeof CMD_CONTINUE_WORKFLOW> {
@@ -282,7 +441,8 @@ export interface ContinueWorkflowCommand extends CommandBase<typeof CMD_CONTINUE
 export type ConnectedRunStateRefusal = 'child-not-terminal' | 'node-not-eligible';
 
 /**
- * Seven arms. `rejected-stale` and `rejected-state` both carry the projection
+ * Eight arms (`control-acknowledged` added in FR-R5-F31 for version-1 D8 control commands).
+ * `rejected-stale` and `rejected-state` both carry the projection
  * (FR-045); the definition and validation arms do not, because neither says
  * anything about the run's state that the caller's snapshot got wrong.
  */
@@ -307,6 +467,10 @@ export type ContinueWorkflowResult =
       readonly outcome: 'rejected-queue';
       readonly reason: 'queue-refused';
       readonly detail?: string;
+    }
+  | {
+      readonly outcome: 'control-acknowledged';
+      readonly acknowledgement: ControlCommandAcknowledgement;
     };
 
 export type ContinueWorkflowOutcome = ContinueWorkflowResult['outcome'];
@@ -368,6 +532,220 @@ export function isLaunchWorkflowPayload(payload: unknown): payload is LaunchWork
   );
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const AUTHORED_ID_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const QUEUE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+export function isValidUuid(value: unknown): value is string {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
+
+export function isValidAuthoredControlId(value: unknown): value is string {
+  return typeof value === 'string' && AUTHORED_ID_RE.test(value);
+}
+
+function hasControlChar(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+export type ControlCommandEnvelopeValidationResult =
+  | { readonly ok: true; readonly envelope: ControlCommandEnvelope }
+  | {
+      readonly ok: false;
+      readonly reason: 'unsupported-control-version' | 'invalid-command';
+      readonly commandId?: string;
+    };
+
+export function validateControlCommandEnvelope(
+  value: unknown
+): ControlCommandEnvelopeValidationResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, reason: 'invalid-command' };
+  }
+  const obj = value as Record<string, unknown>;
+  const rawCommandId = typeof obj.commandId === 'string' ? obj.commandId : undefined;
+
+  if (typeof obj.version === 'number' && Number.isSafeInteger(obj.version)) {
+    if (obj.version !== CONTROL_COMMAND_VERSION) {
+      return {
+        ok: false,
+        reason: 'unsupported-control-version',
+        ...(rawCommandId !== undefined ? { commandId: rawCommandId } : {})
+      };
+    }
+  } else {
+    return {
+      ok: false,
+      reason: 'invalid-command',
+      ...(rawCommandId !== undefined ? { commandId: rawCommandId } : {})
+    };
+  }
+
+  if (
+    hasUnexpectedKeys(obj, [
+      'version',
+      'commandId',
+      'rootRunId',
+      'queueId',
+      'invocationId',
+      'expectedGeneration',
+      'action'
+    ]) ||
+    !isValidUuid(obj.commandId) ||
+    !boundedId(obj.rootRunId, RUN_ID_MAX) ||
+    hasControlChar(obj.rootRunId) ||
+    typeof obj.queueId !== 'string' ||
+    !QUEUE_ID_RE.test(obj.queueId) ||
+    !isValidUuid(obj.invocationId) ||
+    typeof obj.expectedGeneration !== 'number' ||
+    !Number.isSafeInteger(obj.expectedGeneration) ||
+    obj.expectedGeneration < 0 ||
+    !obj.action ||
+    typeof obj.action !== 'object' ||
+    Array.isArray(obj.action)
+  ) {
+    return {
+      ok: false,
+      reason: 'invalid-command',
+      ...(rawCommandId !== undefined ? { commandId: rawCommandId } : {})
+    };
+  }
+
+  const actionObj = obj.action as Record<string, unknown>;
+  const kind = actionObj.kind;
+  if (typeof kind !== 'string' || !(CONTROL_ACTION_KINDS as readonly string[]).includes(kind)) {
+    return { ok: false, reason: 'invalid-command', commandId: obj.commandId };
+  }
+
+  let validatedAction: ControlAction;
+  switch (kind as ControlActionKind) {
+    case 'check-now': {
+      if (hasUnexpectedKeys(actionObj, ['kind', 'candidateId'])) {
+        return { ok: false, reason: 'invalid-command', commandId: obj.commandId };
+      }
+      if ('candidateId' in actionObj) {
+        if (
+          actionObj.candidateId !== undefined &&
+          !isValidAuthoredControlId(actionObj.candidateId)
+        ) {
+          return { ok: false, reason: 'invalid-command', commandId: obj.commandId };
+        }
+      }
+      validatedAction = Object.freeze({
+        kind: 'check-now',
+        ...(actionObj.candidateId !== undefined
+          ? { candidateId: actionObj.candidateId as string }
+          : {})
+      });
+      break;
+    }
+    case 'try-now':
+    case 'select-candidate': {
+      if (
+        hasUnexpectedKeys(actionObj, ['kind', 'candidateId']) ||
+        !isValidAuthoredControlId(actionObj.candidateId)
+      ) {
+        return { ok: false, reason: 'invalid-command', commandId: obj.commandId };
+      }
+      validatedAction =
+        kind === 'try-now'
+          ? Object.freeze({
+              kind: 'try-now' as const,
+              candidateId: actionObj.candidateId
+            })
+          : Object.freeze({
+              kind: 'select-candidate' as const,
+              candidateId: actionObj.candidateId
+            });
+      break;
+    }
+    case 'set-policy': {
+      if (
+        hasUnexpectedKeys(actionObj, ['kind', 'availabilityPolicy']) ||
+        typeof actionObj.availabilityPolicy !== 'string' ||
+        !(CANDIDATE_AVAILABILITY_POLICIES as readonly string[]).includes(
+          actionObj.availabilityPolicy
+        )
+      ) {
+        return { ok: false, reason: 'invalid-command', commandId: obj.commandId };
+      }
+      validatedAction = Object.freeze({
+        kind: 'set-policy',
+        availabilityPolicy: actionObj.availabilityPolicy as CandidateAvailabilityPolicy
+      });
+      break;
+    }
+    case 'set-allowed-candidates': {
+      if (
+        hasUnexpectedKeys(actionObj, ['kind', 'candidateIds']) ||
+        !Array.isArray(actionObj.candidateIds) ||
+        actionObj.candidateIds.length < MIN_CANDIDATES_PER_BLOCK ||
+        actionObj.candidateIds.length > MAX_CANDIDATES_PER_BLOCK ||
+        !actionObj.candidateIds.every((id) => isValidAuthoredControlId(id)) ||
+        new Set(actionObj.candidateIds).size !== actionObj.candidateIds.length
+      ) {
+        return { ok: false, reason: 'invalid-command', commandId: obj.commandId };
+      }
+      validatedAction = Object.freeze({
+        kind: 'set-allowed-candidates',
+        candidateIds: Object.freeze([...(actionObj.candidateIds as string[])])
+      });
+      break;
+    }
+    case 'renew-monitoring': {
+      if (
+        hasUnexpectedKeys(actionObj, ['kind', 'durationMs']) ||
+        typeof actionObj.durationMs !== 'number' ||
+        !Number.isSafeInteger(actionObj.durationMs) ||
+        actionObj.durationMs < MIN_MONITORING_WINDOW_MS ||
+        actionObj.durationMs > MAX_MONITORING_WINDOW_MS
+      ) {
+        return { ok: false, reason: 'invalid-command', commandId: obj.commandId };
+      }
+      validatedAction = Object.freeze({
+        kind: 'renew-monitoring',
+        durationMs: actionObj.durationMs
+      });
+      break;
+    }
+    case 'pause':
+    case 'resume':
+    case 'cancel': {
+      if (hasUnexpectedKeys(actionObj, ['kind'])) {
+        return { ok: false, reason: 'invalid-command', commandId: obj.commandId };
+      }
+      validatedAction =
+        kind === 'pause'
+          ? Object.freeze({ kind: 'pause' as const })
+          : kind === 'resume'
+            ? Object.freeze({ kind: 'resume' as const })
+            : Object.freeze({ kind: 'cancel' as const });
+      break;
+    }
+  }
+
+  return {
+    ok: true,
+    envelope: Object.freeze({
+      version: 1,
+      commandId: obj.commandId,
+      rootRunId: obj.rootRunId,
+      queueId: obj.queueId,
+      invocationId: obj.invocationId,
+      expectedGeneration: obj.expectedGeneration,
+      action: validatedAction
+    })
+  };
+}
+
+export function isControlCommandEnvelope(value: unknown): value is ControlCommandEnvelope {
+  return validateControlCommandEnvelope(value).ok;
+}
+
 export function isContinueWorkflowPayload(payload: unknown): payload is ContinueWorkflowPayload {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
   const value = payload as Record<string, unknown>;
@@ -379,7 +757,8 @@ export function isContinueWorkflowPayload(payload: unknown): payload is Continue
       'request',
       'invocationId',
       'operation',
-      'commandId'
+      'commandId',
+      'controlCommand'
     ]) &&
     boundedId(value.connectedRunId, RUN_ID_MAX) &&
     // Bounded below and not above, matching the ingress validator: a revision the
@@ -392,6 +771,7 @@ export function isContinueWorkflowPayload(payload: unknown): payload is Continue
       (typeof value.operation === 'string' &&
         (WORKFLOW_CONTROL_ACTIONS as readonly string[]).includes(value.operation))) &&
     (value.commandId === undefined || boundedId(value.commandId, CONTROL_ID_MAX)) &&
+    (value.controlCommand === undefined || isControlCommandEnvelope(value.controlCommand)) &&
     validRunRequest(value.request)
   );
 }
