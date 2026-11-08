@@ -19,6 +19,8 @@ import type { ResolvedPortValue } from '../../contracts/run-request';
 import type { ExecutionFence } from '../../contracts/control-ledger';
 import type { WorkflowNodeTerminalStatus } from '../../contracts/workflow-definitions';
 import type { ControlAttemptAdmissionService } from './control-attempt-admission';
+import type { QuotaPermit, QuotaPermitArbiter } from './quota-permit-arbiter';
+import { fromPermitRecord } from './quota-permit-arbiter';
 import {
   clearInvocationControlMarkers,
   pauseInvocationControlMarkers,
@@ -86,7 +88,8 @@ export interface WorkflowRecoveryServiceDeps {
     queueId: string,
     runId: string
   ) => Promise<void> | void;
-  readonly controlAdmission?: ControlAttemptAdmissionService;
+  readonly controlAdmission?: ControlAttemptAdmissionService | undefined;
+  readonly quotaPermitArbiter?: QuotaPermitArbiter | undefined;
   readonly resolveRecoveryFence?: (
     run: ConnectedWorkflowRun,
     queueId: string
@@ -99,6 +102,7 @@ export interface ReconcileConnectedRunResult {
   readonly disposition: RecoveryDispositionRecord | null;
   readonly run: ConnectedWorkflowRun;
   readonly projection: WorkflowRunControlProjection;
+  readonly retainedUncertainPermits?: readonly QuotaPermit[] | undefined;
 }
 
 function createStagingWriter(initial: ConnectedWorkflowRun): {
@@ -224,6 +228,7 @@ export class WorkflowRecoveryService {
     const rootId = resolveRootInvocationId(run);
     const rootFrame = run.invocations?.[rootId];
 
+    let retainedUncertainPermits: readonly QuotaPermit[] | undefined;
     if (run.controlState !== undefined && this.deps.controlAdmission !== undefined) {
       const recoveryFence =
         this.deps.resolveRecoveryFence?.(run, queueId) ?? {
@@ -231,11 +236,26 @@ export class WorkflowRecoveryService {
           queueClaim: `queue:${queueId}`,
           rootGeneration: 1
         };
-      await this.deps.controlAdmission.reconcileControlRoot({
+      const reconciledRoot = await this.deps.controlAdmission.reconcileControlRoot({
         ledgerRunId: run.controlState.ledgerRunId,
         connectedRun: run,
         newFence: recoveryFence
       });
+      if (reconciledRoot.ledger !== undefined) {
+        const uncertainList: QuotaPermit[] = [];
+        for (const pRec of Object.values(reconciledRoot.ledger.permits)) {
+          if (
+            (pRec.rootRunId ?? pRec.ledgerRunId) === run.controlState.ledgerRunId &&
+            (pRec.status === 'held-uncertain' || pRec.state === 'uncertain')
+          ) {
+            const parsed = fromPermitRecord(pRec, recoveryFence);
+            if (parsed !== undefined) {
+              uncertainList.push(parsed);
+            }
+          }
+        }
+        retainedUncertainPermits = Object.freeze(uncertainList);
+      }
     }
 
     // 1. Terminal runs: no-op, ensure lease is released.
@@ -646,7 +666,10 @@ export class WorkflowRecoveryService {
         mutated: true,
         disposition,
         run: finalRun,
-        projection: buildWorkflowRunControlProjection(finalRun)
+        projection: buildWorkflowRunControlProjection(finalRun),
+        ...(retainedUncertainPermits !== undefined
+          ? { retainedUncertainPermits }
+          : {})
       };
     }
 
@@ -655,7 +678,10 @@ export class WorkflowRecoveryService {
       mutated: false,
       disposition: run.recoveryDisposition ?? null,
       run,
-      projection: buildWorkflowRunControlProjection(run)
+      projection: buildWorkflowRunControlProjection(run),
+      ...(retainedUncertainPermits !== undefined
+        ? { retainedUncertainPermits }
+        : {})
     };
   }
 

@@ -249,16 +249,23 @@ export interface AvailabilityCheckRecord {
 export interface QuotaWaiterRecord {
   readonly waiterId: string;
   readonly waitSequence: number;
+  readonly sequence?: number | undefined;
   readonly ledgerRunId: string;
+  readonly rootRunId?: string | undefined;
   readonly connectedRunId: string;
   readonly queueId: string;
   readonly frameKey: string;
   readonly invocationId: string;
+  readonly generation?: number | undefined;
   readonly nodeId: string;
-  readonly candidateId?: string;
+  readonly candidateId?: string | undefined;
+  readonly candidateOccurrenceId?: string | undefined;
   readonly quotaKeys: readonly string[];
+  readonly quotaIds?: readonly string[] | undefined;
+  readonly observationIds?: readonly string[] | undefined;
   readonly status: 'waiting' | 'paused' | 'granted' | 'canceled';
   readonly enqueuedAt: number;
+  readonly registeredAt?: number | undefined;
   readonly updatedAt: number;
 }
 
@@ -266,13 +273,17 @@ export interface ExecutionPermitRecord {
   readonly permitId: string;
   readonly attemptId: string;
   readonly ledgerRunId: string;
+  readonly rootRunId?: string | undefined;
   readonly connectedRunId: string;
   readonly queueId: string;
   readonly quotaKeys: readonly string[];
+  readonly quotaIds?: readonly string[] | undefined;
+  readonly executionFence?: ExecutionFence | undefined;
   readonly status: 'active' | 'held-uncertain' | 'released';
+  readonly state?: 'held' | 'uncertain' | 'released' | undefined;
   readonly grantedAt: number;
-  readonly releasedAt?: number;
-  readonly uncertainReason?: string;
+  readonly releasedAt?: number | undefined;
+  readonly uncertainReason?: string | undefined;
 }
 
 export interface RootControlState {
@@ -413,16 +424,22 @@ export interface PreparedControlAttemptToken {
   readonly nodeId: string;
   readonly attemptId: string;
   readonly attemptIndex: number;
-  readonly candidateId?: string;
+  readonly candidateId?: string | undefined;
   readonly backend: BackendRunnerKind;
-  readonly model?: string;
+  readonly model?: string | undefined;
   readonly reservedMicrousd: number;
   readonly hasSideEffects: boolean;
   readonly fence: ExecutionFence;
   readonly quotaKeys: readonly string[];
-  readonly satisfiedWaiterId?: string;
-  readonly maxDispatches?: number;
-  readonly candidateMaxAttempts?: number;
+  readonly observationIds?: readonly string[] | undefined;
+  readonly requireFreshReady?: boolean | undefined;
+  readonly hostEpoch?: string | undefined;
+  readonly capacitiesByQuotaId?: Readonly<Record<string, number>> | undefined;
+  readonly satisfiedWaiterId?: string | undefined;
+  readonly expectedWaiterSequence?: number | undefined;
+  readonly expectedWaiterGeneration?: number | undefined;
+  readonly maxDispatches?: number | undefined;
+  readonly candidateMaxAttempts?: number | undefined;
 }
 
 export interface PrepareControlAttemptInput {
@@ -430,22 +447,28 @@ export interface PrepareControlAttemptInput {
   readonly connectedRunId: string;
   readonly queueId: string;
   readonly frameKey: string;
-  readonly frameKind?: ControlFrameKind;
+  readonly frameKind?: ControlFrameKind | undefined;
   readonly workflowId: string;
   readonly invocationId: string;
   readonly nodeId: string;
-  readonly attemptId?: string;
-  readonly attemptIndex?: number;
-  readonly candidateId?: string;
+  readonly attemptId?: string | undefined;
+  readonly attemptIndex?: number | undefined;
+  readonly candidateId?: string | undefined;
   readonly backend: BackendRunnerKind;
-  readonly model?: string;
-  readonly reservedMicrousd?: number;
-  readonly hasSideEffects?: boolean;
+  readonly model?: string | undefined;
+  readonly reservedMicrousd?: number | undefined;
+  readonly hasSideEffects?: boolean | undefined;
   readonly fence: ExecutionFence;
-  readonly quotaKeys?: readonly string[];
-  readonly satisfiedWaiterId?: string;
-  readonly maxDispatches?: number;
-  readonly candidateMaxAttempts?: number;
+  readonly quotaKeys?: readonly string[] | undefined;
+  readonly observationIds?: readonly string[] | undefined;
+  readonly requireFreshReady?: boolean | undefined;
+  readonly hostEpoch?: string | undefined;
+  readonly capacitiesByQuotaId?: Readonly<Record<string, number>> | undefined;
+  readonly satisfiedWaiterId?: string | undefined;
+  readonly expectedWaiterSequence?: number | undefined;
+  readonly expectedWaiterGeneration?: number | undefined;
+  readonly maxDispatches?: number | undefined;
+  readonly candidateMaxAttempts?: number | undefined;
 }
 
 export type PrepareControlAttemptOutcome =
