@@ -34,6 +34,7 @@ import type {
   ControlProjection
 } from '../../contracts/sidebar-ipc';
 import {
+  buildForEachNodeProjection,
   buildRepeatNodeProjection,
   buildWorkflowRunControlProjection,
   projectConnectedInvocations
@@ -213,6 +214,7 @@ export function projectConnectedRun(
       .map((f) => f.invocationId);
     const decisionObservation = run.decisionObservations?.filter((obs) => obs.nodeId === node.nodeId).at(-1);
     const repeatProjection = hasInvocations ? buildRepeatNodeProjection(run, node.nodeId) : undefined;
+    const forEachProjection = hasInvocations ? buildForEachNodeProjection(run, node.nodeId) : undefined;
     return {
       nodeId: node.nodeId,
       pipelineId: targetId,
@@ -227,6 +229,7 @@ export function projectConnectedRun(
       ...(reading.latestQueueItemId !== undefined ? { latestQueueItemId: reading.latestQueueItemId } : {}),
       ...(decisionObservation !== undefined ? { decisionObservation } : {}),
       ...(repeatProjection !== undefined ? { repeatProjection } : {}),
+      ...(forEachProjection !== undefined ? { forEachProjection } : {}),
       ...(hasInvocations
         ? {
             nodeKind,

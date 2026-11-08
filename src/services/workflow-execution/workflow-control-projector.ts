@@ -8,6 +8,8 @@
 // Zero `vscode` imports and zero I/O: shared by host and headless adapters.
 
 import type {
+  ConnectedForEachNodeProjection,
+  ConnectedForEachSlotProjection,
   ConnectedInvocationAttemptProjection,
   ConnectedInvocationProjection,
   ConnectedRepeatCompletedPassProjection,
@@ -31,6 +33,11 @@ import {
   type WorkflowPauseCause
 } from '../../state/connected-workflow-run';
 import { lookupRecord } from './control-ledger-store';
+import {
+  buildForEachFrameKey,
+  resolveFrozenForEachControl,
+  type OrderedForEachResultIndex
+} from './foreach-executor';
 import {
   buildRepeatFrameKey,
   resolveFrozenRepeatControl
@@ -676,6 +683,199 @@ export function buildRepeatNodeProjection(
     ...(carryValues !== undefined ? { carryValues } : {}),
     leafAttemptCount,
     completedPasses: Object.freeze(completedPasses),
+    legalActions
+  });
+}
+
+/**
+ * FR-R5-F34 (F34-T02, F34-T07) — Build authoritative `ConnectedForEachNodeProjection`
+ * for a `node.control.kind === 'for-each'` workflow node, distinguishing item count
+ * and active item index from nested leaf Phase attempt count (`leafAttemptCount`).
+ */
+export function buildForEachNodeProjection(
+  run: ConnectedWorkflowRun,
+  nodeId: string,
+  ledgerRoot?: RootControlState
+): ConnectedForEachNodeProjection | undefined {
+  const rootId = resolveRootInvocationId(run);
+  const parentFrame =
+    lookupRecord(run.invocations ?? {}, rootId) ?? Object.values(run.invocations ?? {}).at(0);
+  const parentWf =
+    parentFrame !== undefined && run.frozenClosure !== undefined
+      ? lookupRecord(run.frozenClosure.workflowsById, parentFrame.workflowId) ?? run.graph
+      : run.graph;
+  const node = parentWf.nodes.find((n) => n.nodeId === nodeId);
+  if (node?.control?.kind !== 'for-each') return undefined;
+
+  const resolvedCtrl = resolveFrozenForEachControl(run, parentWf, node, parentFrame);
+  const onItemError = resolvedCtrl.ok
+    ? resolvedCtrl.control.onItemError
+    : (node.control.onItemError ?? 'stop');
+
+  const parentInvId = parentFrame !== undefined ? parentFrame.invocationId : rootId;
+  const frameKey = buildForEachFrameKey(parentInvId, nodeId);
+  const ledgerFrame =
+    ledgerRoot !== undefined ? lookupRecord(ledgerRoot.framesByKey, frameKey) : undefined;
+  const ledgerFe = ledgerFrame?.forEachState;
+
+  const parentAttempts =
+    parentFrame !== undefined ? attemptsForNode(parentFrame, nodeId) : [];
+  const latestParentAttempt = parentAttempts.at(-1);
+
+  const childFrames = Object.values(run.invocations ?? {}).filter(
+    (f) => f.parentInvocationId === parentInvId && f.parentCallNodeId === nodeId
+  );
+  const childIds = new Set(childFrames.map((f) => f.invocationId));
+  let leafAttemptCount = 0;
+  for (const frame of Object.values(run.invocations ?? {})) {
+    if (!childIds.has(frame.invocationId) && !childIds.has(frame.parentInvocationId ?? '')) {
+      continue;
+    }
+    for (const attList of Object.values(frame.attemptsByNodeId)) {
+      for (const att of attList) {
+        if (att.nodeKind === 'phase') {
+          leafAttemptCount += 1;
+        }
+      }
+    }
+  }
+
+  let parsedResultIndex: OrderedForEachResultIndex | undefined;
+  const rawResultIndexPort =
+    latestParentAttempt !== undefined
+      ? lookupRecord(latestParentAttempt.declaredOutputs, 'resultIndex') ??
+        Object.values(latestParentAttempt.declaredOutputs).at(0)
+      : undefined;
+  if (rawResultIndexPort !== undefined) {
+    try {
+      const candidate = JSON.parse(rawResultIndexPort.value) as Partial<OrderedForEachResultIndex>;
+      if (candidate.version === 1 && Array.isArray(candidate.slots)) {
+        parsedResultIndex = candidate as OrderedForEachResultIndex;
+      }
+    } catch {
+      // Ignore non-JSON output
+    }
+  }
+
+  const slots: ConnectedForEachSlotProjection[] =
+    ledgerFe !== undefined
+      ? ledgerFe.slots.map((s) => {
+          const invId = s.invocationId ?? s.childInvocationId;
+          const state =
+            s.state ??
+            (s.status === 'in-flight'
+              ? 'executing'
+              : s.status === 'skipped'
+                ? 'pending'
+                : s.status);
+          return Object.freeze({
+            index: s.index ?? s.itemIndex,
+            itemKey: s.itemKey,
+            state,
+            ...(invId !== undefined ? { invocationId: invId } : {}),
+            ...(s.resultRef !== undefined ? { resultRef: s.resultRef } : {}),
+            ...(s.error !== undefined ? { error: s.error } : {})
+          });
+        })
+      : parsedResultIndex !== undefined
+        ? parsedResultIndex.slots.map((s) =>
+            Object.freeze({
+              index: s.index,
+              itemKey: s.itemKey,
+              state: s.state,
+              ...(s.invocationId !== undefined ? { invocationId: s.invocationId } : {}),
+              ...(s.resultRef !== undefined ? { resultRef: s.resultRef } : {}),
+              ...(s.error !== undefined ? { error: s.error } : {})
+            })
+          )
+        : parentAttempts
+            .filter((a) => a.childInvocationId !== undefined)
+            .map((a, idx) =>
+              Object.freeze({
+                index: idx,
+                itemKey: String(idx),
+                ...(a.childInvocationId !== undefined
+                  ? { invocationId: a.childInvocationId }
+                  : {}),
+                state:
+                  a.status === 'completed'
+                    ? ('completed' as const)
+                    : a.status === 'failed' || a.status === 'canceled'
+                      ? ('failed' as const)
+                      : ('executing' as const),
+                ...(a.status === 'failed'
+                  ? {
+                      error: Object.freeze({
+                        code: 'child-failed' as const,
+                        message: a.failureMessage ?? `Child workflow failed (${a.failureCode ?? 'failed'}).`
+                      })
+                    }
+                  : {})
+              })
+            );
+
+  const itemCount =
+    ledgerFe !== undefined
+      ? (ledgerFe.itemCount ?? ledgerFe.totalItems)
+      : parsedResultIndex !== undefined
+        ? parsedResultIndex.itemCount
+        : slots.length;
+  const currentIndex =
+    ledgerFe !== undefined
+      ? ledgerFe.currentIndex
+      : slots.length > 0
+        ? Math.max(0, slots.length - 1)
+        : 0;
+  const errorCount =
+    ledgerFe?.errorCount ??
+    parsedResultIndex?.errorCount ??
+    slots.filter((s) => s.state === 'failed').length;
+  const hasErrors = ledgerFe?.hasErrors ?? parsedResultIndex?.hasErrors ?? errorCount > 0;
+  const collectionRef = ledgerFe?.collectionRef ?? parsedResultIndex?.collectionRef;
+  const collectionSha256 = ledgerFe?.collectionSha256 ?? parsedResultIndex?.collectionSha256;
+  const resultIndexRef = ledgerFe?.resultIndexRef;
+  const refusalCode =
+    ledgerFe?.refusalCode ??
+    (parentFrame?.status === 'failed' || parentFrame?.status === 'paused'
+      ? parentFrame.failureCode
+      : latestParentAttempt?.failureCode);
+
+  const parentStatus = parentFrame !== undefined ? parentFrame.status : undefined;
+  const isTerminal =
+    parentStatus === 'completed' ||
+    parentStatus === 'failed' ||
+    parentStatus === 'canceled' ||
+    ledgerFrame?.status === 'completed' ||
+    ledgerFrame?.status === 'failed' ||
+    ledgerFrame?.status === 'canceled';
+  const isPaused = parentStatus === 'paused' || ledgerFrame?.status === 'paused';
+
+  const legalActions: readonly ControlLegalActionEntry[] = Object.freeze([
+    { kind: 'pause', allowed: !isTerminal && !isPaused },
+    { kind: 'resume', allowed: isPaused && !isTerminal },
+    { kind: 'cancel', allowed: !isTerminal }
+  ]);
+
+  return Object.freeze({
+    version: 1 as const,
+    kind: 'for-each' as const,
+    ...(collectionRef !== undefined ? { collectionRef } : {}),
+    ...(collectionSha256 !== undefined ? { collectionSha256 } : {}),
+    itemCount,
+    currentIndex,
+    onItemError,
+    hasErrors,
+    errorCount,
+    ...(resultIndexRef !== undefined ? { resultIndexRef } : {}),
+    ...(refusalCode !== undefined ? { refusalCode } : {}),
+    leafAttemptCount,
+    ...(ledgerRoot !== undefined
+      ? {
+          rootDispatchesUsed: ledgerRoot.dispatchedAttempts,
+          rootMaxDispatches: ledgerRoot.rootBudget.maxPhaseAttempts
+        }
+      : {}),
+    slots: Object.freeze(slots),
     legalActions
   });
 }
