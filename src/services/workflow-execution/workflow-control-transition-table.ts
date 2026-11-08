@@ -438,6 +438,12 @@ export function evaluateControlTransition(
   }
 }
 
+export {
+  evaluateControlActionLegality,
+  type EvaluateControlActionLegalityInput,
+  type ControlActionLegalityDecision
+} from './control-command-service';
+
 /**
  * Compute the bounded list of currently allowed `WorkflowControlOperation`s for
  * `invocationId` without UI guesswork.

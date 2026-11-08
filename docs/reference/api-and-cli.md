@@ -160,7 +160,7 @@ The authoritative schema version is `3`. The table is exhaustive: `COMMAND_TYPES
 | `CMD_PREFLIGHT_PROCESS_YAML` | required `{}` | M | <!-- Source: src/contracts/sidebar-ipc/process-yaml.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_LAUNCH_PIPELINE` | `{ request: RunRequest, queueId?: string }`; sent by the History rerun of a Pipeline Run, not by the **Add work** composer | M | <!-- Source: src/contracts/sidebar-ipc/run-launcher.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_LAUNCH_WORKFLOW` | `{ workflowId: string, startNodeId: string, request: RunRequest, queueId?: string }` | M | <!-- Source: src/contracts/sidebar-ipc/workflow-run.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
-| `CMD_CONTINUE_WORKFLOW` | `{ connectedRunId: string, expectedRevision: non-negative integer, nodeId: string, request: RunRequest }` | M | <!-- Source: src/contracts/sidebar-ipc/workflow-run.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
+| `CMD_CONTINUE_WORKFLOW` | `{ connectedRunId: string, expectedRevision: non-negative integer, nodeId: string, request: RunRequest, invocationId?, operation?, commandId?, controlCommand?: ControlCommandEnvelope v1 }` | M | <!-- Source: src/contracts/sidebar-ipc/workflow-run.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --><!-- Source: src/services/workflow-execution/control-command-service.ts --> |
 
 ### What a refused command shows
 
