@@ -552,6 +552,64 @@ export function createFrozenWorkflowClosure(
   };
 }
 
+export interface ResolvedCandidatePhaseTarget {
+  readonly workflowId: string;
+  readonly candidateId: string;
+  readonly nodeId: string;
+  readonly phaseId: string;
+  readonly phase: PhaseDefinition;
+  readonly maxAttempts: number;
+  readonly priority: number;
+}
+
+function lookupRecord<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}
+
+/**
+ * Resolves a candidate's frozen `PhaseDefinition` and candidate-block entry from a
+ * `FrozenWorkflowClosure` (`SPEC-05` / `D5`).
+ *
+ * Ensures two candidates that share a backend runner still retain distinct frozen
+ * `PhaseDefinition` records (`instruction`, `runner`, `resultContract`, `sideEffects`).
+ */
+export function resolveCandidatePhaseDefinition(
+  closure: FrozenWorkflowClosure,
+  workflowId: string,
+  candidateId: string
+): ResolvedCandidatePhaseTarget | undefined {
+  const workflow = lookupRecord(closure.workflowsById, workflowId);
+  if (workflow === undefined || workflow.control?.kind !== 'candidate-block') {
+    return undefined;
+  }
+  const resolvedControl =
+    (closure.controlDefaultsByWorkflowId !== undefined
+      ? lookupRecord(closure.controlDefaultsByWorkflowId, workflowId)
+      : undefined) ?? resolveCandidateBlockDefaults(workflow.control);
+  const candidate = resolvedControl.candidates.find((entry) => entry.candidateId === candidateId);
+  if (candidate === undefined) {
+    return undefined;
+  }
+  const node = workflow.nodes.find((entry) => entry.nodeId === candidate.nodeId);
+  if (node === undefined || node.kind !== 'phase' || node.phaseId === undefined) {
+    return undefined;
+  }
+  const phase = lookupRecord(closure.phasesById, node.phaseId);
+  if (phase === undefined) {
+    return undefined;
+  }
+  return {
+    workflowId,
+    candidateId: candidate.candidateId,
+    nodeId: candidate.nodeId,
+    phaseId: node.phaseId,
+    phase,
+    maxAttempts: candidate.maxAttempts,
+    priority: candidate.priority
+  };
+}
+
+
 // Feature 099 (T489, FR-042) — `mergePhaseRunnerPolicy` stood here. It carried a
 // Git-declaring Phase's pinned runner forward when a *higher-precedence layer*
 // redeclared the same id without one, and its only caller was `mergeCatalog`'s
