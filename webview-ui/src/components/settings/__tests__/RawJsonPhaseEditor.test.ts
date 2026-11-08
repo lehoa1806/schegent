@@ -239,7 +239,11 @@ describe('Feature 011 T054 — RawJsonPhaseEditor (SC-008, FR-028, FR-029, FR-03
       timeoutSeconds: 45,
       retryCondition: 'attempts < 2',
       isRequired: false,
-      runner: 'codex'
+      runner: 'codex',
+      resultContract: {
+        version: 1,
+        fields: [{ name: 'verdict', type: 'enum', enumValues: ['pass', 'fail'] }]
+      }
     } as const;
 
     /**

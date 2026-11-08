@@ -1,4 +1,16 @@
-import type { BackendRunner, TreeTeardownOutcome } from '../contracts/backend-runner';
+import type {
+  BackendAvailabilityAdapter,
+  BackendRunner,
+  FrozenPhaseQuotaTarget,
+  QuotaContext,
+  QuotaStatusCheckSupport,
+  TreeTeardownOutcome
+} from '../contracts/backend-runner';
+import {
+  BACKEND_AVAILABILITY_VERSION,
+  UNKNOWN_LOCAL_QUOTA_ID,
+  validateQuotaContext
+} from '../contracts/backend-availability';
 import { type BackendRunnerFactoryOptions, createBackendRunner } from './backend-runner-factory';
 import { DEFAULT_BACKEND, type BackendRunnerKind } from '../contracts/backend-kinds';
 import { SHIPPED_DEFAULT_POLICY } from '../contracts/process-environment-policy';
@@ -46,6 +58,7 @@ export interface TeardownReport {
  */
 export class BackendRunnerRegistry {
   private readonly runners = new Map<BackendRunnerKind, BackendRunner>();
+  private readonly availabilityAdapters = new Map<BackendRunnerKind, BackendAvailabilityAdapter>();
   // FR-R4-F06 (FR-004) -- the probe takes its environment policy from the factory options,
   // read at each lookup. It used to take none, so a `--version` child inherited the host's
   // complete environment under every mode. An absent policy is the shipped allowlist default.
@@ -228,5 +241,62 @@ export class BackendRunnerRegistry {
       if (runner.hasActiveProcess) return true;
     }
     return false;
+  }
+
+  /**
+   * FR-R5-F28 (SPEC-06, D7) — Register a read-only availability adapter for a backend kind.
+   */
+  public registerAvailabilityAdapter(
+    kind: BackendRunnerKind,
+    adapter: BackendAvailabilityAdapter
+  ): void {
+    this.availabilityAdapters.set(kind, adapter);
+  }
+
+  /**
+   * FR-R5-F28 (SPEC-06, D7) — Return the availability adapter for `kind`.
+   * Built-in CLI adapters default to explicit `statusCheck: 'unsupported'` and
+   * conservative `unknown-local-quota` identity unless a qualified adapter is registered.
+   */
+  public getAvailabilityAdapter(kind?: BackendRunnerKind): BackendAvailabilityAdapter {
+    const effectiveKind = kind ?? this.globalDefault;
+    const registered = this.availabilityAdapters.get(effectiveKind);
+    if (registered !== undefined) {
+      return registered;
+    }
+    const cachedRunner = this.runners.get(effectiveKind);
+    if (cachedRunner?.availabilityAdapter !== undefined) {
+      return cachedRunner.availabilityAdapter;
+    }
+    const adapterId = `${effectiveKind}-cli`;
+    return Object.freeze({
+      adapterId,
+      adapterVersion: BACKEND_AVAILABILITY_VERSION,
+      backend: effectiveKind,
+      statusCheck: 'unsupported' as QuotaStatusCheckSupport,
+      resolveQuotaContext: (): QuotaContext =>
+        Object.freeze({
+          version: BACKEND_AVAILABILITY_VERSION,
+          adapterId,
+          adapterVersion: BACKEND_AVAILABILITY_VERSION,
+          quotaIds: Object.freeze([UNKNOWN_LOCAL_QUOTA_ID]),
+          identity: 'unknown',
+          statusCheck: 'unsupported',
+          capacity: 1
+        })
+    });
+  }
+
+  /**
+   * FR-R5-F28 (SPEC-06, D7) — Resolve and validate the `QuotaContext` for a frozen Phase.
+   */
+  public resolveQuotaContext(frozenPhase: FrozenPhaseQuotaTarget): QuotaContext {
+    const adapter = this.getAvailabilityAdapter(frozenPhase.runner);
+    const rawContext = adapter.resolveQuotaContext(frozenPhase);
+    const validated = validateQuotaContext(rawContext);
+    if (!validated.ok) {
+      throw new Error(validated.message);
+    }
+    return validated.value;
   }
 }

@@ -30,12 +30,27 @@
 // near-identical shapes.
 import type { Phase } from '../controller/phase';
 import type {
+  BackendAvailabilityAdapter,
+  FrozenPhaseQuotaTarget,
+  QuotaContext,
+  QuotaObservation,
+  QuotaStatusCheckSupport
+} from './backend-availability';
+import type {
   InvocationOutputSink,
   InvocationRequest,
   RawInvocationOutput
 } from '../runner/invocation-result';
 
-export type { InvocationRequest, RawInvocationOutput };
+export type {
+  BackendAvailabilityAdapter,
+  FrozenPhaseQuotaTarget,
+  InvocationRequest,
+  QuotaContext,
+  QuotaObservation,
+  QuotaStatusCheckSupport,
+  RawInvocationOutput
+};
 
 /**
  * FR-R3-083 — which adapter's tree it was.
@@ -283,4 +298,8 @@ export interface BackendRunner {
    * deadline; the runner only reads it. Absent, the call waits for every ladder.
    */
   settleTeardowns(deadline?: Promise<void>): Promise<readonly TreeTeardownOutcome[]>;
+  /**
+   * FR-R5-F28 (SPEC-06, D7) — optional read-only availability adapter bound to this runner.
+   */
+  readonly availabilityAdapter?: BackendAvailabilityAdapter | undefined;
 }

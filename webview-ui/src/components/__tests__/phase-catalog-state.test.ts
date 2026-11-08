@@ -62,7 +62,11 @@ const AUTHORED: Readonly<Record<string, unknown>> = {
   sideEffects: 'git',
   evidencePolicy: 'best-effort',
   hostVerification: 'exit-code',
-  capabilities: ['workspace-write']
+  capabilities: ['workspace-write'],
+  resultContract: {
+    version: 1,
+    fields: [{ name: 'verdict', type: 'enum', enumValues: ['pass', 'fail'] }]
+  }
 };
 
 function rowWithEveryAuthoredField(): MutablePhase {

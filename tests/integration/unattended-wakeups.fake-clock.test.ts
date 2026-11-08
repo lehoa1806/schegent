@@ -337,4 +337,23 @@ describe('a swallowed backoff fire is followed by a credit poll that runs /statu
     expect(statusInvoke).toHaveBeenCalledTimes(1);
     expect(statusInvoke).toHaveBeenCalledWith(expect.objectContaining({ prompt: '/status' }));
   });
+
+  it('notifies wakeupReconciler on credit recovery without shortening an unexpired 60-minute retry deadline (FR-R5-F28)', async () => {
+    await creditPausedRun(h, QUEUE_A, 'A');
+    const b = await siblingInState(h, QUEUE_B, 'future backoff');
+    await backoffAt(QUEUE_B, b.runId, HOUR_MS);
+    await h.controller.resumeExistingFromActivation();
+
+    let reconcileCalls = 0;
+    watchdog.setWakeupReconciler(() => {
+      reconcileCalls += 1;
+    });
+
+    statusInvoke.mockResolvedValueOnce(statusOutput('Credits: available'));
+    await watchdog.pollNow();
+
+    expect(reconcileCalls).toBe(1);
+    // The 60-minute retry deadline on QUEUE_B remains untouched and armed
+    expect(timer.armedIn()).toEqual([HOUR_MS]);
+  });
 });
