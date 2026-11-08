@@ -346,8 +346,16 @@
             class="invocation-attempt-row"
             data-testid={`workflow-decision-observation-${obs.nodeId}`}
           >
-            <span>{obs.nodeId} (#{obs.iteration}/{obs.maxIterations})</span>
+            <span>{obs.nodeId} (#{obs.iteration}/{obs.maxIterations}{obs.noProgressThreshold !== undefined ? `, no-progress: ${obs.noProgressThreshold}` : ''})</span>
             <span>{obs.retryCondition} · {describeExitReason(obs.exitReason)} (cap: {obs.capOutcome})</span>
+            <span data-testid={`workflow-decision-sources-${obs.nodeId}`}>
+              sources: maxIterations={obs.settingSources.maxIterations}, capOutcome={obs.settingSources.capOutcome}{obs.settingSources.noProgressThreshold !== undefined ? `, noProgressThreshold=${obs.settingSources.noProgressThreshold}` : ''}
+            </span>
+            {#if Object.keys(obs.observedValues).length > 0}
+              <span data-testid={`workflow-decision-values-${obs.nodeId}`}>
+                observed: {Object.entries(obs.observedValues).map(([k, v]) => `${k}=${String(v)}`).join(', ')}
+              </span>
+            {/if}
             {#each obs.branches as branch (branch.connectionIndex)}
               <span
                 class="run-badge"

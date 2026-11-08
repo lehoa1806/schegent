@@ -108,6 +108,13 @@ export interface RunCheckpointRetentionDeps {
   readonly policy?: RunCheckpointRetentionPolicy;
   readonly now?: () => number;
   readonly filesystem?: FsLike;
+  /**
+   * FR-R5-F27 (F27-T04, D5) — Active or paused runs with pinned recovery envelopes
+   * or baseline snapshots must not be evicted by retention sweeps until terminal
+   * settlement + grace window.
+   */
+  readonly isPinnedRun?: (runId: string) => boolean;
+  readonly pinnedRunIds?: ReadonlySet<string>;
 }
 
 interface RunDirectory {
@@ -289,6 +296,14 @@ export class RunCheckpointRetentionService {
     );
     const floorStart = Math.max(0, ordered.length - Math.max(0, this.policy.recentRunFloor));
     const protectedFromSize = new Set(ordered.slice(floorStart).map((dir) => dir.name));
+    const isPinned = (runId: string): boolean =>
+      this.deps.pinnedRunIds?.has(runId) === true ||
+      this.deps.isPinnedRun?.(runId) === true;
+    for (const dir of ordered) {
+      if (isPinned(dir.name)) {
+        protectedFromSize.add(dir.name);
+      }
+    }
 
     const sweptAt = this.now();
     const removed = new Set<string>();
@@ -296,6 +311,7 @@ export class RunCheckpointRetentionService {
     let removedBytes = 0;
 
     for (const dir of ordered) {
+      if (isPinned(dir.name)) continue;
       // The age bound ignores the floor by design — see the constant.
       if (sweptAt - dir.mtimeMs <= this.policy.maxAgeMs) continue;
       const outcome = await this.removeRun(dir, root, refusals);

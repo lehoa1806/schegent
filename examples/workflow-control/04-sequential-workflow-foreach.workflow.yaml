@@ -14,7 +14,7 @@ spec:
   outputs:
     - portId: batch-result-index
       label: Batch Result Index
-      type: markdown
+      type: structured-data
       required: false
   nodes:
     - nodeId: node-foreach-items
@@ -36,7 +36,7 @@ spec:
       nodeId: node-foreach-items
       portId: batch-result-index
       outputKey: item-report
-      type: markdown
+      type: structured-data
   startNodeIds:
     - node-foreach-items
 included:
@@ -54,7 +54,7 @@ included:
         outputs:
           - portId: item-report
             label: Item Report
-            type: markdown
+            type: structured-data
             required: false
         nodes:
           - nodeId: node-process-item
@@ -74,7 +74,7 @@ included:
             nodeId: node-process-item
             portId: item-report
             outputKey: report
-            type: markdown
+            type: structured-data
         startNodeIds:
           - node-process-item
   phases:

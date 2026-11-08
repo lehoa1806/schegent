@@ -673,7 +673,8 @@ export function validateControlCommandEnvelope(
     hasControlChar(obj.rootRunId) ||
     typeof obj.queueId !== 'string' ||
     !QUEUE_ID_RE.test(obj.queueId) ||
-    !isValidUuid(obj.invocationId) ||
+    (!isValidUuid(obj.invocationId) &&
+      (!boundedId(obj.invocationId, CONTROL_ID_MAX) || hasControlChar(obj.invocationId))) ||
     typeof obj.expectedGeneration !== 'number' ||
     !Number.isSafeInteger(obj.expectedGeneration) ||
     obj.expectedGeneration < 0 ||

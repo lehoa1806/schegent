@@ -33,6 +33,7 @@ import {
   isValidConnectedRunControlLink,
   type ConnectedRunControlLink
 } from '../contracts/control-ledger';
+import type { AttemptOutcomeStatus } from '../contracts/decision-results';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import type { WorkflowRunPipeline } from './workflow-run';
 
@@ -218,6 +219,8 @@ export interface NodeAttemptRecord {
   readonly childInvocationId?: string;
   readonly inputEnvelope: InvocationInputEnvelope;
   readonly declaredOutputs: Readonly<Record<string, ResolvedPortValue>>;
+  readonly decisionResults?: Readonly<Record<string, boolean | number | string>>;
+  readonly outcomeStatus?: AttemptOutcomeStatus;
   readonly verdict?: 'pass' | 'fail' | null;
   readonly failureCode?: string;
   readonly failureMessage?: string;
@@ -611,6 +614,9 @@ export function assertConnectedRunInvariants(
   }
   if (run.decisionObservations !== undefined) {
     if (!Object.isFrozen(run.decisionObservations)) fail('the decisionObservations list must be frozen');
+    if (run.decisionObservations.length > 256) {
+      fail('decisionObservations exceeds 256 entries');
+    }
     for (const obs of run.decisionObservations) {
       const checked = validateExecutionDecisionObservation(obs);
       if (!checked.valid) fail(`invalid decisionObservation: ${checked.errors[0]?.message ?? 'invalid shape'}`);
@@ -758,11 +764,14 @@ export function appendDecision(
 ): ConnectedWorkflowRun {
   const frozen = deepFreeze(deepCopy(decision));
   const frozenObs = observation !== undefined ? deepFreeze(deepCopy(observation)) : undefined;
+  const existingObs = run.decisionObservations ?? [];
+  const trimmedObs =
+    existingObs.length >= 256 ? existingObs.slice(existingObs.length - 255) : existingObs;
   const next: ConnectedWorkflowRun = {
     ...run,
     decisions: Object.freeze([...run.decisions, frozen]),
     ...(frozenObs !== undefined
-      ? { decisionObservations: Object.freeze([...(run.decisionObservations ?? []), frozenObs]) }
+      ? { decisionObservations: Object.freeze([...trimmedObs, frozenObs]) }
       : {}),
     revision: run.revision + 1
   };
@@ -776,9 +785,12 @@ export function appendDecisionObservation(
   observation: ExecutionDecisionObservation
 ): ConnectedWorkflowRun {
   const frozenObs = deepFreeze(deepCopy(observation));
+  const existingObs = run.decisionObservations ?? [];
+  const trimmedObs =
+    existingObs.length >= 256 ? existingObs.slice(existingObs.length - 255) : existingObs;
   const next: ConnectedWorkflowRun = {
     ...run,
-    decisionObservations: Object.freeze([...(run.decisionObservations ?? []), frozenObs]),
+    decisionObservations: Object.freeze([...trimmedObs, frozenObs]),
     revision: run.revision + 1
   };
   assertConnectedRunInvariants(next);
@@ -925,15 +937,23 @@ export function recordNodeAttempt(
 
 export function upsertInvocationFrame(
   run: ConnectedWorkflowRun,
-  frame: WorkflowInvocationFrame
+  frame: WorkflowInvocationFrame,
+  observation?: ExecutionDecisionObservation
 ): ConnectedWorkflowRun {
   const frozenFrame = deepFreeze(deepCopy(frame));
+  const frozenObs = observation !== undefined ? deepFreeze(deepCopy(observation)) : undefined;
+  const existingObs = run.decisionObservations ?? [];
+  const trimmedObs =
+    existingObs.length >= 256 ? existingObs.slice(existingObs.length - 255) : existingObs;
   const next: ConnectedWorkflowRun = {
     ...run,
     invocations: Object.freeze({
       ...(run.invocations ?? {}),
       [frozenFrame.invocationId]: frozenFrame
     }),
+    ...(frozenObs !== undefined
+      ? { decisionObservations: Object.freeze([...trimmedObs, frozenObs]) }
+      : {}),
     revision: run.revision + 1
   };
   assertConnectedRunInvariants(next);

@@ -129,6 +129,27 @@
     }
   }
 
+  function deterministicCommandUuid(seed: string): string {
+    let h1 = 0xdeadbeef ^ seed.length;
+    let h2 = 0x41c6ce57 ^ seed.length;
+    let h3 = 0x9e3779b9 ^ seed.length;
+    let h4 = 0x85ebca6b ^ seed.length;
+    for (let i = 0; i < seed.length; i += 1) {
+      const ch = seed.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+      h3 = Math.imul(h3 ^ ch, 2246822507);
+      h4 = Math.imul(h4 ^ ch, 3266489909);
+    }
+    const hex = (n: number): string => (n >>> 0).toString(16).padStart(8, '0');
+    const p1 = hex(h1);
+    const p2 = hex(h2);
+    const p3 = hex(h3);
+    const p4 = hex(h4);
+    const variantNibble = ((parseInt(p3[0]!, 16) & 0x3) | 0x8).toString(16);
+    return `${p1}-${p2.slice(0, 4)}-4${p2.slice(5, 8)}-${variantNibble}${p3.slice(1, 4)}-${p3.slice(4, 8)}${p4}`;
+  }
+
   async function dispatchControlAction(
     actionKind: ControlActionKind,
     overrideGeneration?: number
@@ -147,7 +168,9 @@
 
     const envelope: ControlCommandEnvelope = {
       version: 1,
-      commandId: `${subjectRootRunId}:${subjectInvocationId}:${actionKind}:${expectedGeneration}`,
+      commandId: deterministicCommandUuid(
+        `${subjectRootRunId}:${subjectInvocationId}:${actionKind}:${expectedGeneration}`
+      ),
       rootRunId: subjectRootRunId,
       queueId: proj.queueId,
       invocationId: subjectInvocationId,

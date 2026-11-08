@@ -1053,7 +1053,7 @@ export class ControlCommandService {
                 quotaKey: obsId,
                 observationId: obsId,
                 backend: slot.backend,
-                status: prevObs?.status ?? 'ready',
+                status: prevObs?.status ?? 'unknown',
                 source: prevObs?.source ?? 'qualified-status',
                 observedAt: nowWallMs,
                 observedMonotonicAt: nowMonoMs,

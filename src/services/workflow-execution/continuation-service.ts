@@ -166,12 +166,13 @@ export async function continueConnectedRun(
   deps: ContinuationDeps,
   input: ContinuationInput
 ): Promise<ContinueWorkflowResult> {
+  const commandService =
+    deps.controlCommandService ??
+    (deps.controlCommandServiceDeps !== undefined
+      ? new ControlCommandService(deps.controlCommandServiceDeps)
+      : undefined);
+
   if (input.payload.controlCommand !== undefined) {
-    const commandService =
-      deps.controlCommandService ??
-      (deps.controlCommandServiceDeps !== undefined
-        ? new ControlCommandService(deps.controlCommandServiceDeps)
-        : undefined);
     if (commandService !== undefined) {
       const acknowledgement = await commandService.executeControlCommand(
         input.payload.controlCommand
@@ -201,6 +202,7 @@ export async function continueConnectedRun(
           await startPhaseAttempt(deps, phaseInput, input.workspaceRoot, { continuesWorkflow: true })
         );
       },
+      ...(commandService !== undefined ? { controlCommandService: commandService } : {}),
       ...deps.workflowControlHooks
     });
     const outcome = await controlService.executeCommand({

@@ -706,18 +706,29 @@ function validateCandidateBlockCrossTargets(
     }
   });
 
+  const declaredInputPortIds = new Set((definition.inputs ?? []).map((p) => p.portId));
+  const declaredOutputPortIds = new Set((definition.outputs ?? []).map((p) => p.portId));
   const bindings = definition.bindings ?? [];
   const inputBindingsByNodeAndPort = new Map<string, string>();
   const outputBindingsByNodeAndPort = new Map<string, number>();
 
   bindings.forEach((binding, index) => {
+    if (!nodeById.has(binding.nodeId)) {
+      errors.push(controlError(wfId, `bindings[${index}].nodeId`, 'unknown-node', `Binding nodeId '${binding.nodeId}' is not declared in workflow.nodes`));
+    }
     if (binding.kind === 'input') {
       if (binding.source.from === 'node-output') {
         errors.push(controlError(wfId, `bindings[${index}].source`, 'cross-candidate-input-binding', 'Candidate-block input bindings must read from workflow-input, never node-output'));
         return;
       }
+      if (!declaredInputPortIds.has(binding.source.portId)) {
+        errors.push(controlError(wfId, `bindings[${index}].source.portId`, 'unknown-input-port', `Candidate-block input binding references undeclared Workflow input port '${binding.source.portId}'`));
+      }
       inputBindingsByNodeAndPort.set(`${binding.nodeId}:${binding.source.portId}`, binding.inputKey);
     } else {
+      if (!declaredOutputPortIds.has(binding.portId)) {
+        errors.push(controlError(wfId, `bindings[${index}].portId`, 'unknown-output-port', `Candidate-block output binding references undeclared Workflow output port '${binding.portId}'`));
+      }
       const key = `${binding.nodeId}:${binding.portId}`;
       const count = (outputBindingsByNodeAndPort.get(key) ?? 0) + 1;
       outputBindingsByNodeAndPort.set(key, count);

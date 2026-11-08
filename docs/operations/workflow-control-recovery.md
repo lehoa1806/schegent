@@ -25,11 +25,12 @@ All workflow control-flow constructs enforce closed `version: 1` bounds validate
 | `Repeat.maxIterations` | `1..25` (default `3`), `carry` `0..32` | Exhaustion follows `onExhausted: 'pause' \| 'fail'` (`repeat-exhausted`) |
 | `ForEach.maxItems` | `1..100` (default `50`) | Collection `<= 262,144` bytes; item `<= 8,192` bytes and `<= 32` primitive fields |
 | `ForEach` ordered `resultIndex` | `<= 262,144` bytes | Overflow pauses with `aggregate-result-too-large` without truncating slots |
-| `structured-result` payload | `<= 65,536` bytes, `1..32` fields | Strings `<= 4,096` bytes, selector depth `1..4`, max `32` array elements |
+| `structured-result` payload | `<= 262,144` bytes, `1..32` fields | Strings `<= 1,024` bytes, selector depth `1..5` segments, max `32` array elements |
+| `diagnostic-result` record | `<= 65,536` bytes | Strings `<= 1,024` bytes, closed `DiagnosticEventKind` / `DiagnosticSeverity` enums |
 | `RecoveryEnvelope` handover | `<= 16,384` bytes, `<= 100` paths | Excess paths set `truncated: true` and `coverage: 'partial'` while preserving workspace files |
 | `monitoringWindowMs` | `60,000..172,800,000` ms (`1m..48h`, default `24h`) | Expiry transitions to `monitoring-expired` (pauses and notifies once) |
 | Availability check execution | `10,000` ms timeout, max `3` concurrent checks | Readiness freshness `30,000` ms; minimum check interval `60,000` ms; `0..5,000` ms deterministic jitter |
-| Live control roots / frames | Max `16` roots, `64` frames/root, `200` attempts/root, `524,288` bytes | Terminal roots evict oldest-first; active overflow pauses for operator action |
+| Live control roots / frames | Max `20` roots, `1,024` frames/root, `2,097,152` bytes/root (`16,384`-byte settlement reserve), `256` observations, `160` waiters | Terminal roots evict oldest-first; active overflow pauses for operator action |
 
 ---
 
@@ -37,12 +38,12 @@ All workflow control-flow constructs enforce closed `version: 1` bounds validate
 
 Backend adapters normalize their availability signals into a common observation contract (`ready`, `cooldown-known`, `cooldown-unknown`, `unreachable`, `top-up-required`, `check-unsupported`):
 
-- **Qualified Non-Executing Status Checks (`check-availability-now`)**:
+- **Qualified Non-Executing Status Checks (`check-now`)**:
   - Execute read-only status probes when supported by the backend adapter.
   - Consume **zero** Phase attempts (`dispatchedAttempts` is unchanged).
   - Sponsored check costs (`costMicrousd`) are recorded against the sponsoring root's usage rollup without consuming Phase attempt budgets.
   - Never shorten an active retry backoff or the 60-minute hard-credit fallback floor.
-- **Counted Execution Trials (`try-candidate-now`)**:
+- **Counted Execution Trials (`try-now`)**:
   - When an adapter declares `check-unsupported` (or availability remains `unknown`), automatic recovery never guesses readiness from wall-clock elapsed time alone.
   - A candidate with `allowUnverifiedTrial: true` may run a bounded execution trial.
   - Every execution trial goes through full atomic admission (`ControlAttemptAdmissionService`), consumes **one** Phase attempt (`dispatchedAttempts + 1`), acquires all required quota permits, and respects unexpired `notBefore` deadlines.
@@ -57,10 +58,11 @@ Schegent separates **monitoring window renewal** from **execution resumption** s
 
 | Control Action | Legal Frame States | Operational Effect |
 |---|---|---|
-| `renew-monitoring-window` | `waiting-availability`, `monitoring-expired`, `paused` | Extends the automatic status-check window (`monitoringExpiresAt`) from the current wall clock and increments `monitoringRenewals`. Does **not** replenish retired candidate attempt counters or bypass `notBefore` deadlines. |
-| `resume` | `paused`, `intervention-required` | Clears manual pause or acknowledged intervention state and re-evaluates the current control frame. If the monitoring window is expired, `resume` is refused with `monitoring-expired` until the operator renews the window or selects a ready candidate. |
-| `select-candidate` | `waiting-availability`, `monitoring-expired`, `paused`, `intervention-required` | Appends a revision-fenced `ControlPolicyOverrideRecord` selecting an eligible non-retired candidate (` remainingAttempts > 0`). Never resets prior attempt counts or cumulative spend. |
-| `change-availability-policy` | `waiting-availability`, `monitoring-expired`, `paused`, `intervention-required` | Switches between `first-ready`, `wait-for-selected`, and `stop-on-unavailability` via an append-only policy override. |
+| `renew-monitoring` | `selecting`, `retry-delayed`, `waiting-availability`, `intervention-required`, `monitoring-expired`, `paused` | Extends the automatic status-check window (`monitoringExpiresAt`) from the current wall clock and increments `monitoringRenewals`. Does **not** replenish retired candidate attempt counters or bypass `notBefore` deadlines. |
+| `resume` | `paused`, `intervention-required`, `monitoring-expired` (when monitoring is active or a candidate is ready) | Clears manual pause or acknowledged intervention state and re-evaluates the current control frame. If the monitoring window is expired and no candidate is ready, `resume` is refused with `monitoring-expired` until the operator renews the window or selects a ready candidate. |
+| `select-candidate` | `selecting`, `retry-delayed`, `waiting-availability`, `intervention-required`, `monitoring-expired`, `paused` | Appends a revision-fenced `ControlPolicyOverrideRecord` selecting an eligible non-retired candidate (`remainingAttempts > 0`). Never resets prior attempt counts or cumulative spend. |
+| `set-policy` | `selecting`, `retry-delayed`, `waiting-availability`, `intervention-required`, `monitoring-expired`, `paused` | Switches between `first-ready`, `wait-for-selected`, and `stop-on-unavailability` via an append-only policy override. |
+| `set-allowed-candidates` | `selecting`, `retry-delayed`, `waiting-availability`, `intervention-required`, `monitoring-expired`, `paused` | Restricts automatic selection to a non-empty subset of authored `candidateId`s (`1..8`). |
 
 ---
 

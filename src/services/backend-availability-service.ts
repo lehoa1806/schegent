@@ -712,10 +712,21 @@ export class BackendAvailabilityService {
     }
 
     // Per-quota minimum start-rate limit (60,000 ms)
-    for (const qId of context.quotaIds) {
+    const ledgerSnapshot = this.ledgerStore.read();
+    const durableObservations = ledgerSnapshot.ok
+      ? ledgerSnapshot.ledger.quotaObservations
+      : undefined;
+    for (let i = 0; i < context.quotaIds.length; i += 1) {
+      const qId = context.quotaIds[i]!;
+      const obsId = observationIds.at(i) ?? primaryObsId;
       const rateKey =
         context.identity === 'unknown' ? primaryObsId : qId;
-      const lastStart = this.lastCheckStartByQuotaKey.get(rateKey);
+      const durableLastStart =
+        durableObservations !== undefined
+          ? lookupRecord(durableObservations, obsId)?.lastCheckStartedAt
+          : undefined;
+      const lastStart =
+        this.lastCheckStartByQuotaKey.get(rateKey) ?? durableLastStart;
       if (
         lastStart !== undefined &&
         nowStartMs - lastStart < MIN_QUOTA_CHECK_INTERVAL_MS

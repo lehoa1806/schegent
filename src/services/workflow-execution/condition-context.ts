@@ -200,7 +200,9 @@ function attemptRecordToFacts(attempt: NodeAttemptRecord): NodeAttemptFacts | nu
   return {
     nodeId: attempt.nodeId,
     status: attempt.status,
-    outputs
+    ...(attempt.outcomeStatus !== undefined ? { outcomeStatus: attempt.outcomeStatus } : {}),
+    outputs,
+    ...(attempt.decisionResults !== undefined ? { results: attempt.decisionResults } : {})
   };
 }
 
