@@ -47,6 +47,17 @@ export interface UnattendedAdmissionDeps {
   /** Ask the credit watchdog for a fresh poll (a stale credits wakeup must not be acted on). */
   readonly pollNow: () => void;
   readonly logger: Pick<SanitizedLogger, 'info' | 'warn'>;
+  /**
+   * FR-R5-F29 (SPEC-07, D7) — optional shared-quota permit readiness check consulted before
+   * handing a due wakeup to the coordinator. Returning `false` keeps the wakeup in `due` as
+   * `capacity-refused` so the next sweep-end or permit release re-evaluates it in fair sequence order.
+   */
+  readonly checkQuotaPermitEligible?: ((queueId: string, wakeup: UnattendedWakeup) => boolean) | undefined;
+  /**
+   * FR-R5-F29 (SPEC-07, D7) — optional hook invoked during `retryDue()` so waiting control
+   * quota waiters are re-evaluated when a drain sweep ends.
+   */
+  readonly onRetryDueSweep?: (() => Promise<void> | void) | undefined;
 }
 
 /** The fixed line: no queue name, Run id, path or status text rides on it. */
@@ -74,6 +85,13 @@ export class UnattendedAdmission {
     if (!decision.eligible) {
       this.due.delete(wakeup.queueId);
       return this.notAdmitted(wakeup, 'ineligible', decision.reason);
+    }
+    if (
+      this.deps.checkQuotaPermitEligible !== undefined &&
+      !this.deps.checkQuotaPermitEligible(wakeup.queueId, wakeup)
+    ) {
+      this.due.set(wakeup.queueId, wakeup);
+      return this.notAdmitted(wakeup, 'capacity-refused', 'quota-permit-unavailable');
     }
     const outcome = await this.deps.admit(wakeup.queueId, wakeup);
     if (outcome === 'admitted') {
@@ -118,6 +136,9 @@ export class UnattendedAdmission {
       await this.admit(wakeup);
     }
     if (stale) this.deps.pollNow();
+    if (this.deps.onRetryDueSweep !== undefined) {
+      await this.deps.onRetryDueSweep();
+    }
   }
 
   /**

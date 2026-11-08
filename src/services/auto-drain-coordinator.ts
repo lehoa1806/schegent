@@ -670,6 +670,16 @@ export class AutoDrainCoordinator {
     this.sweepEndListeners.push(listener);
   }
 
+  /**
+   * FR-R5-F29 (SPEC-07, D7) — re-evaluate eligible queue heads and sweep-end listeners
+   * when a shared-quota permit is released or an availability check updates readiness,
+   * coalescing through `drainAll()` without bypassing queue order or process capacity.
+   */
+  public async notifyQuotaCapacityChanged(): Promise<void> {
+    if (this.closed) return;
+    await this.drainAll();
+  }
+
   private async notifySweepEnd(): Promise<void> {
     for (const listener of this.sweepEndListeners) {
       try {
