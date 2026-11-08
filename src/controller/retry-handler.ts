@@ -110,8 +110,12 @@ export class RetryHandler {
     cause: DelayedRetryCause,
     resetsAtMs: number | null,
     rateLimitMessage: string | null,
-    originalCause?: string
+    originalCause?: string,
+    options?: { readonly blockOwnedRetry?: boolean }
   ): Promise<WorkflowRun> {
+    if (options?.blockOwnedRetry === true) {
+      return run;
+    }
     const retryCap = this.deps.getRetryCap();
     // FR-006 — the configured cap-th failure trips the delayed-retry pause.
     if (run.delayedRetryCount >= retryCap - 1) {
