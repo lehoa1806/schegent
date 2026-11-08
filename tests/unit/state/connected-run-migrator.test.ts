@@ -537,4 +537,42 @@ describe('connected-run compare-and-set', () => {
       reason: 'unsupported-run-schema-version'
     });
   });
+
+  it('FR-R5-F26 (SPEC-04) — round-trips controlState v1 link and preserves unknown controlState versions without overwriting', async () => {
+    const baseSample = sample('cr-ctrl-v1');
+    const validWithControl = Object.freeze({
+      ...baseSample,
+      controlState: Object.freeze({ version: 1 as const, ledgerRunId: 'ledger-root-1' })
+    });
+
+    const futureControlRecord = {
+      ...JSON.parse(JSON.stringify(validWithControl)),
+      connectedRunId: 'cr-ctrl-v2',
+      controlState: { version: 2, ledgerRunId: 'ledger-root-future' }
+    };
+
+    const m = memento({
+      [KEYS.connectedRuns]: {
+        'cr-ctrl-v1': JSON.parse(JSON.stringify(validWithControl)),
+        'cr-ctrl-v2': futureControlRecord
+      }
+    });
+    const store = new WorkspaceStateStore(m);
+
+    const loaded = store.getConnectedRuns();
+    expect(Object.keys(loaded)).toEqual(['cr-ctrl-v1']);
+    const loadedV1 = Object.values(loaded).at(0);
+    expect(loadedV1?.controlState).toEqual({
+      version: 1,
+      ledgerRunId: 'ledger-root-1'
+    });
+    expect(Object.isFrozen(loadedV1?.controlState)).toBe(true);
+
+    const another = sample('cr-other');
+    const casResult = await store.compareAndSetConnectedRun(another, 0);
+    expect(casResult.outcome).toBe('written');
+
+    const rawAfterWrite = m.store.get(KEYS.connectedRuns) as Record<string, unknown>;
+    expect(rawAfterWrite['cr-ctrl-v2']).toEqual(futureControlRecord);
+  });
 });

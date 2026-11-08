@@ -29,6 +29,10 @@ import {
   validateExecutionDecisionObservation,
   type ExecutionDecisionObservation
 } from '../contracts/execution-decision-observation';
+import {
+  isValidConnectedRunControlLink,
+  type ConnectedRunControlLink
+} from '../contracts/control-ledger';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import type { WorkflowRunPipeline } from './workflow-run';
 
@@ -358,6 +362,8 @@ export interface ConnectedWorkflowRun {
   readonly recoveryDisposition?: RecoveryDispositionRecord | null;
   /** FR-R5-F23 (F23-T05, D1) — durable decision observation records for phase repetition and branch evaluation. */
   readonly decisionObservations?: readonly ExecutionDecisionObservation[];
+  /** FR-R5-F26 (SPEC-04, D4) — link to the durable control ledger root (`{ version: 1, ledgerRunId }`). */
+  readonly controlState?: ConnectedRunControlLink;
 }
 
 export class ConnectedRunInvariantError extends Error {
@@ -370,6 +376,7 @@ export class ConnectedRunInvariantError extends Error {
 const AGGREGATE_KEYS: readonly string[] = [
   'commandReceipts',
   'connectedRunId',
+  'controlState',
   'decisionObservations',
   'decisions',
   'frozenClosure',
@@ -609,6 +616,15 @@ export function assertConnectedRunInvariants(
       if (!checked.valid) fail(`invalid decisionObservation: ${checked.errors[0]?.message ?? 'invalid shape'}`);
     }
   }
+  if (run.controlState !== undefined) {
+    if (!Object.isFrozen(run.controlState)) {
+      fail('the controlState link must be frozen');
+    }
+    assertKeys(run.controlState, ['version', 'ledgerRunId'], 'controlState link');
+    if (!isValidConnectedRunControlLink(run.controlState)) {
+      fail('controlState must have version 1 and a non-empty string ledgerRunId');
+    }
+  }
   const nodeIds = new Set(run.graph.nodes.map((node) => node.nodeId));
   for (const [key, record] of Object.entries(run.nodes)) {
     assertKeys(record, NODE_KEYS, 'node record');
@@ -673,6 +689,7 @@ export interface CreateConnectedRunInput {
   readonly inputEnvelopes?: readonly InvocationInputEnvelope[];
   readonly commandReceipts?: readonly CommittedCommandReceipt[];
   readonly recoveryDisposition?: RecoveryDispositionRecord | null;
+  readonly controlState?: ConnectedRunControlLink;
 }
 
 /** Freeze the snapshot and open the aggregate at revision 1. */
@@ -704,6 +721,9 @@ export function createConnectedRun(input: CreateConnectedRunInput): ConnectedWor
       : {}),
     ...(input.recoveryDisposition !== undefined
       ? { recoveryDisposition: deepFreeze(deepCopy(input.recoveryDisposition)) }
+      : {}),
+    ...(input.controlState !== undefined
+      ? { controlState: deepFreeze(deepCopy(input.controlState)) }
       : {})
   };
   assertConnectedRunInvariants(run);

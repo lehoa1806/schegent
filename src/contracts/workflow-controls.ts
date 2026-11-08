@@ -57,6 +57,7 @@ export const MAX_FOR_EACH_ITEM_KEY_BYTES = 128;
 
 export const MAX_CONTROL_NESTING_DEPTH = 2;
 export const MAX_ROOT_CONTROL_DISPATCHES = 100;
+export const DEFAULT_ROOT_MAX_PHASE_ATTEMPTS = MAX_ROOT_CONTROL_DISPATCHES;
 export const MAX_WORKFLOW_DECISION_RESULT_FIELDS = 32;
 
 export const WORKFLOW_CONTROL_KINDS = Object.freeze([
@@ -116,6 +117,12 @@ export interface ResolvedCandidateRetryConfig {
 export type CandidateBlockBudget =
   | { readonly mode: 'count-only' }
   | { readonly mode: 'strict-usd'; readonly limitMicrousd: number };
+
+export interface RootControlBudget {
+  readonly version: typeof WORKFLOW_CONTROL_SCHEMA_VERSION;
+  readonly maxPhaseAttempts: number;
+  readonly strictUsdBudget?: Extract<CandidateBlockBudget, { readonly mode: 'strict-usd' }>;
+}
 
 export interface CandidateSpec {
   readonly candidateId: string;
