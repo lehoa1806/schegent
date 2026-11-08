@@ -3,7 +3,11 @@ import * as path from 'node:path';
 
 import type { SanitizedLogger } from '../lib/logger';
 import { resolveContainedTarget, type ContainmentRefusal } from '../lib/path-containment';
-import { RUN_CHECKPOINT_DIRECTORY } from './run-checkpoint-paths';
+import { RECOVERY_ENVELOPE_SUFFIX, RUN_CHECKPOINT_DIRECTORY } from './run-checkpoint-paths';
+
+export function isRecoveryEnvelopeArtifact(fileName: string): boolean {
+  return fileName.endsWith(RECOVERY_ENVELOPE_SUFFIX);
+}
 
 /**
  * FR-R3-012 — the outer bound on the checkpoint store.

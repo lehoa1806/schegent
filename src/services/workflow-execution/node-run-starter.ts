@@ -42,6 +42,12 @@ import type {
 import type { RunOutputRecord } from '../../contracts/run-results';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { ExecutionFence } from '../../contracts/control-ledger';
+import {
+  serializeRecoveryEnvelope,
+  validateRecoveryEnvelope,
+  type RecoveryEnvelope
+} from '../../contracts/recovery-envelope';
+import { resolveCandidatePhaseDefinition } from '../../config/pipeline-snapshot';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { WorkflowRunPipeline } from '../../state/workflow-run';
 import { checkLocalFile, checkLocalFolder } from '../run-request/local-input-validator';
@@ -191,6 +197,10 @@ export interface NodeRunStartInput {
 export interface PhaseNodeRunStartInput {
   readonly frozenClosure: FrozenWorkflowClosure;
   readonly phaseId: string;
+  readonly workflowId?: string | undefined;
+  readonly candidateId?: string | undefined;
+  readonly recoveryEnvelope?: RecoveryEnvelope | unknown | undefined;
+  readonly allowUncertainEffects?: boolean | undefined;
   readonly request: RunRequest;
   readonly workspaceRoot: string | null;
   readonly description?: string;
@@ -477,15 +487,83 @@ export function toSupplementalInputs(
  * occurrence identity metadata (`rootRunId`, `invocationId`, `parentInvocationId`,
  * `nodePath`, `attemptId`, `attemptIndex`).
  */
+function lookupRecord<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}
+
 export async function startPhaseNodeRun(
   deps: NodeRunStartDeps,
   input: PhaseNodeRunStartInput
 ): Promise<NodeRunStartResult> {
-  const phase = input.frozenClosure.phasesById[input.phaseId];
+  let phase = lookupRecord(input.frozenClosure.phasesById, input.phaseId);
+  if (input.workflowId !== undefined && input.candidateId !== undefined) {
+    const resolvedCandidate = resolveCandidatePhaseDefinition(
+      input.frozenClosure,
+      input.workflowId,
+      input.candidateId
+    );
+    if (resolvedCandidate === undefined || resolvedCandidate.phaseId !== input.phaseId) {
+      return { outcome: 'rejected-definition', reason: 'pipeline-not-found' };
+    }
+    phase = resolvedCandidate.phase;
+  }
   if (phase === undefined) {
     return { outcome: 'rejected-definition', reason: 'pipeline-not-found' };
   }
-  const catalogVersion = input.frozenClosure.catalogVersionsById?.[input.phaseId];
+
+  let recoverySupplemental: SupplementalInput | undefined;
+  if (input.recoveryEnvelope !== undefined) {
+    const validatedHandover = validateRecoveryEnvelope(input.recoveryEnvelope);
+    if (!validatedHandover.ok) {
+      const tooLarge = validatedHandover.diagnostics.some(
+        (diag) => diag.code === 'recovery-context-too-large'
+      );
+      if (tooLarge) {
+        return {
+          outcome: 'rejected-queue',
+          reason: 'queue-refused',
+          detail: 'recovery-context-too-large'
+        };
+      }
+      return {
+        outcome: 'rejected-validation',
+        errors: validatedHandover.diagnostics.map((diag) => ({
+          field: diag.field,
+          code: 'type-mismatch' as const,
+          message: diag.message
+        }))
+      };
+    }
+
+    if (
+      validatedHandover.value.effects.certainty !== 'safe' &&
+      input.allowUncertainEffects !== true
+    ) {
+      return {
+        outcome: 'rejected-queue',
+        reason: 'queue-refused',
+        detail: `uncertain-effects:${validatedHandover.value.effects.certainty}`
+      };
+    }
+
+    const serializedHandover = serializeRecoveryEnvelope(validatedHandover.value);
+    if (!serializedHandover.ok) {
+      return {
+        outcome: 'rejected-queue',
+        reason: 'queue-refused',
+        detail: serializedHandover.code
+      };
+    }
+    recoverySupplemental = {
+      kind: 'text',
+      text: serializedHandover.serialized
+    };
+  }
+
+  const catalogVersion =
+    input.frozenClosure.catalogVersionsById !== undefined
+      ? lookupRecord(input.frozenClosure.catalogVersionsById, phase.phaseId)
+      : undefined;
   const basePipeline = synthesizePhasePipelineSnapshot(
     phase,
     deps.defaultRunnerKind,
@@ -543,10 +621,16 @@ export async function startPhaseNodeRun(
       };
     }
   }
+  const mergedSupplemental: readonly SupplementalInput[] =
+    recoverySupplemental !== undefined
+      ? [...input.request.supplemental, recoverySupplemental]
+      : input.request.supplemental;
+
   return startPipelineRun(deps, {
     request: {
       ...input.request,
-      pipelineId: input.phaseId
+      pipelineId: phase.phaseId,
+      supplemental: mergedSupplemental
     },
     workspaceRoot: input.workspaceRoot,
     ...(input.description !== undefined ? { description: input.description } : {}),
