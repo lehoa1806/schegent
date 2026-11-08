@@ -34,6 +34,7 @@ import {
   upsertInvocationFrame,
   type ConnectedWorkflowRun
 } from '../../src/state/connected-workflow-run';
+import { removeTempRoot } from '../temp-root-cleanup';
 
 function makeMemoryMemento(): Memento {
   const map = new Map<string, unknown>();
@@ -289,8 +290,8 @@ function makeRecoveryHarness(
     parentWf,
     rootInvocationId: created.rootInvocationId,
     store,
-    getRun: () => storedRun,
-    setRun: (next: ConnectedWorkflowRun) => {
+    readRun: () => storedRun,
+    writeRun: (next: ConnectedWorkflowRun) => {
       storedRun = next;
     },
     seedRoot
@@ -302,7 +303,7 @@ afterEach(async () => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir !== undefined) {
-      await fsp.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+      await removeTempRoot(dir);
     }
   }
 });
@@ -340,7 +341,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
 
     // Start ForEach -> dispatches item 0 primary candidate (node-cand-1)
     const step0a = await dispatchComposableNode(coordinatorDeps, {
-      run: h.getRun(),
+      run: h.readRun(),
       invocationId: h.rootInvocationId,
       nodeId: 'node-foreach-1',
       startedAt: 1_000
@@ -351,7 +352,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
 
     // Item 0 primary candidate fails -> routes to fallback candidate (node-cand-2) inside item 0's child workflow
     const step0b = await completeComposableNodeAttempt(coordinatorDeps, {
-      run: h.getRun(),
+      run: h.readRun(),
       invocationId: step0a.invocationId,
       nodeId: 'node-cand-1',
       status: 'failed',
@@ -363,7 +364,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
 
     // Item 0 fallback candidate succeeds -> item 0 completes and ForEach advances to item 1
     const step1 = await completeComposableNodeAttempt(coordinatorDeps, {
-      run: h.getRun(),
+      run: h.readRun(),
       invocationId: step0b.invocationId,
       nodeId: 'node-cand-2',
       status: 'completed',
@@ -375,7 +376,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
 
     // Item 1 fails both primary and fallback candidates -> under onItemError: 'continue', ForEach records failed slot 1 and advances to item 2!
     const step1b = await completeComposableNodeAttempt(coordinatorDeps, {
-      run: h.getRun(),
+      run: h.readRun(),
       invocationId: step1.invocationId,
       nodeId: 'node-cand-1',
       status: 'failed',
@@ -384,7 +385,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
     expect(step1b.outcome).toBe('phase-dispatched');
     if (step1b.outcome !== 'phase-dispatched') return;
     const step2 = await completeComposableNodeAttempt(coordinatorDeps, {
-      run: h.getRun(),
+      run: h.readRun(),
       invocationId: step1b.invocationId,
       nodeId: 'node-cand-2',
       status: 'failed',
@@ -397,7 +398,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
 
     // Item 2 primary candidate succeeds -> ForEach completes with hasErrors: true, errorCount: 1, leafAttemptCount: 5
     const done = await completeComposableNodeAttempt(coordinatorDeps, {
-      run: h.getRun(),
+      run: h.readRun(),
       invocationId: step2.invocationId,
       nodeId: 'node-cand-1',
       status: 'completed',
@@ -421,7 +422,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
 
     const loaded = h.ledgerStore.read();
     const rootState = loaded.ok ? lookupRecord(loaded.ledger.roots, h.rootRunId) : undefined;
-    const proj = buildForEachNodeProjection(h.getRun(), 'node-foreach-1', rootState);
+    const proj = buildForEachNodeProjection(h.readRun(), 'node-foreach-1', rootState);
     expect(proj?.itemCount).toBe(3);
     expect(proj?.leafAttemptCount).toBe(5);
     expect(proj?.hasErrors).toBe(true);
@@ -466,7 +467,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
       forEachExecutor: hFreeze.executor,
       workspaceRoot: wsDir
     });
-    const recFreeze = await recServiceFreeze.reconcileRun(hFreeze.getRun().connectedRunId, 2_000);
+    const recFreeze = await recServiceFreeze.reconcileRun(hFreeze.readRun().connectedRunId, 2_000);
     expect(recFreeze?.mutated).toBe(true);
     expect(recFreeze?.disposition?.reasonCode).toBe('foreach-slot-advance-recovered');
     expect(JSON.parse(dispatchedFreeze[0] ?? '{}')).toEqual({ id: 's0' });
@@ -477,17 +478,17 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
     );
     await hAdmit.seedRoot();
     const prep0 = prepareForEachItemFrames({
-      run: hAdmit.getRun(),
-      parentFrame: hAdmit.getRun().invocations![hAdmit.rootInvocationId]!,
+      run: hAdmit.readRun(),
+      parentFrame: hAdmit.readRun().invocations![hAdmit.rootInvocationId]!,
       node: hAdmit.parentWf.nodes[0]!,
       childWorkflow: CHILD_WORKFLOW,
       itemIndex: 0,
       itemInputPortId: 'itemPayload',
       itemCanonicalJson: '{"id":"s0"}',
-      baseInputsByPort: hAdmit.getRun().invocations![hAdmit.rootInvocationId]!.boundInputs,
+      baseInputsByPort: hAdmit.readRun().invocations![hAdmit.rootInvocationId]!.boundInputs,
       startedAt: 1_000
     })!;
-    hAdmit.setRun(prep0.nextRun);
+    hAdmit.writeRun(prep0.nextRun);
     await hAdmit.executor.initializeForEachFrame({
       rootRunId: hAdmit.rootRunId,
       parentInvocationId: hAdmit.rootInvocationId,
@@ -508,7 +509,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
       },
       forEachExecutor: hAdmit.executor
     });
-    const recAdmit = await recServiceAdmit.reconcileRun(hAdmit.getRun().connectedRunId, 2_000);
+    const recAdmit = await recServiceAdmit.reconcileRun(hAdmit.readRun().connectedRunId, 2_000);
     expect(recAdmit?.mutated).toBe(true);
     expect(recAdmit?.disposition?.reasonCode).toBe('foreach-child-admission-recovered');
     expect(dispatchedAdmit).toEqual([prep0.childFrame.invocationId]);
@@ -529,7 +530,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
         forEachExecutor: hSettle.executor
       },
       {
-        run: hSettle.getRun(),
+        run: hSettle.readRun(),
         invocationId: hSettle.rootInvocationId,
         nodeId: 'node-foreach-1',
         startedAt: 1_000
@@ -538,7 +539,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
     expect(d0.outcome).toBe('phase-dispatched');
     if (d0.outcome !== 'phase-dispatched') return;
     // Simulate crash right after child frame was marked completed, before ForEach settled slot 0
-    const childF = hSettle.getRun().invocations![d0.invocationId]!;
+    const childF = hSettle.readRun().invocations![d0.invocationId]!;
     const childAtt = childF.attemptsByNodeId['phase-item-1']![0]!;
     const completedChildF = {
       ...recordNodeAttempt(childF, { ...childAtt, status: 'completed', completedAt: 1_500 }),
@@ -546,7 +547,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
       status: 'completed' as const,
       completedAt: 1_500
     };
-    hSettle.setRun(upsertInvocationFrame(hSettle.getRun(), completedChildF));
+    hSettle.writeRun(upsertInvocationFrame(hSettle.readRun(), completedChildF));
 
     const recServiceSettle = new WorkflowRecoveryService({
       connectedRuns: hSettle.store,
@@ -556,7 +557,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
       },
       forEachExecutor: hSettle.executor
     });
-    const recSettle = await recServiceSettle.reconcileRun(hSettle.getRun().connectedRunId, 2_000);
+    const recSettle = await recServiceSettle.reconcileRun(hSettle.readRun().connectedRunId, 2_000);
     expect(recSettle?.mutated).toBe(true);
     expect(recSettle?.disposition?.reasonCode).toBe('foreach-post-item-reconciled');
     // Verify slot 0 was NOT replayed and item 1 ('s1') was dispatched!
@@ -574,7 +575,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
         forEachExecutor: hAdv.executor
       },
       {
-        run: hAdv.getRun(),
+        run: hAdv.readRun(),
         invocationId: hAdv.rootInvocationId,
         nodeId: 'node-foreach-1',
         startedAt: 1_000
@@ -594,10 +595,10 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
       nextChildInvocationId: 'child-inv-1'
     });
     // Mark child 0 failed on run so leaf attempt finder does not pause it
-    const childAdv0 = hAdv.getRun().invocations![dAdv0.invocationId]!;
+    const childAdv0 = hAdv.readRun().invocations![dAdv0.invocationId]!;
     const attAdv0 = childAdv0.attemptsByNodeId['phase-item-1']![0]!;
-    hAdv.setRun(
-      upsertInvocationFrame(hAdv.getRun(), {
+    hAdv.writeRun(
+      upsertInvocationFrame(hAdv.readRun(), {
         ...recordNodeAttempt(childAdv0, { ...attAdv0, status: 'failed', completedAt: 1_500 }),
         activeNodeId: null,
         status: 'failed',
@@ -613,7 +614,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
       },
       forEachExecutor: hAdv.executor
     });
-    const recAdv = await recServiceAdv.reconcileRun(hAdv.getRun().connectedRunId, 2_000);
+    const recAdv = await recServiceAdv.reconcileRun(hAdv.readRun().connectedRunId, 2_000);
     expect(recAdv?.mutated).toBe(true);
     expect(recAdv?.disposition?.reasonCode).toBe('foreach-slot-advance-recovered');
     // Only s1 was dispatched; failed slot 0 was NOT replayed!
@@ -631,7 +632,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
         forEachExecutor: hFinal.executor
       },
       {
-        run: hFinal.getRun(),
+        run: hFinal.readRun(),
         invocationId: hFinal.rootInvocationId,
         nodeId: 'node-foreach-1',
         startedAt: 1_000
@@ -639,10 +640,10 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
     );
     expect(dFinal0.outcome).toBe('phase-dispatched');
     if (dFinal0.outcome !== 'phase-dispatched') return;
-    const childFin0 = hFinal.getRun().invocations![dFinal0.invocationId]!;
+    const childFin0 = hFinal.readRun().invocations![dFinal0.invocationId]!;
     const attFin0 = childFin0.attemptsByNodeId['phase-item-1']![0]!;
-    hFinal.setRun(
-      upsertInvocationFrame(hFinal.getRun(), {
+    hFinal.writeRun(
+      upsertInvocationFrame(hFinal.readRun(), {
         ...recordNodeAttempt(childFin0, { ...attFin0, status: 'completed', completedAt: 1_500 }),
         activeNodeId: null,
         status: 'completed',
@@ -654,7 +655,7 @@ describe('FR-R5-F34 — ForEach nested CandidateBlock & crash recovery across al
       dispatchPhase: async (inp) => ({ outcome: 'dispatched', queueItemId: `q-${inp.attemptId}` }),
       forEachExecutor: hFinal.executor
     });
-    const recFin = await recServiceFin.reconcileRun(hFinal.getRun().connectedRunId, 2_000);
+    const recFin = await recServiceFin.reconcileRun(hFinal.readRun().connectedRunId, 2_000);
     expect(recFin?.mutated).toBe(true);
     expect(recFin?.run.invocations?.[hFinal.rootInvocationId]?.status).toBe('completed');
     const finalFrameKey = buildForEachFrameKey(hFinal.rootInvocationId, 'node-foreach-1');

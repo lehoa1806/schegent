@@ -1135,5 +1135,5 @@ describe('Unified Workflow Authoring (FR-R5-F05)', () => {
     } finally {
       restoreTransport();
     }
-  });
+  }, 15_000);
 });

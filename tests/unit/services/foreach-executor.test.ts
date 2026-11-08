@@ -29,6 +29,7 @@ import {
   buildForEachNodeProjection
 } from '../../../src/services/workflow-execution/workflow-control-projector';
 import type { ConnectedWorkflowRun } from '../../../src/state/connected-workflow-run';
+import { removeTempRoot } from '../../temp-root-cleanup';
 
 function makeMemoryMemento(): Memento {
   const map = new Map<string, unknown>();
@@ -202,7 +203,7 @@ afterEach(async () => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir !== undefined) {
-      await fsp.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+      await removeTempRoot(dir);
     }
   }
 });

@@ -1,0 +1,125 @@
+apiVersion: schegent/v1
+kind: Workflow
+metadata:
+  id: example-phase-repetition-branching
+  name: Standalone Phase Repetition and Exclusive Branching
+  description: Demonstrates bounded standalone Phase repetition using a structured-result operator and exclusive priority-ordered conditional routing.
+  version: 1
+spec:
+  inputs:
+    - portId: draft-path
+      label: Draft Path
+      type: local-file
+      required: true
+  outputs:
+    - portId: final-status
+      label: Final Status
+      type: markdown
+      required: true
+  nodes:
+    - nodeId: node-prep-loop
+      kind: phase
+      phaseId: phase-prep-iterative
+      label: Iterative Preparation Phase
+    - nodeId: node-publish
+      kind: phase
+      phaseId: phase-publish-summary
+      label: Publish Summary
+    - nodeId: node-escalate
+      kind: phase
+      phaseId: phase-escalate-review
+      label: Escalate Unresolved Findings
+  connections:
+    - from:
+        nodeId: node-prep-loop
+      to:
+        nodeId: node-publish
+        kind: node
+      handoff: auto
+      condition:
+        version: 1
+        kind: typed
+        test:
+          left:
+            source: node-result
+            nodeId: node-prep-loop
+            fieldId: pending_tasks
+          operator: equals
+          right: 0
+      priority: 1
+    - from:
+        nodeId: node-prep-loop
+      to:
+        nodeId: node-escalate
+        kind: node
+      handoff: manual
+      priority: 2
+      isDefault: true
+  bindings:
+    - kind: input
+      nodeId: node-prep-loop
+      inputKey: target-file
+      type: local-file
+      required: true
+      source:
+        from: workflow-input
+        portId: draft-path
+    - kind: output
+      nodeId: node-publish
+      portId: final-status
+      outputKey: summary-doc
+      type: markdown
+  startNodeIds:
+    - node-prep-loop
+included:
+  phases:
+    - metadata:
+        phaseId: phase-prep-iterative
+        name: Iterative Preparation Phase
+        version: 1
+      spec:
+        runner: claude
+        instruction: Inspect the target draft and emit JSON with pending_tasks and ready status.
+        loopable: true
+        onRetryCap: continue
+        resultContract:
+          version: 1
+          operator: structured-result
+          operatorVersion: 1
+          source:
+            kind: declared-output
+            outputKey: prep-json
+          fields:
+            - fieldId: pending_tasks
+              type: number
+              required: true
+              selector:
+                - pending_tasks
+            - fieldId: ready
+              type: boolean
+              required: true
+              selector:
+                - ready
+          completion:
+            version: 1
+            kind: typed
+            test:
+              left:
+                source: result-field
+                fieldId: pending_tasks
+              operator: equals
+              right: 0
+    - metadata:
+        phaseId: phase-publish-summary
+        name: Publish Summary
+        version: 1
+      spec:
+        runner: codex
+        instruction: Write the final publication summary markdown.
+    - metadata:
+        phaseId: phase-escalate-review
+        name: Escalate Unresolved Findings
+        version: 1
+      spec:
+        runner: agy
+        instruction: Prepare an escalation report for remaining findings.
