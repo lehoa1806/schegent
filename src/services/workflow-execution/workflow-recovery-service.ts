@@ -16,7 +16,9 @@
 // Zero `vscode` imports: shared by host and headless runtime entry points.
 
 import type { ResolvedPortValue } from '../../contracts/run-request';
+import type { ExecutionFence } from '../../contracts/control-ledger';
 import type { WorkflowNodeTerminalStatus } from '../../contracts/workflow-definitions';
+import type { ControlAttemptAdmissionService } from './control-attempt-admission';
 import {
   clearInvocationControlMarkers,
   pauseInvocationControlMarkers,
@@ -84,6 +86,11 @@ export interface WorkflowRecoveryServiceDeps {
     queueId: string,
     runId: string
   ) => Promise<void> | void;
+  readonly controlAdmission?: ControlAttemptAdmissionService;
+  readonly resolveRecoveryFence?: (
+    run: ConnectedWorkflowRun,
+    queueId: string
+  ) => ExecutionFence;
 }
 
 export interface ReconcileConnectedRunResult {
@@ -216,6 +223,20 @@ export class WorkflowRecoveryService {
     const queueId = resolveBoundQueueId(run);
     const rootId = resolveRootInvocationId(run);
     const rootFrame = run.invocations?.[rootId];
+
+    if (run.controlState !== undefined && this.deps.controlAdmission !== undefined) {
+      const recoveryFence =
+        this.deps.resolveRecoveryFence?.(run, queueId) ?? {
+          primacyClaim: `primacy:${run.connectedRunId}`,
+          queueClaim: `queue:${queueId}`,
+          rootGeneration: 1
+        };
+      await this.deps.controlAdmission.reconcileControlRoot({
+        ledgerRunId: run.controlState.ledgerRunId,
+        connectedRun: run,
+        newFence: recoveryFence
+      });
+    }
 
     // 1. Terminal runs: no-op, ensure lease is released.
     if (rootFrame !== undefined && isTerminalInvocationStatus(rootFrame.status)) {
@@ -507,7 +528,7 @@ export class WorkflowRecoveryService {
 
       if (attempt.status === 'pending-dispatch') {
         let resolvedQueueItemId = this.deps.findMatchingEnqueuedAttempt?.(queueId, attempt);
-        if (resolvedQueueItemId === undefined) {
+        if (resolvedQueueItemId === undefined && run.controlState === undefined) {
           const workflowDef = run.frozenClosure?.workflowsById[frame.workflowId] ?? run.graph;
           const phaseNode = workflowDef.nodes.find((candidate) => candidate.nodeId === attempt.nodeId);
           if (phaseNode !== undefined && phaseNode.kind === 'phase') {

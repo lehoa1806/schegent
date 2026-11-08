@@ -3,6 +3,7 @@
 // AttemptOutcome envelopes.
 
 export type Primitive = string | number | boolean;
+export type DecisionFieldValue = Primitive;
 
 export const MAX_RESULT_SOURCE_BYTES = 262_144;
 export const MAX_DIAGNOSTIC_RECORD_BYTES = 65_536;

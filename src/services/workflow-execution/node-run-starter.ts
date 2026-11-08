@@ -41,6 +41,7 @@ import type {
 } from '../../contracts/run-request';
 import type { RunOutputRecord } from '../../contracts/run-results';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
+import type { ExecutionFence } from '../../contracts/control-ledger';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { WorkflowRunPipeline } from '../../state/workflow-run';
 import { checkLocalFile, checkLocalFolder } from '../run-request/local-input-validator';
@@ -144,6 +145,12 @@ export interface NodeRunStartDeps {
   readonly resolveCatalogVersion?: (pipelineId: string) => CatalogVersionRef | undefined;
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly readPriorRunOutputs?: (runId: string) => readonly RunOutputRecord[] | null;
+  readonly recordControlSpawnIntent?: (input: {
+    readonly ledgerRunId: string;
+    readonly attemptId: string;
+    readonly fence: ExecutionFence;
+    readonly hasSideEffects?: boolean;
+  }) => Promise<{ readonly ok: boolean; readonly message?: string }>;
   readonly logger: Pick<SanitizedLogger, 'warn' | 'sanitize'>;
 }
 
@@ -189,6 +196,8 @@ export interface PhaseNodeRunStartInput {
   readonly description?: string;
   readonly queueId?: string;
   readonly occurrence: NodeAttemptOccurrenceRef;
+  readonly ledgerRunId?: string;
+  readonly fence?: ExecutionFence;
   /** The next node of a Workflow already on this queue; see `GuardedScheduleRequest`. */
   readonly continuesWorkflow?: true;
 }
@@ -515,6 +524,25 @@ export async function startPhaseNodeRun(
               }
             : {})
         });
+  if (
+    input.ledgerRunId !== undefined &&
+    input.fence !== undefined &&
+    deps.recordControlSpawnIntent !== undefined
+  ) {
+    const intent = await deps.recordControlSpawnIntent({
+      ledgerRunId: input.ledgerRunId,
+      attemptId: input.occurrence.attemptId,
+      fence: input.fence,
+      hasSideEffects: phase.sideEffects !== 'none'
+    });
+    if (!intent.ok) {
+      return {
+        outcome: 'rejected-queue',
+        reason: 'queue-refused',
+        detail: intent.message ?? 'stale-execution-fence'
+      };
+    }
+  }
   return startPipelineRun(deps, {
     request: {
       ...input.request,

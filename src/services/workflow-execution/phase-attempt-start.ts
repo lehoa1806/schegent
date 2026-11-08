@@ -200,6 +200,10 @@ export async function startPhaseAttempt(
     workspaceRoot,
     description: input.node.label ?? input.phase.name,
     queueId: input.queueId,
+    ...(input.run.controlState !== undefined
+      ? { ledgerRunId: input.run.controlState.ledgerRunId }
+      : {}),
+    ...(input.fence !== undefined ? { fence: input.fence } : {}),
     ...options,
     occurrence: {
       rootRunId: input.run.connectedRunId,
