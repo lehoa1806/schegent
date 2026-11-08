@@ -22,3 +22,12 @@ const UNSAFE_SEGMENT_CHARACTERS = /[^a-zA-Z0-9_-]/g;
 export function safeRunSegment(runId: string): string {
   return runId.replace(UNSAFE_SEGMENT_CHARACTERS, '_');
 }
+
+/** Suffix for persisted bounded candidate handover artifacts (`SPEC-05` / `D5`). */
+export const RECOVERY_ENVELOPE_SUFFIX = '.recovery.json';
+
+/** Canonical filename for one candidate handover artifact inside a Run's checkpoint directory. */
+export function recoveryEnvelopeFileName(handoverId: string): string {
+  return `${safeRunSegment(handoverId)}${RECOVERY_ENVELOPE_SUFFIX}`;
+}
+

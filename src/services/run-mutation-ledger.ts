@@ -1,4 +1,6 @@
 import * as path from 'node:path';
+import type { RecoveryWorkspaceAttribution } from '../contracts/recovery-envelope';
+import type { WorkspaceObservationSnapshot } from './workflow-execution/recovery-envelope-builder';
 
 /**
  * FR-R3-004 — attribution of working-tree changes to one Run.
@@ -211,9 +213,47 @@ export class RunMutationLedger {
   private baselineTaken = false;
   /** Left behind by a Run that terminated without committing. */
   private readonly retired = new Set<string>();
+  /** Bounded pre-attempt workspace snapshots keyed by `<runId>:<attemptId>` (`SPEC-05` / `D5`). */
+  private readonly candidateSnapshots = new Map<string, WorkspaceObservationSnapshot>();
 
   constructor(private readonly deps: RunMutationLedgerDeps) {
     this.createdAt = (deps.now ?? Date.now)();
+  }
+
+  public recordCandidateBeforeSnapshot(
+    attemptKey: string,
+    snapshot: WorkspaceObservationSnapshot
+  ): void {
+    this.candidateSnapshots.set(attemptKey, snapshot);
+  }
+
+  public getCandidateBeforeSnapshot(
+    attemptKey: string
+  ): WorkspaceObservationSnapshot | undefined {
+    return this.candidateSnapshots.get(attemptKey);
+  }
+
+  public clearCandidateSnapshot(attemptKey: string): void {
+    this.candidateSnapshots.delete(attemptKey);
+  }
+
+  public classifyWorkspacePathAttribution(
+    runId: string,
+    relativePath: string
+  ): RecoveryWorkspaceAttribution {
+    this.syncLiveness();
+    const others = this.pathsAttributedToOthers(runId);
+    if (others.has(relativePath)) {
+      return 'concurrent';
+    }
+    const ownEvidence = this.evidenceFor(runId);
+    if (ownEvidence.complete && ownEvidence.paths.has(relativePath)) {
+      return 'attempt';
+    }
+    if (this.baseline.has(relativePath)) {
+      return 'preexisting';
+    }
+    return ownEvidence.complete ? 'attempt' : 'unknown';
   }
 
   /**

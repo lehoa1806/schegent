@@ -3,12 +3,33 @@ import { promisify } from 'node:util';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { SanitizedLogger } from '../lib/logger';
+import { readBoundedRange } from '../lib/bounded-read';
 import { NarrowingReporter } from '../lib/evidence-narrowing';
 import { resolveDiffBase } from '../lib/git-diff-base';
 import { resolveContainedLink } from '../lib/path-containment';
-import { RUN_CHECKPOINT_DIRECTORY, safeRunSegment } from './run-checkpoint-paths';
+import {
+  RECOVERY_ENVELOPE_SUFFIX,
+  RUN_CHECKPOINT_DIRECTORY,
+  recoveryEnvelopeFileName,
+  safeRunSegment
+} from './run-checkpoint-paths';
 import type { WorkflowRun } from '../state/workflow-run';
 import { ensureDirWithinRoot, openWithinRoot } from '../lib/safe-open';
+import {
+  MAX_RECOVERY_ENVELOPE_BYTES,
+  serializeRecoveryEnvelope,
+  validateRecoveryEnvelope,
+  type RecoveryEnvelope,
+  type RecoveryEnvelopeSerializeResult,
+  type RecoveryEnvelopeValidationResult
+} from '../contracts/recovery-envelope';
+import {
+  buildRecoveryEnvelope,
+  captureWorkspaceObservation,
+  type BuildRecoveryEnvelopeOptions,
+  type CaptureWorkspaceObservationOptions,
+  type WorkspaceObservationSnapshot
+} from './workflow-execution/recovery-envelope-builder';
 import {
   joinDiffSections,
   splitDiffSections,
@@ -651,13 +672,199 @@ export class RunCheckpointService {
    */
   private async prune(runRoot: string): Promise<void> {
     const files = (await fs.readdir(runRoot)).sort();
-    const prefixes = [...new Set(files.map((name) => name.replace(/\.(patch|json)$/, '')))];
+    const prefixes = [
+      ...new Set(files.map((name) => name.replace(/\.(patch|declined\.json|recovery\.json|json)$/, '')))
+    ];
     for (const prefix of prefixes.slice(0, Math.max(0, prefixes.length - PER_RUN_LIMIT))) {
       await Promise.all([
         this.removeIfContained(path.join(runRoot, `${prefix}.patch`)),
-        this.removeIfContained(path.join(runRoot, `${prefix}.json`))
+        this.removeIfContained(path.join(runRoot, `${prefix}.json`)),
+        this.removeIfContained(path.join(runRoot, `${prefix}.declined.json`)),
+        this.removeIfContained(path.join(runRoot, `${prefix}${RECOVERY_ENVELOPE_SUFFIX}`))
       ]);
     }
+  }
+
+  /**
+   * Captures and records the pre-attempt workspace snapshot before a candidate attempt starts (`SPEC-05` / `D5`).
+   * Never executes destructive Git commands (`reset`, `checkout`, `restore`, `clean`, `stash`).
+   */
+  public async captureBeforeCandidateAttempt(
+    runId: string,
+    attemptId: string,
+    options?: Omit<CaptureWorkspaceObservationOptions, 'workspaceRoot'>
+  ): Promise<WorkspaceObservationSnapshot> {
+    const baseline = this.ledger.baselinePaths();
+    const mergedDirty = new Set<string>(baseline);
+    if (options?.explicitDirtyPaths !== undefined) {
+      for (const dirty of options.explicitDirtyPaths) {
+        mergedDirty.add(dirty);
+      }
+    }
+    const snapshot = await captureWorkspaceObservation({
+      ...options,
+      workspaceRoot: this.workspaceRoot,
+      explicitDirtyPaths: mergedDirty
+    });
+    this.ledger.recordCandidateBeforeSnapshot(`${runId}:${attemptId}`, snapshot);
+    return snapshot;
+  }
+
+  /**
+   * Persists a validated, redacted, `16,384`-byte bounded `RecoveryEnvelope` under owner-only
+   * checkpoint storage (`<root>/checkpoints/<safeRun>/<safeSegment(handoverId)>.recovery.json`).
+   */
+  public async writeRecoveryEnvelope(
+    runId: string,
+    handoverId: string,
+    handover: RecoveryEnvelope
+  ): Promise<RecoveryEnvelopeSerializeResult> {
+    const serialized = serializeRecoveryEnvelope(handover);
+    if (!serialized.ok) {
+      return serialized;
+    }
+    const safeRun = safeRunSegment(runId);
+    const runRoot = path.join(this.root, RUN_CHECKPOINT_DIRECTORY, safeRun);
+    await this.ensureRunRoot(safeRun);
+    const leaf = recoveryEnvelopeFileName(handoverId);
+    const written = await this.writeCheckpointArtifact(
+      safeRun,
+      leaf,
+      serialized.serialized,
+      'overwrite'
+    );
+    if (written === 'refused') {
+      throw this.blocked('artifact-write-failed');
+    }
+    await this.prune(runRoot).catch(() => undefined);
+    return serialized;
+  }
+
+  /**
+   * Reads and validates a persisted `.recovery.json` handover artifact under containment.
+   * Returns `null` if the artifact does not exist.
+   */
+  public async readRecoveryEnvelope(
+    runId: string,
+    handoverId: string
+  ): Promise<RecoveryEnvelopeValidationResult | null> {
+    const safeRun = safeRunSegment(runId);
+    const leaf = recoveryEnvelopeFileName(handoverId);
+    let opened;
+    try {
+      opened = await openWithinRoot(this.root, [RUN_CHECKPOINT_DIRECTORY, safeRun, leaf], {
+        flags: 'r'
+      });
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+        return null;
+      }
+      throw err;
+    }
+    if (opened.outcome === 'refused') {
+      if (opened.errno === 'ENOENT') {
+        return null;
+      }
+      return {
+        ok: false,
+        diagnostics: [
+          {
+            code: 'invalid-recovery-envelope-field',
+            field: 'recoveryEnvelope',
+            message: `Recovery envelope read refused: ${opened.reason}`
+          }
+        ]
+      };
+    }
+    try {
+      const stat = await opened.handle.stat();
+      if (!stat.isFile() || stat.size > MAX_RECOVERY_ENVELOPE_BYTES) {
+        return {
+          ok: false,
+          diagnostics: [
+            {
+              code: 'recovery-context-too-large',
+              field: 'recoveryEnvelope',
+              message: `Persisted recovery envelope exceeds ${MAX_RECOVERY_ENVELOPE_BYTES} UTF-8 bytes.`
+            }
+          ]
+        };
+      }
+      const range = await readBoundedRange(opened.handle, 0, stat.size);
+      const parsed: unknown = JSON.parse(range.bytes.toString('utf8'));
+      return validateRecoveryEnvelope(parsed);
+    } catch (err: unknown) {
+      return {
+        ok: false,
+        diagnostics: [
+          {
+            code: 'invalid-recovery-envelope-field',
+            field: 'recoveryEnvelope',
+            message: `Failed to parse recovery envelope JSON: ${(err as Error).message}`
+          }
+        ]
+      };
+    } finally {
+      await opened.handle.close().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Captures the post-attempt workspace observation, combines it with the pre-attempt observation
+   * and sibling mutation ledger, builds the bounded `RecoveryEnvelope`, and persists `.recovery.json`.
+   */
+  public async captureAndPersistCandidateHandover(
+    runId: string,
+    handoverId: string,
+    options: Omit<BuildRecoveryEnvelopeOptions, 'beforeObservation' | 'afterObservation'> & {
+      readonly beforeObservation?: WorkspaceObservationSnapshot | undefined;
+      readonly afterObservation?: WorkspaceObservationSnapshot | undefined;
+      readonly captureOptions?: Omit<CaptureWorkspaceObservationOptions, 'workspaceRoot'> | undefined;
+    }
+  ): Promise<RecoveryEnvelopeSerializeResult> {
+    const attemptKey =
+      options.previousAttemptId !== undefined ? `${runId}:${options.previousAttemptId}` : undefined;
+    const beforeObservation =
+      options.beforeObservation ??
+      (attemptKey !== undefined ? this.ledger.getCandidateBeforeSnapshot(attemptKey) : undefined);
+
+    const afterObservation =
+      options.afterObservation ??
+      (await captureWorkspaceObservation({
+        ...options.captureOptions,
+        workspaceRoot: this.workspaceRoot,
+        explicitDirtyPaths: this.ledger.baselinePaths()
+      }));
+
+    this.ledger.syncLiveness();
+    const siblingPaths = this.ledger.pathsAttributedToOthers(runId);
+    const mergedConcurrent = new Set<string>(siblingPaths);
+    if (options.concurrentPaths !== undefined) {
+      for (const item of options.concurrentPaths) {
+        mergedConcurrent.add(item);
+      }
+    }
+
+    const built = buildRecoveryEnvelope({
+      invocationId: options.invocationId,
+      previousAttemptId: options.previousAttemptId,
+      previousOutcome: options.previousOutcome,
+      upstreamArtifactRefs: options.upstreamArtifactRefs,
+      partialArtifactRefs: options.partialArtifactRefs,
+      beforeObservation,
+      afterObservation,
+      concurrentPaths: mergedConcurrent,
+      sideEffects: options.sideEffects,
+      hasAttributableTeardown: options.hasAttributableTeardown,
+      verifiedReconciliation: options.verifiedReconciliation,
+      effectEvidenceRefs: options.effectEvidenceRefs
+    });
+
+    if (!built.ok) {
+      return built;
+    }
+
+    return this.writeRecoveryEnvelope(runId, handoverId, built.handover);
   }
 
   private async removeIfContained(victim: string): Promise<void> {
