@@ -170,7 +170,10 @@ export interface ForEachRuntimeState {
   readonly errorCount?: number | undefined;
   readonly onItemError?: 'stop' | 'continue' | undefined;
   readonly refusalCode?: string | undefined;
+  readonly resultIndexRef?: string | undefined;
+  readonly resultIndexJson?: string | undefined;
   readonly resultIndexArtifactPath?: string;
+  readonly frozenItemsJson?: readonly string[] | undefined;
   readonly slots: readonly ForEachItemRuntimeSlot[];
 }
 
