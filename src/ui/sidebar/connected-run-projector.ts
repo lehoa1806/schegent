@@ -34,6 +34,7 @@ import type {
   ControlProjection
 } from '../../contracts/sidebar-ipc';
 import {
+  buildRepeatNodeProjection,
   buildWorkflowRunControlProjection,
   projectConnectedInvocations
 } from '../../services/workflow-execution/workflow-control-projector';
@@ -210,9 +211,8 @@ export function projectConnectedRun(
     const childInvocationIds = invocationFrames
       .filter((f) => f.parentInvocationId === rootId && f.parentCallNodeId === node.nodeId)
       .map((f) => f.invocationId);
-    const decisionObservation = run.decisionObservations
-      ?.filter((obs) => obs.nodeId === node.nodeId)
-      .at(-1);
+    const decisionObservation = run.decisionObservations?.filter((obs) => obs.nodeId === node.nodeId).at(-1);
+    const repeatProjection = hasInvocations ? buildRepeatNodeProjection(run, node.nodeId) : undefined;
     return {
       nodeId: node.nodeId,
       pipelineId: targetId,
@@ -224,18 +224,15 @@ export function projectConnectedRun(
       // no Pipeline to compose (gate 4a), and its controls are its invocation's `allowedActions`.
       actions: anyInFlight || hasInvocations ? NO_ACTIONS : actionsOf(state, reading.attemptCount),
       attemptCount: reading.attemptCount,
-      ...(reading.latestQueueItemId !== undefined
-        ? { latestQueueItemId: reading.latestQueueItemId }
-        : {}),
+      ...(reading.latestQueueItemId !== undefined ? { latestQueueItemId: reading.latestQueueItemId } : {}),
       ...(decisionObservation !== undefined ? { decisionObservation } : {}),
+      ...(repeatProjection !== undefined ? { repeatProjection } : {}),
       ...(hasInvocations
         ? {
             nodeKind,
             ...(node.label !== undefined ? { label: node.label } : {}),
             ...(versionRef !== undefined ? { frozenVersionId: versionRef.versionId } : {}),
-            ...(childInvocationIds.length > 0
-              ? { childInvocationIds: Object.freeze(childInvocationIds) }
-              : {})
+            ...(childInvocationIds.length > 0 ? { childInvocationIds: Object.freeze(childInvocationIds) } : {})
           }
         : {})
     };

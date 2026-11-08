@@ -185,7 +185,11 @@ export function evaluateControlActionLegality(input: {
       return { allowed: true };
     }
     case 'resume': {
-      if (!PAUSED_FRAME_STATES.has(frame.status)) {
+      if (
+        !PAUSED_FRAME_STATES.has(frame.status) ||
+        frame.pauseCause === 'repeat-exhausted' ||
+        frame.repeatState?.exhaustionReason === 'repeat-exhausted'
+      ) {
         return { allowed: false, reason: 'illegal-state' };
       }
       if (

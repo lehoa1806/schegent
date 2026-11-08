@@ -390,6 +390,11 @@ const CHILD_PROCESS_IMPORTERS: readonly ImporterRow[] = [
     reason: 'runs `git` to take the recovery checkpoint diff; not a configured backend'
   },
   {
+    path: 'src/services/workflow-execution/recovery-envelope-builder.ts',
+    role: 'diagnostic',
+    reason: 'runs `git` to inspect workspace status and diff patches for candidate handover recovery; not a configured backend'
+  },
+  {
     path: 'src/activation/run-safety-wiring.ts',
     role: 'diagnostic',
     reason: 'runs `git diff` for the run-safety requester; not a configured backend'
@@ -694,14 +699,14 @@ describe('every child_process importer is classified, and a spawner forwards env
     expect(censusFailures(CHILD_PROCESS_IMPORTERS, productionSources(), readRepoFile)).toEqual([]);
   });
 
-  it('is not vacuous: it finds all 16 importers and every role is exercised', () => {
+  it('is not vacuous: it finds all 17 importers and every role is exercised', () => {
     const found = productionSources().filter((file) =>
       importsChildProcess(withoutComments(file.text))
     );
     expect(found.map((file) => file.path).sort()).toEqual(
       CHILD_PROCESS_IMPORTERS.map((row) => row.path).sort()
     );
-    expect(found).toHaveLength(16);
+    expect(found).toHaveLength(17);
     const roles = new Set(CHILD_PROCESS_IMPORTERS.map((row) => row.role));
     expect([...roles].sort()).toEqual(['diagnostic', 'spawner', 'type-only']);
     // Both probes are spawners with a rule, which is the whole reason for the census.

@@ -310,7 +310,15 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // `queue-lifecycle-literal-allowlist.test.ts`, not the pinned per-task status
   // projection this guard protects; the two are distinct vocabularies and this
   // file touches only the former.
-  'webview-ui/src/lib/queue-lifecycle-label.ts'
+  'webview-ui/src/lib/queue-lifecycle-label.ts',
+  // FR-R5-F26 / FR-R5-F28 — `ControlProcessEvidenceState` (`'running' | ...`) and
+  // `AvailabilityCheckRecord.status` (`'running' | ...`) are control-ledger
+  // process/probe discriminators, in the same class as `BackendPingState.status`
+  // above, never the pinned per-task `WorkflowRunStatus` projection.
+  'src/contracts/control-ledger.ts',
+  'src/services/backend-availability-service.ts',
+  'src/services/workflow-execution/control-attempt-admission.ts',
+  'src/services/workflow-execution/control-ledger-store.ts'
   // FR-R3-150 added `webview-ui/src/lib/queue-derived.ts` here for a comment
   // quoting `queue-manager.ts`'s lifecycle ternary verbatim. The comment is
   // gone (2026-09-04), so the entry excused nothing and

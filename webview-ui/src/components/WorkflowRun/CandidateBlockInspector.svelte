@@ -220,42 +220,22 @@
   <header class="cb-inspector-header">
     <div class="cb-inspector-title-row">
       <h4 class="cb-inspector-title">Candidate Block</h4>
-      <span
-        class="cb-state-badge"
-        data-testid="candidate-block-inspector-state"
-      >
-        {proj.state}
-      </span>
-      <span class="cb-meta-badge" data-testid="candidate-block-inspector-generation">
-        Gen #{proj.generation}
-      </span>
-      <span class="cb-meta-badge" data-testid="candidate-block-inspector-policy">
-        Policy: {proj.availabilityPolicy ?? 'first-ready'}
-      </span>
+      <span class="cb-state-badge" data-testid="candidate-block-inspector-state">{proj.state}</span>
+      <span class="cb-meta-badge" data-testid="candidate-block-inspector-generation">Gen #{proj.generation}</span>
+      <span class="cb-meta-badge" data-testid="candidate-block-inspector-policy">Policy: {proj.availabilityPolicy ?? 'first-ready'}</span>
       {#if proj.selectedCandidateId}
-        <span class="cb-meta-badge" data-testid="candidate-block-inspector-selected">
-          Selected: {proj.selectedCandidateId}
-        </span>
+        <span class="cb-meta-badge" data-testid="candidate-block-inspector-selected">Selected: {proj.selectedCandidateId}</span>
       {/if}
     </div>
 
     <div class="cb-inspector-counters">
-      <span
-        class="cb-counter-chip"
-        data-testid="candidate-block-inspector-block-dispatches"
-      >
+      <span class="cb-counter-chip" data-testid="candidate-block-inspector-block-dispatches">
         Candidate-block dispatches: {proj.attemptsUsed} / {proj.maxDispatches}
       </span>
-      <span
-        class="cb-counter-chip"
-        data-testid="candidate-block-inspector-root-dispatches"
-      >
+      <span class="cb-counter-chip" data-testid="candidate-block-inspector-root-dispatches">
         Root run dispatches: {proj.rootDispatchesUsed} / {proj.rootMaxDispatches}
       </span>
-      <span
-        class="cb-counter-chip"
-        data-testid="candidate-block-inspector-enclosing-iteration"
-      >
+      <span class="cb-counter-chip" data-testid="candidate-block-inspector-enclosing-iteration">
         Enclosing business iteration: {proj.enclosingIteration ?? 1} / {proj.enclosingMaxIterations ?? 1}
       </span>
     </div>
@@ -271,12 +251,7 @@
   {#if proj.monitoringExpiresAt !== undefined}
     <div class="cb-deadline-row" data-testid="candidate-block-inspector-monitoring-deadline">
       <span>Monitoring deadline:</span>
-      <strong>
-        {formatControlTimestamp(proj.monitoringExpiresAt, {
-          timeZone: p.timeZone,
-          referenceTimeMs: p.referenceTimeMs
-        })}
-      </strong>
+      <strong>{formatControlTimestamp(proj.monitoringExpiresAt, { timeZone: p.timeZone, referenceTimeMs: p.referenceTimeMs })}</strong>
     </div>
   {/if}
 
@@ -284,11 +259,7 @@
     <div class="cb-honesty-card">
       <span class="cb-card-label">Workspace Recovery Coverage</span>
       <strong data-testid="candidate-block-inspector-recovery-coverage">
-        {formatRecoveryCoverageLabel(
-          proj.recoveryCoverage,
-          proj.manifestTruncated,
-          proj.preexistingDirtyCount
-        )}
+        {formatRecoveryCoverageLabel(proj.recoveryCoverage, proj.manifestTruncated, proj.preexistingDirtyCount)}
       </strong>
     </div>
 
@@ -306,10 +277,7 @@
         <span> · </span>
         <span data-testid="candidate-block-inspector-spend-quality">{proj.spendEnforcementQuality}</span>
       </div>
-      <div
-        class="cb-spend-details"
-        data-testid="candidate-block-inspector-spend-summary"
-      >
+      <div class="cb-spend-details" data-testid="candidate-block-inspector-spend-summary">
         Verified: {formatMicrousd(proj.verifiedMicrousd)} · Estimated: {formatMicrousd(proj.estimatedMicrousd)} · Unpriced attempts: {proj.unpricedAttemptCount ?? 0}
         {#if proj.maxMicrousd !== undefined}
           · Ceiling: {formatMicrousd(proj.maxMicrousd)}
@@ -319,21 +287,14 @@
   </div>
 
   {#if proj.activeAttemptOvershootNote}
-    <div
-      class="cb-notice-banner"
-      data-testid="candidate-block-inspector-overshoot-note"
-      role="status"
-    >
+    <div class="cb-notice-banner" data-testid="candidate-block-inspector-overshoot-note" role="status">
       <strong>Active-attempt overshoot:</strong>
       <span>{proj.activeAttemptOvershootNote}</span>
     </div>
   {/if}
 
   {#if proj.durableNotices && proj.durableNotices.length > 0}
-    <ul
-      class="cb-notice-list"
-      data-testid="candidate-block-inspector-durable-notices"
-    >
+    <ul class="cb-notice-list" data-testid="candidate-block-inspector-durable-notices">
       {#each proj.durableNotices as notice, idx (idx)}
         <li data-testid="candidate-block-inspector-durable-notice-{idx}">{notice}</li>
       {/each}
@@ -343,41 +304,20 @@
   <ul class="cb-candidate-rows" data-testid="candidate-block-inspector-candidates">
     {#each candidates as cand (cand.candidateId)}
       {@const remaining = Math.max(0, cand.maxAttempts - cand.attemptsUsed)}
-      <li
-        class="cb-candidate-card"
-        data-testid="candidate-inspector-row-{cand.candidateId}"
-      >
+      <li class="cb-candidate-card" data-testid="candidate-inspector-row-{cand.candidateId}">
         <div class="cb-candidate-card-head">
-          <strong data-testid="candidate-inspector-id-{cand.candidateId}">
-            {cand.candidateId}
-          </strong>
+          <strong data-testid="candidate-inspector-id-{cand.candidateId}">{cand.candidateId}</strong>
           <span class="cb-meta-badge">Node: {cand.nodeId}</span>
           <span class="cb-meta-badge">Backend: {cand.backend}</span>
-          <span
-            class="cb-meta-badge"
-            data-testid="candidate-inspector-status-{cand.candidateId}"
-          >
-            Status: {cand.eligibility}
-            {#if cand.retirementReason}
-              ({cand.retirementReason})
-            {/if}
-            · {cand.policyExcluded ? 'Excluded by operator policy' : 'Included'}
+          <span class="cb-meta-badge" data-testid="candidate-inspector-status-{cand.candidateId}">
+            Status: {cand.eligibility}{#if cand.retirementReason} ({cand.retirementReason}){/if} · {cand.policyExcluded ? 'Excluded by operator policy' : 'Included'}
           </span>
         </div>
 
-        <div
-          class="cb-candidate-phase-identity"
-          data-testid="candidate-inspector-phase-identity-{cand.candidateId}"
-        >
-          <span>
-            Phase: <strong>{cand.phaseName ?? cand.phaseId ?? cand.nodeId}</strong>
-          </span>
-          {#if cand.operatorKind}
-            <span> · Operator: <strong>{cand.operatorKind}</strong></span>
-          {/if}
-          {#if cand.instructionSummary}
-            <span> · Instruction: {cand.instructionSummary}</span>
-          {/if}
+        <div class="cb-candidate-phase-identity" data-testid="candidate-inspector-phase-identity-{cand.candidateId}">
+          <span>Phase: <strong>{cand.phaseName ?? cand.phaseId ?? cand.nodeId}</strong></span>
+          {#if cand.operatorKind}<span> · Operator: <strong>{cand.operatorKind}</strong></span>{/if}
+          {#if cand.instructionSummary}<span> · Instruction: {cand.instructionSummary}</span>{/if}
         </div>
 
         <div class="cb-candidate-metrics">
@@ -389,32 +329,20 @@
           </span>
           {#if cand.quotaIdentity || cand.permitWaitPosition !== undefined}
             <span data-testid="candidate-inspector-quota-{cand.candidateId}">
-              Quota: {cand.quotaIdentity ?? cand.backend}
-              {#if cand.permitWaitPosition !== undefined}
-                (wait position #{cand.permitWaitPosition})
-              {/if}
+              Quota: {cand.quotaIdentity ?? cand.backend}{#if cand.permitWaitPosition !== undefined} (wait position #{cand.permitWaitPosition}){/if}
             </span>
           {/if}
         </div>
 
         <div class="cb-candidate-timestamps">
           <span data-testid="candidate-inspector-reset-at-{cand.candidateId}">
-            Reset estimate: {formatControlTimestamp(cand.resetAt, {
-              timeZone: p.timeZone,
-              referenceTimeMs: p.referenceTimeMs
-            })}
+            Reset estimate: {formatControlTimestamp(cand.resetAt, { timeZone: p.timeZone, referenceTimeMs: p.referenceTimeMs })}
           </span>
           <span data-testid="candidate-inspector-next-check-{cand.candidateId}">
-            Next check: {formatControlTimestamp(cand.nextCheckAt, {
-              timeZone: p.timeZone,
-              referenceTimeMs: p.referenceTimeMs
-            })}
+            Next check: {formatControlTimestamp(cand.nextCheckAt, { timeZone: p.timeZone, referenceTimeMs: p.referenceTimeMs })}
           </span>
           <span data-testid="candidate-inspector-not-before-{cand.candidateId}">
-            Not before: {formatControlTimestamp(cand.notBefore, {
-              timeZone: p.timeZone,
-              referenceTimeMs: p.referenceTimeMs
-            })}
+            Not before: {formatControlTimestamp(cand.notBefore, { timeZone: p.timeZone, referenceTimeMs: p.referenceTimeMs })}
           </span>
         </div>
       </li>
@@ -422,10 +350,7 @@
   </ul>
 
   {#if proj.evidenceRefs.length > 0}
-    <div
-      class="cb-evidence-refs"
-      data-testid="candidate-block-inspector-evidence-refs"
-    >
+    <div class="cb-evidence-refs" data-testid="candidate-block-inspector-evidence-refs">
       <span class="cb-card-label">Evidence References:</span>
       {#each proj.evidenceRefs as ref (ref)}
         <code class="cb-evidence-chip">{ref}</code>
@@ -438,14 +363,7 @@
       <div class="cb-controls-selectors">
         <label class="cb-inline-field">
           Target Candidate
-          <select
-            class="select-input"
-            data-testid="candidate-control-target-select"
-            aria-label="Target candidate for control action"
-            value={selectedCandidateId}
-            disabled={commandPending}
-            onchange={(e) => (selectedCandidateId = e.currentTarget.value)}
-          >
+          <select class="select-input" data-testid="candidate-control-target-select" aria-label="Target candidate for control action" value={selectedCandidateId} disabled={commandPending} onchange={(e) => (selectedCandidateId = e.currentTarget.value)}>
             {#each candidates as cand (cand.candidateId)}
               <option value={cand.candidateId}>{cand.candidateId} ({cand.backend})</option>
             {/each}
@@ -454,15 +372,7 @@
 
         <label class="cb-inline-field">
           Availability Policy
-          <select
-            class="select-input"
-            data-testid="candidate-control-policy-select"
-            aria-label="Availability policy for control action"
-            value={selectedPolicy}
-            disabled={commandPending}
-            onchange={(e) =>
-              (selectedPolicy = e.currentTarget.value as CandidateAvailabilityPolicy)}
-          >
+          <select class="select-input" data-testid="candidate-control-policy-select" aria-label="Availability policy for control action" value={selectedPolicy} disabled={commandPending} onchange={(e) => (selectedPolicy = e.currentTarget.value as CandidateAvailabilityPolicy)}>
             {#each CANDIDATE_AVAILABILITY_POLICIES as pol (pol)}
               <option value={pol}>{pol}</option>
             {/each}
@@ -474,13 +384,7 @@
         <span class="cb-card-label">Allowed Candidates:</span>
         {#each candidates as cand (cand.candidateId)}
           <label class="cb-subset-check">
-            <input
-              type="checkbox"
-              data-testid="candidate-control-allow-checkbox-{cand.candidateId}"
-              checked={allowedSubset[cand.candidateId] !== false}
-              disabled={commandPending}
-              onchange={(e) => toggleSubsetCandidate(cand.candidateId, e.currentTarget.checked)}
-            />
+            <input type="checkbox" data-testid="candidate-control-allow-checkbox-{cand.candidateId}" checked={allowedSubset[cand.candidateId] !== false} disabled={commandPending} onchange={(e) => toggleSubsetCandidate(cand.candidateId, e.currentTarget.checked)} />
             <span>{cand.candidateId}</span>
           </label>
         {/each}
@@ -490,23 +394,11 @@
         {#each ['check-now', 'try-now', 'select-candidate', 'set-policy', 'set-allowed-candidates', 'renew-monitoring', 'pause', 'resume', 'cancel'] as const as actionKey (actionKey)}
           {@const desc = actionDescriptor(actionKey)}
           <div class="cb-action-item">
-            <button
-              type="button"
-              class="cb-action-btn"
-              data-testid="candidate-control-action-{actionKey}"
-              disabled={commandPending || !desc.allowed}
-              title={desc.reason ?? ACTION_LABELS[actionKey]}
-              onclick={() => dispatchControlAction(actionKey)}
-            >
+            <button type="button" class="cb-action-btn" data-testid="candidate-control-action-{actionKey}" disabled={commandPending || !desc.allowed} title={desc.reason ?? ACTION_LABELS[actionKey]} onclick={() => dispatchControlAction(actionKey)}>
               {ACTION_LABELS[actionKey]}
             </button>
             {#if !desc.allowed && desc.reason}
-              <span
-                class="cb-action-reason"
-                data-testid="candidate-control-reason-{actionKey}"
-              >
-                {desc.reason}
-              </span>
+              <span class="cb-action-reason" data-testid="candidate-control-reason-{actionKey}">{desc.reason}</span>
             {/if}
           </div>
         {/each}
@@ -515,141 +407,28 @@
   {/if}
 
   {#if feedbackMessage && feedbackSubjectId === proj.invocationId}
-    <div
-      class="cb-feedback-banner"
-      class:is-refused={feedbackKind === 'refused'}
-      data-testid="candidate-control-feedback"
-      data-feedback-kind={feedbackKind}
-      data-subject-invocation-id={proj.invocationId}
-      role="status"
-    >
+    <div class="cb-feedback-banner" class:is-refused={feedbackKind === 'refused'} data-testid="candidate-control-feedback" data-feedback-kind={feedbackKind} data-subject-invocation-id={proj.invocationId} role="status">
       {feedbackMessage}
     </div>
   {/if}
 </section>
 
 <style>
-  .cb-inspector {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 8px;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--schegent-radius);
-  }
-  .cb-inspector-header,
-  .cb-honesty-card,
-  .cb-candidate-card,
-  .cb-controls-panel {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .cb-inspector-title-row,
-  .cb-inspector-counters,
-  .cb-candidate-card-head,
-  .cb-candidate-metrics,
-  .cb-candidate-timestamps,
-  .cb-evidence-refs,
-  .cb-controls-selectors,
-  .cb-subset-checkboxes,
-  .cb-action-buttons {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-  }
-  .cb-inspector-title {
-    margin: 0;
-    font-size: 0.9em;
-  }
-  .cb-state-badge {
-    font-size: 0.78em;
-    font-weight: 600;
-    text-transform: uppercase;
-    padding: 2px 6px;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--schegent-radius);
-  }
-  .cb-meta-badge,
-  .cb-counter-chip,
-  .cb-evidence-chip {
-    font-size: 0.78em;
-    opacity: 0.88;
-  }
-  .cb-honesty-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: 6px;
-  }
-  .cb-honesty-card,
-  .cb-candidate-card {
-    padding: 6px 8px;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--schegent-radius);
-    font-size: 0.8em;
-  }
-  .cb-card-label {
-    font-size: 0.75em;
-    opacity: 0.78;
-  }
-  .cb-spend-details,
-  .cb-candidate-phase-identity,
-  .cb-deadline-row {
-    font-size: 0.8em;
-    opacity: 0.9;
-  }
-  .cb-candidate-rows,
-  .cb-notice-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .cb-notice-banner,
-  .cb-feedback-banner {
-    padding: 6px 8px;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--schegent-radius);
-    font-size: 0.8em;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .cb-inline-field {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 0.8em;
-  }
-  .cb-subset-check {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 0.8em;
-  }
-  .cb-action-item {
-    display: inline-flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .cb-action-btn {
-    padding: 3px 8px;
-    font-size: 0.78em;
-    background: var(--vscode-button-secondaryBackground, transparent);
-    color: var(--vscode-button-secondaryForeground, inherit);
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--schegent-radius);
-    cursor: pointer;
-  }
-  .cb-action-btn:disabled {
-    cursor: default;
-    opacity: 0.55;
-  }
-  .cb-action-reason {
-    font-size: 0.7em;
-    opacity: 0.75;
-  }
+  .cb-inspector { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); }
+  .cb-inspector-header, .cb-honesty-card, .cb-candidate-card, .cb-controls-panel { display: flex; flex-direction: column; gap: 4px; }
+  .cb-inspector-title-row, .cb-inspector-counters, .cb-candidate-card-head, .cb-candidate-metrics, .cb-candidate-timestamps, .cb-evidence-refs, .cb-controls-selectors, .cb-subset-checkboxes, .cb-action-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .cb-inspector-title { margin: 0; font-size: 0.9em; }
+  .cb-state-badge { font-size: 0.78em; font-weight: 600; text-transform: uppercase; padding: 2px 6px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); }
+  .cb-meta-badge, .cb-counter-chip, .cb-evidence-chip { font-size: 0.78em; opacity: 0.88; }
+  .cb-honesty-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 6px; }
+  .cb-honesty-card, .cb-candidate-card { padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); font-size: 0.8em; }
+  .cb-card-label { font-size: 0.75em; opacity: 0.78; }
+  .cb-spend-details, .cb-candidate-phase-identity, .cb-deadline-row { font-size: 0.8em; opacity: 0.9; }
+  .cb-candidate-rows, .cb-notice-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .cb-notice-banner, .cb-feedback-banner { padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); font-size: 0.8em; display: flex; flex-wrap: wrap; gap: 6px; }
+  .cb-inline-field, .cb-subset-check { display: inline-flex; align-items: center; gap: 4px; font-size: 0.8em; }
+  .cb-action-item { display: inline-flex; flex-direction: column; gap: 2px; }
+  .cb-action-btn { padding: 3px 8px; font-size: 0.78em; background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, inherit); border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); cursor: pointer; }
+  .cb-action-btn:disabled { cursor: default; opacity: 0.55; }
+  .cb-action-reason { font-size: 0.7em; opacity: 0.75; }
 </style>

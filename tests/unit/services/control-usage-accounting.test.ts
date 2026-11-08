@@ -317,7 +317,7 @@ describe('ControlUsageAccountingService unit tests (FR-R5-F30 / SPEC-08 / D6)', 
     if (rec2.ok) {
       expect(rec2.rollup.verifiedMicrousd).toBe(0);
       expect(rec2.rollup.unpricedAttemptCount).toBe(1);
-      expect(rec2.rollup.tokensByBackend.codex.inputTokens).toBe(2500);
+      expect(Object.entries(rec2.rollup.tokensByBackend).find(([k]) => k === 'codex')?.[1].inputTokens).toBe(2500);
     }
 
     // Preserve spend total helper keeps both USD and token totals across backend switches
@@ -398,12 +398,12 @@ describe('ControlUsageAccountingService unit tests (FR-R5-F30 / SPEC-08 / D6)', 
     const rollupB = accounting.getRootUsageRollup('root-b')!;
     expect(rollupA.verifiedMicrousd).toBe(3_000);
     expect(rollupA.sharedCheckMicrousd).toBe(3_000);
-    expect(rollupA.usageRecordsByRef['check:chk-shared-1'].sharedObservation).toBe(
-      false
-    );
+    expect(
+      Object.entries(rollupA.usageRecordsByRef).find(([k]) => k === 'check:chk-shared-1')?.[1].sharedObservation
+    ).toBe(false);
     expect(rollupB.verifiedMicrousd).toBe(0);
-    expect(rollupB.usageRecordsByRef['check:chk-shared-1'].sharedObservation).toBe(
-      true
-    );
+    expect(
+      Object.entries(rollupB.usageRecordsByRef).find(([k]) => k === 'check:chk-shared-1')?.[1].sharedObservation
+    ).toBe(true);
   });
 });

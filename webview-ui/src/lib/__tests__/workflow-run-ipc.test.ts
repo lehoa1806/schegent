@@ -133,7 +133,7 @@ describe('workflow run helpers (T17)', () => {
     expect(posted[1]!.correlationId).not.toBe(posted[0]!.correlationId);
   });
 
-  it('routes sendWorkflowControlCommand through CMD_CONTINUE_WORKFLOW and resolves control-acknowledged (FR-R5-F31)', async () => {
+  it('routes sendWorkflowControlCommand through the continuation wire command and resolves control-acknowledged (FR-R5-F31)', async () => {
     const command = {
       version: 1 as const,
       commandId: '11111111-1111-4111-8111-111111111111',
