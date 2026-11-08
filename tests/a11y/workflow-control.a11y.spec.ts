@@ -1,5 +1,6 @@
-// FR-R5-F32 (F32-T08) — Accessibility (WCAG 2.1 AA axe-core + keyboard/ARIA) verification
-// for CandidateBlockEditor and CandidateBlockInspector across light, dark, and high-contrast themes.
+// FR-R5-F32 (F32-T08) & FR-R5-F35 (F35-T05) — Accessibility (WCAG 2.1 AA axe-core + keyboard/ARIA)
+// verification for CandidateBlockEditor, CandidateBlockInspector, Repeat projection, and ForEach
+// projection across light, dark, and high-contrast themes.
 
 import { createRequire } from 'node:module';
 import { expect, test, type Page } from '@playwright/test';
@@ -56,7 +57,51 @@ function buildA11yControlSnapshot(): WorkflowSnapshot {
             nodeKind: 'phase',
             state: 'in-flight',
             actions: [],
-            attemptCount: 2
+            attemptCount: 2,
+            repeatProjection: {
+              version: 1,
+              kind: 'repeat',
+              iteration: 3,
+              currentPass: 3,
+              maxIterations: 3,
+              conditionResult: 'false',
+              currentChildInvocationId: null,
+              onExhausted: 'pause',
+              exhaustionReason: 'repeat-exhausted',
+              leafAttemptCount: 6,
+              completedPasses: [
+                { iteration: 1, invocationId: 'c-1', status: 'completed' },
+                { iteration: 2, invocationId: 'c-2', status: 'completed' },
+                { iteration: 3, invocationId: 'c-3', status: 'completed' }
+              ],
+              legalActions: [
+                { kind: 'pause', allowed: false, reason: 'illegal-state' },
+                { kind: 'resume', allowed: false, reason: 'illegal-state' },
+                { kind: 'cancel', allowed: true }
+              ]
+            },
+            forEachProjection: {
+              version: 1,
+              kind: 'for-each',
+              collectionRef: 'fe-col-a11y',
+              collectionSha256: 'cafebabe',
+              itemCount: 2,
+              currentIndex: 1,
+              onItemError: 'continue',
+              hasErrors: true,
+              errorCount: 1,
+              resultIndexRef: 'fe-idx-a11y',
+              leafAttemptCount: 4,
+              slots: [
+                { index: 0, itemKey: 'item-1', state: 'completed', resultRef: 'res-0' },
+                {
+                  index: 1,
+                  itemKey: 'item-2',
+                  state: 'failed',
+                  error: { code: 'child-failed', message: 'A11y item error' }
+                }
+              ]
+            }
           }
         ],
         controlProjection
@@ -151,6 +196,26 @@ test.describe('FR-R5-F32 — WCAG 2.1 AA accessibility scan for workflow control
         '[data-testid="candidate-block-inspector"]'
       );
       expect(inspectorViolations, `CandidateBlockInspector axe violations in ${theme}`).toEqual([]);
+
+      // 3. Scan Repeat and ForEach runtime projections in WorkflowNodeStates
+      await expect(page.getByTestId('repeat-node-projection-triage')).toBeVisible();
+      await expect(page.getByTestId('foreach-node-projection-triage')).toBeVisible();
+      await expect(page.getByTestId('foreach-error-summary-triage')).toHaveAttribute(
+        'role',
+        'status'
+      );
+
+      const repeatViolations = await runScopedAxe(
+        page,
+        '[data-testid="repeat-node-projection-triage"]'
+      );
+      expect(repeatViolations, `Repeat projection axe violations in ${theme}`).toEqual([]);
+
+      const forEachViolations = await runScopedAxe(
+        page,
+        '[data-testid="foreach-node-projection-triage"]'
+      );
+      expect(forEachViolations, `ForEach projection axe violations in ${theme}`).toEqual([]);
     });
   }
 });

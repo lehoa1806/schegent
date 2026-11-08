@@ -157,6 +157,7 @@ describe('effectiveLimits on the in-flight Run (E3 G8, G9)', () => {
       'iterationCap', 'idleTimeoutSeconds', 'maxDurationSeconds', 'retryCap', 'onRetryCap', 'spend',
       // FR-R4-F17 — the unchanged-metrics bound's member, its state key and the four closed states.
       'unchangedComparisons', 'state', 'active', 'disabled', 'inert-cap-outcome', 'inert-no-retry-condition',
+      'phaseRetryPolicy', 'retryCondition', 'single-pass', 'capOutcome', 'noProgressThreshold', 'settingSources', 'maxIterations',
       'value', 'origin', 'kind', 'denomination', 'limit', 'trust',
       'default', 'user', 'workspace', 'workspace-folder', 'phase',
       'fail', 'continue', 'continue-degraded', 'none', 'bounded', 'usd', 'tokens', 'enforced', 'not-trustworthy'

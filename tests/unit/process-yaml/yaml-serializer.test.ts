@@ -110,7 +110,8 @@ describe('yaml-serializer — property order (FR-017)', () => {
       // that carries both sees them on consecutive lines, which is the only
       // place the format itself can say they are the same decision written twice.
       'onRetryCap',
-      'retryCondition'
+      'retryCondition',
+      'resultContract'
     ]);
   });
 
@@ -684,14 +685,17 @@ describe('yaml-serializer — declared key order for the Workflow mappings', () 
       'bindings',
       'startNodeIds',
       'executionDefaults',
-      'recommendedNext'
+      'recommendedNext',
+      'control',
+      'decisionResults'
     ]);
     expect(WORKFLOW_NODE_KEY_ORDER).toEqual([
       'nodeId',
       'kind',
       'phaseId',
       'workflowId',
-      'label'
+      'label',
+      'control'
     ]);
     expect(WORKFLOW_CONNECTION_KEY_ORDER).toEqual([
       'from',

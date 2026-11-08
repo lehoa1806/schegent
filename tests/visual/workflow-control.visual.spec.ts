@@ -1,5 +1,6 @@
-// FR-R5-F32 (F32-T08) — Visual & layout verification for CandidateBlockEditor
-// and CandidateBlockInspector across light, dark, and high-contrast themes.
+// FR-R5-F32 (F32-T08) & FR-R5-F35 (F35-T05) — Visual & layout verification for
+// CandidateBlockEditor, CandidateBlockInspector, Repeat projection, and ForEach
+// projection across light, dark, and high-contrast themes.
 
 import { expect, test, type Page } from '@playwright/test';
 import {
@@ -58,7 +59,51 @@ function buildControlSnapshot(state: CandidateBlockFrameState): WorkflowSnapshot
             nodeKind: 'phase',
             state: 'in-flight',
             actions: [],
-            attemptCount: 1
+            attemptCount: 1,
+            repeatProjection: {
+              version: 1,
+              kind: 'repeat',
+              iteration: 2,
+              currentPass: 2,
+              maxIterations: 4,
+              conditionResult: 'false',
+              currentChildInvocationId: 'child-inv-2',
+              onExhausted: 'pause',
+              exhaustionReason: 'repeat-exhausted',
+              carryEnvelopeRef: 'root:triage:pass-2:carry',
+              leafAttemptCount: 5,
+              completedPasses: [
+                { iteration: 1, invocationId: 'child-inv-1', status: 'completed', resultRef: 'ref:1' }
+              ],
+              legalActions: [
+                { kind: 'pause', allowed: false, reason: 'illegal-state' },
+                { kind: 'resume', allowed: false, reason: 'illegal-state' },
+                { kind: 'cancel', allowed: true }
+              ]
+            },
+            forEachProjection: {
+              version: 1,
+              kind: 'for-each',
+              collectionRef: 'fe-col-001',
+              collectionSha256: 'deadbeef',
+              itemCount: 3,
+              currentIndex: 2,
+              onItemError: 'continue',
+              hasErrors: true,
+              errorCount: 1,
+              resultIndexRef: 'fe-idx-001',
+              leafAttemptCount: 6,
+              slots: [
+                { index: 0, itemKey: 'item-a', state: 'completed', resultRef: 'res-0' },
+                {
+                  index: 1,
+                  itemKey: 'item-b',
+                  state: 'failed',
+                  error: { code: 'child-failed', message: 'Item failed cleanly' }
+                },
+                { index: 2, itemKey: 'item-c', state: 'completed', resultRef: 'res-2' }
+              ]
+            }
           }
         ],
         controlProjection
@@ -157,6 +202,27 @@ test.describe('FR-R5-F32 — workflow control visual & layout checks', () => {
       expect(
         inspectorInlineStyles,
         'CandidateBlockInspector must not emit inline style attributes'
+      ).toBe(0);
+
+      // 3. Verify Repeat and ForEach runtime projections in WorkflowNodeStates
+      const repeatPanel = page.getByTestId('repeat-node-projection-triage');
+      await expect(repeatPanel).toBeVisible();
+      await expect(page.getByTestId('repeat-pass-counter-triage')).toContainText('Pass 2 of 4');
+      await expect(page.getByTestId('repeat-leaf-attempts-triage')).toContainText('5 leaf attempts');
+      await expect(page.getByTestId('repeat-exhaustion-reason-triage')).toContainText('repeat-exhausted');
+      expect(
+        await repeatPanel.locator('[style]').count(),
+        'Repeat projection panel must not emit inline style attributes'
+      ).toBe(0);
+
+      const forEachPanel = page.getByTestId('foreach-node-projection-triage');
+      await expect(forEachPanel).toBeVisible();
+      await expect(page.getByTestId('foreach-item-counter-triage')).toContainText('Item 3 of 3');
+      await expect(page.getByTestId('foreach-leaf-attempts-triage')).toContainText('6 leaf attempts');
+      await expect(page.getByTestId('foreach-error-summary-triage')).toContainText('hasErrors: true');
+      expect(
+        await forEachPanel.locator('[style]').count(),
+        'ForEach projection panel must not emit inline style attributes'
       ).toBe(0);
     });
   }

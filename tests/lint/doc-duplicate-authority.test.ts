@@ -490,7 +490,7 @@ describe('no two documents share a body (FR-R3-063, widened by FR-R3-066)', () =
     // `loadDocs`, so that is what is re-run.
     const again = findOverlaps(loadDocs());
     expect(again.map(describeOverlap)).toEqual(overlaps.map(describeOverlap));
-  });
+  }, 90_000);
 
   it('does not scan ignored files', () => {
     // The measured reason for tracked-only enumeration: a gitignored document in

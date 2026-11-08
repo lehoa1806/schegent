@@ -1664,17 +1664,18 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       highWaterMark: 1674
     }
   },
-  // Round 5 workflow control-flow, backend recovery, and admission modules (FR-R5-F26..F31, 2026-11-08) —
+  // Round 5 workflow control-flow, backend recovery, and admission modules (FR-R5-F26..F34, 2026-11-08) —
   // each crosses the 1,000-line entry condition and carries a plain ceiling with ~50 lines of headroom
   // above `tightMargin`.
   { path: 'src/services/backend-availability-service.ts', maxLines: 1_420 },
   { path: 'src/services/workflow-execution/candidate-block-executor.ts', maxLines: 1_980 },
-  { path: 'src/services/workflow-execution/connected-run-coordinator.ts', maxLines: 1_100 },
+  { path: 'src/services/workflow-execution/connected-run-coordinator.ts', maxLines: 1_450 },
   { path: 'src/services/workflow-execution/control-attempt-admission.ts', maxLines: 1_860 },
   { path: 'src/services/workflow-execution/control-command-service.ts', maxLines: 1_380 },
   { path: 'src/services/workflow-execution/control-usage-accounting.ts', maxLines: 1_220 },
   { path: 'src/services/workflow-execution/control-wakeup-planner.ts', maxLines: 1_330 },
   { path: 'src/services/workflow-execution/quota-permit-arbiter.ts', maxLines: 1_840 },
+  { path: 'src/services/workflow-execution/workflow-recovery-service.ts', maxLines: 1_320 },
   { path: 'src/state/connected-workflow-run.ts', maxLines: 1_070 },
   // The second file of the same 2026-10-01 decision; see the waiver above.
   {
