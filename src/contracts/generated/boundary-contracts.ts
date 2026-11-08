@@ -322,7 +322,8 @@ export const CONTRACT_FAMILIES = [
     "sourceFiles": [
       "src/contracts/state-schema.ts",
       "src/state/workflow-run.ts",
-      "src/contracts/decision-results.ts"
+      "src/contracts/decision-results.ts",
+      "src/contracts/workflow-controls.ts"
     ],
     "schemaFiles": [
       "src/contracts/generated/schemas/state.schema.json"

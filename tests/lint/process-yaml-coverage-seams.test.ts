@@ -172,6 +172,7 @@ describe('FR-R4-F07 N5 — every authored Workflow-node field is in the exported
 
   it('lists the authored node fields, so an empty verdict is not an empty set compared to itself', () => {
     expect([...AUTHORED_NODE_FIELDS].sort()).toEqual([
+      'control',
       'kind',
       'label',
       'nodeId',
@@ -197,6 +198,7 @@ describe('FR-R4-F07 N5 — every authored Workflow-node field is in the exported
 
   it('names every field for an empty order', () => {
     expect([...missingNodeKeys([], AUTHORED_NODE_FIELDS)].sort()).toEqual([
+      'control',
       'kind',
       'label',
       'nodeId',

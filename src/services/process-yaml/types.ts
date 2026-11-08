@@ -28,6 +28,10 @@ import type {
 import type { ResultContract } from '../../contracts/decision-results';
 import type { PipelineExecutionDefaults } from '../../contracts/pipeline-definitions';
 import type {
+  CandidateBlockControl,
+  WorkflowDecisionResults
+} from '../../contracts/workflow-controls';
+import type {
   WorkflowBinding,
   WorkflowConnection,
   WorkflowDefinition,
@@ -211,6 +215,8 @@ export interface WorkflowYamlSpec {
   readonly startNodeIds: readonly string[];
   readonly executionDefaults?: PipelineExecutionDefaults;
   readonly recommendedNext?: readonly string[];
+  readonly control?: CandidateBlockControl;
+  readonly decisionResults?: WorkflowDecisionResults;
 }
 
 /**

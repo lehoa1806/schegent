@@ -4,8 +4,25 @@ import type {
   PipelineOutputPortType
 } from './pipeline-definitions';
 import type { TypedCondition } from './decision-results';
+import type {
+  CandidateBlockControl,
+  WorkflowDecisionResults,
+  WorkflowNodeControl
+} from './workflow-controls';
 
 export type { TypedCondition } from './decision-results';
+export type {
+  CandidateBlockControl,
+  CandidateSpec,
+  DecisionResultBinding,
+  ForEachControl,
+  RepeatControl,
+  WorkflowControl,
+  WorkflowDecisionResultField,
+  WorkflowDecisionResults,
+  WorkflowDecisionResultsContract,
+  WorkflowNodeControl
+} from './workflow-controls';
 
 /**
  * Portable contract for the *definition* sense of "Workflow": a reusable acyclic graph of
@@ -156,6 +173,8 @@ export interface WorkflowNode {
   readonly workflowId?: string;
   readonly pipelineId?: string;
   readonly label?: string;
+  /** FR-R5-F25 (D9) — Repeat or ForEach control decorating a child-Workflow call node. */
+  readonly control?: WorkflowNodeControl;
 }
 
 export interface WorkflowConnectionEndpoint {
@@ -229,6 +248,10 @@ export interface WorkflowDefinition {
   readonly startNodeIds: readonly string[];
   readonly executionDefaults?: PipelineExecutionDefaults;
   readonly recommendedNext?: readonly string[];
+  /** FR-R5-F25 (D3) — Candidate-block control when this Workflow is a reusable candidate block. */
+  readonly control?: CandidateBlockControl;
+  /** FR-R5-F25 (D3) — Public typed decision result fields and explicit bindings. */
+  readonly decisionResults?: WorkflowDecisionResults;
 }
 
 /**

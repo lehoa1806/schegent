@@ -1,4 +1,5 @@
 import type { PhaseDefinition } from '../contracts/process-definitions';
+import { MAX_CONTROL_NESTING_DEPTH } from '../contracts/workflow-controls';
 import type {
   WorkflowDefinition,
   WorkflowFieldError
@@ -7,7 +8,7 @@ import { workflowFieldError } from './workflow-definition-validator';
 
 /**
  * Bounded dependency and closure resolution for unified Workflow definitions
- * (FR-R5-F01, FR-007–FR-009, hard rule 38).
+ * (FR-R5-F01, FR-007–FR-009, FR-R5-F25 D1, hard rule 38).
  *
  * Pure: no `vscode` import, no dynamic code execution, deterministic traversal.
  */
@@ -20,6 +21,8 @@ export const MAX_WORKFLOW_CLOSURE_DEFINITIONS = 64;
 
 /** Maximum total expanded node occurrences across a Workflow and its nested Workflows. */
 export const MAX_WORKFLOW_EXPANDED_NODES = 256;
+
+export { MAX_CONTROL_NESTING_DEPTH };
 
 export interface WorkflowClosureContext {
   readonly effectivePhases?: readonly PhaseDefinition[] | undefined;
@@ -36,6 +39,7 @@ export interface WorkflowClosureResult {
   readonly closureSize: number;
   readonly expandedNodeCount: number;
   readonly maxDepthReached: number;
+  readonly maxControlDepthReached: number;
   /** Child-before-parent topological order of valid Workflows in the closure. */
   readonly topologicalWorkflowIds: readonly string[];
 }
@@ -60,6 +64,7 @@ export function resolveWorkflowClosure(
 
   let expandedNodeCount = 0;
   let maxDepthReached = 0;
+  let maxControlDepthReached = 0;
   let expansionErrorEmitted = false;
   let closureErrorEmitted = false;
 
@@ -95,10 +100,14 @@ export function resolveWorkflowClosure(
     current: WorkflowDefinition,
     chain: readonly string[],
     depth: number,
+    controlDepth: number,
     rootNodeFieldPrefix?: string | undefined
   ): void {
     if (depth > maxDepthReached) {
       maxDepthReached = depth;
+    }
+    if (controlDepth > maxControlDepthReached) {
+      maxControlDepthReached = controlDepth;
     }
 
     for (const [index, node] of current.nodes.entries()) {
@@ -193,6 +202,22 @@ export function resolveWorkflowClosure(
           continue;
         }
 
+        const isControlNode =
+          node.control?.kind === 'repeat' || node.control?.kind === 'for-each';
+        const nextControlDepth = isControlNode ? controlDepth + 1 : controlDepth;
+        if (nextControlDepth > MAX_CONTROL_NESTING_DEPTH) {
+          const controlField = depth === 0 ? `nodes[${index}].control` : `${field}.control`;
+          errors.push(
+            workflowFieldError(
+              root.workflowId,
+              controlField,
+              'control-nesting-depth-exceeded',
+              `Control nesting depth ${nextControlDepth} exceeds maximum of ${MAX_CONTROL_NESTING_DEPTH}: ${pathText}`
+            )
+          );
+          continue;
+        }
+
         referencedWorkflowIds.add(node.workflowId);
         if (!recordClosureDefinition('workflow', node.workflowId, wfField, chain)) {
           return;
@@ -227,6 +252,7 @@ export function resolveWorkflowClosure(
           child,
           nextChain,
           nextDepth,
+          nextControlDepth,
           depth === 0 ? `nodes[${index}]` : rootNodeFieldPrefix
         );
         if (!emittedTopological.has(child.workflowId)) {
@@ -237,7 +263,7 @@ export function resolveWorkflowClosure(
     }
   }
 
-  visitWorkflow(root, [root.workflowId], 0);
+  visitWorkflow(root, [root.workflowId], 0, 0);
   if (!emittedTopological.has(root.workflowId)) {
     emittedTopological.add(root.workflowId);
     topologicalWorkflowIds.push(root.workflowId);
@@ -251,6 +277,7 @@ export function resolveWorkflowClosure(
     closureSize: closureDefinitions.size,
     expandedNodeCount,
     maxDepthReached,
+    maxControlDepthReached,
     topologicalWorkflowIds: Object.freeze(topologicalWorkflowIds)
   });
 }

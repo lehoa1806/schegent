@@ -82,13 +82,16 @@ import {
   WORKFLOW_PACKAGE_DOCUMENT_KEY_ORDER,
   WORKFLOW_PORT_KEY_ORDER,
   WORKFLOW_SPEC_KEY_ORDER,
+  emitCandidateBlockControl,
   emitEntry,
   emitKey,
   emitMapping,
   emitMappingSequence,
   emitPhaseDocumentBody,
   emitSequence,
-  emitTypedCondition
+  emitTypedCondition,
+  emitWorkflowDecisionResults,
+  emitWorkflowNodeControl
 } from './yaml-serializer';
 
 /**
@@ -160,6 +163,10 @@ export function documentFromWorkflowDefinition(
       : {}),
     ...(definition.recommendedNext !== undefined
       ? { recommendedNext: definition.recommendedNext }
+      : {}),
+    ...(definition.control !== undefined ? { control: definition.control } : {}),
+    ...(definition.decisionResults !== undefined
+      ? { decisionResults: definition.decisionResults }
       : {})
   };
 
@@ -191,7 +198,19 @@ function renderPort(
 }
 
 function renderNode(bodyIndent: string, node: WorkflowNode): string {
-  return emitMapping(bodyIndent, WORKFLOW_NODE_KEY_ORDER, node);
+  const nestedIndent = `${bodyIndent}${PHASE_YAML_INDENT}`;
+  let out = '';
+  for (const key of WORKFLOW_NODE_KEY_ORDER) {
+    if (key === 'control') {
+      if (node.control !== undefined) {
+        out += emitKey(bodyIndent, 'control');
+        out += emitWorkflowNodeControl(nestedIndent, node.control);
+      }
+      continue;
+    }
+    out += emitMapping(bodyIndent, [key], node);
+  }
+  return out;
 }
 
 function renderCondition(indent: string, condition: WorkflowCondition | TypedCondition): string {
@@ -310,6 +329,21 @@ function renderSpec(indent: string, spec: WorkflowYamlSpec): string {
       case 'recommendedNext':
         if (spec.recommendedNext !== undefined) {
           out += emitSequence(indent, 'recommendedNext', spec.recommendedNext);
+        }
+        break;
+      case 'control':
+        if (spec.control !== undefined) {
+          out += emitKey(indent, 'control');
+          out += emitCandidateBlockControl(`${indent}${PHASE_YAML_INDENT}`, spec.control);
+        }
+        break;
+      case 'decisionResults':
+        if (spec.decisionResults !== undefined) {
+          out += emitKey(indent, 'decisionResults');
+          out += emitWorkflowDecisionResults(
+            `${indent}${PHASE_YAML_INDENT}`,
+            spec.decisionResults
+          );
         }
         break;
     }

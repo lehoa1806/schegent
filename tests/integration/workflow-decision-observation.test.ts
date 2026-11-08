@@ -149,3 +149,4 @@ describe('Workflow decision observation persistence and projection (FR-R5-F23)',
     expect(updated.decisionObservations).toHaveLength(1);
   });
 });
+

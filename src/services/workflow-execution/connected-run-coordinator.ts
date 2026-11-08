@@ -362,6 +362,38 @@ async function dispatchNodeInternal(
       `Node '${nodeId}' not found in frozen workflow '${frame.workflowId}'.`
     );
   }
+  if (workflow.control !== undefined) {
+    const controlVersion: number = workflow.control.version;
+    const code =
+      controlVersion !== 1
+        ? 'unsupported-control-version'
+        : 'unsupported-control-execution';
+    return failFrameAndPropagate(
+      deps,
+      run,
+      expectedRevision,
+      frame,
+      startedAt,
+      code,
+      `Workflow '${frame.workflowId}' control '${workflow.control.kind}' execution is not supported on this path.`
+    );
+  }
+  if (node.control !== undefined) {
+    const nodeControlVersion: number = node.control.version;
+    const code =
+      nodeControlVersion !== 1
+        ? 'unsupported-control-version'
+        : 'unsupported-control-execution';
+    return failFrameAndPropagate(
+      deps,
+      run,
+      expectedRevision,
+      frame,
+      startedAt,
+      code,
+      `Node '${nodeId}' control '${node.control.kind}' execution is not supported on this path.`
+    );
+  }
 
   const nodeKind = node.kind ?? (node.phaseId !== undefined ? 'phase' : 'workflow');
   const handoffEnvelope = latestInputEnvelopeForTarget(run, invocationId, nodeId);
