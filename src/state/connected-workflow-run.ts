@@ -61,9 +61,9 @@ export interface ConnectedNodeRecord {
 
 /** What one referenced operand resolved to, and what the comparison saw. */
 export interface OperandResolution {
-  readonly source: 'node-output' | 'node-status';
+  readonly source: 'node-output' | 'node-status' | 'node-result' | 'result-field';
   readonly nodeId: string;
-  /** Present for `node-output` only; names a declared output, never a path into one. */
+  /** Present for `node-output`, `node-result`, or `result-field`; names a declared field/output. */
   readonly field?: string;
   readonly resolved: boolean;
   /** Capped rendering of the compared value; omitted when the value is longer. */

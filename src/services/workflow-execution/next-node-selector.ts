@@ -42,7 +42,8 @@ import type {
   OperandResolution,
   RoutingDecision
 } from '../../state/connected-workflow-run';
-import { evaluateCondition } from './condition-evaluator';
+import { isTypedCondition, isTypedLeafTest } from '../../contracts/decision-results';
+import { evaluateCondition, evaluateTypedCondition } from './condition-evaluator';
 import { resolveOperand, type ConditionContext } from './condition-context';
 
 export interface SelectNextNodesInput {
@@ -79,6 +80,7 @@ interface Candidate {
  */
 interface Evaluated extends Candidate {
   readonly matched: boolean;
+  readonly typedUnresolved: boolean;
   readonly operands: readonly OperandResolution[];
 }
 
@@ -94,9 +96,25 @@ function evaluate(
   recoveryOnly: boolean
 ): Evaluated {
   const { condition } = candidate.connection;
-  if (condition === undefined) return { ...candidate, matched: !recoveryOnly, operands: [] };
+  if (condition === undefined) {
+    return { ...candidate, matched: !recoveryOnly, typedUnresolved: false, operands: [] };
+  }
+  if (isTypedCondition(condition)) {
+    const typedEval = evaluateTypedCondition(condition, context);
+    return {
+      ...candidate,
+      matched: typedEval.result === true,
+      typedUnresolved: typedEval.result === 'unresolved',
+      operands: typedEval.operands
+    };
+  }
   const evaluation = evaluateCondition(condition, context);
-  return { ...candidate, matched: evaluation.matched, operands: evaluation.operands };
+  return {
+    ...candidate,
+    matched: evaluation.matched,
+    typedUnresolved: false,
+    operands: evaluation.operands
+  };
 }
 
 /** Ascending priority, then authored order (FR-029). */
@@ -119,10 +137,18 @@ function offerOrder(evaluated: readonly Evaluated[]): readonly number[] {
  * empty offer with the evaluation recorded.
  */
 export function selectNextNodes(input: SelectNextNodesInput): RoutingDecision {
-  return decideNextNodes(input, false);
+  return decideNextNodes(input, false).decision;
 }
 
-function decideNextNodes(input: SelectNextNodesInput, recoveryOnly: boolean): RoutingDecision {
+interface InternalDecisionResult {
+  readonly decision: RoutingDecision;
+  readonly blockedByUnresolvedTyped: boolean;
+}
+
+function decideNextNodes(
+  input: SelectNextNodesInput,
+  recoveryOnly: boolean
+): InternalDecisionResult {
   const outgoing: Candidate[] = [];
   input.graph.connections.forEach((connection, index) => {
     if (connection.from.nodeId === input.nodeId) outgoing.push({ index, connection });
@@ -136,17 +162,34 @@ function decideNextNodes(input: SelectNextNodesInput, recoveryOnly: boolean): Ro
   const evaluatedExplicit = explicit.map((candidate) =>
     evaluate(candidate, input.context, recoveryOnly)
   );
-  const matchedExplicit = evaluatedExplicit.filter((candidate) => candidate.matched);
+  const orderedExplicit = [...evaluatedExplicit].sort(byOfferOrder);
+  const matchedExplicit: Evaluated[] = [];
+  let blockedByUnresolvedTyped = false;
+  for (const candidate of orderedExplicit) {
+    if (candidate.typedUnresolved && matchedExplicit.length === 0) {
+      blockedByUnresolvedTyped = true;
+      break;
+    }
+    if (candidate.matched) {
+      matchedExplicit.push(candidate);
+    }
+  }
 
-  // Considered only when nothing explicit matched (FR-027). Leaving it
-  // unevaluated otherwise is deliberate: an unreached connection contributes no
-  // operand resolution, so the record never suggests a comparison that did not
-  // happen.
+  // Considered only when nothing explicit matched and no higher-priority
+  // TypedCondition evaluated to 'unresolved' (FR-027, FR-R5-F24 D2).
   const evaluatedFallback =
-    matchedExplicit.length > 0
-      ? fallback.map((candidate) => ({ ...candidate, matched: false, operands: [] }))
+    matchedExplicit.length > 0 || blockedByUnresolvedTyped
+      ? fallback.map((candidate) => ({
+          ...candidate,
+          matched: false,
+          typedUnresolved: false,
+          operands: []
+        }))
       : fallback.map((candidate) => evaluate(candidate, input.context, recoveryOnly));
-  const matchedFallback = evaluatedFallback.filter((candidate) => candidate.matched);
+  const fallbackTypedUnresolved = evaluatedFallback.some((candidate) => candidate.typedUnresolved);
+  const matchedFallback = evaluatedFallback.filter(
+    (candidate) => candidate.matched && !candidate.typedUnresolved
+  );
 
   const evaluated = [...evaluatedExplicit, ...evaluatedFallback].sort(
     (left, right) => left.index - right.index
@@ -157,17 +200,20 @@ function decideNextNodes(input: SelectNextNodesInput, recoveryOnly: boolean): Ro
     isDefault: candidate.connection.isDefault === true
   }));
 
-  return Object.freeze({
-    nodeId: input.nodeId,
-    attemptIndex: input.attemptIndex,
-    decidedAt: input.decidedAt,
-    operands: Object.freeze(evaluated.flatMap((candidate) => candidate.operands)),
-    connections: Object.freeze(connections),
-    defaultApplied: matchedExplicit.length === 0 && matchedFallback.length > 0,
-    eligible: Object.freeze(
-      offerOrder(matchedExplicit.length > 0 ? matchedExplicit : matchedFallback)
-    )
-  });
+  return {
+    decision: Object.freeze({
+      nodeId: input.nodeId,
+      attemptIndex: input.attemptIndex,
+      decidedAt: input.decidedAt,
+      operands: Object.freeze(evaluated.flatMap((candidate) => candidate.operands)),
+      connections: Object.freeze(connections),
+      defaultApplied: matchedExplicit.length === 0 && matchedFallback.length > 0,
+      eligible: Object.freeze(
+        offerOrder(matchedExplicit.length > 0 ? matchedExplicit : matchedFallback)
+      )
+    }),
+    blockedByUnresolvedTyped: blockedByUnresolvedTyped || fallbackTypedUnresolved
+  };
 }
 
 export type TransitionTarget =
@@ -192,6 +238,10 @@ export type SelectedTransitionOutcome =
       readonly decision: RoutingDecision;
     }
   | {
+      readonly outcome: 'unresolved-condition';
+      readonly decision: RoutingDecision;
+    }
+  | {
       readonly outcome: 'unhandled-node-failure';
       readonly decision: RoutingDecision;
     };
@@ -203,7 +253,8 @@ export interface SelectNextTransitionInput extends SelectNextNodesInput {
 /**
  * FR-R5-F02 — select the winning transition for composable Workflow execution,
  * distinguishing `{ kind: 'node', nodeId }`, `{ kind: 'return' }`, terminal
- * sink completion, `no-eligible-transition`, and `unhandled-node-failure`.
+ * sink completion, `no-eligible-transition`, `unresolved-condition`, and
+ * `unhandled-node-failure`.
  *
  * A failed or canceled attempt routes only through a conditional connection
  * (for example `node-status equals failed`). An unconditional or default
@@ -216,7 +267,10 @@ export function selectNextTransition(
 ): SelectedTransitionOutcome {
   const attemptStatus =
     input.attemptStatus ?? input.context.nodes[input.nodeId]?.status ?? 'completed';
-  const decision = decideNextNodes(input, attemptStatus !== 'completed');
+  const { decision, blockedByUnresolvedTyped } = decideNextNodes(
+    input,
+    attemptStatus !== 'completed'
+  );
   if (decision.eligible.length > 0) {
     const connectionIndex = decision.eligible[0]!;
     const connection = input.graph.connections[connectionIndex]!;
@@ -232,6 +286,13 @@ export function selectNextTransition(
       connection,
       target,
       handoff
+    };
+  }
+
+  if (blockedByUnresolvedTyped) {
+    return {
+      outcome: 'unresolved-condition',
+      decision
     };
   }
 
@@ -301,7 +362,7 @@ export function evaluateBranchDispositions(
 ): readonly ExecutionDecisionBranchRecord[] {
   const attemptStatus = resolveAttemptStatus(input);
   const recoveryOnly = attemptStatus !== 'completed';
-  const decision = precomputedDecision ?? decideNextNodes(input, recoveryOnly);
+  const decision = precomputedDecision ?? decideNextNodes(input, recoveryOnly).decision;
 
   const outgoing: Candidate[] = [];
   input.graph.connections.forEach((connection, index) => {
@@ -335,12 +396,24 @@ export function evaluateBranchDispositions(
     let conditionMatched = true;
 
     if (connection.condition !== undefined) {
-      const lookup = resolveOperand(connection.condition.left, input.context);
-      operandResolved = lookup.resolved;
-      if (lookup.resolved && lookup.value !== undefined) {
-        observedValue = lookup.value;
+    if ( isTypedCondition(connection.condition)) {
+        const typedEval = evaluateTypedCondition(connection.condition, input.context);
+        operandResolved = typedEval.result !== 'unresolved';
+        conditionMatched = typedEval.result === true;
+        if (isTypedLeafTest(connection.condition.test)) {
+          const lookup = resolveOperand(connection.condition.test.left, input.context);
+          if (lookup.resolved && lookup.value !== undefined) {
+            observedValue = lookup.value;
+          }
+        }
+      } else {
+        const lookup = resolveOperand(connection.condition.left, input.context);
+        operandResolved = lookup.resolved;
+        if (lookup.resolved && lookup.value !== undefined) {
+          observedValue = lookup.value;
+        }
+        conditionMatched = evaluateCondition(connection.condition, input.context).matched;
       }
-      conditionMatched = evaluateCondition(connection.condition, input.context).matched;
     }
 
     let disposition: ExecutionBranchDisposition;
@@ -393,7 +466,7 @@ export function buildRoutingDecisionObservation(
 ): ExecutionDecisionObservation {
   const attemptStatus = resolveAttemptStatus(input);
   const recoveryOnly = attemptStatus !== 'completed';
-  const decision = precomputedDecision ?? decideNextNodes(input, recoveryOnly);
+  const decision = precomputedDecision ?? decideNextNodes(input, recoveryOnly).decision;
   const branches = evaluateBranchDispositions(
     input,
     decision,
@@ -406,9 +479,11 @@ export function buildRoutingDecisionObservation(
   for (const op of decision.operands) {
     if (Object.keys(observedValues).length >= 32) break;
     const key =
-      op.source === 'node-output' && op.field !== undefined
+      (op.source === 'node-output' || op.source === 'node-result') && op.field !== undefined
         ? `${op.nodeId}.${op.field}`
-        : `${op.nodeId}.status`;
+        : op.source === 'result-field' && op.field !== undefined
+          ? op.field
+          : `${op.nodeId}.status`;
     if (op.resolved && op.compared !== undefined) {
       observedValues[key] = op.compared;
     }

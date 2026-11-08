@@ -3,6 +3,9 @@ import type {
   PipelineInputPortType,
   PipelineOutputPortType
 } from './pipeline-definitions';
+import type { TypedCondition } from './decision-results';
+
+export type { TypedCondition } from './decision-results';
 
 /**
  * Portable contract for the *definition* sense of "Workflow": a reusable acyclic graph of
@@ -173,7 +176,7 @@ export interface WorkflowConnection {
   readonly from: { readonly nodeId: string; readonly portId?: string };
   readonly to: WorkflowConnectionEndpoint;
   readonly handoff?: WorkflowHandoffMode;
-  readonly condition?: WorkflowCondition;
+  readonly condition?: WorkflowCondition | TypedCondition;
   /** Integer; ascending evaluation order, then authored order for ties. */
   readonly priority?: number;
   /** At most one per source node; considered last. */

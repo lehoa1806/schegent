@@ -182,6 +182,9 @@ export function phaseDefinitionToPhaseDef(definition: PhaseDefinition): PhaseDef
     ...(definition.sideEffects !== undefined ? { sideEffects: definition.sideEffects } : {}),
     ...(definition.evidencePolicy !== undefined
       ? { evidencePolicy: definition.evidencePolicy }
+      : {}),
+    ...(definition.resultContract !== undefined
+      ? { resultContract: definition.resultContract }
       : {})
   });
 }

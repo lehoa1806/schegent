@@ -321,7 +321,8 @@ export const CONTRACT_FAMILIES = [
     "description": "Workflow run status, pause causes, retry causes, and state schema version.",
     "sourceFiles": [
       "src/contracts/state-schema.ts",
-      "src/state/workflow-run.ts"
+      "src/state/workflow-run.ts",
+      "src/contracts/decision-results.ts"
     ],
     "schemaFiles": [
       "src/contracts/generated/schemas/state.schema.json"
