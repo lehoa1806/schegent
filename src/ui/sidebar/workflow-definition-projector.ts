@@ -87,7 +87,10 @@ function projectOperand(operand: WorkflowConditionOperand, sanitize: Sanitize): 
  * A literal is operator-authored, so its string form is sanitized too; numbers and
  * booleans carry nothing to redact and pass through unchanged.
  */
-function projectLiteral(value: WorkflowCondition['right'], sanitize: Sanitize): WorkflowCondition['right'] {
+function projectLiteral(
+  value: NonNullable<WorkflowCondition['right']>,
+  sanitize: Sanitize
+): NonNullable<WorkflowCondition['right']> {
   if (Array.isArray(value)) {
     return Object.freeze(value.map((entry) => (typeof entry === 'string' ? text(entry, sanitize, MESSAGE_MAX) : entry)));
   }

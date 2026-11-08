@@ -618,8 +618,9 @@ describe('QuotaPermitArbiter unit tests (FR-R5-F29 / SPEC-07)', () => {
       });
 
       const holdings = arbiter.getQuotaHoldingsSummary();
-      expect(holdings['quota-shared'].heldCount).toBe(2);
-      expect(holdings['quota-shared'].capacity).toBe(1);
+      const sharedHoldings = Object.entries(holdings).find(([k]) => k === 'quota-shared')?.[1];
+      expect(sharedHoldings?.heldCount).toBe(2);
+      expect(sharedHoldings?.capacity).toBe(1);
 
       const w3 = await arbiter.registerWaiter({
         rootRunId: 'root-3',

@@ -104,6 +104,12 @@ const READ_ALLOWED: ReadonlyMap<string, string> = new Map([
     'reads `QueueItem.paused` — the per-Task pause record the queue projector ' +
       'derives into the wire snapshot, not a persisted field — to tell a ' +
       'system-paused row still in flight from an operator-paused one'
+  ],
+  [
+    'src/services/workflow-execution/quota-permit-arbiter.ts',
+    'reads `QuotaWaiter.paused` — the derived waiter eligibility flag mapped ' +
+      'from `QuotaWaiterRecord.status === "paused"` in the control ledger, ' +
+      'never a `QueueState.paused` mirror'
   ]
 ]);
 

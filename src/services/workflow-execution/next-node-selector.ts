@@ -344,8 +344,9 @@ function resolveAttemptStatus(input: SelectNextTransitionInput): WorkflowNodeTer
   if (input.attemptStatus !== undefined) {
     return input.attemptStatus;
   }
-  if (Object.hasOwn(input.context.nodes, input.nodeId)) {
-    return input.context.nodes[input.nodeId].status;
+  const node = Object.hasOwn(input.context.nodes, input.nodeId) ? input.context.nodes[input.nodeId] : undefined;
+  if (node !== undefined) {
+    return node.status;
   }
   return 'completed';
 }

@@ -238,8 +238,67 @@ export interface ControlProjection {
   readonly policyObservations?: readonly Readonly<
     Record<string, string | number | boolean>
   >[];
+  readonly repeatProjection?: ConnectedRepeatNodeProjection;
+  readonly forEachProjection?: ConnectedForEachNodeProjection;
   readonly legalActions: readonly ControlLegalActionEntry[];
   readonly evidenceRefs: readonly string[];
+}
+
+export interface ConnectedRepeatCompletedPassProjection {
+  readonly iteration: number;
+  readonly invocationId: string;
+  readonly status: 'completed' | 'failed' | 'canceled';
+  readonly resultRef?: string;
+}
+
+export interface ConnectedRepeatNodeProjection {
+  readonly version?: 1;
+  readonly kind?: 'repeat';
+  readonly iteration: number;
+  readonly currentPass?: number;
+  readonly maxIterations: number;
+  readonly conditionResult: 'true' | 'false' | 'unresolved' | 'not-evaluated';
+  readonly currentChildInvocationId?: string | null;
+  readonly onExhausted: 'pause' | 'fail';
+  readonly exhaustionReason?: string;
+  readonly carryEnvelopeRef?: string;
+  readonly carryValues?: Readonly<Record<string, string | number | boolean>>;
+  readonly leafAttemptCount: number;
+  readonly rootDispatchesUsed?: number;
+  readonly rootMaxDispatches?: number;
+  readonly completedPasses: readonly ConnectedRepeatCompletedPassProjection[];
+  readonly legalActions?: readonly ControlLegalActionEntry[];
+}
+
+export interface ConnectedForEachSlotProjection {
+  readonly index: number;
+  readonly itemKey: string;
+  readonly invocationId?: string;
+  readonly state: 'pending' | 'executing' | 'completed' | 'failed';
+  readonly resultRef?: string;
+  readonly error?: {
+    readonly code: 'child-failed' | 'invalid-child-result' | 'dispatch-budget-exhausted';
+    readonly message: string;
+  };
+}
+
+export interface ConnectedForEachNodeProjection {
+  readonly version: 1;
+  readonly kind: 'for-each';
+  readonly collectionRef?: string;
+  readonly collectionSha256?: string;
+  readonly itemCount: number;
+  readonly currentIndex: number;
+  readonly onItemError: 'stop' | 'continue';
+  readonly hasErrors: boolean;
+  readonly errorCount: number;
+  readonly resultIndexRef?: string;
+  readonly refusalCode?: string;
+  readonly leafAttemptCount: number;
+  readonly rootDispatchesUsed?: number;
+  readonly rootMaxDispatches?: number;
+  readonly slots: readonly ConnectedForEachSlotProjection[];
+  readonly legalActions?: readonly ControlLegalActionEntry[];
 }
 
 export interface ControlCommandAcknowledgement {
@@ -312,6 +371,8 @@ export interface ConnectedNodeProjection {
   readonly frozenVersionId?: string;
   readonly childInvocationIds?: readonly string[];
   readonly decisionObservation?: ExecutionDecisionObservation;
+  readonly repeatProjection?: ConnectedRepeatNodeProjection;
+  readonly forEachProjection?: ConnectedForEachNodeProjection;
 }
 
 /**

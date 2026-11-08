@@ -16,6 +16,7 @@
 // Zero `vscode` imports: shared by host and headless runtime entry points.
 
 import type { ResolvedPortValue } from '../../contracts/run-request';
+import type { DecisionFieldValue } from '../../contracts/decision-results';
 import type { ExecutionFence } from '../../contracts/control-ledger';
 import type { WorkflowNodeTerminalStatus } from '../../contracts/workflow-definitions';
 import type { ControlAttemptAdmissionService } from './control-attempt-admission';
@@ -24,6 +25,7 @@ import type { ControlUsageAccountingService } from './control-usage-accounting';
 import type { QuotaPermit, QuotaPermitArbiter } from './quota-permit-arbiter';
 import { fromPermitRecord } from './quota-permit-arbiter';
 import {
+  attemptsForNode,
   clearInvocationControlMarkers,
   pauseInvocationControlMarkers,
   recordNodeAttempt,
@@ -45,6 +47,10 @@ import {
   type PhaseAttemptDispatchResult
 } from './connected-run-coordinator';
 import {
+  handleRepeatChildCompletion,
+  type RepeatExecutor
+} from './repeat-executor';
+import {
   buildWorkflowRunControlProjection,
   type WorkflowRunControlProjection
 } from './workflow-control-projector';
@@ -59,6 +65,7 @@ export interface DurableAttemptEvidenceResult {
   readonly settled?: boolean;
   readonly status?: WorkflowNodeTerminalStatus;
   readonly declaredOutputs?: Readonly<Record<string, ResolvedPortValue>>;
+  readonly decisionResults?: Readonly<Record<string, DecisionFieldValue>>;
   readonly verdict?: 'pass' | 'fail' | null;
   readonly failureCode?: string;
   readonly completedAt?: number;
@@ -91,6 +98,7 @@ export interface WorkflowRecoveryServiceDeps {
     runId: string
   ) => Promise<void> | void;
   readonly controlAdmission?: ControlAttemptAdmissionService | undefined;
+  readonly repeatExecutor?: RepeatExecutor | undefined;
   readonly quotaPermitArbiter?: QuotaPermitArbiter | undefined;
   readonly notificationService?: ControlNotificationService | undefined;
   readonly usageAccounting?: ControlUsageAccountingService | undefined;
@@ -524,7 +532,16 @@ export class WorkflowRecoveryService {
         await completeComposableNodeAttempt(
           {
             connectedRuns: staging.writer,
-            dispatchPhase: this.deps.dispatchPhase
+            dispatchPhase: this.deps.dispatchPhase,
+            ...(this.deps.controlAdmission !== undefined
+              ? { controlAdmission: this.deps.controlAdmission }
+              : {}),
+            ...(this.deps.repeatExecutor !== undefined
+              ? { repeatExecutor: this.deps.repeatExecutor }
+              : {}),
+            ...(this.deps.resolveRecoveryFence !== undefined
+              ? { resolveExecutionFence: this.deps.resolveRecoveryFence }
+              : {})
           },
           {
             run: staging.current(),
@@ -535,6 +552,9 @@ export class WorkflowRecoveryService {
             completedAt: evidence.completedAt ?? now,
             ...(evidence.declaredOutputs !== undefined
               ? { declaredOutputs: evidence.declaredOutputs }
+              : {}),
+            ...(evidence.decisionResults !== undefined
+              ? { decisionResults: evidence.decisionResults }
               : {}),
             ...(evidence.verdict !== undefined ? { verdict: evidence.verdict } : {}),
             ...(evidence.failureCode !== undefined ? { failureCode: evidence.failureCode } : {})
@@ -697,6 +717,123 @@ export class WorkflowRecoveryService {
           ? { retainedUncertainPermits }
           : {})
       };
+    }
+
+    // 5. Post-child-return Repeat reconciliation (crash after child completed before parent Repeat advanced):
+    for (const parentFrame of Object.values(run.invocations ?? {})) {
+      if (parentFrame.status !== 'in-flight') continue;
+      const parentWf = run.frozenClosure?.workflowsById[parentFrame.workflowId];
+      if (parentWf === undefined) continue;
+      for (const parentNode of parentWf.nodes) {
+        if (parentNode.control?.kind !== 'repeat') continue;
+        const nodeAttempts = attemptsForNode(parentFrame, parentNode.nodeId);
+        const latestParentAtt = nodeAttempts.at(-1);
+        if (
+          latestParentAtt === undefined ||
+          latestParentAtt.status !== 'in-flight' ||
+          latestParentAtt.childInvocationId === undefined
+        ) {
+          continue;
+        }
+        const childFrame = run.invocations?.[latestParentAtt.childInvocationId];
+        const childWf =
+          childFrame !== undefined
+            ? run.frozenClosure?.workflowsById[childFrame.workflowId]
+            : undefined;
+        if (childFrame?.status !== 'completed' || childWf === undefined) continue;
+
+        const staging = createStagingWriter(run);
+        const recoveryFence = this.deps.resolveRecoveryFence?.(run, queueId);
+        const repeatRes = await handleRepeatChildCompletion({
+          run: staging.current(),
+          parentFrame,
+          parentWorkflow: parentWf,
+          parentNode,
+          parentAttempt: latestParentAtt,
+          completedChildFrame: childFrame,
+          childWorkflow: childWf,
+          childOutputs: childFrame.resolvedOutputs,
+          completedAt: childFrame.completedAt ?? now,
+          repeatExecutor: this.deps.repeatExecutor,
+          fence: recoveryFence
+        });
+        staging.set(repeatRes.run);
+
+        if (repeatRes.kind === 'accepted') {
+          await completeComposableNodeAttempt(
+            {
+              connectedRuns: staging.writer,
+              dispatchPhase: this.deps.dispatchPhase,
+              ...(this.deps.controlAdmission !== undefined
+                ? { controlAdmission: this.deps.controlAdmission }
+                : {}),
+              ...(this.deps.repeatExecutor !== undefined
+                ? { repeatExecutor: this.deps.repeatExecutor }
+                : {}),
+              ...(this.deps.resolveRecoveryFence !== undefined
+                ? { resolveExecutionFence: this.deps.resolveRecoveryFence }
+                : {})
+            },
+            {
+              run: staging.current(),
+              invocationId: parentFrame.invocationId,
+              nodeId: parentNode.nodeId,
+              attemptIndex: latestParentAtt.attemptIndex,
+              status: 'completed',
+              completedAt: now,
+              declaredOutputs: repeatRes.exportedOutputs
+            }
+          );
+        } else if (repeatRes.kind === 'advance') {
+          await dispatchComposableNode(
+            {
+              connectedRuns: staging.writer,
+              dispatchPhase: this.deps.dispatchPhase,
+              ...(this.deps.controlAdmission !== undefined
+                ? { controlAdmission: this.deps.controlAdmission }
+                : {}),
+              ...(this.deps.repeatExecutor !== undefined
+                ? { repeatExecutor: this.deps.repeatExecutor }
+                : {}),
+              ...(this.deps.resolveRecoveryFence !== undefined
+                ? { resolveExecutionFence: this.deps.resolveRecoveryFence }
+                : {})
+            },
+            {
+              run: staging.current(),
+              invocationId: repeatRes.nextChildInvocationId,
+              nodeId: repeatRes.childEntryNodeId,
+              startedAt: now
+            }
+          );
+        }
+
+        const disposition: RecoveryDispositionRecord = Object.freeze({
+          status: 'settled-from-evidence',
+          invocationId: parentFrame.invocationId,
+          nodeId: parentNode.nodeId,
+          attemptId: latestParentAtt.attemptId,
+          reconciledAt: now,
+          reasonCode: 'repeat-post-pass-reconciled'
+        });
+        const withDisposition = setRecoveryDisposition(
+          { ...staging.current(), revision: run.revision },
+          disposition
+        );
+        const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
+          withDisposition,
+          run.revision
+        );
+        const finalRun =
+          written.outcome === 'written' ? written.run : written.current ?? withDisposition;
+        return {
+          runId: finalRun.connectedRunId,
+          mutated: true,
+          disposition,
+          run: finalRun,
+          projection: buildWorkflowRunControlProjection(finalRun)
+        };
+      }
     }
 
     return {

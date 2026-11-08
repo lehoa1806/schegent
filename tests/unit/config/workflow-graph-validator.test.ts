@@ -723,10 +723,10 @@ describe('dependency closure (US3, T042)', () => {
     );
     const invalid = only(errors, 'pipeline-invalid');
     expect(invalid).toHaveLength(1);
-    expect(invalid[0].field).toBe('nodes[1].pipelineId');
+    expect(invalid[0]?.field).toBe('nodes[1].pipelineId');
     // The operator has to be able to act on this: the failing Phase is named,
     // two levels down from the Workflow they were editing.
-    expect(invalid[0].message).toContain('review');
+    expect(invalid[0]?.message).toContain('review');
     expect(codes(errors)).not.toContain('unknown-pipeline');
   });
 
@@ -739,8 +739,8 @@ describe('dependency closure (US3, T042)', () => {
       causes
     );
     // Two different repairs: fix the Pipeline, versus author or import it.
-    expect(only(errors, 'pipeline-invalid')[0].field).toBe('nodes[0].pipelineId');
-    expect(only(errors, 'unknown-pipeline')[0].field).toBe('nodes[1].pipelineId');
+    expect(only(errors, 'pipeline-invalid')[0]?.field).toBe('nodes[0].pipelineId');
+    expect(only(errors, 'unknown-pipeline')[0]?.field).toBe('nodes[1].pipelineId');
   });
 
   // US3 scenario 3, in the two directions the shipped resolution rule produces.

@@ -5,7 +5,10 @@ import {
 } from '../../src/contracts/control-ledger';
 import type { Memento } from '../../src/state/workspace-state';
 import { ControlAttemptAdmissionService } from '../../src/services/workflow-execution/control-attempt-admission';
-import { ControlLedgerStore } from '../../src/services/workflow-execution/control-ledger-store';
+import {
+  ControlLedgerStore,
+  lookupRecord
+} from '../../src/services/workflow-execution/control-ledger-store';
 import { QuotaPermitArbiter } from '../../src/services/workflow-execution/quota-permit-arbiter';
 
 function makeMemoryMemento(): Memento {
@@ -370,10 +373,10 @@ describe('Control quota contention and crash recovery integration tests (FR-R5-F
     expect(afterRead.ok).toBe(true);
     if (afterRead.ok) {
       expect(Object.keys(afterRead.ledger.permits)).toHaveLength(0);
-      expect(afterRead.ledger.roots['root-1'].dispatchedAttempts).toBe(0);
+      expect(lookupRecord(afterRead.ledger.roots, 'root-1')?.dispatchedAttempts).toBe(0);
       expect(afterRead.ledger.waiters).toHaveLength(1);
-      expect(afterRead.ledger.waiters[0].sequence).toBe(1);
-      expect(afterRead.ledger.waiters[0].status).toBe('waiting');
+      expect(afterRead.ledger.waiters.at(0)?.sequence).toBe(1);
+      expect(afterRead.ledger.waiters.at(0)?.status).toBe('waiting');
     }
   });
 
@@ -480,8 +483,8 @@ describe('Control quota contention and crash recovery integration tests (FR-R5-F
 
     // Verify uncertain permit is STILL retained after 24 hours and blocks root-2 from acquiring 'quota-1'
     const holdingsAfter24h = arbiter.getQuotaHoldingsSummary();
-    expect(holdingsAfter24h['quota-1'].uncertainCount).toBe(1);
-    expect(holdingsAfter24h['quota-1'].totalActiveCount).toBe(1);
+    expect(lookupRecord(holdingsAfter24h, 'quota-1')?.uncertainCount).toBe(1);
+    expect(lookupRecord(holdingsAfter24h, 'quota-1')?.totalActiveCount).toBe(1);
 
     const reg2 = await arbiter.registerWaiter({
       rootRunId: 'root-2',

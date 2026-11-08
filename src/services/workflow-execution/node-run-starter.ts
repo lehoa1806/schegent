@@ -42,6 +42,7 @@ import type {
 import type { RunOutputRecord } from '../../contracts/run-results';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { ExecutionFence } from '../../contracts/control-ledger';
+import { errorMessage } from '../../lib/errors';
 import {
   serializeRecoveryEnvelope,
   validateRecoveryEnvelope,
@@ -424,9 +425,7 @@ export async function startPipelineRun(
     // unexpected failure below is a refusal the caller can render rather than an
     // unhandled rejection the operator sees as a hang.
     deps.logger.warn(
-      `node-run-starter: enqueue failed: ${deps.logger.sanitize(
-        (err as Error).message ?? 'unknown error'
-      )}`
+      `node-run-starter: enqueue failed: ${deps.logger.sanitize(errorMessage(err))}`
     );
     return { outcome: 'rejected-queue', reason: 'queue-refused', detail: 'enqueue-failed' };
   }
