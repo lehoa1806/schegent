@@ -204,6 +204,7 @@ neither listed nor excluded.
 - [Platform observation record](operations/platform-observation-record.md)
 - [Process YAML](operations/process-yaml.md)
 - [Recovery from an interrupted run](operations/recovery-checkpoints.md)
+- [Workflow control flow, repetition, and backend recovery](operations/workflow-control-recovery.md) — candidate recovery blocks, scoped child-Workflow `Repeat`, sequential `ForEach`, durable availability monitoring, and workspace handover (`FR-R5-F35`)
 - [Release notes](operations/release-notes.md)
 - [Release provenance observation](operations/release-provenance-observation.md)
 - [Retry contract](operations/retry-contract.md) — **written 2026-10-28**: which failures retry, pause or fail, where each delay comes from, where automatic attempts stop, and how the watchdog handles them, and what Resume, Restart, Skip and a row Retry each do to a failed run
@@ -325,6 +326,7 @@ neither listed nor excluded.
 ### Other
 
 - [Asset report](ASSET_REPORT.md)
+- [Workflow control flow acceptance verification report](verification/workflow-control-acceptance.md) — 36-criterion acceptance matrix (`AC-01`–`AC-36`), integrated prerequisite commits (`F23`–`F34`), schema compatibility, and measured bounds (`FR-R5-F35`)
 
 ## Current onboarding constraints
 

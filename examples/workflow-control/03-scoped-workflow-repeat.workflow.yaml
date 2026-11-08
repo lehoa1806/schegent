@@ -1,0 +1,168 @@
+apiVersion: schegent/v1
+kind: Workflow
+metadata:
+  id: example-scoped-workflow-repeat
+  name: Scoped Child-Workflow Repeat Loop
+  description: Demonstrates a parent Workflow invoking a child review Workflow in a bounded Repeat loop with post-pass Until evaluation and explicit carry mappings.
+  version: 1
+spec:
+  inputs:
+    - portId: initial-feedback
+      label: Initial Feedback
+      type: text
+      required: true
+  outputs:
+    - portId: accepted-report
+      label: Accepted Report
+      type: markdown
+      required: true
+  nodes:
+    - nodeId: node-repeat-review
+      kind: workflow
+      workflowId: wf-child-refine-and-review
+      label: Repeat Refine and Review
+      control:
+        version: 1
+        kind: repeat
+        maxIterations: 4
+        until:
+          version: 1
+          kind: typed
+          test:
+            left:
+              source: result-field
+              fieldId: approved
+            operator: equals
+            right: true
+        carry:
+          - fieldId: nextFeedback
+            inputPortId: feedback
+          - fieldId: score
+            inputPortId: prior-score
+        onExhausted: pause
+  bindings:
+    - kind: input
+      nodeId: node-repeat-review
+      inputKey: feedback
+      type: text
+      required: true
+      source:
+        from: workflow-input
+        portId: initial-feedback
+    - kind: output
+      nodeId: node-repeat-review
+      portId: accepted-report
+      outputKey: report-doc
+      type: markdown
+  startNodeIds:
+    - node-repeat-review
+included:
+  workflows:
+    - metadata:
+        id: wf-child-refine-and-review
+        name: Child Refine and Review Workflow
+        version: 1
+      spec:
+        inputs:
+          - portId: feedback
+            label: Feedback
+            type: text
+            required: true
+          - portId: prior-score
+            label: Prior Score
+            type: text
+            required: false
+        outputs:
+          - portId: report-doc
+            label: Report Document
+            type: markdown
+            required: true
+        nodes:
+          - nodeId: node-refine-phase
+            kind: phase
+            phaseId: phase-refine-draft
+            label: Refine Draft and Score
+        bindings:
+          - kind: input
+            nodeId: node-refine-phase
+            inputKey: feedback
+            type: text
+            required: true
+            source:
+              from: workflow-input
+              portId: feedback
+          - kind: output
+            nodeId: node-refine-phase
+            portId: report-doc
+            outputKey: report-doc
+            type: markdown
+        startNodeIds:
+          - node-refine-phase
+        decisionResults:
+          version: 1
+          fields:
+            - fieldId: approved
+              type: boolean
+              required: true
+            - fieldId: score
+              type: number
+              required: true
+            - fieldId: nextFeedback
+              type: string
+              required: false
+          bindings:
+            - fieldId: approved
+              source:
+                kind: node-result
+                nodeId: node-refine-phase
+                fieldId: approved
+            - fieldId: score
+              source:
+                kind: node-result
+                nodeId: node-refine-phase
+                fieldId: score
+            - fieldId: nextFeedback
+              source:
+                kind: node-result
+                nodeId: node-refine-phase
+                fieldId: nextFeedback
+  phases:
+    - metadata:
+        phaseId: phase-refine-draft
+        name: Refine Draft and Score
+        version: 1
+      spec:
+        runner: claude
+        instruction: Refine the draft using feedback and output structured approval, score, and nextFeedback.
+        resultContract:
+          version: 1
+          operator: structured-result
+          operatorVersion: 1
+          source:
+            kind: declared-output
+            outputKey: review-metrics
+          fields:
+            - fieldId: approved
+              type: boolean
+              required: true
+              selector:
+                - approved
+            - fieldId: score
+              type: number
+              required: true
+              selector:
+                - score
+            - fieldId: nextFeedback
+              type: string
+              required: false
+              selector:
+                - nextFeedback
+          completion:
+            version: 1
+            kind: typed
+            test:
+              left:
+                source: result-field
+                fieldId: score
+              operator: greaterThanOrEqual
+              right: 0

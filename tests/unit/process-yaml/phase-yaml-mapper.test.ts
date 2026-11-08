@@ -102,7 +102,25 @@ const FULL_INSTRUCTION: PhaseDefinition = {
   // FR-R3-086 — a PROPER SUBSET, and not in the canonical order, so that a path
   // which widens the set, narrows it, or silently canonicalizes it all show up
   // as a changed value here.
-  capabilities: ['network', 'workspace-write']
+  capabilities: ['network', 'workspace-write'],
+  resultContract: {
+    version: 1,
+    operator: 'structured-result',
+    operatorVersion: 1,
+    fields: [
+      { fieldId: 'ready', type: 'boolean', required: true, selector: ['ready'] }
+    ],
+    source: { kind: 'backend-result' },
+    completion: {
+      version: 1,
+      kind: 'typed',
+      test: {
+        left: { source: 'result-field', fieldId: 'ready' },
+        operator: 'equals',
+        right: true
+      }
+    }
+  }
 };
 
 const FULL_SKILL: PhaseDefinition = {
