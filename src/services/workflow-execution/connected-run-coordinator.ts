@@ -22,6 +22,10 @@
 // arrive as ports.
 
 import type { PhaseDefinition } from '../../contracts/process-definitions';
+import type {
+  ControlAdmissionPort,
+  ExecutionFence
+} from '../../contracts/control-ledger';
 import type { ResolvedPortValue } from '../../contracts/run-request';
 import type { RunOutputRecord } from '../../contracts/run-results';
 import type {
@@ -209,6 +213,7 @@ export interface PhaseAttemptDispatchInput {
   readonly attemptIndex: number;
   readonly queueId: string;
   readonly startedAt: number;
+  readonly fence?: ExecutionFence;
 }
 
 export type PhaseAttemptDispatchResult =
@@ -220,6 +225,15 @@ export interface ComposableWorkflowCoordinatorDeps {
   readonly dispatchPhase: (
     input: PhaseAttemptDispatchInput
   ) => Promise<PhaseAttemptDispatchResult>;
+  /**
+   * FR-R5-F26 (SPEC-04, D4) — optional durable control admission port used when
+   * `run.controlState` links the run to `schegent.controlLedger`.
+   */
+  readonly controlAdmission?: ControlAdmissionPort;
+  readonly resolveExecutionFence?: (
+    run: ConnectedWorkflowRun,
+    queueId: string
+  ) => ExecutionFence;
   /**
    * FR-R5-F08 — optional compensating hook invoked when `dispatchPhase` enqueued
    * a queue item but the post-dispatch CAS was rejected as stale and the run/invocation
@@ -464,6 +478,57 @@ async function dispatchNodeInternal(
       startedAt,
       status: 'pending-dispatch'
     });
+    const boundQueueId = resolveBoundQueueId(run);
+    const controlLink = run.controlState;
+    let committedFence: ExecutionFence | undefined;
+    if (controlLink !== undefined && deps.controlAdmission !== undefined) {
+      const fence: ExecutionFence =
+        deps.resolveExecutionFence?.(run, boundQueueId) ?? {
+          primacyClaim: `primacy:${run.connectedRunId}`,
+          queueClaim: `queue:${boundQueueId}`,
+          rootGeneration: 1
+        };
+      const prepared = await deps.controlAdmission.prepareAttempt({
+        ledgerRunId: controlLink.ledgerRunId,
+        connectedRunId: run.connectedRunId,
+        queueId: boundQueueId,
+        frameKey: frame.invocationId,
+        frameKind: frame.parentInvocationId === null ? 'root-workflow' : 'child-workflow',
+        workflowId: frame.workflowId,
+        invocationId: frame.invocationId,
+        nodeId,
+        attemptId: pendingAttempt.attemptId,
+        attemptIndex: pendingAttempt.attemptIndex,
+        backend: phase.runner ?? 'claude',
+        hasSideEffects: phase.sideEffects !== 'none',
+        fence
+      });
+      if (!prepared.ok) {
+        return failFrameAndPropagate(
+          deps,
+          run,
+          expectedRevision,
+          frame,
+          startedAt,
+          prepared.code,
+          prepared.message
+        );
+      }
+      const committed = await deps.controlAdmission.commitAttempt(prepared.token);
+      if (!committed.ok) {
+        return failFrameAndPropagate(
+          deps,
+          run,
+          expectedRevision,
+          frame,
+          startedAt,
+          committed.code,
+          committed.message
+        );
+      }
+      committedFence = fence;
+    }
+
     const frameWithPending = recordNodeAttempt(frame, pendingAttempt);
     const preDispatchRun = upsertInvocationFrame(run, frameWithPending);
     const preWritten = await deps.connectedRuns.compareAndSetConnectedRun(
@@ -474,7 +539,6 @@ async function dispatchNodeInternal(
       return { outcome: 'rejected-stale', current: preWritten.current };
     }
 
-    const boundQueueId = resolveBoundQueueId(preWritten.run);
     const dispatched = await deps.dispatchPhase({
       run: preWritten.run,
       frame: frameWithPending,
@@ -486,7 +550,8 @@ async function dispatchNodeInternal(
       attemptId: pendingAttempt.attemptId,
       attemptIndex: pendingAttempt.attemptIndex,
       queueId: boundQueueId,
-      startedAt
+      startedAt,
+      ...(committedFence !== undefined ? { fence: committedFence } : {})
     });
     if (dispatched.outcome === 'rejected') {
       const failedAttempt: NodeAttemptRecord = Object.freeze({

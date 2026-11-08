@@ -120,6 +120,17 @@ function isLegacyOrUnsupportedSchemaShape(value: Record<string, unknown>): boole
   if ('schemaVersion' in value) return true;
   if ('featureId' in value && !('connectedRunId' in value)) return true;
   if ('phases' in value && !('graph' in value)) return true;
+  const controlState = value.controlState;
+  if (
+    typeof controlState === 'object' &&
+    controlState !== null &&
+    !Array.isArray(controlState) &&
+    'version' in controlState &&
+    typeof (controlState as { version?: unknown }).version === 'number' &&
+    (controlState as { version?: unknown }).version !== 1
+  ) {
+    return true;
+  }
   return false;
 }
 

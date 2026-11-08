@@ -321,7 +321,11 @@ export const KEYS = {
   // attribution. In `KEYS` for the completeness test and on `RESET_EXEMPT_KEYS` below for the reason
   // given there: a Reset clears Schegent's state, not the operator's identity, and rows already written
   // keep the pseudonym they carry. A new one comes only from the reset command, which records it.
-  operatorPseudonym: 'schegent.operatorPseudonym'
+  operatorPseudonym: 'schegent.operatorPseudonym',
+  // FR-R5-F26 (SPEC-04, D4) — durable control admission ledger (`version: 1`).
+  // Linked from `ConnectedWorkflowRun.controlState` (`{ version: 1, ledgerRunId }`)
+  // and cleared by `reset()` via `RESET_CLEARED_KEYS`.
+  controlLedger: 'schegent.controlLedger'
 } as const;
 
 /**
@@ -547,7 +551,8 @@ export type StoreChangeKey =
   | typeof KEYS.executionLeases
   | typeof KEYS.concurrencyNotice
   // FR-R4-F02: the credit poll's last outcome reaches the surface, so a write schedules a projection.
-  | typeof KEYS.watchdog;
+  | typeof KEYS.watchdog
+  | typeof KEYS.controlLedger;
 
 export type StoreChangeListener = (key: StoreChangeKey) => void;
 
@@ -3566,6 +3571,39 @@ export class WorkspaceStateStore {
     });
     if (removed > 0) this.notify(KEYS.connectedRuns);
     return removed;
+  }
+
+  /**
+   * FR-R5-F26 (SPEC-04, D4) — read the raw persisted `schegent.controlLedger` value.
+   */
+  public getRawControlLedger(): unknown {
+    return this.memento.get<unknown>(KEYS.controlLedger);
+  }
+
+  /**
+   * FR-R5-F26 (SPEC-04, D4) — execute a serialized read-modify-write against
+   * `KEYS.controlLedger` on the store's per-key serialization chain so writes
+   * order cleanly against `reset()` (`serializeAcrossKeys`).
+   */
+  public async transactControlLedger<T>(
+    op: (
+      raw: unknown,
+      write: (next: unknown) => Promise<void>
+    ) => Promise<T>
+  ): Promise<T> {
+    let outcome!: T;
+    const state = { didWrite: false };
+    await this.serialize(KEYS.controlLedger, async () => {
+      const current = this.memento.get<unknown>(KEYS.controlLedger);
+      outcome = await op(current, async (next: unknown) => {
+        await this.memento.update(KEYS.controlLedger, next);
+        state.didWrite = true;
+      });
+    });
+    if (state.didWrite) {
+      this.notify(KEYS.controlLedger);
+    }
+    return outcome;
   }
 
   /** The marker as persisted, or `null` when absent or unreadable. */
