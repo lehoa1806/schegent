@@ -132,32 +132,14 @@
     </div>
     <div class="cb-header-actions">
       {#if control}
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm"
-          data-testid="candidate-block-expand-toggle"
-          aria-expanded={expanded}
-          onclick={() => (expanded = !expanded)}
-        >
+        <button type="button" class="btn btn-ghost btn-sm" data-testid="candidate-block-expand-toggle" aria-expanded={expanded} onclick={() => (expanded = !expanded)}>
           {expanded ? 'Collapse block' : 'Expand block'}
         </button>
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm"
-          data-testid="candidate-block-disable"
-          disabled={isReadonly}
-          onclick={handleDisable}
-        >
+        <button type="button" class="btn btn-ghost btn-sm" data-testid="candidate-block-disable" disabled={isReadonly} onclick={handleDisable}>
           Disable candidate block
         </button>
       {:else}
-        <button
-          type="button"
-          class="btn btn-secondary btn-sm"
-          data-testid="candidate-block-enable"
-          disabled={isReadonly}
-          onclick={handleEnable}
-        >
+        <button type="button" class="btn btn-secondary btn-sm" data-testid="candidate-block-enable" disabled={isReadonly} onclick={handleEnable}>
           Enable candidate block
         </button>
       {/if}
@@ -166,24 +148,14 @@
 
   {#if control && descriptor}
     <div class="cb-topology-summary" data-testid="candidate-block-topology-summary">
-      <span class="wf-badge" data-testid="candidate-block-selection-mode">
-        Exclusive single-active candidate selection (no parallel execution)
-      </span>
-      <span class="wf-badge" data-testid="candidate-block-return-path">
-        {descriptor.validatedReturnPath}
-      </span>
-      <span class="wf-badge" data-testid="candidate-block-terminal-exits">
-        Exits: {descriptor.terminalExits.join(' · ')}
-      </span>
+      <span class="wf-badge" data-testid="candidate-block-selection-mode">Exclusive single-active candidate selection (no parallel execution)</span>
+      <span class="wf-badge" data-testid="candidate-block-return-path">{descriptor.validatedReturnPath}</span>
+      <span class="wf-badge" data-testid="candidate-block-terminal-exits">Exits: {descriptor.terminalExits.join(' · ')}</span>
     </div>
 
     {#if !expanded}
       <div class="cb-collapsed-summary" data-testid="candidate-block-collapsed-view">
-        <span>
-          Policy: <strong>{descriptor.availabilityPolicy}</strong> · Max dispatches:
-          <strong>{descriptor.maxDispatches}</strong> · Candidates:
-          <strong>{descriptor.candidates.map((c) => c.candidateId).join(' → ')}</strong>
-        </span>
+        <span>Policy: <strong>{descriptor.availabilityPolicy}</strong> · Max dispatches: <strong>{descriptor.maxDispatches}</strong> · Candidates: <strong>{descriptor.candidates.map((c) => c.candidateId).join(' → ')}</strong></span>
       </div>
     {:else}
       <div class="cb-expanded-body" data-testid="candidate-block-expanded-view">
@@ -196,10 +168,7 @@
               aria-label="Candidate block availability policy"
               value={control.availabilityPolicy ?? DEFAULT_CANDIDATE_AVAILABILITY_POLICY}
               disabled={isReadonly}
-              onchange={(e) =>
-                handlePatchPolicy({
-                  availabilityPolicy: e.currentTarget.value as CandidateAvailabilityPolicy
-                })}
+              onchange={(e) => handlePatchPolicy({ availabilityPolicy: e.currentTarget.value as CandidateAvailabilityPolicy })}
             >
               {#each CANDIDATE_AVAILABILITY_POLICIES as policy (policy)}
                 <option value={policy}>{policy}</option>
@@ -218,15 +187,7 @@
               aria-label="Candidate block max dispatches"
               value={control.maxDispatches ?? DEFAULT_CANDIDATE_BLOCK_DISPATCHES}
               readonly={isReadonly}
-              oninput={(e) =>
-                handlePatchPolicy({
-                  maxDispatches: parseBoundedInt(
-                    e.currentTarget.value,
-                    1,
-                    MAX_CANDIDATE_BLOCK_DISPATCHES,
-                    DEFAULT_CANDIDATE_BLOCK_DISPATCHES
-                  )
-                })}
+              oninput={(e) => handlePatchPolicy({ maxDispatches: parseBoundedInt(e.currentTarget.value, 1, MAX_CANDIDATE_BLOCK_DISPATCHES, DEFAULT_CANDIDATE_BLOCK_DISPATCHES) })}
             />
           </label>
 
@@ -243,9 +204,7 @@
               readonly={isReadonly}
               oninput={(e) => {
                 const parsed = Number.parseInt(e.currentTarget.value.trim(), 10);
-                if (Number.isFinite(parsed) && parsed > 0) {
-                  handlePatchPolicy({ monitoringWindowMs: parsed });
-                }
+                if (Number.isFinite(parsed) && parsed > 0) handlePatchPolicy({ monitoringWindowMs: parsed });
               }}
             />
           </label>
@@ -264,14 +223,9 @@
               readonly={isReadonly}
               oninput={(e) => {
                 const raw = e.currentTarget.value.trim();
-                if (raw === '') {
-                  handlePatchPolicy({ maxMicrousd: undefined });
-                  return;
-                }
+                if (raw === '') { handlePatchPolicy({ maxMicrousd: undefined }); return; }
                 const parsed = Number.parseInt(raw, 10);
-                if (Number.isFinite(parsed) && parsed > 0) {
-                  handlePatchPolicy({ maxMicrousd: parsed });
-                }
+                if (Number.isFinite(parsed) && parsed > 0) handlePatchPolicy({ maxMicrousd: parsed });
               }}
             />
           </label>
@@ -279,13 +233,7 @@
 
         <div class="cb-candidates-header">
           <span class="form-label">Ordered Candidates (1–{MAX_CANDIDATES_PER_BLOCK})</span>
-          <button
-            type="button"
-            class="btn btn-secondary btn-sm"
-            data-testid="candidate-block-add-row"
-            disabled={isReadonly || control.candidates.length >= MAX_CANDIDATES_PER_BLOCK}
-            onclick={handleAddCandidate}
-          >
+          <button type="button" class="btn btn-secondary btn-sm" data-testid="candidate-block-add-row" disabled={isReadonly || control.candidates.length >= MAX_CANDIDATES_PER_BLOCK} onclick={handleAddCandidate}>
             + Add candidate
           </button>
         </div>
@@ -296,56 +244,18 @@
             {@const node = p.row.nodes.find((n) => n.nodeId === cand.nodeId)}
             {@const currentPhaseId = node?.phaseId ?? desc?.phaseId ?? ''}
             {@const isSelected = selectedCandidateId === cand.candidateId}
-            <li
-              class="cb-candidate-row"
-              class:is-selected={isSelected}
-              data-testid="candidate-row-{index}"
-              data-candidate-id={cand.candidateId}
-            >
+            <li class="cb-candidate-row" class:is-selected={isSelected} data-testid="candidate-row-{index}" data-candidate-id={cand.candidateId}>
               <div class="cb-candidate-row-head">
-                <button
-                  type="button"
-                  class="cb-candidate-select-btn"
-                  data-testid="candidate-row-select-{cand.candidateId}"
-                  aria-pressed={isSelected}
-                  onclick={() => (selectedCandidateId = cand.candidateId)}
-                >
+                <button type="button" class="cb-candidate-select-btn" data-testid="candidate-row-select-{cand.candidateId}" aria-pressed={isSelected} onclick={() => (selectedCandidateId = cand.candidateId)}>
                   <span class="wf-badge">#{index + 1}</span>
                   <strong data-testid="candidate-row-id-{index}">{cand.candidateId}</strong>
                   <span class="cb-node-ref">({cand.nodeId})</span>
                 </button>
 
                 <div class="cb-candidate-row-actions">
-                  <button
-                    type="button"
-                    class="icon-btn"
-                    data-testid="candidate-row-up-{index}"
-                    aria-label="Move candidate {cand.candidateId} earlier"
-                    disabled={isReadonly || index === 0}
-                    onclick={() => handleMoveCandidate(index, -1, cand.candidateId)}
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    class="icon-btn"
-                    data-testid="candidate-row-down-{index}"
-                    aria-label="Move candidate {cand.candidateId} later"
-                    disabled={isReadonly || index === control.candidates.length - 1}
-                    onclick={() => handleMoveCandidate(index, 1, cand.candidateId)}
-                  >
-                    ↓
-                  </button>
-                  <button
-                    type="button"
-                    class="icon-btn destructive-icon"
-                    data-testid="candidate-row-remove-{index}"
-                    aria-label="Remove candidate {cand.candidateId}"
-                    disabled={isReadonly || control.candidates.length <= MIN_CANDIDATES_PER_BLOCK}
-                    onclick={() => handleRemoveCandidate(index)}
-                  >
-                    ✕
-                  </button>
+                  <button type="button" class="icon-btn" data-testid="candidate-row-up-{index}" aria-label="Move candidate {cand.candidateId} earlier" disabled={isReadonly || index === 0} onclick={() => handleMoveCandidate(index, -1, cand.candidateId)}>↑</button>
+                  <button type="button" class="icon-btn" data-testid="candidate-row-down-{index}" aria-label="Move candidate {cand.candidateId} later" disabled={isReadonly || index === control.candidates.length - 1} onclick={() => handleMoveCandidate(index, 1, cand.candidateId)}>↓</button>
+                  <button type="button" class="icon-btn destructive-icon" data-testid="candidate-row-remove-{index}" aria-label="Remove candidate {cand.candidateId}" disabled={isReadonly || control.candidates.length <= MIN_CANDIDATES_PER_BLOCK} onclick={() => handleRemoveCandidate(index)}>✕</button>
                 </div>
               </div>
 
@@ -501,96 +411,17 @@
 </section>
 
 <style>
-  .cb-editor {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 8px;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--schegent-radius);
-  }
-  .cb-header,
-  .cb-title-group,
-  .cb-header-actions,
-  .cb-topology-summary,
-  .cb-candidates-header,
-  .cb-candidate-row-head,
-  .cb-candidate-row-actions,
-  .cb-candidate-trial-row,
-  .cb-phase-badges {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-  }
-  .cb-header,
-  .cb-candidates-header,
-  .cb-candidate-row-head,
-  .cb-candidate-trial-row {
-    justify-content: space-between;
-  }
-  .cb-heading {
-    margin: 0;
-    font-size: 0.9em;
-  }
-  .cb-expanded-body {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .cb-policy-grid,
-  .cb-candidate-fields {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 6px;
-  }
-  .cb-candidate-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .cb-candidate-row {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 6px 8px;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--schegent-radius);
-  }
-  .cb-candidate-row.is-selected {
-    border-color: var(--vscode-focusBorder, var(--vscode-panel-border));
-  }
-  .cb-candidate-select-btn {
-    background: transparent;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0;
-    text-align: left;
-  }
-  .cb-node-ref {
-    font-size: 0.8em;
-    opacity: 0.75;
-  }
-  .cb-phase-identity {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding-top: 4px;
-    border-top: 1px dashed var(--vscode-panel-border);
-    font-size: 0.8em;
-  }
-  .cb-phase-instruction,
-  .cb-collapsed-summary {
-    margin: 0;
-    font-size: 0.82em;
-    opacity: 0.9;
-    word-break: break-word;
-  }
+  .cb-editor { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); }
+  .cb-header, .cb-title-group, .cb-header-actions, .cb-topology-summary, .cb-candidates-header, .cb-candidate-row-head, .cb-candidate-row-actions, .cb-candidate-trial-row, .cb-phase-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .cb-header, .cb-candidates-header, .cb-candidate-row-head, .cb-candidate-trial-row { justify-content: space-between; }
+  .cb-heading { margin: 0; font-size: 0.9em; }
+  .cb-expanded-body { display: flex; flex-direction: column; gap: 8px; }
+  .cb-policy-grid, .cb-candidate-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 6px; }
+  .cb-candidate-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .cb-candidate-row { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); }
+  .cb-candidate-row.is-selected { border-color: var(--vscode-focusBorder, var(--vscode-panel-border)); }
+  .cb-candidate-select-btn { background: transparent; border: none; color: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 0; text-align: left; }
+  .cb-node-ref { font-size: 0.8em; opacity: 0.75; }
+  .cb-phase-identity { display: flex; flex-direction: column; gap: 4px; padding-top: 4px; border-top: 1px dashed var(--vscode-panel-border); font-size: 0.8em; }
+  .cb-phase-instruction, .cb-collapsed-summary { margin: 0; font-size: 0.82em; opacity: 0.9; word-break: break-word; }
 </style>

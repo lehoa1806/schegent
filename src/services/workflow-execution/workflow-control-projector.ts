@@ -10,10 +10,13 @@
 import type {
   ConnectedInvocationAttemptProjection,
   ConnectedInvocationProjection,
+  ConnectedRepeatCompletedPassProjection,
+  ConnectedRepeatNodeProjection,
   ControlCandidateProjection,
   ControlLegalActionEntry,
   ControlProjection
 } from '../../contracts/sidebar-ipc/workflow-run';
+import type { RootControlState } from '../../contracts/control-ledger';
 import {
   attemptsForNode,
   resolveBoundQueueId,
@@ -27,6 +30,11 @@ import {
   type WorkflowInvocationStatus,
   type WorkflowPauseCause
 } from '../../state/connected-workflow-run';
+import { lookupRecord } from './control-ledger-store';
+import {
+  buildRepeatFrameKey,
+  resolveFrozenRepeatControl
+} from './repeat-executor';
 import {
   computeAllowedControlActions,
   findLatestLeafPhaseAttempt
@@ -493,4 +501,181 @@ export function projectConnectedInvocations(
       });
     })
   );
+}
+
+/**
+ * FR-R5-F33 (F33-T02, F33-T07) — Build authoritative `ConnectedRepeatNodeProjection`
+ * for a `node.control.kind === 'repeat'` workflow node, distinguishing Repeat pass count
+ * (`iteration` / `maxIterations`) from nested leaf Phase attempt count (`leafAttemptCount`)
+ * and exposing condition outcome, carry ref, exhaustion reason, and legal actions.
+ */
+export function buildRepeatNodeProjection(
+  run: ConnectedWorkflowRun,
+  nodeId: string,
+  ledgerRoot?: RootControlState
+): ConnectedRepeatNodeProjection | undefined {
+  const rootId = resolveRootInvocationId(run);
+  const parentFrame =
+    lookupRecord(run.invocations ?? {}, rootId) ?? Object.values(run.invocations ?? {}).at(0);
+  const parentWf =
+    parentFrame !== undefined && run.frozenClosure !== undefined
+      ? lookupRecord(run.frozenClosure.workflowsById, parentFrame.workflowId) ?? run.graph
+      : run.graph;
+  const node = parentWf.nodes.find((n) => n.nodeId === nodeId);
+  if (node?.control?.kind !== 'repeat') return undefined;
+
+  const resolvedCtrl = resolveFrozenRepeatControl(run, parentWf, node);
+  const maxIterations = resolvedCtrl.ok
+    ? resolvedCtrl.control.maxIterations
+    : node.control.maxIterations;
+  const onExhausted = resolvedCtrl.ok
+    ? resolvedCtrl.control.onExhausted
+    : (node.control.onExhausted ?? 'pause');
+
+  const parentInvId = parentFrame !== undefined ? parentFrame.invocationId : rootId;
+  const frameKey = buildRepeatFrameKey(parentInvId, nodeId);
+  const ledgerFrame =
+    ledgerRoot !== undefined ? lookupRecord(ledgerRoot.framesByKey, frameKey) : undefined;
+  const ledgerRepeat = ledgerFrame?.repeatState;
+
+  const parentAttempts =
+    parentFrame !== undefined ? attemptsForNode(parentFrame, nodeId) : [];
+  const latestParentAttempt = parentAttempts.at(-1);
+
+  const childFrames = Object.values(run.invocations ?? {}).filter(
+    (f) => f.parentInvocationId === parentInvId && f.parentCallNodeId === nodeId
+  );
+
+  // Count nested leaf Phase attempts across all child Workflow invocations spawned by this Repeat node
+  const childIds = new Set(childFrames.map((f) => f.invocationId));
+  let leafAttemptCount = 0;
+  for (const frame of Object.values(run.invocations ?? {})) {
+    if (!childIds.has(frame.invocationId) && !childIds.has(frame.parentInvocationId ?? '')) {
+      continue;
+    }
+    for (const attList of Object.values(frame.attemptsByNodeId)) {
+      for (const att of attList) {
+        if (att.nodeKind === 'phase') {
+          leafAttemptCount += 1;
+        }
+      }
+    }
+  }
+
+  const completedPasses: ConnectedRepeatCompletedPassProjection[] =
+    ledgerRepeat?.completedPasses !== undefined && ledgerRepeat.completedPasses.length > 0
+      ? ledgerRepeat.completedPasses.map((p) =>
+          Object.freeze({
+            iteration: p.iteration,
+            invocationId: p.invocationId,
+            status: p.status,
+            ...(p.resultRef !== undefined ? { resultRef: p.resultRef } : {})
+          })
+        )
+      : parentAttempts
+          .filter(
+            (a) =>
+              a.status === 'completed' ||
+              a.status === 'failed' ||
+              a.status === 'canceled' ||
+              (a.status === 'paused' && a.failureCode === 'repeat-exhausted')
+          )
+          .map((a) =>
+            Object.freeze({
+              iteration: a.attemptIndex,
+              invocationId: a.childInvocationId ?? a.attemptId,
+              status:
+                a.status === 'paused' && a.failureCode === 'repeat-exhausted'
+                  ? ('completed' as const)
+                  : a.status === 'completed' || a.status === 'failed' || a.status === 'canceled'
+                    ? a.status
+                    : ('completed' as const)
+            })
+          );
+
+  const iteration =
+    ledgerRepeat?.iteration ??
+    ledgerRepeat?.currentPass ??
+    (parentAttempts.length > 0 ? parentAttempts.length : 1);
+
+  const activeChild = childFrames.find((f) => f.status === 'in-flight' || f.status === 'paused');
+  const currentChildInvocationId =
+    ledgerRepeat?.currentChildInvocationId !== undefined
+      ? ledgerRepeat.currentChildInvocationId
+      : (activeChild?.invocationId ?? null);
+
+  const parentFailureCode = parentFrame !== undefined ? parentFrame.failureCode : undefined;
+  const parentStatus = parentFrame !== undefined ? parentFrame.status : undefined;
+  const isExhausted =
+    ledgerRepeat?.exhaustionReason === 'repeat-exhausted' ||
+    parentFailureCode === 'repeat-exhausted' ||
+    latestParentAttempt?.failureCode === 'repeat-exhausted';
+  const isUnresolved =
+    ledgerRepeat?.conditionResult === 'unresolved' ||
+    parentFailureCode === 'unresolved-condition';
+
+  const conditionResult =
+    ledgerRepeat?.conditionResult ??
+    (isUnresolved
+      ? 'unresolved'
+      : isExhausted
+        ? 'false'
+        : latestParentAttempt?.status === 'completed' &&
+            Object.keys(latestParentAttempt.declaredOutputs).length > 0
+          ? 'true'
+          : parentAttempts.length > 1 && activeChild !== undefined
+            ? 'false'
+            : 'not-evaluated');
+
+  const exhaustionReason =
+    ledgerRepeat?.exhaustionReason ??
+    (isExhausted ? 'repeat-exhausted' : isUnresolved ? 'unresolved-condition' : undefined);
+
+  const latestCarryEnv = [...(run.inputEnvelopes ?? [])]
+    .reverse()
+    .find((env) => env.targetNodeId === nodeId && env.envelopeId.includes(':carry-env'));
+  const carryEnvelopeRef = ledgerRepeat?.carryEnvelopeRef ?? latestCarryEnv?.envelopeId;
+  const fallbackCarryValues: Record<string, string | number | boolean> | undefined =
+    latestCarryEnv !== undefined
+      ? Object.fromEntries(
+          Object.entries(latestCarryEnv.inputsByPort).map(([portId, portVal]) => [portId, portVal.value])
+        )
+      : undefined;
+  const carryValues = ledgerRepeat?.carryValues ?? fallbackCarryValues;
+
+  const isTerminal =
+    parentStatus === 'completed' ||
+    parentStatus === 'failed' ||
+    parentStatus === 'canceled' ||
+    ledgerFrame?.status === 'completed' ||
+    ledgerFrame?.status === 'failed' ||
+    ledgerFrame?.status === 'canceled';
+  const isPaused = parentStatus === 'paused' || ledgerFrame?.status === 'paused';
+
+  const legalActions: readonly ControlLegalActionEntry[] = Object.freeze([
+    { kind: 'pause', allowed: !isTerminal && !isPaused },
+    {
+      kind: 'resume',
+      allowed: isPaused && !isExhausted && !isTerminal,
+      ...(isExhausted ? { reason: 'illegal-state' as const } : {})
+    },
+    { kind: 'cancel', allowed: !isTerminal }
+  ]);
+
+  return Object.freeze({
+    version: 1 as const,
+    kind: 'repeat' as const,
+    iteration,
+    currentPass: iteration,
+    maxIterations,
+    conditionResult,
+    currentChildInvocationId,
+    onExhausted,
+    ...(exhaustionReason !== undefined ? { exhaustionReason } : {}),
+    ...(carryEnvelopeRef !== undefined ? { carryEnvelopeRef } : {}),
+    ...(carryValues !== undefined ? { carryValues } : {}),
+    leafAttemptCount,
+    completedPasses: Object.freeze(completedPasses),
+    legalActions
+  });
 }

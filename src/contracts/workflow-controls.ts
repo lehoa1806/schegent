@@ -146,7 +146,6 @@ export interface CandidateSpec {
 
 export type CandidateRetryPolicy = CandidateRetryConfig;
 export type CandidateBudgetControl = CandidateBlockBudget;
-export type CandidateDefinition = CandidateSpec;
 
 export interface ResolvedCandidateSpec {
   readonly candidateId: string;

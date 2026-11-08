@@ -257,6 +257,14 @@ export function evaluateControlTransition(
           targetInvocationId
         };
       }
+      if (frame.failureCode === 'repeat-exhausted') {
+        return {
+          allowed: false,
+          refusalCode: 'retry-bound-exceeded',
+          reason: `Cannot resume invocation '${targetInvocationId}' because Repeat iterations are exhausted.`,
+          targetInvocationId
+        };
+      }
       if (isSpendBoundExceeded(run, frame)) {
         return {
           allowed: false,
