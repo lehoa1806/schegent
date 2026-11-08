@@ -180,6 +180,12 @@ export interface ControlCandidateProjection {
   readonly resetAt?: number;
   readonly nextCheckAt?: number;
   readonly notBefore?: number;
+  readonly phaseId?: string;
+  readonly phaseName?: string;
+  readonly instructionSummary?: string;
+  readonly operatorKind?: string;
+  readonly quotaIdentity?: string;
+  readonly permitWaitPosition?: number;
 }
 
 export interface ControlProjection {
@@ -206,6 +212,8 @@ export interface ControlProjection {
   readonly maxDispatches: number;
   readonly rootDispatchesUsed: number;
   readonly rootMaxDispatches: number;
+  readonly enclosingIteration?: number;
+  readonly enclosingMaxIterations?: number;
   readonly monitoringStartedAt?: number;
   readonly monitoringExpiresAt?: number;
   readonly monitoringRenewals?: number;
@@ -213,6 +221,8 @@ export interface ControlProjection {
   readonly resultReason?: string;
   readonly recoveryCoverage?: 'complete' | 'partial' | 'unavailable';
   readonly effectCertainty?: 'safe' | 'uncertain' | 'unknown';
+  readonly manifestTruncated?: boolean;
+  readonly preexistingDirtyCount?: number;
   readonly spendMode: 'count-only' | 'strict-usd';
   readonly spendEnforcementQuality:
     | 'verified'
@@ -223,6 +233,8 @@ export interface ControlProjection {
   readonly estimatedMicrousd?: number;
   readonly unpricedAttemptCount?: number;
   readonly maxMicrousd?: number;
+  readonly activeAttemptOvershootNote?: string;
+  readonly durableNotices?: readonly string[];
   readonly policyObservations?: readonly Readonly<
     Record<string, string | number | boolean>
   >[];

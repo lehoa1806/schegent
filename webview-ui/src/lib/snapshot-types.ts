@@ -274,15 +274,50 @@ export type {
 export type {
   PhaseName
 } from '../../../src/contracts/phase-identity.js';
-export type {
-  ConnectedInvocationAttemptProjection,
-  ConnectedInvocationProjection,
-  ConnectedNodeAction,
-  ConnectedNodeProjection,
-  ConnectedNodeState,
-  ConnectedRunProjection,
-  WorkflowControlAction
+export {
+  CONTROL_ACTION_KINDS,
+  CONTROL_COMMAND_REFUSAL_REASONS,
+  CONTROL_COMMAND_VERSION,
+  type ConnectedInvocationAttemptProjection,
+  type ConnectedInvocationProjection,
+  type ConnectedNodeAction,
+  type ConnectedNodeProjection,
+  type ConnectedNodeState,
+  type ConnectedRunProjection,
+  type ControlAction,
+  type ControlActionKind,
+  type ControlCandidateProjection,
+  type ControlCommandAcknowledgement,
+  type ControlCommandEnvelope,
+  type ControlCommandRefusalReason,
+  type ControlLegalActionEntry,
+  type ControlProjection,
+  type WorkflowControlAction
 } from '../../../src/contracts/sidebar-ipc/workflow-run.js';
+export {
+  CANDIDATE_AVAILABILITY_POLICIES,
+  DEFAULT_CANDIDATE_ATTEMPTS,
+  DEFAULT_CANDIDATE_AVAILABILITY_POLICY,
+  DEFAULT_CANDIDATE_BLOCK_DISPATCHES,
+  DEFAULT_MONITORING_WINDOW_MS,
+  MAX_CANDIDATE_ATTEMPTS,
+  MAX_CANDIDATE_BLOCK_DISPATCHES,
+  MAX_CANDIDATES_PER_BLOCK,
+  MAX_MONITORING_WINDOW_MS,
+  MIN_CANDIDATE_ATTEMPTS,
+  MIN_CANDIDATE_BLOCK_DISPATCHES,
+  MIN_CANDIDATES_PER_BLOCK,
+  MIN_MONITORING_WINDOW_MS,
+  type CandidateAvailabilityPolicy,
+  type CandidateBlockControl,
+  type CandidateBudgetControl,
+  type CandidateDefinition,
+  type CandidateRetryPolicy,
+  type ForEachControl,
+  type RepeatControl,
+  type WorkflowDecisionResults,
+  type WorkflowNodeControl
+} from '../../../src/contracts/workflow-controls.js';
 export {
   describeBranchDisposition,
   describeExitReason,

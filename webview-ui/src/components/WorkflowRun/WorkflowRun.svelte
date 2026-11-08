@@ -19,6 +19,7 @@
 
   import WorkflowNodeStates from './WorkflowNodeStates.svelte';
   import WorkflowContinuation from './WorkflowContinuation.svelte';
+  import CandidateBlockInspector from './CandidateBlockInspector.svelte';
   import { continueWorkflow } from '../../lib/workflow-run-ipc';
   import type { ContinueWorkflowResult, WorkflowControlAction } from '../../lib/messages';
   import {
@@ -183,8 +184,7 @@
           {#if !hasCollapsedAncestor(inv)}
           {@const isCollapsed = collapsedInvocations[inv.invocationId] === true}
           <li
-            class="invocation-item"
-            style={`margin-left: ${inv.depth * 14}px`}
+            class="invocation-item invocation-depth-{Math.min(inv.depth, 5)}"
             data-testid={`workflow-invocation-${inv.invocationId}`}
           >
             <div class="invocation-head">
@@ -292,6 +292,13 @@
                 </ul>
               {/if}
 
+              {#if inv.controlProjection}
+                <CandidateBlockInspector
+                  projection={inv.controlProjection}
+                  {isPrimary}
+                />
+              {/if}
+
               {#if isPrimary && inv.allowedActions.length > 0}
                 <div
                   class="invocation-actions"
@@ -317,9 +324,17 @@
       </ul>
     {/if}
 
+    {#if run.controlProjection && !(run.invocations ?? []).some((inv) => inv.controlProjection?.invocationId === run.controlProjection?.invocationId)}
+      <CandidateBlockInspector
+        projection={run.controlProjection}
+        {isPrimary}
+      />
+    {/if}
+
     <WorkflowNodeStates
       nodes={run.nodes}
       {queueItems}
+      controlProjection={run.controlProjection}
       disabled={openNode !== undefined}
       onAct={(node) => onAct(node)}
     />
@@ -445,6 +460,21 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+  .invocation-depth-1 {
+    margin-left: 14px;
+  }
+  .invocation-depth-2 {
+    margin-left: 28px;
+  }
+  .invocation-depth-3 {
+    margin-left: 42px;
+  }
+  .invocation-depth-4 {
+    margin-left: 56px;
+  }
+  .invocation-depth-5 {
+    margin-left: 70px;
   }
   .invocation-toggle {
     background: transparent;

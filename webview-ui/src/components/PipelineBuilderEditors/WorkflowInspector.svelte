@@ -22,6 +22,7 @@
   import type { WorkflowFlowSelection } from "./workflow-flow-view";
   import type { MutableWorkflow } from "./types";
   import DefinitionLifecyclePanel from "../Builder/DefinitionLifecyclePanel.svelte";
+  import CandidateBlockEditor from "./CandidateBlockEditor.svelte";
   import WorkflowBranchInspector from "./WorkflowBranchInspector.svelte";
   import WorkflowPortsAndBindingsEditor from "./WorkflowPortsAndBindingsEditor.svelte";
   import WorkflowRowDefects from "./WorkflowRowDefects.svelte";
@@ -374,6 +375,14 @@
         definitionName={p.row.name || "Untitled Workflow"}
         lifecycle={p.lifecycle}
         defects={p.row.sourceErrors}
+      />
+
+      <CandidateBlockEditor
+        row={p.row}
+        {phases}
+        {readonly}
+        onedit={(edit) => p.onworkflowpatch(edit(p.row))}
+        onopenphase={p.onopenphase}
       />
 
       {#if p.actions}

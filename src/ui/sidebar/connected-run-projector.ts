@@ -19,18 +19,10 @@
 // in that terminal state rather than returning to `available`. Whether it will
 // accept another start is an *action*, not a fifth state.
 //
-// Two rules about a child reference the host cannot resolve, and they are
-// deliberately different answers to deliberately different questions:
-//
-//   * `hydrating` is FR-058's question — have the child-run references arrived?
-//     An unresolvable one answers no, and the view shows a loading state rather
-//     than a speculative action set.
-//   * The node's own state is read as *no observation at all*, so the node falls
-//     through to the decision fold. That is the same reading
-//     `ChildRunSettledProbe` documents for the FR-044 gate — a queue item nothing
-//     holds is not executing — and reading it as "still going" instead would leave
-//     a connected run permanently unstartable on the strength of a reference that
-//     no longer resolves.
+// Two rules about a child reference the host cannot resolve:
+//   * `hydrating` is FR-058's question — an unresolvable reference answers no.
+//   * The node's own state is read as *no observation at all*, falling through
+//     to the decision fold (`ChildRunSettledProbe`, FR-044).
 //
 // No `vscode` import: the child-state reader arrives as a port.
 
@@ -38,7 +30,8 @@ import type {
   ConnectedNodeAction,
   ConnectedNodeProjection,
   ConnectedNodeState,
-  ConnectedRunProjection
+  ConnectedRunProjection,
+  ControlProjection
 } from '../../contracts/sidebar-ipc';
 import {
   buildWorkflowRunControlProjection,
@@ -48,11 +41,7 @@ import type { ConnectedWorkflowRun } from '../../state/connected-workflow-run';
 import { attemptsForNode, resolveRootInvocationId } from '../../state/connected-workflow-run';
 
 /**
- * What one child Pipeline Run is doing, in the vocabulary the wire already uses.
- *
- * Drawn from `ConnectedNodeState` rather than declared afresh: these four members
- * ARE the node states a child can produce, and a parallel enum would be a second
- * vocabulary for the same lifecycle.
+ * What one child Pipeline Run is doing, in the wire vocabulary (`ConnectedNodeState`).
  */
 export type ConnectedChildState = Extract<
   ConnectedNodeState,
@@ -188,7 +177,8 @@ function actionsOf(state: ConnectedNodeState, attemptCount: number): readonly Co
  */
 export function projectConnectedRun(
   run: ConnectedWorkflowRun,
-  readChildState: ChildRunStateReader
+  readChildState: ChildRunStateReader,
+  controlProjectionsByInvocationId?: Readonly<Record<string, ControlProjection>>
 ): ConnectedRunProjection {
   const decided = foldDecisions(run);
   const anyInFlight = eachAttempt(run, readChildState, (state) => state === 'in-flight');
@@ -197,7 +187,13 @@ export function projectConnectedRun(
   const invocationFrames = run.invocations !== undefined ? Object.values(run.invocations) : [];
   const hasInvocations = invocationFrames.length > 0;
   const control = hasInvocations ? buildWorkflowRunControlProjection(run) : undefined;
-  const invocations = control !== undefined ? projectConnectedInvocations(run, control) : undefined;
+  const invocations =
+    control !== undefined
+      ? projectConnectedInvocations(run, control, controlProjectionsByInvocationId)
+      : undefined;
+  const rootControlProjection =
+    invocations?.find((inv) => inv.invocationId === control?.activeInvocationId)?.controlProjection ??
+    invocations?.find((inv) => inv.controlProjection !== undefined)?.controlProjection;
 
   const rootId = resolveRootInvocationId(run);
   const nodes: ConnectedNodeProjection[] = run.graph.nodes.map((node) => {
@@ -272,7 +268,8 @@ export function projectConnectedRun(
                     ? { targetAttemptId: control.recoveryDisposition.attemptId }
                     : {})
                 }),
-          ...(invocations !== undefined ? { invocations } : {})
+          ...(invocations !== undefined ? { invocations } : {}),
+          ...(rootControlProjection !== undefined ? { controlProjection: rootControlProjection } : {})
         }
       : {})
   };
