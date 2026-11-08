@@ -74,6 +74,17 @@ import {
   settleFailedOrCanceledRepeatChild,
   type RepeatExecutor
 } from './repeat-executor';
+import {
+  buildForEachDeclaredOutputs,
+  buildOrderedResultIndex,
+  extractCollectionPayloadFromParentFrame,
+  handleForEachChildSettlement,
+  prepareForEachItemFrames,
+  readAndValidateForEachCollection,
+  resolveFrozenForEachControl,
+  type ForEachExecutor
+} from './foreach-executor';
+import { lookupRecord } from './control-ledger-store';
 
 /** What one finished child run contributes. Read from the child, never stored here. */
 export interface ChildRunFacts {
@@ -234,6 +245,8 @@ export interface ComposableWorkflowCoordinatorDeps {
   ) => Promise<PhaseAttemptDispatchResult>;
   readonly controlAdmission?: ControlAdmissionPort;
   readonly repeatExecutor?: RepeatExecutor;
+  readonly forEachExecutor?: ForEachExecutor;
+  readonly workspaceRoot?: string;
   readonly resolveExecutionFence?: (
     run: ConnectedWorkflowRun,
     queueId: string
@@ -394,7 +407,12 @@ async function dispatchNodeInternal(
   const nodeKind = node.kind ?? (node.phaseId !== undefined ? 'phase' : 'workflow');
   if (node.control !== undefined) {
     const nodeControlVersion: number = node.control.version;
-    if (nodeControlVersion !== 1 || node.control.kind !== 'repeat' || nodeKind !== 'workflow') {
+    const nodeControlKind: string = node.control.kind;
+    const isSupportedNodeControl =
+      nodeControlVersion === 1 &&
+      nodeKind === 'workflow' &&
+      (nodeControlKind === 'repeat' || nodeControlKind === 'for-each');
+    if (!isSupportedNodeControl) {
       const code =
         nodeControlVersion !== 1 ? 'unsupported-control-version' : 'unsupported-control-execution';
       return failFrameAndPropagate(
@@ -405,10 +423,16 @@ async function dispatchNodeInternal(
   }
   const handoffEnvelope = latestInputEnvelopeForTarget(run, invocationId, nodeId);
 
-  const targetPorts =
+  const rawTargetPorts =
     nodeKind === 'phase'
       ? undefined
       : closure.workflowsById[node.workflowId ?? '']?.inputs;
+  const forEachItemPortId =
+    node.control?.kind === 'for-each' ? node.control.itemInputPortId : undefined;
+  const targetPorts =
+    rawTargetPorts !== undefined && forEachItemPortId !== undefined
+      ? rawTargetPorts.filter((p) => p.portId !== forEachItemPortId)
+      : rawTargetPorts;
 
   const resolved = resolveNodeInputBindings({
     workflow,
@@ -632,6 +656,132 @@ async function dispatchNodeInternal(
   }
 
   // Child workflow node call (`nodeKind === 'workflow'`):
+  if (node.control?.kind === 'for-each') {
+    const resolvedForEach = resolveFrozenForEachControl(run, workflow, node, frame);
+    if (!resolvedForEach.ok) {
+      return failFrameAndPropagate(
+        deps, run, expectedRevision, frame, startedAt, resolvedForEach.code, resolvedForEach.message
+      );
+    }
+    const payloadSource = extractCollectionPayloadFromParentFrame({
+      parentFrame: frame,
+      control: resolvedForEach.control
+    });
+    const collectionRead = await readAndValidateForEachCollection({
+      control: resolvedForEach.control,
+      ...payloadSource,
+      ...(deps.workspaceRoot !== undefined ? { workspaceRoot: deps.workspaceRoot } : {}),
+      enclosingWorkflow: workflow,
+      childWorkflow: resolvedForEach.childWorkflow,
+      nodeId,
+      invocationId: frame.invocationId
+    });
+    if (!collectionRead.ok) {
+      return failFrameAndPropagate(
+        deps, run, expectedRevision, frame, startedAt, collectionRead.code, collectionRead.message
+      );
+    }
+    if (collectionRead.collection.itemCount === 0) {
+      if (deps.forEachExecutor !== undefined) {
+        const initEmpty = await deps.forEachExecutor.initializeForEachFrame({
+          rootRunId: run.controlState?.ledgerRunId ?? run.connectedRunId,
+          parentInvocationId: frame.invocationId,
+          parentWorkflowId: workflow.workflowId,
+          nodeId,
+          control: resolvedForEach.control,
+          collection: collectionRead.collection,
+          workspaceRoot: deps.workspaceRoot
+        });
+        if (!initEmpty.ok) {
+          return failFrameAndPropagate(
+            deps, run, expectedRevision, frame, startedAt, initEmpty.code, initEmpty.message
+          );
+        }
+      }
+      const emptyIdx = await buildOrderedResultIndex({
+        collectionRef: collectionRead.collection.collectionRef,
+        collectionSha256: collectionRead.collection.collectionSha256,
+        slots: [],
+        workspaceRoot: deps.workspaceRoot
+      });
+      if (!emptyIdx.ok) {
+        return failFrameAndPropagate(
+          deps, run, expectedRevision, frame, startedAt, emptyIdx.code, emptyIdx.message
+        );
+      }
+      const emptyAttempt = createNodeAttemptRecord({
+        frame,
+        nodeId,
+        nodeKind: 'workflow',
+        targetDefinitionId: resolvedForEach.childWorkflow.workflowId,
+        inputEnvelope,
+        startedAt
+      });
+      const frameWithEmptyAttempt = recordNodeAttempt(frame, emptyAttempt);
+      const runWithEmptyAttempt = upsertInvocationFrame(run, frameWithEmptyAttempt);
+      const declaredOutputs = buildForEachDeclaredOutputs({
+        parentWorkflow: workflow,
+        nodeId,
+        resultIndexJson: emptyIdx.resultIndexJson
+      });
+      return settleAttemptInternal(
+        deps,
+        runWithEmptyAttempt,
+        expectedRevision,
+        frame.invocationId,
+        nodeId,
+        emptyAttempt.attemptIndex,
+        'completed',
+        startedAt,
+        declaredOutputs
+      );
+    }
+
+    const firstItem = collectionRead.collection.items.at(0);
+    const preparedFirst = prepareForEachItemFrames({
+      run,
+      parentFrame: frame,
+      node,
+      childWorkflow: resolvedForEach.childWorkflow,
+      itemIndex: 0,
+      itemInputPortId: resolvedForEach.control.itemInputPortId,
+      itemCanonicalJson: firstItem?.canonicalJson ?? '{}',
+      baseInputsByPort: boundInputs,
+      startedAt
+    });
+    if (preparedFirst === null) {
+      return failFrameAndPropagate(
+        deps, run, expectedRevision, frame, startedAt, 'invalid-entry-node',
+        `Child workflow '${resolvedForEach.childWorkflow.workflowId}' has no valid entry node.`
+      );
+    }
+    if (deps.forEachExecutor !== undefined) {
+      const initRes = await deps.forEachExecutor.initializeForEachFrame({
+        rootRunId: run.controlState?.ledgerRunId ?? run.connectedRunId,
+        parentInvocationId: frame.invocationId,
+        parentWorkflowId: workflow.workflowId,
+        nodeId,
+        control: resolvedForEach.control,
+        collection: collectionRead.collection,
+        firstChildInvocationId: preparedFirst.childFrame.invocationId,
+        workspaceRoot: deps.workspaceRoot
+      });
+      if (!initRes.ok) {
+        return failFrameAndPropagate(
+          deps, run, expectedRevision, frame, startedAt, initRes.code, initRes.message
+        );
+      }
+    }
+    return dispatchNodeInternal(
+      deps,
+      preparedFirst.nextRun,
+      expectedRevision,
+      preparedFirst.childFrame.invocationId,
+      preparedFirst.childEntryNodeId,
+      startedAt
+    );
+  }
+
   // Always enters child workflow at `startNodeIds[0]` (FR-002).
   const childWorkflowId = node.workflowId ?? '';
   const childWorkflow = closure.workflowsById[childWorkflowId];
@@ -885,6 +1035,44 @@ async function settleAttemptInternal(
             completedAt, repeatRes.failureCode, repeatRes.detail
           );
         }
+        if (parentWorkflow !== undefined && parentNode?.control?.kind === 'for-each') {
+          const feRes = await handleForEachChildSettlement({
+            run: nextRun,
+            parentFrame,
+            parentWorkflow,
+            parentNode,
+            childFrame: completedFrame,
+            childStatus: 'completed',
+            completedAt,
+            forEachExecutor: deps.forEachExecutor,
+            workspaceRoot: deps.workspaceRoot
+          });
+          if (feRes.action === 'completed') {
+            return settleAttemptInternal(
+              deps, feRes.nextRun, expectedRevision, parentFrame.invocationId,
+              parentNode.nodeId, feRes.parentAttempt.attemptIndex, 'completed',
+              completedAt, feRes.declaredOutputs
+            );
+          }
+          if (feRes.action === 'advance-item') {
+            return dispatchNodeInternal(
+              deps, feRes.nextRun, expectedRevision, feRes.childInvocationId,
+              feRes.childEntryNodeId, completedAt
+            );
+          }
+          if (feRes.action === 'paused') {
+            return persistRunStep(deps.connectedRuns, feRes.nextRun, expectedRevision, (persisted) => ({
+              outcome: 'workflow-paused', run: persisted,
+              invocationId: parentFrame.invocationId, pauseCause: feRes.pauseCause
+            }));
+          }
+          if (feRes.action === 'failed') {
+            return failFrameAndPropagate(
+              deps, feRes.nextRun, expectedRevision, feRes.settledParentFrame,
+              completedAt, feRes.failureCode
+            );
+          }
+        }
         return settleAttemptInternal(
           deps, nextRun, expectedRevision, parentFrame.invocationId,
           parentAttempt.nodeId, parentAttempt.attemptIndex, 'completed',
@@ -981,6 +1169,54 @@ async function failFrameAndPropagate(
       (a) => a.childInvocationId === failedFrame.invocationId
     );
     if (parentFrame !== undefined && parentAttempt !== undefined) {
+      const parentWorkflow =
+        run.frozenClosure !== undefined
+          ? lookupRecord(run.frozenClosure.workflowsById, parentFrame.workflowId)
+          : undefined;
+      const parentNode = parentWorkflow?.nodes.find(
+        (n) => n.nodeId === failedFrame.parentCallNodeId
+      );
+      if (parentWorkflow !== undefined && parentNode?.control?.kind === 'for-each') {
+        const feRes = await handleForEachChildSettlement({
+          run: nextRun,
+          parentFrame,
+          parentWorkflow,
+          parentNode,
+          childFrame: failedFrame,
+          childStatus: 'failed',
+          childFailureCode: failureCode,
+          childFailureMessage: detail,
+          completedAt,
+          forEachExecutor: deps.forEachExecutor,
+          workspaceRoot: deps.workspaceRoot
+        });
+        if (feRes.action === 'completed') {
+          return settleAttemptInternal(
+            deps, feRes.nextRun, expectedRevision, parentFrame.invocationId,
+            parentNode.nodeId, feRes.parentAttempt.attemptIndex, 'completed',
+            completedAt, feRes.declaredOutputs
+          );
+        }
+        if (feRes.action === 'advance-item') {
+          return dispatchNodeInternal(
+            deps, feRes.nextRun, expectedRevision, feRes.childInvocationId,
+            feRes.childEntryNodeId, completedAt
+          );
+        }
+        if (feRes.action === 'paused') {
+          return persistRunStep(deps.connectedRuns, feRes.nextRun, expectedRevision, (persisted) => ({
+            outcome: 'workflow-paused', run: persisted,
+            invocationId: parentFrame.invocationId, pauseCause: feRes.pauseCause
+          }));
+        }
+        if (feRes.action === 'failed') {
+          return settleAttemptInternal(
+            deps, feRes.nextRun, expectedRevision, parentFrame.invocationId,
+            parentAttempt.nodeId, parentAttempt.attemptIndex, 'failed',
+            completedAt, undefined, undefined, feRes.failureCode
+          );
+        }
+      }
       await settleFailedOrCanceledRepeatChild({
         run: nextRun, parentFrame, childFrame: failedFrame, status: 'failed',
         failureCode, repeatExecutor: deps.repeatExecutor
@@ -1029,6 +1265,26 @@ async function cancelFrameAndPropagate(
       (a) => a.childInvocationId === canceledFrame.invocationId
     );
     if (parentFrame !== undefined && parentAttempt !== undefined) {
+      const parentWorkflow =
+        run.frozenClosure !== undefined
+          ? lookupRecord(run.frozenClosure.workflowsById, parentFrame.workflowId)
+          : undefined;
+      const parentNode = parentWorkflow?.nodes.find(
+        (n) => n.nodeId === canceledFrame.parentCallNodeId
+      );
+      if (parentWorkflow !== undefined && parentNode?.control?.kind === 'for-each') {
+        await handleForEachChildSettlement({
+          run: nextRun,
+          parentFrame,
+          parentWorkflow,
+          parentNode,
+          childFrame: canceledFrame,
+          childStatus: 'canceled',
+          completedAt,
+          forEachExecutor: deps.forEachExecutor,
+          workspaceRoot: deps.workspaceRoot
+        });
+      }
       await settleFailedOrCanceledRepeatChild({
         run: nextRun, parentFrame, childFrame: canceledFrame, status: 'canceled',
         repeatExecutor: deps.repeatExecutor

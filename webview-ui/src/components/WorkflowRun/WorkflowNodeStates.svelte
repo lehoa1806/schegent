@@ -29,6 +29,7 @@
 
   import QueueItemRow from '../QueueItem.svelte';
   import type {
+    ConnectedForEachNodeProjection,
     ConnectedNodeAction,
     ConnectedNodeProjection,
     ConnectedRepeatNodeProjection,
@@ -65,6 +66,10 @@
 
   function repeatOf(node: ConnectedNodeProjection): ConnectedRepeatNodeProjection | undefined {
     return node.repeatProjection ?? (controlProjection?.nodeId === node.nodeId ? controlProjection.repeatProjection : undefined);
+  }
+
+  function forEachOf(node: ConnectedNodeProjection): ConnectedForEachNodeProjection | undefined {
+    return node.forEachProjection ?? (controlProjection?.nodeId === node.nodeId ? controlProjection.forEachProjection : undefined);
   }
 </script>
 
@@ -142,6 +147,63 @@
                 {#each rep.completedPasses as passEntry (passEntry.iteration)}
                   <span class="repeat-pass-chip" data-testid={`repeat-pass-chip-${node.nodeId}-${passEntry.iteration}`}>
                     #{passEntry.iteration}: {passEntry.status}
+                  </span>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+      {/if}
+
+      {#if forEachOf(node)}
+        {@const fe = forEachOf(node)}
+        {#if fe}
+          <div class="node-repeat-panel" data-testid={`foreach-node-projection-${node.nodeId}`}>
+            <div class="repeat-row">
+              <span class="repeat-pass-counter" data-testid={`foreach-item-counter-${node.nodeId}`}>
+                {fe.itemCount === 0
+                  ? '0 items (empty collection)'
+                  : `Item ${Math.min(fe.currentIndex + 1, fe.itemCount)} of ${fe.itemCount}`}
+              </span>
+              ·
+              <span class="repeat-leaf-attempts" data-testid={`foreach-leaf-attempts-${node.nodeId}`}>
+                {fe.leafAttemptCount} {fe.leafAttemptCount === 1 ? 'leaf attempt' : 'leaf attempts'}
+              </span>
+              ·
+              <span class="repeat-on-exhausted" data-testid={`foreach-on-item-error-${node.nodeId}`}>
+                onItemError: {fe.onItemError}
+              </span>
+            </div>
+            {#if fe.collectionRef}
+              <div class="repeat-row" data-testid={`foreach-collection-ref-${node.nodeId}`}>
+                Collection: {fe.collectionRef}
+              </div>
+            {/if}
+            {#if fe.resultIndexRef}
+              <div class="repeat-row" data-testid={`foreach-result-index-ref-${node.nodeId}`}>
+                Result index: {fe.resultIndexRef}
+              </div>
+            {/if}
+            {#if fe.hasErrors}
+              <div
+                class="repeat-exhaustion"
+                role="status"
+                aria-live="polite"
+                data-testid={`foreach-error-summary-${node.nodeId}`}
+              >
+                Completed with {fe.errorCount} item {fe.errorCount === 1 ? 'error' : 'errors'} (hasErrors: true)
+              </div>
+            {/if}
+            {#if fe.refusalCode}
+              <div class="repeat-exhaustion" data-testid={`foreach-refusal-code-${node.nodeId}`}>
+                Refusal: {fe.refusalCode}
+              </div>
+            {/if}
+            {#if fe.slots.length > 0}
+              <div class="repeat-passes" data-testid={`foreach-slots-${node.nodeId}`}>
+                {#each fe.slots as slot (slot.index)}
+                  <span class="repeat-pass-chip" data-testid={`foreach-slot-${node.nodeId}-${slot.index}`}>
+                    #{slot.index} ({slot.itemKey}): {slot.state}{slot.error ? ` — ${slot.error.code}: ${slot.error.message}` : ''}
                   </span>
                 {/each}
               </div>

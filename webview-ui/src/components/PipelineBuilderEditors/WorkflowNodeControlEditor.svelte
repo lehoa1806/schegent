@@ -1,10 +1,19 @@
 <script lang="ts">
   // FR-R5-F33 / FR-R5-F34 — Child-Workflow Repeat & ForEach Node Control Editor.
   import {
+    DEFAULT_FOR_EACH_MAX_ITEMS,
+    DEFAULT_FOR_EACH_ON_ITEM_ERROR,
+    FOR_EACH_COLLECTION_SOURCES,
+    FOR_EACH_ON_ITEM_ERROR_POLICIES,
+    MAX_FOR_EACH_MAX_ITEMS,
     MAX_REPEAT_ITERATIONS,
+    MIN_FOR_EACH_MAX_ITEMS,
     MIN_REPEAT_ITERATIONS,
     REPEAT_ON_EXHAUSTED_POLICIES,
     TYPED_CONDITION_OPERATORS,
+    type ForEachCollectionSource,
+    type ForEachControl,
+    type ForEachItemErrorPolicy,
     type PortableWorkflowDefinition,
     type RepeatCarryMapping,
     type RepeatControl,
@@ -44,6 +53,21 @@
     };
   }
 
+  function defaultForEachControl(): ForEachControl {
+    const firstInputPort = p.childWorkflow?.inputs?.at(0)?.portId ?? "item";
+    return {
+      version: 1,
+      kind: "for-each",
+      collection: {
+        source: "workflow-input",
+        portId: "itemsFile",
+      },
+      itemInputPortId: firstInputPort,
+      maxItems: DEFAULT_FOR_EACH_MAX_ITEMS,
+      onItemError: DEFAULT_FOR_EACH_ON_ITEM_ERROR,
+    };
+  }
+
   function toggleRepeatControl(): void {
     if (p.node.control?.kind === "repeat") {
       p.onnodepatch(p.index, { control: undefined });
@@ -52,8 +76,33 @@
     }
   }
 
+  function toggleForEachControl(): void {
+    if (p.node.control?.kind === "for-each") {
+      p.onnodepatch(p.index, { control: undefined });
+    } else {
+      p.onnodepatch(p.index, { control: defaultForEachControl() });
+    }
+  }
+
   function patchRepeatControl(current: RepeatControl, patch: Partial<RepeatControl>): void {
     p.onnodepatch(p.index, { control: { ...current, ...patch } });
+  }
+
+  function patchForEachControl(current: ForEachControl, patch: Partial<ForEachControl>): void {
+    p.onnodepatch(p.index, { control: { ...current, ...patch } });
+  }
+
+  function updateForEachCollectionSource(current: ForEachControl, source: ForEachCollectionSource["source"]): void {
+    const portId = current.collection.portId || "itemsFile";
+    const collection: ForEachControl["collection"] =
+      source === "node-output"
+        ? {
+            source: "node-output",
+            nodeId: current.collection.source === "node-output" ? current.collection.nodeId : "node-upstream",
+            portId,
+          }
+        : { source: "workflow-input", portId };
+    patchForEachControl(current, { collection });
   }
 
   function repeatUntilLeaf(ctrl: RepeatControl): TypedLeaf {
@@ -114,6 +163,18 @@
       onchange={toggleRepeatControl}
     />
     <span class="form-label">Repeat child Workflow until condition</span>
+  </label>
+
+  <label class="checkbox-field">
+    <input
+      type="checkbox"
+      data-testid="toggle-foreach-control"
+      aria-label="Enable ForEach control on node {p.index + 1}"
+      checked={p.node.control?.kind === "for-each"}
+      disabled={p.readonly}
+      onchange={toggleForEachControl}
+    />
+    <span class="form-label">Sequential ForEach over bounded item collection</span>
   </label>
 
   {#if p.node.control?.kind === "repeat"}
@@ -288,6 +349,134 @@
         </button>
       {/if}
     </div>
+  {:else if p.node.control?.kind === "for-each"}
+    {@const feCtrl = p.node.control}
+    <label class="wf-field">
+      Collection Source
+      <select
+        class="select-input"
+        data-testid="foreach-collection-source"
+        aria-label="ForEach collection source"
+        value={feCtrl.collection.source}
+        disabled={p.readonly}
+        onchange={(event) =>
+          updateForEachCollectionSource(feCtrl, event.currentTarget.value as ForEachCollectionSource["source"])}
+      >
+        {#each FOR_EACH_COLLECTION_SOURCES as src (src)}
+          <option value={src}>{src}</option>
+        {/each}
+      </select>
+    </label>
+
+    {#if feCtrl.collection.source === "node-output"}
+      <label class="wf-field">
+        Upstream Node ID
+        <input
+          type="text"
+          class="text-input"
+          data-testid="foreach-collection-node-id"
+          aria-label="ForEach upstream collection node ID"
+          value={feCtrl.collection.nodeId}
+          disabled={p.readonly}
+          oninput={(event) =>
+            patchForEachControl(feCtrl, {
+              collection: {
+                source: "node-output",
+                nodeId: event.currentTarget.value.trim(),
+                portId: feCtrl.collection.portId,
+              },
+            })}
+        />
+      </label>
+    {/if}
+
+    <label class="wf-field">
+      Collection Port ID
+      <input
+        type="text"
+        class="text-input"
+        data-testid="foreach-collection-port-id"
+        aria-label="ForEach collection port ID"
+        value={feCtrl.collection.portId}
+        disabled={p.readonly}
+        oninput={(event) => {
+          const portId = event.currentTarget.value.trim();
+          const collection: ForEachControl["collection"] =
+            feCtrl.collection.source === "node-output"
+              ? { source: "node-output", nodeId: feCtrl.collection.nodeId, portId }
+              : { source: "workflow-input", portId };
+          patchForEachControl(feCtrl, { collection });
+        }}
+      />
+    </label>
+
+    <label class="wf-field">
+      Child Item Input Port ID (required text port)
+      <input
+        type="text"
+        class="text-input"
+        data-testid="foreach-item-input-port-id"
+        aria-label="ForEach child item input port ID"
+        value={feCtrl.itemInputPortId}
+        disabled={p.readonly}
+        oninput={(event) =>
+          patchForEachControl(feCtrl, { itemInputPortId: event.currentTarget.value.trim() })}
+      />
+    </label>
+
+    <label class="wf-field">
+      Item Key Field (optional)
+      <input
+        type="text"
+        class="text-input"
+        data-testid="foreach-item-key-field"
+        aria-label="ForEach item key field"
+        value={feCtrl.itemKeyField ?? ""}
+        disabled={p.readonly}
+        oninput={(event) => {
+          const trimmed = event.currentTarget.value.trim();
+          patchForEachControl(feCtrl, { itemKeyField: trimmed.length > 0 ? trimmed : undefined });
+        }}
+      />
+    </label>
+
+    <label class="wf-field">
+      Max Items ({MIN_FOR_EACH_MAX_ITEMS}–{MAX_FOR_EACH_MAX_ITEMS})
+      <input
+        type="number"
+        class="text-input"
+        data-testid="foreach-max-items"
+        aria-label="ForEach max items"
+        min={MIN_FOR_EACH_MAX_ITEMS}
+        max={MAX_FOR_EACH_MAX_ITEMS}
+        value={feCtrl.maxItems ?? DEFAULT_FOR_EACH_MAX_ITEMS}
+        disabled={p.readonly}
+        oninput={(event) => {
+          const parsed = Number.parseInt(event.currentTarget.value, 10);
+          if (Number.isFinite(parsed)) {
+            patchForEachControl(feCtrl, { maxItems: parsed });
+          }
+        }}
+      />
+    </label>
+
+    <label class="wf-field">
+      On Item Error
+      <select
+        class="select-input"
+        data-testid="foreach-on-item-error"
+        aria-label="ForEach onItemError policy"
+        value={feCtrl.onItemError ?? DEFAULT_FOR_EACH_ON_ITEM_ERROR}
+        disabled={p.readonly}
+        onchange={(event) =>
+          patchForEachControl(feCtrl, {
+            onItemError: event.currentTarget.value as ForEachItemErrorPolicy,
+          })}
+      >
+        {#each FOR_EACH_ON_ITEM_ERROR_POLICIES as policy (policy)}
+          <option value={policy}>{policy}</option>
+        {/each}
+      </select>
+    </label>
   {/if}
 </div>
-
