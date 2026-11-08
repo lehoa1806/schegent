@@ -337,11 +337,11 @@ import {
   isContinueWorkflowPayload, isLaunchWorkflowPayload,
   type ContinueWorkflowCommand, type LaunchWorkflowCommand } from './sidebar-ipc/workflow-run';
 export type {
-  ConnectedInvocationAttemptProjection, ConnectedInvocationProjection, ConnectedNodeAction,
-  ConnectedNodeProjection, ConnectedNodeState, ConnectedRunProjection, ConnectedRunStateRefusal,
-  ContinueWorkflowCommand, ContinueWorkflowOutcome, ContinueWorkflowPayload, ContinueWorkflowResult,
-  LaunchWorkflowCommand, LaunchWorkflowOutcome, LaunchWorkflowPayload, LaunchWorkflowResult,
-  WorkflowControlAction, WorkflowDefinitionRefusal } from './sidebar-ipc/workflow-run';
+  ConnectedInvocationAttemptProjection, ConnectedInvocationProjection, ConnectedNodeAction, ConnectedNodeProjection,
+  ConnectedNodeState, ConnectedRunProjection, ConnectedRunStateRefusal, ContinueWorkflowCommand, ContinueWorkflowOutcome,
+  ContinueWorkflowPayload, ContinueWorkflowResult, ControlAction, ControlActionKind, ControlCandidateProjection,
+  ControlCommandAcknowledgement, ControlCommandEnvelope, ControlCommandRefusalReason, ControlLegalActionEntry, ControlProjection,
+  LaunchWorkflowCommand, LaunchWorkflowOutcome, LaunchWorkflowPayload, LaunchWorkflowResult, WorkflowControlAction, WorkflowDefinitionRefusal } from './sidebar-ipc/workflow-run';
 // Feature 092 (US1, FR-019/FR-020) — the seven reinstated queue commands. Their
 // wire shapes live in sidebar-ipc/queue.ts, as every family since 084 does; what
 // stays here is the registration the drift test requires be exhaustive — the

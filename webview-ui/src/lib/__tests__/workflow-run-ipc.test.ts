@@ -67,7 +67,9 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const { continueWorkflow, launchWorkflow } = await import('../workflow-run-ipc');
+const { continueWorkflow, launchWorkflow, sendWorkflowControlCommand } = await import(
+  '../workflow-run-ipc'
+);
 
 const REQUEST = { pipelineId: 'ship-flow', inputs: [], supplemental: [], outputs: [] };
 const LAUNCH = { workflowId: 'release', startNodeId: 'n-triage', request: REQUEST };
@@ -129,5 +131,42 @@ describe('workflow run helpers (T17)', () => {
     void continueWorkflow({ ...base, expectedRevision: 4 });
 
     expect(posted[1]!.correlationId).not.toBe(posted[0]!.correlationId);
+  });
+
+  it('routes sendWorkflowControlCommand through CMD_CONTINUE_WORKFLOW and resolves control-acknowledged (FR-R5-F31)', async () => {
+    const command = {
+      version: 1 as const,
+      commandId: '11111111-1111-4111-8111-111111111111',
+      rootRunId: 'cr-1',
+      queueId: 'default',
+      invocationId: '22222222-2222-4222-8222-222222222222',
+      expectedGeneration: 4,
+      action: {
+        kind: 'select-candidate' as const,
+        candidateId: 'cand-2'
+      }
+    };
+    const waiting = sendWorkflowControlCommand(command);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.payload).toMatchObject({
+      connectedRunId: 'cr-1',
+      expectedRevision: 4,
+      invocationId: '22222222-2222-4222-8222-222222222222',
+      commandId: '11111111-1111-4111-8111-111111111111',
+      controlCommand: command
+    });
+
+    const ackResult = {
+      outcome: 'control-acknowledged' as const,
+      acknowledgement: {
+        version: 1 as const,
+        commandId: command.commandId,
+        outcome: 'accepted' as const,
+        generation: 5
+      }
+    };
+    fireAck(posted[0]!.correlationId, { status: 'accepted', result: ackResult });
+
+    await expect(waiting).resolves.toEqual(ackResult);
   });
 });

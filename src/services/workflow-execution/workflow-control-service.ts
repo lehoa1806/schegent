@@ -51,6 +51,8 @@ import {
 } from './workflow-control-transition-table';
 import type { DurableAttemptEvidence } from './workflow-recovery-service';
 import type { ConnectedRunWriter } from './workflow-launcher';
+import type { ControlCommandAcknowledgement } from '../../contracts/sidebar-ipc/workflow-run';
+import type { ControlCommandService } from './control-command-service';
 
 export interface ActiveLeafAbortInput {
   readonly runId: string;
@@ -102,6 +104,13 @@ export interface WorkflowControlServiceDeps {
     queueItemId: string,
     queueId: string
   ) => Promise<void> | void;
+  /**
+   * FR-R5-F31 — optional candidate-block control command service used to redirect
+   * generic `retry-phase` commands on block-owned leaves through the shared
+   * candidate control authority so they cannot spawn separately or restore
+   * exhausted candidate/block attempt counters.
+   */
+  readonly controlCommandService?: ControlCommandService;
 }
 
 export interface WorkflowControlCommandRequest {
@@ -286,6 +295,25 @@ export class WorkflowControlService {
   }
 
   /**
+   * Execute a candidate-block `ControlCommandEnvelope` (`version: 1`) directly
+   * through the configured `ControlCommandService`.
+   */
+  public async executeCandidateControlCommand(
+    rawCommand: unknown
+  ): Promise<ControlCommandAcknowledgement> {
+    if (this.deps.controlCommandService === undefined) {
+      return Object.freeze({
+        version: 1,
+        commandId: '00000000-0000-0000-0000-000000000000',
+        outcome: 'refused',
+        generation: 0,
+        reason: 'unknown-target'
+      });
+    }
+    return this.deps.controlCommandService.executeControlCommand(rawCommand);
+  }
+
+  /**
    * Execute a control command (`pause`, `resume`, `cancel`, `retry-phase`,
    * `retry-invocation`, `continue-handoff`) inside the per-queue serialized
    * mutation boundary.
@@ -463,7 +491,89 @@ export class WorkflowControlService {
       };
     }
 
-    // 5. Evaluate control transition table.
+    // 5. Redirect generic `retry-phase` targeting a candidate-block-owned invocation
+    //    through `ControlCommandService` (FR-R5-F31-T05) so it cannot spawn separately
+    //    or bypass exhausted candidate/block counters.
+    const candidateTargetFrameId =
+      request.targetInvocationId ?? resolveRootInvocationId(run);
+    if (
+      request.operation === 'retry-phase' &&
+      this.deps.controlCommandService !== undefined &&
+      this.deps.controlCommandService.hasCandidateFrame(
+        run.connectedRunId,
+        candidateTargetFrameId
+      )
+    ) {
+      const redirected = await this.deps.controlCommandService.redirectLegacyRetryPhase({
+        commandId: request.commandId,
+        rootRunId: run.connectedRunId,
+        queueId,
+        invocationId: candidateTargetFrameId,
+        ...(request.targetNodeId !== undefined
+          ? { candidateId: request.targetNodeId }
+          : {})
+      });
+      if (redirected.outcome === 'refused') {
+        const mappedRefusal: WorkflowControlRefusalCode =
+          redirected.reason === 'spend-limit-reached' ||
+          redirected.reason === 'spend-unverifiable'
+            ? 'spend-bound-exceeded'
+            : redirected.reason === 'candidate-ineligible'
+              ? 'retry-bound-exceeded'
+              : redirected.reason === 'stale-generation'
+                ? 'stale-revision'
+                : 'invalid-state-for-operation';
+        return {
+          accepted: false,
+          refusalCode: mappedRefusal,
+          reason: `Candidate-block retry refused (${redirected.reason ?? 'illegal-state'}).`,
+          currentRevision: run.revision,
+          run,
+          projection: buildWorkflowRunControlProjection(run)
+        };
+      }
+      const rootId = resolveRootInvocationId(run);
+      const rootStatus = run.invocations?.[rootId]?.status ?? 'in-flight';
+      const targetStatus =
+        run.invocations?.[candidateTargetFrameId]?.status ?? rootStatus;
+      const receipt: CommittedCommandReceipt = Object.freeze({
+        commandId: request.commandId,
+        operation: request.operation,
+        targetInvocationId: candidateTargetFrameId,
+        ...(request.targetNodeId !== undefined ? { targetNodeId: request.targetNodeId } : {}),
+        committedRevision: run.revision + 1,
+        committedAt: request.now,
+        resultingRunStatus: rootStatus,
+        resultingInvocationStatus: targetStatus
+      });
+      const withReceipt = appendCommandReceipt({ ...run, revision: run.revision }, receipt);
+      const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
+        withReceipt,
+        run.revision
+      );
+      if (written.outcome === 'stale') {
+        return {
+          accepted: false,
+          refusalCode: 'stale-revision',
+          reason: 'Concurrent modification detected during command commit.',
+          currentRevision: written.current?.revision ?? null,
+          run: written.current,
+          projection:
+            written.current !== null
+              ? buildWorkflowRunControlProjection(written.current)
+              : null
+        };
+      }
+      return {
+        accepted: true,
+        idempotentReplay: false,
+        run: written.run,
+        receipt,
+        projection: buildWorkflowRunControlProjection(written.run)
+      };
+    }
+
+    // 6. Evaluate control transition table.
     const decision = evaluateControlTransition({
       run,
       operation: request.operation,
