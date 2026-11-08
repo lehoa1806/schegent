@@ -19,6 +19,10 @@
 
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import {
+  UNKNOWN_LOCAL_QUOTA_ID,
+  isQuotaObservationFreshReady
+} from '../../contracts/backend-availability';
+import {
   CONTROL_LEDGER_VERSION,
   MAX_FRAMES_PER_ROOT,
   MAX_ROOT_LEDGER_BYTES,
@@ -50,17 +54,20 @@ import {
   type RootControlBudget
 } from '../../contracts/workflow-controls';
 import type { ConnectedWorkflowRun } from '../../state/connected-workflow-run';
+import { fromObservationRecord } from '../backend-availability-service';
 import {
   ControlLedgerStore,
   lookupRecord,
   measureRootLedgerBytes
 } from './control-ledger-store';
+import { quotaIdSetsEqual, sortQuotaIds } from './quota-permit-arbiter';
 
 export interface ControlAttemptAdmissionDeps {
   readonly ledgerStore: ControlLedgerStore;
-  readonly clock?: ControlClockPort;
-  readonly policyPort?: ControlPolicySnapshotPort;
-  readonly processEvidencePort?: ProcessEvidencePort;
+  readonly clock?: ControlClockPort | undefined;
+  readonly policyPort?: ControlPolicySnapshotPort | undefined;
+  readonly processEvidencePort?: ProcessEvidencePort | undefined;
+  readonly hasProcessCapacity?: (() => boolean) | undefined;
   readonly verifyLiveFence?: (
     fence: ExecutionFence,
     context: { readonly ledgerRunId: string; readonly queueId: string }
@@ -138,12 +145,13 @@ export interface SettleControlAttemptInput {
   readonly attemptId: string;
   readonly fence: ExecutionFence;
   readonly terminalStatus: ControlAttemptTerminalStatus;
-  readonly settledMicrousd?: number;
-  readonly failureCode?: string;
-  readonly failureMessage?: string;
-  readonly decisionResults?: Readonly<Record<string, DecisionFieldValue>>;
-  readonly holdPermitUncertain?: boolean;
-  readonly uncertainReason?: string;
+  readonly settledMicrousd?: number | undefined;
+  readonly failureCode?: string | undefined;
+  readonly failureMessage?: string | undefined;
+  readonly decisionResults?: Readonly<Record<string, DecisionFieldValue>> | undefined;
+  readonly holdPermitUncertain?: boolean | undefined;
+  readonly uncertainReason?: string | undefined;
+  readonly allowCurrentOwnerTeardownAfterGenerationAdvance?: boolean | undefined;
 }
 
 export type AttemptTransitionOutcome =
@@ -203,6 +211,7 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
   private readonly clock: ControlClockPort;
   private readonly policyPort: ControlPolicySnapshotPort | undefined;
   private readonly processEvidencePort: ProcessEvidencePort | undefined;
+  private readonly hasProcessCapacity: (() => boolean) | undefined;
   private readonly verifyLiveFence:
     | ((
         fence: ExecutionFence,
@@ -218,6 +227,7 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
     this.clock = deps.clock ?? DEFAULT_CLOCK;
     this.policyPort = deps.policyPort;
     this.processEvidencePort = deps.processEvidencePort;
+    this.hasProcessCapacity = deps.hasProcessCapacity;
     this.verifyLiveFence = deps.verifyLiveFence;
   }
 
@@ -588,6 +598,7 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
 
     this.tokenCounter += 1;
     const tokenId = `prep:${input.ledgerRunId}:${attemptId}:${this.tokenCounter}`;
+    const sortedQuotaKeys = sortQuotaIds(input.quotaKeys ?? []);
     const token: PreparedControlAttemptToken = Object.freeze({
       tokenId,
       preparedAt: now,
@@ -608,9 +619,25 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
       reservedMicrousd,
       hasSideEffects: input.hasSideEffects ?? true,
       fence: Object.freeze({ ...input.fence }),
-      quotaKeys: Object.freeze([...(input.quotaKeys ?? [])]),
+      quotaKeys: sortedQuotaKeys,
+      ...(input.observationIds !== undefined
+        ? { observationIds: Object.freeze([...input.observationIds]) }
+        : {}),
+      ...(input.requireFreshReady !== undefined
+        ? { requireFreshReady: input.requireFreshReady }
+        : {}),
+      ...(input.hostEpoch !== undefined ? { hostEpoch: input.hostEpoch } : {}),
+      ...(input.capacitiesByQuotaId !== undefined
+        ? { capacitiesByQuotaId: Object.freeze({ ...input.capacitiesByQuotaId }) }
+        : {}),
       ...(input.satisfiedWaiterId !== undefined
         ? { satisfiedWaiterId: input.satisfiedWaiterId }
+        : {}),
+      ...(input.expectedWaiterSequence !== undefined
+        ? { expectedWaiterSequence: input.expectedWaiterSequence }
+        : {}),
+      ...(input.expectedWaiterGeneration !== undefined
+        ? { expectedWaiterGeneration: input.expectedWaiterGeneration }
         : {}),
       ...(effectiveMaxDispatches !== undefined
         ? { maxDispatches: effectiveMaxDispatches }
@@ -656,6 +683,14 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
         ok: false,
         code: 'stale-execution-fence',
         message: `Live execution fence check failed before commitAttempt for '${token.attemptId}'.`
+      };
+    }
+
+    if (this.hasProcessCapacity !== undefined && !this.hasProcessCapacity()) {
+      return {
+        ok: false,
+        code: 'quota-capacity-unavailable',
+        message: `Host process capacity is unavailable during commitAttempt for '${token.attemptId}'.`
       };
     }
 
@@ -708,6 +743,21 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
 
         const now = this.clock.nowWallMs();
         const existingFrame = lookupRecord(root.framesByKey, token.frameKey);
+        if (
+          existingFrame?.status === 'paused' ||
+          existingFrame?.status === 'intervention-required' ||
+          existingFrame?.status === 'monitoring-expired' ||
+          existingFrame?.status === 'canceled' ||
+          existingFrame?.status === 'failed' ||
+          existingFrame?.status === 'completed'
+        ) {
+          return {
+            commit: false,
+            code: 'control-root-not-active',
+            message: `Frame '${token.frameKey}' is in state '${existingFrame.status}' and cannot admit an attempt.`
+          };
+        }
+
         const nextDispatchedCount = (existingFrame?.dispatchedCount ?? 0) + 1;
         if (
           token.maxDispatches !== undefined &&
@@ -720,18 +770,117 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
           };
         }
 
+        // Revalidate waiter identity, sequence, generation, and quota set if a waiter was satisfied
+        if (token.satisfiedWaiterId !== undefined) {
+          const waiterRec = ledger.waiters.find(
+            (w) => w.waiterId === token.satisfiedWaiterId
+          );
+          if (
+            waiterRec === undefined ||
+            waiterRec.status !== 'waiting' ||
+            (token.expectedWaiterSequence !== undefined &&
+              (waiterRec.sequence ?? waiterRec.waitSequence) !==
+                token.expectedWaiterSequence) ||
+            (token.expectedWaiterGeneration !== undefined &&
+              (waiterRec.generation ?? 1) !== token.expectedWaiterGeneration) ||
+            !quotaIdSetsEqual(
+              waiterRec.quotaIds ?? waiterRec.quotaKeys,
+              token.quotaKeys
+            )
+          ) {
+            return {
+              commit: false,
+              code: 'stale-execution-fence',
+              message: `Satisfied waiter '${token.satisfiedWaiterId}' is missing, paused, or mutated before commit.`
+            };
+          }
+        }
+
+        // Revalidate fresh readiness inside commit boundary when required
+        if (token.requireFreshReady === true) {
+          const obsIds = token.observationIds ?? token.quotaKeys;
+          const epoch = token.hostEpoch ?? 'default-epoch';
+          for (const obsId of obsIds) {
+            const obsRec = lookupRecord(ledger.quotaObservations, obsId);
+            const obs =
+              obsRec !== undefined ? fromObservationRecord(obsRec) : undefined;
+            if (!isQuotaObservationFreshReady(obs, now, epoch)) {
+              return {
+                commit: false,
+                code: 'quota-capacity-unavailable',
+                message: `Observation '${obsId}' is no longer fresh-ready at commit time.`
+              };
+            }
+          }
+        }
+
+        // Revalidate no duplicate active permit for this attemptId and all-or-none quota capacity
+        for (const existingPermit of Object.values(ledger.permits)) {
+          if (
+            existingPermit.attemptId === token.attemptId &&
+            existingPermit.status !== 'released' &&
+            existingPermit.state !== 'released'
+          ) {
+            return {
+              commit: false,
+              code: 'quota-capacity-unavailable',
+              message: `Attempt '${token.attemptId}' already has an active permit '${existingPermit.permitId}'.`
+            };
+          }
+        }
+
+        const sortedQuotas = sortQuotaIds(token.quotaKeys);
+        for (const qId of sortedQuotas) {
+          let activeHoldingsForQuota = 0;
+          for (const existingPermit of Object.values(ledger.permits)) {
+            if (
+              existingPermit.status === 'released' ||
+              existingPermit.state === 'released'
+            ) {
+              continue;
+            }
+            const pQuotas = existingPermit.quotaIds ?? existingPermit.quotaKeys;
+            if (pQuotas.includes(qId)) {
+              activeHoldingsForQuota += 1;
+            }
+          }
+          const obsRec = lookupRecord(ledger.quotaObservations, qId);
+          const rawCapacity =
+            token.capacitiesByQuotaId?.[qId] ??
+            (qId === UNKNOWN_LOCAL_QUOTA_ID ? 1 : obsRec?.capacity);
+          const effectiveCapacity =
+            qId === UNKNOWN_LOCAL_QUOTA_ID
+              ? 1
+              : rawCapacity !== undefined &&
+                  Number.isSafeInteger(rawCapacity) &&
+                  rawCapacity >= 1
+                ? Math.min(20, rawCapacity)
+                : 1;
+          if (activeHoldingsForQuota >= effectiveCapacity) {
+            return {
+              commit: false,
+              code: 'quota-capacity-unavailable',
+              message: `Quota '${qId}' capacity (${effectiveCapacity}) is full (${activeHoldingsForQuota} held).`
+            };
+          }
+        }
+
         const permitId =
-          token.quotaKeys.length > 0 ? `permit:${token.attemptId}` : undefined;
+          sortedQuotas.length > 0 ? `permit:${token.attemptId}` : undefined;
         const permit: ExecutionPermitRecord | undefined =
           permitId !== undefined
             ? Object.freeze({
                 permitId,
                 attemptId: token.attemptId,
                 ledgerRunId: token.ledgerRunId,
+                rootRunId: token.ledgerRunId,
                 connectedRunId: token.connectedRunId,
                 queueId: token.queueId,
-                quotaKeys: Object.freeze([...token.quotaKeys]),
+                quotaKeys: sortedQuotas,
+                quotaIds: sortedQuotas,
+                executionFence: token.fence,
                 status: 'active',
+                state: 'held',
                 grantedAt: now
               })
             : undefined;
@@ -1145,7 +1294,9 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
     }>(
       {
         targetRootId: input.ledgerRunId,
-        expectedFence: input.fence,
+        ...(input.allowCurrentOwnerTeardownAfterGenerationAdvance === true
+          ? {}
+          : { expectedFence: input.fence }),
         allowSettlementReserve: true
       },
       ({ ledger }) => {
@@ -1165,13 +1316,29 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
             message: `Attempt '${input.attemptId}' not found in root '${input.ledgerRunId}'.`
           };
         }
+        if (input.allowCurrentOwnerTeardownAfterGenerationAdvance === true) {
+          if (
+            root.fence.primacyClaim !== input.fence.primacyClaim ||
+            root.fence.queueClaim !== input.fence.queueClaim ||
+            existingAttempt.fence.primacyClaim !== input.fence.primacyClaim ||
+            existingAttempt.fence.queueClaim !== input.fence.queueClaim
+          ) {
+            return {
+              commit: false,
+              code: 'stale-execution-fence',
+              message: `Stale ownership claim on settleAttempt for '${input.attemptId}'.`
+            };
+          }
+        }
         if (existingAttempt.stage === 'settled') {
           return {
             commit: true,
             plan: {
               nextLedger: ledger,
               targetRootId: input.ledgerRunId,
-              expectedFence: input.fence,
+              ...(input.allowCurrentOwnerTeardownAfterGenerationAdvance === true
+                ? {}
+                : { expectedFence: input.fence }),
               allowSettlementReserve: true,
               result: { root, attempt: existingAttempt }
             }
@@ -1236,6 +1403,7 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
             const updatedPermit: ExecutionPermitRecord = Object.freeze({
               ...existingPermit,
               status: input.holdPermitUncertain ? 'held-uncertain' : 'released',
+              state: input.holdPermitUncertain ? 'uncertain' : 'released',
               ...(input.holdPermitUncertain
                 ? {
                     uncertainReason:
@@ -1262,7 +1430,9 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
               permits: nextPermits
             },
             targetRootId: input.ledgerRunId,
-            expectedFence: input.fence,
+            ...(input.allowCurrentOwnerTeardownAfterGenerationAdvance === true
+              ? {}
+              : { expectedFence: input.fence }),
             allowSettlementReserve: true,
             result: { root: nextRoot, attempt: updatedAttempt }
           }
@@ -1488,6 +1658,7 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
                 permits[attempt.permitId] = Object.freeze({
                   ...p,
                   status: 'released',
+                  state: 'released',
                   releasedAt: now
                 });
               }
@@ -1513,6 +1684,7 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
                 permits[attempt.permitId] = Object.freeze({
                   ...p,
                   status: 'released',
+                  state: 'released',
                   releasedAt: now
                 });
               }
@@ -1543,6 +1715,7 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
               permits[attempt.permitId] = Object.freeze({
                 ...p,
                 status: 'held-uncertain',
+                state: 'uncertain',
                 uncertainReason: 'recovery-uncertain-effect'
               });
             }
