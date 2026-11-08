@@ -22,7 +22,7 @@
   ],
   "rules": {
     "@typescript-eslint/no-unnecessary-condition": {
-      "host": 403,
+      "host": 402,
       "webview": 231,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
@@ -79,7 +79,7 @@
         "src/services/workflow-execution/connected-run-factory.ts": 2,
         "src/services/workflow-execution/continuation-composer.ts": 2,
         "src/services/workflow-execution/next-node-selector.ts": 2,
-        "src/services/workflow-execution/node-run-starter.ts": 2,
+        "src/services/workflow-execution/node-run-starter.ts": 1,
         "src/services/workflow-execution/workflow-control-projector.ts": 15,
         "src/services/workflow-execution/workflow-control-service.ts": 5,
         "src/services/workflow-execution/workflow-control-transition-table.ts": 10,

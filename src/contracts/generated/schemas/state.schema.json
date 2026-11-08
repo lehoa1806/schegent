@@ -8,7 +8,8 @@
     "src/contracts/state-schema.ts",
     "src/state/workflow-run.ts",
     "src/contracts/decision-results.ts",
-    "src/contracts/workflow-controls.ts"
+    "src/contracts/workflow-controls.ts",
+    "src/contracts/recovery-envelope.ts"
   ],
   "type": "object",
   "additionalProperties": false,
@@ -25,7 +26,10 @@
     "candidateAvailabilityPolicies",
     "candidateBudgetModes",
     "repeatOnExhaustedPolicies",
-    "forEachOnItemErrorPolicies"
+    "forEachOnItemErrorPolicies",
+    "recoveryWorkspaceCoverages",
+    "recoveryWorkspaceAttributions",
+    "recoveryEffectCertainties"
   ],
   "properties": {
     "stateSchemaVersion": {
@@ -393,6 +397,43 @@
         "enum": [
           "stop",
           "continue"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "recoveryWorkspaceCoverages": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "complete",
+          "partial",
+          "unavailable"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "recoveryWorkspaceAttributions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "attempt",
+          "preexisting",
+          "concurrent",
+          "unknown"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "recoveryEffectCertainties": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "safe",
+          "uncertain",
+          "unknown"
         ]
       },
       "uniqueItems": true
