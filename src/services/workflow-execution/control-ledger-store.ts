@@ -335,7 +335,12 @@ function enforceBoundsAndEvict(
     }
   }
 
-  const activeChecks = Object.values(ledger.checks).filter((c) => c.status === 'running');
+  const activeChecks = Object.values(ledger.checks).filter(
+    (c) =>
+      c.status === 'running' ||
+      c.stage === 'pending' ||
+      c.stage === 'started'
+  );
   if (activeChecks.length > MAX_ACTIVE_AVAILABILITY_CHECKS) {
     return {
       ok: false,

@@ -35,6 +35,9 @@ export interface WatchdogOptions {
   cliPath: string;
   cwd: string;
   timeoutMs: number;
+  /** FR-R5-F28 (SPEC-06) — optional injectable wall clock and control-wakeup reconciler. */
+  clock?: (() => number) | undefined;
+  onWakeupReconcile?: (() => void | Promise<void>) | undefined;
 }
 
 /**
@@ -73,6 +76,8 @@ export class CreditWatchdog {
    */
   private inFlight: Promise<void> | null = null;
   private pollIntervalMs: number;
+  private readonly now: () => number;
+  private wakeupReconciler: (() => void | Promise<void>) | undefined;
 
   constructor(
     /**
@@ -98,6 +103,12 @@ export class CreditWatchdog {
     private readonly notifier: Pick<Notifier, 'warn'> | null = null
   ) {
     this.pollIntervalMs = options.pollIntervalMs;
+    this.now = options.clock ?? (() => Date.now());
+    this.wakeupReconciler = options.onWakeupReconcile;
+  }
+
+  public setWakeupReconciler(reconciler: () => void | Promise<void>): void {
+    this.wakeupReconciler = reconciler;
   }
 
   public getPollIntervalMs(): number {
@@ -135,7 +146,7 @@ export class CreditWatchdog {
    * every credit poll runs `/status`.
    */
   public async pauseAndPoll(cause: string): Promise<void> {
-    const now = Date.now();
+    const now = this.now();
     const delay = this.pollIntervalMs;
     const nextPollAt = now + delay;
     await this.store.setWatchdog({
@@ -184,7 +195,7 @@ export class CreditWatchdog {
       return;
     }
     if (!state.nextPollAt) return;
-    const delay = Math.max(0, state.nextPollAt - Date.now());
+    const delay = Math.max(0, state.nextPollAt - this.now());
     this.statusBar.updateWindow({ kind: 'paused', nextPollAt: state.nextPollAt });
     this.scheduleNext(delay);
   }
@@ -228,13 +239,13 @@ export class CreditWatchdog {
    */
   private async poll(): Promise<void> {
     try {
-      if ((await this.advanceWindows(Date.now())) === 0) {
+      if ((await this.advanceWindows(this.now())) === 0) {
         await this.endPolling(this.store.getWatchdog());
         return;
       }
       this.logger.info('watchdog: polling /status');
       const status = await this.checkStatus();
-      const evidenceAt = Date.now();
+      const evidenceAt = this.now();
       const state = this.store.getWatchdog();
       if (status === 'recovered') {
         await this.store.setWatchdog({
@@ -251,7 +262,7 @@ export class CreditWatchdog {
         this.notifyCreditsRestored(evidenceAt);
         return;
       }
-      const nextPollAt = Date.now() + this.pollIntervalMs;
+      const nextPollAt = this.now() + this.pollIntervalMs;
       await this.store.setWatchdog({
         ...state,
         paused: true,
@@ -364,6 +375,13 @@ export class CreditWatchdog {
       });
     } catch {
       this.logger.warn(CREDITS_RESTORED_FAILED_LINE);
+    }
+    if (this.wakeupReconciler !== undefined) {
+      try {
+        void Promise.resolve(this.wakeupReconciler()).catch(() => undefined);
+      } catch {
+        // Reconciler is best-effort notification.
+      }
     }
   }
 }

@@ -351,7 +351,8 @@ export const CONTRACT_FAMILIES = [
     "description": "Backend runner request and raw invocation result field names.",
     "sourceFiles": [
       "src/contracts/backend-runner.ts",
-      "src/runner/invocation-result.ts"
+      "src/runner/invocation-result.ts",
+      "src/contracts/backend-availability.ts"
     ],
     "schemaFiles": [
       "src/contracts/generated/schemas/backend-runner.schema.json"
