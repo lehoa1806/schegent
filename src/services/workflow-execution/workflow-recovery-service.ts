@@ -51,6 +51,14 @@ import {
   type RepeatExecutor
 } from './repeat-executor';
 import {
+  buildForEachFrameKey,
+  handleForEachChildSettlement,
+  prepareForEachItemFrames,
+  resolveFrozenForEachControl,
+  type ForEachExecutor
+} from './foreach-executor';
+import { lookupRecord } from './control-ledger-store';
+import {
   buildWorkflowRunControlProjection,
   type WorkflowRunControlProjection
 } from './workflow-control-projector';
@@ -99,6 +107,8 @@ export interface WorkflowRecoveryServiceDeps {
   ) => Promise<void> | void;
   readonly controlAdmission?: ControlAttemptAdmissionService | undefined;
   readonly repeatExecutor?: RepeatExecutor | undefined;
+  readonly forEachExecutor?: ForEachExecutor | undefined;
+  readonly workspaceRoot?: string | undefined;
   readonly quotaPermitArbiter?: QuotaPermitArbiter | undefined;
   readonly notificationService?: ControlNotificationService | undefined;
   readonly usageAccounting?: ControlUsageAccountingService | undefined;
@@ -539,6 +549,12 @@ export class WorkflowRecoveryService {
             ...(this.deps.repeatExecutor !== undefined
               ? { repeatExecutor: this.deps.repeatExecutor }
               : {}),
+            ...(this.deps.forEachExecutor !== undefined
+              ? { forEachExecutor: this.deps.forEachExecutor }
+              : {}),
+            ...(this.deps.workspaceRoot !== undefined
+              ? { workspaceRoot: this.deps.workspaceRoot }
+              : {}),
             ...(this.deps.resolveRecoveryFence !== undefined
               ? { resolveExecutionFence: this.deps.resolveRecoveryFence }
               : {})
@@ -815,6 +831,303 @@ export class WorkflowRecoveryService {
           attemptId: latestParentAtt.attemptId,
           reconciledAt: now,
           reasonCode: 'repeat-post-pass-reconciled'
+        });
+        const withDisposition = setRecoveryDisposition(
+          { ...staging.current(), revision: run.revision },
+          disposition
+        );
+        const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
+          withDisposition,
+          run.revision
+        );
+        const finalRun =
+          written.outcome === 'written' ? written.run : written.current ?? withDisposition;
+        return {
+          runId: finalRun.connectedRunId,
+          mutated: true,
+          disposition,
+          run: finalRun,
+          projection: buildWorkflowRunControlProjection(finalRun)
+        };
+      }
+    }
+
+    // 6. Post-child-settlement / mid-slot ForEach reconciliation (crash across any slot boundary):
+    for (const parentFrame of Object.values(run.invocations ?? {})) {
+      if (parentFrame.status !== 'in-flight') continue;
+      const parentWf = run.frozenClosure?.workflowsById[parentFrame.workflowId];
+      if (parentWf === undefined) continue;
+      for (const parentNode of parentWf.nodes) {
+        if (parentNode.control?.kind !== 'for-each') continue;
+        const resolvedCtrl = resolveFrozenForEachControl(run, parentWf, parentNode, parentFrame);
+        if (!resolvedCtrl.ok) continue;
+
+        const nodeAttempts = attemptsForNode(parentFrame, parentNode.nodeId);
+        const latestParentAtt = nodeAttempts.at(-1);
+        const ledgerRunId = run.controlState?.ledgerRunId ?? run.connectedRunId;
+        const frameKey = buildForEachFrameKey(parentFrame.invocationId, parentNode.nodeId);
+        const loadedLedger = this.deps.forEachExecutor?.getLedgerStore().read();
+        const ledgerRoot =
+          loadedLedger !== undefined && loadedLedger.ok
+            ? lookupRecord(loadedLedger.ledger.roots, ledgerRunId)
+            : undefined;
+        const ledgerFrame =
+          ledgerRoot !== undefined ? lookupRecord(ledgerRoot.framesByKey, frameKey) : undefined;
+        const ledgerFe = ledgerFrame?.forEachState;
+
+        // Case A: Crash after collection freeze (before item 0 frame created) or after item advance
+        // (ledger currentIndex advanced to k, while run only has k attempts recorded)
+        if (
+          ledgerFrame?.status === 'in-flight' &&
+          ledgerFe !== undefined &&
+          (ledgerFe.itemCount ?? ledgerFe.totalItems) > 0 &&
+          nodeAttempts.length === ledgerFe.currentIndex
+        ) {
+          const staging = createStagingWriter(run);
+          let parentForPrep = parentFrame;
+          if (latestParentAtt !== undefined && latestParentAtt.status === 'in-flight') {
+            const prevSlot = ledgerFe.slots.at(ledgerFe.currentIndex - 1);
+            const settledPrev: NodeAttemptRecord = Object.freeze({
+              ...latestParentAtt,
+              status: prevSlot?.state === 'failed' ? 'failed' : 'completed',
+              completedAt: now,
+              declaredOutputs: Object.freeze({})
+            });
+            parentForPrep = recordNodeAttempt(parentFrame, settledPrev);
+          }
+          const baseInputs =
+            nodeAttempts.at(0)?.inputEnvelope.inputsByPort ?? parentFrame.boundInputs;
+          const itemJson = ledgerFe.frozenItemsJson?.at(ledgerFe.currentIndex) ?? '{}';
+          const prepared = prepareForEachItemFrames({
+            run: staging.current(),
+            parentFrame: parentForPrep,
+            node: parentNode,
+            childWorkflow: resolvedCtrl.childWorkflow,
+            itemIndex: ledgerFe.currentIndex,
+            itemInputPortId: resolvedCtrl.control.itemInputPortId,
+            itemCanonicalJson: itemJson,
+            baseInputsByPort: baseInputs,
+            startedAt: now
+          });
+          if (prepared !== null) {
+            staging.set(prepared.nextRun);
+            await dispatchComposableNode(
+              {
+                connectedRuns: staging.writer,
+                dispatchPhase: this.deps.dispatchPhase,
+                ...(this.deps.controlAdmission !== undefined
+                  ? { controlAdmission: this.deps.controlAdmission }
+                  : {}),
+                ...(this.deps.forEachExecutor !== undefined
+                  ? { forEachExecutor: this.deps.forEachExecutor }
+                  : {}),
+                ...(this.deps.workspaceRoot !== undefined
+                  ? { workspaceRoot: this.deps.workspaceRoot }
+                  : {})
+              },
+              {
+                run: staging.current(),
+                invocationId: prepared.childFrame.invocationId,
+                nodeId: prepared.childEntryNodeId,
+                startedAt: now
+              }
+            );
+            const disposition: RecoveryDispositionRecord = Object.freeze({
+              status: 'pending-dispatch-recovered',
+              invocationId: parentFrame.invocationId,
+              nodeId: parentNode.nodeId,
+              attemptId: prepared.parentAttempt.attemptId,
+              reconciledAt: now,
+              reasonCode: 'foreach-slot-advance-recovered'
+            });
+            const withDisposition = setRecoveryDisposition(
+              { ...staging.current(), revision: run.revision },
+              disposition
+            );
+            const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
+              withDisposition,
+              run.revision
+            );
+            const finalRun =
+              written.outcome === 'written' ? written.run : written.current ?? withDisposition;
+            return {
+              runId: finalRun.connectedRunId,
+              mutated: true,
+              disposition,
+              run: finalRun,
+              projection: buildWorkflowRunControlProjection(finalRun)
+            };
+          }
+        }
+
+        if (
+          latestParentAtt === undefined ||
+          latestParentAtt.status !== 'in-flight' ||
+          latestParentAtt.childInvocationId === undefined
+        ) {
+          continue;
+        }
+        const childFrame = run.invocations?.[latestParentAtt.childInvocationId];
+        if (childFrame === undefined) continue;
+
+        // Case B: Crash after child admission before child entry node was dispatched
+        if (
+          childFrame.status === 'in-flight' &&
+          Object.keys(childFrame.attemptsByNodeId).length === 0
+        ) {
+          const staging = createStagingWriter(run);
+          await dispatchComposableNode(
+            {
+              connectedRuns: staging.writer,
+              dispatchPhase: this.deps.dispatchPhase,
+              ...(this.deps.controlAdmission !== undefined
+                ? { controlAdmission: this.deps.controlAdmission }
+                : {}),
+              ...(this.deps.forEachExecutor !== undefined
+                ? { forEachExecutor: this.deps.forEachExecutor }
+                : {}),
+              ...(this.deps.workspaceRoot !== undefined
+                ? { workspaceRoot: this.deps.workspaceRoot }
+                : {})
+            },
+            {
+              run: staging.current(),
+              invocationId: childFrame.invocationId,
+              nodeId: childFrame.entryNodeId,
+              startedAt: now
+            }
+          );
+          const disposition: RecoveryDispositionRecord = Object.freeze({
+            status: 'pending-dispatch-recovered',
+            invocationId: childFrame.invocationId,
+            nodeId: childFrame.entryNodeId,
+            attemptId: latestParentAtt.attemptId,
+            reconciledAt: now,
+            reasonCode: 'foreach-child-admission-recovered'
+          });
+          const withDisposition = setRecoveryDisposition(
+            { ...staging.current(), revision: run.revision },
+            disposition
+          );
+          const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
+            withDisposition,
+            run.revision
+          );
+          const finalRun =
+            written.outcome === 'written' ? written.run : written.current ?? withDisposition;
+          return {
+            runId: finalRun.connectedRunId,
+            mutated: true,
+            disposition,
+            run: finalRun,
+            projection: buildWorkflowRunControlProjection(finalRun)
+          };
+        }
+
+        // Case C: Crash after child settlement, after slot commit, or before final export
+        if (childFrame.status !== 'completed' && childFrame.status !== 'failed') continue;
+        const staging = createStagingWriter(run);
+        const feRes = await handleForEachChildSettlement({
+          run: staging.current(),
+          parentFrame,
+          parentWorkflow: parentWf,
+          parentNode,
+          childFrame,
+          childStatus: childFrame.status,
+          childFailureCode: childFrame.failureCode,
+          childFailureMessage: childFrame.failureMessage,
+          completedAt: childFrame.completedAt ?? now,
+          forEachExecutor: this.deps.forEachExecutor,
+          workspaceRoot: this.deps.workspaceRoot
+        });
+        if (feRes.action === 'not-for-each' || feRes.action === 'canceled') continue;
+
+        if (feRes.action === 'completed') {
+          staging.set(feRes.nextRun);
+          await completeComposableNodeAttempt(
+            {
+              connectedRuns: staging.writer,
+              dispatchPhase: this.deps.dispatchPhase,
+              ...(this.deps.controlAdmission !== undefined
+                ? { controlAdmission: this.deps.controlAdmission }
+                : {}),
+              ...(this.deps.forEachExecutor !== undefined
+                ? { forEachExecutor: this.deps.forEachExecutor }
+                : {}),
+              ...(this.deps.workspaceRoot !== undefined
+                ? { workspaceRoot: this.deps.workspaceRoot }
+                : {})
+            },
+            {
+              run: staging.current(),
+              invocationId: parentFrame.invocationId,
+              nodeId: parentNode.nodeId,
+              attemptIndex: feRes.parentAttempt.attemptIndex,
+              status: 'completed',
+              completedAt: now,
+              declaredOutputs: feRes.declaredOutputs
+            }
+          );
+        } else if (feRes.action === 'advance-item') {
+          staging.set(feRes.nextRun);
+          await dispatchComposableNode(
+            {
+              connectedRuns: staging.writer,
+              dispatchPhase: this.deps.dispatchPhase,
+              ...(this.deps.controlAdmission !== undefined
+                ? { controlAdmission: this.deps.controlAdmission }
+                : {}),
+              ...(this.deps.forEachExecutor !== undefined
+                ? { forEachExecutor: this.deps.forEachExecutor }
+                : {}),
+              ...(this.deps.workspaceRoot !== undefined
+                ? { workspaceRoot: this.deps.workspaceRoot }
+                : {})
+            },
+            {
+              run: staging.current(),
+              invocationId: feRes.childInvocationId,
+              nodeId: feRes.childEntryNodeId,
+              startedAt: now
+            }
+          );
+        } else if (feRes.action === 'paused') {
+          staging.set(feRes.nextRun);
+        } else {
+          staging.set(feRes.nextRun);
+          await completeComposableNodeAttempt(
+            {
+              connectedRuns: staging.writer,
+              dispatchPhase: this.deps.dispatchPhase,
+              ...(this.deps.controlAdmission !== undefined
+                ? { controlAdmission: this.deps.controlAdmission }
+                : {}),
+              ...(this.deps.forEachExecutor !== undefined
+                ? { forEachExecutor: this.deps.forEachExecutor }
+                : {}),
+              ...(this.deps.workspaceRoot !== undefined
+                ? { workspaceRoot: this.deps.workspaceRoot }
+                : {})
+            },
+            {
+              run: staging.current(),
+              invocationId: parentFrame.invocationId,
+              nodeId: parentNode.nodeId,
+              attemptIndex: latestParentAtt.attemptIndex,
+              status: 'failed',
+              completedAt: now,
+              failureCode: feRes.failureCode
+            }
+          );
+        }
+
+        const disposition: RecoveryDispositionRecord = Object.freeze({
+          status: 'settled-from-evidence',
+          invocationId: parentFrame.invocationId,
+          nodeId: parentNode.nodeId,
+          attemptId: latestParentAtt.attemptId,
+          reconciledAt: now,
+          reasonCode: 'foreach-post-item-reconciled'
         });
         const withDisposition = setRecoveryDisposition(
           { ...staging.current(), revision: run.revision },
