@@ -29,6 +29,7 @@ import type {
   WorkflowNode,
   WorkflowOutputPort
 } from '../../contracts/workflow-definitions';
+import { isTypedCondition, type TypedCondition } from '../../contracts/decision-results';
 import {
   admitSection,
   declaresSecondRoot,
@@ -86,7 +87,8 @@ import {
   emitMapping,
   emitMappingSequence,
   emitPhaseDocumentBody,
-  emitSequence
+  emitSequence,
+  emitTypedCondition
 } from './yaml-serializer';
 
 /**
@@ -192,7 +194,10 @@ function renderNode(bodyIndent: string, node: WorkflowNode): string {
   return emitMapping(bodyIndent, WORKFLOW_NODE_KEY_ORDER, node);
 }
 
-function renderCondition(indent: string, condition: WorkflowCondition): string {
+function renderCondition(indent: string, condition: WorkflowCondition | TypedCondition): string {
+  if (isTypedCondition(condition)) {
+    return emitTypedCondition(indent, condition);
+  }
   const nestedIndent = `${indent}${PHASE_YAML_INDENT}`;
   let out = '';
   for (const key of WORKFLOW_CONDITION_KEY_ORDER) {

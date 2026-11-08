@@ -65,7 +65,33 @@ const EVERY_FIELD_ROW = {
   sideEffects: 'git',
   evidencePolicy: 'best-effort',
   hostVerification: 'exit-code',
-  capabilities: ['workspace-write']
+  capabilities: ['workspace-write'],
+  resultContract: {
+    version: 1,
+    operator: 'structured-result',
+    operatorVersion: 1,
+    fields: [
+      {
+        fieldId: 'verdict',
+        type: 'string',
+        required: true,
+        selector: ['verdict']
+      }
+    ],
+    source: {
+      kind: 'declared-output',
+      outputKey: '.schegent/results/verify.json'
+    },
+    completion: {
+      version: 1,
+      kind: 'typed',
+      test: {
+        left: { source: 'result-field', fieldId: 'verdict' },
+        operator: 'equals',
+        right: 'pass'
+      }
+    }
+  }
 } as const;
 
 /** The projected record for a single row, definition and display alike. */

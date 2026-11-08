@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 import type { PipelineDefinition } from '../../../src/contracts/pipeline-definitions';
+import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
 import type {
   WorkflowCondition,
   WorkflowConnection,
@@ -1447,6 +1448,147 @@ describe('unified Phase and child-Workflow graph validation (FR-R5-F01-T03, T04)
 
       const atTheGate = validateWorkflowGraph(earlyReturn('gate'), [], new Map(), { effectivePhases });
       expect(atTheGate).toEqual([]);
+    });
+  });
+
+  describe('FR-R5-F24 (D2) — TypedCondition node-result and dominance validation', () => {
+    const phaseWithResult: PhaseDefinition = {
+      phaseId: 'verify-phase',
+      name: 'Verify Phase',
+      version: 1,
+      instruction: 'Run verification.',
+      resultContract: {
+        version: 1,
+        operator: 'structured-result',
+        operatorVersion: 1,
+        fields: [
+          {
+            fieldId: 'verdict',
+            type: 'string',
+            required: true,
+            selector: ['verdict']
+          },
+          {
+            fieldId: 'open_issues',
+            type: 'number',
+            required: true,
+            selector: ['openIssues']
+          }
+        ],
+        source: {
+          kind: 'declared-output',
+          outputKey: '.schegent/results/verify.json'
+        },
+        completion: {
+          version: 1,
+          kind: 'typed',
+          test: {
+            left: { source: 'result-field', fieldId: 'verdict' },
+            operator: 'equals',
+            right: 'pass'
+          }
+        }
+      }
+    };
+
+    const shipPhase: PhaseDefinition = {
+      phaseId: 'ship-phase',
+      name: 'Ship Phase',
+      version: 1,
+      instruction: 'Ship.'
+    };
+
+    it('accepts a valid TypedCondition referencing a declared DecisionField on a dominating Phase node', () => {
+      const wf: WorkflowDefinition = {
+        workflowId: 'wf-typed-valid',
+        name: 'Typed Valid',
+        version: 1,
+        nodes: [
+          { nodeId: 'verify', kind: 'phase', phaseId: 'verify-phase' },
+          { nodeId: 'ship', kind: 'phase', phaseId: 'ship-phase' }
+        ],
+        connections: [
+          {
+            from: { nodeId: 'verify' },
+            to: { nodeId: 'ship' },
+            condition: {
+              version: 1,
+              kind: 'typed',
+              test: {
+                all: [
+                  {
+                    left: { source: 'node-result', nodeId: 'verify', fieldId: 'verdict' },
+                    operator: 'equals',
+                    right: 'pass'
+                  },
+                  {
+                    left: { source: 'node-result', nodeId: 'verify', fieldId: 'open_issues' },
+                    operator: 'lessThanOrEqual',
+                    right: 0
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        startNodeIds: ['verify']
+      };
+      const errors = validateWorkflowGraph(wf, [], new Map(), {
+        effectivePhases: [phaseWithResult, shipPhase]
+      });
+      expect(errors).toEqual([]);
+    });
+
+    it('refuses a TypedCondition referencing an undeclared DecisionField or incompatible operator/right literal', () => {
+      const wf: WorkflowDefinition = {
+        workflowId: 'wf-typed-invalid',
+        name: 'Typed Invalid',
+        version: 1,
+        nodes: [
+          { nodeId: 'verify', kind: 'phase', phaseId: 'verify-phase' },
+          { nodeId: 'ship', kind: 'phase', phaseId: 'ship-phase' }
+        ],
+        connections: [
+          {
+            from: { nodeId: 'verify' },
+            to: { nodeId: 'ship' },
+            condition: {
+              version: 1,
+              kind: 'typed',
+              test: {
+                all: [
+                  {
+                    left: { source: 'node-result', nodeId: 'verify', fieldId: 'unknown_field' },
+                    operator: 'equals',
+                    right: 'pass'
+                  },
+                  {
+                    left: { source: 'node-result', nodeId: 'verify', fieldId: 'verdict' },
+                    operator: 'greaterThan',
+                    right: 1
+                  },
+                  {
+                    left: { source: 'node-result', nodeId: 'verify', fieldId: 'verdict' },
+                    operator: 'equals',
+                    right: 42
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        startNodeIds: ['verify']
+      };
+      const errors = validateWorkflowGraph(wf, [], new Map(), {
+        effectivePhases: [phaseWithResult, shipPhase]
+      });
+      expect(codes(errors)).toEqual(
+        expect.arrayContaining([
+          'condition-operand-unknown',
+          'condition-comparison-unsupported',
+          'condition-right-invalid'
+        ])
+      );
     });
   });
 });

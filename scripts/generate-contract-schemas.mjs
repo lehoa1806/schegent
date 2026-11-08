@@ -450,6 +450,7 @@ const sidebar = new SourceExtractor('src/contracts/sidebar-ipc.ts');
 const audit = new SourceExtractor('src/contracts/audit-events.ts');
 const state = new SourceExtractor('src/state/workflow-run.ts');
 const stateSchema = new SourceExtractor('src/contracts/state-schema.ts');
+const decisionResults = new SourceExtractor('src/contracts/decision-results.ts');
 const queueSnapshot = new SourceExtractor('src/contracts/queue-snapshot.ts');
 const featureRequest = new SourceExtractor('src/queue/feature-request.ts');
 const runner = new SourceExtractor('src/runner/invocation-result.ts');
@@ -469,6 +470,9 @@ const featureRequestStatuses = featureRequest.stringUnion('FeatureRequestStatus'
 const workflowRunStatuses = state.stringUnion('WorkflowRunStatus');
 const manualPauseCauses = state.stringUnion('ManualPauseCause');
 const delayedRetryCauses = state.stringUnion('DelayedRetryCause');
+const attemptOutcomeStatuses = decisionResults.stringArray('ATTEMPT_OUTCOME_STATUSES');
+const attemptOutcomeReasons = decisionResults.stringArray('ATTEMPT_OUTCOME_REASONS');
+const attemptOutcomeRecoveries = decisionResults.stringArray('ATTEMPT_OUTCOME_RECOVERIES');
 
 const schemas = {
   'src/contracts/generated/schemas/sidebar-ipc.schema.json': makeSchema(
@@ -539,13 +543,16 @@ const schemas = {
   'src/contracts/generated/schemas/state.schema.json': makeSchema(
     'state',
     'Schegent Workflow State Contract',
-    ['src/contracts/state-schema.ts', 'src/state/workflow-run.ts'],
+    ['src/contracts/state-schema.ts', 'src/state/workflow-run.ts', 'src/contracts/decision-results.ts'],
     {
       stateSchemaVersion: { type: 'integer', const: stateSchema.numberConst('STATE_SCHEMA_VERSION') },
       workflowRunStatuses: enumProperty(workflowRunStatuses),
       manualPauseCauses: enumProperty(manualPauseCauses),
       delayedRetryCauses: enumProperty(delayedRetryCauses),
-      workflowRunFields: interfaceProperty(state.interfaceProperties('WorkflowRun'))
+      workflowRunFields: interfaceProperty(state.interfaceProperties('WorkflowRun')),
+      attemptOutcomeStatuses: enumProperty(attemptOutcomeStatuses),
+      attemptOutcomeReasons: enumProperty(attemptOutcomeReasons),
+      attemptOutcomeRecoveries: enumProperty(attemptOutcomeRecoveries)
     }
   ),
   'src/contracts/generated/schemas/backend-runner.schema.json': makeSchema(
@@ -591,7 +598,7 @@ const contractFamilies = [
     family: 'workflow-state',
     status: 'generated',
     description: 'Workflow run status, pause causes, retry causes, and state schema version.',
-    sourceFiles: ['src/contracts/state-schema.ts', 'src/state/workflow-run.ts'],
+    sourceFiles: ['src/contracts/state-schema.ts', 'src/state/workflow-run.ts', 'src/contracts/decision-results.ts'],
     schemaFiles: ['src/contracts/generated/schemas/state.schema.json'],
     typescriptBinding: 'src/contracts/generated/boundary-contracts.ts',
     reviewPolicy: 'Regenerate with every persisted workflow state shape change.'

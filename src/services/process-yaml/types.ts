@@ -25,6 +25,7 @@ import type {
   PhaseSourceStatus,
   RetryCapOutcome
 } from '../../contracts/process-definitions';
+import type { ResultContract } from '../../contracts/decision-results';
 import type { PipelineExecutionDefaults } from '../../contracts/pipeline-definitions';
 import type {
   WorkflowBinding,
@@ -134,6 +135,8 @@ interface PhaseYamlSpecBase {
   readonly onRetryCap?: RetryCapOutcome;
   /** Inert text. This feature never parses, evaluates, or rewrites it (FR-012). */
   readonly retryCondition?: string;
+  /** FR-R5-F24 (D2) — typed decision result contract for this Phase. */
+  readonly resultContract?: ResultContract;
 }
 
 export interface InstructionPhaseYamlSpec extends PhaseYamlSpecBase {

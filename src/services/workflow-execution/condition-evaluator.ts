@@ -25,6 +25,13 @@ import type {
   WorkflowConditionLiteral,
   WorkflowConditionOperator
 } from '../../contracts/workflow-definitions';
+import {
+  isTypedCondition,
+  isTypedLeafTest,
+  type ThreeValuedResult,
+  type TypedCondition,
+  type TypedLeaf
+} from '../../contracts/decision-results';
 import type { OperandResolution } from '../../state/connected-workflow-run';
 import { renderCompared } from '../../state/connected-workflow-run';
 import { resolveOperand, type ConditionContext } from './condition-context';
@@ -32,6 +39,12 @@ import { resolveOperand, type ConditionContext } from './condition-context';
 export interface ConditionEvaluation {
   readonly matched: boolean;
   /** One entry per operand the condition referenced, in evaluation order. */
+  readonly operands: readonly OperandResolution[];
+}
+
+export interface TypedConditionEvaluation {
+  readonly result: ThreeValuedResult;
+  readonly matched: boolean;
   readonly operands: readonly OperandResolution[];
 }
 
@@ -87,6 +100,103 @@ export function compareValues(
   }
 }
 
+function evaluateTypedLeaf(
+  leaf: TypedLeaf,
+  context: ConditionContext,
+  operands: OperandResolution[]
+): ThreeValuedResult {
+  const lookup = resolveOperand(leaf.left, context);
+  const nodeId = leaf.left.source === 'result-field' ? '@self' : leaf.left.nodeId;
+  const resolution: OperandResolution = {
+    source: leaf.left.source,
+    nodeId,
+    field: leaf.left.fieldId,
+    resolved: lookup.resolved,
+    ...(lookup.resolved ? withCompared(lookup.value) : {})
+  };
+  operands.push(resolution);
+
+  if (leaf.operator === 'exists') {
+    if (lookup.resolved) return true;
+    if (lookup.containerResolved === true) return false;
+    return 'unresolved';
+  }
+
+  if (!lookup.resolved || lookup.value === undefined) {
+    return 'unresolved';
+  }
+
+  const leftVal = lookup.value;
+  const rightVal = leaf.right;
+
+  if (leaf.operator === 'in') {
+    if (!Array.isArray(rightVal) || rightVal.length === 0) return 'unresolved';
+    if (!rightVal.every((candidate) => typeof candidate === typeof leftVal)) {
+      return 'unresolved';
+    }
+    return rightVal.some((candidate) => sameTypeEqual(leftVal, candidate));
+  }
+
+  if (!isLiteral(rightVal) || typeof leftVal !== typeof rightVal) {
+    return 'unresolved';
+  }
+
+  return compareValues(leftVal, leaf.operator, rightVal);
+}
+
+function evaluateTypedNode(
+  condition: TypedCondition,
+  context: ConditionContext,
+  operands: OperandResolution[]
+): ThreeValuedResult {
+  const { test } = condition;
+  if (isTypedLeafTest(test)) {
+    return evaluateTypedLeaf(test, context, operands);
+  }
+  if ('all' in test) {
+    let sawUnresolved = false;
+    let sawFalse = false;
+    for (const child of test.all) {
+      const res = evaluateTypedLeaf(child, context, operands);
+      if (res === false) sawFalse = true;
+      else if (res === 'unresolved') sawUnresolved = true;
+    }
+    if (sawFalse) return false;
+    if (sawUnresolved) return 'unresolved';
+    return true;
+  }
+  if ('any' in test) {
+    let sawTrue = false;
+    let sawUnresolved = false;
+    for (const child of test.any) {
+      const res = evaluateTypedLeaf(child, context, operands);
+      if (res === true) sawTrue = true;
+      else if (res === 'unresolved') sawUnresolved = true;
+    }
+    if (sawTrue) return true;
+    if (sawUnresolved) return 'unresolved';
+    return false;
+  }
+  return 'unresolved';
+}
+
+/**
+ * Evaluate a versioned `TypedCondition` (`version: 1`) using three-valued logic
+ * (`true | false | 'unresolved'`) per FR-R5-F24 (D2, F24-T04).
+ */
+export function evaluateTypedCondition(
+  condition: TypedCondition,
+  context: ConditionContext
+): TypedConditionEvaluation {
+  const operands: OperandResolution[] = [];
+  const result = evaluateTypedNode(condition, context, operands);
+  return {
+    result,
+    matched: result === true,
+    operands
+  };
+}
+
 /**
  * Evaluate one condition and record what it saw (FR-024, FR-025, FR-066).
  *
@@ -96,9 +206,13 @@ export function compareValues(
  * content behind it.
  */
 export function evaluateCondition(
-  condition: WorkflowCondition,
+  condition: WorkflowCondition | TypedCondition,
   context: ConditionContext
 ): ConditionEvaluation {
+  if (isTypedCondition(condition)) {
+    const typed = evaluateTypedCondition(condition, context);
+    return { matched: typed.matched, operands: typed.operands };
+  }
   const lookup = resolveOperand(condition.left, context);
   const resolution: OperandResolution = {
     source: condition.left.source,

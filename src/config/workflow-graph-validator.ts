@@ -18,6 +18,15 @@ import {
   type WorkflowOutputBinding,
   type WorkflowOutputPort
 } from '../contracts/workflow-definitions';
+import {
+  collectTypedConditionLeaves,
+  isTypedCondition,
+  isTypedConditionCandidate,
+  validateLeafAgainstField,
+  validateTypedCondition,
+  type DecisionField,
+  type TypedCondition
+} from '../contracts/decision-results';
 import { resolveWorkflowClosure } from './workflow-closure-resolver';
 import { workflowFieldError } from './workflow-definition-validator';
 import {
@@ -388,6 +397,14 @@ function validateConditions(context: GraphContext, acyclic: boolean): void {
     const condition = connection.condition;
     if (condition === undefined) return;
     const field = `connections[${index}].condition`;
+    if (isTypedCondition(condition)) {
+      validateTypedConnectionCondition(context, connection, condition, field, scopes);
+      return;
+    }
+    if (isTypedConditionCandidate(condition)) {
+      validateTypedConnectionCondition(context, connection, condition, field, scopes);
+      return;
+    }
     const shapeDefect = conditionShapeDefect(condition);
     if (shapeDefect) {
       context.errors.push(error(context.definition, field, 'unsupported-condition', shapeDefect));
@@ -403,6 +420,71 @@ function validateConditions(context: GraphContext, acyclic: boolean): void {
       validateOperandScope(context, connection, condition, field, scopes);
     }
   });
+}
+
+function validateTypedConnectionCondition(
+  context: GraphContext,
+  connection: WorkflowConnection,
+  rawCondition: unknown,
+  field: string,
+  scopes: ReadonlyMap<string, ReadonlySet<string>> | null
+): void {
+  const validated = validateTypedCondition(rawCondition, field, { scope: 'workflow-connection' });
+  if (!validated.ok) {
+    for (const defect of validated.errors) {
+      context.errors.push(error(context.definition, defect.field, defect.code, defect.message));
+    }
+    return;
+  }
+  const typed: TypedCondition = validated.value;
+  const leaves = collectTypedConditionLeaves(typed, field);
+  for (const { leaf, fieldPath } of leaves) {
+    if (leaf.left.source !== 'node-result') {
+      continue;
+    }
+    const operandNodeId = leaf.left.nodeId;
+    const resolved = context.nodes.get(operandNodeId);
+    if (!resolved) {
+      context.errors.push(
+        error(
+          context.definition,
+          `${fieldPath}.left`,
+          'condition-operand-unknown',
+          `Condition operand names node '${operandNodeId}', which this Workflow does not declare`
+        )
+      );
+      continue;
+    }
+    if (scopes && !scopes.get(connection.from.nodeId)?.has(operandNodeId)) {
+      context.errors.push(
+        error(
+          context.definition,
+          `${fieldPath}.left`,
+          'condition-operand-not-ancestor',
+          `Node '${operandNodeId}' has not run when the branch out of '${connection.from.nodeId}' is evaluated`
+        )
+      );
+    }
+    const declaredFields: readonly DecisionField[] | undefined =
+      resolved.phase?.resultContract?.fields ??
+      (resolved.workflow as { readonly decisionResults?: readonly DecisionField[] } | null)?.decisionResults;
+    const declaredField = declaredFields?.find((entry) => entry.fieldId === leaf.left.fieldId);
+    if (!declaredField) {
+      context.errors.push(
+        error(
+          context.definition,
+          `${fieldPath}.left.fieldId`,
+          'condition-operand-unknown',
+          `Node '${operandNodeId}' declares no decision result field '${leaf.left.fieldId}'`
+        )
+      );
+      continue;
+    }
+    const fieldDefects = validateLeafAgainstField(leaf, declaredField, fieldPath);
+    for (const defect of fieldDefects) {
+      context.errors.push(error(context.definition, defect.field, defect.code, defect.message));
+    }
+  }
 }
 
 function conditionScopes(context: GraphContext): ReadonlyMap<string, ReadonlySet<string>> {
