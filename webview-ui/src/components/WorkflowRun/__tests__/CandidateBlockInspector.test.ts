@@ -266,6 +266,9 @@ describe('CandidateBlockInspector — legal operator controls & stale-generation
     await tick();
 
     expect(sendControlSpy).toHaveBeenCalledTimes(1);
+    expect(sendControlSpy.mock.calls[0][0].commandId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    );
     expect(sendControlSpy.mock.calls[0][0]).toMatchObject({
       version: 1,
       expectedGeneration: 5,

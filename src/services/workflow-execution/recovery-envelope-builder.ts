@@ -581,7 +581,12 @@ export function evaluateEffectCertainty(options: {
     (entry) => entry.attribution === 'concurrent' || entry.attribution === 'unknown'
   );
 
-  if (options.verifiedReconciliation === true && options.evidenceRefs.length > 0 && !hasConcurrentOrUnknownEntry) {
+  if (
+    options.verifiedReconciliation === true &&
+    options.evidenceRefs.length > 0 &&
+    !hasConcurrentOrUnknownEntry &&
+    options.workspaceCoverage !== 'unavailable'
+  ) {
     return 'safe';
   }
 

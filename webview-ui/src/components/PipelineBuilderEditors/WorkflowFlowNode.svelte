@@ -36,7 +36,7 @@
   const target = $derived(node ? nodeTargetSummary(view, node) : null);
   const phaseDef = $derived(node ? phaseOfNode(view, node) : null);
   const phaseRetrySummary = $derived(
-    phaseDef
+    phaseDef && phaseDef.retryCondition?.trim()
       ? formatPhaseRetrySummary({
           retryCondition: phaseDef.retryCondition,
           capOutcome: resolveRetryCapOutcome(phaseDef, undefined),

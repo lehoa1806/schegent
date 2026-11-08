@@ -147,6 +147,12 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
     this.availabilityAdapters.set(kind, adapter);
   }
 
+  public getAvailabilityAdapter(
+    kind: BackendRunnerKind
+  ): BackendAvailabilityAdapter | undefined {
+    return this.availabilityAdapters.get(kind);
+  }
+
   public getStatusCheckSupport(kind: BackendRunnerKind): QuotaStatusCheckSupport {
     const adapter = this.availabilityAdapters.get(kind);
     return adapter?.statusCheck ?? 'unsupported';

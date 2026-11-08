@@ -224,6 +224,23 @@ test.describe('FR-R5-F32 — workflow control visual & layout checks', () => {
         await forEachPanel.locator('[style]').count(),
         'ForEach projection panel must not emit inline style attributes'
       ).toBe(0);
+
+      // 4. Verify responsive viewports (360px, 720px, 1280px) without horizontal overflow
+      for (const width of [360, 720, 1280]) {
+        await page.setViewportSize({ width, height: 900 });
+        await expect(inspector).toBeVisible();
+        const overflow = await inspector.evaluate((el) => {
+          const htmlEl = el as unknown as {
+            readonly scrollWidth: number;
+            readonly clientWidth: number;
+          };
+          return htmlEl.scrollWidth > htmlEl.clientWidth;
+        });
+        expect(
+          overflow,
+          `CandidateBlockInspector must not overflow horizontally at ${width}px in ${theme}`
+        ).toBe(false);
+      }
     });
   }
 });

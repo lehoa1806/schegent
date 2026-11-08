@@ -84,14 +84,23 @@ export function createBackendAvailabilityWiring(input: {
   const availabilityService = new BackendAvailabilityService({
     ledgerStore,
     clock,
-    getAdapter: (kind) => ({
-      adapterId: `${kind}-cli`,
-      adapterVersion: 1,
-      backend: kind,
-      statusCheck: input.capabilities.getStatusCheckSupport(kind),
-      resolveQuotaContext: (frozenPhase) =>
-        input.capabilities.resolveQuotaContext(frozenPhase)
-    })
+    getAdapter: (kind) => {
+      const registered = input.capabilities.getAvailabilityAdapter(kind);
+      return {
+        adapterId: registered?.adapterId ?? `${kind}-cli`,
+        adapterVersion: registered?.adapterVersion ?? 1,
+        backend: kind,
+        statusCheck: input.capabilities.getStatusCheckSupport(kind),
+        resolveQuotaContext: (frozenPhase) =>
+          input.capabilities.resolveQuotaContext(frozenPhase),
+        ...(registered?.checkAvailability !== undefined
+          ? {
+              checkAvailability: (ctx, signal) =>
+                registered.checkAvailability!(ctx, signal)
+            }
+          : {})
+      };
+    }
   });
   const wakeupPlanner = new ControlWakeupPlanner({
     ledgerStore,

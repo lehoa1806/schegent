@@ -65,6 +65,7 @@ export interface ResolveNodeInputBindingsInput {
 export interface ResolveWorkflowPublicOutputsInput {
   readonly workflow: WorkflowDefinition;
   readonly frame: WorkflowInvocationFrame;
+  readonly selectedCandidateId?: string | undefined;
 }
 
 /**
@@ -292,8 +293,25 @@ export function resolveWorkflowPublicOutputs(
   const outputBindings = (input.workflow.bindings ?? []).filter(
     (binding): binding is WorkflowOutputBinding => binding.kind === 'output'
   );
+  const selectedCandidateId =
+    input.workflow.control?.kind === 'candidate-block'
+      ? input.selectedCandidateId
+      : undefined;
+  const selectedCandidateNodeId =
+    selectedCandidateId !== undefined && input.workflow.control?.kind === 'candidate-block'
+      ? input.workflow.control.candidates.find((c) => c.candidateId === selectedCandidateId)?.nodeId
+      : input.workflow.control?.kind === 'candidate-block' && input.frame.activeNodeId !== null
+        ? input.frame.activeNodeId
+        : undefined;
+  const orderedOutputBindings =
+    selectedCandidateNodeId !== undefined
+      ? [
+          ...outputBindings.filter((b) => b.nodeId !== selectedCandidateNodeId),
+          ...outputBindings.filter((b) => b.nodeId === selectedCandidateNodeId)
+        ]
+      : outputBindings;
 
-  for (const binding of outputBindings) {
+  for (const binding of orderedOutputBindings) {
     const completedAttempt = latestCompletedAttemptForNode(input.frame, binding.nodeId);
     if (completedAttempt === undefined) {
       continue;

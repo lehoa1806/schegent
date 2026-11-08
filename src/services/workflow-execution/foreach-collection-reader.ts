@@ -862,7 +862,7 @@ export function buildForEachDeclaredOutputs(input: {
   };
   for (const b of input.parentWorkflow.bindings ?? []) {
     if (b.kind === 'output' && b.nodeId === input.nodeId) {
-      const sourcePort = b.sourcePortId ?? b.portId;
+      const sourcePort = b.sourcePortId ?? b.outputKey ?? b.portId;
       outputs[sourcePort] = Object.freeze({
         portId: sourcePort,
         type: 'structured-data',

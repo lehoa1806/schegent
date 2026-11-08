@@ -67,7 +67,11 @@ import {
   createChildWorkflowInvocationFrame,
   createNodeAttemptRecord
 } from './connected-run-factory';
-import { selectNextNodes, selectNextTransition } from './next-node-selector';
+import {
+  buildRoutingDecisionObservation,
+  selectNextNodes,
+  selectNextTransition
+} from './next-node-selector';
 import {
   handleRepeatChildCompletion,
   resolveFrozenRepeatControl,
@@ -191,17 +195,30 @@ export async function recordChildTerminal(
     return { outcome: 'ignored', reason: 'not-terminal' };
   }
 
+  const context = buildConditionContext(
+    collectFacts(run, input.nodeId, input.attemptIndex, deps.readChildFacts)
+  );
   const decision = selectNextNodes({
     graph: run.graph,
     nodeId: input.nodeId,
     attemptIndex: input.attemptIndex,
     decidedAt: input.decidedAt,
-    context: buildConditionContext(
-      collectFacts(run, input.nodeId, input.attemptIndex, deps.readChildFacts)
-    )
+    context
   });
+  const observation = buildRoutingDecisionObservation(
+    {
+      runId: run.connectedRunId,
+      graph: run.graph,
+      nodeId: input.nodeId,
+      attemptIndex: input.attemptIndex,
+      decidedAt: input.decidedAt,
+      context,
+      selectSingleWinner: false
+    },
+    decision
+  );
 
-  const next = appendDecision(run, decision);
+  const next = appendDecision(run, decision, observation);
   const written = await deps.connectedRuns.compareAndSetConnectedRun(next, run.revision);
   if (written.outcome === 'stale') {
     // Someone wrote between the read and here. The caller re-reads and calls
@@ -912,10 +929,34 @@ async function settleAttemptInternal(
     ...(declaredOutputs !== undefined
       ? { declaredOutputs: Object.freeze({ ...declaredOutputs }) }
       : {}),
+    ...(decisionResults !== undefined
+      ? { decisionResults: Object.freeze({ ...decisionResults }) }
+      : {}),
     ...(verdict !== undefined ? { verdict } : {}),
     ...(failureCode !== undefined ? { failureCode } : {})
   });
   const frameWithAttempt = recordNodeAttempt(frame, settledAttempt);
+
+  if (
+    run.controlState !== undefined &&
+    deps.controlAdmission?.settleAttempt !== undefined
+  ) {
+    const boundQueueId = resolveBoundQueueId(run);
+    const fence: ExecutionFence =
+      deps.resolveExecutionFence?.(run, boundQueueId) ?? {
+        primacyClaim: `primacy:${run.connectedRunId}`,
+        queueClaim: `queue:${boundQueueId}`,
+        rootGeneration: 1
+      };
+    await deps.controlAdmission.settleAttempt({
+      ledgerRunId: run.controlState.ledgerRunId,
+      attemptId: existingAttempt.attemptId,
+      fence,
+      terminalStatus: status,
+      ...(failureCode !== undefined ? { failureCode } : {}),
+      ...(decisionResults !== undefined ? { decisionResults } : {})
+    });
+  }
 
   const context = buildInvocationConditionContext(frameWithAttempt, settledAttempt);
   const transition = selectNextTransition({
@@ -926,12 +967,27 @@ async function settleAttemptInternal(
     attemptStatus: status,
     context
   });
+  const routingObservation = buildRoutingDecisionObservation(
+    {
+      runId: run.connectedRunId,
+      decisionId: `${invocationId}:${nodeId}:attempt-${settledAttempt.attemptIndex}:${completedAt}`,
+      attemptId: settledAttempt.attemptId,
+      graph: workflow,
+      nodeId,
+      attemptIndex: settledAttempt.attemptIndex,
+      decidedAt: completedAt,
+      attemptStatus: status,
+      context,
+      selectSingleWinner: true
+    },
+    transition.decision
+  );
 
   const updatedFrame: WorkflowInvocationFrame = {
     ...frameWithAttempt,
     decisions: Object.freeze([...frameWithAttempt.decisions, transition.decision])
   };
-  let nextRun = upsertInvocationFrame(run, updatedFrame);
+  let nextRun = upsertInvocationFrame(run, updatedFrame, routingObservation);
 
   if (
     transition.outcome === 'unhandled-node-failure' ||

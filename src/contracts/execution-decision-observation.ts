@@ -200,6 +200,7 @@ function isValidNonEmptyString(
     typeof value === 'string' &&
     value.trim().length > 0 &&
     value.length <= maxLength &&
+    Buffer.byteLength(value, 'utf8') <= maxLength &&
     !hasInvalidUtf8OrSurrogates(value)
   );
 }
@@ -211,6 +212,7 @@ function isValidStringAllowEmpty(
   return (
     typeof value === 'string' &&
     value.length <= maxLength &&
+    Buffer.byteLength(value, 'utf8') <= maxLength &&
     !hasInvalidUtf8OrSurrogates(value)
   );
 }
@@ -300,7 +302,7 @@ export function validateExecutionDecisionObservation(
 
   if (
     typeof value.evaluatedAt !== 'number' ||
-    !Number.isInteger(value.evaluatedAt) ||
+    !Number.isSafeInteger(value.evaluatedAt) ||
     value.evaluatedAt < 0
   ) {
     errors.push({
@@ -312,7 +314,7 @@ export function validateExecutionDecisionObservation(
 
   if (
     typeof value.iteration !== 'number' ||
-    !Number.isInteger(value.iteration) ||
+    !Number.isSafeInteger(value.iteration) ||
     value.iteration < 1
   ) {
     errors.push({
@@ -324,7 +326,7 @@ export function validateExecutionDecisionObservation(
 
   if (
     typeof value.maxIterations !== 'number' ||
-    !Number.isInteger(value.maxIterations) ||
+    !Number.isSafeInteger(value.maxIterations) ||
     value.maxIterations < 1
   ) {
     errors.push({

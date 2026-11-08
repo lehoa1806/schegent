@@ -244,6 +244,43 @@ describe('workflow-control-validator (FR-R5-F25 / SPEC-03)', () => {
       expect(codes).toContain('missing-candidate-output-binding');
       expect(codes).toContain('candidate-result-field-mismatch');
     });
+
+    it('rejects candidate phases declaring a legacy retryCondition and candidate bindings referencing undeclared nodes or ports', () => {
+      const wf = makeCandidateBlockWorkflow(2);
+      const phase1WithLegacyRetry: PhaseDefinition = {
+        ...makeCandidatePhase('phase-1'),
+        retryCondition: 'verdict == fail'
+      };
+      const phase2 = makeCandidatePhase('phase-2');
+      const wfWithBadBindings: WorkflowDefinition = {
+        ...wf,
+        bindings: [
+          ...(wf.bindings ?? []),
+          {
+            kind: 'input',
+            nodeId: 'n-missing',
+            inputKey: 'extra',
+            source: { from: 'workflow-input', portId: 'undeclared-in' }
+          },
+          {
+            kind: 'output',
+            nodeId: 'n-1',
+            portId: 'undeclared-out',
+            outputKey: 'out-md'
+          }
+        ]
+      };
+
+      const errors = validateWorkflowGraph(wfWithBadBindings, [], new Map(), {
+        effectivePhases: [phase1WithLegacyRetry, phase2],
+        effectiveWorkflows: [wfWithBadBindings]
+      });
+      const codes = errors.map((e) => e.code);
+      expect(codes).toContain('candidate-legacy-retry-condition');
+      expect(codes).toContain('unknown-node');
+      expect(codes).toContain('unknown-input-port');
+      expect(codes).toContain('unknown-output-port');
+    });
   });
 
   describe('WorkflowDecisionResults validation', () => {

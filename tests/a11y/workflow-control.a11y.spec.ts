@@ -171,10 +171,15 @@ test.describe('FR-R5-F32 — WCAG 2.1 AA accessibility scan for workflow control
 
       const editor = page.getByTestId('candidate-block-editor');
       await expect(editor).toBeVisible();
-      await expect(page.getByTestId('candidate-block-expand-toggle')).toHaveAttribute(
-        'aria-expanded',
-        'true'
-      );
+      const expandToggle = page.getByTestId('candidate-block-expand-toggle');
+      await expect(expandToggle).toHaveAttribute('aria-expanded', 'true');
+
+      // Keyboard navigation check: focus toggle and press Enter to collapse/re-expand
+      await expandToggle.focus();
+      await page.keyboard.press('Enter');
+      await expect(expandToggle).toHaveAttribute('aria-expanded', 'false');
+      await page.keyboard.press('Enter');
+      await expect(expandToggle).toHaveAttribute('aria-expanded', 'true');
 
       const editorViolations = await runScopedAxe(page, '[data-testid="candidate-block-editor"]');
       expect(editorViolations, `CandidateBlockEditor axe violations in ${theme}`).toEqual([]);

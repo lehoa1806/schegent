@@ -392,5 +392,28 @@ describe('FR-R3-012 (T436) cross-run checkpoint retention', () => {
       );
       expect(await survivors()).toEqual([]);
     });
+
+    it('protects pinned active or paused recovery run directories from age and total-bytes eviction (F27-T04)', async () => {
+      await writeRun('pinned-old-run', 30, { bytes: 4_096 });
+      await writeRun('unpinned-old-run', 30, { bytes: 4_096 });
+
+      const info = vi.fn();
+      const warn = vi.fn();
+      const svc = new RunCheckpointRetentionService({
+        globalStorageRoot,
+        logger: { info, warn },
+        now: () => NOW,
+        policy: {
+          maxAgeMs: CHECKPOINT_MAX_AGE_MS,
+          maxTotalBytes: 1_024,
+          recentRunFloor: 0
+        },
+        pinnedRunIds: new Set(['pinned-old-run'])
+      });
+
+      const result = await svc.sweep();
+      expect(result.removedRunCount).toBe(1);
+      expect(await survivors()).toEqual(['pinned-old-run']);
+    });
   });
 });

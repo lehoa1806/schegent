@@ -71,7 +71,8 @@ export type ControlAttemptStage =
   | 'pending-dispatch'
   | 'spawn-intent'
   | 'started'
-  | 'settled';
+  | 'settled'
+  | 'uncertain';
 
 export type ControlAttemptTerminalStatus = 'completed' | 'failed' | 'canceled';
 
@@ -688,6 +689,18 @@ export interface ControlAdmissionPort {
   commitAttempt(
     token: PreparedControlAttemptToken
   ): Promise<CommitControlAttemptOutcome>;
+  settleAttempt?(
+    input: {
+      readonly ledgerRunId: string;
+      readonly attemptId: string;
+      readonly fence: ExecutionFence;
+      readonly terminalStatus: ControlAttemptTerminalStatus;
+      readonly settledMicrousd?: number | undefined;
+      readonly failureCode?: string | undefined;
+      readonly failureMessage?: string | undefined;
+      readonly decisionResults?: Readonly<Record<string, DecisionFieldValue>> | undefined;
+    }
+  ): Promise<unknown>;
 }
 
 export function createEmptyControlLedger(): ControlLedger {
