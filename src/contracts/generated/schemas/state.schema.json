@@ -7,7 +7,8 @@
   "x-generatedFrom": [
     "src/contracts/state-schema.ts",
     "src/state/workflow-run.ts",
-    "src/contracts/decision-results.ts"
+    "src/contracts/decision-results.ts",
+    "src/contracts/workflow-controls.ts"
   ],
   "type": "object",
   "additionalProperties": false,
@@ -19,7 +20,12 @@
     "workflowRunFields",
     "attemptOutcomeStatuses",
     "attemptOutcomeReasons",
-    "attemptOutcomeRecoveries"
+    "attemptOutcomeRecoveries",
+    "workflowControlKinds",
+    "candidateAvailabilityPolicies",
+    "candidateBudgetModes",
+    "repeatOnExhaustedPolicies",
+    "forEachOnItemErrorPolicies"
   ],
   "properties": {
     "stateSchemaVersion": {
@@ -330,6 +336,63 @@
           "retire",
           "candidate-intervention",
           "block-intervention"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "workflowControlKinds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "candidate-block",
+          "repeat",
+          "for-each"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "candidateAvailabilityPolicies": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "first-ready",
+          "wait-for-selected",
+          "stop-on-unavailability"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "candidateBudgetModes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "count-only",
+          "strict-usd"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "repeatOnExhaustedPolicies": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "pause",
+          "fail"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "forEachOnItemErrorPolicies": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "stop",
+          "continue"
         ]
       },
       "uniqueItems": true

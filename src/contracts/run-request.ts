@@ -19,6 +19,11 @@
 import type { CatalogVersionRef } from './catalog-version';
 import type { PipelineInputPortType, PipelineOutputPortType } from './pipeline-definitions';
 import type { PhaseDefinition } from './process-definitions';
+import type {
+  CandidateBlockBudget,
+  ResolvedCandidateBlockControl,
+  ResolvedWorkflowNodeControl
+} from './workflow-controls';
 import type { WorkflowDefinition } from './workflow-definitions';
 import type { WorkflowRunPipeline } from '../state/workflow-run';
 
@@ -148,7 +153,10 @@ export const RUN_REQUEST_ERROR_CODES = [
   'collection-selection-violation',
   'missing-required-output',
   'no-eligible-transition',
-  'unhandled-node-failure'
+  'unhandled-node-failure',
+  // FR-R5-F25 — workflow control validation and runtime refusal codes.
+  'unsupported-control-version',
+  'unsupported-control-execution'
 ] as const;
 
 export type RunRequestErrorCode = (typeof RUN_REQUEST_ERROR_CODES)[number];
@@ -199,13 +207,15 @@ export interface FrozenWorkflowClosureMetrics {
   readonly maxDepth: number;
   readonly definitionCount: number;
   readonly expandedNodeCount: number;
+  readonly maxControlDepth?: number;
 }
 
 /**
- * FR-R5-F02 — the immutable transitive closure of a composable Workflow run.
+ * FR-R5-F02 / FR-R5-F25 — the immutable transitive closure of a composable Workflow run.
  * Contains all reachable Workflow and Phase definitions, their SHA-256 content
- * digests, optional catalog version provenance, and bounded closure metrics
- * (`maxDepth <= 8`, `definitionCount <= 64`, `expandedNodeCount <= 256`).
+ * digests, optional catalog version provenance, frozen control defaults and root budget,
+ * and bounded closure metrics (`maxDepth <= 8`, `definitionCount <= 64`,
+ * `expandedNodeCount <= 256`, `maxControlDepth <= 2`).
  */
 export interface FrozenWorkflowClosure {
   readonly rootWorkflowId: string;
@@ -215,6 +225,9 @@ export interface FrozenWorkflowClosure {
   readonly definitionDigestsById: Readonly<Record<string, string>>;
   readonly catalogVersionsById?: Readonly<Record<string, CatalogVersionRef>>;
   readonly closureMetrics: FrozenWorkflowClosureMetrics;
+  readonly rootBudget?: CandidateBlockBudget;
+  readonly controlDefaultsByWorkflowId?: Readonly<Record<string, ResolvedCandidateBlockControl>>;
+  readonly nodeControlDefaultsByNodeKey?: Readonly<Record<string, ResolvedWorkflowNodeControl>>;
 }
 
 /**
