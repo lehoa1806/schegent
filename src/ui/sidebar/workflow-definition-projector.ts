@@ -196,7 +196,7 @@ function projectExecutionDefaults(defaults: PipelineExecutionDefaults, sanitize:
   });
 }
 
-function projectCandidateBlockControl(control: CandidateBlockControl, sanitize: Sanitize): CandidateBlockControl {
+export function projectCandidateBlockControl(control: CandidateBlockControl, sanitize: Sanitize): CandidateBlockControl {
   return Object.freeze({
     version: 1 as const,
     kind: 'candidate-block' as const,

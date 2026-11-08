@@ -9,7 +9,10 @@
 
 import type {
   ConnectedInvocationAttemptProjection,
-  ConnectedInvocationProjection
+  ConnectedInvocationProjection,
+  ControlCandidateProjection,
+  ControlLegalActionEntry,
+  ControlProjection
 } from '../../contracts/sidebar-ipc/workflow-run';
 import {
   attemptsForNode,
@@ -28,11 +31,111 @@ import {
   computeAllowedControlActions,
   findLatestLeafPhaseAttempt
 } from './workflow-control-transition-table';
+import { projectCandidatePhaseIdentity } from '../../ui/sidebar/phase-projector';
 
 export {
   buildControlProjection,
   type BuildControlProjectionInput
 } from './control-command-service';
+
+export const CANDIDATE_BLOCK_FRAME_STATES = Object.freeze([
+  'selecting',
+  'dispatch-pending',
+  'executing',
+  'retry-delayed',
+  'waiting-availability',
+  'intervention-required',
+  'monitoring-expired',
+  'completed',
+  'failed',
+  'canceled'
+] as const);
+
+export type CandidateBlockFrameState = (typeof CANDIDATE_BLOCK_FRAME_STATES)[number];
+
+/**
+ * FR-R5-F32 (F32-T01) — Deterministic projection fixture builder for every
+ * candidate-block frame state, preserving absence when optional evidence is omitted.
+ */
+export function buildCandidateBlockStateFixture(
+  state: CandidateBlockFrameState,
+  overrides: Partial<ControlProjection> = {}
+): ControlProjection {
+  const isTerminal = state === 'completed' || state === 'failed' || state === 'canceled';
+  const isPausedLike =
+    state === 'intervention-required' || state === 'monitoring-expired';
+  const defaultCandidates: readonly ControlCandidateProjection[] = Object.freeze([
+    Object.freeze({
+      candidateId: 'cand-primary',
+      nodeId: 'node-cand-primary',
+      backend: 'claude',
+      priority: 1,
+      authoredOrder: 0,
+      attemptsUsed: state === 'selecting' ? 0 : 1,
+      maxAttempts: 3,
+      eligibility:
+        state === 'intervention-required'
+          ? ('intervention' as const)
+          : ('eligible' as const),
+      policyExcluded: false,
+      phaseId: 'phase-implement-primary',
+      phaseName: 'Primary Implementer',
+      instructionSummary: 'Implement feature with primary instructions.',
+      operatorKind: 'json-file'
+    }),
+    Object.freeze({
+      candidateId: 'cand-fallback',
+      nodeId: 'node-cand-fallback',
+      backend: 'codex',
+      priority: 2,
+      authoredOrder: 1,
+      attemptsUsed: 0,
+      maxAttempts: 2,
+      eligibility: 'eligible' as const,
+      policyExcluded: false,
+      phaseId: 'phase-implement-fallback',
+      phaseName: 'Fallback Implementer',
+      instructionSummary: 'Implement feature with fallback instructions.',
+      operatorKind: 'json-file'
+    })
+  ]);
+
+  return Object.freeze({
+    version: 1,
+    rootRunId: 'root-run-fixture-1',
+    queueId: 'default',
+    invocationId: '00000000-0000-4000-8000-000000000101',
+    workflowId: 'wf-candidate-block',
+    generation: 1,
+    frameKind: 'candidate-block',
+    state,
+    availabilityPolicy: 'first-ready',
+    selectedCandidateId: 'cand-primary',
+    allowedCandidateIds: Object.freeze(['cand-primary', 'cand-fallback']),
+    candidates: defaultCandidates,
+    attemptsUsed: state === 'selecting' ? 0 : 1,
+    maxDispatches: 40,
+    rootDispatchesUsed: state === 'selecting' ? 0 : 1,
+    rootMaxDispatches: 100,
+    ...(state === 'completed' ? { resultStatus: 'done', resultReason: 'completed' } : {}),
+    ...(state === 'failed' ? { resultStatus: 'failed', resultReason: 'all-candidates-exhausted' } : {}),
+    spendMode: 'count-only',
+    spendEnforcementQuality: 'count-only',
+    legalActions: Object.freeze<readonly ControlLegalActionEntry[]>([
+      { kind: 'check-now', allowed: !isTerminal && state !== 'executing' && state !== 'dispatch-pending' },
+      { kind: 'try-now', allowed: !isTerminal && state !== 'executing' && state !== 'dispatch-pending' && state !== 'monitoring-expired' },
+      { kind: 'select-candidate', allowed: !isTerminal && state !== 'executing' && state !== 'dispatch-pending' },
+      { kind: 'set-policy', allowed: !isTerminal && state !== 'executing' && state !== 'dispatch-pending' },
+      { kind: 'set-allowed-candidates', allowed: !isTerminal && state !== 'executing' && state !== 'dispatch-pending' },
+      { kind: 'renew-monitoring', allowed: !isTerminal && state !== 'executing' && state !== 'dispatch-pending' },
+      { kind: 'pause', allowed: !isTerminal && !isPausedLike },
+      { kind: 'resume', allowed: isPausedLike && state !== 'monitoring-expired', ...(state === 'monitoring-expired' ? { reason: 'monitoring-expired' as const } : {}) },
+      { kind: 'cancel', allowed: !isTerminal }
+    ]),
+    evidenceRefs: Object.freeze([]),
+    ...overrides
+  });
+}
 
 export const MAX_EVIDENCE_SUMMARY_CHARS = 256;
 
@@ -293,7 +396,8 @@ export function buildAncestryEvidenceMetadata(
  */
 export function projectConnectedInvocations(
   run: ConnectedWorkflowRun,
-  _control: WorkflowRunControlProjection = buildWorkflowRunControlProjection(run)
+  _control: WorkflowRunControlProjection = buildWorkflowRunControlProjection(run),
+  controlProjectionsByInvocationId?: Readonly<Record<string, ControlProjection>>
 ): readonly ConnectedInvocationProjection[] | undefined {
   const frames = run.invocations;
   if (frames === undefined || Object.keys(frames).length === 0) return undefined;
@@ -334,6 +438,34 @@ export function projectConnectedInvocations(
               boundInputPortIds: Object.freeze(Object.keys(rawHandoff.prefilledInputsByPort))
             })
           : null;
+      const suppliedControlProjection = controlProjectionsByInvocationId?.[frame.invocationId];
+      let controlProjection: ControlProjection | undefined = suppliedControlProjection;
+      if (controlProjection !== undefined && wfDef !== undefined && controlProjection.candidates !== undefined) {
+        const enrichedCandidates = controlProjection.candidates.map((cand) => {
+          const nodeDef = wfDef.nodes.find((n) => n.nodeId === cand.nodeId);
+          const phaseDef =
+            nodeDef?.phaseId !== undefined
+              ? run.frozenClosure?.phasesById[nodeDef.phaseId]
+              : undefined;
+          const phaseIdentity = projectCandidatePhaseIdentity(phaseDef);
+          if (!phaseIdentity) return cand;
+          return Object.freeze({
+            ...cand,
+            phaseId: cand.phaseId ?? phaseIdentity.phaseId,
+            phaseName: cand.phaseName ?? phaseIdentity.phaseName,
+            ...(cand.instructionSummary === undefined && phaseIdentity.instructionSummary !== undefined
+              ? { instructionSummary: phaseIdentity.instructionSummary }
+              : {}),
+            ...(cand.operatorKind === undefined && phaseIdentity.operatorKind !== undefined
+              ? { operatorKind: phaseIdentity.operatorKind }
+              : {})
+          });
+        });
+        controlProjection = Object.freeze({
+          ...controlProjection,
+          candidates: Object.freeze(enrichedCandidates)
+        });
+      }
       return Object.freeze({
         invocationId: frame.invocationId,
         parentInvocationId: frame.parentInvocationId,
@@ -356,7 +488,8 @@ export function projectConnectedInvocations(
         pendingRetryCause: ctrl.pendingRetryCause,
         ...(pendingHandoff !== null ? { pendingHandoff } : {}),
         outputPortIds: Object.freeze(Object.keys(frame.resolvedOutputs)),
-        attempts: Object.freeze(attempts)
+        attempts: Object.freeze(attempts),
+        ...(controlProjection !== undefined ? { controlProjection } : {})
       });
     })
   );

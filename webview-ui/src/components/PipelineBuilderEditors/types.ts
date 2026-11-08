@@ -1,4 +1,5 @@
 import type {
+  CandidateBlockControl,
   PhaseBinding,
   PhaseCatalogSourceRecord,
   PhaseDefinition,
@@ -16,6 +17,7 @@ import type {
   WorkflowCatalogFieldErrorProjection,
   WorkflowCatalogPortProjection,
   WorkflowConnection,
+  WorkflowDecisionResults,
   WorkflowInputPort,
   WorkflowNode,
   WorkflowOutputPort,
@@ -133,6 +135,8 @@ export type MutableWorkflow = {
   startNodeIds: string[];
   executionDefaults?: PipelineExecutionDefaults;
   recommendedNext?: string[];
+  control?: CandidateBlockControl;
+  decisionResults?: WorkflowDecisionResults;
   /** Stable list key; mirrors the projection record key for persisted rows. */
   sourceKey: string;
   sourceStatus: WorkflowSourceStatus;

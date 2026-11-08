@@ -27,12 +27,14 @@ import type {
   WorkflowOutputPort
 } from '../../../src/contracts/workflow-definitions';
 import type {
+  CandidateBlockControl,
   PhaseBinding,
   PhaseDefinition,
   PipelineExecutionDefaults,
   PipelineInputPort,
   PipelineOutputPort,
   WorkflowConnection,
+  WorkflowDecisionResults,
   WorkflowNode
 } from './snapshot-types';
 
@@ -121,6 +123,8 @@ export interface SaveWorkflowRow {
   readonly startNodeIds: readonly string[];
   readonly executionDefaults?: PipelineExecutionDefaults;
   readonly recommendedNext?: readonly string[];
+  readonly control?: CandidateBlockControl;
+  readonly decisionResults?: WorkflowDecisionResults;
 }
 
 /** The id a Pipeline row is addressed by; `''` when it declares neither spelling. */
