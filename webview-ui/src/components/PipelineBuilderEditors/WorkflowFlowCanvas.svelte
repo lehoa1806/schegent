@@ -11,13 +11,18 @@
   // would hide the very node the operator has to connect or delete to make the
   // save pass, with the host's defect pointing at something invisible.
   import type {
+    CandidateBlockControl,
     PortablePhaseDefinition,
     PortablePipelineDefinition,
     PortableWorkflowDefinition,
     WorkflowConnection,
     WorkflowNode
   } from '../../lib/snapshot-types';
-  import { buildWorkflowFlowLayout, type FlowNodeSlot } from './workflow-flow-layout';
+  import {
+    buildWorkflowFlowLayout,
+    describeCandidateBlockCanvasPath,
+    type FlowNodeSlot
+  } from './workflow-flow-layout';
   import type { WorkflowFlowSelection, WorkflowFlowView } from './workflow-flow-view';
   import type { WorkflowDraftError } from './workflow-catalog-state';
   import type { MutableWorkflow } from './types';
@@ -27,6 +32,7 @@
     nodes: readonly WorkflowNode[];
     connections: readonly WorkflowConnection[];
     startNodeIds: readonly string[];
+    control?: CandidateBlockControl;
     pipelines: readonly PortablePipelineDefinition[];
     phases?: readonly PortablePhaseDefinition[];
     workflows?: readonly PortableWorkflowDefinition[];
@@ -66,12 +72,18 @@
   const roots = $derived(layout.slots.filter((slot) => slot.depth === 0));
   const detachedRoots = $derived(layout.detached.filter((slot) => slot.depth === 0));
 
+  const candidateBlockPath = $derived(
+    describeCandidateBlockCanvasPath(props.control, props.nodes, props.phases ?? [])
+  );
+  let blockCanvasExpanded = $state(true);
+
   const view = $derived<WorkflowFlowView>({
     nodes: props.nodes,
     slotsById,
     pipelines: props.pipelines,
     phases: props.phases,
     workflows: props.allWorkflows ?? props.workflows,
+    control: props.control,
     nodeDefects: props.nodeDefects,
     connectionDefects: props.connectionDefects,
     cycleNodeIds: layout.cycleNodeIds,
@@ -88,6 +100,42 @@
 </script>
 
 <div class="wf-canvas" data-testid="workflow-canvas">
+  {#if candidateBlockPath}
+    <div
+      class="wf-candidate-block-banner"
+      data-testid="workflow-canvas-candidate-block-banner"
+    >
+      <div class="wf-candidate-block-head">
+        <span class="wf-badge" data-testid="workflow-canvas-candidate-selection-mode">
+          Candidate Block · Exclusive single-active selection
+        </span>
+        <span class="wf-badge" data-testid="workflow-canvas-candidate-policy">
+          {candidateBlockPath.availabilityPolicy}
+        </span>
+        <span class="wf-badge" data-testid="workflow-canvas-candidate-return">
+          {candidateBlockPath.validatedReturnPath}
+        </span>
+        <span class="wf-badge" data-testid="workflow-canvas-candidate-exits">
+          Exits: {candidateBlockPath.terminalExits.join(' · ')}
+        </span>
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          data-testid="workflow-canvas-candidate-block-toggle"
+          aria-expanded={blockCanvasExpanded}
+          onclick={() => (blockCanvasExpanded = !blockCanvasExpanded)}
+        >
+          {blockCanvasExpanded ? 'Collapse candidates' : 'Expand candidates'}
+        </button>
+      </div>
+      {#if !blockCanvasExpanded}
+        <p class="wf-candidate-block-collapsed" data-testid="workflow-canvas-candidate-collapsed">
+          Ordered candidates ({candidateBlockPath.candidates.length}):
+          {candidateBlockPath.candidates.map((c) => `${c.candidateId} (${c.phaseName})`).join(' → ')}
+        </p>
+      {/if}
+    </div>
+  {/if}
   {#if props.nodes.length === 0}
     <div class="empty-selection" data-testid="workflow-canvas-empty">
       No nodes yet. Add one from Actions.

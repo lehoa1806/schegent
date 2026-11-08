@@ -19,7 +19,17 @@
 
 import { boundaryRefusalText } from '../../lib/boundary-refusal-text';
 import {
+  DEFAULT_CANDIDATE_ATTEMPTS,
+  DEFAULT_CANDIDATE_AVAILABILITY_POLICY,
+  DEFAULT_CANDIDATE_BLOCK_DISPATCHES,
+  DEFAULT_MONITORING_WINDOW_MS,
+  MAX_CANDIDATES_PER_BLOCK,
+  MIN_CANDIDATES_PER_BLOCK,
   WORKFLOW_NODE_TERMINAL_STATUSES,
+  type CandidateAvailabilityPolicy,
+  type CandidateBlockControl,
+  type CandidateDefinition,
+  type CandidateRetryPolicy,
   type PipelineExecutionDefaults,
   type PortablePhaseDefinition,
   type PortablePipelineDefinition,
@@ -32,6 +42,7 @@ import {
   type WorkflowConditionOperand,
   type WorkflowConditionOperator,
   type WorkflowConnection,
+  type WorkflowDecisionResults,
   type WorkflowInputPort,
   type WorkflowNode,
   type WorkflowOutputPort
@@ -136,6 +147,12 @@ export function sourceRecordToMutableWorkflow(
     ...(definition?.recommendedNext !== undefined
       ? { recommendedNext: [...definition.recommendedNext] }
       : {}),
+    ...(definition?.control !== undefined
+      ? { control: copyCandidateBlockControl(definition.control) }
+      : {}),
+    ...(definition?.decisionResults !== undefined
+      ? { decisionResults: copyDecisionResults(definition.decisionResults) }
+      : {}),
     sourceKey: record.key,
     sourceStatus: record.status,
     sourceErrors: record.errors,
@@ -175,6 +192,12 @@ export function toSaveWorkflowRow(workflow: MutableWorkflow): SaveWorkflowRow {
     ...(hasExecutionDefaults ? { executionDefaults: { ...workflow.executionDefaults } } : {}),
     ...(workflow.recommendedNext && workflow.recommendedNext.length > 0
       ? { recommendedNext: [...workflow.recommendedNext] }
+      : {}),
+    ...(workflow.control !== undefined
+      ? { control: copyCandidateBlockControl(workflow.control) }
+      : {}),
+    ...(workflow.decisionResults !== undefined
+      ? { decisionResults: copyDecisionResults(workflow.decisionResults) }
       : {})
   };
 }
@@ -235,6 +258,8 @@ export function makeDuplicateWorkflowDraft(
     startNodeIds: [...source.startNodeIds],
     ...(source.executionDefaults ? { executionDefaults: { ...source.executionDefaults } } : {}),
     ...(source.recommendedNext ? { recommendedNext: [...source.recommendedNext] } : {}),
+    ...(source.control ? { control: copyCandidateBlockControl(source.control) } : {}),
+    ...(source.decisionResults ? { decisionResults: copyDecisionResults(source.decisionResults) } : {}),
     sourceKey: nextDraftSourceKey(workflowId),
     sourceStatus: 'effective',
     sourceErrors: [],
@@ -1221,6 +1246,271 @@ export function buildChildWorkflowPreview(
 }
 
 export type { PortablePhaseDefinition };
+
+export function copyCandidateBlockControl(control: CandidateBlockControl): CandidateBlockControl {
+  return {
+    version: 1,
+    kind: 'candidate-block',
+    candidates: control.candidates.map((c) => ({
+      candidateId: c.candidateId,
+      nodeId: c.nodeId,
+      ...(c.priority !== undefined ? { priority: c.priority } : {}),
+      ...(c.maxAttempts !== undefined ? { maxAttempts: c.maxAttempts } : {}),
+      ...(c.retry !== undefined ? { retry: { ...c.retry } } : {}),
+      ...(c.allowUnverifiedTrial !== undefined ? { allowUnverifiedTrial: c.allowUnverifiedTrial } : {})
+    })),
+    ...(control.availabilityPolicy !== undefined ? { availabilityPolicy: control.availabilityPolicy } : {}),
+    ...(control.maxDispatches !== undefined ? { maxDispatches: control.maxDispatches } : {}),
+    ...(control.monitoringWindowMs !== undefined ? { monitoringWindowMs: control.monitoringWindowMs } : {}),
+    ...(control.budget !== undefined ? { budget: { ...control.budget } } : {})
+  };
+}
+
+export function copyDecisionResults(dr: WorkflowDecisionResults): WorkflowDecisionResults {
+  return {
+    version: 1,
+    fields: dr.fields.map((f) => ({ ...f })),
+    bindings: dr.bindings.map((b) => ({
+      fieldId: b.fieldId,
+      source: { ...b.source }
+    }))
+  };
+}
+
+/**
+ * FR-R5-F32 (F32-T02) — Enable candidate-block control on a Workflow draft,
+ * seeding 1..8 candidate rows from its existing Phase nodes (or creating one if empty).
+ */
+export function enableCandidateBlockControl(
+  workflow: MutableWorkflow,
+  defaultPhaseId = 'phase-1'
+): MutableWorkflow {
+  if (workflow.control !== undefined) return workflow;
+  let nodes = [...workflow.nodes];
+  if (nodes.length === 0) {
+    nodes = [{ nodeId: 'cand-node-1', kind: 'phase', phaseId: defaultPhaseId }];
+  }
+  const phaseNodes = nodes.filter((n) => n.kind === 'phase' || n.phaseId !== undefined).slice(0, MAX_CANDIDATES_PER_BLOCK);
+  const candidates: CandidateDefinition[] = (phaseNodes.length > 0 ? phaseNodes : [nodes[0]!]).map((n, idx) => ({
+    candidateId: freeIdentifier(`candidate-${idx + 1}`, []),
+    nodeId: n.nodeId,
+    priority: idx + 1,
+    maxAttempts: DEFAULT_CANDIDATE_ATTEMPTS,
+    allowUnverifiedTrial: false
+  }));
+  return {
+    ...workflow,
+    nodes,
+    startNodeIds: candidates.map((c) => c.nodeId),
+    control: {
+      version: 1,
+      kind: 'candidate-block',
+      candidates,
+      availabilityPolicy: DEFAULT_CANDIDATE_AVAILABILITY_POLICY,
+      maxDispatches: DEFAULT_CANDIDATE_BLOCK_DISPATCHES,
+      monitoringWindowMs: DEFAULT_MONITORING_WINDOW_MS
+    }
+  };
+}
+
+export function disableCandidateBlockControl(workflow: MutableWorkflow): MutableWorkflow {
+  if (workflow.control === undefined) return workflow;
+  const { control: _removed, ...rest } = workflow;
+  return rest;
+}
+
+/**
+ * Add a candidate row (up to MAX_CANDIDATES_PER_BLOCK = 8) using stable IDs,
+ * creating and binding a Phase node when no unbound Phase node exists.
+ */
+export function addCandidateRow(
+  workflow: MutableWorkflow,
+  phaseId = 'phase-1'
+): MutableWorkflow {
+  const control = workflow.control;
+  if (!control || control.candidates.length >= MAX_CANDIDATES_PER_BLOCK) return workflow;
+  const takenCandidateIds = control.candidates.map((c) => c.candidateId);
+  const candidateId = freeIdentifier(`candidate-${control.candidates.length + 1}`, takenCandidateIds);
+  const boundNodeIds = new Set(control.candidates.map((c) => c.nodeId));
+  const unboundPhaseNode = workflow.nodes.find(
+    (n) => (n.kind === 'phase' || n.phaseId !== undefined) && !boundNodeIds.has(n.nodeId)
+  );
+  let nodes = workflow.nodes;
+  let targetNodeId: string;
+  if (unboundPhaseNode) {
+    targetNodeId = unboundPhaseNode.nodeId;
+  } else {
+    const takenNodeIds = workflow.nodes.map((n) => n.nodeId);
+    targetNodeId = freeIdentifier(`cand-node-${control.candidates.length + 1}`, takenNodeIds);
+    nodes = [...workflow.nodes, { nodeId: targetNodeId, kind: 'phase', phaseId }];
+  }
+  const nextCandidate: CandidateDefinition = {
+    candidateId,
+    nodeId: targetNodeId,
+    priority: control.candidates.length + 1,
+    maxAttempts: DEFAULT_CANDIDATE_ATTEMPTS,
+    allowUnverifiedTrial: false
+  };
+  const nextCandidates = [...control.candidates, nextCandidate];
+  const nextStarts = Array.from(new Set([...workflow.startNodeIds, targetNodeId]));
+  return {
+    ...workflow,
+    nodes,
+    startNodeIds: nextStarts,
+    control: {
+      ...control,
+      candidates: nextCandidates
+    }
+  };
+}
+
+/**
+ * Remove a candidate row while keeping at least MIN_CANDIDATES_PER_BLOCK = 1.
+ */
+export function removeCandidateRow(
+  workflow: MutableWorkflow,
+  index: number
+): MutableWorkflow {
+  const control = workflow.control;
+  if (!control || control.candidates.length <= MIN_CANDIDATES_PER_BLOCK) return workflow;
+  if (!inRange(index, control.candidates.length)) return workflow;
+  const removed = control.candidates[index]!;
+  const nextCandidates = control.candidates.filter((_, i) => i !== index);
+  const nextNodes = workflow.nodes.filter((n) => n.nodeId !== removed.nodeId);
+  const nextStarts = workflow.startNodeIds.filter((id) => id !== removed.nodeId);
+  return {
+    ...workflow,
+    nodes: nextNodes.length > 0 ? nextNodes : workflow.nodes,
+    startNodeIds: nextStarts.length > 0 ? nextStarts : nextCandidates.map((c) => c.nodeId),
+    control: {
+      ...control,
+      candidates: nextCandidates
+    }
+  };
+}
+
+/**
+ * Reorder a candidate row by `delta` (-1 or +1) while preserving each row's stable `candidateId`.
+ */
+export function moveCandidateRow(
+  workflow: MutableWorkflow,
+  index: number,
+  delta: number
+): MutableWorkflow {
+  const control = workflow.control;
+  if (!control) return workflow;
+  const targetIndex = index + delta;
+  if (!inRange(index, control.candidates.length) || !inRange(targetIndex, control.candidates.length)) {
+    return workflow;
+  }
+  const nextCandidates = [...control.candidates];
+  const [moved] = nextCandidates.splice(index, 1);
+  nextCandidates.splice(targetIndex, 0, moved);
+  return {
+    ...workflow,
+    control: {
+      ...control,
+      candidates: nextCandidates
+    }
+  };
+}
+
+export interface CandidateRowPatch {
+  readonly candidateId?: string;
+  readonly nodeId?: string;
+  readonly phaseId?: string;
+  readonly priority?: number;
+  readonly maxAttempts?: number;
+  readonly retry?: CandidateRetryPolicy;
+  readonly allowUnverifiedTrial?: boolean;
+}
+
+/**
+ * Update one candidate row and/or its bound Phase node target without duplicating Phase fields.
+ */
+export function updateCandidateRow(
+  workflow: MutableWorkflow,
+  index: number,
+  patch: CandidateRowPatch
+): MutableWorkflow {
+  const control = workflow.control;
+  if (!control || !inRange(index, control.candidates.length)) return workflow;
+  const current = control.candidates[index]!;
+  const targetNodeId = patch.nodeId ?? current.nodeId;
+  let nodes = workflow.nodes;
+  if (patch.phaseId !== undefined) {
+    nodes = workflow.nodes.map((n) =>
+      n.nodeId === targetNodeId
+        ? { ...n, kind: 'phase' as const, phaseId: patch.phaseId, workflowId: undefined, pipelineId: undefined }
+        : n
+    );
+  }
+  const updated: CandidateDefinition = {
+    candidateId: patch.candidateId ?? current.candidateId,
+    nodeId: targetNodeId,
+    ...(patch.priority !== undefined
+      ? { priority: patch.priority }
+      : current.priority !== undefined
+        ? { priority: current.priority }
+        : {}),
+    ...(patch.maxAttempts !== undefined
+      ? { maxAttempts: patch.maxAttempts }
+      : current.maxAttempts !== undefined
+        ? { maxAttempts: current.maxAttempts }
+        : {}),
+    ...(patch.retry !== undefined
+      ? { retry: { ...patch.retry } }
+      : current.retry !== undefined
+        ? { retry: { ...current.retry } }
+        : {}),
+    ...(patch.allowUnverifiedTrial !== undefined
+      ? { allowUnverifiedTrial: patch.allowUnverifiedTrial }
+      : current.allowUnverifiedTrial !== undefined
+        ? { allowUnverifiedTrial: current.allowUnverifiedTrial }
+        : {})
+  };
+  const nextCandidates = control.candidates.map((c, i) => (i === index ? updated : c));
+  return {
+    ...workflow,
+    nodes,
+    control: {
+      ...control,
+      candidates: nextCandidates
+    }
+  };
+}
+
+export interface CandidateBlockPolicyPatch {
+  readonly availabilityPolicy?: CandidateAvailabilityPolicy;
+  readonly maxDispatches?: number;
+  readonly monitoringWindowMs?: number;
+  readonly maxMicrousd?: number | undefined;
+}
+
+export function updateCandidateBlockPolicy(
+  workflow: MutableWorkflow,
+  patch: CandidateBlockPolicyPatch
+): MutableWorkflow {
+  const control = workflow.control;
+  if (!control) return workflow;
+  const nextBudget =
+    'maxMicrousd' in patch
+      ? patch.maxMicrousd !== undefined
+        ? ({ mode: 'strict-usd' as const, limitMicrousd: patch.maxMicrousd })
+        : ({ mode: 'count-only' as const })
+      : control.budget;
+  const { budget: _oldBudget, ...restControl } = control;
+  return {
+    ...workflow,
+    control: {
+      ...restControl,
+      ...(patch.availabilityPolicy !== undefined ? { availabilityPolicy: patch.availabilityPolicy } : {}),
+      ...(patch.maxDispatches !== undefined ? { maxDispatches: patch.maxDispatches } : {}),
+      ...(patch.monitoringWindowMs !== undefined ? { monitoringWindowMs: patch.monitoringWindowMs } : {}),
+      ...(nextBudget !== undefined ? { budget: nextBudget } : {})
+    }
+  };
+}
 
 function copyConnection(connection: WorkflowConnection): WorkflowConnection {
   return {

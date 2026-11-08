@@ -450,6 +450,8 @@ async function openBuilderRoute(page: Page, route: PolicySmokeRoute): Promise<vo
     if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
     await page.getByTestId(`workflows-list-item-${POLICY_SMOKE_WORKFLOW_ID}`).click();
     await expect(page.locator('.wf-branches')).toHaveCount(1);
+    await expect(page.getByTestId('candidate-block-editor')).toBeVisible();
+    await expect(page.getByTestId('workflow-canvas-candidate-block-banner')).toBeVisible();
   }
   if (route === 'models') {
     await expect(page.locator('.models-container')).toBeVisible();

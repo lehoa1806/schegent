@@ -26,7 +26,14 @@
 // whole reason to draw it top-to-bottom rather than in authored array order.
 
 import {
+  DEFAULT_CANDIDATE_ATTEMPTS,
+  DEFAULT_CANDIDATE_AVAILABILITY_POLICY,
+  DEFAULT_CANDIDATE_BLOCK_DISPATCHES,
+  DEFAULT_MONITORING_WINDOW_MS,
   formatConditionSummary,
+  type CandidateAvailabilityPolicy,
+  type CandidateBlockControl,
+  type PortablePhaseDefinition,
   type WorkflowCondition,
   type WorkflowConditionOperator,
   type WorkflowConnection,
@@ -292,4 +299,87 @@ export function buildWorkflowFlowLayout(input: WorkflowFlowInput): WorkflowFlowL
   }
 
   return { slots, detached, cycleNodeIds: [...state.cycle] };
+}
+
+export interface CandidateBlockCanvasCandidate {
+  readonly candidateId: string;
+  readonly nodeId: string;
+  readonly priority: number;
+  readonly maxAttempts: number;
+  readonly retrySummary: string;
+  readonly allowUnverifiedTrial: boolean;
+  readonly phaseId?: string;
+  readonly phaseName: string;
+  readonly runner?: string;
+  readonly model?: string;
+  readonly instructionSummary: string;
+  readonly operatorKind: string;
+}
+
+export interface CandidateBlockCanvasDescriptor {
+  readonly selectionMode: 'exclusive-single-active';
+  readonly availabilityPolicy: CandidateAvailabilityPolicy;
+  readonly maxDispatches: number;
+  readonly monitoringWindowMs: number;
+  readonly maxMicrousd?: number;
+  readonly candidates: readonly CandidateBlockCanvasCandidate[];
+  readonly validatedReturnPath: string;
+  readonly terminalExits: readonly ['failed', 'intervention-required'];
+  readonly hasCyclicEdges: false;
+}
+
+/**
+ * FR-R5-F32 (F32-T03) — Pure descriptor for candidate-block collapsed and expanded
+ * canvas views. Represents exclusive single-active candidate selection, per-candidate
+ * retry adornments, the validated return path, and failed/intervention terminal exits
+ * without cyclic edges or parallel execution ambiguity.
+ */
+export function describeCandidateBlockCanvasPath(
+  control: CandidateBlockControl | undefined,
+  nodes: readonly WorkflowNode[],
+  phases: readonly PortablePhaseDefinition[] = []
+): CandidateBlockCanvasDescriptor | null {
+  if (!control) return null;
+  const nodeMap = new Map(nodes.map((n) => [n.nodeId, n]));
+  const phaseMap = new Map(phases.map((p) => [p.phaseId, p]));
+
+  const candidates: CandidateBlockCanvasCandidate[] = control.candidates.map((cand, index) => {
+    const node = nodeMap.get(cand.nodeId);
+    const phase = node?.phaseId ? phaseMap.get(node.phaseId) : undefined;
+    const maxAttempts = cand.maxAttempts ?? DEFAULT_CANDIDATE_ATTEMPTS;
+    const maxRetries = Math.max(0, maxAttempts - 1);
+    const retrySummary =
+      maxRetries > 0
+        ? `Up to ${maxAttempts} attempts (${maxRetries} retries${cand.retry?.initialDelayMs ? `, ${cand.retry.initialDelayMs}ms initial backoff` : ''})`
+        : `${maxAttempts} attempt${maxAttempts === 1 ? '' : 's'} (no retry)`;
+    const rawInstr = phase?.instruction?.trim().replace(/\s+/g, ' ') ?? '';
+    const instructionSummary =
+      rawInstr.length > 72 ? `${rawInstr.slice(0, 69)}...` : rawInstr || '(no Phase instruction)';
+    return {
+      candidateId: cand.candidateId,
+      nodeId: cand.nodeId,
+      priority: cand.priority ?? index + 1,
+      maxAttempts,
+      retrySummary,
+      allowUnverifiedTrial: cand.allowUnverifiedTrial === true,
+      ...(phase?.phaseId !== undefined ? { phaseId: phase.phaseId } : node?.phaseId ? { phaseId: node.phaseId } : {}),
+      phaseName: phase?.name ?? node?.label ?? node?.phaseId ?? cand.nodeId,
+      ...(phase?.runner ? { runner: phase.runner } : {}),
+      ...(phase?.model ? { model: phase.model } : {}),
+      instructionSummary,
+      operatorKind: phase?.retryCondition ? `retry:${phase.retryCondition}` : 'phase-result'
+    };
+  });
+
+  return {
+    selectionMode: 'exclusive-single-active',
+    availabilityPolicy: control.availabilityPolicy ?? DEFAULT_CANDIDATE_AVAILABILITY_POLICY,
+    maxDispatches: control.maxDispatches ?? DEFAULT_CANDIDATE_BLOCK_DISPATCHES,
+    monitoringWindowMs: control.monitoringWindowMs ?? DEFAULT_MONITORING_WINDOW_MS,
+    ...(control.budget?.mode === 'strict-usd' ? { maxMicrousd: control.budget.limitMicrousd } : {}),
+    candidates,
+    validatedReturnPath: 'Single validated candidate return',
+    terminalExits: ['failed', 'intervention-required'],
+    hasCyclicEdges: false
+  };
 }

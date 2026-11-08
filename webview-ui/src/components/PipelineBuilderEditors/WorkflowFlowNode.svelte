@@ -46,6 +46,16 @@
   const selected = $derived(
     view.selection?.kind === "node" && view.selection.index === index,
   );
+  const candidateIndex = $derived(
+    node && view.control
+      ? view.control.candidates.findIndex((c) => c.nodeId === node.nodeId)
+      : -1,
+  );
+  const candidateEntry = $derived(
+    candidateIndex >= 0 && view.control
+      ? (view.control.candidates[candidateIndex] ?? null)
+      : null,
+  );
   const inCycle = $derived(
     node !== undefined && view.cycleNodeIds.includes(node.nodeId),
   );
@@ -137,6 +147,14 @@
           </span>
           {#if node.label?.trim()}
             <span class="wf-badge">{node.nodeId}</span>
+          {/if}
+          {#if candidateEntry}
+            <span
+              class="wf-badge"
+              data-testid="workflow-node-candidate-badge-{index}"
+            >
+              Candidate #{candidateIndex + 1}: {candidateEntry.candidateId} · {candidateEntry.maxAttempts ?? 1} attempts
+            </span>
           {/if}
           {#if phaseRetrySummary}
             <span

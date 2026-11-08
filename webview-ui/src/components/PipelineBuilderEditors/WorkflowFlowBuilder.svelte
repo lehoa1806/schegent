@@ -118,6 +118,7 @@
     nodes={p.row.nodes}
     connections={p.row.connections}
     startNodeIds={p.row.startNodeIds}
+    control={p.row.control}
     pipelines={p.pipelines}
     phases={p.phases}
     workflows={p.workflows}

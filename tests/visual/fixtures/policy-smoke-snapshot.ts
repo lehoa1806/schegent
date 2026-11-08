@@ -68,7 +68,31 @@ const WORKFLOW_DEFINITION = {
     { from: { nodeId: 'triage' }, to: { nodeId: 'fix' } },
     { from: { nodeId: 'triage' }, to: { nodeId: 'ship' } }
   ],
-  startNodeIds: ['triage']
+  startNodeIds: ['triage'],
+  control: {
+    version: 1,
+    kind: 'candidate-block' as const,
+    candidates: [
+      {
+        candidateId: 'cand-triage',
+        nodeId: 'triage',
+        priority: 1,
+        maxAttempts: 2,
+        allowUnverifiedTrial: false
+      },
+      {
+        candidateId: 'cand-fix',
+        nodeId: 'fix',
+        priority: 2,
+        maxAttempts: 3,
+        allowUnverifiedTrial: true
+      }
+    ],
+    availabilityPolicy: 'first-ready' as const,
+    maxDispatches: 10,
+    monitoringWindowMs: 86_400_000,
+    budget: { mode: 'count-only' as const }
+  }
 } as const;
 
 /** The base snapshot with a Phase catalog and a Workflow catalog added. */

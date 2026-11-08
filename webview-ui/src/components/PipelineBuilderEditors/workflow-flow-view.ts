@@ -12,6 +12,7 @@
 // every level. One object forwarded whole cannot fall out of step with itself.
 
 import type {
+  CandidateBlockControl,
   PortablePhaseDefinition,
   PortablePipelineDefinition,
   PortableWorkflowDefinition,
@@ -54,6 +55,7 @@ export interface WorkflowFlowView {
   readonly pipelines: readonly PortablePipelineDefinition[];
   readonly phases?: readonly PortablePhaseDefinition[];
   readonly workflows?: readonly PortableWorkflowDefinition[];
+  readonly control?: CandidateBlockControl;
   /** Both indexed alongside their authored list; see `anchorWorkflowDefects`. */
   readonly nodeDefects: readonly (readonly WorkflowDraftError[])[];
   readonly connectionDefects: readonly (readonly WorkflowDraftError[])[];
