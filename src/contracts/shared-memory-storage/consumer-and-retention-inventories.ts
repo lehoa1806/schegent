@@ -21,6 +21,14 @@ import {
   type Round6FeatureId,
   type StorageBoundaryOutcome
 } from './inventories';
+import {
+  OUTSTANDING_ACCOUNTING_INTENTS_MAX_BYTES,
+  OUTSTANDING_ACCOUNTING_INTENTS_MAX_ITEMS,
+  PENDING_ACCOUNTING_PROJECTION_MAX_BYTES,
+  PENDING_ACCOUNTING_PROJECTION_MAX_ITEMS,
+  RESOURCE_COLLECTOR_MAX_BYTES,
+  RESOURCE_COLLECTOR_MAX_SAMPLES
+} from '../runtime-resource-budgets/common-bounds';
 
 export interface FeatureOwnedLimit {
   readonly limitName: string;
@@ -117,7 +125,23 @@ export const ROUND6_FEATURE_CONSUMER_MAPPING: readonly Round6FeatureConsumerEntr
     ],
     outputAuthorities: ['current-execution-admission-permits'],
     sharedFieldsConsumed: ['schemaVersion', 'rootExecutionId', 'queueId', 'attemptId', 'streamCursor'],
-    ownedLimits: [{ limitName: 'accountingIntentQueueItems', maxItems: 256 }],
+    ownedLimits: [
+      {
+        limitName: 'resourceCollectorWindow',
+        maxItems: RESOURCE_COLLECTOR_MAX_SAMPLES,
+        maxBytes: RESOURCE_COLLECTOR_MAX_BYTES
+      },
+      {
+        limitName: 'pendingAccountingProjectionWork',
+        maxItems: PENDING_ACCOUNTING_PROJECTION_MAX_ITEMS,
+        maxBytes: PENDING_ACCOUNTING_PROJECTION_MAX_BYTES
+      },
+      {
+        limitName: 'outstandingAccountingIntents',
+        maxItems: OUTSTANDING_ACCOUNTING_INTENTS_MAX_ITEMS,
+        maxBytes: OUTSTANDING_ACCOUNTING_INTENTS_MAX_BYTES
+      }
+    ],
     targetArchitecture: TARGET_ARCHITECTURE_BOUNDARY
   },
   {

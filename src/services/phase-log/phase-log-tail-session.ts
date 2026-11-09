@@ -43,6 +43,7 @@ import { StreamLineProjector } from './phase-log-display-projector';
 import { sanitizeDisplayEntryBody } from './phase-log-sanitizer';
 import { truncateDisplayEntryBody } from './phase-log-truncator';
 import { readBoundedRange, readBoundedTail } from '../../lib/bounded-read';
+import { DEFAULT_MAX_LINE_UNITS } from '../../lib/line-framer';
 
 export type TailEndedReason = 'webview-stop' | 'webview-dispose' | 'phase-complete';
 
@@ -67,7 +68,10 @@ export interface PhaseLogTailSessionDeps {
   readonly selection: PhaseLogSelection;
   readonly pushToWebview: (msg: PhaseLogEntryPushPayload) => void;
   readonly sanitize: (s: string) => string;
-  readonly caps: { readonly perFieldBytes: number };
+  readonly caps: {
+    readonly perFieldBytes: number;
+    readonly maxResidualUnits?: number;
+  };
 }
 
 export class PhaseLogTailSession {
@@ -78,10 +82,15 @@ export class PhaseLogTailSession {
 
   private readonly pushToWebview: (msg: PhaseLogEntryPushPayload) => void;
   private readonly sanitize: (s: string) => string;
-  private readonly caps: { readonly perFieldBytes: number };
+  private readonly caps: {
+    readonly perFieldBytes: number;
+    readonly maxResidualUnits?: number;
+  };
 
   private offset = 0;
   private partial = '';
+  private discardingOversizeLine = false;
+  private droppedUnitsTotal = 0;
   // Feature 020 BUG-002 (T083) — holds an agy step open across ticks.
   private projector = new StreamLineProjector();
   /**
@@ -120,8 +129,42 @@ export class PhaseLogTailSession {
     return this.skippedLeadingBytes;
   }
 
+  /**
+   * FR-R6-F03 (T016, US4) — UTF-16 units discarded from unterminated records
+   * that exceeded the cross-tick residual bound (`DEFAULT_MAX_LINE_UNITS`).
+   */
+  get droppedResidualUnits(): number {
+    return this.droppedUnitsTotal;
+  }
+
+  get retainedResidualUnits(): number {
+    return this.partial.length;
+  }
+
   get isDisposed(): boolean {
     return this.disposed;
+  }
+
+  private emitDisplayOmissionNotice(maxResidualUnits: number): void {
+    this.seq += 1;
+    const notice: PhaseLogDisplayEntry = {
+      seq: this.seq,
+      kind: 'system',
+      ts: null,
+      body: {
+        systemSubtype: 'display-omission',
+        systemSummary: `Display buffer omitted an unterminated log record exceeding ${maxResidualUnits} UTF-16 units (${this.droppedUnitsTotal} units dropped total); authoritative phase log file is unchanged.`
+      },
+      bodyTruncated: null
+    };
+    const truncated = truncateDisplayEntryBody(notice, this.caps);
+    const sanitized = sanitizeDisplayEntryBody(truncated, this.sanitize);
+    const stamped: PhaseLogDisplayEntry = { ...sanitized, seq: this.seq };
+    this.pushToWebview({
+      tailSessionId: this.sessionId,
+      entrySeq: this.seq,
+      entry: stamped
+    });
   }
 
   async tick(): Promise<void> {
@@ -148,6 +191,7 @@ export class PhaseLogTailSession {
           // re-emit already-emitted entries via partial-line confusion.
           this.offset = 0;
           this.partial = '';
+          this.discardingOversizeLine = false;
           // Feature 020 BUG-002 (T083) — an agy step held from the old file
           // must not absorb the new file's lines.
           this.projector = new StreamLineProjector();
@@ -171,10 +215,48 @@ export class PhaseLogTailSession {
         if (range.bytes.length === 0) return;
         this.offset = range.nextOffset;
         if (range.skippedBytes > 0) this.skippedLeadingBytes += range.skippedBytes;
-        const slice = range.bytes;
+
+        const maxResidualUnits = this.caps.maxResidualUnits ?? DEFAULT_MAX_LINE_UNITS;
+        let sliceText = range.bytes.toString('utf8');
+
+        if (this.discardingOversizeLine) {
+          const nlIdx = sliceText.indexOf('\n');
+          if (nlIdx === -1) {
+            this.droppedUnitsTotal += sliceText.length;
+            return;
+          }
+          this.droppedUnitsTotal += nlIdx;
+          this.skipped += 1;
+          this.discardingOversizeLine = false;
+          this.partial = '';
+          sliceText = sliceText.slice(nlIdx + 1);
+          if (sliceText.length === 0) return;
+        }
+
+        const firstNl = sliceText.indexOf('\n');
+        if (firstNl === -1) {
+          if (this.partial.length + sliceText.length > maxResidualUnits) {
+            this.droppedUnitsTotal += this.partial.length + sliceText.length;
+            this.partial = '';
+            this.discardingOversizeLine = true;
+            this.emitDisplayOmissionNotice(maxResidualUnits);
+            return;
+          }
+          this.partial += sliceText;
+          return;
+        }
+
+        if (this.partial.length + firstNl > maxResidualUnits) {
+          this.droppedUnitsTotal += this.partial.length + firstNl;
+          this.skipped += 1;
+          this.partial = '';
+          this.emitDisplayOmissionNotice(maxResidualUnits);
+          sliceText = sliceText.slice(firstNl + 1);
+          if (sliceText.length === 0) return;
+        }
+
         const { parsedLines, skippedLines, partialTrailingBuffer } =
-          parseStreamJsonlBytes(slice, this.partial);
-        this.partial = partialTrailingBuffer;
+          parseStreamJsonlBytes(sliceText, this.partial);
         this.skipped += skippedLines;
         for (const projected of parsedLines.flatMap((line) => this.projector.project(line))) {
           const truncated = truncateDisplayEntryBody(projected, this.caps);
@@ -186,6 +268,15 @@ export class PhaseLogTailSession {
             entrySeq: this.seq,
             entry: stamped
           });
+        }
+
+        if (partialTrailingBuffer.length > maxResidualUnits) {
+          this.droppedUnitsTotal += partialTrailingBuffer.length;
+          this.partial = '';
+          this.discardingOversizeLine = true;
+          this.emitDisplayOmissionNotice(maxResidualUnits);
+        } else {
+          this.partial = partialTrailingBuffer;
         }
       } finally {
         try {

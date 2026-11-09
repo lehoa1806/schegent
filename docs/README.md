@@ -207,6 +207,7 @@ neither listed nor excluded.
 - [Workflow control flow, repetition, and backend recovery](operations/workflow-control-recovery.md) — candidate recovery blocks, scoped child-Workflow `Repeat`, sequential `ForEach`, durable availability monitoring, and workspace handover (`FR-R5-F35`)
 - [Production workflow integration and support boundary matrix](operations/production-workflow-integration-matrix.md) — entry-point wiring census, production collaborator composition, seven-category refusal taxonomy, eight-checkpoint recovery, and F08/F01-B seams (`FR-R6-F01`)
 - [Shared memory and storage contracts](operations/shared-memory-storage-contracts.md) — C1 field dictionary, current-record mappings, C2 single-authority inventory, 15-feature consumer mapping, C4 retention inventory, and acceptance fixtures (`FR-R6-F02`)
+- [Runtime resource budgets and qualification](operations/runtime-resource-budgets.md) — runtime resource inventory, FR-015 common queue and query bounds, registered qualification targets, current-store migration baselines, and pending joint qualification (`FR-R6-F03`)
 - [Release notes](operations/release-notes.md)
 - [Release provenance observation](operations/release-provenance-observation.md)
 - [Retry contract](operations/retry-contract.md) — **written 2026-10-28**: which failures retry, pause or fail, where each delay comes from, where automatic attempts stop, and how the watchdog handles them, and what Resume, Restart, Skip and a row Retry each do to a failed run
