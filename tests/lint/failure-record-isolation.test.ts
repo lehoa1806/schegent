@@ -57,7 +57,11 @@ const ALLOWED_IMPORTERS: ReadonlyArray<RegExp> = [
   // FR-R5-F19 (feature 278) — the blocker notice reads only the record module's tag constant
   // (`BLOCKING_ISSUE_TAGS`) and its tag normaliser to say which two tags block work. It never reads a
   // failure record and feeds nothing back into a decision (L4.2 still names none of the five areas).
-  /^src\/services\/blocker-notice\.ts$/
+  /^src\/services\/blocker-notice\.ts$/,
+  // FR-R6-F03 (feature 302) — the runtime resource inventory imports only the record's bounds
+  // (`FAILURE_RECORD_RETAINED_MAX` and `FAILURE_RECORD_MAX_BYTES`) so the inventory states them from
+  // the constants that enforce them. It never reads a failure record and is not a decision site.
+  /^src\/services\/runtime-resource-budgets\/resource-inventory\.ts$/
 ];
 
 /** L4.2 — the places a decision is made. A violation here is named as such. */
