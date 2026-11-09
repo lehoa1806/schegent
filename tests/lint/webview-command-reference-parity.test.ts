@@ -18,7 +18,7 @@
 //   5. the registered-only table's id set equals the disposition ids minus `contributes.commands`.
 //
 // VACUITY. A parse that finds nothing would pass every check above. The real page must yield at
-// least 63 inbound rows and at least one registered-only row, and each of five fixture mutations of an
+// least 64 inbound rows and at least one registered-only row, and each of five fixture mutations of an
 // in-memory copy (a dropped row, an added row, a flipped authority, a host-to-webview row, a dropped
 // registered-only row) must fail the same checks. Nothing is written to the page.
 
@@ -133,9 +133,9 @@ function registeredOnlyViolations(page: string): readonly string[] {
 }
 
 describe('the webview command reference matches the code (T19; SC-007)', () => {
-  it('parses the real page: at least 63 inbound rows and a registered-only list (vacuity guard)', () => {
-    expect(COMMAND_TYPES).toHaveLength(63);
-    expect(inboundRows(REFERENCE).length).toBeGreaterThanOrEqual(63);
+  it('parses the real page: at least 64 inbound rows and a registered-only list (vacuity guard)', () => {
+    expect(COMMAND_TYPES).toHaveLength(64);
+    expect(inboundRows(REFERENCE).length).toBeGreaterThanOrEqual(64);
     expect(registeredOnlyIds(REFERENCE).length).toBeGreaterThan(0);
   });
 

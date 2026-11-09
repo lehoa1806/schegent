@@ -51,6 +51,7 @@ export const SIDEBAR_COMMAND_TYPES = [
   "CMD_RESOLVE_HISTORY_DESCRIPTION",
   "CMD_READ_FAILURE_RECORD",
   "CMD_OPEN_DECISION_RECORD",
+  "CMD_READ_STORAGE_DETAILS",
   "CMD_SET_PHASE_BREAKPOINT",
   "CMD_CLEAR_PHASE_BREAKPOINT",
   "CMD_START_QUEUE",
@@ -207,7 +208,8 @@ export const AUDIT_EVENT_TYPES = [
   "control-wait",
   "control-return",
   "control-notice",
-  "control-command"
+  "control-command",
+  "artifact-lifecycle-mutation"
 ] as const;
 
 export const SETTINGS_KEYS = [

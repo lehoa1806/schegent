@@ -377,7 +377,7 @@ export function retentionDisclosure(): readonly RetentionInventoryRow[] {
         CHECKPOINT_MAX_TOTAL_BYTES
       )} MiB total, with the ${CHECKPOINT_RECENT_RUN_FLOOR} most recent Run directories protected from the size limit; deliberately outside the workspace`,
       sweptBy: ['activation'],
-      liveProtection: `the ${CHECKPOINT_RECENT_RUN_FLOOR} most recent Run directories are protected from the size limit`,
+      liveProtection: `active and paused Runs are pinned against both limits; the ${CHECKPOINT_RECENT_RUN_FLOOR} most recent Run directories are protected from the size limit`,
       onDelete: 'removed',
       onExport: 'n/a',
       source: 'CHECKPOINT_MAX_AGE_MS / CHECKPOINT_MAX_TOTAL_BYTES / CHECKPOINT_RECENT_RUN_FLOOR in src/services/run-checkpoint-retention.ts'

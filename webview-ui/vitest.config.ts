@@ -101,10 +101,14 @@ export default defineConfig({
       // Raised on feature 252 (trusted commands and acknowledgements), whose
       // intent-ledger tests measured 91.38% statements / 84.11% functions /
       // 91.38% lines; branches were not flagged and stay at 75.
+      //
+      // Functions raised 79 → 81 on FR-R6-F05 (artifact lifecycle), whose
+      // storage-details IPC tests measured 91.91% statements / 79.43% branches /
+      // 86.07% functions / 91.91% lines; only functions was flagged.
       thresholds: {
         statements: 86,
         branches: 75,
-        functions: 79,
+        functions: 81,
         lines: 86
       }
     }

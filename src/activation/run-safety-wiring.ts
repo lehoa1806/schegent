@@ -30,6 +30,7 @@ import { createSpendBoundWatcher, spendSeedTargets } from '../services/spend-bou
 import { readSpendReplay } from '../services/spend-bound-replay';
 import { readSpendLimits } from './uncached-settings-accessors';
 import { RunCheckpointService } from '../services/run-checkpoint-service';
+import { recoveryPinnedRunPredicate } from '../services/artifact-lifecycle/run-recovery-pins';
 import { RunCheckpointRetentionService } from '../services/run-checkpoint-retention';
 import { RunMutationLedger } from '../services/run-mutation-ledger';
 import type { SessionArtifactRetentionService } from '../services/session-retention/session-artifact-retention-service';
@@ -259,9 +260,12 @@ export async function createRunSafetyWiring(input: {
     )
   );
 
+  // FR-R6-F05 (FR-005) — active and paused runs pin their checkpoints; the
+  // predicate reads the run map at sweep time, not at construction.
   const checkpointRetention = new RunCheckpointRetentionService({
     globalStorageRoot: input.context.globalStorageUri.fsPath,
-    logger: input.logger
+    logger: input.logger,
+    isPinnedRun: recoveryPinnedRunPredicate(() => input.store.getRunMap())
   });
   // FR-R3-136 (FR-011) — deferred with the same reasoning, and it needs its own
   // sentence because the writes are NOT under the workspace: the sweep deletes

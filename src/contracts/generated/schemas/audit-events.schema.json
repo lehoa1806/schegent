@@ -155,7 +155,8 @@
           "control-wait",
           "control-return",
           "control-notice",
-          "control-command"
+          "control-command",
+          "artifact-lifecycle-mutation"
         ]
       },
       "uniqueItems": true
