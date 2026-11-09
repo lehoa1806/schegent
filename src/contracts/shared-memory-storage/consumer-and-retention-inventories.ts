@@ -29,6 +29,10 @@ import {
   RESOURCE_COLLECTOR_MAX_BYTES,
   RESOURCE_COLLECTOR_MAX_SAMPLES
 } from '../runtime-resource-budgets/common-bounds';
+import {
+  SQLITE_WRITER_MAX_QUEUE_BYTES,
+  SQLITE_WRITER_MAX_QUEUE_REQUESTS
+} from '../sqlite-store/schema-types';
 
 export interface FeatureOwnedLimit {
   readonly limitName: string;
@@ -169,8 +173,8 @@ export const ROUND6_FEATURE_CONSUMER_MAPPING: readonly Round6FeatureConsumerEntr
       'sourceCutoff'
     ],
     ownedLimits: [
-      { limitName: 'writerAdmissionQueueRequests', maxItems: 64 },
-      { limitName: 'writerAdmissionQueueBytes', maxBytes: 16_777_216 }
+      { limitName: 'writerAdmissionQueueRequests', maxItems: SQLITE_WRITER_MAX_QUEUE_REQUESTS },
+      { limitName: 'writerAdmissionQueueBytes', maxBytes: SQLITE_WRITER_MAX_QUEUE_BYTES }
     ],
     targetArchitecture: TARGET_ARCHITECTURE_BOUNDARY
   },

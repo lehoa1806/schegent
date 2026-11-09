@@ -323,7 +323,14 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/contracts/control-ledger.ts',
   'src/services/backend-availability-service.ts',
   'src/services/workflow-execution/control-attempt-admission.ts',
-  'src/services/workflow-execution/control-ledger-store.ts'
+  'src/services/workflow-execution/control-ledger-store.ts',
+  // FR-R6-F04 — `SqliteRunStatus`, `SqliteStepStatus`, and `AttemptStatus` SQLite
+  // relational table CHECK constraints and `Admission` transaction unit defaults
+  // for `runs`, `step_executions`, and `attempts`, never the legacy per-task
+  // Memento projection discriminator.
+  'src/contracts/sqlite-store/schema-types.ts',
+  'src/services/sqlite-store/schema-bootstrap.ts',
+  'src/services/sqlite-store/transaction-units.ts'
   // FR-R3-150 added `webview-ui/src/lib/queue-derived.ts` here for a comment
   // quoting `queue-manager.ts`'s lifecycle ternary verbatim. The comment is
   // gone (2026-09-04), so the entry excused nothing and
