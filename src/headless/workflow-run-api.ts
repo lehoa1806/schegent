@@ -55,6 +55,10 @@ import {
   ControlCommandService,
   type ControlCommandServiceDeps
 } from '../services/workflow-execution/control-command-service';
+import {
+  getOrCreateProductionWorkflowComposition,
+  type ProductionWorkflowComposition
+} from '../services/workflow-execution/production-workflow-composition';
 import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
 import {
   launchComposableWorkflow,
@@ -166,6 +170,7 @@ export async function launchComposableWorkflowRun(
     envelope: validation.plan,
     workspaceRoot: input.workspaceRoot,
     startedAt: input.startedAt,
+    entryPointId: 'headless.launchWorkflow',
     ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
     ...(input.releaseRootLease !== undefined
       ? { releaseRootLease: input.releaseRootLease }
@@ -189,7 +194,9 @@ export type ContinueComposableWorkflowHandoffResult =
  * (FR-015, FR-016, FR-018).
  */
 export async function continueComposableWorkflowHandoff(
-  deps: ContinueWaitingHandoffDeps & ComposableWorkflowCoordinatorDeps,
+  deps: ContinueWaitingHandoffDeps & ComposableWorkflowCoordinatorDeps & {
+    readonly productionComposition?: ProductionWorkflowComposition;
+  },
   input: ContinueComposableWorkflowHandoffInput
 ): Promise<ContinueComposableWorkflowHandoffResult> {
   const rootRefusal = checkWorkspaceRoot(input?.workspaceRoot);
@@ -203,12 +210,31 @@ export async function continueComposableWorkflowHandoff(
     return accepted;
   }
 
-  return dispatchComposableNode(deps, {
-    run: accepted.run,
-    invocationId: input.invocationId,
-    nodeId: input.targetNodeId,
-    startedAt: input.acceptedAt
-  });
+  const composition =
+    deps.productionComposition ??
+    getOrCreateProductionWorkflowComposition(deps.connectedRuns, {
+      ...(input.workspaceRoot !== null ? { workspaceRoot: input.workspaceRoot } : {})
+    });
+
+  return dispatchComposableNode(
+    {
+      ...composition.createCoordinatorDeps({
+        connectedRuns: deps.connectedRuns,
+        dispatchPhase: deps.dispatchPhase,
+        ...(input.workspaceRoot !== null ? { workspaceRoot: input.workspaceRoot } : {}),
+        ...(deps.cancelOrphanedQueueItem !== undefined
+          ? { cancelOrphanedQueueItem: deps.cancelOrphanedQueueItem }
+          : {})
+      }),
+      ...deps
+    },
+    {
+      run: accepted.run,
+      invocationId: input.invocationId,
+      nodeId: input.targetNodeId,
+      startedAt: input.acceptedAt
+    }
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +248,9 @@ export async function continueComposableWorkflowHandoff(
  * compare-and-set.
  */
 export async function executeComposableWorkflowControlCommand(
-  deps: WorkflowControlServiceDeps,
+  deps: WorkflowControlServiceDeps & {
+    readonly productionComposition?: ProductionWorkflowComposition;
+  },
   request: WorkflowControlCommandRequest
 ): Promise<WorkflowControlCommandOutcome | BoundaryRefusal> {
   if (typeof request?.runId !== 'string' || request.runId.trim().length === 0) {
@@ -237,7 +265,18 @@ export async function executeComposableWorkflowControlCommand(
   if (!Number.isFinite(request.now)) {
     return { outcome: 'rejected-argument', field: 'now', code: 'wrong-type' };
   }
-  const service = new WorkflowControlService(deps);
+  const composition =
+    deps.productionComposition ??
+    getOrCreateProductionWorkflowComposition(deps.connectedRuns, {
+      ...(deps.workspaceRoot !== undefined ? { workspaceRoot: deps.workspaceRoot } : {})
+    });
+  const service = new WorkflowControlService({
+    controlAdmission: composition.controlAdmission,
+    repeatExecutor: composition.repeatExecutor,
+    forEachExecutor: composition.forEachExecutor,
+    controlCommandService: composition.controlCommandService,
+    ...deps
+  });
   return service.executeCommand(request);
 }
 
@@ -246,7 +285,9 @@ export async function executeComposableWorkflowControlCommand(
  * shared `WorkflowRecoveryService`.
  */
 export async function recoverComposableWorkflowRun(
-  deps: WorkflowRecoveryServiceDeps,
+  deps: WorkflowRecoveryServiceDeps & {
+    readonly productionComposition?: ProductionWorkflowComposition;
+  },
   input: { readonly runId: string; readonly now: number }
 ): Promise<ReconcileConnectedRunResult | BoundaryRefusal | undefined> {
   if (typeof input?.runId !== 'string' || input.runId.trim().length === 0) {
@@ -255,7 +296,20 @@ export async function recoverComposableWorkflowRun(
   if (!Number.isFinite(input.now)) {
     return { outcome: 'rejected-argument', field: 'now', code: 'wrong-type' };
   }
-  const service = new WorkflowRecoveryService(deps);
+  const composition =
+    deps.productionComposition ??
+    getOrCreateProductionWorkflowComposition(deps.connectedRuns, {
+      ...(deps.workspaceRoot !== undefined ? { workspaceRoot: deps.workspaceRoot } : {})
+    });
+  const service = new WorkflowRecoveryService({
+    controlAdmission: composition.controlAdmission,
+    repeatExecutor: composition.repeatExecutor,
+    forEachExecutor: composition.forEachExecutor,
+    quotaPermitArbiter: composition.quotaPermitArbiter,
+    notificationService: composition.notificationService,
+    usageAccounting: composition.usageAccounting,
+    ...deps
+  });
   return service.reconcileRun(input.runId, input.now);
 }
 

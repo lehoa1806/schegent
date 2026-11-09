@@ -45,11 +45,13 @@ import {
   phaseDispatchResultOf,
   startPhaseAttempt
 } from '../services/workflow-execution/phase-attempt-start';
-import { WorkflowControlService } from '../services/workflow-execution/workflow-control-service';
 import {
-  WorkflowRecoveryService,
-  type DurableAttemptEvidenceResult
-} from '../services/workflow-execution/workflow-recovery-service';
+  getOrCreateProductionWorkflowComposition,
+  type ProductionWorkflowComposition
+} from '../services/workflow-execution/production-workflow-composition';
+import type { DurableAttemptEvidenceResult } from '../services/workflow-execution/workflow-recovery-service';
+import { createBackendAvailabilityWiring } from './backend-wiring';
+import type { BackendCapabilityService } from '../services/backend-capability-service';
 import { isWorkflowNodeTerminalStatus } from '../contracts/workflow-definitions';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import type { ResolvedPortValue } from '../contracts/run-request';
@@ -472,6 +474,8 @@ export async function reconcileComposableWorkflowRuns(input: {
   readonly getGuardedRun?: () => NodeRunStartDeps['guardedRun'] | undefined;
   readonly getDefaultRunnerKind?: () => BackendRunnerKind | undefined;
   readonly isQueueOrTaskPresent?: (queueId: string, rootRunId: string) => boolean;
+  readonly capabilities?: BackendCapabilityService;
+  readonly productionComposition?: ProductionWorkflowComposition;
 }): Promise<void> {
   try {
     if (
@@ -484,7 +488,21 @@ export async function reconcileComposableWorkflowRuns(input: {
       (run) => run.invocations !== undefined
     );
     if (allRuns.length === 0) return;
-    const recovery = new WorkflowRecoveryService({
+    if (input.capabilities !== undefined && 'getRawControlLedger' in input.store) {
+      const availabilityWiring = createBackendAvailabilityWiring({
+        store: input.store as WorkspaceStateStore,
+        capabilities: input.capabilities,
+        hostEpoch: 'recovery-epoch'
+      });
+      availabilityWiring.dispose();
+    }
+    const composition =
+      input.productionComposition ??
+      getOrCreateProductionWorkflowComposition(input.store, {
+        workspaceRoot: input.workspaceRoot
+      });
+    const recovery = composition.createRecoveryService({
+      workspaceRoot: input.workspaceRoot,
       connectedRuns: {
         get: (id) => input.store.getConnectedRuns()[id] ?? null,
         list: () =>
@@ -603,6 +621,7 @@ export async function recordConnectedWorkflowTransition(
     readonly logger: SanitizedLogger;
     readonly getGuardedRun?: () => NodeRunStartDeps['guardedRun'] | undefined;
     readonly getDefaultRunnerKind?: () => BackendRunnerKind | undefined;
+    readonly productionComposition?: ProductionWorkflowComposition;
   },
   run: import('../state/workflow-run').WorkflowRun
 ): Promise<void> {
@@ -644,7 +663,27 @@ export async function recordConnectedWorkflowTransition(
                 candidate.queueItemId === run.featureId && candidate.status === 'in-flight'
             );
             if (matchedAttempt === undefined) continue;
-            const controlService = new WorkflowControlService({
+            const composition =
+              input.productionComposition ??
+              getOrCreateProductionWorkflowComposition(input.store, {
+                ...(input.workspaceRoot !== undefined
+                  ? { workspaceRoot: input.workspaceRoot }
+                  : {})
+              });
+            const phase =
+              workflowRun.frozenClosure?.phasesById[matchedAttempt.targetDefinitionId];
+            const evaluated = await composition.evaluateSettlementOutcome({
+              attemptId: matchedAttempt.attemptId,
+              workspaceRoot: input.workspaceRoot ?? '',
+              status: run.status,
+              phase,
+              declaredOutputs: buildDeclaredOutputsFromRun(run.runOutputs),
+              evaluatedAt: run.lastTransitionAt
+            });
+            const controlService = composition.createControlService({
+              ...(input.workspaceRoot !== undefined
+                ? { workspaceRoot: input.workspaceRoot }
+                : {}),
               connectedRuns: {
                 get: (id) => input.store.getConnectedRuns()[id] ?? null,
                 compareAndSetConnectedRun: (next, rev) =>
@@ -657,9 +696,16 @@ export async function recordConnectedWorkflowTransition(
               invocationId: frame.invocationId,
               nodeId: matchedAttempt.nodeId,
               attemptIndex: matchedAttempt.attemptIndex,
-              status: run.status,
+              status: evaluated.status,
               completedAt: run.lastTransitionAt,
-              declaredOutputs: buildDeclaredOutputsFromRun(run.runOutputs)
+              declaredOutputs: evaluated.declaredOutputs,
+              ...(evaluated.decisionResults !== undefined
+                ? { decisionResults: evaluated.decisionResults }
+                : {}),
+              ...(evaluated.verdict !== undefined ? { verdict: evaluated.verdict } : {}),
+              ...(evaluated.failureCode !== undefined
+                ? { failureCode: evaluated.failureCode }
+                : {})
             });
             return;
           }
