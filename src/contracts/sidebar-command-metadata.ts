@@ -33,6 +33,7 @@ import {
   CMD_READ_DEFINITION_VERSION,
   CMD_READ_FAILURE_RECORD,
   CMD_READ_STORAGE_DETAILS,
+  CMD_READ_USAGE_ACCOUNTING,
   CMD_OPEN_DECISION_RECORD,
   CMD_READ_METRICS,
   CMD_READ_PHASE_LOG,
@@ -293,6 +294,9 @@ export const COMMAND_AUTHORITY = Object.freeze({
   ),
   [CMD_READ_STORAGE_DETAILS]: readOnly(
     'storage details are a read-only projection of the lifecycle service; starts no process, writes no persisted state or file, appends no audit row and runs no sweep, repair, migration or probe'
+  ),
+  [CMD_READ_USAGE_ACCOUNTING]: readOnly(
+    'reads one revision-pinned page of the usage accounting store; starts no process, writes no persisted state or file, appends no audit row and ingests, corrects or imports nothing'
   )
 } satisfies Record<CommandType, CommandAuthority>);
 

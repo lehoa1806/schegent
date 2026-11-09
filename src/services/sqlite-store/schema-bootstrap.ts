@@ -23,6 +23,11 @@ import {
   F05_LIFECYCLE_MIGRATION_NAME,
   F05_LIFECYCLE_MIGRATION_VERSION
 } from '../artifact-lifecycle/lifecycle-schema';
+import {
+  F06_ACCOUNTING_DDL,
+  F06_ACCOUNTING_MIGRATION_NAME,
+  F06_ACCOUNTING_MIGRATION_VERSION
+} from '../usage-accounting/accounting-schema';
 
 export interface SchemaMigrationDefinition {
   readonly version: number;
@@ -793,6 +798,12 @@ export const BUILTIN_SCHEMA_MIGRATIONS: readonly SchemaMigrationDefinition[] = O
     version: F05_LIFECYCLE_MIGRATION_VERSION,
     name: F05_LIFECYCLE_MIGRATION_NAME,
     ddlStatements: F05_LIFECYCLE_DDL
+  },
+  {
+    // FR-R6-F06: additive and forward-only; never edit migrations 1 or 2.
+    version: F06_ACCOUNTING_MIGRATION_VERSION,
+    name: F06_ACCOUNTING_MIGRATION_NAME,
+    ddlStatements: F06_ACCOUNTING_DDL
   }
 ]);
 
