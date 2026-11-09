@@ -45,6 +45,7 @@ import {
 /** The closed key set of the aggregate, copied rather than imported on purpose. */
 const AGGREGATE_KEYS = [
   'connectedRunId',
+  'decisionObservations',
   'decisions',
   'graph',
   'nodes',

@@ -204,6 +204,11 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // operator reads — the same class as `webview-ui/src/lib/action-copy.ts` and
   // `src/commands/reset.ts` above.
   'webview-ui/src/components/PhaseLogFeed/PhaseLogEmptyStates.svelte',
+  // Feature 265 BUG-002 (FR-014) — checks `state.verboseDiagnosticsState?.kind === 'phase-running-no-output'`
+  // to reload the phase-log manifest when a new snapshot arrives for an in-flight phase that initially
+  // had zero iterations. Same `PhaseLogEmptyStateKind` member as `PhaseLogEmptyStates.svelte` above,
+  // never the pinned per-task `WorkflowRunStatus` projection.
+  'webview-ui/src/components/PhaseLogFeed/PhaseLogFeed.svelte',
   // Comment-only: one line naming the member whose card would otherwise survive a
   // live append, which is the reason the branch beside it reclassifies. Same case
   // as `src/services/phase-log/phase-log-reader.ts` directly above.
