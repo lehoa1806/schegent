@@ -711,15 +711,12 @@ export class RunDriver {
 
         const postDecision = this.sequencer.decideAfterPhase({
           run,
-          output,
-          iteration,
+          output, iteration,
           iterationCap: this.deps.options.iterationCap,
           activePhaseDef,
           latestManualPauseAt: (await this.latestSnapshotOf(run))?.manualPauseAt ?? null,
           now: Date.now(),
-          blockOwnedRetry:
-            activePhaseDef?.resultContract !== undefined &&
-            this.deps.queue.findById(run.featureId)?.workflowOccurrence !== undefined,
+          blockOwnedRetry: activePhaseDef?.resultContract !== undefined && this.deps.queue.findById(run.featureId)?.workflowOccurrence !== undefined,
           ...this.sequencer.liveRetryPolicyOf(this.deps.options)
         });
         this.handlePostPhaseDecisionSideEffects(run, postDecision, output.result, description);
