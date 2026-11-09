@@ -386,8 +386,8 @@ describe('OperationsSurface — member Tasks of a Workflow run (Feature 265 BUG-
         position: 1,
         lifecycle: 'running',
         tasks: [
-          task('m-a1', { status: 'failed', position: 0 }),
-          task('m-a2', { status: 'completed', position: 1 }),
+          task('m-a1', { status: 'failed', position: 0, currentPipelineId: 'specify' }),
+          task('m-a2', { status: 'completed', position: 1, currentPipelineId: 'specify' }),
           task('r-1', { label: 'generate the RFC', position: 2 }),
           ...(executing ? [live] : [])
         ],
@@ -460,6 +460,19 @@ describe('OperationsSurface — member Tasks of a Workflow run (Feature 265 BUG-
     await awaitTaskTier(view);
     expect(view.getByTestId('run-detail-back').textContent).toContain(WORKFLOW_ID);
     expect(view.getByTestId('run-detail-back').textContent).not.toContain('nightly');
+  });
+
+  it('opens the latest attempt Task directly from its step header button and restores focus on Back (BUG-002)', async () => {
+    const view = mount(memberSnapshot());
+    await openRun(view);
+    await fireEvent.click(view.getByTestId('workflow-node-id-specify'));
+    await awaitTaskTier(view);
+    expect(view.getByTestId('run-detail-back').textContent).toContain(WORKFLOW_ID);
+    expect(view.queryByTestId('phase-log-empty-no-phase')).toBeNull();
+
+    await fireEvent.click(view.getByTestId('run-detail-back'));
+    const headBtn = await awaitTier(view, 'workflow-node-id-specify');
+    await vi.waitFor(() => expect(document.activeElement).toBe(headBtn));
   });
 
   it('opens an earlier attempt Task from its attempt row', async () => {

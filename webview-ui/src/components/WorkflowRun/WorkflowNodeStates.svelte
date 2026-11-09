@@ -77,9 +77,22 @@
 
 <ul class="node-list" data-testid="workflow-node-states">
   {#each nodes as node (node.nodeId)}
+    {@const attempt = attemptOf(node)}
     <li class="node-row" data-testid={`workflow-node-${node.nodeId}`}>
       <div class="node-head">
-        <span class="node-id" data-testid={`workflow-node-id-${node.nodeId}`}>{node.nodeId}</span>
+        {#if attempt && onOpenTask}
+          <button
+            type="button"
+            class="node-id node-open"
+            data-testid={`workflow-node-id-${node.nodeId}`}
+            data-return-key={`node-head:${node.nodeId}`}
+            onclick={() => onOpenTask(attempt.id, `node-head:${node.nodeId}`)}
+          >
+            {node.nodeId}
+          </button>
+        {:else}
+          <span class="node-id" data-testid={`workflow-node-id-${node.nodeId}`}>{node.nodeId}</span>
+        {/if}
         <span class="node-state" data-testid={`workflow-node-state-${node.nodeId}`}>
           {node.state}
         </span>
@@ -231,7 +244,6 @@
       {/if}
 
       {#if node.latestQueueItemId !== undefined}
-        {@const attempt = attemptOf(node)}
         {#if attempt}
           <ul class="attempt-row" data-testid={`workflow-node-attempt-${node.nodeId}`} data-return-key={`node:${node.nodeId}`}>
             <QueueItemRow
@@ -279,6 +291,20 @@
   .node-id {
     font-weight: 600;
     word-break: break-word;
+  }
+  .node-open {
+    padding: 0;
+    background: transparent;
+    border: 0;
+    color: var(--vscode-textLink-foreground, inherit);
+    font: inherit;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+  }
+  .node-open:hover,
+  .node-open:focus-visible {
+    text-decoration: underline;
   }
   .node-state {
     flex: none;

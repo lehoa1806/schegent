@@ -206,7 +206,8 @@
     // typed as any string and the refusal this produces is silent.
     const currentPhase =
       task.currentPhase === TERMINAL_PHASE_SENTINEL ? null : task.currentPhase ?? null;
-    const key = `${queueId}:${runId}:${task.currentPipelineId}:${currentPhase}`;
+    const effectivePhase = currentPhase ?? (isLeafMember ? (task.currentPipelineId ?? null) : null);
+    const key = `${queueId}:${runId}:${task.currentPipelineId}:${effectivePhase}`;
     if (key === pinnedTaskKey) return;
     // A re-pin follows the Run as it advances, which is right up until the
     // operator picks a phase tile themselves: `setPhase` records that as an
@@ -225,7 +226,7 @@
         queueId,
         taskId: runId,
         pipelineId: task.currentPipelineId ?? null,
-        phaseId: currentPhase,
+        phaseId: effectivePhase,
         iterationN: null
       },
       { origin: 'cascade' }
