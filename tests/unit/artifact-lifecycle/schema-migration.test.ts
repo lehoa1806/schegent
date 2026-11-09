@@ -14,6 +14,7 @@ import {
   F05_LIFECYCLE_DDL,
   F05_LIFECYCLE_TABLE_NAMES
 } from '../../../src/services/artifact-lifecycle/lifecycle-schema';
+import { F06_ACCOUNTING_TABLE_NAMES } from '../../../src/services/usage-accounting/accounting-schema';
 import {
   BUILTIN_SCHEMA_MIGRATIONS,
   NodeSqliteConnection,
@@ -75,10 +76,12 @@ describe('FR-R6-F05 migration 2 (NFR-006)', () => {
     const conn = openMemory();
     try {
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
-      expect(SQLITE_SCHEMA_CURRENT_VERSION).toBe(2);
-      expect(result.schemaVersion).toBe(2);
-      expect(result.appliedMigrations).toEqual([1, 2]);
-      expect(result.strictTableCount).toBe(F04_INITIAL_STRICT_TABLE_COUNT + F05_LIFECYCLE_TABLE_NAMES.length);
+      expect(SQLITE_SCHEMA_CURRENT_VERSION).toBe(3);
+      expect(result.schemaVersion).toBe(3);
+      expect(result.appliedMigrations).toEqual([1, 2, 3]);
+      expect(result.strictTableCount).toBe(
+        F04_INITIAL_STRICT_TABLE_COUNT + F05_LIFECYCLE_TABLE_NAMES.length + F06_ACCOUNTING_TABLE_NAMES.length
+      );
       for (const name of F05_LIFECYCLE_TABLE_NAMES) {
         expect(tableSql(conn, name), name).toMatch(/\)\s*STRICT$/);
       }
@@ -98,8 +101,8 @@ describe('FR-R6-F05 migration 2 (NFR-006)', () => {
       const artifactsBefore = conn.all<Record<string, unknown>>(`SELECT * FROM artifacts ORDER BY artifact_id`);
 
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
-      expect(result.appliedMigrations).toEqual([2]);
-      expect(result.schemaVersion).toBe(2);
+      expect(result.appliedMigrations).toEqual([2, 3]);
+      expect(result.schemaVersion).toBe(3);
       expect(conn.all(`SELECT * FROM artifact_availability ORDER BY artifact_id`)).toEqual(before);
       expect(conn.all(`SELECT * FROM artifacts ORDER BY artifact_id`)).toEqual(artifactsBefore);
       expect(tableSql(conn, 'artifact_availability')).toContain(`'available', 'quarantined', 'evicted', 'missing'`);
@@ -114,7 +117,7 @@ describe('FR-R6-F05 migration 2 (NFR-006)', () => {
       SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
       const second = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
       expect(second.appliedMigrations).toEqual([]);
-      expect(second.schemaVersion).toBe(2);
+      expect(second.schemaVersion).toBe(3);
     } finally {
       conn.close();
     }
@@ -124,7 +127,7 @@ describe('FR-R6-F05 migration 2 (NFR-006)', () => {
     const conn = openMemory();
     try {
       SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
-      conn.run(`UPDATE schema_meta SET meta_value = '3' WHERE meta_key = 'schema_version'`);
+      conn.run(`UPDATE schema_meta SET meta_value = '4' WHERE meta_key = 'schema_version'`);
       expect(() => SchemaBootstrapService.bootstrapAndMigrate(conn)).toThrow(/UNSUPPORTED_FUTURE_SCHEMA_VERSION/);
     } finally {
       conn.close();

@@ -87,15 +87,23 @@ export const STRUCTURED_STATE_CENSUS: readonly StructuredStateCensusEntry[] = Ob
     scope: 'both',
     classification: 'sqlite-authoritative',
     targetTables: [
-      'usage_observations',
-      'usage_corrections',
-      'usage_accounting_applications',
-      'attempt_usage_revisions'
+      'accounting_observations',
+      'accounting_observation_measures',
+      'accounting_contributions',
+      'accounting_corrections',
+      'accounting_revisions',
+      'accounting_projection_intents',
+      'accounting_attempts',
+      'accounting_root_outcomes',
+      'accounting_gaps',
+      'accounting_legacy_epoch',
+      'accounting_legacy_runs'
     ],
-    owningFeature: 'F06/F04-B',
+    owningFeature: 'F06',
     executionAffecting: false,
     migrationStage: 'F04-B',
-    rationale: 'Append-only usage observations and repricing corrections with transactional revision advancement.'
+    rationale:
+      'FR-R6-F06 (research R14): append-only usage observations, revisioned contributions and corrections, and the imported legacy rollup epoch. The F04 usage_* tables are commit-unit placeholders production does not write.'
   },
   {
     surfaceId: 'log-segment-index',

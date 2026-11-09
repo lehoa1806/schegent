@@ -129,6 +129,13 @@
       "budgetMs": 500,
       "constant": "WARM_P95_BUDGET_MS",
       "rationale": "FR-R6-F05 NFR-003 / SC-004 (AC-04): warm p95 of 200 measured page reads (20 warm-up, the F03 floor) at the 200-entry page bound is at most 500 ms, and the scan heap delta is at most 32 MiB (SCAN_HEAP_BUDGET_BYTES). One scan pass stops at SCAN_MAX_ENTRIES_PER_PASS (2,000) of the 10,000 entries and is asserted partial (NFR-001). At implement: p95 4.1 ms, scan heap delta 2.4 MiB (darwin-arm64, Node 24.19.0)."
+    },
+    {
+      "test": "tests/perf/usage-accounting-query.test.ts",
+      "name": "UsageAccountingService.query \u2014 warm filtered 200-row page read at 100,000 attempts with 4 measures each",
+      "budgetMs": 500,
+      "constant": "WARM_P95_BUDGET_MS",
+      "rationale": "FR-R6-F06 NFR-003 / SC-006: warm p95 of 200 measured filtered page reads (20 warm-up, the F03 floor, above the task's 5/50) grouped by phase at the 200-row page bound is at most 500 ms, and every response is at most 1 MiB. At implement: p95 399.3 ms, p99 428.4 ms, cold 387.7 ms, largest response 125,035 bytes (darwin-arm64, Node 24.19.0). Before idx_accounting_contributions_attempt the read was quadratic in store size and did not finish."
     }
   ],
   "notes": [

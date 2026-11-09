@@ -112,6 +112,8 @@ describe('FR-R3-098 — the cost-shaped scenario, classified by the host', () =>
       cliDurationMs: row.duration_ms,
       numTurns: row.num_turns,
       totalCostUsd: row.total_cost_usd,
+      // FR-R6-F06 — no baseline was passed, so the cumulative figure is unattributed.
+      costBaseline: 'absent',
       inputTokens: usage.input_tokens,
       outputTokens: usage.output_tokens,
       cacheCreationInputTokens: usage.cache_creation_input_tokens,

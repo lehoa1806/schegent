@@ -1258,19 +1258,21 @@ describe('FR-R6-F05 acceptance (T045)', () => {
     const tableNamed = (name: string): number =>
       reopened.scalar<number>(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name) ?? -1;
     expect(tableNamed('artifact_lifecycle')).toBe(0);
-    expect(SchemaBootstrapService.bootstrapAndMigrate(reopened, () => now).appliedMigrations).toEqual([2]);
+    const throughF05 = BUILTIN_SCHEMA_MIGRATIONS.filter((migration) => migration.version <= F05_LIFECYCLE_MIGRATION_VERSION);
+    expect(SchemaBootstrapService.bootstrapAndMigrate(reopened, () => now, throughF05).appliedMigrations).toEqual([2]);
     expect(tableNamed('artifact_lifecycle')).toBe(1);
     expect(f04Rows(reopened)).toEqual(rowsBefore);
     expect(reopened.scalar<string>(`SELECT content_sha256 FROM artifacts WHERE artifact_id = 'f04-1'`)).toBe(
       sha256Hex(await fs.readFile(bodyPath))
     );
 
-    // A store written by a newer schema is refused and left exactly as it was.
-    reopened.run(`UPDATE schema_meta SET meta_value = '3' WHERE meta_key = 'schema_version'`);
+    // A store written by a newer schema than any built-in migration is refused and left exactly as it was.
+    const futureVersion = String(Math.max(...BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)) + 1);
+    reopened.run(`UPDATE schema_meta SET meta_value = ? WHERE meta_key = 'schema_version'`, futureVersion);
     closeStore(reopened);
     const future = openStore(migratingPath);
     expect(() => SchemaBootstrapService.bootstrapAndMigrate(future, () => now)).toThrow(/UNSUPPORTED_FUTURE_SCHEMA_VERSION/);
-    expect(future.scalar<string>(`SELECT meta_value FROM schema_meta WHERE meta_key = 'schema_version'`)).toBe('3');
+    expect(future.scalar<string>(`SELECT meta_value FROM schema_meta WHERE meta_key = 'schema_version'`)).toBe(futureVersion);
     expect(f04Rows(future)).toEqual(rowsBefore);
   });
 

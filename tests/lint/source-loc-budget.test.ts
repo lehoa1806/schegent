@@ -706,7 +706,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // irreducible registration: two literal imports, one module import, and two
   // switch arms — seven lines for two command families, against a ceiling that
   // had seven to give.
-  { path: 'src/contracts/runtime-validators.ts', maxLines: 776 },
+  // Feature 305 (FR-R6-F06, 2026-11-10) — 776 -> 780: the read-usage-accounting command (its
+  // literal import, validator import, response re-export and switch arm) adds 5 lines and lands
+  // the file at 754 by this gate's count, inside `tightMargin`'s band. Measurement plus 26, the
+  // rule the sidebar-ipc entry below uses.
+  { path: 'src/contracts/runtime-validators.ts', maxLines: 780 },
   // P4 IPC-family extraction ratchet: 1,250 → 885. The stable barrel retains
   // literals and guards while domain wire shapes live in focused modules.
   // Feature 084 (T071) — 885 → 950 for the process-YAML command family. Its
@@ -806,7 +810,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // Feature 304 (FR-R6-F05, 2026-11-10) — 1165 -> 1182: the storage-details read (its constant, the
   // `COMMAND_TYPES` member, the barrel re-exports, the union member and the guard) adds 17 lines and
   // lands the file at 1156 by this gate's count, inside the band. Measurement plus 26, the same rule.
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1182 },
+  // Feature 305 (FR-R6-F06, 2026-11-10) — 1182 -> 1198: the read-usage-accounting command (its
+  // constant, `COMMAND_TYPES` member, barrel re-exports, union member, guard and guard-map row)
+  // adds 16 lines and lands the file at 1172 by this gate's count, inside the band. Measurement
+  // plus 26, the same rule.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1198 },
   // Waived, not budgeted. Feature 063's operator decision retired the ceiling
   // on this file and on queue-manager.ts below; it did not set a large one. The
   // entries used to say `maxLines: 10_000` against files of 2,500 and 1,821,

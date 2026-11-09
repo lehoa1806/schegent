@@ -203,6 +203,20 @@ Feature 212 added two more `phase-end` fields, both narrowed the same way:
   that never happened. Counting terminations that produced no verdict means
   counting `resultEnvelope: "absent"`, not counting the field's absence.
 
+FR-R6-F06 added one more, narrowed the same way:
+
+- **`phase-end.costBaseline`** — what the parser did with the CLI session's
+  baseline when it read a Claude cost into `metrics.totalCostUsd`: `subtracted`
+  (the figure is this invocation's share), `below-baseline` (the session counter
+  fell below the baseline, so it was reset and the figure is the whole
+  cumulative total), or `absent` (no baseline was known). It sits outside
+  `metrics` because `metrics` holds numbers only. Only Claude reports a cost, so
+  only Claude rows carry it. `projectPhaseEnd()` admits only those three
+  literals and omits anything else. The usage accounting store counts a cost as
+  attributed only under `subtracted`; a row with no marker reads as
+  unattributed. The counts-only export does not carry this field.
+<!-- Source: src/contracts/usage-accounting/cost-baseline.ts -->
+
 FR-R3-198 added one `phase-end` outcome, and changed what one metric counts:
 
 - **`incomplete_turn`** — the `outcome` and the `terminationReason` of a turn

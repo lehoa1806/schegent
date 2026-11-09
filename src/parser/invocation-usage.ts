@@ -1,5 +1,6 @@
 import type { ZippedStreamBuffer } from '../runner/zipped-stream-buffer';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import type { CostBaselineMarker } from '../contracts/usage-accounting/cost-baseline';
 
 export interface InvocationUsageMetrics {
   readonly cliDurationMs?: number;
@@ -9,13 +10,22 @@ export interface InvocationUsageMetrics {
   readonly outputTokens?: number;
   readonly cacheCreationInputTokens?: number;
   readonly cacheReadInputTokens?: number;
+  /**
+   * FR-R6-F06 (FR-006, research R3) — what was done with the session baseline when
+   * `totalCostUsd` was read. Present exactly when `totalCostUsd` is, so only for claude.
+   * It describes the figure; it never changes it.
+   */
+  readonly costBaseline?: CostBaselineMarker;
 }
+
+/** The numeric members: every field a backend row can report. */
+type UsageNumberKey = Exclude<keyof InvocationUsageMetrics, 'costBaseline'>;
 
 const MAX_USAGE_JSON_LINE_BYTES = 256 * 1024;
 const MS_PER_SECOND = 1_000;
 
 type MutableInvocationUsageMetrics = {
-  -readonly [K in keyof InvocationUsageMetrics]?: InvocationUsageMetrics[K];
+  -readonly [K in UsageNumberKey]?: InvocationUsageMetrics[K];
 };
 
 /**
@@ -138,7 +148,7 @@ function finiteInteger(value: unknown): number | undefined {
 
 function assignNumber(
   out: MutableInvocationUsageMetrics,
-  key: keyof InvocationUsageMetrics,
+  key: UsageNumberKey,
   field: string | undefined,
   source: Record<string, unknown>
 ): void {
@@ -149,7 +159,7 @@ function assignNumber(
 
 function assignInteger(
   out: MutableInvocationUsageMetrics,
-  key: keyof InvocationUsageMetrics,
+  key: UsageNumberKey,
   field: string | undefined,
   source: Record<string, unknown>
 ): void {
@@ -217,7 +227,7 @@ function metricsFromLine(
 }
 
 /** The counters a summing backend's row reports for its own turn alone. */
-const PER_TURN_COUNTERS: ReadonlyArray<keyof InvocationUsageMetrics> = [
+const PER_TURN_COUNTERS: ReadonlyArray<UsageNumberKey> = [
   'cliDurationMs',
   'numTurns',
   'inputTokens',
@@ -252,6 +262,12 @@ function invocationCostUsd(cumulativeUsd: number, baselineUsd: number | undefine
   return cumulativeUsd - baselineUsd;
 }
 
+/** FR-R6-F06 (research R3) — which branch of `invocationCostUsd` produced the figure. */
+function costBaselineMarker(cumulativeUsd: number, baselineUsd: number | undefined): CostBaselineMarker {
+  if (baselineUsd === undefined) return 'absent';
+  return cumulativeUsd < baselineUsd ? 'below-baseline' : 'subtracted';
+}
+
 /**
  * Extract numeric usage/cost fields from a backend's terminal envelope row.
  *
@@ -270,7 +286,7 @@ function invocationCostUsd(cumulativeUsd: number, baselineUsd: number | undefine
  * over every row and its cost is the last row's (FR-010). That cost is the CLI
  * session's cumulative total, so `sessionCostBaselineUsd`, the total the runner last
  * recorded for the session, is subtracted from it (FR-011). Omitted, the whole
- * cumulative total counts.
+ * cumulative total counts. FR-R6-F06 — `costBaseline` records which of those happened.
  */
 export function extractInvocationUsageMetrics(
   stdout: ZippedStreamBuffer | string,
@@ -310,6 +326,7 @@ export function extractInvocationUsageMetrics(
   if (total === null || total.totalCostUsd === undefined) return total;
   return {
     ...total,
-    totalCostUsd: invocationCostUsd(total.totalCostUsd, sessionCostBaselineUsd)
+    totalCostUsd: invocationCostUsd(total.totalCostUsd, sessionCostBaselineUsd),
+    costBaseline: costBaselineMarker(total.totalCostUsd, sessionCostBaselineUsd)
   };
 }
