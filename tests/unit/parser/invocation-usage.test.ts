@@ -17,6 +17,7 @@ describe('extractInvocationUsageMetrics', () => {
       cliDurationMs: 350,
       numTurns: 3,
       totalCostUsd: 0.05,
+      costBaseline: 'absent',
       inputTokens: 40,
       outputTokens: 60,
       cacheCreationInputTokens: 5,
@@ -97,6 +98,7 @@ describe('extractInvocationUsageMetrics FR-R3-198 (T1882)', () => {
       cliDurationMs: 4_000,
       numTurns: 3,
       totalCostUsd: 0.03,
+      costBaseline: 'absent',
       inputTokens: 11,
       outputTokens: 220,
       cacheCreationInputTokens: 3_300,
@@ -121,6 +123,7 @@ describe('extractInvocationUsageMetrics FR-R3-198 (T1882)', () => {
       cliDurationMs: 3_193,
       numTurns: 2,
       totalCostUsd: 0.0024,
+      costBaseline: 'absent',
       inputTokens: 9,
       outputTokens: 1_489,
       cacheCreationInputTokens: 12_000,
@@ -132,17 +135,20 @@ describe('extractInvocationUsageMetrics FR-R3-198 (T1882)', () => {
     const row = '{"type":"result","num_turns":1,"total_cost_usd":0.75}';
     expect(extractInvocationUsageMetrics(row, 'claude', 0.5)).toEqual({
       numTurns: 1,
-      totalCostUsd: 0.25
+      totalCostUsd: 0.25,
+      costBaseline: 'subtracted'
     });
     // A cumulative below the baseline means the CLI restarted the session's
     // counter, so the whole figure counts.
     expect(extractInvocationUsageMetrics(row, 'claude', 0.9)).toEqual({
       numTurns: 1,
-      totalCostUsd: 0.75
+      totalCostUsd: 0.75,
+      costBaseline: 'below-baseline'
     });
     expect(extractInvocationUsageMetrics(row, 'claude')).toEqual({
       numTurns: 1,
-      totalCostUsd: 0.75
+      totalCostUsd: 0.75,
+      costBaseline: 'absent'
     });
   });
 
@@ -159,6 +165,7 @@ describe('extractInvocationUsageMetrics FR-R3-198 (T1882)', () => {
       cliDurationMs: 4_251,
       numTurns: 3,
       totalCostUsd: 0.003214365,
+      costBaseline: 'absent',
       inputTokens: 12,
       outputTokens: 1_864,
       cacheCreationInputTokens: 13_200,
@@ -183,6 +190,7 @@ describe('extractInvocationUsageMetrics FR-R3-198 (T1882)', () => {
       cliDurationMs: 46_559,
       numTurns: 8,
       totalCostUsd: 23.040391799999984,
+      costBaseline: 'absent',
       inputTokens: 14,
       outputTokens: 4_496,
       cacheCreationInputTokens: 90_889,

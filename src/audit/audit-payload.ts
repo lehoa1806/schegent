@@ -5,6 +5,7 @@ import { CATALOG_KINDS, type CatalogKind } from '../contracts/catalog-store';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { isCompletionProvenance } from '../contracts/completion-provenance';
 import { isFailureCause } from '../contracts/failure-cause';
+import { type CostBaselineMarker, costBaselineOf } from '../contracts/usage-accounting/cost-baseline';
 import {
   CHAIN_VERIFIED_CONDITION,
   CHECKPOINT_PRIOR_STATUSES,
@@ -183,6 +184,13 @@ export interface PhaseEndPayloadV3 {
    * rule below — defaulting would assert something nobody recorded.
    */
   readonly resultEnvelope?: 'received' | 'absent';
+  /**
+   * FR-R6-F06 (FR-006, research R3) — what the parser did with the session baseline when it
+   * read the cost in `metrics.totalCostUsd`. A closed three-member set, outside `metrics`
+   * because `metrics` holds numbers only. Omitted when absent or unrecognised, like
+   * `resultEnvelope`: a cost with no marker reads as unattributed.
+   */
+  readonly costBaseline?: CostBaselineMarker;
   readonly metrics: Readonly<Record<string, number>>;
   /**
    * Feature 212 (FR-008, FR-009) — OPTIONAL as of this feature, and the three
@@ -670,6 +678,8 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
     rawResultEnvelope === 'received' || rawResultEnvelope === 'absent'
       ? rawResultEnvelope
       : undefined;
+  // FR-R6-F06 — the parser's cost-baseline marker, matched against its closed set.
+  const costBaseline = costBaselineOf(payload.costBaseline);
   // FR-R3-117 — closed set, and omitted rather than defaulted when absent or
   // unrecognised. Defaulting would assert a basis nobody recorded.
   const rawBasis = payload.verdictBasis;
@@ -729,6 +739,7 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
       outcome
     ),
     ...(cause !== undefined ? { cause } : {}),
+    ...(costBaseline !== null ? { costBaseline } : {}),
     metrics: Object.freeze(legacyMetrics),
     ...(auditBlockParsed
       ? { fileChangeCounts: Object.freeze({ created, modified, deleted }) }

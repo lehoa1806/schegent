@@ -262,6 +262,8 @@ function capabilityArgs(
   return plan.args;
 }
 
+const FRESH_SESSION_BASELINE_USD = 0; // FR-R6-F06: a session the CLI just created has cost nothing.
+
 /** The flag whose argument is the session a resumed invocation continues. */
 const RESUME_FLAG = '--resume';
 /** What the spawn log prints in place of that session id. */
@@ -877,8 +879,10 @@ export class ClaudeCliRunner implements BackendRunner {
       // invocation, then keep its cumulative total for the next. A helper
       // invocation (compaction) keeps nothing, so its cost lands in the next
       // phase's figure (K5). The id is a key only, and is never logged.
+      // FR-R6-F06 (R3): with no `--resume` and no `-c` the session is new, so its baseline is 0.
       const sessionCostBaselineUsd =
-        cliSessionId === undefined ? undefined : this.sessionCosts.get(cliSessionId);
+        (cliSessionId === undefined ? undefined : this.sessionCosts.get(cliSessionId)) ??
+        (continuePrefix.length === 0 ? FRESH_SESSION_BASELINE_USD : undefined);
       if (
         cliSessionId !== undefined &&
         lastResultCostUsd !== undefined &&

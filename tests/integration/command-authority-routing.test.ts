@@ -2,7 +2,7 @@
 // SC-001, SC-003) — the router gates what the declaration says it gates, for every
 // webview command, and the review of the 17 commands the old table left out holds.
 //
-// WHY ALL 64. The old table was partial, so a command nobody had decided about
+// WHY ALL 65. The old table was partial, so a command nobody had decided about
 // ran with no gate and no record. A unit test of any one command cannot show that
 // the rest are covered. This one sends every `COMMAND_TYPES` member, as a raw
 // command with the smallest payload its own runtime guard accepts, through the
@@ -15,7 +15,7 @@
 // `executeCommand`. A read-only command that fails inside its handler on a missing
 // dependency is fine here: the assertion is only that no gate refused it.
 //
-// TWO SOURCES OF TRUTH, ON PURPOSE. For all 64 the expectation is the declaration's,
+// TWO SOURCES OF TRUTH, ON PURPOSE. For all 65 the expectation is the declaration's,
 // which proves the router matches it. For the 17 commands research R5 reviewed, the
 // expected verdict is ALSO written out below by hand, so that reclassifying one in
 // the declaration, in either direction, is a visible edit here and not a silent one.
@@ -68,6 +68,7 @@ const EMPTY_LAUNCH_REQUEST = { inputs: [], supplemental: [], outputs: [] };
 const REQUIRED_PAYLOADS: Readonly<Partial<Record<CommandType, unknown>>> = {
   CMD_SET_CONFIRM_SUPPRESSION: { actionKey: 'queue.clean-all', suppressed: true },
   CMD_READ_METRICS: {},
+  CMD_READ_USAGE_ACCOUNTING: { query: {} },
   CMD_READ_DEFINITION_VERSION: { kind: 'phase', id: 'specify', versionId: 'v2' },
   CMD_PING_BACKEND: { runner: 'claude' },
   CMD_EXPORT_PROCESS_YAML: { resourceKind: 'phase', resourceId: 'specify' },
@@ -207,9 +208,10 @@ const gatedByDeclaration = (type: CommandType): boolean =>
   commandAuthorityOf(type).authority === 'gated';
 
 describe('every webview command is routed as the declaration says (T4)', () => {
-  it('parses 64 commands, each with a payload its own guard accepts', () => {
+  it('parses 65 commands, each with a payload its own guard accepts', () => {
     // FR-R6-F05 added the read-only CMD_READ_STORAGE_DETAILS (63 to 64).
-    expect(COMMAND_TYPES).toHaveLength(64);
+    // FR-R6-F06 added the read-only CMD_READ_USAGE_ACCOUNTING (64 to 65).
+    expect(COMMAND_TYPES).toHaveLength(65);
     const rejected = COMMAND_TYPES.filter((type) => !COMMAND_GUARDS[type](minimalCommand(type)));
     expect(rejected, `commands whose minimal payload their guard refuses: ${rejected.join(', ')}`).toEqual([]);
   });

@@ -12,6 +12,7 @@ import { EventEmitter } from 'events';
 import { Readable } from 'stream';
 import type { ChildProcess } from 'child_process';
 import { ClaudeCliRunner, type SpawnFn } from '../../../src/runner/claude-cli';
+import { extractInvocationUsageMetrics } from '../../../src/parser/invocation-usage';
 import type {
   InvocationRequest,
   RawInvocationOutput
@@ -145,7 +146,8 @@ describe('ClaudeCliRunner session cost baseline (K2)', () => {
     const runner = new ClaudeCliRunner(spawnEach([turn(SESSION, 1.0), turn(SESSION, 1.6)]));
     const first = await invokeOnce(runner, {});
     const second = await invokeOnce(runner, RESUMED);
-    expect(first.sessionCostBaselineUsd).toBeUndefined();
+    // FR-R6-F06 — a fresh session's counter starts at zero, so its baseline is known.
+    expect(first.sessionCostBaselineUsd).toBe(0);
     expect(second.sessionCostBaselineUsd).toBe(1.0);
   });
 
@@ -169,7 +171,7 @@ describe('ClaudeCliRunner session cost baseline (K2)', () => {
     const noSession = await invokeOnce(runner, {});
     const noCost = await invokeOnce(runner, RESUMED);
     const next = await invokeOnce(runner, RESUMED);
-    expect(noSession.sessionCostBaselineUsd).toBeUndefined();
+    expect(noSession.sessionCostBaselineUsd).toBe(0);
     expect(noCost.sessionCostBaselineUsd).toBe(1.0);
     expect(next.sessionCostBaselineUsd).toBe(1.0);
   });
@@ -217,5 +219,38 @@ describe('ClaudeCliRunner session cost baseline (K2)', () => {
     await invokeOnce(runner, { ...RESUMED, helperInvocation: true });
     const phase = await invokeOnce(runner, { ...RESUMED, resumeSessionCostUsd: 1.0 });
     expect(phase.sessionCostBaselineUsd).toBe(1.0);
+  });
+});
+
+/**
+ * FR-R6-F06 (T036, FR-006, research R3) — a fresh invocation, with no resume id and no continue
+ * flag, starts a new CLI session whose cumulative cost begins at zero. Its baseline is therefore
+ * `0`, which the parser marks `subtracted` while the cost stays what it was. A resumed or
+ * continued invocation keeps the baseline it had.
+ */
+describe('ClaudeCliRunner fresh-session baseline (FR-R6-F06)', () => {
+  it('passes a zero baseline for a fresh invocation, leaving its cost unchanged', async () => {
+    const runner = new ClaudeCliRunner(spawnEach([turn(SESSION, 0.4)]));
+    const fresh = await invokeOnce(runner, {});
+    expect(fresh.sessionCostBaselineUsd).toBe(0);
+    expect(extractInvocationUsageMetrics(fresh.stdoutBuffer, 'claude', fresh.sessionCostBaselineUsd)).toStrictEqual({
+      numTurns: 1,
+      totalCostUsd: 0.4,
+      costBaseline: 'subtracted'
+    });
+  });
+
+  it('keeps the seeded baseline for a resumed invocation', async () => {
+    const runner = new ClaudeCliRunner(spawnEach([turn(SESSION, 1.6)]));
+    const resumed = await invokeOnce(runner, { ...RESUMED, resumeSessionCostUsd: 1.0 });
+    expect(resumed.sessionCostBaselineUsd).toBe(1.0);
+  });
+
+  it('passes no baseline for a continued or resumed invocation the ledger knows nothing about', async () => {
+    const runner = new ClaudeCliRunner(spawnEach([turn(SESSION, 1.6), turn(SESSION, 1.6)]));
+    const continued = await invokeOnce(runner, { isContinue: true });
+    expect(continued.sessionCostBaselineUsd).toBeUndefined();
+    const resumedUnknown = await invokeOnce(new ClaudeCliRunner(spawnEach([turn(SESSION, 1.6)])), RESUMED);
+    expect(resumedUnknown.sessionCostBaselineUsd).toBeUndefined();
   });
 });

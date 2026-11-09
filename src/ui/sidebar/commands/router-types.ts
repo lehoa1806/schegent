@@ -6,6 +6,7 @@ import type { DescriptionResolution } from '../../../services/history/history-de
 import type { DecisionRecordOpener } from '../../../services/decision-record/decision-record-open';
 import type { FailureRecordAnswerer } from '../../../services/failure-record/failure-record-service';
 import type { StorageDetailsReader } from '../../../contracts/sidebar-ipc/storage-details';
+import type { UsageAccountingReader } from '../../../contracts/sidebar-ipc/usage-accounting';
 import type { CatalogLifecycleOps, CatalogStore } from '../../../catalog';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type { CatalogVersionRef } from '../../../contracts/catalog-version';
@@ -520,6 +521,12 @@ export interface RouterDeps {
    * headless one give the same answer.
    */
   readonly storageDetails?: StorageDetailsReader;
+  /**
+   * FR-R6-F06 (contracts/surfaces-and-wiring.md section 4) — one revision-pinned accounting page.
+   * Absent in a harness that builds no reader; the handler then answers `store-unavailable`. Built
+   * by the headless API's `createUsageAccountingReader`, so both surfaces give the same answer.
+   */
+  readonly usageAccounting?: UsageAccountingReader;
   /**
    * FR-R5-F19 (feature 278, contract decision-record-open.md) — opens a blocked row's `decisions.md`
    * read-only. Absent in a harness that builds no opener; the handler then answers `internal-error`.

@@ -926,3 +926,29 @@ describe('task-removed completionProvenance projection (FR-R4-F16)', () => {
     expect(AUDIT_SCHEMA_VERSION).toBe(3);
   });
 });
+
+/**
+ * FR-R6-F06 (T035, FR-006, research R3) — the parser's cost-baseline marker reaches the
+ * persisted `phase-end` record. The runner spreads the parser output onto the raw payload, so
+ * the marker sits beside the legacy top-level `totalCostUsd`; without its own field here the
+ * projection drops it, and every Claude cost would read as unattributed.
+ */
+describe('phase-end cost baseline marker (FR-R6-F06)', () => {
+  const project = (payload: Record<string, unknown>): Record<string, unknown> =>
+    projectAuditPayload('phase-end', payload) as unknown as Record<string, unknown>;
+
+  it('carries each member of the closed set, beside a numeric-only metrics map', () => {
+    for (const costBaseline of ['subtracted', 'below-baseline', 'absent']) {
+      const projected = project({ outcome: 'clean', totalCostUsd: 0.25, costBaseline });
+      expect(projected.costBaseline).toBe(costBaseline);
+      expect(projected.metrics).toStrictEqual({ totalCostUsd: 0.25 });
+    }
+  });
+
+  it('omits the marker when absent or outside the closed set', () => {
+    expect('costBaseline' in project({ outcome: 'clean', totalCostUsd: 0.25 })).toBe(false);
+    for (const costBaseline of ['maybe', '/Users/someone/cost', 1, null, { subtracted: true }]) {
+      expect('costBaseline' in project({ outcome: 'clean', costBaseline })).toBe(false);
+    }
+  });
+});

@@ -29,6 +29,8 @@ export interface StreamedRollup {
   readonly records: readonly MetricsRollupRecord[];
   /** The trim's header, when the file carries one. */
   readonly carryForward: MetricsRollupCarryForward | undefined;
+  /** FR-R6-F06 (research R8) — that header's line as written, for a verbatim copy. */
+  readonly carryForwardLine?: string | undefined;
   /** Lines present but unusable. Surfaced so a corrupt tail is visible. */
   readonly unreadableRecords: number;
   /** File size in bytes at the moment it was read, for the trim's threshold. */
@@ -97,6 +99,7 @@ export async function streamRollup(
 
   const records: MetricsRollupRecord[] = [];
   let carryForward: MetricsRollupCarryForward | undefined;
+  let carryForwardLine: string | undefined;
   let unreadableRecords = 0;
   let sizeBytes = 0;
   let skippedBytes = 0;
@@ -135,7 +138,7 @@ export async function streamRollup(
     await handle.close().catch(() => undefined);
   }
 
-  return { available: true, records, carryForward, unreadableRecords, sizeBytes, skippedBytes };
+  return { available: true, records, carryForward, carryForwardLine, unreadableRecords, sizeBytes, skippedBytes };
 
   function consume(line: string): 'ok' | 'unreadable' {
     const parsed = parseMetricsRollupLine(line);
@@ -148,6 +151,7 @@ export async function streamRollup(
       // produces, and choosing the later one is the reading that survives a
       // crash between writing a new header and truncating the old file.
       carryForward = parsed.carryForward;
+      carryForwardLine = line;
       return 'ok';
     }
     return parsed.warning === undefined ? 'ok' : 'unreadable';
