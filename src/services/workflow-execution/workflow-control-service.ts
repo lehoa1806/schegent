@@ -11,6 +11,8 @@
 // Zero `vscode` imports: shared by both host and headless runtime entry points.
 
 import type { RunRequest } from '../../contracts/run-request';
+import type { ControlAdmissionPort, ExecutionFence } from '../../contracts/control-ledger';
+import type { DecisionFieldValue } from '../../contracts/decision-results';
 import type { WorkflowNodeTerminalStatus } from '../../contracts/workflow-definitions';
 import {
   appendCommandReceipt,
@@ -33,11 +35,14 @@ import {
 import {
   completeComposableNodeAttempt,
   dispatchComposableNode,
+  type ComposableWorkflowCoordinatorDeps,
   type ComposableWorkflowStepResult,
   type PhaseAttemptDispatchInput,
   type PhaseAttemptDispatchResult
 } from './connected-run-coordinator';
 import { continueWaitingHandoff } from './continuation-composer';
+import type { ForEachExecutor } from './foreach-executor';
+import type { RepeatExecutor } from './repeat-executor';
 import {
   buildWorkflowRunControlProjection,
   type WorkflowRunControlProjection
@@ -111,6 +116,11 @@ export interface WorkflowControlServiceDeps {
    * exhausted candidate/block attempt counters.
    */
   readonly controlCommandService?: ControlCommandService;
+  readonly controlAdmission?: ControlAdmissionPort | undefined;
+  readonly repeatExecutor?: RepeatExecutor | undefined;
+  readonly forEachExecutor?: ForEachExecutor | undefined;
+  readonly workspaceRoot?: string | undefined;
+  readonly resolveExecutionFence?: (run: ConnectedWorkflowRun, queueId: string) => ExecutionFence;
 }
 
 export interface WorkflowControlCommandRequest {
@@ -280,6 +290,20 @@ export class WorkflowControlService {
 
   constructor(private readonly deps: WorkflowControlServiceDeps) {}
 
+  private coordinatorDeps(writer: ConnectedRunWriter): ComposableWorkflowCoordinatorDeps {
+    const { controlAdmission, repeatExecutor, forEachExecutor, workspaceRoot, resolveExecutionFence, cancelOrphanedQueueItem } = this.deps;
+    return {
+      connectedRuns: writer,
+      dispatchPhase: this.deps.dispatchPhase,
+      ...(controlAdmission !== undefined ? { controlAdmission } : {}),
+      ...(repeatExecutor !== undefined ? { repeatExecutor } : {}),
+      ...(forEachExecutor !== undefined ? { forEachExecutor } : {}),
+      ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
+      ...(resolveExecutionFence !== undefined ? { resolveExecutionFence } : {}),
+      ...(cancelOrphanedQueueItem !== undefined ? { cancelOrphanedQueueItem } : {})
+    };
+  }
+
   /**
    * Serialize an async operation on `queueId` in strict FIFO order.
    */
@@ -339,6 +363,7 @@ export class WorkflowControlService {
     readonly status: WorkflowNodeTerminalStatus;
     readonly completedAt: number;
     readonly declaredOutputs?: NodeAttemptRecord['declaredOutputs'];
+    readonly decisionResults?: Readonly<Record<string, DecisionFieldValue>>;
     readonly verdict?: 'pass' | 'fail' | null;
     readonly failureCode?: string;
   }): Promise<
@@ -368,13 +393,7 @@ export class WorkflowControlService {
       }
 
       const result = await completeComposableNodeAttempt(
-        {
-          connectedRuns: this.deps.connectedRuns,
-          dispatchPhase: this.deps.dispatchPhase,
-          ...(this.deps.cancelOrphanedQueueItem !== undefined
-            ? { cancelOrphanedQueueItem: this.deps.cancelOrphanedQueueItem }
-            : {})
-        },
+        this.coordinatorDeps(this.deps.connectedRuns),
         {
           run: currentRun,
           invocationId: input.invocationId,
@@ -384,6 +403,9 @@ export class WorkflowControlService {
           completedAt: input.completedAt,
           ...(input.declaredOutputs !== undefined
             ? { declaredOutputs: input.declaredOutputs }
+            : {}),
+          ...(input.decisionResults !== undefined
+            ? { decisionResults: input.decisionResults }
             : {}),
           ...(input.verdict !== undefined ? { verdict: input.verdict } : {}),
           ...(input.failureCode !== undefined ? { failureCode: input.failureCode } : {})
@@ -876,13 +898,7 @@ export class WorkflowControlService {
           evidence.status !== 'canceled'
         ) {
           const settled = await completeComposableNodeAttempt(
-            {
-              connectedRuns: staging.writer,
-              dispatchPhase: this.deps.dispatchPhase,
-              ...(this.deps.cancelOrphanedQueueItem !== undefined
-                ? { cancelOrphanedQueueItem: this.deps.cancelOrphanedQueueItem }
-                : {})
-            },
+            this.coordinatorDeps(staging.writer),
             {
               run: staging.current(),
               invocationId: deepestLeafFrame.invocationId,
@@ -892,6 +908,9 @@ export class WorkflowControlService {
               completedAt: evidence.completedAt ?? now,
               ...(evidence.declaredOutputs !== undefined
                 ? { declaredOutputs: evidence.declaredOutputs }
+                : {}),
+              ...(evidence.decisionResults !== undefined
+                ? { decisionResults: evidence.decisionResults }
                 : {}),
               ...(evidence.verdict !== undefined ? { verdict: evidence.verdict } : {}),
               ...(evidence.failureCode !== undefined ? { failureCode: evidence.failureCode } : {})
@@ -928,13 +947,7 @@ export class WorkflowControlService {
       }
       if (leafAttempt === undefined || leafAttempt.status === 'paused') {
         const dispatched = await dispatchComposableNode(
-          {
-            connectedRuns: staging.writer,
-            dispatchPhase: this.deps.dispatchPhase,
-            ...(this.deps.cancelOrphanedQueueItem !== undefined
-              ? { cancelOrphanedQueueItem: this.deps.cancelOrphanedQueueItem }
-              : {})
-          },
+          this.coordinatorDeps(staging.writer),
           {
             run: staging.current(),
             invocationId: deepestLeafFrame.invocationId,
@@ -1037,7 +1050,7 @@ export class WorkflowControlService {
         staging.set(nextRun);
         if (parentAttempt !== undefined) {
           await completeComposableNodeAttempt(
-            { connectedRuns: staging.writer, dispatchPhase: this.deps.dispatchPhase },
+            this.coordinatorDeps(staging.writer),
             {
               run: staging.current(),
               invocationId: parentFrame.invocationId,
@@ -1075,7 +1088,7 @@ export class WorkflowControlService {
     staging.set(nextRun);
 
     const dispatched = await dispatchComposableNode(
-      { connectedRuns: staging.writer, dispatchPhase: this.deps.dispatchPhase },
+      this.coordinatorDeps(staging.writer),
       {
         run: staging.current(),
         invocationId: targetInvocationId,
@@ -1124,7 +1137,7 @@ export class WorkflowControlService {
 
       const beforeDispatch = staging.current();
       const dispatched = await dispatchComposableNode(
-        { connectedRuns: staging.writer, dispatchPhase: this.deps.dispatchPhase },
+        this.coordinatorDeps(staging.writer),
         {
           run: beforeDispatch,
           invocationId: targetFrame.parentInvocationId,
@@ -1148,7 +1161,7 @@ export class WorkflowControlService {
     staging.set(nextRun);
 
     const dispatched = await dispatchComposableNode(
-      { connectedRuns: staging.writer, dispatchPhase: this.deps.dispatchPhase },
+      this.coordinatorDeps(staging.writer),
       {
         run: staging.current(),
         invocationId: targetInvocationId,
@@ -1195,7 +1208,7 @@ export class WorkflowControlService {
     }
 
     const dispatched = await dispatchComposableNode(
-      { connectedRuns: staging.writer, dispatchPhase: this.deps.dispatchPhase },
+      this.coordinatorDeps(staging.writer),
       {
         run: staging.current(),
         invocationId: targetInvocationId,

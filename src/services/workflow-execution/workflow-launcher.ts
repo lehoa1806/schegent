@@ -50,9 +50,18 @@ import {
   createConnectedRunSnapshot
 } from './connected-run-factory';
 import { dispatchComposableNode } from './connected-run-coordinator';
+import type {
+  ControlCollaboratorKind,
+  PublicEntryPointId,
+  WorkflowRefusalOutcome
+} from './entry-point-wiring-census';
 import type { NodeRunStartDeps, NodeRunStartResult } from './node-run-starter';
 import { startPipelineRun } from './node-run-starter';
 import { launchContextOf, phaseDispatchResultOf, startPhaseAttempt } from './phase-attempt-start';
+import {
+  getOrCreateProductionWorkflowComposition,
+  type ProductionWorkflowComposition
+} from './production-workflow-composition';
 
 /**
  * Why a start was refused for a reason that is neither a field nor the run's
@@ -78,12 +87,17 @@ export type LaunchWorkflowResult =
       readonly run: ConnectedWorkflowRun;
       readonly queueItemId: string;
     }
-  | { readonly outcome: 'rejected-definition'; readonly reason: WorkflowStartRefusal }
+  | {
+      readonly outcome: 'rejected-definition';
+      readonly reason: WorkflowStartRefusal;
+      readonly refusal?: WorkflowRefusalOutcome;
+    }
   | { readonly outcome: 'rejected-validation'; readonly errors: readonly RunRequestFieldError[] }
   | {
       readonly outcome: 'rejected-queue';
       readonly reason: 'queue-refused';
       readonly detail?: string;
+      readonly refusal?: WorkflowRefusalOutcome;
     };
 
 export type ContinueWorkflowResult =
@@ -132,6 +146,7 @@ export interface ConnectedRunWriter {
 export interface WorkflowLauncherDeps extends NodeRunStartDeps {
   readonly connectedRuns: ConnectedRunWriter;
   readonly isChildSettled: ChildRunSettledProbe;
+  readonly productionComposition?: ProductionWorkflowComposition;
 }
 
 export interface LaunchWorkflowInput {
@@ -522,6 +537,7 @@ export interface LaunchComposableWorkflowInput {
   readonly startedAt: number;
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly queueId?: string;
+  readonly entryPointId?: PublicEntryPointId;
   /**
    * Optional lease release hook invoked in `finally` if admission or initial
    * start fails so no orphaned queue/lock claim remains (FR-017).
@@ -530,6 +546,31 @@ export interface LaunchComposableWorkflowInput {
     queueId: string,
     connectedRunId: string
   ) => Promise<void> | void;
+}
+
+function collectRequiredLaunchCollaborators(
+  rootWorkflow: WorkflowDefinition,
+  entryNodeId: string
+): readonly ControlCollaboratorKind[] {
+  const required = new Set<ControlCollaboratorKind>([
+    'controlAdmission',
+    'cutoverAuthorityGuard'
+  ]);
+  if (rootWorkflow.control?.kind === 'candidate-block') {
+    required.add('candidateBlockExecutor');
+  }
+  const entryNode = rootWorkflow.nodes.find((n) => n.nodeId === entryNodeId);
+  if (entryNode?.control?.kind === 'repeat') {
+    required.add('repeatExecutor');
+  }
+  if (entryNode?.control?.kind === 'for-each') {
+    required.add('forEachExecutor');
+  }
+  for (const node of rootWorkflow.nodes) {
+    if (node.control?.kind === 'repeat') required.add('repeatExecutor');
+    if (node.control?.kind === 'for-each') required.add('forEachExecutor');
+  }
+  return Object.freeze([...required]);
 }
 
 function isRootInvocationFailed(run: ConnectedWorkflowRun, rootInvocationId: string): boolean {
@@ -589,6 +630,31 @@ export async function launchComposableWorkflow(
       return { outcome: 'rejected-definition', reason: 'no-workspace-root' };
     }
 
+    const composition =
+      deps.productionComposition ??
+      getOrCreateProductionWorkflowComposition(deps.connectedRuns, {
+        workspaceRoot: input.workspaceRoot
+      });
+
+    const requiredCollaborators = collectRequiredLaunchCollaborators(
+      rootWorkflow,
+      entryNodeId
+    );
+    const preCheck = composition.verifyPreAdmission({
+      entryPointId: input.entryPointId ?? 'ui.launchWorkflow',
+      rootExecutionId: input.connectedRunId,
+      invocationId: `${input.connectedRunId}:root`,
+      requiredCollaborators
+    });
+    if (!preCheck.allowed) {
+      return {
+        outcome: 'rejected-queue',
+        reason: 'queue-refused',
+        detail: preCheck.refusal.reasonCode,
+        refusal: preCheck.refusal
+      };
+    }
+
     const launchContext = launchContextOf(input.envelope);
     const snapshot = createComposableWorkflowRunSnapshot({
       connectedRunId: input.connectedRunId,
@@ -607,37 +673,51 @@ export async function launchComposableWorkflow(
       return { outcome: 'rejected-definition', reason: 'workflow-invalid' };
     }
 
+    const linkedRun = await composition.ensureRootControlLink(snapshot.run, boundQueueId);
+
     let lastFailure: LaunchWorkflowResult | null = null;
     let firstQueueItemId: string | null = null;
 
-    const stepResult = await dispatchComposableNode(
-      {
-        connectedRuns: {
-          compareAndSetConnectedRun: async (next) =>
-            // Before the first phase is enqueued, or when a launch's root already failed,
-            // keep the pre-dispatch state in memory so a refused launch leaves no
-            // connected-run state behind (FR-012).
-            firstQueueItemId === null || isRootInvocationFailed(next, snapshot.rootInvocationId)
-              ? { outcome: 'written', run: next }
-              : deps.connectedRuns.compareAndSetConnectedRun(next, 0)
-        },
-        dispatchPhase: async (phaseInput) => {
-          const started = await startPhaseAttempt(deps, phaseInput, input.workspaceRoot);
-          if (started.outcome === 'enqueued') firstQueueItemId = started.queueItemId;
-          else lastFailure = refusalOf(started);
-          return phaseDispatchResultOf(started);
-        }
+    const coordinatorDeps = composition.createCoordinatorDeps({
+      connectedRuns: {
+        compareAndSetConnectedRun: async (next) =>
+          // Before the first phase is enqueued, or when a launch's root already failed,
+          // keep the pre-dispatch state in memory so a refused launch leaves no
+          // connected-run state behind (FR-012).
+          firstQueueItemId === null || isRootInvocationFailed(next, snapshot.rootInvocationId)
+            ? { outcome: 'written', run: next }
+            : deps.connectedRuns.compareAndSetConnectedRun(next, 0)
       },
-      {
-        run: snapshot.run,
-        invocationId: snapshot.rootInvocationId,
-        nodeId: entryNodeId,
-        startedAt: input.startedAt
-      }
-    );
+      dispatchPhase: async (phaseInput) => {
+        const started = await startPhaseAttempt(deps, phaseInput, input.workspaceRoot);
+        if (started.outcome === 'enqueued') firstQueueItemId = started.queueItemId;
+        else lastFailure = refusalOf(started);
+        return phaseDispatchResultOf(started);
+      },
+      workspaceRoot: input.workspaceRoot
+    });
+
+    const stepResult = await dispatchComposableNode(coordinatorDeps, {
+      run: linkedRun,
+      invocationId: snapshot.rootInvocationId,
+      nodeId: entryNodeId,
+      startedAt: input.startedAt
+    });
 
     if (lastFailure !== null) {
       return lastFailure;
+    }
+    if (stepResult.outcome === 'workflow-completed') {
+      const persisted = await deps.connectedRuns.compareAndSetConnectedRun(stepResult.run, 0);
+      if (persisted.outcome === 'stale') {
+        return { outcome: 'rejected-definition', reason: 'workflow-invalid' };
+      }
+      startedSuccessfully = true;
+      return {
+        outcome: 'started',
+        run: persisted.run,
+        queueItemId: `completed:${input.connectedRunId}`
+      };
     }
     if (stepResult.outcome !== 'phase-dispatched' || firstQueueItemId === null) {
       return { outcome: 'rejected-definition', reason: 'workflow-invalid' };
