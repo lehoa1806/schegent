@@ -59,6 +59,11 @@ import {
   getOrCreateProductionWorkflowComposition,
   type ProductionWorkflowComposition
 } from '../services/workflow-execution/production-workflow-composition';
+import {
+  executeSharedContractOperation,
+  type SharedContractBoundaryResult
+} from '../services/shared-memory-storage/shared-contract-entry-boundary';
+import type { StorageBoundaryOutcome } from '../contracts/shared-memory-storage/inventories';
 import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
 import {
   launchComposableWorkflow,
@@ -359,4 +364,20 @@ export function getCandidateBlockControlProjection(
   input: BuildControlProjectionInput
 ): ControlProjection {
   return buildControlProjection(input);
+}
+
+// ---------------------------------------------------------------------------
+// FR-R6-F02 (T022, FR-013, SC-009) — Headless shared contract entry boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a shared memory and storage contract operation (`inspect-record`,
+ * `accept-observation`, or `rebind-workspace`) through the headless entry point,
+ * applying the exact same validation, ownership fence checks, unknown-field
+ * rejection, and untrusted-workspace read-only guard as the editor UI and host.
+ */
+export function executeHeadlessSharedContractOperation(
+  rawRequest: unknown
+): StorageBoundaryOutcome<SharedContractBoundaryResult> {
+  return executeSharedContractOperation('headless', rawRequest);
 }
