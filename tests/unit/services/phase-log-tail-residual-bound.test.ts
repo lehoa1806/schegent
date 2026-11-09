@@ -93,3 +93,4 @@ describe('PhaseLogTailSession cross-tick residual bound (T016, T017, US4)', () =
     ).toBe(crypto.createHash('sha256').update(expectedDiskContent).digest('hex'));
   });
 });
+
