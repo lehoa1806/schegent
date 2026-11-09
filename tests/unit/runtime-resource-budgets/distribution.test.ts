@@ -58,3 +58,4 @@ describe('distribution and sample sufficiency (T005, T007)', () => {
     expect(report.failures.length).toBe(3);
   });
 });
+

@@ -61,3 +61,4 @@ describe('common-bound-conformance (F03-AC-05, FR-008..FR-010, FR-015, SC-008)',
     expect(queue.state.coverageGapCount).toBeGreaterThan(0);
   });
 });
+

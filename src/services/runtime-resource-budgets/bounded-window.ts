@@ -274,3 +274,4 @@ export class BoundedWindow<T> {
     this.totalBytes = 0;
   }
 }
+

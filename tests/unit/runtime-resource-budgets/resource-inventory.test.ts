@@ -142,3 +142,4 @@ describe('RUNTIME_RESOURCE_INVENTORY (T008, T009, T010, T011, SC-001)', () => {
     }
   });
 });
+

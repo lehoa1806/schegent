@@ -75,3 +75,4 @@ describe('PressureStatusTracker (FR-017)', () => {
     expect(afterInterval.suppressedWarnings).toBe(2);
   });
 });
+

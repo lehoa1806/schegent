@@ -142,3 +142,4 @@ describe('BoundedWindow (T004, T006)', () => {
     expect(window.counters.expired).toBe(2);
   });
 });
+
