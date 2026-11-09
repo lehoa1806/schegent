@@ -6,6 +6,11 @@ export * from './queue-snapshot';
 export * from './sidebar-ipc';
 export * from './snapshot-bounds';
 export * from './runtime-validators';
+export * from './shared-memory-storage/inventories';
+export * from './shared-memory-storage/consumer-and-retention-inventories';
+export * from './shared-memory-storage/identity-and-observations';
+export * from './shared-memory-storage/monetary-and-clocks';
+export * from './shared-memory-storage/artifacts-streams-and-acp';
 export type {
   BackendRunner,
   InvocationRequest as BackendInvocationRequest,
