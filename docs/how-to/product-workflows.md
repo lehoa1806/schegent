@@ -62,7 +62,9 @@ The concurrency cap is workspace-wide while each individual queue still runs at 
 
 ## 3. Pause, resume, or restart a phase
 
-1. On **Queues**, open the queue, then select its executing task.
+1. On **Queues**, open the queue, then select its executing task. For a
+   Workflow, the queue lists the whole run as one row: open it, then select
+   the running node to open its Task.
 2. In run detail, select the active phase.
 3. Use **Pause** to request a pause at the active phase.
 4. When paused, optionally enter a **Resume prompt**, then select **Resume**.

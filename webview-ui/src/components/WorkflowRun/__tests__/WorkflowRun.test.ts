@@ -555,3 +555,94 @@ describe('WorkflowRun — hierarchical invocation tree and controls (FR-R5-F06)'
     expect(guidanceEl.textContent).toContain('Inspect workspace outputs');
   });
 });
+
+// Feature 265 BUG-001 (FR-009) — every node and attempt that names a Task the
+// queue holds opens that Task, by pointer and by keyboard. A control is offered
+// only where it can land: no attempt, a `workflow` attempt (it names a child
+// invocation, not a Task), or a Task the queue no longer holds gets none.
+describe('WorkflowRun — member Tasks open from the topology (Feature 265 BUG-001)', () => {
+  const MEMBER: QueueItem = { ...QUEUE_ITEM, id: 'member-a1', status: 'completed', currentPhase: null };
+
+  function memberRun(): ConnectedRunProjection {
+    return run({
+      nodes: [
+        node({ nodeId: 'node-a', state: 'completed', actions: [], attemptCount: 1, latestQueueItemId: MEMBER.id }),
+        node({ nodeId: 'node-b', state: 'unvisited', actions: [], attemptCount: 0 })
+      ],
+      invocations: [
+        {
+          invocationId: 'inv-root',
+          parentInvocationId: null,
+          workflowId: 'research-workflow',
+          depth: 0,
+          nodePath: 'research-workflow',
+          status: 'in-flight',
+          currentNodeId: 'node-a',
+          activeAttemptId: null,
+          activeAttemptIndex: null,
+          allowedActions: [],
+          waitingReason: null,
+          pauseCause: null,
+          failureReason: null,
+          pendingRetryAt: null,
+          pendingRetryCause: null,
+          outputPortIds: [],
+          attempts: [
+            { attemptId: 'att-held', attemptIndex: 1, nodeId: 'node-a', nodeKind: 'phase', status: 'completed', startedAt: 1, endedAt: 2, queueItemId: MEMBER.id },
+            { attemptId: 'att-child', attemptIndex: 1, nodeId: 'node-c', nodeKind: 'workflow', status: 'in-flight', startedAt: 3, childInvocationId: 'inv-child' },
+            { attemptId: 'att-gone', attemptIndex: 2, nodeId: 'node-a', nodeKind: 'phase', status: 'failed', startedAt: 4, queueItemId: 'member-gone' }
+          ]
+        }
+      ]
+    });
+  }
+
+  function mountMembers(props: Record<string, unknown> = {}) {
+    const onOpenTask = vi.fn<(queueItemId: string, returnKey: string) => void>();
+    const view = mount(memberRun(), { queueItems: [MEMBER], onOpenTask, ...props });
+    return { ...view, onOpenTask };
+  }
+
+  it('opens the latest attempt Task from its node row', async () => {
+    const { getByTestId, onOpenTask } = mountMembers();
+    await fireEvent.click(getByTestId(`workflow-node-run-label-${MEMBER.id}`));
+    expect(onOpenTask).toHaveBeenCalledWith(MEMBER.id, 'node:node-a');
+  });
+
+  it('opens an attempt Task from its attempt row, through a real button', async () => {
+    const { getByTestId, onOpenTask } = mountMembers();
+    const open = getByTestId('workflow-invocation-attempt-open-att-held');
+    expect(open.tagName).toBe('BUTTON');
+    expect(open.getAttribute('type')).toBe('button');
+    await fireEvent.click(open);
+    expect(onOpenTask).toHaveBeenCalledWith(MEMBER.id, 'attempt:att-held');
+  });
+
+  it('offers no control for a node with no attempt, a workflow attempt, or a Task the queue does not hold', () => {
+    const { getByTestId, queryByTestId } = mountMembers();
+    expect(getByTestId('workflow-node-node-b').querySelector('button')).toBeNull();
+    expect(queryByTestId('workflow-invocation-attempt-open-att-child')).toBeNull();
+    expect(queryByTestId('workflow-invocation-attempt-open-att-gone')).toBeNull();
+    expect(getByTestId('workflow-invocation-attempt-att-child').textContent).toContain('node-c');
+    expect(getByTestId('workflow-invocation-attempt-att-gone').textContent).toContain('failed');
+  });
+
+  it('offers no open control at all when no opener is wired', () => {
+    const { queryByTestId } = mount(memberRun(), { queueItems: [MEMBER] });
+    expect(queryByTestId('workflow-invocation-attempt-open-att-held')).toBeNull();
+    expect(queryByTestId(`workflow-node-run-label-${MEMBER.id}`)?.tagName).not.toBe('BUTTON');
+  });
+
+  it('returns focus to the attempt row that opened the Task', async () => {
+    const { getByTestId } = mountMembers({ returnFocusKey: 'attempt:att-held' });
+    await tick();
+    expect(document.activeElement).toBe(getByTestId('workflow-invocation-attempt-open-att-held'));
+  });
+
+  it('returns focus to the node row that opened the Task', async () => {
+    const { getByTestId } = mountMembers({ returnFocusKey: 'node:node-a' });
+    await tick();
+    expect(getByTestId('workflow-node-attempt-node-a').contains(document.activeElement)).toBe(true);
+    expect(document.activeElement?.tagName).toBe('BUTTON');
+  });
+});

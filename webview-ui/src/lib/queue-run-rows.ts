@@ -6,6 +6,11 @@
 // attempt used (`latestQueueItemId`), so membership is a set of Task ids and the
 // row is a fold over the Tasks the queue already holds.
 //
+// Feature 265 BUG-001 (FR-013): membership also takes every attempt's Task from
+// `invocations`, root and nested, so a retried node and a child Workflow's leaf stay
+// inside the row. Status reads only each node occurrence's latest attempt, and the
+// `n of nodeCount` count reads the root nodes only, so the count never exceeds the total.
+//
 // Deriving it means the wire gains nothing for the tier: no per-row `queueId`, no
 // second membership list to keep in step with the aggregate. It also means a
 // connected run whose nodes name Tasks this queue does not hold produces no row
@@ -26,12 +31,12 @@ export interface ConnectedRunRow {
   readonly position: number;
   /** Label of the earliest member Task — the row's stand-in name. */
   readonly label: string;
-  /** The most advanced member status, by `STATUS_PRECEDENCE` below. */
+  /** The most advanced status among latest-attempt members, by `STATUS_PRECEDENCE` below. */
   readonly status: QueueItemStatus;
   readonly memberTaskIds: readonly string[];
   /** Nodes in the aggregate, including those that have not run yet. */
   readonly nodeCount: number;
-  /** Member Tasks that have completed — `n of nodeCount` in the UI. */
+  /** Root nodes whose latest attempt's Task has completed — `n of nodeCount` in the UI. */
   readonly completedNodeCount: number;
   readonly hydrating: boolean;
 }
@@ -67,12 +72,49 @@ function summariseStatus(members: readonly QueueItem[]): QueueItemStatus {
   return 'pending';
 }
 
-function memberIdsOf(run: ConnectedRunProjection): readonly string[] {
+function rootLatestIdsOf(run: ConnectedRunProjection): readonly string[] {
   // A node with no `latestQueueItemId` has not run yet. It is part of the
   // aggregate — hence `nodeCount` — but it is not a Task on any queue.
   return run.nodes
     .map((node) => node.latestQueueItemId)
     .filter((id): id is string => id !== undefined && id.length > 0);
+}
+
+type AttemptView = NonNullable<ConnectedRunProjection['invocations']>[number]['attempts'][number];
+
+function attemptsOf(run: ConnectedRunProjection): readonly AttemptView[] {
+  return (run.invocations ?? []).flatMap((frame) => frame.attempts);
+}
+
+/**
+ * Feature 265 BUG-001 (FR-013) — every Task the run started: the root nodes' latest attempts and
+ * every invocation attempt, root and nested, so a retried node's earlier attempt and a child
+ * Workflow's leaf join the row instead of each listing as a standalone Task.
+ */
+function memberIdsOf(run: ConnectedRunProjection): readonly string[] {
+  const attemptIds = attemptsOf(run)
+    .map((attempt) => attempt.queueItemId)
+    .filter((id): id is string => id !== undefined && id.length > 0);
+  return [...new Set([...rootLatestIdsOf(run), ...attemptIds])];
+}
+
+/**
+ * The Tasks of each node occurrence's latest attempt, which alone decide the row's status: a
+ * superseded failure must not outrank the attempt that recovered it.
+ */
+function latestIdsOf(run: ConnectedRunProjection): ReadonlySet<string> {
+  const latest = new Map<string, AttemptView>();
+  for (const frame of run.invocations ?? []) {
+    for (const attempt of frame.attempts) {
+      const key = `${frame.invocationId}:${attempt.nodeId}`;
+      const held = latest.get(key);
+      if (held === undefined || attempt.attemptIndex > held.attemptIndex) latest.set(key, attempt);
+    }
+  }
+  const ids = [...latest.values()].map((attempt) => attempt.queueItemId);
+  return new Set(
+    [...rootLatestIdsOf(run), ...ids].filter((id): id is string => id !== undefined && id.length > 0)
+  );
 }
 
 export function buildQueueRunRows(
@@ -95,16 +137,18 @@ export function buildQueueRunRows(
     for (const member of members) claimed.add(member.id);
     const ordered = members.slice().sort((a, b) => a.position - b.position);
     const first = ordered[0] as QueueItem;
+    const latest = latestIdsOf(run);
+    const rootLatest = new Set(rootLatestIdsOf(run));
     rows.push(
       Object.freeze({
         connectedRunId: run.connectedRunId,
         workflowId: run.workflowId,
         position: first.position,
         label: first.label,
-        status: summariseStatus(ordered),
+        status: summariseStatus(ordered.filter((item) => latest.has(item.id))),
         memberTaskIds: Object.freeze(ordered.map((item) => item.id)),
         nodeCount: run.nodes.length,
-        completedNodeCount: ordered.filter((item) => item.status === 'completed').length,
+        completedNodeCount: ordered.filter((item) => rootLatest.has(item.id) && item.status === 'completed').length,
         hydrating: run.hydrating
       })
     );

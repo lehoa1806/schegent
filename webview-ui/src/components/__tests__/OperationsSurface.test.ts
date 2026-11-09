@@ -12,7 +12,7 @@ import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import OperationsSurface from '../OperationsSurface.svelte';
-import { buildQueueRuntime } from '../../lib/__tests__/queue-runtime-fixture';
+import { buildInFlightRun, buildQueueRuntime } from '../../lib/__tests__/queue-runtime-fixture';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
 import type {
   QueueItem,
@@ -363,5 +363,174 @@ describe('OperationsSurface — a non-primary window (FR-065)', () => {
     await awaitTier(view, 'queue-detail-tier');
 
     expect(postCommandSpy).not.toHaveBeenCalled();
+  });
+});
+
+// Feature 265 BUG-001 (FR-009) — a Workflow run's member Tasks are reachable
+// from its topology, and Back walks Task → run → Queue Detail. The fixture is a
+// run with two attempts at one node (`m-a1` failed, `m-a2` completed), a node
+// that never ran, a `workflow` attempt (no Task), and an attempt whose Task the
+// queue no longer holds.
+describe('OperationsSurface — member Tasks of a Workflow run (Feature 265 BUG-001)', () => {
+  const RUN_ID = 'cr-1';
+  const WORKFLOW_ID = 'wf-feature';
+
+  /** `executing` adds an in-flight member `m-live` at node `plan`, the queue's executing Task. */
+  function memberSnapshot(executing = false): WorkflowSnapshot {
+    const live = task('m-live', { status: 'in-flight', position: 3, currentPhase: 'plan', currentPipelineId: 'plan' });
+    const queues = [
+      QUEUES[0]!,
+      buildQueueRuntime({
+        queueId: 'q-beta',
+        name: 'nightly',
+        position: 1,
+        lifecycle: 'running',
+        tasks: [
+          task('m-a1', { status: 'failed', position: 0 }),
+          task('m-a2', { status: 'completed', position: 1 }),
+          task('r-1', { label: 'generate the RFC', position: 2 }),
+          ...(executing ? [live] : [])
+        ],
+        ...(executing
+          ? { inFlightRun: buildInFlightRun({ feature: { id: live.id, label: live.label, startedAt: '2026-08-12T00:00:10.000Z' } }) }
+          : {})
+      })
+    ];
+    const run = {
+      connectedRunId: RUN_ID,
+      workflowId: WORKFLOW_ID,
+      revision: 3,
+      hydrating: false,
+      queueId: 'q-beta',
+      status: 'in-flight',
+      rootInvocationId: 'inv-root',
+      nodes: [
+        { nodeId: 'specify', pipelineId: 'specify', state: 'completed', actions: [], attemptCount: 2, latestQueueItemId: 'm-a2' },
+        executing
+          ? { nodeId: 'plan', pipelineId: 'plan', state: 'in-flight', actions: [], attemptCount: 1, latestQueueItemId: 'm-live' }
+          : { nodeId: 'plan', pipelineId: 'plan', state: 'unvisited', actions: [], attemptCount: 0 }
+      ],
+      invocations: [
+        {
+          invocationId: 'inv-root',
+          parentInvocationId: null,
+          workflowId: WORKFLOW_ID,
+          depth: 0,
+          nodePath: WORKFLOW_ID,
+          status: 'in-flight',
+          currentNodeId: 'specify',
+          activeAttemptId: null,
+          activeAttemptIndex: null,
+          allowedActions: [],
+          waitingReason: null,
+          pauseCause: null,
+          failureReason: null,
+          pendingRetryAt: null,
+          pendingRetryCause: null,
+          outputPortIds: [],
+          attempts: [
+            { attemptId: 'a1', attemptIndex: 1, nodeId: 'specify', nodeKind: 'phase', status: 'failed', startedAt: 1, endedAt: 2, queueItemId: 'm-a1' },
+            { attemptId: 'a2', attemptIndex: 2, nodeId: 'specify', nodeKind: 'phase', status: 'completed', startedAt: 3, endedAt: 4, queueItemId: 'm-a2' },
+            { attemptId: 'a-child', attemptIndex: 1, nodeId: 'review', nodeKind: 'workflow', status: 'in-flight', startedAt: 5, childInvocationId: 'inv-child' },
+            { attemptId: 'a-gone', attemptIndex: 3, nodeId: 'specify', nodeKind: 'phase', status: 'failed', startedAt: 6, queueItemId: 'm-gone' }
+          ]
+        }
+      ]
+    };
+    return { ...buildSnapshot(queues), connectedRuns: [run] } as unknown as WorkflowSnapshot;
+  }
+
+  async function openRun(view: ReturnType<typeof mount>): Promise<void> {
+    await fireEvent.click(view.getByTestId('queue-card-q-beta'));
+    await awaitTier(view, 'queue-detail-tier');
+    await fireEvent.click(view.getByTestId(`queue-run-row-${RUN_ID}`));
+    await awaitTier(view, 'workflow-run');
+  }
+
+  /** The tier that shows a Task, as opposed to the run's topology. */
+  async function awaitTaskTier(view: ReturnType<typeof mount>): Promise<void> {
+    await awaitTier(view, 'run-tab-log');
+    expect(view.queryByTestId('workflow-run')).toBeNull();
+  }
+
+  it('opens the latest attempt Task from its node row, and Back names the Workflow', async () => {
+    const view = mount(memberSnapshot());
+    await openRun(view);
+    await fireEvent.click(view.getByTestId('workflow-node-run-label-m-a2'));
+    await awaitTaskTier(view);
+    expect(view.getByTestId('run-detail-back').textContent).toContain(WORKFLOW_ID);
+    expect(view.getByTestId('run-detail-back').textContent).not.toContain('nightly');
+  });
+
+  it('opens an earlier attempt Task from its attempt row', async () => {
+    const view = mount(memberSnapshot());
+    await openRun(view);
+    await fireEvent.click(view.getByTestId('workflow-invocation-attempt-open-a1'));
+    await awaitTaskTier(view);
+    expect(view.getByTestId('run-detail-back').textContent).toContain(WORKFLOW_ID);
+  });
+
+  it('walks Back to the topology with focus on the opening row, then to Queue Detail with the run marked', async () => {
+    const view = mount(memberSnapshot());
+    await openRun(view);
+    await fireEvent.click(view.getByTestId('workflow-invocation-attempt-open-a1'));
+    await awaitTaskTier(view);
+
+    await fireEvent.click(view.getByTestId('run-detail-back'));
+    const opener = await awaitTier(view, 'workflow-invocation-attempt-open-a1');
+    await vi.waitFor(() => expect(document.activeElement).toBe(opener));
+
+    await fireEvent.click(view.getByTestId('run-detail-back'));
+    await awaitTier(view, 'queue-detail-tier');
+    expect(view.getByTestId(`queue-run-row-${RUN_ID}`).getAttribute('data-selected')).toBe('true');
+  });
+
+  it('offers no control for a node that never ran, a workflow attempt, or a Task the queue does not hold', async () => {
+    const view = mount(memberSnapshot());
+    await openRun(view);
+    expect(view.getByTestId('workflow-node-plan').querySelector('button')).toBeNull();
+    expect(view.queryByTestId('workflow-invocation-attempt-open-a-child')).toBeNull();
+    expect(view.queryByTestId('workflow-invocation-attempt-open-a-gone')).toBeNull();
+  });
+
+  it('starts a Task opened from the topology on its Log tab after another Task was left on Outputs', async () => {
+    const view = mount(memberSnapshot());
+    await openRun(view);
+    await fireEvent.click(view.getByTestId('workflow-node-run-label-m-a2'));
+    await awaitTaskTier(view);
+    await fireEvent.click(view.getByTestId('run-tab-outputs'));
+    expect(view.getByTestId('run-tab-outputs').getAttribute('aria-selected')).toBe('true');
+
+    await fireEvent.click(view.getByTestId('run-detail-back'));
+    await awaitTier(view, 'workflow-run');
+    await fireEvent.click(view.getByTestId('workflow-invocation-attempt-open-a1'));
+    await awaitTaskTier(view);
+    expect(view.getByTestId('run-tab-log').getAttribute('aria-selected')).toBe('true');
+  });
+
+  // T014 (FR-010, SC-006) — the log route BUG-001's decision selected: the member
+  // Task's own tier, with its phase strip and log feed. The Workflow tier itself
+  // still renders neither (092 T101's pin in `RunDetailTier.test.ts`).
+  it('shows an executing member its phase progression and log feed, and the Workflow tier neither', async () => {
+    const view = mount(memberSnapshot(true));
+    await openRun(view);
+    expect(view.queryByTestId('dashboard-phase-progression')).toBeNull();
+    expect(view.queryByTestId('phase-log-feed')).toBeNull();
+
+    await fireEvent.click(view.getByTestId('workflow-node-run-label-m-live'));
+    await awaitTaskTier(view);
+    expect(view.getByTestId('dashboard-phase-progression')).toBeTruthy();
+    expect(view.getByTestId('phase-log-feed')).toBeTruthy();
+    expect(view.getByTestId('run-streaming-badge')).toBeTruthy();
+  });
+
+  it('still names the queue on Back for a Task opened from Queue Detail', async () => {
+    const view = mount(memberSnapshot());
+    await fireEvent.click(view.getByTestId('queue-card-q-beta'));
+    await awaitTier(view, 'queue-detail-tier');
+    await fireEvent.click(view.getByTestId('queue-task-row-r-1'));
+    await awaitTaskTier(view);
+    expect(view.getByTestId('run-detail-back').textContent).toContain('nightly');
+    expect(view.getByTestId('run-detail-back').textContent).not.toContain(WORKFLOW_ID);
   });
 });

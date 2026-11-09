@@ -18,7 +18,7 @@ import type { PhaseProgress } from './types';
 // service → ui direction and `dependency-direction.test.ts`, which governs value
 // imports, is unaffected. Precedent: `continuation-service.ts` imports
 // `ChildRunStateReader` from `../../ui/sidebar/connected-run-projector` the same
-// way. `Pick` rather than the whole interface: the service reads four fields and
+// way. `Pick` rather than the whole interface: the service reads five fields and
 // the type should say so.
 import type { QueueItem } from '../../ui/sidebar/snapshot';
 
@@ -31,7 +31,10 @@ export interface PhaseLogSnapshotView {
    */
   readonly queues: readonly {
     readonly queueId: string;
-    readonly tasks: readonly Pick<QueueItem, 'id' | 'status' | 'currentPhase' | 'paused'>[];
+    // Feature 265 BUG-001 (FR-012) — `currentPipelineId` is optional here so a stand-in view
+    // may omit it; the projected snapshot always carries it.
+    readonly tasks: readonly (Pick<QueueItem, 'id' | 'status' | 'currentPhase' | 'paused'> &
+      Partial<Pick<QueueItem, 'currentPipelineId'>>)[];
   }[];
   /** BUG-002 (FR-008) — with its partition, so an entry answers under its own queue only. */
   readonly history: readonly { readonly runId: string; readonly queueId: string }[];
@@ -197,7 +200,14 @@ function validateSelection(
   // tuple resolves to an empty manifest, not a hard failure.
   const pipelineKnown = snapshot.availablePipelines.some((p) => p.id === selection.pipelineId);
   const phaseKnown = snapshot.availablePhases.some((p) => p.id === selection.phaseId);
-  if (!inFlightMatch && (!pipelineKnown || !phaseKnown)) {
+  // Feature 265 BUG-001 (FR-012) — a Workflow leaf Task runs one Phase under its own id
+  // (`buildPhaseAttemptRequest` sets `pipelineId` to the Phase id), so (Phase, Phase) is the only
+  // tuple its log has, and the catalog lists that id as a Phase, never as a Pipeline. The Task's
+  // own row vouches for that one tuple; every other tuple still needs the catalog.
+  const ownLeafTuple =
+    selection.phaseId === selection.pipelineId &&
+    runtime.tasks.some((t) => t.id === selection.taskId && t.currentPipelineId === selection.pipelineId);
+  if (!inFlightMatch && !ownLeafTuple && (!pipelineKnown || !phaseKnown)) {
     return { outcome: 'failure', reason: 'unknown-tuple' };
   }
 

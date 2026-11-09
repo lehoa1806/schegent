@@ -1107,3 +1107,163 @@ describe('FR-R4-F08 K-T2 — Run Detail tab roving focus and association', () =>
     expect(order).toEqual(['run-tab-outputs', 'run-tab-context', 'run-tab-log', 'run-tab-outputs']);
   });
 });
+
+// Feature 265 BUG-001 (FR-011, T015) — a leaf member Task's strip is its own one Phase.
+//
+// A Workflow's leaf Task runs one Phase: its `currentPipelineId` is that Phase's id. The queue's
+// `runtime.phases` belongs to whatever the queue is executing, so a leaf member that is not the
+// one executing must not borrow it. Standalone Tasks keep `runtime.phases`; the
+// "phase named done" pins above are that control and stay unedited.
+describe('RunDetailTier — a leaf member Task shows its own Phase (Feature 265 BUG-001)', () => {
+  const LEAF_PHASE = 'speckit-tasks';
+
+  function leafRun(queueItemIds: readonly string[], nodeKind: 'phase' | 'workflow' = 'phase'): ConnectedRunProjection {
+    return {
+      connectedRunId: 'cr-leaf',
+      workflowId: 'wf-feature',
+      revision: 1,
+      hydrating: false,
+      queueId: 'q-beta',
+      status: 'in-flight',
+      rootInvocationId: 'inv-root',
+      activeInvocationId: 'inv-root',
+      nodes: [
+        { nodeId: LEAF_PHASE, pipelineId: LEAF_PHASE, nodeKind: 'phase', actions: [], state: 'completed', attemptCount: queueItemIds.length }
+      ],
+      invocations: [
+        {
+          invocationId: 'inv-root',
+          parentInvocationId: null,
+          workflowId: 'wf-feature',
+          workflowName: 'Feature',
+          depth: 0,
+          nodePath: '',
+          status: 'in-flight',
+          currentNodeId: LEAF_PHASE,
+          activeAttemptId: null,
+          activeAttemptIndex: null,
+          allowedActions: [],
+          waitingReason: null,
+          pauseCause: null,
+          failureReason: null,
+          pendingRetryAt: null,
+          pendingRetryCause: null,
+          outputPortIds: [],
+          attempts: queueItemIds.map((queueItemId, index) => ({
+            attemptId: `a-${queueItemId}`,
+            attemptIndex: index + 1,
+            nodeId: LEAF_PHASE,
+            nodeKind,
+            status: 'completed',
+            startedAt: index,
+            endedAt: index + 1,
+            queueItemId
+          }))
+        }
+      ]
+    } as unknown as ConnectedRunProjection;
+  }
+
+  function leafTask(status: QueueItem['status']): QueueItem {
+    return task('m-1', { status, currentPipelineId: LEAF_PHASE, currentPhase: null });
+  }
+
+  function tileNames(container: HTMLElement): readonly string[] {
+    return [...container.querySelectorAll('[data-testid^="phase-progression-"]')]
+      .map((el) => el.getAttribute('data-testid') ?? '')
+      .filter((id) => id !== 'phase-progression-list' && !id.startsWith('phase-progression-header'))
+      .map((id) => id.slice('phase-progression-'.length));
+  }
+
+  it('shows one tile for its own Phase, not the queue strip', () => {
+    const { container, getByTestId } = mount(
+      buildSnapshot({ tasks: [leafTask('completed')], connectedRuns: [leafRun(['m-1'])] }),
+      { runId: 'm-1' }
+    );
+
+    expect(tileNames(container)).toEqual([LEAF_PHASE]);
+    expect(getByTestId(`phase-progression-${LEAF_PHASE}`).getAttribute('data-state')).toBe('completed');
+  });
+
+  it.each([
+    ['pending', 'not-started'],
+    ['paused', 'active'],
+    ['completed', 'completed'],
+    ['failed', 'completed'],
+    ['canceled', 'completed']
+  ] as const)('a %s leaf member reads its tile as %s', (status, state) => {
+    const { getByTestId } = mount(
+      buildSnapshot({ tasks: [leafTask(status)], connectedRuns: [leafRun(['m-1'])] }),
+      { runId: 'm-1' }
+    );
+
+    expect(getByTestId(`phase-progression-${LEAF_PHASE}`).getAttribute('data-state')).toBe(state);
+  });
+
+  it('activating the tile requests that Phase as both pipeline and phase', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot({ tasks: [leafTask('failed')], connectedRuns: [leafRun(['m-1'])] }),
+      { runId: 'm-1' }
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    readPhaseLogSpy.mockClear();
+
+    await fireEvent.click(getByTestId(`phase-progression-${LEAF_PHASE}`));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-beta',
+        taskId: 'm-1',
+        pipelineId: LEAF_PHASE,
+        phaseId: LEAF_PHASE,
+        iterationN: null
+      }
+    });
+  });
+
+  it('an earlier attempt of a retried node is a leaf member too', () => {
+    const { container } = mount(
+      buildSnapshot({
+        tasks: [leafTask('failed'), task('m-2', { status: 'completed', currentPipelineId: LEAF_PHASE })],
+        connectedRuns: [leafRun(['m-1', 'm-2'])]
+      }),
+      { runId: 'm-1' }
+    );
+
+    expect(tileNames(container)).toEqual([LEAF_PHASE]);
+  });
+
+  it('the executing leaf member keeps the live strip', () => {
+    const { container } = mount(
+      buildSnapshot({
+        tasks: [leafTask('in-flight')],
+        connectedRuns: [leafRun(['m-1'])],
+        inFlightTaskId: 'm-1'
+      }),
+      { runId: 'm-1' }
+    );
+
+    expect(tileNames(container)).toEqual(PHASES.map((tile) => tile.name));
+  });
+
+  it('a standalone Task keeps the queue strip', () => {
+    const { container } = mount(
+      buildSnapshot({ tasks: [leafTask('completed')], connectedRuns: [leafRun(['someone-else'])] }),
+      { runId: 'm-1' }
+    );
+
+    expect(tileNames(container)).toEqual(PHASES.map((tile) => tile.name));
+  });
+
+  it('a Task a workflow-kind attempt names keeps the queue strip', () => {
+    const { container } = mount(
+      buildSnapshot({ tasks: [leafTask('completed')], connectedRuns: [leafRun(['m-1'], 'workflow')] }),
+      { runId: 'm-1' }
+    );
+
+    expect(tileNames(container)).toEqual(PHASES.map((tile) => tile.name));
+  });
+});

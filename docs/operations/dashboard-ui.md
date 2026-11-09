@@ -19,8 +19,11 @@ Open the Dashboard with `Schegent: Open Dashboard` (`schegent.openDashboard`). S
 
 <!-- Source: webview-ui/src/dashboard/routes.ts -->
 <!-- Source: webview-ui/src/dashboard/route-loader.ts -->
+<!-- Source: webview-ui/src/components/WorkflowRun/WorkflowRun.svelte -->
+<!-- Source: webview-ui/src/components/drilldown/RunDetailTier.svelte -->
 
 `operations` is the default route. Queue detail and Run detail are nested locations rather than top-level navigation entries; Back moves Run → Queue → all Queues.
+A Workflow run's detail lists its nodes and attempts; selecting one that has started opens that member Task's Run detail, with its Phase strip, live feed and log. Back from that Task returns to the Workflow run, labelled with the Workflow's id, and restores focus to the row that opened it.
 
 <!-- Source: webview-ui/src/dashboard/routes.ts -->
 

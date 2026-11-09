@@ -52,6 +52,12 @@ export interface RunDetailLocation {
   readonly route: 'run-detail';
   readonly queueId: string;
   readonly runId: string;
+  /**
+   * Feature 265 BUG-001 (FR-009): the Workflow run a member Task was opened
+   * from. Present only on that route, so Back returns to the run's topology;
+   * a Task opened from Queue Detail carries no such key.
+   */
+  readonly parentRunId?: string;
 }
 
 export type DashboardLocation = QueuesLocation | QueueDetailLocation | RunDetailLocation;
@@ -68,8 +74,9 @@ export function queueDetailLocation(queueId: string): QueueDetailLocation {
   return Object.freeze({ route: 'queue-detail', queueId } as const);
 }
 
-export function runDetailLocation(queueId: string, runId: string): RunDetailLocation {
-  return Object.freeze({ route: 'run-detail', queueId, runId } as const);
+export function runDetailLocation(queueId: string, runId: string, parentRunId?: string): RunDetailLocation {
+  if (parentRunId === undefined) return Object.freeze({ route: 'run-detail', queueId, runId } as const);
+  return Object.freeze({ route: 'run-detail', queueId, runId, parentRunId } as const);
 }
 
 /**
@@ -80,7 +87,9 @@ export function runDetailLocation(queueId: string, runId: string): RunDetailLoca
 export function parentLocation(location: DashboardLocation): DashboardLocation {
   switch (location.route) {
     case 'run-detail':
-      return queueDetailLocation(location.queueId);
+      return location.parentRunId === undefined
+        ? queueDetailLocation(location.queueId)
+        : runDetailLocation(location.queueId, location.parentRunId);
     case 'queue-detail':
       return DEFAULT_DASHBOARD_LOCATION;
     case 'queues':

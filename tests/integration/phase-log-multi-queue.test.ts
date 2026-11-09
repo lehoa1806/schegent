@@ -256,3 +256,59 @@ describe('phase-log read on a queue other than the default (BUG-002, T072)', () 
     expect(unlisted).toEqual(UNKNOWN_TUPLE);
   });
 });
+
+// Feature 265 BUG-001 (FR-012, SC-006, T016) — a settled Workflow leaf reads its own log.
+//
+// A Workflow dispatches each Phase attempt as a Task whose `pipelineId` is the Phase's own id, so
+// the tuple that names its log is (Phase, Phase). The catalog lists that id as a Phase and never as
+// a Pipeline, so once the Task left flight the catalog check refused the only tuple it has.
+describe('phase-log read of a settled Workflow leaf Task (Feature 265 BUG-001, T016)', () => {
+  const LEAF_PHASE = 'speckit-tasks';
+  const RUN_LEAF = 'run-leaf-b';
+
+  async function startLeafTask(queueId: string, runId: string): Promise<string> {
+    const task = await queue.enqueue(`leaf for ${runId}`, { queueId, pipelineId: LEAF_PHASE });
+    await store.setRun(queueId, sampleRun({ id: runId, featureId: task.id }), unfencedCommit('test-fixture'));
+    await queue.markInFlight(task.id, runId);
+    return task.id;
+  }
+
+  it('the projected snapshot carries the leaf Phase as the Task’s currentPipelineId', async () => {
+    const leaf = await startLeafTask(QUEUE_B, RUN_LEAF);
+    const rows = project().queues.find((runtime) => runtime.queueId === QUEUE_B)?.tasks ?? [];
+    expect(rows.find((row) => row.id === leaf)?.currentPipelineId).toBe(LEAF_PHASE);
+  });
+
+  it.each(['completed', 'failed'] as const)('reads a %s leaf Task’s own (Phase, Phase) tuple', async (outcome) => {
+    const leaf = await startLeafTask(QUEUE_B, RUN_LEAF);
+    await writeStream(RUN_LEAF, LEAF_PHASE, LEAF_PHASE);
+    await queue.finish(leaf, outcome);
+    const { service } = buildService();
+
+    const own = await service.read(request(QUEUE_B, leaf, LEAF_PHASE, LEAF_PHASE));
+    expect(own).toMatchObject({ outcome: 'success', manifest: { iterations: [1], isInFlight: false } });
+  });
+
+  it('still refuses other tuples for a settled leaf Task, and its tuple for another Task', async () => {
+    const leaf = await startLeafTask(QUEUE_B, RUN_LEAF);
+    await writeStream(RUN_LEAF, LEAF_PHASE, LEAF_PHASE);
+    await queue.finish(leaf, 'completed');
+    const other = await queue.enqueue('pending Pipeline Task on B', { queueId: QUEUE_B });
+    const { service } = buildService();
+
+    // Its own Phase under a Pipeline the catalog does not list, and another Phase under its own id.
+    expect(await service.read(request(QUEUE_B, leaf, 'unlisted-pipeline', LEAF_PHASE))).toEqual(UNKNOWN_TUPLE);
+    expect(await service.read(request(QUEUE_B, leaf, LEAF_PHASE, 'speckit-plan'))).toEqual(UNKNOWN_TUPLE);
+    // The same tuple for a Task whose own Phase it is not.
+    expect(await service.read(request(QUEUE_B, other.id, LEAF_PHASE, LEAF_PHASE))).toEqual(UNKNOWN_TUPLE);
+  });
+
+  it('still accepts any tuple for the in-flight Task', async () => {
+    const leaf = await startLeafTask(QUEUE_B, RUN_LEAF);
+    await writeStream(RUN_LEAF, 'unlisted-pipeline', 'unlisted-phase');
+    const { service } = buildService();
+
+    const live = await service.read(request(QUEUE_B, leaf, 'unlisted-pipeline', 'unlisted-phase'));
+    expect(live).toMatchObject({ outcome: 'success', manifest: { iterations: [1], isInFlight: true } });
+  });
+});

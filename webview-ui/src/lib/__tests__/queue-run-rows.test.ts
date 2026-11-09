@@ -172,3 +172,107 @@ describe('buildQueueRunRows — a connected run occupies one row (FR-047)', () =
     expect(standaloneTasks.map((item) => item.id)).toEqual(['a']);
   });
 });
+
+// Feature 265 BUG-001 (FR-013, SC-007, T017) — every attempt's Task belongs to the run's one row.
+//
+// Membership read only the root nodes' `latestQueueItemId`, so a retried node's earlier attempt and
+// a nested child Workflow's leaf each fell out as a standalone row. Status and the node count still
+// read latest attempts only: `failed` outranks `completed`, so a superseded failure would otherwise
+// turn a recovered run's row red, and a retry would push the count past `nodeCount`.
+describe('buildQueueRunRows — every attempt of a Workflow run is one row (Feature 265 BUG-001)', () => {
+  type Attempt = { readonly attemptId: string; readonly attemptIndex: number; readonly nodeId: string; readonly nodeKind: 'phase' | 'workflow'; readonly status: string; readonly queueItemId?: string; readonly childInvocationId?: string };
+
+  function frame(invocationId: string, parentInvocationId: string | null, attempts: readonly Attempt[]) {
+    return {
+      invocationId,
+      parentInvocationId,
+      workflowId: `wf-${invocationId}`,
+      workflowName: invocationId,
+      depth: parentInvocationId === null ? 0 : 1,
+      nodePath: '',
+      status: 'in-flight',
+      currentNodeId: null,
+      activeAttemptId: null,
+      activeAttemptIndex: null,
+      allowedActions: [],
+      waitingReason: null,
+      pauseCause: null,
+      failureReason: null,
+      pendingRetryAt: null,
+      pendingRetryCause: null,
+      outputPortIds: [],
+      attempts: attempts.map((attempt) => ({ startedAt: attempt.attemptIndex, ...attempt }))
+    };
+  }
+
+  const RETRIED_ATTEMPTS: readonly Attempt[] = [
+    { attemptId: 'a1', attemptIndex: 1, nodeId: 'specify', nodeKind: 'phase', status: 'failed', queueItemId: 'm-a1' },
+    { attemptId: 'a2', attemptIndex: 2, nodeId: 'specify', nodeKind: 'phase', status: 'completed', queueItemId: 'm-a2' }
+  ];
+
+  function retriedRun(extraNodes: ConnectedRunProjection['nodes'] = [], extraFrames: readonly ReturnType<typeof frame>[] = [], rootExtra: readonly Attempt[] = []): ConnectedRunProjection {
+    return {
+      ...connectedRun('cr-1', ['m-a2']),
+      nodes: [
+        { nodeId: 'specify', pipelineId: 'specify', nodeKind: 'phase', state: 'completed', actions: [], attemptCount: 2, latestQueueItemId: 'm-a2' },
+        { nodeId: 'plan', pipelineId: 'plan', nodeKind: 'phase', state: 'unvisited', actions: [], attemptCount: 0 },
+        ...extraNodes
+      ],
+      invocations: [frame('inv-root', null, [...RETRIED_ATTEMPTS, ...rootExtra]), ...extraFrames]
+    } as unknown as ConnectedRunProjection;
+  }
+
+  it('a failed attempt followed by a completed one is one row: badge 2, completed 1, not failed', () => {
+    const tasks = [
+      task('m-a1', { position: 0, status: 'failed' }),
+      task('m-a2', { position: 1, status: 'completed' }),
+      task('solo', { position: 2 })
+    ];
+
+    const { rows, standaloneTasks } = buildQueueRunRows(tasks, [retriedRun()]);
+
+    expect(rows).toHaveLength(1);
+    const row = rows.at(0);
+    expect(row?.memberTaskIds).toEqual(['m-a1', 'm-a2']);
+    expect(row?.completedNodeCount).toBe(1);
+    expect(row?.nodeCount).toBe(2);
+    expect(row?.status).toBe('completed');
+    expect(standaloneTasks.map((item) => item.id)).toEqual(['solo']);
+  });
+
+  it('a live retry reads in-flight, and a failed latest attempt still reads failed', () => {
+    const live = buildQueueRunRows(
+      [task('m-a1', { position: 0, status: 'failed' }), task('m-a2', { position: 1, status: 'in-flight' })],
+      [retriedRun()]
+    );
+    expect(live.rows.at(0)?.status).toBe('in-flight');
+
+    const failed = buildQueueRunRows(
+      [task('m-a1', { position: 0, status: 'completed' }), task('m-a2', { position: 1, status: 'failed' })],
+      [retriedRun()]
+    );
+    expect(failed.rows.at(0)?.status).toBe('failed');
+  });
+
+  it('a nested child Workflow’s leaf joins the run’s row, and is not a root node in the count', () => {
+    const tasks = [
+      task('m-a1', { position: 0, status: 'failed' }),
+      task('m-a2', { position: 1, status: 'completed' }),
+      task('m-child', { position: 2, status: 'completed' })
+    ];
+    const run = retriedRun(
+      [{ nodeId: 'call', pipelineId: 'call', nodeKind: 'workflow', state: 'in-flight', actions: [], attemptCount: 1 }] as unknown as ConnectedRunProjection['nodes'],
+      [frame('inv-child', 'inv-root', [{ attemptId: 'c1', attemptIndex: 1, nodeId: 'leaf', nodeKind: 'phase', status: 'completed', queueItemId: 'm-child' }])],
+      [{ attemptId: 'a-call', attemptIndex: 1, nodeId: 'call', nodeKind: 'workflow', status: 'in-flight', childInvocationId: 'inv-child' }]
+    );
+
+    const { rows, standaloneTasks } = buildQueueRunRows(tasks, [run]);
+
+    expect(standaloneTasks).toEqual([]);
+    expect(rows).toHaveLength(1);
+    const row = rows.at(0);
+    expect(row?.memberTaskIds).toEqual(['m-a1', 'm-a2', 'm-child']);
+    expect(row?.completedNodeCount).toBe(1);
+    expect(row?.nodeCount).toBe(3);
+  });
+});
