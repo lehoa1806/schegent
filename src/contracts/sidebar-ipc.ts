@@ -114,6 +114,9 @@ export const CMD_READ_FAILURE_RECORD = 'CMD_READ_FAILURE_RECORD' as const;
 // FR-R5-F19 — open the decision record (`decisions.md`) of the feature a blocked row's Run works on.
 // READ-ONLY, so out of MUTATING_COMMANDS; cmd-open-decision-record.ts says why.
 export const CMD_OPEN_DECISION_RECORD = 'CMD_OPEN_DECISION_RECORD' as const;
+// FR-R6-F05 — read storage pressure and one inventory page.
+// READ-ONLY, so out of MUTATING_COMMANDS; cmd-read-storage-details.ts says why.
+export const CMD_READ_STORAGE_DETAILS = 'CMD_READ_STORAGE_DETAILS' as const;
 // Feature 028 — future-phase breakpoints. Operator marks a pending phase
 // as a "pause when reached" point. The pipeline runs preceding phases
 // then halts before invoking the marked phase. Both are mutating —
@@ -248,6 +251,7 @@ export const COMMAND_TYPES = [
   CMD_RESOLVE_HISTORY_DESCRIPTION,
   CMD_READ_FAILURE_RECORD,
   CMD_OPEN_DECISION_RECORD,
+  CMD_READ_STORAGE_DETAILS,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE,
@@ -303,6 +307,14 @@ import type { ResolveAuditPointerCommand } from './sidebar-ipc/history-evidence'
 import type { ResolveHistoryDescriptionCommand } from './sidebar-ipc/history-description';
 import type { ReadFailureRecordCommand } from './sidebar-ipc/failure-record';
 import type { OpenDecisionRecordCommand } from './sidebar-ipc/decision-record';
+import type { ReadStorageDetailsCommand } from './sidebar-ipc/storage-details';
+export type {
+  ReadStorageDetailsRequest,
+  ReadStorageDetailsCommand,
+  ReadStorageDetailsResponse,
+  StorageDetails,
+  StorageDetailsReader
+} from './sidebar-ipc/storage-details';
 export type {
   OpenDecisionRecordRequest,
   OpenDecisionRecordCommand,
@@ -683,6 +695,7 @@ export type SidebarCommand =
   | ResolveHistoryDescriptionCommand
   | ReadFailureRecordCommand
   | OpenDecisionRecordCommand
+  | ReadStorageDetailsCommand
   | StartQueueCommand
   | ClearQueueCommand
   | SetConfirmSuppressionCommand
@@ -910,6 +923,9 @@ export function isCmdReadFailureRecord(value: unknown): value is ReadFailureReco
 export function isCmdOpenDecisionRecord(value: unknown): value is OpenDecisionRecordCommand {
   return isObjectWithType(value, CMD_OPEN_DECISION_RECORD);
 }
+export function isCmdReadStorageDetails(value: unknown): value is ReadStorageDetailsCommand {
+  return isObjectWithType(value, CMD_READ_STORAGE_DETAILS);
+}
 // Feature 028 — phase breakpoint set/clear guards.
 export function isCmdSetPhaseBreakpoint(value: unknown): value is SetPhaseBreakpointCommand {
   return isObjectWithType(value, CMD_SET_PHASE_BREAKPOINT);
@@ -1121,6 +1137,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_RESOLVE_HISTORY_DESCRIPTION]: isCmdResolveHistoryDescription,
   [CMD_READ_FAILURE_RECORD]: isCmdReadFailureRecord,
   [CMD_OPEN_DECISION_RECORD]: isCmdOpenDecisionRecord,
+  [CMD_READ_STORAGE_DETAILS]: isCmdReadStorageDetails,
   [CMD_SET_PHASE_BREAKPOINT]: isCmdSetPhaseBreakpoint,
   [CMD_CLEAR_PHASE_BREAKPOINT]: isCmdClearPhaseBreakpoint,
   [CMD_START_QUEUE]: isCmdStartQueue,

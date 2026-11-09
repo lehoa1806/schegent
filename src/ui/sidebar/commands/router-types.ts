@@ -5,6 +5,7 @@ import type { HistoryEvidenceResolution } from '../../../services/history/histor
 import type { DescriptionResolution } from '../../../services/history/history-description-resolver';
 import type { DecisionRecordOpener } from '../../../services/decision-record/decision-record-open';
 import type { FailureRecordAnswerer } from '../../../services/failure-record/failure-record-service';
+import type { StorageDetailsReader } from '../../../contracts/sidebar-ipc/storage-details';
 import type { CatalogLifecycleOps, CatalogStore } from '../../../catalog';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type { CatalogVersionRef } from '../../../contracts/catalog-version';
@@ -512,6 +513,13 @@ export interface RouterDeps {
    * over the requesting window's own queue state, so a pair it does not hold is an unknown row.
    */
   readonly readFailureRecord?: FailureRecordAnswerer['answer'];
+  /**
+   * FR-R6-F05 (contract surfaces-and-wiring.md §5) — storage pressure and one inventory page, read
+   * for the storage details view. Absent in a harness that builds no reader; the handler then answers
+   * `unavailable`. Built by the headless API's `createStorageDetailsReader`, so this surface and the
+   * headless one give the same answer.
+   */
+  readonly storageDetails?: StorageDetailsReader;
   /**
    * FR-R5-F19 (feature 278, contract decision-record-open.md) — opens a blocked row's `decisions.md`
    * read-only. Absent in a harness that builds no opener; the handler then answers `internal-error`.

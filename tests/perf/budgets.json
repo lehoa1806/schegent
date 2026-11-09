@@ -122,6 +122,13 @@
       "budgetMs": 1500,
       "constant": "MAX_MS_AT_16_MIB",
       "rationale": "FR-R4-F12 FR-023: completion detection stays linear at 16 MiB. The median of 3 runs over each seeded shape is at most 1,500 ms at 16 MiB with a 16/8 MiB ratio of at most 3.0 (MAX_DOUBLING_RATIO). At plan the worst shape took 295.7 ms with a ratio of 2.4 (research R0). A deliberately quadratic reference scan must show a ratio above 3.0 on the same run shape, so the check can fail."
+    },
+    {
+      "test": "tests/perf/artifact-lifecycle-inventory.test.ts",
+      "name": "ArtifactLifecycleService.listInventory \u2014 warm page read at 10,000 artifacts, plus one 10,000-entry declared-root scan",
+      "budgetMs": 500,
+      "constant": "WARM_P95_BUDGET_MS",
+      "rationale": "FR-R6-F05 NFR-003 / SC-004 (AC-04): warm p95 of 200 measured page reads (20 warm-up, the F03 floor) at the 200-entry page bound is at most 500 ms, and the scan heap delta is at most 32 MiB (SCAN_HEAP_BUDGET_BYTES). One scan pass stops at SCAN_MAX_ENTRIES_PER_PASS (2,000) of the 10,000 entries and is asserted partial (NFR-001). At implement: p95 4.1 ms, scan heap delta 2.4 MiB (darwin-arm64, Node 24.19.0)."
     }
   ],
   "notes": [

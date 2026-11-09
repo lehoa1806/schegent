@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   ATOMIC_TRANSACTION_UNITS,
+  F04_INITIAL_STRICT_TABLE_COUNT,
   MIGRATION_STAGES,
   SQLITE_BENCHMARK_MEASURED_SAMPLES,
   SQLITE_BENCHMARK_WARMUP_SAMPLES,
@@ -19,6 +20,7 @@ import {
   SqliteApplicationStore,
   resolveTrustedSqliteLocation
 } from '../../src/services/sqlite-store';
+import { F05_LIFECYCLE_TABLE_NAMES } from '../../src/services/artifact-lifecycle/lifecycle-schema';
 
 describe('FR-R6-F04 End-to-End Acceptance Matrix (F04-AC-01 .. F04-AC-12)', () => {
   const tempDirs: string[] = [];
@@ -40,7 +42,9 @@ describe('FR-R6-F04 End-to-End Acceptance Matrix (F04-AC-01 .. F04-AC-12)', () =
     });
     expect(qualReport.qualificationPassed).toBe(true);
     expect(qualReport.meetsMinimumVersionFloor).toBe(true);
-    expect(qualReport.strictSchemaTableCount).toBe(78);
+    expect(qualReport.strictSchemaTableCount).toBe(
+      F04_INITIAL_STRICT_TABLE_COUNT + F05_LIFECYCLE_TABLE_NAMES.length
+    );
     expect(qualReport.foreignKeyCheckViolations).toBe(0);
     for (const dist of qualReport.sqliteBenchmarks) {
       expect(dist.warmupSamples).toBeGreaterThanOrEqual(20);

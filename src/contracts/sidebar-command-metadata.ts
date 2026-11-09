@@ -32,6 +32,7 @@ import {
   CMD_PUBLISH_PACKAGE,
   CMD_READ_DEFINITION_VERSION,
   CMD_READ_FAILURE_RECORD,
+  CMD_READ_STORAGE_DETAILS,
   CMD_OPEN_DECISION_RECORD,
   CMD_READ_METRICS,
   CMD_READ_PHASE_LOG,
@@ -289,6 +290,9 @@ export const COMMAND_AUTHORITY = Object.freeze({
   ),
   [CMD_OPEN_DECISION_RECORD]: readOnly(
     'reads one decision record file under the workspace root and shows it in a read-only document; starts no process, writes no persisted state or file and appends no audit row; refuses itself when the workspace is untrusted'
+  ),
+  [CMD_READ_STORAGE_DETAILS]: readOnly(
+    'storage details are a read-only projection of the lifecycle service; starts no process, writes no persisted state or file, appends no audit row and runs no sweep, repair, migration or probe'
   )
 } satisfies Record<CommandType, CommandAuthority>);
 
