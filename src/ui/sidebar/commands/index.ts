@@ -35,6 +35,7 @@ import {
   CMD_READ_METRICS,
   CMD_READ_FAILURE_RECORD,
   CMD_READ_STORAGE_DETAILS,
+  CMD_READ_USAGE_ACCOUNTING,
   CMD_READ_PHASE_LOG,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_REMOVE_TASK_PHASE,
@@ -100,6 +101,7 @@ import { handler as readMetrics } from './cmd-read-metrics';
 import { handler as openDecisionRecord } from './cmd-open-decision-record';
 import { handler as readFailureRecord } from './cmd-read-failure-record';
 import { handler as readStorageDetails } from './cmd-read-storage-details';
+import { handler as readUsageAccounting } from './cmd-read-usage-accounting';
 import { handler as readPhaseLog } from './cmd-read-phase-log';
 import { handler as removeQueueItem } from './cmd-remove-queue-item';
 import { handler as removeTaskPhase } from './cmd-remove-task-phase';
@@ -181,6 +183,7 @@ export const HANDLER_TABLE: CommandHandlerTable = Object.freeze({
   [CMD_OPEN_DECISION_RECORD]: openDecisionRecord,
   [CMD_READ_FAILURE_RECORD]: readFailureRecord,
   [CMD_READ_STORAGE_DETAILS]: readStorageDetails,
+  [CMD_READ_USAGE_ACCOUNTING]: readUsageAccounting,
   [CMD_READ_PHASE_LOG]: readPhaseLog,
   [CMD_REMOVE_QUEUE_ITEM]: removeQueueItem,
   [CMD_REMOVE_TASK_PHASE]: removeTaskPhase,

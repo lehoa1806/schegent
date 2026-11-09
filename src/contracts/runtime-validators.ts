@@ -67,6 +67,7 @@ import {
   CMD_READ_FAILURE_RECORD,
   CMD_OPEN_DECISION_RECORD,
   CMD_READ_STORAGE_DETAILS,
+  CMD_READ_USAGE_ACCOUNTING,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE, CMD_READ_METRICS,
@@ -93,6 +94,7 @@ import { validateResolveHistoryDescription } from './validators/history-descript
 import { validateReadFailureRecord } from './validators/failure-record';
 import { validateOpenDecisionRecord } from './validators/decision-record';
 import { validateReadStorageDetails } from './validators/artifact-lifecycle';
+import { validateReadUsageAccounting } from './validators/usage-accounting';
 import {
   validateExportProcessYaml,
   validatePreflightProcessYaml
@@ -142,6 +144,7 @@ export { isValidResolveAuditPointerResponse } from './validators/history-evidenc
 export { isValidResolveHistoryDescriptionResponse } from './validators/history-description';
 export { isValidReadFailureRecordResponse } from './validators/failure-record';
 export { isValidReadStorageDetailsResponse } from './validators/artifact-lifecycle';
+export { isValidReadUsageAccountingResponse } from './validators/usage-accounting';
 export type { IpcValidationError, IpcValidationResult } from './validators/shared';
 
 const DESCRIPTION_MAX = 4096;
@@ -292,6 +295,8 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateOpenDecisionRecord(obj, correlationId);
     case CMD_READ_STORAGE_DETAILS:
       return validateReadStorageDetails(obj, correlationId);
+    case CMD_READ_USAGE_ACCOUNTING:
+      return validateReadUsageAccounting(obj, correlationId);
     case CMD_SET_PHASE_BREAKPOINT:
       return validatePhaseBreakpointPayload(CMD_SET_PHASE_BREAKPOINT, obj, correlationId);
     case CMD_CLEAR_PHASE_BREAKPOINT:

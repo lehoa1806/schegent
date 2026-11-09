@@ -117,6 +117,9 @@ export const CMD_OPEN_DECISION_RECORD = 'CMD_OPEN_DECISION_RECORD' as const;
 // FR-R6-F05 — read storage pressure and one inventory page.
 // READ-ONLY, so out of MUTATING_COMMANDS; cmd-read-storage-details.ts says why.
 export const CMD_READ_STORAGE_DETAILS = 'CMD_READ_STORAGE_DETAILS' as const;
+// FR-R6-F06 — read one usage accounting page.
+// READ-ONLY, so out of MUTATING_COMMANDS; cmd-read-usage-accounting.ts says why.
+export const CMD_READ_USAGE_ACCOUNTING = 'CMD_READ_USAGE_ACCOUNTING' as const;
 // Feature 028 — future-phase breakpoints. Operator marks a pending phase
 // as a "pause when reached" point. The pipeline runs preceding phases
 // then halts before invoking the marked phase. Both are mutating —
@@ -252,6 +255,7 @@ export const COMMAND_TYPES = [
   CMD_READ_FAILURE_RECORD,
   CMD_OPEN_DECISION_RECORD,
   CMD_READ_STORAGE_DETAILS,
+  CMD_READ_USAGE_ACCOUNTING,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE,
@@ -308,6 +312,13 @@ import type { ResolveHistoryDescriptionCommand } from './sidebar-ipc/history-des
 import type { ReadFailureRecordCommand } from './sidebar-ipc/failure-record';
 import type { OpenDecisionRecordCommand } from './sidebar-ipc/decision-record';
 import type { ReadStorageDetailsCommand } from './sidebar-ipc/storage-details';
+import type { ReadUsageAccountingCommand } from './sidebar-ipc/usage-accounting';
+export type {
+  ReadUsageAccountingRequest,
+  ReadUsageAccountingCommand,
+  ReadUsageAccountingResponse,
+  UsageAccountingReader
+} from './sidebar-ipc/usage-accounting';
 export type {
   ReadStorageDetailsRequest,
   ReadStorageDetailsCommand,
@@ -696,6 +707,7 @@ export type SidebarCommand =
   | ReadFailureRecordCommand
   | OpenDecisionRecordCommand
   | ReadStorageDetailsCommand
+  | ReadUsageAccountingCommand
   | StartQueueCommand
   | ClearQueueCommand
   | SetConfirmSuppressionCommand
@@ -926,6 +938,9 @@ export function isCmdOpenDecisionRecord(value: unknown): value is OpenDecisionRe
 export function isCmdReadStorageDetails(value: unknown): value is ReadStorageDetailsCommand {
   return isObjectWithType(value, CMD_READ_STORAGE_DETAILS);
 }
+export function isCmdReadUsageAccounting(value: unknown): value is ReadUsageAccountingCommand {
+  return isObjectWithType(value, CMD_READ_USAGE_ACCOUNTING);
+}
 // Feature 028 — phase breakpoint set/clear guards.
 export function isCmdSetPhaseBreakpoint(value: unknown): value is SetPhaseBreakpointCommand {
   return isObjectWithType(value, CMD_SET_PHASE_BREAKPOINT);
@@ -1138,6 +1153,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_READ_FAILURE_RECORD]: isCmdReadFailureRecord,
   [CMD_OPEN_DECISION_RECORD]: isCmdOpenDecisionRecord,
   [CMD_READ_STORAGE_DETAILS]: isCmdReadStorageDetails,
+  [CMD_READ_USAGE_ACCOUNTING]: isCmdReadUsageAccounting,
   [CMD_SET_PHASE_BREAKPOINT]: isCmdSetPhaseBreakpoint,
   [CMD_CLEAR_PHASE_BREAKPOINT]: isCmdClearPhaseBreakpoint,
   [CMD_START_QUEUE]: isCmdStartQueue,

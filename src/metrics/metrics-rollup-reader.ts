@@ -27,8 +27,17 @@ export interface MetricsRollupReadResult {
    * written before this feature — so those compose exactly as they always did.
    */
   readonly carryForward: MetricsRollupCarryForward | undefined;
+  /** FR-R6-F06 (research R8) — the header's line as written, for the legacy epoch's verbatim copy. */
+  readonly carryForwardLine?: string | undefined;
   /** Lines present but unusable. Surfaced so a corrupt tail is visible. */
   readonly unreadableRecords: number;
+  /**
+   * FR-R6-F06 (review S1) — the file exists but could not be read. Only the failure path sets it,
+   * so a caller that must not mistake a failure for "no history" can tell the two apart.
+   */
+  readonly readFailed?: true | undefined;
+  /** FR-R6-F06 (review S1) — bytes the read bound skipped; set only when greater than 0. */
+  readonly skippedBytes?: number | undefined;
 }
 
 const EMPTY: MetricsRollupReadResult = Object.freeze({
@@ -70,11 +79,11 @@ export async function readMetricsRollup(
     logger?.warn('metrics rollup read failed; cumulative totals fall back to the retained log', {
       ...(typeof code === 'string' ? { errno: code } : {})
     });
-    return EMPTY;
+    return { ...EMPTY, readFailed: true };
   }
   if (!streamed.available) return EMPTY;
 
-  const { records, carryForward, unreadableRecords } = streamed;
+  const { records, carryForward, carryForwardLine, unreadableRecords } = streamed;
 
   if (streamed.skippedBytes > 0) {
     // The rollup exceeded the read bound, so this answer is the newest records
@@ -98,5 +107,12 @@ export async function readMetricsRollup(
     );
   }
 
-  return { available: true, records, carryForward, unreadableRecords };
+  return {
+    available: true,
+    records,
+    carryForward,
+    carryForwardLine,
+    unreadableRecords,
+    ...(streamed.skippedBytes > 0 ? { skippedBytes: streamed.skippedBytes } : {})
+  };
 }

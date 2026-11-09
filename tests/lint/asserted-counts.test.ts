@@ -464,8 +464,8 @@ const REGISTRY: readonly CountEntry[] = [
   },
   {
     document: 'repo/docs/reference/api-and-cli.md',
-    claim: 'contains exactly these 64 inbound literals',
-    stated: 64,
+    claim: 'contains exactly these 65 inbound literals',
+    stated: 65,
     producer: 'COMMAND_TYPES in repo/src/contracts/sidebar-ipc.ts',
     derive: webviewCommandCount,
     why:
@@ -475,8 +475,8 @@ const REGISTRY: readonly CountEntry[] = [
   },
   {
     document: 'repo/docs/reference/api-and-cli.md',
-    claim: '11 are read-only (`R`)',
-    stated: 11,
+    claim: '12 are read-only (`R`)',
+    stated: 12,
     producer: 'the entries of COMMAND_AUTHORITY declared read-only (READ_ONLY_COMMAND_TYPES)',
     derive: readOnlyWebviewCommandCount,
     why:

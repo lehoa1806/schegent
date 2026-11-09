@@ -56,6 +56,7 @@ import type { BackendCapabilityService } from '../services/backend-capability-se
 import { isWorkflowNodeTerminalStatus } from '../contracts/workflow-definitions';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import type { ResolvedPortValue } from '../contracts/run-request';
+import { createUsageAccountingWiring } from '../services/usage-accounting/usage-accounting-wiring';
 import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../state/workspace-state';
 import type { WorkflowRun } from '../state/workflow-run';
@@ -90,6 +91,16 @@ export async function createRunSafetyWiring(input: {
     logger: input.logger,
     workspaceRoot: input.workspaceRoot
   });
+  // FR-R6-F06 (T026, contracts/surfaces-and-wiring.md section 1) — no accounting store is opened
+  // until the F01-B cutover, so the service is `null`: nothing is subscribed and a terminal run
+  // is not recorded. Production behaviour is unchanged. Declared before the coordinator whose
+  // terminal callback uses it, so no terminal run can reach it uninitialized.
+  const usageAccounting = createUsageAccountingWiring({
+    service: null,
+    auditWriter: input.auditWriter,
+    subscriptions: input.context.subscriptions,
+    logger: input.logger
+  });
   const terminalTransitions = new TerminalTransitionCoordinator(
     input.store,
     input.queue,
@@ -107,6 +118,13 @@ export async function createRunSafetyWiring(input: {
           spendWatcher.forget(run.id);
         }
         await terminalRollupRecorder.recordTerminalRun(run);
+        // FR-R6-F06 (T026) — after the rollup, and in its own guard: accounting never decides
+        // whether a terminal transition completes.
+        try {
+          usageAccounting.onTerminalRun({ runId: run.id, status: run.status, endedAtMs: run.lastTransitionAt });
+        } catch {
+          // The wiring does not throw; this guard keeps that true if it ever did.
+        }
       }
     }
   );

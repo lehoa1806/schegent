@@ -94,7 +94,7 @@ These 11 IDs can be invoked through `vscode.commands.executeCommand`, but they a
 
 ## Webview command boundary
 
-The authoritative schema version is `3`. The table is exhaustive: `COMMAND_TYPES` contains exactly these 64 inbound literals, and 11 are read-only (`R`); the rest are gated (`M`). Payload notation describes the runtime boundary; `?` means optional. All rows also require the shared `type` and `correlationId` envelope.
+The authoritative schema version is `3`. The table is exhaustive: `COMMAND_TYPES` contains exactly these 65 inbound literals, and 12 are read-only (`R`); the rest are gated (`M`). Payload notation describes the runtime boundary; `?` means optional. All rows also require the shared `type` and `correlationId` envelope.
 
 | Inbound command | Payload | Guard | Source |
 |---|---|---|---|
@@ -149,6 +149,7 @@ The authoritative schema version is `3`. The table is exhaustive: `COMMAND_TYPES
 | `CMD_READ_FAILURE_RECORD` | `{ queueId: string, taskId: string }` | R | <!-- Source: src/contracts/sidebar-ipc/failure-record.ts --><!-- Source: src/contracts/validators/failure-record.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_OPEN_DECISION_RECORD` | `{ rowId: string }`; the row id only, no path and no text. The answer is one of nine outcomes and carries neither a path nor record text | R | <!-- Source: src/contracts/sidebar-ipc/decision-record.ts --><!-- Source: src/contracts/validators/decision-record.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_READ_STORAGE_DETAILS` | `{ cursor?: string }`; an opaque inventory cursor only. The answer is the storage pressure report and one inventory page, with opaque ids and no path | R | <!-- Source: src/contracts/sidebar-ipc/storage-details.ts --><!-- Source: src/contracts/validators/artifact-lifecycle.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
+| `CMD_READ_USAGE_ACCOUNTING` | `{ query: unknown }`; the query is checked by the same validator the headless API uses, so an invalid one is refused as `invalid-query` on both surfaces. The answer is one revision-pinned accounting page, or a refusal code | R | <!-- Source: src/contracts/sidebar-ipc/usage-accounting.ts --><!-- Source: src/contracts/validators/usage-accounting.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_SET_PHASE_BREAKPOINT` | `{ queueId: string, runId: string, phaseId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_CLEAR_PHASE_BREAKPOINT` | `{ queueId: string, runId: string, phaseId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_START_QUEUE` | no payload, `{}`, or `{ queueId?, startIntent? }` | M | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/contracts/start-intent-types.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |

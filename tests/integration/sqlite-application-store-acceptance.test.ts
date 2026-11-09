@@ -21,6 +21,7 @@ import {
   resolveTrustedSqliteLocation
 } from '../../src/services/sqlite-store';
 import { F05_LIFECYCLE_TABLE_NAMES } from '../../src/services/artifact-lifecycle/lifecycle-schema';
+import { F06_ACCOUNTING_TABLE_NAMES } from '../../src/services/usage-accounting/accounting-schema';
 
 describe('FR-R6-F04 End-to-End Acceptance Matrix (F04-AC-01 .. F04-AC-12)', () => {
   const tempDirs: string[] = [];
@@ -43,7 +44,7 @@ describe('FR-R6-F04 End-to-End Acceptance Matrix (F04-AC-01 .. F04-AC-12)', () =
     expect(qualReport.qualificationPassed).toBe(true);
     expect(qualReport.meetsMinimumVersionFloor).toBe(true);
     expect(qualReport.strictSchemaTableCount).toBe(
-      F04_INITIAL_STRICT_TABLE_COUNT + F05_LIFECYCLE_TABLE_NAMES.length
+      F04_INITIAL_STRICT_TABLE_COUNT + F05_LIFECYCLE_TABLE_NAMES.length + F06_ACCOUNTING_TABLE_NAMES.length
     );
     expect(qualReport.foreignKeyCheckViolations).toBe(0);
     for (const dist of qualReport.sqliteBenchmarks) {

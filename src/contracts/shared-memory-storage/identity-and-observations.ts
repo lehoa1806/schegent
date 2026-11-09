@@ -302,6 +302,10 @@ export interface MonetaryObservationValue {
   readonly legacyRecordedPrecisionDigits?: number | undefined;
 }
 
+/** How a cache counter relates to input tokens: inside it, beside it, or not known. */
+export const USAGE_CACHE_RELATIONS = Object.freeze(['subset-of-input', 'disjoint', 'unknown'] as const);
+export type UsageCacheRelation = (typeof USAGE_CACHE_RELATIONS)[number];
+
 export interface UsageObservationInput {
   readonly schemaVersion: number;
   readonly workspaceId: string;
@@ -324,6 +328,10 @@ export interface UsageObservationInput {
   readonly hasQualifiedSessionBaseline?: boolean | undefined;
   readonly inputTokens?: bigint | number | string | null | undefined;
   readonly outputTokens?: bigint | number | string | null | undefined;
+  /** FR-R6-F06 (research R2): distinct cache counters, never folded into input. */
+  readonly cacheReadTokens?: bigint | number | string | null | undefined;
+  readonly cacheCreationTokens?: bigint | number | string | null | undefined;
+  readonly cacheRelation?: UsageCacheRelation | undefined;
   readonly monetary?: MonetaryObservationValue | null | undefined;
   readonly modelId?: string | undefined;
   readonly providerSessionId?: string | undefined;
@@ -352,6 +360,10 @@ export interface AcceptedUsageObservation {
   readonly billableOutputTokens: bigint | null;
   readonly exactInputTokensText: string | null;
   readonly exactOutputTokensText: string | null;
+  /** FR-R6-F06 (research R2). Null when the source did not report the counter. */
+  readonly cacheReadTokens: bigint | null;
+  readonly cacheCreationTokens: bigint | null;
+  readonly cacheRelation: UsageCacheRelation;
   readonly monetary: MonetaryObservationValue | null;
   readonly modelId?: string | undefined;
   readonly providerSessionId?: string | undefined;
@@ -568,6 +580,9 @@ const ALLOWED_OBSERVATION_INPUT_KEYS = new Set([
   'hasQualifiedSessionBaseline',
   'inputTokens',
   'outputTokens',
+  'cacheReadTokens',
+  'cacheCreationTokens',
+  'cacheRelation',
   'monetary',
   'modelId',
   'providerSessionId',
@@ -666,6 +681,21 @@ export function acceptUsageObservation(
   if (inTokensRes.status !== 'accepted') return inTokensRes;
   const outTokensRes = parseExactTokenCount(input.outputTokens, 'outputTokens');
   if (outTokensRes.status !== 'accepted') return outTokensRes;
+  const cacheReadRes = parseExactTokenCount(input.cacheReadTokens, 'cacheReadTokens');
+  if (cacheReadRes.status !== 'accepted') return cacheReadRes;
+  const cacheCreationRes = parseExactTokenCount(input.cacheCreationTokens, 'cacheCreationTokens');
+  if (cacheCreationRes.status !== 'accepted') return cacheCreationRes;
+  if (
+    input.cacheRelation !== undefined &&
+    !(USAGE_CACHE_RELATIONS as readonly string[]).includes(input.cacheRelation)
+  ) {
+    return buildSharedContractRefusal(
+      'invalid-observation',
+      'unknown-cache-relation',
+      'cacheRelation must be subset-of-input, disjoint or unknown.',
+      'cacheRelation'
+    );
+  }
 
   let replayQuality: AcceptedUsageObservation['replayQuality'];
   let observationId: string;
@@ -798,6 +828,9 @@ export function acceptUsageObservation(
     billableOutputTokens: billableOutput,
     exactInputTokensText: billableInput !== null ? billableInput.toString() : null,
     exactOutputTokensText: billableOutput !== null ? billableOutput.toString() : null,
+    cacheReadTokens: attributionScope === 'attempt' ? cacheReadRes.value : null,
+    cacheCreationTokens: attributionScope === 'attempt' ? cacheCreationRes.value : null,
+    cacheRelation: input.cacheRelation ?? 'unknown',
     monetary: monetaryRes.value,
     ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
     ...(input.providerSessionId !== undefined
