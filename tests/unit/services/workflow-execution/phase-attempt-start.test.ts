@@ -522,4 +522,43 @@ describe('startPhaseAttempt', () => {
     );
     expect(started).toEqual({ outcome: 'rejected-definition', reason: 'pipeline-not-found' });
   });
+
+  it('uses launch instructions as the enqueued task description when present, and falls back to node label or Phase name when absent (F36-T07, AC-13)', async () => {
+    const scheduleOrEnqueue = vi.fn(() =>
+      Promise.resolve({
+        outcome: 'enqueued' as const,
+        queueItemId: 'row-1',
+        lifecycleAfter: 'active-empty' as const
+      })
+    );
+    const deps = {
+      guardedRun: { scheduleOrEnqueue },
+      logger: { warn: vi.fn(), sanitize: (text: string) => text }
+    } as unknown as NodeRunStartDeps;
+
+    const withInstructions = openRun({
+      supplemental: [],
+      outputs: [],
+      instructions: 'Audit the retry policy'
+    });
+    await startPhaseAttempt(
+      deps,
+      dispatchInput(withInstructions, withInstructions.root, 'first'),
+      '/workspace'
+    );
+
+    const withoutInstructions = openRun();
+    const baseInput = dispatchInput(withoutInstructions, withoutInstructions.root, 'first');
+    await startPhaseAttempt(
+      deps,
+      { ...baseInput, node: { ...baseInput.node, label: 'Triage step' } },
+      '/workspace'
+    );
+    await startPhaseAttempt(deps, baseInput, '/workspace');
+
+    const calls = scheduleOrEnqueue.mock.calls as unknown as GuardedScheduleRequest[][];
+    expect(calls.at(0)?.at(0)?.description).toBe('Audit the retry policy');
+    expect(calls.at(1)?.at(0)?.description).toBe('Triage step');
+    expect(calls.at(2)?.at(0)?.description).toBe('one');
+  });
 });

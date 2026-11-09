@@ -709,7 +709,7 @@ test('Workflow tasks are composed inside their Queue', async ({ page }) => {
   await page.getByTestId(`queue-card-${FIXTURE_QUEUE_ID}`).click();
   await page.getByTestId('queue-composer-open').click();
   await page.getByTestId(`launchable-select-workflow-${workflow.workflowId}`).click();
-  await page.getByTestId('launchable-detail-trigger').click();
+  await expect(page.getByTestId('run-supplemental-instruction')).toBeVisible();
   await expect(page.getByTestId('workflow-trigger-submit')).toHaveText('Add task');
   await expect(page.getByTestId('queue-detail-title')).toBeVisible();
   await expect(page.locator('main')).toHaveCount(1);

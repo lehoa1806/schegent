@@ -5,6 +5,9 @@
   // Feature 285 (OD-2, FR-001): Workflows only. The Pipeline section and its RunLauncher arm
   // are retired; `pipelines` is still read for a stored Workflow whose start node names a
   // legacy Pipeline (FR-011), whose output ports and name come from that Pipeline.
+  //
+  // FR-R5-F36 (F36-T01): Selecting a Workflow row (or preselecting `defaultWorkflowId` on open)
+  // opens both `LaunchableDetail` and `WorkflowTriggerForm` in one step when `canLaunch` is true.
   import TrustBanner from './TrustBanner.svelte';
   import LaunchableSection from './Runs/LaunchableSection.svelte';
   import LaunchableDetail from './Runs/LaunchableDetail.svelte';
@@ -15,14 +18,16 @@
     selectedEntry,
     type LaunchSelection
   } from './Runs/launch-selection';
+  import type { BatchSubmissionState } from '../lib/task-batch';
   import type { Launchable, WorkflowSnapshot } from '../lib/snapshot-types';
 
   interface Props {
     readonly snapshot: WorkflowSnapshot;
     readonly queueId?: string;
+    readonly onBatchStateChange?: (state: BatchSubmissionState) => void;
   }
 
-  const { snapshot, queueId }: Props = $props();
+  const { snapshot, queueId, onBatchStateChange }: Props = $props();
 
   const pipelines = $derived(snapshot.availablePipelines ?? []);
 
@@ -35,7 +40,6 @@
   const launchables = $derived(snapshot.launchables);
 
   let selection = $state<LaunchSelection>(null);
-  let triggered = $state(false);
 
   /** Read out of the projection every time, never remembered (FR-017). */
   const selected = $derived(selectedEntry(launchables, selection));
@@ -69,10 +73,10 @@
   );
 
   /**
-   * Feature 285 (FR-006a) — the default Workflow is preselected once, the first time the
-   * projection offers it while nothing is selected. Once it has been applied, or the operator
-   * has chosen, it is not applied again: a cleared selection stays cleared. Preselection
-   * opens no form and submits nothing.
+   * Feature 285 (FR-006a) & FR-R5-F36 (F36-T01) — the default Workflow is preselected once,
+   * the first time the projection offers it while nothing is selected. Once it has been
+   * applied, or the operator has chosen, it is not applied again: a cleared selection stays
+   * cleared. Preselection opens the form when `canLaunch` is true and submits nothing.
    */
   let defaultApplied = false;
 
@@ -92,22 +96,12 @@
     // is never told why; see `reconcileSelection`.
     if (reconcileSelection(launchables, selection) === null && selection !== null) {
       selection = null;
-      triggered = false;
     }
   });
 
   function onSelect(entry: Launchable): void {
     defaultApplied = true;
     selection = isSelected(entry, selection) ? null : { kind: entry.kind, id: entry.id };
-    triggered = false;
-  }
-
-  function onTrigger(): void {
-    // FR-015 is enforced where the state changes, not only where the control is
-    // drawn. A form this window could not submit is a form that wastes the
-    // operator's typing, so the disabled control and this guard state the same
-    // rule twice on purpose — the second one is the one that holds.
-    triggered = canLaunch;
   }
 </script>
 
@@ -125,16 +119,19 @@
         {onSelect}
       />
       {#if selected}
-        <LaunchableDetail entry={selected} {canLaunch} {onTrigger} />
+        <LaunchableDetail entry={selected} {canLaunch} />
       {/if}
-      {#if triggered && selected?.kind === 'workflow'}
-        <WorkflowTriggerForm
-          entry={selected}
-          graph={selectedGraph}
-          {pipelines}
-          {queueId}
-          onClose={() => (triggered = false)}
-        />
+      {#if canLaunch && selected?.kind === 'workflow'}
+        {#key selected.id}
+          <WorkflowTriggerForm
+            entry={selected}
+            graph={selectedGraph}
+            {pipelines}
+            {queueId}
+            {onBatchStateChange}
+            onClose={() => (selection = null)}
+          />
+        {/key}
       {/if}
     {/if}
   </section>

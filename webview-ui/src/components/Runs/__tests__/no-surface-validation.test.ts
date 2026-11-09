@@ -108,7 +108,6 @@ function runsSources(): readonly { readonly file: string; readonly code: string 
 async function openForm() {
   const view = render(QueueTaskComposer, { snapshot: buildSnapshot() });
   await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
-  await fireEvent.click(view.getByTestId('launchable-detail-trigger'));
   return view;
 }
 

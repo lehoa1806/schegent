@@ -91,12 +91,10 @@ describe('Feature 098 (T053) — a non-empty catalog restores the choices', () =
 
   it('reaches the launcher through the restored choices (SC-010)', async () => {
     // The reachability half, stated as the operator's path rather than as a
-    // rendered handle: select, Trigger, launcher. A picker that renders and opens
-    // nothing would satisfy the assertion above and none of the requirement.
+    // rendered handle: select row -> launcher opens in one step.
     const { getByTestId } = render(QueueTaskComposer, { snapshot: buildSnapshot() });
 
     await fireEvent.click(getByTestId('launchable-select-workflow-analysis-pipeline'));
-    await fireEvent.click(getByTestId('launchable-detail-trigger'));
 
     expect(getByTestId('workflow-trigger')).toBeTruthy();
   });

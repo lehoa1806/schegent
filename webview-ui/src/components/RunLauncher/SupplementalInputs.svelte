@@ -1,23 +1,13 @@
 <script lang="ts">
-  // Feature 087 T053 (FR-003) — everything the operator adds that the Pipeline
-  // did not declare.
+  // Feature 087 T053 (FR-003) & FR-R5-F36 (F36-T03) — everything the operator adds
+  // that the Pipeline or Workflow did not declare.
   //
-  // It is a section of its own, and that separation is the requirement rather
-  // than a layout preference: the contract section is a faithful projection of
-  // the declared ports, so anything mixed into it would read as part of the
-  // contract. Here the operator can attach material this session needs — a file,
-  // a folder, a URL, pasted text, an instruction, or a named output of a previous
-  // run — without any of it pretending to be a declared input.
-  //
-  // The free-form instruction is one control, and the composer routes it to the
-  // request's own `instructions` field: that is the field the host bounds at the
-  // existing description limit and the one the queue row is labelled from. A
-  // second instruction surface inside the supplemental list would be an
-  // instruction the length rule cannot see.
-  //
-  // The prior-output reference is two fields because it is structured data — a
-  // run and a named output, compared field-wise — not a string with a separator
-  // that would need a grammar to take apart.
+  // By default (`omitInstruction = false`, `collapsible = false`), all fields render
+  // in an open section for `RunLauncher.svelte` and `WorkflowContinuation.svelte`.
+  // When `WorkflowTriggerForm.svelte` promotes Instructions to its primary field, it
+  // passes `omitInstruction={true}` and `collapsible={true}` so the remaining
+  // attachment controls stay tucked inside a disclosure that auto-opens whenever any
+  // visible attachment has a non-empty value or a host field error.
 
   interface SupplementalField {
     readonly key: string;
@@ -46,16 +36,32 @@
     readonly errors: ReadonlyMap<string, string>;
     readonly disabled: boolean;
     readonly onChange: (key: string, value: string) => void;
+    readonly omitInstruction?: boolean;
+    readonly collapsible?: boolean;
   }
 
-  const { values, errors, disabled, onChange }: Props = $props();
+  const {
+    values,
+    errors,
+    disabled,
+    onChange,
+    omitInstruction = false,
+    collapsible = false
+  }: Props = $props();
+
+  const visibleFields = $derived(
+    omitInstruction ? FIELDS.filter((field) => field.key !== 'instruction') : FIELDS
+  );
+
+  const shouldAutoOpen = $derived(
+    visibleFields.some(
+      (field) => (values[field.key] ?? '').trim().length > 0 || errors.has(field.key)
+    )
+  );
 </script>
 
-<section class="supplemental-section" data-testid="run-launcher-supplemental">
-  <h4 class="section-heading">Supplemental inputs</h4>
-  <p class="section-note">Optional material for this session. Not part of the Workflow's contract.</p>
-
-  {#each FIELDS as field (field.key)}
+{#snippet fieldRows()}
+  {#each visibleFields as field (field.key)}
     <div class="supplemental-row">
       <label class="supplemental-label" for={`run-supplemental-${field.key}`}>{field.label}</label>
       <span class="supplemental-hint">{field.hint}</span>
@@ -87,13 +93,46 @@
       {/if}
     </div>
   {/each}
-</section>
+{/snippet}
+
+{#if collapsible}
+  <details
+    class="supplemental-section supplemental-disclosure"
+    data-testid="run-launcher-supplemental"
+    open={shouldAutoOpen}
+  >
+    <summary class="section-heading disclosure-summary">Attachments &amp; references (optional)</summary>
+    <div class="disclosure-body">
+      <p class="section-note">Optional material for this session. Not part of the Workflow's contract.</p>
+      {@render fieldRows()}
+    </div>
+  </details>
+{:else}
+  <section class="supplemental-section" data-testid="run-launcher-supplemental">
+    <h4 class="section-heading">Supplemental inputs</h4>
+    <p class="section-note">Optional material for this session. Not part of the Workflow's contract.</p>
+    {@render fieldRows()}
+  </section>
+{/if}
 
 <style>
   .supplemental-section {
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+  .supplemental-disclosure {
+    margin: 0;
+  }
+  .disclosure-summary {
+    cursor: pointer;
+    user-select: none;
+  }
+  .disclosure-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 8px;
   }
   .section-heading {
     margin: 0;

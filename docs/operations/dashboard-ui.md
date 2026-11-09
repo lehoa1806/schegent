@@ -27,16 +27,25 @@ A Workflow run's detail lists its nodes and attempts; selecting one that has sta
 
 <!-- Source: webview-ui/src/dashboard/routes.ts -->
 
-Task composition is part of Queue detail: choose or create a Queue, select
-**Add work**, choose a published Workflow, review its execution policy, and
-supply inputs, additional context and output targets. **Add task** submits work
-to that Queue. An idle Queue waits for **Start Queue**; an already running Queue
-continues draining. Connected Workflow progress and controls are available by
-selecting its row in the Queue. There is no standalone Runs page.
+Task composition is part of Queue detail: choose or create a Queue and select
+**Add work**. When the workspace's default Workflow is launchable, its compact
+summary and start form open immediately; selecting any other published Workflow
+row switches directly to that Workflow's form without a separate Trigger step.
+**Instructions** appears first, while declared input ports and output targets
+render only when the Workflow declares them and optional attachments stay inside
+a disclosure that opens automatically when populated or carrying a host error.
+Placing `---schegent-task---` on its own line in **Instructions** splits the
+text into sequential tasks (**Add N tasks**), halting and keeping only the
+unsubmitted remainder if a task is refused. An idle Queue waits for **Start
+Queue**; an already running Queue continues draining. Connected Workflow
+progress and controls are available by selecting its row in the Queue. There is
+no standalone Runs page.
 
 <!-- Source: webview-ui/src/components/drilldown/QueueDetailTier.svelte -->
 <!-- Source: webview-ui/src/components/QueueTaskComposer.svelte -->
+<!-- Source: webview-ui/src/components/Runs/LaunchableDetail.svelte -->
 <!-- Source: webview-ui/src/components/Runs/WorkflowTriggerForm.svelte -->
+<!-- Source: webview-ui/src/lib/task-batch.ts -->
 
 ## State and commands
 
