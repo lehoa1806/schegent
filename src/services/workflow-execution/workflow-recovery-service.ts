@@ -17,7 +17,10 @@
 
 import type { ResolvedPortValue } from '../../contracts/run-request';
 import type { DecisionFieldValue } from '../../contracts/decision-results';
-import type { ExecutionFence } from '../../contracts/control-ledger';
+import type {
+  ControlAdmissionPort,
+  ExecutionFence
+} from '../../contracts/control-ledger';
 import type { WorkflowNodeTerminalStatus } from '../../contracts/workflow-definitions';
 import type { ControlAttemptAdmissionService } from './control-attempt-admission';
 import type { ControlNotificationService } from './control-notification-service';
@@ -105,7 +108,10 @@ export interface WorkflowRecoveryServiceDeps {
     queueId: string,
     runId: string
   ) => Promise<void> | void;
-  readonly controlAdmission?: ControlAttemptAdmissionService | undefined;
+  readonly controlAdmission?:
+    | (ControlAdmissionPort & Pick<ControlAttemptAdmissionService, 'reconcileControlRoot'>)
+    | ControlAttemptAdmissionService
+    | undefined;
   readonly repeatExecutor?: RepeatExecutor | undefined;
   readonly forEachExecutor?: ForEachExecutor | undefined;
   readonly workspaceRoot?: string | undefined;
