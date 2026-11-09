@@ -11,6 +11,9 @@ export * from './shared-memory-storage/consumer-and-retention-inventories';
 export * from './shared-memory-storage/identity-and-observations';
 export * from './shared-memory-storage/monetary-and-clocks';
 export * from './shared-memory-storage/artifacts-streams-and-acp';
+export * from './sqlite-store/schema-types';
+export * from './sqlite-store/domain-adapter-types';
+export * from './sqlite-store/state-census';
 export type {
   BackendRunner,
   InvocationRequest as BackendInvocationRequest,
