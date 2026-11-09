@@ -803,7 +803,10 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // constant, the barrel re-exports, the union member, the guard and the validator-table row)
   // adds 16 lines, which put the file inside `tightMargin`'s band. Measurement plus 26, the same
   // rule as the entries above.
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1165 },
+  // Feature 304 (FR-R6-F05, 2026-11-10) — 1165 -> 1182: the storage-details read (its constant, the
+  // `COMMAND_TYPES` member, the barrel re-exports, the union member and the guard) adds 17 lines and
+  // lands the file at 1156 by this gate's count, inside the band. Measurement plus 26, the same rule.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1182 },
   // Waived, not budgeted. Feature 063's operator decision retired the ceiling
   // on this file and on queue-manager.ts below; it did not set a large one. The
   // entries used to say `maxLines: 10_000` against files of 2,500 and 1,821,
@@ -1661,7 +1664,14 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // Feature 293 (FR-R5-F30, 2026-11-08) — 1646 → 1674, +28: `CANDIDATE_BLOCK_EVENT_TYPES`
       // (`candidate-attempt-settled`, `candidate-block-settled`, `candidate-block-paused`,
       // `control-notification-recorded`) and their metadata-only payload interfaces.
-      highWaterMark: 1674
+      //
+      // Feature 304 (FR-R6-F05, 2026-11-10) — 1674 → 1684, +10 by this gate's count: the
+      // feature entry in the file's own header (three, with its blank comment line); the new group
+      // `ARTIFACT_LIFECYCLE_EVENT_TYPES` with its doc comment and blank line (three) and its spread into
+      // `ALL_AUDIT_EVENT_TYPES` with its note (two); and the same type in `SYSTEM_SCOPED_EVENT_TYPES`
+      // with its one-line note (two), because the row has no run. The payload type lives in
+      // `src/contracts/artifact-lifecycle/audit-payload.ts`, not here.
+      highWaterMark: 1684
     }
   },
   // Round 5 workflow control-flow, backend recovery, and admission modules (FR-R5-F26..F34, 2026-11-08) —

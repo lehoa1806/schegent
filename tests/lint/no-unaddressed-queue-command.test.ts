@@ -205,6 +205,9 @@ const NOT_QUEUE_ADDRESSED: ReadonlyMap<string, string> = new Map([
   ['CMD_RESTORE_DEFINITION_VERSION', WORKSPACE_SCOPED],
   ['CMD_DISCARD_DEFINITION_DRAFT', WORKSPACE_SCOPED],
   ['CMD_PUBLISH_PACKAGE', WORKSPACE_SCOPED],
+  // FR-R6-F05 (FR-021) — a read of the workspace's storage inventory and pressure;
+  // artifacts and retention belong to the workspace store, not to any one queue.
+  ['CMD_READ_STORAGE_DETAILS', WORKSPACE_SCOPED],
   [
     'CMD_CREATE_QUEUE',
     `${WORKSPACE_SCOPED} A create has no id to name yet; the registry mints it.`
