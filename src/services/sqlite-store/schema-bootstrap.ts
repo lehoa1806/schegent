@@ -2,7 +2,7 @@
  * FR-R6-F04 (F04-A, F04-B, F04-C) — Authoritative `STRICT` SQLite schema
  * bootstrap and forward-only migration service.
  *
- * Defines all 78 `STRICT` tables across:
+ * Migration 1 defines the 78 F04 `STRICT` tables across:
  * 1. Schema control, cutover sentinel, migration ledger/quarantine, lease fences,
  *    operation receipts, and state change outbox (`F04-A`)
  * 2. Core operational execution tables (`runs`, `run_inputs`, `queue_entries`,
@@ -18,6 +18,11 @@
 import { createHash } from 'node:crypto';
 import { SQLITE_SCHEMA_CURRENT_VERSION } from '../../contracts/sqlite-store/schema-types';
 import type { NodeSqliteConnection } from './sqlite-driver';
+import {
+  F05_LIFECYCLE_DDL,
+  F05_LIFECYCLE_MIGRATION_NAME,
+  F05_LIFECYCLE_MIGRATION_VERSION
+} from '../artifact-lifecycle/lifecycle-schema';
 
 export interface SchemaMigrationDefinition {
   readonly version: number;
@@ -782,6 +787,12 @@ export const BUILTIN_SCHEMA_MIGRATIONS: readonly SchemaMigrationDefinition[] = O
       `CREATE INDEX IF NOT EXISTS idx_artifact_pins_artifact ON artifact_pins(artifact_id)`,
       `CREATE INDEX IF NOT EXISTS idx_findings_loop_status ON findings(review_loop_id, status)`
     ]
+  },
+  {
+    // FR-R6-F05: additive and forward-only; never edit migration 1.
+    version: F05_LIFECYCLE_MIGRATION_VERSION,
+    name: F05_LIFECYCLE_MIGRATION_NAME,
+    ddlStatements: F05_LIFECYCLE_DDL
   }
 ]);
 

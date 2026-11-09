@@ -180,6 +180,7 @@ neither listed nor excluded.
   autonomy in one table, including the per-run spend bound and which denomination applies to which
   backend, derived from the constants that enforce them (FR-R3-112)
 
+- [Artifact lifecycle, storage and recovery](operations/artifact-lifecycle.md) — what Schegent may delete, why it kept something, and what an interrupted deletion or legacy catalog migration leaves behind
 - [Backends](operations/backends.md)
 - [Built-artifact route diagnosis](operations/built-artifact-route-diagnosis.md)
 - [Configuration](operations/configuration.md)

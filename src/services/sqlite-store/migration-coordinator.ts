@@ -25,6 +25,13 @@ import {
   type StorageAuthority
 } from '../../contracts/sqlite-store/schema-types';
 import type { NodeSqliteConnection } from './sqlite-driver';
+import type {
+  LegacyCatalogClassification,
+  LegacyCatalogMigrationSection
+} from '../../contracts/artifact-lifecycle/legacy-preservation-types';
+
+const LEGACY_CATALOG_PREVIEW_PREFIX = 'legacy-catalog-';
+const LEGACY_CATALOG_PREVIEW_HEX_LENGTH = 32;
 
 export interface LegacyRunRecordInput {
   readonly recordKey: string;
@@ -148,6 +155,26 @@ export class MigrationCoordinator {
     this.conn = conn;
     this.nowMs = nowMs;
     this.authorityGuard = new CutoverAuthorityGuard(conn);
+  }
+
+  /**
+   * FR-R6-F05 (T035, FR-013) — the legacy-catalog section of the migration
+   * preview. Read-only: it touches no table, no stage ledger and no cutover
+   * sentinel. The preview id is derived from the classification's basis
+   * revision, so the same catalog state always yields the same id, and the
+   * staleness inputs let a later apply refuse a catalog that moved.
+   */
+  public previewLegacyCatalog(classification: LegacyCatalogClassification): LegacyCatalogMigrationSection {
+    const digest = createHash('sha256').update(classification.basisRevision, 'utf8').digest('hex');
+    return {
+      section: 'legacy-catalog',
+      previewId: `${LEGACY_CATALOG_PREVIEW_PREFIX}${digest.slice(0, LEGACY_CATALOG_PREVIEW_HEX_LENGTH)}`,
+      staleness: {
+        manifestGeneration: classification.manifestGeneration,
+        basisRevision: classification.basisRevision
+      },
+      classification
+    };
   }
 
   public listStageLedger(migrationId: string): readonly MigrationStageStatusRow[] {

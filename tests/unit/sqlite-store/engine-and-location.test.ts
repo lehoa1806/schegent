@@ -12,6 +12,13 @@ import {
   isNetworkFilesystem,
   resolveTrustedSqliteLocation
 } from '../../../src/services/sqlite-store';
+import {
+  F04_INITIAL_STRICT_TABLE_COUNT,
+  SQLITE_SCHEMA_CURRENT_VERSION
+} from '../../../src/contracts/sqlite-store/schema-types';
+import { F05_LIFECYCLE_TABLE_NAMES } from '../../../src/services/artifact-lifecycle/lifecycle-schema';
+
+const EXPECTED_STRICT_TABLE_COUNT = F04_INITIAL_STRICT_TABLE_COUNT + F05_LIFECYCLE_TABLE_NAMES.length;
 
 describe('FR-R6-F04 (US1): SQLite Engine Qualification, Pragmas & Trusted Storage Location', () => {
   const tempDirs: string[] = [];
@@ -58,13 +65,13 @@ describe('FR-R6-F04 (US1): SQLite Engine Qualification, Pragmas & Trusted Storag
     ).toThrow(SqlitePragmaVerificationError);
   });
 
-  it('bootstraps all 78 STRICT tables and rejects future unsupported schema versions (FR-002, FR-008, NFR-003)', () => {
+  it('bootstraps every STRICT table and rejects future unsupported schema versions (FR-002, FR-008, NFR-003)', () => {
     const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
     try {
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => 1_700_000_000_000);
-      expect(result.schemaVersion).toBe(1);
-      expect(result.strictTableCount).toBe(78);
-      expect(result.appliedMigrations).toEqual([1]);
+      expect(result.schemaVersion).toBe(SQLITE_SCHEMA_CURRENT_VERSION);
+      expect(result.strictTableCount).toBe(EXPECTED_STRICT_TABLE_COUNT);
+      expect(result.appliedMigrations).toEqual([1, 2]);
       expect(conn.runForeignKeyCheck()).toEqual([]);
 
       // Re-running bootstrap is idempotent
@@ -176,7 +183,7 @@ describe('FR-R6-F04 (US1): SQLite Engine Qualification, Pragmas & Trusted Storag
     });
     expect(report.qualificationPassed).toBe(true);
     expect(report.meetsMinimumVersionFloor).toBe(true);
-    expect(report.strictSchemaTableCount).toBe(78);
+    expect(report.strictSchemaTableCount).toBe(EXPECTED_STRICT_TABLE_COUNT);
     expect(report.foreignKeyCheckViolations).toBe(0);
   });
 });

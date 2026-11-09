@@ -73,6 +73,9 @@ import type { CatalogKind } from './catalog-store';
 // `capability-applied` and `unqualified` on `capability-refused` (closed unions from `./phase-capabilities`).
 // A reader that does not know either preserves the row (warn-and-preserve). Additive — no
 // `AUDIT_SCHEMA_VERSION` bump (same precedent).
+//
+// Feature 304 (FR-R6-F05) — additive system-scoped `artifact-lifecycle-mutation`; metadata-only payload
+// in `./artifact-lifecycle/audit-payload`. Additive — no `AUDIT_SCHEMA_VERSION` bump (same precedent).
 export const AUDIT_SCHEMA_VERSION = 3 as const;
 
 export type {
@@ -1001,6 +1004,9 @@ export const EVIDENCE_LIFECYCLE_EVENT_TYPES = ['evidence-deleted', 'evidence-exp
 /** FR-R4-F04 (FR-028) — the operator reset their attribution pseudonym; the row carries neither value. */
 export const OPERATOR_ATTRIBUTION_EVENT_TYPES = ['operator-pseudonym-reset'] as const;
 
+/** FR-R6-F05 (FR-022) — one artifact lifecycle mutation: kind, operation id, counts and result only. */
+export const ARTIFACT_LIFECYCLE_EVENT_TYPES = ['artifact-lifecycle-mutation'] as const;
+
 /** FR-R5-F30 (SPEC-08, D7) — metadata-only workflow control-flow events (IDs, enums, counts, generation, timestamps only). */
 export const CONTROL_FLOW_EVENT_TYPES = [
   'control-decision',
@@ -1065,7 +1071,9 @@ export const ALL_AUDIT_EVENT_TYPES = [
   // FR-R4-F04 — the operator reset their attribution pseudonym.
   ...OPERATOR_ATTRIBUTION_EVENT_TYPES,
   // FR-R5-F30 — metadata-only workflow control-flow events.
-  ...CONTROL_FLOW_EVENT_TYPES
+  ...CONTROL_FLOW_EVENT_TYPES,
+  // FR-R6-F05 — an artifact lifecycle mutation (deletion, quarantine, archival, policy adoption).
+  ...ARTIFACT_LIFECYCLE_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -1589,6 +1597,8 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'audit-integrity-condition',
     // FR-R4-F04 — run-independent: an operator act on this workspace's attribution, with no run.
     'operator-pseudonym-reset',
+    // FR-R6-F05 — a lifecycle mutation has no run; it belongs on the System tab.
+    'artifact-lifecycle-mutation',
     // State migration / repair
     'state-migrated',
     'workflow-run-repaired',

@@ -62,6 +62,8 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'audit-integrity-condition': 'system',
   // Feature 251 — the operator's reset of their attribution pseudonym, with no run (system)
   'operator-pseudonym-reset': 'system',
+  // Feature 304 — an artifact lifecycle mutation, with no run (system)
+  'artifact-lifecycle-mutation': 'system',
   // Retry-condition decision (task)
   'phase.retry_evaluated': 'task',
   // Delayed retry (system)
@@ -338,6 +340,7 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'session-retention-applied':
         case 'audit-integrity-condition':
         case 'operator-pseudonym-reset':
+        case 'artifact-lifecycle-mutation':
         case 'phase.retry_evaluated':
         case 'retry-scheduled':
         case 'retry-manual':
