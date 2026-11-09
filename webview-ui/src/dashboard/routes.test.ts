@@ -113,3 +113,34 @@ describe('Feature 092 T098 — back-navigation walks the tiers (FR-060)', () => 
     expect(parentLocation(parentLocation(tier3))).toEqual(DEFAULT_DASHBOARD_LOCATION);
   });
 });
+
+// Feature 265 BUG-001 (FR-009) — a member Task opened from a Workflow run's
+// topology is addressed within that run, so Back returns to the run, not to the
+// queue. The parent id is present only on that route: a Task opened from Queue
+// Detail keeps the exact key set pinned above.
+describe('Feature 265 BUG-001 — a member Task returns to its Workflow run', () => {
+  const PARENT_RUN = 'connected-run-1';
+
+  it('carries the parent run id only when the Task was opened from a run', () => {
+    expect(Object.keys(runDetailLocation(QUEUE_A, RUN_1, PARENT_RUN)).sort()).toEqual([
+      'parentRunId',
+      'queueId',
+      'route',
+      'runId'
+    ]);
+    expect(runDetailLocation(QUEUE_A, RUN_1, PARENT_RUN).parentRunId).toBe(PARENT_RUN);
+    expect(Object.keys(runDetailLocation(QUEUE_A, RUN_1, undefined)).sort()).toEqual(['queueId', 'route', 'runId']);
+    expect(Object.isFrozen(runDetailLocation(QUEUE_A, RUN_1, PARENT_RUN))).toBe(true);
+  });
+
+  it('takes a member Task back to its Workflow run', () => {
+    expect(parentLocation(runDetailLocation(QUEUE_A, RUN_1, PARENT_RUN))).toEqual(
+      runDetailLocation(QUEUE_A, PARENT_RUN)
+    );
+  });
+
+  it('reaches Queue Detail from a member Task in exactly two steps', () => {
+    const member: DashboardLocation = runDetailLocation(QUEUE_A, RUN_1, PARENT_RUN);
+    expect(parentLocation(parentLocation(member))).toEqual(queueDetailLocation(QUEUE_A));
+  });
+});

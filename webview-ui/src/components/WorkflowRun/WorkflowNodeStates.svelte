@@ -46,9 +46,11 @@
     /** True while a submission is in flight; the host, not the view, decides legality. */
     readonly disabled?: boolean;
     readonly onAct?: (node: ConnectedNodeProjection, action: ConnectedNodeAction) => void;
+    /** Feature 265 BUG-001 (FR-009): opens the node's latest attempt Task. */
+    readonly onOpenTask?: (queueItemId: string, returnKey: string) => void;
   }
 
-  const { nodes, queueItems, controlProjection, disabled = false, onAct }: Props = $props();
+  const { nodes, queueItems, controlProjection, disabled = false, onAct, onOpenTask }: Props = $props();
 
   const ACTION_LABELS: Record<ConnectedNodeAction, string> = {
     start: 'Start',
@@ -231,8 +233,12 @@
       {#if node.latestQueueItemId !== undefined}
         {@const attempt = attemptOf(node)}
         {#if attempt}
-          <ul class="attempt-row" data-testid={`workflow-node-attempt-${node.nodeId}`}>
-            <QueueItemRow item={attempt} testIdPrefix="workflow-node-run" />
+          <ul class="attempt-row" data-testid={`workflow-node-attempt-${node.nodeId}`} data-return-key={`node:${node.nodeId}`}>
+            <QueueItemRow
+              item={attempt}
+              testIdPrefix="workflow-node-run"
+              onSelect={onOpenTask === undefined ? undefined : () => onOpenTask(attempt.id, `node:${node.nodeId}`)}
+            />
           </ul>
         {:else}
           <!-- The projection references an attempt the queue projection has not

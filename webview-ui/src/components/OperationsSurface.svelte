@@ -123,7 +123,7 @@
       case 'queue-detail':
         return `queue-detail:${value.queueId}`;
       case 'run-detail':
-        return `run-detail:${value.queueId}:${value.runId}`;
+        return `run-detail:${value.queueId}:${value.runId}:${value.parentRunId ?? ''}`;
     }
   }
 
@@ -139,19 +139,39 @@
     if (scroller !== undefined) scroller.scrollTop = offsets.get(key) ?? 0;
   });
 
+  // Feature 265 BUG-001 (FR-009): the topology row a member Task was opened
+  // from, so Back to the run puts focus where the operator left it.
+  let memberReturnKey: string | null = null;
+  let returnFocusKey = $state<string | null>(null);
+
   function openQueue(queueId: string): void {
+    returnFocusKey = null;
     selectedQueueId = queueId;
     location = queueDetailLocation(queueId);
   }
 
-  function openRun(runId: string): void {
-    if (resolved.location.route !== 'queue-detail') return;
-    selectedRunId = runId;
-    location = runDetailLocation(resolved.location.queueId, runId);
+  /**
+   * Opens a Run from Queue Detail, or a member Task from a Workflow run's
+   * topology (BUG-001). The member route keeps Queue Detail's selection on the
+   * run, so walking back marks the run's row, not a Task it collapses.
+   */
+  function openRun(runId: string, returnKey?: string): void {
+    const current = resolved.location;
+    returnFocusKey = null;
+    if (current.route === 'queue-detail') {
+      selectedRunId = runId;
+      location = runDetailLocation(current.queueId, runId);
+      return;
+    }
+    if (current.route !== 'run-detail' || current.parentRunId !== undefined) return;
+    memberReturnKey = returnKey ?? null;
+    location = runDetailLocation(current.queueId, runId, current.runId);
   }
 
   function goBack(): void {
-    location = parentLocation(resolved.location);
+    const current = resolved.location;
+    returnFocusKey = current.route === 'run-detail' && current.parentRunId !== undefined ? memberReturnKey : null;
+    location = parentLocation(current);
   }
 </script>
 
@@ -195,16 +215,24 @@
   {:else}
     {@const queueId = resolved.location.queueId}
     {@const runId = resolved.location.runId}
+    {@const parentRunId = resolved.location.parentRunId}
     {#await loadRunDetailTier()}
       <p class="tier-loading" data-testid="operations-tier-loading" role="status">Opening…</p>
     {:then RunDetailTier}
-      <RunDetailTier
-        {snapshot}
-        {queueId}
-        {runId}
-        isPrimary={snapshot.isPrimary}
-        onBack={goBack}
-      />
+      <!-- Keyed so a run and its member Task never share a tier instance: each
+           opens on its own Log tab and focus (BUG-001). -->
+      {#key locationKey(resolved.location)}
+        <RunDetailTier
+          {snapshot}
+          {queueId}
+          {runId}
+          {parentRunId}
+          isPrimary={snapshot.isPrimary}
+          onBack={goBack}
+          onOpenTask={openRun}
+          {returnFocusKey}
+        />
+      {/key}
     {:catch}
       <p class="tier-error" data-testid="operations-tier-error" role="alert">
         That view could not be loaded. Reload the dashboard to try again.

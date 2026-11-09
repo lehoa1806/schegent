@@ -17,6 +17,7 @@
   // and everything inside the reused Run surfaces — are interpolated with `{}`,
   // which escapes (FR-059). Nothing here uses `{@html}`.
 
+  import { onMount } from 'svelte';
   import WorkflowNodeStates from './WorkflowNodeStates.svelte';
   import WorkflowContinuation from './WorkflowContinuation.svelte';
   import CandidateBlockInspector from './CandidateBlockInspector.svelte';
@@ -47,9 +48,34 @@
      */
     readonly prefillFor?: (node: ConnectedNodeProjection) => Record<string, string> | undefined;
     readonly isPrimary?: boolean;
+    /**
+     * Feature 265 BUG-001 (FR-009): opens a member Task. `returnKey` names the
+     * row that asked, so Back can return focus to it. Absent: no row opens.
+     */
+    readonly onOpenTask?: (queueItemId: string, returnKey: string) => void;
+    /** The row (`node:<id>` or `attempt:<id>`) to focus on mount, after Back. */
+    readonly returnFocusKey?: string | null;
   }
 
-  const { run, queueItems = [], pipelines = [], prefillFor, isPrimary = true }: Props = $props();
+  const { run, queueItems = [], pipelines = [], prefillFor, isPrimary = true, onOpenTask, returnFocusKey = null }: Props = $props();
+
+  let section = $state<HTMLElement | undefined>(undefined);
+
+  /** A Task id an attempt row can open: one it names and the queue still holds. */
+  function openableTask(queueItemId: string | undefined): string | null {
+    if (onOpenTask === undefined || queueItemId === undefined) return null;
+    return queueItems.some((item) => item.id === queueItemId) ? queueItemId : null;
+  }
+
+  onMount(() => {
+    if (returnFocusKey === null || section === undefined) return;
+    // Compared by attribute value, not a selector, so an operator-authored id is never parsed.
+    const row = [...section.querySelectorAll<HTMLElement>('[data-return-key]')].find(
+      (el) => el.dataset.returnKey === returnFocusKey
+    );
+    const target = row?.matches('button') === true ? row : row?.querySelector<HTMLElement>('button');
+    target?.focus();
+  });
 
   let openNodeId = $state<string | null>(null);
   let runStatus = $state<string | null>(null);
@@ -151,7 +177,7 @@
   }
 </script>
 
-<section class="workflow-run" data-testid="workflow-run">
+<section class="workflow-run" data-testid="workflow-run" bind:this={section}>
   <header class="run-header">
     <h3 class="run-title" data-testid="workflow-run-title">{run.workflowId}</h3>
     <div class="run-badges">
@@ -278,11 +304,23 @@
                   data-testid={`workflow-invocation-attempts-${inv.invocationId}`}
                 >
                   {#each inv.attempts as att (att.attemptId)}
+                    {@const openTaskId = openableTask(att.queueItemId)}
                     <li
                       class="invocation-attempt-row"
                       data-testid={`workflow-invocation-attempt-${att.attemptId}`}
                     >
-                      <span>#{att.attemptIndex} {att.nodeId} ({att.nodeKind})</span>
+                      {#if openTaskId !== null}
+                        <button
+                          type="button"
+                          class="attempt-open"
+                          data-testid={`workflow-invocation-attempt-open-${att.attemptId}`}
+                          data-return-key={`attempt:${att.attemptId}`}
+                          aria-label={`Open task ${openTaskId} (attempt ${att.attemptIndex} of ${att.nodeId})`}
+                          onclick={() => onOpenTask?.(openTaskId, `attempt:${att.attemptId}`)}
+                        >#{att.attemptIndex} {att.nodeId} ({att.nodeKind})</button>
+                      {:else}
+                        <span>#{att.attemptIndex} {att.nodeId} ({att.nodeKind})</span>
+                      {/if}
                       <span>{att.status}</span>
                       {#if att.failureCode}
                         <span>({att.failureCode})</span>
@@ -337,6 +375,7 @@
       controlProjection={run.controlProjection}
       disabled={openNode !== undefined}
       onAct={(node) => onAct(node)}
+      {onOpenTask}
     />
 
     {#if run.decisionObservations && run.decisionObservations.length > 0}
@@ -438,5 +477,7 @@
   .invocation-depth-5 { margin-left: 70px; }
   .invocation-toggle { background: transparent; border: none; color: inherit; cursor: pointer; font-weight: 600; padding: 0; text-align: left; }
   .invocation-diagnostic, .invocation-outputs, .invocation-attempt-row { margin: 0; font-size: 0.8em; display: flex; gap: 6px; flex-wrap: wrap; }
+  .attempt-open { font: inherit; padding: 0; border: 0; background: transparent; color: var(--vscode-textLink-foreground); cursor: pointer; text-align: left; }
+  .attempt-open:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
   .invocation-action-btn { padding: 3px 8px; font-size: 0.8em; background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, inherit); border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); cursor: pointer; }
 </style>

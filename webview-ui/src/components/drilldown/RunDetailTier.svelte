@@ -24,9 +24,10 @@
   import RunOutputs from '../RunOutputs.svelte';
   import CreditPollingNotice from './CreditPollingNotice.svelte';
   import RunLimitsPanel from './RunLimitsPanel.svelte';
+  import RunTabBar, { type RunTab } from './RunTabBar.svelte';
   import { findQueueRuntime } from '../../lib/queue-runtime-view';
   import { formatDuration } from '../../lib/format-duration';
-  import type { QueueItemStatus } from '../../lib/snapshot-types';
+  import type { PhaseTile, QueueItemStatus } from '../../lib/snapshot-types';
   import { resolveTaskPipelineName } from '../../lib/resolve-pipeline-name';
   import { createPhaseLogStore } from '../../lib/phase-log-store.svelte';
   import { TERMINAL_PHASE_SENTINEL } from '../../lib/activity-feed-selection.svelte';
@@ -48,9 +49,15 @@
     /** FR-065 — a non-primary window reads the Run but mutates nothing. */
     isPrimary: boolean;
     onBack: () => void;
+    /** BUG-001 (FR-009): the Workflow run this member Task was opened from. */
+    parentRunId?: string;
+    /** BUG-001 (FR-009): opens a member Task from the topology. */
+    onOpenTask?: (taskId: string, returnKey: string) => void;
+    /** BUG-001 (FR-009): the topology row to focus on return. */
+    returnFocusKey?: string | null;
   }
 
-  const { snapshot, queueId, runId, isPrimary, onBack }: Props = $props();
+  const { snapshot, queueId, runId, isPrimary, onBack, parentRunId, onOpenTask, returnFocusKey = null }: Props = $props();
 
   const runtime = $derived(findQueueRuntime(snapshot, queueId));
   const queueName = $derived(runtime?.name ?? queueId);
@@ -60,6 +67,10 @@
     (snapshot.connectedRuns ?? []).find((run) => run.connectedRunId === runId) ?? null
   );
   const task = $derived(tasks.find((item) => item.id === runId) ?? null);
+  // Back names where it goes: the parent run's Workflow for a member Task, else the queue.
+  const backLabel = $derived(
+    (snapshot.connectedRuns ?? []).find((run) => run.connectedRunId === parentRunId)?.workflowId ?? queueName
+  );
   // T010 (FR-010/SC-003) — the same resolver tier 2's row calls, so the two
   // tiers can never disagree about what a Task's Pipeline is named.
   const pipelineName = $derived(
@@ -127,7 +138,40 @@
       : null
   );
 
-  const phases = $derived(runtime?.phases ?? []);
+  // Feature 265 BUG-001 (FR-011) — a leaf member Task, one a connected run names through a
+  // `phase` attempt, ran one Phase: `currentPipelineId` is that Phase's id. While it is not the
+  // one executing, `runtime.phases` is some other Run's strip, so it shows its own one tile, the
+  // non-borrowing rule `liveActivity` and `outputs` already follow. Standalone and legacy
+  // `pipeline`-node Tasks keep the queue's strip. Assumed mapping: no `failed` PhaseState
+  // exists, so a settled Task reads `completed` and the header's status names the outcome.
+  const isLeafMember = $derived(
+    (snapshot.connectedRuns ?? []).some((run) =>
+      (run.invocations ?? []).some((frame) =>
+        frame.attempts.some((attempt) => attempt.nodeKind === 'phase' && attempt.queueItemId === runId)
+      )
+    )
+  );
+  const LEAF_TILE_STATE: Record<QueueItemStatus, PhaseTile['state']> = {
+    'pending': 'not-started',
+    'in-flight': 'active',
+    'paused': 'active',
+    'completed': 'completed',
+    'failed': 'completed',
+    'canceled': 'completed'
+  };
+  const phases = $derived.by((): readonly PhaseTile[] => {
+    const leafPhase = task?.currentPipelineId ?? null;
+    if (!isLeafMember || isExecuting || task === null || leafPhase === null) return runtime?.phases ?? [];
+    return [{
+      name: leafPhase,
+      order: 1,
+      state: LEAF_TILE_STATE[task.status],
+      iteration: 1,
+      lastResult: task.status === 'failed' ? 'failed' : null,
+      elapsedMs: 0,
+      subProgress: null
+    }];
+  });
   const activePhaseIndex = $derived(
     phases.findIndex((p) => p.state === 'active')
   );
@@ -140,29 +184,8 @@
     activePhaseIndex >= 0 ? phases[activePhaseIndex].iteration : 1
   );
 
-  // ── Tab state ──────────────────────────────────────────────────────
-  // FR-R4-F08 (K1 to K3) — the tabs follow the roving contract the Builder, System and
-  // Settings tab bars use: one tab is in the Tab order, the arrow keys, Home and End move
-  // between the three, and every tab names the one panel it controls. The handler indexes
-  // this list, so the streaming badge after the tabs is never a stop.
-  const RUN_TABS = ['log', 'outputs', 'context'] as const;
-  type RunTab = (typeof RUN_TABS)[number];
+  // ── Tab state ── (FR-R4-F08; the roving tab bar lives in `RunTabBar.svelte`)
   let activeTab = $state<RunTab>('log');
-
-  function onTabKeydown(event: KeyboardEvent): void {
-    const current = RUN_TABS.indexOf(activeTab);
-    let next: number;
-    if (event.key === 'ArrowRight') next = (current + 1) % RUN_TABS.length;
-    else if (event.key === 'ArrowLeft') next = (current - 1 + RUN_TABS.length) % RUN_TABS.length;
-    else if (event.key === 'Home') next = 0;
-    else if (event.key === 'End') next = RUN_TABS.length - 1;
-    else return;
-    const name = RUN_TABS.at(next);
-    if (name === undefined) return;
-    event.preventDefault();
-    activeTab = name;
-    queueMicrotask(() => document.getElementById(`run-tab-${name}`)?.focus());
-  }
 
   // Feature 097 (T006) — a local PhaseLogStore pinned to this Run. Unlike the
   // removed Dashboard embed, this tier is about one Run, so the store lives
@@ -242,7 +265,7 @@
   }
 </script>
 
-<main class="run-detail-tier" data-testid="run-detail-tier" aria-label="Run detail">
+<main class="run-detail-tier" class:workflow-branch={connectedRun !== null} data-testid="run-detail-tier" aria-label="Run detail">
   <header class="tier-header">
     <button
       type="button"
@@ -251,7 +274,7 @@
       onclick={onBack}
       onkeydown={onBackKeyDown}
     >
-      &larr; {queueName}
+      &larr; {backLabel}
     </button>
   </header>
 
@@ -262,6 +285,8 @@
       queueItems={tasks}
       pipelines={snapshot.availablePipelines ?? []}
       {isPrimary}
+      {onOpenTask}
+      {returnFocusKey}
     />
   {:else if task !== null}
     <!-- Header block: title + meta line + action buttons -->
@@ -344,51 +369,7 @@
 
       <!-- Right panel: Tabbed content -->
       <div class="run-right-panel">
-        <div class="tab-bar" role="tablist" onkeydown={onTabKeydown}>
-          <button
-            type="button"
-            role="tab"
-            id="run-tab-log"
-            class="tab-btn"
-            class:active={activeTab === 'log'}
-            aria-selected={activeTab === 'log'}
-            aria-controls="run-detail-panel"
-            tabindex={activeTab === 'log' ? 0 : -1}
-            data-testid="run-tab-log"
-            onclick={() => activeTab = 'log'}
-          >&Sigma; Phase log</button>
-          <button
-            type="button"
-            role="tab"
-            id="run-tab-outputs"
-            class="tab-btn"
-            class:active={activeTab === 'outputs'}
-            aria-selected={activeTab === 'outputs'}
-            aria-controls="run-detail-panel"
-            tabindex={activeTab === 'outputs' ? 0 : -1}
-            data-testid="run-tab-outputs"
-            onclick={() => activeTab = 'outputs'}
-          >&#128196; Run outputs</button>
-          <button
-            type="button"
-            role="tab"
-            id="run-tab-context"
-            class="tab-btn"
-            class:active={activeTab === 'context'}
-            aria-selected={activeTab === 'context'}
-            aria-controls="run-detail-panel"
-            tabindex={activeTab === 'context' ? 0 : -1}
-            data-testid="run-tab-context"
-            onclick={() => activeTab = 'context'}
-          >&#128196; Context</button>
-
-          {#if isExecuting}
-            <span class="streaming-badge" data-testid="run-streaming-badge">
-              <span class="streaming-dot"></span>
-              STREAMING
-            </span>
-          {/if}
-        </div>
+        <RunTabBar bind:activeTab {isExecuting} />
 
         <div
           class="tab-panel"
@@ -445,6 +426,8 @@
 
 <style>
   .run-detail-tier { display: flex; flex-direction: column; gap: 12px; padding: 16px 20px; height: 100%; min-height: 0; overflow: hidden; }
+  /* BUG-001 (FR-008): the topology grows with its nodes; `operations-scroll` owns the overflow. */
+  .run-detail-tier.workflow-branch { height: auto; overflow: visible; }
   .tier-header { display: flex; align-items: center; }
   .back { font: inherit; padding: 2px 0; border: 0; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; }
   .back:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
@@ -472,18 +455,6 @@
   .run-columns { display: flex; gap: 0; flex: 1 1 0; min-height: 0; overflow: hidden; }
   .run-left-panel { flex: 0 0 260px; border-right: 1px solid var(--schegent-divider, color-mix(in srgb, var(--vscode-descriptionForeground) 15%, transparent)); padding-right: 14px; overflow-y: auto; }
   .run-right-panel { flex: 1 1 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
-
-  .tab-bar { display: flex; align-items: center; gap: 0; border-bottom: 1px solid var(--schegent-divider, color-mix(in srgb, var(--vscode-descriptionForeground) 15%, transparent)); padding-left: 14px; flex-shrink: 0; }
-  .tab-btn { font: inherit; font-size: 12px; padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; white-space: nowrap; }
-  .tab-btn:hover { color: var(--vscode-editor-foreground); }
-  .tab-btn.active { color: var(--vscode-editor-foreground); border-bottom-color: var(--vscode-focusBorder); }
-
-  .streaming-badge { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: var(--schegent-color-active); padding-right: 8px; }
-  .streaming-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--schegent-color-active); animation: pulse-stream 1.8s ease-in-out infinite; }
-  @keyframes pulse-stream {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.5; transform: scale(1.3); }
-  }
 
   .tab-panel { flex: 1 1 0; min-height: 0; overflow-y: auto; padding-left: 14px; padding-top: 8px; height: 100%; }
 
