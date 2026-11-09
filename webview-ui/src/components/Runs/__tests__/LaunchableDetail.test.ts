@@ -154,20 +154,17 @@ describe('the detail panel for a selected definition (FR-007)', () => {
 });
 
 describe('a window that cannot start work (FR-015)', () => {
-  it('still lists and still selects, but withholds Trigger and says why', async () => {
+  it('still lists and still selects, but withholds the launch form and says why (AC-03)', async () => {
     // Read-only is not a reduced surface. An operator in a second window is
     // usually there to look something up, and hiding the lists would answer a
-    // question they did not ask. What they cannot do is start work — so the one
-    // control that starts work is withheld, and the reason is on screen next to
-    // it rather than left to be inferred from a control that does nothing.
+    // question they did not ask. What they cannot do is start work — so the
+    // launch form is withheld, and the reason is on screen inside the summary.
     const { getByTestId, queryByTestId } = await selectDeclared({ isPrimary: false });
 
     expect(getByTestId('launchable-detail-name').textContent).toContain('Research Workflow');
     expect(getByTestId('launchable-detail-port-topic')).toBeTruthy();
-    expect((getByTestId('launchable-detail-trigger') as HTMLButtonElement).disabled).toBe(true);
+    expect(queryByTestId('launchable-detail-trigger')).toBeNull();
     expect(getByTestId('launchable-detail-read-only').textContent).toContain('cannot start runs');
-
-    await fireEvent.click(getByTestId('launchable-detail-trigger'));
     expect(queryByTestId('workflow-trigger')).toBeNull();
     expect(launchWorkflow).not.toHaveBeenCalled();
     expect(launchPipeline).not.toHaveBeenCalled();
@@ -179,20 +176,20 @@ describe('a window that cannot start work (FR-015)', () => {
   });
 });
 
-describe('Trigger and Run are distinct controls (FR-008)', () => {
-  it('opens the form on Trigger without reaching the host', async () => {
+describe('Selection and Run are distinct actions (FR-008, FR-R5-F36)', () => {
+  it('opens the compact summary and form on selection without reaching the host (AC-01, AC-05)', async () => {
     const { getByTestId, queryByTestId } = await selectDeclared();
-    expect(queryByTestId('workflow-trigger')).toBeNull();
 
-    await fireEvent.click(getByTestId('launchable-detail-trigger'));
-
+    expect(queryByTestId('launchable-detail-trigger')).toBeNull();
     expect(getByTestId('workflow-trigger')).toBeTruthy();
+    const disclosure = getByTestId('launchable-detail-disclosure') as HTMLDetailsElement;
+    expect(disclosure.tagName).toBe('DETAILS');
+    expect(disclosure.open).toBe(false);
     expect(launchWorkflow).not.toHaveBeenCalled();
   });
 
-  it('presents exactly the selected definition ports in the form, with the required one marked (FR-009)', async () => {
+  it('presents the selected definition ports in the form, with the required one marked (FR-009)', async () => {
     const { getByTestId, queryByTestId } = await selectDeclared();
-    await fireEvent.click(getByTestId('launchable-detail-trigger'));
 
     expect(getByTestId('run-input-topic')).toBeTruthy();
     expect(getByTestId('run-input-notes')).toBeTruthy();
@@ -211,7 +208,6 @@ describe('Trigger and Run are distinct controls (FR-008)', () => {
       queueItemId: 'queue-item-9'
     });
     const { getByTestId } = await selectDeclared();
-    await fireEvent.click(getByTestId('launchable-detail-trigger'));
     expect(launchWorkflow).not.toHaveBeenCalled();
 
     await fireEvent.click(getByTestId('workflow-trigger-submit'));
@@ -275,12 +271,12 @@ describe('what the panel says about the authority a start will have (FR-R4-F06 F
     expect(getByTestId('launch-authority-notice-text-claude').textContent).toBe(CLAUDE_TEXT);
   });
 
-  it('puts the notice above the control that starts the work', async () => {
+  it('puts the notice above the control that starts the work (AC-05)', async () => {
     const { getByTestId } = await selectOffered({ ...RESEARCH, backends: ['claude'] });
 
     const notice = getByTestId('launch-authority-notice');
-    const trigger = getByTestId('launchable-detail-trigger');
-    expect(notice.compareDocumentPosition(trigger) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const submit = getByTestId('workflow-trigger-submit');
+    expect(notice.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('shows nothing for a definition that runs only on a contained backend', async () => {
@@ -288,7 +284,7 @@ describe('what the panel says about the authority a start will have (FR-R4-F06 F
     // the window default in place of the entry's own backends, would show it here.
     const { getByTestId, queryByTestId } = await selectOffered({ ...RESEARCH, backends: ['codex'] });
 
-    expect(getByTestId('launchable-detail-trigger')).toBeTruthy();
+    expect(getByTestId('workflow-trigger-submit')).toBeTruthy();
     expect(queryByTestId('launch-authority-notice')).toBeNull();
     expect(queryByTestId('launch-authority-notice-text-claude')).toBeNull();
   });

@@ -1,15 +1,10 @@
 <script lang="ts">
-  // Feature 102 (T027, US3 — FR-012, FR-016, FR-017, FR-041, FR-043) — Workflow start form.
-  // Sibling of `WorkflowRun/WorkflowContinuation.svelte`: same four sections and assembly from
-  // `lib/run-composition.ts`, plus start-node selection joined against `workflowCatalog.effective`.
-  // Only the chosen start node's unsatisfied ports are requested on every render (FR-016, FR-017);
-  // nothing here pre-validates submission (FR-010, FR-011), and path ports pass through `RunInputFields` (FR-041).
+  // Feature 102 (T027, US3 — FR-012, FR-016, FR-017, FR-041, FR-043) & FR-R5-F36 (F36-T03, F36-T05):
+  // Workflow start form with Instructions promoted to the primary field, empty contract/output
+  // sections omitted, optional attachments collapsed by default, and sequential batch submission
+  // when Instructions contain two or more `---schegent-task---`-separated segments.
 
-  import {
-    OUTCOME_NOT_YET_KNOWN_TEXT,
-    boundaryRefusalText,
-    refusalTextFrom,
-  } from "../../lib/boundary-refusal-text";
+  import { OUTCOME_NOT_YET_KNOWN_TEXT, boundaryRefusalText, refusalTextFrom } from "../../lib/boundary-refusal-text";
   import RunInputFields from "../RunLauncher/RunInputFields.svelte";
   import SupplementalInputs from "../RunLauncher/SupplementalInputs.svelte";
   import RunOutputTargets from "../RunLauncher/RunOutputTargets.svelte";
@@ -21,26 +16,18 @@
     overwriteRequestedPorts,
     supplementalErrors as mapSupplementalErrors,
   } from "../../lib/run-composition";
+  import {
+    formatBatchHaltStatus,
+    formatBatchTimeoutStatus,
+    remainingAfter,
+    splitTaskInstructions,
+    submitButtonLabel,
+    type BatchSubmissionState,
+  } from "../../lib/task-batch";
   import type { LaunchWorkflowResult } from "../../lib/messages";
-  import type {
-    Launchable,
-    PipelineDefinition,
-    PortableWorkflowDefinition,
-    WorkflowNode,
-  } from "../../lib/snapshot-types";
+  import type { Launchable, PipelineDefinition, PortableWorkflowDefinition, WorkflowNode } from "../../lib/snapshot-types";
   import type { RunRequestFieldError } from "../../../../src/contracts/run-request";
 
-  // FR-R4-F05 (I7, O3) — the 30 s outer timer and its message are gone, as on both sibling
-  // composers: the wait is the ledger's 5 s, a timeout says the outcome is not yet known, and the
-  // late outcome replaces it once (O4).
-
-  /**
-   * The host's refusal vocabulary, said in words an operator can act on.
-   *
-   * Each entry names the reason and the next move. The reason itself is the
-   * host's — this map translates it, it does not decide it — and an arm the host
-   * adds later falls through to the raw reason rather than to silence.
-   */
   const DEFINITION_REFUSALS: Record<string, string> = {
     "workflow-not-found":
       "This Workflow is no longer in the catalog. Close the form and reopen Add work to see what is published now.",
@@ -63,9 +50,10 @@
     readonly pipelines: readonly PipelineDefinition[];
     readonly onClose?: () => void;
     readonly queueId?: string;
+    readonly onBatchStateChange?: (state: BatchSubmissionState) => void;
   }
 
-  const { entry, graph, pipelines, onClose, queueId }: Props = $props();
+  const { entry, graph, pipelines, onClose, queueId, onBatchStateChange }: Props = $props();
 
   let chosenStartNodeId = $state<string | null>(null);
   let inputValues = $state<Record<string, string>>({});
@@ -79,11 +67,6 @@
   /** Which control produced each supplemental entry of the LAST submission. */
   let submittedSupplementalKeys = $state<readonly string[]>([]);
 
-  /**
-   * The join. A start node the graph does not carry is dropped rather than
-   * guessed at: without a node there is no Pipeline to name, and an entry in the
-   * list that cannot be started is worse than one that is not offered.
-   */
   const startNodes = $derived.by<readonly WorkflowNode[]>(() => {
     if (graph === undefined) return [];
     const found: WorkflowNode[] = [];
@@ -94,13 +77,8 @@
     return found;
   });
 
-  /**
-   * One start node is not a choice, so it is not asked about (FR-043). More than
-   * one is unanswered until the operator answers it, and an answer the graph has
-   * since dropped is no answer at all.
-   */
   const startNodeId = $derived.by<string | null>(() => {
-    if (startNodes.length === 1) return startNodes[0]!.nodeId;
+    if (startNodes.length === 1) return startNodes.at(0)?.nodeId ?? null;
     return startNodes.some((node) => node.nodeId === chosenStartNodeId)
       ? chosenStartNodeId
       : null;
@@ -110,11 +88,6 @@
     startNodes.find((node) => node.nodeId === startNodeId),
   );
 
-  /**
-   * The chosen node's unsatisfied ports (FR-016), read out of the projection on
-   * every render (FR-017). `operatorPorts` drops the ports an earlier Phase of
-   * the node's own Pipeline feeds, as both sibling composers do.
-   */
   const contractPorts = $derived(
     startNodeId === null
       ? []
@@ -158,12 +131,11 @@
     mapSupplementalErrors(fieldErrors, submittedSupplementalKeys),
   );
   const overwriteRequested = $derived(overwriteRequestedPorts(fieldErrors));
+  const segments = $derived(splitTaskInstructions(supplementalValues["instruction"]));
+  const buttonLabel = $derived(
+    submitButtonLabel({ pending, queueId, segmentCount: segments.length }),
+  );
 
-  /**
-   * A node's id always tells it apart from another's; its label may be absent,
-   * and two nodes on one Pipeline may share one. So the id is always shown and
-   * the label, when authored, leads.
-   */
   function startNodeName(node: WorkflowNode): string {
     return node.label !== undefined && node.label !== ""
       ? `${node.label} (${node.nodeId})`
@@ -180,10 +152,6 @@
     );
   }
 
-  /**
-   * Everything typed was typed against the node being left behind, so none of it
-   * carries over. Keeping it would send one node's answers to another's ports.
-   */
   function forget(): void {
     inputValues = {};
     supplementalValues = {};
@@ -202,14 +170,23 @@
   }
 
   $effect(() => {
-    // The graph moved and took the answered question with it. `startNodeId` has
-    // already read as null; this drops what was composed against the node that
-    // is gone, so the next choice starts from nothing.
     if (startNodeId === null && chosenStartNodeId !== null) {
       chosenStartNodeId = null;
       forget();
     }
   });
+
+  function refusalDetail(result: Exclude<LaunchWorkflowResult, { outcome: "started" }>): string {
+    if (result.outcome === 'rejected-validation') {
+      return "This Workflow was not started. Each field below states what to change.";
+    }
+    if (result.outcome === "rejected-definition") {
+      return refusalTextFrom(DEFINITION_REFUSALS, result.reason);
+    }
+    return result.detail
+      ? `The queue refused this run. ${boundaryRefusalText(result.detail)}`
+      : "The queue refused this run.";
+  }
 
   function applyResult(result: LaunchWorkflowResult | NotYetKnown): void {
     if (result.outcome === "not-yet-known") {
@@ -224,26 +201,34 @@
         : `Added task to queue. Run ${result.connectedRunId}.`;
       return;
     }
-    if (result.outcome === 'rejected-validation') {
-      fieldErrors = result.errors;
-      statusMessage =
-        "This Workflow was not started. Each field below states what to change.";
-      return;
-    }
-    fieldErrors = [];
-    if (result.outcome === "rejected-definition") {
-      statusMessage = refusalTextFrom(DEFINITION_REFUSALS, result.reason);
-      return;
-    }
-    // FR-R4-F05 (O1) — `reason` is the code `queue-refused` and `detail` is the guard's own
-    // code, so neither is shown raw: the detail goes through the shared boundary text.
-    statusMessage = result.detail
-      ? `The queue refused this run. ${boundaryRefusalText(result.detail)}`
-      : "The queue refused this run.";
+    fieldErrors = result.outcome === 'rejected-validation' ? result.errors : [];
+    statusMessage = refusalDetail(result);
   }
 
-  // FR-R4-F05 (I8) — the in-flight submission's signal, aborted when this component goes: the
-  // wait's timer and late callback are removed, and the ledger keeps the identity for a retry.
+  function applyBatchLateOutcome(
+    batchSegments: readonly string[],
+    acceptedBeforeTimeout: number,
+    total: number,
+    late: LaunchWorkflowResult | NotYetKnown,
+  ): void {
+    if (late.outcome === "not-yet-known") return;
+    if (late.outcome === "started") {
+      const nextAccepted = acceptedBeforeTimeout + 1;
+      supplementalValues = {
+        ...supplementalValues,
+        instruction: remainingAfter(batchSegments, nextAccepted),
+      };
+      fieldErrors = [];
+      statusMessage =
+        nextAccepted < total
+          ? `Added ${nextAccepted} of ${total} tasks. Submit the remaining tasks to continue.`
+          : `Added ${total} of ${total} tasks to queue.`;
+      return;
+    }
+    fieldErrors = late.outcome === 'rejected-validation' ? late.errors : [];
+    statusMessage = formatBatchHaltStatus(acceptedBeforeTimeout, total, refusalDetail(late));
+  }
+
   let submission: AbortController | null = null;
   $effect(() => () => submission?.abort());
 
@@ -252,6 +237,7 @@
     const node = startNode;
     if (node === undefined) return;
     const { request, supplementalKeys } = composition;
+    const batchSegments = [...segments];
     pending = true;
     fieldErrors = [];
     statusMessage = null;
@@ -260,21 +246,76 @@
     const controller = new AbortController();
     submission = controller;
     try {
-      const result = await launchWorkflow(
-        {
-          workflowId: entry.id,
-          startNodeId: node.nodeId,
-          request,
-          ...(queueId === undefined ? {} : { queueId })
-        },
-        {
-          signal: controller.signal,
-          // O4 — the outcome of a send whose wait ran out, shown once through the same text path.
-          onLateOutcome: (late) => applyResult(late),
-        },
-      );
-      if (controller.signal.aborted) return;
-      applyResult(result);
+      if (batchSegments.length < 2) {
+        onBatchStateChange?.({ inFlight: false, halted: false, accepted: 0, total: 1 });
+        const result = await launchWorkflow(
+          {
+            workflowId: entry.id,
+            startNodeId: node.nodeId,
+            request,
+            ...(queueId === undefined ? {} : { queueId })
+          },
+          {
+            signal: controller.signal,
+            onLateOutcome: (late) => applyResult(late),
+          },
+        );
+        if (controller.signal.aborted) return;
+        applyResult(result);
+        return;
+      }
+
+      const total = batchSegments.length;
+      let accepted = 0;
+      onBatchStateChange?.({ inFlight: true, halted: false, accepted: 0, total });
+
+      for (const segment of batchSegments) {
+        const segmentIndex = accepted;
+        const result = await launchWorkflow(
+          {
+            workflowId: entry.id,
+            startNodeId: node.nodeId,
+            request: { ...request, instructions: segment },
+            ...(queueId === undefined ? {} : { queueId })
+          },
+          {
+            signal: controller.signal,
+            onLateOutcome: (late) =>
+              applyBatchLateOutcome(batchSegments, segmentIndex, total, late),
+          },
+        );
+        if (controller.signal.aborted) return;
+
+        if (result.outcome !== "started") {
+          supplementalValues = {
+            ...supplementalValues,
+            instruction: remainingAfter(batchSegments, accepted),
+          };
+          if (result.outcome === "not-yet-known") {
+            fieldErrors = [];
+            statusMessage = formatBatchTimeoutStatus(
+              accepted,
+              total,
+              OUTCOME_NOT_YET_KNOWN_TEXT,
+            );
+          } else {
+            fieldErrors = result.outcome === 'rejected-validation' ? result.errors : [];
+            statusMessage = formatBatchHaltStatus(accepted, total, refusalDetail(result));
+          }
+          onBatchStateChange?.({ inFlight: false, halted: true, accepted, total });
+          return;
+        }
+
+        accepted += 1;
+      }
+
+      supplementalValues = { ...supplementalValues, instruction: "" };
+      fieldErrors = [];
+      statusMessage =
+        queueId === undefined
+          ? `Started ${total} of ${total} runs.`
+          : `Added ${total} of ${total} tasks to queue.`;
+      onBatchStateChange?.({ inFlight: false, halted: false, accepted: total, total });
     } finally {
       if (!controller.signal.aborted) pending = false;
     }
@@ -310,13 +351,8 @@
     </p>
   {:else}
     {#if startNodes.length > 1}
-      <fieldset
-        class="start-question"
-        data-testid="workflow-trigger-start-question"
-      >
-        <legend class="start-legend"
-          >Which node should this run begin at?</legend
-        >
+      <fieldset class="start-question" data-testid="workflow-trigger-start-question">
+        <legend class="start-legend">Which node should this run begin at?</legend>
         <ul class="start-list">
           {#each startNodes as node (node.nodeId)}
             <li>
@@ -339,46 +375,61 @@
     {/if}
 
     {#if startNode}
+      <div class="instruction-row">
+        <label class="instruction-label" for="run-supplemental-instruction">Instructions</label>
+        <span class="instruction-hint" data-testid="run-supplemental-instruction-hint">
+          Free-form direction for this run. Place <code>---schegent-task---</code>
+          on its own line to split into sequential tasks (declared inputs,
+          attachments, and output targets are shared across tasks).
+        </span>
+        <textarea
+          id="run-supplemental-instruction"
+          data-testid="run-supplemental-instruction"
+          class="instruction-input"
+          rows="5"
+          disabled={pending}
+          value={supplementalValues["instruction"] ?? ""}
+          oninput={(event) => (supplementalValues = { ...supplementalValues, instruction: event.currentTarget.value })}
+        ></textarea>
+        {#if supplementalErrors.has("instruction")}
+          <p class="field-error" data-testid="run-launcher-error-supplemental-instruction">
+            {supplementalErrors.get("instruction")}
+          </p>
+        {/if}
+      </div>
+
       {#if contractPorts.length > 0}
         <RunInputFields
           ports={contractPorts}
           values={inputValues}
           errors={errorsByField}
           disabled={pending}
-          onChange={(portId, value) =>
-            (inputValues = { ...inputValues, [portId]: value })}
+          onChange={(portId, value) => (inputValues = { ...inputValues, [portId]: value })}
         />
-      {:else}
-        <p class="trigger-note" data-testid="workflow-trigger-no-inputs">
-          Every input this node takes is supplied by the graph, so there is
-          nothing to fill in. It can be started as it is.
-        </p>
       {/if}
 
       <SupplementalInputs
         values={supplementalValues}
         errors={supplementalErrors}
         disabled={pending}
-        onChange={(key, value) =>
-          (supplementalValues = { ...supplementalValues, [key]: value })}
+        omitInstruction={true}
+        collapsible={true}
+        onChange={(key, value) => (supplementalValues = { ...supplementalValues, [key]: value })}
       />
 
-      <RunOutputTargets
-        ports={outputPorts}
-        targets={outputTargets}
-        {sideEffectConfirmed}
-        errors={errorsByField}
-        {overwriteRequested}
-        disabled={pending}
-        onTargetChange={(portId, value) =>
-          (outputTargets = { ...outputTargets, [portId]: value })}
-        onSideEffectChange={(portId, confirmed) =>
-          (sideEffectConfirmed = {
-            ...sideEffectConfirmed,
-            [portId]: confirmed,
-          })}
-        {onOverwriteConfirmed}
-      />
+      {#if outputPorts.length > 0}
+        <RunOutputTargets
+          ports={outputPorts}
+          targets={outputTargets}
+          {sideEffectConfirmed}
+          errors={errorsByField}
+          {overwriteRequested}
+          disabled={pending}
+          onTargetChange={(portId, value) => (outputTargets = { ...outputTargets, [portId]: value })}
+          onSideEffectChange={(portId, confirmed) => (sideEffectConfirmed = { ...sideEffectConfirmed, [portId]: confirmed })}
+          {onOverwriteConfirmed}
+        />
+      {/if}
 
       <footer class="trigger-footer">
         <button
@@ -388,14 +439,10 @@
           disabled={pending}
           onclick={() => submitRequest()}
         >
-          {pending ? "Submitting…" : queueId === undefined ? "Run Workflow" : "Add task"}
+          {buttonLabel}
         </button>
         {#if statusMessage}
-          <p
-            class="status-line"
-            data-testid="workflow-trigger-status"
-            role="status"
-          >
+          <p class="status-line" data-testid="workflow-trigger-status" role="status">
             {statusMessage}
           </p>
         {/if}
@@ -413,57 +460,18 @@
   .start-question { border: none; margin: 0; padding: 0; min-width: 0; }
   .start-legend { padding: 0; font-size: 0.9em; font-weight: 600; }
   .start-list { display: flex; flex-direction: column; gap: 4px; list-style: none; margin: 6px 0 0; padding: 0; }
-  .start-choice {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-    width: 100%;
-    padding: 6px 8px;
-    background: transparent;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--schegent-radius);
-    color: inherit;
-    cursor: pointer;
-    text-align: left;
-  }
-  .start-choice.chosen {
-    border-color: var(--vscode-focusBorder);
-    background: var(--vscode-list-activeSelectionBackground);
-  }
-  .start-choice:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-  .choice-name {
-    font-size: 0.9em;
-    word-break: break-word;
-  }
-  .choice-pipeline {
-    font-size: 0.8em;
-    opacity: 0.8;
-    word-break: break-word;
-  }
-  .trigger-footer {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .submit-button {
-    align-self: flex-start;
-    padding: 6px 12px;
-    background: var(--sch-accent-gradient);
-    color: var(--vscode-button-foreground);
-    border: none;
-    border-radius: var(--schegent-radius);
-    cursor: pointer;
-  }
-  .submit-button:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-  .status-line {
-    margin: 0;
-    font-size: 0.85em;
-  }
+  .start-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: 6px 8px; background: transparent; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); color: inherit; cursor: pointer; text-align: left; }
+  .start-choice.chosen { border-color: var(--vscode-focusBorder); background: var(--vscode-list-activeSelectionBackground); }
+  .start-choice:disabled { cursor: default; opacity: 0.6; }
+  .choice-name { font-size: 0.9em; word-break: break-word; }
+  .choice-pipeline { font-size: 0.8em; opacity: 0.8; word-break: break-word; }
+  .instruction-row { display: flex; flex-direction: column; gap: 4px; }
+  .instruction-label { font-weight: 600; font-size: 0.9em; }
+  .instruction-hint { font-size: 0.8em; opacity: 0.8; }
+  .instruction-input { padding: 4px 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); border-radius: var(--schegent-radius); font-family: inherit; }
+  .field-error { margin: 0; font-size: 0.85em; color: var(--schegent-error-text); }
+  .trigger-footer { display: flex; flex-direction: column; gap: 6px; }
+  .submit-button { align-self: flex-start; padding: 6px 12px; background: var(--sch-accent-gradient); color: var(--vscode-button-foreground); border: none; border-radius: var(--schegent-radius); cursor: pointer; }
+  .submit-button:disabled { cursor: default; opacity: 0.6; }
+  .status-line { margin: 0; font-size: 0.85em; }
 </style>

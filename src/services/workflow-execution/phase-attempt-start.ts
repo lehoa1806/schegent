@@ -193,12 +193,15 @@ export async function startPhaseAttempt(
   if (closure === undefined) {
     return { outcome: 'rejected-definition', reason: 'pipeline-not-found' };
   }
+  const request = buildPhaseAttemptRequest(input);
+  const hasInstructions =
+    request.instructions !== undefined && request.instructions.trim().length > 0;
   return startPhaseNodeRun(deps, {
     frozenClosure: closure,
     phaseId: input.phase.phaseId,
-    request: buildPhaseAttemptRequest(input),
+    request,
     workspaceRoot,
-    description: input.node.label ?? input.phase.name,
+    ...(hasInstructions ? {} : { description: input.node.label ?? input.phase.name }),
     queueId: input.queueId,
     ...(input.run.controlState !== undefined
       ? { ledgerRunId: input.run.controlState.ledgerRunId }

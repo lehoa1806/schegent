@@ -1480,10 +1480,9 @@ describe('QueueDetailTier — published Workflow task composition', () => {
     expect(view.queryByTestId('queue-task-composer')).toBeNull();
     await fireEvent.click(view.getByTestId('queue-composer-open'));
     await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
-    await fireEvent.click(view.getByTestId('launchable-detail-trigger'));
     await fireEvent.click(view.getByTestId('workflow-trigger-submit'));
     expect(postCommandSpy).toHaveBeenCalledTimes(1);
-    expect(postCommandSpy.mock.calls[0]?.[1]).toMatchObject({
+    expect(postCommandSpy.mock.calls.at(0)?.at(1)).toMatchObject({
       queueId: 'q-beta', workflowId: 'analysis-pipeline', startNodeId: 'node-a'
     });
     ack(0, 'accepted', undefined, { outcome: 'started', connectedRunId: 'cr-new', revision: 1, queueItemId: 'new-task' });
@@ -1493,6 +1492,84 @@ describe('QueueDetailTier — published Workflow task composition', () => {
     await view.rerender({ snapshot: { ...queued, launchables: state.launchables, workflowCatalog: state.workflowCatalog } });
     expect(view.queryByTestId('queue-composer')).toBeNull();
     expect(view.getByTestId('idle-pending-start-queue-button')).toBeTruthy();
+  });
+
+  it('defers auto-close while a multi-task batch is in flight and closes once the batch finishes (F36-T06, AC-10)', async () => {
+    const state = snapshot();
+    const view = mount(state);
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
+    await fireEvent.input(view.getByTestId('run-supplemental-instruction'), {
+      target: { value: 'First batch task\n---schegent-task---\nSecond batch task' }
+    });
+
+    await fireEvent.click(view.getByTestId('workflow-trigger-submit'));
+    expect(postCommandSpy).toHaveBeenCalledTimes(1);
+
+    // First task is accepted and the snapshot's pendingCount rises while task 2 is in flight.
+    ack(0, 'accepted', undefined, {
+      outcome: 'started',
+      connectedRunId: 'cr-batch-1',
+      revision: 1,
+      queueItemId: 'batch-task-1'
+    });
+    await vi.waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(2));
+    const afterFirst = buildSnapshot([task('batch-task-1')], { lifecycle: 'idle-pending' });
+    await view.rerender({
+      snapshot: { ...afterFirst, launchables: state.launchables, workflowCatalog: state.workflowCatalog }
+    });
+
+    // Composer stays open while the second task is still in flight.
+    expect(view.getByTestId('queue-composer')).toBeTruthy();
+
+    // Second task is accepted; batch completes and the composer auto-closes.
+    ack(1, 'accepted', undefined, {
+      outcome: 'started',
+      connectedRunId: 'cr-batch-2',
+      revision: 1,
+      queueItemId: 'batch-task-2'
+    });
+    await vi.waitFor(() => expect(view.queryByTestId('queue-composer')).toBeNull());
+  });
+
+  it('keeps the composer open when a multi-task batch halts after an earlier task raised pendingCount (F36-T06, AC-10)', async () => {
+    const state = snapshot();
+    const view = mount(state);
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
+    await fireEvent.input(view.getByTestId('run-supplemental-instruction'), {
+      target: { value: 'First batch task\n---schegent-task---\nSecond batch task' }
+    });
+
+    await fireEvent.click(view.getByTestId('workflow-trigger-submit'));
+    ack(0, 'accepted', undefined, {
+      outcome: 'started',
+      connectedRunId: 'cr-batch-1',
+      revision: 1,
+      queueItemId: 'batch-task-1'
+    });
+    await vi.waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(2));
+
+    const afterFirst = buildSnapshot([task('batch-task-1')], { lifecycle: 'idle-pending' });
+    await view.rerender({
+      snapshot: { ...afterFirst, launchables: state.launchables, workflowCatalog: state.workflowCatalog }
+    });
+
+    // Second task is refused by the host.
+    ack(1, 'accepted', undefined, {
+      outcome: 'rejected-queue',
+      reason: 'queue-refused',
+      detail: 'queue-paused'
+    });
+    await vi.waitFor(() =>
+      expect(view.getByTestId('workflow-trigger-status').textContent).toContain('Added 1 of 2 tasks.')
+    );
+
+    // Composer stays open with the remaining task preserved in the textarea.
+    expect(view.getByTestId('queue-composer')).toBeTruthy();
+    expect((view.getByTestId('run-supplemental-instruction') as HTMLTextAreaElement).value).toBe(
+      'Second batch task'
+    );
   });
 
   it('shows the trust explanation and no launch form in an untrusted workspace', async () => {

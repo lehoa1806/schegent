@@ -794,4 +794,12 @@ describe('a submission whose wait ran out (T118; FR-024, FR-026)', () => {
 
     expect(lastWaitOptions!.signal!.aborted).toBe(true);
   });
+
+  it('keeps the baseline non-collapsed SupplementalInputs layout with inline Instructions (F36-T03, AC-11)', () => {
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+    const supplemental = getByTestId('run-launcher-supplemental');
+
+    expect(supplemental.tagName).toBe('SECTION');
+    expect(supplemental.querySelector('[data-testid="run-supplemental-instruction"]')).not.toBeNull();
+  });
 });

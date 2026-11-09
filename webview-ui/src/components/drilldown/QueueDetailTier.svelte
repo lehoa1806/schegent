@@ -18,6 +18,7 @@
   import { clearCompleted, clearQueue, confirmAndDeleteQueue, refusalText, type ClearQueueOutcome, type DeleteQueueOutcome } from '../../lib/queue-control-ipc';
   import { useConfirm } from '../../lib/use-confirm';
   import { deriveCleanAllContext, deriveClearDoneContext } from '../../lib/queue-derived';
+  import type { BatchSubmissionState } from '../../lib/task-batch';
   import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 
   interface Props {
@@ -130,30 +131,38 @@
   }
   const wait = { signal: lifetime.signal, onLateOutcome: showOutcome };
 
-  // T008 (FR-009) — closed by default, opened on demand. The composer
-  // posts its own submission command internally and exposes no
-  // event-handler props (research.md R3): it is mounted unmodified, so
-  // "successful submission" is observed the only way the parent can — a rise
-  // in this queue's own pending count while the composer is open, which is
-  // exactly what a newly-enqueued Task produces.
+  // T008 (FR-009) & FR-R5-F36 (F36-T06) — closed by default, opened on demand.
+  // Single-task submissions auto-close on the first rise above `minPendingCountSinceOpen`.
+  // Multi-task batch submissions defer auto-close while `batchState.inFlight` is true,
+  // close once the batch finishes with all tasks accepted and a rise observed, and keep
+  // the composer open when a batch halts so the operator can inspect and resubmit.
   let composerOpen = $state(false);
-  // The lowest pending count observed since open, not a frozen open-time
-  // snapshot: this queue's own pending count falls on its own whenever a
-  // pending Task starts executing, independent of the composer. Comparing
-  // only against the value at open time would let that fall mask a real
-  // submission's rise (open at 3, drain to 2, submit back to 3 — 3 > 3 is
-  // false). Tracking the lowest point seen and closing on any rise above it
-  // catches the submission regardless of how much unrelated queue activity
-  // happened while the composer was open.
+  let batchState = $state<BatchSubmissionState>({
+    inFlight: false,
+    halted: false,
+    accepted: 0,
+    total: 0
+  });
   let minPendingCountSinceOpen = 0;
+  let pendingRiseObserved = $state(false);
 
   function openComposer(): void {
     minPendingCountSinceOpen = pendingCount;
+    pendingRiseObserved = false;
+    batchState = { inFlight: false, halted: false, accepted: 0, total: 0 };
     composerOpen = true;
   }
 
   function closeComposer(): void {
     composerOpen = false;
+  }
+
+  function onBatchStateChange(next: BatchSubmissionState): void {
+    if (next.accepted === 0 && !next.halted) {
+      minPendingCountSinceOpen = pendingCount;
+      pendingRiseObserved = false;
+    }
+    batchState = next;
   }
 
   $effect(() => {
@@ -162,7 +171,12 @@
       minPendingCountSinceOpen = pendingCount;
       return;
     }
-    if (pendingCount > minPendingCountSinceOpen) composerOpen = false;
+    if (pendingCount > minPendingCountSinceOpen) {
+      pendingRiseObserved = true;
+    }
+    if (pendingRiseObserved && !batchState.inFlight && !batchState.halted) {
+      composerOpen = false;
+    }
   });
 
   function openConfig(): void {
@@ -374,7 +388,7 @@
     <div class="composer-row" data-testid="queue-composer">
       <!-- Feature 285 (OD-2, FR-002): always the composer. Its sections render their own
            loading arm until the catalogs resolve; the Pipeline-listing form is retired. -->
-      <QueueTaskComposer {snapshot} {queueId} />
+      <QueueTaskComposer {snapshot} {queueId} {onBatchStateChange} />
       <button type="button" data-testid="queue-composer-cancel" onclick={closeComposer}>
         Cancel
       </button>

@@ -10,8 +10,9 @@ Use this path when you want enqueueing and execution to be separate decisions. I
 
 1. Open the dashboard, select **Queues**, then open the target queue card.
 2. Select **Add work**.
-3. Select a published Workflow under **Workflows**, select **Trigger**, fill in its inputs, and select **Add task**.
-4. Wait for `Added task to queue. Run <run-id>.`
+3. Under **Workflows**, the workspace's default Workflow is preselected when launchable, or select another published Workflow to open its compact summary and start form in one step. Enter **Instructions** (and any declared inputs, optional attachments, or output targets), then select **Add task**.
+   - To enqueue multiple tasks in one submission, place `---schegent-task---` on its own line between task instructions. The submit button updates to **Add N tasks** and dispatches each segment sequentially with the same Workflow, start node, declared inputs, attachments, and output targets. If any task in the batch is refused or times out, the batch halts, removes the already-accepted segments from **Instructions**, and leaves the remaining segments in place so you can fix the issue and resubmit without duplicating earlier tasks.
+4. Wait for `Added task to queue. Run <run-id>.` (or `Added N of N tasks to queue.` for a batch).
 5. If the queue was empty, use the inline **Start the queue** chooser. Choose one of:
 
    - **Start now**.
@@ -22,7 +23,9 @@ Use this path when you want enqueueing and execution to be separate decisions. I
 An enqueued task does not itself carry a start intent. On an otherwise empty active queue, the host leaves it `idle-pending` for this separate choice. A scheduled start must be no more than seven days away.
 <!-- Source: webview-ui/src/components/drilldown/QueueDetailTier.svelte -->
 <!-- Source: webview-ui/src/components/QueueTaskComposer.svelte -->
+<!-- Source: webview-ui/src/components/Runs/LaunchableDetail.svelte -->
 <!-- Source: webview-ui/src/components/Runs/WorkflowTriggerForm.svelte -->
+<!-- Source: webview-ui/src/lib/task-batch.ts -->
 <!-- Source: webview-ui/src/components/drilldown/QueueIdlePendingPanel.svelte -->
 <!-- Source: webview-ui/src/components/StartModeChooser.svelte -->
 <!-- Source: src/commands/start-queue.ts -->

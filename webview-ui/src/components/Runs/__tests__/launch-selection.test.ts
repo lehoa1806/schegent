@@ -144,7 +144,6 @@ describe('the surface holds one selection (FR-014)', () => {
     });
 
     await fireEvent.click(getByTestId('launchable-select-workflow-analysis-pipeline'));
-    await fireEvent.click(getByTestId('launchable-detail-trigger'));
     expect(queryByTestId('workflow-trigger')).toBeTruthy();
 
     await rerender({

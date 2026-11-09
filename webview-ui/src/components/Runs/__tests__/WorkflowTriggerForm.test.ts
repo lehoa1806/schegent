@@ -42,6 +42,9 @@ vi.mock('../../../lib/workflow-run-ipc', () => ({
   launchWorkflow: (...args: readonly unknown[]) => launchWorkflow(...args),
   continueWorkflow: vi.fn()
 }));
+vi.mock('../../../lib/use-confirm', () => ({
+  useConfirm: vi.fn(async () => true)
+}));
 
 // Late import so the form binds to the stub above.
 import WorkflowTriggerForm from '../WorkflowTriggerForm.svelte';
@@ -107,10 +110,20 @@ describe('the ports a Workflow trigger asks for (FR-016)', () => {
     expect(queryByTestId('run-input-draft')).toBeNull();
   });
 
-  it('says so plainly when the start node has no unsatisfied ports', () => {
-    const { getByTestId, queryByTestId } = mount(workflow(['node-b'], []));
+  it('omits empty contract and output sections when the start node has no unsatisfied ports or outputs (F36-T03, AC-04)', () => {
+    const { getByTestId, queryByTestId } = render(WorkflowTriggerForm, {
+      props: {
+        entry: workflow(['node-b'], []),
+        graph: graphWithStarts('node-b'),
+        pipelines: [],
+        onClose: () => {}
+      }
+    });
 
-    expect(getByTestId('workflow-trigger-no-inputs')).toBeTruthy();
+    expect(getByTestId('run-supplemental-instruction')).toBeTruthy();
+    expect(queryByTestId('workflow-trigger-no-inputs')).toBeNull();
+    expect(queryByTestId('run-launcher-contract')).toBeNull();
+    expect(queryByTestId('run-launcher-outputs')).toBeNull();
     expect(queryByTestId('run-input-seed')).toBeNull();
   });
 });
@@ -520,7 +533,7 @@ describe('composable Workflow start node (FR-R5-F06)', () => {
     await submit(view);
 
     expect(launchWorkflow).toHaveBeenCalledTimes(1);
-    expect(launchWorkflow.mock.calls[0][0]).toMatchObject({
+    expect(launchWorkflow.mock.calls.at(0)?.at(0)).toMatchObject({
       workflowId: RESEARCH_GRAPH.workflowId,
       startNodeId: 'phase-entry',
       request: {
@@ -528,5 +541,312 @@ describe('composable Workflow start node (FR-R5-F06)', () => {
         inputs: [{ portId: 'seed', type: 'text', value: 'composable topic' }]
       }
     });
+  });
+});
+
+describe('Instructions-first layout & collapsible attachments (F36-T03, AC-04)', () => {
+  it('places Instructions before declared inputs, collapsible attachments, and output targets in DOM order', () => {
+    const view = mountOneStart();
+    const instruction = view.getByTestId('run-supplemental-instruction');
+    const contract = view.getByTestId('run-launcher-contract');
+    const supplemental = view.getByTestId('run-launcher-supplemental') as HTMLDetailsElement;
+    const outputs = view.getByTestId('run-launcher-outputs');
+
+    expect(instruction.compareDocumentPosition(contract) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(contract.compareDocumentPosition(supplemental) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(supplemental.compareDocumentPosition(outputs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(supplemental.tagName).toBe('DETAILS');
+    expect(supplemental.open).toBe(false);
+    expect(supplemental.querySelectorAll('[data-testid="run-supplemental-instruction"]')).toHaveLength(0);
+    expect(view.getAllByTestId('run-supplemental-instruction')).toHaveLength(1);
+  });
+
+  it('auto-opens the attachment disclosure when an attachment has a value or a host validation error, and keeps instruction errors on the primary field', async () => {
+    launchWorkflow.mockResolvedValueOnce({
+      outcome: 'rejected-validation',
+      errors: [
+        { field: 'instructions', code: 'value-too-long', message: 'Instructions exceed limit.' },
+        { field: 'supplemental[0]', code: 'invalid-path', message: 'File path is outside workspace.' }
+      ]
+    });
+    const view = mountOneStart();
+    const supplemental = view.getByTestId('run-launcher-supplemental') as HTMLDetailsElement;
+    expect(supplemental.open).toBe(false);
+
+    await fireEvent.input(view.getByTestId('run-supplemental-local-file'), {
+      target: { value: '../secret.txt' }
+    });
+    expect(supplemental.open).toBe(true);
+
+    await submit(view);
+    expect(view.getByTestId('run-launcher-error-supplemental-instruction').textContent).toContain(
+      'Instructions exceed limit.'
+    );
+    expect(view.getByTestId('run-launcher-error-supplemental-local-file').textContent).toContain(
+      'File path is outside workspace.'
+    );
+  });
+});
+
+describe('multi-task batch submission over ---schegent-task--- (F36-T05, AC-07, AC-08, AC-09)', () => {
+  it('updates the submit button label and dispatches N sequential launchWorkflow calls sharing inputs, attachments, outputs, and queueId (AC-07)', async () => {
+    let resolveFirst: (value: unknown) => void = () => {};
+    launchWorkflow
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          })
+      )
+      .mockResolvedValueOnce({
+        outcome: 'started',
+        connectedRunId: 'cr-2',
+        revision: 1,
+        queueItemId: 'qi-2'
+      })
+      .mockResolvedValueOnce({
+        outcome: 'started',
+        connectedRunId: 'cr-3',
+        revision: 1,
+        queueItemId: 'qi-3'
+      });
+
+    const view = render(WorkflowTriggerForm, {
+      props: {
+        entry: workflow(['node-a']),
+        graph: graphWithStarts('node-a'),
+        pipelines: PIPELINES,
+        queueId: 'queue-batch',
+        onClose: () => {}
+      }
+    });
+
+    await fireEvent.input(view.getByTestId('run-input-seed'), { target: { value: 'shared-seed' } });
+    await fireEvent.input(view.getByTestId('run-supplemental-local-file'), {
+      target: { value: 'docs/context.md' }
+    });
+    await fireEvent.input(view.getByTestId('run-output-draft'), {
+      target: { value: 'out/draft.md' }
+    });
+    await fireEvent.input(view.getByTestId('run-supplemental-instruction'), {
+      target: {
+        value: 'First task instruction\n---schegent-task---\nSecond task instruction\n---schegent-task---\nThird task instruction'
+      }
+    });
+
+    const button = view.getByTestId('workflow-trigger-submit') as HTMLButtonElement;
+    expect(button.textContent).toContain('Add 3 tasks');
+
+    const clickPromise = fireEvent.click(button);
+    expect(button.textContent).toContain('Adding 3 tasks…');
+    expect(button.disabled).toBe(true);
+    expect(launchWorkflow).toHaveBeenCalledTimes(1);
+
+    resolveFirst({
+      outcome: 'started',
+      connectedRunId: 'cr-1',
+      revision: 1,
+      queueItemId: 'qi-1'
+    });
+    await clickPromise;
+    await vi.waitFor(() =>
+      expect(view.getByTestId('workflow-trigger-status').textContent).toContain(
+        'Added 3 of 3 tasks to queue.'
+      )
+    );
+    expect(launchWorkflow).toHaveBeenCalledTimes(3);
+
+    expect(launchWorkflow.mock.calls.at(0)?.at(0)).toMatchObject({
+      workflowId: RESEARCH_GRAPH.workflowId,
+      startNodeId: 'node-a',
+      queueId: 'queue-batch',
+      request: {
+        pipelineId: 'draft-pipeline',
+        inputs: [{ portId: 'seed', type: 'text', value: 'shared-seed' }],
+        supplemental: [{ kind: 'local-file', path: 'docs/context.md' }],
+        outputs: [{ portId: 'draft', target: 'out/draft.md' }],
+        instructions: 'First task instruction'
+      }
+    });
+    expect(launchWorkflow.mock.calls.at(1)?.at(0)).toMatchObject({
+      queueId: 'queue-batch',
+      request: { instructions: 'Second task instruction' }
+    });
+    expect(launchWorkflow.mock.calls.at(2)?.at(0)).toMatchObject({
+      queueId: 'queue-batch',
+      request: { instructions: 'Third task instruction' }
+    });
+    expect((view.getByTestId('run-supplemental-instruction') as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('halts on the first non-started outcome, prunes accepted segments from the textarea, and reports how many tasks were added (AC-08)', async () => {
+    launchWorkflow
+      .mockResolvedValueOnce({
+        outcome: 'started',
+        connectedRunId: 'cr-1',
+        revision: 1,
+        queueItemId: 'qi-1'
+      })
+      .mockResolvedValueOnce({
+        outcome: 'rejected-queue',
+        reason: 'queue-refused',
+        detail: 'queue-paused'
+      });
+
+    const view = render(WorkflowTriggerForm, {
+      props: {
+        entry: workflow(['node-a']),
+        graph: graphWithStarts('node-a'),
+        pipelines: PIPELINES,
+        queueId: 'queue-batch',
+        onClose: () => {}
+      }
+    });
+
+    await fireEvent.input(view.getByTestId('run-supplemental-instruction'), {
+      target: {
+        value: 'Task one\n---schegent-task---\nTask two\n---schegent-task---\nTask three'
+      }
+    });
+    await submit(view);
+
+    expect(launchWorkflow).toHaveBeenCalledTimes(2);
+    expect((view.getByTestId('run-supplemental-instruction') as HTMLTextAreaElement).value).toBe(
+      'Task two\n\n---schegent-task---\n\nTask three'
+    );
+    expect(view.getByTestId('workflow-trigger-status').textContent).toContain('Added 1 of 3 tasks.');
+    expect(view.getByTestId('workflow-trigger-status').textContent).toContain('queue-paused');
+  });
+
+  it('halts on output-overwrite-unconfirmed and resubmits only the remaining segments after overwrite confirmation (AC-09)', async () => {
+    launchWorkflow
+      .mockResolvedValueOnce({
+        outcome: 'started',
+        connectedRunId: 'cr-1',
+        revision: 1,
+        queueItemId: 'qi-1'
+      })
+      .mockResolvedValueOnce({
+        outcome: 'rejected-validation',
+        errors: [
+          {
+            field: 'outputs.draft',
+            code: 'output-overwrite-unconfirmed',
+            message: 'out/draft.md already exists.'
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        outcome: 'started',
+        connectedRunId: 'cr-2',
+        revision: 1,
+        queueItemId: 'qi-2'
+      })
+      .mockResolvedValueOnce({
+        outcome: 'started',
+        connectedRunId: 'cr-3',
+        revision: 1,
+        queueItemId: 'qi-3'
+      });
+
+    const view = render(WorkflowTriggerForm, {
+      props: {
+        entry: workflow(['node-a']),
+        graph: graphWithStarts('node-a'),
+        pipelines: PIPELINES,
+        queueId: 'queue-batch',
+        onClose: () => {}
+      }
+    });
+
+    await fireEvent.input(view.getByTestId('run-output-draft'), {
+      target: { value: 'out/draft.md' }
+    });
+    await fireEvent.input(view.getByTestId('run-supplemental-instruction'), {
+      target: {
+        value: 'Task 1\n---schegent-task---\nTask 2\n---schegent-task---\nTask 3'
+      }
+    });
+    await submit(view);
+
+    expect(launchWorkflow).toHaveBeenCalledTimes(2);
+    expect((view.getByTestId('run-supplemental-instruction') as HTMLTextAreaElement).value).toBe(
+      'Task 2\n\n---schegent-task---\n\nTask 3'
+    );
+
+    await fireEvent.click(view.getByTestId('run-output-overwrite-draft'));
+    await vi.waitFor(() =>
+      expect(view.getByTestId('workflow-trigger-status').textContent).toContain(
+        'Added 2 of 2 tasks to queue.'
+      )
+    );
+    expect(launchWorkflow).toHaveBeenCalledTimes(4);
+
+    expect(launchWorkflow.mock.calls.at(2)?.at(0)).toMatchObject({
+      request: {
+        instructions: 'Task 2',
+        outputs: [{ portId: 'draft', target: 'out/draft.md', overwriteConfirmed: true }]
+      }
+    });
+    expect(launchWorkflow.mock.calls.at(3)?.at(0)).toMatchObject({
+      request: {
+        instructions: 'Task 3',
+        outputs: [{ portId: 'draft', target: 'out/draft.md', overwriteConfirmed: true }]
+      }
+    });
+  });
+
+  it('halts on mid-batch not-yet-known and updates the remaining segments if a late outcome arrives (C5)', async () => {
+    launchWorkflow
+      .mockResolvedValueOnce({
+        outcome: 'started',
+        connectedRunId: 'cr-1',
+        revision: 1,
+        queueItemId: 'qi-1'
+      })
+      .mockResolvedValueOnce({ outcome: 'not-yet-known' });
+
+    const view = render(WorkflowTriggerForm, {
+      props: {
+        entry: workflow(['node-a']),
+        graph: graphWithStarts('node-a'),
+        pipelines: PIPELINES,
+        queueId: 'queue-batch',
+        onClose: () => {}
+      }
+    });
+
+    await fireEvent.input(view.getByTestId('run-supplemental-instruction'), {
+      target: {
+        value: 'Task 1\n---schegent-task---\nTask 2\n---schegent-task---\nTask 3'
+      }
+    });
+    await submit(view);
+
+    expect(launchWorkflow).toHaveBeenCalledTimes(2);
+    expect((view.getByTestId('run-supplemental-instruction') as HTMLTextAreaElement).value).toBe(
+      'Task 2\n\n---schegent-task---\n\nTask 3'
+    );
+    expect(view.getByTestId('workflow-trigger-status').textContent).toContain(
+      'Added 1 of 3 tasks; task 2 of 3 is awaiting host acknowledgement.'
+    );
+
+    const secondCallOptions = launchWorkflow.mock.calls.at(1)?.at(1) as {
+      onLateOutcome?: (result: unknown) => void;
+    };
+    secondCallOptions.onLateOutcome?.({
+      outcome: 'started',
+      connectedRunId: 'cr-2',
+      revision: 1,
+      queueItemId: 'qi-2'
+    });
+    await fireEvent.input(view.getByTestId('run-input-seed'), { target: { value: 'touch' } });
+
+    expect((view.getByTestId('run-supplemental-instruction') as HTMLTextAreaElement).value).toBe(
+      'Task 3'
+    );
+    expect(view.getByTestId('workflow-trigger-status').textContent).toContain(
+      'Added 2 of 3 tasks. Submit the remaining tasks to continue.'
+    );
   });
 });

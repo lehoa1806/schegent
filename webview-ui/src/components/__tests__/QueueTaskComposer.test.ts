@@ -259,7 +259,6 @@ describe('the two launch paths stay distinct (FR-019)', () => {
   async function openWorkflowForm(snapshot: WorkflowSnapshot) {
     const view = render(QueueTaskComposer, { snapshot });
     await fireEvent.click(view.getByTestId('launchable-select-workflow-research-workflow'));
-    await fireEvent.click(view.getByTestId('launchable-detail-trigger'));
     return view;
   }
 
@@ -337,10 +336,9 @@ describe('the two launch paths stay distinct (FR-019)', () => {
     launchWorkflow.mockResolvedValue({ outcome: 'started', connectedRunId: 'run-9', revision: 1, queueItemId: 'item-9' });
     const view = render(QueueTaskComposer, { snapshot: buildSnapshot({ launchables: LAUNCHABLES }), queueId: 'queue-beta' });
     await fireEvent.click(view.getByTestId('launchable-select-workflow-research-workflow'));
-    await fireEvent.click(view.getByTestId('launchable-detail-trigger'));
     expect(view.getByTestId('workflow-trigger-submit').textContent).toContain('Add task');
     await fireEvent.click(view.getByTestId('workflow-trigger-submit'));
-    expect(launchWorkflow.mock.calls[0][0]).toMatchObject({ queueId: 'queue-beta', workflowId: 'research-workflow' });
+    expect(launchWorkflow.mock.calls.at(0)?.at(0)).toMatchObject({ queueId: 'queue-beta', workflowId: 'research-workflow' });
     expect(view.getByTestId('workflow-trigger-status').textContent).toContain('Added task to queue');
     expect(postCommand).not.toHaveBeenCalled();
   });
@@ -352,18 +350,37 @@ describe('the two launch paths stay distinct (FR-019)', () => {
   });
 });
 
-// Feature 285 (FR-006a): the composer preselects the resolved default Workflow when the
-// launch projection offers it and nothing is selected. Preselection opens and submits nothing.
-describe('the composer preselects the default Workflow (FR-006a)', () => {
-  it('selects a launchable default Workflow and opens no form', () => {
+// Feature 285 (FR-006a) & FR-R5-F36 (F36-T01, AC-01, AC-02, AC-03): the composer preselects the
+// resolved default Workflow when the launch projection offers it and nothing is selected, opening
+// the compact summary and WorkflowTriggerForm immediately when `canLaunch` is true without posting
+// any IPC command.
+describe('the composer preselects the default Workflow and opens the form in one step (FR-006a, FR-R5-F36)', () => {
+  it('selects a launchable default Workflow, opens the form immediately when canLaunch is true, and submits nothing (AC-01)', () => {
     const { getByTestId, queryByTestId } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({ launchables: LAUNCHABLES, defaultWorkflowId: 'research-workflow' })
     });
 
     expect(getByTestId('launchable-detail-name').textContent).toContain('Research Workflow');
-    expect(queryByTestId('workflow-trigger')).toBeNull();
+    expect(getByTestId('workflow-trigger')).toBeTruthy();
+    expect(getByTestId('run-supplemental-instruction')).toBeTruthy();
+    expect(queryByTestId('launchable-detail-trigger')).toBeNull();
     expect(launchWorkflow).not.toHaveBeenCalled();
     expect(postCommand).not.toHaveBeenCalled();
+  });
+
+  it('shows only the read-only summary when canLaunch is false (AC-03, AC-12)', () => {
+    const { getByTestId, queryByTestId } = render(QueueTaskComposer, {
+      snapshot: buildSnapshot({
+        isPrimary: false,
+        launchables: LAUNCHABLES,
+        defaultWorkflowId: 'research-workflow'
+      })
+    });
+
+    expect(getByTestId('launchable-detail-name').textContent).toContain('Research Workflow');
+    expect(getByTestId('launchable-detail-read-only')).toBeTruthy();
+    expect(queryByTestId('workflow-trigger')).toBeNull();
+    expect(queryByTestId('launchable-detail-trigger')).toBeNull();
   });
 
   it('selects nothing with no default, an empty default or one that is not launchable', () => {
@@ -376,22 +393,73 @@ describe('the composer preselects the default Workflow (FR-006a)', () => {
       });
 
       expect(queryByTestId('launchable-detail'), String(defaultWorkflowId)).toBeNull();
+      expect(queryByTestId('workflow-trigger'), String(defaultWorkflowId)).toBeNull();
       unmount();
     }
   });
 
-  it('does not reselect the default once the operator has cleared the selection', async () => {
+  it('does not reselect the default once the operator has cleared the selection via row re-click or Close (AC-02)', async () => {
     const snapshot = buildSnapshot({
       launchables: LAUNCHABLES,
       defaultWorkflowId: 'research-workflow'
     });
     const { getByTestId, queryByTestId, rerender } = render(QueueTaskComposer, { snapshot });
 
-    await fireEvent.click(getByTestId('launchable-select-workflow-research-workflow'));
+    await fireEvent.click(getByTestId('workflow-trigger-close'));
     expect(queryByTestId('launchable-detail')).toBeNull();
+    expect(queryByTestId('workflow-trigger')).toBeNull();
 
     await rerender({ snapshot: { ...snapshot, producedAt: '2026-08-01T00:00:05.000Z' } });
     expect(queryByTestId('launchable-detail')).toBeNull();
+    expect(queryByTestId('workflow-trigger')).toBeNull();
+  });
+
+  it('resets form values and errors when switching between Workflow rows (AC-02)', async () => {
+    const secondGraph: PortableWorkflowDefinition = {
+      workflowId: 'triage-workflow',
+      name: 'Triage Workflow',
+      version: 1,
+      nodes: [{ nodeId: 'node-b', pipelineId: 'review-pipeline', label: 'Triage' }],
+      connections: [],
+      startNodeIds: ['node-b']
+    };
+    const multiLaunchables: LaunchProjection = {
+      ...LAUNCHABLES,
+      workflows: {
+        state: 'entries',
+        entries: [
+          ...(LAUNCHABLES.workflows.state === 'entries' ? LAUNCHABLES.workflows.entries : []),
+          {
+            kind: 'workflow',
+            id: 'triage-workflow',
+            name: 'Triage Workflow',
+            activeVersionId: 'v1',
+            inputs: [],
+            startNodeIds: ['node-b']
+          }
+        ]
+      }
+    };
+    const snapshot = buildSnapshot({
+      launchables: multiLaunchables,
+      defaultWorkflowId: 'research-workflow',
+      workflowCatalog: {
+        state: 'ready',
+        records: [],
+        effective: [WORKFLOW_GRAPH, secondGraph],
+        revision: 'wf-2',
+        warnings: []
+      }
+    });
+    const { getByTestId } = render(QueueTaskComposer, { snapshot });
+
+    const firstTextarea = getByTestId('run-supplemental-instruction') as HTMLTextAreaElement;
+    await fireEvent.input(firstTextarea, { target: { value: 'Draft for research workflow' } });
+    expect(firstTextarea.value).toBe('Draft for research workflow');
+
+    await fireEvent.click(getByTestId('launchable-select-workflow-triage-workflow'));
+    expect(getByTestId('launchable-detail-name').textContent).toContain('Triage Workflow');
+    expect((getByTestId('run-supplemental-instruction') as HTMLTextAreaElement).value).toBe('');
   });
 
   it('preselects the default once the projection first offers it', async () => {
@@ -404,5 +472,6 @@ describe('the composer preselects the default Workflow (FR-006a)', () => {
       snapshot: buildSnapshot({ launchables: LAUNCHABLES, defaultWorkflowId: 'research-workflow' })
     });
     expect(getByTestId('launchable-detail-name').textContent).toContain('Research Workflow');
+    expect(getByTestId('workflow-trigger')).toBeTruthy();
   });
 });
