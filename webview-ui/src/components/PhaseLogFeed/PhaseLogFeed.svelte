@@ -184,6 +184,20 @@
     store.applyInFlightIdentityChange({ queue: { inFlight: liveInFlight } });
   });
 
+  // Feature 265 BUG-002 (FR-014) — reload on new snapshot when an in-flight phase read 0 iterations.
+  let lastObservedSnapshot: WorkflowSnapshot | null = null;
+  $effect(() => {
+    const prev = lastObservedSnapshot;
+    lastObservedSnapshot = snapshot;
+    if (
+      !state.loading && prev !== null && prev !== snapshot &&
+      state.iterations.length === 0 && state.verboseDiagnosticsState?.kind === 'phase-running-no-output' &&
+      tailInFlight !== null && tailInFlight.id === state.selection.taskId && tailInFlight.currentPhase === state.selection.phaseId
+    ) {
+      void store.reload();
+    }
+  });
+
   // FR-R5-F18 (T18.2) — separate active, pending, and refused tail states with
   // bounded transient retry (max 2 attempts per load cycle).
   let activeTailFp = '', pendingTailFp = '', refusedTailFp = '', transientAttempts = 0;

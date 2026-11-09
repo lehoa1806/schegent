@@ -1200,6 +1200,26 @@ describe('RunDetailTier — a leaf member Task shows its own Phase (Feature 265 
     expect(getByTestId(`phase-progression-${LEAF_PHASE}`).getAttribute('data-state')).toBe(state);
   });
 
+  it('auto-selects its own Phase and requests its log immediately on mount without a second click (BUG-002)', async () => {
+    const { queryByTestId } = mount(
+      buildSnapshot({ tasks: [leafTask('failed')], connectedRuns: [leafRun(['m-1'])] }),
+      { runId: 'm-1' }
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-beta',
+        taskId: 'm-1',
+        pipelineId: LEAF_PHASE,
+        phaseId: LEAF_PHASE,
+        iterationN: null
+      }
+    });
+    expect(queryByTestId('phase-log-empty-no-phase')).toBeNull();
+  });
+
   it('activating the tile requests that Phase as both pipeline and phase', async () => {
     const { getByTestId } = mount(
       buildSnapshot({ tasks: [leafTask('failed')], connectedRuns: [leafRun(['m-1'])] }),

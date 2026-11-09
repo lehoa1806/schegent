@@ -609,6 +609,15 @@ describe('WorkflowRun — member Tasks open from the topology (Feature 265 BUG-0
     expect(onOpenTask).toHaveBeenCalledWith(MEMBER.id, 'node:node-a');
   });
 
+  it('opens the latest attempt Task directly from its step header button (BUG-002)', async () => {
+    const { getByTestId, onOpenTask } = mountMembers();
+    const headBtn = getByTestId('workflow-node-id-node-a');
+    expect(headBtn.tagName).toBe('BUTTON');
+    expect(headBtn.getAttribute('type')).toBe('button');
+    await fireEvent.click(headBtn);
+    expect(onOpenTask).toHaveBeenCalledWith(MEMBER.id, 'node-head:node-a');
+  });
+
   it('opens an attempt Task from its attempt row, through a real button', async () => {
     const { getByTestId, onOpenTask } = mountMembers();
     const open = getByTestId('workflow-invocation-attempt-open-att-held');
@@ -630,6 +639,7 @@ describe('WorkflowRun — member Tasks open from the topology (Feature 265 BUG-0
   it('offers no open control at all when no opener is wired', () => {
     const { queryByTestId } = mount(memberRun(), { queueItems: [MEMBER] });
     expect(queryByTestId('workflow-invocation-attempt-open-att-held')).toBeNull();
+    expect(queryByTestId('workflow-node-id-node-a')?.tagName).not.toBe('BUTTON');
     expect(queryByTestId(`workflow-node-run-label-${MEMBER.id}`)?.tagName).not.toBe('BUTTON');
   });
 
@@ -644,5 +654,11 @@ describe('WorkflowRun — member Tasks open from the topology (Feature 265 BUG-0
     await tick();
     expect(getByTestId('workflow-node-attempt-node-a').contains(document.activeElement)).toBe(true);
     expect(document.activeElement?.tagName).toBe('BUTTON');
+  });
+
+  it('returns focus to the step header button when opened from the step header (BUG-002)', async () => {
+    const { getByTestId } = mountMembers({ returnFocusKey: 'node-head:node-a' });
+    await tick();
+    expect(document.activeElement).toBe(getByTestId('workflow-node-id-node-a'));
   });
 });

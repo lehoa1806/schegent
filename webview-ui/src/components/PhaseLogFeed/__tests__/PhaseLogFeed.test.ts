@@ -1923,3 +1923,60 @@ describe('FR-R5-F18 — multi-iteration live tail & bounded tail-start recovery 
     expect(stopSpy).toHaveBeenCalledWith({ sessionId: 'sess-unmounted' });
   });
 });
+
+describe('Feature 265 BUG-002 (FR-014) — live-log recovery from phase-running-no-output with zero iterations', () => {
+  it('reloads the manifest and attaches the live tail when a new snapshot arrives after an initial phase-running-no-output read with empty iterations', async () => {
+    readSpy.mockResolvedValueOnce({
+      outcome: 'success',
+      manifest: {
+        iterations: [],
+        selectedIteration: null,
+        entries: [],
+        skippedLines: 0,
+        truncatedCount: 0,
+        verboseDiagnosticsState: { kind: 'phase-running-no-output' },
+        isInFlight: true
+      }
+    });
+
+    const store = createPhaseLogStore();
+    const snap = buildSnapshot();
+    const { rerender } = render(PhaseLogFeed, {
+      props: {
+        snapshot: snap,
+        store,
+        autoFollow: false,
+        liveTarget: { inFlight: snap.queue.inFlight }
+      }
+    });
+
+    await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
+    expect(readSpy).toHaveBeenCalledTimes(1);
+    expect(store.state.iterations).toEqual([]);
+    expect(startSpy).not.toHaveBeenCalled();
+
+    await rerender({
+      snapshot: { ...snap, producedAt: '2026-05-10T12:00:05.000Z' },
+      store,
+      autoFollow: false,
+      liveTarget: { inFlight: snap.queue.inFlight }
+    });
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    expect(readSpy).toHaveBeenCalledTimes(2);
+    expect(store.state.iterations).toEqual([1]);
+    expect(startSpy).toHaveBeenCalledTimes(1);
+    expect(startSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 1
+      }
+    });
+  });
+});
