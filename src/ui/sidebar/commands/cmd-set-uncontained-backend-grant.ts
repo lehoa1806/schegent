@@ -46,8 +46,8 @@ export const handler: CommandHandler<SetUncontainedBackendGrantCommand> = async 
       await ack(ctx, 'rejected', 'write-failed', { kind });
       return;
     default:
-      // `not-applicable`: the list does not govern this id — `codex` carries an
-      // OS-enforced bound, or the id is not a backend. The message is the policy
+      // `not-applicable`: the list does not govern this id, because it is not a
+      // backend (FR-R6-F09 granted codex like the rest). The message is the policy
       // module's own sentence, carried verbatim so the surface does not restate a
       // rule it does not own.
       await ack(ctx, 'rejected', outcome.problem, { kind, message: outcome.message });

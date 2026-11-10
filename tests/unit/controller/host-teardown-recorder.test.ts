@@ -46,6 +46,12 @@ const reportOf = (...outcomes: TreeTeardownOutcome[]): TeardownReport => ({
 
 type Appended = Parameters<HostTeardownRecorderDeps['append']>[0];
 
+/** FR-R6-F09 (FR-009, research R12) -- each recorded result, in the qualification vocabulary. */
+const QUALIFIED = {
+  'platform-unanswerable': { teardownOutcome: 'unanswerable', residuals: [] },
+  'bound-elapsed': { teardownOutcome: 'residual', residuals: ['bound-elapsed'] }
+} as const;
+
 function harness(over: Partial<HostTeardownRecorderDeps> = {}) {
   const events: string[] = [];
   const appended: Appended[] = [];
@@ -111,7 +117,7 @@ describe('recordTeardownEvidence (T25)', () => {
           phase: 'speckit-implement',
           iteration: 2,
           eventType: 'host-teardown-unconfirmed',
-          payload: { runner: 'codex-cli', pid: 4242, result, boundMs: BOUND_MS },
+          payload: { runner: 'codex-cli', pid: 4242, result, boundMs: BOUND_MS, ...QUALIFIED[result] },
           outcome: 'info'
         }
       ]);
@@ -152,14 +158,16 @@ describe('recordTeardownEvidence (T25)', () => {
     expect(h.appended).toEqual([]);
   });
 
-  it('writes a closed payload: runner, pid, result and boundMs, and nothing else', async () => {
+  it('writes a closed payload: runner, pid, result, boundMs and the qualification, and nothing else', async () => {
     const h = harness();
     await recordTeardownEvidence(reportOf(outcomeOf('bound-elapsed')), h.deps);
-    expect(Object.keys(h.appended[0]?.payload ?? {}).sort()).toEqual([
+    expect(Object.keys(h.appended.at(0)?.payload ?? {}).sort()).toEqual([
       'boundMs',
       'pid',
+      'residuals',
       'result',
-      'runner'
+      'runner',
+      'teardownOutcome'
     ]);
   });
 

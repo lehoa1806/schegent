@@ -31,8 +31,8 @@ import {
 import {
   ALLOW_UNCONTAINED_SETTING,
   judgeBackendContainment,
-  mechanismOf,
-  resolveUncontainedGrant
+  resolveUncontainedGrant,
+  unqualifiedGrantMessage
 } from '../../../src/services/backend-containment-policy';
 import { CONFIGURATION_TARGET_GLOBAL } from '../../../src/config/general-settings';
 import { KEY_SPECS } from '../../../src/config/general-settings-keys';
@@ -120,44 +120,20 @@ describe('setUncontainedGrant — the stale draft (FR-006, C-3)', () => {
 });
 
 describe('setUncontainedGrant — membership is the policy modules answer', () => {
-  it('grants nothing for codex, in the policy modules own words (T013)', async () => {
-    // `codex` carries an OS-enforced bound and was never refused, so naming it in
-    // the setting means nothing. `resolveUncontainedGrant` already has a sentence
-    // for that, and this must be that sentence rather than a second one written
-    // here — two sentences for one fact drift, and the operator gets whichever
-    // surface they happened to look at.
-    // `.at(0)` rather than `[0]`, following `src`'s own idiom: the head of an
-    // array is TYPED as present while it may well be absent, and this project's
-    // two ratchets take opposite sides of that. `no-unnecessary-condition` reads
-    // the `?.` below as dead syntax when the head types as present; the
-    // `noUncheckedIndexedAccess` ratchet counts the unguarded read as a new site
-    // when it does not. `.at()` is typed `| undefined` under both, so one shape
-    // satisfies both, and the chain says something true.
-    const expected = resolveUncontainedGrant(['codex']).problems.at(0);
-    expect(expected?.problem, 'the policy module must classify codex as already-contained').toBe(
-      'already-contained'
-    );
-
+  it('grants codex like any other backend: its sandbox is qualified per tuple (FR-R6-F09 R4)', async () => {
+    // FR-R6-F09 retired `already-contained`. Codex is contained only on a qualified
+    // tuple; elsewhere its spawn refuses `containment-unqualified-for-tuple`, and
+    // this grant is the acceptance that refusal asks for.
+    expect(resolveUncontainedGrant(['codex']).problems).toEqual([]);
     const c = stubConfig([]);
-    await expect(setUncontainedGrant(c.deps, 'codex', true)).resolves.toEqual({
-      decision: 'not-applicable',
-      problem: 'already-contained',
-      message: expected?.message
-    });
-    expect(c.update).not.toHaveBeenCalled();
-    // Non-vacuity: the message is the substantive one, not an empty string that
-    // would make the identity assertion above pass against anything.
-    expect(expected?.message).toContain(mechanismOf('codex'));
-    expect(expected?.message).toContain(ALLOW_UNCONTAINED_SETTING);
+    await expect(setUncontainedGrant(c.deps, 'codex', true)).resolves.toEqual({ decision: 'granted' });
+    expect(c.read()).toEqual(['codex']);
   });
 
-  it('reports the same no-op when codex is revoked', async () => {
-    // Both directions, because the grant list never governed `codex` either way.
+  it('revokes codex like any other backend', async () => {
     const c = stubConfig(['codex']);
-    const outcome = await setUncontainedGrant(c.deps, 'codex', false);
-    expect(outcome.decision).toBe('not-applicable');
-    expect(c.update).not.toHaveBeenCalled();
-    expect(c.read()).toEqual(['codex']);
+    await expect(setUncontainedGrant(c.deps, 'codex', false)).resolves.toEqual({ decision: 'denied' });
+    expect(c.read()).toEqual([]);
   });
 
   it('refuses an id outside SUPPORTED_BACKENDS and writes nothing (T014)', async () => {
@@ -178,15 +154,14 @@ describe('setUncontainedGrant — membership is the policy modules answer', () =
     expect(expected?.message).toContain(SUPPORTED_BACKENDS.join(', '));
   });
 
-  it('accepts every uncontained member of SUPPORTED_BACKENDS, enumerated', async () => {
+  it('accepts every member of SUPPORTED_BACKENDS, enumerated', async () => {
     // Enumerated rather than sampled: a fourth backend added to the union must be
     // decided by this writer too, and "we tested claude and agy" is how the fourth
     // one arrives undecided.
     for (const kind of SUPPORTED_BACKENDS) {
       const c = stubConfig([]);
       const outcome = await setUncontainedGrant(c.deps, kind, true);
-      const contained = resolveUncontainedGrant([kind]).problems.length > 0;
-      expect(outcome.decision, `${kind}`).toBe(contained ? 'not-applicable' : 'granted');
+      expect(outcome.decision, `${kind}`).toBe('granted');
     }
   });
 });
@@ -425,6 +400,21 @@ describe('FR-R5-F16 — host confirmation authority on false -> true transitions
     expect(c.read()).toEqual(['claude']);
   });
 
+  it('prompts for codex with the unqualified-grant sentence, not a refusal it never gets', async () => {
+    const c = stubConfig([]);
+    const confirm = vi.fn().mockResolvedValue(uncontainedConsentApproveLabel('codex'));
+
+    const outcome = await setUncontainedGrant({ ...c.deps, confirm }, 'codex', true);
+
+    expect(outcome).toEqual({ decision: 'granted' });
+    expect(confirm).toHaveBeenCalledWith(
+      uncontainedConsentHeadline('codex'),
+      unqualifiedGrantMessage('codex'),
+      uncontainedConsentApproveLabel('codex')
+    );
+    expect(c.read()).toEqual(['codex']);
+  });
+
   it('writes nothing and returns denied on cancel, dismissal, or confirm failure', async () => {
     for (const confirm of [
       vi.fn().mockResolvedValue('Cancel'),
@@ -472,7 +462,7 @@ describe('FR-R5-F16 — host confirmation authority on false -> true transitions
       setUncontainedGrant({ ...granted.deps, confirm }, 'claude', true)
     ).resolves.toEqual({ decision: 'granted' });
     await expect(
-      setUncontainedGrant({ ...granted.deps, confirm }, 'codex', true)
+      setUncontainedGrant({ ...granted.deps, confirm }, 'claud' as BackendRunnerKind, true)
     ).resolves.toMatchObject({ decision: 'not-applicable' });
     await expect(
       setUncontainedGrant({ ...granted.deps, confirm }, 'claude', false)

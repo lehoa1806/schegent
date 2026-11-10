@@ -41,6 +41,13 @@ export const CLI_VERSION_TIMEOUT_MS = 5_000;
 /** Bound on what is recorded, so a chatty `--version` cannot inflate an audit payload. */
 export const CLI_VERSION_MAX_LEN = 64;
 
+/**
+ * FR-R6-F09 (NFR-002) -- the most `--version` output the probe reads. Past it the child is
+ * stopped and the answer is `null`, which admission reads as unverified: the version decides
+ * whether a spawn is admitted, so an unbounded answer must not be buffered to decide it.
+ */
+export const CLI_VERSION_MAX_OUTPUT_BYTES = 64 * 1024;
+
 export interface CliVersionProbe {
   /** The observed version, or `null` when it could not be observed. Never throws. */
   observe: (cliPath: string) => Promise<string | null>;
@@ -104,6 +111,7 @@ export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersio
           // shipped allowlist default included.
           const { stdout } = await run(cliPath, ['--version'], {
             timeout: CLI_VERSION_TIMEOUT_MS,
+            maxBuffer: CLI_VERSION_MAX_OUTPUT_BYTES,
             windowsHide: true,
             env: buildSpawnEnv(policyRequestFields(policy))
           });

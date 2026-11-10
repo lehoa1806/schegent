@@ -602,7 +602,11 @@ describe('Feature 093 BUG-001 (T103a, SC-010) — at cap 1, a compaction before 
       disposables,
       hostSubscriptions,
       evidenceHealth: new EvidenceHealthMonitor(),
-      processEnvironmentPolicy: { mode: 'minimal', inheritProcessEnv: false }
+      processEnvironmentPolicy: { mode: 'minimal', inheritProcessEnv: false },
+      // FR-R6-F09 -- the spawn gate's inputs; nothing in this file spawns through it.
+      memento: { get: () => undefined, update: async () => undefined },
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: async () => true
     };
     wiring = wireBackendExecution(deps);
   });

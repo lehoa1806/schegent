@@ -28,6 +28,7 @@ import type { AuditEntry } from '../audit/audit-entry';
 import type { HostTeardownUnconfirmedPayload } from '../contracts/audit-events';
 import type { SanitizedLogger } from '../lib/logger';
 import type { BackendRunnerRegistry, TeardownReport } from '../runner/backend-runner-registry';
+import { qualifyTeardown } from '../services/containment-qualification/teardown-qualification';
 import type { ProcessTreeDegradationRecorder } from './process-tree-degradation-recorder';
 
 export interface HostTeardownRecorderDeps {
@@ -55,11 +56,16 @@ export async function recordTeardownEvidence(
     // one Run in a window, naming one would record a tree against a Run that never spawned it.
     const { runId, phase, iteration } = outcome.attribution;
     if (runId === null) continue;
+    // FR-R6-F09 (FR-009) -- the same result in the qualification vocabulary, so the row names
+    // its residual rather than leaving a reader to infer one.
+    const { outcome: teardownOutcome, residuals } = qualifyTeardown(outcome.result);
     const payload: HostTeardownUnconfirmedPayload = {
       runner: outcome.runner,
       pid: outcome.pid,
       result: outcome.result,
-      boundMs: report.boundMs
+      boundMs: report.boundMs,
+      teardownOutcome,
+      residuals: [...residuals]
     };
     try {
       await deps.append({

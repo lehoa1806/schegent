@@ -26,6 +26,7 @@ import { TerminalRunRollupRecorder } from '../metrics/terminal-run-rollup-record
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 import type { Notifier } from '../ui/notifications';
+import type { ContainmentAcceptancePort } from '../controller/uncontained-consent-gate';
 import { createSpendBoundWatcher, spendSeedTargets } from '../services/spend-bound-watcher';
 import { readSpendReplay } from '../services/spend-bound-replay';
 import { readSpendLimits } from './uncached-settings-accessors';
@@ -77,6 +78,8 @@ export async function createRunSafetyWiring(input: {
   evidenceHealth: EvidenceHealthReporter;
   auditWriter: AuditLogWriter;
   notifier: Notifier;
+  /** FR-R6-F09 -- binds the fingerprint an operator accepted; returned beside the consent requester. */
+  recordContainmentAcceptance?: ContainmentAcceptancePort;
 }) {
   // FR-R3-009 — the durable cumulative-totals rollup. Constructed here so the
   // terminal-transition coordinator, which is the single append site, is the only
@@ -365,6 +368,7 @@ export async function createRunSafetyWiring(input: {
       },
       logger: input.logger
     }),
+    recordContainmentAcceptance: input.recordContainmentAcceptance,
     onRunTerminal: async (run: import('../state/workflow-run').WorkflowRun) => {
       if (!isOperableRunStatus(run.status)) {
         spendWatcher.forget(run.id);
