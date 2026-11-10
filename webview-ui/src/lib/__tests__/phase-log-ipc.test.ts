@@ -17,6 +17,7 @@ type AckListener = (ack: AckLike) => void;
 const ackListeners = new Map<string, AckListener>();
 const posted: Array<{ type: string; payload?: unknown; correlationId: string }> = [];
 let nextId = 0;
+const hostHandlers = new Set<(message: unknown) => void>();
 
 vi.mock('../snapshot-store.svelte', () => ({
   snapshotStore: {
@@ -41,7 +42,12 @@ vi.mock('../vscode-api', () => ({
     posted.push({ type, payload, correlationId });
     return { correlationId };
   },
-  onHostMessage: () => () => undefined
+  onHostMessage(handler: (message: unknown) => void): () => void {
+    hostHandlers.add(handler);
+    return () => {
+      hostHandlers.delete(handler);
+    };
+  }
 }));
 
 const { disposeIntentLedger } = await import('../intent-ledger');
@@ -58,6 +64,7 @@ beforeEach(() => {
   ackListeners.clear();
   posted.length = 0;
   nextId = 0;
+  hostHandlers.clear();
   vi.useFakeTimers();
 });
 
@@ -66,7 +73,9 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const { readPhaseLog, startPhaseLogTail, stopPhaseLogTail } = await import('../phase-log-ipc');
+const { ackPhaseLogTail, readPhaseLog, startPhaseLogTail, stopPhaseLogTail, subscribePhaseLogBatch } = await import(
+  '../phase-log-ipc'
+);
 
 const SELECTION = { queueId: 'q', taskId: 't', pipelineId: 'p1', phaseId: 'p2', iterationN: null };
 const NOT_YET_KNOWN = 'The host has not answered yet, so the outcome is not yet known.';
@@ -125,5 +134,41 @@ describe('phase-log helpers (T17)', () => {
 
     await expect(start).resolves.toMatchObject({ outcome: 'failure', refusalText: expect.stringContaining('not trusted') });
     await expect(stop).resolves.toMatchObject({ outcome: 'failure', refusalText: expect.stringContaining('not the primary') });
+  });
+});
+
+// FR-R6-F07 (T021; FR-004, FR-009) — the batch push and its acknowledgement.
+describe('live-log batches (T021)', () => {
+  function hostPosts(message: unknown): void {
+    for (const handler of [...hostHandlers]) handler(message);
+  }
+
+  it('posts an acknowledgement as a one-way command that waits for nothing', () => {
+    const returned: unknown = ackPhaseLogTail({ sessionId: 'session-1', batchSeq: 0 });
+    ackPhaseLogTail({ sessionId: 'session-1', batchSeq: 4, resync: true });
+
+    expect(returned).toBeUndefined();
+    expect(posted.map((entry) => entry.type)).toEqual(['CMD_ACK_PHASE_LOG_TAIL', 'CMD_ACK_PHASE_LOG_TAIL']);
+    expect(posted.at(0)?.payload).toEqual({ sessionId: 'session-1', batchSeq: 0 });
+    expect(posted.at(1)?.payload).toEqual({ sessionId: 'session-1', batchSeq: 4, resync: true });
+    expect(ackListeners.size).toBe(0);
+  });
+
+  it('delivers each batch payload, whatever its protocol, and nothing else', () => {
+    const seen: unknown[] = [];
+    const unsubscribe = subscribePhaseLogBatch((payload) => {
+      seen.push(payload);
+    });
+    const batch = { protocol: 1, tailSessionId: 's', batchSeq: 1, generation: 'g', mode: 'resume', toCursor: null, entries: [] };
+    const future = { ...batch, protocol: 2, batchSeq: 2 };
+
+    hostPosts({ type: 'MSG_PHASE_LOG_BATCH', payload: batch });
+    hostPosts({ type: 'MSG_PHASE_LOG_ENTRY', payload: { tailSessionId: 's', entrySeq: 1 } });
+    hostPosts({ type: 'STATE_SNAPSHOT', payload: {} });
+    hostPosts({ type: 'MSG_PHASE_LOG_BATCH', payload: future });
+    unsubscribe();
+    hostPosts({ type: 'MSG_PHASE_LOG_BATCH', payload: batch });
+
+    expect(seen).toEqual([batch, future]);
   });
 });

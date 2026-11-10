@@ -12,7 +12,7 @@
 // foot of this file.
 //
 // FR-R4-F05 (US2) — the declaration is now total (`COMMAND_AUTHORITY`), the pin
-// holds 53 gated commands, and the FR-027 table of commands deliberately kept out of
+// holds 53 gated commands (54 since FR-R6-F07 added the tail acknowledgement), and the FR-027 table of commands deliberately kept out of
 // the gate is gone: its three entries (the migration notice, export, preflight) are
 // gated, because each writes state or appends an audit row. A command kept ungated
 // by decision now carries a read-only reason in the declaration, which a test there
@@ -77,7 +77,8 @@ import {
   CMD_READ_METRICS,
   CMD_READ_PHASE_LOG,
   CMD_START_PHASE_LOG_TAIL,
-  CMD_STOP_PHASE_LOG_TAIL
+  CMD_STOP_PHASE_LOG_TAIL,
+  CMD_ACK_PHASE_LOG_TAIL
 } from '../../../../src/ui/sidebar/messages';
 import { MUTATING_COMMAND_TYPES } from '../../../../src/contracts/sidebar-command-metadata';
 import { isMutatingCommand } from '../../../../src/ui/sidebar/message-router';
@@ -213,7 +214,10 @@ const PINNED_MUTATING_COMMANDS: ReadonlyArray<string> = [
   CMD_READ_METRICS,
   CMD_READ_PHASE_LOG,
   CMD_START_PHASE_LOG_TAIL,
-  CMD_STOP_PHASE_LOG_TAIL
+  CMD_STOP_PHASE_LOG_TAIL,
+  // FR-R6-F07 — the tail acknowledgement. It appends no row of its own; it only
+  // advances delivery on a tail the gated start opened, so it is gated with it.
+  CMD_ACK_PHASE_LOG_TAIL
 ];
 
 describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => {
@@ -257,16 +261,16 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
   // FR-003 gates a command that appends an audit row, so both are gated now. Gating
   // does not serialize them: each waits on an operator's dialog, so the declaration
   // marks them concurrent and a queue mutation never waits behind an open dialog.
-  it('gates CMD_EXPORT_PROCESS_YAML as mutating, and pins the list at 53', () => {
+  it('gates CMD_EXPORT_PROCESS_YAML as mutating, and pins the list at 54', () => {
     expect(isMutatingCommand(CMD_EXPORT_PROCESS_YAML)).toBe(true);
     expect(PINNED_MUTATING_COMMANDS).toContain(CMD_EXPORT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(53);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(54);
   });
 
-  it('gates CMD_PREFLIGHT_PROCESS_YAML as mutating, and pins the list at 53', () => {
+  it('gates CMD_PREFLIGHT_PROCESS_YAML as mutating, and pins the list at 54', () => {
     expect(isMutatingCommand(CMD_PREFLIGHT_PROCESS_YAML)).toBe(true);
     expect(PINNED_MUTATING_COMMANDS).toContain(CMD_PREFLIGHT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(53);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(54);
   });
 
   it('keeps CMD_CONTINUE_WORKFLOW gated for workflow continuation and candidate-block control actions (FR-R5-F31)', () => {

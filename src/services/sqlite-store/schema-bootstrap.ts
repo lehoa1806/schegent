@@ -28,6 +28,11 @@ import {
   F06_ACCOUNTING_MIGRATION_NAME,
   F06_ACCOUNTING_MIGRATION_VERSION
 } from '../usage-accounting/accounting-schema';
+import {
+  F07_LIVE_LOG_DDL,
+  F07_LIVE_LOG_MIGRATION_NAME,
+  F07_LIVE_LOG_MIGRATION_VERSION
+} from '../phase-log/live-log-index-schema';
 
 export interface SchemaMigrationDefinition {
   readonly version: number;
@@ -804,6 +809,12 @@ export const BUILTIN_SCHEMA_MIGRATIONS: readonly SchemaMigrationDefinition[] = O
     version: F06_ACCOUNTING_MIGRATION_VERSION,
     name: F06_ACCOUNTING_MIGRATION_NAME,
     ddlStatements: F06_ACCOUNTING_DDL
+  },
+  {
+    // FR-R6-F07: additive and forward-only; never edit migrations 1 to 3.
+    version: F07_LIVE_LOG_MIGRATION_VERSION,
+    name: F07_LIVE_LOG_MIGRATION_NAME,
+    ddlStatements: F07_LIVE_LOG_DDL
   }
 ]);
 

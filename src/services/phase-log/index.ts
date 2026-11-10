@@ -40,13 +40,19 @@ export type {
 export { PhaseLogTailSession } from './phase-log-tail-session';
 export type {
   PhaseLogTailSessionDeps,
-  PhaseLogEntryPushPayload,
+  PhaseLogTailCaps,
+  PhaseLogBatchPush,
+  LiveLogBatchItem,
+  TailSessionStart,
+  TailSessionAck,
   TailEndedReason
 } from './phase-log-tail-session';
-export { PhaseLogTailRegistry } from './phase-log-tail-registry';
+export { PhaseLogTailRegistry, PHASE_LOG_TAIL_CONSUMERS } from './phase-log-tail-registry';
 export type {
   PhaseLogTailRegistryDeps,
   PhaseLogTailRegistryAuditEvent,
   PhaseLogTailSubscriptionToken,
-  PhaseLogTailEnvelope
+  PhaseLogTailSink,
+  PhaseLogTailConsumer,
+  PhaseLogTailStartRequest
 } from './phase-log-tail-registry';

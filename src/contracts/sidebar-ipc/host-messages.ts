@@ -1,4 +1,5 @@
-import type { CMD_ACK, MSG_PHASE_LOG_ENTRY, STATE_SNAPSHOT } from '../sidebar-ipc';
+import type { CMD_ACK, MSG_PHASE_LOG_BATCH, STATE_SNAPSHOT } from '../sidebar-ipc';
+import type { PhaseLogBatchPayload } from './phase-log';
 import type { CommandAckOutcome } from '../command-outcome';
 import type { SnapshotSyncMeta } from '../snapshot-bounds';
 
@@ -24,33 +25,15 @@ export interface CommandAckMessage {
   readonly result?: unknown;
 }
 
-// Live phase-log entries are sanitized and bounded before crossing the IPC
-// boundary. Consumers discard entries for superseded tail session IDs.
-export interface PhaseLogEntryPushMessage {
-  readonly type: typeof MSG_PHASE_LOG_ENTRY;
-  readonly payload: {
-    readonly tailSessionId: string;
-    readonly entrySeq: number;
-    readonly entry: {
-      readonly seq: number;
-      readonly kind:
-        | 'assistant-text'
-        | 'tool-use'
-        | 'tool-result'
-        | 'system'
-        | 'result'
-        | 'truncated-head'
-        | 'tail-ended';
-      readonly ts: string | null;
-      readonly body: Readonly<Record<string, unknown>>;
-      readonly bodyTruncated: Readonly<
-        Record<string, { readonly originalLength: number }>
-      > | null;
-    };
-  };
+// FR-R6-F07 (FR-004, FR-008) — sanitized, budgeted entries with their source
+// positions; at most 256 KiB serialized. Consumers drop a superseded session's
+// batches and deduplicate entries by position.
+export interface PhaseLogBatchPushMessage {
+  readonly type: typeof MSG_PHASE_LOG_BATCH;
+  readonly payload: PhaseLogBatchPayload;
 }
 
 export type HostMessage<S> =
   | StateSnapshotMessage<S>
   | CommandAckMessage
-  | PhaseLogEntryPushMessage;
+  | PhaseLogBatchPushMessage;

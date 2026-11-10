@@ -30,7 +30,7 @@ import {
 import { readIterationManifest } from '../../../../src/services/phase-log/phase-log-reader';
 import {
   PhaseLogTailSession,
-  type PhaseLogEntryPushPayload
+  type LiveLogBatchItem
 } from '../../../../src/services/phase-log/phase-log-tail-session';
 import type {
   PhaseLogDisplayEntry,
@@ -104,16 +104,21 @@ async function writeStream(lines: readonly string[]): Promise<void> {
 
 /** Drive one tail tick over the written stream and collect the pushes. */
 async function tailEntries(): Promise<readonly PhaseLogDisplayEntry[]> {
-  const pushed: PhaseLogEntryPushPayload[] = [];
+  const pushed: LiveLogBatchItem[] = [];
   const session = new PhaseLogTailSession({
     sessionId: 's1',
     workspaceRoot: tmpDir,
     filePath: streamPath(),
     selection: SELECTION,
-    pushToWebview: (msg) => pushed.push(msg),
+    postBatch: (batch) => {
+      pushed.push(...batch.entries);
+      return true;
+    },
     sanitize,
     caps: { perFieldBytes: 64 * 1024 }
   });
+  await session.start();
+  session.ack({ batchSeq: 0 });
   await session.tick();
   return pushed.map((p) => p.entry);
 }
