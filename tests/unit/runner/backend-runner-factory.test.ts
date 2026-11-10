@@ -16,6 +16,7 @@ import { BackendRunnerRegistry } from '../../../src/runner/backend-runner-regist
 import { DEFAULT_BACKEND, SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
 import { ClaudeCliRunner } from '../../../src/runner/claude-cli';
 import { CodexCliRunner } from '../../../src/runner/codex-cli';
+import { SpawnGatedRunner } from '../../../src/runner/spawn-gated-runner';
 import type { SanitizedLogger } from '../../../src/lib/logger';
 import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 
@@ -323,5 +324,19 @@ describe('the grant is re-read per construction, so a mid-session grant takes ef
     );
     expect(() => registry.getOrCreate('claude')).toThrow(/without an OS-enforced bound/);
     expect(() => registry.getOrCreate('claude')).toThrow(/without an OS-enforced bound/);
+  });
+});
+
+// FR-R6-F09 T028 -- the factory wraps in `SpawnGatedRunner` only when a gate is given.
+describe('createBackendRunner and the spawn gate (FR-R6-F09)', () => {
+  const granted = () => new Set<BackendRunnerKind>(['claude', 'agy']);
+
+  it.each(SUPPORTED_BACKENDS)('%s is wrapped when a spawn gate is present', (kind) => {
+    const spawnGate = { admit: async () => undefined };
+    expect(createBackendRunner(kind, { uncontainedGranted: granted, spawnGate })).toBeInstanceOf(SpawnGatedRunner);
+  });
+
+  it.each(SUPPORTED_BACKENDS)('%s is returned unwrapped without one', (kind) => {
+    expect(createBackendRunner(kind, { uncontainedGranted: granted })).not.toBeInstanceOf(SpawnGatedRunner);
   });
 });

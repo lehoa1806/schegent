@@ -359,3 +359,115 @@ They intentionally differ in **terminal event decoding**, qualified against the 
 <!-- Source: src/services/process-liveness.ts -->
 <!-- Source: src/runner/process-tree.ts -->
 <!-- Source: src/services/capability-confirmed-flags.ts -->
+
+## 10. Per-effect qualification matrix (`FR-R6-F09`)
+
+Sections 3 to 8 say which mechanism each backend carries. This section says, effect by effect, what
+that mechanism has been shown to bound, and on what evidence. It is the evidence the spawn gate, the
+sidebar's qualification field and the headless inspection read; one row here is one entry of
+`EVIDENCE_MATRIX`, and `tests/lint/containment-effect-matrix-parity.test.ts` holds the two equal in
+both directions.
+
+Reading a row:
+
+- **os/arch** and **version** name the tuple the evidence was taken on; `any` means the evidence does
+  not depend on that column.
+- **outcome** is what was established: `observed-enforced` (a probe saw the bound hold),
+  `tool-restricted` (the CLI withholds a tool, but nothing below it enforces), `unsupported` (no
+  bound exists or none is claimed), or `unverified` (help text names a flag; nothing was observed).
+- **basis** is where the outcome comes from. `help-syntax` never yields `observed-enforced`
+  (`FR-002`).
+
+How a backend's record is built from these rows, for its observed `{ version, os, arch }`:
+
+1. the most specific row whose tuple matches gives the cell;
+2. when an observed row exists for the same os and arch but another version, the cell reads `stale`
+   (or `unverified` when the version could not be read), because the evidence is about this
+   platform but not this version;
+3. with no matching row, the cell reads `unverified`.
+
+A backend is **qualified** only when every effect its mechanism claims (`codex`: `fs-write` and
+`network`) reads `observed-enforced`. Each observed row also lists the components exercised and the
+residuals it leaves open (the file tool, hooks and external tools for `codex` `fs-write`; non-loopback
+destinations, DNS, redirects and proxies for `codex` `network`; descendants that leave the process
+group for `descendant-lifetime`). Those lists live in `EVIDENCE_MATRIX` and reach the operator through
+the record; this table does not repeat them.
+
+| backend | os/arch | version | effect | outcome | basis |
+| --- | --- | --- | --- | --- | --- |
+| `claude` | any/any | any | `fs-read` | `unsupported` | `help-syntax` |
+| `claude` | any/any | any | `fs-write` | `unsupported` | `help-syntax` |
+| `claude` | any/any | any | `network` | `unsupported` | `help-syntax` |
+| `claude` | any/any | any | `credential-exposure` | `unsupported` | `help-syntax` |
+| `claude` | any/any | any | `process-creation` | `tool-restricted` | `help-syntax` |
+| `codex` | darwin/arm64 | 0.163 | `fs-read` | `unsupported` | `observed-behavior` |
+| `codex` | darwin/arm64 | 0.163 | `fs-write` | `observed-enforced` | `observed-behavior` |
+| `codex` | darwin/arm64 | 0.163 | `process-creation` | `unsupported` | `observed-behavior` |
+| `codex` | darwin/arm64 | 0.163 | `network` | `observed-enforced` | `observed-behavior` |
+| `codex` | darwin/arm64 | 0.163 | `credential-exposure` | `unsupported` | `observed-behavior` |
+| `codex` | any/any | any | `fs-read` | `unverified` | `help-syntax` |
+| `codex` | any/any | any | `fs-write` | `unverified` | `help-syntax` |
+| `codex` | any/any | any | `process-creation` | `unverified` | `help-syntax` |
+| `codex` | any/any | any | `network` | `unverified` | `help-syntax` |
+| `codex` | any/any | any | `credential-exposure` | `unverified` | `help-syntax` |
+| `agy` | any/any | any | `fs-read` | `unsupported` | `help-syntax` |
+| `agy` | any/any | any | `fs-write` | `unsupported` | `help-syntax` |
+| `agy` | any/any | any | `network` | `unsupported` | `help-syntax` |
+| `agy` | any/any | any | `credential-exposure` | `unsupported` | `help-syntax` |
+| `agy` | any/any | any | `process-creation` | `tool-restricted` | `help-syntax` |
+| `claude` | darwin/any | any | `descendant-lifetime` | `observed-enforced` | `observed-behavior` |
+| `codex` | darwin/any | any | `descendant-lifetime` | `observed-enforced` | `observed-behavior` |
+| `agy` | darwin/any | any | `descendant-lifetime` | `observed-enforced` | `observed-behavior` |
+
+The `codex` rows were observed on `codex-cli` 0.163.0 on darwin arm64 on 2026-11-10 (`codex sandbox -P
+:workspace`, emptied environment, disposable home, local endpoints only). The `descendant-lifetime`
+rows are the host's own process-group ladder, exercised on darwin; they hold for any CLI version.
+Every other row is the help capture of section 7.
+
+<!-- Source: src/services/containment-qualification/evidence-matrix.ts -->
+<!-- Source: src/services/containment-qualification/qualify.ts -->
+
+## 11. Wrapper adoption criteria (`FR-R6-F09`)
+
+This feature adopts no wrapper. No backend is launched inside a container, a jail, a sandbox profile
+or any other outer layer the host supplies; the only bounds are the ones sections 3 and 10 record.
+
+A future wrapper may be adopted only when it meets every criterion below, and its qualification
+evidence is taken the way section 10's `codex` rows were, on the tuple it will ship for:
+
+1. It grants the CLI only the runtime resources it needs: the executable, its runtime, and the
+   libraries and certificates it loads, and nothing selected by convenience.
+2. It grants only the declared execution and evidence access: the phase's working tree for the
+   effects the phase declares, and the Run's evidence directory for the host's own records.
+3. It gives the CLI scoped temporary storage: a per-Run temporary directory that the wrapper creates
+   and removes, never the shared system temporary directory.
+4. Any broad home or root mount it still needs is disclosed in this document, with the reason, and
+   is shown to the operator as a residual; an undisclosed broad mount disqualifies the wrapper.
+
+A wrapper that meets these criteria still adds no outcome by itself. Its rows enter
+`EVIDENCE_MATRIX` only as observed evidence, effect by effect, and a cell it does not change keeps
+the outcome it had.
+
+## 12. Network denial versus filtering (`FR-R6-F09`)
+
+Denial and filtering are different claims. **Denial** says the CLI's descendants cannot open a
+connection at all. **Filtering** says they can reach some destinations and not others. Denial is
+the only network claim this document makes.
+
+The `codex` `network` cell of section 10 reads `observed-enforced` for denial only: a shell child
+was refused a connection to a loopback listener. Its residuals say what that observation does not
+cover: `non-loopback-destinations-unobserved`, `dns-unobserved`, `redirect-unobserved`,
+`proxy-unobserved` and `no-filtering-claimed`. No profile in this feature claims filtering.
+
+A filtering claim is refused unless each of these cases was observed on the tuple the claim is for:
+
+- DNS: a name lookup for a destination outside the allowed set fails;
+- direct-address: a connection to a literal address outside the allowed set fails;
+- redirect: an allowed destination that redirects outside the set does not carry the request there;
+- proxy: a proxy setting in the environment or the CLI's configuration does not reach a refused
+  destination;
+- child-process: a descendant of the CLI, not only the CLI itself, is held to the same set.
+
+Until all five are on record, an allow-list in a backend's configuration is not evidence: the
+`network` cell keeps the outcome section 10 gives it, and no outcome in the vocabulary means
+"filtered".

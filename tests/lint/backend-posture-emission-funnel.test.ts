@@ -105,6 +105,14 @@ const ACCOUNTED_INVOKE_SITES: ReadonlyArray<{ file: string; why: string }> = [
   {
     file: 'src/runner/codex-cli.ts',
     why: 'Calls `lifecycle.invoke` on the internal process runner, not the BackendRunner facade.'
+  },
+  {
+    file: 'src/runner/spawn-gated-runner.ts',
+    why:
+      'FR-R6-F09: a decorator around every BackendRunner the factory builds. It forwards the ' +
+      'invoke that PhaseRunner.run (and the compactor and watchdog above) already made, after the ' +
+      'containment admission; it starts no Run of its own, so the posture recorded by the funnel ' +
+      'still covers the call it forwards.'
   }
 ];
 

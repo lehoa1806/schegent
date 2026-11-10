@@ -249,7 +249,9 @@ workspace denies regardless of overrides.
 
 The backends you allow to run with **no OS-enforced bound** on what they can reach, **named one at a
 time**. `claude` and `agy` are spawned with `--dangerously-skip-permissions`; `codex` carries a
-`workspace-write` sandbox, is already contained, and is unaffected by this setting.
+`workspace-write` sandbox and needs no entry on a platform, architecture and version where that
+sandbox is qualified. On any other tuple it is refused like the others until it is named here, and
+naming it accepts the unqualified sandbox (FR-R6-F09).
 
 Because `schegent.backend.runner` defaults to `claude`, **a fresh install refuses its first run**
 until `claude` is named here or a sandboxed backend is selected (FR-R3-056). Naming a backend is an
@@ -269,8 +271,7 @@ one reads. Revoking is available from the Settings control at any time; it takes
 invocation, not for a run already in flight.
 
 Entries are validated rather than filtered, and neither case throws: an id that is not a backend
-names the ids that are, and an id naming an already-contained backend says it grants nothing because
-that backend was never refused. Anything that is not a list of strings grants nothing.
+names the ids that are. Anything that is not a list of strings grants nothing.
 
 `application`-scoped on purpose: a workspace must not be able to grant itself the right to run an
 unbounded agent, and the grant therefore applies to **every workspace you open in this

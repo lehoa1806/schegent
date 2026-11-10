@@ -1,5 +1,6 @@
 import { LockHeldError } from '../lib/errors';
 import { isUncontainedBackendRefusal } from '../services/backend-containment-policy';
+import { isContainmentAdmissionRefusal } from '../services/containment-qualification/admission-refusal';
 import { isCapabilityRefusal } from '../services/capability-refusal';
 import { isConsentWriteFailure } from './uncontained-consent-gate';
 
@@ -31,6 +32,7 @@ import { isConsentWriteFailure } from './uncontained-consent-gate';
 /** The shapes a start failure takes, named rather than implied by a boolean pair. */
 export type StartFailureKind =
   | 'lock-held'
+  | 'containment-admission-refused'
   | 'uncontained-backend-refused'
   | 'capability-not-enforceable'
   | 'consent-write-failed'
@@ -93,6 +95,22 @@ export function classifyStartFailure(
       logLine: `workflow ${featureId} rejected: workspace lock held by ${sanitize(err.ownerId)}`,
       statusDetail: message,
       announcement: `Schegent: workflow failed unexpectedly — ${message}.`
+    };
+  }
+
+  if (isContainmentAdmissionRefusal(err)) {
+    // FR-R6-F09 (research R2) -- the spawn gate's refusal. A subtype of the uncontained
+    // refusal, so it is asked about FIRST: its reason is the code, and the status bar names
+    // the reason rather than claiming "no OS-enforced bound", which is false for codex.
+    const message = sanitize(err.message);
+    return {
+      kind: 'containment-admission-refused',
+      code: err.reason,
+      message,
+      level: 'warn',
+      logLine: `workflow ${featureId} refused: ${message}`,
+      statusDetail: `backend '${err.kind}' refused: ${err.reason}`,
+      announcement: `Schegent: backend '${err.kind}' was refused — ${message}`
     };
   }
 

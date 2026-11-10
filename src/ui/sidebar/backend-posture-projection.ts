@@ -32,6 +32,7 @@ import {
 } from '../../services/backend-containment-policy';
 import { SUPPORTED_BACKENDS } from '../../contracts/backend-kinds';
 import type { BackendGrantState, BackendPosture } from './snapshot';
+import { projectBackendQualification, type BackendQualificationSource } from './backend-qualification-projection';
 
 export interface BackendPostureProjection {
   readonly backendPostures: readonly BackendPosture[];
@@ -41,18 +42,17 @@ export interface BackendPostureProjection {
 /**
  * Whether this backend's grant is in force, in three states.
  *
- * `not-required` is decided FIRST, and that order is the point (A-2). `codex`
- * carries an OS-enforced bound, so it never appears in the granted set even when
- * an operator has listed it by hand — asking about membership first would report
- * `not-granted` for a backend that needs no grant, and those two states have
- * opposite remedies.
+ * FR-R6-F09 (research R4) made an OS-enforced backend grantable: on a tuple where
+ * its bound is unqualified, the grant is the acceptance. So membership is asked
+ * FIRST: a listed `codex` is `granted`; an unlisted one is `not-required`, never
+ * `not-granted`, because those two have opposite remedies (A-2).
  */
 function grantStateOf(
   kind: (typeof SUPPORTED_BACKENDS)[number],
   granted: ReadonlySet<(typeof SUPPORTED_BACKENDS)[number]>
 ): BackendGrantState {
-  if (containmentOf(kind) === 'os-enforced') return 'not-required';
-  return granted.has(kind) ? 'granted' : 'not-granted';
+  if (granted.has(kind)) return 'granted';
+  return containmentOf(kind) === 'os-enforced' ? 'not-required' : 'not-granted';
 }
 
 /**
@@ -63,8 +63,13 @@ function grantStateOf(
  *   `resolveUncontainedGrant` fails closed on anything that is not an array of
  *   strings, so `undefined` from an unwired host yields no grants and no problems,
  *   which is the same answer a fresh install's `[]` gives.
+ * @param qualification FR-R6-F09 -- the gate's observed identities and stored
+ *   bindings. Absent, no row carries a `qualification` key.
  */
-export function composeBackendPostures(rawSetting: unknown): BackendPostureProjection {
+export function composeBackendPostures(
+  rawSetting: unknown,
+  qualification?: BackendQualificationSource
+): BackendPostureProjection {
   const resolved = resolveUncontainedGrant(rawSetting);
 
   // Problems that name a real backend hang off that backend's row; problems that
@@ -106,7 +111,10 @@ export function composeBackendPostures(rawSetting: unknown): BackendPostureProje
       ...base,
       ...(problem === undefined ? {} : { problem }),
       ...(verdict.outcome === 'refused' ? { refusal: verdict.message } : {}),
-      ...(carriesNotice ? { notice: uncontainedGrantNotice(kind) } : {})
+      ...(carriesNotice ? { notice: uncontainedGrantNotice(kind) } : {}),
+      ...(qualification === undefined
+        ? {}
+        : { qualification: projectBackendQualification(kind, resolved.granted, qualification) })
     });
   });
 

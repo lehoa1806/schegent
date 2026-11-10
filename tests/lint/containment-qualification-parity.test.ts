@@ -209,16 +209,21 @@ describe('the containment qualification record agrees with the product (FR-R3-12
   });
 });
 
-describe('the setting only offers the backends it can grant (FR-R3-125)', () => {
-  it("the manifest's enum is exactly the uncontained backends", () => {
+describe('the setting offers every backend it can grant (FR-R3-125, FR-R6-F09)', () => {
+  it("the manifest's enum is every backend, because every backend's grant now means something (FR-R6-F09 R4)", () => {
     // Two silent failures this closes, in opposite directions:
     //
-    //   - a FOURTH uncontained backend is added and the enum is not, so VS Code
-    //     refuses the only value that would let an operator run it, and the
-    //     refusal reads as a product bug rather than a manifest omission;
-    //   - a backend gains a real boundary and stays in the enum, so the settings
-    //     UI keeps offering a grant that `resolveUncontainedGrant` now reports as
-    //     granting nothing.
+    //   - a backend the policy will honour a grant for is missing from the enum, so
+    //     VS Code marks the only value that would let an operator run it as invalid,
+    //     and the refusal reads as a product bug rather than a manifest omission.
+    //     Since FR-R6-F09 (research R4) that includes `codex`: on a tuple where its
+    //     sandbox is unqualified it is refused until named here;
+    //   - the enum offers an id that is not a backend, which the writer refuses as
+    //     `unsupported`.
+    //
+    // Before FR-R6-F09 the enum was exactly the uncontained backends, because an
+    // OS-enforced backend was never refused and its grant meant nothing. R4 retired
+    // that `already-contained` answer, so the narrower enum became the first failure.
     const manifest = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8')) as {
       contributes?: {
         configuration?: {
@@ -230,12 +235,11 @@ describe('the setting only offers the backends it can grant (FR-R3-125)', () => 
       manifest.contributes?.configuration?.properties?.['schegent.backend.uncontainedBackends']
         ?.items?.enum;
     expect(offered, 'the setting must declare an item enum').toBeDefined();
-    const uncontained = [...mechanismByBackend()]
-      .filter(([, mechanism]) => mechanism === 'none')
-      .map(([kind]) => kind)
-      .sort();
-    expect([...(offered as readonly string[])].sort()).toEqual(uncontained);
-    expect(uncontained.length, 'the sweep must find uncontained backends').toBeGreaterThan(0);
+    expect([...(offered as readonly string[])].sort()).toEqual([...SUPPORTED_BACKENDS].sort());
+    expect(
+      [...mechanismByBackend()].some(([, mechanism]) => mechanism !== 'none'),
+      'the enum must include a backend that carries a mechanism, or this test proves nothing new'
+    ).toBe(true);
   });
 });
 
@@ -431,5 +435,27 @@ describe('sections 7 and 8 state only what was observed (L9, FR-R4-F06)', () => 
       return !confirmed && cells[6] === 'observed';
     });
     expect(wrong).toHaveLength(1);
+  });
+});
+
+describe('sections 11 and 12 carry the wrapper criteria and the denial/filtering line (FR-R6-F09 T037)', () => {
+  const body = readFileSync(resolve(REPO_ROOT, RECORD_PATH), 'utf8');
+
+  it('section 11 adopts no wrapper and records the four adoption criteria (FR-006)', () => {
+    const wrapper = sectionOf(body, '11.');
+    expect(wrapper).toMatch(/## 11\. Wrapper adoption criteria/);
+    expect(wrapper).toMatch(/adopts no wrapper/);
+    for (const criterion of [/runtime resources/, /declared execution and evidence access/, /scoped temporary storage/, /broad home or root mount/]) {
+      expect(wrapper).toMatch(criterion);
+    }
+  });
+
+  it('section 12 separates denial from filtering and names every case a filtering claim needs (FR-007)', () => {
+    const network = sectionOf(body, '12.');
+    expect(network).toMatch(/## 12\. Network denial versus filtering/);
+    expect(network).toMatch(/`no-filtering-claimed`/);
+    for (const observedCase of ['DNS', 'direct-address', 'redirect', 'proxy', 'child-process']) {
+      expect(network).toContain(observedCase);
+    }
   });
 });

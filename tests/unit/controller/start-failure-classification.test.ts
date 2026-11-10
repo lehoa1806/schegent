@@ -11,6 +11,8 @@ import { LockHeldError } from '../../../src/lib/errors';
 import { ALL_PHASE_CAPABILITIES } from '../../../src/contracts/phase-capabilities';
 import { CapabilityNotEnforceableError } from '../../../src/services/capability-refusal';
 import { UncontainedBackendRefusedError } from '../../../src/services/backend-containment-policy';
+import { ContainmentAdmissionRefusedError } from '../../../src/services/containment-qualification/admission-refusal';
+import { CONTAINMENT_REFUSAL_REASONS } from '../../../src/contracts/containment-qualification';
 import {
   UNEXPECTED_MESSAGE_MAX,
   classifyStartFailure
@@ -133,5 +135,31 @@ describe('the shapes that already worked keep working', () => {
   it('falls back to a name when the throw carries no message at all', () => {
     const report = classifyStartFailure(new Error(''), FEATURE, identity);
     expect(report.message).toBe('unknown workflow error');
+  });
+});
+
+describe('FR-R6-F09 T018 -- a containment admission refusal is reported as itself', () => {
+  it.each([...CONTAINMENT_REFUSAL_REASONS])('%s: its own kind, its reason as the code, warn', (reason) => {
+    const err = new ContainmentAdmissionRefusedError({ kind: 'codex', reason });
+    const report = classifyStartFailure(err, FEATURE, identity);
+    expect(report.kind).toBe('containment-admission-refused');
+    expect(report.code).toBe(reason);
+    expect(report.level).toBe('warn');
+    expect(report.statusDetail).toBe(`backend 'codex' refused: ${reason}`);
+    expect(report.message).toBe(err.message);
+    expect(report.announcement).not.toContain('failed unexpectedly');
+  });
+
+  it('is checked ahead of the uncontained branch it inherits from', () => {
+    const err = new ContainmentAdmissionRefusedError({ kind: 'claude', reason: 'acceptance-fingerprint-changed' });
+    expect(err).toBeInstanceOf(UncontainedBackendRefusedError);
+    expect(classifyStartFailure(err, FEATURE, identity).kind).toBe('containment-admission-refused');
+  });
+
+  it('passes the message through the injected sanitizer', () => {
+    const err = new ContainmentAdmissionRefusedError({ kind: 'agy', reason: 'backend-executable-unresolved', cause: 'not-found' });
+    const report = classifyStartFailure(err, FEATURE, (raw) => raw.replace('agy', 'REDACTED'));
+    expect(report.message).toContain('REDACTED');
+    expect(report.logLine).toContain('REDACTED');
   });
 });

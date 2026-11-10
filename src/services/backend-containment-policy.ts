@@ -137,21 +137,22 @@ export const REMOVED_ALLOW_UNCONTAINED_SETTING = 'schegent.backend.allowUncontai
  * different problems needing different sentences.
  *
  * `unsupported` is a typo (`"claud"`): the id is not a backend, so the message
- * names the ids that are. `already-contained` is a no-op (`"codex"`): the id IS a
- * backend, it was never refused, so granting it means nothing — and telling that
- * operator "unsupported id" would send them looking for a spelling mistake they
- * did not make.
+ * names the ids that are. FR-R6-F09 (research R4) retired the second problem,
+ * `already-contained`: an OS-enforced backend is qualified per tuple, and on an
+ * unqualified tuple its grant is the acceptance, so listing it is no longer a no-op.
  *
  * Neither THROWS. A malformed safety setting must fail closed and leave the
  * product usable: an exception here would take down activation, and an operator
  * whose extension will not start does not read the reason.
  */
-export type UncontainedEntryProblem =
-  | { readonly entry: string; readonly problem: 'unsupported'; readonly message: string }
-  | { readonly entry: string; readonly problem: 'already-contained'; readonly message: string };
+export type UncontainedEntryProblem = {
+  readonly entry: string;
+  readonly problem: 'unsupported';
+  readonly message: string;
+};
 
 export interface GrantedUncontainedBackends {
-  /** Entries that name a real, currently-uncontained backend. */
+  /** Entries that name a real backend. */
   readonly granted: ReadonlySet<BackendRunnerKind>;
   /** Entries that grant nothing, each with why. Empty in the ordinary case. */
   readonly problems: readonly UncontainedEntryProblem[];
@@ -216,20 +217,23 @@ export function resolveUncontainedGrant(raw: unknown): GrantedUncontainedBackend
       }
       continue;
     }
-    if (containmentOf(kind) === 'os-enforced') {
-      if (!report) continue;
-      problems.push({
-        entry: value,
-        problem: 'already-contained',
-        message:
-          `'${value}' already carries an OS-enforced bound (${mechanismOf(kind)}) and was never ` +
-          `refused, so naming it in '${ALLOW_UNCONTAINED_SETTING}' grants nothing. Remove it.`
-      });
-      continue;
-    }
     granted.add(kind);
   }
   return { granted, problems };
+}
+
+/**
+ * FR-R6-F09 (research R4) -- the confirm-modal detail for granting an OS-enforced
+ * backend. Its bound is not refused by `judgeBackendContainment`, so there is no
+ * refusal sentence to reuse; this one says what the grant accepts. Built from the
+ * kind alone: no path, version or setting value reaches it.
+ */
+export function unqualifiedGrantMessage(kind: BackendRunnerKind): string {
+  return (
+    `Granting '${kind}' in '${ALLOW_UNCONTAINED_SETTING}' accepts it on a platform, architecture ` +
+    `or version where its bound (${mechanismOf(kind)}) has not been qualified. On a qualified ` +
+    `tuple the grant changes nothing.`
+  );
 }
 
 /**

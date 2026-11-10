@@ -56,10 +56,15 @@ export interface PhaseExecutionWiringDeps {
   readonly evidenceHealth: EvidenceHealthMonitor;
   readonly sessionRetention: SessionArtifactRetentionService;
   readonly protectedSessionRunIds: EvidenceWiring['protectedSessionRunIds'];
-  readonly readUncontainedAllowed: BackendExecutionWiring['readUncontainedAllowed'];
-  readonly verboseAccessor: BackendExecutionWiring['verboseAccessor'];
-  /** FR-R4-F04 (X5) — handed on to the run-safety wiring, whose Run-end hook applies the transport end table. */
-  readonly transportRouter: BackendExecutionWiring['transportRouter'];
+  /**
+   * The slice of the backend wiring this region reads. `transportRouter` (FR-R4-F04, X5) and
+   * `recordContainmentAcceptance` (FR-R6-F09) are handed on to the run-safety wiring: the first
+   * for its Run-end hook, the second beside the consent modal whose acceptance it binds.
+   */
+  readonly backend: Pick<
+    BackendExecutionWiring,
+    'readUncontainedAllowed' | 'verboseAccessor' | 'transportRouter' | 'recordContainmentAcceptance'
+  >;
 }
 
 /**
@@ -126,9 +131,7 @@ export async function wirePhaseExecution(
     evidenceHealth,
     sessionRetention,
     protectedSessionRunIds,
-    readUncontainedAllowed,
-    verboseAccessor,
-    transportRouter
+    backend: { readUncontainedAllowed, verboseAccessor, transportRouter, recordContainmentAcceptance }
   } = deps;
 
 const fatalSignaturesAccessor = {
@@ -186,7 +189,8 @@ const runSafety = await createRunSafetyWiring({
   protectedSessionRunIds,
   evidenceHealth,
   auditWriter,
-  notifier
+  notifier,
+  recordContainmentAcceptance
 });
   return { phaseRunner, runSafety };
 }

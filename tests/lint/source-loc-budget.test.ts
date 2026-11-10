@@ -696,7 +696,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // is deliberate and is not prose to trim — it records why the admission catch beside it is
   // left alone (no runner is constructed there), which is the question the next reader will
   // have. Set to exactly what the file measures.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 1_040 },
+  // Feature 308 (FR-R6-F09, 2026-11-10) — 1,040 -> 1,041: the optional acceptance dep the
+  // consent gate is constructed with (the binding an accepted fingerprint writes) adds 1 line
+  // and lands the file at 1,015 by this gate's count, inside `tightMargin`'s band. Measurement
+  // plus 26, the rule the runtime-validators entry uses.
+  { path: 'src/controller/workflow-controller.ts', maxLines: 1_041 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log and metrics validators own shape rules.
   // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both
@@ -1687,7 +1691,14 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // `ALL_AUDIT_EVENT_TYPES` with its note (two); and the same type in `SYSTEM_SCOPED_EVENT_TYPES`
       // with its one-line note (two), because the row has no run. The payload type lives in
       // `src/contracts/artifact-lifecycle/audit-payload.ts`, not here.
-      highWaterMark: 1684
+      //
+      // Feature 308 (FR-R6-F09, 2026-11-10) — 1684 → 1688, +4 by this gate's count: the type-only
+      // import of `TeardownOutcome` and `TeardownResidual` (one) and the two fields
+      // `teardownOutcome` and `residuals` on `HostTeardownUnconfirmedPayload` with their one-line
+      // note (three), which state the ladder's result in the qualification vocabulary. No event
+      // type or constant changed; the mapping lives in
+      // `src/services/containment-qualification/teardown-qualification.ts`, not here.
+      highWaterMark: 1688
     }
   },
   // Round 5 workflow control-flow, backend recovery, and admission modules (FR-R5-F26..F34, 2026-11-08) —
