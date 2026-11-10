@@ -16,6 +16,7 @@ import {
 } from '../../../src/services/artifact-lifecycle/lifecycle-schema';
 import { F06_ACCOUNTING_TABLE_NAMES } from '../../../src/services/usage-accounting/accounting-schema';
 import { F07_LIVE_LOG_TABLE_NAMES } from '../../../src/services/phase-log/live-log-index-schema';
+import { F08_HANDOFF_TABLE_NAMES } from '../../../src/services/recovery-handoff/handoff-schema';
 import {
   BUILTIN_SCHEMA_MIGRATIONS,
   NodeSqliteConnection,
@@ -77,14 +78,15 @@ describe('FR-R6-F05 migration 2 (NFR-006)', () => {
     const conn = openMemory();
     try {
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
-      expect(SQLITE_SCHEMA_CURRENT_VERSION).toBe(4);
-      expect(result.schemaVersion).toBe(4);
-      expect(result.appliedMigrations).toEqual([1, 2, 3, 4]);
+      expect(SQLITE_SCHEMA_CURRENT_VERSION).toBe(5);
+      expect(result.schemaVersion).toBe(5);
+      expect(result.appliedMigrations).toEqual([1, 2, 3, 4, 5]);
       expect(result.strictTableCount).toBe(
         F04_INITIAL_STRICT_TABLE_COUNT +
           F05_LIFECYCLE_TABLE_NAMES.length +
           F06_ACCOUNTING_TABLE_NAMES.length +
-          F07_LIVE_LOG_TABLE_NAMES.length
+          F07_LIVE_LOG_TABLE_NAMES.length +
+          F08_HANDOFF_TABLE_NAMES.length
       );
       for (const name of F05_LIFECYCLE_TABLE_NAMES) {
         expect(tableSql(conn, name), name).toMatch(/\)\s*STRICT$/);
@@ -105,8 +107,8 @@ describe('FR-R6-F05 migration 2 (NFR-006)', () => {
       const artifactsBefore = conn.all<Record<string, unknown>>(`SELECT * FROM artifacts ORDER BY artifact_id`);
 
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
-      expect(result.appliedMigrations).toEqual([2, 3, 4]);
-      expect(result.schemaVersion).toBe(4);
+      expect(result.appliedMigrations).toEqual([2, 3, 4, 5]);
+      expect(result.schemaVersion).toBe(5);
       expect(conn.all(`SELECT * FROM artifact_availability ORDER BY artifact_id`)).toEqual(before);
       expect(conn.all(`SELECT * FROM artifacts ORDER BY artifact_id`)).toEqual(artifactsBefore);
       expect(tableSql(conn, 'artifact_availability')).toContain(`'available', 'quarantined', 'evicted', 'missing'`);
@@ -121,7 +123,7 @@ describe('FR-R6-F05 migration 2 (NFR-006)', () => {
       SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
       const second = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
       expect(second.appliedMigrations).toEqual([]);
-      expect(second.schemaVersion).toBe(4);
+      expect(second.schemaVersion).toBe(5);
     } finally {
       conn.close();
     }

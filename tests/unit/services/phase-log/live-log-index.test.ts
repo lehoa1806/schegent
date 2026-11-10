@@ -103,19 +103,19 @@ describe('FR-R6-F07 T039 — migration 4, the live-log segment index (FR-018)', 
   it('is registered as version 4 and applies after 1 to 3 on a fresh store', () => {
     expect(F07_LIVE_LOG_MIGRATION_VERSION).toBe(4);
     expect(F07_LIVE_LOG_MIGRATION_NAME).toBe('004_f07_live_log_index');
-    expect(SQLITE_SCHEMA_CURRENT_VERSION).toBe(F07_LIVE_LOG_MIGRATION_VERSION);
-    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4]);
+    expect(SQLITE_SCHEMA_CURRENT_VERSION).toBeGreaterThanOrEqual(F07_LIVE_LOG_MIGRATION_VERSION);
+    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5]);
     const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
     try {
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
-      expect(result.schemaVersion).toBe(4);
-      expect(result.appliedMigrations).toEqual([1, 2, 3, 4]);
+      expect(result.schemaVersion).toBe(5);
+      expect(result.appliedMigrations).toEqual([1, 2, 3, 4, 5]);
     } finally {
       conn.close();
     }
   });
 
-  it('upgrades a version 3 store by applying only migration 4', () => {
+  it('upgrades a version 3 store by applying migration 4 and the later ones', () => {
     const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
     try {
       const upToThree = BUILTIN_SCHEMA_MIGRATIONS.filter((migration) => migration.version <= 3);
@@ -123,8 +123,8 @@ describe('FR-R6-F07 T039 — migration 4, the live-log segment index (FR-018)', 
         1, 2, 3
       ]);
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
-      expect(result.appliedMigrations).toEqual([4]);
-      expect(result.schemaVersion).toBe(4);
+      expect(result.appliedMigrations).toEqual([4, 5]);
+      expect(result.schemaVersion).toBe(5);
     } finally {
       conn.close();
     }

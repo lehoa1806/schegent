@@ -74,7 +74,23 @@ const ALLOWED: ReadonlySet<string> = new Set(['src/state/queue-state-migrator.ts
  * are listed by file because `.paused` is a field name three unrelated records
  * share, and a token scan cannot tell them apart:
  */
+const HANDOFF_PAUSE_REASON =
+  'reads the recovery handoff pause flag (FR-R6-F08) — `HandoffRow.paused`, the ' +
+  '`recovery_handoffs.paused` column, or `LegacyMapping.paused` — which only picks the pin ' +
+  'purpose and is unrelated to any queue lifecycle';
+
+const HANDOFF_PAUSE_READERS = [
+  'src/services/recovery-handoff/handoff-explanation.ts',
+  'src/services/recovery-handoff/handoff-operator.ts',
+  'src/services/recovery-handoff/handoff-pins.ts',
+  'src/services/recovery-handoff/handoff-prepare.ts',
+  'src/services/recovery-handoff/handoff-settle.ts',
+  'src/services/recovery-handoff/handoff-store-rows.ts',
+  'src/services/recovery-handoff/legacy-handoff-import.ts'
+] as const;
+
 const READ_ALLOWED: ReadonlyMap<string, string> = new Map([
+  ...HANDOFF_PAUSE_READERS.map((file): [string, string] => [file, HANDOFF_PAUSE_REASON]),
   [
     'src/state/queue-state-migrator.ts',
     'reads the mirror as migration input, off the legacy record it is lifting'

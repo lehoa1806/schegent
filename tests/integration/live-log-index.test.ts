@@ -28,6 +28,7 @@ import { SanitizedLogger } from '../../src/lib/logger';
 import { initialAcpProjectionState, projectAcpEvents } from '../../src/services/phase-log/acp-live-projection';
 import { createLiveLogIndex, type LiveLogIndex } from '../../src/services/phase-log/live-log-index';
 import { F07_LIVE_LOG_TABLE_NAMES } from '../../src/services/phase-log/live-log-index-schema';
+import { F08_HANDOFF_TABLE_NAMES } from '../../src/services/recovery-handoff/handoff-schema';
 import {
   BUILTIN_SCHEMA_MIGRATIONS,
   NodeSqliteConnection,
@@ -245,7 +246,7 @@ describe('FR-R6-F07 T041 — the segment index across restarts (F07-AC-08)', () 
     expect(replay?.readable).toEqual([]);
   });
 
-  it('upgrades a version 3 store on disk to version 4 and keeps its rows', () => {
+  it('upgrades a version 3 store on disk through version 4 and keeps its rows', () => {
     const upToThree = BUILTIN_SCHEMA_MIGRATIONS.filter((migration) => migration.version <= 3);
     const v3 = openStore(upToThree);
     const tablesBefore = v3.all<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`);
@@ -254,13 +255,15 @@ describe('FR-R6-F07 T041 — the segment index across restarts (F07-AC-08)', () 
     const conn = new NodeSqliteConnection({ databasePath: join(workspaceRoot, 'schegent.db') });
     opened.push(conn);
     const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
-    expect(result.appliedMigrations).toEqual([4]);
-    expect(result.schemaVersion).toBe(4);
+    expect(result.appliedMigrations).toEqual([4, 5]);
+    expect(result.schemaVersion).toBe(5);
     const tablesAfter = conn
       .all<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
       .map((row) => row.name);
     expect(tablesAfter).toEqual(
-      [...tablesBefore.map((row) => row.name), ...F07_LIVE_LOG_TABLE_NAMES].sort((a, b) => a.localeCompare(b))
+      [...tablesBefore.map((row) => row.name), ...F07_LIVE_LOG_TABLE_NAMES, ...F08_HANDOFF_TABLE_NAMES].sort((a, b) =>
+        a.localeCompare(b)
+      )
     );
   });
 });

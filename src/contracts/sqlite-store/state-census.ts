@@ -129,6 +129,24 @@ export const STRUCTURED_STATE_CENSUS: readonly StructuredStateCensusEntry[] = Ob
     rationale: 'High-volume streaming stdout/stderr bytes stay in bounded segment files tracked by BackupDependencyManifest.'
   },
   {
+    surfaceId: 'recovery-handoffs',
+    legacyLocation: '.schegent/checkpoints/*/*.recovery.json',
+    scope: 'workspace',
+    classification: 'sqlite-authoritative',
+    targetTables: [
+      'recovery_handoffs',
+      'recovery_handoff_revisions',
+      'recovery_handoff_references',
+      'recovery_handoff_deliveries',
+      'recovery_handoff_decisions'
+    ],
+    owningFeature: 'F08',
+    executionAffecting: true,
+    migrationStage: 'F04-B',
+    rationale:
+      'FR-R6-F08 (research R1): one handoff per lineage, immutable issued revisions with a bounded metadata manifest, pinned references, delivery intents and operator decisions; no column holds content. The v1 recovery_manifests tables need runs rows production does not write before F01-B.'
+  },
+  {
     surfaceId: 'crash-recovery-manifests',
     legacyLocation: '.schegent/recovery/*.json',
     scope: 'workspace',
