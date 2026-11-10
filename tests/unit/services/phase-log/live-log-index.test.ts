@@ -104,12 +104,12 @@ describe('FR-R6-F07 T039 — migration 4, the live-log segment index (FR-018)', 
     expect(F07_LIVE_LOG_MIGRATION_VERSION).toBe(4);
     expect(F07_LIVE_LOG_MIGRATION_NAME).toBe('004_f07_live_log_index');
     expect(SQLITE_SCHEMA_CURRENT_VERSION).toBeGreaterThanOrEqual(F07_LIVE_LOG_MIGRATION_VERSION);
-    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6]);
     const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
     try {
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
-      expect(result.schemaVersion).toBe(5);
-      expect(result.appliedMigrations).toEqual([1, 2, 3, 4, 5]);
+      expect(result.schemaVersion).toBe(6);
+      expect(result.appliedMigrations).toEqual([1, 2, 3, 4, 5, 6]);
     } finally {
       conn.close();
     }
@@ -123,8 +123,8 @@ describe('FR-R6-F07 T039 — migration 4, the live-log segment index (FR-018)', 
         1, 2, 3
       ]);
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
-      expect(result.appliedMigrations).toEqual([4, 5]);
-      expect(result.schemaVersion).toBe(5);
+      expect(result.appliedMigrations).toEqual([4, 5, 6]);
+      expect(result.schemaVersion).toBe(6);
     } finally {
       conn.close();
     }

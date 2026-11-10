@@ -400,6 +400,16 @@ const CHILD_PROCESS_IMPORTERS: readonly ImporterRow[] = [
     reason: 'runs `git diff` for the run-safety requester; not a configured backend'
   },
   {
+    path: 'src/services/execution-lanes/git-runner.ts',
+    role: 'diagnostic',
+    reason: 'runs `git` for the lane engine with `GIT_DIR`-family variables stripped (FR-R6-F10); not a configured backend'
+  },
+  {
+    path: 'src/services/execution-lanes/verification-runner.ts',
+    role: 'diagnostic',
+    reason: 'runs the checks an operator declared in a lane verification profile (FR-R6-F10); not a configured backend'
+  },
+  {
     path: 'src/services/process-liveness.ts',
     role: 'diagnostic',
     reason: 'runs `ps` to read a process start time; a fixed system tool'
@@ -699,14 +709,14 @@ describe('every child_process importer is classified, and a spawner forwards env
     expect(censusFailures(CHILD_PROCESS_IMPORTERS, productionSources(), readRepoFile)).toEqual([]);
   });
 
-  it('is not vacuous: it finds all 17 importers and every role is exercised', () => {
+  it('is not vacuous: it finds all 19 importers and every role is exercised', () => {
     const found = productionSources().filter((file) =>
       importsChildProcess(withoutComments(file.text))
     );
     expect(found.map((file) => file.path).sort()).toEqual(
       CHILD_PROCESS_IMPORTERS.map((row) => row.path).sort()
     );
-    expect(found).toHaveLength(17);
+    expect(found).toHaveLength(19);
     const roles = new Set(CHILD_PROCESS_IMPORTERS.map((row) => row.role));
     expect([...roles].sort()).toEqual(['diagnostic', 'spawner', 'type-only']);
     // Both probes are spawners with a rule, which is the whole reason for the census.

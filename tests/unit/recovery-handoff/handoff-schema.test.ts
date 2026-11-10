@@ -1,7 +1,7 @@
 // FR-R6-F08 T004 — migration 5, the recovery handoff store.
 //
 // WHAT THIS PINS:
-//   - migration 5 applies after 1 to 4, once, and a second bootstrap applies nothing;
+//   - migration 5 applies after 1 to 4, once, before 6, and a second bootstrap applies nothing;
 //   - five STRICT tables whose CHECK lists still equal the contract constants;
 //   - no table has a foreign key to `runs`: keys point only among the five tables;
 //   - a manifest over 16,384 bytes cannot be stored, whatever the caller does;
@@ -101,29 +101,29 @@ describe('FR-R6-F08 T004 — migration 5, the recovery handoff store', () => {
   it('is registered as version 5 and applies after 1 to 4, once', () => {
     expect(F08_HANDOFF_MIGRATION_VERSION).toBe(5);
     expect(F08_HANDOFF_MIGRATION_NAME).toBe('005_f08_recovery_handoff');
-    expect(SQLITE_SCHEMA_CURRENT_VERSION).toBe(F08_HANDOFF_MIGRATION_VERSION);
-    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(SQLITE_SCHEMA_CURRENT_VERSION).toBeGreaterThanOrEqual(F08_HANDOFF_MIGRATION_VERSION);
+    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6]);
     const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
     try {
       const first = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
-      expect(first.schemaVersion).toBe(5);
-      expect(first.appliedMigrations).toEqual([1, 2, 3, 4, 5]);
+      expect(first.schemaVersion).toBe(6);
+      expect(first.appliedMigrations).toEqual([1, 2, 3, 4, 5, 6]);
       const second = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
       expect(second.appliedMigrations).toEqual([]);
-      expect(second.schemaVersion).toBe(5);
+      expect(second.schemaVersion).toBe(6);
     } finally {
       conn.close();
     }
   });
 
-  it('upgrades a version 4 store by applying only migration 5', () => {
+  it('upgrades a version 4 store by applying migrations 5 and 6', () => {
     const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
     try {
       const upToFour = BUILTIN_SCHEMA_MIGRATIONS.filter((migration) => migration.version <= 4);
       SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW, upToFour);
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
-      expect(result.appliedMigrations).toEqual([5]);
-      expect(result.schemaVersion).toBe(5);
+      expect(result.appliedMigrations).toEqual([5, 6]);
+      expect(result.schemaVersion).toBe(6);
     } finally {
       conn.close();
     }
