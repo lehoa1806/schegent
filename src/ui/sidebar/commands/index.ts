@@ -1,4 +1,5 @@
 import {
+  CMD_ACK_PHASE_LOG_TAIL,
   CMD_ATTEST_TASK_COMPLETED,
   CMD_CANCEL,
   CMD_CLEAR_QUEUE,
@@ -69,6 +70,7 @@ import {
 } from '../messages';
 import type { CommandHandler } from './handler-contract';
 
+import { handler as ackPhaseLogTail } from './cmd-ack-phase-log-tail';
 import { handler as attestTaskCompleted } from './cmd-attest-task-completed';
 import { handler as cancel } from './cmd-cancel';
 import { handler as clearQueue } from './cmd-clear-queue';
@@ -151,6 +153,7 @@ export type CommandHandlerTable = {
 // Exhaustive compile-time table keyed by `CommandType`. Omitting any
 // `CommandType` member fails `tsc` here before runtime.
 export const HANDLER_TABLE: CommandHandlerTable = Object.freeze({
+  [CMD_ACK_PHASE_LOG_TAIL]: ackPhaseLogTail,
   [CMD_ATTEST_TASK_COMPLETED]: attestTaskCompleted,
   [CMD_CANCEL]: cancel,
   [CMD_CLEAR_QUEUE]: clearQueue,

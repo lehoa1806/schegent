@@ -24,6 +24,8 @@ import type {
   GuardedScheduleResult
 } from '../../../services/guarded-run-service';
 import type {
+  AckPhaseLogTailRequest,
+  AckPhaseLogTailResponse,
   CommandAckMessage,
   ExportProcessYamlResult,
   ReadMetricsRequest,
@@ -446,6 +448,8 @@ export interface RouterDeps {
   readonly phaseLogTailService?: {
     start(req: StartPhaseLogTailRequest): Promise<StartPhaseLogTailResponse>;
     stop(req: StopPhaseLogTailRequest): Promise<StopPhaseLogTailResponse>;
+    /** FR-R6-F07 (FR-009) — batch credit, the ready ack, gap and duplicate reports. */
+    ack(req: AckPhaseLogTailRequest): Promise<AckPhaseLogTailResponse>;
   };
   /**
    * Feature 084 (FR-018, FR-019, research R3) — hands a serialized document to

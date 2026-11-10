@@ -209,10 +209,6 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // had zero iterations. Same `PhaseLogEmptyStateKind` member as `PhaseLogEmptyStates.svelte` above,
   // never the pinned per-task `WorkflowRunStatus` projection.
   'webview-ui/src/components/PhaseLogFeed/PhaseLogFeed.svelte',
-  // Comment-only: one line naming the member whose card would otherwise survive a
-  // live append, which is the reason the branch beside it reclassifies. Same case
-  // as `src/services/phase-log/phase-log-reader.ts` directly above.
-  'webview-ui/src/lib/phase-log-store.svelte.ts',
   // Feature 065 — v6→v7 derivation table maps (inFlight, paused, pending)
   // tuples to a `queueLifecycle` value; `'running'` appears as a target.
   'src/state/queue-state-migrator.ts',

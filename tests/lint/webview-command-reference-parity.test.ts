@@ -134,7 +134,7 @@ function registeredOnlyViolations(page: string): readonly string[] {
 
 describe('the webview command reference matches the code (T19; SC-007)', () => {
   it('parses the real page: at least 65 inbound rows and a registered-only list (vacuity guard)', () => {
-    expect(COMMAND_TYPES).toHaveLength(65);
+    expect(COMMAND_TYPES).toHaveLength(66);
     expect(inboundRows(REFERENCE).length).toBeGreaterThanOrEqual(65);
     expect(registeredOnlyIds(REFERENCE).length).toBeGreaterThan(0);
   });

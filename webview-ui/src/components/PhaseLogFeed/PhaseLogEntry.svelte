@@ -12,6 +12,11 @@
   import AuditCompletionCard from './parts/AuditCompletionCard.svelte';
   import { detectAuditFooter } from '../../lib/activity-feed/detect-audit-footer';
   import type { AuditFooterDetection } from '../../lib/activity-feed/types';
+  import {
+    coverageGapFigure,
+    coverageGapLabel,
+    coverageGapReason
+  } from '../../lib/activity-feed/coverage-gap-label';
 
   interface Props {
     readonly entry: PhaseLogDisplayEntry;
@@ -26,7 +31,8 @@
     system: '·',
     result: '◆',
     'truncated-head': '…',
-    'tail-ended': '⏹'
+    'tail-ended': '⏹',
+    'coverage-gap': '!'
   };
 
   const isError = $derived(entry.kind === 'tool-result' && entry.body.isError === true);
@@ -49,6 +55,16 @@
   }
 
   const truncatedMax = $derived(truncationBytes(truncated));
+
+  // FR-R6-F07 T036 (FR-012) — a coverage gap shows a label for its reason and
+  // its figures as numbers; a record count of one is implied by the row.
+  const gapReason = $derived(coverageGapReason(entry.body.reason));
+  const gapLabel = $derived(coverageGapLabel(entry.body.reason));
+  const gapCount = $derived.by<number | null>(() => {
+    const count = coverageGapFigure(entry.body.count);
+    return count !== null && count > 1 ? count : null;
+  });
+  const gapBytes = $derived(coverageGapFigure(entry.body.bytes));
 
   // Feature 029 T031 — detect the SCHEGENT AUDIT LOG footer in
   // assistant-text bodies and render the matched block via
@@ -98,6 +114,16 @@
       </span>
     {:else if entry.kind === 'tail-ended'}
       <span class="tail-ended">Tail ended ({entry.body.reason ?? 'unknown'})</span>
+    {:else if entry.kind === 'coverage-gap'}
+      <span class="coverage-gap" data-testid="phase-log-coverage-gap" data-reason={gapReason}>
+        <span class="coverage-label">{gapLabel}</span>
+        {#if gapCount !== null}
+          <span class="coverage-figure" data-testid="coverage-gap-count">· {gapCount} records</span>
+        {/if}
+        {#if gapBytes !== null}
+          <span class="coverage-figure" data-testid="coverage-gap-bytes">· {gapBytes} bytes</span>
+        {/if}
+      </span>
     {/if}
     {#if truncatedMax !== null}
       <span class="truncation" data-testid="phase-log-entry-truncation">
@@ -153,7 +179,8 @@
     opacity: 0.6;
     font-style: italic;
   }
-  .dropped {
+  .dropped,
+  .coverage-gap {
     font-style: italic;
     opacity: 0.7;
   }

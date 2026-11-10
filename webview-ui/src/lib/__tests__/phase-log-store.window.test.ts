@@ -26,7 +26,8 @@ vi.mock('../phase-log-ipc', () => ({
   readPhaseLog: vi.fn(),
   startPhaseLogTail: vi.fn(),
   stopPhaseLogTail: vi.fn(),
-  subscribePhaseLogPush: () => () => {}
+  subscribePhaseLogBatch: () => () => {},
+  ackPhaseLogTail: vi.fn()
 }));
 
 import { __resetLiveModeForTests, createPhaseLogStore } from '../phase-log-store.svelte';
@@ -75,7 +76,7 @@ function cappedRead(dropped: number): readonly PhaseLogDisplayEntry[] {
 
 interface Rig {
   readonly store: ReturnType<typeof createPhaseLogStore>;
-  readonly push: (payload: unknown) => void;
+  readonly pushEntry: (sessionId: string, entry: PhaseLogDisplayEntry) => void;
   readonly setRead: (entries: readonly PhaseLogDisplayEntry[]) => void;
 }
 
@@ -88,6 +89,7 @@ async function buildRig(initial: readonly PhaseLogDisplayEntry[]): Promise<Rig> 
     {
       start: async () => ({ outcome: 'success', sessionId: SESSION, mechanism: 'fs.watch' }),
       stop: async () => ({ outcome: 'success', sessionId: SESSION }),
+      ack: () => undefined,
       subscribe: (callback: (payload: never) => void) => {
         captured.push(callback as (payload: unknown) => void);
         return () => {
@@ -101,12 +103,27 @@ async function buildRig(initial: readonly PhaseLogDisplayEntry[]): Promise<Rig> 
   await store.startTail({ selection: { ...SELECTION } });
   const push = captured.at(0);
   if (push === undefined) throw new Error('startTail did not subscribe, so no push could be delivered');
-  return { store, push, setRead: (entries) => { current = entries; } };
+  // FR-R6-F07 — each entry arrives as the one-entry `continue` batch that carries it, numbered
+  // in arrival order as the host numbers batches.
+  let batchSeq = 0;
+  const pushEntry = (sessionId: string, delivered: PhaseLogDisplayEntry): void => {
+    batchSeq += 1;
+    push({
+      protocol: 1,
+      tailSessionId: sessionId,
+      batchSeq,
+      generation: 'g-1',
+      mode: 'continue',
+      toCursor: null,
+      entries: [{ at: batchSeq, n: 0, entry: delivered }]
+    });
+  };
+  return { store, pushEntry, setRead: (entries) => { current = entries; } };
 }
 
 function deliver(rig: Rig, firstSeq: number, count: number, sessionId = SESSION): void {
   for (let seq = firstSeq; seq < firstSeq + count; seq += 1) {
-    rig.push({ tailSessionId: sessionId, entrySeq: seq, entry: entry(seq) });
+    rig.pushEntry(sessionId, entry(seq));
   }
 }
 
@@ -166,7 +183,7 @@ describe('L-T2 pushes that must change nothing', () => {
     deliver(rig, 1, 600);
     const countBefore = markerOf(rig)?.body.droppedEntryCount;
     expect(countBefore).toBe(600 - (READ_CAP - 1));
-    rig.push({ tailSessionId: SESSION, entrySeq: 601, entry: entry(601, 'tail-ended') });
+    rig.pushEntry(SESSION, entry(601, 'tail-ended'));
     expect(rig.store.state.tailSessionId).toBeNull();
     expect(rig.store.state.entries.length).toBe(READ_CAP);
     expect(markerOf(rig)?.body.droppedEntryCount).toBe(countBefore);

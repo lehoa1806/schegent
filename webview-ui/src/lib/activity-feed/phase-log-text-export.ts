@@ -1,4 +1,5 @@
 import type { PhaseLogDisplayEntry } from '../../../../src/services/phase-log/types';
+import { coverageGapReason } from './coverage-gap-label';
 import { parseToolArguments } from './parse-tool-arguments';
 import type { ParsedToolArgument, ToolArgumentValue } from './types';
 
@@ -85,6 +86,8 @@ function entryToText(entry: PhaseLogDisplayEntry): string {
       return `${prefix}(${entry.body.droppedEntryCount ?? 0} earlier entries hidden)`;
     case 'tail-ended':
       return `${prefix}Tail ended (${entry.body.reason ?? 'unknown'})`;
+    case 'coverage-gap':
+      return `${prefix}Coverage gap (${coverageGapReason(entry.body.reason)})`;
     default:
       return prefix;
   }

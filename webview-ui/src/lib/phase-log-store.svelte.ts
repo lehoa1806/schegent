@@ -1,6 +1,7 @@
 // Feature 020 — phase-log selection + entries store (Svelte 5 $state
-// runes). NOT persisted across dashboard re-mount; all fields default
-// to null/empty on construction. Tail-session lifecycle and
+// runes). Entries are NOT persisted across dashboard re-mount; all fields
+// default to null/empty on construction. Live Mode (Feature 067) and the
+// applied live-log cursor (FR-R6-F07, `live-log-resume.ts`) are. Tail-session lifecycle and
 // auto-attach land in US2 (T051/T056); this module currently exposes
 // only the read surface (load a manifest, cascade selectors, iteration
 // stepper).
@@ -25,16 +26,25 @@ import type {
   VerboseDiagnosticsBanner
 } from '../../../src/services/phase-log/types';
 import {
+  ackPhaseLogTail,
   readPhaseLog,
   startPhaseLogTail,
   type WithRefusalText,
   stopPhaseLogTail,
-  subscribePhaseLogPush,
-  type PhaseLogEntryPushPayload,
+  subscribePhaseLogBatch,
   type StartPhaseLogTailRequest,
   type StopPhaseLogTailRequest
 } from './phase-log-ipc';
+import type { AckPhaseLogTailRequest } from './messages';
+import {
+  FRESH_CONSUMER_STATE,
+  LIVE_LOG_INCOMPATIBLE_TEXT,
+  applyLiveLogBatch,
+  type LiveLogBatchInput,
+  type LiveLogBatchVerdict
+} from './live-log-consumer';
 import { getWebviewState, setWebviewState } from './vscode-api';
+import { readLiveLogResume, resumeCursorFor, writeLiveLogResume } from './live-log-resume';
 import { PHASE_LOG_WINDOW_MAX_ENTRIES, appendToWindow } from './phase-log-window';
 import { OUTCOME_NOT_YET_KNOWN_TEXT } from './boundary-refusal-text';
 import type { IntentWaitOptions } from './intent-ledger';
@@ -280,12 +290,14 @@ export function createPhaseLogStore(
       req: StopPhaseLogTailRequest
     ) => Promise<PhaseLogTailStopResult>;
     readonly subscribe: (
-      cb: (payload: PhaseLogEntryPushPayload) => void
+      cb: (payload: LiveLogBatchInput) => void
     ) => () => void;
+    readonly ack: (req: AckPhaseLogTailRequest) => void;
   } = {
     start: startPhaseLogTail,
     stop: stopPhaseLogTail,
-    subscribe: subscribePhaseLogPush
+    subscribe: subscribePhaseLogBatch,
+    ack: ackPhaseLogTail
   }
 ): PhaseLogStore {
   // Box the state in a stable container so closures (notably
@@ -321,36 +333,61 @@ export function createPhaseLogStore(
   // lifecycle: dispose on `stopTail()`, dispose on a duplicate
   // `startTail()`, dispose on `reset()`.
   let pushUnsubscribe: (() => void) | null = null;
+  // FR-R6-F07 (FR-001, FR-004) — the consumer's sequence state for the
+  // current session, and the cursor the next start resumes from: the read's,
+  // then each applied batch's. A new read or a reset of the entries clears both.
+  let consumer = FRESH_CONSUMER_STATE;
+  let resumeCursor: string | null = null;
+  // FR-R6-F07 (FR-005) — what a previous view of this webview applied. A start
+  // uses it only for the same selection, and only when there is no newer cursor.
+  const persistedResume = readLiveLogResume();
+  let tailSelection: PhaseLogSelection | null = null;
 
-  function handlePush(payload: PhaseLogEntryPushPayload): void {
+  function handleBatch(payload: LiveLogBatchInput): void {
     // Defense against late delivery after navigate-away (T044
-    // contract): drop pushes whose session does not match the
-    // currently-active tail. The host's registry tears down the
-    // previous session before allocating a new one, but the message
-    // bus is not guaranteed to be quiesced — a stale envelope can
-    // still arrive in flight.
+    // contract): drop batches whose session does not match the
+    // currently-active tail. The message bus is not guaranteed to be
+    // quiesced — a stale envelope can still arrive in flight.
     const cur = getState();
     if (cur.tailSessionId === null) return;
     if (payload.tailSessionId !== cur.tailSessionId) return;
-    if (payload.entry.kind === 'tail-ended') {
-      // Synthetic terminator — clears the LIVE indicator. The entry
-      // itself is NOT appended to the visible log because it carries
-      // no body the user cares about; the disappearance of the LIVE
-      // badge is the observable cue.
-      teardownPush();
-      setState({ ...cur, tailSessionId: null });
+    const verdict = applyLiveLogBatch(consumer, payload);
+    if (verdict.kind === 'incompatible') {
+      // FR-R6-F07 (FR-011) — apply nothing and acknowledge nothing.
+      setState({ ...cur, errorReason: LIVE_LOG_INCOMPATIBLE_TEXT });
       return;
     }
+    consumer = verdict.state;
+    if (verdict.kind === 'apply') showBatch(cur, verdict, payload.generation);
+    if (verdict.ack !== null) tail.ack({ sessionId: payload.tailSessionId, ...verdict.ack });
+  }
+
+  function showBatch(
+    cur: PhaseLogStoreState,
+    verdict: Extract<LiveLogBatchVerdict, { kind: 'apply' }>,
+    generation: string
+  ): void {
+    if (verdict.cursor !== null) {
+      resumeCursor = verdict.cursor;
+      if (tailSelection !== null) {
+        writeLiveLogResume({ selection: tailSelection, cursor: verdict.cursor, generation });
+      }
+    }
+    let entries = verdict.replace ? [] : cur.entries;
+    for (const entry of verdict.entries) {
+      // FR-R4-F08 (L3) — windowed: the newest 499 entries plus one marker counting the rest.
+      entries = appendToWindow(entries, entry, PHASE_LOG_WINDOW_MAX_ENTRIES);
+    }
     // Feature 203 (T043, D8) — the classification describes the log on screen,
-    // so appending to that log has to move it too. Without this, a feed the
-    // host classified `phase-running-no-output` keeps its "nothing yet" card
-    // while the output arrives beneath it. Only the appending branch does this:
-    // the two returns above append nothing and leave the classification alone.
+    // so appending to that log has to move it too; a batch that appends nothing
+    // leaves it alone. A terminal `tail-ended` entry is not shown: the LIVE
+    // badge going away is the cue.
+    if (verdict.ended) teardownPush();
     setState({
       ...cur,
-      // FR-R4-F08 (L3) — windowed: the newest 499 entries plus one marker counting the rest.
-      entries: appendToWindow(cur.entries, payload.entry, PHASE_LOG_WINDOW_MAX_ENTRIES),
-      verboseDiagnosticsState: { kind: 'entries-present' }
+      entries,
+      ...(verdict.entries.length > 0 ? { verboseDiagnosticsState: { kind: 'entries-present' } } : {}),
+      ...(verdict.ended ? { tailSessionId: null } : {})
     });
   }
 
@@ -376,6 +413,8 @@ export function createPhaseLogStore(
     tailToken++;
     rememberTailForStop();
     teardownPush();
+    resumeCursor = null;
+    consumer = FRESH_CONSUMER_STATE;
     const cur = getState();
     setState({
       ...cur,
@@ -426,6 +465,8 @@ export function createPhaseLogStore(
     result: WithRefusalText<PhaseLogReadResult>
   ): void {
     if (token !== loadToken) return; // stale
+    resumeCursor = result.outcome === 'success' ? (result.manifest.cursor ?? null) : null;
+    consumer = FRESH_CONSUMER_STATE;
     if (result.outcome === 'success') {
       const manifest = result.manifest;
       const before = getState();
@@ -611,10 +652,22 @@ export function createPhaseLogStore(
       if (prior !== null) {
         setState({ ...getState(), tailSessionId: null });
       }
+      // FR-R6-F07 (FR-009) — subscribe before the start, so no batch can
+      // land between the answer and the listener; the host posts nothing
+      // until ack 0 in any case. Batches before `tailSessionId` is set are
+      // dropped by the session filter.
+      // The sequence restarts; the applied position stays, so a resume from a
+      // cursor behind the shown entries adds none of them twice (a `reset`
+      // batch still clears it).
+      consumer = { ...FRESH_CONSUMER_STATE, position: consumer.position };
+      pushUnsubscribe = tail.subscribe(handleBatch);
+      const fromCursor =
+        req.fromCursor ?? resumeCursor ?? resumeCursorFor(persistedResume, req.selection) ?? undefined;
       let result: WithRefusalText<PhaseLogTailStartResult>;
       try {
-        result = await tail.start(req);
+        result = await tail.start(fromCursor === undefined ? req : { ...req, fromCursor });
       } catch {
+        if (token === tailToken) teardownPush();
         return { outcome: 'failure', reason: 'internal-error' };
       }
       if (token !== tailToken) {
@@ -623,10 +676,14 @@ export function createPhaseLogStore(
         }
         return result;
       }
-      if (result.outcome === 'success') {
-        setState({ ...getState(), tailSessionId: result.sessionId });
-        pushUnsubscribe = tail.subscribe(handlePush);
+      if (result.outcome !== 'success') {
+        teardownPush();
+        return result;
       }
+      const { queueId, taskId, pipelineId, phaseId, iterationN } = req.selection;
+      tailSelection = { queueId, taskId, pipelineId, phaseId, iterationN };
+      setState({ ...getState(), tailSessionId: result.sessionId });
+      tail.ack({ sessionId: result.sessionId, batchSeq: 0 });
       return result;
     },
     async stopTail() {
@@ -693,6 +750,8 @@ export function createPhaseLogStore(
         tailSessionId: null
       });
       teardownPush();
+      resumeCursor = null;
+      consumer = FRESH_CONSUMER_STATE;
       await loadIfComplete();
       return next;
     }

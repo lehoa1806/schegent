@@ -11,6 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { PhaseLogDisplayEntry } from '../../../../src/services/phase-log/types';
+import { LIVE_LOG_VISIBLE_MAX_BYTES } from '../../../../src/contracts/phase-log-bounds';
 import {
   PHASE_LOG_WINDOW_MAX_ENTRIES,
   WINDOW_MARKER_SEQ,
@@ -173,5 +174,102 @@ describe('hiddenEntryCount', () => {
 
   it('is the marker\'s dropped count', () => {
     expect(hiddenEntryCount([hostMarker(7), entry(1)])).toBe(7);
+  });
+});
+
+// FR-R6-F07 T031 (NFR-005) — the window is also bounded in serialized bytes:
+// the UTF-8 length of each row's JSON, the marker included. Over the bound the
+// oldest entries leave from the head into the marker's count; no field changes.
+describe('appendToWindow byte bound (FR-R6-F07)', () => {
+  const encoder = new TextEncoder();
+
+  function rowBytes(row: PhaseLogDisplayEntry): number {
+    return encoder.encode(JSON.stringify(row)).length;
+  }
+
+  function windowBytes(window: readonly PhaseLogDisplayEntry[]): number {
+    return window.reduce((total, row) => total + rowBytes(row), 0);
+  }
+
+  function sized(seq: number, text: string): PhaseLogDisplayEntry {
+    return Object.freeze({ seq, kind: 'assistant-text', ts: null, body: { text }, bodyTruncated: null });
+  }
+
+  function pushSized(
+    start: readonly PhaseLogDisplayEntry[],
+    count: number,
+    text: string,
+    maxBytes?: number
+  ): readonly PhaseLogDisplayEntry[] {
+    let window = start;
+    for (let seq = 1; seq <= count; seq += 1) {
+      window = appendToWindow(window, sized(seq, text), PHASE_LOG_WINDOW_MAX_ENTRIES, maxBytes);
+    }
+    return window;
+  }
+
+  it('the default byte bound is LIVE_LOG_VISIBLE_MAX_BYTES', () => {
+    const text = 'x'.repeat(100_000);
+    const window = pushSized([], 60, text);
+    expect(windowBytes(window)).toBeLessThanOrEqual(LIVE_LOG_VISIBLE_MAX_BYTES);
+    expect(realEntries(window).length).toBeLessThan(60);
+    expect(hiddenEntryCount(window) + realEntries(window).length).toBe(60);
+  });
+
+  it('evicts the oldest entries into the marker when bytes bind before the count', () => {
+    const maxBytes = 10_000;
+    const window = pushSized([], 50, 'y'.repeat(900), maxBytes);
+    const real = realEntries(window);
+    expect(windowBytes(window)).toBeLessThanOrEqual(maxBytes);
+    expect(window.at(0)?.kind).toBe('truncated-head');
+    expect(window.at(0)?.seq).toBe(WINDOW_MARKER_SEQ);
+    expect(hiddenEntryCount(window) + real.length).toBe(50);
+    expect(real.map((row) => row.seq)).toEqual(
+      Array.from({ length: real.length }, (_, index) => 50 - real.length + 1 + index)
+    );
+  });
+
+  it('keeps as many entries as fit, not fewer', () => {
+    const maxBytes = 10_000;
+    const window = pushSized([], 50, 'y'.repeat(900), maxBytes);
+    const oneMore = sized(0, 'y'.repeat(900));
+    const withOneMore = [window.at(0), oneMore, ...realEntries(window)];
+    expect(windowBytes(withOneMore as PhaseLogDisplayEntry[])).toBeGreaterThan(maxBytes);
+  });
+
+  it('measures UTF-8 bytes, not UTF-16 code units', () => {
+    const text = 'é'.repeat(400);
+    const maxBytes = 3_000;
+    const window = pushSized([], 10, text, maxBytes);
+    expect(windowBytes(window)).toBeLessThanOrEqual(maxBytes);
+    const codeUnits = window.reduce((total, row) => total + JSON.stringify(row).length, 0);
+    expect(codeUnits).toBeLessThan(windowBytes(window));
+  });
+
+  it('raises a host marker\'s count and keeps its seq', () => {
+    const maxBytes = 10_000;
+    const window = pushSized([hostMarker(7)], 50, 'z'.repeat(900), maxBytes);
+    expect(window.at(0)?.seq).toBe(0);
+    expect(hiddenEntryCount(window)).toBe(7 + 50 - realEntries(window).length);
+    expect(windowBytes(window)).toBeLessThanOrEqual(maxBytes);
+  });
+
+  it('always keeps the newest entry, even when it alone passes the bound', () => {
+    const big = sized(2, 'w'.repeat(5_000));
+    const window = appendToWindow([sized(1, 'small')], big, PHASE_LOG_WINDOW_MAX_ENTRIES, 1_000);
+    expect(window.at(-1)).toBe(big);
+    expect(hiddenEntryCount(window)).toBe(1);
+  });
+
+  it('copies entry references and never rewrites a field', () => {
+    const originals = Array.from({ length: 30 }, (_, index) => sized(index + 1, 'q'.repeat(900)));
+    let window: readonly PhaseLogDisplayEntry[] = [];
+    for (const row of originals) {
+      window = appendToWindow(window, row, PHASE_LOG_WINDOW_MAX_ENTRIES, 10_000);
+    }
+    for (const row of realEntries(window)) {
+      expect(originals).toContain(row);
+      expect(row.body.text).toBe('q'.repeat(900));
+    }
   });
 });

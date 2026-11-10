@@ -100,13 +100,14 @@ describe('FR-R6-F06 migration 3 (T007)', () => {
   it('is registered as version 3 and applies after 1 and 2 on a fresh store', () => {
     expect(F06_ACCOUNTING_MIGRATION_VERSION).toBe(3);
     expect(F06_ACCOUNTING_MIGRATION_NAME).toBe('003_f06_usage_accounting');
-    expect(SQLITE_SCHEMA_CURRENT_VERSION).toBe(F06_ACCOUNTING_MIGRATION_VERSION);
-    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3]);
+    // FR-R6-F07 added migration 4 after this one.
+    expect(SQLITE_SCHEMA_CURRENT_VERSION).toBe(4);
+    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4]);
     const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
     try {
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
-      expect(result.schemaVersion).toBe(3);
-      expect(result.appliedMigrations).toEqual([1, 2, 3]);
+      expect(result.schemaVersion).toBe(4);
+      expect(result.appliedMigrations).toEqual([1, 2, 3, 4]);
     } finally {
       conn.close();
     }
@@ -118,8 +119,8 @@ describe('FR-R6-F06 migration 3 (T007)', () => {
       const upToTwo = BUILTIN_SCHEMA_MIGRATIONS.filter((migration) => migration.version <= 2);
       expect(SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW, upToTwo).appliedMigrations).toEqual([1, 2]);
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
-      expect(result.appliedMigrations).toEqual([3]);
-      expect(result.schemaVersion).toBe(3);
+      expect(result.appliedMigrations).toEqual([3, 4]);
+      expect(result.schemaVersion).toBe(4);
     } finally {
       conn.close();
     }

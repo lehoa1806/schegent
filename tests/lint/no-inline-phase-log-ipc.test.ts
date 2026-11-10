@@ -1,6 +1,7 @@
 // Feature 020 T010 — grep regression: webview components must NOT
 // import `CMD_READ_PHASE_LOG`, `CMD_START_PHASE_LOG_TAIL`,
-// `CMD_STOP_PHASE_LOG_TAIL`, or `MSG_PHASE_LOG_ENTRY` directly. The
+// `CMD_STOP_PHASE_LOG_TAIL`, `CMD_ACK_PHASE_LOG_TAIL` or `MSG_PHASE_LOG_BATCH`
+// directly (FR-R6-F07 replaced `MSG_PHASE_LOG_ENTRY` with the batch). The
 // SINGLE call site for these constants in webview code is the helper
 // at `webview-ui/src/lib/phase-log-ipc.ts`.
 //
@@ -18,7 +19,8 @@ const PHASE_LOG_IPC_CONSTANTS = [
   'CMD_READ_PHASE_LOG',
   'CMD_START_PHASE_LOG_TAIL',
   'CMD_STOP_PHASE_LOG_TAIL',
-  'MSG_PHASE_LOG_ENTRY'
+  'CMD_ACK_PHASE_LOG_TAIL',
+  'MSG_PHASE_LOG_BATCH'
 ] as const;
 
 /**
@@ -31,7 +33,10 @@ const HELPER_MODULE = 'webview-ui/src/lib/phase-log-ipc.ts';
 const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/lib/messages.ts',
   'webview-ui/src/lib/phase-log-ipc.ts',
-  'webview-ui/src/lib/phase-log-store.svelte.ts'
+  'webview-ui/src/lib/phase-log-store.svelte.ts',
+  // FR-R6-F07 — the helper's own unit test pins the wire names the helper posts and filters
+  // on. It is a test of the funnel, not a second way around it.
+  'webview-ui/src/lib/__tests__/phase-log-ipc.test.ts'
 ]);
 
 

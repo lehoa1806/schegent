@@ -1,5 +1,6 @@
-// Feature 020 — phase-log IPC helper. The SINGLE call site for the 3
-// phase-log commands and the `MSG_PHASE_LOG_ENTRY` push subscription.
+// Feature 020 — phase-log IPC helper. The SINGLE call site for the
+// phase-log commands and the `MSG_PHASE_LOG_BATCH` push subscription
+// (FR-R6-F07 replaced the per-entry push with batches and an ack).
 // Mirrors the pattern from `save-general-settings.ts`.
 //
 // Webview components MUST NOT import the underlying CMD_/MSG_
@@ -13,13 +14,15 @@
 // kept aligned (the `kind` union mirrors `PhaseLogDisplayEntryKind`).
 
 import {
+  CMD_ACK_PHASE_LOG_TAIL,
   CMD_OPEN_VERBOSE_SETTING,
   CMD_READ_PHASE_LOG,
   CMD_START_PHASE_LOG_TAIL,
   CMD_STOP_PHASE_LOG_TAIL,
-  MSG_PHASE_LOG_ENTRY,
+  MSG_PHASE_LOG_BATCH,
+  type AckPhaseLogTailRequest,
   type CommandType,
-  type PhaseLogEntryPushMessage,
+  type PhaseLogBatchPushMessage,
   type ReadPhaseLogResponse,
   type StartPhaseLogTailResponse,
   type StopPhaseLogTailResponse
@@ -27,8 +30,8 @@ import {
 import { OUTCOME_NOT_YET_KNOWN_TEXT, boundaryRefusalText } from './boundary-refusal-text';
 import { sendIntent, type IntentWaitOptions } from './intent-ledger';
 import { onHostMessage, postCommand } from './vscode-api';
+import type { LiveLogBatchInput } from './live-log-consumer';
 import type {
-  PhaseLogDisplayEntry,
   PhaseLogReadResult,
   PhaseLogSelection,
   PhaseLogTailStartResult,
@@ -73,16 +76,14 @@ export interface ReadPhaseLogRequest {
 
 export interface StartPhaseLogTailRequest {
   readonly selection: PhaseLogSelection & { readonly iterationN: number };
+  /** FR-R6-F07 — the consumer slot; the host takes `dashboard` when absent. */
+  readonly consumer?: 'dashboard' | 'sidebar';
+  /** FR-R6-F07 (FR-001) — where to resume; never read authority. */
+  readonly fromCursor?: string;
 }
 
 export interface StopPhaseLogTailRequest {
   readonly sessionId: string;
-}
-
-export interface PhaseLogEntryPushPayload {
-  readonly tailSessionId: string;
-  readonly entrySeq: number;
-  readonly entry: PhaseLogDisplayEntry;
 }
 
 // Read a phase-log iteration manifest. Resolves with the typed wire
@@ -176,23 +177,23 @@ export function openVerboseSetting(): void {
   postCommand(CMD_OPEN_VERBOSE_SETTING);
 }
 
-// Subscribe to host-pushed phase-log entries. The webview must drop
-// pushes whose `tailSessionId` does not match the active session
-// (defense against late delivery after navigate-away) — that filter
-// lives in the store, not here; this helper only delivers the raw
-// envelope to the callback.
-export function subscribePhaseLogPush(
-  cb: (payload: PhaseLogEntryPushPayload) => void
-): () => void {
+// FR-R6-F07 (FR-004) — subscribe to host-pushed live-log batches. The
+// session filter, the protocol check and the sequence rules live in the
+// store and `live-log-consumer.ts`; this helper only delivers the payload.
+export function subscribePhaseLogBatch(cb: (payload: LiveLogBatchInput) => void): () => void {
   return onHostMessage((msg) => {
-    if (msg.type !== MSG_PHASE_LOG_ENTRY) return;
-    const push = msg as PhaseLogEntryPushMessage;
-    cb({
-      tailSessionId: push.payload.tailSessionId,
-      entrySeq: push.payload.entrySeq,
-      entry: push.payload.entry as PhaseLogDisplayEntry
-    });
+    if (msg.type !== MSG_PHASE_LOG_BATCH) return;
+    cb((msg as PhaseLogBatchPushMessage).payload as LiveLogBatchInput);
   });
+}
+
+// FR-R6-F07 (FR-009) — acknowledge a batch, ask for a resync or report a
+// duplicate. One-way: it does not go through the intent ledger, which would
+// fold two identical acks into one, and nothing waits on the answer. A lost
+// ack leaves the host's credit unreleased until the next ack, which carries
+// every batch before it.
+export function ackPhaseLogTail(req: AckPhaseLogTailRequest): void {
+  postCommand(CMD_ACK_PHASE_LOG_TAIL, req);
 }
 
 // Shared ack-correlation primitive. FR-R4-F05 (I4): it sends through the intent ledger, so an

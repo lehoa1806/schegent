@@ -1,7 +1,7 @@
 import type { SanitizedLogger } from '../../lib/logger';
 import type { ProjectorHandle } from '../sidebar/projector-handle';
 import type { InboundDispatch } from '../sidebar/sidebar-view-provider';
-import type { PhaseLogEntryPushMessage } from '../../contracts/sidebar-ipc';
+import type { PhaseLogBatchPushMessage } from '../../contracts/sidebar-ipc';
 import { DashboardPanel, type DashboardOpenOptions } from './dashboard-panel';
 
 export interface DashboardBridgeOptions {
@@ -18,6 +18,7 @@ export class DashboardBridge {
   private projector: ProjectorHandle;
   private dispatch: InboundDispatch;
   private onPanelDispose: (() => void) | undefined;
+  private onVisibilityChange: ((visible: boolean) => void) | undefined;
 
   constructor(opts: DashboardBridgeOptions) {
     this.extensionRoot = opts.extensionRoot;
@@ -39,25 +40,31 @@ export class DashboardBridge {
     this.onPanelDispose = onPanelDispose;
   }
 
+  /** FR-R6-F07 — the panel reports its visibility here, on open and on every change. */
+  public setOnVisibilityChange(onVisibilityChange: ((visible: boolean) => void) | undefined): void {
+    this.onVisibilityChange = onVisibilityChange;
+  }
+
   public openDashboard(): DashboardPanel {
     const opts: DashboardOpenOptions = {
       extensionRoot: this.extensionRoot,
       projector: this.projector,
       dispatch: this.dispatch,
       logger: this.logger,
-      onDispose: this.onPanelDispose
+      onDispose: this.onPanelDispose,
+      onVisibilityChange: this.onVisibilityChange
     };
     return DashboardPanel.open(opts);
   }
 
   /**
-   * Feature 020 / FR-R5-F10 — push a phase-log tail entry to the active
-   * dashboard webview. No-op when the dashboard is closed or hidden. When the
-   * dashboard panel disposes, `onPanelDispose` releases any dashboard-owned
-   * tail session with reason `webview-dispose`.
+   * FR-R6-F07 — post one phase-log batch to the active dashboard webview. Returns
+   * `false` when the dashboard is closed or hidden, so the tail session suspends.
+   * When the dashboard panel disposes, `onPanelDispose` releases any
+   * dashboard-owned tail session with reason `webview-dispose`.
    */
-  public postPhaseLogEntry(envelope: PhaseLogEntryPushMessage): void {
-    DashboardPanel.current()?.postPhaseLogEntry(envelope);
+  public postPhaseLogBatch(message: PhaseLogBatchPushMessage): boolean {
+    return DashboardPanel.current()?.postPhaseLogBatch(message) ?? false;
   }
 
   public dispose(): void {
