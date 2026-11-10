@@ -140,6 +140,10 @@ function attemptScope(request: AccountingQueryRequest, revision: number): ScopeS
     conditions.push(`${DIMENSION_SQL[dimension as AccountingDimension]} = ?`);
     params.push(value);
   }
+  if (request.rootIds !== undefined) {
+    conditions.push(`a.root_id IN (${placeholders(request.rootIds.length)})`);
+    params.push(...request.rootIds);
+  }
   const columns = [...groupColumns, 'a.attempt_id', 'a.root_id', 'a.last_event_utc'].join(', ');
   return { sql: `SELECT ${columns} FROM accounting_attempts a WHERE ${conditions.join(' AND ')}`, params };
 }

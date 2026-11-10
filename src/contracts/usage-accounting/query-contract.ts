@@ -39,6 +39,11 @@ export interface AccountingQueryRequest {
   readonly limit?: number;
   /** Opaque keyset cursor, at most 512 characters. */
   readonly cursor?: string;
+  /**
+   * FR-R6-F11: scopes the read to these roots; 1..64 unique ids, each matching the identifier
+   * pattern. Absent means every root.
+   */
+  readonly rootIds?: readonly string[];
 }
 
 export interface AccountingMeasureTotal {
@@ -92,6 +97,8 @@ export interface AccountingQueryResponse {
 }
 
 export const MAX_QUERY_LIMIT = 200;
+/** FR-R6-F11: the most roots one query may be scoped to. */
+export const MAX_QUERY_ROOT_IDS = 64;
 
 /**
  * The closed patterns a stored or filtered dimension value must match (research R11). Shared by

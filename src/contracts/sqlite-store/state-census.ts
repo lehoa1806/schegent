@@ -207,6 +207,18 @@ export const STRUCTURED_STATE_CENSUS: readonly StructuredStateCensusEntry[] = Ob
     rationale: 'Keyset-paginated read projections at stable cutoff revision S and bounded export leases.'
   },
   {
+    surfaceId: 'historical-reports',
+    legacyLocation: 'none (new in FR-R6-F11)',
+    scope: 'workspace',
+    classification: 'sqlite-authoritative',
+    targetTables: ['report_saved', 'report_exports'],
+    owningFeature: 'F11',
+    executionAffecting: false,
+    migrationStage: 'F04-B',
+    rationale:
+      'FR-R6-F11 (research R4): saved report queries with their manifests, and one row per export with its staging names and typed outcome so reconciliation removes only owned partial files. Report snapshots are in memory and never persisted; a query writes nothing. The F04 report_manifests, report_leases and export_operations skeleton tables stay unused: a lease row per query would be a write on read.'
+  },
+  {
     surfaceId: 'agent-runtime-sessions-and-effects',
     legacyLocation: '.schegent/sessions/*/runtime.json',
     scope: 'workspace',

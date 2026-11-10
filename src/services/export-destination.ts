@@ -33,6 +33,11 @@ export type ExportDestinationResolution =
 
 const EVIDENCE_DIRECTORY = '.schegent';
 
+/** The evidence store of a workspace: the directory no export may be written into. */
+export function evidenceStoreOf(workspaceRoot: string): string {
+  return path.join(workspaceRoot, EVIDENCE_DIRECTORY);
+}
+
 /** Lexical containment of two absolute paths, with no syscall. */
 function lexicallyInside(candidate: string, root: string): boolean {
   const relative = path.relative(root, candidate);
@@ -47,7 +52,7 @@ export async function resolveExportDestination(
 ): Promise<ExportDestinationResolution> {
   if (uri.scheme !== 'file') return { ok: false, refusal: 'destination-not-local-file' };
   const absolute = path.resolve(uri.fsPath);
-  const store = path.join(workspaceRoot, EVIDENCE_DIRECTORY);
+  const store = evidenceStoreOf(workspaceRoot);
   if (lexicallyInside(absolute, store)) return { ok: false, refusal: 'destination-in-evidence-store' };
   const classified = await classifyDestination(absolute, [store]);
   if (classified === 'inside') return { ok: false, refusal: 'destination-in-evidence-store' };

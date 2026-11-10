@@ -587,6 +587,14 @@ export class LiveReportLeaseTable {
     return { status: 'active', lease };
   }
 
+  /**
+   * FR-R6-F11: frees a lease when its report closes, so the slot is not held until expiry.
+   * Answers false for an unknown, expired-and-evicted or already released lease.
+   */
+  release(leaseId: string): boolean {
+    return this.leases.delete(leaseId);
+  }
+
   renew(): {
     readonly status: 'refused-no-automatic-renewal';
     readonly instruction: 'restart-report-query';

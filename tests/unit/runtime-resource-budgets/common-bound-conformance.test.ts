@@ -10,7 +10,10 @@ import {
   runAllReferenceBoundConformance,
   runCommonBoundConformance
 } from '../../../src/services/runtime-resource-budgets/common-bound-conformance.js';
-import { PendingUsageIngestionQueue } from '../../../src/services/runtime-resource-budgets/common-bound-references.js';
+import {
+  LiveReportLeaseTable,
+  PendingUsageIngestionQueue
+} from '../../../src/services/runtime-resource-budgets/common-bound-references.js';
 
 describe('common-bound-conformance (F03-AC-05, FR-008..FR-010, FR-015, SC-008)', () => {
   it('defines at least one limit and one limit-plus-one fixture for every FR-015 common bound', () => {
@@ -59,6 +62,26 @@ describe('common-bound-conformance (F03-AC-05, FR-008..FR-010, FR-015, SC-008)',
     expect(queue.state.items).toBe(8);
     expect(queue.state.coalescedCount).toBeGreaterThan(0);
     expect(queue.state.coverageGapCount).toBeGreaterThan(0);
+  });
+
+  it('frees a live report lease on release, so a fifth report is admitted (FR-R6-F11 T007)', () => {
+    const table = new LiveReportLeaseTable();
+    for (const id of ['r1', 'r2', 'r3', 'r4']) {
+      expect(table.acquire(id, 0).status).toBe('acquired');
+    }
+    expect(table.acquire('r5', 0).status).toBe('refused-lease-limit');
+    expect(table.release('r2')).toBe(true);
+    expect(table.state.activeLeases).toBe(3);
+    expect(table.acquire('r5', 0).status).toBe('acquired');
+    expect(table.useLease('r2', 0).status).toBe('expired-restart-required');
+  });
+
+  it('answers false when releasing an unknown or already released lease (FR-R6-F11 T007)', () => {
+    const table = new LiveReportLeaseTable();
+    expect(table.release('missing')).toBe(false);
+    table.acquire('r1', 0);
+    expect(table.release('r1')).toBe(true);
+    expect(table.release('r1')).toBe(false);
   });
 });
 

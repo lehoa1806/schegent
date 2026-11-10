@@ -342,6 +342,12 @@ const ATOMIC_PUBLISH_RENAME_RESIDUAL: readonly string[] = [
   // handle-relative, for the reason this list exists. Every other open the store makes (the Run file,
   // the stage file, the legacy reads) goes through the walk.
   'monitor/transport/run-transport-store.ts',
+  // FR-R6-F11 (research R8) — a report export's overwrite publish. The partial it renames FROM is
+  // created through the checked walk (`wx`, `0600`) in the destination's resolved anchor, and a
+  // containment proof of both names as direct entries of that anchor precedes the rename; the
+  // rename itself cannot be handle-relative, for the reason this list exists. The no-overwrite
+  // publish is a `link`, which never replaces a file.
+  'services/reporting/export-publisher.ts',
   'state/ownership-fs.ts'
 ];
 
