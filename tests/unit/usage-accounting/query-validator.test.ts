@@ -81,3 +81,22 @@ describe('gap read validator (T027)', () => {
     expect(validateReadGapsRequest({ other: 1 })).toEqual({ ok: false, refusal: { code: 'invalid-query', detail: 'request' } });
   });
 });
+
+describe('accounting query rootIds (FR-R6-F11 T008)', () => {
+  it('accepts 1..64 unique root ids and keeps them in the normalized request', () => {
+    const result = validateAccountingQueryRequest({ groupBy: [], rootIds: ['r-1', 'r-2'] });
+    expect(result).toEqual({ ok: true, value: { groupBy: [], rootIds: ['r-1', 'r-2'], limit: 50 } });
+    const full = Array.from({ length: 64 }, (_, index) => `r-${String(index)}`);
+    expect(refusedField({ groupBy: [], rootIds: full })).toBeUndefined();
+  });
+
+  it('refuses an empty, oversized, duplicated or malformed root id list', () => {
+    const tooMany = Array.from({ length: 65 }, (_, index) => `r-${String(index)}`);
+    expect(refusedField({ groupBy: [], rootIds: [] })).toBe('rootIds');
+    expect(refusedField({ groupBy: [], rootIds: tooMany })).toBe('rootIds');
+    expect(refusedField({ groupBy: [], rootIds: ['r-1', 'r-1'] })).toBe('rootIds');
+    expect(refusedField({ groupBy: [], rootIds: ['has space'] })).toBe('rootIds');
+    expect(refusedField({ groupBy: [], rootIds: [7] })).toBe('rootIds');
+    expect(refusedField({ groupBy: [], rootIds: 'r-1' })).toBe('rootIds');
+  });
+});

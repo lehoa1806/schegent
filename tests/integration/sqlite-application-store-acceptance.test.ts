@@ -25,6 +25,7 @@ import { F06_ACCOUNTING_TABLE_NAMES } from '../../src/services/usage-accounting/
 import { F07_LIVE_LOG_TABLE_NAMES } from '../../src/services/phase-log/live-log-index-schema';
 import { F08_HANDOFF_TABLE_NAMES } from '../../src/services/recovery-handoff/handoff-schema';
 import { F10_LANES_TABLE_NAMES } from '../../src/services/execution-lanes/lane-schema';
+import { F11_REPORTING_TABLE_NAMES } from '../../src/services/reporting/reporting-schema';
 
 describe('FR-R6-F04 End-to-End Acceptance Matrix (F04-AC-01 .. F04-AC-12)', () => {
   const tempDirs: string[] = [];
@@ -52,7 +53,8 @@ describe('FR-R6-F04 End-to-End Acceptance Matrix (F04-AC-01 .. F04-AC-12)', () =
         F06_ACCOUNTING_TABLE_NAMES.length +
         F07_LIVE_LOG_TABLE_NAMES.length +
         F08_HANDOFF_TABLE_NAMES.length +
-        F10_LANES_TABLE_NAMES.length
+        F10_LANES_TABLE_NAMES.length +
+        F11_REPORTING_TABLE_NAMES.length
     );
     expect(qualReport.foreignKeyCheckViolations).toBe(0);
     for (const dist of qualReport.sqliteBenchmarks) {

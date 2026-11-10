@@ -102,28 +102,28 @@ describe('FR-R6-F08 T004 — migration 5, the recovery handoff store', () => {
     expect(F08_HANDOFF_MIGRATION_VERSION).toBe(5);
     expect(F08_HANDOFF_MIGRATION_NAME).toBe('005_f08_recovery_handoff');
     expect(SQLITE_SCHEMA_CURRENT_VERSION).toBeGreaterThanOrEqual(F08_HANDOFF_MIGRATION_VERSION);
-    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
     try {
       const first = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
-      expect(first.schemaVersion).toBe(6);
-      expect(first.appliedMigrations).toEqual([1, 2, 3, 4, 5, 6]);
+      expect(first.schemaVersion).toBe(7);
+      expect(first.appliedMigrations).toEqual([1, 2, 3, 4, 5, 6, 7]);
       const second = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
       expect(second.appliedMigrations).toEqual([]);
-      expect(second.schemaVersion).toBe(6);
+      expect(second.schemaVersion).toBe(7);
     } finally {
       conn.close();
     }
   });
 
-  it('upgrades a version 4 store by applying migrations 5 and 6', () => {
+  it('upgrades a version 4 store by applying migration 5 and the later ones', () => {
     const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
     try {
       const upToFour = BUILTIN_SCHEMA_MIGRATIONS.filter((migration) => migration.version <= 4);
       SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW, upToFour);
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
-      expect(result.appliedMigrations).toEqual([5, 6]);
-      expect(result.schemaVersion).toBe(6);
+      expect(result.appliedMigrations).toEqual([5, 6, 7]);
+      expect(result.schemaVersion).toBe(7);
     } finally {
       conn.close();
     }
