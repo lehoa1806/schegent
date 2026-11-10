@@ -49,7 +49,8 @@ vi.mock('../phase-log-ipc', () => ({
   }),
   startPhaseLogTail: vi.fn(),
   stopPhaseLogTail: vi.fn(),
-  subscribePhaseLogPush: () => () => {}
+  subscribePhaseLogBatch: () => () => {},
+  ackPhaseLogTail: vi.fn()
 }));
 
 // Late import so the mocks above bind before the store module
@@ -494,6 +495,7 @@ async function storeShowingRunningCard(): Promise<{
     {
       start: async () => ({ outcome: 'success', sessionId: 's-1', mechanism: 'fs.watch' }),
       stop: async () => ({ outcome: 'success', sessionId: 's-1' }),
+      ack: () => undefined,
       subscribe: (cb: (payload: never) => void) => {
         captured.push(cb as (payload: unknown) => void);
         return () => {
@@ -513,7 +515,28 @@ async function storeShowingRunningCard(): Promise<{
   if (push === undefined) {
     throw new Error('startTail did not subscribe, so no push could be delivered');
   }
-  return { store, push };
+  return { store, push: (payload) => push(asBatch(payload as LegacyPush)) };
+}
+
+// FR-R6-F07 — the Feature 203 cases below were written against the per-entry push. Each one is
+// now delivered as the one-entry `continue` batch that carries it, numbered from 1 as the host
+// numbers them, so the cases keep their own words.
+interface LegacyPush {
+  readonly tailSessionId: string;
+  readonly entrySeq: number;
+  readonly entry: unknown;
+}
+
+function asBatch(push: LegacyPush): unknown {
+  return {
+    protocol: 1,
+    tailSessionId: push.tailSessionId,
+    batchSeq: push.entrySeq,
+    generation: 'g-1',
+    mode: 'continue',
+    toCursor: null,
+    entries: [{ at: push.entrySeq, n: 0, entry: push.entry }]
+  };
 }
 
 describe('Feature 203 T044 — a live entry retires the card that said there were none', () => {
@@ -560,5 +583,198 @@ describe('Feature 203 T044 — a live entry retires the card that said there wer
     expect(store.state.entries).toHaveLength(0);
     expect(store.state.tailSessionId).toBeNull();
     expect(store.state.verboseDiagnosticsState).toEqual({ kind: 'phase-running-no-output' });
+  });
+});
+
+// FR-R6-F07 (T021; FR-001, FR-004, FR-009, FR-011) — the store as a live-log consumer.
+//
+// The tail seam records every call in order, so "subscribe before start" and "ack 0 after the
+// start answer" are read off one log rather than inferred.
+describe('FR-R6-F07 T021 — batches, acknowledgements and the cursor', () => {
+  type Call = { readonly kind: string; readonly payload?: unknown };
+
+  interface ConsumerRig {
+    readonly store: ReturnType<typeof createPhaseLogStore>;
+    readonly calls: Call[];
+    readonly deliver: (payload: unknown) => void;
+  }
+
+  function batch(
+    batchSeq: number,
+    entries: readonly (readonly [number, number, unknown])[],
+    overrides: Record<string, unknown> = {}
+  ): unknown {
+    return {
+      protocol: 1,
+      tailSessionId: 's-1',
+      batchSeq,
+      generation: 'g-1',
+      mode: 'continue',
+      toCursor: null,
+      entries: entries.map(([at, n, entry]) => ({ at, n, entry })),
+      ...overrides
+    };
+  }
+
+  function acksOf(calls: readonly Call[]): unknown[] {
+    return calls.filter((call) => call.kind === 'ack').map((call) => call.payload);
+  }
+
+  function textsOf(store: ConsumerRig['store']): unknown[] {
+    return store.state.entries.map((entry) => entry.body['text']);
+  }
+
+  async function consumerRig(cursor: string | null = 'c-read'): Promise<ConsumerRig> {
+    const calls: Call[] = [];
+    const handlers: ((payload: unknown) => void)[] = [];
+    const manifest = { ...RUNNING_WITH_NO_OUTPUT.manifest, cursor };
+    const store = createPhaseLogStore(
+      async () => ({ outcome: 'success', manifest }) as never,
+      {
+        start: async (req: unknown) => {
+          calls.push({ kind: 'start', payload: req });
+          return {
+            outcome: 'success',
+            sessionId: 's-1',
+            mechanism: 'fs.watch',
+            snapshotCutoff: 'c-cut',
+            nextCursor: 'c-cut',
+            cursorStatus: 'accepted'
+          };
+        },
+        stop: async (req: unknown) => {
+          calls.push({ kind: 'stop', payload: req });
+          return { outcome: 'success', sessionId: 's-1' };
+        },
+        ack: (req: unknown) => {
+          calls.push({ kind: 'ack', payload: req });
+        },
+        subscribe: (handler: (payload: never) => void) => {
+          calls.push({ kind: 'subscribe' });
+          handlers.push(handler as (payload: unknown) => void);
+          return () => {
+            calls.push({ kind: 'unsubscribe' });
+            handlers.length = 0;
+          };
+        }
+      } as never
+    );
+    store.setSelection({ ...SELECTION }, { origin: 'cascade' });
+    await store.reload();
+    await store.startTail({ selection: { ...SELECTION } });
+    return {
+      store,
+      calls,
+      deliver: (payload) => {
+        const handler = handlers.at(0);
+        if (handler === undefined) throw new Error('no batch subscription is open');
+        handler(payload);
+      }
+    };
+  }
+
+  it('subscribes before it starts, starts from the read cursor and sends ack 0 after the answer', async () => {
+    const { calls } = await consumerRig('c-read');
+    expect(calls.map((call) => call.kind)).toEqual(['subscribe', 'start', 'ack']);
+    expect(calls.at(1)?.payload).toMatchObject({ fromCursor: 'c-read' });
+    expect(acksOf(calls)).toEqual([{ sessionId: 's-1', batchSeq: 0 }]);
+  });
+
+  it('starts with no cursor when the read had none', async () => {
+    const { calls } = await consumerRig(null);
+    expect(calls.at(1)?.payload).not.toHaveProperty('fromCursor');
+  });
+
+  it('applies each batch and acknowledges it by its sequence number', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)], [20, 0, makeEntry(2)]], { mode: 'resume' }));
+    deliver(batch(2, [[30, 0, makeEntry(3)]]));
+    expect(textsOf(store)).toEqual(['line 1', 'line 2', 'line 3']);
+    expect(store.state.verboseDiagnosticsState).toEqual({ kind: 'entries-present' });
+    expect(acksOf(calls).slice(1)).toEqual([
+      { sessionId: 's-1', batchSeq: 1 },
+      { sessionId: 's-1', batchSeq: 2 }
+    ]);
+  });
+
+  it('skips entries at or before the applied position when a replay resumes', async () => {
+    const { store, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)], [10, 1, makeEntry(2)]], { mode: 'resume' }));
+    deliver(batch(2, [[10, 0, makeEntry(11)], [10, 1, makeEntry(12)], [20, 0, makeEntry(3)]], { mode: 'resume' }));
+    expect(textsOf(store)).toEqual(['line 1', 'line 2', 'line 3']);
+  });
+
+  it('asks for one resync on a gap and ignores the batches after it until a resume', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume' }));
+    deliver(batch(3, [[30, 0, makeEntry(3)]]));
+    deliver(batch(4, [[40, 0, makeEntry(4)]]));
+    expect(textsOf(store)).toEqual(['line 1']);
+    deliver(batch(5, [[20, 0, makeEntry(2)], [30, 0, makeEntry(3)]], { mode: 'resume' }));
+    expect(textsOf(store)).toEqual(['line 1', 'line 2', 'line 3']);
+    expect(acksOf(calls).slice(1)).toEqual([
+      { sessionId: 's-1', batchSeq: 1 },
+      { sessionId: 's-1', batchSeq: 1, resync: true },
+      { sessionId: 's-1', batchSeq: 5 }
+    ]);
+  });
+
+  it('reports a batch it has already applied as a duplicate and applies nothing', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume' }));
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume' }));
+    expect(textsOf(store)).toEqual(['line 1']);
+    expect(acksOf(calls).at(-1)).toEqual({ sessionId: 's-1', batchSeq: 1, duplicate: true });
+  });
+
+  it('replaces what it shows with a reset batch', async () => {
+    const { store, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)], [20, 0, makeEntry(2)]], { mode: 'resume' }));
+    deliver(batch(2, [[5, 0, makeEntry(7)]], { mode: 'reset', generation: 'g-2' }));
+    expect(textsOf(store)).toEqual(['line 7']);
+  });
+
+  it('shows a compatibility notice for an unknown protocol, applies nothing and acknowledges nothing', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume', protocol: 2 }));
+    expect(store.state.entries).toHaveLength(0);
+    expect(store.state.errorReason).toMatch(/version/i);
+    expect(acksOf(calls)).toEqual([{ sessionId: 's-1', batchSeq: 0 }]);
+  });
+
+  it('drops a batch for another session', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume', tailSessionId: 's-stale' }));
+    expect(store.state.entries).toHaveLength(0);
+    expect(acksOf(calls)).toHaveLength(1);
+  });
+
+  it('starts the next tail from the cursor of the last applied batch', async () => {
+    const { store, calls, deliver } = await consumerRig('c-read');
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume', toCursor: 'c-10' }));
+    deliver(batch(2, [[15, 0, makeEntry(2)]]));
+    await store.stopTail();
+    await store.startTail({ selection: { ...SELECTION } });
+    const starts = calls.filter((call) => call.kind === 'start');
+    expect(starts.at(-1)?.payload).toMatchObject({ fromCursor: 'c-10' });
+  });
+
+  it('ends the tail on a terminal batch without acknowledging it', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume' }));
+    deliver(batch(2, [[Number.MAX_SAFE_INTEGER, 0, makeEntry(2, 'tail-ended')]]));
+    expect(textsOf(store)).toEqual(['line 1']);
+    expect(store.state.tailSessionId).toBeNull();
+    expect(acksOf(calls).at(-1)).toEqual({ sessionId: 's-1', batchSeq: 1 });
+  });
+
+  it('ends the tail on a terminal batch that arrives after a gap', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume' }));
+    deliver(batch(3, [[30, 0, makeEntry(3)]]));
+    deliver(batch(4, [[Number.MAX_SAFE_INTEGER, 0, makeEntry(4, 'tail-ended')]]));
+    expect(textsOf(store)).toEqual(['line 1']);
+    expect(store.state.tailSessionId).toBeNull();
+    expect(acksOf(calls)).toHaveLength(3);
   });
 });

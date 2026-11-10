@@ -10,10 +10,13 @@
 //    'secondary-window-readonly' before the handler runs, and an untrusted
 //    workspace with 'untrusted-workspace'. Trust is checked first.
 // 3. A trusted primary host is not refused by either gate.
+// 4. FR-R6-F07 (T019) — CMD_ACK_PHASE_LOG_TAIL is gated like the other three and
+//    forwards to the tail service's `ack`.
 
 import { describe, expect, it, vi } from 'vitest';
 import {
   CMD_READ_PHASE_LOG,
+  CMD_ACK_PHASE_LOG_TAIL,
   CMD_START_PHASE_LOG_TAIL,
   CMD_STOP_PHASE_LOG_TAIL
 } from '../../../../src/ui/sidebar/messages';
@@ -61,14 +64,32 @@ const PHASE_LOG_COMMANDS: ReadonlyArray<{ readonly type: string; readonly comman
       correlationId: 'corr-3',
       payload: { sessionId: 'session-xyz' }
     }
+  },
+  {
+    type: CMD_ACK_PHASE_LOG_TAIL,
+    command: {
+      type: CMD_ACK_PHASE_LOG_TAIL,
+      correlationId: 'corr-4',
+      payload: { sessionId: 'session-xyz', batchSeq: 0 }
+    }
   }
 ];
 
-function routerWith(gate: {
-  readonly isPrimary: () => boolean;
-  readonly isTrusted: () => boolean;
-}): MessageRouter {
+const ACK_COMMAND: SidebarCommand = {
+  type: CMD_ACK_PHASE_LOG_TAIL,
+  correlationId: 'corr-5',
+  payload: { sessionId: 'session-xyz', batchSeq: 3, duplicate: true }
+};
+
+function routerWith(
+  gate: {
+    readonly isPrimary: () => boolean;
+    readonly isTrusted: () => boolean;
+  },
+  phaseLogTailService?: RouterDeps['phaseLogTailService']
+): MessageRouter {
   return new MessageRouter({
+    ...(phaseLogTailService === undefined ? {} : { phaseLogTailService }),
     executeCommand: noopExecuteCommand,
     isPrimary: gate.isPrimary,
     isTrusted: gate.isTrusted,
@@ -122,4 +143,48 @@ describe('FR-R4-F05 T032 — phase-log commands are gated', () => {
       expect(ack?.reason).not.toBe('untrusted-workspace');
     });
   }
+});
+
+describe('FR-R6-F07 T019 — CMD_ACK_PHASE_LOG_TAIL forwards to the tail service', () => {
+  const OPEN = { isPrimary: () => true, isTrusted: () => true };
+
+  function tailService(ack: NonNullable<RouterDeps['phaseLogTailService']>['ack']): RouterDeps['phaseLogTailService'] {
+    return {
+      start: () => Promise.resolve({ outcome: 'failure', reason: 'internal-error' }),
+      stop: (req) => Promise.resolve({ outcome: 'failure', sessionId: req.sessionId }),
+      ack
+    };
+  }
+
+  it('passes the ack through and accepts it on success', async () => {
+    const ack = vi.fn((req: { readonly sessionId: string }) =>
+      Promise.resolve({ outcome: 'success' as const, sessionId: req.sessionId })
+    );
+    const router = routerWith(OPEN, tailService(ack));
+    const reply = await lastAckOf(router, ACK_COMMAND);
+    expect(ack).toHaveBeenCalledWith({ sessionId: 'session-xyz', batchSeq: 3, duplicate: true });
+    expect(reply).toMatchObject({ status: 'accepted' });
+  });
+
+  it('rejects an ack for an unknown session with unknown-session', async () => {
+    const router = routerWith(
+      OPEN,
+      tailService((req) =>
+        Promise.resolve({ outcome: 'failure', sessionId: req.sessionId, reason: 'unknown-session' })
+      )
+    );
+    const reply = await lastAckOf(router, ACK_COMMAND);
+    expect(reply).toMatchObject({ status: 'rejected', reason: 'unknown-session' });
+  });
+
+  it('rejects with internal-error when no tail service is wired', async () => {
+    const reply = await lastAckOf(routerWith(OPEN), ACK_COMMAND);
+    expect(reply).toMatchObject({ status: 'rejected', reason: 'internal-error' });
+  });
+
+  it('rejects with internal-error when the service throws', async () => {
+    const router = routerWith(OPEN, tailService(() => Promise.reject(new Error('boom'))));
+    const reply = await lastAckOf(router, ACK_COMMAND);
+    expect(reply).toMatchObject({ status: 'rejected', reason: 'internal-error' });
+  });
 });

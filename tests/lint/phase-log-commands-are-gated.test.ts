@@ -1,4 +1,4 @@
-// FR-R4-F05 (FR-003, US2; contract T, T6) — the three phase-log IPC commands are
+// FR-R4-F05 (FR-003, US2; contract T, T6) — the phase-log IPC commands are
 // GATED: members of `MUTATING_COMMANDS`, declared `gatedConcurrent` in
 // `COMMAND_AUTHORITY`.
 //
@@ -25,6 +25,7 @@
 import { describe, expect, it } from 'vitest';
 import { COMMAND_AUTHORITY } from '../../src/contracts/sidebar-command-metadata';
 import {
+  CMD_ACK_PHASE_LOG_TAIL,
   CMD_READ_PHASE_LOG,
   CMD_START_PHASE_LOG_TAIL,
   CMD_STOP_PHASE_LOG_TAIL
@@ -34,7 +35,9 @@ import { MUTATING_COMMANDS } from '../../src/ui/sidebar/message-router';
 const PHASE_LOG_COMMAND_NAMES = [
   CMD_READ_PHASE_LOG,
   CMD_START_PHASE_LOG_TAIL,
-  CMD_STOP_PHASE_LOG_TAIL
+  CMD_STOP_PHASE_LOG_TAIL,
+  // FR-R6-F07 — the ack advances delivery on a tail the gated start opened.
+  CMD_ACK_PHASE_LOG_TAIL
 ] as const;
 
 describe('FR-R4-F05 T031 — phase-log commands are gated in MUTATING_COMMANDS', () => {
@@ -43,11 +46,12 @@ describe('FR-R4-F05 T031 — phase-log commands are gated in MUTATING_COMMANDS',
       expect(MUTATING_COMMANDS.has(name)).toBe(true);
     });
 
-    it(`${name} is declared gated and concurrent, with the audit row as its reason`, () => {
+    it(`${name} is declared gated and concurrent, with its reason`, () => {
       const entry = COMMAND_AUTHORITY[name];
 
       expect(entry).toMatchObject({ authority: 'gated', execution: 'concurrent' });
-      expect(entry.reason).toContain('row');
+      // The ack appends no row; it is gated because the start that opened its tail is.
+      expect(entry.reason).toContain(name === CMD_ACK_PHASE_LOG_TAIL ? 'gated start' : 'row');
     });
   }
 });

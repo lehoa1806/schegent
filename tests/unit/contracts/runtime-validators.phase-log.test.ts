@@ -281,3 +281,82 @@ describe('validateInboundMessage — phase-log commands (020 BUG-001)', () => {
     });
   });
 });
+
+// FR-R6-F07 (FR-002, FR-003, FR-009, NFR-003) — start gains `consumer` and
+// `fromCursor`; the new ack command carries batch credit and gap requests.
+const ACK = 'CMD_ACK_PHASE_LOG_TAIL';
+const CURSOR = 'plc1.0123456789abcdef.1a-2b.42.fedcba9876543210';
+
+function ackMsg(payload: unknown): unknown {
+  return { type: ACK, correlationId: 'cid', payload };
+}
+
+function reasonOf(result: ReturnType<typeof validateInboundMessage>): string | null {
+  return result.ok ? null : result.reason;
+}
+
+describe('validateInboundMessage — live-log fields (FR-R6-F07)', () => {
+  it('accepts a start with a consumer and a cursor and passes both through', () => {
+    const result = validateInboundMessage(
+      startMsg({ selection: SELECTION, consumer: 'sidebar', fromCursor: CURSOR })
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = (result.command as { payload: Record<string, unknown> }).payload;
+    expect(payload['consumer']).toBe('sidebar');
+    expect(payload['fromCursor']).toBe(CURSOR);
+  });
+
+  it('accepts an unknown consumer name so the host can answer busy', () => {
+    expect(validateInboundMessage(startMsg({ selection: SELECTION, consumer: 'third' })).ok).toBe(
+      true
+    );
+  });
+
+  it('rejects an empty, oversized or non-string consumer', () => {
+    for (const consumer of ['', 'c'.repeat(65), 7, null]) {
+      const result = validateInboundMessage(startMsg({ selection: SELECTION, consumer }));
+      expect(reasonOf(result)).toBe('invalid-consumer');
+    }
+  });
+
+  it('rejects a cursor over 160 characters or outside printable ASCII', () => {
+    for (const fromCursor of ['', 'p'.repeat(161), 'plc1.é', 'plc1 x', 12]) {
+      const result = validateInboundMessage(startMsg({ selection: SELECTION, fromCursor }));
+      expect(reasonOf(result)).toBe('invalid-fromCursor');
+    }
+    const longest = validateInboundMessage(
+      startMsg({ selection: SELECTION, fromCursor: 'p'.repeat(160) })
+    );
+    expect(longest.ok).toBe(true);
+  });
+
+  it('accepts an ack with the documented fields', () => {
+    for (const payload of [
+      { sessionId: 's-1', batchSeq: 0 },
+      { sessionId: 's-1', batchSeq: 9, resync: true },
+      { sessionId: 's-1', batchSeq: 3, duplicate: true }
+    ]) {
+      const result = validateInboundMessage(ackMsg(payload));
+      expect(result.ok).toBe(true);
+      if (result.ok) expect((result.command as { payload: unknown }).payload).toEqual(payload);
+    }
+  });
+
+  it('rejects an ack with a bad sequence, flag, session or extra key', () => {
+    const cases: readonly [unknown, string][] = [
+      [{ sessionId: 's-1', batchSeq: -1 }, 'invalid-batchSeq'],
+      [{ sessionId: 's-1', batchSeq: 1.5 }, 'invalid-batchSeq'],
+      [{ sessionId: 's-1', batchSeq: Number.MAX_SAFE_INTEGER + 1 }, 'invalid-batchSeq'],
+      [{ sessionId: 's-1' }, 'invalid-batchSeq'],
+      [{ sessionId: '', batchSeq: 1 }, 'invalid-sessionId'],
+      [{ sessionId: 's-1', batchSeq: 1, resync: 'yes' }, 'invalid-resync'],
+      [{ sessionId: 's-1', batchSeq: 1, duplicate: 1 }, 'invalid-duplicate'],
+      [{ sessionId: 's-1', batchSeq: 1, extra: true }, 'unexpected-payload-fields'],
+      [null, 'missing-payload']
+    ];
+    for (const [payload, reason] of cases) {
+      expect(reasonOf(validateInboundMessage(ackMsg(payload)))).toBe(reason);
+    }
+  });
+});

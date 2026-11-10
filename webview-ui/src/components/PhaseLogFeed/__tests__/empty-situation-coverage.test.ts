@@ -56,7 +56,8 @@ vi.mock('../../../lib/phase-log-ipc', () => ({
   startPhaseLogTail: (req: unknown) => startSpy(req),
   stopPhaseLogTail: (req: unknown) => stopSpy(req),
   openVerboseSetting: vi.fn(),
-  subscribePhaseLogPush: () => () => {}
+  subscribePhaseLogBatch: () => () => {},
+  ackPhaseLogTail: vi.fn()
 }));
 
 vi.mock('../../../lib/vscode-api', () => ({
@@ -269,7 +270,8 @@ async function renderWithManifest(manifest: IterationManifest): Promise<RenderOu
     {
       start: (req) => startSpy(req),
       stop: (req) => stopSpy(req),
-      subscribe: () => () => {}
+      subscribe: () => () => {},
+      ack: () => undefined
     }
   );
   const { container } = render(PhaseLogFeed, {

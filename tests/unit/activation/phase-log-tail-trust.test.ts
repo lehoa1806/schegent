@@ -117,6 +117,8 @@ function harness(isWorkspaceTrusted: () => boolean): Harness {
     isWorkspaceTrusted,
     logger
   });
+  // FR-R6-F07 — a start needs the dashboard slot bound; this sink accepts every batch.
+  created.bindDashboardBridge({ postPhaseLogBatch: () => true });
   wiring = created;
 
   return {

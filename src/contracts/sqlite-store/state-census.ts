@@ -110,11 +110,12 @@ export const STRUCTURED_STATE_CENSUS: readonly StructuredStateCensusEntry[] = Ob
     legacyLocation: '.schegent/logs/index.json',
     scope: 'workspace',
     classification: 'sqlite-authoritative',
-    targetTables: ['log_streams', 'log_segments', 'log_gaps'],
-    owningFeature: 'F07/F04-B',
+    targetTables: ['live_log_streams', 'live_log_segments', 'live_log_coverage'],
+    owningFeature: 'F07',
     executionAffecting: false,
     migrationStage: 'F04-B',
-    rationale: 'Relational index over bounded external log segment files and backpressure gaps.'
+    rationale:
+      'FR-R6-F07 (research R9): source generations, segment byte ranges with a durable flag, and coverage ranges over the live phase-log files; no column holds log content. The F04 log_* tables are commit-unit placeholders production does not write.'
   },
   {
     surfaceId: 'log-segment-bytes',

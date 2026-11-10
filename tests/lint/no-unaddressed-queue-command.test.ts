@@ -185,6 +185,11 @@ const NOT_QUEUE_ADDRESSED: ReadonlyMap<string, string> = new Map([
     `${RUN_ADDRESSED} The session id was minted by CMD_START_PHASE_LOG_TAIL, whose own selection ` +
       'names the queue, so the tail is addressed by the thing the addressed command created.'
   ],
+  [
+    'CMD_ACK_PHASE_LOG_TAIL',
+    `${RUN_ADDRESSED} FR-R6-F07: like CMD_STOP_PHASE_LOG_TAIL, it names only the session id ` +
+      'CMD_START_PHASE_LOG_TAIL minted, and an ack for any other session is a no-op failure.'
+  ],
   ['CMD_OPEN_AUDIT_LOG', WORKSPACE_SCOPED],
   ['CMD_OPEN_DASHBOARD', WORKSPACE_SCOPED],
   ['CMD_OPEN_VERBOSE_SETTING', WORKSPACE_SCOPED],

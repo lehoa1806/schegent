@@ -10,6 +10,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import { readIterationManifest } from '../../../../src/services/phase-log/phase-log-reader';
 import type { PhaseProgress } from '../../../../src/services/phase-log/types';
+import {
+  FINGERPRINT_WINDOW_BYTES,
+  fingerprintOf,
+  generationOf,
+  issueCursor,
+  parseCursor,
+  streamDigest
+} from '../../../../src/services/phase-log/live-log-cursor';
 
 // Feature 203 (T038) — the ONLY seam in this file, and it exists for the race
 // windows. The reader's other empty return sites are reachable by building the
@@ -683,5 +691,88 @@ describe('Feature 203 T040 — entries-present is exactly the non-empty case', (
     // the biconditional would satisfy the loop above without testing it.
     expect(observed.filter((row) => row.entryCount > 0)).toHaveLength(1);
     expect(observed.filter((row) => row.entryCount === 0)).toHaveLength(4);
+  });
+});
+
+// FR-R6-F07 (FR-001, FR-002) — the read issues the cursor the tail starts from.
+describe('FR-R6-F07 — the read returns a cursor at its last projector-idle boundary', () => {
+  const SELECTION_1 = { ...BASE_SELECTION, iterationN: 1 };
+  const INIT = '{"type":"system","subtype":"init"}';
+  const RESULT = '{"type":"result","duration_ms":1}';
+  const OPEN_STEP = JSON.stringify({
+    event: 'step_update',
+    step_type: 'agent_response',
+    state: 'ACTIVE',
+    step_index: 0,
+    text_delta: 'thinking'
+  });
+
+  async function read(isInFlight: boolean) {
+    return readIterationManifest({
+      workspaceRoot: tmpDir,
+      selection: SELECTION_1,
+      isInFlight,
+      progress: isInFlight ? 'running' : 'not-running',
+      caps: { perFieldBytes: 4096, maxEntries: 500 },
+      sanitize
+    });
+  }
+
+  async function expectedCursorAt(offset: number): Promise<string> {
+    const file = await fs.readFile(streamPath(1));
+    const stat = await fs.stat(streamPath(1));
+    const window = file.subarray(Math.max(0, offset - FINGERPRINT_WINDOW_BYTES), offset);
+    return issueCursor({
+      digest: streamDigest(tmpDir, SELECTION_1),
+      generation: generationOf(stat, process.platform),
+      offset,
+      fingerprint: fingerprintOf(window)
+    });
+  }
+
+  it('issues a cursor at the end of a complete, idle stream', async () => {
+    await writeStream(1, [INIT, RESULT]);
+    const { size } = await fs.stat(streamPath(1));
+    const manifest = await read(true);
+    expect(manifest.cursor).toBe(await expectedCursorAt(size));
+    expect(manifest.entries).toHaveLength(2);
+  });
+
+  it('stops an in-flight read at the last idle boundary and leaves later entries to the tail', async () => {
+    await writeStream(1, [INIT, OPEN_STEP, RESULT]);
+    const boundary = Buffer.byteLength(`${INIT}\n`);
+    const manifest = await read(true);
+    expect(manifest.cursor).toBe(await expectedCursorAt(boundary));
+    expect(manifest.entries.map((entry) => entry.kind)).toEqual(['system']);
+  });
+
+  it('keeps every entry of a finished read while the cursor stays at the idle boundary', async () => {
+    await writeStream(1, [INIT, OPEN_STEP, RESULT]);
+    const boundary = Buffer.byteLength(`${INIT}\n`);
+    const manifest = await read(false);
+    expect(manifest.cursor).toBe(await expectedCursorAt(boundary));
+    expect(manifest.entries.map((entry) => entry.kind)).toEqual(['system', 'result']);
+  });
+
+  it('never places the cursor inside a partial trailing record', async () => {
+    await writeStream(1, [INIT]);
+    await fs.appendFile(streamPath(1), '{"type":"result","dur');
+    const boundary = Buffer.byteLength(`${INIT}\n`);
+    const manifest = await read(true);
+    expect(manifest.cursor).toBe(await expectedCursorAt(boundary));
+  });
+
+  it('has a null cursor when there is no file', async () => {
+    expect((await read(true)).cursor).toBeNull();
+    await makeIterationDir(1);
+    expect((await read(true)).cursor).toBeNull();
+  });
+
+  it('issues a parseable cursor of at most 160 characters', async () => {
+    await writeStream(1, [INIT]);
+    const { cursor } = await read(true);
+    expect(typeof cursor).toBe('string');
+    expect(parseCursor(cursor ?? '').outcome).toBe('parsed');
+    expect((cursor ?? '').length).toBeLessThanOrEqual(160);
   });
 });

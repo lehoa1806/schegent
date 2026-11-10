@@ -430,8 +430,8 @@ const REGISTRY: readonly CountEntry[] = [
   },
   {
     document: 'repo/docs/development/lint-gate-census.md',
-    claim: 'one rule implemented twelve times, across **794 lines**',
-    stated: 794,
+    claim: 'one rule implemented twelve times, across **799 lines**',
+    stated: 799,
     producer: 'the twelve no-inline-* gates in repo/tests/lint/, summed',
     derive: noInlineFamilyLines,
     why:
@@ -452,8 +452,8 @@ const REGISTRY: readonly CountEntry[] = [
    */
   {
     document: 'repo/docs/reference/api-and-cli.md',
-    claim: 'all 53 metadata-classified webview mutations',
-    stated: 53,
+    claim: 'all 54 metadata-classified webview mutations',
+    stated: 54,
     producer: 'the entries of COMMAND_AUTHORITY declared gated (MUTATING_COMMAND_TYPES)',
     derive: gatedWebviewCommandCount,
     why:
@@ -464,8 +464,8 @@ const REGISTRY: readonly CountEntry[] = [
   },
   {
     document: 'repo/docs/reference/api-and-cli.md',
-    claim: 'contains exactly these 65 inbound literals',
-    stated: 65,
+    claim: 'contains exactly these 66 inbound literals',
+    stated: 66,
     producer: 'COMMAND_TYPES in repo/src/contracts/sidebar-ipc.ts',
     derive: webviewCommandCount,
     why:

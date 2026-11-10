@@ -62,6 +62,7 @@ import {
   CMD_READ_PHASE_LOG,
   CMD_START_PHASE_LOG_TAIL,
   CMD_STOP_PHASE_LOG_TAIL,
+  CMD_ACK_PHASE_LOG_TAIL,
   CMD_RESOLVE_AUDIT_POINTER,
   CMD_RESOLVE_HISTORY_DESCRIPTION,
   CMD_READ_FAILURE_RECORD,
@@ -84,6 +85,7 @@ import {
 } from './sidebar-ipc';
 import { isValidEnqueueStartIntent } from './start-intent-types';
 import {
+  validateAckPhaseLogTail,
   validateReadPhaseLog,
   validateStartPhaseLogTail,
   validateStopPhaseLogTail
@@ -281,6 +283,8 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateStartPhaseLogTail(obj, correlationId);
     case CMD_STOP_PHASE_LOG_TAIL:
       return validateStopPhaseLogTail(obj, correlationId);
+    case CMD_ACK_PHASE_LOG_TAIL:
+      return validateAckPhaseLogTail(obj, correlationId);
     case CMD_OPEN_VERBOSE_SETTING:
       return validateNoPayload(CMD_OPEN_VERBOSE_SETTING, obj, correlationId);
     case CMD_OPEN_TRUST_SETTINGS:

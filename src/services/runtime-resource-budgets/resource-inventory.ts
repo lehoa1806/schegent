@@ -28,7 +28,7 @@ import {
   FAILURE_RECORD_MAX_BYTES,
   FAILURE_RECORD_RETAINED_MAX
 } from '../../contracts/failure-record';
-import { PHASE_LOG_MAX_ENTRIES } from '../../contracts/phase-log-bounds';
+import { LIVE_LOG_RESIDUAL_MAX_BYTES, PHASE_LOG_MAX_ENTRIES } from '../../contracts/phase-log-bounds';
 import { MAX_QUEUES } from '../../contracts/queue-bounds';
 import {
   MAX_CAPTURE_TOTAL_BYTES,
@@ -182,6 +182,7 @@ export const AUTHORITATIVE_CONSTANT_VALUES: ReadonlyMap<string, number> = new Ma
   ['src/contracts/snapshot-bounds.ts#MAX_RETAINED_HISTORY_ENTRIES', MAX_RETAINED_HISTORY_ENTRIES],
   ['src/contracts/queue-bounds.ts#MAX_QUEUES', MAX_QUEUES],
   ['src/contracts/phase-log-bounds.ts#PHASE_LOG_MAX_ENTRIES', PHASE_LOG_MAX_ENTRIES],
+  ['src/contracts/phase-log-bounds.ts#LIVE_LOG_RESIDUAL_MAX_BYTES', LIVE_LOG_RESIDUAL_MAX_BYTES],
   ['src/contracts/ack-retention.ts#ACK_RETENTION_MAX_ENTRIES', ACK_RETENTION_MAX_ENTRIES],
   ['src/contracts/ack-retention.ts#ACK_RETENTION_MS', ACK_RETENTION_MS],
   ['src/contracts/transport-bounds.ts#TRANSPORT_FILE_MAX_BYTES', TRANSPORT_FILE_MAX_BYTES],
@@ -396,9 +397,9 @@ export const RUNTIME_RESOURCE_INVENTORY: readonly InventoryEntry[] = Object.free
   },
   {
     id: 'phase-log-tail-residual',
-    category: 'parser-residual', owner: 'src/services/phase-log/phase-log-tail-session.ts', lifetime: 'per-view', units: 'utf16-units',
-    limit: { kind: 'authority', module: 'src/lib/line-framer.ts', symbol: 'DEFAULT_MAX_LINE_UNITS', value: DEFAULT_MAX_LINE_UNITS },
-    overflow: 'Drop unterminated residual above DEFAULT_MAX_LINE_UNITS, discard until newline, and push one display-omission system entry.',
+    category: 'parser-residual', owner: 'src/services/phase-log/phase-log-tail-session.ts', lifetime: 'per-view', units: 'bytes',
+    limit: { kind: 'authority', module: 'src/contracts/phase-log-bounds.ts', symbol: 'LIVE_LOG_RESIDUAL_MAX_BYTES', value: LIVE_LOG_RESIDUAL_MAX_BYTES },
+    overflow: 'Drop unterminated record bytes above LIVE_LOG_RESIDUAL_MAX_BYTES, discard until newline, and post one oversized-record coverage gap.',
     architecture: 'current', consumers: ['F03', 'F07']
   },
   {

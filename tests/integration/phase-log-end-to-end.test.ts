@@ -16,7 +16,7 @@
 //         `tail-ended` push and drops the registry to 0 sessions.
 //
 // The MessageRouter is *not* mounted directly; the contracts under
-// test (CMD_READ_PHASE_LOG, MSG_PHASE_LOG_ENTRY) are the IPC seams,
+// test (CMD_READ_PHASE_LOG, MSG_PHASE_LOG_BATCH) are the IPC seams,
 // and we exercise them through the service + registry that the router
 // dispatches to. The router itself is a thin adapter — exercising it
 // would re-test wiring already covered by unit tests in
@@ -31,12 +31,13 @@ import { SanitizedLogger } from '../../src/lib/logger';
 import { createPhaseLogService } from '../../src/services/phase-log/phase-log-service';
 import {
   PhaseLogTailRegistry,
-  type PhaseLogTailEnvelope,
   type PhaseLogTailRegistryAuditEvent
 } from '../../src/services/phase-log/phase-log-tail-registry';
 import {
   CMD_READ_PHASE_LOG,
-  MSG_PHASE_LOG_ENTRY,
+  MSG_PHASE_LOG_BATCH,
+  type PhaseLogBatchPushMessage,
+  type PhaseLogWireEntry,
   type ReadPhaseLogRequest,
   type ReadPhaseLogResponse
 } from '../../src/contracts/sidebar-ipc';
@@ -293,12 +294,13 @@ describe('Feature 020 T057 — phase-log end-to-end', () => {
     expect(success.manifest.entries.length).toBeGreaterThan(0);
   });
 
-  it('PhaseLogTailRegistry emits MSG_PHASE_LOG_ENTRY pushes for existing bytes, new appends, and synthetic tail-ended', async () => {
-    const envelopes: PhaseLogTailEnvelope[] = [];
+  it('PhaseLogTailRegistry emits MSG_PHASE_LOG_BATCH entries for existing bytes, new appends, and synthetic tail-ended', async () => {
+    const batches: PhaseLogBatchPushMessage[] = [];
+    // FR-R6-F07 — the entries of every batch, in delivery order.
+    const envelopes: Array<{ readonly payload: { readonly tailSessionId: string; readonly entry: PhaseLogWireEntry } }> = [];
     const auditEvents: PhaseLogTailRegistryAuditEvent[] = [];
     let leaveCb: ((runId: string) => void) | null = null;
     const registry = new PhaseLogTailRegistry({
-      pushToWebview: (env) => envelopes.push(env),
       sanitize: (s) => harness.logger.sanitize(s),
       appendAudit: (e) => {
         auditEvents.push(e);
@@ -308,6 +310,15 @@ describe('Feature 020 T057 — phase-log end-to-end', () => {
         return { dispose: () => { leaveCb = null; } };
       },
       caps: { perFieldBytes: 4096 }
+    });
+    // FR-R6-F07 — a consumer that applies and acknowledges every batch.
+    registry.bindSink('dashboard', (msg) => {
+      batches.push(msg);
+      for (const item of msg.payload.entries) {
+        envelopes.push({ payload: { tailSessionId: msg.payload.tailSessionId, entry: item.entry } });
+      }
+      queueMicrotask(() => registry.ack(msg.payload.tailSessionId, { batchSeq: msg.payload.batchSeq }));
+      return true;
     });
 
     // Step 1 — start a tail on the malformed-lines iteration. The
@@ -327,16 +338,23 @@ describe('Feature 020 T057 — phase-log end-to-end', () => {
     }
     expect(registry.activeSessionCount).toBe(1);
     expect(['fs.watch', 'polling']).toContain(start.mechanism);
+    expect(registry.ack(start.sessionId, { batchSeq: 0 }).outcome).toBe('success');
 
-    // Step 2 — wait for the 3 valid entries to push from the initial
-    // tick. Skipped lines are counted but don't push.
-    await pollUntil(() => envelopes.length >= 3, 2000);
-    expect(envelopes.length).toBeGreaterThanOrEqual(3);
-    for (const env of envelopes) {
-      expect(env.type).toBe(MSG_PHASE_LOG_ENTRY);
-      expect(env.payload.tailSessionId).toBe(start.sessionId);
+    // Step 2 — wait for the 3 valid entries from the initial tick.
+    // FR-R6-F07 (US3) — each malformed line now shows as a `parse-omission`
+    // coverage gap in place, rather than vanishing.
+    const isRecord = (e: { readonly payload: { readonly entry: PhaseLogWireEntry } }): boolean =>
+      e.payload.entry.kind !== 'coverage-gap';
+    await pollUntil(() => envelopes.filter(isRecord).length >= 3, 2000);
+    expect(envelopes.filter(isRecord).length).toBeGreaterThanOrEqual(3);
+    const gaps = envelopes.filter((e) => !isRecord(e));
+    expect(gaps.length).toBeGreaterThan(0);
+    for (const gap of gaps) expect(gap.payload.entry.body.reason).toBe('parse-omission');
+    for (const batch of batches) {
+      expect(batch.type).toBe(MSG_PHASE_LOG_BATCH);
+      expect(batch.payload.tailSessionId).toBe(start.sessionId);
     }
-    const initialKinds = envelopes.map((e) => e.payload.entry.kind);
+    const initialKinds = envelopes.filter(isRecord).map((e) => e.payload.entry.kind);
     expect(initialKinds.slice(0, 3)).toEqual([
       'assistant-text',
       'system',
@@ -369,9 +387,9 @@ describe('Feature 020 T057 — phase-log end-to-end', () => {
       2000
     );
     expect(arrived).toBe(true);
-    const latest = envelopes[envelopes.length - 1].payload.entry;
-    expect(latest.kind).toBe('assistant-text');
-    expect(latest.body.text).toBe('appended live');
+    const latest = envelopes.at(-1)?.payload.entry;
+    expect(latest?.kind).toBe('assistant-text');
+    expect(latest?.body.text).toBe('appended live');
 
     // Step 4 — simulate the task leaving in-flight. The registry MUST
     // dispose the active session, push a synthetic tail-ended entry,
@@ -384,9 +402,9 @@ describe('Feature 020 T057 — phase-log end-to-end', () => {
     (leaveCb as (runId: string) => void)(RUN_ID);
 
     await pollUntil(() => envelopes.length > beforeLeave, 2000);
-    const tailEnded = envelopes[envelopes.length - 1].payload.entry;
-    expect(tailEnded.kind).toBe('tail-ended');
-    expect(tailEnded.body.reason).toBe('phase-complete');
+    const tailEnded = envelopes.at(-1)?.payload.entry;
+    expect(tailEnded?.kind).toBe('tail-ended');
+    expect(tailEnded?.body.reason).toBe('phase-complete');
     expect(registry.activeSessionCount).toBe(0);
 
     // Audit-log expectations: one started + one stopped event with the
@@ -417,6 +435,6 @@ describe('Feature 020 T057 — phase-log end-to-end', () => {
     // test would surface as a typo here, not just at runtime in the
     // router. The literal MUST match the export.
     expect(CMD_READ_PHASE_LOG).toBe('CMD_READ_PHASE_LOG');
-    expect(MSG_PHASE_LOG_ENTRY).toBe('MSG_PHASE_LOG_ENTRY');
+    expect(MSG_PHASE_LOG_BATCH).toBe('MSG_PHASE_LOG_BATCH');
   });
 });

@@ -92,6 +92,8 @@ export const CMD_RESTART_CANCELED_TASK = 'CMD_RESTART_CANCELED_TASK' as const;
 export const CMD_READ_PHASE_LOG = 'CMD_READ_PHASE_LOG' as const;
 export const CMD_START_PHASE_LOG_TAIL = 'CMD_START_PHASE_LOG_TAIL' as const;
 export const CMD_STOP_PHASE_LOG_TAIL = 'CMD_STOP_PHASE_LOG_TAIL' as const;
+// FR-R6-F07 (FR-009) — batch credit, gap requests and duplicate reports.
+export const CMD_ACK_PHASE_LOG_TAIL = 'CMD_ACK_PHASE_LOG_TAIL' as const;
 // Feature 020 — small helper command that opens the VS Code Settings
 // editor scoped to `schegent.logging.verbose`. Powers the empty-state
 // "Open Settings" CTA when verbose diagnostics is disabled. Read-only
@@ -201,10 +203,9 @@ export const CMD_ATTEST_TASK_COMPLETED = 'CMD_ATTEST_TASK_COMPLETED' as const;
 
 export const STATE_SNAPSHOT = 'STATE_SNAPSHOT' as const;
 export const CMD_ACK = 'CMD_ACK' as const;
-// Feature 020 — host → webview push for a single new phase-log entry
-// while a tail session is active. See `MSG_PHASE_LOG_ENTRY` payload
-// shape below.
-export const MSG_PHASE_LOG_ENTRY = 'MSG_PHASE_LOG_ENTRY' as const;
+// FR-R6-F07 (FR-004, FR-008) — a bounded, positioned batch of live entries.
+// It replaced Feature 020's one-entry push.
+export const MSG_PHASE_LOG_BATCH = 'MSG_PHASE_LOG_BATCH' as const;
 
 export const COMMAND_TYPES = [
   CMD_START,
@@ -248,6 +249,7 @@ export const COMMAND_TYPES = [
   CMD_READ_PHASE_LOG,
   CMD_START_PHASE_LOG_TAIL,
   CMD_STOP_PHASE_LOG_TAIL,
+  CMD_ACK_PHASE_LOG_TAIL,
   CMD_OPEN_VERBOSE_SETTING,
   CMD_OPEN_TRUST_SETTINGS,
   CMD_RESOLVE_AUDIT_POINTER,
@@ -274,7 +276,7 @@ export const COMMAND_TYPES = [
   CMD_ATTEST_TASK_COMPLETED
 ] as const;
 
-export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_ENTRY] as const;
+export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_BATCH] as const;
 export type CommandType = (typeof COMMAND_TYPES)[number];
 export type HostMessageType = (typeof HOST_MESSAGE_TYPES)[number];
 // -- Command payload interfaces ---------------------------------------------
@@ -301,6 +303,7 @@ import {
   isValidStartQueueIntent
 } from './start-intent-types';
 import type {
+  AckPhaseLogTailCommand,
   ReadPhaseLogCommand,
   StartPhaseLogTailCommand,
   StopPhaseLogTailCommand
@@ -388,7 +391,9 @@ export type {
   StartPhaseLogTailResponse,
   StopPhaseLogTailRequest,
   StopPhaseLogTailCommand,
-  StopPhaseLogTailResponse
+  StopPhaseLogTailResponse,
+  AckPhaseLogTailRequest, AckPhaseLogTailCommand, AckPhaseLogTailResponse, PhaseLogCursorStatus,
+  PhaseLogTailCounters, PhaseLogWireEntry, LiveLogBatchEntry, LiveLogBatchMode, PhaseLogBatchPayload
 } from './sidebar-ipc/phase-log';
 export type {
   PhaseRecord,
@@ -433,7 +438,7 @@ export type {
 export type {
   StateSnapshotMessage,
   CommandAckMessage,
-  PhaseLogEntryPushMessage,
+  PhaseLogBatchPushMessage,
   HostMessage
 } from './sidebar-ipc/host-messages';
 // FR-R3-154 (T1646) — the ACK's `outcome` vocabulary, published here because
@@ -700,6 +705,7 @@ export type SidebarCommand =
   | ReadPhaseLogCommand
   | StartPhaseLogTailCommand
   | StopPhaseLogTailCommand
+  | AckPhaseLogTailCommand
   | OpenVerboseSettingCommand
   | OpenTrustSettingsCommand
   | ResolveAuditPointerCommand
@@ -914,6 +920,9 @@ export function isCmdStartPhaseLogTail(value: unknown): value is StartPhaseLogTa
 }
 export function isCmdStopPhaseLogTail(value: unknown): value is StopPhaseLogTailCommand {
   return isObjectWithType(value, CMD_STOP_PHASE_LOG_TAIL);
+}
+export function isCmdAckPhaseLogTail(value: unknown): value is AckPhaseLogTailCommand {
+  return isObjectWithType(value, CMD_ACK_PHASE_LOG_TAIL);
 }
 export function isCmdOpenVerboseSetting(value: unknown): value is OpenVerboseSettingCommand {
   return isObjectWithType(value, CMD_OPEN_VERBOSE_SETTING);
@@ -1146,6 +1155,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_READ_PHASE_LOG]: isCmdReadPhaseLog,
   [CMD_START_PHASE_LOG_TAIL]: isCmdStartPhaseLogTail,
   [CMD_STOP_PHASE_LOG_TAIL]: isCmdStopPhaseLogTail,
+  [CMD_ACK_PHASE_LOG_TAIL]: isCmdAckPhaseLogTail,
   [CMD_OPEN_VERBOSE_SETTING]: isCmdOpenVerboseSetting,
   [CMD_OPEN_TRUST_SETTINGS]: isCmdOpenTrustSettings,
   [CMD_RESOLVE_AUDIT_POINTER]: isCmdResolveAuditPointer,

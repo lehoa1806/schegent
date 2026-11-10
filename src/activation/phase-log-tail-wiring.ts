@@ -14,7 +14,9 @@ import {
   type PhaseLogTailRegistryAuditEvent
 } from '../services/phase-log';
 import type {
-  PhaseLogEntryPushMessage,
+  AckPhaseLogTailRequest,
+  AckPhaseLogTailResponse,
+  PhaseLogBatchPushMessage,
   StartPhaseLogTailRequest,
   StartPhaseLogTailResponse,
   StopPhaseLogTailRequest,
@@ -29,6 +31,7 @@ import type { StateProjector } from '../ui/sidebar/state-projector';
  */
 export interface PhaseLogTailService {
   start(req: StartPhaseLogTailRequest): Promise<StartPhaseLogTailResponse>;
+  ack(req: AckPhaseLogTailRequest): Promise<AckPhaseLogTailResponse>;
   stop(req: StopPhaseLogTailRequest): Promise<StopPhaseLogTailResponse>;
   releaseConsumer?(consumerId?: string): Promise<boolean>;
 }
@@ -37,25 +40,29 @@ export interface PhaseLogTailWiring {
   readonly phaseLogTailService: PhaseLogTailService;
   /**
    * Closes the forward reference described below. Called once, after
-   * `registerStage2Ui` returns; pushes before it are dropped, not queued.
+   * `registerStage2Ui` returns; a dashboard start before it is refused
+   * `consumer-unavailable`.
    */
   bindDashboardBridge(bridge: DashboardBridgeSink): void;
   dispose(): void;
 }
 
 type DashboardBridgeSink = {
-  postPhaseLogEntry(envelope: PhaseLogEntryPushMessage): void;
+  /** FR-R6-F07 — `false` when nothing was posted (closed or hidden). */
+  postPhaseLogBatch(message: PhaseLogBatchPushMessage): boolean;
   setOnPanelDispose?(onPanelDispose: (() => void) | undefined): void;
+  setOnVisibilityChange?(onVisibilityChange: ((visible: boolean) => void) | undefined): void;
 };
 
 /**
  * Feature 020 — phase-log tail wiring (T049).
  *
- * The PhaseLogTailRegistry owns the cap-of-1 invariant per host and the
- * watcher mechanism (fs.watch vs polling) chosen at start time. A tail ends
+ * The PhaseLogTailRegistry owns one tail per consumer slot (FR-R6-F07: the
+ * dashboard and the sidebar) and the watcher mechanism (fs.watch vs polling)
+ * chosen at start time. A tail ends
  * with one of three reasons, by five paths:
  *   1. webview-stop      — explicit CMD_STOP_PHASE_LOG_TAIL (handled in router),
- *                          or the next start replacing it (cap of 1, registry)
+ *                          or the next start on the same slot replacing it
  *   2. webview-dispose   — the dashboard panel closing, through the
  *                          `setOnPanelDispose` hook `bindDashboardBridge` sets
  *                          (`releaseConsumer('dashboard')`), or extension
@@ -121,17 +128,10 @@ export function createPhaseLogTailWiring(input: {
     previousInFlightRunIds = next;
   });
 
-  // Forward reference: the registry pushes through `dashboardBridge`,
-  // which is constructed AFTER the router. The thunk resolves the
-  // bridge at call time; pushes before the bridge exists are silently
-  // dropped (the dashboard cannot be open yet).
-  let dashboardBridgeRef: DashboardBridgeSink | null = null;
+  // Forward reference: the registry posts through `dashboardBridge`, which is
+  // constructed AFTER the router. `bindDashboardBridge` binds the dashboard
+  // slot's sink once it exists; until then that slot has no sink.
   const phaseLogTailRegistry = new PhaseLogTailRegistry({
-    pushToWebview: (envelope) => {
-      const bridge = dashboardBridgeRef;
-      if (bridge === null) return;
-      bridge.postPhaseLogEntry(envelope as PhaseLogEntryPushMessage);
-    },
     sanitize: (s) => logger.sanitize(s),
     appendAudit: async (event: PhaseLogTailRegistryAuditEvent) => {
       // FR-R3-136 (FR-011) — THE TAIL IS A READ; RECORDING IT IS NOT.
@@ -177,6 +177,8 @@ export function createPhaseLogTailWiring(input: {
       };
       if (p.mechanism !== undefined) auditPayload.mechanism = p.mechanism;
       if (p.reason !== undefined) auditPayload.reason = p.reason;
+      // FR-R6-F07 (FR-013) — six integer counters; never text from the log.
+      if (p.counters !== undefined) Object.assign(auditPayload, p.counters);
       try {
         await auditWriter.append({
           runId: p.taskId,
@@ -233,9 +235,17 @@ export function createPhaseLogTailWiring(input: {
             pipelineId: req.selection.pipelineId,
             phaseId: req.selection.phaseId,
             iterationN: req.selection.iterationN
-          }
+          },
+          ...(req.consumer === undefined ? {} : { consumer: req.consumer }),
+          ...(req.fromCursor === undefined ? {} : { fromCursor: req.fromCursor })
         });
       },
+      ack: async (req: AckPhaseLogTailRequest): Promise<AckPhaseLogTailResponse> =>
+        phaseLogTailRegistry.ack(req.sessionId, {
+          batchSeq: req.batchSeq,
+          ...(req.resync === undefined ? {} : { resync: req.resync }),
+          ...(req.duplicate === undefined ? {} : { duplicate: req.duplicate })
+        }),
       stop: async (
         req: StopPhaseLogTailRequest
       ): Promise<StopPhaseLogTailResponse> =>
@@ -244,9 +254,13 @@ export function createPhaseLogTailWiring(input: {
         phaseLogTailRegistry.releaseConsumer(consumerId, 'webview-dispose')
     },
     bindDashboardBridge: (bridge) => {
-      dashboardBridgeRef = bridge;
+      phaseLogTailRegistry.bindSink('dashboard', (message) => bridge.postPhaseLogBatch(message));
       bridge.setOnPanelDispose?.(() => {
         void phaseLogTailRegistry.releaseConsumer('dashboard', 'webview-dispose');
+      });
+      // FR-R6-F07 (FR-005) — a hidden dashboard suspends its tail; a reveal resumes it.
+      bridge.setOnVisibilityChange?.((visible) => {
+        phaseLogTailRegistry.setConsumerVisible('dashboard', visible);
       });
     },
     dispose: () => {
