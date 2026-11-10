@@ -24,6 +24,7 @@ import { LockHeldError } from '../../../src/lib/errors';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { FeatureRequest } from '../../../src/queue/feature-request';
 import { UncontainedBackendRefusedError } from '../../../src/services/backend-containment-policy';
+import { ContainmentAdmissionRefusedError } from '../../../src/services/containment-qualification/admission-refusal';
 import { CapabilityNotEnforceableError } from '../../../src/services/capability-refusal';
 import {
   createFailureRecorder,
@@ -41,6 +42,10 @@ const CLASSIFICATIONS: ReadonlyArray<{ readonly name: string; readonly err: () =
   { name: 'uncontained-backend-refused', err: () => new UncontainedBackendRefusedError('codex', 'refused: add it') },
   { name: 'capability-not-enforceable', err: () => new CapabilityNotEnforceableError('codex', ['network']) },
   { name: 'consent-write-failed', err: () => new ConsentWriteFailedError('codex', 'disk full') },
+  {
+    name: 'containment-admission-refused',
+    err: () => new ContainmentAdmissionRefusedError({ kind: 'codex', reason: 'containment-unqualified-for-tuple' })
+  },
   { name: 'unexpected', err: () => new Error('something broke') }
 ];
 

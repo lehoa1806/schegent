@@ -1,9 +1,8 @@
 // FR-R3-144 (T016, D-2) — the boundary check for the uncontained-grant command.
 //
 // This parses untrusted webview input and nothing else. It does not decide whether
-// the grant is meaningful — `codex` is a well-formed payload here and is refused by
-// `setUncontainedGrant` as `already-contained`, because that is a policy answer and
-// the policy module owns it. Duplicating the containment question here would put a
+// the grant is meaningful — whether an id is a backend the list governs is a policy
+// answer `setUncontainedGrant` gives, and the policy module owns it. Duplicating the containment question here would put a
 // second authority for it at the boundary, and the two would drift the first time a
 // backend's mechanism changed.
 //

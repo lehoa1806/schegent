@@ -20,6 +20,7 @@ import type { ConnectedRunProjection } from '../../contracts/sidebar-ipc';
 import type { RunOriginRef } from '../../contracts/run-origin';
 import type { WorkflowPipelineReference } from './commands/router-types';
 import type { BuilderLifecycleByKind } from './builder-lifecycle';
+import type { BackendQualificationSource } from './backend-qualification-projection';
 import { StateProjectorRuntime } from './state-projector-runtime';
 import type {
   AuditTailEntry,
@@ -181,6 +182,11 @@ export interface StateProjectorDeps {
    * which the surface renders as "not reported" rather than as "nothing granted".
    */
   readonly getUncontainedGrantSetting?: () => unknown;
+  /**
+   * FR-R6-F09 (FR-014) -- the spawn gate's observed identities and stored bindings,
+   * read on every compose. Absent, no posture row carries `qualification`.
+   */
+  readonly getBackendQualificationSource?: () => BackendQualificationSource | undefined;
 }
 
 export type ProjectorListener = (snapshot: WorkflowSnapshot) => void;

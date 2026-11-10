@@ -42,6 +42,8 @@ import { windowsShellOut } from '../telemetry/platform/platform-windows';
 import { psShellOut } from '../telemetry/platform/platform-ps';
 import { createSpawnIdentityRecorder } from '../state/spawn-identity-recorder';
 import { createBackendDiagnosticsWiring, type BackendDiagnosticsWiring } from './backend-wiring';
+import { wireContainmentAdmission, type ContainmentAdmissionWiring } from './containment-admission-wiring';
+import type { AcceptanceMementoPort } from '../services/containment-qualification/acceptance-bindings';
 import {
   readRawTranscriptMode,
   readSessionRetentionMaxAgeDays,
@@ -107,6 +109,10 @@ export interface BackendExecutionWiringDeps {
   readonly hostSubscriptions: { dispose(): unknown }[];
   readonly evidenceHealth: EvidenceHealthMonitor;
   readonly processEnvironmentPolicy: ProcessEnvironmentPolicy;
+  /** FR-R6-F09 -- the spawn gate's inputs: the acceptance memento, trust and primacy. */
+  readonly memento: AcceptanceMementoPort;
+  readonly isWorkspaceTrusted: () => boolean;
+  readonly hasPrimacy: () => Promise<boolean>;
 }
 
 export interface BackendExecutionWiring {
@@ -156,6 +162,9 @@ export interface BackendExecutionWiring {
    */
   readonly readUncontainedAllowed: (kind: BackendRunnerKind) => boolean;
   readonly verboseAccessor: { isVerboseDiagnosticsEnabled: () => boolean };
+  /** FR-R6-F09 -- what the sidebar reads, and what the consent modal records an acceptance through. */
+  readonly backendQualification: ContainmentAdmissionWiring['qualification'];
+  readonly recordContainmentAcceptance: ContainmentAdmissionWiring['recordAcceptance'];
   /** Late binding — see the docblock. Without these the closures keep `null`. */
   readonly bindLivenessRecorder: (r: {
     recordRunActivity: (o: RunActivityObservation) => void;
@@ -291,7 +300,7 @@ const backendKind = resolveBackendKind(
 // file reads `getConfiguration('schegent.backend')` for the posture: the wiring
 // site is where an auditor sees it enter the system.
 // FR-R3-125 (FR-004, FR-004a) — the value is a list now, so reading it means
-// resolving it: unsupported entries and already-contained entries grant nothing
+// resolving it: unsupported entries grant nothing
 // and are reported rather than silently dropped. Anything that is not an array
 // yields an empty grant, which is the fail-closed direction.
 const readUncontainedGrant = (): GrantedUncontainedBackends =>
@@ -396,6 +405,17 @@ const monitorHook: MonitorSidecarHook = (event) => {
     void treeDegradationRecorder.record(event satisfies { kind: 'tree-unconfirmed' });
   }
 };
+// FR-R6-F09 (T032) -- the gate every spawn awaits. The version is read through the registry's
+// cached probe, reached late: the registry is built below, and the gate asks only at spawn time.
+const containment = wireContainmentAdmission({
+  memento: deps.memento,
+  logger,
+  isTrusted: deps.isWorkspaceTrusted,
+  hasPrimacy: deps.hasPrimacy,
+  environmentPolicy: processEnvironmentPolicy,
+  granted: () => readUncontainedGrant().granted,
+  observeVersion: (path) => runnerRegistry.observedCliVersion(path)
+});
 const runnerRegistry = new BackendRunnerRegistry({
   // FR-R3-056 (H-01), reshaped by FR-R3-125 — the shipped posture. Unset reads as
   // the manifest default (`[]`), so a fresh install refuses every uncontained
@@ -417,6 +437,7 @@ const runnerRegistry = new BackendRunnerRegistry({
   // registry's `--version` probe obeys it too. It was the one spawn that took none.
   environmentPolicy: processEnvironmentPolicy,
   monitorHook,
+  spawnGate: containment.spawnGate,
   probeTransport: true,
   logger,
   evidenceHealth
@@ -473,6 +494,8 @@ const verboseAccessor = {
     backendPing,
     readUncontainedAllowed: (kind) => readUncontainedGrant().granted.has(kind),
     verboseAccessor,
+    backendQualification: containment.qualification,
+    recordContainmentAcceptance: containment.recordAcceptance,
     bindLivenessRecorder: (r) => {
       livenessRecorder = r;
     },

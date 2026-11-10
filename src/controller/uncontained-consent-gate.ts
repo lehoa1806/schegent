@@ -1,4 +1,6 @@
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import type { FingerprintRecord } from '../contracts/containment-qualification';
+import { isContainmentAdmissionRefusal } from '../services/containment-qualification/admission-refusal';
 import {
   ALLOW_UNCONTAINED_SETTING,
   isUncontainedBackendRefusal
@@ -74,6 +76,13 @@ export function isConsentWriteFailure(error: unknown): error is ConsentWriteFail
   return error instanceof ConsentWriteFailedError;
 }
 
+/**
+ * FR-R6-F09 (research R3) -- records an acceptance against the fingerprint it was given for.
+ * Called after a granted consent and before the retry, so the retry's admission finds the
+ * binding. A rejection means the acceptance did not take: the refusal is reported.
+ */
+export type ContainmentAcceptancePort = (kind: BackendRunnerKind, fingerprint: FingerprintRecord) => Promise<void>;
+
 /** Retry the start, or report `err` as the failure it is. */
 export type StartRecovery =
   | { readonly action: 'retry' }
@@ -95,7 +104,8 @@ export class UncontainedConsentGate {
 
   public constructor(
     private readonly request: UncontainedConsentPort | undefined,
-    private readonly sanitize: (raw: string) => string
+    private readonly sanitize: (raw: string) => string,
+    private readonly onAccepted?: ContainmentAcceptancePort
   ) {}
 
   public async decide(err: unknown): Promise<StartRecovery> {
@@ -104,6 +114,8 @@ export class UncontainedConsentGate {
     // throws, for the same reason.
     if (!isUncontainedBackendRefusal(err) || !this.request) return { action: 'report', err };
     if (this.granted.has(err.kind)) return { action: 'report', err };
+    // FR-R6-F09 (R3) -- a refusal no consent can lift is reported without a modal.
+    if (isContainmentAdmissionRefusal(err) && !err.consentable) return { action: 'report', err };
 
     const outcome = await this.request({
       kind: err.kind,
@@ -111,12 +123,24 @@ export class UncontainedConsentGate {
     });
     if (outcome.decision === 'granted') {
       this.granted.add(err.kind);
-      return { action: 'retry' };
+      return (await this.recordAcceptance(err)) ? { action: 'retry' } : { action: 'report', err };
     }
     if (outcome.decision === 'write-failed') {
       return { action: 'report', err: new ConsentWriteFailedError(err.kind, outcome.reason) };
     }
     return { action: 'report', err };
+  }
+
+  /** True when there is nothing to record or the record took. Never logs the error. */
+  private async recordAcceptance(err: Error): Promise<boolean> {
+    if (!isContainmentAdmissionRefusal(err) || err.fingerprint === undefined) return true;
+    if (this.onAccepted === undefined) return true;
+    try {
+      await this.onAccepted(err.kind, err.fingerprint);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 

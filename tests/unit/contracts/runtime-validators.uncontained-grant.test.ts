@@ -17,7 +17,7 @@
 // WHAT THIS FILE DELIBERATELY DOES NOT ASSERT
 //
 // That `codex` is refused. It is a well-formed payload at this layer and is
-// answered `not-applicable` by `setUncontainedGrant`, because containment is a
+// answered by `setUncontainedGrant` (granted, since FR-R6-F09), because containment is a
 // policy question and `services/backend-containment-policy.ts` owns it. A test
 // here pinning `codex` as invalid would install a second authority for that
 // question at the boundary, and the two would part company the first time a

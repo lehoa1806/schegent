@@ -9,6 +9,7 @@ import { AuditPathRefusedError } from '../../src/audit/audit-log-writer';
 import { CapabilityNotEnforceableError } from '../../src/services/capability-refusal';
 import { OutputTargetRefusedAtDispatch } from '../../src/services/dispatch-output-guard';
 import { UncontainedBackendRefusedError } from '../../src/services/backend-containment-policy';
+import { ContainmentAdmissionRefusedError } from '../../src/services/containment-qualification/admission-refusal';
 import { SpawnRefusedAfterCloseError } from '../../src/runner/spawn-refused-after-close';
 import { UnattendedAdmissionRefused } from '../../src/controller/resume-pause-fields';
 import { ALL_PHASE_CAPABILITIES } from '../../src/contracts/phase-capabilities';
@@ -79,6 +80,17 @@ const REFUSALS: ReadonlyArray<{ readonly name: string; readonly make: () => Erro
     name: 'SpawnRefusedAfterCloseError',
     // 67 characters at its longest label, so it is left to the catch-all.
     make: () => new SpawnRefusedAfterCloseError('claude-cli')
+  },
+  {
+    name: 'ContainmentAdmissionRefusedError',
+    // FR-R6-F09: the longest reason, remedy and qualifier at the longest backend id. Classified
+    // in its own branch whatever its length, so the status-bar check below covers it too.
+    make: () =>
+      new ContainmentAdmissionRefusedError({
+        kind: 'claude',
+        reason: 'acceptance-fingerprint-changed',
+        changedComponent: 'environment-policy'
+      })
   },
   {
     name: 'UnattendedAdmissionRefused',

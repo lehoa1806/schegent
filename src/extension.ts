@@ -383,7 +383,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     disposables,
     hostSubscriptions: context.subscriptions,
     evidenceHealth,
-    processEnvironmentPolicy
+    processEnvironmentPolicy,
+    memento: context.workspaceState,
+    isWorkspaceTrusted,
+    hasPrimacy: () => lock.hasPrimacy()
   });
   const {
     monitor,
@@ -393,9 +396,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     rawTranscript,
     backendKind,
     backendCapabilities,
-    backendPing,
-    readUncontainedAllowed,
-    verboseAccessor
+    backendPing
   } = backend;
   // FR-R3-119 — extracted to `src/activation/phase-execution-wiring.ts`: the
   // call-time setting accessors, retry-decision sink, phase runner, and run-safety net.
@@ -414,9 +415,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     evidenceHealth,
     sessionRetention,
     protectedSessionRunIds,
-    readUncontainedAllowed,
-    verboseAccessor,
-    transportRouter: backend.transportRouter
+    backend
   });
 
   const controller = new SchegentWorkflowController(
@@ -540,6 +539,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     backendKind,
     backendCapabilities,
     backendPing,
+    backendQualification: backend.backendQualification,
     protectedSessionRunIds,
     queueStartFailures,
     collectAllWorkflowPipelineRefs,

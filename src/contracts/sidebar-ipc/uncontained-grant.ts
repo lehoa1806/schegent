@@ -19,6 +19,7 @@
 // argument.
 
 import type { CMD_SET_UNCONTAINED_BACKEND_GRANT, CommandBase } from '../sidebar-ipc';
+import type { ContainmentEffect, EffectOutcome, EvidenceBasis, IdentityState } from '../containment-qualification';
 import { isBackendRunnerKind, type BackendRunnerKind } from '../backend-kinds';
 // Type-only, which is what keeps `contracts` a leaf layer: the projection's
 // vocabulary is the policy module's, and restating `'os-enforced' | 'none'` here
@@ -79,12 +80,14 @@ export function isSetUncontainedBackendGrantPayload(payload: unknown): boolean {
  * FR-R3-144 (T020, T048, D-4, A-2) — whether this backend's grant is in force.
  *
  * THREE states, not a boolean, and the third is the reason this type exists.
- * `codex` is `os-enforced`, so it never appears in `resolveUncontainedGrant`'s
- * granted set even when an operator has listed it by hand — which means `false`
- * would have meant both "refused" and "needs no grant". Those have opposite
+ * An unlisted `os-enforced` backend needs no grant, so `false` would have meant
+ * both "refused" and "needs no grant". Those have opposite
  * remedies: the first is fixed by granting, the second by understanding that
  * there is nothing to grant. A surface given one word for both would send an
  * operator to tick a box that must not exist.
+ *
+ * FR-R6-F09 (R4): a LISTED `os-enforced` backend is `granted` — on an unqualified
+ * tuple its grant is the acceptance.
  *
  * `not-required` is DERIVED from `containmentOf`, never stored. A backend that
  * gains a containment mechanism becomes `not-required` on the next projection
@@ -114,8 +117,8 @@ export interface BackendPosture {
   readonly grant: BackendGrantState;
   /**
    * The policy module's own sentence about this backend's entry in the grant
-   * setting, when that entry grants nothing — today, an `already-contained`
-   * listing of a backend that carries an OS-enforced bound.
+   * setting, when that entry grants nothing. FR-R6-F09 retired the only producer
+   * (`already-contained`); the field stays so a future per-backend problem has a row.
    *
    * Carried verbatim rather than restated, for the reason every other surface in
    * this feature carries it verbatim: one authority for the rule, one wording on
@@ -156,6 +159,36 @@ export interface BackendPosture {
    * it.
    */
   readonly notice?: string;
+  /**
+   * FR-R6-F09 (FR-014, SC-005) -- what this backend's bound is qualified to do on the
+   * identity the spawn gate last observed, and what the gate would decide. Composed
+   * host-side from `qualifyBackend` and `judgeSpawnAdmission`, the functions the gate and
+   * the headless inspection call; the webview renders the fields and derives none.
+   * Absent when the host wires no qualification source.
+   */
+  readonly qualification?: BackendQualificationProjection;
+}
+
+/** The gate's decision for a backend, in one word for a surface. */
+export type BackendAdmissionProjection = 'contained' | 'acceptance-required' | 'accepted' | 'executable-unresolved';
+
+/** One effect's qualification, without the evidence detail a surface does not render. */
+export interface BackendEffectProjection {
+  readonly effect: ContainmentEffect;
+  readonly outcome: EffectOutcome;
+  readonly basis: EvidenceBasis;
+}
+
+/**
+ * `not-observed`: no spawn has been judged since activation. Then `effects` is empty and
+ * `admission` is `accepted` when granted, else `acceptance-required` -- never `contained`,
+ * which only an observed identity can earn.
+ */
+export interface BackendQualificationProjection {
+  readonly identityState: IdentityState;
+  readonly versionMinor: string | null;
+  readonly effects: readonly BackendEffectProjection[];
+  readonly admission: BackendAdmissionProjection;
 }
 
 /**

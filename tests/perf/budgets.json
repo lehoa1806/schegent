@@ -136,6 +136,13 @@
       "budgetMs": 500,
       "constant": "WARM_P95_BUDGET_MS",
       "rationale": "FR-R6-F06 NFR-003 / SC-006: warm p95 of 200 measured filtered page reads (20 warm-up, the F03 floor, above the task's 5/50) grouped by phase at the 200-row page bound is at most 500 ms, and every response is at most 1 MiB. At implement: p95 399.3 ms, p99 428.4 ms, cold 387.7 ms, largest response 125,035 bytes (darwin-arm64, Node 24.19.0). Before idx_accounting_contributions_attempt the read was quadratic in store size and did not finish."
+    },
+    {
+      "test": "tests/perf/containment-admission-latency.test.ts",
+      "name": "SpawnGate.admit \u2014 cached-identity admission through the wired gate",
+      "budgetMs": 10,
+      "constant": "P95_BUDGET_MS",
+      "rationale": "FR-R6-F09 NFR-001 / F09-AC-06: p95 of 200 measured admissions (20 warm-up, the F03 floor) from a cached version, with executable resolution, record and binding judgement and the per-Run check, is at most 10 ms. At implement: p95 0.235 ms (darwin-arm64, Node 24.19.0)."
     }
   ],
   "notes": [

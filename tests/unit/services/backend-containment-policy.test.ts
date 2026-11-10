@@ -10,6 +10,7 @@ import {
   mechanismOf,
   resolveUncontainedGrant,
   judgeBackendContainment,
+  unqualifiedGrantMessage,
   UncontainedBackendRefusedError,
   isUncontainedBackendRefusal
 } from '../../../src/services/backend-containment-policy';
@@ -177,15 +178,20 @@ describe('the setting is validated, not filtered (FR-004a)', () => {
     for (const kind of SUPPORTED_BACKENDS) expect(problems[0]!.message).toContain(kind);
   });
 
-  it('reports an already-contained id as a no-op, not as a typo', () => {
-    // Two different problems needing two different sentences: `codex` is a real
-    // backend id that was never refused, so telling this operator "unsupported
-    // id" sends them hunting a mistake they did not make.
+  it('grants codex: its sandbox is qualified per tuple, so it can need acceptance (FR-R6-F09 R4)', () => {
+    // FR-R6-F09 retired `already-contained`. Codex carries a mechanism, but that
+    // mechanism is qualified only on an observed tuple; elsewhere the spawn refuses
+    // `containment-unqualified-for-tuple`, and this grant is what accepts it.
     const { granted, problems } = resolveUncontainedGrant(['codex']);
-    expect([...granted]).toEqual([]);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]!.problem).toBe('already-contained');
-    expect(problems[0]!.message).toContain('grants nothing');
+    expect([...granted]).toEqual(['codex']);
+    expect(problems).toEqual([]);
+  });
+
+  it('words an unqualified-codex grant from the kind alone', () => {
+    const message = unqualifiedGrantMessage('codex');
+    expect(message).toContain("'codex'");
+    expect(message).toContain(mechanismOf('codex'));
+    expect(message).toContain(ALLOW_UNCONTAINED_SETTING);
   });
 
   it('fails closed on every shape that is not a list of strings', () => {

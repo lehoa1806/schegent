@@ -85,17 +85,15 @@ describe('FR-R3-144 T048 — three grant states, and which backend can be in eac
   });
 
   it.each([...OS_ENFORCED])(
-    'reports %s as not-required whether or not the setting lists it',
+    'reports %s as not-required until listed, then granted (FR-R6-F09 R4)',
     (kind) => {
-      // The asymmetry A-2 exists for. An OS-enforced backend never enters the
-      // granted set even when an operator lists it by hand, so a projection that
-      // asked about set membership first would report `not-granted` — and
-      // `not-granted` and `not-required` have opposite remedies: one wants a grant,
-      // the other wants the operator left alone.
-      expect(resolveUncontainedGrant([kind]).granted.has(kind)).toBe(false);
+      // FR-R6-F09 made an OS-enforced backend grantable: its mechanism is qualified
+      // per tuple, and on an unqualified one the grant is the acceptance. Listed, it
+      // is in the granted set, so the row says so.
+      expect(resolveUncontainedGrant([kind]).granted.has(kind)).toBe(true);
 
       expect(postureOf([], kind)?.grant).toBe('not-required');
-      expect(postureOf([kind], kind)?.grant).toBe('not-required');
+      expect(postureOf([kind], kind)?.grant).toBe('granted');
     }
   );
 
@@ -155,25 +153,20 @@ describe('FR-R3-144 T023 — a malformed grant entry becomes visible (FR-004)', 
     expect(projection.backendPostures.some((row) => row.problem !== undefined)).toBe(false);
   });
 
-  it.each([...OS_ENFORCED])(
-    'hangs an already-contained entry on %s own row, where the remedy is',
-    (kind) => {
-      const projection = composeBackendPostures([kind]);
-      const row = projection.backendPostures.find((entry) => entry.kind === kind);
+  it.each([...OS_ENFORCED])('carries no problem when %s is listed (FR-R6-F09 R4)', (kind) => {
+    const projection = composeBackendPostures([kind]);
+    const row = projection.backendPostures.find((entry) => entry.kind === kind);
 
-      // This problem DOES name a real backend, so it belongs on that backend's row
-      // and not in the loose list: the operator's remedy is about this backend.
-      expect(row?.problem).toBe(resolveUncontainedGrant([kind]).problems[0]?.message);
-      expect(projection.backendGrantProblems).toEqual([]);
-    }
-  );
+    expect(row !== undefined && Object.hasOwn(row, 'problem')).toBe(false);
+    expect(projection.backendGrantProblems).toEqual([]);
+  });
 
   it('reports a problem without changing what is granted', () => {
     const projection = composeBackendPostures(['claud', ...OS_ENFORCED]);
 
     expect(projection.backendGrantProblems).toHaveLength(1);
     for (const row of projection.backendPostures) {
-      expect(row.grant).toBe(containmentOf(row.kind) === 'os-enforced' ? 'not-required' : 'not-granted');
+      expect(row.grant).toBe(containmentOf(row.kind) === 'os-enforced' ? 'granted' : 'not-granted');
     }
   });
 });

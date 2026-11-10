@@ -19,9 +19,8 @@ import { postCommand, type PostCommandResult } from './vscode-api';
 /**
  * Grant or revoke this backend's permission to run uncontained.
  *
- * The host decides whether the request is applicable — `codex` carries an
- * OS-enforced bound and is refused with `already-contained` — so this sends the
- * request rather than a decision. The webview does not know the policy and must
+ * The host decides whether the request is applicable — an id that is not a
+ * backend is `not-applicable` — so this sends the request rather than a decision. The webview does not know the policy and must
  * not appear to.
  */
 export function setUncontainedBackendGrant(
