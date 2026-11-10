@@ -38,6 +38,11 @@ import {
   F08_HANDOFF_MIGRATION_NAME,
   F08_HANDOFF_MIGRATION_VERSION
 } from '../recovery-handoff/handoff-schema';
+import {
+  F10_LANES_DDL,
+  F10_LANES_MIGRATION_NAME,
+  F10_LANES_MIGRATION_VERSION
+} from '../execution-lanes/lane-schema';
 
 export interface SchemaMigrationDefinition {
   readonly version: number;
@@ -826,6 +831,12 @@ export const BUILTIN_SCHEMA_MIGRATIONS: readonly SchemaMigrationDefinition[] = O
     version: F08_HANDOFF_MIGRATION_VERSION,
     name: F08_HANDOFF_MIGRATION_NAME,
     ddlStatements: F08_HANDOFF_DDL
+  },
+  {
+    // FR-R6-F10: additive and forward-only; never edit migrations 1 to 5.
+    version: F10_LANES_MIGRATION_VERSION,
+    name: F10_LANES_MIGRATION_NAME,
+    ddlStatements: F10_LANES_DDL
   }
 ]);
 

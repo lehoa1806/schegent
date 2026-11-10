@@ -20,13 +20,15 @@ import { F05_LIFECYCLE_TABLE_NAMES } from '../../../src/services/artifact-lifecy
 import { F06_ACCOUNTING_TABLE_NAMES } from '../../../src/services/usage-accounting/accounting-schema';
 import { F07_LIVE_LOG_TABLE_NAMES } from '../../../src/services/phase-log/live-log-index-schema';
 import { F08_HANDOFF_TABLE_NAMES } from '../../../src/services/recovery-handoff/handoff-schema';
+import { F10_LANES_TABLE_NAMES } from '../../../src/services/execution-lanes/lane-schema';
 
 const EXPECTED_STRICT_TABLE_COUNT =
   F04_INITIAL_STRICT_TABLE_COUNT +
   F05_LIFECYCLE_TABLE_NAMES.length +
   F06_ACCOUNTING_TABLE_NAMES.length +
   F07_LIVE_LOG_TABLE_NAMES.length +
-  F08_HANDOFF_TABLE_NAMES.length;
+  F08_HANDOFF_TABLE_NAMES.length +
+  F10_LANES_TABLE_NAMES.length;
 
 describe('FR-R6-F04 (US1): SQLite Engine Qualification, Pragmas & Trusted Storage Location', () => {
   const tempDirs: string[] = [];
@@ -79,7 +81,7 @@ describe('FR-R6-F04 (US1): SQLite Engine Qualification, Pragmas & Trusted Storag
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => 1_700_000_000_000);
       expect(result.schemaVersion).toBe(SQLITE_SCHEMA_CURRENT_VERSION);
       expect(result.strictTableCount).toBe(EXPECTED_STRICT_TABLE_COUNT);
-      expect(result.appliedMigrations).toEqual([1, 2, 3, 4, 5]);
+      expect(result.appliedMigrations).toEqual([1, 2, 3, 4, 5, 6]);
       expect(conn.runForeignKeyCheck()).toEqual([]);
 
       // Re-running bootstrap is idempotent
