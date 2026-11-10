@@ -313,3 +313,24 @@ describe('provider qualifications (FR-020)', () => {
     expect(JSON.stringify(response)).not.toContain('fixture-verified');
   });
 });
+
+describe('accounting query rootIds scope (FR-R6-F11 T008)', () => {
+  it('narrows totals to the named roots', () => {
+    const accounting = service();
+    ingest(accounting, { attemptId: 'a-1', rootId: 'root-x', measures: tokens(100, 1) });
+    ingest(accounting, { attemptId: 'a-2', rootId: 'root-x', measures: tokens(20, 1) });
+    ingest(accounting, { attemptId: 'a-3', rootId: 'root-y', measures: tokens(3, 1) });
+    ingest(accounting, { attemptId: 'a-4', rootId: 'root-z', measures: tokens(4000, 1) });
+    const scoped = okValue(accounting.query({ groupBy: [], rootIds: ['root-x', 'root-y'] })).rows.at(0);
+    expect(scoped?.attempts).toBe(3);
+    expect(scoped?.roots).toBe(2);
+    expect(measureOf(scoped, 'input_tokens')).toMatchObject({ total: '123' });
+    const all = okValue(accounting.query({ groupBy: [] })).rows.at(0);
+    expect(measureOf(all, 'input_tokens')).toMatchObject({ total: '4123' });
+  });
+
+  it('refuses a malformed root id list before reading', () => {
+    const result = service().query({ groupBy: [], rootIds: ['r-1', 'r-1'] });
+    expect(result).toEqual({ ok: false, refusal: { code: 'invalid-query', detail: 'rootIds' } });
+  });
+});
