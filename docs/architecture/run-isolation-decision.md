@@ -230,10 +230,14 @@ implementation argues otherwise, and each states what would change it.
 
 ## 9. The gate on implementing this — read this section first
 
-**Nothing in §2–§8 is built.** As of 2026-08-27 there is no worktree, sandbox, or per-Run checkout
-mechanism anywhere in `repo/src/`; the word `worktree` appears 15 times across 9 files under
-`src/`, every one of them a comment explaining its absence. `FR-R3-124`'s T1465 (the boundary) and T1466 (rewiring checkpoints, the
-ledger and evidence onto it) are **open**.
+**The lane engine is built; dispatch into it is not.** As of 2026-08-27 there was no worktree,
+sandbox, or per-Run checkout mechanism anywhere in `repo/src/`. As of 2026-11-10 the lane engine
+exists (`FR-R6-F10`, [Execution lanes](../operations/execution-lanes.md)): it provisions, freezes,
+verifies, lands, reconciles and cleans up separate Git working trees, and how each entry condition
+below was met is recorded in `specs/309-isolated-workspace-lanes/research.md`. Run dispatch into a
+lane remains gated: no Run executes in a lane, so a cap above one still shares one working tree.
+The dispatch half of `FR-R3-124` (T1466: rewiring checkpoints, the ledger and evidence onto the
+boundary) is not built.
 
 **Why gated rather than built.** The audit scopes recommendation P0-2 at a **months** horizon. The
 item's own sequencing note says both P0 items *"begin with a decision record … that scopes everything

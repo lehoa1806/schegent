@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 134
+    vacuity-census-denominator: 135
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **134** |
+| Gates the detector calls **controlled** (the denominator) | **135** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1673,3 +1673,16 @@ does not read it as a scanning gate.
 | **+1** | `queue-halt-not-persisted.test.ts` (133 → 134) | Joined (`FR-027`, task T050). The file already existed; it gained a walk over every production source file and a control case that feeds both halt patterns a stored-halt shape, which is what the detector reads |
 
 The rate stays **0.0%**: all 134 still read as uncontrolled once their controls are stripped.
+
+**Denominator movement 134 → 135 (2026-11-10, feature 309 / `FR-R6-F10`).** One gate joined, and it is the one
+gate-shaped file the feature added under `tests/lint/`. Attribution is by census membership, measured rather than
+assumed: the controlled set was computed with the detector's own two predicates (`isScanningGate` and
+`looksControlled`) over `tests/lint/` at the `repo/` commit this feature branched from (134, matching the record
+above) and over the working tree that held the feature (135), and the only name in the second set that is not in
+the first is the one below. None left.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `execution-lanes-git-verbs.test.ts` (134 → 135) | Joined (`FR-013`, task T041). New: it walks every source file under `src/services/execution-lanes/` and fails on a destructive Git verb in any string or template text; its controls are a planted source fed through the extractor and a floor on the `worktree` literals the walk finds |
+
+The rate stays **0.0%**: all 135 still read as uncontrolled once their controls are stripped.
