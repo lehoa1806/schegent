@@ -49,7 +49,8 @@ vi.mock('../../../lib/phase-log-ipc', () => ({
   readPhaseLog: (req: unknown) => readPhaseLogSpy(req),
   startPhaseLogTail: vi.fn(),
   stopPhaseLogTail: vi.fn(),
-  subscribePhaseLogPush: () => () => {},
+  subscribePhaseLogBatch: () => () => {},
+  ackPhaseLogTail: vi.fn(),
   openVerboseSetting: vi.fn()
 }));
 

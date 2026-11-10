@@ -9,6 +9,7 @@ import {
   AUDIT_LOG_CLOSE_MARKER,
   AUDIT_LOG_OPEN_MARKER
 } from '../../../../../src/contracts/phase-output-contract';
+import { LIVE_LOG_COVERAGE_REASONS } from '../../../../../src/contracts/phase-log-bounds';
 
 afterEach(() => cleanup());
 
@@ -211,5 +212,66 @@ describe('Feature 029 T020 — PhaseLogEntry tool-use snapshots', () => {
     expect(code).not.toBeNull();
     expect(code?.textContent).toContain('# Heading');
     expect(code?.textContent).toContain('Second paragraph.');
+  });
+});
+
+// FR-R6-F07 T036 (FR-012) — every coverage reason renders as its own labelled
+// row. The label names what happened in words that stay true after later
+// output arrives; the counts are shown as numbers and nothing else.
+describe('FR-R6-F07 T036 — coverage-gap rows', () => {
+  function gap(body: PhaseLogDisplayEntry['body']): PhaseLogDisplayEntry {
+    return entry({ kind: 'coverage-gap', body });
+  }
+
+  it('renders one distinct, non-empty label per coverage reason', () => {
+    const labels = new Set<string>();
+    for (const reason of LIVE_LOG_COVERAGE_REASONS) {
+      const { getByTestId } = render(PhaseLogEntry, { props: { entry: gap({ reason, count: 1 }) } });
+      const row = getByTestId('phase-log-coverage-gap');
+      expect(row.getAttribute('data-reason')).toBe(reason);
+      const label = row.querySelector('.coverage-label')?.textContent.trim() ?? '';
+      expect(label.length, reason).toBeGreaterThan(0);
+      expect(label, reason).not.toContain(reason);
+      labels.add(label);
+      cleanup();
+    }
+    expect(labels.size).toBe(LIVE_LOG_COVERAGE_REASONS.length);
+  });
+
+  it('labels not-yet-produced as a state at the moment the view opened', () => {
+    const { getByTestId } = render(PhaseLogEntry, {
+      props: { entry: gap({ reason: 'not-yet-produced', count: 1 }) }
+    });
+    const text = getByTestId('phase-log-coverage-gap').textContent;
+    expect(text).toMatch(/when (this|the) view opened/i);
+  });
+
+  it('shows the record count and bytes as numbers', () => {
+    const { getByTestId } = render(PhaseLogEntry, {
+      props: { entry: gap({ reason: 'range-skipped', count: 3, bytes: 8_400_000 }) }
+    });
+    const row = getByTestId('phase-log-coverage-gap');
+    expect(row.querySelector('[data-testid="coverage-gap-count"]')?.textContent).toContain('3');
+    expect(row.querySelector('[data-testid="coverage-gap-bytes"]')?.textContent).toContain('8400000');
+  });
+
+  it('omits the count for a single gap and any figure that is not a non-negative integer', () => {
+    const { getByTestId } = render(PhaseLogEntry, {
+      props: { entry: gap({ reason: 'parse-omission', count: 1, bytes: 1.5 }) }
+    });
+    const row = getByTestId('phase-log-coverage-gap');
+    expect(row.querySelector('[data-testid="coverage-gap-count"]')).toBeNull();
+    expect(row.querySelector('[data-testid="coverage-gap-bytes"]')).toBeNull();
+  });
+
+  it('renders an unrecognised reason as a generic gap without echoing it', () => {
+    const forged = '<img src=x onerror=alert(1)>';
+    const { getByTestId, container } = render(PhaseLogEntry, {
+      props: { entry: gap({ reason: forged as unknown as 'range-skipped', count: 1 }) }
+    });
+    const row = getByTestId('phase-log-coverage-gap');
+    expect(row.getAttribute('data-reason')).toBe('unknown');
+    expect(row.textContent).not.toContain('onerror');
+    expect(container.querySelector('img')).toBeNull();
   });
 });

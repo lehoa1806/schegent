@@ -150,8 +150,8 @@ function scalarSummaryParts(rec: AnyRecord, skippedKeys: ReadonlySet<string>): s
 }
 
 // Feature 020 BUG-002 (T083) — the `tool-use` body of a Claude `tool_use` block
-// and of an agy `tool` step alike.
-function toolUseBody(toolName: string, inputValue: unknown): PhaseLogDisplayEntry['body'] {
+// and of an agy `tool` step alike. FR-R6-F07 (FR-017) shapes an ACP tool call with it too.
+export function toolUseBody(toolName: string, inputValue: unknown): PhaseLogDisplayEntry['body'] {
   const toolInput = inputValue === undefined
     ? ''
     : typeof inputValue === 'string'
@@ -330,6 +330,15 @@ function projectAgyStep(step: OpenAgyStep): PhaseLogDisplayEntry[] {
  */
 export class StreamLineProjector {
   private readonly openSteps = new Map<string, OpenAgyStep>();
+
+  /**
+   * FR-R6-F07 — true when no agy step is open. A fresh projector started at an
+   * idle boundary reproduces exactly the entries that follow it, so only such a
+   * boundary may carry a live-log cursor.
+   */
+  isIdle(): boolean {
+    return this.openSteps.size === 0;
+  }
 
   project(line: unknown): readonly PhaseLogDisplayEntry[] {
     const rec = asRecord(line);

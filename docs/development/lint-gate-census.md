@@ -63,7 +63,7 @@ implementations** sharing a scan helper and differing only by a constant and an 
 **name-cluster overlap**.
 
 **What that found.** One cluster, evidenced rather than suspected: **twelve** of the thirteen
-`no-inline-*` gates are one rule implemented twelve times, across **794 lines**. Diffing two of
+`no-inline-*` gates are one rule implemented twelve times, across **799 lines**. Diffing two of
 them leaves the command constant, the allowlist and the prose; several say in their own headers
 that they *"mirror the established pattern at"* a named sibling. And
 `no-inline-backend-ping-ipc.test.ts` does the same job in **15 lines**, which is what makes this
@@ -84,12 +84,16 @@ evidence rather than an impression.
 > set the total sums. The membership was corrected; the number that membership determines was left
 > alone, one clause away, for eighteen days.
 >
-> That is the failure this re-measurement exists to exhibit, and it is why **794** is now derived
+> That is the failure this re-measurement exists to exhibit, and it is why **799** is now derived
 > rather than transcribed: `tests/lint/asserted-counts.test.ts` registers this claim against the
 > twelve files themselves, and its entry also pins the family at twelve, so neither a resized member
 > nor a thirteenth one can pass silently again. The exemplar's **15 lines** beside it is deliberately
 > *not* registered — see the decision in
 > `docs/operations/asserted-counts-sweep.md` for which figures earned an entry and which did not.
+>
+> **Re-measured 2026-11-10** (`FR-R6-F07`). 794 → 799: `no-inline-phase-log-ipc.test.ts` grew
+> from 63 to 68 lines when the one-entry push became a batch message and the tail gained an
+> acknowledgement command. The derivation caught it, as intended.
 
 **Relied on.** That a gate's `describe` title describes its rule.
 

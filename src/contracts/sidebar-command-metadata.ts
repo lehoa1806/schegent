@@ -64,6 +64,7 @@ import {
   CMD_START_PHASE_LOG_TAIL,
   CMD_START_QUEUE,
   CMD_STOP_PHASE_LOG_TAIL,
+  CMD_ACK_PHASE_LOG_TAIL,
   COMMAND_TYPES,
   type CommandType
 } from './sidebar-ipc';
@@ -258,6 +259,9 @@ export const COMMAND_AUTHORITY = Object.freeze({
   [CMD_READ_PHASE_LOG]: gatedConcurrent('appends a phase-log-read row on every read'),
   [CMD_START_PHASE_LOG_TAIL]: gatedConcurrent('appends a phase-log-tail-started row'),
   [CMD_STOP_PHASE_LOG_TAIL]: gatedConcurrent('appends a phase-log-tail-stopped row'),
+  // FR-R6-F07: the ack only moves a tail the gated start opened, so it is gated
+  // with it; it appends no row of its own.
+  [CMD_ACK_PHASE_LOG_TAIL]: gatedConcurrent('advances delivery on a tail the gated start opened'),
 
   // The nine that stay read-only. Each reason says what the command does and that it
   // has none of the four effects (`tests/unit/contracts/sidebar-command-metadata.test.ts`

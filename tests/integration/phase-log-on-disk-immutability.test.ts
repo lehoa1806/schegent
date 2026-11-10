@@ -23,7 +23,7 @@ import { SanitizedLogger } from '../../src/lib/logger';
 import { readIterationManifest } from '../../src/services/phase-log/phase-log-reader';
 import {
   PhaseLogTailSession,
-  type PhaseLogEntryPushPayload
+  type LiveLogBatchItem
 } from '../../src/services/phase-log/phase-log-tail-session';
 
 const logger = new SanitizedLogger();
@@ -159,16 +159,21 @@ describe('Feature 029 T033 — phase-log on-disk immutability (SC-005)', () => {
     expect(manifest.entries.length).toBeGreaterThan(0);
 
     // 2. Tail-session lifecycle.
-    const pushed: PhaseLogEntryPushPayload[] = [];
+    const pushed: LiveLogBatchItem[] = [];
     const tail = new PhaseLogTailSession({
       sessionId: 'tail-1',
       workspaceRoot: tmpDir,
       filePath: streamPath,
       selection: { ...SELECTION, iterationN: SELECTION.iterationN },
-      pushToWebview: (msg) => pushed.push(msg),
+      postBatch: (batch) => {
+        pushed.push(...batch.entries);
+        return true;
+      },
       sanitize,
       caps: { perFieldBytes: 4096 }
     });
+    await tail.start();
+    tail.ack({ batchSeq: 0 });
     await tail.tick();
     await tail.tick();
     expect(pushed.length).toBeGreaterThan(0);

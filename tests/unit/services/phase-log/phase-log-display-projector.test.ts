@@ -16,7 +16,7 @@ import {
 import { readIterationManifest } from '../../../../src/services/phase-log/phase-log-reader';
 import {
   PhaseLogTailSession,
-  type PhaseLogEntryPushPayload
+  type LiveLogBatchItem
 } from '../../../../src/services/phase-log/phase-log-tail-session';
 import type {
   IterationManifest,
@@ -371,18 +371,23 @@ describe('Feature 020 BUG-002 — agy lines project by their shape', () => {
       text.slice(betweenFragments, insideLine),
       text.slice(insideLine)
     ];
-    const pushed: PhaseLogEntryPushPayload[] = [];
+    const pushed: LiveLogBatchItem[] = [];
     const session = new PhaseLogTailSession({
       sessionId: 's1',
       workspaceRoot,
       filePath: streamPath(),
       selection: SELECTION,
-      pushToWebview: (msg) => pushed.push(msg),
+      postBatch: (batch) => {
+        pushed.push(...batch.entries);
+        return true;
+      },
       sanitize,
       caps: { perFieldBytes: CAPS.perFieldBytes }
     });
 
     await writeStream('');
+    await session.start();
+    session.ack({ batchSeq: 0 });
     for (const piece of pieces) {
       await fs.appendFile(streamPath(), piece);
       await session.tick();
@@ -390,17 +395,26 @@ describe('Feature 020 BUG-002 — agy lines project by their shape', () => {
     const read = await readStream();
 
     expect(read.entries).toHaveLength(EXPECTED.length);
-    expect(withoutSeq(pushed.map((p) => p.entry))).toEqual(withoutSeq(read.entries));
+    // FR-R6-F07 (FR-012) — the tail started on an empty file, so it leads with
+    // one `not-yet-produced` gap; every entry after it matches the read.
+    const entries = pushed.map((p) => p.entry);
+    const leading = entries.at(0);
+    expect(leading?.kind).toBe('coverage-gap');
+    expect(leading?.body.reason).toBe('not-yet-produced');
+    expect(withoutSeq(entries.slice(1))).toEqual(withoutSeq(read.entries));
   });
 
   it('holds no step from before the tailed file was truncated', async () => {
-    const pushed: PhaseLogEntryPushPayload[] = [];
+    const pushed: LiveLogBatchItem[] = [];
     const session = new PhaseLogTailSession({
       sessionId: 's1',
       workspaceRoot,
       filePath: streamPath(),
       selection: SELECTION,
-      pushToWebview: (msg) => pushed.push(msg),
+      postBatch: (batch) => {
+        pushed.push(...batch.entries);
+        return true;
+      },
       sanitize,
       caps: { perFieldBytes: CAPS.perFieldBytes }
     });
@@ -408,6 +422,8 @@ describe('Feature 020 BUG-002 — agy lines project by their shape', () => {
       step(2, 'agent_response', 'ACTIVE', { text_delta: 'Held from the first file. ' }),
       step(3, 'checkpoint', 'DONE', { text_delta: 'Saved a checkpoint.' })
     ]));
+    await session.start();
+    session.ack({ batchSeq: 0 });
     await session.tick();
 
     await writeStream(serialize([step(2, 'agent_response', 'DONE', { text_delta: 'Fresh.' })]));
@@ -415,6 +431,8 @@ describe('Feature 020 BUG-002 — agy lines project by their shape', () => {
 
     expect(kindAndBody(pushed.map((p) => p.entry))).toEqual([
       { kind: 'system', body: { systemSubtype: 'checkpoint', systemSummary: 'Saved a checkpoint.' } },
+      // FR-R6-F07 (FR-012) — the shorter file is a replaced source, announced before its records.
+      { kind: 'coverage-gap', body: { reason: 'source-replaced', count: 1, bytes: 0 } },
       { kind: 'assistant-text', body: { text: 'Fresh.' } }
     ]);
   });

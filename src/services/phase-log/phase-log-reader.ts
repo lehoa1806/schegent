@@ -5,8 +5,15 @@
 
 import { openWithinRootByPath } from '../../lib/safe-open';
 import { discoverIterations } from './phase-log-iteration-discovery';
-import { parseStreamJsonlBytes } from './phase-log-jsonl-parser';
 import { StreamLineProjector } from './phase-log-display-projector';
+import { RecordFramer } from './live-log-record-framer';
+import {
+  cursorAtOffset,
+  generationOf,
+  readBeforeFromHandle,
+  streamDigest
+} from './live-log-cursor';
+import { LIVE_LOG_RESIDUAL_MAX_BYTES } from '../../contracts/phase-log-bounds';
 import { resolvePhaseDirPath, resolveStreamJsonlPath } from './phase-log-path';
 // Feature 098 (PRIV-01) — the boundary scrub is shared with the live
 // tail session so a reopened phase and a watched one redact identically.
@@ -49,6 +56,40 @@ interface ReadIterationManifestArgs {
   readonly caps: ReadCaps;
   readonly sanitize: (s: string) => string;
   readonly readSetting?: () => boolean;
+}
+
+interface FramedTail {
+  readonly projected: ReadonlyArray<{ readonly entry: PhaseLogDisplayEntry; readonly end: number }>;
+  readonly skippedLines: number;
+  /** The end of the last record after which the projector was idle. */
+  readonly idleEnd: number;
+}
+
+/**
+ * FR-R6-F07 (FR-001) — frames the bounded tail as the live tail does, so a read
+ * and a tail split records at the same offsets. The residual bound is the tail
+ * itself: a one-shot read already holds every byte, so it shows a long record
+ * whole as it always has. The idle boundary starts at the tail's first byte; a
+ * tail that began mid-record makes that cursor fail its newline check, and the
+ * tail then starts from the newest snapshot instead.
+ */
+function frameTail(bytes: Buffer, start: number): FramedTail {
+  const framer = new RecordFramer(start, Math.max(bytes.length, LIVE_LOG_RESIDUAL_MAX_BYTES));
+  framer.feed(bytes);
+  const projector = new StreamLineProjector();
+  const projected: Array<{ entry: PhaseLogDisplayEntry; end: number }> = [];
+  let skippedLines = 0;
+  let idleEnd = start;
+  for (let item = framer.next(); item !== null; item = framer.next()) {
+    if (item.kind === 'oversized-record') continue;
+    if (item.kind === 'record') {
+      for (const entry of projector.project(item.value)) projected.push({ entry, end: item.end });
+    } else if (item.kind === 'parse-omission') {
+      skippedLines += 1;
+    }
+    if (projector.isIdle()) idleEnd = item.end;
+  }
+  return { projected, skippedLines, idleEnd };
 }
 
 function validateSelectionFullyPopulated(
@@ -95,6 +136,7 @@ export async function readIterationManifest(
       entries: [],
       skippedLines: 0,
       truncatedCount: 0,
+      cursor: null,
       verboseDiagnosticsState: classifyEmptyKind({
         discovery,
         settingOn,
@@ -119,8 +161,9 @@ export async function readIterationManifest(
     iterationN: selectedIteration
   });
 
-  let bytes = '';
+  let framed: FramedTail = { projected: [], skippedLines: 0, idleEnd: 0 };
   let skippedBytes = 0;
+  let cursor: string | null = null;
   try {
     // FR-R3-052 (H-03) — was `fs.readFile(streamPath, 'utf8')` with no `stat` at
     // all, so a multi-GiB phase log went wholly into memory. Now the file's tail
@@ -157,6 +200,7 @@ export async function readIterationManifest(
         entries: [],
         skippedLines: 0,
         truncatedCount: 0,
+        cursor: null,
         verboseDiagnosticsState:
           opened.errno === 'ENOENT'
             ? { kind: 'record-vanished' }
@@ -166,10 +210,16 @@ export async function readIterationManifest(
     }
     const handle = opened.handle;
     try {
-      const { size } = await handle.stat();
-      const tail = await readBoundedTail(handle, size);
-      bytes = tail.bytes.toString('utf8');
+      const stat = await handle.stat();
+      const tail = await readBoundedTail(handle, stat.size);
       skippedBytes = tail.skippedBytes;
+      framed = frameTail(tail.bytes, tail.nextOffset - tail.bytes.length);
+      // FR-R6-F07 — the digest names the iteration read, not the one asked for.
+      const stream = {
+        digest: streamDigest(args.workspaceRoot, { ...args.selection, iterationN: selectedIteration }),
+        generation: generationOf(stat, process.platform)
+      };
+      cursor = await cursorAtOffset(stream, framed.idleEnd, readBeforeFromHandle(handle));
     } finally {
       await handle.close();
     }
@@ -188,6 +238,7 @@ export async function readIterationManifest(
         entries: [],
         skippedLines: 0,
         truncatedCount: 0,
+        cursor: null,
         verboseDiagnosticsState: { kind: 'record-vanished' },
         isInFlight: args.isInFlight
       };
@@ -195,14 +246,17 @@ export async function readIterationManifest(
     throw err;
   }
 
-  const { parsedLines, skippedLines } = parseStreamJsonlBytes(bytes, '');
   // Feature 020 BUG-002 (T083, FR-012a) — one projector for the whole read: an
   // agy step spans several lines and is emitted once, when a line closes it.
-  const projector = new StreamLineProjector();
-
+  // FR-R6-F07 (FR-001) — an in-flight read stops at its cursor; the tail that
+  // starts from it delivers the later entries, so none is shown twice.
+  const { skippedLines, idleEnd } = framed;
+  const shown = args.isInFlight
+    ? framed.projected.filter(({ end }) => end <= idleEnd)
+    : framed.projected;
   let entries: PhaseLogDisplayEntry[] = [];
   let truncatedCount = 0;
-  for (const projected of parsedLines.flatMap((parsed) => projector.project(parsed))) {
+  for (const { entry: projected } of shown) {
     const truncated = truncateDisplayEntryBody(projected, {
       perFieldBytes: args.caps.perFieldBytes
     });
@@ -238,6 +292,7 @@ export async function readIterationManifest(
     // FR-R3-052 — omitted when nothing was skipped, so the field's presence is
     // itself the signal rather than a zero every caller has to interpret.
     ...(skippedBytes > 0 ? { skippedLeadingBytes: skippedBytes } : {}),
+    cursor,
     // Feature 203 (T037, D2, FR-007) — the only site that can reach
     // `entries-present`, and it reaches it by counting the entries it is about
     // to return. `entries-present` with zero entries is unconstructible here.

@@ -6,6 +6,12 @@
 // crosses host → webview. The bytes of the source `stream.jsonl` on
 // disk are NEVER altered (010 T10 hard rule).
 
+import type { LiveLogCoverageReason } from '../../contracts/phase-log-bounds';
+import type {
+  StartPhaseLogTailResponse,
+  StopPhaseLogTailResponse
+} from '../../contracts/sidebar-ipc/phase-log';
+
 export type PhaseLogDisplayEntryKind =
   | 'assistant-text'
   | 'tool-use'
@@ -13,7 +19,10 @@ export type PhaseLogDisplayEntryKind =
   | 'system'
   | 'result'
   | 'truncated-head'
-  | 'tail-ended';
+  | 'tail-ended'
+  // FR-R6-F07 (FR-012) — a row that says why output is absent or incomplete.
+  // Its body holds a reason from the closed list and integers, never text.
+  | 'coverage-gap';
 
 // Feature 029 — structured tool-call arguments preserved from the
 // original `tool_use.input` object. String leaves are sanitized by the
@@ -43,7 +52,11 @@ export interface PhaseLogDisplayEntry {
     readonly systemSummary?: string;
     readonly resultSummary?: string;
     readonly droppedEntryCount?: number;
-    readonly reason?: 'webview-stop' | 'webview-dispose' | 'phase-complete';
+    readonly reason?: 'webview-stop' | 'webview-dispose' | 'phase-complete' | LiveLogCoverageReason;
+    /** `coverage-gap` only: how many records or events the gap stands for. */
+    readonly count?: number;
+    /** `coverage-gap` only: how many source bytes the gap stands for. */
+    readonly bytes?: number;
   };
   readonly bodyTruncated: {
     readonly text?: { readonly originalLength: number };
@@ -139,6 +152,12 @@ export interface IterationManifest {
    * log, and nothing in the UI could tell the operator otherwise.
    */
   readonly skippedLeadingBytes?: number;
+  /**
+   * FR-R6-F07 (FR-001) — the live-log cursor at the end of the last complete,
+   * projector-idle record of this read; `null` when there is no stream file.
+   * Optional so a manifest built before the field still deserializes.
+   */
+  readonly cursor?: string | null;
   readonly verboseDiagnosticsState: VerboseDiagnosticsBanner;
   readonly isInFlight: boolean;
 }
@@ -153,23 +172,7 @@ export type PhaseLogReadResult =
         | 'internal-error';
     };
 
-export type PhaseLogTailStartResult =
-  | {
-      readonly outcome: 'success';
-      readonly sessionId: string;
-      readonly mechanism: 'fs.watch' | 'polling';
-    }
-  | {
-      readonly outcome: 'failure';
-      readonly reason:
-        | 'unknown-tuple'
-        | 'not-in-flight'
-        | 'permission-denied'
-        | 'internal-error';
-    };
+// FR-R6-F07 — the host results are the IPC responses, so the two cannot drift.
+export type PhaseLogTailStartResult = StartPhaseLogTailResponse;
 
-export interface PhaseLogTailStopResult {
-  readonly outcome: 'success' | 'failure';
-  readonly sessionId: string;
-  readonly reason?: 'unknown-session' | 'internal-error';
-}
+export type PhaseLogTailStopResult = StopPhaseLogTailResponse;

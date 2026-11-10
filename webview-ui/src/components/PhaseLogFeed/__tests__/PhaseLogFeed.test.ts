@@ -4,8 +4,8 @@
 // (T051 + T053) must deliver:
 //   1. When the selection resolves to (latest iteration, in-flight
 //      task, active phase), the container auto-attaches a tail via
-//      `startPhaseLogTail` and registers a `subscribePhaseLogPush`
-//      listener (T053).
+//      `startPhaseLogTail` and registers a `subscribePhaseLogBatch`
+//      listener (T053; FR-R6-F07 replaced the per-entry push).
 //   2. Push messages whose `tailSessionId` matches the active session
 //      are appended to the entries list; mismatched ids are dropped
 //      (T051 push handler).
@@ -47,34 +47,35 @@ import {
 const startSpy = vi.fn<(req: unknown) => Promise<PhaseLogTailStartResult>>();
 const stopSpy = vi.fn<(req: unknown) => Promise<PhaseLogTailStopResult>>();
 const readSpy = vi.fn<(req: unknown) => Promise<PhaseLogReadResult>>();
-const subscribeSpy = vi.fn<
-  (
-    cb: (payload: {
-      tailSessionId: string;
-      entrySeq: number;
-      entry: PhaseLogDisplayEntry;
-    }) => void
-  ) => () => void
->();
-let capturedPushListener:
-  | ((payload: {
-      tailSessionId: string;
-      entrySeq: number;
-      entry: PhaseLogDisplayEntry;
-    }) => void)
-  | null = null;
+const subscribeSpy = vi.fn<(cb: (payload: unknown) => void) => () => void>();
+let capturedBatchListener: ((payload: unknown) => void) | null = null;
+
+// FR-R6-F07 — the entry the host would push, as the one-entry batch that now carries it. Each
+// case delivers one batch after the start, so it is batch 1.
+function capturedPushListener(push: {
+  tailSessionId: string;
+  entrySeq: number;
+  entry: PhaseLogDisplayEntry;
+}): void {
+  capturedBatchListener?.({
+    protocol: 1,
+    tailSessionId: push.tailSessionId,
+    batchSeq: 1,
+    generation: 'g-1',
+    mode: 'continue',
+    toCursor: null,
+    entries: [{ at: push.entrySeq, n: 0, entry: push.entry }]
+  });
+}
 
 vi.mock('../../../lib/phase-log-ipc', () => ({
   readPhaseLog: (req: unknown) => readSpy(req),
   startPhaseLogTail: (req: unknown) => startSpy(req),
   stopPhaseLogTail: (req: unknown) => stopSpy(req),
   openVerboseSetting: vi.fn(),
-  subscribePhaseLogPush: (cb: (p: {
-    tailSessionId: string;
-    entrySeq: number;
-    entry: PhaseLogDisplayEntry;
-  }) => void) => {
-    capturedPushListener = cb;
+  ackPhaseLogTail: vi.fn(),
+  subscribePhaseLogBatch: (cb: (payload: unknown) => void) => {
+    capturedBatchListener = cb;
     return subscribeSpy(cb);
   }
 }));
@@ -266,7 +267,7 @@ beforeEach(() => {
   readSpy.mockReset();
   subscribeSpy.mockReset();
   postCommandSpy.mockReset();
-  capturedPushListener = null;
+  capturedBatchListener = null;
 
   // Default: manifest read returns success with one initial entry and
   // `isInFlight: true` so the container can decide to auto-attach.
@@ -285,7 +286,10 @@ beforeEach(() => {
   startSpy.mockResolvedValue({
     outcome: 'success',
     sessionId: 'sess-A',
-    mechanism: 'fs.watch'
+    mechanism: 'fs.watch',
+    snapshotCutoff: 'cut-0',
+    nextCursor: 'c-0',
+    cursorStatus: 'none'
   });
   stopSpy.mockResolvedValue({
     outcome: 'success',
@@ -365,10 +369,10 @@ describe('Feature 020 T044 — push routing (T051 contract)', () => {
     await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
     await tick();
     await tick();
-    expect(capturedPushListener).not.toBeNull();
+    expect(capturedBatchListener).not.toBeNull();
 
     const before = container.querySelectorAll('[data-testid="phase-log-entry"]').length;
-    capturedPushListener?.({
+    capturedPushListener({
       tailSessionId: 'sess-A',
       entrySeq: 2,
       entry: makePushEntry(2, 'live-streamed-line')
@@ -387,10 +391,10 @@ describe('Feature 020 T044 — push routing (T051 contract)', () => {
     await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
     await tick();
     await tick();
-    expect(capturedPushListener).not.toBeNull();
+    expect(capturedBatchListener).not.toBeNull();
 
     const before = container.querySelectorAll('[data-testid="phase-log-entry"]').length;
-    capturedPushListener?.({
+    capturedPushListener({
       tailSessionId: 'sess-DIFFERENT',
       entrySeq: 9,
       entry: makePushEntry(9, 'should-be-dropped')
@@ -413,7 +417,7 @@ describe('Feature 020 T044 — push routing (T051 contract)', () => {
     // While tailing, LIVE indicator is visible.
     expect(queryByTestId('phase-log-live-indicator')).not.toBeNull();
 
-    capturedPushListener?.({
+    capturedPushListener({
       tailSessionId: 'sess-A',
       entrySeq: 99,
       entry: makePushEntry(99, '', 'tail-ended')
@@ -1704,7 +1708,10 @@ describe('FR-R5-F18 — multi-iteration live tail & bounded tail-start recovery 
     startSpy.mockResolvedValue({
       outcome: 'success',
       sessionId: 'sess-B',
-      mechanism: 'fs.watch'
+      mechanism: 'fs.watch',
+      snapshotCutoff: 'cut-0',
+      nextCursor: 'c-0',
+      cursorStatus: 'none'
     });
 
     await fireEvent.click(getByTestId('phase-log-jump-current'));
@@ -1782,7 +1789,10 @@ describe('FR-R5-F18 — multi-iteration live tail & bounded tail-start recovery 
       .mockResolvedValueOnce({
         outcome: 'success',
         sessionId: 'sess-recovered',
-        mechanism: 'fs.watch'
+        mechanism: 'fs.watch',
+        snapshotCutoff: 'cut-0',
+        nextCursor: 'c-0',
+        cursorStatus: 'none'
       });
 
     const store = createPhaseLogStore();
@@ -1833,7 +1843,10 @@ describe('FR-R5-F18 — multi-iteration live tail & bounded tail-start recovery 
     startSpy.mockResolvedValueOnce({
       outcome: 'success',
       sessionId: 'sess-after-reload',
-      mechanism: 'fs.watch'
+      mechanism: 'fs.watch',
+      snapshotCutoff: 'cut-0',
+      nextCursor: 'c-0',
+      cursorStatus: 'none'
     });
     await store.reload();
     await tick();
@@ -1878,7 +1891,10 @@ describe('FR-R5-F18 — multi-iteration live tail & bounded tail-start recovery 
     resolvePendingStart!({
       outcome: 'success',
       sessionId: 'sess-stale',
-      mechanism: 'fs.watch'
+      mechanism: 'fs.watch',
+      snapshotCutoff: 'cut-0',
+      nextCursor: 'c-0',
+      cursorStatus: 'none'
     });
     await tick();
     await tick();
@@ -1914,7 +1930,10 @@ describe('FR-R5-F18 — multi-iteration live tail & bounded tail-start recovery 
     resolvePendingStart!({
       outcome: 'success',
       sessionId: 'sess-unmounted',
-      mechanism: 'fs.watch'
+      mechanism: 'fs.watch',
+      snapshotCutoff: 'cut-0',
+      nextCursor: 'c-0',
+      cursorStatus: 'none'
     });
     await tick();
     await tick();

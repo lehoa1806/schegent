@@ -208,10 +208,11 @@ const gatedByDeclaration = (type: CommandType): boolean =>
   commandAuthorityOf(type).authority === 'gated';
 
 describe('every webview command is routed as the declaration says (T4)', () => {
-  it('parses 65 commands, each with a payload its own guard accepts', () => {
+  it('parses 66 commands, each with a payload its own guard accepts', () => {
     // FR-R6-F05 added the read-only CMD_READ_STORAGE_DETAILS (63 to 64).
     // FR-R6-F06 added the read-only CMD_READ_USAGE_ACCOUNTING (64 to 65).
-    expect(COMMAND_TYPES).toHaveLength(65);
+    // FR-R6-F07 added the gated CMD_ACK_PHASE_LOG_TAIL (65 to 66).
+    expect(COMMAND_TYPES).toHaveLength(66);
     const rejected = COMMAND_TYPES.filter((type) => !COMMAND_GUARDS[type](minimalCommand(type)));
     expect(rejected, `commands whose minimal payload their guard refuses: ${rejected.join(', ')}`).toEqual([]);
   });

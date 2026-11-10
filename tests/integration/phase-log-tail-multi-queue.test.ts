@@ -187,6 +187,8 @@ function buildWiring(projector: ReturnType<typeof controlledProjector>) {
     isWorkspaceTrusted: () => true,
     logger: new SanitizedLogger()
   });
+  // FR-R6-F07 — a start needs the dashboard slot bound; this sink accepts every batch.
+  created.bindDashboardBridge({ postPhaseLogBatch: () => true });
   wiring = created;
   const start = (queueId: string, taskId: string) =>
     created.phaseLogTailService.start({
@@ -234,7 +236,7 @@ describe('phase-log tail on a queue other than the default (BUG-002, T073)', () 
 
     expect(h.phaseCompleteStops()).toEqual([]);
     // Still the live session: a torn-down one answers `unknown-session`.
-    expect(await h.stop(sessionId)).toEqual({ outcome: 'success', sessionId });
+    expect(await h.stop(sessionId)).toMatchObject({ outcome: 'success', sessionId });
   });
 
   it("keeps the default queue's tail through a Run starting and ending on B", async () => {
@@ -250,7 +252,7 @@ describe('phase-log tail on a queue other than the default (BUG-002, T073)', () 
     projector.publish();
 
     expect(h.phaseCompleteStops()).toEqual([]);
-    expect(await h.stop(sessionId)).toEqual({ outcome: 'success', sessionId });
+    expect(await h.stop(sessionId)).toMatchObject({ outcome: 'success', sessionId });
   });
 
   it("tears down B's tail when B's Run leaves in-flight", async () => {

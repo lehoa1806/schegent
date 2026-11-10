@@ -288,7 +288,7 @@ describe('DashboardPanel (T053)', () => {
     expect(mocks.state.createWebviewPanel).not.toHaveBeenCalled();
   });
 
-  it('(g) suppresses postPhaseLogEntry while hidden and invokes onDispose exactly once when closed (FR-R5-F10)', async () => {
+  it('(g) posts a phase-log batch only while visible and reports the refusal (FR-R5-F10, FR-R6-F07)', async () => {
     const onDispose = vi.fn();
     const opts = { ...buildOpts(), onDispose };
     const dashboard = DashboardPanel.open(opts);
@@ -297,31 +297,46 @@ describe('DashboardPanel (T053)', () => {
     await Promise.resolve();
     panel.webview.postMessage.mockClear();
 
-    const envelope = {
-      type: 'MSG_PHASE_LOG_ENTRY' as const,
+    const batch = {
+      type: 'MSG_PHASE_LOG_BATCH' as const,
       payload: {
+        protocol: 1 as const,
         tailSessionId: 'tail-1',
-        entrySeq: 0,
-        entry: {
-          seq: 0,
-          kind: 'assistant-text' as const,
-          ts: null,
-          body: { text: 'hello' },
-          bodyTruncated: null
-        }
+        batchSeq: 1,
+        generation: 'gen-1',
+        mode: 'continue' as const,
+        toCursor: null,
+        entries: [
+          {
+            at: 0,
+            n: 0,
+            entry: { seq: 0, kind: 'assistant-text' as const, ts: null, body: { text: 'hello' }, bodyTruncated: null }
+          }
+        ]
       }
     };
 
-    dashboard.postPhaseLogEntry(envelope);
-    expect(panel.webview.postMessage).toHaveBeenCalledWith(envelope);
+    expect(dashboard.postPhaseLogBatch(batch)).toBe(true);
+    expect(panel.webview.postMessage).toHaveBeenCalledWith(batch);
 
     panel.webview.postMessage.mockClear();
     panel.__triggerVisibilityChange(false);
-    dashboard.postPhaseLogEntry(envelope);
+    expect(dashboard.postPhaseLogBatch(batch)).toBe(false);
     expect(panel.webview.postMessage).not.toHaveBeenCalled();
 
     panel.__triggerDispose();
     dashboard.dispose();
+    expect(dashboard.postPhaseLogBatch(batch)).toBe(false);
     expect(onDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('(h) reports each visibility change, and the initial state on open (FR-R6-F07)', () => {
+    const seen: boolean[] = [];
+    DashboardPanel.open({ ...buildOpts(), onVisibilityChange: (visible: boolean) => seen.push(visible) });
+    const panel = mocks.state.panels.at(0);
+    if (!panel) throw new Error('expected the dashboard panel to be created');
+    panel.__triggerVisibilityChange(false);
+    panel.__triggerVisibilityChange(true);
+    expect(seen).toEqual([true, false, true]);
   });
 });

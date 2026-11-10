@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { REDACTION_SENTINEL, SanitizedLogger } from '../../../src/lib/logger';
 import {
   PhaseLogTailSession,
-  type PhaseLogEntryPushPayload
+  type LiveLogBatchItem
 } from '../../../src/services/phase-log/phase-log-tail-session';
 import type { PhaseLogSelection } from '../../../src/services/phase-log/types';
 import { assertAbsentIn, assertOutcomeIn, casesFor } from './sink-cases';
@@ -47,19 +47,24 @@ function streamPath(): string {
   return path.join(tmpDir, '.schegent', 'sessions', 'run-1', 'diagnostics', 'pipe-1', 'phase-1', 'iter-1', 'stream.jsonl');
 }
 
-async function postedFor(lines: readonly string[]): Promise<PhaseLogEntryPushPayload[]> {
+async function postedFor(lines: readonly string[]): Promise<LiveLogBatchItem[]> {
   await fs.mkdir(path.dirname(streamPath()), { recursive: true });
   await fs.writeFile(streamPath(), `${lines.join('\n')}\n`);
-  const posted: PhaseLogEntryPushPayload[] = [];
+  const posted: LiveLogBatchItem[] = [];
   const session = new PhaseLogTailSession({
     sessionId: 's1',
     workspaceRoot: tmpDir,
     filePath: streamPath(),
     selection: SELECTION,
-    pushToWebview: (message) => posted.push(message),
+    postBatch: (batch) => {
+      posted.push(...batch.entries);
+      return true;
+    },
     sanitize,
     caps: { perFieldBytes: 64 * 1024 }
   });
+  await session.start();
+  session.ack({ batchSeq: 0 });
   await session.tick();
   return posted;
 }
@@ -95,7 +100,7 @@ describe('the webview tail, a tool call whose input holds a secret under a key (
       const value = testCase.build();
       const posted = await postedFor([toolUseLine({ [key]: value, target: 'staging', count: 3 })]);
       expect(posted).toHaveLength(1);
-      const { body } = (posted.at(0) as PhaseLogEntryPushPayload).entry;
+      const { body } = (posted.at(0) as LiveLogBatchItem).entry;
       assertAbsentIn(body.toolInput ?? '', testCase, 'webview tail toolInput');
       assertAbsentIn(JSON.stringify(body.toolArguments), testCase, 'webview tail toolArguments');
       expect(body.toolArguments).toEqual({ [key]: REDACTION_SENTINEL, target: 'staging', count: 3 });
@@ -109,7 +114,7 @@ describe('the webview tail, a tool call whose input holds a secret under a key (
     const posted = await postedFor([
       toolUseLine({ nested: { client_secret: secret }, steps: [{ password: secret }], input_tokens: 4096 })
     ]);
-    const { body } = (posted.at(0) as PhaseLogEntryPushPayload).entry;
+    const { body } = (posted.at(0) as LiveLogBatchItem).entry;
     expect(JSON.stringify(body.toolArguments)).not.toContain(secret);
     expect(body.toolInput).not.toContain(secret);
     expect(body.toolArguments).toEqual({
@@ -122,6 +127,6 @@ describe('the webview tail, a tool call whose input holds a secret under a key (
   it('leaves a tool call with no secret key and no secret pattern whole', async () => {
     const input = { command: 'ls -la', tokenizer: 'wordpiece', path: '/tmp/example/work' };
     const posted = await postedFor([toolUseLine(input)]);
-    expect((posted.at(0) as PhaseLogEntryPushPayload).entry.body.toolArguments).toEqual(input);
+    expect((posted.at(0) as LiveLogBatchItem).entry.body.toolArguments).toEqual(input);
   });
 });
