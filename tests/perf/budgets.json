@@ -143,6 +143,13 @@
       "budgetMs": 10,
       "constant": "P95_BUDGET_MS",
       "rationale": "FR-R6-F09 NFR-001 / F09-AC-06: p95 of 200 measured admissions (20 warm-up, the F03 floor) from a cached version, with executable resolution, record and binding judgement and the per-Run check, is at most 10 ms. At implement: p95 0.235 ms (darwin-arm64, Node 24.19.0)."
+    },
+    {
+      "test": "tests/perf/historical-report-query.test.ts",
+      "name": "Historical report pages at 25,000 roots and 100,000 attempts",
+      "budgetMs": 500,
+      "constant": "PAGE_P95_BUDGET_MS",
+      "rationale": "FR-R6-F11 NFR-002 / NFR-004 / NFR-005 / F11-AC-08: execution-summary over 100,000 captured attempts (25,000 rows, 200-row pages). Asserted: later-page p95 of 200 measured reads (20 warm-up, the F03 floor) at most 500 ms, cancellation acknowledged within 1 s, a 1 ms deadline ending limited deadline-exceeded, and attempt-detail over the whole range ending limited working-data (its 100,000 rows pass the shared 32 MiB budget). Recorded, not asserted (SHOULDs): first-page p95 and slice p95. At implement, darwin-arm64, Node 24.19.0. Two in-memory takes at load 7.3 to 7.9: later-page p95 0.164 and 0.181 ms; first-page p95 563.54 and 551.56 ms over 20 measured runs (target 500 ms, missed): capture about 240 ms in one unsliced read (R1), population digest and estimate about 200 ms sliced, aggregation about 80 ms; sliced-gap p95 13.04 and 15.34 ms (target 10 ms, missed); cancellation acknowledged in 8.41 and 10.68 ms. Then the file-backed store quickstart section 3 names, one take at load 5.9: later-page p95 0.166 ms; first-page p95 554.33 ms (missed); capture p50 246.9 ms; sliced-gap p95 12.6 ms (missed), with two gaps above 100 ms (286.25 and 261.48 ms), the capture and one not attributed; cancellation acknowledged in 8.49 ms. Execution-summary working data 22,120,000 bytes in every take."
     }
   ],
   "notes": [

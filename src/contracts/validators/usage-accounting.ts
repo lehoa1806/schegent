@@ -13,6 +13,7 @@ import {
   MAX_GROUP_BY_DIMENSIONS,
   MAX_QUERY_CURSOR_CHARS,
   MAX_QUERY_LIMIT,
+  MAX_QUERY_ROOT_IDS,
   type AccountingDimension,
   type AccountingQueryRequest,
   type ReadGapsRequest
@@ -34,7 +35,8 @@ const QUERY_KEYS = [
   'asOfRevision',
   'includeLegacy',
   'limit',
-  'cursor'
+  'cursor',
+  'rootIds'
 ] as const;
 const GAP_KEYS = ['limit', 'cursor'] as const;
 const UTC_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,3})?Z$/;
@@ -119,6 +121,14 @@ function validateMeasures(value: unknown): readonly Measure[] | undefined {
   return value as Measure[];
 }
 
+/** FR-R6-F11: 1..64 unique root ids, each an identifier; else `undefined`. */
+function validateRootIds(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_QUERY_ROOT_IDS) return undefined;
+  const wellFormed = value.every((item) => typeof item === 'string' && DIMENSION_VALUE_PATTERNS.identifier.test(item));
+  if (!wellFormed || new Set(value).size !== value.length) return undefined;
+  return value as string[];
+}
+
 /** Validates and normalizes a query request; `limit` is always present in the result. */
 export function validateAccountingQueryRequest(
   input: unknown
@@ -149,6 +159,8 @@ export function validateAccountingQueryRequest(
   if (input.includeLegacy !== undefined && typeof input.includeLegacy !== 'boolean') return invalid('includeLegacy');
   if (input.limit !== undefined && !isLimit(input.limit)) return invalid('limit');
   if (input.cursor !== undefined && !isCursor(input.cursor)) return invalid('cursor');
+  const rootIds = input.rootIds === undefined ? undefined : validateRootIds(input.rootIds);
+  if (input.rootIds !== undefined && rootIds === undefined) return invalid('rootIds');
 
   return {
     ok: true,
@@ -161,7 +173,8 @@ export function validateAccountingQueryRequest(
       ...(revision !== undefined ? { asOfRevision: revision } : {}),
       ...(input.includeLegacy !== undefined ? { includeLegacy: input.includeLegacy } : {}),
       limit: input.limit ?? DEFAULT_QUERY_LIMIT,
-      ...(input.cursor !== undefined ? { cursor: input.cursor } : {})
+      ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
+      ...(rootIds !== undefined ? { rootIds } : {})
     }
   };
 }

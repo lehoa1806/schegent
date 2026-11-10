@@ -43,6 +43,11 @@ import {
   F10_LANES_MIGRATION_NAME,
   F10_LANES_MIGRATION_VERSION
 } from '../execution-lanes/lane-schema';
+import {
+  F11_REPORTING_DDL,
+  F11_REPORTING_MIGRATION_NAME,
+  F11_REPORTING_MIGRATION_VERSION
+} from '../reporting/reporting-schema';
 
 export interface SchemaMigrationDefinition {
   readonly version: number;
@@ -837,6 +842,12 @@ export const BUILTIN_SCHEMA_MIGRATIONS: readonly SchemaMigrationDefinition[] = O
     version: F10_LANES_MIGRATION_VERSION,
     name: F10_LANES_MIGRATION_NAME,
     ddlStatements: F10_LANES_DDL
+  },
+  {
+    // FR-R6-F11: additive and forward-only; never edit migrations 1 to 6.
+    version: F11_REPORTING_MIGRATION_VERSION,
+    name: F11_REPORTING_MIGRATION_NAME,
+    ddlStatements: F11_REPORTING_DDL
   }
 ]);
 

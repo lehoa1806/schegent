@@ -184,6 +184,7 @@ a crash between storing an observation and projecting it loses nothing.
 | Rows per page | 200 |
 | Response size | 1 MiB |
 | Query deadline | 5 seconds |
+| Roots per query (`rootIds`, added by `FR-R6-F11`) | 1 to 64 unique ids, each matching the identifier pattern; absent means every root. It narrows the rows only: the unattributed count, gaps and legacy summary stay store-wide |
 | Grouping dimensions | at most 3 of `backend`, `model`, `workflowRevision`, `phaseId`, `attemptOutcome`, `utcDay` |
 
 At 100,000 retained attempts, warm filtered 200-row reads meet p95 ≤ 500 ms
