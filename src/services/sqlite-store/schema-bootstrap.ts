@@ -33,6 +33,11 @@ import {
   F07_LIVE_LOG_MIGRATION_NAME,
   F07_LIVE_LOG_MIGRATION_VERSION
 } from '../phase-log/live-log-index-schema';
+import {
+  F08_HANDOFF_DDL,
+  F08_HANDOFF_MIGRATION_NAME,
+  F08_HANDOFF_MIGRATION_VERSION
+} from '../recovery-handoff/handoff-schema';
 
 export interface SchemaMigrationDefinition {
   readonly version: number;
@@ -815,6 +820,12 @@ export const BUILTIN_SCHEMA_MIGRATIONS: readonly SchemaMigrationDefinition[] = O
     version: F07_LIVE_LOG_MIGRATION_VERSION,
     name: F07_LIVE_LOG_MIGRATION_NAME,
     ddlStatements: F07_LIVE_LOG_DDL
+  },
+  {
+    // FR-R6-F08: additive and forward-only; never edit migrations 1 to 4.
+    version: F08_HANDOFF_MIGRATION_VERSION,
+    name: F08_HANDOFF_MIGRATION_NAME,
+    ddlStatements: F08_HANDOFF_DDL
   }
 ]);
 

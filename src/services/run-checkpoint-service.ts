@@ -253,13 +253,19 @@ export class RunCheckpointService {
    *   of what the tree held before any of them started. Also required, and for
    *   the same reason: a service without one could only fall back to guessing,
    *   and the fallback would be invisible.
+   * @param isRecoveryEnvelopeProtected FR-R6-F08 (FR-017, research R10) — asked, with the
+   *   Run's and the handover's path segments, before `prune` removes an evicted
+   *   `.recovery.json`. Optional, and fail-safe when absent: with no predicate the
+   *   envelope is kept, because a recovery handoff may still need it. A predicate
+   *   that throws is treated as protected, and the prune still completes.
    */
   constructor(
     private readonly root: string,
     private readonly workspaceRoot: string,
     private readonly logger: SanitizedLogger,
     private readonly countInFlightRuns: () => number,
-    private readonly ledger: RunMutationLedger
+    private readonly ledger: RunMutationLedger,
+    private readonly isRecoveryEnvelopeProtected?: (runId: string, handoverId: string) => boolean
   ) {}
 
   public async checkpoint(run: WorkflowRun, phaseId: string): Promise<void> {
@@ -680,9 +686,27 @@ export class RunCheckpointService {
         this.removeIfContained(path.join(runRoot, `${prefix}.patch`)),
         this.removeIfContained(path.join(runRoot, `${prefix}.json`)),
         this.removeIfContained(path.join(runRoot, `${prefix}.declined.json`)),
-        this.removeIfContained(path.join(runRoot, `${prefix}${RECOVERY_ENVELOPE_SUFFIX}`))
+        this.removeEnvelopeUnlessProtected(runRoot, prefix)
       ]);
     }
+  }
+
+  /**
+   * FR-R6-F08 (R10) — an evicted envelope goes only when a wired predicate says it is unprotected.
+   * A predicate that throws counts as protected: the envelope is kept and the prune goes on.
+   */
+  private async removeEnvelopeUnlessProtected(runRoot: string, prefix: string): Promise<void> {
+    const predicate = this.isRecoveryEnvelopeProtected;
+    if (predicate === undefined) return;
+    let isProtected: boolean;
+    try {
+      isProtected = predicate(path.basename(runRoot), prefix);
+    } catch {
+      this.logger.warn('checkpoint prune kept recovery envelope: protection check failed');
+      return;
+    }
+    if (isProtected) return;
+    await this.removeIfContained(path.join(runRoot, `${prefix}${RECOVERY_ENVELOPE_SUFFIX}`));
   }
 
   /**
