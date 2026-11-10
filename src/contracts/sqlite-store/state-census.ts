@@ -169,6 +169,27 @@ export const STRUCTURED_STATE_CENSUS: readonly StructuredStateCensusEntry[] = Ob
     rationale: 'Tracks isolated worktrees, candidate git tree snapshots, and merge receipts.'
   },
   {
+    surfaceId: 'execution-lanes',
+    legacyLocation: 'none (new in FR-R6-F10)',
+    scope: 'workspace',
+    classification: 'sqlite-authoritative',
+    targetTables: [
+      'execution_lanes',
+      'lane_operations',
+      'lane_candidates',
+      'lane_integration_requests',
+      'lane_verification_results',
+      'lane_review_receipts',
+      'lane_integration_journal',
+      'lane_host_generations'
+    ],
+    owningFeature: 'F10',
+    executionAffecting: true,
+    migrationStage: 'F04-B',
+    rationale:
+      'FR-R6-F10 (research R11): host-provisioned lane records, provisioning and cleanup operations, frozen candidates, integration requests with digest-only verification results, review receipts, the landing journal and the per-workspace ownership generation. Each lane is its own git worktree under host storage, outside the user checkout; the checkout changes only through a reviewed landing. The F04 execution_workspaces tables need runs rows production does not write before F01-B.'
+  },
+  {
     surfaceId: 'reporting-summaries-and-leases',
     legacyLocation: 'workspaceState:schegent.historySummaries',
     scope: 'both',
