@@ -92,6 +92,8 @@ export interface LivePictureWiringDeps {
   readonly backendKind: BackendRunnerKind;
   readonly backendCapabilities: BackendExecutionWiring['backendCapabilities'];
   readonly backendPing: BackendExecutionWiring['backendPing'];
+  /** FR-R6-F09 -- the identity the spawn gate observed and the stored acceptance binding. */
+  readonly backendQualification: BackendExecutionWiring['backendQualification'];
   readonly protectedSessionRunIds: EvidenceWiring['protectedSessionRunIds'];
   /**
    * Feature 187 — the read half of the drain's report channel. The same registry
@@ -165,6 +167,7 @@ export function wireLivePicture(deps: LivePictureWiringDeps): LivePictureWiring 
     backendKind,
     backendCapabilities,
     backendPing,
+    backendQualification,
     protectedSessionRunIds,
     queueStartFailures,
     collectAllWorkflowPipelineRefs,
@@ -242,6 +245,7 @@ const projector = new StateProjector({
   getAvailableModels: () => backendCapabilities.getAvailableModels(),
   getAvailableBackends: () => backendCapabilities.getAvailableBackends(),
   getBackendPingState: () => backendPing.getState(),
+  getBackendQualificationSource: () => backendQualification,
   // FR-R3-144 (T021, D-4) — the grant setting, read raw on every compose.
   //
   // No section and no `Uri` scope, unlike `getGeneralSettings` above: the setting

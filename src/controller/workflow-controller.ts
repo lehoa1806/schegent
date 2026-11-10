@@ -29,7 +29,7 @@ import { ExecutionLeaseManager, releaseLeaseLogged } from '../state/execution-le
 import { EMPTY_CATALOG, type PipelineCatalog } from '../config/pipeline-config';
 import { reportUnexpectedStartFailure } from './unexpected-start-failure';
 import { UncontainedConsentGate, driveUnderConsent } from './uncontained-consent-gate';
-import type { UncontainedConsentPort } from './uncontained-consent-gate';
+import type { ContainmentAcceptancePort, UncontainedConsentPort } from './uncontained-consent-gate';
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
 import { BlockerNoticeLedger } from '../services/blocker-notice';
 import { RunDriver } from '../services/run-driver';
@@ -109,6 +109,7 @@ export interface WorkflowControllerDeps {
   requestGitApproval?: (plan: MutationPlanSnapshot) => Promise<boolean>;
   /** FR-R3-146 (FR-002) — asked once when a backend is refused for want of a grant. */
   requestUncontainedConsent?: UncontainedConsentPort;
+  recordContainmentAcceptance?: ContainmentAcceptancePort; // FR-R6-F09 -- binds an accepted fingerprint, origin `consent`.
   checkpoints?: Pick<RunCheckpointService, 'checkpoint'>;
   /**
    * FR-R3-004 — passed straight to the driver, which brackets every phase
@@ -203,7 +204,7 @@ export class SchegentWorkflowController {
     this.terminalTransitions = deps.terminalTransitions;
     this.requestGitApproval = deps.requestGitApproval;
     this.spendWatcher = deps.spendWatcher;
-    this.consent = new UncontainedConsentGate(deps.requestUncontainedConsent, (r) => logger.sanitize(r));
+    this.consent = new UncontainedConsentGate(deps.requestUncontainedConsent, (r) => logger.sanitize(r), deps.recordContainmentAcceptance);
     this.runFactory = new WorkflowRunFactory({
       getCatalog: () => this.catalog,
       defaultRunnerKind: options.defaultRunnerKind,

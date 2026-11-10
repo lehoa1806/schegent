@@ -293,7 +293,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     availableBackends: Object.freeze(
       deps.getAvailableBackends?.() ?? (['claude'] as readonly BackendRunnerKind[])
     ),
-    ...composeBackendPostures(deps.getUncontainedGrantSetting?.()),
+    ...composeBackendPostures(deps.getUncontainedGrantSetting?.(), deps.getBackendQualificationSource?.()),
     backendPingState: deps.getBackendPingState?.() ?? Object.freeze({ status: 'idle' as const }),
     generalSettings,
     // FR-R3-145 (T1572) — `store`, not `deps`: the cap is enforced against the

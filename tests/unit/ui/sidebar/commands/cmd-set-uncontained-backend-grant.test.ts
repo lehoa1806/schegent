@@ -179,21 +179,16 @@ describe('FR-R3-144 T018 — the handler reports what the writer decided', () =>
     expect(JSON.stringify(h.lastAck())).not.toContain('EROFS');
   });
 
-  it('rejects a contained backend with the policy module`s own problem and sentence', async () => {
-    // `codex` carries an OS-enforced bound, so this list does not govern it. The
-    // ack carries `already-contained` and the message the policy module writes —
-    // not a sentence this handler composed, which would be a second statement of
-    // a rule it does not own.
+  it('accepts a codex grant like any other backend (FR-R6-F09 R4)', async () => {
+    // FR-R6-F09 retired `already-contained`: codex is contained only on a qualified
+    // tuple, and elsewhere this grant is the acceptance its refusal asks for.
     const h = buildHarness();
 
     await setGrantHandler(h.ctx, grantCmd('codex', true));
 
-    expect(h.grants()).toEqual([]);
-    expect(h.lastAck().status).toBe('rejected');
-    expect(h.lastAck().reason).toBe('already-contained');
-    const result = h.lastAck().result as { kind: string; message: string };
-    expect(result.kind).toBe('codex');
-    expect(result.message.length).toBeGreaterThan(0);
+    expect(h.grants()).toEqual(['codex']);
+    expect(h.lastAck().status).toBe('accepted');
+    expect(h.lastAck().result).toEqual({ decision: 'granted', kind: 'codex' });
   });
 
   it('rejects rather than silently accepting when the host wired no port', async () => {

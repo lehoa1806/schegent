@@ -87,6 +87,12 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
 
   // ---- Qualification
   { path: 'src/contracts/qualified-backend-versions.ts', role: 'Qualification', how: 'literal' },
+  {
+    path: 'src/headless/backend-qualification-api.ts',
+    role: 'Qualification',
+    how: 'record',
+    note: 'a Partial record of acceptance bindings, keyed by kind; a new kind is accepted with no binding'
+  },
 
   // ---- Models and projection
   { path: 'src/ui/sidebar/snapshot-composer.ts', role: 'Models and projection', how: 'record' },

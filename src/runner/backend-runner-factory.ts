@@ -2,6 +2,8 @@ import type { BackendRunner, MonitorSidecarHook } from '../contracts/backend-run
 import { ClaudeCliRunner } from './claude-cli';
 import { CodexCliRunner } from './codex-cli';
 import { AgyCliRunner } from './agy-cli';
+import { SpawnGatedRunner } from './spawn-gated-runner';
+import type { SpawnGate } from '../contracts/containment-qualification';
 import { SanitizedLogger } from '../lib/logger';
 import {
   ALLOW_UNCONTAINED_SETTING,
@@ -89,6 +91,11 @@ export interface BackendRunnerFactoryOptions {
   readonly probeTransport?: boolean;
   readonly logger?: SanitizedLogger;
   readonly evidenceHealth?: EvidenceHealthReporter;
+  /**
+   * FR-R6-F09 (FR-003) -- when present, every invocation of the built runner awaits this gate
+   * before its child is started (`SpawnGatedRunner`). Construction is unchanged.
+   */
+  readonly spawnGate?: SpawnGate;
 }
 
 /**
@@ -145,6 +152,11 @@ export function createBackendRunner(
   kind: BackendRunnerKind,
   options: BackendRunnerFactoryOptions
 ): BackendRunner {
+  const runner = constructBackendRunner(kind, options);
+  return options.spawnGate === undefined ? runner : new SpawnGatedRunner(kind, runner, options.spawnGate);
+}
+
+function constructBackendRunner(kind: BackendRunnerKind, options: BackendRunnerFactoryOptions): BackendRunner {
   // FR-R3-146 (FR-003) — read here, at judgement time, never captured by a caller.
   const verdict = judgeBackendContainment(kind, options.uncontainedGranted());
   if (verdict.outcome === 'refused') {

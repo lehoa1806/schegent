@@ -1,5 +1,6 @@
 import type { CapabilityEnforcement, CapabilityResidual, PhaseCapability } from './phase-capabilities';
 import type { BackendRunnerKind } from './backend-kinds';
+import type { TeardownOutcome, TeardownResidual } from './containment-qualification';
 import type {
   BackendContainment,
   BackendContainmentMechanism
@@ -848,6 +849,9 @@ export interface HostTeardownUnconfirmedPayload {
   readonly pid: number | null;
   readonly result: 'platform-unanswerable' | 'bound-elapsed';
   readonly boundMs: number;
+  /** FR-R6-F09 (FR-009, research R12) -- `result` in the qualification vocabulary. */
+  readonly teardownOutcome: TeardownOutcome;
+  readonly residuals: readonly TeardownResidual[];
 }
 
 /**

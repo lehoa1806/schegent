@@ -917,7 +917,11 @@ describe('Feature 093 BUG-001 (T103, SC-019) — a compaction before the phase d
       disposables,
       hostSubscriptions,
       evidenceHealth: new EvidenceHealthMonitor(),
-      processEnvironmentPolicy: { mode: 'minimal', inheritProcessEnv: false }
+      processEnvironmentPolicy: { mode: 'minimal', inheritProcessEnv: false },
+      // FR-R6-F09 -- the spawn gate's inputs; nothing in this file spawns through it.
+      memento: { get: () => undefined, update: async () => undefined },
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: async () => true
     };
     wiring = wireBackendExecution(deps);
     hook = wiring.monitorHook;

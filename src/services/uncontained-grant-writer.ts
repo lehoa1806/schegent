@@ -42,6 +42,7 @@ import {
   ALLOW_UNCONTAINED_SETTING,
   judgeBackendContainment,
   resolveUncontainedGrant,
+  unqualifiedGrantMessage,
   type UncontainedEntryProblem
 } from './backend-containment-policy';
 import { CONFIGURATION_TARGET_GLOBAL } from '../config/general-settings';
@@ -89,11 +90,10 @@ export interface UncontainedConsentConfig {
  * could not.
  *
  * The modal only ever asks about a backend that was just REFUSED, so it can only
- * name an id that is both real and uncontained. A Settings tab renders a control
- * for every backend, and an IPC payload can carry anything, so this writer must
- * also answer "that id is not something this list governs" — for `codex`, which
- * carries an OS-enforced bound and was never refused, and for an id that is not a
- * backend at all.
+ * name an id that is real. A Settings tab renders a control for every backend, and
+ * an IPC payload can carry anything, so this writer must also answer "that id is
+ * not something this list governs" — for an id that is not a backend at all.
+ * (FR-R6-F09 R4: `codex` is governed; its grant accepts an unqualified tuple.)
  *
  * `not-applicable` rather than `denied`, because they are different facts and the
  * operator acts on them differently: `denied` means the grant is not in force and
@@ -187,16 +187,16 @@ export async function setUncontainedGrant(
   // boundary must obtain host modal confirmation before persisting to global
   // configuration. Revocation (`true -> false`) remains immediate and unconfirmed.
   if (granted && deps.confirm !== undefined) {
+    // FR-R6-F09 (R4) -- an OS-enforced backend is never refused here, but its grant is
+    // still an acceptance (of an unqualified tuple), so it is confirmed like any other.
     const verdict = judgeBackendContainment(kind, new Set());
-    if (verdict.outcome !== 'refused') {
-      return { decision: 'denied' };
-    }
+    const detail = verdict.outcome === 'refused' ? verdict.message : unqualifiedGrantMessage(kind);
     const approveLabel = uncontainedConsentApproveLabel(kind);
     let choice: string | undefined;
     try {
       choice = await deps.confirm(
         uncontainedConsentHeadline(kind),
-        verdict.message,
+        detail,
         approveLabel
       );
     } catch (error) {
@@ -248,7 +248,7 @@ export async function setUncontainedGrant(
  * A non-array value grants nothing today — `resolveUncontainedGrant` fails closed
  * on it — so replacing it with a one-entry list loses no grant. Non-string elements
  * are dropped for the same reason and because the manifest declares `string[]`;
- * unsupported and already-contained ids are KEPT verbatim, because reporting those
+ * unsupported ids are KEPT verbatim, because reporting those
  * is `resolveUncontainedGrant`'s job and quietly deleting an operator's typo is how
  * they never learn they made one.
  *
