@@ -332,6 +332,12 @@ const CHILD_PROCESS_IMPORTERS: readonly ImporterRow[] = [
     rules: [{ marker: 'spawnFn(', envFrom: 'caller-input' }]
   },
   {
+    path: 'src/services/acp-runtime/stdio-transport.ts',
+    role: 'spawner',
+    reason: 'the ACP stdio transport; its env comes from the host launch resolver',
+    rules: [{ marker: 'spawn(', envFrom: 'caller-input' }]
+  },
+  {
     path: 'src/runner/cli-version-probe.ts',
     role: 'spawner',
     reason: 'the `--version` probe; its child environment is built from the policy',
@@ -709,14 +715,14 @@ describe('every child_process importer is classified, and a spawner forwards env
     expect(censusFailures(CHILD_PROCESS_IMPORTERS, productionSources(), readRepoFile)).toEqual([]);
   });
 
-  it('is not vacuous: it finds all 19 importers and every role is exercised', () => {
+  it('is not vacuous: it finds all 20 importers and every role is exercised', () => {
     const found = productionSources().filter((file) =>
       importsChildProcess(withoutComments(file.text))
     );
     expect(found.map((file) => file.path).sort()).toEqual(
       CHILD_PROCESS_IMPORTERS.map((row) => row.path).sort()
     );
-    expect(found).toHaveLength(19);
+    expect(found).toHaveLength(20);
     const roles = new Set(CHILD_PROCESS_IMPORTERS.map((row) => row.role));
     expect([...roles].sort()).toEqual(['diagnostic', 'spawner', 'type-only']);
     // Both probes are spawners with a rule, which is the whole reason for the census.
