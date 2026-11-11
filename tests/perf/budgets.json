@@ -171,6 +171,13 @@
       "budgetMs": 5,
       "constant": "P95_BUDGET_MS",
       "rationale": "FR-R6-F14 NFR-003 / F14-AC-05: p95 of 200 measured samples (20 warm-up, the F03 floor); one sample is one offer of the reference batch of 256 source records (192 usage records of five measures, 48 operation records, 16 corrections, over 8 model pairs and 2 backends) through validation, the copy check against a ledger already holding 16,384 identities from the 65th batch on, mapping, the attribute-set limit, the size pre-check, the batch and the seal with its encoding. Also asserts every record accepted, 220 acknowledged batches, no drop, expiry, duplicate, invalid record or overflow, and 220 transport requests. At implement, darwin-arm64, Node 24.19.0, load 6.8 and 5.4 with another project's tests active, two takes: p50 1.69 and 1.70 ms, p95 2.54 and 2.43 ms. Before the shared attribute lists, the ledger ring and the kept coverage growth the same test measured p95 13.56 ms."
+    },
+    {
+      "test": "tests/perf/phase-context-preparation.test.ts",
+      "name": "Phase-context preparation of one handoff with a maximum manifest",
+      "budgetMs": 250,
+      "constant": "P95_BUDGET_MS",
+      "rationale": "FR-R6-F15 NFR-005 / F15-AC-10: p95 of 200 measured samples (20 warm-up, the F03 floor); one sample is one prepareHandoff call over the largest handoff the limits admit: 256 candidates (the candidate limit) validated, 32 sources selected at one cutoff through 32 selectors (one required), four entries of 200 bytes per source so each collection holds its 32 entries, the manifest built, serialized and digested and the context rendered within 2 KiB of the 32 KiB bound. In memory only: no store, disk or network is inside the sample, which is the part of NFR-005 that F15-A delivers. Also asserts 32 selected sources and 224 omissions per sample and the manifest within 64 KiB. At implement, darwin-arm64, Node 24.19.0, load 7.7 and 23.6 with another project's tests active, two takes: p50 2.21 and 3.08 ms, p95 2.70 and 8.17 ms (rendered 31,097 bytes, manifest 42,604 bytes). The budget is the requirement's bound, not the measurement."
     }
   ],
   "notes": [
