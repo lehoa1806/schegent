@@ -259,6 +259,7 @@ export type ClassifiedConfigurationKey = keyof typeof CONFIGURATION_SENSITIVITY;
  * failure it catches is a property MOVING here, not a property arriving.
  */
 export const EXECUTABLE_AUTHORITY_PROPERTIES: readonly string[] = Object.freeze([
+  'schegent.acp.profile',
   'schegent.agy.path',
   'schegent.backend.probeTimeoutSeconds',
   'schegent.backend.runner',

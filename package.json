@@ -262,6 +262,18 @@
           "scope": "application",
           "description": "Path to the Agy CLI binary. Defaults to `agy` (resolved via PATH)."
         },
+        "schegent.acp.profile": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "agy-acp-native",
+            "claude-acp-bridge",
+            "codex-acp-bridge"
+          ],
+          "default": "auto",
+          "scope": "application",
+          "markdownDescription": "Machine-scoped ACP agent profile selection (FR-R6-F13). `auto` maps the selected backend (`claude`, `codex`, `agy`) to its qualified built-in ACP profile (`claude-acp-bridge`, `codex-acp-bridge`, `agy-acp-native`). Naming an explicit built-in profile pins ACP dispatch to that profile and refuses mismatched backend capability tuples. `application`-scoped so repository files cannot install or replace an agent profile."
+        },
         "schegent.loop.maxIterations": {
           "type": "number",
           "default": 10,

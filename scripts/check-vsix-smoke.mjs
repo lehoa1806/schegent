@@ -53,6 +53,7 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   'extension/assets/banner.png',
   'extension/assets/logo.png',
   'extension/assets/sidebar-icon.svg',
+  'extension/dist/acp-stdio-bridge.js',
   'extension/dist/extension.js',
   // FR-R3-120 — the SBOM ships INSIDE the VSIX, not only beside it. A recipient is
   // handed one file, and an SBOM left on the builder's disk describes the artifact

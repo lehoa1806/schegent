@@ -48,6 +48,11 @@ import {
   F11_REPORTING_MIGRATION_NAME,
   F11_REPORTING_MIGRATION_VERSION
 } from '../reporting/reporting-schema';
+import {
+  R6_INTEGRATION_DDL,
+  R6_INTEGRATION_MIGRATION_NAME,
+  R6_INTEGRATION_MIGRATION_VERSION
+} from './round6-integration-schema';
 
 export interface SchemaMigrationDefinition {
   readonly version: number;
@@ -848,6 +853,12 @@ export const BUILTIN_SCHEMA_MIGRATIONS: readonly SchemaMigrationDefinition[] = O
     version: F11_REPORTING_MIGRATION_VERSION,
     name: F11_REPORTING_MIGRATION_NAME,
     ddlStatements: F11_REPORTING_DDL
+  },
+  {
+    // Round 6 integration (F04, F01-B, F09-FR-17, F10, F11, F13, F14-B, F15-B): additive and forward-only.
+    version: R6_INTEGRATION_MIGRATION_VERSION,
+    name: R6_INTEGRATION_MIGRATION_NAME,
+    ddlStatements: R6_INTEGRATION_DDL
   }
 ]);
 

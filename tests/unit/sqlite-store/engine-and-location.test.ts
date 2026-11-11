@@ -22,6 +22,7 @@ import { F07_LIVE_LOG_TABLE_NAMES } from '../../../src/services/phase-log/live-l
 import { F08_HANDOFF_TABLE_NAMES } from '../../../src/services/recovery-handoff/handoff-schema';
 import { F10_LANES_TABLE_NAMES } from '../../../src/services/execution-lanes/lane-schema';
 import { F11_REPORTING_TABLE_NAMES } from '../../../src/services/reporting/reporting-schema';
+import { R6_INTEGRATION_TABLE_NAMES } from '../../../src/services/sqlite-store/round6-integration-schema';
 
 const EXPECTED_STRICT_TABLE_COUNT =
   F04_INITIAL_STRICT_TABLE_COUNT +
@@ -30,7 +31,8 @@ const EXPECTED_STRICT_TABLE_COUNT =
   F07_LIVE_LOG_TABLE_NAMES.length +
   F08_HANDOFF_TABLE_NAMES.length +
   F10_LANES_TABLE_NAMES.length +
-  F11_REPORTING_TABLE_NAMES.length;
+  F11_REPORTING_TABLE_NAMES.length +
+  R6_INTEGRATION_TABLE_NAMES.length;
 
 describe('FR-R6-F04 (US1): SQLite Engine Qualification, Pragmas & Trusted Storage Location', () => {
   const tempDirs: string[] = [];
@@ -83,7 +85,7 @@ describe('FR-R6-F04 (US1): SQLite Engine Qualification, Pragmas & Trusted Storag
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => 1_700_000_000_000);
       expect(result.schemaVersion).toBe(SQLITE_SCHEMA_CURRENT_VERSION);
       expect(result.strictTableCount).toBe(EXPECTED_STRICT_TABLE_COUNT);
-      expect(result.appliedMigrations).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      expect(result.appliedMigrations).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
       expect(conn.runForeignKeyCheck()).toEqual([]);
 
       // Re-running bootstrap is idempotent

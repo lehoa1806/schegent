@@ -195,25 +195,36 @@ export function writeHostGraph(metafile, identity, root) {
   const output = metafile.outputs?.[HOST_OUTPUT];
   if (!output) throw new Error(`module-graph: the esbuild metafile has no output ${HOST_OUTPUT}`);
 
-  let bundle;
-  try {
-    bundle = readFileSync(join(root, HOST_OUTPUT));
-  } catch {
-    throw new Error(`module-graph: ${HOST_OUTPUT} was not written, so it cannot be digested`);
+  const allOutputs = Object.keys(metafile.outputs);
+  const shippedFiles = allOutputs.filter((file) => file.endsWith('.js'));
+  const excludedOutputs = allOutputs.filter((file) => !file.endsWith('.js'));
+
+  const digestedOutputs = [];
+  const mergedBytesByModule = new Map();
+  for (const file of shippedFiles) {
+    let bundle;
+    try {
+      bundle = readFileSync(join(root, file));
+    } catch {
+      throw new Error(`module-graph: ${file} was not written, so it cannot be digested`);
+    }
+    digestedOutputs.push({ file, sha256: sha256Hex(bundle), bytes: bundle.length });
+    const entry = metafile.outputs[file];
+    for (const [id, input] of Object.entries(entry?.inputs ?? {})) {
+      const added = input.bytesInOutput ?? 0;
+      mergedBytesByModule.set(id, (mergedBytesByModule.get(id) ?? 0) + added);
+    }
   }
 
-  const modules = Object.entries(output.inputs ?? {}).map(([id, input]) => ({
-    id,
-    bytes: input.bytesInOutput ?? 0
-  }));
+  const modules = [...mergedBytesByModule.entries()].map(([id, bytes]) => ({ id, bytes }));
   const graph = assembleGraph({
     half: 'host',
     tree: 'root',
     bundler: 'esbuild',
     bundlerVersion: esbuildVersion(),
     build: { ...identity },
-    outputs: [{ file: HOST_OUTPUT, sha256: sha256Hex(bundle), bytes: bundle.length }],
-    excludedOutputs: Object.keys(metafile.outputs).filter((file) => file !== HOST_OUTPUT),
+    outputs: digestedOutputs,
+    excludedOutputs,
     summary: summarize(modules, root, root, readLockPackages(root))
   });
   writeGraph(root, 'host', graph);

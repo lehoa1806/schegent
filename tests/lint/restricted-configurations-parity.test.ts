@@ -183,10 +183,13 @@ describe('restrictedConfigurations parity (FR-R3-136 T1526c)', () => {
     // Feature 285 (OD-2, 2026-11-07) — 30 -> 31. `schegent.defaultWorkflowId` arrived as the
     // rename of `schegent.defaultPipelineId`, classified `run-shape` as its deprecated alias still
     // is. The restricted list stays at 15.
+    // FR-R6-F13 (F13-FR-01, F13-FR-04) — executable-authority list 9 -> 10 with
+    // `schegent.acp.profile` (`application` scope so repository files cannot select or replace
+    // an ACP agent profile).
     expect(workspaceSettableKeys()).toHaveLength(31);
     expect(Object.keys(CONFIGURATION_SENSITIVITY)).toHaveLength(31);
     expect(derivedRestrictedConfigurations()).toHaveLength(15);
-    expect(EXECUTABLE_AUTHORITY_PROPERTIES).toHaveLength(9);
+    expect(EXECUTABLE_AUTHORITY_PROPERTIES).toHaveLength(10);
 
     const histogram = new Map<SensitivityClass, number>();
     for (const entry of Object.values(CONFIGURATION_SENSITIVITY)) {

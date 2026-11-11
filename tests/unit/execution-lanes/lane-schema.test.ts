@@ -112,12 +112,12 @@ describe('FR-R6-F10 T003 — migration 6, the execution lanes store', () => {
     expect(F10_LANES_MIGRATION_VERSION).toBe(6);
     expect(F10_LANES_MIGRATION_NAME).toBe('006_f10_execution_lanes');
     expect(SQLITE_SCHEMA_CURRENT_VERSION).toBeGreaterThanOrEqual(F10_LANES_MIGRATION_VERSION);
-    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
     try {
       const first = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
-      expect(first.schemaVersion).toBe(7);
-      expect(first.appliedMigrations).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      expect(first.schemaVersion).toBe(8);
+      expect(first.appliedMigrations).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
       const second = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
       expect(second.appliedMigrations).toEqual([]);
     } finally {
@@ -125,14 +125,14 @@ describe('FR-R6-F10 T003 — migration 6, the execution lanes store', () => {
     }
   });
 
-  it('upgrades a version 5 store by applying migrations 6 and 7', () => {
+  it('upgrades a version 5 store by applying migrations 6 to 8', () => {
     const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
     try {
       const upToFive = BUILTIN_SCHEMA_MIGRATIONS.filter((migration) => migration.version <= 5);
       SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW, upToFive);
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
-      expect(result.appliedMigrations).toEqual([6, 7]);
-      expect(result.schemaVersion).toBe(7);
+      expect(result.appliedMigrations).toEqual([6, 7, 8]);
+      expect(result.schemaVersion).toBe(8);
     } finally {
       conn.close();
     }
@@ -143,7 +143,11 @@ describe('FR-R6-F10 T003 — migration 6, the execution lanes store', () => {
     try {
       const withFuture = [
         ...BUILTIN_SCHEMA_MIGRATIONS,
-        { version: 8, name: '008_future', ddlStatements: ['CREATE TABLE IF NOT EXISTS future_t (x INTEGER) STRICT'] }
+        {
+          version: SQLITE_SCHEMA_CURRENT_VERSION + 1,
+          name: '009_future',
+          ddlStatements: ['CREATE TABLE IF NOT EXISTS future_t (x INTEGER) STRICT']
+        }
       ];
       SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW, withFuture);
       expect(() => SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1)).toThrow();

@@ -177,6 +177,14 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'application',
     docLabel: 'Agy CLI binary path'
   },
+  'schegent.acp.profile': {
+    key: 'schegent.acp.profile',
+    type: 'enum',
+    default: 'auto',
+    scope: 'application',
+    enum: ['auto', 'agy-acp-native', 'claude-acp-bridge', 'codex-acp-bridge'],
+    docLabel: 'ACP agent profile selection'
+  },
   'schegent.loop.maxIterations': {
     key: 'schegent.loop.maxIterations',
     type: 'number',

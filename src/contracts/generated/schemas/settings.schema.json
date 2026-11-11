@@ -109,6 +109,23 @@
       },
       "default": [
         {
+          "key": "schegent.acp.profile",
+          "type": "enum",
+          "default": "auto",
+          "scope": "application",
+          "enum": [
+            "auto",
+            "agy-acp-native",
+            "claude-acp-bridge",
+            "codex-acp-bridge"
+          ],
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
           "key": "schegent.agy.path",
           "type": "string",
           "default": "agy",

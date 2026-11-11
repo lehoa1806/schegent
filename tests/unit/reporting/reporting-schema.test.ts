@@ -84,13 +84,13 @@ describe('FR-R6-F11 T005 — migration 7, the reporting store', () => {
   it('is registered as version 7 and applies after 1 to 6, once', () => {
     expect(F11_REPORTING_MIGRATION_VERSION).toBe(7);
     expect(F11_REPORTING_MIGRATION_NAME).toBe('007_f11_reporting');
-    expect(SQLITE_SCHEMA_CURRENT_VERSION).toBe(F11_REPORTING_MIGRATION_VERSION);
-    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(SQLITE_SCHEMA_CURRENT_VERSION).toBeGreaterThanOrEqual(F11_REPORTING_MIGRATION_VERSION);
+    expect(BUILTIN_SCHEMA_MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
     try {
       const first = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
-      expect(first.schemaVersion).toBe(7);
-      expect(first.appliedMigrations).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      expect(first.schemaVersion).toBe(8);
+      expect(first.appliedMigrations).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
       const second = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
       expect(second.appliedMigrations).toEqual([]);
     } finally {
@@ -98,14 +98,14 @@ describe('FR-R6-F11 T005 — migration 7, the reporting store', () => {
     }
   });
 
-  it('upgrades a version 6 store by applying only migration 7', () => {
+  it('upgrades a version 6 store by applying migration 7 and the later ones', () => {
     const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
     try {
       const upToSix = BUILTIN_SCHEMA_MIGRATIONS.filter((migration) => migration.version <= 6);
       SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW, upToSix);
       const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
-      expect(result.appliedMigrations).toEqual([7]);
-      expect(result.schemaVersion).toBe(7);
+      expect(result.appliedMigrations).toEqual([7, 8]);
+      expect(result.schemaVersion).toBe(8);
     } finally {
       conn.close();
     }
