@@ -157,6 +157,13 @@
       "budgetMs": 500,
       "constant": "P95_BUDGET_MS",
       "rationale": "FR-R6-F12 NFR-002 / SC-004 / F12-AC-04: p95 of 20 measured openReview takes (3 warm-up) on a generated candidate adding 1,050 files: commit and ancestry checks, the bounded inventory read and parse, the tip read, classification and the first 200-entry page. Also asserts total 1,050, loaded 1,000, truncated and five 200-entry pages. At implement, darwin-arm64, Node 24.19.0, load about 3: p50 109.63 ms, p95 122.24 ms."
+    },
+    {
+      "test": "tests/perf/acp-normalization.test.ts",
+      "name": "ACP adapter normalization of one bounded session/update message",
+      "budgetMs": 5,
+      "constant": "P95_BUDGET_MS",
+      "rationale": "FR-R6-F13 NFR-003 / SC-005 / F13-AC-05: p95 of 200 measured samples (20 warm-up, the F03 floor), one framed session/update line per sample through frame decoding, JSON-RPC classification, the session-update mapper, the F07 event and the F02 envelope; the reference set is one update of each kind the synthetic agent streams plus one 64 KiB message chunk. At implement, darwin-arm64, Node 24.19.0, load about 4.3, two takes: p50 0.0029 and 0.0030 ms, p95 0.0579 and 0.0598 ms."
     }
   ],
   "notes": [
