@@ -262,3 +262,75 @@ export function writePromptToStdin(
     }
   });
 }
+
+/**
+ * FR-R6-F13 — a line-oriented write channel on a child's stdin that stays open for many
+ * messages. `writePromptToStdin` above writes once and closes; a protocol that keeps stdin
+ * open (ACP's JSON-RPC lines) needs the same H-04 discipline without the close.
+ */
+export interface StdinLineChannel {
+  /**
+   * Hand one already-framed line to the stream. `true` means the stream took it, not that
+   * the child read it. `false` means nothing was written: no stdin, a closed or broken
+   * stream, or a write that threw. Never throws.
+   */
+  write(line: string): boolean;
+  /** Close the stream. Only the first call does anything. Never throws. */
+  end(): void;
+}
+
+const REFUSING_CHANNEL: StdinLineChannel = { write: () => false, end: () => undefined };
+
+/**
+ * Open a line channel on `child.stdin`.
+ *
+ * The `'error'` listener is attached here, before any byte can be written, and stays for the
+ * stream's lifetime: an `EPIPE` from a peer that is gone is absorbed and marks the channel
+ * broken instead of reaching the host as an uncaught exception. A stdin that cannot take a
+ * listener (an injected double that is not an emitter) is never written to at all, because
+ * an unlistened write is the defect this module exists to prevent.
+ *
+ * `onBroken`, when given, is called once when the stream reports an error. A write the stream
+ * took can still fail later, and that error is the only sign of it. A fault in the callback is
+ * swallowed: it runs inside the `'error'` listener, where a throw would reach the host.
+ */
+export function openStdinLineChannel(child: ChildProcess, onBroken?: () => void): StdinLineChannel {
+  const stdin = child.stdin;
+  if (!stdin) return REFUSING_CHANNEL;
+  let broken = false;
+  let ended = false;
+  try {
+    stdin.on('error', () => {
+      if (broken) return;
+      broken = true;
+      try {
+        onBroken?.();
+      } catch {
+        // The channel is already marked broken; the callback's own fault changes nothing.
+      }
+    });
+  } catch {
+    return REFUSING_CHANNEL;
+  }
+  return {
+    write(line: string): boolean {
+      if (broken || ended || stdin.destroyed || !stdin.writable) return false;
+      try {
+        stdin.write(line);
+        return true;
+      } catch {
+        broken = true;
+        return false;
+      }
+    },
+    end(): void {
+      if (ended) return;
+      ended = true;
+      try {
+        stdin.end();
+      } catch {
+        // Nothing left to close.
+      }
+    }
+  };
+}

@@ -11,6 +11,7 @@ import { OutputTargetRefusedAtDispatch } from '../../src/services/dispatch-outpu
 import { UncontainedBackendRefusedError } from '../../src/services/backend-containment-policy';
 import { ContainmentAdmissionRefusedError } from '../../src/services/containment-qualification/admission-refusal';
 import { SpawnRefusedAfterCloseError } from '../../src/runner/spawn-refused-after-close';
+import { AgentStdinRefusedError } from '../../src/services/acp-runtime/stdio-transport';
 import { UnattendedAdmissionRefused } from '../../src/controller/resume-pause-fields';
 import { ALL_PHASE_CAPABILITIES } from '../../src/contracts/phase-capabilities';
 
@@ -97,6 +98,13 @@ const REFUSALS: ReadonlyArray<{ readonly name: string; readonly make: () => Erro
     // 59 characters, so it is left to the catch-all. It is thrown inside the resume's patch and
     // `patchRunForResume` turns it into a refusal; it never reaches an operator-facing start path.
     make: () => new UnattendedAdmissionRefused()
+  },
+  {
+    name: 'AgentStdinRefusedError',
+    // FR-R6-F13: 35 characters, so it is left to the catch-all. The ACP stdio transport throws it
+    // from `write`, and the JSON-RPC connection catches it at both of its write sites and fails
+    // the connection `transport-closed`; it never reaches an operator-facing start path.
+    make: () => new AgentStdinRefusedError()
   }
 ];
 
