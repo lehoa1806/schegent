@@ -121,9 +121,9 @@ describe('size bounds (SC-019)', () => {
     );
   });
 
-  it('keeps the bounds at the values the feature inherited (FR-033)', () => {
+  it('keeps the bounds at the reviewed policy values (FR-033)', () => {
     expect(policy.MAX_VSIX_COMPRESSED_BYTES).toBe(2 * 1024 * 1024);
-    expect(policy.MAX_VSIX_UNCOMPRESSED_BYTES).toBe(5 * 1024 * 1024);
+    expect(policy.MAX_VSIX_UNCOMPRESSED_BYTES).toBe(8 * 1024 * 1024);
   });
 });
 

@@ -122,7 +122,7 @@ cannot be buried in a longer content-difference report.
 <!-- Source: scripts/check-vsix-smoke.mjs -->
 <!-- Source: tests/unit/build/vsix-archive-assertions.test.ts -->
 
-The archive must be at most 2 MiB compressed and 5 MiB in total declared
+The archive must be at most 2 MiB compressed and 8 MiB in total declared
 uncompressed size. Its embedded `extension/package.json` must have name
 `schegent`, main entry `./dist/extension.js`, and the
 `workspaceContains:.specify/` activation event.

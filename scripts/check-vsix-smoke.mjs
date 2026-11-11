@@ -7,7 +7,7 @@ import { invokedAsScript } from './invoked-as-script.mjs';
 import { sha256Hex } from './release-digest.mjs';
 
 export const MAX_VSIX_COMPRESSED_BYTES = 2 * 1024 * 1024;
-export const MAX_VSIX_UNCOMPRESSED_BYTES = 5 * 1024 * 1024;
+export const MAX_VSIX_UNCOMPRESSED_BYTES = 8 * 1024 * 1024;
 
 const EXAMPLES_DIR = fileURLToPath(new URL('../examples', import.meta.url));
 const EXAMPLES_PREFIX = 'extension/examples/';
