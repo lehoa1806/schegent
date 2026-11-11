@@ -164,6 +164,13 @@
       "budgetMs": 5,
       "constant": "P95_BUDGET_MS",
       "rationale": "FR-R6-F13 NFR-003 / SC-005 / F13-AC-05: p95 of 200 measured samples (20 warm-up, the F03 floor), one framed session/update line per sample through frame decoding, JSON-RPC classification, the session-update mapper, the F07 event and the F02 envelope; the reference set is one update of each kind the synthetic agent streams plus one 64 KiB message chunk. At implement, darwin-arm64, Node 24.19.0, load about 4.3, two takes: p50 0.0029 and 0.0030 ms, p95 0.0579 and 0.0598 ms."
+    },
+    {
+      "test": "tests/perf/telemetry-export-mapping.test.ts",
+      "name": "Telemetry export intake of one bounded batch of 256 source records",
+      "budgetMs": 5,
+      "constant": "P95_BUDGET_MS",
+      "rationale": "FR-R6-F14 NFR-003 / F14-AC-05: p95 of 200 measured samples (20 warm-up, the F03 floor); one sample is one offer of the reference batch of 256 source records (192 usage records of five measures, 48 operation records, 16 corrections, over 8 model pairs and 2 backends) through validation, the copy check against a ledger already holding 16,384 identities from the 65th batch on, mapping, the attribute-set limit, the size pre-check, the batch and the seal with its encoding. Also asserts every record accepted, 220 acknowledged batches, no drop, expiry, duplicate, invalid record or overflow, and 220 transport requests. At implement, darwin-arm64, Node 24.19.0, load 6.8 and 5.4 with another project's tests active, two takes: p50 1.69 and 1.70 ms, p95 2.54 and 2.43 ms. Before the shared attribute lists, the ledger ring and the kept coverage growth the same test measured p95 13.56 ms."
     }
   ],
   "notes": [
