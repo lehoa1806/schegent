@@ -56,7 +56,7 @@ describe('FR-R6-F09 T017 — ACP authority gate and containment channel (F09-AC-
       );
 
       let trusted = true;
-      let holdsPrimacy = true;
+      const holdsPrimacy = true;
       let ownershipGen = 7;
       let cancelling = false;
 

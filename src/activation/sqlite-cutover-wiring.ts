@@ -4,7 +4,7 @@
 // and `runSafety.reconcileComposableWorkflowRuns`, gated on `isWorkspaceTrusted()` and `lock.hasPrimacy()`.
 // At wiring time this module only attaches a read-only SQLite snapshot if an existing DB file is present.
 
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import type * as vscode from 'vscode';
@@ -13,6 +13,7 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { StorageDetailsReader } from '../contracts/sidebar-ipc/storage-details';
 import type { UsageAccountingReader } from '../contracts/sidebar-ipc/usage-accounting';
 import { createStorageDetailsReader } from '../headless/artifact-lifecycle-api';
+import { createPhaseContextApi, type PhaseContextApi } from '../headless/phase-context-api';
 import { createUsageAccountingReader } from '../headless/usage-accounting-api';
 import type { SanitizedLogger } from '../lib/logger';
 import { openWithinRoot } from '../lib/safe-open';
@@ -29,6 +30,11 @@ import {
   type StorageScanRoot
 } from '../services/artifact-lifecycle';
 import { createLiveLogIndex, type LiveLogIndex } from '../services/phase-log/live-log-index';
+import {
+  createPhaseHandoffCoordinator,
+  createSqliteHandoffStore,
+  type PhaseHandoffCoordinator
+} from '../services/phase-context';
 import {
   createRecoveryHandoffService,
   type RecoveryEnvelopePort,
@@ -225,8 +231,8 @@ function buildOwnerResolver(store: WorkspaceStateStore): OwnerResolver {
       if (live) {
         return isTerminalRunStatus(live.status) ? 'settled' : 'live';
       }
-      const connected = store.getConnectedRuns()[ownerId];
-      if (connected) return 'live';
+      const connectedRuns: Readonly<Record<string, unknown>> = store.getConnectedRuns();
+      if (connectedRuns[ownerId] !== undefined) return 'live';
       return 'settled';
     }
     return 'live';
@@ -240,6 +246,7 @@ export interface SqliteCutoverServices {
   readonly usageWiring: UsageAccountingWiring;
   readonly liveLogIndex: LiveLogIndex;
   readonly recoveryHandoff: RecoveryHandoffService;
+  readonly phaseHandoffCoordinator: PhaseHandoffCoordinator;
   readonly workflowComposition: ProductionWorkflowComposition;
 }
 
@@ -253,6 +260,8 @@ export interface SqliteCutoverCoordinator {
   getUsageAccounting(): UsageAccountingService | null;
   getLiveLogIndex(): LiveLogIndex | null;
   getRecoveryHandoff(): RecoveryHandoffService | null;
+  getPhaseHandoffCoordinator(): PhaseHandoffCoordinator | null;
+  getPhaseContextApi(): PhaseContextApi;
   getProtectedRunIds(): ReadonlySet<string>;
   getDatabaseProtectedPaths(): readonly string[];
   onTerminalRun(summary: TerminalRunSummary): void;
@@ -400,6 +409,14 @@ export function createSqliteCutoverCoordinator(
       });
       recoveryHandoff.reopen();
 
+      const handoffStore = createSqliteHandoffStore(sqliteStore.writerConnection);
+      const phaseHandoffCoordinator = createPhaseHandoffCoordinator({
+        store: handoffStore,
+        primaryWorkspaceRoot: deps.workspaceRoot,
+        workspaceId: scopeId,
+        lifecycle: artifactLifecycle
+      });
+
       const durableHandoffSeam: DurableArtifactHandoverSeam = Object.freeze({
         status: 'qualified' as const,
         requestHandover(req: Parameters<DurableArtifactHandoverSeam['requestHandover']>[0]) {
@@ -427,6 +444,7 @@ export function createSqliteCutoverCoordinator(
         workspaceRoot: deps.workspaceRoot,
         isWorkspaceTrusted: deps.isWorkspaceTrusted,
         durableHandoffSeam,
+        phaseHandoffCoordinator,
         cutoverAuthorityGuard: createCutoverAuthorityGuard({
           mode: 'post-cutover-strict',
           storeAuthority: 'sqlite-f04',
@@ -454,6 +472,7 @@ export function createSqliteCutoverCoordinator(
         usageWiring,
         liveLogIndex,
         recoveryHandoff,
+        phaseHandoffCoordinator,
         workflowComposition
       };
       return activeServices;
@@ -482,6 +501,8 @@ export function createSqliteCutoverCoordinator(
     getUsageAccounting: () => activeServices?.usageAccounting ?? null,
     getLiveLogIndex: () => activeServices?.liveLogIndex ?? null,
     getRecoveryHandoff: () => activeServices?.recoveryHandoff ?? null,
+    getPhaseHandoffCoordinator: () => activeServices?.phaseHandoffCoordinator ?? null,
+    getPhaseContextApi: () => createPhaseContextApi(() => activeServices?.phaseHandoffCoordinator ?? null),
     getProtectedRunIds: () => querySqliteProtectedRunIds(activeServices),
     getDatabaseProtectedPaths: () => [
       expectedDatabasePath,
@@ -489,7 +510,24 @@ export function createSqliteCutoverCoordinator(
       `${expectedDatabasePath}-shm`
     ],
     onTerminalRun(summary) {
-      activeServices?.usageWiring.onTerminalRun(summary);
+      if (activeServices === null) return;
+      activeServices.usageWiring.onTerminalRun(summary);
+      try {
+        const matchedRun = Object.values(deps.store.getRunMap()).find(
+          (candidate) => candidate.id === summary.runId
+        );
+        const handoff = matchedRun?.envelope?.phaseHandoff;
+        if (handoff?.handoffId != null && handoff.revision != null) {
+          activeServices.phaseHandoffCoordinator.settleAttemptDispatch({
+            handoffId: handoff.handoffId,
+            revision: handoff.revision,
+            targetAttemptId: handoff.attemptId,
+            delivered: summary.status === 'completed'
+          });
+        }
+      } catch {
+        // Best-effort handoff dispatch settlement.
+      }
     },
     recordAcpObservation(event) {
       if (activeServices === null) return;
@@ -497,23 +535,30 @@ export function createSqliteCutoverCoordinator(
       const now = Date.now();
       const obs = event.observation;
       const sessionId = obs.acpSessionId || `${event.attemptId}-session`;
+      const connectionGeneration = Math.max(1, obs.generation || 1);
+      const hostReceiveSeq = Math.max(1, obs.hostReceiveSeq || 1);
       const eventKind = obs.kind === 'display' ? `display:${obs.event.kind}` : obs.kind;
+      const observationKey = `${event.projection.profileId}:${connectionGeneration}:${hostReceiveSeq}`;
+      const payloadSha256 = createHash('sha256')
+        .update(JSON.stringify({ kind: eventKind, turnId: obs.turnId, origin: obs.origin }), 'utf8')
+        .digest('hex');
       try {
         conn.run(
           `INSERT INTO acp_observation_ledger (
-            observation_id, run_id, attempt_id, session_id, profile_id, sequence_no,
-            event_kind, is_history_replay, payload_json, observed_at_ms
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(session_id, sequence_no) DO NOTHING`,
-          randomUUID(),
-          event.runId ?? 'adhoc',
-          event.attemptId,
-          sessionId,
+            observation_key, profile_id, connection_generation, host_receive_seq,
+            acp_session_id, turn_id, attempt_id, origin, kind, payload_sha256, observed_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(profile_id, connection_generation, host_receive_seq) DO NOTHING`,
+          observationKey,
           event.projection.profileId,
-          obs.hostReceiveSeq,
+          connectionGeneration,
+          hostReceiveSeq,
+          sessionId,
+          obs.turnId || 'idle',
+          obs.attemptId ?? event.attemptId,
+          obs.origin,
           eventKind,
-          obs.origin === 'history' ? 1 : 0,
-          JSON.stringify({ kind: eventKind }),
+          payloadSha256,
           now
         );
         const streamKey = `${event.runId ?? 'adhoc'}:${event.attemptId}`;

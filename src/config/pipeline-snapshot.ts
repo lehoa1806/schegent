@@ -23,6 +23,7 @@ import type { WorkflowRunPipeline } from '../state/workflow-run';
 import type { PhaseDef, PipelineDef } from './pipeline-config';
 import { resolveHostVerification, writesGitMetadata } from './phase-runner-policy';
 import { resolveWorkflowClosure } from './workflow-closure-resolver';
+import { parseHandoffPolicy } from '../services/phase-context/policy';
 
 /**
  * Where a frozen policy value came from. An origin the Phase already carries wins, so a re-freeze
@@ -469,6 +470,41 @@ export function createFrozenWorkflowClosure(
               field: `nodes[${nodeIndex}].control.version`,
               code: 'unsupported-control-version',
               message: `Node '${node.nodeId}' control.version must be ${WORKFLOW_CONTROL_SCHEMA_VERSION}.`
+            }
+          ]
+        };
+      }
+    }
+    for (const [connIndex, conn] of wf.connections.entries()) {
+      if (conn.contextPolicy === undefined) continue;
+      const policyCheck = parseHandoffPolicy(conn.contextPolicy);
+      if (policyCheck.kind === 'unsupported-version') {
+        const ver = String((conn.contextPolicy as { readonly version?: unknown }).version ?? '?');
+        return {
+          ok: false,
+          code: 'unsupported-control-version',
+          message: `Connection ${connIndex} in Workflow '${wfId}' declares unsupported contextPolicy version '${ver}'.`,
+          errors: [
+            {
+              workflowId: wfId,
+              field: `connections[${connIndex}].contextPolicy.version`,
+              code: 'unsupported-context-policy-version',
+              message: `Connection ${connIndex} contextPolicy.version '${ver}' is unsupported.`
+            }
+          ]
+        };
+      }
+      if (policyCheck.kind !== 'valid') {
+        return {
+          ok: false,
+          code: 'workflow-closure-invalid',
+          message: `Connection ${connIndex} in Workflow '${wfId}' declares an invalid contextPolicy (${policyCheck.kind === 'invalid' ? policyCheck.detail : 'absent'}).`,
+          errors: [
+            {
+              workflowId: wfId,
+              field: `connections[${connIndex}].contextPolicy`,
+              code: 'invalid-context-policy',
+              message: `Connection ${connIndex} contextPolicy is invalid.`
             }
           ]
         };

@@ -31,6 +31,7 @@
 // exists even though the phase does not. An operator reconstructing why a phase
 // never started has something to read; a refusal that leaves no trace is
 // indistinguishable from a phase nobody scheduled.
+import type { AcpPromptBlock } from '../contracts/acp-runtime';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import type {
   AmbientConfigObservation,
@@ -43,12 +44,14 @@ import {
   type DeclaredCapabilitySet,
   type PhaseCapability
 } from '../contracts/phase-capabilities';
+import type { FrozenPhaseHandoffDelivery } from '../contracts/run-request';
 import { planCapabilityEnforcement } from '../services/capability-enforcement-plan';
 import { CapabilityNotEnforceableError } from '../services/capability-refusal';
 
 /** What the recorder needs from a phase run, and nothing more. */
 export interface CapabilityRefusalContext {
   readonly phaseDef?: { readonly capabilities?: readonly PhaseCapability[] } | undefined;
+  readonly envelope?: { readonly phaseHandoff?: FrozenPhaseHandoffDelivery } | undefined;
   /** By INDEX, never by id: a sequence may repeat a phase. */
   readonly iteration: number;
 }
@@ -146,7 +149,33 @@ export async function recordCapabilityDecision<TContext extends CapabilityRefusa
  */
 export function capabilityRequestFields(
   context: CapabilityRefusalContext
-): { capabilities?: DeclaredCapabilitySet } {
+): {
+  capabilities?: DeclaredCapabilitySet;
+  attemptId?: string;
+  acpPromptBlocks?: readonly AcpPromptBlock[];
+  authorizedUpstreamInputPaths?: readonly string[];
+  authorizedOutputPaths?: readonly string[];
+  resumeSessionOrigin?: 'acp' | 'legacy-cli';
+} {
   const declared = context.phaseDef?.capabilities;
-  return declared === undefined ? {} : { capabilities: declaredCapabilitySet(declared) };
+  const handoff = context.envelope?.phaseHandoff;
+  return {
+    ...(declared === undefined ? {} : { capabilities: declaredCapabilitySet(declared) }),
+    ...(handoff === undefined
+      ? {}
+      : {
+          attemptId: handoff.attemptId,
+          ...(handoff.acpPromptBlocks !== undefined && handoff.acpPromptBlocks.length > 0
+            ? { acpPromptBlocks: handoff.acpPromptBlocks }
+            : {}),
+          ...(handoff.authorizedUpstreamInputPaths !== undefined &&
+          handoff.authorizedUpstreamInputPaths.length > 0
+            ? { authorizedUpstreamInputPaths: handoff.authorizedUpstreamInputPaths }
+            : {}),
+          ...(handoff.authorizedOutputPaths !== undefined && handoff.authorizedOutputPaths.length > 0
+            ? { authorizedOutputPaths: handoff.authorizedOutputPaths }
+            : {}),
+          ...(handoff.sessionReusePermitted === true ? { resumeSessionOrigin: 'acp' as const } : {})
+        })
+  };
 }

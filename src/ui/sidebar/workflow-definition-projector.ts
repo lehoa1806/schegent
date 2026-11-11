@@ -16,8 +16,8 @@ import type { PipelineExecutionDefaults } from '../../contracts/pipeline-definit
 import { isTypedCondition, isTypedLeafTest, type TypedCondition, type TypedLeaf } from '../../contracts/decision-results';
 import type { CandidateBlockControl, WorkflowDecisionResults, WorkflowNodeControl } from '../../contracts/workflow-controls';
 import type {
-  WorkflowBinding, WorkflowCondition, WorkflowConditionOperand, WorkflowConnection,
-  WorkflowDefinition, WorkflowDerivedPort, WorkflowInputPort, WorkflowNode, WorkflowOutputPort
+  ContextSelector, HandoffPolicy, WorkflowBinding, WorkflowCondition, WorkflowConditionOperand,
+  WorkflowConnection, WorkflowDefinition, WorkflowDerivedPort, WorkflowInputPort, WorkflowNode, WorkflowOutputPort
 } from '../../contracts/workflow-definitions';
 
 export const ID_MAX = 64;
@@ -125,6 +125,16 @@ function projectCondition(condition: WorkflowCondition | TypedCondition, sanitiz
   });
 }
 
+function projectContextPolicy(policy: HandoffPolicy, sanitize: Sanitize): HandoffPolicy {
+  return Object.freeze({
+    version: policy.version, approval: policy.approval, session: policy.session,
+    selectors: Object.freeze(policy.selectors.map((s): ContextSelector => Object.freeze({
+      selectorId: text(s.selectorId, sanitize, LABEL_MAX), sourceNodePath: text(s.sourceNodePath, sanitize, 256),
+      required: s.required, priority: s.priority
+    })))
+  });
+}
+
 function projectConnection(connection: WorkflowConnection, sanitize: Sanitize): WorkflowConnection {
   return Object.freeze({
     from: Object.freeze({
@@ -140,7 +150,8 @@ function projectConnection(connection: WorkflowConnection, sanitize: Sanitize): 
     ...(connection.condition !== undefined ? { condition: projectCondition(connection.condition, sanitize) } : {}),
     ...(connection.priority !== undefined ? { priority: connection.priority } : {}),
     ...(connection.isDefault !== undefined ? { isDefault: connection.isDefault } : {}),
-    ...(connection.selection !== undefined ? { selection: connection.selection } : {})
+    ...(connection.selection !== undefined ? { selection: connection.selection } : {}),
+    ...(connection.contextPolicy !== undefined ? { contextPolicy: projectContextPolicy(connection.contextPolicy, sanitize) } : {})
   });
 }
 

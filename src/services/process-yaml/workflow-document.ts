@@ -84,6 +84,7 @@ import {
   WORKFLOW_SPEC_KEY_ORDER,
   emitCandidateBlockControl,
   emitEntry,
+  emitHandoffPolicy,
   emitKey,
   emitMapping,
   emitMappingSequence,
@@ -253,6 +254,11 @@ function renderConnection(bodyIndent: string, connection: WorkflowConnection): s
         if (connection.condition === undefined) break;
         out += emitKey(bodyIndent, 'condition');
         out += renderCondition(nestedIndent, connection.condition);
+        break;
+      case 'contextPolicy':
+        if (connection.contextPolicy === undefined) break;
+        out += emitKey(bodyIndent, 'contextPolicy');
+        out += emitHandoffPolicy(nestedIndent, connection.contextPolicy);
         break;
       case 'handoff':
       case 'priority':
@@ -489,6 +495,16 @@ function classifyWorkflow(
   }
   if (specSection !== null) {
     admitSection(specSection, WORKFLOW_SPEC_KEYS, raw, defects);
+    if (Array.isArray(raw.connections)) {
+      for (const conn of raw.connections) {
+        if (typeof conn === 'object' && conn !== null && !Array.isArray(conn)) {
+          const cp = (conn as Record<string, unknown>).contextPolicy;
+          if (typeof cp === 'object' && cp !== null && !Array.isArray(cp) && !hasOwn(cp as Record<string, unknown>, 'selectors')) {
+            (cp as Record<string, unknown>).selectors = [];
+          }
+        }
+      }
+    }
   }
 
   if (metadataSection === null || specSection === null) {

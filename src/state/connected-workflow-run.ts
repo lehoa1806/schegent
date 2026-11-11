@@ -238,6 +238,8 @@ export interface PendingHandoffRecord {
   readonly pausedAt: number;
   /** FR-R5-F03 (T006) — persisted accepted continuation envelope prior to target dispatch. */
   readonly acceptedEnvelope?: InvocationInputEnvelope;
+  /** FR-R6-F15 (F15-B) — durable phase-context handoff identifier awaiting manual approval. */
+  readonly phaseHandoffId?: string;
 }
 
 export type WorkflowInvocationStatus =

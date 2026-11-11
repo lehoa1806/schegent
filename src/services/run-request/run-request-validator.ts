@@ -29,6 +29,7 @@
 
 import type {
   FrozenInputBinding,
+  FrozenPhaseHandoffDelivery,
   FrozenSupplementalInput,
   FrozenWorkflowClosure,
   RunInputValue,
@@ -144,6 +145,7 @@ export interface RunRequestValidationContext {
    * none (FR-021, FR-027). This module never substitutes one.
    */
   readonly catalogVersion?: CatalogVersionRef;
+  readonly phaseHandoff?: FrozenPhaseHandoffDelivery;
 }
 
 /**
@@ -684,7 +686,8 @@ export async function validateRunRequest(
       // Feature 102 (T036, FR-021, FR-027). Stamped, not resolved: whatever the
       // caller resolved is what the plan records, and an absent value records
       // absence rather than becoming `''` or a guess.
-      ...(context.catalogVersion === undefined ? {} : { catalogVersion: context.catalogVersion })
+      ...(context.catalogVersion === undefined ? {} : { catalogVersion: context.catalogVersion }),
+      ...(context.phaseHandoff === undefined ? {} : { phaseHandoff: context.phaseHandoff })
     }
   };
 }

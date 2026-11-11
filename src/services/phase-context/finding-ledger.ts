@@ -52,6 +52,18 @@ export interface ClaimsContext {
 export type AcceptReportResult = { readonly ok: true; readonly outcome: PassOutcome } | Refusal;
 export type RecordClaimsResult = { readonly ok: true; readonly recorded: number } | Refusal;
 
+export interface FindingLedgerSnapshotPass {
+  readonly outcome: PassOutcome;
+  readonly candidateRef: string;
+  readonly inputDigest: string;
+}
+
+export interface FindingLedgerSnapshot {
+  readonly options: LedgerOptions;
+  readonly findings: readonly Finding[];
+  readonly passes: readonly FindingLedgerSnapshotPass[];
+}
+
 export interface FindingLedger {
   /** Applies a parsed report whole, or refuses it and changes nothing. */
   acceptReport(report: ReviewReport, context: ReportContext): AcceptReportResult;
@@ -61,6 +73,8 @@ export interface FindingLedger {
   findings(): readonly Finding[];
   /** The outcome of every accepted pass in order, as copies. */
   passes(): readonly PassOutcome[];
+  /** Metadata-only durable snapshot (zero finding prose). */
+  snapshot?(): FindingLedgerSnapshot;
 }
 
 interface FindingState {
@@ -226,6 +240,44 @@ class Ledger implements FindingLedger {
     return this.passList.map((pass) => ({ ...pass.outcome }));
   }
 
+  snapshot(): FindingLedgerSnapshot {
+    return {
+      options: {
+        loopId: this.options.loopId,
+        blockingSeverities: [...this.options.blocking],
+        maxPasses: this.options.maxPasses
+      },
+      findings: this.findings(),
+      passes: this.passList.map((pass) => ({
+        outcome: { ...pass.outcome },
+        candidateRef: pass.candidateRef,
+        inputDigest: pass.inputDigest
+      }))
+    };
+  }
+
+  restoreFromSnapshot(saved: FindingLedgerSnapshot): void {
+    this.byId.clear();
+    this.passList.length = 0;
+    for (const f of saved.findings) {
+      this.byId.set(f.id, {
+        id: f.id,
+        severity: f.severity,
+        status: f.status,
+        openedInPass: f.openedInPass,
+        history: f.history.map((h) => ({ ...h })),
+        claims: f.claims.map((c) => ({ ...c }))
+      });
+    }
+    for (const p of saved.passes) {
+      this.passList.push({
+        outcome: { ...p.outcome },
+        candidateRef: p.candidateRef,
+        inputDigest: p.inputDigest
+      });
+    }
+  }
+
   /** The report's place in the loop: its pass, its candidate and the report before it. */
   private orderRefusal(report: ReviewReport, context: ReportContext): Refusal | null {
     if (report.pass !== this.passList.length + 1) return stale('pass-out-of-order');
@@ -322,4 +374,12 @@ function refusingLedger(): FindingLedger {
 export function createFindingLedger(options: LedgerOptions): FindingLedger {
   const checked = checkedOptions(options);
   return checked === null ? refusingLedger() : new Ledger(checked);
+}
+
+export function rehydrateFindingLedger(saved: FindingLedgerSnapshot): FindingLedger {
+  const checked = checkedOptions(saved.options);
+  if (checked === null) return refusingLedger();
+  const ledger = new Ledger(checked);
+  ledger.restoreFromSnapshot(saved);
+  return ledger;
 }

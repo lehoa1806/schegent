@@ -704,7 +704,8 @@ describe('yaml-serializer — declared key order for the Workflow mappings', () 
       'condition',
       'priority',
       'isDefault',
-      'selection'
+      'selection',
+      'contextPolicy'
     ]);
     expect(WORKFLOW_ENDPOINT_KEY_ORDER).toEqual(['nodeId', 'portId', 'kind']);
     expect(WORKFLOW_CONDITION_KEY_ORDER).toEqual(['left', 'operator', 'right']);

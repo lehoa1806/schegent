@@ -9,8 +9,10 @@ import type {
   WorkflowDecisionResults,
   WorkflowNodeControl
 } from './workflow-controls';
+import type { HandoffPolicy } from './phase-context/context-policy';
 
 export type { TypedCondition } from './decision-results';
+export type { ContextSelector, HandoffPolicy } from './phase-context/context-policy';
 export type {
   CandidateBlockControl,
   CandidateSpec,
@@ -201,6 +203,8 @@ export interface WorkflowConnection {
   /** At most one per source node; considered last. */
   readonly isDefault?: boolean;
   readonly selection?: WorkflowSelectionRule;
+  /** FR-R6-F15 (F15-FR-01) — versioned opt-in phase-to-phase context handoff policy. */
+  readonly contextPolicy?: HandoffPolicy;
 }
 
 export type WorkflowInputBindingSource =
