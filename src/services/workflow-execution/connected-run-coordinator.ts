@@ -27,7 +27,7 @@ import type {
   ExecutionFence
 } from '../../contracts/control-ledger';
 import type { DecisionFieldValue } from '../../contracts/decision-results';
-import type { ResolvedPortValue } from '../../contracts/run-request';
+import type { FrozenPhaseHandoffDelivery, ResolvedPortValue } from '../../contracts/run-request';
 import type { RunOutputRecord } from '../../contracts/run-results';
 import type {
   WorkflowDefinition,
@@ -89,6 +89,11 @@ import {
   type ForEachExecutor
 } from './foreach-executor';
 import { lookupRecord } from './control-ledger-store';
+import type { PhaseHandoffCoordinator } from '../phase-context/phase-handoff-coordinator';
+import {
+  buildAttemptHandoffDelivery,
+  settleAndPrepareTransitionHandoff
+} from './phase-handoff-execution-bridge';
 
 /** What one finished child run contributes. Read from the child, never stored here. */
 export interface ChildRunFacts {
@@ -249,6 +254,7 @@ export interface PhaseAttemptDispatchInput {
   readonly queueId: string;
   readonly startedAt: number;
   readonly fence?: ExecutionFence;
+  readonly phaseHandoff?: FrozenPhaseHandoffDelivery;
 }
 
 export type PhaseAttemptDispatchResult =
@@ -263,6 +269,7 @@ export interface ComposableWorkflowCoordinatorDeps {
   readonly controlAdmission?: ControlAdmissionPort;
   readonly repeatExecutor?: RepeatExecutor;
   readonly forEachExecutor?: ForEachExecutor;
+  readonly phaseHandoffCoordinator?: PhaseHandoffCoordinator;
   readonly workspaceRoot?: string;
   readonly resolveExecutionFence?: (
     run: ConnectedWorkflowRun,
@@ -563,6 +570,17 @@ async function dispatchNodeInternal(
       committedFence = fence;
     }
 
+    const deliveryRes = await buildAttemptHandoffDelivery({
+      coordinator: deps.phaseHandoffCoordinator,
+      run, frame, nodeId, phase, pendingAttempt
+    });
+    if (!deliveryRes.ok) {
+      return failFrameAndPropagate(
+        deps, run, expectedRevision, frame, startedAt, deliveryRes.failureCode, deliveryRes.detail
+      );
+    }
+    const phaseHandoff = deliveryRes.delivery;
+
     const frameWithPending = recordNodeAttempt(frame, pendingAttempt);
     const preDispatchRun = upsertInvocationFrame(run, frameWithPending);
     const preWritten = await deps.connectedRuns.compareAndSetConnectedRun(
@@ -585,7 +603,8 @@ async function dispatchNodeInternal(
       attemptIndex: pendingAttempt.attemptIndex,
       queueId: boundQueueId,
       startedAt,
-      ...(committedFence !== undefined ? { fence: committedFence } : {})
+      ...(committedFence !== undefined ? { fence: committedFence } : {}),
+      ...(phaseHandoff !== undefined ? { phaseHandoff } : {})
     });
     if (dispatched.outcome === 'rejected') {
       const failedAttempt: NodeAttemptRecord = Object.freeze({
@@ -989,6 +1008,21 @@ async function settleAttemptInternal(
   };
   let nextRun = upsertInvocationFrame(run, updatedFrame, routingObservation);
 
+  const isNodeTransition = transition.outcome === 'transition' && transition.target.kind === 'node';
+  const handoffStep = await settleAndPrepareTransitionHandoff({
+    coordinator: deps.phaseHandoffCoordinator,
+    run: nextRun, frame: updatedFrame, workflow, settledAttempt,
+    connectionIndex: isNodeTransition ? transition.connectionIndex : null,
+    targetNodeId: isNodeTransition ? transition.target.nodeId : null
+  });
+  if (!handoffStep.ok) {
+    return failFrameAndPropagate(
+      deps, nextRun, expectedRevision, updatedFrame, completedAt, handoffStep.failureCode, handoffStep.detail
+    );
+  }
+  const preparedHandoffId = handoffStep.handoffId;
+  const preparedWaitingApproval = handoffStep.waitingApproval;
+
   if (
     transition.outcome === 'unhandled-node-failure' ||
     transition.outcome === 'no-eligible-transition' ||
@@ -1068,6 +1102,16 @@ async function settleAttemptInternal(
             explicitDecisionResults: decisionResults, repeatExecutor: deps.repeatExecutor, fence
           });
           if (repeatRes.kind === 'accepted') {
+            const repeatCheck = deps.phaseHandoffCoordinator?.verifyRepeatExitAllowed({
+              runId: nextRun.connectedRunId,
+              repeatNodeId: parentNode.nodeId
+            });
+            if (repeatCheck !== undefined && !repeatCheck.ok) {
+              return failFrameAndPropagate(
+                deps, upsertInvocationFrame(repeatRes.run, parentFrame),
+                expectedRevision, parentFrame, completedAt, repeatCheck.failure, repeatCheck.detail
+              );
+            }
             return settleAttemptInternal(
               deps, repeatRes.run, expectedRevision, parentFrame.invocationId,
               parentAttempt.nodeId, parentAttempt.attemptIndex, 'completed',
@@ -1137,6 +1181,7 @@ async function settleAttemptInternal(
       }
     }
 
+    deps.phaseHandoffCoordinator?.releaseTerminalRunPins(nextRun.connectedRunId);
     return persistRunStep(deps.connectedRuns, nextRun, expectedRevision, (persisted) => ({
       outcome: 'workflow-completed',
       run: persisted,
@@ -1149,7 +1194,7 @@ async function settleAttemptInternal(
     throw new Error('Unreachable: return target handled above');
   }
   const targetNodeId = transition.target.nodeId;
-  if (transition.handoff === 'manual') {
+  if (transition.handoff === 'manual' || preparedWaitingApproval) {
     const targetNode = workflow.nodes.find((n) => n.nodeId === targetNodeId);
     const targetKind =
       targetNode?.kind ?? (targetNode?.phaseId !== undefined ? 'phase' : 'workflow');
@@ -1171,7 +1216,8 @@ async function settleAttemptInternal(
       connectionIndex: transition.connectionIndex,
       target: { kind: 'node' as const, nodeId: targetNodeId },
       prefilledInputsByPort,
-      pausedAt: completedAt
+      pausedAt: completedAt,
+      ...(preparedHandoffId !== undefined ? { phaseHandoffId: preparedHandoffId } : {})
     });
     nextRun = upsertInvocationFrame(nextRun, {
       ...updatedFrame,
@@ -1285,6 +1331,7 @@ async function failFrameAndPropagate(
     }
   }
 
+  deps.phaseHandoffCoordinator?.releaseTerminalRunPins(nextRun.connectedRunId);
   return persistRunStep(deps.connectedRuns, nextRun, expectedRevision, (persisted) => ({
     outcome: 'workflow-failed',
     run: persisted,
@@ -1352,6 +1399,7 @@ async function cancelFrameAndPropagate(
     }
   }
 
+  deps.phaseHandoffCoordinator?.releaseTerminalRunPins(nextRun.connectedRunId);
   return persistRunStep(deps.connectedRuns, nextRun, expectedRevision, (persisted) => ({
     outcome: 'workflow-canceled',
     run: persisted,

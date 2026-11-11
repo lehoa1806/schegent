@@ -57,6 +57,8 @@ import {
 import type { DurableAttemptEvidence } from './workflow-recovery-service';
 import type { ConnectedRunWriter } from './workflow-launcher';
 import type { ControlCommandAcknowledgement } from '../../contracts/sidebar-ipc/workflow-run';
+import type { PhaseHandoffCoordinator } from '../phase-context/phase-handoff-coordinator';
+import { approvePendingPhaseHandoffForContinue } from './phase-handoff-execution-bridge';
 import type { ControlCommandService } from './control-command-service';
 
 export interface ActiveLeafAbortInput {
@@ -119,6 +121,7 @@ export interface WorkflowControlServiceDeps {
   readonly controlAdmission?: ControlAdmissionPort | undefined;
   readonly repeatExecutor?: RepeatExecutor | undefined;
   readonly forEachExecutor?: ForEachExecutor | undefined;
+  readonly phaseHandoffCoordinator?: PhaseHandoffCoordinator | undefined;
   readonly workspaceRoot?: string | undefined;
   readonly resolveExecutionFence?: (run: ConnectedWorkflowRun, queueId: string) => ExecutionFence;
 }
@@ -291,13 +294,14 @@ export class WorkflowControlService {
   constructor(private readonly deps: WorkflowControlServiceDeps) {}
 
   private coordinatorDeps(writer: ConnectedRunWriter): ComposableWorkflowCoordinatorDeps {
-    const { controlAdmission, repeatExecutor, forEachExecutor, workspaceRoot, resolveExecutionFence, cancelOrphanedQueueItem } = this.deps;
+    const { controlAdmission, repeatExecutor, forEachExecutor, phaseHandoffCoordinator, workspaceRoot, resolveExecutionFence, cancelOrphanedQueueItem } = this.deps;
     return {
       connectedRuns: writer,
       dispatchPhase: this.deps.dispatchPhase,
       ...(controlAdmission !== undefined ? { controlAdmission } : {}),
       ...(repeatExecutor !== undefined ? { repeatExecutor } : {}),
       ...(forEachExecutor !== undefined ? { forEachExecutor } : {}),
+      ...(phaseHandoffCoordinator !== undefined ? { phaseHandoffCoordinator } : {}),
       ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
       ...(resolveExecutionFence !== undefined ? { resolveExecutionFence } : {}),
       ...(cancelOrphanedQueueItem !== undefined ? { cancelOrphanedQueueItem } : {})
@@ -688,6 +692,7 @@ export class WorkflowControlService {
           decision.targetInvocationId,
           decision.targetNodeId ?? '',
           request.continuationRequest,
+          request.commandId,
           request.now
         );
         if (!out.accepted) {
@@ -1181,8 +1186,13 @@ export class WorkflowControlService {
     targetInvocationId: string,
     targetNodeId: string,
     continuationRequest: RunRequest | undefined,
+    commandId: string,
     now: number
   ): Promise<DispatchStepOutcome & { readonly accepted: boolean }> {
+    if (!approvePendingPhaseHandoffForContinue(this.deps.phaseHandoffCoordinator, run, targetInvocationId, commandId)) {
+      return { accepted: false };
+    }
+
     const requestPayload: RunRequest = continuationRequest ?? {
       pipelineId: targetNodeId,
       workflowId: run.workflowId,

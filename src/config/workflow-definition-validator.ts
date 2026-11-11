@@ -43,11 +43,10 @@ import {
   type TypedCondition
 } from '../contracts/decision-results';
 import {
-  validateCandidateBlockControl,
-  validateCandidateBlockGraphStructure,
-  validateWorkflowDecisionResults,
-  validateWorkflowNodeControl
+  validateCandidateBlockControl, validateCandidateBlockGraphStructure,
+  validateWorkflowDecisionResults, validateWorkflowNodeControl
 } from './workflow-control-validator';
+import { readConnectionContextPolicy } from './workflow-handoff-policy-validator';
 import {
   AUTHORED_EXECUTION_DEFAULT_FIELDS,
   PIPELINE_ID_PATTERN,
@@ -79,7 +78,7 @@ export const AUTHORED_WORKFLOW_FIELDS: ReadonlySet<string> = new Set([
 
 /** Closed set of fields a Workflow node may carry (feature 254, FR-042, V3; compared with `WORKFLOW_NODE_KEY_ORDER`). */
 export const AUTHORED_NODE_FIELDS: ReadonlySet<string> = new Set(['nodeId', 'kind', 'phaseId', 'workflowId', 'label', 'control']);
-const AUTHORED_CONNECTION_FIELDS: ReadonlySet<string> = new Set(['from', 'to', 'handoff', 'condition', 'priority', 'isDefault', 'selection']);
+const AUTHORED_CONNECTION_FIELDS: ReadonlySet<string> = new Set(['from', 'to', 'handoff', 'condition', 'priority', 'isDefault', 'selection', 'contextPolicy']);
 const AUTHORED_ENDPOINT_FIELDS: ReadonlySet<string> = new Set(['nodeId', 'portId', 'kind']);
 const AUTHORED_CONDITION_FIELDS: ReadonlySet<string> = new Set(['left', 'operator', 'right']);
 const AUTHORED_PORT_FIELDS: ReadonlySet<string> = new Set(['portId', 'label', 'type', 'required', 'description']);
@@ -592,15 +591,16 @@ function readConnections(
       }
     }
 
+    const parsedPolicy = readConnectionContextPolicy(raw.contextPolicy, workflowId, `connections[${index}].contextPolicy`, errors);
+    if (!parsedPolicy.ok) ok = false;
+
     if (!ok || from === null || to === null) return;
     connections.push(Object.freeze({
-      from,
-      to,
-      ...(handoff !== undefined ? { handoff } : {}),
-      ...(condition !== undefined ? { condition } : {}),
-      ...(priority !== undefined ? { priority } : {}),
-      ...(isDefault !== undefined ? { isDefault } : {}),
-      ...(selection !== undefined ? { selection } : {})
+      from, to,
+      ...(handoff !== undefined ? { handoff } : {}), ...(condition !== undefined ? { condition } : {}),
+      ...(priority !== undefined ? { priority } : {}), ...(isDefault !== undefined ? { isDefault } : {}),
+      ...(selection !== undefined ? { selection } : {}),
+      ...(parsedPolicy.policy !== undefined ? { contextPolicy: parsedPolicy.policy } : {})
     }));
   });
   return connections;

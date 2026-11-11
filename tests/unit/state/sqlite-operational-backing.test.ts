@@ -102,7 +102,7 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
       expect(legacy.writes).toBe(0);
 
       // Imported state is readable from SQLite
-      const importedRuns = switchable.get<Record<string, { id: string }>>(KEYS.run);
+      const importedRuns = switchable.get<Record<string, { id: string } | undefined>>(KEYS.run);
       expect(importedRuns?.default?.id).toBe('run-legacy-1');
 
       // Relational projection in `runs` table exists

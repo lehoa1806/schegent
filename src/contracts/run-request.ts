@@ -16,6 +16,7 @@
 // execution path reads, rather than a record the factory harvested one field
 // from. `FrozenRunPlan` is retained as an alias of it, not as a sibling type.
 
+import type { AcpPromptBlock } from './acp-runtime';
 import type { CatalogVersionRef } from './catalog-version';
 import type { PipelineInputPortType, PipelineOutputPortType } from './pipeline-definitions';
 import type { PhaseDefinition } from './process-definitions';
@@ -255,6 +256,17 @@ export interface FrozenWorkflowClosure {
  * in-flight envelope behaves exactly as the in-flight `pipeline` snapshot
  * already does under a catalog or task-row edit.
  */
+export interface FrozenPhaseHandoffDelivery {
+  readonly handoffId: string | null;
+  readonly revision: number | null;
+  readonly attemptId: string;
+  readonly representationDigest: string | null;
+  readonly acpPromptBlocks?: readonly AcpPromptBlock[];
+  readonly authorizedUpstreamInputPaths?: readonly string[];
+  readonly authorizedOutputPaths?: readonly string[];
+  readonly sessionReusePermitted?: boolean;
+}
+
 export interface ExecutionEnvelope {
   readonly pipeline: WorkflowRunPipeline;
   readonly workflowId?: string;
@@ -279,6 +291,11 @@ export interface ExecutionEnvelope {
    * — a version invented for either would be a version the system never resolved.
    */
   readonly catalogVersion?: CatalogVersionRef;
+  /**
+   * FR-R6-F15 (F15-B) — host-frozen phase handoff delivery blocks, attempt identity,
+   * and ACP authority paths stamped at validation/dispatch time.
+   */
+  readonly phaseHandoff?: FrozenPhaseHandoffDelivery;
 }
 
 /**

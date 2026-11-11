@@ -32,6 +32,7 @@ import type { PhaseDef, PipelineCatalog } from '../../config/pipeline-config';
 import type { CatalogVersionRef } from '../../contracts/catalog-version';
 import { CATALOG_EMPTY_REASON, type CatalogEmptyReason } from '../../contracts/empty-catalog-guidance';
 import type {
+  FrozenPhaseHandoffDelivery,
   FrozenRunPlan,
   FrozenSupplementalInput,
   FrozenWorkflowClosure,
@@ -191,6 +192,7 @@ export interface NodeRunStartInput {
    */
   readonly frozenPipeline?: WorkflowRunPipeline;
   readonly occurrence?: NodeAttemptOccurrenceRef;
+  readonly phaseHandoff?: FrozenPhaseHandoffDelivery;
   /** The next node of a Workflow already on this queue; see `GuardedScheduleRequest`. */
   readonly continuesWorkflow?: true;
 }
@@ -209,6 +211,7 @@ export interface PhaseNodeRunStartInput {
   readonly occurrence: NodeAttemptOccurrenceRef;
   readonly ledgerRunId?: string;
   readonly fence?: ExecutionFence;
+  readonly phaseHandoff?: FrozenPhaseHandoffDelivery;
   /** The next node of a Workflow already on this queue; see `GuardedScheduleRequest`. */
   readonly continuesWorkflow?: true;
 }
@@ -392,7 +395,8 @@ export async function startPipelineRun(
     // Carried, not re-resolved (FR-021). Gate 1 resolved it from the same read
     // that produced the body; asking again here would be a second oracle that
     // could answer for a different body than the one about to be frozen.
-    ...(resolved.catalogVersion === undefined ? {} : { catalogVersion: resolved.catalogVersion })
+    ...(resolved.catalogVersion === undefined ? {} : { catalogVersion: resolved.catalogVersion }),
+    ...(input.phaseHandoff === undefined ? {} : { phaseHandoff: input.phaseHandoff })
   });
   if (!validated.ok) {
     // Forwarded verbatim. Every `message` is one of a closed set of fixed
@@ -635,6 +639,7 @@ export async function startPhaseNodeRun(
     ...(input.description !== undefined ? { description: input.description } : {}),
     ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
     ...(input.continuesWorkflow === true ? { continuesWorkflow: true } : {}),
+    ...(input.phaseHandoff !== undefined ? { phaseHandoff: input.phaseHandoff } : {}),
     frozenPipeline,
     occurrence: input.occurrence
   });

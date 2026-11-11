@@ -30,6 +30,7 @@ import {
 import { resolveWorkflowClosure } from './workflow-closure-resolver';
 import { validateWorkflowControlsInGraph } from './workflow-control-validator';
 import { workflowFieldError } from './workflow-definition-validator';
+import { validateWorkflowHandoffPoliciesInGraph } from './workflow-handoff-policy-validator';
 import {
   ancestorSets,
   reachableFrom,
@@ -121,6 +122,7 @@ export function validateWorkflowGraph(
   const phasesById = new Map((options.effectivePhases ?? []).map((entry) => [entry.phaseId, entry]));
   const workflowsById = new Map((options.effectiveWorkflows ?? []).map((entry) => [entry.workflowId, entry]));
   errors.push(...validateWorkflowControlsInGraph({ definition, acyclic, edges, phasesById, workflowsById }));
+  errors.push(...validateWorkflowHandoffPoliciesInGraph({ definition, nodeIds: new Set(nodes.keys()), acyclic, edges }));
   return errors;
 }
 

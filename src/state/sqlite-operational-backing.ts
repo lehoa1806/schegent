@@ -107,14 +107,14 @@ function isConnectedRunTerminal(
       activeFeatureIds.add(live.featureId);
     }
   }
-  for (const node of Object.values(run.nodes ?? {})) {
+  for (const node of Object.values(run.nodes)) {
     for (const attempt of node.attempts) {
       if (activeFeatureIds.has(attempt.queueItemId)) {
         return false;
       }
     }
   }
-  return Object.keys(run.nodes ?? {}).length > 0;
+  return Object.keys(run.nodes).length > 0;
 }
 
 function connectedRunLastUpdatedMs(run: ConnectedWorkflowRun): number {
@@ -128,7 +128,7 @@ function connectedRunLastUpdatedMs(run: ConnectedWorkflowRun): number {
       }
     }
   }
-  for (const decision of run.decisions ?? []) {
+  for (const decision of run.decisions) {
     if (typeof decision.decidedAt === 'number' && decision.decidedAt > latest) {
       latest = decision.decidedAt;
     }
@@ -144,7 +144,7 @@ export function pruneConnectedRunsMap(
   if (rawValue === null || typeof rawValue !== 'object' || Array.isArray(rawValue)) {
     return rawValue;
   }
-  const entries = Object.entries(rawValue as Record<string, ConnectedWorkflowRun>);
+  const entries = Object.entries(rawValue as Record<string, unknown>);
   if (entries.length === 0) return rawValue;
 
   const nonTerminal: Array<readonly [string, ConnectedWorkflowRun, number]> = [];
@@ -155,8 +155,9 @@ export function pruneConnectedRunsMap(
     readonly bytes: number;
   }> = [];
 
-  for (const [id, run] of entries) {
-    if (run === null || typeof run !== 'object') continue;
+  for (const [id, rawRun] of entries) {
+    if (rawRun === null || typeof rawRun !== 'object') continue;
+    const run = rawRun as ConnectedWorkflowRun;
     const serialized = JSON.stringify(run);
     const bytes = Buffer.byteLength(serialized, 'utf8');
     if (!isConnectedRunTerminal(run, liveRunMap)) {
@@ -419,7 +420,7 @@ export class SqliteOperationalBacking {
           this.scopeId,
           workflowId,
           sqlStatus,
-          candidate.currentPhase ?? null,
+          candidate.currentPhase,
           createdAt,
           completedAt,
           candidate.failureCause ?? null,
@@ -435,8 +436,10 @@ export class SqliteOperationalBacking {
       typeof value === 'object' &&
       !Array.isArray(value)
     ) {
-      for (const wfRun of Object.values(value as Record<string, ConnectedWorkflowRun>)) {
-        if (!wfRun || typeof wfRun.connectedRunId !== 'string') continue;
+      for (const rawWfRun of Object.values(value as Record<string, unknown>)) {
+        if (rawWfRun === null || typeof rawWfRun !== 'object') continue;
+        const wfRun = rawWfRun as ConnectedWorkflowRun;
+        if (typeof wfRun.connectedRunId !== 'string') continue;
         const isTerm = isConnectedRunTerminal(wfRun, {});
         let wfStatus: RunStatus = isTerm ? 'succeeded' : 'running';
         if (wfRun.invocations !== undefined) {
@@ -466,7 +469,7 @@ export class SqliteOperationalBacking {
           this.scopeId,
           wfRun.workflowId,
           wfStatus,
-          Math.max(1, wfRun.revision ?? 1),
+          Math.max(1, wfRun.revision),
           createdAt,
           isTerm ? updatedAt : null,
           createdAt,

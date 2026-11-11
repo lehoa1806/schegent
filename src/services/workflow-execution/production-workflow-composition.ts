@@ -80,6 +80,7 @@ import {
 import { ForEachExecutor } from './foreach-executor';
 import { QuotaPermitArbiter } from './quota-permit-arbiter';
 import { RepeatExecutor } from './repeat-executor';
+import type { PhaseHandoffCoordinator } from '../phase-context/phase-handoff-coordinator';
 import {
   WorkflowControlService,
   type WorkflowControlServiceDeps,
@@ -171,6 +172,7 @@ export interface ProductionWorkflowCompositionOptions {
   readonly onScheduleQueueWakeup?: ((queueId?: string) => void | Promise<void>) | undefined;
   readonly durableHandoffSeam?: DurableArtifactHandoverSeam | undefined;
   readonly cutoverAuthorityGuard?: CutoverAuthorityGuard | undefined;
+  readonly phaseHandoffCoordinator?: PhaseHandoffCoordinator | undefined;
   readonly admissionDeps?: Partial<ControlAttemptAdmissionDeps> | undefined;
   readonly commandServiceDeps?: Partial<ControlCommandServiceDeps> | undefined;
 }
@@ -193,6 +195,7 @@ export interface ProductionWorkflowComposition {
   readonly wakeupPlanner: ControlWakeupPlanner;
   readonly durableHandoffSeam: DurableArtifactHandoverSeam;
   readonly cutoverAuthorityGuard: CutoverAuthorityGuard;
+  readonly phaseHandoffCoordinator?: PhaseHandoffCoordinator | undefined;
 
   getEntryPointCensus(): readonly EntryPointCensusRecord[];
   isCollaboratorSupplied(kind: ControlCollaboratorKind): boolean;
@@ -874,6 +877,7 @@ export function createProductionWorkflowComposition(
       ...(isCollaboratorSupplied('controlAdmission') ? { controlAdmission: coordinatorControlAdmissionPort } : {}),
       ...(isCollaboratorSupplied('repeatExecutor') ? { repeatExecutor } : {}),
       ...(isCollaboratorSupplied('forEachExecutor') ? { forEachExecutor } : {}),
+      ...(options.phaseHandoffCoordinator !== undefined ? { phaseHandoffCoordinator: options.phaseHandoffCoordinator } : {}),
       ...(effectiveRoot !== undefined ? { workspaceRoot: effectiveRoot } : {}),
       resolveExecutionFence: resolveFence,
       ...(coordOptions.cancelOrphanedQueueItem !== undefined ? { cancelOrphanedQueueItem: coordOptions.cancelOrphanedQueueItem } : {})
@@ -889,6 +893,7 @@ export function createProductionWorkflowComposition(
       ...(isCollaboratorSupplied('controlAdmission') ? { controlAdmission: coordinatorControlAdmissionPort } : {}),
       ...(isCollaboratorSupplied('repeatExecutor') ? { repeatExecutor } : {}),
       ...(isCollaboratorSupplied('forEachExecutor') ? { forEachExecutor } : {}),
+      ...(options.phaseHandoffCoordinator !== undefined ? { phaseHandoffCoordinator: options.phaseHandoffCoordinator } : {}),
       ...(effectiveRoot !== undefined ? { workspaceRoot: effectiveRoot } : {}),
       resolveExecutionFence: resolveFence,
       ...(isCollaboratorSupplied('controlCommandService') ? { controlCommandService } : {})
@@ -906,6 +911,7 @@ export function createProductionWorkflowComposition(
         : {}),
       ...(isCollaboratorSupplied('repeatExecutor') ? { repeatExecutor } : {}),
       ...(isCollaboratorSupplied('forEachExecutor') ? { forEachExecutor } : {}),
+      ...(options.phaseHandoffCoordinator !== undefined ? { phaseHandoffCoordinator: options.phaseHandoffCoordinator } : {}),
       ...(effectiveRoot !== undefined ? { workspaceRoot: effectiveRoot } : {}),
       ...(isCollaboratorSupplied('quotaPermitArbiter') ? { quotaPermitArbiter } : {}),
       notificationService,
@@ -932,6 +938,7 @@ export function createProductionWorkflowComposition(
     wakeupPlanner,
     durableHandoffSeam,
     cutoverAuthorityGuard,
+    ...(options.phaseHandoffCoordinator !== undefined ? { phaseHandoffCoordinator: options.phaseHandoffCoordinator } : {}),
     getEntryPointCensus: () => getEntryPointWiringCensus(collaboratorOverrides),
     isCollaboratorSupplied,
     assessCapability,

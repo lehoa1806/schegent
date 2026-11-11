@@ -42,6 +42,7 @@ import type {
   WorkflowDecisionResults,
   WorkflowNodeControl
 } from '../../contracts/workflow-controls';
+import type { ContextSelector, HandoffPolicy } from '../../contracts/phase-context/context-policy';
 
 export const DOCUMENT_KEY_ORDER = Object.freeze([
   'apiVersion',
@@ -296,7 +297,22 @@ export const WORKFLOW_CONNECTION_KEY_ORDER = Object.freeze([
   'condition',
   'priority',
   'isDefault',
-  'selection'
+  'selection',
+  'contextPolicy'
+] as const);
+
+export const HANDOFF_POLICY_KEY_ORDER = Object.freeze([
+  'version',
+  'approval',
+  'session',
+  'selectors'
+] as const);
+
+export const CONTEXT_SELECTOR_KEY_ORDER = Object.freeze([
+  'selectorId',
+  'sourceNodePath',
+  'required',
+  'priority'
 ] as const);
 
 export const WORKFLOW_ENDPOINT_KEY_ORDER = Object.freeze([
@@ -702,6 +718,22 @@ export function emitWorkflowNodeControl(indent: string, control: WorkflowNodeCon
         out += emitMapping(indent, [key], control);
         break;
     }
+  }
+  return out;
+}
+
+function renderContextSelector(bodyIndent: string, selector: ContextSelector): string {
+  return emitMapping(bodyIndent, CONTEXT_SELECTOR_KEY_ORDER, selector);
+}
+
+export function emitHandoffPolicy(indent: string, policy: HandoffPolicy): string {
+  let out = '';
+  for (const key of HANDOFF_POLICY_KEY_ORDER) {
+    if (key === 'selectors') {
+      out += emitMappingSequence(indent, 'selectors', policy.selectors, renderContextSelector);
+      continue;
+    }
+    out += emitMapping(indent, [key], policy);
   }
   return out;
 }

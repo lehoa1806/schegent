@@ -207,6 +207,7 @@ export async function startPhaseAttempt(
       ? { ledgerRunId: input.run.controlState.ledgerRunId }
       : {}),
     ...(input.fence !== undefined ? { fence: input.fence } : {}),
+    ...(input.phaseHandoff !== undefined ? { phaseHandoff: input.phaseHandoff } : {}),
     ...options,
     occurrence: {
       rootRunId: input.run.connectedRunId,

@@ -70,6 +70,7 @@ import {
   isTerminalInvocationStatus
 } from './workflow-control-transition-table';
 import type { ConnectedRunWriter } from './workflow-launcher';
+import type { PhaseHandoffCoordinator } from '../phase-context/phase-handoff-coordinator';
 
 export interface DurableAttemptEvidenceResult {
   readonly completed?: boolean;
@@ -114,6 +115,7 @@ export interface WorkflowRecoveryServiceDeps {
     | undefined;
   readonly repeatExecutor?: RepeatExecutor | undefined;
   readonly forEachExecutor?: ForEachExecutor | undefined;
+  readonly phaseHandoffCoordinator?: PhaseHandoffCoordinator | undefined;
   readonly workspaceRoot?: string | undefined;
   readonly quotaPermitArbiter?: QuotaPermitArbiter | undefined;
   readonly notificationService?: ControlNotificationService | undefined;

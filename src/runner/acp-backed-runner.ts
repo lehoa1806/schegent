@@ -205,7 +205,7 @@ export class AcpBackedRunner implements BackendRunner {
     }
 
     const expectedProfileId = ACP_PROFILE_IDS[this.options.kind];
-    const configuredRaw = this.options.readConfiguredProfile?.()?.trim() || 'auto';
+    const configuredRaw = (this.options.readConfiguredProfile ? this.options.readConfiguredProfile().trim() : '') || 'auto';
     if (configuredRaw !== 'auto' && configuredRaw !== expectedProfileId) {
       throw new AcpProfileMismatchError(this.options.kind, configuredRaw, expectedProfileId);
     }
@@ -224,14 +224,14 @@ export class AcpBackedRunner implements BackendRunner {
     const startedAtMs = Date.now();
     const warnings: string[] = [];
 
-    let transport: AcpStdioTransport | null = null;
+    let transport: AcpStdioTransport | null = null as AcpStdioTransport | null;
     let connection: AcpConnection | null = null;
     let activeSessionId: string | null = null;
     let latestUsage: AcpUsageUpdate | null = null;
     let sawTerminalResult = false;
     let killed = false;
-    let timedOut = false;
-    let deadlineExceeded = false;
+    let timedOut: boolean = false as boolean;
+    let deadlineExceeded: boolean = false as boolean;
     let teardownOutcome: TreeTeardownOutcome | null = null;
     let liveStreamText = '';
 
@@ -262,7 +262,7 @@ export class AcpBackedRunner implements BackendRunner {
       }
     };
 
-    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null as ReturnType<typeof setTimeout> | null;
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
 
     const resetIdleTimer = (): void => {
@@ -274,7 +274,7 @@ export class AcpBackedRunner implements BackendRunner {
             cancelExecution();
           }
         }, request.timeoutMs);
-        idleTimer.unref?.();
+        idleTimer.unref();
       }
     };
 
@@ -384,7 +384,7 @@ export class AcpBackedRunner implements BackendRunner {
           timedOut = false;
           cancelExecution();
         }, maxDurationMs);
-        deadlineTimer.unref?.();
+        deadlineTimer.unref();
       }
 
       const spawnEnv = buildSpawnEnv(request);
@@ -613,7 +613,7 @@ export class AcpBackedRunner implements BackendRunner {
     params.stdoutBuffer.finalize();
     params.stderrBuffer.finalize();
     const streamFatalMatch = params.effectiveFatalSignatures
-      ? classifyFatal(params.liveStreamText, params.stderrBuffer.getTrailingLines(200), params.effectiveFatalSignatures) ?? undefined
+      ? classifyFatal(params.liveStreamText, params.stderrBuffer.getTrailingLines(200), params.effectiveFatalSignatures)
       : undefined;
 
     return {
