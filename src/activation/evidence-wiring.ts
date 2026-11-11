@@ -39,6 +39,7 @@ type MigrationEvents = Parameters<typeof forwardMigrationAuditEvents>[0];
 import { recordCompletedInterruptedReset } from '../commands/reset-wiring';
 import { maybeShowMultiRootWarning } from '../state/multi-root-warning';
 import { getCanonicalWorkspaceRoot } from '../state/workspace-folder-picker';
+import { getSqliteCutoverCoordinator } from './sqlite-cutover-wiring';
 
 /**
  * FR-R3-119 — the evidence surface: the audit writer, the session-artifact
@@ -266,6 +267,10 @@ const protectedSessionRunIds = (): ReadonlySet<string> => {
   const protectedIds = new Set<string>();
   for (const run of Object.values(store.getRunMap())) {
     if (run.status === 'running' || run.status === 'paused') protectedIds.add(run.id);
+  }
+  const f05Pinned = getSqliteCutoverCoordinator(store)?.getProtectedRunIds();
+  if (f05Pinned !== undefined) {
+    for (const id of f05Pinned) protectedIds.add(id);
   }
   return protectedIds;
 };

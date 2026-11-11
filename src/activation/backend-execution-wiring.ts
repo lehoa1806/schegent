@@ -42,6 +42,7 @@ import { windowsShellOut } from '../telemetry/platform/platform-windows';
 import { psShellOut } from '../telemetry/platform/platform-ps';
 import { createSpawnIdentityRecorder } from '../state/spawn-identity-recorder';
 import { createBackendDiagnosticsWiring, type BackendDiagnosticsWiring } from './backend-wiring';
+import { buildHostAcpDispatchOptions } from './acp-execution-wiring';
 import { wireContainmentAdmission, type ContainmentAdmissionWiring } from './containment-admission-wiring';
 import type { AcceptanceMementoPort } from '../services/containment-qualification/acceptance-bindings';
 import {
@@ -438,6 +439,13 @@ const runnerRegistry = new BackendRunnerRegistry({
   environmentPolicy: processEnvironmentPolicy,
   monitorHook,
   spawnGate: containment.spawnGate,
+  acpDispatch: buildHostAcpDispatchOptions({
+    workspaceRoot,
+    store,
+    logger,
+    isWorkspaceTrusted: deps.isWorkspaceTrusted,
+    hasPrimacy: deps.hasPrimacy
+  }),
   probeTransport: true,
   logger,
   evidenceHealth

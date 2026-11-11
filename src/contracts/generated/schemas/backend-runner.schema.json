@@ -152,6 +152,36 @@
           "name": "effectiveFatalSignatures",
           "optional": true,
           "type": "ReadonlyArray<EffectiveSignature>"
+        },
+        {
+          "name": "attemptId",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "acpPromptBlocks",
+          "optional": true,
+          "type": "readonly AcpPromptBlock[]"
+        },
+        {
+          "name": "resumeSessionOrigin",
+          "optional": true,
+          "type": "'acp' | 'legacy-cli'"
+        },
+        {
+          "name": "legacyDrain",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
+          "name": "authorizedUpstreamInputPaths",
+          "optional": true,
+          "type": "readonly string[]"
+        },
+        {
+          "name": "authorizedOutputPaths",
+          "optional": true,
+          "type": "readonly string[]"
         }
       ]
     },

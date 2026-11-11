@@ -56,6 +56,8 @@ async function removeIfContained(
   return 'removed';
 }
 
+export const RAW_TRANSCRIPT_FAILED_RUNS_MAX = 256;
+
 export interface RawTranscriptStartInput {
   runId: string;
   phase: Phase;
@@ -360,6 +362,7 @@ export class RawTranscriptWriter {
     // transcript, so its chain entry has nothing left to order and holding it
     // would be the leak this bounds.
     if (this.chains.get(runId) === next) this.chains.delete(runId);
+    this.failedRuns.delete(runId);
   }
 
   private filePathFor(runId: string, mode: RawTranscriptMode): string {
@@ -619,6 +622,10 @@ export class RawTranscriptWriter {
       normalizeEvidenceFailureCause(code)
     ) ?? !this.failedRuns.has(runId);
     if (!shouldWarn) return;
+    if (this.failedRuns.size >= RAW_TRANSCRIPT_FAILED_RUNS_MAX) {
+      const oldest = this.failedRuns.values().next().value;
+      if (oldest !== undefined) this.failedRuns.delete(oldest);
+    }
     this.failedRuns.add(runId);
     this.logger.warn(`raw transcript write failed for run ${runId}; workflow continues with degraded raw evidence`, {
       ...(typeof (err as NodeJS.ErrnoException).code === 'string'

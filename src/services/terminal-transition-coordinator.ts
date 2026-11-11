@@ -66,6 +66,8 @@ export interface TerminalRollupHook {
  * are unique across queues, so an entry still names exactly one queue, and the
  * queue-addressed `setRun` below still resolves it from the Task row.
  */
+export const LOST_NOTICED_RUNS_MAX = 256;
+
 export class TerminalTransitionCoordinator {
   constructor(
     private readonly store: WorkspaceStateStore,
@@ -159,6 +161,10 @@ export class TerminalTransitionCoordinator {
       }
     }
     if (this.lostNoticed.has(run.id)) return;
+    if (this.lostNoticed.size >= LOST_NOTICED_RUNS_MAX) {
+      const oldest = this.lostNoticed.values().next().value;
+      if (oldest !== undefined) this.lostNoticed.delete(oldest);
+    }
     this.lostNoticed.add(run.id);
     this.logger.warn('terminal-transition: terminal outcome held in memory after a lost claim', {
       queueId: queueId ?? null,

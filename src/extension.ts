@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
 import { WorkspaceStateStore } from './state/workspace-state';
+import { createSwitchableOperationalMemento } from './state/sqlite-operational-backing';
+import { getOperationalMementoForStore, registerOperationalMementoForStore } from './activation/sqlite-cutover-wiring';
 import {
   getCanonicalWorkspaceRoot,
   disposeWorkspaceFolderPicker
@@ -99,10 +101,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     { dispose: () => placeholder.dispose() }
   );
 
-  const store = new WorkspaceStateStore({
-    get: <T>(key: string) => context.workspaceState.get<T>(key),
-    update: (key, value) => context.workspaceState.update(key, value)
-  }, logger);
+  const operationalMemento = createSwitchableOperationalMemento(context.workspaceState, logger);
+  const store = new WorkspaceStateStore(operationalMemento, logger);
+  registerOperationalMementoForStore(store, operationalMemento);
 
   let stage2: Stage2Wiring | null = null;
   let activeOutput: SchegentOutputChannel | null = null;
@@ -384,7 +385,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     hostSubscriptions: context.subscriptions,
     evidenceHealth,
     processEnvironmentPolicy,
-    memento: context.workspaceState,
+    memento: getOperationalMementoForStore(store) ?? context.workspaceState,
     isWorkspaceTrusted,
     hasPrimacy: () => lock.hasPrimacy()
   });

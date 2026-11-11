@@ -36,6 +36,7 @@ type Slot = 'directory' | 'stream' | 'verbose';
  */
 const DIAGNOSTIC_DIR_MODE = 0o700;
 const DIAGNOSTIC_FILE_MODE = 0o600;
+export const VERBOSE_DIAGNOSTIC_TRACKED_DIRS_MAX = 256;
 
 const OCTAL_RADIX = 8;
 
@@ -108,6 +109,10 @@ export class VerboseDiagnosticWriter {
         await narrowMode(target.directory, DIAGNOSTIC_DIR_MODE)
       );
       if (narrowed !== null) this.recordNarrowing(target, 'directory', narrowed);
+      if (this.preparedDirs.size >= VERBOSE_DIAGNOSTIC_TRACKED_DIRS_MAX) {
+        const oldest = this.preparedDirs.values().next().value;
+        if (oldest !== undefined) this.preparedDirs.delete(oldest);
+      }
       this.preparedDirs.add(target.directory);
     } catch (err) {
       this.hadFailure = true;
@@ -234,6 +239,10 @@ export class VerboseDiagnosticWriter {
     const seen = this.warnedSlots.get(target.directory) ?? new Set<Slot>();
     if (seen.has(slot)) return;
     seen.add(slot);
+    if (!this.warnedSlots.has(target.directory) && this.warnedSlots.size >= VERBOSE_DIAGNOSTIC_TRACKED_DIRS_MAX) {
+      const oldest = this.warnedSlots.keys().next().value;
+      if (oldest !== undefined) this.warnedSlots.delete(oldest);
+    }
     this.warnedSlots.set(target.directory, seen);
     this.warnings.push(message);
     this.logger.warn(message);

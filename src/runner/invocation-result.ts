@@ -1,4 +1,5 @@
 import type { DeclaredCapabilitySet } from '../contracts/phase-capabilities';
+import type { AcpPromptBlock } from '../contracts/acp-runtime';
 import type { Phase } from '../controller/phase';
 import type { Effort } from '../config/pipeline-config';
 
@@ -236,6 +237,18 @@ export interface InvocationRequest {
    * harnesses and fixtures get.
    */
   effectiveFatalSignatures?: ReadonlyArray<EffectiveSignature>;
+  /** FR-R6-F13 / F02 — host attempt identifier bound to the ACP turn. */
+  attemptId?: string;
+  /** FR-R6-F13 / F15 — structured ACP prompt blocks (text, embedded resources, resource links). */
+  acpPromptBlocks?: readonly AcpPromptBlock[];
+  /** FR-R6-F13 (FR-021) — whether `resumeSessionId` originated from an ACP profile vs legacy CLI. */
+  resumeSessionOrigin?: 'acp' | 'legacy-cli';
+  /** FR-R6-F13 (FR-021) — true only for pre-cutover in-flight legacy attempts during bounded drain. */
+  legacyDrain?: boolean;
+  /** FR-R6-F09 / F15 — explicit accepted upstream artifact paths authorized for read-only access. */
+  authorizedUpstreamInputPaths?: readonly string[];
+  /** FR-R6-F09 / F15 — explicit declared output paths authorized for write access. */
+  authorizedOutputPaths?: readonly string[];
 }
 
 /**

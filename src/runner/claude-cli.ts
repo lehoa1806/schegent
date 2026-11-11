@@ -1,19 +1,8 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { extractCliSessionId } from "../parser/session-id-extractor";
-
-import type {
-  InvocationOutputSink,
-  InvocationRequest,
-  RawInvocationOutput
-} from './invocation-result';
-import { armedMaxDurationMs } from './invocation-result';
-import type {
-  BackendRunner,
-  MonitorSidecarEvent,
-  MonitorSidecarHook,
-  TreeAttribution,
-  TreeTeardownOutcome
-} from '../contracts/backend-runner';
+import { armedMaxDurationMs, type InvocationOutputSink, type InvocationRequest, type RawInvocationOutput } from './invocation-result';
+import { createDiagnosticWriteChain } from './diagnostic-write-chain';
+import type { BackendRunner, MonitorSidecarEvent, MonitorSidecarHook, TreeAttribution, TreeTeardownOutcome } from '../contracts/backend-runner';
 import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
 import { buildSpawnEnv } from './spawn-env';
@@ -650,7 +639,7 @@ export class ClaudeCliRunner implements BackendRunner {
         this.emitHook({ kind: 'background-hold', runId: request.runId ?? null, invocationId, held: true });
       };
 
-      const diagnosticWrites: Promise<void>[] = [];
+      const diagnosticWrites = createDiagnosticWriteChain();
       // FR-R4-F06 (F2) -- one stdout line, judged the same way whether the framer cut it at a newline or
       // the stream ended on it. Declared before the listeners so both call the one body.
       const handleStdoutLine = (line: string): void => {
@@ -727,7 +716,7 @@ export class ClaudeCliRunner implements BackendRunner {
         if (!outputBackpressure.isBlocked) resetIdleTimer();
         this.emitHook({ kind: 'stdout-chunk', runId: request.runId ?? null, invocationId, chunk });
         if (diagnosticWriter && verboseTarget) {
-          diagnosticWrites.push(diagnosticWriter.teeStream(verboseTarget, chunk));
+          diagnosticWrites.enqueue(() => diagnosticWriter.teeStream(verboseTarget, chunk));
         }
       });
       // The CLI's last line may have no newline. Without this the framer's remainder was never judged,
@@ -742,7 +731,7 @@ export class ClaudeCliRunner implements BackendRunner {
         if (!outputBackpressure.isBlocked) resetIdleTimer();
         this.emitHook({ kind: 'stderr-chunk', runId: request.runId ?? null, invocationId, chunk });
         if (diagnosticWriter && verboseTarget) {
-          diagnosticWrites.push(diagnosticWriter.teeVerbose(verboseTarget, chunk));
+          diagnosticWrites.enqueue(() => diagnosticWriter.teeVerbose(verboseTarget, chunk));
         }
       });
 
@@ -838,7 +827,7 @@ export class ClaudeCliRunner implements BackendRunner {
       // Feature 020 BUG-002 (FR-002a) — what `diagnosticsEnabled` records.
       let diagnosticsCaptured = false;
       if (diagnosticWriter) {
-        await Promise.allSettled(diagnosticWrites);
+        await diagnosticWrites.drain();
         const result = diagnosticWriter.result();
         diagnosticWarnings = result.warnings.length > 0 ? result.warnings : undefined;
         diagnosticsCaptured = result.streamCaptured;
