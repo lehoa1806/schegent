@@ -1,0 +1,190 @@
+[
+  {
+    "sourceSchema": 1,
+    "kind": "usage",
+    "sourceId": "usage-0001",
+    "sourceRevision": 0,
+    "backend": "claude",
+    "modelRequested": "model-large",
+    "modelReported": "model-large-20260101",
+    "measures": [
+      {
+        "measure": "input_tokens",
+        "quantity": "512",
+        "unit": "count",
+        "completeness": "known",
+        "provenance": "provider-reported",
+        "cacheRelation": null
+      },
+      {
+        "measure": "output_tokens",
+        "quantity": "1024",
+        "unit": "count",
+        "completeness": "known",
+        "provenance": "provider-reported",
+        "cacheRelation": null
+      },
+      {
+        "measure": "cache_read_tokens",
+        "quantity": "300",
+        "unit": "count",
+        "completeness": "known",
+        "provenance": "provider-reported",
+        "cacheRelation": "subset-of-input"
+      },
+      {
+        "measure": "cache_creation_tokens",
+        "quantity": "40",
+        "unit": "count",
+        "completeness": "known",
+        "provenance": "provider-reported",
+        "cacheRelation": "disjoint"
+      },
+      {
+        "measure": "cost",
+        "quantity": "12500",
+        "unit": "USD",
+        "completeness": "known",
+        "provenance": "derived",
+        "cacheRelation": null
+      }
+    ]
+  },
+  {
+    "sourceSchema": 1,
+    "kind": "usage",
+    "sourceId": "usage-0002",
+    "sourceRevision": 0,
+    "backend": "codex",
+    "modelRequested": "model-small",
+    "modelReported": null,
+    "measures": [
+      {
+        "measure": "input_tokens",
+        "quantity": "2000",
+        "unit": "count",
+        "completeness": "known",
+        "provenance": "estimated",
+        "cacheRelation": null
+      },
+      {
+        "measure": "output_tokens",
+        "quantity": "750",
+        "unit": "count",
+        "completeness": "partial",
+        "provenance": "provider-reported",
+        "cacheRelation": null
+      },
+      {
+        "measure": "cache_read_tokens",
+        "quantity": null,
+        "unit": "count",
+        "completeness": "unknown",
+        "provenance": "provider-reported",
+        "cacheRelation": "unknown"
+      },
+      {
+        "measure": "cost",
+        "quantity": "3400",
+        "unit": "EUR",
+        "completeness": "known",
+        "provenance": "estimated",
+        "cacheRelation": null
+      },
+      {
+        "measure": "credits",
+        "quantity": "12",
+        "unit": "credits",
+        "completeness": "known",
+        "provenance": "provider-reported",
+        "cacheRelation": null
+      },
+      {
+        "measure": "context_used",
+        "quantity": "9000",
+        "unit": "count",
+        "completeness": "known",
+        "provenance": "provider-reported",
+        "cacheRelation": null
+      }
+    ]
+  },
+  {
+    "sourceSchema": 1,
+    "kind": "operation",
+    "sourceId": "attempt-0001",
+    "sourceRevision": 0,
+    "backend": "claude",
+    "modelRequested": "model-large",
+    "modelReported": "model-large-20260101",
+    "durationMs": 1500,
+    "outcome": "succeeded"
+  },
+  {
+    "sourceSchema": 1,
+    "kind": "operation",
+    "sourceId": "attempt-0002",
+    "sourceRevision": 0,
+    "backend": "codex",
+    "modelRequested": "model-small",
+    "modelReported": null,
+    "durationMs": 250,
+    "outcome": "failed"
+  },
+  {
+    "sourceSchema": 1,
+    "kind": "operation",
+    "sourceId": "attempt-0003",
+    "sourceRevision": 0,
+    "backend": "claude",
+    "modelRequested": "model-large",
+    "modelReported": null,
+    "durationMs": null,
+    "outcome": "interrupted"
+  },
+  {
+    "sourceSchema": 1,
+    "kind": "correction",
+    "sourceId": "usage-0001",
+    "sourceRevision": 1,
+    "backend": "claude",
+    "modelRequested": "model-large",
+    "modelReported": "model-large-20260101",
+    "correction": {
+      "measure": "output_tokens",
+      "unit": "count",
+      "previousQuantity": "1024",
+      "replacementQuantity": "1000"
+    }
+  },
+  {
+    "sourceSchema": 1,
+    "kind": "correction",
+    "sourceId": "usage-0001",
+    "sourceRevision": 2,
+    "backend": "claude",
+    "modelRequested": "model-large",
+    "modelReported": "model-large-20260101",
+    "correction": {
+      "measure": "cost",
+      "unit": "USD",
+      "previousQuantity": "12500",
+      "replacementQuantity": "13000"
+    }
+  },
+  {
+    "sourceSchema": 1,
+    "kind": "correction",
+    "sourceId": "usage-0002",
+    "sourceRevision": 1,
+    "backend": "codex",
+    "modelRequested": "model-small",
+    "modelReported": null,
+    "correction": {
+      "measure": "output_tokens",
+      "unit": "count",
+      "previousQuantity": null,
+      "replacementQuantity": "800"
+    }
+  }
+]
