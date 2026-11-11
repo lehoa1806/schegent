@@ -1,5 +1,6 @@
 /**
- * FR-R6-F13 (FR-002, FR-019, research R7) — the stdio transport for one ACP agent process.
+ * FR-R6-F13 (FR-002, FR-019, research R7) — the stdio transport for one ACP agent process and
+ * the managed child-process primitive shared by maintained ACP stdio bridges.
  *
  * - The agent is launched with no shell, in its own process group on POSIX, with the
  *   environment the host launch resolver built; nothing here reads `process.env`.
@@ -23,9 +24,11 @@ import type { AcpTransport } from '../../contracts/acp-runtime';
 import { openStdinLineChannel, type StdinLineChannel } from '../../runner/child-stdin';
 import {
   childIsReaped,
+  processTreeIsGone,
   processTreeSpawnOptions,
   signalProcessTree,
-  TEARDOWN_BOUND_MS
+  TEARDOWN_BOUND_MS,
+  trackGroupAtExit
 } from '../../runner/process-tree';
 
 /** The SIGTERM-to-SIGKILL delay, the same as the runner ladder's. */
@@ -47,7 +50,69 @@ export interface StdioLaunch {
   readonly env: NodeJS.ProcessEnv;
 }
 
-class StdioTransport implements AcpTransport {
+/** Extended stdio transport carrying process-tree liveness inspection for F09-FR-17 / F09-AC-08. */
+export interface AcpStdioTransport extends AcpTransport {
+  readonly pid: number | undefined;
+  isProcessTreeGone(): boolean;
+}
+
+export interface ManagedCliExit {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly launchFailed: boolean;
+}
+
+/** Managed CLI child handle used by maintained ACP bridges without importing `child_process`. */
+export interface ManagedCliChild {
+  readonly pid: number | undefined;
+  readonly exited: Promise<ManagedCliExit>;
+  writeStdin(text: string): boolean;
+  endStdin(): void;
+  onStdout(listener: (chunk: Uint8Array) => void): void;
+  onStderr(listener: (chunk: Uint8Array) => void): void;
+  isProcessTreeGone(): boolean;
+  terminate(): Promise<void>;
+}
+
+function spawnDetachedProcess(input: StdioLaunch): ChildProcess {
+  const child = spawn(input.command, [...input.args], {
+    cwd: input.cwd,
+    env: input.env,
+    shell: false,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    ...processTreeSpawnOptions()
+  });
+  trackGroupAtExit(child);
+  return child;
+}
+
+async function teardownChildTree(
+  child: ChildProcess,
+  channel: StdinLineChannel,
+  exited: Promise<unknown>
+): Promise<void> {
+  channel.end();
+  const timers: NodeJS.Timeout[] = [];
+  const signalTree = (sig: NodeJS.Signals): void => {
+    if (childIsReaped(child)) return;
+    signalProcessTree(child, sig).catch(() => undefined);
+  };
+  if (!childIsReaped(child) && child.pid !== undefined) {
+    signalTree('SIGTERM');
+    timers.push(setTimeout(() => signalTree('SIGKILL'), SIGKILL_ESCALATION_MS));
+  }
+  const bound = new Promise<void>((resolve) => {
+    timers.push(setTimeout(resolve, TEARDOWN_BOUND_MS));
+  });
+  try {
+    await Promise.race([exited, bound]);
+  } finally {
+    for (const timer of timers) clearTimeout(timer);
+  }
+}
+
+class StdioTransport implements AcpStdioTransport {
   private readonly stdoutListeners: ((chunk: Uint8Array) => void)[] = [];
   private readonly stderrListeners: ((chunk: Uint8Array) => void)[] = [];
   private readonly closeListeners: (() => void)[] = [];
@@ -72,6 +137,14 @@ class StdioTransport implements AcpTransport {
     child.stderr?.on('data', (chunk: Buffer) => this.emit(this.stderrListeners, chunk));
   }
 
+  get pid(): number | undefined {
+    return this.child.pid;
+  }
+
+  isProcessTreeGone(): boolean {
+    return processTreeIsGone(this.child);
+  }
+
   write(line: string): void {
     if (!this.channel.write(line)) throw new AgentStdinRefusedError();
   }
@@ -90,30 +163,8 @@ class StdioTransport implements AcpTransport {
 
   close(): Promise<void> {
     if (this.closing !== null) return this.closing;
-    this.closing = this.teardown();
+    this.closing = teardownChildTree(this.child, this.channel, this.exited);
     return this.closing;
-  }
-
-  private async teardown(): Promise<void> {
-    this.channel.end();
-    const timers: NodeJS.Timeout[] = [];
-    if (!childIsReaped(this.child) && this.child.pid !== undefined) {
-      this.signal('SIGTERM');
-      timers.push(setTimeout(() => this.signal('SIGKILL'), SIGKILL_ESCALATION_MS));
-    }
-    const bound = new Promise<void>((resolve) => {
-      timers.push(setTimeout(resolve, TEARDOWN_BOUND_MS));
-    });
-    try {
-      await Promise.race([this.exited, bound]);
-    } finally {
-      for (const timer of timers) clearTimeout(timer);
-    }
-  }
-
-  private signal(signal: NodeJS.Signals): void {
-    if (childIsReaped(this.child)) return;
-    signalProcessTree(this.child, signal).catch(() => undefined);
   }
 
   private emit(listeners: readonly ((chunk: Uint8Array) => void)[], chunk: Buffer): void {
@@ -128,15 +179,82 @@ class StdioTransport implements AcpTransport {
   }
 }
 
-/** Launch the agent and wrap its stdio as an `AcpTransport`. A launch failure is a close. */
-export function spawnStdioTransport(input: StdioLaunch): AcpTransport {
-  const child = spawn(input.command, [...input.args], {
-    cwd: input.cwd,
-    env: input.env,
-    shell: false,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true,
-    ...processTreeSpawnOptions()
-  });
-  return new StdioTransport(child);
+class ManagedCliChildImpl implements ManagedCliChild {
+  private readonly stdoutListeners: ((chunk: Uint8Array) => void)[] = [];
+  private readonly stderrListeners: ((chunk: Uint8Array) => void)[] = [];
+  private readonly channel: StdinLineChannel;
+  readonly exited: Promise<ManagedCliExit>;
+  private terminating: Promise<void> | null = null;
+
+  constructor(private readonly child: ChildProcess) {
+    let settleExit: (value: ManagedCliExit) => void = () => undefined;
+    let settled = false;
+    const finish = (value: ManagedCliExit): void => {
+      if (settled) return;
+      settled = true;
+      settleExit(value);
+    };
+    this.exited = new Promise<ManagedCliExit>((resolve) => {
+      settleExit = resolve;
+    });
+    child.once('error', () => finish({ code: null, signal: null, launchFailed: true }));
+    child.once('close', (code, signal) => finish({ code, signal, launchFailed: false }));
+    child.once('exit', (code, signal) => {
+      if (!child.stdout && !child.stderr) finish({ code, signal, launchFailed: false });
+    });
+    this.channel = openStdinLineChannel(child, () => undefined);
+    child.stdout?.on('data', (chunk: Buffer) => this.emit(this.stdoutListeners, chunk));
+    child.stderr?.on('data', (chunk: Buffer) => this.emit(this.stderrListeners, chunk));
+  }
+
+  get pid(): number | undefined {
+    return this.child.pid;
+  }
+
+  writeStdin(text: string): boolean {
+    if (!this.child.stdin || this.child.stdin.destroyed || !this.child.stdin.writable) return false;
+    try {
+      this.child.stdin.write(text, 'utf8');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  endStdin(): void {
+    this.channel.end();
+  }
+
+  onStdout(listener: (chunk: Uint8Array) => void): void {
+    this.stdoutListeners.push(listener);
+  }
+
+  onStderr(listener: (chunk: Uint8Array) => void): void {
+    this.stderrListeners.push(listener);
+  }
+
+  isProcessTreeGone(): boolean {
+    return processTreeIsGone(this.child);
+  }
+
+  terminate(): Promise<void> {
+    if (this.terminating !== null) return this.terminating;
+    this.terminating = teardownChildTree(this.child, this.channel, this.exited);
+    return this.terminating;
+  }
+
+  private emit(listeners: readonly ((chunk: Uint8Array) => void)[], chunk: Buffer): void {
+    const bytes = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    for (const listener of listeners) listener(bytes);
+  }
+}
+
+/** Launch the agent and wrap its stdio as an `AcpStdioTransport`. A launch failure is a close. */
+export function spawnStdioTransport(input: StdioLaunch): AcpStdioTransport {
+  return new StdioTransport(spawnDetachedProcess(input));
+}
+
+/** Launch a managed CLI child for a maintained ACP bridge, reusing the host process-tree ladder. */
+export function spawnManagedCliChild(input: StdioLaunch): ManagedCliChild {
+  return new ManagedCliChildImpl(spawnDetachedProcess(input));
 }

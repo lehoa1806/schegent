@@ -80,7 +80,9 @@ export function qualifyBackend(identity: BackendIdentity): QualificationRecord {
   const version = identity.versionMinor ?? UNVERIFIED_VERSION;
   const effects = Object.freeze(CONTAINMENT_EFFECTS.map((effect) => cellFor(identity, effect)));
   const claims = MECHANISM_CLAIMS[mechanism];
+  const acpChannel = identity.acp ?? 'not-applicable';
   const qualified =
+    acpChannel !== 'unqualified-acp' &&
     claims.length > 0 &&
     claims.every((claimed) => effects.some((entry) => entry.effect === claimed && entry.outcome === 'observed-enforced'));
   return Object.freeze({
@@ -93,7 +95,7 @@ export function qualifyBackend(identity: BackendIdentity): QualificationRecord {
       mechanismVersion: version,
       fingerprint: computeFingerprint(identity).digest,
       capabilitySet: Object.freeze([...CONFIRMED_FLAGS[identity.kind]].sort()),
-      acp: 'not-applicable'
+      acp: acpChannel
     }),
     effects,
     qualified,

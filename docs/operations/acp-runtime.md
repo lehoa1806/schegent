@@ -17,10 +17,13 @@ Implemented in:
 
 ## Production status
 
-The runtime, its stdio transport and its fixtures ship in this release. Nothing in activation
-constructs them: production dispatch still uses the CLI runners. Moving dispatch onto ACP is
-F13-C, after the F01-B cutover. No profile can be configured from settings or repository text,
-and no real agent profile is qualified (see the release matrix below).
+The runtime, its stdio transport, its maintained stdio bridge (`dist/acp-stdio-bridge.js`), and its
+three built-in profiles (`agy-acp-native`, `claude-acp-bridge`, `codex-acp-bridge`) ship in the
+package. Production dispatch routes new-architecture attempts through `AcpBackedRunner` while
+draining any pre-cutover in-flight legacy CLI attempts without dual live authority. Profiles are
+host-owned constants; repository text cannot install or replace an agent profile. Qualification is
+recorded per platform (`darwin/arm64` qualified from local host observations; Linux, Windows, and
+remote extension hosts remain `unqualified` and refuse before spawn).
 
 ## Protocol
 
@@ -199,24 +202,15 @@ It never holds a command, argument or environment value. No UI shows it yet.
 
 ## Release matrix
 
-Qualified profiles: 0
+Qualified profiles on `darwin/arm64`: 3 (`unqualified` on Linux, Windows, and remote hosts until observed on those targets)
 
-| Profile | Qualification | Maintenance owner | Gap |
-|---------|---------------|-------------------|-----|
-| Claude | not qualified | unassigned | No qualified ACP adapter profile; dispatch uses the Claude CLI runner. Qualification is F13-B. |
-| Codex | not qualified | unassigned | No qualified ACP adapter profile; dispatch uses the Codex CLI runner. Qualification is F13-B. |
-| Agy | not qualified | unassigned | No ACP entry point is qualified; dispatch uses the Agy CLI runner. Qualification is F13-B. |
-| Fixture agent | fixture | host test suite | Deterministic fixtures only (`tests/fixtures/acp/`); never opened in production. |
+| Profile | Kind | Qualification (`darwin/arm64`) | Maintenance owner | Notes & residuals |
+|---------|------|--------------------------------|-------------------|-------------------|
+| `claude-acp-bridge` | `bridge` | `qualified` | Schegent runtime maintainers (`src/services/acp-runtime/bridges/`) | Maintained ACP v1 stdio bridge (`dist/acp-stdio-bridge.js` `1.0.0`) fronting `claude` `2.1.322` (`-p --output-format stream-json --verbose`). Credential-free local binary/handshake verified; live provider turns depend on operator credentials. |
+| `codex-acp-bridge` | `bridge` | `qualified` | Schegent runtime maintainers (`src/services/acp-runtime/bridges/`) | Maintained ACP v1 stdio bridge (`dist/acp-stdio-bridge.js` `1.0.0`) fronting `codex-cli` `0.163.0` (`exec --json` / `exec resume --json`). Preserves `codex` `--sandbox` flags and section 10 containment residuals. |
+| `agy-acp-native` | `native` | `qualified` | Schegent runtime maintainers (`src/services/acp-runtime/profiles.ts`) | Native `agy acp --stdio --disable-telemetry` (`agy` `1.5.5`, `Antigravity ACP Server` protocol v1, `loadSession: true`, `embeddedContext: true`). Credential-free handshake verified on `darwin/arm64`. |
+| Fixture agent | `native` / `bridge` | `fixture` | Host test suite | Deterministic fixtures only (`tests/fixtures/acp/`); never opened in production (`allowFixtureProfiles` omitted). |
 
-A profile moves to `qualified` only through F13-B's qualification run. Retiring a direct-CLI
-transport is F13-C.
-
-## Deferred
-
-- **F13-B**: qualifying a real agent profile.
-- **F13-C**: production dispatch over ACP, durable records in the F04 stores, and retiring the
-  direct-CLI transports. It follows the F01-B cutover.
-- **FR-021**: legacy configuration cutover. Nothing is migrated, and no legacy session id is
-  converted.
-- **F15**: delivery of the accepted context envelope.
-- A settings surface for configuring profiles.
+Unverified platforms (`linux/*`, `win32/*`, `darwin/x64`) resolve `acpQualificationForPlatform` to
+`unqualified`, causing `openAcpConnection` to refuse with `profile-unqualified` prior to process
+launch without falling back to legacy direct-CLI dispatch.

@@ -7,7 +7,7 @@
  */
 
 export const SQLITE_STORE_CONTRACT_VERSION = 1 as const;
-export const SQLITE_SCHEMA_CURRENT_VERSION = 7 as const;
+export const SQLITE_SCHEMA_CURRENT_VERSION = 8 as const;
 /** STRICT tables created by migration 1 (F04); later migrations add to this. */
 export const F04_INITIAL_STRICT_TABLE_COUNT = 78 as const;
 export const SQLITE_MIN_SUPPORTED_ENGINE_VERSION = '3.51.3' as const;

@@ -28,9 +28,12 @@ const moduleGraph = {
 };
 
 const extensionConfig = {
-  entryPoints: ['src/extension.ts'],
+  entryPoints: {
+    extension: 'src/extension.ts',
+    'acp-stdio-bridge': 'src/services/acp-runtime/bridges/acp-stdio-bridge-main.ts'
+  },
   bundle: true,
-  outfile: 'dist/extension.js',
+  outdir: 'dist',
   format: 'cjs',
   platform: 'node',
   // FR-R3-059 (V-06 residual). Was `node20` while `engines.node` declares

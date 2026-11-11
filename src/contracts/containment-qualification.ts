@@ -98,6 +98,31 @@ export type AcceptanceOrigin = (typeof ACCEPTANCE_ORIGINS)[number];
 export const IDENTITY_STATES = Object.freeze(['observed', 'unverified', 'not-observed'] as const);
 export type IdentityState = (typeof IDENTITY_STATES)[number];
 
+/** Closed ACP transport qualification posture for F09-FR-01 / F09-FR-17. */
+export const ACP_CONTAINMENT_CHANNELS = Object.freeze([
+  'not-applicable',
+  'native-stdio-v1',
+  'bridge-stdio-v1',
+  'unqualified-acp'
+] as const);
+export type AcpContainmentChannel = (typeof ACP_CONTAINMENT_CHANNELS)[number];
+
+/** Closed ACP callback authorization refusal vocabulary (F09-FR-17, F09-AC-08). */
+export const ACP_AUTHORIZATION_REASONS = Object.freeze([
+  'authorized',
+  'workspace-untrusted',
+  'ownership-lost',
+  'session-attempt-mismatch',
+  'stale-connection-generation',
+  'effect-not-declared',
+  'protected-target-refused',
+  'outside-execution-root',
+  'duplicate-effect-request',
+  'turn-cancelling',
+  'policy-undecided'
+] as const);
+export type AcpAuthorizationReason = (typeof ACP_AUTHORIZATION_REASONS)[number];
+
 export const TEARDOWN_OUTCOMES = Object.freeze([
   'group-exit-confirmed',
   'residual',
@@ -143,9 +168,11 @@ export interface BackendIdentity {
   readonly arch: string;
   /** 64 hex characters: mode plus sorted allowlist names, never values. */
   readonly environmentPolicyDigest: string;
+  /** Optional ACP channel posture when qualifying an ACP profile (defaults to `'not-applicable'`). */
+  readonly acp?: AcpContainmentChannel;
 }
 
-/** The record key (FR-001). `acp` is reserved for F13 (FR-017). */
+/** The record key (FR-001). `acp` distinguishes direct CLI from ACP native/bridge profiles (FR-017). */
 export interface QualificationKey {
   readonly kind: BackendRunnerKind;
   /** `major.minor`, or `'unverified'`. */
@@ -159,7 +186,7 @@ export interface QualificationKey {
   readonly fingerprint: string;
   /** The sorted confirmed-flag names for the kind. */
   readonly capabilitySet: readonly string[];
-  readonly acp: 'not-applicable';
+  readonly acp: AcpContainmentChannel;
 }
 
 export interface EffectQualification {

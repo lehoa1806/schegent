@@ -471,3 +471,37 @@ A filtering claim is refused unless each of these cases was observed on the tupl
 Until all five are on record, an allow-list in a backend's configuration is not evidence: the
 `network` cell keeps the outcome section 10 gives it, and no outcome in the vocabulary means
 "filtered".
+
+## 13. ACP runtime profiles and callback authority (`FR-R6-F09` `FR-017`, `F09-AC-08`)
+
+New-architecture attempts execute through the ACP runtime (`src/services/acp-runtime/`) using three
+host-owned profiles qualified on `darwin/arm64` (`macOS arm64`; Linux, Windows, and remote hosts
+remain unverified and resolve to `unqualified` before spawn):
+
+- `agy-acp-native` (`native-stdio-v1`): invokes `agy acp --stdio --disable-telemetry` (`agy` 1.5.5
+  observed on `darwin/arm64`) under the host's process-group ladder and environment policy.
+- `claude-acp-bridge` (`bridge-stdio-v1`): invokes bundled `dist/acp-stdio-bridge.js` (`1.0.0`)
+  fronting `claude` (`2.1.322` observed on `darwin/arm64`), forwarding only host-resolved
+  capability flags and minimal `buildSpawnEnv` variables.
+- `codex-acp-bridge` (`bridge-stdio-v1`): invokes bundled `dist/acp-stdio-bridge.js` (`1.0.0`)
+  fronting `codex-cli` (`0.163.0` observed on `darwin/arm64`), preserving `--sandbox
+  workspace-write` (or `--sandbox read-only` when narrowed).
+
+ACP transport messages provide structured mediation points for risk reduction, not an OS sandbox
+around direct child tools. Therefore:
+
+1. Direct process access keeps the exact per-effect matrix recorded in section 10 (`QualificationKey.acp`
+   records `'native-stdio-v1'`, `'bridge-stdio-v1'`, `'unqualified-acp'`, or `'not-applicable'`).
+2. Host-side callback evaluation (`src/services/containment-qualification/acp-authority-gate.ts`)
+   rechecks workspace trust, window primacy / ownership generation, exact `acpSessionId` to
+   `attemptId` + `connectionGeneration` binding, declared Phase effects, duplicate effect keys, and
+   target path boundaries before allowing any permission, filesystem, or terminal callback.
+3. Callback paths targeting SQLite database/WAL/SHM files, `.schegent/` evidence directories, or
+   credential files are refused unless explicitly listed in the attempt's accepted F15 upstream
+   read-only input set or declared output set. Bounded decision provenance (`acp_authorization_receipts`)
+   stores closed reason codes only, never raw tool arguments, paths, or secret values.
+4. Protocol cancellation (`session/cancel`) is paired with `verifyAcpTransportTeardown`: a
+   successful protocol response never conceals surviving helper processes in the OS process group.
+
+<!-- Source: src/services/containment-qualification/acp-authority-gate.ts -->
+<!-- Source: src/services/acp-runtime/profiles.ts -->
