@@ -155,3 +155,4 @@ export * from './domain-adapters/usage-log-recovery-adapters';
 export * from './domain-adapters/reporting-telemetry-adapters';
 export * from './domain-adapters/agent-runtime-adapter';
 export * from './domain-adapters/handoff-review-adapter';
+export * from './sqlite-catalog-store';

@@ -44,6 +44,8 @@ export interface ReadMetricsOptions {
 
 const ARCHIVE_PREFIX = 'audit.log.';
 const ARCHIVE_STAMP_RE = /^\d{8}-\d{6}(?:-\d{3}-[0-9a-f]{8})?$/;
+export const METRICS_SCAN_CORPUS_MAX_ENTRIES = 2_048;
+export const METRICS_WORKSPACE_CACHES_MAX = 8;
 
 interface PhaseGroup {
   readonly runId: string;
@@ -115,6 +117,10 @@ export async function readMetrics(
 
   for (const file of files) {
     offsets.set(file, await scanFile(file, state, logger, offsets.get(file) ?? 0));
+  }
+  if (!metricsCache.has(cacheKey) && metricsCache.size >= METRICS_WORKSPACE_CACHES_MAX) {
+    const oldestKey = metricsCache.keys().next().value;
+    if (oldestKey !== undefined) metricsCache.delete(oldestKey);
   }
   metricsCache.set(cacheKey, { files: [...files], offsets, state });
 
@@ -350,6 +356,10 @@ function pushTo(map: Map<string, AuditEntry[]>, key: string, entry: AuditEntry):
   if (list) {
     list.push(entry);
   } else {
+    if (map.size >= METRICS_SCAN_CORPUS_MAX_ENTRIES) {
+      const oldest = map.keys().next().value;
+      if (oldest !== undefined) map.delete(oldest);
+    }
     map.set(key, [entry]);
   }
 }
@@ -370,6 +380,10 @@ function getOrCreatePhaseGroup(
   const key = JSON.stringify([runId, phaseType, iteration]);
   let group = state.phaseGroups.get(key);
   if (!group) {
+    if (state.phaseGroups.size >= METRICS_SCAN_CORPUS_MAX_ENTRIES) {
+      const oldest = state.phaseGroups.keys().next().value;
+      if (oldest !== undefined) state.phaseGroups.delete(oldest);
+    }
     group = {
       runId,
       phaseType: truncateForDisplay(phaseType),

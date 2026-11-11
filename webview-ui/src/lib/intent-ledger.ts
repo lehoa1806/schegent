@@ -26,7 +26,7 @@
 // `postCommand(CMD_…)` stays in the module that holds it today (hard rules 11 and 30), and a
 // destructive post stays inside its `useConfirm` block.
 
-import { ACK_RETENTION_MS } from '../../../src/contracts/ack-retention';
+import { ACK_RETENTION_MAX_ENTRIES, ACK_RETENTION_MS } from '../../../src/contracts/ack-retention';
 import type { CommandType } from './messages';
 import { snapshotStore } from './snapshot-store.svelte';
 import type { AckResult } from './snapshot-store.svelte';
@@ -217,6 +217,10 @@ export function sendIntent<P>(request: SendIntentRequest<P>): Promise<IntentResu
   let entry = entries.get(key);
   const isNew = entry === undefined;
   if (entry === undefined) {
+    if (entries.size >= ACK_RETENTION_MAX_ENTRIES) {
+      const oldest = entries.values().next().value;
+      if (oldest !== undefined) discard(oldest);
+    }
     const correlationId = uuidv4();
     const created: IntentEntry = {
       key,

@@ -206,6 +206,8 @@ function defaultRootBudget(): RootControlBudget {
   });
 }
 
+export const ADMISSION_CONSUMED_TOKENS_MAX = 4_096;
+
 export class ControlAttemptAdmissionService implements ControlAdmissionPort {
   private readonly store: ControlLedgerStore;
   private readonly clock: ControlClockPort;
@@ -647,6 +649,10 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
         : {})
     });
 
+    if (this.unconsumedTokens.size >= ADMISSION_CONSUMED_TOKENS_MAX) {
+      const oldest = this.unconsumedTokens.keys().next().value;
+      if (oldest !== undefined) this.unconsumedTokens.delete(oldest);
+    }
     this.unconsumedTokens.set(tokenId, token);
     return {
       ok: true,
@@ -1016,6 +1022,10 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
     }
 
     this.unconsumedTokens.delete(token.tokenId);
+    if (this.consumedTokenIds.size >= ADMISSION_CONSUMED_TOKENS_MAX) {
+      const oldest = this.consumedTokenIds.values().next().value;
+      if (oldest !== undefined) this.consumedTokenIds.delete(oldest);
+    }
     this.consumedTokenIds.add(token.tokenId);
 
     return {
@@ -1791,6 +1801,14 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
         ? { pauseCause: mutated.result.pauseCause }
         : {})
     };
+  }
+
+  public pruneRootTokens(ledgerRunId: string): void {
+    for (const [tokenId, token] of this.unconsumedTokens.entries()) {
+      if (token.ledgerRunId === ledgerRunId) {
+        this.unconsumedTokens.delete(tokenId);
+      }
+    }
   }
 }
 

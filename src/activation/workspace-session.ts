@@ -9,6 +9,7 @@ import * as vscode from 'vscode';
 
 import { CatalogSession } from './catalog-loading';
 import { createHostCatalogStore, createHostCatalogLifecycle } from './catalog-store-wiring';
+import { registerCatalogFsForStore, registerWorkspaceLockForStore } from './sqlite-cutover-wiring';
 import type { CatalogConfigReader } from '../config/pipeline-config-loader';
 import { createCatalogReader } from './catalog-settings-wiring';
 import { nodeDigest } from './catalog-store-wiring';
@@ -131,7 +132,8 @@ const catalogStore = createHostCatalogStore(
   () => retainedHistoryPlans(getHistoryStore().list()),
   logger,
   // Feature 254 (FR-038, TA7): the claim on this catalog directory is released with the rest of Stage 2.
-  disposables
+  disposables,
+  (switchableFs) => registerCatalogFsForStore(store, switchableFs)
 );
 // Feature 099 (T493b, T496f, FR-027a, FR-042) — the store is read once, here,
 // before anything is composed, and the session owns that snapshot together with
@@ -171,6 +173,7 @@ store.useOwnershipStorage(createDiskOwnershipFs({ workspaceRoot, ownershipDir },
 // FR-R4-F01 (FR-033) — the logger is how a release that did not go is said; the clock and the
 // scheduler are the manager's own defaults, passed positionally to reach it.
 const lock = new WorkspaceLockManager(store, ownerId, systemClock, systemScheduler, logger);
+registerWorkspaceLockForStore(store, lock, disposables);
 // Feature 092 (T049, FR-031) — the execution half of the lock split. Same
 // owner id as the workspace lock so a crash strands both together, but a
 // separate manager over a separate key: holding a queue's execution lease

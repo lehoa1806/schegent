@@ -18,41 +18,13 @@
 import { createHash } from 'node:crypto';
 import { SQLITE_SCHEMA_CURRENT_VERSION } from '../../contracts/sqlite-store/schema-types';
 import type { NodeSqliteConnection } from './sqlite-driver';
-import {
-  F05_LIFECYCLE_DDL,
-  F05_LIFECYCLE_MIGRATION_NAME,
-  F05_LIFECYCLE_MIGRATION_VERSION
-} from '../artifact-lifecycle/lifecycle-schema';
-import {
-  F06_ACCOUNTING_DDL,
-  F06_ACCOUNTING_MIGRATION_NAME,
-  F06_ACCOUNTING_MIGRATION_VERSION
-} from '../usage-accounting/accounting-schema';
-import {
-  F07_LIVE_LOG_DDL,
-  F07_LIVE_LOG_MIGRATION_NAME,
-  F07_LIVE_LOG_MIGRATION_VERSION
-} from '../phase-log/live-log-index-schema';
-import {
-  F08_HANDOFF_DDL,
-  F08_HANDOFF_MIGRATION_NAME,
-  F08_HANDOFF_MIGRATION_VERSION
-} from '../recovery-handoff/handoff-schema';
-import {
-  F10_LANES_DDL,
-  F10_LANES_MIGRATION_NAME,
-  F10_LANES_MIGRATION_VERSION
-} from '../execution-lanes/lane-schema';
-import {
-  F11_REPORTING_DDL,
-  F11_REPORTING_MIGRATION_NAME,
-  F11_REPORTING_MIGRATION_VERSION
-} from '../reporting/reporting-schema';
-import {
-  R6_INTEGRATION_DDL,
-  R6_INTEGRATION_MIGRATION_NAME,
-  R6_INTEGRATION_MIGRATION_VERSION
-} from './round6-integration-schema';
+import { F05_LIFECYCLE_DDL, F05_LIFECYCLE_MIGRATION_NAME, F05_LIFECYCLE_MIGRATION_VERSION } from '../artifact-lifecycle/lifecycle-schema';
+import { F06_ACCOUNTING_DDL, F06_ACCOUNTING_MIGRATION_NAME, F06_ACCOUNTING_MIGRATION_VERSION } from '../usage-accounting/accounting-schema';
+import { F07_LIVE_LOG_DDL, F07_LIVE_LOG_MIGRATION_NAME, F07_LIVE_LOG_MIGRATION_VERSION } from '../phase-log/live-log-index-schema';
+import { F08_HANDOFF_DDL, F08_HANDOFF_MIGRATION_NAME, F08_HANDOFF_MIGRATION_VERSION } from '../recovery-handoff/handoff-schema';
+import { F10_LANES_DDL, F10_LANES_MIGRATION_NAME, F10_LANES_MIGRATION_VERSION } from '../execution-lanes/lane-schema';
+import { F11_REPORTING_DDL, F11_REPORTING_MIGRATION_NAME, F11_REPORTING_MIGRATION_VERSION } from '../reporting/reporting-schema';
+import { R6_INTEGRATION_DDL, R6_INTEGRATION_MIGRATION_NAME, R6_INTEGRATION_MIGRATION_VERSION } from './round6-integration-schema';
 
 export interface SchemaMigrationDefinition {
   readonly version: number;

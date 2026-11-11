@@ -2,8 +2,13 @@ import type { BackendRunner, MonitorSidecarHook } from '../contracts/backend-run
 import { ClaudeCliRunner } from './claude-cli';
 import { CodexCliRunner } from './codex-cli';
 import { AgyCliRunner } from './agy-cli';
+import {
+  AcpBackedRunner,
+  type AcpRunnerObservationEvent
+} from './acp-backed-runner';
 import { SpawnGatedRunner } from './spawn-gated-runner';
 import type { SpawnGate } from '../contracts/containment-qualification';
+import type { AcpAuthorityGate } from '../services/containment-qualification/acp-authority-gate';
 import { SanitizedLogger } from '../lib/logger';
 import {
   ALLOW_UNCONTAINED_SETTING,
@@ -96,6 +101,22 @@ export interface BackendRunnerFactoryOptions {
    * before its child is started (`SpawnGatedRunner`). Construction is unchanged.
    */
   readonly spawnGate?: SpawnGate;
+  /**
+   * FR-R6-F13 (F13-C; FR-001, FR-021) -- when present and `enabled: true`, wraps the constructed
+   * runner in `AcpBackedRunner` so all post-cutover invocations run over ACP with `AcpAuthorityGate`
+   * and only pre-cutover in-flight legacy attempts (`legacyDrain: true`) drain through `inner`.
+   */
+  readonly acpDispatch?: {
+    readonly enabled: boolean;
+    readonly readConfiguredProfile?: () => string;
+    readonly allowLegacyDrain?: boolean;
+    readonly bridgeScriptPath?: string;
+    readonly authorityGate?: AcpAuthorityGate;
+    readonly primaryWorkspaceRoot?: string;
+    readonly protectedDatabasePaths?: readonly string[];
+    readonly currentOwnershipGeneration?: () => number;
+    readonly onAcpObservation?: (event: AcpRunnerObservationEvent) => void;
+  };
 }
 
 /**
@@ -152,7 +173,23 @@ export function createBackendRunner(
   kind: BackendRunnerKind,
   options: BackendRunnerFactoryOptions
 ): BackendRunner {
-  const runner = constructBackendRunner(kind, options);
+  const cliRunner = constructBackendRunner(kind, options);
+  const runner =
+    options.acpDispatch?.enabled === true
+      ? new AcpBackedRunner({
+          kind,
+          inner: cliRunner,
+          monitorHook: options.monitorHook ?? null,
+          readConfiguredProfile: options.acpDispatch.readConfiguredProfile,
+          allowLegacyDrain: options.acpDispatch.allowLegacyDrain,
+          bridgeScriptPath: options.acpDispatch.bridgeScriptPath,
+          authorityGate: options.acpDispatch.authorityGate,
+          primaryWorkspaceRoot: options.acpDispatch.primaryWorkspaceRoot,
+          protectedDatabasePaths: options.acpDispatch.protectedDatabasePaths,
+          currentOwnershipGeneration: options.acpDispatch.currentOwnershipGeneration,
+          onAcpObservation: options.acpDispatch.onAcpObservation
+        })
+      : cliRunner;
   return options.spawnGate === undefined ? runner : new SpawnGatedRunner(kind, runner, options.spawnGate);
 }
 

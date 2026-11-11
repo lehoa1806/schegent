@@ -53,6 +53,10 @@ import {
 } from '../services/workflow-execution/production-workflow-composition';
 import type { DurableAttemptEvidenceResult } from '../services/workflow-execution/workflow-recovery-service';
 import { createBackendAvailabilityWiring } from './backend-wiring';
+import {
+  createSqliteCutoverCoordinator,
+  getWorkspaceLockForStore
+} from './sqlite-cutover-wiring';
 import type { BackendCapabilityService } from '../services/backend-capability-service';
 import { isWorkflowNodeTerminalStatus } from '../contracts/workflow-definitions';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
@@ -125,6 +129,7 @@ export async function createRunSafetyWiring(input: {
         // whether a terminal transition completes.
         try {
           usageAccounting.onTerminalRun({ runId: run.id, status: run.status, endedAtMs: run.lastTransitionAt });
+          sqliteCutover?.onTerminalRun({ runId: run.id, status: run.status, endedAtMs: run.lastTransitionAt });
         } catch {
           // The wiring does not throw; this guard keeps that true if it ever did.
         }
@@ -159,8 +164,9 @@ export async function createRunSafetyWiring(input: {
     boundGuardedRun = guardedRun;
     boundDefaultRunnerKind = defaultRunnerKind;
   };
-  const runComposableWorkflowRecovery = (): Promise<void> =>
-    reconcileComposableWorkflowRuns({
+  const runComposableWorkflowRecovery = async (): Promise<void> => {
+    await sqliteCutover?.activatePrimary();
+    await reconcileComposableWorkflowRuns({
       workspaceRoot: input.workspaceRoot,
       store: input.store,
       historyStore: input.historyStore,
@@ -168,7 +174,9 @@ export async function createRunSafetyWiring(input: {
       getGuardedRun: () => boundGuardedRun,
       getDefaultRunnerKind: () => boundDefaultRunnerKind
     });
+  };
   const replayTerminalTransitions = async (selfOwnerId?: string): Promise<void> => {
+    await sqliteCutover?.activatePrimary();
     await terminalTransitions.replay(selfOwnerId);
     await runComposableWorkflowRecovery();
   };
@@ -303,6 +311,28 @@ export async function createRunSafetyWiring(input: {
   // those names are run ids the checkpoint service wrote when the runs they
   // belong to were persisted. The influence is real and one step longer than the
   // old sentence claimed.
+  const checkpoints = new RunCheckpointService(
+    input.context.globalStorageUri.fsPath,
+    input.workspaceRoot,
+    input.logger,
+    () => inFlightRuns().length,
+    mutationLedger
+  );
+  const lockRegistration = getWorkspaceLockForStore(input.store);
+  const sqliteCutover = lockRegistration
+    ? createSqliteCutoverCoordinator({
+        context: input.context,
+        workspaceRoot: input.workspaceRoot,
+        store: input.store,
+        auditWriter: input.auditWriter,
+        envelopes: checkpoints,
+        pinnedRunIds: input.protectedSessionRunIds,
+        logger: input.logger,
+        isWorkspaceTrusted: () => vscode.workspace.isTrusted,
+        hasPrimacy: () => lockRegistration.lock.hasPrimacy(),
+        disposables: lockRegistration.disposables
+      })
+    : undefined;
   const sweepCheckpointRetention = (): Promise<unknown> => checkpointRetention.sweep();
   return {
     terminalTransitions,
@@ -313,13 +343,7 @@ export async function createRunSafetyWiring(input: {
     reconcileComposableWorkflowRuns: runComposableWorkflowRecovery,
     sweepCheckpointRetention,
     bindGuardedRun,
-    checkpoints: new RunCheckpointService(
-      input.context.globalStorageUri.fsPath,
-      input.workspaceRoot,
-      input.logger,
-      () => inFlightRuns().length,
-      mutationLedger
-    ),
+    checkpoints,
     // Feature 098 (SEC-02) — a real, awaited approve/cancel decision bound to
     // the mutation fingerprint. `showWarningMessage` with `modal: true` adds
     // its own Cancel button and resolves `undefined` on dismissal, so the only

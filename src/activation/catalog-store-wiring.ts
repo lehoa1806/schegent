@@ -32,6 +32,10 @@ import {
 import { createDefinitionSemantics } from '../config/definition-semantics';
 import { CATALOG_DIRECTORY_SEGMENTS, createCatalogFsAdapter } from '../host-services/catalog-fs-adapter';
 import type { SanitizedLogger } from '../lib/logger';
+import {
+  createSwitchableCatalogFsAdapter,
+  type SwitchableCatalogFsAdapter
+} from '../services/sqlite-store';
 import { getCanonicalWorkspaceRoot } from '../state/workspace-folder-picker';
 
 /** Epoch milliseconds, the store's one time representation (FR-021a). */
@@ -108,13 +112,19 @@ export function createHostCatalogStore(
   enumeratePlans: () => Iterable<RunVersionCarrier> = () => [],
   enumerateRetained: () => Iterable<RunVersionCarrier> = () => [],
   logger?: Pick<SanitizedLogger, 'warn'>,
-  disposables?: vscode.Disposable[]
+  disposables?: vscode.Disposable[],
+  onSwitchableFs?: (fs: SwitchableCatalogFsAdapter) => void
 ): CatalogStore | null {
   if (!isCatalogActivationTrusted()) return null;
   const anchor = catalogStoreAnchor();
   if (anchor !== null && !claimStoreRoot(anchor.storeRoot, logger, disposables)) return null;
+  const switchableFs = createSwitchableCatalogFsAdapter(
+    createCatalogFsAdapter(anchor, logger),
+    () => anchor !== null
+  );
+  onSwitchableFs?.(switchableFs);
   return createCatalogStore({
-    fs: createCatalogFsAdapter(anchor, logger),
+    fs: switchableFs,
     clock: systemClock,
     digest: nodeDigest,
     provenance: createQueueRunProvenance(enumeratePlans, enumerateRetained)

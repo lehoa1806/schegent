@@ -50,24 +50,12 @@ import type {
   PhaseAttemptDispatchInput,
   PhaseAttemptDispatchResult
 } from './connected-run-coordinator';
-import {
-  ControlAttemptAdmissionService,
-  type ControlAttemptAdmissionDeps
-} from './control-attempt-admission';
-import {
-  ControlCommandService,
-  type ControlCommandServiceDeps
-} from './control-command-service';
-import {
-  ControlLedgerStore,
-  type ControlLedgerBackingStore
-} from './control-ledger-store';
+import { ControlAttemptAdmissionService, type ControlAttemptAdmissionDeps } from './control-attempt-admission';
+import { ControlCommandService, type ControlCommandServiceDeps } from './control-command-service';
+import { ControlLedgerStore, type ControlLedgerBackingStore } from './control-ledger-store';
 import { ControlNotificationService } from './control-notification-service';
 import { ControlUsageAccountingService } from './control-usage-accounting';
-import {
-  ControlWakeupPlanner,
-  type ControlWakeupEvent
-} from './control-wakeup-planner';
+import { ControlWakeupPlanner, type ControlWakeupEvent } from './control-wakeup-planner';
 import {
   createCutoverAuthorityGuard,
   createDefaultDurableArtifactHandoverSeam,
@@ -106,6 +94,8 @@ import {
 export {
   createCutoverAuthorityGuard,
   createDefaultDurableArtifactHandoverSeam,
+  createWorkflowRefusalOutcome,
+  defaultCapabilityAssessment,
   isLiveProviderQualified,
   type BackendCapabilityAssessment,
   type BackendCapabilityName,
@@ -957,6 +947,13 @@ export function createProductionWorkflowComposition(
 }
 
 const compositionCacheByStore = new WeakMap<object, ProductionWorkflowComposition>();
+
+export function registerProductionWorkflowComposition(
+  storeKey: object,
+  composition: ProductionWorkflowComposition
+): void {
+  compositionCacheByStore.set(storeKey, composition);
+}
 
 export function getOrCreateProductionWorkflowComposition(
   storeKey: object,

@@ -167,7 +167,9 @@ const HARD_RULE_ANCHORS: ReadonlyArray<string> = [
   'composable workflow yaml preflight (`planworkflowpackageimport`)',
   "`kind: pipeline`\n  is refused with `unsupported-kind`",
   're-inspecting the same document plans landed drafts as `skip`',
-  "`process_yaml_resource_kinds` is narrowed to\n  `['phase', 'workflow', 'modelcatalog']`"
+  "`process_yaml_resource_kinds` is narrowed to\n  `['phase', 'workflow', 'modelcatalog']`",
+  // Feature 303 (FR-R6-F04) — SQLite operational store cutover amendment to rule 58.
+  'commits through the single serialized `sqliteoperationalbacking`'
 ];
 
 /** The authoritative file — the only one that carries the rule set. */

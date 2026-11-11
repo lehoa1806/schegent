@@ -46,8 +46,11 @@ import { HistoryEvidenceService } from '../services/history/history-evidence-ser
 import { AuditPointerResolver } from '../services/history/audit-pointer-resolver';
 import { HistoryDescriptionStore } from '../services/history/history-description-store';
 import { createFailureRecordAnswerer } from '../services/failure-record/failure-record-service';
-import { createStorageDetailsReader } from '../headless/artifact-lifecycle-api';
-import { createUsageAccountingReader } from '../headless/usage-accounting-api';
+import {
+  createDynamicStorageDetailsReader,
+  createDynamicUsageAccountingReader,
+  getSqliteCutoverCoordinator
+} from './sqlite-cutover-wiring';
 import { normalizedPolicy } from '../services/session-retention/session-artifact-retention-service';
 import { resolveHistoryDescription } from '../services/history/history-description-resolver';
 import {
@@ -471,12 +474,12 @@ export function createSidebarRouter(deps: SidebarRouterWiringDeps): MessageRoute
       }
     },
     readFailureRecord: (request) => failureRecordAnswerer.answer(request),
-    // FR-R6-F05 — no application store is constructed in production until the F01-B cutover, so
-    // the reader answers `unavailable`; the cutover passes the lifecycle service here.
-    storageDetails: createStorageDetailsReader(null),
-    // FR-R6-F06 — no accounting store exists in production until the F01-B cutover; the reader
-    // answers `store-unavailable` until the cutover passes the accounting service here.
-    usageAccounting: createUsageAccountingReader(null),
+    storageDetails: createDynamicStorageDetailsReader(
+      () => getSqliteCutoverCoordinator(store)?.getArtifactLifecycle() ?? null
+    ),
+    usageAccounting: createDynamicUsageAccountingReader(
+      () => getSqliteCutoverCoordinator(store)?.getUsageAccounting() ?? null
+    ),
     openDecisionRecord: (request) => decisionRecord.opener.open(request.rowId),
     // Feature 073 — existing session-scoped correlation id, reused (not
     // newly minted) for the metrics-view-opened audit payload
