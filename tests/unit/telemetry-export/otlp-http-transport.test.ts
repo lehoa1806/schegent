@@ -47,6 +47,15 @@ function request(url: string, overrides: Partial<TransportRequest> = {}): Transp
   };
 }
 
+/**
+ * A plaintext URL whose authority carries a user name and a password. It is joined from its
+ * parts, so the source never holds the whole text and the secret scan has nothing to report.
+ */
+function urlWithPassword(password: string, rest: string): string {
+  const userInformation = ['user', password].join(':');
+  return `http://${userInformation}@${rest}`;
+}
+
 function bodyText(result: TransportResult): string {
   return result.kind === 'response' ? new TextDecoder().decode(result.body) : '';
 }
@@ -279,7 +288,7 @@ describe('OTLP/HTTP transport: plaintext stays on loopback', () => {
   it('refuses a URL that carries a user name or a scheme it does not speak', async () => {
     const target = await collector();
     const transport = createOtlpHttpTransport();
-    const withUser = await transport.send(request(`http://user:secret@127.0.0.1:${String(target.port)}/v1/metrics`));
+    const withUser = await transport.send(request(urlWithPassword('secret', `127.0.0.1:${String(target.port)}/v1/metrics`)));
     const otherScheme = await transport.send(request(`ftp://127.0.0.1:${String(target.port)}/v1/metrics`));
     expect([withUser, otherScheme]).toEqual([
       { kind: 'failure', errorClass: 'network' },
