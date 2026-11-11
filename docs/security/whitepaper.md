@@ -19,7 +19,7 @@ The deployed product is local: one extension-host bundle, two local webviews, VS
 <!-- Source: src/extension.ts -->
 <!-- Source: src/ui/sidebar/csp.ts -->
 
-The host itself has no application network client in the request path described here. Backend CLIs can make their own network requests under their own implementation and environment; local-first is therefore not an offline-execution promise.
+The host itself has no application network client in the request path described here. The optional telemetry exporter (`FR-R6-F14`) is the one network client in host source; nothing constructs it in this release, and when wired it sends usage and duration metadata only, to a destination a user-scope profile names ([telemetry export](../operations/telemetry-export.md)). Backend CLIs can make their own network requests under their own implementation and environment; local-first is therefore not an offline-execution promise.
 
 <!-- Source: src/runner/claude-cli.ts -->
 <!-- Source: src/runner/codex-cli.ts -->
