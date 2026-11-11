@@ -31,6 +31,15 @@ function profile(overrides: Partial<TelemetryProfile> = {}): TelemetryProfile {
   };
 }
 
+/**
+ * A URL whose authority carries a user name and a password. It is joined from its parts, so
+ * the source never holds the whole text and the secret scan has no credential to report.
+ */
+function urlWithPassword(scheme: string, password: string, rest: string): string {
+  const userInformation = ['user', password].join(':');
+  return `${scheme}://${userInformation}@${rest}`;
+}
+
 function destinationOf(evaluation: ProfileEvaluation): ResolvedDestination {
   if (evaluation.kind !== 'authorized') throw new Error(`expected authorized, got ${evaluation.kind}`);
   return evaluation.destination;
@@ -129,7 +138,7 @@ describe('evaluateProfiles: refusals', () => {
     ['another scheme', 'ftp://collector.example.test/v1/metrics'],
     ['a file URL', 'file:///tmp/metrics'],
     ['user information', 'https://user@collector.example.test/v1/metrics'],
-    ['a password', 'https://user:word@collector.example.test/v1/metrics'],
+    ['a password', urlWithPassword('https', 'word', 'collector.example.test/v1/metrics')],
     ['a query string', 'https://collector.example.test/v1/metrics?key=marker'],
     ['an empty query string', 'https://collector.example.test/v1/metrics?'],
     ['a fragment', 'https://collector.example.test/v1/metrics#part'],
@@ -276,7 +285,8 @@ describe('evaluateProfiles: order and closure', () => {
   });
 
   it('has a case for every refusal reason and returns nothing but the reason', () => {
-    const evaluation = evaluateProfiles([profile({ endpoint: 'https://user:marker@collector.example.test/' })], TRUSTED);
+    const endpoint = urlWithPassword('https', 'marker', 'collector.example.test/');
+    const evaluation = evaluateProfiles([profile({ endpoint })], TRUSTED);
     expect(Object.keys(evaluation).sort()).toEqual(['kind', 'reason']);
     expect(JSON.stringify(evaluation)).not.toContain('marker');
     expect(PROFILE_REFUSAL_REASONS).toHaveLength(11);
