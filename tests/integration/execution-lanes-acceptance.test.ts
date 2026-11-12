@@ -119,7 +119,12 @@ function openHost(options: HostOptions): Host {
     GIT_CONFIG_NOSYSTEM: '1'
   };
   const real = createExecFileGitRunner({ baseEnv: gitEnv });
-  const spawnCheck = createSpawnCheck({ baseEnv: { ...process.env, [SENTINEL_NAME]: SENTINEL } });
+  // GC-15: a check's environment follows the process-environment policy. The seeded name is
+  // allowlisted, so the checks still see the value whose absence from every record is scanned.
+  const spawnCheck = createSpawnCheck({
+    baseEnv: { ...process.env, [SENTINEL_NAME]: SENTINEL },
+    environmentPolicy: () => ({ mode: 'allowlist', inheritProcessEnv: true, processEnvAllowlist: [SENTINEL_NAME] })
+  });
   const depsFor = (connection: NodeSqliteConnection, wrap: GitWrapper | undefined): LaneServiceDeps => ({
     connection,
     workspaceRoot: options.workspaceRoot?.(fixture) ?? fixture.root,
