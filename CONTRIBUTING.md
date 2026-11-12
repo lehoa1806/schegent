@@ -13,6 +13,8 @@ Four steps, in this order:
    (one directory above this checkout; named here, not linked, because a standalone clone does not
    have it) and read the rows of its index that your change touches. In a standalone clone, obtain
    the planning envelope rather than guess at a rule.
+   The planning envelope is the Schegent workspace repository that holds this checkout as its
+   `repo/` directory; cloning this repository alone does not bring it.
 4. **Run `npm run gate`.** It is the full local verification. Nothing on the remote checks a pull request.
 
 Two checks keep the pointers honest: `tests/lint/agents-rule-index.test.ts` re-derives the index, and

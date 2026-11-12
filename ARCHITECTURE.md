@@ -135,7 +135,7 @@ table is an ownership map, not permission for cross-layer shortcuts.
 | `src/config/` | Settings schemas, effective catalog projections, Pipeline snapshots, and definition validators. |
 | `src/contracts/` | Shared host/webview, runner, state, audit, and catalog types plus validators. |
 | `src/controller/` | Run and Phase orchestration, retries, pause/resume controls, and terminal transitions. |
-| `src/headless/` | VS Code-independent headless adapters over process and run services: internal module boundaries for parity tests and non-editor callers. Nothing is published from them. |
+| `src/headless/` | VS Code-independent facades over process, run and Round 6 services. They began as seams for parity tests and non-editor callers, and they are now also production facades: `src/activation/sqlite-cutover-wiring.ts` and `src/activation/round6-visibility-wiring.ts` import them, and `src/ui/sidebar/commands/` imports their types and the usage-accounting query. Nothing is published from them. |
 | `src/host-services/` | The catalog filesystem adapter, on the checked `safe-open` path. Not a general host facade: every other host facility is constructed where it is used. |
 | `src/lib/` | Cross-cutting redaction, path-safety, runtime-log, and small utility modules. |
 | `src/metrics/` | Read-only derivation of task, phase, cost, and coverage metrics from retained evidence. |
@@ -143,13 +143,57 @@ table is an ownership map, not permission for cross-layer shortcuts.
 | `src/parser/` | Backend output, audit line, usage, reset-time, rate-limit, and error parsing. |
 | `src/queue/` | Queue registry, task lifecycle, admission capacity, ordering, and scheduling state. |
 | `src/runner/` | Backend-specific argv construction, spawn environment, prompt composition, and output collection. |
-| `src/services/` | Reusable application services for guarded starts, process YAML, checkpoints, retention, and projections. |
+| `src/services/` | Application services for guarded starts, process YAML, checkpoints, retention, and projections, plus the Round 6 stack (SQLite store, ACP runtime, lanes, reporting, telemetry export). The subdirectories are listed in the next table. |
 | `src/state/` | Workspace memento records, forward migrations, ownership leases, run history, and recovery journals. |
 | `src/telemetry/` | In-memory local process resource sampling and platform shims. |
 | `src/ui/` | Status bar, notifications, sidebar IPC, Dashboard bridge, HTML, CSP, and immutable view projections. |
 | `src/watchdog/` | Credit polling: `/status` classification, the per-Run 24-hour polling window, and the poll timer. |
 
 <!-- Source: src -->
+
+### Services subsystems
+
+`src/services/` holds many loose files for single-purpose services, and these
+subdirectories for larger subsystems. Features named `F<NN>` are Round 6 features.
+
+| Subdirectory | Purpose |
+|---|---|
+| `src/services/acp-runtime/` | Agent Client Protocol client: connection, stdio transport and bridge, built-in agent profiles, and the fail-closed permission policy (F13). |
+| `src/services/artifact-lifecycle/` | Artifact records, pins, availability, deletion plans, and preservation of legacy artifacts (F05). |
+| `src/services/change-review/` | Read-only review of the changes a Run made: diff inventory, comparison revisions, content handles, and the view-request gate (F12). |
+| `src/services/containment-qualification/` | Per-backend containment qualification, acceptance bindings, the spawn admission gate, and `AcpAuthorityGate` (F09). |
+| `src/services/decision-record/` | Opens a queue row's `decisions.md` through the root-bounded safe open for a read-only presenter. |
+| `src/services/diagnostics-bundle/` | Plans, collects and writes a redacted diagnostics bundle for one Run. |
+| `src/services/evidence-health/` | Tracks the health of each evidence sink (audit, transcript, runtime log, and others). |
+| `src/services/evidence-maintenance/` | Scheduled pass that runs the session retention sweep and the transport log pass. |
+| `src/services/execution-lanes/` | Isolated execution lanes: lane lifecycle, candidate freezing, the integration store and requests, and landing (F10). |
+| `src/services/failed-row-census/` | Read-only census of how each failed queue row was later resolved. |
+| `src/services/failure-record/` | Writes and retains the failure record for a failed Phase and builds the matching notice. |
+| `src/services/history/` | Resolves the audit pointer of a history entry and maintains history descriptions. |
+| `src/services/nested-repo-sync/` | Local transactional sync with compensating rollback across the workspace repository and `repo/`. |
+| `src/services/phase-context/` | Phase-context handoff: manifests, acceptance, delivery plans, review-loop history, and attempt result publication (F15). |
+| `src/services/phase-log/` | Phase log selection, display projection, and the live-log batcher, cursor and segment index (F07). |
+| `src/services/process-yaml/` | Import, export and preflight of Phase, Workflow and model-catalog YAML packages. |
+| `src/services/recovery-handoff/` | Recovery handoff envelopes, identity, pins, and settlement (F08). |
+| `src/services/reporting/` | Report engine, saved reports, and the CSV and export pipeline over the run store (F11). |
+| `src/services/run-output/` | Resolves and probes the declared outputs of a Run, with a per-check time bound. |
+| `src/services/run-request/` | Validates Run request inputs, output targets, and workspace containment. |
+| `src/services/runtime-resource-budgets/` | Bounded-window primitive, resource inventory, and pressure status (F03). |
+| `src/services/session-cleanup/` | Best-effort removal of a Run's session tree and raw transcript. |
+| `src/services/session-retention/` | Age and size retention sweep over session artifacts. |
+| `src/services/shared-memory-storage/` | Shared storage contract boundary: consumer projections, untrusted-workspace read-only guard, and cross-feature fixtures (F02). |
+| `src/services/sqlite-store/` | The `node:sqlite` operational store: driver, location resolver, schema and migrations, writer coordination, transaction units, backup and restore (F04). |
+| `src/services/telemetry-export/` | Optional OTLP/HTTP JSON metrics exporter: destination policy, mapping, batching, retry, and the transport (F14-A). |
+| `src/services/telemetry-host/` | Host side of export: SQLite-backed durable ledger, cardinality dictionary and private file spool (F14-B). |
+| `src/services/usage-accounting/` | Revisioned usage and cost ledger, corrections, and bounded aggregate reads (F06). |
+| `src/services/workflow-execution/` | Composable Workflow execution: binding resolution, condition evaluation, connected Runs, control ledger, and continuation. |
+
+<!-- Source: src/services/index.ts -->
+<!-- Source: src/services/sqlite-store/index.ts -->
+<!-- Source: src/services/acp-runtime/index.ts -->
+<!-- Source: src/services/execution-lanes/index.ts -->
+<!-- Source: src/services/telemetry-export/index.ts -->
+<!-- Source: src/services/usage-accounting -->
 
 ## Operator request boundary
 
@@ -582,7 +626,9 @@ verify Phase that ends the bugfix Workflow still pauses instead.
 The supported runner kinds are `claude`, `codex`, and `agy`; `claude` is the
 default. All adapters spawn with `shell: false`, receive prompts over stdin, use
 the shared environment builder, and return the common `BackendRunner` result.
-They do not have equal authority.
+They do not have equal authority. In a running extension these CLI adapters
+are wrapped by the ACP dispatch layer described below, which carries every new
+invocation; the CLI adapters are the inner runners behind it.
 
 Claude and Agy disable their CLI approval prompts and therefore act without
 asking through those CLIs. Codex runs non-interactively with an OS-enforced
@@ -644,6 +690,53 @@ that declares nothing emits neither.
 The limits — the host does not observe tool calls, and `agy` can express one of
 four — are stated in `docs/security/threat-model.md` beside what it does bound.
 
+**ACP dispatch (FR-R6-F13, FR-R6-F09).** `createBackendRunner` wraps the
+constructed CLI runner in `AcpBackedRunner` (`src/runner/acp-backed-runner.ts`)
+whenever its `acpDispatch.enabled` option is `true`. The activation wiring in
+`src/activation/acp-execution-wiring.ts` builds that option with `enabled: true`
+as a literal: ACP is the default execution path, and there is no setting that
+turns it off. `schegent.acp.profile` only selects the agent profile (`auto` maps
+`claude`, `codex` and `agy` to `claude-acp-bridge`, `codex-acp-bridge` and
+`agy-acp-native`); naming a profile that does not match the Run's backend refuses
+with `acp-profile-mismatch`. Profiles are host constants, and the setting is
+`application`-scoped so repository files cannot install one. For each invocation
+the runner opens one connection through `src/services/acp-runtime/`, which
+launches the agent over a stdio transport with `shell: false` in its own process
+group; for `claude` and `codex` the agent is the maintained bridge
+`dist/acp-stdio-bridge.js` wrapping the CLI. An ACP refusal, disconnect or error
+ends the attempt and never falls back to the CLI. The ACP result is not accepted
+as is: the host's own result validation still runs. The connection layout,
+limits and refusals are in `docs/operations/acp-runtime.md`.
+
+Authority over the agent's callbacks is the host's, not the agent's. The client
+advertises no filesystem and no terminal method, so the one agent-initiated
+request it answers is `session/request_permission`; any other is refused with
+`-32601`. `AcpAuthorityGate`
+(`src/services/containment-qualification/acp-authority-gate.ts`) binds each ACP
+session to one attempt and connection generation. On every permission request it
+re-checks workspace trust, window primacy and ownership generation, the Phase's
+declared capabilities and a replayed `toolCallId`. The runner also asks the gate
+to authorize each `file://` resource link before it goes into a prompt: the path
+must be inside the execution root and must not be a SQLite database or its WAL
+files, `.schegent/` or a credential file, unless a declared upstream input or
+output names it. The gate's decision type also covers filesystem and terminal
+kinds and a protected-database list, but no production caller supplies that list
+or a terminal request. Each decision is a bounded receipt without tool arguments
+or paths, kept in memory and, when a SQLite store is attached, inserted into
+`acp_authorization_receipts`. The permission policy the gate supplies answers
+with an `allow_once` option only when the gate allows the request; otherwise the
+policy answers `undecided` and the ACP client falls back to the agent's
+`reject_once` option, then `reject_always`, then `cancelled`. During cancellation
+every answer is `cancelled`. After a turn or a cancel the runner verifies that
+the agent's process group is gone.
+
+The legacy drain is the one path that bypasses ACP. An `InvocationRequest` with
+`legacyDrain: true`, honoured while `allowLegacyDrain` is not `false` (the
+wiring sets it `true`), is delegated to the inner CLI runner, so an attempt that
+was already in flight before the cutover can finish without a second live
+authority. No production source sets `legacyDrain` today, so every invocation
+that reaches the runner goes over ACP.
+
 **Local evidence controls (FR-R3-085).** `services/retention-disclosure.ts` derives
 the operator-facing retention document from the constants that enforce it;
 `services/evidence-export.ts` produces a manifest checked in both directions with
@@ -659,6 +752,10 @@ through the shared containment oracle and act on the resolved path.
 <!-- Source: src/services/retention-disclosure.ts -->
 <!-- Source: src/contracts/backend-kinds.ts -->
 <!-- Source: src/runner/backend-runner-factory.ts -->
+<!-- Source: src/runner/acp-backed-runner.ts -->
+<!-- Source: src/activation/acp-execution-wiring.ts -->
+<!-- Source: src/services/acp-runtime/permission-policy.ts -->
+<!-- Source: src/services/containment-qualification/acp-authority-gate.ts -->
 <!-- Source: src/runner/claude-cli.ts -->
 <!-- Source: src/runner/codex-cli.ts -->
 <!-- Source: src/runner/agy-cli.ts -->
@@ -669,10 +766,33 @@ through the shared containment oracle and act on the resolved path.
 ## Persistence and ownership
 
 Workspace-scoped durable files live below `.schegent/`; memento-backed state is
-owned by `WorkspaceStateStore`. The host writes whole addressed queue, Run, and
-history maps rather than partially mutating independently serialized fragments.
-Schema upgrades are forward-only. State written by a newer unsupported version
-is refused rather than guessed backward.
+owned by `WorkspaceStateStore`. Before the SQLite cutover below, the host writes
+whole addressed queue, Run, and history maps rather than partially mutating
+independently serialized fragments. Schema upgrades are forward-only. State
+written by a newer unsupported version is refused rather than guessed backward.
+
+**SQLite operational store (FR-R6-F04).** Structured operational state moves into
+an embedded `node:sqlite` database, `schegent-state.db`, at
+`<storage>/sqlite/<scope>/` in host storage, outside the workspace. `<storage>` is
+the window's `storageUri` (or `globalStorageUri` without one) and `<scope>` is a
+hash of the workspace root. `src/services/sqlite-store/` owns the driver, the
+trusted location resolver, schema bootstrap and migrations, the writer
+coordinator, the atomic transaction units, and backup and restore.
+`src/activation/sqlite-cutover-wiring.ts` wires it at activation; the store is
+opened for writing only in a trusted primary window, and any other window
+attaches a read-only snapshot at most.
+The cutover is staged and resumable: until its `publish-authority` stage
+completes, the legacy Memento and JSON copies stay authoritative. After it,
+`WorkspaceStateStore` delegates Run, Queue and related writes to
+`SqliteOperationalBacking`, which commits them as `BEGIN IMMEDIATE` transactions
+through one serialized writer with revision fencing, and direct writes to the
+legacy keys are refused (Hard Rule 58). The census in
+`src/contracts/sqlite-store/state-census.ts` classifies each state surface: 16 of
+20 are `sqlite-authoritative`; the audit log, content-addressed blobs and log
+segment bytes, and UI layout preferences are not. The store's pragma profile,
+write limits and migration stages are in
+`docs/operations/sqlite-application-store.md`; its schema version is in the
+Schema Versions table below.
 
 The workspace lock decides which VS Code window is authoritative for mutations.
 Its durable ownership record is filesystem-fenced and freshness-aware.
@@ -701,6 +821,10 @@ ceiling for catalog and sidebar mutations, with capability-specific decisions
 applied only below that ceiling.
 
 <!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/state/sqlite-operational-backing.ts -->
+<!-- Source: src/activation/sqlite-cutover-wiring.ts -->
+<!-- Source: src/services/sqlite-store/index.ts -->
+<!-- Source: src/contracts/sqlite-store/state-census.ts -->
 <!-- Source: src/state/lock.ts -->
 <!-- Source: src/state/ownership-registry.ts -->
 <!-- Source: src/state/execution-lease.ts -->
@@ -863,6 +987,7 @@ their constant rows.
 | Store | Constant | Current | Migrators |
 |---|---|---|---|
 | Workspace state | `STATE_SCHEMA_VERSION` | `15` | 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8, 8→9, 9→10, 10→11, 11→12, 12→13, 13→14, 14→15 (credit-pause default) |
+| SQLite operational store | `SQLITE_SCHEMA_CURRENT_VERSION` | `8` | Forward-only, additive migrations 1 to 8 applied by `schema-bootstrap.ts`; a database written by a newer schema is refused (`UNSUPPORTED_FUTURE_SCHEMA_VERSION`). |
 | Audit event envelope | `AUDIT_SCHEMA_VERSION` | `3` | Additive event types and payload fields retain the current envelope version; readers preserve unknown historical event types. |
 
 Workspace migration history includes the legacy Run lift, queue-registry lift,
@@ -872,6 +997,7 @@ pluralization, and the final collapse to one persisted pause answer. A downgrade
 migrator is intentionally absent.
 
 <!-- Source: src/contracts/state-schema.ts -->
+<!-- Source: src/contracts/sqlite-store/schema-types.ts -->
 <!-- Source: src/contracts/audit-events.ts -->
 <!-- Source: src/state/workflow-run-migrator.ts -->
 <!-- Source: src/state/queue-state-migrator.ts -->
