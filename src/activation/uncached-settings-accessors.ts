@@ -16,16 +16,32 @@
 
 import * as vscode from 'vscode';
 
+import { resolveRunLimit, type RunLimitKey } from '../config/tighten-only-limits';
+import {
+  resolveProcessEnvironmentPolicy,
+  type ProcessEnvironmentPolicy
+} from '../contracts/process-environment-policy';
 import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
 import type { EffectiveLimit } from '../contracts/snapshot-projections';
 import { normalizeMaxUnchangedComparisons } from '../contracts/unchanged-comparison-bound';
 import type { TelemetryUserSettingsInput } from '../services/telemetry-host/telemetry-host-service';
 import type { RawTranscriptMode } from '../state/workflow-run';
-import { originOf } from './workspace-settings';
 
 /** Every accessor re-reads the folder-scoped section; none of them holds it. */
 function section(workspaceRoot: string): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot));
+}
+
+/**
+ * Review gap GC-10 — a spend, retry or loop limit as the operator set it, tightened and never
+ * loosened by the repository's layers (`config/tighten-only-limits.ts`).
+ */
+function runLimit<K extends RunLimitKey>(
+  config: vscode.WorkspaceConfiguration,
+  key: K
+): Pick<ReturnType<typeof resolveRunLimit<K>>, 'value' | 'origin'> {
+  const { value, origin } = resolveRunLimit(key, config.inspect(key));
+  return { value, origin };
 }
 
 /**
@@ -42,11 +58,8 @@ export function readForceContinueOnRetryCap(workspaceRoot: string): boolean {
  * the runner acts on and the value the operator is shown come from one read of the setting.
  */
 export function readForceContinueOnRetryCapLimit(workspaceRoot: string): EffectiveLimit<boolean> {
-  const config = section(workspaceRoot);
-  return {
-    value: config.get<boolean>('retry.forceContinueOnCap', false) === true,
-    origin: originOf(config.inspect<boolean>('retry.forceContinueOnCap'))
-  };
+  const { value, origin } = runLimit(section(workspaceRoot), 'retry.forceContinueOnCap');
+  return { value: value === true, origin };
 }
 
 /**
@@ -56,11 +69,8 @@ export function readForceContinueOnRetryCapLimit(workspaceRoot: string): Effecti
  * the per-Run limits view calls this, so both read the setting the same way.
  */
 export function readMaxUnchangedComparisonsLimit(workspaceRoot: string): EffectiveLimit<number> {
-  const config = section(workspaceRoot);
-  return {
-    value: normalizeMaxUnchangedComparisons(config.get<number>('loop.maxUnchangedComparisons', 0)),
-    origin: originOf(config.inspect<number>('loop.maxUnchangedComparisons'))
-  };
+  const { value, origin } = runLimit(section(workspaceRoot), 'loop.maxUnchangedComparisons');
+  return { value: normalizeMaxUnchangedComparisons(value), origin };
 }
 
 /** The bound alone, for the controller's per-decision reader (S5.2). */
@@ -79,14 +89,8 @@ export function readSpendLimits(): {
 } {
   const config = vscode.workspace.getConfiguration('schegent');
   return {
-    limitUsd: {
-      value: config.get<number | null>('spend.maxUsdPerRun', null),
-      origin: originOf(config.inspect<number | null>('spend.maxUsdPerRun'))
-    },
-    limitTokens: {
-      value: config.get<number | null>('spend.maxTokensPerRun', null),
-      origin: originOf(config.inspect<number | null>('spend.maxTokensPerRun'))
-    }
+    limitUsd: runLimit(config, 'spend.maxUsdPerRun'),
+    limitTokens: runLimit(config, 'spend.maxTokensPerRun')
   };
 }
 
@@ -111,7 +115,7 @@ export function readQueueFailurePolicyDefault(workspaceRoot: string): QueueFailu
  * invariant are honest.
  */
 export function readRetryCap(workspaceRoot: string): number {
-  const value = section(workspaceRoot).get<number>('retry.maxAttempts', 5);
+  const { value } = runLimit(section(workspaceRoot), 'retry.maxAttempts');
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 5
     ? value
     : 5;
@@ -149,6 +153,23 @@ export function readTransportCaptureMode(workspaceRoot: string): unknown {
 export function readSessionRetentionMaxAgeDays(workspaceRoot: string): number {
   const value = section(workspaceRoot).get<number>('logging.sessionRetentionMaxAgeDays', 30);
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 30;
+}
+
+/**
+ * The child-process environment policy from `schegent.cli.*`. Activation reads it once for the
+ * agent's spawns (`workspace-settings.ts`); lane verification checks read it per check (review gap
+ * GC-15). The fallbacks mirror the manifest: an absent contribution must not restore full
+ * ambient-environment forwarding (Feature 098, PRIV-02).
+ */
+export function readProcessEnvironmentPolicy(
+  workspaceRoot: string,
+  config: vscode.WorkspaceConfiguration = section(workspaceRoot)
+): ProcessEnvironmentPolicy {
+  return resolveProcessEnvironmentPolicy({
+    inheritEnvironment: config.get<boolean>('cli.inheritEnvironment', true),
+    mode: config.get<unknown>('cli.environmentMode', 'allowlist'),
+    allowlist: config.get<unknown>('cli.environmentAllowlist', [])
+  });
 }
 
 /**

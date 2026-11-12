@@ -13,6 +13,8 @@ Four steps, in this order:
    (one directory above this checkout; named here, not linked, because a standalone clone does not
    have it) and read the rows of its index that your change touches. In a standalone clone, obtain
    the planning envelope rather than guess at a rule.
+   The planning envelope is the Schegent workspace repository that holds this checkout as its
+   `repo/` directory; cloning this repository alone does not bring it.
 4. **Run `npm run gate`.** It is the full local verification. Nothing on the remote checks a pull request.
 
 Two checks keep the pointers honest: `tests/lint/agents-rule-index.test.ts` re-derives the index, and
@@ -91,8 +93,10 @@ npm --prefix webview-ui ci
 
 **Two commands, and the second one is the point (FR-R3-090).** `.npmrc` in both trees sets
 `ignore-scripts=true`, so a plain `npm ci` does not run third-party lifecycle scripts. That disables
-the root `postinstall` which used to install `webview-ui`, which is why the second command exists —
-without it the first build fails, and it fails somewhere that does not mention installing.
+the root `postinstall` which used to install `webview-ui`, which is why the second command exists.
+Without it, `build:webview` stops at its first step, `scripts/check-webview-install.mjs`, with a
+message naming the command to run; before that check (review gap GC-22) the build failed inside
+`vite`, somewhere that did not mention installing.
 
 Since **2026-08-26 this is the only authority on how the repository installs.** The hardening used to
 live in the workflow files as `npm ci --ignore-scripts`, so the tree CI scanned was installed
@@ -259,10 +263,12 @@ enforcement. It writes nothing.
 <!-- Source: scripts/review-due-report.mjs -->
 
 **`.vscode/launch.json` exists** — `FR-R3-073` added it, and this sentence denied it until
-2026-08-26 (`FR-R3-101`). Its single `Run Extension` configuration is the interactive F5 path,
+2026-08-26 (`FR-R3-101`). Its `Run Extension` configuration is the interactive F5 path,
 and its `outFiles` names `dist/**` because that is where `esbuild.config.mjs` bundles the host;
 it named `out/**` until the same date, which is the integration-test compile target, so F5
-breakpoints bound against the wrong artifact and never hit.
+breakpoints bound against the wrong artifact and never hit. Its second configuration, `Debug
+Current Host Test File`, runs the host test file open in the editor under the debugger with the
+root vitest config (`webview-ui/` tests have their own config and are not covered by it).
 
 **`.vscode/tasks.json` genuinely does not exist**, and the launch configuration names a
 `preLaunchTask` of `npm: build` anyway. That works because VS Code auto-detects npm scripts as

@@ -50,8 +50,28 @@ export interface AckResult {
 
 export type AckListener = (ack: AckResult) => void;
 
+/**
+ * Review gap GC-16 — a snapshot the view could not read. The view keeps its last readable state
+ * (or "Connecting"), and a surface shows this so the operator knows that state is stale.
+ */
+export interface IncompatibleSnapshot {
+  readonly reason: 'unknown-schema' | 'malformed-queues';
+  /** The version the host sent, as bounded text; `null` when the version was not the problem. */
+  readonly schemaVersion: string | null;
+}
+
+/** Long enough for any real version, short enough that a hostile value cannot fill the notice. */
+const SCHEMA_VERSION_DISPLAY_MAX = 32;
+
+function displayVersion(value: unknown): string {
+  return String(value).slice(0, SCHEMA_VERSION_DISPLAY_MAX);
+}
+
 class SnapshotStore {
-  private _snapshot = $state<WorkflowSnapshot | null>(null);
+  // Review gap GC-16 — raw, not deep: a snapshot is replaced whole and never mutated, so a deep
+  // proxy only added a wrapper to every nested read of a large object on each 1 Hz tick.
+  private _snapshot = $state.raw<WorkflowSnapshot | null>(null);
+  private _incompatible = $state.raw<IncompatibleSnapshot | null>(null);
   private _lastSchemaWarning = false;
   private _lastRevision: number | null = null;
   private _resyncCount = 0;
@@ -61,6 +81,10 @@ class SnapshotStore {
 
   get snapshot(): WorkflowSnapshot | null {
     return this._snapshot;
+  }
+
+  get incompatibleSnapshot(): IncompatibleSnapshot | null {
+    return this._incompatible;
   }
 
   get lastRevision(): number | null {
@@ -81,6 +105,7 @@ class SnapshotStore {
     this._resyncCount = 0;
     this._droppedStaleCount = 0;
     this._lastSchemaWarning = false;
+    this._incompatible = null;
   }
 
   get isReady(): boolean {
@@ -275,6 +300,7 @@ class SnapshotStore {
     );
     if (reconciled.outcome === 'ignore-malformed') return;
     if (reconciled.outcome === 'unknown-schema') {
+      this._incompatible = { reason: 'unknown-schema', schemaVersion: displayVersion(reconciled.schemaVersion) };
       if (!this._lastSchemaWarning) {
         console.warn('[schegent] dropping snapshot with unknown schemaVersion', reconciled.schemaVersion);
         this._lastSchemaWarning = true;
@@ -282,6 +308,7 @@ class SnapshotStore {
       return;
     }
     if (reconciled.outcome === 'malformed-queues') {
+      this._incompatible = { reason: 'malformed-queues', schemaVersion: null };
       if (!this._lastSchemaWarning) {
         console.warn('[schegent] dropping snapshot with malformed queues');
         this._lastSchemaWarning = true;
@@ -299,6 +326,7 @@ class SnapshotStore {
     }
     this._snapshot = reconciled.snapshot;
     this._lastRevision = reconciled.revision;
+    this._incompatible = null;
     // FR-R3-106 (FR-071) — a snapshot clears NOTHING by itself.
     //
     // THE DEFECT. This used to be `if (this._pending.size > 0) this._pending = new Set();`

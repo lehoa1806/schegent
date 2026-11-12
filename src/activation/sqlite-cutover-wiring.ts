@@ -16,6 +16,7 @@ import { createStorageDetailsReader } from '../headless/artifact-lifecycle-api';
 import { createPhaseContextApi, type PhaseContextApi } from '../headless/phase-context-api';
 import { createUsageAccountingReader } from '../headless/usage-accounting-api';
 import type { SanitizedLogger } from '../lib/logger';
+import { createSideEffectFailureReporter, type SideEffectFailureReport } from '../lib/side-effect-failure-reporter';
 import { resolveContainedLink } from '../lib/path-containment';
 import { openWithinRoot } from '../lib/safe-open';
 import type { AcpRunnerObservationEvent } from '../runner/acp-backed-runner';
@@ -37,6 +38,7 @@ import {
   type RunLaneCoordinator
 } from '../services/execution-lanes';
 import { IntegrationStore } from '../services/execution-lanes/integration-store';
+import { createSpawnCheck } from '../services/execution-lanes/verification-runner';
 import {
   createChangeReviewService,
   integrationStoreSource,
@@ -94,6 +96,7 @@ import {
   readLanesEnabled,
   readLanesLiveCap,
   readLanesProvisioningDeadlineMs,
+  readProcessEnvironmentPolicy,
   readTelemetryExportUserSettings
 } from './uncached-settings-accessors';
 
@@ -148,6 +151,20 @@ export function getSqliteCutoverCoordinator(
 
 export function deriveWorkspaceScopeId(workspaceRoot: string): string {
   return createHash('sha256').update(workspaceRoot, 'utf8').digest('hex').slice(0, 16);
+}
+
+/**
+ * The SQLite database a window opens: `<storage>/sqlite/<scope>/schegent-state.db`, where `<storage>`
+ * is the window's `storageUri` (or `globalStorageUri` when it has none) and `<scope>` hashes the
+ * workspace root. VS Code keys `storageUri` by workspace identity, so a folder opened directly and
+ * through a `.code-workspace` resolve to two databases with one scope id (review gap GC-26).
+ */
+export function sqliteDatabasePathFor(
+  storage: { readonly storageUri: string | undefined; readonly globalStorageUri: string },
+  workspaceRoot: string
+): string {
+  const storageRoot = storage.storageUri ?? storage.globalStorageUri;
+  return path.join(storageRoot, 'sqlite', deriveWorkspaceScopeId(workspaceRoot), 'schegent-state.db');
 }
 
 function buildNodeLifecycleFs(allowedRoots: readonly string[]): LifecycleFs {
@@ -356,6 +373,7 @@ interface OpenPrimarySqliteServicesInput {
   readonly hasWorkspaceStorage: boolean;
   readonly operationalMemento: SwitchableOperationalMemento | undefined;
   readonly catalogFs: SwitchableCatalogFsAdapter | undefined;
+  readonly reportSideEffectFailure: SideEffectFailureReport;
 }
 
 async function openPrimarySqliteServices(
@@ -432,9 +450,11 @@ async function openPrimarySqliteServices(
       storageRoot,
       secrets: buildSecretPort(deps.context.secrets),
       isWorkspaceTrusted: deps.isWorkspaceTrusted,
-      serviceVersion: '0.2.0'
+      serviceVersion: '0.2.0',
+      reportSideEffectFailure: input.reportSideEffectFailure
     });
     telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
+    void replayTelemetrySpoolAfterSettling(telemetryHost, input.reportSideEffectFailure);
     const configSub = vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('schegent.telemetry.export')) {
         telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
@@ -471,6 +491,7 @@ async function openPrimarySqliteServices(
       liveLaneCap: readLanesLiveCap(deps.workspaceRoot),
       provisioningDeadlineMs: readLanesProvisioningDeadlineMs(deps.workspaceRoot),
       git: createExecFileGitRunner(),
+      spawnCheck: createSpawnCheck({ environmentPolicy: () => readProcessEnvironmentPolicy(deps.workspaceRoot) }),
       clock: () => Date.now(),
       random: (size) => randomBytes(size)
     });
@@ -624,7 +645,10 @@ export function createSqliteCutoverCoordinator(
   const scopeId = deriveWorkspaceScopeId(deps.workspaceRoot);
   const hasWorkspaceStorage = deps.context.storageUri !== undefined;
   const storageRoot = deps.context.storageUri?.fsPath ?? deps.context.globalStorageUri.fsPath;
-  const expectedDatabasePath = path.join(storageRoot, 'sqlite', scopeId, 'schegent-state.db');
+  const expectedDatabasePath = sqliteDatabasePathFor(
+    { storageUri: deps.context.storageUri?.fsPath, globalStorageUri: deps.context.globalStorageUri.fsPath },
+    deps.workspaceRoot
+  );
 
   const operationalMemento = getOperationalMementoForStore(deps.store);
   const catalogFs = catalogFsByStore.get(deps.store);
@@ -634,6 +658,8 @@ export function createSqliteCutoverCoordinator(
   catalogFs?.attachReadOnlySnapshotIfPresent(expectedDatabasePath, scopeId);
 
   let activeServices: SqliteCutoverServices | null = null;
+  // Review gap GC-05 — the best-effort paths below report a failure instead of dropping it.
+  const reportSideEffectFailure = createSideEffectFailureReporter(deps.logger);
   let activatingPromise: Promise<SqliteCutoverServices | null> | null = null;
   let closed = false;
 
@@ -674,7 +700,8 @@ export function createSqliteCutoverCoordinator(
       expectedDatabasePath,
       hasWorkspaceStorage,
       operationalMemento,
-      catalogFs
+      catalogFs,
+      reportSideEffectFailure
     });
     return activeServices;
   };
@@ -702,7 +729,7 @@ export function createSqliteCutoverCoordinator(
     getReportingService: () => activeServices?.reportingService ?? null,
     getChangeReviewService: () => activeServices?.changeReviewService ?? null,
     getPhaseContextApi: () => createPhaseContextApi(() => activeServices?.phaseHandoffCoordinator ?? null),
-    getProtectedRunIds: () => querySqliteProtectedRunIds(activeServices),
+    getProtectedRunIds: () => querySqliteProtectedRunIds(activeServices, reportSideEffectFailure),
     getDatabaseProtectedPaths: () => [
       expectedDatabasePath,
       `${expectedDatabasePath}-wal`,
@@ -734,10 +761,11 @@ export function createSqliteCutoverCoordinator(
             runId: summary.runId,
             laneId: matchedRun?.laneId,
             status: summary.status
-          });
+          }).catch((err: unknown) => reportSideEffectFailure('lane-settlement', err));
         }
-      } catch {
+      } catch (err) {
         // Best-effort handoff dispatch and lane settlement.
+        reportSideEffectFailure('handoff-and-lane-settlement', err);
       }
     },
     completeRootExecutionLane(params) {
@@ -746,7 +774,7 @@ export function createSqliteCutoverCoordinator(
         runId: params.rootExecutionId,
         laneId: params.laneId,
         status: params.status
-      });
+      }).catch((err: unknown) => reportSideEffectFailure('lane-settlement', err));
     },
     recordAcpObservation(event) {
       if (activeServices === null) return;
@@ -787,8 +815,9 @@ export function createSqliteCutoverCoordinator(
           captureMode: 'captured',
           nowMs: now
         });
-      } catch {
+      } catch (err) {
         // Best-effort observation ledger recording.
+        reportSideEffectFailure('acp-observation-ledger', err);
       }
     },
     recordAcpUsageUpdate(update, binding) {
@@ -798,8 +827,9 @@ export function createSqliteCutoverCoordinator(
         if (res.ok && res.value.disposition === 'accepted') {
           activeServices.telemetryHost.offerAcceptedObservationById(res.value.observationId);
         }
-      } catch {
+      } catch (err) {
         // Accounting never interrupts agent execution.
+        reportSideEffectFailure('usage-accounting', err);
       }
     },
     close
@@ -809,7 +839,62 @@ export function createSqliteCutoverCoordinator(
   return coordinator;
 }
 
-function querySqliteProtectedRunIds(services: SqliteCutoverServices | null): ReadonlySet<string> {
+/** The SQLite half of the protected-run set could not be read, so no sweep may act on the rest. */
+export class ProtectedRunIdsUnavailableError extends Error {
+  public constructor() {
+    super('the protected run set could not be read');
+    this.name = 'ProtectedRunIdsUnavailableError';
+  }
+}
+
+/**
+ * Review gap GC-05 follow-up (2026-11-12) — runs `sweep` only on a protected set that was read
+ * whole. When the set is unavailable the query has already reported why, and the sweep is skipped:
+ * a set missing its SQLite pins would let the sweep delete what those pins protect. Any other
+ * failure propagates.
+ */
+export async function sweepWithReadableProtection(
+  readProtected: () => ReadonlySet<string>,
+  sweep: (protectedIds: ReadonlySet<string>) => Promise<unknown>
+): Promise<'swept' | 'skipped'> {
+  let protectedIds: ReadonlySet<string>;
+  try {
+    protectedIds = readProtected();
+  } catch (err) {
+    if (err instanceof ProtectedRunIdsUnavailableError) return 'skipped';
+    throw err;
+  }
+  await sweep(protectedIds);
+  return 'swept';
+}
+
+/**
+ * Re-sends the batches a previous host spooled, once, after the spool work that configuring the
+ * destination started has settled, so the two reconciles do not race over the same rows. Review gap
+ * closure (2026-11-12): the replay existed and was tested across a reopen, but nothing in the
+ * extension called it. A failure is reported as `telemetry-spool` and never rejects activation.
+ */
+export async function replayTelemetrySpoolAfterSettling(
+  host: Pick<TelemetryHostService, 'idle' | 'reconcileAndReplaySpool'>,
+  reportFailure: SideEffectFailureReport
+): Promise<void> {
+  try {
+    await host.idle();
+    await host.reconcileAndReplaySpool();
+  } catch (err) {
+    reportFailure('telemetry-spool', err);
+  }
+}
+
+/**
+ * The run ids a sweep must spare: lane pins, export pins and active protective references.
+ * Empty when SQLite is not open, since nothing can be pinned there. Throws
+ * {@link ProtectedRunIdsUnavailableError}, after reporting, when the query fails.
+ */
+export function querySqliteProtectedRunIds(
+  services: SqliteCutoverServices | null,
+  reportFailure: SideEffectFailureReport
+): ReadonlySet<string> {
   const result = new Set<string>();
   if (services === null) return result;
   for (const lanePinnedRunId of services.runLaneCoordinator.getProtectedRunIds()) {
@@ -832,8 +917,10 @@ function querySqliteProtectedRunIds(services: SqliteCutoverServices | null): Rea
     for (const row of rows) {
       if (row.run_id) result.add(row.run_id);
     }
-  } catch {
-    // Best-effort sweep protection query.
+  } catch (err) {
+    // Fail closed: a partial set would expose the runs pinned only here.
+    reportFailure('sweep-protection-query', err);
+    throw new ProtectedRunIdsUnavailableError();
   }
   return result;
 }

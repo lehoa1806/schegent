@@ -9,6 +9,98 @@ This file is maintained by hand: neither the version field nor any script can de
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### Review gap closure: limits, git calls, evidence and recovery (2026-11-12)
+
+From the 2026-11-12 full repository review. Each item names its review gap (`GC-*`).
+
+- **A repository can only tighten spend, retry and loop limits (GC-10).** These settings used to take the
+  innermost layer, so a repository's `.vscode/settings.json` could raise or clear the operator's spend cap,
+  raise the retry or iteration cap, or set `retry.forceContinueOnCap`. The user value (else the default) is
+  now the operator's limit. A workspace or folder value replaces it only when it is valid and strictly
+  tighter. An ignored value is named in a warning. The idle and wall-clock invocation timeouts follow the same
+  rule, and a Phase's authored spend bound applies only where it is tighter than the operator's.
+- **Host git calls no longer run the repository's fsmonitor or hooks (GC-11).** Every git call the extension
+  makes passes `core.fsmonitor=false` and an empty hooks path. The checkpoint and mutation-ledger diffs
+  also pass `--no-textconv`, so a repository textconv program no longer runs or replaces file content in a
+  checkpoint patch. Clean and smudge filters still run.
+- **A committed `.schegent/.gitignore` that does not ignore everything is repaired (GC-12).** The file is
+  replaced with the canonical body and a warning is logged, so transcripts and the audit log stay
+  uncommitted.
+- **Verification checks run under the process-environment policy (GC-15).** A lane's checks used to inherit
+  the whole extension-host environment. They now get the environment `schegent.cli.environmentMode` and
+  `schegent.cli.environmentAllowlist` allow, like agent runs. A check that relied on an inherited variable,
+  such as `JAVA_HOME`, needs that name on `schegent.cli.environmentAllowlist`.
+- **Earlier agent output is labelled as data in the next prompt (GC-14).** Previous Phase messages and
+  carried issues open with a fixed line telling the model to treat them as data, and a line break inside an
+  entry cannot open a new prompt section. The prompt composition version is now 2, so prompt identity
+  digests differ from earlier builds. The label is advice to the model, not enforcement.
+- **More secret formats are redacted from logs (GC-13):** SendGrid keys, Twilio API key SIDs, PyPI tokens,
+  HashiCorp Vault tokens, Azure SAS signatures and Azure Storage account keys.
+- **A snapshot the view cannot read is shown, not swallowed (GC-16).** The sidebar and the dashboard show a
+  notice naming the state format and asking for a window reload, instead of freezing on the last state or on
+  "Connecting".
+- **An older build refuses a newer operational store by name (GC-09).** Opening a SQLite store whose recorded
+  minimum reader version is above this build's fails with `UNSUPPORTED_MIN_READER_VERSION`, naming both
+  versions.
+- **Bare program names resolve along PATH only on Windows (GC-24).** On win32 the extension used to hand a
+  bare name such as `git` or `claude` to the operating system, which looks in the workspace folder before
+  PATH, so a `git.exe` committed to a repository could run in place of the installed one. A bare name is now
+  resolved to its absolute path along PATH, trying `.com` and `.exe`, and a relative PATH entry is skipped.
+  Lane verification checks are resolved the same way. A CLI installed only as a `.cmd` shim is still not
+  found, as before. Untested on a real Windows host.
+- **Host coverage floors are close to measured coverage (GC-17).** The floors are now 84% statements, 81%
+  branches, 88% functions and 84% lines, about five points under the 2026-11-12 measurement, and
+  `npm run coverage:headroom` (part of `verify:release`) fails when a floor drifts more than five points
+  below the measured figure again.
+- **A missing webview install is named (GC-22).** `npm run build:webview` first checks that `webview-ui/`
+  dependencies are installed and, when they are not, prints the install command instead of a build error.
+- **The settings reference and the services table are held to the code (GC-20, GC-21).** The
+  architecture, security, settings and file-layout pages now describe the SQLite store, ACP, execution
+  lanes and telemetry export. Two lint gates fail when a contributed setting has no row in
+  `docs/reference/settings.md`, or a `src/services/` subsystem has no row in `ARCHITECTURE.md`, and in the
+  other direction for a stale row.
+- **The spend-bound settings state their overshoot (GC-25).** `schegent.spend.maxUsdPerRun` and
+  `schegent.spend.maxTokensPerRun` now say that the bound is checked only when a phase ends, so the phase
+  that crosses it runs to completion, one more phase can run when the pause lands late, and a paused Run's
+  total ends above the bound.
+- **One folder opened two ways uses two databases (GC-26).** The SQLite store sits under the window's
+  `storageUri`, which VS Code keys by how the workspace was opened, so the same folder opened directly and
+  through a `.code-workspace` file has two stores. The two windows are never primary at once, but state in
+  one store is not in the other. Documented in the file-layout reference; behaviour unchanged.
+- **The unit tier runs on Linux, locally (GC-18).** `npm run verify:linux` runs the install, the build,
+  the SBOM, both typechecks, lint, `contracts:check` and `test:host` in a Linux container against a
+  commit, as the local replacement for hosted CI. Linux path case-sensitivity in output-target identity is
+  now observed there. Linux stays in the `unverified` tier: no extension host, browser or real CLI runs in
+  the container. It needs a running Docker daemon and refuses to run while its own files are
+  uncommitted. Its first run had two reds from gates that read the workspace envelope; both now hold without it.
+  Its fourth run, at `c1fa6239`, exited 0 at every step.
+  See the platform observation record.
+- **SC-003 measures arithmetic, not `fsync`.** The 100,000-addition exact-total case now runs in one
+  outer transaction against the real file store. It took 245 s on macOS and timed out at 600 s in the
+  Linux leg, where each of its 101,000 commits reached the disk; it now takes about 34 s on macOS.
+- **The editor's Node is recorded at the VS Code floor (GC-19).** A new extension-host module prints
+  the VS Code, Electron and Node versions it runs on and checks that `node:sqlite` opens and writes a
+  WAL database there. VS Code 1.107.0 runs the extension on Node 22.21.1. See the Node floor record.
+- **A launch configuration debugs one host test file (GC-23).** `Debug Current Host Test File` in
+  `.vscode/launch.json` runs the open file under the debugger. The commit hook stays opt-in.
+- **Internal robustness fixes with no setting or command change (GC-02, GC-03, GC-06, GC-07, GC-08).** A failed
+  workspace-lock heartbeat is logged instead of escaping as an unhandled rejection. Stage 2 wiring runs once
+  even when two triggers race, and its listeners are disposed with it. The CLI path accessor refuses an
+  unknown backend kind instead of answering with Claude's path. The run driver probes backends whatever
+  `NODE_ENV` says, and in the extension a missing probe service fails the Run instead of skipping the probe.
+  The ACP authority gate decides window primacy from the verified verdict alone: a session waits for that
+  verdict before it registers its scope, and one it cannot get ends the attempt with
+  `acp-ownership-unverified` before the prompt is sent. A receipt the gate could not record is now reported.
+- **Recovery keeps going after one failure (GC-01, GC-04, GC-05).** One failed recovery step at startup no
+  longer skips the steps after it, and one Run that cannot be re-armed no longer strands the queues after
+  it. A state write past its deadline no longer blocks writes until a reset: writing resumes when that write
+  settles. Failed best-effort side effects (lane settlement, usage accounting and similar) log a warning
+  instead of failing silently.
+- **A telemetry spool after shutdown no longer rejects unhandled.** A retry-exhausted OTLP batch is
+  spooled by a timer nobody awaits, so it could reach the database after the window had closed it. It
+  now drops that batch and its file, and any other spool or spool-reconciliation failure logs a
+  `telemetry-spool` warning, once, by error class only.
+
 ### A failed row can restart its Phase, and a drained Run can open its decision record (FR-R5-F19 follow-up, 2026-11-06)
 
 - **Restart on a failed row.** A failed row whose Run is still its queue's current Run now shows a restart

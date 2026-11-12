@@ -167,7 +167,10 @@ describe('backend posture — every route reaches the funnel (FR-R3-064)', () =>
     // service, so the route crosses files and each hop is pinned where it lives. A hop that stops
     // calling the next one leaves a route that reaches a backend by a path nobody resolved.
     const hops: ReadonlyArray<{ file: string; entry: string; target: string }> = [
-      { file: CONTROLLER, entry: 'resumeExistingFromActivation', target: 'resumeExistingFromActivation' },
+      // Review gap GC-01 — the controller hands the whole Run map to the coordinator, which re-arms
+      // each Run in isolation; the per-Run hop below it is unchanged.
+      { file: CONTROLLER, entry: 'resumeExistingFromActivation', target: 'resumeAllFromActivation' },
+      { file: RETRY_COORDINATOR, entry: 'resumeAllFromActivation', target: 'resumeExistingFromActivation' },
       { file: RETRY_COORDINATOR, entry: 'resumeExistingFromActivation', target: 'onBackoffElapsed' },
       { file: CONTROLLER, entry: 'setBackoffElapsedHandler', target: 'bind' },
       { file: RETRY_COORDINATOR, entry: 'handOff', target: 'handler' },

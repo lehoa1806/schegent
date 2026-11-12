@@ -137,13 +137,16 @@ const SIGNATURE = 'public async drive(';
  *        comment gained a line, 656 → 650.
  *        `run-driver.ts` itself moved 1,317 → 1,312 by `wc -l`.
  *
+ *   649  Review gap GC-07 (2026-11-12) — the start-of-Run backend probe no longer skips itself
+ *        when `NODE_ENV` is `test`; the clause and its comment line went, 650 → 649.
+ *
  * Next candidates, named so the next decrement does not start with a
  * re-measurement: the four pause arms — breakpoint, delayed-retry, rate-limit,
  * verify — are roughly 230 lines between them. The probe-failure arm is NOT a
  * candidate for merging into the shared sequence: its audit emission order differs,
  * and unifying it is an observable change.
  */
-const DRIVE_MAX_LINES = 650;
+const DRIVE_MAX_LINES = 649;
 
 /** Lines from the signature to the closing brace, inclusive. */
 export function methodLineCount(source: string, signature: string): number {

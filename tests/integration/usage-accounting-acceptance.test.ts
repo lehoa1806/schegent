@@ -473,6 +473,12 @@ describe('usage accounting acceptance (T051)', () => {
     () => {
       const conn = openStore();
       const service = serviceOn(conn);
+      // SC-003 is about exact totals, not commit cost. One outer transaction, which every
+      // accounting write joins (accounting-transaction.ts), keeps the real file store and the
+      // exact-arithmetic check while making one durable commit instead of about 101,000: on a
+      // platform where a commit reaches the disk (3.4 ms in the Linux leg) those alone exceeded
+      // DRIFT_TIMEOUT_MS. Recovery after a crash is F06-AC-07's case, not this one.
+      conn.exec('BEGIN IMMEDIATE');
       const next = seededRandom(SHUFFLE_SEED);
       const quantities: bigint[] = [];
       const ids: string[] = [];
@@ -507,6 +513,7 @@ describe('usage accounting acceptance (T051)', () => {
         quantities[index] = money.micros;
       }
 
+      conn.exec('COMMIT');
       const expected = quantities.reduce((sum, micros) => sum + micros, 0n);
       expect(measureOf(answerOf(service), 'cost')).toMatchObject({ total: formatMicros(expected), completeness: 'known' });
     },

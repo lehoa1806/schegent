@@ -1,7 +1,8 @@
 /**
  * FR-R6-F10 (research R9): executing a request's frozen verification profile in its lane.
  *
- * Each check is spawned with no shell, in the lane root, with the R5 environment. Its stdout and
+ * Each check is spawned with no shell, in the lane root, with the R5 environment built from the
+ * operator's process-environment policy (review gap GC-15). Its stdout and
  * stderr are streamed into one SHA-256 and a byte count, then discarded; no output text is kept
  * (SC-006). Checks run in order and the first failure stops the run. A check settles when its
  * output closes, or a short grace after it exits, whichever comes first.
@@ -16,6 +17,9 @@
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { VerificationCheck, VerificationProfile } from '../../contracts/execution-lanes';
+import { SHIPPED_DEFAULT_POLICY, type ProcessEnvironmentPolicy } from '../../contracts/process-environment-policy';
+import { spawnCommandFor } from '../../lib/spawn-command';
+import { buildSpawnEnv } from '../../runner/spawn-env';
 import { allDirtyCount, trackedDirtyCount } from './git-observe';
 import { buildLaneGitEnv, LaneGitError, type LaneGitRunner } from './git-runner';
 import type { IntegrationStore, RequestRecord, VerificationResultRecord } from './integration-store';
@@ -42,8 +46,13 @@ type SpawnLike = (command: string, args: readonly string[], options: SpawnOption
 
 export interface SpawnCheckDeps {
   readonly spawn?: SpawnLike;
-  /** The environment before the R5 stripping; default `process.env`. */
+  /** The environment the policy selects from; default `process.env`. */
   readonly baseEnv?: NodeJS.ProcessEnv;
+  /**
+   * The operator's process-environment policy, read at each check so a changed setting reaches
+   * the next one; default the shipped policy, an empty allowlist (review gap GC-15).
+   */
+  readonly environmentPolicy?: () => ProcessEnvironmentPolicy;
   readonly now?: () => number;
 }
 
@@ -60,6 +69,19 @@ export function checkPassed(run: CheckRun): boolean {
   return run.exitCode === 0 && run.signal === null && !run.timedOut;
 }
 
+/**
+ * Review gap GC-15 — a check runs code the candidate holds, which an agent wrote, so it gets what
+ * the agent's own process gets, not the host's whole environment. `minimal` keeps the bootstrap
+ * names here: a check is a build tool started by name, and none can be found without `PATH`.
+ */
+function checkEnv(policy: ProcessEnvironmentPolicy, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const selected =
+    policy.mode === 'inherit'
+      ? buildSpawnEnv({}, base)
+      : buildSpawnEnv({ processEnvAllowlist: policy.processEnvAllowlist ?? [] }, base);
+  return buildLaneGitEnv(selected);
+}
+
 /** Kills the check's whole process group, so a grandchild cannot outlive the timeout. */
 function killGroup(child: ChildProcess): void {
   if (child.pid === undefined) return;
@@ -73,7 +95,8 @@ function killGroup(child: ChildProcess): void {
 /** The default port: `child_process.spawn`, no shell, its own process group, output digested. */
 export function createSpawnCheck(deps: SpawnCheckDeps = {}): SpawnCheck {
   const spawnFn: SpawnLike = deps.spawn ?? nodeSpawn;
-  const env = buildLaneGitEnv(deps.baseEnv ?? process.env);
+  const base = deps.baseEnv ?? process.env;
+  const environmentPolicy = deps.environmentPolicy ?? (() => SHIPPED_DEFAULT_POLICY);
   const now = deps.now ?? Date.now;
   return (argv, options) =>
     new Promise<CheckRun>((resolve) => {
@@ -88,7 +111,18 @@ export function createSpawnCheck(deps: SpawnCheckDeps = {}): SpawnCheck {
         clearTimeout(timer);
         resolve({ exitCode, signal, timedOut, durationMs: now() - started, outputBytes, outputSha256: hash.digest('hex') });
       };
-      const command = argv.at(0) ?? '';
+      const env = checkEnv(environmentPolicy(), base);
+      // Review gap GC-24 -- on win32 a bare check program (`npm`, `node`) resolves along the
+      // check's PATH only, never from the lane root, where the lane's own work could plant one.
+      // A miss is reported the way a spawn error is: no exit code, no signal.
+      let command: string;
+      try {
+        command = spawnCommandFor(argv.at(0) ?? '', env);
+      } catch {
+        settled = true;
+        resolve({ exitCode: null, signal: null, timedOut, durationMs: now() - started, outputBytes, outputSha256: hash.digest('hex') });
+        return;
+      }
       const child = spawnFn(command, argv.slice(1), {
         cwd: options.cwd,
         env,

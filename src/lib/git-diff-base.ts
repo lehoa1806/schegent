@@ -1,6 +1,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { withHostGitConfig } from './host-git-config';
+import { spawnCommandFor } from './spawn-command';
+
 const runExecFile = promisify(execFile);
 
 /**
@@ -44,7 +47,7 @@ export interface DiffBase {
  */
 export async function resolveDiffBase(cwd: string): Promise<DiffBase> {
   try {
-    const { stdout } = await runExecFile('git', ['rev-parse', '--verify', 'HEAD'], {
+    const { stdout } = await runExecFile(spawnCommandFor('git'), withHostGitConfig(['rev-parse', '--verify', 'HEAD']), {
       cwd,
       maxBuffer: 1024
     });
@@ -66,7 +69,7 @@ export async function resolveDiffBase(cwd: string): Promise<DiffBase> {
 async function hasUnbornHead(cwd: string): Promise<boolean> {
   let ref: string;
   try {
-    const { stdout } = await runExecFile('git', ['symbolic-ref', '--quiet', 'HEAD'], {
+    const { stdout } = await runExecFile(spawnCommandFor('git'), withHostGitConfig(['symbolic-ref', '--quiet', 'HEAD']), {
       cwd,
       maxBuffer: 1024
     });
@@ -76,7 +79,7 @@ async function hasUnbornHead(cwd: string): Promise<boolean> {
   }
   if (ref === '') return false;
   try {
-    await runExecFile('git', ['show-ref', '--verify', '--quiet', ref], { cwd, maxBuffer: 1024 });
+    await runExecFile(spawnCommandFor('git'), withHostGitConfig(['show-ref', '--verify', '--quiet', ref]), { cwd, maxBuffer: 1024 });
     // The branch exists, so HEAD should have resolved. It did not: damaged, not
     // empty.
     return false;
@@ -96,7 +99,7 @@ async function hasUnbornHead(cwd: string): Promise<boolean> {
  */
 async function emptyTree(cwd: string): Promise<string> {
   try {
-    const { stdout } = await runExecFile('git', ['rev-parse', '--show-object-format'], {
+    const { stdout } = await runExecFile(spawnCommandFor('git'), withHostGitConfig(['rev-parse', '--show-object-format']), {
       cwd,
       maxBuffer: 1024
     });

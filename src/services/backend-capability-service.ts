@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import type { SanitizedLogger } from '../lib/logger';
+import { spawnCommandFor } from '../lib/spawn-command';
 import {
   SUPPORTED_BACKENDS,
   type BackendRunnerKind
@@ -324,7 +325,8 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
     return new Promise<CommandResult>((resolve) => {
       let child: ChildProcess;
       try {
-        child = this.spawnFn(cliPath, args, {
+        // Review gap GC-24 -- on win32 a bare name resolves along PATH only, never the cwd.
+        child = this.spawnFn(spawnCommandFor(cliPath, env), args, {
           cwd: this.deps.cwd,
           env,
           shell: false,

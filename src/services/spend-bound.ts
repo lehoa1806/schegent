@@ -201,24 +201,33 @@ export interface SpendBoundOverride {
 }
 
 /**
- * The bound in force, with the authored per-phase value overriding the workspace
- * default.
+ * Whether an authored per-phase bound is the one in force: it is stated, and it is
+ * tighter than the operator's (`null` is no bound, so any stated value is tighter).
+ */
+export function phaseSpendBoundApplies(operator: number | null, authored: number | undefined): authored is number {
+  return authored !== undefined && (operator === null || authored < operator);
+}
+
+/**
+ * The bound in force: the authored per-phase value where it tightens the
+ * operator's bound, else the operator's.
  *
- * ORDINARY CONFIG PRECEDENCE, per denomination independently. A phase that
- * declares only a token bound keeps the workspace dollar bound: the alternative —
- * one declared field clearing the other denomination — would let a phase silently
- * remove a bound the operator set, which is the shape of every defect this round
- * has been closing. Same precedence as `effectivePhaseTimeoutMs`, and stated the
- * same way, because an operator who has learned one authored bound has learned
- * them all.
+ * Per denomination independently. A phase that declares only a token bound keeps
+ * the workspace dollar bound: the alternative — one declared field clearing the
+ * other denomination — would let a phase silently remove a bound the operator set.
+ * Review gap GC-10 follow-up (2026-11-12): a Phase definition is repository
+ * content, so, like a repository settings layer, it may tighten the operator's
+ * bound and never raise it.
  */
 export function effectiveSpendBound(
   workspace: SpendBoundConfig,
   phase?: SpendBoundOverride | undefined
 ): SpendBoundConfig {
+  const usd = phase?.spendBoundUsd;
+  const tokens = phase?.spendBoundTokens;
   return {
-    limitUsd: phase?.spendBoundUsd ?? workspace.limitUsd,
-    limitTokens: phase?.spendBoundTokens ?? workspace.limitTokens
+    limitUsd: phaseSpendBoundApplies(workspace.limitUsd, usd) ? usd : workspace.limitUsd,
+    limitTokens: phaseSpendBoundApplies(workspace.limitTokens, tokens) ? tokens : workspace.limitTokens
   };
 }
 

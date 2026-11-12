@@ -184,7 +184,7 @@ export interface LedgerRunView {
 }
 
 export interface RunMutationLedgerDeps {
-  /** Raw `git diff --binary --no-ext-diff HEAD` output for the shared tree. */
+  /** Raw `git diff --binary --no-ext-diff --no-textconv HEAD` output for the shared tree. */
   readonly readDiff: () => Promise<string>;
   /** Run ids that could currently hold uncommitted work. Bounds ledger memory. */
   readonly listInFlightRunIds: () => readonly string[];

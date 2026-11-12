@@ -354,3 +354,31 @@ describe('WorkspaceLockManager.release', () => {
     expect(scheduler.intervals).toHaveLength(0);
   });
 });
+
+// Review gap GC-02 (2026-11-12) — the interval launched `void this.tick().finally(...)` with no
+// catch, so every beat whose store write rejected became an unhandled rejection every 5 s.
+describe('WorkspaceLockManager heartbeat failure', () => {
+  it('logs a rejected beat, and the next interval still ticks', async () => {
+    const warnings: string[] = [];
+    const lock = new WorkspaceLockManager(store, 'owner-1', clock, scheduler, {
+      warn: (message: string) => warnings.push(message)
+    });
+    await lock.tryAcquire();
+    const beat = scheduler.intervals.at(0);
+    expect(beat).toBeDefined();
+    let ticks = 0;
+    lock.tick = async () => {
+      ticks += 1;
+      throw new Error('store write rejected');
+    };
+
+    beat?.fn();
+    for (let round = 0; round < 6; round += 1) await Promise.resolve();
+    beat?.fn();
+    for (let round = 0; round < 6; round += 1) await Promise.resolve();
+
+    expect(ticks).toBe(2);
+    expect(warnings.filter((line) => line.includes('heartbeat tick failed'))).toHaveLength(2);
+    await lock.release();
+  });
+});

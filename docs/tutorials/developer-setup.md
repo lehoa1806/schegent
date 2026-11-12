@@ -123,7 +123,9 @@ The repository provides `.vscode/launch.json` with a **Run Extension** extension
 configuration, so the interactive session in [User quickstart](user-quickstart.md) — F5 → **Run
 Extension** — is the local Extension Development Host workflow this checkout defines.
 `npm run test:integration` remains the automated gate: it runs the suites and exits, leaving no
-window to click through.
+window to click through. A second configuration, **Debug Current Host Test File**, runs the host
+test file open in the editor under the debugger with the root vitest config; tests under
+`webview-ui/` have their own config and are not covered by it.
 <!-- Source: .vscode/launch.json -->
 <!-- Source: package.json -->
 

@@ -62,11 +62,48 @@ feature removed them before it was committed. The count of failed tests is the s
   the bill of materials. It does not cover the webview test tier, the typecheck or lint gates,
   `npm run gate`, or the extension-host integration tier.
 - **Not the editor's runtime.** The extension runs inside the editor's own bundled Node, whatever
-  version that editor ships. This run says nothing about that runtime.
+  version that editor ships. This run says nothing about that runtime; the separate observation
+  below does, for the declared VS Code floor only.
 - **macOS only.** Linux and Windows are not covered.
 - **Not a qualification cell.** Each cell of the [qualification matrix](qualification-matrix.md) is
   an `npm run gate` observation recorded through `npm run gate:record`. This run is neither, so the
   macOS / Node 22 cell stays `unobserved`.
+
+## The editor's runtime at the VS Code floor
+
+Added 2026-11-12 (review gap GC-19). The SQLite store runs on the `node:sqlite` built into the
+extension host's Node, which is Electron's and not the Node in `.nvmrc`, and nothing had recorded
+which Node the declared VS Code floor ships. This is a separate observation from the run above and is
+not replaced with it.
+
+- **Date**: 2026-11-12, from 11:09:32Z to 11:10:16Z.
+- **Command**: `fnm exec --using=24.19.0 -- npm run test:integration`, exit 0. The harness completed
+  21 test modules across 4 launches (single-folder 18, multi-root 1, trust-untrusted 1,
+  trust-granted 1), against the VS Code version `engines.vscode` declares.
+- **Commit**: `repo/` at `fafb67f6`, with `tests/integration/runtime-floor.host.test.ts`
+  uncommitted; it is committed with this section.
+- **Platform**: macOS on arm64. No other test tier ran.
+
+`runtime-floor.host.test.ts` runs inside the extension host and printed:
+
+```text
+runtime-floor: vscode=1.107.0 electron=39.2.3 node=22.21.1
+runtime-floor: node:sqlite DatabaseSync opened a WAL file database, wrote and read in the extension host
+```
+
+So VS Code 1.107.0 runs the extension on Node 22.21.1, inside `engines.node` (`^22 || ^24`), and
+there `node:sqlite` opened a file database in WAL mode, created a `STRICT` table, and committed and read
+back a row. The module fails if the host's Node major falls outside `engines.node`, which it reads from
+the installed extension's manifest.
+
+What it does not show:
+
+- **The floor build only.** A newer VS Code ships another Electron and another Node; none was observed.
+- **A lower patch than the plain-Node run.** The editor's 22.21.1 is older than the 22.23.2 the run
+  above used, so that run is no proxy for the editor's Node.
+- **One table, not the store.** The module exercises `node:sqlite` directly; it does not run the
+  store's schema or migrations.
+- **macOS only**, as above.
 
 ## When to run it again
 

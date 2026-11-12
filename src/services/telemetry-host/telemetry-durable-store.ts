@@ -363,6 +363,29 @@ export function createTelemetrySpoolStore(params: {
     return out;
   }
 
+  function insertSpoolRow(
+    req: { readonly batchId: string; readonly destination: ResolvedDestination; readonly body: Uint8Array },
+    metaJson: string,
+    now: number
+  ): void {
+    conn.run(
+      `INSERT INTO telemetry_spool_batches (
+        batch_id, profile_id, signal, payload_json, payload_bytes, attempt_count, next_attempt_at_ms, created_at_ms
+      ) VALUES (?, ?, 'metrics', ?, ?, 1, ?, ?)
+      ON CONFLICT(batch_id) DO UPDATE SET
+        payload_json = excluded.payload_json,
+        payload_bytes = excluded.payload_bytes,
+        attempt_count = telemetry_spool_batches.attempt_count + 1,
+        next_attempt_at_ms = excluded.next_attempt_at_ms`,
+      req.batchId,
+      req.destination.profileId,
+      metaJson,
+      req.body.byteLength,
+      now,
+      now
+    );
+  }
+
   return {
     async spoolBatch(req) {
       if (!SAFE_BATCH_ID.test(req.batchId)) {
@@ -374,12 +397,17 @@ export function createTelemetrySpoolStore(params: {
       ) {
         return { spooled: false, droppedBatchIds: [req.batchId] };
       }
+      // A spool is started without being awaited, from a retry timer, so it can begin or resume after
+      // the store closed at shutdown. It then drops the batch instead of rejecting with
+      // `database is not open` (seen in the Linux leg, 2026-11-12). Checked again after every await.
+      if (conn.isClosed()) return { spooled: false, droppedBatchIds: [req.batchId] };
 
       const droppedBatchIds: string[] = [];
       const existing = listDbEntries();
       let currentBytes = existing.reduce((acc, item) => acc + item.payloadBytes, 0);
       for (const candidate of existing) {
         if (currentBytes + req.body.byteLength <= TELEMETRY_EXPORT_BOUNDS.diskSpoolBytes) break;
+        if (conn.isClosed()) return { spooled: false, droppedBatchIds: [...droppedBatchIds, req.batchId] };
         conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, candidate.batchId);
         await unlinkQuietly(candidate.relPath);
         currentBytes -= candidate.payloadBytes;
@@ -401,6 +429,10 @@ export function createTelemetrySpoolStore(params: {
       } finally {
         await opened.handle.close();
       }
+      if (conn.isClosed()) {
+        await unlinkQuietly(relPath);
+        return { spooled: false, droppedBatchIds: [...droppedBatchIds, req.batchId] };
+      }
 
       const now = nowMs();
       const metaJson = JSON.stringify({
@@ -409,22 +441,13 @@ export function createTelemetrySpoolStore(params: {
         authorizationGeneration: req.authorizationGeneration
       } satisfies SpooledBatchMeta);
 
-      conn.run(
-        `INSERT INTO telemetry_spool_batches (
-          batch_id, profile_id, signal, payload_json, payload_bytes, attempt_count, next_attempt_at_ms, created_at_ms
-        ) VALUES (?, ?, 'metrics', ?, ?, 1, ?, ?)
-        ON CONFLICT(batch_id) DO UPDATE SET
-          payload_json = excluded.payload_json,
-          payload_bytes = excluded.payload_bytes,
-          attempt_count = telemetry_spool_batches.attempt_count + 1,
-          next_attempt_at_ms = excluded.next_attempt_at_ms`,
-        req.batchId,
-        req.destination.profileId,
-        metaJson,
-        req.body.byteLength,
-        now,
-        now
-      );
+      try {
+        insertSpoolRow(req, metaJson, now);
+      } catch (err) {
+        // No row means no reader: the file would only wait for orphan reconciliation.
+        await unlinkQuietly(relPath);
+        throw err;
+      }
 
       return { spooled: true, droppedBatchIds };
     },

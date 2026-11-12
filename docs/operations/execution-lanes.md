@@ -235,15 +235,31 @@ reconcile observes what Git holds.
   `GIT_REPLACE_REF_BASE`, `GIT_ATTR_SOURCE`, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`,
   `GIT_LITERAL_PATHSPECS`, `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS`, `GIT_ICASE_PATHSPECS` and
   `GIT_PREFIX`. The operator's `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` are kept.
+- **A check's environment.** A verification check runs code the candidate holds, so before that
+  removal it gets what `schegent.cli.environmentMode` gives the agent: under `allowlist` the
+  bootstrap names (`PATH`, `HOME`, the account, locale and temp-directory names) plus
+  `schegent.cli.environmentAllowlist`; under `inherit` the whole host environment. `minimal` keeps
+  the bootstrap names for a check, since a build tool started by name needs `PATH`. The policy is
+  read at each check, so a changed setting reaches the next one without a reload (review gap
+  GC-15). A check that needs another variable, such as `JAVA_HOME`, needs it on the allowlist.
+  <!-- Source: src/services/execution-lanes/verification-runner.ts -->
 - **Git timeouts.** A Git call past its bound is sent `SIGTERM`, not killed as a process group.
   A hook that ignores it, or leaves a process holding Git's output, can hold the call open.
-- **Repository code runs.** Hooks, `core.fsmonitor` and clean or smudge filters configured for the
-  repository run in lanes as they do in the checkout.
+- **Repository filters run.** Every host Git call passes `-c core.fsmonitor=false` and
+  `-c core.hooksPath=/dev/null`, so repository hooks and an fsmonitor program do not run (review gap
+  GC-11). The host's patch diffs also pass `--no-ext-diff --no-textconv`. Clean and smudge filters
+  configured for the repository still run in lanes as they do in the checkout: switching them off
+  would make the lane commit store raw worktree content, which for an encrypting filter is the
+  plaintext.
+  <!-- Source: src/lib/host-git-config.ts -->
 - **Large status output.** A lane whose `git status` output exceeds 1 MiB cannot be observed, and
   the operation that needed it fails instead of guessing.
-- **Windows.** Git and check commands are started from the lane root by name. On Windows that
-  search includes the lane root itself, so a `git.exe` placed in a lane could run in the host.
-  The engine is not exercised on Windows.
+- **Windows.** Git and check commands run with the lane root as their working directory. On
+  Windows a bare program name such as `git` or `npm` is resolved along PATH only, to an absolute
+  path, so a `git.exe` or `npm.exe` placed in a lane does not run (review gap GC-24). A relative
+  PATH entry is skipped for the same reason. A check program installed only as a `.cmd` shim is
+  not found, as before. The engine is not exercised on Windows.
+  <!-- Source: src/lib/spawn-command.ts -->
 
 ## What is deferred
 

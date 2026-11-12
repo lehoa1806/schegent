@@ -242,9 +242,13 @@ FR-R4-F12 added one `phase-start` field, optional and additive:
 - **`phase-start.promptIdentity`** — which prompt contract this attempt was asked
   under, so two attempts or two Runs can be compared without keeping any prompt
   text. It is one of exactly two shapes:
-  `{ "scope": "contract", "compositionVersion": 1, "digest": "sha256:<64 hex>" }`
+  `{ "scope": "contract", "compositionVersion": 2, "digest": "sha256:<64 hex>" }`
   for a prompt Schegent composed, and `{ "scope": "resume" }` for an attempt that
   sent an operator's stored resume prompt, where no digest is recorded.
+  - **Composition version**: 2 since review gap GC-14 (2026-11-12) opened the
+    previous-phase-message and carried-issue sections with a line naming their
+    entries as data. Rows written earlier carry 1, so a digest from before that
+    change never equals one from after it, even for the same contract and task.
   - **What the digest covers**: the output-contract text (the completion-token and
     audit-block instructions), the composition version, and the task block as
     rendered. For a skill Phase that is the skill *reference* and the fixed
@@ -318,8 +322,8 @@ future `conditionVersion` or an unknown `condition` is preserved and never read 
 ## Storage, rotation, and retention
 
 The writer serializes appends, creates `.schegent/` on demand, and makes a
-best-effort attempt to create `.schegent/.gitignore` without overwriting an
-operator-managed file. An append that takes longer than five seconds fails and
+best-effort attempt to create `.schegent/.gitignore`. An existing file is kept
+while it still ignores every path, and replaced otherwise. An append that takes longer than five seconds fails and
 is reported to the sanitized runtime logger; later appends can still proceed.
 
 <!-- Source: src/audit/audit-log-writer.ts -->

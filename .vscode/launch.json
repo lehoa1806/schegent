@@ -19,6 +19,20 @@
       // bundler config and fails when they name different directories.
       "outFiles": ["${workspaceFolder}/dist/**/*.js"],
       "preLaunchTask": "npm: build"
+    },
+    {
+      // Review gap GC-23 (2026-11-12) — debug the host test file open in the editor, with the
+      // root vitest config `test:host` uses. Host tests only: `webview-ui/` has its own config.
+      "name": "Debug Current Host Test File",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
+      "args": ["run", "${relativeFile}"],
+      "cwd": "${workspaceFolder}",
+      "autoAttachChildProcesses": true,
+      "smartStep": true,
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"],
+      "console": "integratedTerminal"
     }
   ]
 }

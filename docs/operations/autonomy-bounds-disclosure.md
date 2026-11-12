@@ -77,7 +77,10 @@ saying "the bound is denomination-aware".
 The bound is evaluated at a phase boundary, against the `phase-end` audit record that
 carries the usage — the same record an operator reads and `npm run audit:verify` chains.
 Spend cannot be observed mid-turn, because no backend reports it until the turn ends, so
-the overshoot is at most the phase that crossed the bound.
+the phase that crossed the bound always runs to completion. The pause is written beside that
+`phase-end` record, not before the Run moves on: if the write lands after the Run reads its own
+state, the pause takes effect at the next boundary and one more phase runs. The overshoot is
+therefore the crossing phase, and at most one phase after it.
 
 A host restart does not hand a run its whole bound again. At activation the tally of every Run
 that can still move is rebuilt: a live Run, and a `failed` one, which Retry, Restart and Resume
@@ -96,8 +99,9 @@ before it. Such a Run can pause early, once per host session.
 
 **A pause at a phase boundary, never a ceiling inside an invocation.** The bound reads the
 `phase-end` record of a phase that has already finished and been paid for. No backend reports
-spend until its turn ends, so a Run that crosses the bound overshoots by at most the phase that
-crossed it, and nothing stops an invocation partway.
+spend until its turn ends, so a Run that crosses the bound overshoots by the phase that crossed
+it, and at most one phase after it when the pause write lands late (above). Nothing stops an
+invocation partway.
 
 **The denomination is the backend's, not the figures'.** The bound compares a Run's total with the
 limit in the unit the ended phase's backend reports: USD for `claude`, tokens for `codex` and `agy`
@@ -143,8 +147,21 @@ The table above lists the **default** bounds. The settings behind them (`schegen
 the two invocation timeouts, `schegent.retry.forceContinueOnCap` and the two spend bounds) are
 resource-scoped, so a trusted workspace or a workspace folder may set them as well as the user's own
 settings (the two spend bounds are read for the workspace as a whole, so a folder's value does not
-apply to them). **That is accepted behaviour:** a workspace you have chosen to trust may tighten or
-loosen the bounds a Run is held to, and the page you are reading cannot say which it did.
+apply to them).
+
+**A workspace may only tighten the spend, retry, loop and invocation time limits.** For
+`schegent.spend.maxUsdPerRun`, `schegent.spend.maxTokensPerRun`, `schegent.retry.maxAttempts`,
+`schegent.retry.forceContinueOnCap`, `schegent.loop.maxIterations`,
+`schegent.loop.maxUnchangedComparisons`, `schegent.invocation.idleTimeoutSeconds` and
+`schegent.invocation.maxDurationSeconds`, the operator's value is the user setting, else the
+default. For the idle window, the user value of the deprecated `schegent.invocation.timeoutSeconds`
+counts as the operator's when the new key has no user value. A workspace or folder value replaces it only when it is valid and
+stricter: a lower cap or a shorter timeout, a cap where the operator set none (`null`, or `0` for
+the unchanged-comparison bound), or `false` for `forceContinueOnCap`. A value that would raise, clear
+or switch off a limit is ignored, and activation logs one warning naming the setting and the layer.
+A Phase's own spend bound (below) follows the same rule. A Phase's own idle timeout and retry-cap
+outcome are part of the pipeline and are not limited by it; the wall-clock bound still applies to
+every invocation.
 
 So each Run shows the limits it actually runs under, in the Run's detail view: the iteration cap and
 what happens at it, the idle and wall-clock timeouts, the delayed-retry cap, and the spend bound with
@@ -159,12 +176,13 @@ fully measured is shown with a warning that it is not trustworthy. Nothing a set
 view as text: only numbers and the five phrases do, so a setting cannot put a path, a secret or markup
 into it.
 
-Narrowing these settings to the user scope only would be a separate, reviewed change with a migration
-for the workspaces that set them today. This feature does not make it.
+<!-- Source: src/config/tighten-only-limits.ts -->
 
 ## Per-phase overrides
 
-A Phase may declare `spendBoundUsd` or `spendBoundTokens`, which override the workspace
-default while that phase runs. Precedence is per denomination and independent: a phase
-declaring only a token bound keeps the operator's dollar bound rather than clearing it.
+A Phase may declare `spendBoundUsd` or `spendBoundTokens`, which apply while that phase runs
+when they are tighter than the operator's bound, or when the operator set none. A looser
+authored bound is not used, and the limits view then shows the operator's value and its layer.
+Precedence is per denomination and independent: a phase declaring only a token bound keeps the
+operator's dollar bound rather than clearing it.
 See `docs/features/custom-phases.md` for the authored field table and its bounds.

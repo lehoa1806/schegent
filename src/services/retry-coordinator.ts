@@ -1,6 +1,7 @@
 import type { PhaseResult, WorkflowRun } from '../state/workflow-run';
 import { RetryHandler, type RetryHandlerDeps } from '../controller/retry-handler';
 import type { SanitizedLogger } from '../lib/logger';
+import { errorMessage } from '../lib/errors';
 import type { GuardedRunService } from './guarded-run-service';
 import type { UnattendedWakeup } from './unattended-eligibility';
 
@@ -387,5 +388,19 @@ export class RetryCoordinator {
       return;
     }
     await this.armDelayedRetry(queueId, run.pendingRetryCause, delay);
+  }
+
+  /**
+   * Review gap GC-01 (2026-11-12) — re-arms every persisted Run, each in isolation. One Run that
+   * cannot be re-armed is logged and skipped, so it no longer strands the queues after it.
+   */
+  public async resumeAllFromActivation(runs: Readonly<Record<string, WorkflowRun>>): Promise<void> {
+    for (const [queueId, run] of Object.entries(runs)) {
+      try {
+        await this.resumeExistingFromActivation(queueId, run);
+      } catch (err) {
+        this.logger.warn(`activation resume failed for queue ${queueId}: ${errorMessage(err)}`);
+      }
+    }
   }
 }

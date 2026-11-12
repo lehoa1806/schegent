@@ -30,7 +30,7 @@ Schegent qualifies Node's built-in `node:sqlite` (`DatabaseSync`, verified at `s
 | Pragma | Applied Setting | Required Read-Back | Purpose |
 |---|---|---|---|
 | `journal_mode` | `WAL` (or `MEMORY` in `:memory:` tests) | `'wal'` / `'memory'` | Concurrent readers alongside a single serialized writer |
-| `synchronous` | `FULL` (`2`) | `2` | Crash and power-loss durability for authoritative state |
+| `synchronous` | `FULL` (`2`) | `2` | A committed write survives a process or OS crash; power-loss durability depends on the platform (below) |
 | `foreign_keys` | `ON` (`1`) | `1` | Per-connection enforcement of all relational foreign keys |
 | `busy_timeout` | `250` | `250` | Bounded `250 ms` lock wait ceiling |
 | `trusted_schema` | `OFF` (`0`) | `0` | Hardens against untrusted SQL functions/triggers in schema objects |
@@ -38,6 +38,13 @@ Schegent qualifies Node's built-in `node:sqlite` (`DatabaseSync`, verified at `s
 | `query_only` | `ON` (`1`) on read pool | `1` (readers) / `0` (writer) | Prevents accidental mutations on read connections (`max 2`) |
 
 If any pragma read-back does not match its required value, `NodeSqliteConnection` closes the descriptor and throws `SqlitePragmaVerificationError`.
+
+**Power loss on macOS.** `synchronous = FULL` makes every commit call `fsync`. On Linux that reaches the disk.
+On macOS, `fsync` leaves the data in the drive's cache; only `F_FULLFSYNC` flushes it, and SQLite issues that
+only under `PRAGMA fullfsync`, which the store does not set. A power cut or a forced shutdown on macOS can
+therefore lose the most recent commits. Turning it on was measured and not adopted: on 2026-11-12, 500 one-row
+WAL commits under `node:sqlite` on APFS took 63 µs each without it and 4,818 µs each with it. The connection
+is synchronous on the extension host thread, so that cost would block the host on every commit.
 
 ---
 
@@ -88,3 +95,4 @@ All authoritative multi-table state changes execute inside `AtomicTransactionUni
 2. **Online Backup & Validated Restore (`BackupRestoreService`)**:
    - `createOnlineBackup` uses `VACUUM INTO` to snapshot the live WAL database and builds a `BackupDependencyManifest` listing external content-addressed blobs (`F05`), bounded log segments (`F07`), and `AuditLogger` files with SHA-256 digests and byte lengths.
    - `validateAndRestoreBackup` opens the backup in an isolated read-only connection, verifies `PRAGMA quick_check` (`ok`), `PRAGMA foreign_key_check` (`0` rows), schema version compatibility, and every external file digest before modifying the active store.
+   - Both functions are library code. No host command, activation module or UI calls them, so there is no operator-facing way to back up or restore the database today.

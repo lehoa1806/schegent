@@ -14,11 +14,14 @@ Implemented in:
 
 ## Production status
 
-This release ships package F14-A: the exporter, its mapping, its queue and a real OTLP/HTTP
-transport, with their tests. Nothing in activation constructs them, and no file outside
-`src/services/telemetry-export/` imports the module (`tests/lint/expansion-freeze.test.ts`
-holds both facts). There is no setting that turns export on, so an installed build sends
-nothing. Wiring is F14-B (see Deferred).
+This release ships package F14-A, the exporter, its mapping, its queue and a real OTLP/HTTP
+transport, and package F14-B, the host side: the `schegent.telemetry.export.*` settings, a
+secret-store adapter, a SQLite-backed durable ledger and file spool, and the activation wiring
+that offers accepted usage observations to the exporter (`src/services/telemetry-host/`,
+`src/activation/sqlite-cutover-wiring.ts`). Export is off by default. It starts only when the
+user-scoped setting `schegent.telemetry.export.enabled` is `true` and a valid destination is
+set, in a trusted primary window; an installed build with the default settings sends nothing.
+Workspace and folder settings are never read for these keys.
 
 The exporter is the only network client in host source. Only its transport file imports a
 network module, and the same lint file fails if any other source does.
@@ -229,7 +232,7 @@ the batch `credential-unavailable`; a value outside the rule drops it `credentia
 | Measures in one usage record | 16 |
 | Mapping and queueing one batch of 256 records | 5 ms at p95 (`tests/perf/budgets.json`) |
 
-A disk spool bound of 32 MiB is declared for F14-B. Nothing in this release writes a spool.
+The host service spools undelivered batches to a private directory under the storage root, bounded at 32 MiB (`diskSpoolBytes`), and replays them once when the extension next activates, after configuring the destination, while that destination and credential are still authorized.
 
 ## Health
 
@@ -260,18 +263,19 @@ from the transport, the secret store or the ledger is caught and counted.
   batch identity, so a destination cannot tell the second copy from the first, and delta data
   points are added twice. Local records are unaffected.
 - **A model label is bounded by pattern, not by meaning.** A model value that fits the model
-  pattern and does not look like a credential is exported as given. The source adapter (F14-B)
+  pattern and does not look like a credential is exported as given. The source adapter
   must not put a session or Run identifier in a backend or model field. The overflow set is the
   only limit on how many distinct values reach a destination.
-- **The copy ledger is in memory.** It remembers 16,384 copy identities, oldest forgotten
-  first, and is empty after a restart. A record offered again after either can be exported
-  again. The durable ledger is F14-B.
+- **The exporter's own copy ledger is in memory.** It remembers 16,384 copy identities, oldest
+  forgotten first, and is empty after a restart. The host service keeps a SQLite-backed durable
+  ledger beside it; this guide does not describe that ledger's limits.
 - **Certificate authorities are a process setting.** `NODE_EXTRA_CA_CERTS` and the platform
   trust store decide which certificates verify. The exporter cannot narrow them.
-- **Batches do not survive a restart.** Queued and open batches are dropped at shutdown.
+- **Only spooled batches survive a restart.** Queued and open batches are dropped at shutdown. A
+  batch that exhausted its retries is spooled instead, and is replayed once at the next activation.
 - **The proxy environment is not read.** Every request goes straight to the destination, also
   when Node is started with its environment-proxy option. A network that reaches the
-  destination only through a proxy cannot export. Proxy support is an F14-B decision.
+  destination only through a proxy cannot export. Proxy support is not provided.
 - **A peer that does not speak TLS can be reported as `network`.** The failure class comes from
   the error code alone. A peer that closes the connection during the handshake gives a
   connection error code, so the last error in `health()` is `network`, not `tls`.
@@ -285,8 +289,5 @@ vendor accepts these requests.
 
 ## Deferred
 
-- **F14-B**: the settings surface for a profile, the editor secret-store adapter, the durable
-  SQLite ledger, the file spool, activation wiring and the source adapter that offers records,
-  and a health surface.
 - **Content export** with a preview. Refused in this release (`content-export-unsupported`).
 - **Traces and logs**, and the protobuf and gRPC protocols. Declared and refused.

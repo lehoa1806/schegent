@@ -252,6 +252,12 @@ lifecycle service at the F01-B cutover.
 The source of truth is `SWEEPER_CENSUS`. A unit test requires each named symbol to appear in its
 source file, so a renamed or moved sweeper fails the build before this table goes stale.
 
+The run-status protected set also carries the runs pinned in SQLite: lane pins, exports in flight
+and active protective references. When the SQLite query for those pins fails, the failure is
+reported once and the session sweep is skipped, at activation, at a terminal Run and on a retention
+setting change. A sweep on the rest of the set would delete what those pins protect. The
+maintenance pass stops the same way, and both run again on their next trigger.
+
 ## Unqualified platforms
 
 The containment, link and unlink guarantees above were measured on local POSIX filesystems only:

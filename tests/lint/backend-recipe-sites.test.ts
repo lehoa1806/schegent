@@ -148,12 +148,14 @@ describe('the backend recipe lists every site (L11)', () => {
     expect(absorbing).toEqual([]);
   });
 
-  it('lists the factory as a switch, and names its fallback site', () => {
+  it('lists the factory as a switch, and the path accessor as an exhaustive one', () => {
     const factory = BACKEND_RECIPE_SITES.find((site) => site.path === 'src/runner/backend-runner-factory.ts');
     expect(factory?.how).toBe('switch');
+    // Review gap GC-06 (2026-11-12) — the accessor was an `if` chain whose fallback was Claude; it is
+    // now a switch with a `never` default, so it no longer has a fallback site to name.
     const accessor = BACKEND_RECIPE_SITES.find((site) => site.path === 'src/config/cli-path-accessor.ts');
-    expect(accessor?.how).toBe('equality');
-    expect(accessor?.note).toMatch(/fallback is Claude/);
+    expect(accessor?.how).toBe('switch');
+    expect(accessor?.note).toMatch(/`never` default/);
   });
 
   describe('the check itself (seeded)', () => {

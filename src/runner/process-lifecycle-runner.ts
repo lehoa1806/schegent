@@ -15,6 +15,7 @@ import { ZippedStreamBuffer } from './zipped-stream-buffer';
 import { processTreeSpawnOptions, escalateAndReportTree, trackGroupAtExit } from './process-tree';
 import { nextInvocationId } from './invocation-identity';
 import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
+import { spawnCommandFor } from '../lib/spawn-command';
 import { TeardownLedger } from './teardown-ledger';
 import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 
@@ -131,7 +132,8 @@ export class ProcessLifecycleRunner {
     // After the last await, so a `close()` that lands while `prepare()` runs
     // still refuses this spawn (feature-228 security review, S1).
     if (this.closed) throw new SpawnRefusedAfterCloseError(this.label);
-    const child = this.spawnFn(request.cliPath, input.args, {
+    // Review gap GC-24 -- on win32 a bare name resolves along the child's PATH only, never the cwd.
+    const child = this.spawnFn(spawnCommandFor(request.cliPath, input.env), input.args, {
       stdio: ['pipe', 'pipe', 'pipe'], shell: false, cwd: request.cwd, env: input.env,
       // FR-R3-054 (H-05) — its own process group, so the ladder below can reach
       // descendants. Without this a CLI that forks a helper survived cancel and

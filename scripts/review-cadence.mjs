@@ -174,7 +174,7 @@ export const DATED_REVIEW_RECORDS = Object.freeze([
   {
     document: 'docs/operations/platform-observation-record.md',
     marker: 'decline-review-date',
-    defers: 'the Windows and Linux verification routes (FR-R3-115, FR-R3-129)',
+    defers: 'the Windows verification route and Linux verification beyond the local unit-tier leg (FR-R3-115, FR-R3-129)',
     mustMention: ['What would change this', 'Windows machine', 'container runtime', 'contributor']
   },
   {

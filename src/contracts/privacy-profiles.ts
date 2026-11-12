@@ -115,7 +115,8 @@ const COMMON_RESIDUALS: readonly string[] = Object.freeze([
   // content on the machine; a profile that listed only what Schegent keeps would read as "nothing leaves".
   "Claude Code sends repository content and prompts to the model vendor, whatever Schegent's local " +
     'capture settings are. Schegent makes no network call of its own, but that does not keep that content ' +
-    "on the machine: it leaves through the CLI's own requests, and no profile changes that.",
+    "on the machine: it leaves through the CLI's own requests, and no profile changes that. The one " +
+    'exception is the optional OTLP telemetry export, which is off by default and sends metadata only.',
   // FR-R5-F17 (NS-10, NU-20, S-19..S-22) — backend-owned session stores under the operator's home directory
   // are outside Schegent's retention and deletion controls.
   'Backend CLIs write their own unredacted session history under your home directory (`<home>/.claude/`, ' +

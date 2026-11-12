@@ -1059,6 +1059,17 @@ describe('FR-R4-F08 K-T1 — arrow, Home and End keys move between the Run Detai
     expect(ignored.defaultPrevented, 'an unrelated key is not prevented').toBe(false);
     expect(selected(tab), 'an unrelated key moves nothing').toBe('outputs');
   });
+
+  // Like the Builder, System and Settings tab bars: the tablist is named, and the keys are handled
+  // on the tabs, so the list itself carries no handler and no Tab stop of its own.
+  it('names the tablist and handles the keys on the tabs, not on the list', () => {
+    const { tab } = mountOnTab();
+    const list = tab('log').closest('[role="tablist"]');
+    expect(list?.getAttribute('aria-label')).toBe('Run detail views');
+    const onList = new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true });
+    list?.dispatchEvent(onList);
+    expect(onList.defaultPrevented, 'a key on the list itself is not a tab key').toBe(false);
+  });
 });
 
 describe('FR-R4-F08 K-T2 — Run Detail tab roving focus and association', () => {

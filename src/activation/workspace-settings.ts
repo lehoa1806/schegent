@@ -4,8 +4,10 @@
 import * as vscode from 'vscode';
 
 import type { SanitizedLogger } from '../lib/logger';
-import { resolveProcessEnvironmentPolicy, type ProcessEnvironmentPolicy } from '../runner/spawn-env';
+import type { ProcessEnvironmentPolicy } from '../runner/spawn-env';
+import { readProcessEnvironmentPolicy } from './uncached-settings-accessors';
 import { validateWorkspaceSettings } from '../config/settings-schema-validator';
+import { RUN_LIMIT_KEYS, mergeIdleTimeoutLayers, resolveRunLimit } from '../config/tighten-only-limits';
 import type { EffectiveLimit, LimitOrigin } from '../contracts/snapshot-projections';
 
 /** The layers `WorkspaceConfiguration.inspect` reports, as far as an origin is concerned. */
@@ -80,41 +82,38 @@ const config = vscode.workspace.getConfiguration('schegent', vscode.Uri.file(wor
 // `loop.maxIterations: 0`) surface in the runtime log at activation
 // instead of producing a confusing downstream reject. Sync, no I/O.
 validateWorkspaceSettings(config, logger, new Set());
+// Review gap GC-10 — a repository layer may tighten a spend, retry, loop or invocation time limit and
+// never loosen it. The readers ignore a looser value silently on every read; activation says so once
+// per key. The idle window folds in its deprecated alias (FR-R3-075), so it is read through the merge.
+const idleLayers = mergeIdleTimeoutLayers(
+  config.inspect('invocation.idleTimeoutSeconds'),
+  config.inspect('invocation.timeoutSeconds')
+);
+for (const key of RUN_LIMIT_KEYS) {
+  const layers = key === 'invocation.idleTimeoutSeconds' ? idleLayers : config.inspect(key);
+  const { ignoredLayers } = resolveRunLimit(key, layers);
+  if (ignoredLayers.length === 0) continue;
+  logger.warn('workspace setting may only tighten an operator limit; value ignored', {
+    key,
+    layers: ignoredLayers.join(',')
+  });
+}
 const cliPath = config.get<string>('cli.path', 'claude');
-const processEnvironmentPolicy = resolveProcessEnvironmentPolicy({
-  inheritEnvironment: config.get<boolean>('cli.inheritEnvironment', true),
-  // Feature 098 (PRIV-02) — fallback mirrors the manifest default, which
-  // moved `inherit` -> `allowlist`. An absent contribution must not
-  // silently restore full ambient-environment forwarding.
-  mode: config.get<unknown>('cli.environmentMode', 'allowlist'),
-  allowlist: config.get<unknown>('cli.environmentAllowlist', [])
-});
-const iterationCap = config.get<number>('loop.maxIterations', 10);
+// Feature 098 (PRIV-02) — the reader's fallbacks mirror the manifest default, which moved
+// `inherit` -> `allowlist`; one reader serves this and lane verification (review gap GC-15).
+const processEnvironmentPolicy = readProcessEnvironmentPolicy(workspaceRoot, config);
+const iterationLimit = resolveRunLimit('loop.maxIterations', config.inspect('loop.maxIterations'));
+const iterationCap = iterationLimit.value;
 const pollIntervalMinutes = config.get<number>('watchdog.pollIntervalMinutes', 30);
-// FR-R3-075 — the idle window, renamed to say what it is. The old key is
-// honored as a fallback when the operator set it explicitly and has not yet
-// adopted the new name; `inspect` distinguishes an explicit value from the
-// manifest default, which plain `get` cannot.
-const idleInspect = config.inspect<number>('invocation.idleTimeoutSeconds');
-const idleExplicit =
-  idleInspect?.workspaceFolderValue ?? idleInspect?.workspaceValue ?? idleInspect?.globalValue;
-const legacyInspect = config.inspect<number>('invocation.timeoutSeconds');
-const legacyExplicit =
-  legacyInspect?.workspaceFolderValue ??
-  legacyInspect?.workspaceValue ??
-  legacyInspect?.globalValue;
-const timeoutSeconds = idleExplicit ?? legacyExplicit ?? 5400;
-// FR-R4-F02 (E2 G5) — the origin names the layer that won, not the key: the explicit new key if it
-// was set, else the legacy key's layer, else the default, in the order `timeoutSeconds` resolves.
-const idleOrigin =
-  idleExplicit !== undefined
-    ? originOf(idleInspect)
-    : legacyExplicit !== undefined
-      ? originOf(legacyInspect)
-      : 'default';
+// FR-R3-075 — the idle window, renamed to say what it is. The old key is honored while the operator
+// set it explicitly and has not yet adopted the new name (`mergeIdleTimeoutLayers`). FR-R4-F02 (E2
+// G5) — the origin names the layer that won, not the key.
+const idleLimit = resolveRunLimit('invocation.idleTimeoutSeconds', idleLayers);
+const timeoutSeconds = idleLimit.value;
 // FR-R3-075 — the absolute per-invocation bound; reasoning beside the
 // default's declaration in general-settings.ts.
-const maxDurationSeconds = config.get<number>('invocation.maxDurationSeconds', 21600);
+const maxDurationLimit = resolveRunLimit('invocation.maxDurationSeconds', config.inspect('invocation.maxDurationSeconds'));
+const maxDurationSeconds = maxDurationLimit.value;
 const rotationSizeMB = config.get<number>('audit.rotation.sizeMB', 5);
 const rotationMaxAgeDays = config.get<number>('audit.rotation.maxAgeDays', 30);
   return {
@@ -128,12 +127,9 @@ const rotationMaxAgeDays = config.get<number>('audit.rotation.maxAgeDays', 30);
     rotationSizeMB,
     rotationMaxAgeDays,
     limits: {
-      iterationCap: { value: iterationCap, origin: originOf(config.inspect<number>('loop.maxIterations')) },
-      idleTimeoutSeconds: { value: timeoutSeconds, origin: idleOrigin },
-      maxDurationSeconds: {
-        value: maxDurationSeconds,
-        origin: originOf(config.inspect<number>('invocation.maxDurationSeconds'))
-      }
+      iterationCap: { value: iterationCap, origin: iterationLimit.origin },
+      idleTimeoutSeconds: { value: timeoutSeconds, origin: idleLimit.origin },
+      maxDurationSeconds: { value: maxDurationSeconds, origin: maxDurationLimit.origin }
     }
   };
 }

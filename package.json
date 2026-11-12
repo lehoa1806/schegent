@@ -378,7 +378,7 @@
           "default": null,
           "minimum": 0.01,
           "scope": "resource",
-          "markdownDescription": "Per-run spend bound in US dollars (FR-R3-112). `null` (the default) means **no bound** \u2014 the mechanism ships enabled and unset, because a bound arriving as a surprise mid-run is worse than no bound. Crossing the bound **pauses** the run through the ordinary operator-resumable pause (cause `spend-bound-reached`); it never fails or cancels it, so nothing is destroyed. Applies to backends that report a cost \u2014 today, `claude`. For `codex` and `agy`, which report tokens and no cost, use `schegent.spend.maxTokensPerRun`. A per-phase override may be declared on a Phase as `spendBoundUsd`."
+          "markdownDescription": "Per-run spend bound in US dollars (FR-R3-112). `null` (the default) means **no bound** \u2014 the mechanism ships enabled and unset, because a bound arriving as a surprise mid-run is worse than no bound. Crossing the bound **pauses** the run through the ordinary operator-resumable pause (cause `spend-bound-reached`); it never fails or cancels it, so nothing is destroyed. Applies to backends that report a cost \u2014 today, `claude`. For `codex` and `agy`, which report tokens and no cost, use `schegent.spend.maxTokensPerRun`. A per-phase override may be declared on a Phase as `spendBoundUsd`. The bound is checked only when a phase ends, never during an invocation, because no backend reports spend until its turn ends: the phase that crosses the bound always runs to completion, and one more phase can run when the pause lands after the Run reads its state, so a paused Run's total ends above the bound."
         },
         "schegent.spend.maxTokensPerRun": {
           "type": [
@@ -388,7 +388,7 @@
           "default": null,
           "minimum": 1,
           "scope": "resource",
-          "markdownDescription": "Per-run spend bound in tokens (FR-R3-112), for backends that report tokens and no cost \u2014 today, `codex` and `agy`. `null` (the default) means **no bound**. Behaves identically to the dollar bound: crossing it pauses the run, resumable by the operator, with no terminal transition. A per-phase override may be declared on a Phase as `spendBoundTokens`."
+          "markdownDescription": "Per-run spend bound in tokens (FR-R3-112), for backends that report tokens and no cost \u2014 today, `codex` and `agy`. `null` (the default) means **no bound**. Behaves identically to the dollar bound: crossing it pauses the run, resumable by the operator, with no terminal transition. A per-phase override may be declared on a Phase as `spendBoundTokens`. Like the dollar bound, it is checked only when a phase ends, so the phase that crosses it always runs to completion, one more phase can run when the pause lands late, and a paused Run's total ends above the bound."
         },
         "schegent.audit.rotation.sizeMB": {
           "type": "number",
@@ -621,7 +621,7 @@
   "scripts": {
     "build": "npm run build:webview && npm run build:host",
     "build:host": "node esbuild.config.mjs",
-    "build:webview": "npm --prefix webview-ui run build",
+    "build:webview": "node scripts/check-webview-install.mjs && npm --prefix webview-ui run build",
     "contracts:generate": "node scripts/generate-contract-schemas.mjs",
     "contracts:check": "node scripts/generate-contract-schemas.mjs --check",
     "docs:check": "node scripts/check-docs.mjs && node scripts/check-doc-links.mjs && node scripts/check-gate-coverage-parity.mjs",
@@ -642,6 +642,7 @@
     "test": "npm run build:webview && vitest run && npm --prefix webview-ui run test",
     "test:host": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "coverage:headroom": "node scripts/check-coverage-headroom.mjs host",
     "test:webview": "npm --prefix webview-ui run test",
     "test:webview:coverage": "npm --prefix webview-ui run test:coverage",
     "test:perf": "vitest run --config vitest.perf.config.ts",
@@ -656,10 +657,11 @@
     "test:integration": "npm run build && npm run test:integration:compile && node ./out/tests/integration/runTest.js",
     "verify:all": "npm run build:webview && npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run test:host && npm run test:webview:coverage",
     "verify:edit": "npm run build:webview && npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run test:host && npm run test:webview",
+    "verify:linux": "sh scripts/linux-leg.sh",
     "verify:push": "npm run verify:edit && npm run lint && npm run lint:webview && npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check",
-    "verify:release": "npm run verify:push && npm run build:webview && npm run test:coverage && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run a11y && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
+    "verify:release": "npm run verify:push && npm run build:webview && npm run test:coverage && npm run coverage:headroom && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run a11y && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
     "ci:fast": "npm run typecheck:tests && npm run lint && npm run verify:all && npm run test:evals && npm run test:visual && npm run test:perf && npm run build:host && npm run package:smoke",
-    "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run build:webview && npm run test:coverage && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run a11y && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
+    "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run build:webview && npm run test:coverage && npm run coverage:headroom && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run a11y && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
     "gate": "npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run ci",
     "gate:record": "node scripts/record-gate-run.mjs",
     "gate:distance": "node scripts/gate-distance.mjs",
