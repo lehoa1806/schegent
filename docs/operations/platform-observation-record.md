@@ -198,7 +198,7 @@ reports `Linux 7.2.12-orbstack-00394-gbecdd6130068 aarch64` and Node v24.19.0.
 | `ps` and `pgrep` not found | `process-tree-surviving-helper` (T14), `shutdown-teardown-order` (T23), `global-temp-root` (T1818a) | The slim image ships no `procps`; a desktop Linux does | `procps` in the image (`18f9beea`) |
 | `acp-open-refused:profile-unqualified` | `acp-backed-runner` (the full turn), `f10-isolated-lanes-integration` (F10-AC-08) | Only darwin/arm64 qualifies an ACP profile, and both tests took the host's platform, so they would fail on an Intel Mac as well (inferred, not run) | The runner takes a platform; the tests pin darwin/arm64, and a new case asserts the refusal before launch anywhere else (`bb290c79`) |
 | Sidebar bundle over its cap | `bundle-size` (SC-010) | Not Linux-specific: review gap GC-16's notice pushed the sidebar past its cap | Fixed (`f9e82e55`) |
-| Workspace references not found | `basename-line-references` (2 cases: too few references extracted), `doc-references-outside-markdown` (2 cases: citations resolve in neither tree) | `git archive` carries `repo/` only, and these gates read the workspace's documents | Fixed later the same day: without the envelope `basename-line-references` sets its floors to what `repo/` holds (225 references and 34 unbackticked citations, against floors of 100 and 20), and `doc-references-outside-markdown` judges only explicit `repo/` citations. Observed green in a `git archive` extract committed the way the leg commits it (230 lint files passed); the leg itself has not rerun them yet |
+| Workspace references not found | `basename-line-references` (2 cases: too few references extracted), `doc-references-outside-markdown` (2 cases: citations resolve in neither tree) | `git archive` carries `repo/` only, and these gates read the workspace's documents | Fixed later the same day: without the envelope `basename-line-references` sets its floors to what `repo/` holds (225 references and 34 unbackticked citations, against floors of 100 and 20), and `doc-references-outside-markdown` judges only explicit `repo/` citations. Observed green in a `git archive` extract committed the way the leg commits it (230 lint files passed), and in the leg's fourth run at `c1fa6239` |
 | Timed out at 600 s | `usage-accounting-acceptance` (SC-003, 100,000 money additions into a file database) | A durable commit costs about 42 times as much in the container as on macOS; see below | The case now runs in one outer transaction, so it measures the arithmetic, not one commit per write; see below |
 
 **SC-003 is consistent with a cost of `fsync`.** Run alone in the same image, the file took 829 s
@@ -257,6 +257,12 @@ load-sensitive test designs, not Linux behaviour, and neither is fixed here:
   between two delayed polls leaves nothing to see (inferred, not traced). Fixed later the same day in
   the test: the engine is now a stub that writes a ready file and never finishes, and the signal is sent
   once that file exists.
+
+**Fourth run, at `c1fa6239`** (14:25 to 14:33 UTC). Every step exited 0. `test:host` ran 1,480 files
+and 22,637 tests: 22,592 passed, none failed and 45 were skipped, in 326 s. Each file that was red in
+an earlier run passed: `basename-line-references`, `doc-references-outside-markdown`,
+`usage-accounting-acceptance` (234 s for the file), `stdio-transport`, `f14b-host-integration` and
+`secret-scan-staged`. The host's one-minute load average read 8.7 before the run and 6.1 after it.
 
 **Row 3.** `tests/unit/platform/linux-case-sensitivity.test.ts` (`d386f056`) creates `Report.md` and
 `report.md` side by side and asserts two output identities. In the leg image it passed, 2 of 2, and

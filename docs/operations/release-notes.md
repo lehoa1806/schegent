@@ -73,6 +73,7 @@ From the 2026-11-12 full repository review. Each item names its review gap (`GC-
   now observed there. Linux stays in the `unverified` tier: no extension host, browser or real CLI runs in
   the container. It needs a running Docker daemon and refuses to run while its own files are
   uncommitted. Its first run had two reds from gates that read the workspace envelope; both now hold without it.
+  Its fourth run, at `c1fa6239`, exited 0 at every step.
   See the platform observation record.
 - **SC-003 measures arithmetic, not `fsync`.** The 100,000-addition exact-total case now runs in one
   outer transaction against the real file store. It took 245 s on macOS and timed out at 600 s in the
