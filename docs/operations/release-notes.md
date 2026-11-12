@@ -45,8 +45,9 @@ From the 2026-11-12 full repository review. Each item names its review gap (`GC-
 - **Bare program names resolve along PATH only on Windows (GC-24).** On win32 the extension used to hand a
   bare name such as `git` or `claude` to the operating system, which looks in the workspace folder before
   PATH, so a `git.exe` committed to a repository could run in place of the installed one. A bare name is now
-  resolved to its absolute path along PATH, trying `.com` and `.exe`. A CLI installed only as a `.cmd` shim
-  is still not found, as before. Untested on a real Windows host.
+  resolved to its absolute path along PATH, trying `.com` and `.exe`, and a relative PATH entry is skipped.
+  Lane verification checks are resolved the same way. A CLI installed only as a `.cmd` shim is still not
+  found, as before. Untested on a real Windows host.
 - **Host coverage floors are close to measured coverage (GC-17).** The floors are now 84% statements, 81%
   branches, 88% functions and 84% lines, about five points under the 2026-11-12 measurement, and
   `npm run coverage:headroom` (part of `verify:release`) fails when a floor drifts more than five points

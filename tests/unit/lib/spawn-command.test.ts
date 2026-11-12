@@ -11,7 +11,7 @@
 //   - every agent CLI and git spawn site calls it (census below).
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawnCommandFor } from '../../../src/lib/spawn-command';
 
@@ -76,6 +76,14 @@ describe('GC-24 — win32 bare names resolve along PATH only', () => {
     expect(() => spawnCommandFor('claude', {}, 'win32')).toThrow(expect.objectContaining({ code: 'ENOENT' }));
   });
 
+  // A relative PATH entry (`.`, or a bare folder name) is looked up against the host's own cwd here
+  // and then against the child's cwd, the workspace, by the spawn. It is skipped like a miss.
+  it('skips a relative PATH entry, which would resolve against the cwd', () => {
+    const relativeToHost = relative(process.cwd(), cwdDir);
+
+    expect(spawnCommandFor('claude', winEnv('.', relativeToHost, binB), 'win32')).toBe(join(binB, 'claude.exe'));
+  });
+
   it('reads PATH case-insensitively on win32', () => {
     expect(spawnCommandFor('claude', { PATH: binB }, 'win32')).toBe(join(binB, 'claude.exe'));
   });
@@ -106,7 +114,8 @@ describe('GC-24 — every agent CLI and git spawn site resolves through it', () 
     'src/lib/git-diff-base.ts',
     'src/services/run-checkpoint-service.ts',
     'src/services/workflow-execution/recovery-envelope-builder.ts',
-    'src/activation/run-safety-wiring.ts'
+    'src/activation/run-safety-wiring.ts',
+    'src/services/execution-lanes/verification-runner.ts'
   ];
 
   it.each(SITES)('%s calls spawnCommandFor', (site) => {

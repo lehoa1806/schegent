@@ -254,9 +254,12 @@ reconcile observes what Git holds.
   <!-- Source: src/lib/host-git-config.ts -->
 - **Large status output.** A lane whose `git status` output exceeds 1 MiB cannot be observed, and
   the operation that needed it fails instead of guessing.
-- **Windows.** Git and check commands are started from the lane root by name. On Windows that
-  search includes the lane root itself, so a `git.exe` placed in a lane could run in the host.
-  The engine is not exercised on Windows.
+- **Windows.** Git and check commands run with the lane root as their working directory. On
+  Windows a bare program name such as `git` or `npm` is resolved along PATH only, to an absolute
+  path, so a `git.exe` or `npm.exe` placed in a lane does not run (review gap GC-24). A relative
+  PATH entry is skipped for the same reason. A check program installed only as a `.cmd` shim is
+  not found, as before. The engine is not exercised on Windows.
+  <!-- Source: src/lib/spawn-command.ts -->
 
 ## What is deferred
 

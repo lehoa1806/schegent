@@ -18,6 +18,7 @@ import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:c
 import { createHash } from 'node:crypto';
 import type { VerificationCheck, VerificationProfile } from '../../contracts/execution-lanes';
 import { SHIPPED_DEFAULT_POLICY, type ProcessEnvironmentPolicy } from '../../contracts/process-environment-policy';
+import { spawnCommandFor } from '../../lib/spawn-command';
 import { buildSpawnEnv } from '../../runner/spawn-env';
 import { allDirtyCount, trackedDirtyCount } from './git-observe';
 import { buildLaneGitEnv, LaneGitError, type LaneGitRunner } from './git-runner';
@@ -110,10 +111,21 @@ export function createSpawnCheck(deps: SpawnCheckDeps = {}): SpawnCheck {
         clearTimeout(timer);
         resolve({ exitCode, signal, timedOut, durationMs: now() - started, outputBytes, outputSha256: hash.digest('hex') });
       };
-      const command = argv.at(0) ?? '';
+      const env = checkEnv(environmentPolicy(), base);
+      // Review gap GC-24 -- on win32 a bare check program (`npm`, `node`) resolves along the
+      // check's PATH only, never from the lane root, where the lane's own work could plant one.
+      // A miss is reported the way a spawn error is: no exit code, no signal.
+      let command: string;
+      try {
+        command = spawnCommandFor(argv.at(0) ?? '', env);
+      } catch {
+        settled = true;
+        resolve({ exitCode: null, signal: null, timedOut, durationMs: now() - started, outputBytes, outputSha256: hash.digest('hex') });
+        return;
+      }
       const child = spawnFn(command, argv.slice(1), {
         cwd: options.cwd,
-        env: checkEnv(environmentPolicy(), base),
+        env,
         shell: false,
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
