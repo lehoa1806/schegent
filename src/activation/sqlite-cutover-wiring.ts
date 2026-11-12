@@ -454,6 +454,7 @@ async function openPrimarySqliteServices(
       reportSideEffectFailure: input.reportSideEffectFailure
     });
     telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
+    void replayTelemetrySpoolAfterSettling(telemetryHost, input.reportSideEffectFailure);
     const configSub = vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('schegent.telemetry.export')) {
         telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
@@ -865,6 +866,24 @@ export async function sweepWithReadableProtection(
   }
   await sweep(protectedIds);
   return 'swept';
+}
+
+/**
+ * Re-sends the batches a previous host spooled, once, after the spool work that configuring the
+ * destination started has settled, so the two reconciles do not race over the same rows. Review gap
+ * closure (2026-11-12): the replay existed and was tested across a reopen, but nothing in the
+ * extension called it. A failure is reported as `telemetry-spool` and never rejects activation.
+ */
+export async function replayTelemetrySpoolAfterSettling(
+  host: Pick<TelemetryHostService, 'idle' | 'reconcileAndReplaySpool'>,
+  reportFailure: SideEffectFailureReport
+): Promise<void> {
+  try {
+    await host.idle();
+    await host.reconcileAndReplaySpool();
+  } catch (err) {
+    reportFailure('telemetry-spool', err);
+  }
 }
 
 /**
