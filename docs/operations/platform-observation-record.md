@@ -254,7 +254,9 @@ load-sensitive test designs, not Linux behaviour, and neither is fixed here:
   `idle()` waits for unawaited spool work, which the test now awaits in place of the 20 ms.
 - `secret-scan-staged` (SS4, SIGTERM while the engine runs) polls every 2 ms for the scan's temporary
   directory and never saw it. The directory exists only while the scan runs, so a scan that completes
-  between two delayed polls leaves nothing to see (inferred, not traced).
+  between two delayed polls leaves nothing to see (inferred, not traced). Fixed later the same day in
+  the test: the engine is now a stub that writes a ready file and never finishes, and the signal is sent
+  once that file exists.
 
 **Row 3.** `tests/unit/platform/linux-case-sensitivity.test.ts` (`d386f056`) creates `Report.md` and
 `report.md` side by side and asserts two output identities. In the leg image it passed, 2 of 2, and
