@@ -75,7 +75,7 @@ export interface WorkflowControllerOptions extends ResumeGuardOptions {
   inheritProcessEnv?: boolean;
   processEnvAllowlist?: readonly string[];
   skipProbing?: boolean;
-  cliPathResolver?: (runnerKind: string) => string;
+  cliPathResolver?: (runnerKind: BackendRunnerKind) => string;
   defaultRunnerKind?: BackendRunnerKind;
   isAuditEvidenceAvailable?: () => boolean;
   getForceContinueOnRetryCap?: () => boolean; // `retry.forceContinueOnCap`: dynamic, never cached

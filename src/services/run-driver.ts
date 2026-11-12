@@ -98,7 +98,7 @@ interface RunDriverOptions {
   readonly processEnvAllowlist?: readonly string[];
   // Feature 074 — resolve the CLI binary path for a given runner kind.
   // When undefined, falls back to `cliPath` for all runners.
-  readonly cliPathResolver?: (runnerKind: string) => string;
+  readonly cliPathResolver?: (runnerKind: BackendRunnerKind) => string;
   /** Effective global backend for phases without an explicit override. */
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly skipProbing?: boolean;

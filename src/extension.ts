@@ -442,7 +442,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       // Feature 074 — resolve CLI binary path per-runner-kind. Reads the
       // setting per-invocation (never cached at activation) so the operator
       // can change `schegent.agy.path` without restarting VS Code.
-      cliPathResolver: (runnerKind: string) => resolveCliPath(runnerKind, workspaceRoot, cliPath)
+      cliPathResolver: (runnerKind) => resolveCliPath(runnerKind, workspaceRoot, cliPath)
     },
     {
       monitor,
