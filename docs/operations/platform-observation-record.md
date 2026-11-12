@@ -233,6 +233,21 @@ hardened (`5a7ab5e0`): it refuses to run while its own files differ from `HEAD`,
 a file before the container reads it, runs the container with `--init`, and reads the Node pin from the
 commit under test.
 
+**Third run, at `3b51e8b0`** (11:16 to 11:52 UTC), the first through the hardened harness. Every step
+exited 0 except `test:host`: 1,480 files and 22,611 tests, 22,559 passed, 7 failed and 45 skipped, in
+2,056 s. `stdio-transport` passed. Five of the seven are the envelope gates and SC-003 again. The other
+two had passed in both earlier runs, and another session's test runs were loading the host: its
+one-minute load average, sampled every two minutes from 11:25 UTC, read between 3.8 and 30.5. Both are recorded as
+load-sensitive test designs, not Linux behaviour, and neither is fixed here:
+
+- `f14b-host-integration` (F14-AC-05/06/10) waits a fixed 20 ms for a retry-exhausted batch to spool,
+  then asserts one spooled batch; it read 0. The spool arrived after the test had closed the
+  database and surfaced as an unhandled `database is not open` rejection from
+  `src/services/telemetry-host/telemetry-durable-store.ts`.
+- `secret-scan-staged` (SS4, SIGTERM while the engine runs) polls every 2 ms for the scan's temporary
+  directory and never saw it. The directory exists only while the scan runs, so a scan that completes
+  between two delayed polls leaves nothing to see (inferred, not traced).
+
 **Row 3.** `tests/unit/platform/linux-case-sensitivity.test.ts` (`d386f056`) creates `Report.md` and
 `report.md` side by side and asserts two output identities. In the leg image it passed, 2 of 2, and
 with `fold()` changed to always lower-case it failed, 2 of 2, so the fixture can see the defect it
