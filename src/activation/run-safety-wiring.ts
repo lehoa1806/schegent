@@ -58,7 +58,8 @@ import { createBackendAvailabilityWiring } from './backend-wiring';
 import {
   createSqliteCutoverCoordinator,
   getSqliteCutoverCoordinator,
-  getWorkspaceLockForStore
+  getWorkspaceLockForStore,
+  sweepWithReadableProtection
 } from './sqlite-cutover-wiring';
 import type { BackendCapabilityService } from '../services/backend-capability-service';
 import { isWorkflowNodeTerminalStatus } from '../contracts/workflow-definitions';
@@ -435,7 +436,7 @@ export async function createRunSafetyWiring(input: {
         run.rawTranscriptMode ?? 'always'
       );
       if (run.status !== 'paused') {
-        await input.sessionRetention.sweep(input.protectedSessionRunIds());
+        await sweepWithReadableProtection(input.protectedSessionRunIds, (ids) => input.sessionRetention.sweep(ids));
       }
       await recordConnectedWorkflowTransition(
         {

@@ -39,7 +39,7 @@ type MigrationEvents = Parameters<typeof forwardMigrationAuditEvents>[0];
 import { recordCompletedInterruptedReset } from '../commands/reset-wiring';
 import { maybeShowMultiRootWarning } from '../state/multi-root-warning';
 import { getCanonicalWorkspaceRoot } from '../state/workspace-folder-picker';
-import { getSqliteCutoverCoordinator } from './sqlite-cutover-wiring';
+import { getSqliteCutoverCoordinator, sweepWithReadableProtection } from './sqlite-cutover-wiring';
 
 /**
  * FR-R3-119 — the evidence surface: the audit writer, the session-artifact
@@ -311,8 +311,8 @@ const replayEvidenceBacklog = async (): Promise<void> => {
 
   // Sweep once at activation. The service is fail-soft and restricts deletion
   // to exact inactive run groups below `.schegent/sessions`; `audit.log` lives
-  // outside that root and is never a candidate.
-  await sessionRetention.sweep(protectedSessionRunIds());
+  // outside that root and is never a candidate. Skipped when the protected set cannot be read (GC-05).
+  await sweepWithReadableProtection(protectedSessionRunIds, (ids) => sessionRetention.sweep(ids));
 
   // FR-R4-F04 (G1) — the history descriptions are swept at the same moment, which is what the retention
   // inventory has always said. Owner only: this deletes operator-authored text, and FR-031's principle is
