@@ -143,8 +143,17 @@ The table above lists the **default** bounds. The settings behind them (`schegen
 the two invocation timeouts, `schegent.retry.forceContinueOnCap` and the two spend bounds) are
 resource-scoped, so a trusted workspace or a workspace folder may set them as well as the user's own
 settings (the two spend bounds are read for the workspace as a whole, so a folder's value does not
-apply to them). **That is accepted behaviour:** a workspace you have chosen to trust may tighten or
-loosen the bounds a Run is held to, and the page you are reading cannot say which it did.
+apply to them).
+
+**A workspace may only tighten the spend, retry and loop limits.** For `schegent.spend.maxUsdPerRun`,
+`schegent.spend.maxTokensPerRun`, `schegent.retry.maxAttempts`, `schegent.retry.forceContinueOnCap`,
+`schegent.loop.maxIterations` and `schegent.loop.maxUnchangedComparisons`, the operator's value is
+the user setting, else the default. A workspace or folder value replaces it only when it is valid and
+stricter: a lower cap, a cap where the operator set none (`null`, or `0` for the unchanged-comparison
+bound), or `false` for `forceContinueOnCap`. A value that would raise, clear or switch off a limit is
+ignored, and activation logs one warning naming the setting and the layer. The two invocation
+timeouts are not in this set: a trusted workspace may still lengthen them. A Phase's own overrides
+(below) are part of the pipeline, not a settings layer, and are not limited by this rule.
 
 So each Run shows the limits it actually runs under, in the Run's detail view: the iteration cap and
 what happens at it, the idle and wall-clock timeouts, the delayed-retry cap, and the spend bound with
@@ -159,8 +168,7 @@ fully measured is shown with a warning that it is not trustworthy. Nothing a set
 view as text: only numbers and the five phrases do, so a setting cannot put a path, a secret or markup
 into it.
 
-Narrowing these settings to the user scope only would be a separate, reviewed change with a migration
-for the workspaces that set them today. This feature does not make it.
+<!-- Source: src/config/tighten-only-limits.ts -->
 
 ## Per-phase overrides
 

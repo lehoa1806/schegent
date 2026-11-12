@@ -61,11 +61,11 @@ export type SensitivityClass =
    * act on until the operator trusts the folder — at which point a repository
    * tuning its own runs is the intended use and the whole point of `resource`
    * scope. THE HARDEST ROW IN THIS CLASS IS `retry.forceContinueOnCap`, whose own
-   * description says "whatever the condition gates is left unverified": a
-   * repository can make its own gates advisory. It stays here because it can only
-   * do so during a Run the operator started after trusting the folder, and a
-   * trusted repository can already ship a phase with `forceContinueOnRetryCap`
-   * set per row. Named rather than quietly filed.
+   * description says "whatever the condition gates is left unverified". Since review
+   * gap GC-10 a repository layer can no longer turn it on, nor raise or clear the
+   * spend, retry and loop limits (`config/tighten-only-limits.ts`); a trusted
+   * repository can still ship a phase with `forceContinueOnRetryCap` set per row.
+   * Named rather than quietly filed.
    */
   | 'run-shape';
 
