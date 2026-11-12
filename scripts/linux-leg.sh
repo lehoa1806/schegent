@@ -2,8 +2,9 @@
 # Review gap GC-18 (2026-11-12) — a second platform for the unit tier, run locally.
 #
 # Hosted CI was retired by operator decision (FR-R3-099), so every gate ran on one macOS machine.
-# This builds `scripts/linux-leg/Dockerfile` and runs typecheck, lint, `contracts:check` and
-# `test:host` on Linux against a commit (default HEAD), piped in with `git archive`. It refuses to
+# This builds `scripts/linux-leg/Dockerfile` and runs the install, the build, the SBOM, both
+# typechecks, lint, `contracts:check` and `test:host` (scripts/linux-leg/run-steps.sh) on Linux
+# against a commit (default HEAD), piped in with `git archive`. It refuses to
 # run while its own files differ from HEAD, so neither the tree under test nor the harness that
 # judges it can carry uncommitted work.
 #
