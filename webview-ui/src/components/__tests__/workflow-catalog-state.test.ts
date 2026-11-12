@@ -224,6 +224,25 @@ describe('node and connection row editing', () => {
     expect(removeWorkflowConnection(edited, 0).connections).toHaveLength(1);
   });
 
+  it('keeps an authored context handoff policy when the edge is edited (F15-FR-01)', () => {
+    const contextPolicy = {
+      version: 1,
+      approval: 'manual',
+      session: 'fresh',
+      selectors: []
+    } as const;
+    const withPolicy = addWorkflowConnection(row(), {
+      from: { nodeId: 'ship', portId: 'log' },
+      to: { nodeId: 'draft', portId: 'goal' },
+      contextPolicy
+    });
+    expect(withPolicy.connections.at(1)?.contextPolicy).toEqual(contextPolicy);
+
+    const edited = updateWorkflowConnection(withPolicy, 1, { priority: 3 });
+    expect(edited.connections.at(1)?.priority).toBe(3);
+    expect(edited.connections.at(1)?.contextPolicy).toEqual(contextPolicy);
+  });
+
   it('ignores an out-of-range index instead of corrupting the draft', () => {
     const base = row();
     expect(updateWorkflowNode(base, 9, { pipelineId: 'x' }).nodes).toEqual(base.nodes);
