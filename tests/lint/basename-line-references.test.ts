@@ -423,6 +423,14 @@ export function directoryRelative(target: string): boolean {
 }
 
 const present = envelopePresent();
+/**
+ * Corpus floors, the vacuity controls below. Without the planning envelope (a standalone clone, or
+ * the Linux leg's `git archive`) only `repo/` is read: 225 references and 34 unbackticked citations
+ * on 2026-11-12, against more than 1,000 and 600 with it. The floors fit the tree that is there, so
+ * a clone still proves the scan read something instead of failing on the tree that is not.
+ */
+const MIN_REFERENCES = present ? 1000 : 100;
+const MIN_UNMARKED = present ? 600 : 20;
 
 function treeFiles(root: string, roots: readonly string[]): readonly string[] {
   const out: string[] = [];
@@ -670,7 +678,7 @@ describe('bare-basename file:line references resolve (FR-R3-145 follow-up)', () 
     expect(index.size, 'the file index is empty; nothing below is being resolved').toBeGreaterThan(
       500
     );
-    expect(all.length, 'no bare-basename reference was extracted at all').toBeGreaterThan(1000);
+    expect(all.length, 'no bare-basename reference was extracted at all').toBeGreaterThan(MIN_REFERENCES);
     expect(
       all.filter((ref) => !ref.record && !ref.qualified).length,
       'no present-tense bare-basename reference was found; the live corpus is not being read'
@@ -837,7 +845,7 @@ describe('bare-basename file:line references resolve (FR-R3-145 follow-up)', () 
     expect(
       unmarked.length,
       'no unbackticked citation was extracted at all; the pass is reading nothing'
-    ).toBeGreaterThan(600);
+    ).toBeGreaterThan(MIN_UNMARKED);
     expect(
       live.length,
       'no unbackticked citation was found in the live tier; comment extraction is not running'

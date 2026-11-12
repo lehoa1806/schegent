@@ -68,8 +68,8 @@ From the 2026-11-12 full repository review. Each item names its review gap (`GC-
   commit, as the local replacement for hosted CI. Linux path case-sensitivity in output-target identity is
   now observed there. Linux stays in the `unverified` tier: no extension host, browser or real CLI runs in
   the container. It needs a running Docker daemon and refuses to run while its own files are
-  uncommitted. It is not green yet: two gates that read the workspace envelope fail without it. See the platform
-  observation record.
+  uncommitted. Its first run had two reds from gates that read the workspace envelope; both now hold without it.
+  See the platform observation record.
 - **SC-003 measures arithmetic, not `fsync`.** The 100,000-addition exact-total case now runs in one
   outer transaction against the real file store. It took 245 s on macOS and timed out at 600 s in the
   Linux leg, where each of its 101,000 commits reached the disk; it now takes about 34 s on macOS.

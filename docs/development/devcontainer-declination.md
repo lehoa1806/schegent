@@ -80,7 +80,7 @@ Reopen condition 4 is now **met in part**, and the decline **stands**.
 - **Why the decline stands.** That image is a one-shot verification container, not a development
   environment: it has no editor, no extension host, no browser and no shell a contributor works in,
   so reason 2 holds unchanged. Linux is still in the `unverified` tier, because the leg covers the
-  unit tier only and its remaining reds are recorded rather than cleared
+  unit tier only
   ([platform observation record](../operations/platform-observation-record.md#local-linux-leg-2026-11-12)),
   so reason 4 holds unchanged. What condition 4 predicted, that exposing the image to contributors
   would cost almost nothing, is true of the toolchain half only.
