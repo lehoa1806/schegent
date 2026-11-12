@@ -6,7 +6,9 @@
 # any step failed, after running every step, so one run reports every red.
 set -u
 mkdir -p work
-tar -x -C work
+# An empty or truncated archive must stop the leg, not run the steps against nothing.
+tar -x -C work || exit 2
+test -f work/package.json || { echo 'linux-leg: the archive carried no package.json' >&2; exit 2; }
 cd work || exit 2
 
 git config --global user.name 'Linux Leg'
