@@ -152,3 +152,4 @@ export const R6_INTEGRATION_DDL: readonly string[] = Object.freeze([
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS idx_phase_review_loop_run ON phase_review_loop_ledgers (run_id, updated_at_ms DESC)`
 ]);
+

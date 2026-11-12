@@ -811,6 +811,14 @@ export interface WorkflowRun {
    * Absent until the Run completes, and on every Run that declared no outputs.
    */
   runOutputs?: readonly RunOutputRecord[];
+  /**
+   * FR-R6-F10 (F10-FR-02, F10-FR-04) — opaque lane identifier and storage-relative root reference
+   * (`lanes/<workspaceId>/<laneId>`) frozen when an isolated lane is provisioned for this Run.
+   * Never holds an absolute filesystem path; existing Runs without these fields execute in the
+   * primary workspace root.
+   */
+  readonly laneId?: string;
+  readonly laneRootRef?: string;
 }
 
 /** FR-R3-209 — the three session fields cleared together, for a Run that stops owning a session. */

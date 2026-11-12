@@ -350,6 +350,42 @@
           "itemPattern": null
         },
         {
+          "key": "schegent.lanes.enabled",
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.lanes.liveCap",
+          "type": "integer",
+          "default": 1,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1,
+          "maximum": 20,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.lanes.provisioningDeadlineSeconds",
+          "type": "integer",
+          "default": 120,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1,
+          "maximum": 600,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
           "key": "schegent.logging.rawTranscriptMode",
           "type": "enum",
           "default": "errors-only",

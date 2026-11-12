@@ -185,6 +185,31 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     enum: ['auto', 'agy-acp-native', 'claude-acp-bridge', 'codex-acp-bridge'],
     docLabel: 'ACP agent profile selection'
   },
+  'schegent.lanes.enabled': {
+    key: 'schegent.lanes.enabled',
+    type: 'boolean',
+    default: false,
+    scope: 'resource',
+    docLabel: 'Provision isolated per-run Git worktrees'
+  },
+  'schegent.lanes.liveCap': {
+    key: 'schegent.lanes.liveCap',
+    type: 'integer',
+    default: 1,
+    min: 1,
+    max: 20,
+    scope: 'resource',
+    docLabel: 'Maximum concurrent live isolated execution lanes'
+  },
+  'schegent.lanes.provisioningDeadlineSeconds': {
+    key: 'schegent.lanes.provisioningDeadlineSeconds',
+    type: 'integer',
+    default: 120,
+    min: 1,
+    max: 600,
+    scope: 'resource',
+    docLabel: 'Isolated lane provisioning deadline (seconds)'
+  },
   'schegent.loop.maxIterations': {
     key: 'schegent.loop.maxIterations',
     type: 'number',

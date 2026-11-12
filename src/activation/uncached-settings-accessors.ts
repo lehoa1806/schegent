@@ -149,3 +149,25 @@ export function readSessionRetentionMaxAgeDays(workspaceRoot: string): number {
   const value = section(workspaceRoot).get<number>('logging.sessionRetentionMaxAgeDays', 30);
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 30;
 }
+
+/**
+ * FR-R6-F10 — opt-in isolated per-Run Git worktree execution, read per admission so toggling
+ * `schegent.lanes.enabled` takes effect on the next admitted Run without relocating active Runs.
+ */
+export function readLanesEnabled(workspaceRoot: string): boolean {
+  return section(workspaceRoot).get<boolean>('lanes.enabled', false) === true;
+}
+
+/** FR-R6-F10 — live isolated lane cap (1..20, default 1). */
+export function readLanesLiveCap(workspaceRoot: string): number {
+  const value = section(workspaceRoot).get<number>('lanes.liveCap', 1);
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 20 ? value : 1;
+}
+
+/** FR-R6-F10 — isolated lane provisioning deadline in milliseconds (1..600s, default 120s). */
+export function readLanesProvisioningDeadlineMs(workspaceRoot: string): number {
+  const value = section(workspaceRoot).get<number>('lanes.provisioningDeadlineSeconds', 120);
+  const secs =
+    typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 600 ? value : 120;
+  return secs * 1_000;
+}

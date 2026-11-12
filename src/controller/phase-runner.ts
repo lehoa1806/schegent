@@ -121,7 +121,7 @@ export interface PhaseRunInputs {
   featureDir: string | null;
   carriedIssues?: Array<{ tag?: string; summary: string }> | string[];
   cliPath: string;
-  cwd: string;
+  cwd: string; readonly evidenceRoot?: string;
   timeoutMs: number;
   /** FR-R3-075 — absolute per-invocation wall-clock bound. */
   maxDurationMs?: number;
@@ -1169,7 +1169,7 @@ export class PhaseRunner {
     const phaseId = inputs.phaseDef?.id ?? inputs.phase;
     try {
       return composeVerboseDiagnosticPath({
-        workspaceRoot: inputs.cwd,
+        workspaceRoot: inputs.evidenceRoot ?? inputs.cwd,
         runId: inputs.runId,
         pipelineId,
         phaseId,

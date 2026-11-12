@@ -399,6 +399,28 @@
           "scope": "resource",
           "markdownDescription": "Default for a phase's `forceContinueOnRetryCap`. When a phase's `retryCondition` is **still truthy** after its last permitted iteration, advance to the next phase instead of failing the run, and write a `[notify] forced-continue` line to the runtime log. Use this for a phase gated on something an autonomous run cannot satisfy \u2014 a manual verification step, for example \u2014 where the alternative is a loop that burns every iteration and then fails. **Whatever the condition gates is left unverified**, so the log line is the record that it was skipped. A phase's own `forceContinueOnRetryCap` overrides this. Does not apply to `failed` or `timeout` outcomes, which are terminal and never consult `retryCondition`."
         },
+        "schegent.lanes.enabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "markdownDescription": "Opt-in per-Run isolated Git worktree execution (`FR-R6-F10`). When `true`, each admitted Run provisions a separate Git working tree outside the workspace (`lanes/<workspaceId>/<laneId>`) and refuses admission with a named `LaneRefusalReason` rather than falling back to the shared checkout when repository topology, Git version, submodules, LFS, or capacity bounds prevent provisioning. A Git worktree is a working-tree boundary, not a permission boundary: repository hooks, configuration, credentials, and object store remain shared."
+        },
+        "schegent.lanes.liveCap": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 20,
+          "scope": "resource",
+          "markdownDescription": "Maximum number of live (`preparing`, `active`, or `paused`) isolated execution lanes permitted at once (`FR-R6-F10`). Defaults to `1`; range `1`\u2013`20`."
+        },
+        "schegent.lanes.provisioningDeadlineSeconds": {
+          "type": "integer",
+          "default": 120,
+          "minimum": 1,
+          "maximum": 600,
+          "scope": "resource",
+          "markdownDescription": "Absolute wall-clock deadline in seconds for isolated execution lane provisioning (`FR-R6-F10`). Defaults to `120`; range `1`\u2013`600`."
+        },
         "schegent.logging.verbose": {
           "type": "boolean",
           "default": false,

@@ -287,6 +287,16 @@
           "name": "runOutputs",
           "optional": true,
           "type": "readonly RunOutputRecord[]"
+        },
+        {
+          "name": "laneId",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "laneRootRef",
+          "optional": true,
+          "type": "string"
         }
       ]
     },
