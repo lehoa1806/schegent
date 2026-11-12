@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { createSideEffectFailureReporter } from '../../../src/lib/side-effect-failure-reporter';
+import {
+  ProtectedRunIdsUnavailableError,
+  querySqliteProtectedRunIds,
+  sweepWithReadableProtection,
+  type SqliteCutoverServices
+} from '../../../src/activation/sqlite-cutover-wiring';
+import { createSideEffectFailureReporter, type SideEffectOperation } from '../../../src/lib/side-effect-failure-reporter';
 
 // Review gap GC-05 (2026-11-12) — lane settlement, the ACP observation ledger, usage accounting and
 // the sweep-protection query each ended in a bare `catch {}`, so a broken side effect left no trace.
@@ -30,5 +36,82 @@ describe('side-effect failure reporter', () => {
         context: { operation: 'lane-settlement', error: 'string' }
       }
     ]);
+  });
+});
+
+// The sweep-protection query used to report its failure and then return the lane and export pins
+// alone, so a retention sweep went on to delete the session groups of runs pinned only in SQLite.
+// It now fails closed: the query throws a typed error after reporting, and a sweep that cannot read
+// its protected set whole does not run.
+describe('sweep protection fails closed (GC-05 follow-up, 2026-11-12)', () => {
+  function servicesWhoseQuery(all: () => ReadonlyArray<{ run_id: string }>): SqliteCutoverServices {
+    return {
+      runLaneCoordinator: { getProtectedRunIds: () => new Set(['lane-pinned']) },
+      reportingService: { activeExportRootIds: () => ['export-pinned'] },
+      sqliteStore: { writerConnection: { all } }
+    } as unknown as SqliteCutoverServices;
+  }
+
+  function recordingReport(): { calls: SideEffectOperation[]; report: (operation: SideEffectOperation) => void } {
+    const calls: SideEffectOperation[] = [];
+    return { calls, report: (operation) => calls.push(operation) };
+  }
+
+  it('returns the lane, export and SQLite pins together when the query answers', () => {
+    const { calls, report } = recordingReport();
+    const ids = querySqliteProtectedRunIds(
+      servicesWhoseQuery(() => [{ run_id: 'sqlite-pinned' }]),
+      report
+    );
+    expect([...ids].sort()).toEqual(['export-pinned', 'lane-pinned', 'sqlite-pinned']);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('reports and throws instead of returning a partial set when the query fails', () => {
+    const { calls, report } = recordingReport();
+    const services = servicesWhoseQuery(() => {
+      throw new Error('SQLITE_MISUSE: database is closed');
+    });
+    expect(() => querySqliteProtectedRunIds(services, report)).toThrow(ProtectedRunIdsUnavailableError);
+    expect(calls).toEqual(['sweep-protection-query']);
+  });
+
+  it('protects nothing extra and throws nothing when SQLite is not open', () => {
+    const { report } = recordingReport();
+    expect(querySqliteProtectedRunIds(null, report).size).toBe(0);
+  });
+
+  it('skips the sweep when the protected set cannot be read', async () => {
+    const swept: Array<ReadonlySet<string>> = [];
+    const outcome = await sweepWithReadableProtection(
+      () => {
+        throw new ProtectedRunIdsUnavailableError();
+      },
+      async (ids) => {
+        swept.push(ids);
+      }
+    );
+    expect(outcome).toBe('skipped');
+    expect(swept).toHaveLength(0);
+  });
+
+  it('sweeps with the set it read, and lets any other failure through', async () => {
+    const swept: Array<ReadonlySet<string>> = [];
+    const outcome = await sweepWithReadableProtection(
+      () => new Set(['run-a']),
+      async (ids) => {
+        swept.push(ids);
+      }
+    );
+    expect(outcome).toBe('swept');
+    expect(swept.map((ids) => [...ids])).toEqual([['run-a']]);
+    await expect(
+      sweepWithReadableProtection(
+        () => {
+          throw new TypeError('not a protection failure');
+        },
+        async () => undefined
+      )
+    ).rejects.toThrow(TypeError);
   });
 });

@@ -49,6 +49,7 @@ import {
   readMaxUnchangedComparisonsLimit,
   readSpendLimits
 } from './uncached-settings-accessors';
+import { sweepWithReadableProtection } from './sqlite-cutover-wiring';
 import type { WorkspaceSettings } from './workspace-settings';
 
 /**
@@ -330,7 +331,9 @@ if (typeof vscode.workspace.onDidChangeConfiguration === 'function') {
         // commands and webview IPC, and this arm writes to `.schegent/sessions`.
         // Re-read here rather than captured, per FR-005.
         if (isWorkspaceTrusted()) {
-          void sessionRetention.sweep(protectedSessionRunIds()).then(() => projector.kick());
+          void sweepWithReadableProtection(protectedSessionRunIds, (ids) => sessionRetention.sweep(ids)).then(() =>
+            projector.kick()
+          );
         } else {
           logger.info('session retention sweep skipped on config change: workspace is not trusted');
         }

@@ -318,7 +318,11 @@ describe('FR-R3-070 — activation elects before it recovers', () => {
     const start = source.indexOf('const replayEvidenceBacklog = async');
     expect(start, `${WIRING} must still define replayEvidenceBacklog`).toBeGreaterThanOrEqual(0);
     const body = source.slice(start);
-    const sessions = body.indexOf('await sessionRetention.sweep(');
+    // GC-05 follow-up (2026-11-12) — the sweep runs through the helper that skips it when the
+    // protected set cannot be read.
+    const sessions = body.indexOf(
+      'await sweepWithReadableProtection(protectedSessionRunIds, (ids) => sessionRetention.sweep(ids))'
+    );
     const owner = body.indexOf('await lock.hasPrimacy()');
     const histories = body.indexOf('await sweepHistoryDescriptions(');
     expect(sessions, `${WIRING} must still sweep the session groups at activation`).toBeGreaterThanOrEqual(0);

@@ -838,7 +838,41 @@ export function createSqliteCutoverCoordinator(
   return coordinator;
 }
 
-function querySqliteProtectedRunIds(
+/** The SQLite half of the protected-run set could not be read, so no sweep may act on the rest. */
+export class ProtectedRunIdsUnavailableError extends Error {
+  public constructor() {
+    super('the protected run set could not be read');
+    this.name = 'ProtectedRunIdsUnavailableError';
+  }
+}
+
+/**
+ * Review gap GC-05 follow-up (2026-11-12) — runs `sweep` only on a protected set that was read
+ * whole. When the set is unavailable the query has already reported why, and the sweep is skipped:
+ * a set missing its SQLite pins would let the sweep delete what those pins protect. Any other
+ * failure propagates.
+ */
+export async function sweepWithReadableProtection(
+  readProtected: () => ReadonlySet<string>,
+  sweep: (protectedIds: ReadonlySet<string>) => Promise<unknown>
+): Promise<'swept' | 'skipped'> {
+  let protectedIds: ReadonlySet<string>;
+  try {
+    protectedIds = readProtected();
+  } catch (err) {
+    if (err instanceof ProtectedRunIdsUnavailableError) return 'skipped';
+    throw err;
+  }
+  await sweep(protectedIds);
+  return 'swept';
+}
+
+/**
+ * The run ids a sweep must spare: lane pins, export pins and active protective references.
+ * Empty when SQLite is not open, since nothing can be pinned there. Throws
+ * {@link ProtectedRunIdsUnavailableError}, after reporting, when the query fails.
+ */
+export function querySqliteProtectedRunIds(
   services: SqliteCutoverServices | null,
   reportFailure: SideEffectFailureReport
 ): ReadonlySet<string> {
@@ -865,8 +899,9 @@ function querySqliteProtectedRunIds(
       if (row.run_id) result.add(row.run_id);
     }
   } catch (err) {
-    // Best-effort sweep protection query.
+    // Fail closed: a partial set would expose the runs pinned only here.
     reportFailure('sweep-protection-query', err);
+    throw new ProtectedRunIdsUnavailableError();
   }
   return result;
 }
