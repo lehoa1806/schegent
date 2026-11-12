@@ -212,7 +212,10 @@ export class AcpBackedRunner implements BackendRunner {
       throw new AcpProfileMismatchError(this.options.kind, configuredRaw, expectedProfileId);
     }
 
-    const profile = getBuiltinAcpProfile(this.options.kind, { model: request.model });
+    const profile = getBuiltinAcpProfile(
+      this.options.kind,
+      request.model !== undefined ? { model: request.model } : {}
+    );
     const generation = ++nextAcpGeneration;
     const label = RUNNER_LABEL_BY_KIND[this.options.kind];
     const invocationId = nextInvocationId(label);
@@ -395,10 +398,12 @@ export class AcpBackedRunner implements BackendRunner {
         resolvedCliPath: request.cliPath,
         cwd: request.cwd,
         env: spawnEnv,
-        capabilities: request.capabilities,
-        model: request.model,
-        effort: request.effort,
-        bridgeScriptPath: this.options.bridgeScriptPath
+        ...(request.capabilities !== undefined ? { capabilities: request.capabilities } : {}),
+        ...(request.model !== undefined ? { model: request.model } : {}),
+        ...(request.effort !== undefined ? { effort: request.effort } : {}),
+        ...(this.options.bridgeScriptPath !== undefined
+          ? { bridgeScriptPath: this.options.bridgeScriptPath }
+          : {})
       });
 
       const opened = await openAcpConnection({
@@ -423,9 +428,7 @@ export class AcpBackedRunner implements BackendRunner {
           });
           return created;
         },
-        permissionPolicy: gate
-          ? gate.createPermissionPolicy(generation)
-          : undefined,
+        ...(gate !== undefined ? { permissionPolicy: gate.createPermissionPolicy(generation) } : {}),
         verifyResourceLink,
         onObservation: (observation) => {
           resetIdleTimer();
@@ -515,10 +518,16 @@ export class AcpBackedRunner implements BackendRunner {
               ownershipGeneration: this.options.currentOwnershipGeneration?.() ?? 1,
               executionRoot: request.cwd,
               primaryWorkspaceRoot: this.options.primaryWorkspaceRoot ?? request.cwd,
-              protectedDatabasePaths: this.options.protectedDatabasePaths,
-              authorizedUpstreamInputPaths: request.authorizedUpstreamInputPaths,
-              authorizedOutputPaths: request.authorizedOutputPaths,
-              capabilities: request.capabilities
+              ...(this.options.protectedDatabasePaths !== undefined
+                ? { protectedDatabasePaths: this.options.protectedDatabasePaths }
+                : {}),
+              ...(request.authorizedUpstreamInputPaths !== undefined
+                ? { authorizedUpstreamInputPaths: request.authorizedUpstreamInputPaths }
+                : {}),
+              ...(request.authorizedOutputPaths !== undefined
+                ? { authorizedOutputPaths: request.authorizedOutputPaths }
+                : {}),
+              ...(request.capabilities !== undefined ? { capabilities: request.capabilities } : {})
             });
 
             const blocks: readonly AcpPromptBlock[] =

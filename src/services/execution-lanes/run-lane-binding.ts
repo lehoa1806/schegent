@@ -68,8 +68,8 @@ export interface RunLaneCoordinator {
   ): Promise<ProvisionedRunLaneBinding | null>;
   resolveExecutionRoot(params: {
     readonly runId: string;
-    readonly laneId?: string;
-    readonly laneRootRef?: string;
+    readonly laneId?: string | undefined;
+    readonly laneRootRef?: string | undefined;
   }): Promise<string>;
   resolveExecutionRootSyncOrCached(runId: string): string;
   resolveLaneIdForRun(runId: string): string | null;
@@ -77,7 +77,7 @@ export interface RunLaneCoordinator {
   onRunResumed(runId: string): void;
   onRunTerminal(params: {
     readonly runId: string;
-    readonly laneId?: string;
+    readonly laneId?: string | undefined;
     readonly status: 'completed' | 'failed' | 'canceled';
   }): Promise<void>;
   getProtectedRunIds(): ReadonlySet<string>;

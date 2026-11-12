@@ -327,6 +327,7 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/contracts/sqlite-store/schema-types.ts',
   'src/services/sqlite-store/schema-bootstrap.ts',
   'src/services/sqlite-store/transaction-units.ts',
+  'src/state/sqlite-operational-backing.ts',
   // FR-R6-F11 — the historical report query's `RUN_OUTCOMES` and `ATTEMPT_STATUSES`
   // filter vocabularies, which repeat the `runs` and `attempts` CHECK spellings of the
   // FR-R6-F04 entries above so a report filter matches stored rows; never the

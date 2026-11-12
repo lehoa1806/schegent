@@ -221,7 +221,7 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
             fromNodeId: 'n1',
             toNodeId: 'n2',
             pausedAt: now - 5_000
-          } as unknown as ConnectedWorkflowRun['pendingHandoff']
+          } as unknown as NonNullable<ConnectedWorkflowRun['pendingHandoff']>
         };
       }
       // 600 terminal runs

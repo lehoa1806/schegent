@@ -45,6 +45,30 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
     how: 'switch',
     note: 'each backend has its own case; the default assigns the kind to never and throws (TA7)'
   },
+  {
+    path: 'src/runner/acp-backed-runner.ts',
+    role: 'ACP runtime and bridge launch',
+    how: 'equality',
+    note: 'maps RunnerLabel by kind and formats synthetic compatibility result lines per backend'
+  },
+  {
+    path: 'src/services/acp-runtime/profiles.ts',
+    role: 'ACP runtime and bridge launch',
+    how: 'switch',
+    note: 'built-in ACP profile descriptors and native-vs-bridge launch resolution per backend'
+  },
+  {
+    path: 'src/services/acp-runtime/bridges/acp-stdio-bridge.ts',
+    role: 'ACP runtime and bridge launch',
+    how: 'equality',
+    note: 'maintained ACP v1 stdio bridge CLI flag translation for bridged backends (claude and codex)'
+  },
+  {
+    path: 'src/state/sqlite-operational-backing.ts',
+    role: 'Qualification',
+    how: 'equality',
+    note: 'projects containment_acceptance_bindings rows for supported backend kinds during SQLite sync'
+  },
 
   // ---- Path resolution
   {

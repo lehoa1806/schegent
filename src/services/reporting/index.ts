@@ -104,6 +104,8 @@ export interface ReportingService {
   deleteSavedReport(input: unknown): ReportResult<{ readonly deleted: boolean }>;
   /** Ends exports an earlier host left pending; the host calls it once at start. */
   reconcileExports(): Promise<ReportResult<{ readonly reconciled: number }>>;
+  /** F11-FR-18: root IDs held by an in-progress export so F05 retention preserves referenced detail until completion. */
+  activeExportRootIds(): ReadonlySet<string>;
   resources(): ReportResources;
 }
 
@@ -130,6 +132,21 @@ export function createReportingService(options: ReportingServiceOptions): Report
     ...(logger === undefined ? {} : { logger })
   });
   const saved = createSavedReports({ conn, workspaceId, engine, nowMs, ...(logger === undefined ? {} : { logger }) });
+  const exportRootCounts = new Map<string, number>();
+
+  function retainExportRoots(report: { readonly roots: readonly { readonly rootId: string }[] }): () => void {
+    const ids = [...new Set(report.roots.map((root) => root.rootId))];
+    for (const rootId of ids) {
+      exportRootCounts.set(rootId, (exportRootCounts.get(rootId) ?? 0) + 1);
+    }
+    return () => {
+      for (const rootId of ids) {
+        const next = (exportRootCounts.get(rootId) ?? 0) - 1;
+        if (next <= 0) exportRootCounts.delete(rootId);
+        else exportRootCounts.set(rootId, next);
+      }
+    };
+  }
 
   function reconcile(): Promise<{ readonly reconciled: number }> {
     return reconcileExports({ store, fs: exportFs, workspaceId, nowMs, ...(logger === undefined ? {} : { logger }) });
@@ -152,33 +169,38 @@ export function createReportingService(options: ReportingServiceOptions): Report
     await reconcile();
     const live = engine.useReport(input.reportId);
     if (!live.ok) return live;
-    const destination = await resolveExportDestination(input.destination, workspaceRoot);
-    if (!destination.ok) {
-      return reportRefused(destination.refusal === 'destination-not-local-file' || destination.refusal === 'destination-in-evidence-store'
-        ? destination.refusal
-        : 'destination-unresolvable');
-    }
-    return runExport(
-      {
-        report: live.value,
-        workspaceId,
-        destinationPath: destination.path,
-        evidenceStore: evidenceStoreOf(workspaceRoot),
-        format: input.format,
-        overwrite: input.overwrite ?? false,
-        ...(signal === undefined ? {} : { signal }),
-        ...(progress === undefined ? {} : { onProgress: progress })
-      },
-      {
-        store,
-        fs: exportFs,
-        nowMs,
-        monotonicMs,
-        newExportId,
-        ...(logger === undefined ? {} : { logger }),
-        ...(options.bounds?.exportCaps === undefined ? {} : { caps: options.bounds.exportCaps })
+    const releasePinnedRoots = retainExportRoots(live.value);
+    try {
+      const destination = await resolveExportDestination(input.destination, workspaceRoot);
+      if (!destination.ok) {
+        return reportRefused(destination.refusal === 'destination-not-local-file' || destination.refusal === 'destination-in-evidence-store'
+          ? destination.refusal
+          : 'destination-unresolvable');
       }
-    );
+      return await runExport(
+        {
+          report: live.value,
+          workspaceId,
+          destinationPath: destination.path,
+          evidenceStore: evidenceStoreOf(workspaceRoot),
+          format: input.format,
+          overwrite: input.overwrite ?? false,
+          ...(signal === undefined ? {} : { signal }),
+          ...(progress === undefined ? {} : { onProgress: progress })
+        },
+        {
+          store,
+          fs: exportFs,
+          nowMs,
+          monotonicMs,
+          newExportId,
+          ...(logger === undefined ? {} : { logger }),
+          ...(options.bounds?.exportCaps === undefined ? {} : { caps: options.bounds.exportCaps })
+        }
+      );
+    } finally {
+      releasePinnedRoots();
+    }
   }
 
   return {
@@ -193,6 +215,7 @@ export function createReportingService(options: ReportingServiceOptions): Report
     reproduceSavedReport: (input, signal) => saved.reproduceSavedReport(input, signal),
     deleteSavedReport: (input) => saved.deleteSavedReport(input),
     reconcileExports: () => storeGuarded('reconcileExports', async () => reportOk(await reconcile())),
+    activeExportRootIds: () => new Set(exportRootCounts.keys()),
     resources: () => engine.resources()
   };
 }

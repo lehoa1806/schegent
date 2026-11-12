@@ -16,24 +16,53 @@ const identity = readBuildIdentity();
 // FR-R4-F09 (FR-007; contract MG1) -- write the host module graph once the bundle is on disk, on
 // every rebuild, and only for a build that had no errors. The webview half writes its own graph
 // from `webview-ui/vite.config.ts`.
-const moduleGraph = {
-  name: 'schegent-module-graph',
+let latestExtensionMetafile = null;
+let latestBridgeMetafile = null;
+
+function flushCombinedHostGraph() {
+  if (!latestExtensionMetafile || !latestBridgeMetafile) return;
+  writeHostGraph(
+    {
+      inputs: {
+        ...(latestExtensionMetafile.inputs ?? {}),
+        ...(latestBridgeMetafile.inputs ?? {})
+      },
+      outputs: {
+        ...(latestExtensionMetafile.outputs ?? {}),
+        ...(latestBridgeMetafile.outputs ?? {})
+      }
+    },
+    identity,
+    root
+  );
+}
+
+const extensionGraphPlugin = {
+  name: 'schegent-module-graph-extension',
   setup(buildContext) {
     buildContext.onEnd((result) => {
       if (result.errors.length === 0 && result.metafile) {
-        writeHostGraph(result.metafile, identity, root);
+        latestExtensionMetafile = result.metafile;
+        flushCombinedHostGraph();
       }
     });
   }
 };
 
-const extensionConfig = {
-  entryPoints: {
-    extension: 'src/extension.ts',
-    'acp-stdio-bridge': 'src/services/acp-runtime/bridges/acp-stdio-bridge-main.ts'
-  },
+const bridgeGraphPlugin = {
+  name: 'schegent-module-graph-bridge',
+  setup(buildContext) {
+    buildContext.onEnd((result) => {
+      if (result.errors.length === 0 && result.metafile) {
+        latestBridgeMetafile = result.metafile;
+        flushCombinedHostGraph();
+      }
+    });
+  }
+};
+
+const sharedHostOptions = {
   bundle: true,
-  outdir: 'dist',
   format: 'cjs',
   platform: 'node',
   // FR-R3-059 (V-06 residual). Was `node20` while `engines.node` declares
@@ -50,15 +79,31 @@ const extensionConfig = {
   // and the tsc-compiled integration suite the constant is absent and the read says `unknown`.
   define: { __SCHEGENT_BUILD_IDENTITY__: JSON.stringify(identity) },
   metafile: true,
-  plugins: [moduleGraph],
   logLevel: 'info'
 };
 
+const extensionConfig = {
+  ...sharedHostOptions,
+  entryPoints: ['src/extension.ts'],
+  outfile: 'dist/extension.js',
+  plugins: [extensionGraphPlugin]
+};
+
+const bridgeConfig = {
+  ...sharedHostOptions,
+  entryPoints: ['src/services/acp-runtime/bridges/acp-stdio-bridge-main.ts'],
+  outfile: 'dist/acp-stdio-bridge.js',
+  plugins: [bridgeGraphPlugin]
+};
 
 if (isWatch) {
-  const extensionCtx = await context(extensionConfig);
-  await extensionCtx.watch();
-  console.log('esbuild: watching extension...');
+  const [extensionCtx, bridgeCtx] = await Promise.all([
+    context(extensionConfig),
+    context(bridgeConfig)
+  ]);
+  await Promise.all([extensionCtx.watch(), bridgeCtx.watch()]);
+  console.log('esbuild: watching extension and ACP stdio bridge...');
 } else {
+  await build(bridgeConfig);
   await build(extensionConfig);
 }

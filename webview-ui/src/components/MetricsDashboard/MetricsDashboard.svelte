@@ -14,10 +14,13 @@
   import MetricsTaskTable, { type MetricsSortKey } from './MetricsTaskTable.svelte';
   import MetricsPhaseAnalytics from './MetricsPhaseAnalytics.svelte';
   import MetricsCostChart from './MetricsCostChart.svelte';
+  import HistoricalReportsPanel from './HistoricalReportsPanel.svelte';
 
   interface Props { active: boolean }
   const { active }: Props = $props();
   const PAGE_SIZE = 200;
+
+  let surfaceMode = $state<'rollup' | 'reports'>('rollup');
 
   let loading = $state(false);
   // FR-R4-F05 (O1, O7) — the sentence for a refused read, or null. Only a refusal sets it:
@@ -165,24 +168,46 @@
       <p>Actionable throughput, cost, and phase performance from the append-only audit log.</p>
     </div>
     <div class="metrics-toolbar" data-testid="metrics-toolbar">
-      <button type="button" class="metrics-action" data-testid="metrics-refresh"
-        disabled={loading} onclick={() => void fetchMetrics()}>
-        {loading ? 'Scanning…' : 'Refresh'}
+      <button
+        type="button"
+        class="metrics-action"
+        aria-pressed={surfaceMode === 'rollup'}
+        data-testid="metrics-mode-rollup"
+        onclick={() => { surfaceMode = 'rollup'; }}
+      >
+        Audit rollup
       </button>
-      <label class="metrics-archived-toggle">
-        <input type="checkbox" data-testid="metrics-include-archived"
-          checked={includeArchives} onchange={() => { includeArchives = !includeArchives; void fetchMetrics(); }} />
-        Include archived history
-      </label>
-      {#if loaded}
-        <span class="coverage-window" data-testid="metrics-coverage-window">
-          {detailWindow}
-        </span>
+      <button
+        type="button"
+        class="metrics-action"
+        aria-pressed={surfaceMode === 'reports'}
+        data-testid="metrics-mode-reports"
+        onclick={() => { surfaceMode = 'reports'; }}
+      >
+        Historical reports
+      </button>
+      {#if surfaceMode === 'rollup'}
+        <button type="button" class="metrics-action" data-testid="metrics-refresh"
+          disabled={loading} onclick={() => void fetchMetrics()}>
+          {loading ? 'Scanning…' : 'Refresh'}
+        </button>
+        <label class="metrics-archived-toggle">
+          <input type="checkbox" data-testid="metrics-include-archived"
+            checked={includeArchives} onchange={() => { includeArchives = !includeArchives; void fetchMetrics(); }} />
+          Include archived history
+        </label>
+        {#if loaded}
+          <span class="coverage-window" data-testid="metrics-coverage-window">
+            {detailWindow}
+          </span>
+        {/if}
       {/if}
     </div>
   </header>
 
-  {#if !loaded}
+  {#if surfaceMode === 'reports'}
+    <HistoricalReportsPanel />
+  {:else if !loaded}
     <div class="metrics-loading" data-testid="metrics-loading" role="status">
       <span class="status-line">Scanning audit history…</span>
       <div class="metrics-skeleton" aria-hidden="true">

@@ -25,6 +25,7 @@
   import CreditPollingNotice from './CreditPollingNotice.svelte';
   import RunLimitsPanel from './RunLimitsPanel.svelte';
   import RunTabBar, { type RunTab } from './RunTabBar.svelte';
+  import ExecutionVisibilityPanel from '../ExecutionVisibilityPanel.svelte';
   import { findQueueRuntime } from '../../lib/queue-runtime-view';
   import { formatDuration } from '../../lib/format-duration';
   import type { PhaseTile, QueueItemStatus } from '../../lib/snapshot-types';
@@ -412,6 +413,7 @@
               </dd>
             </dl>
             <p class="live-feed" data-testid="run-detail-live-feed">{feedText}</p>
+            <ExecutionVisibilityPanel rootExecutionId={runId} {isPrimary} />
           {/if}
         </div>
       </div>

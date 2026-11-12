@@ -7,6 +7,14 @@ import type { DecisionRecordOpener } from '../../../services/decision-record/dec
 import type { FailureRecordAnswerer } from '../../../services/failure-record/failure-record-service';
 import type { StorageDetailsReader } from '../../../contracts/sidebar-ipc/storage-details';
 import type { UsageAccountingReader } from '../../../contracts/sidebar-ipc/usage-accounting';
+import type { ExportFormat } from '../../../contracts/reporting/report-manifest';
+import type { HostReportExportResult } from '../../../contracts/sidebar-ipc/reporting';
+import type { ChangeEntry, ReviewOpened } from '../../../contracts/change-review';
+import type { ChangeReviewEditorOpenOutcome } from '../../../contracts/sidebar-ipc/execution-visibility';
+import type { ChangeReviewApi } from '../../../headless/change-review-api';
+import type { ExecutionVisibilityApi } from '../../../headless/execution-visibility-api';
+import type { PhaseContextApi } from '../../../headless/phase-context-api';
+import type { ReportingApi } from '../../../headless/reporting-api';
 import type { CatalogLifecycleOps, CatalogStore } from '../../../catalog';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type { CatalogVersionRef } from '../../../contracts/catalog-version';
@@ -531,6 +539,18 @@ export interface RouterDeps {
    * by the headless API's `createUsageAccountingReader`, so both surfaces give the same answer.
    */
   readonly usageAccounting?: UsageAccountingReader;
+  readonly reportingApi?: () => ReportingApi | null;
+  readonly exportReportWithDialog?: (request: {
+    readonly reportId: string;
+    readonly format: ExportFormat;
+  }) => Promise<HostReportExportResult>;
+  readonly executionVisibility?: ExecutionVisibilityApi;
+  readonly changeReviewApi?: () => ChangeReviewApi | null;
+  readonly openReviewInEditor?: (
+    opened: ReviewOpened,
+    entries: readonly ChangeEntry[]
+  ) => Promise<ChangeReviewEditorOpenOutcome>;
+  readonly phaseContextApi?: () => PhaseContextApi | null;
   /**
    * FR-R5-F19 (feature 278, contract decision-record-open.md) — opens a blocked row's `decisions.md`
    * read-only. Absent in a harness that builds no opener; the handler then answers `internal-error`.

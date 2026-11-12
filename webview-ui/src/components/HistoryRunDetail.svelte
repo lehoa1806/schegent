@@ -32,6 +32,7 @@
   import { formatAbsoluteTime, formatStatus } from '../lib/format';
   import { formatDuration } from '../lib/format-duration';
   import HistoryEvidencePanel from './HistoryEvidencePanel.svelte';
+  import ExecutionVisibilityPanel from './ExecutionVisibilityPanel.svelte';
 
   interface Props {
     row: HistoryRow;
@@ -338,6 +339,8 @@
     rawTranscriptMode={rawTranscriptMode}
     retentionMaxAgeDays={retentionMaxAgeDays}
   />
+
+  <ExecutionVisibilityPanel rootExecutionId={runId} isPrimary={true} />
 </article>
 
 <style>
