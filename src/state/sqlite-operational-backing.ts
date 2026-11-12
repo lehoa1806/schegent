@@ -66,6 +66,21 @@ export class PostCutoverMementoWriteForbiddenError extends Error {
   }
 }
 
+/**
+ * The cutover migration stopped before SQLite authority was published (F04-FR-15). The legacy
+ * Memento stays authoritative; attaching SQLite over a partial store is refused.
+ */
+export class SqliteCutoverMigrationIncompleteError extends Error {
+  public readonly code = 'sqlite-cutover-migration-incomplete' as const;
+
+  public constructor(scopeId: string, stage: string) {
+    super(
+      `Refused to attach SQLite for scope '${scopeId}': cutover migration stopped at stage '${stage}' (sqlite-cutover-migration-incomplete).`
+    );
+    this.name = 'SqliteCutoverMigrationIncompleteError';
+  }
+}
+
 function mapWorkflowStatusToSqlite(status: string | undefined): RunStatus {
   switch (status) {
     case 'running':
@@ -307,23 +322,6 @@ export class SqliteOperationalBacking {
       }
     }
 
-    const migrationId = `f04-cutover-${this.scopeId}`;
-    const outcome = this.store.migration.runMigrationThroughRetainSource({
-      migrationId,
-      scopeId: this.scopeId,
-      runRecords: legacyRunRecords
-    });
-
-    if (!outcome.completed) {
-      this.logger?.warn('sqlite cutover migration incomplete', {
-        stage: outcome.currentStage,
-        quarantined: outcome.quarantinedRecords
-      });
-      return outcome;
-    }
-
-    const conn = this.store.writerConnection;
-    const now = this.nowMs();
     const allKeys = [...Object.values(KEYS), ...EXTRA_IMPORTED_MEMENTO_KEYS].filter(
       (k) => !PASSTHROUGH_OWNERSHIP_KEYS.has(k)
     );
@@ -332,39 +330,68 @@ export class SqliteOperationalBacking {
         ? (runMapRaw as Readonly<Record<string, WorkflowRun | undefined>>)
         : {};
 
-    conn.exec('BEGIN IMMEDIATE');
-    try {
-      for (const key of allKeys) {
-        const rawVal = legacyMemento.get<unknown>(key);
-        if (rawVal === undefined) continue;
-        const effectiveVal =
-          key === KEYS.connectedRuns ? pruneConnectedRunsMap(rawVal, liveRuns, now) : rawVal;
-        const json = JSON.stringify(effectiveVal);
-        const bytes = Buffer.byteLength(json, 'utf8');
-        conn.run(
-          `INSERT INTO operational_kv_documents (
-            doc_namespace, doc_key, revision, schema_version, payload_json, payload_bytes, is_terminal, updated_at_ms
-          ) VALUES (?, ?, 1, 1, ?, ?, 0, ?)
-          ON CONFLICT(doc_namespace, doc_key) DO NOTHING`,
-          this.scopeId,
-          key,
-          json,
-          bytes,
-          now
-        );
-        this.projectRelationalStateInTx(conn, key, effectiveVal, now);
+    const migrationId = `f04-cutover-${this.scopeId}`;
+    const outcome = this.store.migration.runMigrationThroughRetainSource({
+      migrationId,
+      scopeId: this.scopeId,
+      runRecords: legacyRunRecords,
+      importOperationalDocuments: (conn) => {
+        this.copyLegacyDocumentsInTx(conn, legacyMemento, allKeys, liveRuns, this.nowMs());
       }
-      conn.exec('COMMIT');
-    } catch (error) {
-      try {
-        conn.exec('ROLLBACK');
-      } catch {
-        // Ignore rollback failure.
-      }
-      throw error;
-    }
+    });
 
+    if (!outcome.completed) {
+      this.logger?.warn('sqlite cutover migration incomplete', {
+        stage: outcome.currentStage,
+        quarantined: outcome.quarantinedRecords
+      });
+    }
     return outcome;
+  }
+
+  /**
+   * Copies every non-run legacy key into `operational_kv_documents` inside the migration's
+   * `import` stage transaction. Legacy is still authoritative here, so a retried import replaces
+   * an earlier committed copy and removes keys the legacy source no longer holds.
+   */
+  private copyLegacyDocumentsInTx(
+    conn: NodeSqliteConnection,
+    legacyMemento: Memento,
+    keys: readonly string[],
+    liveRuns: Readonly<Record<string, WorkflowRun | undefined>>,
+    now: number
+  ): void {
+    for (const key of keys) {
+      const rawVal = legacyMemento.get<unknown>(key);
+      if (rawVal === undefined) {
+        conn.run(
+          `DELETE FROM operational_kv_documents WHERE doc_namespace = ? AND doc_key = ?`,
+          this.scopeId,
+          key
+        );
+        continue;
+      }
+      const effectiveVal =
+        key === KEYS.connectedRuns ? pruneConnectedRunsMap(rawVal, liveRuns, now) : rawVal;
+      const json = JSON.stringify(effectiveVal);
+      const bytes = Buffer.byteLength(json, 'utf8');
+      conn.run(
+        `INSERT INTO operational_kv_documents (
+          doc_namespace, doc_key, revision, schema_version, payload_json, payload_bytes, is_terminal, updated_at_ms
+        ) VALUES (?, ?, 1, 1, ?, ?, 0, ?)
+        ON CONFLICT(doc_namespace, doc_key) DO UPDATE SET
+          revision = operational_kv_documents.revision + 1,
+          payload_json = excluded.payload_json,
+          payload_bytes = excluded.payload_bytes,
+          updated_at_ms = excluded.updated_at_ms`,
+        this.scopeId,
+        key,
+        json,
+        bytes,
+        now
+      );
+      this.projectRelationalStateInTx(conn, key, effectiveVal, now);
+    }
   }
 
   private reloadCacheFromSqlite(): void {
@@ -614,8 +641,13 @@ export function createSwitchableOperationalMemento(
       if (activeSqlite !== null && activeSqlite.store === store && activeSqlite.scopeId === scopeId) {
         return activeSqlite;
       }
+      const backing = new SqliteOperationalBacking(store, scopeId, legacyMemento, nowMs, logger);
+      const outcome = backing.migrationOutcome;
+      if (outcome !== null && !outcome.completed) {
+        throw new SqliteCutoverMigrationIncompleteError(scopeId, outcome.currentStage);
+      }
       readOnlyCache = null;
-      activeSqlite = new SqliteOperationalBacking(store, scopeId, legacyMemento, nowMs, logger);
+      activeSqlite = backing;
       postCutoverScopeId = scopeId;
       return activeSqlite;
     },

@@ -45,6 +45,13 @@ export interface LegacyWorkspaceSnapshotInput {
   readonly runRecords: readonly LegacyRunRecordInput[];
   readonly deltaRunRecords?: readonly LegacyRunRecordInput[] | undefined;
   readonly failAtStage?: MigrationStageName | undefined;
+  /**
+   * Copies the caller's non-run legacy state inside the `import` stage transaction (F04-FR-13/14).
+   * Running it there, before `validate` and `publish-authority`, means SQLite authority is never
+   * published over a partial copy: a throw rolls the stage back and leaves authority `legacy`,
+   * and the next run copies again from the still-authoritative legacy source.
+   */
+  readonly importOperationalDocuments?: ((conn: NodeSqliteConnection, nowMs: number) => void) | undefined;
 }
 
 export interface ParsedLegacyRunPayload {
@@ -311,6 +318,7 @@ export class MigrationCoordinator {
             maxVersion,
             now
           );
+          input.importOperationalDocuments?.(this.conn, now);
           importedRuns += res.imported;
           quarantinedRecords += res.quarantined;
           this.upsertStageLedger(
