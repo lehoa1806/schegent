@@ -47,6 +47,12 @@ import { SanitizedLogger } from '../../src/lib/logger';
  * knows what the flatness claim was measured over.
  */
 const CYCLES = 200;
+/**
+ * The Run start/end case takes about 0.5 s on a quiet machine and ran past vitest's 5 s default with
+ * the load average between 10 and 42 (gate, 2026-11-12). It counts handles, not time, so the budget
+ * only bounds a hang.
+ */
+const RUN_CYCLE_TEST_TIMEOUT_MS = 30_000;
 
 let workspaceRoot: string;
 
@@ -178,7 +184,7 @@ describe('FR-R3-137 — descriptor cycles (T1532a, FR-015)', () => {
       `[FR-R3-137] run start/end: ${CYCLES} cycles, ` +
         `start=${distinct(afterStart)}, end=${distinct(afterEnd)}, next=${distinct(afterNext)}, disposed=0`
     );
-  });
+  }, RUN_CYCLE_TEST_TIMEOUT_MS);
 
   it('stays flat across a sustained fixture rather than growing with it', async () => {
     const { sink } = sinkFor();
