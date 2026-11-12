@@ -6,7 +6,8 @@ export type SideEffectOperation =
   | 'lane-settlement'
   | 'acp-observation-ledger'
   | 'usage-accounting'
-  | 'sweep-protection-query';
+  | 'sweep-protection-query'
+  | 'acp-authorization-receipt';
 
 export type SideEffectFailureReport = (operation: SideEffectOperation, thrown: unknown) => void;
 
