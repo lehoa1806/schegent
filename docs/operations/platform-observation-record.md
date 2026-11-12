@@ -248,7 +248,10 @@ load-sensitive test designs, not Linux behaviour, and neither is fixed here:
 - `f14b-host-integration` (F14-AC-05/06/10) waits a fixed 20 ms for a retry-exhausted batch to spool,
   then asserts one spooled batch; it read 0. The spool arrived after the test had closed the
   database and surfaced as an unhandled `database is not open` rejection from
-  `src/services/telemetry-host/telemetry-durable-store.ts`.
+  `src/services/telemetry-host/telemetry-durable-store.ts`. Fixed later the same day: a spool that
+  starts or resumes after the store closed now drops its batch and removes its file, any other spool
+  failure is reported through the side-effect reporter (operation `telemetry-spool`), and the host's
+  `idle()` waits for unawaited spool work, which the test now awaits in place of the 20 ms.
 - `secret-scan-staged` (SS4, SIGTERM while the engine runs) polls every 2 ms for the scan's temporary
   directory and never saw it. The directory exists only while the scan runs, so a scan that completes
   between two delayed polls leaves nothing to see (inferred, not traced).

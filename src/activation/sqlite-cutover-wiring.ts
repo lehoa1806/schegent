@@ -373,6 +373,7 @@ interface OpenPrimarySqliteServicesInput {
   readonly hasWorkspaceStorage: boolean;
   readonly operationalMemento: SwitchableOperationalMemento | undefined;
   readonly catalogFs: SwitchableCatalogFsAdapter | undefined;
+  readonly reportSideEffectFailure: SideEffectFailureReport;
 }
 
 async function openPrimarySqliteServices(
@@ -449,7 +450,8 @@ async function openPrimarySqliteServices(
       storageRoot,
       secrets: buildSecretPort(deps.context.secrets),
       isWorkspaceTrusted: deps.isWorkspaceTrusted,
-      serviceVersion: '0.2.0'
+      serviceVersion: '0.2.0',
+      reportSideEffectFailure: input.reportSideEffectFailure
     });
     telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
     const configSub = vscode.workspace.onDidChangeConfiguration((event) => {
@@ -697,7 +699,8 @@ export function createSqliteCutoverCoordinator(
       expectedDatabasePath,
       hasWorkspaceStorage,
       operationalMemento,
-      catalogFs
+      catalogFs,
+      reportSideEffectFailure
     });
     return activeServices;
   };

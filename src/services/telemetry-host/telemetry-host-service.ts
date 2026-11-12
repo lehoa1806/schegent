@@ -45,6 +45,7 @@ import type {
   Measure,
   Provenance
 } from '../../contracts/usage-accounting/accounting-types';
+import type { SideEffectFailureReport } from '../../lib/side-effect-failure-reporter';
 import type { SqliteApplicationStore } from '../sqlite-store';
 import {
   classifyDelivery,
@@ -107,6 +108,12 @@ export interface TelemetryHostServiceDeps {
   readonly clock?: ExporterClock;
   readonly timers?: ExporterTimers;
   readonly random?: () => number;
+  /**
+   * Where a failed background spool or spool reconciliation is reported. Both run unawaited, from
+   * a retry timer or a settings change, so without it a failure is dropped here rather than
+   * surfacing as an unhandled rejection.
+   */
+  readonly reportSideEffectFailure?: SideEffectFailureReport;
 }
 
 export interface TelemetryHostService {
@@ -351,6 +358,19 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
   let exporter: TelemetryExporter | null = null;
   let lastFailedBody: Uint8Array | null = null;
 
+  /** Unawaited spool work, so `idle()` can wait for it; each entry has already handled its failure. */
+  const pendingSpoolWork = new Set<Promise<void>>();
+  function trackSpoolWork(work: Promise<unknown>): void {
+    const settled = work.then(
+      () => undefined,
+      (err: unknown) => {
+        deps.reportSideEffectFailure?.('telemetry-spool', err);
+      }
+    );
+    pendingSpoolWork.add(settled);
+    void settled.then(() => pendingSpoolWork.delete(settled));
+  }
+
   const spoolDropCounts: Partial<Record<DropReason, number>> = {};
   const spoolExpiryCounts: Partial<Record<ExpiryReason, number>> = {};
 
@@ -424,18 +444,20 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
           const destSnapshot = activeDestination;
           const genSnapshot = authorizationGeneration;
           lastFailedBody = null;
-          void spool
-            .spoolBatch({
-              batchId,
-              destination: destSnapshot,
-              authorizationGeneration: genSnapshot,
-              body: bodyToSpool
-            })
-            .then((spooled) => {
-              for (const evictedId of spooled.droppedBatchIds) {
-                recordSpoolDrop(evictedId, 'queue-saturated');
-              }
-            });
+          trackSpoolWork(
+            spool
+              .spoolBatch({
+                batchId,
+                destination: destSnapshot,
+                authorizationGeneration: genSnapshot,
+                body: bodyToSpool
+              })
+              .then((spooled) => {
+                for (const evictedId of spooled.droppedBatchIds) {
+                  recordSpoolDrop(evictedId, 'queue-saturated');
+                }
+              })
+          );
         }
       }
     };
@@ -469,12 +491,14 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
       }
       // Revoke any spooled batches if any exist in SQLite without creating directories in disabled mode.
       if (spool.stats().spooledBatches > 0) {
-        void spool.reconcileForDestination({
-          activeDestination: null,
-          authorizationGeneration,
-          onDropped: recordSpoolDrop,
-          onExpired: recordSpoolExpiry
-        });
+        trackSpoolWork(
+          spool.reconcileForDestination({
+            activeDestination: null,
+            authorizationGeneration,
+            onDropped: recordSpoolDrop,
+            onExpired: recordSpoolExpiry
+          })
+        );
       }
       return evaluation;
     }
@@ -483,12 +507,14 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
     const exp = ensureExporter();
     exp.configure(nextEval, authorizationGeneration);
     if (spool.stats().spooledBatches > 0) {
-      void spool.reconcileForDestination({
-        activeDestination: nextDest,
-        authorizationGeneration,
-        onDropped: recordSpoolDrop,
-        onExpired: recordSpoolExpiry
-      });
+      trackSpoolWork(
+        spool.reconcileForDestination({
+          activeDestination: nextDest,
+          authorizationGeneration,
+          onDropped: recordSpoolDrop,
+          onExpired: recordSpoolExpiry
+        })
+      );
     }
     return evaluation;
   }
@@ -742,8 +768,9 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
       applyEvaluation(Object.freeze({ kind: 'disabled' }));
     },
 
-    idle() {
-      return exporter === null ? Promise.resolve() : exporter.idle();
+    async idle() {
+      if (exporter !== null) await exporter.idle();
+      while (pendingSpoolWork.size > 0) await Promise.all([...pendingSpoolWork]);
     },
 
     async shutdown() {

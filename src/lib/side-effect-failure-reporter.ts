@@ -7,7 +7,8 @@ export type SideEffectOperation =
   | 'acp-observation-ledger'
   | 'usage-accounting'
   | 'sweep-protection-query'
-  | 'acp-authorization-receipt';
+  | 'acp-authorization-receipt'
+  | 'telemetry-spool';
 
 export type SideEffectFailureReport = (operation: SideEffectOperation, thrown: unknown) => void;
 
