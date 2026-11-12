@@ -42,8 +42,9 @@ const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
  * and the task block changed: bump `PROMPT_COMPOSITION_VERSION` if anything outside the contract
  * text and the task block changed, then re-pin both values together.
  */
-const PINNED_COMPOSITION_VERSION = 1;
-const PINNED_SCAFFOLD_SHA256 = '6b9d7f69feebdd8e9c127cbfed69f475538e9af22ebb97dfcf12d8693cdf2274';
+// 2: review gap GC-14 (2026-11-12) labels the previous-phase-message and carried-issue sections as data.
+const PINNED_COMPOSITION_VERSION = 2;
+const PINNED_SCAFFOLD_SHA256 = 'deda7383686f74bcf03b09da4cabf323e2f5c84a911830c6cc964beedc880b51';
 
 const CANONICAL_INPUT: PromptInputs = {
   phase: 'speckit-specify',
