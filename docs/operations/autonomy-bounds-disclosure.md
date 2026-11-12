@@ -145,15 +145,19 @@ resource-scoped, so a trusted workspace or a workspace folder may set them as we
 settings (the two spend bounds are read for the workspace as a whole, so a folder's value does not
 apply to them).
 
-**A workspace may only tighten the spend, retry and loop limits.** For `schegent.spend.maxUsdPerRun`,
-`schegent.spend.maxTokensPerRun`, `schegent.retry.maxAttempts`, `schegent.retry.forceContinueOnCap`,
-`schegent.loop.maxIterations` and `schegent.loop.maxUnchangedComparisons`, the operator's value is
-the user setting, else the default. A workspace or folder value replaces it only when it is valid and
-stricter: a lower cap, a cap where the operator set none (`null`, or `0` for the unchanged-comparison
-bound), or `false` for `forceContinueOnCap`. A value that would raise, clear or switch off a limit is
-ignored, and activation logs one warning naming the setting and the layer. The two invocation
-timeouts are not in this set: a trusted workspace may still lengthen them. A Phase's own overrides
-(below) are part of the pipeline, not a settings layer, and are not limited by this rule.
+**A workspace may only tighten the spend, retry, loop and invocation time limits.** For
+`schegent.spend.maxUsdPerRun`, `schegent.spend.maxTokensPerRun`, `schegent.retry.maxAttempts`,
+`schegent.retry.forceContinueOnCap`, `schegent.loop.maxIterations`,
+`schegent.loop.maxUnchangedComparisons`, `schegent.invocation.idleTimeoutSeconds` and
+`schegent.invocation.maxDurationSeconds`, the operator's value is the user setting, else the
+default. For the idle window, the user value of the deprecated `schegent.invocation.timeoutSeconds`
+counts as the operator's when the new key has no user value. A workspace or folder value replaces it only when it is valid and
+stricter: a lower cap or a shorter timeout, a cap where the operator set none (`null`, or `0` for
+the unchanged-comparison bound), or `false` for `forceContinueOnCap`. A value that would raise, clear
+or switch off a limit is ignored, and activation logs one warning naming the setting and the layer.
+A Phase's own spend bound (below) follows the same rule. A Phase's own idle timeout and retry-cap
+outcome are part of the pipeline and are not limited by it; the wall-clock bound still applies to
+every invocation.
 
 So each Run shows the limits it actually runs under, in the Run's detail view: the iteration cap and
 what happens at it, the idle and wall-clock timeouts, the delayed-retry cap, and the spend bound with
@@ -172,7 +176,9 @@ into it.
 
 ## Per-phase overrides
 
-A Phase may declare `spendBoundUsd` or `spendBoundTokens`, which override the workspace
-default while that phase runs. Precedence is per denomination and independent: a phase
-declaring only a token bound keeps the operator's dollar bound rather than clearing it.
+A Phase may declare `spendBoundUsd` or `spendBoundTokens`, which apply while that phase runs
+when they are tighter than the operator's bound, or when the operator set none. A looser
+authored bound is not used, and the limits view then shows the operator's value and its layer.
+Precedence is per denomination and independent: a phase declaring only a token bound keeps the
+operator's dollar bound rather than clearing it.
 See `docs/features/custom-phases.md` for the authored field table and its bounds.

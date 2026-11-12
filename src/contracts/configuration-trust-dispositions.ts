@@ -63,7 +63,7 @@ export type SensitivityClass =
    * scope. THE HARDEST ROW IN THIS CLASS IS `retry.forceContinueOnCap`, whose own
    * description says "whatever the condition gates is left unverified". Since review
    * gap GC-10 a repository layer can no longer turn it on, nor raise or clear the
-   * spend, retry and loop limits (`config/tighten-only-limits.ts`); a trusted
+   * spend, retry, loop and invocation time limits (`config/tighten-only-limits.ts`); a trusted
    * repository can still ship a phase with `forceContinueOnRetryCap` set per row.
    * Named rather than quietly filed.
    */

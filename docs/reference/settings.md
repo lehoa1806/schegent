@@ -61,9 +61,10 @@ The backend choice is a privilege choice, not a cosmetic preference. A Phase's `
 | `schegent.queue.haltOnTaskFailure` | `halt-on-failure` or `continue` | `halt-on-failure` | window | Workspace default for what a Queue does after one of its tasks ends `failed`. `halt-on-failure` starts no further task until the operator retries or removes the failed one; `continue` keeps starting the remaining tasks. A Queue that states its own policy overrides it. |
 
 A workspace or folder value of `schegent.loop.maxIterations`, `schegent.loop.maxUnchangedComparisons`,
-`schegent.spend.maxUsdPerRun`, `schegent.spend.maxTokensPerRun`, `schegent.retry.maxAttempts` or
-`schegent.retry.forceContinueOnCap` may only tighten the user's value (or the default): a lower cap,
-a cap where none was set, or `false`. A value that would raise, clear or switch off the limit is
+`schegent.spend.maxUsdPerRun`, `schegent.spend.maxTokensPerRun`, `schegent.retry.maxAttempts`,
+`schegent.retry.forceContinueOnCap`, `schegent.invocation.idleTimeoutSeconds` or
+`schegent.invocation.maxDurationSeconds` may only tighten the user's value (or the default): a lower
+cap, a shorter timeout, a cap where none was set, or `false`. A value that would raise, clear or switch off the limit is
 ignored, and activation logs a warning. See [Autonomy bounds](../operations/autonomy-bounds-disclosure.md#where-each-limit-comes-from).
 
 <!-- Source: src/config/tighten-only-limits.ts -->
