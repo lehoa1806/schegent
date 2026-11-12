@@ -62,33 +62,36 @@ export function buildHostAcpDispatchOptions(
   let lastVerifiedPrimacy: boolean | null = null;
   let ownershipGeneration = 1;
 
+  /** Asks the lock once and records the verdict; an unreadable lock is a lost one. */
+  const verifyPrimacy = async (): Promise<boolean> => {
+    let held: boolean;
+    try {
+      held = await deps.hasPrimacy();
+    } catch {
+      held = false;
+    }
+    if (lastVerifiedPrimacy === true && !held) {
+      ownershipGeneration += 1;
+    }
+    lastVerifiedPrimacy = held;
+    return held;
+  };
   const refreshPrimacyState = (): void => {
-    void deps
-      .hasPrimacy()
-      .then((held) => {
-        if (lastVerifiedPrimacy === true && !held) {
-          ownershipGeneration += 1;
-        }
-        lastVerifiedPrimacy = held;
-      })
-      .catch(() => {
-        lastVerifiedPrimacy = false;
-      });
+    void verifyPrimacy();
   };
 
   // Review gap GC-08 (2026-11-12) — the authoritative verdict decides. "A SQLite store is attached"
   // used to satisfy primacy outright, and it stays true in a window that opened its store while
-  // primary and then lost primacy. It now stands in only until the first verdict lands, and the
-  // verify starts when a session registers its scope, before any callback can arrive. The
-  // synchronous `isHeld()` is the advisory mirror, which FR-R3-024 keeps out of decisions.
-  const storeAttached = (): boolean => Boolean(getSqliteCutoverCoordinator(deps.store)?.getSqliteStore());
-
+  // primary and then lost primacy. The follow-up the same day removed it as a stand-in too: a
+  // session awaits `primeAuthority` before it registers its scope, so a verdict is in place before
+  // its first callback, and no verdict denies. The synchronous `isHeld()` is the advisory mirror,
+  // which FR-R3-024 keeps out of decisions.
   const authorityGate = new AcpAuthorityGate(
     {
       isWorkspaceTrusted: () => deps.isWorkspaceTrusted(),
       holdsPrimacy: () => {
         refreshPrimacyState();
-        return deps.isWorkspaceTrusted() && (lastVerifiedPrimacy ?? storeAttached());
+        return deps.isWorkspaceTrusted() && lastVerifiedPrimacy === true;
       },
       currentOwnershipGeneration: () => ownershipGeneration
     },
@@ -122,6 +125,7 @@ export function buildHostAcpDispatchOptions(
       refreshPrimacyState();
       return ownershipGeneration;
     },
+    primeAuthority: async () => (await verifyPrimacy()) && deps.isWorkspaceTrusted(),
     onAcpObservation: (event) => {
       getSqliteCutoverCoordinator(deps.store)?.recordAcpObservation(event);
     }

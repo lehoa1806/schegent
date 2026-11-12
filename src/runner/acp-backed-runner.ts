@@ -93,6 +93,12 @@ export interface AcpBackedRunnerOptions {
   readonly primaryWorkspaceRoot?: string;
   readonly protectedDatabasePaths?: readonly string[];
   readonly currentOwnershipGeneration?: () => number;
+  /**
+   * Review gap GC-08 follow-up — awaited before a session registers its scope, so the gate holds an
+   * authoritative primacy verdict before the session's first callback. `false` ends the attempt
+   * with `acp-ownership-unverified` before its prompt is sent.
+   */
+  readonly primeAuthority?: () => Promise<boolean>;
   readonly onAcpObservation?: (event: AcpRunnerObservationEvent) => void;
   /**
    * The platform the profile's qualification is judged against; omitted, this host's. Tests pin it
@@ -514,6 +520,9 @@ export class AcpBackedRunner implements BackendRunner {
           }
           if (missingUpstream) {
             warnings.push('acp-upstream-artifact-inaccessible');
+            exitCode = 1;
+          } else if (this.options.primeAuthority !== undefined && !(await this.options.primeAuthority())) {
+            warnings.push('acp-ownership-unverified');
             exitCode = 1;
           } else {
             gate?.registerScope({

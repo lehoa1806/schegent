@@ -87,10 +87,35 @@ describe('GC-08 — ACP authority gate primacy and receipt writer wiring', () =>
     expect(gate.authorize(readRequest()).reason).toBe('ownership-lost');
   });
 
-  it('lets an attached store stand in for primacy only until the first verdict lands', () => {
+  // GC-08 follow-up (2026-11-12) — the attached store no longer stands in before the first verdict.
+  // A session awaits `primeAuthority()` before it registers its scope, so the verdict is in place
+  // when its first callback arrives, and nothing is allowed on a store's word.
+  it('denies before the first verdict even when a store is attached', () => {
     const { gate } = build({ primary: true });
 
+    expect(gate.authorize(readRequest()).reason).toBe('ownership-lost');
+  });
+
+  it('primes an authoritative verdict a session can wait for', async () => {
+    const { dispatch, gate } = build({ primary: true });
+
+    await expect(dispatch.primeAuthority?.()).resolves.toBe(true);
     expect(gate.authorize(readRequest()).allowed).toBe(true);
+  });
+
+  it('primes a refusal when primacy is lost or cannot be read', async () => {
+    const lost = build({ primary: false });
+    await expect(lost.dispatch.primeAuthority?.()).resolves.toBe(false);
+    expect(lost.gate.authorize(readRequest()).reason).toBe('ownership-lost');
+
+    const unreadable = buildHostAcpDispatchOptions({
+      workspaceRoot: '/workspace',
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: () => Promise.reject(new Error('lock file unreadable'))
+    });
+    await expect(unreadable.primeAuthority?.()).resolves.toBe(false);
   });
 
   it('denies before the first verdict when no store is attached', () => {
@@ -117,14 +142,15 @@ describe('GC-08 — ACP authority gate primacy and receipt writer wiring', () =>
     });
   });
 
-  it('reports a receipt write the database refused', () => {
+  it('reports a receipt write the database refused', async () => {
     registry.writer = {
       run: () => {
         throw new RangeError('constraint');
       }
     };
     const logger = makeLogger();
-    const { gate } = build({ primary: true, logger });
+    const { dispatch, gate } = build({ primary: true, logger });
+    await dispatch.primeAuthority?.();
 
     expect(gate.authorize(readRequest()).allowed).toBe(true);
     expect(logger.warn).toHaveBeenCalledWith(expect.any(String), {
