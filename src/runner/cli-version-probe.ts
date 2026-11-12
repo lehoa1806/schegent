@@ -29,6 +29,7 @@ import {
   QUALIFIED_BACKEND_VERSIONS
 } from '../contracts/qualified-backend-versions';
 import { buildSpawnEnv, policyRequestFields } from './spawn-env';
+import { spawnCommandFor } from '../lib/spawn-command';
 
 const run = promisify(execFile);
 
@@ -109,7 +110,10 @@ export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersio
           // FR-R4-F06 (FR-004) -- `env` is built by the construction every runner uses. It was
           // absent, so the child received the host's complete environment under every mode, the
           // shipped allowlist default included.
-          const { stdout } = await run(cliPath, ['--version'], {
+          //
+          // Review gap GC-24 -- on win32 a bare name resolves along PATH only, never the cwd. The
+          // host's PATH is the child's: `buildSpawnEnv` copies it under every mode.
+          const { stdout } = await run(spawnCommandFor(cliPath), ['--version'], {
             timeout: CLI_VERSION_TIMEOUT_MS,
             maxBuffer: CLI_VERSION_MAX_OUTPUT_BYTES,
             windowsHide: true,

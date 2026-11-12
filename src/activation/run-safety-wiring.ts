@@ -15,6 +15,7 @@ import type { QueueManager } from '../queue/queue-manager';
 import type { SanitizedLogger } from '../lib/logger';
 import { resolveDiffBase } from '../lib/git-diff-base';
 import { withHostGitConfig } from '../lib/host-git-config';
+import { spawnCommandFor } from '../lib/spawn-command';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import { isOperableRunStatus, isTerminalRunStatus, LIVE_RUN_STATUSES } from '../state/workflow-run';
@@ -207,7 +208,7 @@ export async function createRunSafetyWiring(input: {
     readDiff: async () =>
       (
         await promisify(execFile)(
-          'git',
+          spawnCommandFor('git'),
           withHostGitConfig([
             'diff',
             '--binary',

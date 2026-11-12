@@ -6,6 +6,7 @@ import type { BackendRunner, MonitorSidecarEvent, MonitorSidecarHook, TreeAttrib
 import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
 import { buildSpawnEnv } from './spawn-env';
+import { spawnCommandFor } from '../lib/spawn-command';
 import { planCapabilityEnforcement } from '../services/capability-enforcement-plan';
 import { CapabilityNotEnforceableError } from '../services/capability-refusal';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
@@ -187,7 +188,12 @@ function safeSpawn(
   }
   // FR-R3-054 (H-05) — its own process group, so the terminate ladder can reach
   // descendants rather than only the direct child.
-  return spawnFn(command, args, { ...options, shell: false, ...processTreeSpawnOptions() });
+  // Review gap GC-24 -- on win32 a bare name resolves along the child's PATH only, never the cwd.
+  return spawnFn(spawnCommandFor(command, options.env ?? process.env), args, {
+    ...options,
+    shell: false,
+    ...processTreeSpawnOptions()
+  });
 }
 
 /**

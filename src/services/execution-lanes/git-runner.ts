@@ -15,6 +15,7 @@
 import { execFile } from 'node:child_process';
 
 import { withHostGitConfig } from '../../lib/host-git-config';
+import { spawnCommandFor } from '../../lib/spawn-command';
 
 /**
  * Variables that would redirect a Git call to another repository, index or object store, or
@@ -139,7 +140,15 @@ export function createExecFileGitRunner(deps: ExecFileGitRunnerDeps = {}): LaneG
           windowsHide: true,
           encoding: 'utf8'
         };
-        execFileImpl(GIT_EXECUTABLE, withHostGitConfig(args), options, (error, stdout) => {
+        // Review gap GC-24 -- on win32 `git` resolves along PATH only, never the lane's cwd.
+        let file: string;
+        try {
+          file = spawnCommandFor(GIT_EXECUTABLE, env);
+        } catch {
+          resolve({ ok: false, exitCode: null, code: 'spawn' });
+          return;
+        }
+        execFileImpl(file, withHostGitConfig(args), options, (error, stdout) => {
           resolve(error === null ? { ok: true, stdout } : classifyFailure(error));
         });
       })
