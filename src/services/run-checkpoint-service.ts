@@ -7,6 +7,7 @@ import { readBoundedRange } from '../lib/bounded-read';
 import { NarrowingReporter } from '../lib/evidence-narrowing';
 import { resolveDiffBase } from '../lib/git-diff-base';
 import { withHostGitConfig } from '../lib/host-git-config';
+import { spawnCommandFor } from '../lib/spawn-command';
 import { resolveContainedLink } from '../lib/path-containment';
 import {
   RECOVERY_ENVELOPE_SUFFIX,
@@ -505,7 +506,7 @@ export class RunCheckpointService {
     cwd: string = this.workspaceRoot
   ): Promise<string> {
     try {
-      const { stdout } = await runExecFile('git', withHostGitConfig(args), { cwd, maxBuffer });
+      const { stdout } = await runExecFile(spawnCommandFor('git'), withHostGitConfig(args), { cwd, maxBuffer });
       return stdout;
     } catch (error) {
       if ((error as { code?: unknown }).code === MAX_BUFFER_EXCEEDED) {

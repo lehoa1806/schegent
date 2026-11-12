@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { promisify } from 'node:util';
 
 import { withHostGitConfig } from '../../lib/host-git-config';
+import { spawnCommandFor } from '../../lib/spawn-command';
 import type { AttemptOutcome } from '../../contracts/decision-results';
 import type { PhaseSideEffects } from '../../contracts/process-definitions';
 import {
@@ -137,7 +138,7 @@ async function inspectGitWorkspace(workspaceRoot: string, remainingMs: number): 
   const timeoutMs = Math.max(50, Math.min(remainingMs, MAX_CAPTURE_DURATION_MS));
   try {
     const { stdout: statusOut } = await execFileAsync(
-      'git',
+      spawnCommandFor('git'),
       withHostGitConfig(['-C', workspaceRoot, 'status', '--porcelain=v1', '-z', '-uall']),
       {
         encoding: 'utf8',
@@ -177,7 +178,7 @@ async function inspectGitWorkspace(workspaceRoot: string, remainingMs: number): 
     let head: string | undefined;
     try {
       const { stdout: headOut } = await execFileAsync(
-        'git',
+        spawnCommandFor('git'),
         withHostGitConfig(['-C', workspaceRoot, 'rev-parse', '--verify', 'HEAD']),
         {
           encoding: 'utf8',
