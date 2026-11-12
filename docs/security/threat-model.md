@@ -43,6 +43,9 @@ This catalog describes code-resident mitigations and residual risk. It does not 
 | [T23](#t23--operator-authored-value-escapes-its-declared-bound) | Identifiers or retry expressions reach bounded sinks without their owning bound | Each definition contract owns its maximum and validators/reporting sites reuse it. | <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/contracts/pipeline-definitions.ts --><!-- Source: src/contracts/workflow-definitions.ts --> |
 | [T24](#t24--legacy-persisted-state-re-enters-the-runtime) | Old or newer persisted state violates current invariants | Forward-only initialization migrates old state and refuses a schema newer than the runtime. | <!-- Source: src/state/workspace-state.ts --><!-- Source: src/state/queue-state-migrator.ts --> |
 | [T25](#t25--control-sentinel-carried-in-cli-output) | Model-controlled stdout carries apparent host control signals | Outcome parsing uses the trailing audit region; process termination uses the CLI harness result envelope. | <!-- Source: src/parser/audit-log-parser.ts --><!-- Source: src/parser/stdout-parser.ts --><!-- Source: src/runner/claude-cli.ts --> |
+| [T29](#t29--sqlite-operational-store-holds-unencrypted-state-at-rest) | The SQLite operational store holds structured state at rest, unencrypted, outside the workspace | Owner-only modes (`0700` directories, `0600` files), trusted-root-only path resolution, refusal of a WAL on a network filesystem, forward-only schema with a future schema refused, and one fenced writer in the trusted primary window. | <!-- Source: src/services/sqlite-store/storage-location-resolver.ts --><!-- Source: src/services/sqlite-store/schema-bootstrap.ts --> |
+| [T30](#t30--acp-bridge-callback-carries-agent-authority) | An ACP agent asks the host for a permission its Phase did not declare, or a prompt names a file outside the Run's reach | `AcpAuthorityGate` re-checks trust, primacy, ownership generation, declared capabilities and replay on every permission request, and path containment on every file resource link; an undecided request falls back to reject, then cancelled. | <!-- Source: src/services/containment-qualification/acp-authority-gate.ts --><!-- Source: src/services/acp-runtime/permission-policy.ts --> |
+| [T31](#t31--opt-in-telemetry-export-leaves-the-machine) | The optional OTLP exporter sends usage metadata to a collector the operator named | Off by default; user-scoped settings only; one `https` endpoint (plaintext only to loopback, and only when allowed); metadata-only profile; credential read from SecretStorage; no redirects; a 2 second deadline. | <!-- Source: src/services/telemetry-export/otlp-http-transport.ts --><!-- Source: src/services/telemetry-export/destination-policy.ts --> |
 
 ## The untrusted input classes
 
@@ -529,7 +532,7 @@ Schegent has several distinct local sensitive-data surfaces:
 
 - Raw session transcripts are local and unredacted. Claude verbose diagnostics are optional and unredacted. Generated ignore rules reduce accidental commits but are not encryption or access control.
 - Recovery checkpoints live under extension `globalStorage/checkpoints`. A checkpoint patch is `git diff --binary --no-ext-diff HEAD`, so it may contain source and secrets that were present in uncommitted changes. Run directories use mode `0700` and files use `0600`. Their separate retention policy is 14 days and 256 MiB, while protecting the ten most recent Run directories from the size bound; session-retention settings do not govern them.
-- The CLI transport is a per-Run file, `.schegent/sessions/<runId>/transport.log` (an earlier release's shared `.schegent/cli-transport.log` is legacy and no longer written). It is sanitized through the shared secret patterns but deliberately retains paths found in backend output, and everything else in the stream lines as the CLI sent it, which is why it is local evidence of the same class as the transcript. What it holds depends on `schegent.logging.transportCaptureMode`: `off` writes none, `errors-only` keeps only a failed or canceled Run's lines (a clean Run's are removed when it ends), `on` keeps every Run's, and `inherit` (the default) follows the raw transcript mode. Its bounds, from the constants that enforce them, are in [the retention disclosure](../operations/evidence-retention-disclosure.md). None of this limits what Claude Code itself sends: the CLI sends repository content and prompts to the model vendor whatever Schegent's local capture settings are, and Schegent making no network call of its own does not keep that content on the machine (see [local-first, not offline](../concepts/local-first-not-offline.md)). `.schegent/history/<runId>.txt` stores the full sanitized Task description with mode `0600`; sanitization is pattern-based and is not a general data-classification guarantee. Since FR-R3-071 that text also reaches the sidebar on request (`CMD_RESOLVE_HISTORY_DESCRIPTION`), so the operator repeating a run edits what they actually wrote rather than an 80-character preview: the webview names a run id and never a path, the host resolves the sidecar through the single description resolver, and the command is read-only — outside `MUTATING_COMMANDS` and ungated by primacy, on the same terms as the evidence drill-down.
+- The CLI transport is a per-Run file, `.schegent/sessions/<runId>/transport.log` (an earlier release's shared `.schegent/cli-transport.log` is legacy and no longer written). It is sanitized through the shared secret patterns but deliberately retains paths found in backend output, and everything else in the stream lines as the CLI sent it, which is why it is local evidence of the same class as the transcript. What it holds depends on `schegent.logging.transportCaptureMode`: `off` writes none, `errors-only` keeps only a failed or canceled Run's lines (a clean Run's are removed when it ends), `on` keeps every Run's, and `inherit` (the default) follows the raw transcript mode. Its bounds, from the constants that enforce them, are in [the retention disclosure](../operations/evidence-retention-disclosure.md). None of this limits what Claude Code itself sends: the CLI sends repository content and prompts to the model vendor whatever Schegent's local capture settings are, and Schegent making no network call of its own does not keep that content on the machine (see [local-first, not offline](../concepts/local-first-not-offline.md)). The one network client in host source is the optional telemetry exporter, which is off by default and sends metadata only; [T31](#t31--opt-in-telemetry-export-leaves-the-machine) states it. `.schegent/history/<runId>.txt` stores the full sanitized Task description with mode `0600`; sanitization is pattern-based and is not a general data-classification guarantee. Since FR-R3-071 that text also reaches the sidebar on request (`CMD_RESOLVE_HISTORY_DESCRIPTION`), so the operator repeating a run edits what they actually wrote rather than an 80-character preview: the webview names a run id and never a path, the host resolves the sidecar through the single description resolver, and the command is read-only — outside `MUTATING_COMMANDS` and ungated by primacy, on the same terms as the evidence drill-down.
 - **Evidence at rest is owner-only** (`FR-R3-179`, 2026-10-02). Until then the CLI transport log and the runtime log were created without a declared mode, `0644` under the common `022` umask, readable by every local account, and every evidence path an earlier release created kept the bits it was born with, because a mode applies only when a path is created. The host now declares `0600` for each evidence file and `0700` for each evidence directory it creates, and narrows an existing path in place the next time it writes through it: group and other bits are cleared, the file is never recreated or truncated, so the audit chain stays intact, and a symbolic link is refused rather than followed: each path is checked with `lstat` before it is narrowed, and narrowing stops at the first directory found to be a link. Rotated generations and audit archives are narrowed where they lie. Every writer reports what it narrowed, or could not narrow, without naming the path, and a report that cannot be delivered never fails the write. This is a boundary against **other local accounts** only. It keeps out nothing that runs as the operator — the operator, a backend process, an extension — and it is not encryption. Two limits are stated rather than closed. A path swapped for a link between that check and the `chmod` redirects the change, the window every path-based change has; the mode it sets carries no group or other bit, and `chmod` succeeds only on a file the operator owns, so the worst a swap can do is set one of the operator's own files to an owner-only mode, and no other account gains anything. And files a backend writes itself under `.schegent/sessions/`, Claude's `debug.json` and the `phase-message.env` sidecars, are not narrowed, nor are the `latest` links; other accounts cannot reach them only because an ancestor is `0700`: the host creates `.schegent/` owner-only and narrows it the next time it writes through it.
 
 <!-- Source: src/monitor/transport/transport-policy.ts -->
@@ -913,3 +916,119 @@ code-shaped unknown inside a fixed sentence, and shows nothing of any other stri
   inside a fixed sentence, and anything else is not shown, so a composed string that reached the
   acknowledgement would not be displayed. This bounds what the operator reads. It does not
   re-sanitize what the host sends, which is why the first bullet still stands.
+
+### T29 — SQLite operational store holds unencrypted state at rest
+
+After the one-time cutover (FR-R6-F04), structured operational state lives in a `node:sqlite`
+database at `<storage>/sqlite/<scope>/schegent-state.db`, with `-wal` and `-shm` sidecar files.
+It holds the queue and run state, catalog definitions, the usage and cost ledger, structured
+outputs and handoffs, log segments and similar records (16 of the 20 surfaces in the state
+census), and the receipts the ACP gate writes. The raw transcripts, the audit log and the other
+evidence files stay under `.schegent/` and are covered by the T10 entry.
+
+What the store does:
+
+- The directories are created `0700` and the database file `0600`, so other local accounts cannot
+  read it. This is the same boundary as the evidence files, and it has the same limit: it keeps out
+  nothing that runs as the operator.
+- The location is resolved only from trusted roots, so repository text cannot point the host at a
+  database elsewhere.
+- A write-ahead log is refused on a network filesystem, where its locking is not reliable.
+- The schema is forward-only. A database written by a newer schema is refused, not opened.
+- One serialized writer owns the file, in a trusted primary window. A non-primary window reads a
+  snapshot and cannot write.
+
+What it does not do, stated rather than implied:
+
+- **The database is not encrypted.** Task text, run outputs, log segments and usage figures kept in it are readable
+  by anything running as the operator, and by anyone who copies the file or a disk image.
+- **No Schegent command backs it up, restores it or deletes it.** The online backup and validated
+  restore functions are library code with no caller. Deleting the file is a manual act, and doing it
+  discards the state the store holds.
+- **It sits outside the workspace**, so ignore rules and a workspace clean-up do not touch it.
+
+<!-- Source: src/services/sqlite-store/storage-location-resolver.ts -->
+<!-- Source: src/services/sqlite-store/schema-bootstrap.ts -->
+<!-- Source: src/contracts/sqlite-store/state-census.ts -->
+
+### T30 — ACP bridge callback carries agent authority
+
+A Run dispatched through the ACP layer (FR-R6-F09, FR-R6-F13) talks to an agent over stdio. The
+host client advertises no filesystem and no terminal method and answers `-32601` to any other agent
+request, so the one thing an agent can ask the host for is a permission decision
+(`session/request_permission`). The request comes from a process steered by model output, so it is
+treated as untrusted input. The host also puts `file://` resource links into prompts, and each is
+checked before it is sent.
+
+`AcpAuthorityGate` decides each permission request on its own. It checks that the ACP session
+matches the attempt and the connection generation, that the workspace is still trusted, that this
+window still holds primacy and the ownership generation, that the Phase declared a capability that
+covers an effectful request, and that the `toolCallId` is not a replay. For a resource link it also
+requires the path to be inside the attempt's execution root or an explicitly authorized input or
+output reference, and refuses a SQLite database, its WAL files, `.schegent/` and credential files.
+Each decision is recorded as a bounded receipt in `acp_authorization_receipts`; a receipt holds a
+reason code and never raw tool arguments, paths or secret values. When the policy does not allow a
+request, the client answers with a reject option, then `cancelled`.
+
+Stated limits:
+
+- **The gate mediates callbacks. It is not an OS sandbox.** The bridge and the agent behind it run
+  as the operator, and anything the agent does without asking the host is outside the gate. The
+  ACP runtime guide records that the Codex bridge preserves the `--sandbox` flags; the permission
+  posture in `SECURITY.md` describes what each CLI is launched with.
+- **A protected-database list is supported by the gate, but no activation module supplies one.**
+  The store is kept out of a resource link's reach by lying outside the execution root, not by that
+  list.
+- **The legacy drain bypasses the gate.** A request flagged `legacyDrain` is handed to the inner CLI
+  runner. No production source sets the flag today.
+- **The bridges forward to a model vendor.** What the vendor receives is the same class as in T10.
+
+<!-- Source: src/services/containment-qualification/acp-authority-gate.ts -->
+<!-- Source: src/services/acp-runtime/permission-policy.ts -->
+<!-- Source: src/runner/acp-backed-runner.ts -->
+<!-- Source: src/activation/acp-execution-wiring.ts -->
+
+### T31 — Opt-in telemetry export leaves the machine
+
+The exporter (FR-R6-F14) is the only network client in host source: only its transport file imports a
+network module, and a lint file fails if any other source does. It copies usage and duration
+metadata to one OpenTelemetry collector over OTLP/HTTP with a JSON body.
+
+It is off in an installed build. It starts only when the user-scoped setting
+`schegent.telemetry.export.enabled` is `true` and a valid destination is set, in a trusted primary
+window. Workspace and folder settings are never read for these keys, so a repository cannot turn
+export on or choose where it goes.
+
+What bounds it:
+
+- **Metadata only.** A profile whose content policy is not `metadata-only` is refused. A record is
+  copied field by field: token and cost measures, durations, outcome, a backend name and up to two
+  model names. Prompts, responses, tool content, diffs, paths, credentials, and workspace, Run,
+  attempt and session identifiers are not part of the record shape.
+- **One destination.** An `https` endpoint with no user information, query or fragment. Plaintext
+  `http` is accepted only for a loopback host and only when the profile allows it.
+- **No redirects and a 2 second deadline** on each request. Of a response the exporter keeps the
+  status code and the rejected data point count.
+- **The credential is not in a setting.** The profile names a header and a secret-store reference;
+  the value is read from SecretStorage when a batch is sent.
+- **Undelivered batches stay local** in a SQLite-backed ledger and a spool directory under the
+  storage root, bounded at 32 MiB, in `0700` directories with `0600` files.
+
+Stated limits:
+
+- **The collector is trusted by the operator's choice.** Schegent cannot see what the collector does
+  with the metadata, or who else can read it. Usage figures and model names show how much and which
+  backends the operator uses.
+- **Free-text labels are filtered, not proven safe.** A backend or model value is sent only if it
+  passes a closed pattern, a 256 byte bound and the logger's secret detector; the detector is
+  pattern-based, as T1 says.
+- **It does not change what the CLI sends.** Claude Code, Codex and Agy still contact their
+  vendors on their own, as T10 states.
+
+[The telemetry export guide](../operations/telemetry-export.md) has the full field list and the
+refusal reasons.
+
+<!-- Source: src/services/telemetry-export/otlp-http-transport.ts -->
+<!-- Source: src/services/telemetry-export/destination-policy.ts -->
+<!-- Source: src/services/telemetry-host/telemetry-durable-store.ts -->
+<!-- Source: src/contracts/telemetry-export.ts -->

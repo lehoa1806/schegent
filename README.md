@@ -22,12 +22,13 @@ Schegent is a local-first VS Code extension that queues development Tasks, execu
   operator, or if the harness stops deriving its version from the manifest.
 - English only, by decision: command titles, settings, dialogs and webview text are not localized. The decision, what it measured and what would reopen it are in [English-only is a product decision](docs/concepts/english-only-not-localizable.md).
 - Vitest for host and webview tests, Playwright for visual tests, and the VS Code Electron harness for integration tests.
-- VS Code `workspaceState` plus workspace-local `.schegent/` files; no database, ORM, Schegent HTTP server, or Schegent-owned CLI executable.
+- Structured state (Runs, the Queue, catalog definitions, the usage ledger, handoffs, lanes and reports) lives, after a one-time cutover in a trusted primary window, in an embedded SQLite store: Node's built-in `node:sqlite`, no ORM. The database is in the extension's host storage, outside the workspace (`<storage>/sqlite/<scope>/schegent-state.db` with `-wal` and `-shm` sidecars); see [SQLite application store](docs/operations/sqlite-application-store.md). The audit log, transcripts and other evidence files stay in workspace-local `.schegent/` files, and VS Code `workspaceState` holds the pre-cutover copies and UI preferences. There is no Schegent HTTP server or Schegent-owned CLI executable.
 
 <!-- Source: package.json -->
 <!-- Source: webview-ui/package.json -->
 <!-- Source: esbuild.config.mjs -->
 <!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/services/sqlite-store/storage-location-resolver.ts -->
 
 ## Get started
 

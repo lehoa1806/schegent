@@ -88,3 +88,4 @@ All authoritative multi-table state changes execute inside `AtomicTransactionUni
 2. **Online Backup & Validated Restore (`BackupRestoreService`)**:
    - `createOnlineBackup` uses `VACUUM INTO` to snapshot the live WAL database and builds a `BackupDependencyManifest` listing external content-addressed blobs (`F05`), bounded log segments (`F07`), and `AuditLogger` files with SHA-256 digests and byte lengths.
    - `validateAndRestoreBackup` opens the backup in an isolated read-only connection, verifies `PRAGMA quick_check` (`ok`), `PRAGMA foreign_key_check` (`0` rows), schema version compatibility, and every external file digest before modifying the active store.
+   - Both functions are library code. No host command, activation module or UI calls them, so there is no operator-facing way to back up or restore the database today.

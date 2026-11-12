@@ -60,6 +60,18 @@ The audit log is hash-chained, with a head checkpoint. The chain detects edits, 
 <!-- Source: src/audit/audit-chain.ts -->
 <!-- Source: src/audit/audit-checkpoint.ts -->
 
+## Data at rest and egress
+
+Three surfaces were added after the original local-evidence model. Each has an entry in the threat model.
+
+- **SQLite operational store.** After the one-time cutover, structured state lives in a `node:sqlite` database at `<storage>/sqlite/<scope>/schegent-state.db`, outside the workspace, in `0700` directories with a `0600` file. It is not encrypted, and the owner-only modes keep out other local accounts only. No Schegent command backs it up, restores it or deletes it. See [the threat model entry](docs/security/threat-model.md#t29--sqlite-operational-store-holds-unencrypted-state-at-rest) and [the store guide](docs/operations/sqlite-application-store.md).
+- **ACP bridge.** Runs are dispatched to the backend through an ACP agent over stdio. The host decides each agent permission request, and checks each file link it puts in a prompt, through `AcpAuthorityGate`. The gate mediates callbacks and is not an OS sandbox; the agent and bridge run with the operator's permissions. See [the threat model entry](docs/security/threat-model.md#t30--acp-bridge-callback-carries-agent-authority) and [the ACP runtime guide](docs/operations/acp-runtime.md).
+- **OTLP telemetry export.** This is the only network client in host source. It is off by default, takes its settings from user scope only, and sends usage and duration metadata, never content, to one collector the operator names. See [the threat model entry](docs/security/threat-model.md#t31--opt-in-telemetry-export-leaves-the-machine) and [the export guide](docs/operations/telemetry-export.md).
+
+<!-- Source: src/services/sqlite-store/storage-location-resolver.ts -->
+<!-- Source: src/services/containment-qualification/acp-authority-gate.ts -->
+<!-- Source: src/services/telemetry-export/otlp-http-transport.ts -->
+
 ## Automated security checks
 
 > **GitHub Actions were retired on 2026-08-26 by operator decision, for budget**

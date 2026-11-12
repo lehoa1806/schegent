@@ -308,6 +308,47 @@ containment is actually available per backend and platform, and
 [Running Schegent on a repository you do not trust](../operations/untrusted-repositories.md) for when
 naming a backend here is and is not acceptable.
 
+## ACP agent profile
+
+| Setting | Type and accepted values | Default | Scope | Purpose |
+|---|---|---|---|---|
+| `schegent.acp.profile` | `auto`, `agy-acp-native`, `claude-acp-bridge`, or `codex-acp-bridge` | `auto` | application | Selects the ACP agent profile. `auto` maps the selected backend (`claude`, `codex`, `agy`) to `claude-acp-bridge`, `codex-acp-bridge` or `agy-acp-native`. Naming a profile that does not match the Run's backend refuses with `acp-profile-mismatch`. The setting does not turn ACP dispatch on or off; dispatch is always on. Application scope keeps repository files from installing or replacing a profile. |
+
+<!-- Source: package.json -->
+<!-- Source: src/activation/acp-execution-wiring.ts -->
+<!-- Source: src/runner/backend-runner-factory.ts -->
+
+[The ACP runtime guide](../operations/acp-runtime.md) has the profiles and refusals.
+
+## Isolated execution lanes
+
+| Setting | Type and accepted values | Default | Scope | Purpose |
+|---|---|---|---|---|
+| `schegent.lanes.enabled` | boolean | `false` | resource | Opt-in per-Run isolated Git worktree execution. When `true`, each admitted Run gets its own working tree outside the workspace and is refused with a named reason, not run in the shared checkout, when the repository or capacity prevents it. A worktree is a working-tree boundary, not a permission boundary: hooks, configuration, credentials and the object store stay shared. |
+| `schegent.lanes.liveCap` | integer, `1`-`20` | `1` | resource | Most live (`preparing`, `active` or `paused`) lanes allowed at once. |
+| `schegent.lanes.provisioningDeadlineSeconds` | integer, `1`-`600` | `120` | resource | Wall-clock deadline in seconds for provisioning one lane. |
+
+<!-- Source: package.json -->
+<!-- Source: src/config/settings-schema.ts -->
+
+## Optional telemetry export
+
+Export is off unless `schegent.telemetry.export.enabled` is `true` and the destination is valid. All of these keys are application-scoped, so workspace and folder settings are never read for them. [The export guide](../operations/telemetry-export.md) has the refusal reasons and what is sent.
+
+| Setting | Type and accepted values | Default | Scope | Purpose |
+|---|---|---|---|---|
+| `schegent.telemetry.export.enabled` | boolean | `false` | application | Opt-in for exporting metadata-only usage observations as OTLP metrics over HTTP. Opens no listener and reads no environment variable. |
+| `schegent.telemetry.export.endpoint` | string | empty | application | Destination URL, for example `https://collector.example.com/v1/metrics`. Empty means unset. The URL is used as written; no path is appended. |
+| `schegent.telemetry.export.protocol` | `otlp-http-json`, `otlp-http-protobuf`, or `otlp-grpc` | `otlp-http-json` | application | Declared protocol. Only `otlp-http-json` is supported; the other two refuse export and open no fallback channel. |
+| `schegent.telemetry.export.allowPlaintextLoopback` | boolean | `false` | application | Allows plaintext `http://` only to a loopback destination (`localhost`, `127.0.0.0/8`, `[::1]`) whose resolved addresses are also loopback at connect time. |
+| `schegent.telemetry.export.credentialSecretKey` | string | empty | application | Identifier of a VS Code `SecretStorage` entry sent as the credential header. Never put a token in a setting. Empty means unauthenticated export. |
+| `schegent.telemetry.export.credentialHeaderName` | string | `Authorization` | application | Header that carries the credential when `credentialSecretKey` is set. It must be a valid header token and cannot be a header the transport owns. |
+| `schegent.telemetry.export.contentPolicy` | `metadata-only` or `content` | `metadata-only` | application | Content selector. `metadata-only` sends no prompts, responses, tool arguments, transcripts, credentials or paths. `content` is refused with `content-export-unsupported`. Enabling export never changes local transcript retention. |
+
+<!-- Source: package.json -->
+<!-- Source: src/contracts/telemetry-export.ts -->
+<!-- Source: src/services/telemetry-host/telemetry-host-service.ts -->
+
 ## Run request budgets (not configurable)
 
 FR-R3-057. A run request is bounded at validation, **before** it is persisted, frozen, built into a

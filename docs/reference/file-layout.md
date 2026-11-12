@@ -1,6 +1,6 @@
 # File layout
 
-Schegent has no database, ORM, or remote persistence service. Durable product state is split between VS Code `workspaceState`, workspace-local files under `.schegent/`, and private recovery checkpoints in the extension's `globalStorage` directory. Generated build files and installed dependencies live elsewhere in the repository and are not runtime state.
+Schegent has no ORM, Schegent HTTP server, or remote persistence service. After a one-time cutover in a trusted primary window, structured operational state (Runs, Queue entries, catalog definitions, the usage ledger and related records) is held in an embedded SQLite database, `schegent-state.db`, described in [the SQLite store section](#sqlite-operational-store) below. Before cutover, and for evidence, state is split between VS Code `workspaceState`, workspace-local files under `.schegent/`, and private recovery checkpoints in the extension's `globalStorage` directory. Generated build files and installed dependencies live elsewhere in the repository and are not runtime state.
 
 <!-- Source: src/extension.ts -->
 <!-- Source: src/state/workspace-state.ts -->
@@ -112,6 +112,25 @@ These checkpoints are outside the workspace so a repository cleanup cannot erase
 <!-- Source: src/services/run-checkpoint-retention.ts -->
 <!-- Source: src/activation/run-safety-wiring.ts -->
 
+## SQLite operational store
+
+Node's built-in `node:sqlite` (`DatabaseSync`) backs the operational store. The database is outside the workspace, in host storage:
+
+```text
+<storage>/
+`-- sqlite/
+    `-- <scope>/
+        |-- schegent-state.db
+        |-- schegent-state.db-wal
+        `-- schegent-state.db-shm
+```
+
+`<storage>` is the extension's per-workspace `storageUri` directory, or `globalStorageUri` when the window has no workspace storage. `<scope>` is the first 16 hex characters of a SHA-256 of the workspace root path. The path is resolved only from those host-trusted roots; a webview, workspace setting or environment override is refused. Directories use mode `0700` and the database file `0600` where supported. WAL mode is refused on network filesystems. The schema is versioned and forward-only; a database written by a newer schema is refused. Writes are serialized through one writer. After cutover the store, not the Memento keys or the legacy JSON files, is authoritative for the 16 of 20 state surfaces that the census (`STRUCTURED_STATE_CENSUS`) marks `sqlite-authoritative`; the audit log, content-addressed blobs and log segment bytes, and UI layout preferences are not in that set. The contract, pragma profile, write limits and migration rules are in [SQLite application store](../operations/sqlite-application-store.md). The data-at-rest consequences are in [the threat model](../security/threat-model.md).
+
+<!-- Source: src/services/sqlite-store/storage-location-resolver.ts -->
+<!-- Source: src/activation/sqlite-cutover-wiring.ts -->
+<!-- Source: src/contracts/sqlite-store/state-census.ts -->
+
 ## VS Code Memento state
 
 `WorkspaceStateStore` writes keyed JSON-compatible values to `workspaceState`. The schema is forward-only; its current version is the `STATE_SCHEMA_VERSION` constant, stated and checked in [the Schema Versions table of `ARCHITECTURE.md`](../../ARCHITECTURE.md#schema-versions). The principal partitions are the Queue registry and Queue states, active Runs keyed by Queue, terminal history keyed by Queue, connected-run aggregates, execution-lease mirrors, confirmation suppression, watchdog state, and migration/reset markers. The authoritative ownership records remain on disk; Memento copies are projections or compatibility state where the owning contract says so.
@@ -121,7 +140,7 @@ These checkpoints are outside the workspace so a repository cleanup cannot erase
 <!-- Source: src/state/execution-lease.ts -->
 <!-- Source: src/state/lock.ts -->
 
-There is no down-migration command or database migration directory. On read, sequential migrators advance old Memento shapes up to the current `STATE_SCHEMA_VERSION` (see [the Schema Versions table of `ARCHITECTURE.md`](../../ARCHITECTURE.md#schema-versions)). Two different things happen to state that cannot be used as it stands. A persisted version newer than the running extension supports is **refused**: the error ends "Update the extension before opening this workspace.", and nothing is read. Separately, an individual malformed record is **quarantined**, kept aside rather than interpreted as current or discarded, and the rest of the state is read.
+There is no down-migration command. On read, sequential migrators advance old Memento shapes up to the current `STATE_SCHEMA_VERSION` (see [the Schema Versions table of `ARCHITECTURE.md`](../../ARCHITECTURE.md#schema-versions)). Two different things happen to state that cannot be used as it stands. A persisted version newer than the running extension supports is **refused**: the error ends "Update the extension before opening this workspace.", and nothing is read. Separately, an individual malformed record is **quarantined**, kept aside rather than interpreted as current or discarded, and the rest of the state is read.
 
 <!-- Source: src/contracts/state-schema.ts -->
 <!-- Source: src/state/workspace-state.ts -->
