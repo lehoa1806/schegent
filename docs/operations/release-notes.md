@@ -60,7 +60,8 @@ From the 2026-11-12 full repository review. Each item names its review gap (`GC-
   other direction for a stale row.
 - **The spend-bound settings state their overshoot (GC-25).** `schegent.spend.maxUsdPerRun` and
   `schegent.spend.maxTokensPerRun` now say that the bound is checked only when a phase ends, so the phase
-  that crosses it runs to completion and a paused Run's total ends above the bound.
+  that crosses it runs to completion, one more phase can run when the pause lands late, and a paused Run's
+  total ends above the bound.
 - **One folder opened two ways uses two databases (GC-26).** The SQLite store sits under the window's
   `storageUri`, which VS Code keys by how the workspace was opened, so the same folder opened directly and
   through a `.code-workspace` file has two stores. The two windows are never primary at once, but state in
