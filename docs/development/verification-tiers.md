@@ -76,6 +76,22 @@ conformance (see [`RELEASE.md`](../../RELEASE.md) and
 `RELEASE.md` bounds, and every platform except darwin/arm64 remains in the declared `unverified` tier
 ([platform observation record](../operations/platform-observation-record.md)).
 
+## `verify:linux` is a second platform, not a tier
+
+Added 2026-11-12 (review gap GC-18). `npm run verify:linux` runs the install, the build, the SBOM,
+both typechecks, lint, `contracts:check` and `test:host` in a Linux container
+(`scripts/linux-leg/Dockerfile`) against a commit, `HEAD` by default, piped in with `git archive`. The
+script refuses to run while its own files (`scripts/linux-leg.sh`, `scripts/linux-leg/`) differ from
+`HEAD`, so neither the tree under test nor the harness can carry uncommitted work. It needs a running Docker daemon. It is the operator's local
+replacement for the hosted Linux leg that `FR-R3-099` retired.
+
+It is not in the tier chain above, because it is not a superset of `verify:push`: it skips the docs,
+security and licence checks and every webview check, and runs part of the release gate on another
+platform instead. It establishes the unit tier on Linux and nothing more: no extension host, browser
+or real CLI runs in it, so a green run does not move Linux out of the `unverified` tier. What it has
+observed is recorded in the
+[platform observation record](../operations/platform-observation-record.md#local-linux-leg-2026-11-12).
+
 ## The successor to `verify:edit`, and what it needs
 
 Selecting tests by changed file is the better edit loop, and it is deliberately not what this is.
