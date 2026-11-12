@@ -402,7 +402,7 @@ because the derivation had always been sound; its subject had not.
 
 - `a11y` — `node scripts/check-playwright-browser.mjs && npm run build:webview && playwright test --config playwright.a11y.config.ts`
 - `build:host` — `node esbuild.config.mjs`
-- `build:webview` — `npm --prefix webview-ui run build`
+- `build:webview` — `node scripts/check-webview-install.mjs && npm --prefix webview-ui run build`
 - `contracts:check` — `node scripts/generate-contract-schemas.mjs --check`
 - `coverage:headroom` — `node scripts/check-coverage-headroom.mjs host`
 - `docs:check` — `node scripts/check-docs.mjs && node scripts/check-doc-links.mjs && node scripts/check-gate-coverage-parity.mjs`

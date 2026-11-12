@@ -91,8 +91,10 @@ npm --prefix webview-ui ci
 
 **Two commands, and the second one is the point (FR-R3-090).** `.npmrc` in both trees sets
 `ignore-scripts=true`, so a plain `npm ci` does not run third-party lifecycle scripts. That disables
-the root `postinstall` which used to install `webview-ui`, which is why the second command exists —
-without it the first build fails, and it fails somewhere that does not mention installing.
+the root `postinstall` which used to install `webview-ui`, which is why the second command exists.
+Without it, `build:webview` stops at its first step, `scripts/check-webview-install.mjs`, with a
+message naming the command to run; before that check (review gap GC-22) the build failed inside
+`vite`, somewhere that did not mention installing.
 
 Since **2026-08-26 this is the only authority on how the repository installs.** The hardening used to
 live in the workflow files as `npm ci --ignore-scripts`, so the tree CI scanned was installed
