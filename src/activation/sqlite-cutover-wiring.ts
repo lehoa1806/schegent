@@ -16,6 +16,7 @@ import { createStorageDetailsReader } from '../headless/artifact-lifecycle-api';
 import { createPhaseContextApi, type PhaseContextApi } from '../headless/phase-context-api';
 import { createUsageAccountingReader } from '../headless/usage-accounting-api';
 import type { SanitizedLogger } from '../lib/logger';
+import { createSideEffectFailureReporter, type SideEffectFailureReport } from '../lib/side-effect-failure-reporter';
 import { resolveContainedLink } from '../lib/path-containment';
 import { openWithinRoot } from '../lib/safe-open';
 import type { AcpRunnerObservationEvent } from '../runner/acp-backed-runner';
@@ -634,6 +635,8 @@ export function createSqliteCutoverCoordinator(
   catalogFs?.attachReadOnlySnapshotIfPresent(expectedDatabasePath, scopeId);
 
   let activeServices: SqliteCutoverServices | null = null;
+  // Review gap GC-05 — the best-effort paths below report a failure instead of dropping it.
+  const reportSideEffectFailure = createSideEffectFailureReporter(deps.logger);
   let activatingPromise: Promise<SqliteCutoverServices | null> | null = null;
   let closed = false;
 
@@ -702,7 +705,7 @@ export function createSqliteCutoverCoordinator(
     getReportingService: () => activeServices?.reportingService ?? null,
     getChangeReviewService: () => activeServices?.changeReviewService ?? null,
     getPhaseContextApi: () => createPhaseContextApi(() => activeServices?.phaseHandoffCoordinator ?? null),
-    getProtectedRunIds: () => querySqliteProtectedRunIds(activeServices),
+    getProtectedRunIds: () => querySqliteProtectedRunIds(activeServices, reportSideEffectFailure),
     getDatabaseProtectedPaths: () => [
       expectedDatabasePath,
       `${expectedDatabasePath}-wal`,
@@ -734,10 +737,11 @@ export function createSqliteCutoverCoordinator(
             runId: summary.runId,
             laneId: matchedRun?.laneId,
             status: summary.status
-          });
+          }).catch((err: unknown) => reportSideEffectFailure('lane-settlement', err));
         }
-      } catch {
+      } catch (err) {
         // Best-effort handoff dispatch and lane settlement.
+        reportSideEffectFailure('handoff-and-lane-settlement', err);
       }
     },
     completeRootExecutionLane(params) {
@@ -746,7 +750,7 @@ export function createSqliteCutoverCoordinator(
         runId: params.rootExecutionId,
         laneId: params.laneId,
         status: params.status
-      });
+      }).catch((err: unknown) => reportSideEffectFailure('lane-settlement', err));
     },
     recordAcpObservation(event) {
       if (activeServices === null) return;
@@ -787,8 +791,9 @@ export function createSqliteCutoverCoordinator(
           captureMode: 'captured',
           nowMs: now
         });
-      } catch {
+      } catch (err) {
         // Best-effort observation ledger recording.
+        reportSideEffectFailure('acp-observation-ledger', err);
       }
     },
     recordAcpUsageUpdate(update, binding) {
@@ -798,8 +803,9 @@ export function createSqliteCutoverCoordinator(
         if (res.ok && res.value.disposition === 'accepted') {
           activeServices.telemetryHost.offerAcceptedObservationById(res.value.observationId);
         }
-      } catch {
+      } catch (err) {
         // Accounting never interrupts agent execution.
+        reportSideEffectFailure('usage-accounting', err);
       }
     },
     close
@@ -809,7 +815,10 @@ export function createSqliteCutoverCoordinator(
   return coordinator;
 }
 
-function querySqliteProtectedRunIds(services: SqliteCutoverServices | null): ReadonlySet<string> {
+function querySqliteProtectedRunIds(
+  services: SqliteCutoverServices | null,
+  reportFailure: SideEffectFailureReport
+): ReadonlySet<string> {
   const result = new Set<string>();
   if (services === null) return result;
   for (const lanePinnedRunId of services.runLaneCoordinator.getProtectedRunIds()) {
@@ -832,8 +841,9 @@ function querySqliteProtectedRunIds(services: SqliteCutoverServices | null): Rea
     for (const row of rows) {
       if (row.run_id) result.add(row.run_id);
     }
-  } catch {
+  } catch (err) {
     // Best-effort sweep protection query.
+    reportFailure('sweep-protection-query', err);
   }
   return result;
 }
