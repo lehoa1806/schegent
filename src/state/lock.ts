@@ -442,9 +442,15 @@ export class WorkspaceLockManager {
       // against a clock that has moved on (research R7, alternatives).
       if (this.tickInFlight) return;
       this.tickInFlight = true;
-      void this.tick().finally(() => {
-        this.tickInFlight = false;
-      });
+      // Review gap GC-02 — a rejected beat is said, not leaked as an unhandled rejection. The
+      // line names the error class only; staleness then decides primacy, as for a skipped beat.
+      void this.tick()
+        .catch((err: unknown) => {
+          this.logger?.warn('workspace lock heartbeat tick failed', { error: errorClassOf(err) });
+        })
+        .finally(() => {
+          this.tickInFlight = false;
+        });
     }, HEARTBEAT_INTERVAL_MS);
   }
 
@@ -452,4 +458,9 @@ export class WorkspaceLockManager {
     this.heartbeatHandle?.clear();
     this.heartbeatHandle = null;
   }
+}
+
+/** Review gap GC-02 — the class of a thrown value, never its message or payload. */
+function errorClassOf(err: unknown): string {
+  return err instanceof Error ? err.name : typeof err;
 }
