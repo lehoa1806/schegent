@@ -75,6 +75,8 @@ export interface WorkflowControllerOptions extends ResumeGuardOptions {
   inheritProcessEnv?: boolean;
   processEnvAllowlist?: readonly string[];
   skipProbing?: boolean;
+  /** See `RunDriverOptions.requireProbe`: the extension sets it so an unwired probe fails closed. */
+  requireProbe?: boolean;
   cliPathResolver?: (runnerKind: BackendRunnerKind) => string;
   defaultRunnerKind?: BackendRunnerKind;
   isAuditEvidenceAvailable?: () => boolean;

@@ -102,6 +102,11 @@ interface RunDriverOptions {
   /** Effective global backend for phases without an explicit override. */
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly skipProbing?: boolean;
+  /**
+   * Review gap GC-07 follow-up — an unwired probe service fails the Run as a failed probe instead
+   * of skipping the probe. The extension sets it; harnesses that wire no service leave it unset.
+   */
+  readonly requireProbe?: boolean;
   readonly isAuditEvidenceAvailable?: () => boolean;
   /**
    * Dynamic reader for `schegent.retry.forceContinueOnCap`. A reader rather
@@ -450,9 +455,9 @@ export class RunDriver {
       // now holds only its queue's execution lease.
       this.assertAuditEvidenceAvailable();
       // Feature 074 T017 — Probe all distinct runners referenced in the pipeline at start. Review gap
-      // GC-07: skipped only by `skipProbing` or an unwired probe service, never by `NODE_ENV`.
+      // GC-07: skipped only by `skipProbing` or an unwired service without `requireProbe`, never by `NODE_ENV`.
       if (
-        this.deps.backendCapabilities !== undefined &&
+        (this.deps.backendCapabilities !== undefined || this.deps.options.requireProbe === true) &&
         !this.deps.options.skipProbing &&
         run.phasesCompleted.length === 0 &&
         run.currentIteration === 0 &&
@@ -465,7 +470,7 @@ export class RunDriver {
         );
         for (const runnerKind of runners) {
           try {
-            const available = await this.deps.backendCapabilities.probeAvailability(runnerKind);
+            const available = (await this.deps.backendCapabilities?.probeAvailability(runnerKind)) ?? false;
             if (!available) throw new Error('backend unavailable');
           } catch {
             const failureMessage =
