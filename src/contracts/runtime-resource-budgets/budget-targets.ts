@@ -143,7 +143,7 @@ export const WORKLOAD_FIXTURES: readonly WorkloadFixture[] = Object.freeze([
       isolatedSoakRuns: 3
     }),
     consumers: ['F03', 'F04', 'F07', 'F11', 'F13', 'F14', 'F15'],
-    buildable: 'pending-joint-qualification'
+    buildable: 'this-cycle'
   },
   {
     id: 'mixed-normal',
@@ -160,7 +160,7 @@ export const WORKLOAD_FIXTURES: readonly WorkloadFixture[] = Object.freeze([
       pagedHistoryQueries: 1
     }),
     consumers: ['F03', 'F04', 'F06', 'F07', 'F11', 'F13', 'F14', 'F15'],
-    buildable: 'pending-joint-qualification'
+    buildable: 'this-cycle'
   },
   {
     id: 'mixed-stress',
@@ -176,7 +176,7 @@ export const WORKLOAD_FIXTURES: readonly WorkloadFixture[] = Object.freeze([
       limitPlusOneQueues: 9
     }),
     consumers: ['F03', 'F04', 'F06', 'F07', 'F11', 'F13', 'F14', 'F15'],
-    buildable: 'pending-joint-qualification'
+    buildable: 'this-cycle'
   },
   {
     id: 'control-ledger-matrix',
@@ -251,8 +251,8 @@ export const SUCCESS_CRITERION_OBLIGATIONS: readonly SuccessCriterionObligation[
   },
   {
     id: 'SC-003',
-    obligation: 'pending-joint-qualification',
-    summary: 'Mixed normal workload event-loop delay p95 <= 20 ms and p99 <= 100 ms on reference host (requires F04/F07/F11/F13)'
+    obligation: 'enforced-by-test',
+    summary: 'Mixed normal workload event-loop delay p95 <= 20 ms and p99 <= 100 ms across SQLite, ACP, live logs, reporting, telemetry, and F15 context'
   },
   {
     id: 'SC-004',
@@ -266,12 +266,12 @@ export const SUCCESS_CRITERION_OBLIGATIONS: readonly SuccessCriterionObligation[
   },
   {
     id: 'SC-006',
-    obligation: 'pending-joint-qualification',
+    obligation: 'enforced-by-test',
     summary: 'Three 60-minute mixed normal soaks show <= 10% owned retained byte growth between minutes 20 and 60'
   },
   {
     id: 'SC-007',
-    obligation: 'pending-joint-qualification',
+    obligation: 'enforced-by-test',
     summary: 'Mixed normal workload owned retained application data <= 512 MiB across in-scope host consumers'
   },
   {
@@ -281,7 +281,7 @@ export const SUCCESS_CRITERION_OBLIGATIONS: readonly SuccessCriterionObligation[
   },
   {
     id: 'SC-009',
-    obligation: 'pending-joint-qualification',
+    obligation: 'enforced-by-test',
     summary: 'Combined stress workload completes 100% of cancellations and durable acceptances with zero optional-consumer outcome drift'
   },
   {
@@ -301,8 +301,8 @@ export const SUCCESS_CRITERION_OBLIGATIONS: readonly SuccessCriterionObligation[
   },
   {
     id: 'FR-023',
-    obligation: 'pending-joint-qualification',
-    summary: 'Installed editor host qualification run deferred to joint run after F04 and F13 land'
+    obligation: 'enforced-by-test',
+    summary: 'Installed editor host qualification run over live SQLite and ACP runtime (darwin/arm64)'
   }
 ]);
 
@@ -362,7 +362,7 @@ export const REGISTERED_BUDGET_TARGETS: readonly RegisteredBudgetTarget[] = Obje
       p95Max: 20,
       p99Max: 100
     }),
-    obligation: 'pending-joint-qualification'
+    obligation: 'enforced-by-test'
   },
   {
     id: 'SC-004a',
@@ -411,7 +411,7 @@ export const REGISTERED_BUDGET_TARGETS: readonly RegisteredBudgetTarget[] = Obje
     threshold: Object.freeze({
       maxGrowthPercent: 10
     }),
-    obligation: 'pending-joint-qualification'
+    obligation: 'enforced-by-test'
   },
   {
     id: 'SC-007',
@@ -423,7 +423,7 @@ export const REGISTERED_BUDGET_TARGETS: readonly RegisteredBudgetTarget[] = Obje
     threshold: Object.freeze({
       maxOwnedRetainedBytes: 512 * 1024 * 1024
     }),
-    obligation: 'pending-joint-qualification'
+    obligation: 'enforced-by-test'
   }
 ]);
 
@@ -462,7 +462,8 @@ export const F03_ACCEPTANCE_CASE_TRACEABILITY: readonly F03AcceptanceCaseMapping
     fixtures: [
       'tests/unit/runtime-resource-budgets/resource-collector.test.ts',
       'tests/unit/runtime-resource-budgets/distribution.test.ts',
-      'tests/perf/runtime-resource-baselines.test.ts'
+      'tests/perf/runtime-resource-baselines.test.ts',
+      'tests/integration/round6-resource-qualification.host.test.ts'
     ]
   },
   {
@@ -481,14 +482,18 @@ export const F03_ACCEPTANCE_CASE_TRACEABILITY: readonly F03AcceptanceCaseMapping
     fixtures: [
       'tests/unit/services/phase-log-tail-residual-bound.test.ts',
       'tests/unit/runtime-resource-budgets/pressure-status.test.ts',
-      'tests/perf/runtime-resource-baselines.test.ts'
+      'tests/perf/runtime-resource-baselines.test.ts',
+      'tests/perf/joint-round6-resource-qualification.test.ts'
     ]
   },
   {
     caseId: 'F03-AC-05',
     functionalRequirements: ['FR-011'],
     successCriteria: ['SC-006'],
-    fixtures: ['tests/unit/runtime-resource-budgets/qualification-record.test.ts']
+    fixtures: [
+      'tests/unit/runtime-resource-budgets/qualification-record.test.ts',
+      'tests/perf/joint-round6-resource-qualification.test.ts'
+    ]
   },
   {
     caseId: 'F03-AC-06',

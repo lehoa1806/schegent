@@ -110,14 +110,30 @@ export function buildQualificationRecord(
 
   const providedBudgets = input.budgets ?? [];
   const providedIds = new Set(providedBudgets.map((b) => b.targetId));
-  const pendingBudgets: BudgetResult[] = SUCCESS_CRITERION_OBLIGATIONS.filter(
-    (entry) =>
-      entry.obligation === 'pending-joint-qualification' && !providedIds.has(entry.id)
-  ).map((entry) => ({
-    targetId: entry.id,
-    status: 'pending-joint-qualification',
-    evidence: 'Deferred to joint qualification run after F04/F07/F11/F13 land'
-  }));
+  const migrationDeferredIds: readonly string[] = [
+    'SC-003',
+    'SC-006',
+    'SC-007',
+    'SC-009',
+    'FR-023'
+  ];
+  const pendingBudgets: BudgetResult[] =
+    baselineLabel === 'migration-baseline'
+      ? migrationDeferredIds
+          .filter((id) => !providedIds.has(id))
+          .map((id) => ({
+            targetId: id,
+            status: 'pending-joint-qualification' as const,
+            evidence: 'Migration-baseline arm does not qualify joint target-architecture obligations'
+          }))
+      : SUCCESS_CRITERION_OBLIGATIONS.filter(
+          (entry) =>
+            entry.obligation === 'pending-joint-qualification' && !providedIds.has(entry.id)
+        ).map((entry) => ({
+          targetId: entry.id,
+          status: 'pending-joint-qualification' as const,
+          evidence: 'Deferred to joint qualification run after F04/F07/F11/F13 land'
+        }));
 
   const memory = input.memory ?? readHostMemoryCategories();
   const totalDistSamples = input.distributions.reduce((acc, d) => acc + d.rawCount, 0);

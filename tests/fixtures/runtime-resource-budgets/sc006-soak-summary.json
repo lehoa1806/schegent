@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "startedAtUtc": "2026-11-12T01:17:02.552Z",
+  "completedAtUtc": "2026-11-12T02:17:04.324Z",
+  "durationMinutes": 60,
+  "tickIntervalMs": 2000,
+  "nodeVersion": "v24.21.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "gcCaveat": "Heap and resident-memory readings reflect V8 garbage-collection timing; a negative or flat heap delta does not prove the absence of a leak and never substitutes for owned retained bytes across matched quiescent checkpoints.",
+  "allRunsWithin10PercentTarget": true,
+  "soakSamples": [
+    {
+      "runId": "soak-1",
+      "minute20OwnedBytes": 2905664,
+      "minute60OwnedBytes": 3005249,
+      "minute20HeapBytes": 57428008,
+      "minute60HeapBytes": 58301560,
+      "minute20RssBytes": 202211328,
+      "minute60RssBytes": 288980992
+    },
+    {
+      "runId": "soak-2",
+      "minute20OwnedBytes": 2905664,
+      "minute60OwnedBytes": 3005249,
+      "minute20HeapBytes": 57381264,
+      "minute60HeapBytes": 58273944,
+      "minute20RssBytes": 201359360,
+      "minute60RssBytes": 303972352
+    },
+    {
+      "runId": "soak-3",
+      "minute20OwnedBytes": 2905664,
+      "minute60OwnedBytes": 3005249,
+      "minute20HeapBytes": 57435112,
+      "minute60HeapBytes": 58271872,
+      "minute20RssBytes": 203341824,
+      "minute60RssBytes": 289472512
+    }
+  ],
+  "perRunSummary": [
+    {
+      "runId": "soak-1",
+      "tickCount": 1800,
+      "actualElapsedMs": 3600002,
+      "minute20OwnedBytes": 2905664,
+      "minute60OwnedBytes": 3005249,
+      "growthBytes": 99585,
+      "growthPercent": 3.4273,
+      "within10PercentTarget": true,
+      "mutationAckP95Ms": 14.492,
+      "historicalQueryPageP95Ms": 1.773,
+      "eventLoopDelayP95Ms": 14.172,
+      "maxEventLoopDelayP99Ms": 44.728
+    },
+    {
+      "runId": "soak-2",
+      "tickCount": 1800,
+      "actualElapsedMs": 3600003,
+      "minute20OwnedBytes": 2905664,
+      "minute60OwnedBytes": 3005249,
+      "growthBytes": 99585,
+      "growthPercent": 3.4273,
+      "within10PercentTarget": true,
+      "mutationAckP95Ms": 14.534,
+      "historicalQueryPageP95Ms": 1.967,
+      "eventLoopDelayP95Ms": 14.139,
+      "maxEventLoopDelayP99Ms": 43.549
+    },
+    {
+      "runId": "soak-3",
+      "tickCount": 1800,
+      "actualElapsedMs": 3600002,
+      "minute20OwnedBytes": 2905664,
+      "minute60OwnedBytes": 3005249,
+      "growthBytes": 99585,
+      "growthPercent": 3.4273,
+      "within10PercentTarget": true,
+      "mutationAckP95Ms": 14.099,
+      "historicalQueryPageP95Ms": 1.97,
+      "eventLoopDelayP95Ms": 14.189,
+      "maxEventLoopDelayP99Ms": 42.795
+    }
+  ]
+}
