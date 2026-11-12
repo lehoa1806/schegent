@@ -276,3 +276,64 @@ describe('FR-R6-F10 verification runner: refusals', () => {
     });
   });
 });
+
+// Review gap GC-15 (2026-11-12) — a check runs code the candidate holds, which an agent wrote, so
+// it gets the operator's process-environment policy, not the host's whole environment. The
+// bootstrap names (`PATH`, `HOME`, ...) always pass: no check can find `npm` without `PATH`.
+describe('GC-15 verification runner: the process-environment policy', () => {
+  const PROBE = 'SCHEGENT_GC15_PROBE';
+  const PROBE_VALUE = 'probe-value';
+  const script = `process.stdout.write((process.env.${PROBE} ?? "unset") + "|" + (process.env.PATH === undefined ? "no-path" : "path"))`;
+  const base = { ...process.env, [PROBE]: PROBE_VALUE };
+
+  async function observed(deps: Parameters<typeof createSpawnCheck>[0]): Promise<string> {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-env-'));
+    try {
+      const run = await createSpawnCheck(deps)([process.execPath, '-e', script], { cwd: dir, timeoutMs: CHECK_TIMEOUT_MS });
+      expect(run.exitCode).toBe(0);
+      return run.outputSha256;
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('withholds an unlisted variable under the shipped default policy and keeps PATH', async () => {
+    expect(await observed({ baseEnv: base })).toBe(sha256('unset|path'));
+  });
+
+  it('passes a variable the allowlist names', async () => {
+    const environmentPolicy = () => ({ mode: 'allowlist' as const, inheritProcessEnv: false, processEnvAllowlist: [PROBE] });
+
+    expect(await observed({ baseEnv: base, environmentPolicy })).toBe(sha256(`${PROBE_VALUE}|path`));
+  });
+
+  it('passes everything under inherit', async () => {
+    const environmentPolicy = () => ({ mode: 'inherit' as const, inheritProcessEnv: true });
+
+    expect(await observed({ baseEnv: base, environmentPolicy })).toBe(sha256(`${PROBE_VALUE}|path`));
+  });
+
+  it('keeps the bootstrap names under minimal, so the check can still be found', async () => {
+    const environmentPolicy = () => ({ mode: 'minimal' as const, inheritProcessEnv: false });
+
+    expect(await observed({ baseEnv: base, environmentPolicy })).toBe(sha256('unset|path'));
+  });
+
+  it('reads the policy at each check, so a changed setting reaches the next one', async () => {
+    let calls = 0;
+    const environmentPolicy = () => {
+      calls += 1;
+      return { mode: 'inherit' as const, inheritProcessEnv: true };
+    };
+    const spawnCheck = createSpawnCheck({ baseEnv: base, environmentPolicy });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-env-'));
+    try {
+      await spawnCheck([process.execPath, '-e', '0'], { cwd: dir, timeoutMs: CHECK_TIMEOUT_MS });
+      await spawnCheck([process.execPath, '-e', '0'], { cwd: dir, timeoutMs: CHECK_TIMEOUT_MS });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    expect(calls).toBe(2);
+  });
+});

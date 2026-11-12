@@ -29,7 +29,7 @@ Schegent contributes the settings below to VS Code under the `schegent.*` namesp
 
 <a id="schegentclienvironmentmode"></a>
 
-The policy that `schegent.cli.environmentMode` selects reaches every backend process Schegent starts: the Phase runner, the session compactor, the credit watchdog, the backend capability probe, and the CLI version probe. A hand-edited value that is not `inherit`, `minimal`, or `allowlist`, whether misspelled, mis-cased, empty or not a string, resolves to `allowlist` and never to `inherit`.
+The policy that `schegent.cli.environmentMode` selects reaches every backend process Schegent starts: the Phase runner, the session compactor, the credit watchdog, the backend capability probe, and the CLI version probe. Isolated-lane verification checks follow it too, read at each check, except that `minimal` keeps the bootstrap names for a check so a build tool can be found on `PATH` ([execution lanes](../operations/execution-lanes.md)). A hand-edited value that is not `inherit`, `minimal`, or `allowlist`, whether misspelled, mis-cased, empty or not a string, resolves to `allowlist` and never to `inherit`.
 
 The default backend and process-environment policy are resolved during workspace-bound activation. Reload the VS Code Extension Host after changing `schegent.backend.runner`, `schegent.cli.environmentMode`, `schegent.cli.environmentAllowlist`, or `schegent.cli.inheritEnvironment`. In contrast, the three CLI executable-path settings are read for each invocation and can take effect without a reload.
 

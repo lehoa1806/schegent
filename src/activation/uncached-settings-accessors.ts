@@ -17,6 +17,10 @@
 import * as vscode from 'vscode';
 
 import { resolveRunLimit, type RunLimitKey } from '../config/tighten-only-limits';
+import {
+  resolveProcessEnvironmentPolicy,
+  type ProcessEnvironmentPolicy
+} from '../contracts/process-environment-policy';
 import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
 import type { EffectiveLimit } from '../contracts/snapshot-projections';
 import { normalizeMaxUnchangedComparisons } from '../contracts/unchanged-comparison-bound';
@@ -149,6 +153,23 @@ export function readTransportCaptureMode(workspaceRoot: string): unknown {
 export function readSessionRetentionMaxAgeDays(workspaceRoot: string): number {
   const value = section(workspaceRoot).get<number>('logging.sessionRetentionMaxAgeDays', 30);
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 30;
+}
+
+/**
+ * The child-process environment policy from `schegent.cli.*`. Activation reads it once for the
+ * agent's spawns (`workspace-settings.ts`); lane verification checks read it per check (review gap
+ * GC-15). The fallbacks mirror the manifest: an absent contribution must not restore full
+ * ambient-environment forwarding (Feature 098, PRIV-02).
+ */
+export function readProcessEnvironmentPolicy(
+  workspaceRoot: string,
+  config: vscode.WorkspaceConfiguration = section(workspaceRoot)
+): ProcessEnvironmentPolicy {
+  return resolveProcessEnvironmentPolicy({
+    inheritEnvironment: config.get<boolean>('cli.inheritEnvironment', true),
+    mode: config.get<unknown>('cli.environmentMode', 'allowlist'),
+    allowlist: config.get<unknown>('cli.environmentAllowlist', [])
+  });
 }
 
 /**

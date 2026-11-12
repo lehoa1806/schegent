@@ -235,6 +235,14 @@ reconcile observes what Git holds.
   `GIT_REPLACE_REF_BASE`, `GIT_ATTR_SOURCE`, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`,
   `GIT_LITERAL_PATHSPECS`, `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS`, `GIT_ICASE_PATHSPECS` and
   `GIT_PREFIX`. The operator's `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` are kept.
+- **A check's environment.** A verification check runs code the candidate holds, so before that
+  removal it gets what `schegent.cli.environmentMode` gives the agent: under `allowlist` the
+  bootstrap names (`PATH`, `HOME`, the account, locale and temp-directory names) plus
+  `schegent.cli.environmentAllowlist`; under `inherit` the whole host environment. `minimal` keeps
+  the bootstrap names for a check, since a build tool started by name needs `PATH`. The policy is
+  read at each check, so a changed setting reaches the next one without a reload (review gap
+  GC-15). A check that needs another variable, such as `JAVA_HOME`, needs it on the allowlist.
+  <!-- Source: src/services/execution-lanes/verification-runner.ts -->
 - **Git timeouts.** A Git call past its bound is sent `SIGTERM`, not killed as a process group.
   A hook that ignores it, or leaves a process holding Git's output, can hold the call open.
 - **Repository filters run.** Every host Git call passes `-c core.fsmonitor=false` and

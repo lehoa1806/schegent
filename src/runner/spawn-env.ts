@@ -103,8 +103,13 @@ export function policyRequestFields(
   };
 }
 
+/**
+ * The environment a child gets under `request`'s policy. `base` is the environment the policy
+ * selects from; it is `process.env` everywhere but a test (review gap GC-15).
+ */
 export function buildSpawnEnv(
-  request: Pick<InvocationRequest, 'env' | 'inheritProcessEnv' | 'processEnvAllowlist'>
+  request: Pick<InvocationRequest, 'env' | 'inheritProcessEnv' | 'processEnvAllowlist'>,
+  base: NodeJS.ProcessEnv = process.env
 ): NodeJS.ProcessEnv {
   const overlay = request.env ?? {};
   if (request.processEnvAllowlist !== undefined) {
@@ -113,7 +118,7 @@ export function buildSpawnEnv(
       ...sanitizeProcessEnvAllowlist(request.processEnvAllowlist)
     ]);
     const selected: NodeJS.ProcessEnv = {};
-    for (const [name, value] of Object.entries(process.env)) {
+    for (const [name, value] of Object.entries(base)) {
       if (approved.has(name) || name.startsWith('LC_')) {
         selected[name] = value;
       }
@@ -128,5 +133,5 @@ export function buildSpawnEnv(
   // it received would mutate the host's own environment. Nothing does today,
   // which is exactly why it would have gone unnoticed. Identity changes here;
   // contents do not.
-  return { ...process.env, ...overlay };
+  return { ...base, ...overlay };
 }

@@ -4,7 +4,8 @@
 import * as vscode from 'vscode';
 
 import type { SanitizedLogger } from '../lib/logger';
-import { resolveProcessEnvironmentPolicy, type ProcessEnvironmentPolicy } from '../runner/spawn-env';
+import type { ProcessEnvironmentPolicy } from '../runner/spawn-env';
+import { readProcessEnvironmentPolicy } from './uncached-settings-accessors';
 import { validateWorkspaceSettings } from '../config/settings-schema-validator';
 import { RUN_LIMIT_KEYS, resolveRunLimit } from '../config/tighten-only-limits';
 import type { EffectiveLimit, LimitOrigin } from '../contracts/snapshot-projections';
@@ -92,14 +93,9 @@ for (const key of RUN_LIMIT_KEYS) {
   });
 }
 const cliPath = config.get<string>('cli.path', 'claude');
-const processEnvironmentPolicy = resolveProcessEnvironmentPolicy({
-  inheritEnvironment: config.get<boolean>('cli.inheritEnvironment', true),
-  // Feature 098 (PRIV-02) — fallback mirrors the manifest default, which
-  // moved `inherit` -> `allowlist`. An absent contribution must not
-  // silently restore full ambient-environment forwarding.
-  mode: config.get<unknown>('cli.environmentMode', 'allowlist'),
-  allowlist: config.get<unknown>('cli.environmentAllowlist', [])
-});
+// Feature 098 (PRIV-02) — the reader's fallbacks mirror the manifest default, which moved
+// `inherit` -> `allowlist`; one reader serves this and lane verification (review gap GC-15).
+const processEnvironmentPolicy = readProcessEnvironmentPolicy(workspaceRoot, config);
 const iterationLimit = resolveRunLimit('loop.maxIterations', config.inspect('loop.maxIterations'));
 const iterationCap = iterationLimit.value;
 const pollIntervalMinutes = config.get<number>('watchdog.pollIntervalMinutes', 30);
