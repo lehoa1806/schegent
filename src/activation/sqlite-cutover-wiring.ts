@@ -38,6 +38,7 @@ import {
   type RunLaneCoordinator
 } from '../services/execution-lanes';
 import { IntegrationStore } from '../services/execution-lanes/integration-store';
+import { createSpawnCheck } from '../services/execution-lanes/verification-runner';
 import {
   createChangeReviewService,
   integrationStoreSource,
@@ -95,6 +96,7 @@ import {
   readLanesEnabled,
   readLanesLiveCap,
   readLanesProvisioningDeadlineMs,
+  readProcessEnvironmentPolicy,
   readTelemetryExportUserSettings
 } from './uncached-settings-accessors';
 
@@ -472,6 +474,7 @@ async function openPrimarySqliteServices(
       liveLaneCap: readLanesLiveCap(deps.workspaceRoot),
       provisioningDeadlineMs: readLanesProvisioningDeadlineMs(deps.workspaceRoot),
       git: createExecFileGitRunner(),
+      spawnCheck: createSpawnCheck({ environmentPolicy: () => readProcessEnvironmentPolicy(deps.workspaceRoot) }),
       clock: () => Date.now(),
       random: (size) => randomBytes(size)
     });
