@@ -5,13 +5,16 @@
  * `execFile` with no shell, the caller's timeout and a bounded output buffer. Its
  * environment is the host's minus every variable that would point Git at another
  * repository, with the credential prompt turned off so a host operation never waits
- * on a terminal.
+ * on a terminal. Every call also carries the GC-11 overrides that stop the repository's
+ * fsmonitor and hooks from executing.
  *
  * A failure carries an exit code and a bounded reason code. Stderr is never returned,
  * stored or logged (hard rule 22): it can hold paths and remote URLs.
  */
 
 import { execFile } from 'node:child_process';
+
+import { withHostGitConfig } from '../../lib/host-git-config';
 
 /**
  * Variables that would redirect a Git call to another repository, index or object store, or
@@ -136,7 +139,7 @@ export function createExecFileGitRunner(deps: ExecFileGitRunnerDeps = {}): LaneG
           windowsHide: true,
           encoding: 'utf8'
         };
-        execFileImpl(GIT_EXECUTABLE, args, options, (error, stdout) => {
+        execFileImpl(GIT_EXECUTABLE, withHostGitConfig(args), options, (error, stdout) => {
           resolve(error === null ? { ok: true, stdout } : classifyFailure(error));
         });
       })

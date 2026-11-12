@@ -14,6 +14,7 @@ import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SanitizedLogger } from '../lib/logger';
 import { resolveDiffBase } from '../lib/git-diff-base';
+import { withHostGitConfig } from '../lib/host-git-config';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import { isOperableRunStatus, isTerminalRunStatus, LIVE_RUN_STATUSES } from '../state/workflow-run';
@@ -207,12 +208,12 @@ export async function createRunSafetyWiring(input: {
       (
         await promisify(execFile)(
           'git',
-          [
+          withHostGitConfig([
             'diff',
             '--binary',
             '--no-ext-diff',
             (await resolveDiffBase(input.workspaceRoot)).ref
-          ],
+          ]),
           {
             cwd: input.workspaceRoot,
             maxBuffer: 20 * 1024 * 1024

@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
 
+import { withHostGitConfig } from '../../lib/host-git-config';
 import type { AttemptOutcome } from '../../contracts/decision-results';
 import type { PhaseSideEffects } from '../../contracts/process-definitions';
 import {
@@ -137,7 +138,7 @@ async function inspectGitWorkspace(workspaceRoot: string, remainingMs: number): 
   try {
     const { stdout: statusOut } = await execFileAsync(
       'git',
-      ['-C', workspaceRoot, 'status', '--porcelain=v1', '-z', '-uall'],
+      withHostGitConfig(['-C', workspaceRoot, 'status', '--porcelain=v1', '-z', '-uall']),
       {
         encoding: 'utf8',
         timeout: timeoutMs,
@@ -177,7 +178,7 @@ async function inspectGitWorkspace(workspaceRoot: string, remainingMs: number): 
     try {
       const { stdout: headOut } = await execFileAsync(
         'git',
-        ['-C', workspaceRoot, 'rev-parse', '--verify', 'HEAD'],
+        withHostGitConfig(['-C', workspaceRoot, 'rev-parse', '--verify', 'HEAD']),
         {
           encoding: 'utf8',
           timeout: Math.max(50, Math.min(500, timeoutMs)),

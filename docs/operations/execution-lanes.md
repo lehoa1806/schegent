@@ -237,8 +237,11 @@ reconcile observes what Git holds.
   `GIT_PREFIX`. The operator's `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` are kept.
 - **Git timeouts.** A Git call past its bound is sent `SIGTERM`, not killed as a process group.
   A hook that ignores it, or leaves a process holding Git's output, can hold the call open.
-- **Repository code runs.** Hooks, `core.fsmonitor` and clean or smudge filters configured for the
-  repository run in lanes as they do in the checkout.
+- **Repository filters run.** Every host Git call passes `-c core.fsmonitor=false` and
+  `-c core.hooksPath=/dev/null`, so repository hooks and an fsmonitor program do not run (review gap
+  GC-11). Clean and smudge filters configured for the repository still run in lanes as they do in
+  the checkout.
+  <!-- Source: src/lib/host-git-config.ts -->
 - **Large status output.** A lane whose `git status` output exceeds 1 MiB cannot be observed, and
   the operation that needed it fails instead of guessing.
 - **Windows.** Git and check commands are started from the lane root by name. On Windows that
