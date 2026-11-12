@@ -12,14 +12,14 @@ npm run test:coverage
 
 The command runs the default Vitest suite with V8 coverage. The measured set is `src/**/*.ts`, excluding only `src/ui/sidebar/messages.ts`. Reports are written to `coverage/` in text, JSON, HTML, and LCOV forms.
 
-| Metric | Enforced floor | Recorded 2026-08-22 measurement |
+| Metric | Enforced floor | Recorded 2026-11-12 measurement |
 |---|---:|---:|
-| Statements | 80% | 89.64% (`38,720 / 43,192`) |
-| Branches | 75% | 88.11% (`13,088 / 14,854`) |
-| Functions | 80% | 91.65% (`2,437 / 2,659`) |
-| Lines | 80% | 89.64% |
+| Statements | 84% | 89.07% (`121,229 / 136,105`) |
+| Branches | 81% | 86.28% (`39,739 / 46,059`) |
+| Functions | 88% | 93.73% (`7,261 / 7,747`) |
+| Lines | 84% | 89.07% |
 
-The recorded host run measured 411 files with `src/extension.ts` included. The configuration warns that V8 branch attribution moved by 0.02 percentage points across runs, so floors are intentionally below the observed snapshot rather than pinned to it.
+The recorded host run measured 984 files on darwin. The configuration warns that V8 branch attribution moves by a few hundredths of a point across runs, so floors are intentionally below the observed snapshot rather than pinned to it. Review gap GC-17 raised them from 80/75/80/80, which had drifted 9 to 13 points below measured coverage, and put the host under the same headroom ratchet as the webview (below).
 
 <!-- Source: package.json -->
 <!-- Source: vitest.config.ts -->
@@ -51,11 +51,12 @@ This row replaces the 2026-08-29 measurement rather than sitting beside it: this
 
 ## Headroom ratchet
 
-`scripts/check-coverage-headroom.mjs` reads `webview-ui/coverage/coverage-final.json` after a coverage run. For statements, branches, functions, and lines, it computes an intended floor of `floor(measured) - 5`. A configured floor may lag that intended value by at most one point; a larger gap fails and asks the maintainer to raise the floor.
+`scripts/check-coverage-headroom.mjs` reads a coverage report after a coverage run: `webview-ui/coverage/coverage-final.json` at the end of the webview `test:coverage`, and the host `coverage/coverage-final.json` through `npm run coverage:headroom`, which `ci` and `verify:release` run straight after the host `test:coverage`. The host check is a separate script because the host `test:coverage` must stay one command (the `webview-build-precedes-host-suite` gate), and it is not in `ci:fast`, which writes no coverage report. For statements, branches, functions, and lines, it computes an intended floor of `floor(measured) - 5`. A configured floor may lag that intended value by at most one point; a larger gap fails and asks the maintainer to raise the floor.
 
-The ratchet never edits configuration. Lowering a floor remains a deliberate code change, while rising coverage must eventually be banked in `webview-ui/vitest.config.ts`.
+The ratchet never edits configuration. Lowering a floor remains a deliberate code change, while rising coverage must eventually be banked in `vitest.config.ts` or `webview-ui/vitest.config.ts`.
 
 <!-- Source: scripts/check-coverage-headroom.mjs -->
+<!-- Source: vitest.config.ts -->
 <!-- Source: webview-ui/vitest.config.ts -->
 
 ## Where coverage runs
