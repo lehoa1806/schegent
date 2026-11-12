@@ -476,7 +476,7 @@ export class RunCheckpointService {
   private async capture(effectiveRoot: string = this.workspaceRoot): Promise<CheckpointCapture> {
     const base = await resolveDiffBase(effectiveRoot);
     const [diff, status] = await Promise.all([
-      this.runGit(['diff', '--binary', '--no-ext-diff', base.ref], DIFF_MAX_BUFFER_BYTES, 'diff-size-limit', effectiveRoot),
+      this.runGit(['diff', '--binary', '--no-ext-diff', '--no-textconv', base.ref], DIFF_MAX_BUFFER_BYTES, 'diff-size-limit', effectiveRoot),
       // `--untracked-files=normal` is explicit so a user's `status.showUntrackedFiles=no` cannot
       // turn "an untracked file exists" into a `complete` record.
       this.runGit(

@@ -133,6 +133,28 @@ describe('RunCheckpointService — sole in-flight Run (T053, FR-022a)', () => {
     expect(patch).toContain('edit by run-a');
     expect(warnings).toEqual([]);
   });
+
+  // Review gap closure (2026-11-12) -- a repository `diff.<driver>.textconv` ran inside the
+  // checkpoint's `git diff --binary`: a program the repository names executed on the host, and
+  // the patch carried its output instead of the file, so it no longer applied.
+  (process.platform === 'win32' ? it.skip : it)('runs no repository textconv and records the real content', async () => {
+    const marker = path.join(storageRoot, 'textconv-ran');
+    const textconv = path.join(storageRoot, 'textconv.sh');
+    await fs.writeFile(textconv, `#!/bin/sh\ntouch "${marker}"\necho converted\n`, { mode: 0o755 });
+    await run('git', ['config', 'diff.conv.textconv', textconv], { cwd: workspaceRoot });
+    await fs.writeFile(path.join(workspaceRoot, '.gitattributes'), '*.txt diff=conv\n');
+    await fs.writeFile(path.join(workspaceRoot, 'a.txt'), 'edit by run-a\n');
+    await run('git', ['add', '-A'], { cwd: workspaceRoot });
+
+    await service(() => 1).checkpoint(RUN, 'speckit-implement');
+
+    const patchName = (await artifacts()).find((name) => name.endsWith('.patch'));
+    expect(patchName).toBeDefined();
+    const patch = await fs.readFile(path.join(storageRoot, 'checkpoints', 'run-a', String(patchName)), 'utf8');
+    expect(patch).toContain('edit by run-a');
+    expect(patch).not.toContain('converted');
+    expect(await fs.access(marker).then(() => true, () => false)).toBe(false);
+  });
 });
 
 describe('RunCheckpointService — says what its artifact write narrowed (feature 217, FR-003)', () => {
