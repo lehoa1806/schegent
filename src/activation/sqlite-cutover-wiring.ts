@@ -153,6 +153,20 @@ export function deriveWorkspaceScopeId(workspaceRoot: string): string {
   return createHash('sha256').update(workspaceRoot, 'utf8').digest('hex').slice(0, 16);
 }
 
+/**
+ * The SQLite database a window opens: `<storage>/sqlite/<scope>/schegent-state.db`, where `<storage>`
+ * is the window's `storageUri` (or `globalStorageUri` when it has none) and `<scope>` hashes the
+ * workspace root. VS Code keys `storageUri` by workspace identity, so a folder opened directly and
+ * through a `.code-workspace` resolve to two databases with one scope id (review gap GC-26).
+ */
+export function sqliteDatabasePathFor(
+  storage: { readonly storageUri: string | undefined; readonly globalStorageUri: string },
+  workspaceRoot: string
+): string {
+  const storageRoot = storage.storageUri ?? storage.globalStorageUri;
+  return path.join(storageRoot, 'sqlite', deriveWorkspaceScopeId(workspaceRoot), 'schegent-state.db');
+}
+
 function buildNodeLifecycleFs(allowedRoots: readonly string[]): LifecycleFs {
   return {
     async lstat(absolutePath) {
@@ -628,7 +642,10 @@ export function createSqliteCutoverCoordinator(
   const scopeId = deriveWorkspaceScopeId(deps.workspaceRoot);
   const hasWorkspaceStorage = deps.context.storageUri !== undefined;
   const storageRoot = deps.context.storageUri?.fsPath ?? deps.context.globalStorageUri.fsPath;
-  const expectedDatabasePath = path.join(storageRoot, 'sqlite', scopeId, 'schegent-state.db');
+  const expectedDatabasePath = sqliteDatabasePathFor(
+    { storageUri: deps.context.storageUri?.fsPath, globalStorageUri: deps.context.globalStorageUri.fsPath },
+    deps.workspaceRoot
+  );
 
   const operationalMemento = getOperationalMementoForStore(deps.store);
   const catalogFs = catalogFsByStore.get(deps.store);
