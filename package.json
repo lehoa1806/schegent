@@ -674,7 +674,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
-    "@playwright/test": "^1.62.1",
+    "@playwright/test": "^1.65.0",
     "@secretlint/node": "^10.2.2",
     "@secretlint/secretlint-rule-preset-recommend": "^10.2.2",
     "@types/node": "^22.20.1",
