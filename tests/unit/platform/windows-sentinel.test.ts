@@ -38,6 +38,11 @@ import {
  * See `docs/operations/platform-observation-record.md`.
  */
 const IS_WINDOWS = process.platform === 'win32';
+// The skip reason is in the title only where the suite is skipped, as in the Linux fixture: on
+// Windows it used to read "skipped: this run is on win32, not win32" while it ran.
+const SUITE_TITLE = IS_WINDOWS
+  ? 'process tree cancellation on Windows'
+  : `process tree cancellation on Windows (skipped: this run is on ${process.platform}, not win32)`;
 
 /**
  * Backstop: every process this fixture spawns exits on its own within this window,
@@ -47,7 +52,7 @@ const IS_WINDOWS = process.platform === 'win32';
 const SELF_REAP_MS = 20_000;
 
 describe.skipIf(!IS_WINDOWS)(
-  `process tree cancellation on Windows (skipped: this run is on ${process.platform}, not win32)`,
+  SUITE_TITLE,
   () => {
     it('stops a grandchild that is appending to a sentinel', async () => {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'win-sentinel-'));
