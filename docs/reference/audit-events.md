@@ -318,8 +318,8 @@ future `conditionVersion` or an unknown `condition` is preserved and never read 
 ## Storage, rotation, and retention
 
 The writer serializes appends, creates `.schegent/` on demand, and makes a
-best-effort attempt to create `.schegent/.gitignore` without overwriting an
-operator-managed file. An append that takes longer than five seconds fails and
+best-effort attempt to create `.schegent/.gitignore`. An existing file is kept
+while it still ignores every path, and replaced otherwise. An append that takes longer than five seconds fails and
 is reported to the sanitized runtime logger; later appends can still proceed.
 
 <!-- Source: src/audit/audit-log-writer.ts -->

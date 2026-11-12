@@ -119,8 +119,10 @@ deletion when filesystem containment cannot be established.
 <!-- Source: tests/unit/audit/retention.test.ts -->
 
 Every runtime writer also attempts to create `.schegent/.gitignore` with `*` so
-the directory's contents remain local. An existing operator-managed ignore file
-is not overwritten. This is a best-effort source-control guard, not access
+the directory's contents remain local. An existing ignore file is kept while it
+has an ignore-everything line (`*`, `/*`, `**` or `/**`) and no `!` negation.
+Anything else, including a file a repository committed, is replaced with the
+canonical body and a warning is logged; a tracked file then shows as modified. This is a best-effort source-control guard, not access
 control or tamper protection.
 <!-- Source: src/audit/schegent-gitignore.ts -->
 
