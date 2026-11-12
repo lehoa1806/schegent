@@ -408,6 +408,7 @@ import {
   type VerdictBasisMigrationEvent
 } from './host-verification-migrator';
 import { systemScheduler, type Scheduler } from './lock';
+import { MementoWriteGate, StorageWriteQuarantinedError } from './memento-write-gate';
 import { createMementoOwnershipFs, type OwnershipFs } from './ownership-fs';
 import {
   isResetInterrupted,
@@ -630,26 +631,13 @@ export class QueueMutationRejected extends Error {
   }
 }
 
-/**
- * FR-R5-F09 (F-35, NU-02) — deadline for any `memento.update` inside the serialized store chains,
- * and the typed error raised when a write hangs past it or when subsequent writes hit the
- * quarantined writer.
- */
-export const MEMENTO_WRITE_DEADLINE_MS = OWNERSHIP_VERIFY_DEADLINE_MS;
-
-export type StorageWriteFailureReason =
-  | 'storage-write-timeout'
-  | 'storage-write-quarantined';
-
-export class StorageWriteQuarantinedError extends Error {
-  public readonly reason: StorageWriteFailureReason;
-
-  constructor(reason: StorageWriteFailureReason, message: string) {
-    super(message);
-    this.name = 'StorageWriteQuarantinedError';
-    this.reason = reason;
-  }
-}
+// FR-R5-F09 (F-35, NU-02) — the write deadline and its quarantine error live with the gate that
+// enforces them (review gap GC-04); re-exported so their importers keep one import site.
+export {
+  MEMENTO_WRITE_DEADLINE_MS,
+  StorageWriteQuarantinedError,
+  type StorageWriteFailureReason
+} from './memento-write-gate';
 
 /**
  * FR-R5-F09 (NU-03) — maximum number of deleted-queue history partitions retained in
@@ -904,7 +892,8 @@ export class WorkspaceStateStore {
   private readonly chains = new Map<string, Promise<void>>();
   private readonly listeners = new Set<StoreChangeListener>();
   private readonly logger: SanitizedLogger | null;
-  private writerQuarantined = false;
+  /** FR-R5-F09 / review gap GC-04 — the deadline-bounded writer and its quarantine. */
+  private readonly writeGate: MementoWriteGate;
   /** FR-R3-077 — bound at composition; see `bindRunClaimSource`. */
   private runClaimSource: RunClaimSource | null = null;
   /** FR-R5-F08 — bound by `WorkspaceLockManager` when constructed. */
@@ -939,10 +928,11 @@ export class WorkspaceStateStore {
     this.rawMemento = memento;
     this.memento = {
       get: <T>(key: string): T | undefined => this.rawMemento.get<T>(key),
-      update: (key: string, value: unknown): Thenable<void> => this.writeMemento(key, value)
+      update: (key: string, value: unknown): Thenable<void> => this.writeGate.write(key, value)
     };
     this.logger = logger ?? null;
     this.scheduler = scheduler;
+    this.writeGate = new MementoWriteGate(memento, scheduler, this.logger);
     this.ownershipRegistry = new OwnershipRegistry(
       createMementoOwnershipFs(memento),
       MEMENTO_OWNERSHIP_DIR
@@ -950,55 +940,7 @@ export class WorkspaceStateStore {
   }
 
   public isWriterQuarantined(): boolean {
-    return this.writerQuarantined;
-  }
-
-  private async writeMemento(key: string, value: unknown): Promise<void> {
-    if (this.writerQuarantined) {
-      throw new StorageWriteQuarantinedError(
-        'storage-write-quarantined',
-        `Workspace state write refused for ${key}: storage writer is quarantined after an earlier write timed out`
-      );
-    }
-    let handle: { clear(): void } | null = null;
-    const clear = (): void => {
-      if (handle !== null) {
-        handle.clear();
-        handle = null;
-      }
-    };
-    let writeOutcome: Promise<
-      { readonly outcome: 'ok' } | { readonly outcome: 'error'; readonly error: unknown }
-    >;
-    try {
-      writeOutcome = Promise.resolve(this.rawMemento.update(key, value)).then(
-        () => ({ outcome: 'ok' as const }),
-        (error: unknown) => ({ outcome: 'error' as const, error })
-      );
-    } catch (error) {
-      writeOutcome = Promise.resolve({ outcome: 'error' as const, error });
-    }
-    const raced = await Promise.race([
-      writeOutcome,
-      new Promise<{ readonly outcome: 'timeout' }>((resolve) => {
-        handle = this.scheduler.setInterval(() => {
-          clear();
-          resolve({ outcome: 'timeout' });
-        }, MEMENTO_WRITE_DEADLINE_MS);
-      })
-    ]);
-    clear();
-    if (raced.outcome === 'ok') return;
-    if (raced.outcome === 'error') throw raced.error;
-    this.writerQuarantined = true;
-    this.logger?.warn('workspace state write timed out; quarantining state writer', {
-      key,
-      deadlineMs: MEMENTO_WRITE_DEADLINE_MS
-    });
-    throw new StorageWriteQuarantinedError(
-      'storage-write-timeout',
-      `Workspace state write timed out after ${MEMENTO_WRITE_DEADLINE_MS}ms for ${key}; state writer is now quarantined`
-    );
+    return this.writeGate.isQuarantined();
   }
 
   /**
@@ -3647,7 +3589,7 @@ export class WorkspaceStateStore {
    * task description, or anything the operator wrote.
    */
   public async reset(): Promise<number> {
-    this.writerQuarantined = false;
+    this.writeGate.lift();
     const generation = nextResetGeneration(this.getResetMarker());
     await this.serializeAcrossKeys([...RESET_CLEARED_KEYS, KEYS.resetMarker], async () => {
       await this.memento.update(KEYS.resetMarker, {
@@ -3687,7 +3629,7 @@ export class WorkspaceStateStore {
   public async completeInterruptedReset(): Promise<number | null> {
     const marker = this.getResetMarker();
     if (!isResetInterrupted(marker)) return null;
-    this.writerQuarantined = false;
+    this.writeGate.lift();
     const generation = marker!.generation;
     await this.serializeAcrossKeys([...RESET_CLEARED_KEYS, KEYS.resetMarker], async () => {
       for (const key of RESET_CLEARED_KEYS) {
@@ -3723,7 +3665,7 @@ export class WorkspaceStateStore {
     keys: readonly string[],
     op: () => Thenable<void> | Promise<void>
   ): Promise<void> {
-    if (this.writerQuarantined) {
+    if (this.writeGate.isQuarantined()) {
       return Promise.reject(
         new StorageWriteQuarantinedError(
           'storage-write-quarantined',
@@ -3733,7 +3675,7 @@ export class WorkspaceStateStore {
     }
     const predecessors = keys.map((key) => this.chains.get(key) ?? Promise.resolve());
     const next = Promise.all(predecessors).then(() => {
-      if (this.writerQuarantined) {
+      if (this.writeGate.isQuarantined()) {
         throw new StorageWriteQuarantinedError(
           'storage-write-quarantined',
           `Workspace state write refused for ${keys.join(',')}: storage writer is quarantined`
@@ -3747,7 +3689,7 @@ export class WorkspaceStateStore {
   }
 
   private serialize(key: string, op: () => Thenable<void> | Promise<void>): Promise<void> {
-    if (this.writerQuarantined) {
+    if (this.writeGate.isQuarantined()) {
       return Promise.reject(
         new StorageWriteQuarantinedError(
           'storage-write-quarantined',
@@ -3757,7 +3699,7 @@ export class WorkspaceStateStore {
     }
     const previous = this.chains.get(key) ?? Promise.resolve();
     const next = previous.then(() => {
-      if (this.writerQuarantined) {
+      if (this.writeGate.isQuarantined()) {
         throw new StorageWriteQuarantinedError(
           'storage-write-quarantined',
           `Workspace state write refused for ${key}: storage writer is quarantined`

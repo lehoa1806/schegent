@@ -1067,7 +1067,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       //
       // Feature 289 (FR-R5-F26, 2026-11-08) — 3757 → 3795, +38: `KEYS.controlLedger` memento
       // registration and the read/write seam that `ControlLedgerStore` delegates to.
-      highWaterMark: 3795
+      //
+      // Review gap GC-04 (2026-11-12) — 3795 → 3737, -58: the bounded write, its deadline and its
+      // quarantine moved to `memento-write-gate.ts`, which now also lifts the quarantine when the
+      // timed-out write settles.
+      highWaterMark: 3737
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have

@@ -19,6 +19,12 @@ class FakeMemento implements Memento {
   readonly data = new Map<string, unknown>();
   hangKey: string | null = null;
   failOnKeyOnce: string | null = null;
+  /** Review gap GC-04 — a hung write held here can be settled late, landed or failed. */
+  private readonly held: Array<(outcome: 'land' | 'fail') => void> = [];
+
+  settleHeld(outcome: 'land' | 'fail'): void {
+    this.held.shift()?.(outcome);
+  }
 
   get<T>(key: string): T | undefined {
     if (!this.data.has(key)) return undefined;
@@ -27,8 +33,16 @@ class FakeMemento implements Memento {
 
   async update(key: string, value: unknown): Promise<void> {
     if (this.hangKey === key) {
-      return new Promise<void>(() => {
-        // intentionally never settles
+      // Never settles on its own; `settleHeld` is the only way out.
+      return new Promise<void>((resolve, reject) => {
+        this.held.push((outcome) => {
+          if (outcome === 'fail') {
+            reject(new Error(`late failure on ${key}`));
+            return;
+          }
+          this.data.set(key, structuredClone(value));
+          resolve();
+        });
       });
     }
     if (this.failOnKeyOnce === key) {
@@ -501,6 +515,64 @@ describe('FR-R5-F09 — Queue ownership, serialized registry/cross-queue mutatio
           new StorageWriteQuarantinedError('storage-write-quarantined', 'schegent.queue')
         );
         expect(classified.outcome).toBe('failed-storage');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Review gap GC-04 (2026-11-12) — the quarantine used to hold until a destructive reset, even
+    // after the write that caused it had long since finished. It now ends when that write settles.
+    async function quarantineOneWrite(): Promise<{ memento: FakeMemento; store: WorkspaceStateStore; qm: QueueManager }> {
+      const memento = new FakeMemento();
+      const store = new WorkspaceStateStore(memento);
+      await store.initialize();
+      const qm = new QueueManager(store, new SanitizedLogger());
+      memento.hangKey = 'schegent.queue';
+      const hung = expect(qm.enqueue('Will hang on persistence')).rejects.toMatchObject({
+        reason: 'storage-write-timeout'
+      });
+      await vi.advanceTimersByTimeAsync(MEMENTO_WRITE_DEADLINE_MS + 10);
+      await hung;
+      memento.hangKey = null;
+      return { memento, store, qm };
+    }
+
+    it.each(['land', 'fail'] as const)(
+      'lifts the quarantine once the timed-out write settles late (%s)',
+      async (outcome) => {
+        vi.useFakeTimers();
+        try {
+          const { memento, store, qm } = await quarantineOneWrite();
+          expect(store.isWriterQuarantined()).toBe(true);
+
+          memento.settleHeld(outcome);
+          await vi.advanceTimersByTimeAsync(0);
+
+          expect(store.isWriterQuarantined()).toBe(false);
+          await qm.enqueue('Writes again');
+          expect(store.getQueue(DEFAULT_QUEUE_ID).requests.map((r) => r.description)).toContain('Writes again');
+        } finally {
+          vi.useRealTimers();
+        }
+      }
+    );
+
+    it('a late settle from an earlier quarantine does not lift a newer one', async () => {
+      vi.useFakeTimers();
+      try {
+        const { memento, store, qm } = await quarantineOneWrite();
+        await store.reset();
+        memento.hangKey = 'schegent.queue';
+        const second = expect(qm.enqueue('Hangs too')).rejects.toMatchObject({
+          reason: 'storage-write-timeout'
+        });
+        await vi.advanceTimersByTimeAsync(MEMENTO_WRITE_DEADLINE_MS + 10);
+        await second;
+
+        memento.settleHeld('land');
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(store.isWriterQuarantined()).toBe(true);
       } finally {
         vi.useRealTimers();
       }
