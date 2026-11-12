@@ -190,6 +190,24 @@ export const CONFIGURATION_SENSITIVITY = Object.freeze({
     sensitivity: 'run-shape',
     reason: 'bounds a CLI invocation that an untrusted window never starts'
   },
+  'schegent.lanes.enabled': {
+    sensitivity: 'run-shape',
+    reason:
+      'opts a Run into host-provisioned Git worktree isolation, and an untrusted window ' +
+      'starts no Runs and provisions no lanes'
+  },
+  'schegent.lanes.liveCap': {
+    sensitivity: 'run-shape',
+    reason:
+      'bounds concurrent live isolated lanes for Runs started after trusting the folder; ' +
+      'an untrusted window provisions nothing'
+  },
+  'schegent.lanes.provisioningDeadlineSeconds': {
+    sensitivity: 'run-shape',
+    reason:
+      'bounds Git worktree provisioning time for Runs started after trusting the folder; ' +
+      'an untrusted window spawns no Git probes'
+  },
   'schegent.loop.maxIterations': {
     sensitivity: 'run-shape',
     reason: 'bounds phase iteration inside a run'

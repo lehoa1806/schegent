@@ -265,7 +265,8 @@ export class RunCheckpointService {
     private readonly logger: SanitizedLogger,
     private readonly countInFlightRuns: () => number,
     private readonly ledger: RunMutationLedger,
-    private readonly isRecoveryEnvelopeProtected?: (runId: string, handoverId: string) => boolean
+    private readonly isRecoveryEnvelopeProtected?: (runId: string, handoverId: string) => boolean,
+    private readonly resolveRunExecutionRoot?: (run: WorkflowRun) => Promise<string>
   ) {}
 
   public async checkpoint(run: WorkflowRun, phaseId: string): Promise<void> {
@@ -281,7 +282,8 @@ export class RunCheckpointService {
       throw this.blocked('artifact-write-failed');
     }
     try {
-      capture = await this.capture();
+      const effectiveRoot = (await this.resolveRunExecutionRoot?.(run)) ?? this.workspaceRoot;
+      capture = await this.capture(effectiveRoot);
     } catch (error) {
       // A tree that cannot be read is a snapshot failure, not a decline, and the
       // two must stay different outcomes: this blocks the Git-capable phase.
@@ -368,9 +370,9 @@ export class RunCheckpointService {
     inFlight: number,
     capture: CheckpointCapture
   ): CheckpointDecision {
-    // One Run in flight: the tree's uncommitted content is that Run's, and the
-    // whole-tree diff is written exactly as it is today.
-    if (inFlight <= 1) {
+    // One Run in flight, or an isolated execution lane whose worktree diff is exclusively its own
+    // (`run-isolation-decision.md` §8b Q1): write the whole-tree diff directly before the ledger.
+    if (run.laneId !== undefined || inFlight <= 1) {
       return { kind: 'write', mode: 'sole-run', body: capture.diff, paths: [], declared: null };
     }
 
@@ -469,16 +471,17 @@ export class RunCheckpointService {
    * reach the caller's `catch` as `checkpoint-unavailable`, blocking the first
    * Git-capable phase in every fresh workspace. Every other fault still throws.
    */
-  private async capture(): Promise<CheckpointCapture> {
-    const base = await resolveDiffBase(this.workspaceRoot);
+  private async capture(effectiveRoot: string = this.workspaceRoot): Promise<CheckpointCapture> {
+    const base = await resolveDiffBase(effectiveRoot);
     const [diff, status] = await Promise.all([
-      this.runGit(['diff', '--binary', '--no-ext-diff', base.ref], DIFF_MAX_BUFFER_BYTES, 'diff-size-limit'),
+      this.runGit(['diff', '--binary', '--no-ext-diff', base.ref], DIFF_MAX_BUFFER_BYTES, 'diff-size-limit', effectiveRoot),
       // `--untracked-files=normal` is explicit so a user's `status.showUntrackedFiles=no` cannot
       // turn "an untracked file exists" into a `complete` record.
       this.runGit(
         ['status', '--porcelain=v1', '--untracked-files=normal'],
         STATUS_MAX_BUFFER_BYTES,
-        'status-size-limit'
+        'status-size-limit',
+        effectiveRoot
       )
     ]);
     return {
@@ -497,10 +500,11 @@ export class RunCheckpointService {
   private async runGit(
     args: readonly string[],
     maxBuffer: number,
-    overflow: CheckpointUnavailableReason
+    overflow: CheckpointUnavailableReason,
+    cwd: string = this.workspaceRoot
   ): Promise<string> {
     try {
-      const { stdout } = await runExecFile('git', [...args], { cwd: this.workspaceRoot, maxBuffer });
+      const { stdout } = await runExecFile('git', [...args], { cwd, maxBuffer });
       return stdout;
     } catch (error) {
       if ((error as { code?: unknown }).code === MAX_BUFFER_EXCEEDED) {

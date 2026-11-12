@@ -367,6 +367,9 @@ export interface ConnectedWorkflowRun {
   readonly recoveryDisposition?: RecoveryDispositionRecord | null;
   /** FR-R5-F23 (F23-T05, D1) — durable decision observation records for phase repetition and branch evaluation. */
   readonly decisionObservations?: readonly ExecutionDecisionObservation[];
+  /** FR-R6-F10 — opaque isolated lane identity and relative root reference frozen for the root execution. */
+  readonly laneId?: string;
+  readonly laneRootRef?: string;
   /** FR-R5-F26 (SPEC-04, D4) — link to the durable control ledger root (`{ version: 1, ledgerRunId }`). */
   readonly controlState?: ConnectedRunControlLink;
 }

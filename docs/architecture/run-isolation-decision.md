@@ -230,14 +230,18 @@ implementation argues otherwise, and each states what would change it.
 
 ## 9. The gate on implementing this — read this section first
 
-**The lane engine is built; dispatch into it is not.** As of 2026-08-27 there was no worktree,
-sandbox, or per-Run checkout mechanism anywhere in `repo/src/`. As of 2026-11-10 the lane engine
-exists (`FR-R6-F10`, [Execution lanes](../operations/execution-lanes.md)): it provisions, freezes,
-verifies, lands, reconciles and cleans up separate Git working trees, and how each entry condition
-below was met is recorded in `specs/309-isolated-workspace-lanes/research.md`. Run dispatch into a
-lane remains gated: no Run executes in a lane, so a cap above one still shares one working tree.
-The dispatch half of `FR-R3-124` (T1466: rewiring checkpoints, the ledger and evidence onto the
-boundary) is not built.
+**Opt-in isolated lane dispatch is now wired (`FR-R6-F10`, 2026-11-12); shared-tree execution remains the default.**
+As of 2026-08-27 there was no worktree, sandbox, or per-Run checkout mechanism anywhere in
+`repo/src/`. As of 2026-11-10 the lane engine landed (`FR-R6-F10`,
+[Execution lanes](../operations/execution-lanes.md)), recording how each entry condition below was
+met in `specs/309-isolated-workspace-lanes/research.md`. As of 2026-11-12, all four entry
+conditions below are satisfied in code (`F09` qualification matrix, `F15` cross-root handoff
+materializer, `RunCheckpointService` per-lane `sole-run` capture, and primary-workspace evidence
+anchoring), and opt-in per-Run lane dispatch is wired behind `schegent.lanes.enabled` (default
+`false`, `schegent.lanes.liveCap` default `1`). When `schegent.lanes.enabled` is `false` (the
+shipped default), Runs execute in the shared checkout and a cap above one still shares one working
+tree. When `schegent.lanes.enabled` is `true`, admission gates on `LaneService.provisionLane` and
+refuses with a named `LaneRefusalReason` rather than falling back to the shared checkout.
 
 **Why gated rather than built.** The audit scopes recommendation P0-2 at a **months** horizon. The
 item's own sequencing note says both P0 items *"begin with a decision record … that scopes everything
@@ -289,7 +293,7 @@ The shape decided in §2 returns to this record if any of these move:
 
 ## 11. What this record does not claim
 
-- It does not claim per-Run isolation exists. §9.
+- It does not claim per-Run isolation is active by default: `schegent.lanes.enabled` defaults to `false`, and shared-tree mode still shares one working tree. §9.
 - It does not claim a worktree is a permission or process boundary. §7.
 - It does not claim the attribution machinery was wasted. §1 and §8b Q1: it becomes what makes
   merge-back reviewable.
