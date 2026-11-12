@@ -30,10 +30,14 @@ import {
 } from '../../contracts/reporting/report-outcomes';
 import type { ReportQuery } from '../../contracts/reporting/report-query';
 import type {
+  AttemptAcpAttribution,
+  AttemptHandoffSummary,
   LegacyUsageSummary,
   ReportCoverage,
+  ReportEvidenceReference,
   ReportOmission,
   ReportRow,
+  RootReviewLoopSummary,
   TimeBasis
 } from '../../contracts/reporting/report-rows';
 import {
@@ -62,6 +66,10 @@ export interface LiveReport {
   /** Run-derived views only; drill-down reads them. */
   readonly roots: readonly SnapshotRoot[];
   readonly attempts: readonly SnapshotAttempt[];
+  readonly evidenceRefs?: readonly ReportEvidenceReference[];
+  readonly acpAttributions?: readonly AttemptAcpAttribution[];
+  readonly handoffSummaries?: readonly AttemptHandoffSummary[];
+  readonly reviewSummaries?: readonly RootReviewLoopSummary[];
   readonly rows: readonly ReportRow[];
   readonly coverage: ReportCoverage;
   readonly timeBasis: TimeBasis;

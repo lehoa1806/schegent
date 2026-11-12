@@ -122,6 +122,18 @@ export const CMD_READ_STORAGE_DETAILS = 'CMD_READ_STORAGE_DETAILS' as const;
 // FR-R6-F06 — read one usage accounting page.
 // READ-ONLY, so out of MUTATING_COMMANDS; cmd-read-usage-accounting.ts says why.
 export const CMD_READ_USAGE_ACCOUNTING = 'CMD_READ_USAGE_ACCOUNTING' as const;
+// FR-R6-F11 — read historical reports, pages, drill-down and saved report records.
+// READ-ONLY, so out of MUTATING_COMMANDS; cmd-read-report.ts says why.
+export const CMD_READ_REPORT = 'CMD_READ_REPORT' as const;
+// FR-R6-F11 — host-dialog export or saved-report mutation in SQLite. Gated concurrent.
+export const CMD_MUTATE_REPORT = 'CMD_MUTATE_REPORT' as const;
+// FR-R6-F12, F10, F13, F14, F15 — read attempt visibility, lane posture and telemetry preview.
+// READ-ONLY, so out of MUTATING_COMMANDS; cmd-read-execution-visibility.ts says why.
+export const CMD_READ_EXECUTION_VISIBILITY = 'CMD_READ_EXECUTION_VISIBILITY' as const;
+// FR-R6-F12 — open, refresh, classify, page or close an immutable candidate change review.
+export const CMD_OPEN_CHANGE_REVIEW = 'CMD_OPEN_CHANGE_REVIEW' as const;
+// FR-R6-F15 — approve or edit a manual phase-to-phase context handoff revision.
+export const CMD_DECIDE_PHASE_HANDOFF = 'CMD_DECIDE_PHASE_HANDOFF' as const;
 // Feature 028 — future-phase breakpoints. Operator marks a pending phase
 // as a "pause when reached" point. The pipeline runs preceding phases
 // then halts before invoking the marked phase. Both are mutating —
@@ -258,6 +270,11 @@ export const COMMAND_TYPES = [
   CMD_OPEN_DECISION_RECORD,
   CMD_READ_STORAGE_DETAILS,
   CMD_READ_USAGE_ACCOUNTING,
+  CMD_READ_REPORT,
+  CMD_MUTATE_REPORT,
+  CMD_READ_EXECUTION_VISIBILITY,
+  CMD_OPEN_CHANGE_REVIEW,
+  CMD_DECIDE_PHASE_HANDOFF,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE,
@@ -316,6 +333,48 @@ import type { ReadFailureRecordCommand } from './sidebar-ipc/failure-record';
 import type { OpenDecisionRecordCommand } from './sidebar-ipc/decision-record';
 import type { ReadStorageDetailsCommand } from './sidebar-ipc/storage-details';
 import type { ReadUsageAccountingCommand } from './sidebar-ipc/usage-accounting';
+import type { MutateReportCommand, ReadReportCommand } from './sidebar-ipc/reporting';
+import type {
+  DecidePhaseHandoffCommand,
+  OpenChangeReviewCommand,
+  ReadExecutionVisibilityCommand
+} from './sidebar-ipc/execution-visibility';
+export type {
+  SavedReportListPage,
+  ReadReportRequest,
+  ReadReportCommand,
+  ReadReportResponse,
+  MutateReportRequest,
+  MutateReportCommand,
+  HostReportExportResult,
+  MutateReportResponse
+} from './sidebar-ipc/reporting';
+export type {
+  VisibilityDataQuality,
+  VisibilityStreamState,
+  VisibilityRecoveryPosture,
+  NormalizedAcpActivityState,
+  AttemptVisibilityRow,
+  ExecutionHierarchySummary,
+  ExecutionLiveLogVisibility,
+  ExecutionRecoveryVisibility,
+  ExecutionAcpVisibility,
+  ExecutionLaneCandidateVisibility,
+  ExecutionAttemptVisibility,
+  RuntimeLanePosture,
+  RuntimeTelemetryPosture,
+  RuntimePostureVisibility,
+  ReadExecutionVisibilityRequest,
+  ReadExecutionVisibilityCommand,
+  ReadExecutionVisibilityResponse,
+  OpenChangeReviewRequest,
+  OpenChangeReviewCommand,
+  ChangeReviewEditorOpenOutcome,
+  OpenChangeReviewResponse,
+  DecidePhaseHandoffRequest,
+  DecidePhaseHandoffCommand,
+  DecidePhaseHandoffResponse
+} from './sidebar-ipc/execution-visibility';
 export type {
   ReadUsageAccountingRequest,
   ReadUsageAccountingCommand,
@@ -714,6 +773,11 @@ export type SidebarCommand =
   | OpenDecisionRecordCommand
   | ReadStorageDetailsCommand
   | ReadUsageAccountingCommand
+  | ReadReportCommand
+  | MutateReportCommand
+  | ReadExecutionVisibilityCommand
+  | OpenChangeReviewCommand
+  | DecidePhaseHandoffCommand
   | StartQueueCommand
   | ClearQueueCommand
   | SetConfirmSuppressionCommand
@@ -950,6 +1014,23 @@ export function isCmdReadStorageDetails(value: unknown): value is ReadStorageDet
 export function isCmdReadUsageAccounting(value: unknown): value is ReadUsageAccountingCommand {
   return isObjectWithType(value, CMD_READ_USAGE_ACCOUNTING);
 }
+export function isCmdReadReport(value: unknown): value is ReadReportCommand {
+  return isObjectWithType(value, CMD_READ_REPORT);
+}
+export function isCmdMutateReport(value: unknown): value is MutateReportCommand {
+  return isObjectWithType(value, CMD_MUTATE_REPORT);
+}
+export function isCmdReadExecutionVisibility(
+  value: unknown
+): value is ReadExecutionVisibilityCommand {
+  return isObjectWithType(value, CMD_READ_EXECUTION_VISIBILITY);
+}
+export function isCmdOpenChangeReview(value: unknown): value is OpenChangeReviewCommand {
+  return isObjectWithType(value, CMD_OPEN_CHANGE_REVIEW);
+}
+export function isCmdDecidePhaseHandoff(value: unknown): value is DecidePhaseHandoffCommand {
+  return isObjectWithType(value, CMD_DECIDE_PHASE_HANDOFF);
+}
 // Feature 028 — phase breakpoint set/clear guards.
 export function isCmdSetPhaseBreakpoint(value: unknown): value is SetPhaseBreakpointCommand {
   return isObjectWithType(value, CMD_SET_PHASE_BREAKPOINT);
@@ -1164,6 +1245,11 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_OPEN_DECISION_RECORD]: isCmdOpenDecisionRecord,
   [CMD_READ_STORAGE_DETAILS]: isCmdReadStorageDetails,
   [CMD_READ_USAGE_ACCOUNTING]: isCmdReadUsageAccounting,
+  [CMD_READ_REPORT]: isCmdReadReport,
+  [CMD_MUTATE_REPORT]: isCmdMutateReport,
+  [CMD_READ_EXECUTION_VISIBILITY]: isCmdReadExecutionVisibility,
+  [CMD_OPEN_CHANGE_REVIEW]: isCmdOpenChangeReview,
+  [CMD_DECIDE_PHASE_HANDOFF]: isCmdDecidePhaseHandoff,
   [CMD_SET_PHASE_BREAKPOINT]: isCmdSetPhaseBreakpoint,
   [CMD_CLEAR_PHASE_BREAKPOINT]: isCmdClearPhaseBreakpoint,
   [CMD_START_QUEUE]: isCmdStartQueue,

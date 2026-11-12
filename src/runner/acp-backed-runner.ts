@@ -13,6 +13,7 @@
  *
  * Zero `vscode`, `child_process`, or audit-writer imports.
  */
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -179,6 +180,7 @@ interface ActiveAcpExecution {
 export class AcpBackedRunner implements BackendRunner {
   private readonly inner: BackendRunner;
   private readonly activeExecutions = new Map<string, ActiveAcpExecution>();
+  private readonly sessionRoots = new Map<string, string>();
   private closed = false;
 
   public constructor(private readonly options: AcpBackedRunnerOptions) {
@@ -210,7 +212,10 @@ export class AcpBackedRunner implements BackendRunner {
       throw new AcpProfileMismatchError(this.options.kind, configuredRaw, expectedProfileId);
     }
 
-    const profile = getBuiltinAcpProfile(this.options.kind, { model: request.model });
+    const profile = getBuiltinAcpProfile(
+      this.options.kind,
+      request.model !== undefined ? { model: request.model } : {}
+    );
     const generation = ++nextAcpGeneration;
     const label = RUNNER_LABEL_BY_KIND[this.options.kind];
     const invocationId = nextInvocationId(label);
@@ -393,10 +398,12 @@ export class AcpBackedRunner implements BackendRunner {
         resolvedCliPath: request.cliPath,
         cwd: request.cwd,
         env: spawnEnv,
-        capabilities: request.capabilities,
-        model: request.model,
-        effort: request.effort,
-        bridgeScriptPath: this.options.bridgeScriptPath
+        ...(request.capabilities !== undefined ? { capabilities: request.capabilities } : {}),
+        ...(request.model !== undefined ? { model: request.model } : {}),
+        ...(request.effort !== undefined ? { effort: request.effort } : {}),
+        ...(this.options.bridgeScriptPath !== undefined
+          ? { bridgeScriptPath: this.options.bridgeScriptPath }
+          : {})
       });
 
       const opened = await openAcpConnection({
@@ -421,9 +428,7 @@ export class AcpBackedRunner implements BackendRunner {
           });
           return created;
         },
-        permissionPolicy: gate
-          ? gate.createPermissionPolicy(generation)
-          : undefined,
+        ...(gate !== undefined ? { permissionPolicy: gate.createPermissionPolicy(generation) } : {}),
         verifyResourceLink,
         onObservation: (observation) => {
           resetIdleTimer();
@@ -458,7 +463,19 @@ export class AcpBackedRunner implements BackendRunner {
         exitCode = 1;
       } else {
         connection = opened.connection;
+        const normalizedCwd = path.resolve(request.cwd);
+        const priorSessionRoot =
+          isValidAcpSessionToken(request.resumeSessionId)
+            ? this.sessionRoots.get(request.resumeSessionId)
+            : undefined;
+        const rootMismatchOnResume =
+          priorSessionRoot !== undefined && priorSessionRoot !== normalizedCwd;
+        if (rootMismatchOnResume) {
+          // F10-FR-19: session reuse/load cannot retain a prior lane's cwd or grants; open a fresh session.
+          warnings.push('acp-session-rebind-fresh-root');
+        }
         const mayLoad =
+          !rootMismatchOnResume &&
           (request.isContinue === true || request.sessionReuse === true) &&
           request.resumeSessionOrigin === 'acp' &&
           isValidAcpSessionToken(request.resumeSessionId);
@@ -471,51 +488,80 @@ export class AcpBackedRunner implements BackendRunner {
           exitCode = 1;
         } else {
           activeSessionId = sessionRes.sessionId;
-          gate?.registerScope({
-            attemptId,
-            profileId: profile.profileId,
-            acpSessionId: activeSessionId,
-            connectionGeneration: generation,
-            ownershipGeneration: this.options.currentOwnershipGeneration?.() ?? 1,
-            executionRoot: request.cwd,
-            primaryWorkspaceRoot: this.options.primaryWorkspaceRoot ?? request.cwd,
-            protectedDatabasePaths: this.options.protectedDatabasePaths,
-            authorizedUpstreamInputPaths: request.authorizedUpstreamInputPaths,
-            authorizedOutputPaths: request.authorizedOutputPaths,
-            capabilities: request.capabilities
-          });
+          if (!this.sessionRoots.has(activeSessionId) && this.sessionRoots.size >= 512) {
+            const oldestKey = this.sessionRoots.keys().next().value;
+            if (oldestKey !== undefined) this.sessionRoots.delete(oldestKey);
+          }
+          this.sessionRoots.set(activeSessionId, normalizedCwd);
 
-          const blocks: readonly AcpPromptBlock[] =
-            request.acpPromptBlocks && request.acpPromptBlocks.length > 0
-              ? request.acpPromptBlocks
-              : [{ type: 'text', text: request.prompt }];
-
-          const outcome = await connection.prompt({
-            sessionId: activeSessionId,
-            attemptId,
-            rootId,
-            blocks
-          });
-
-          const elapsedMs = Date.now() - startedAtMs;
-          if (outcome.kind === 'completed') {
-            emitChunk('stdout', encodeUsageResultLine(this.options.kind, activeSessionId, elapsedMs, latestUsage));
-            sawTerminalResult = true;
-            exitCode = 0;
-          } else if (outcome.kind === 'cancelled') {
-            exitCode = 130;
-          } else if (outcome.kind === 'uncertain') {
-            warnings.push(`acp-turn-uncertain:${outcome.reason}`);
-            exitCode = 1;
-          } else if (outcome.kind === 'refused') {
-            warnings.push(`acp-prompt-refused:${outcome.reason}${outcome.detail ? `:${outcome.detail}` : ''}`);
-            exitCode = 1;
-          } else if (outcome.kind === 'rejected') {
-            warnings.push(`acp-prompt-rejected:${outcome.code}`);
+          // F10-FR-19: verify access to accepted F15 upstream artifact versions before prompt dispatch.
+          let missingUpstream = false;
+          if (request.authorizedUpstreamInputPaths !== undefined) {
+            for (const upstreamPath of request.authorizedUpstreamInputPaths) {
+              try {
+                await fs.access(upstreamPath);
+              } catch {
+                missingUpstream = true;
+                break;
+              }
+            }
+          }
+          if (missingUpstream) {
+            warnings.push('acp-upstream-artifact-inaccessible');
             exitCode = 1;
           } else {
-            warnings.push(`acp-prompt-not-dispatched:${outcome.reason}`);
-            exitCode = 1;
+            gate?.registerScope({
+              attemptId,
+              profileId: profile.profileId,
+              acpSessionId: activeSessionId,
+              connectionGeneration: generation,
+              ownershipGeneration: this.options.currentOwnershipGeneration?.() ?? 1,
+              executionRoot: request.cwd,
+              primaryWorkspaceRoot: this.options.primaryWorkspaceRoot ?? request.cwd,
+              ...(this.options.protectedDatabasePaths !== undefined
+                ? { protectedDatabasePaths: this.options.protectedDatabasePaths }
+                : {}),
+              ...(request.authorizedUpstreamInputPaths !== undefined
+                ? { authorizedUpstreamInputPaths: request.authorizedUpstreamInputPaths }
+                : {}),
+              ...(request.authorizedOutputPaths !== undefined
+                ? { authorizedOutputPaths: request.authorizedOutputPaths }
+                : {}),
+              ...(request.capabilities !== undefined ? { capabilities: request.capabilities } : {})
+            });
+
+            const blocks: readonly AcpPromptBlock[] =
+              request.acpPromptBlocks && request.acpPromptBlocks.length > 0
+                ? request.acpPromptBlocks
+                : [{ type: 'text', text: request.prompt }];
+
+            const outcome = await connection.prompt({
+              sessionId: activeSessionId,
+              attemptId,
+              rootId,
+              blocks
+            });
+
+            const elapsedMs = Date.now() - startedAtMs;
+            if (outcome.kind === 'completed') {
+              emitChunk('stdout', encodeUsageResultLine(this.options.kind, activeSessionId, elapsedMs, latestUsage));
+              sawTerminalResult = true;
+              exitCode = 0;
+            } else if (outcome.kind === 'cancelled') {
+              exitCode = 130;
+            } else if (outcome.kind === 'uncertain') {
+              warnings.push(`acp-turn-uncertain:${outcome.reason}`);
+              exitCode = 1;
+            } else if (outcome.kind === 'refused') {
+              warnings.push(`acp-prompt-refused:${outcome.reason}${outcome.detail ? `:${outcome.detail}` : ''}`);
+              exitCode = 1;
+            } else if (outcome.kind === 'rejected') {
+              warnings.push(`acp-prompt-rejected:${outcome.code}`);
+              exitCode = 1;
+            } else {
+              warnings.push(`acp-prompt-not-dispatched:${outcome.reason}`);
+              exitCode = 1;
+            }
           }
         }
       }

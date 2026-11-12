@@ -111,6 +111,8 @@ interface Measured {
  * itself. Only SEMANTIC diagnostics are counted — a syntactic error would be a broken tree rather
  * than strictness debt, and mixing the two would make the pin move for the wrong reason.
  */
+let previousProgram: ts.Program | undefined;
+
 function measure(option: 'noUncheckedIndexedAccess' | 'exactOptionalPropertyTypes'): Measured {
   const configPath = resolve(REPO_ROOT, 'tsconfig.json');
   const readResult = ts.readConfigFile(configPath, (path) => readFileSync(path, 'utf8'));
@@ -120,11 +122,17 @@ function measure(option: 'noUncheckedIndexedAccess' | 'exactOptionalPropertyType
     ts.sys,
     REPO_ROOT
   );
-  const program = ts.createProgram(parsed.fileNames, {
-    ...parsed.options,
-    [option]: true,
-    noEmit: true
-  });
+  const program = ts.createProgram(
+    parsed.fileNames,
+    {
+      ...parsed.options,
+      [option]: true,
+      noEmit: true
+    },
+    undefined,
+    previousProgram
+  );
+  previousProgram = program;
 
   const byFile = new Map<string, number>();
   let total = 0;
@@ -142,15 +150,16 @@ function measure(option: 'noUncheckedIndexedAccess' | 'exactOptionalPropertyType
 /**
  * How long one measurement may take.
  *
- * This case creates a full TypeScript program over the whole tree, twice — once per flag — which
- * measured **12.5 s** standalone on the reference machine and exceeded the 30 s default when the
- * gate ran it under coverage instrumentation alongside 780 other files. That is COST, not a hang:
- * the alternative to paying it is a ratchet that measures nothing.
+ * This case creates a full TypeScript program over the whole tree, twice — once per flag — reusing
+ * parsed source ASTs through `oldProgram` while still performing two full semantic checks. Under
+ * V8 `--coverage` instrumentation alongside 1,460+ test files, worker CPU contention stretches
+ * semantic checking well beyond standalone wall time. That is COST, not a hang: the alternative to
+ * paying it is a ratchet that measures nothing.
  *
  * Bounded rather than unbounded, so a genuinely wedged compiler still fails instead of holding the
  * gate open forever.
  */
-const MEASURE_TIMEOUT_MS = 180_000;
+const MEASURE_TIMEOUT_MS = 300_000;
 
 describe('FR-R3-110 — compiler strictness is adopted under a ratchet', () => {
   it.each(RATCHET)('$flag has not grown past its pinned count', (entry) => {

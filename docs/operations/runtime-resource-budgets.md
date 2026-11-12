@@ -84,19 +84,19 @@ Every retained data class in the current and target runtime is registered in `RU
 | `f03-historical-query-concurrency` | `queue` | `src/services/runtime-resource-budgets/common-bound-references.ts` | `per-activation` | `items+bytes` | `historical-query-concurrency` (`2` exec / `8` wait / `1 MiB`) | Return busy/limited for excess; cancellation removes waiting request |
 | `f03-historical-query-working-data` | `query-result` | `src/services/runtime-resource-budgets/common-bound-references.ts` | `per-call` | `bytes` | `historical-query-working-data` (`32 MiB`) | Stream/batch or return typed limit excluding shared store cache |
 | `f03-live-report-leases` | `cache` | `src/services/runtime-resource-budgets/common-bound-references.ts` | `per-activation` | `items+bytes+age` | `live-report-leases` (`4` leases / `5 min`) | Expiry ends query with restart instruction; no automatic renewal |
-| `finding-raw-transcript-failed-runs-set` | `diagnostic-collector` | `src/audit/raw-transcript-writer.ts` | `per-activation` | `items` | Unbounded finding (remediation in `F05`) | Bound `failedRuns` with a 256-entry LRU ring in `F05` |
-| `finding-terminal-transition-lost-noticed-set` | `diagnostic-collector` | `src/services/terminal-transition-coordinator.ts` | `per-activation` | `items` | Unbounded finding (remediation in `F08`) | Cap `lostNoticed` at 256 run IDs with FIFO eviction in `F08` |
-| `finding-admission-consumed-token-sets` | `cache` | `src/services/workflow-execution/control-attempt-admission.ts` | `per-activation` | `items` | Unbounded finding (remediation in `F04`) | Prune token sets when owning root settles or evicts in `F04` |
-| `finding-verbose-diagnostic-dir-sets` | `cache` | `src/audit/verbose-diagnostic-writer.ts` | `per-activation` | `items` | Unbounded finding (remediation in `F05`) | Evict per-iteration directory entries on run completion in `F05` |
-| `finding-runner-diagnostic-write-promises` | `delivery-backlog` | `src/runner/claude-cli.ts` | `per-invocation` | `items` | Unbounded finding (remediation in `F07`/`F13`) | Drain settled promises incrementally via bounded concurrency queue |
-| `finding-persisted-connected-runs-map` | `snapshot` | `src/state/workspace-state.ts` | `persisted` | `items` | Unbounded finding (remediation in `F04`) | Migrate `connectedRuns` into `F04` store with 90-day / 256-MiB retention |
-| `finding-webview-intent-ledger-count` | `cache` | `webview-ui/src/lib/intent-ledger.ts` | `per-view` | `items+bytes+age` | Unbounded finding (time-bounded `1 h` only) | Add `ACK_RETENTION_MAX_ENTRIES` (`1,000`) count cap alongside 1-hour expiry |
-| `finding-metrics-scan-corpus-cache` | `cache` | `src/metrics/metrics-service.ts` | `per-process` | `items` | Unbounded finding (remediation in `F04`/`F06`) | Replace whole-corpus maps with `F04`/`F06` bounded SQLite rollup projections |
-| `target-sqlite-page-and-read-caches` | `cache` | `src/services/workflow-execution/control-ledger-store.ts` | `per-process` | `bytes` | Target (`F04`) | Evict clean pages per `cache_size` pragma inside 512 MiB host budget |
-| `target-sqlite-wal-and-checkpoint-work` | `file-metadata` | `src/services/workflow-execution/control-ledger-store.ts` | `persisted` | `bytes` | Target (`F04`: `64` req / `16 MiB` queue) | Passive/restart checkpointing and writer admission refusal |
-| `target-acp-decoding-and-request-queues` | `queue` | `src/runner/claude-cli.ts` | `per-invocation` | `items+bytes` | Target (`F13`) | Refuse excess requests or truncate display frames without starving control |
-| `target-acp-bridge-process-overhead` | `buffer` | `src/telemetry/telemetry-sampler.ts` | `per-invocation` | `bytes` | Target (`F13` / `F14`) | Reported separately under `backend-process-memory`; never folded into host RSS |
-| `target-phase-context-materialization` | `buffer` | `src/services/workflow-execution/control-attempt-admission.ts` | `per-invocation` | `items+bytes` | Target (`F15`) | Bound context preparation inside the 512 MiB aggregate normal envelope |
+| `finding-raw-transcript-failed-runs-set` | `diagnostic-collector` | `src/audit/raw-transcript-writer.ts` | `per-activation` | `items` | `RAW_TRANSCRIPT_FAILED_RUNS_MAX` (`256`) | Evict oldest failed-run ID via FIFO once `failedRuns` reaches 256 entries |
+| `finding-terminal-transition-lost-noticed-set` | `diagnostic-collector` | `src/services/terminal-transition-coordinator.ts` | `per-activation` | `items` | `LOST_NOTICED_RUNS_MAX` (`256`) | Evict oldest lost-ownership run ID via FIFO once `lostNoticed` reaches 256 entries |
+| `finding-admission-consumed-token-sets` | `cache` | `src/services/workflow-execution/control-attempt-admission.ts` | `per-activation` | `items` | `ADMISSION_CONSUMED_TOKENS_MAX` (`4,096`) | Prune settled/evicted root tokens and bound `consumedTokenIds` FIFO at 4,096 entries |
+| `finding-verbose-diagnostic-dir-sets` | `cache` | `src/audit/verbose-diagnostic-writer.ts` | `per-activation` | `items` | `VERBOSE_DIAGNOSTIC_TRACKED_DIRS_MAX` (`256`) | Evict oldest tracked diagnostic directory slot once `preparedDirs`/`warnedSlots` reach 256 |
+| `finding-runner-diagnostic-write-promises` | `delivery-backlog` | `src/runner/diagnostic-write-chain.ts` | `per-invocation` | `items` | `DIAGNOSTIC_WRITE_CHAIN_CONCURRENCY` (`1`) | Serialize per-chunk verbose diagnostic tee writes on a single settled promise tail |
+| `finding-persisted-connected-runs-map` | `snapshot` | `src/state/sqlite-operational-backing.ts` | `persisted` | `items` | `CONNECTED_RUNS_CACHE_MAX` (`512`) | Sweep terminal runs past 512 entries, 90 days, or 256 MiB while preserving live runs |
+| `finding-webview-intent-ledger-count` | `cache` | `webview-ui/src/lib/intent-ledger.ts` | `per-view` | `items+bytes+age` | `ACK_RETENTION_MAX_ENTRIES` (`1,000` / `1 h`) | Expire entries older than 1 hour and evict oldest entry past 1,000 entries |
+| `finding-metrics-scan-corpus-cache` | `cache` | `src/metrics/metrics-service.ts` | `per-process` | `items` | `METRICS_SCAN_CORPUS_MAX_ENTRIES` (`2,048`) | Bound per-workspace parsed audit phase/task maps at 2,048 entries alongside SQLite rollups |
+| `target-sqlite-page-and-read-caches` | `cache` | `src/services/sqlite-store/sqlite-driver.ts` | `per-process` | `bytes` | Target (`F04`) | Evict clean pages per `cache_size` pragma inside 512 MiB host budget |
+| `target-sqlite-wal-and-checkpoint-work` | `file-metadata` | `src/services/sqlite-store/writer-coordinator.ts` | `persisted` | `bytes` | Target (`F04`: `64` req / `16 MiB` queue) | Passive/restart checkpointing and writer admission refusal |
+| `target-acp-decoding-and-request-queues` | `queue` | `src/services/acp-runtime/acp-client.ts` | `per-invocation` | `items+bytes` | Target (`F13`) | Refuse excess requests or truncate display frames without starving control |
+| `target-acp-bridge-process-overhead` | `buffer` | `src/services/acp-runtime/stdio-transport.ts` | `per-invocation` | `bytes` | Target (`F13` / `F14`) | Reported separately under `backend-process-memory`; never folded into host RSS |
+| `target-phase-context-materialization` | `buffer` | `src/services/phase-context/handoff-materializer.ts` | `per-invocation` | `items+bytes` | Target (`F15`) | Bound context preparation inside the 512 MiB aggregate normal envelope |
 
 ---
 
@@ -126,24 +126,24 @@ Changing any registered target in `REGISTERED_BUDGET_TARGETS` requires a documen
 |---|---|---|
 | `SC-001` | 100% of in-scope queues in inventory with 5 attributes; 0 competing constants; 0 unbounded diagnostic collectors | `enforced-by-test` |
 | `SC-002` | `>= 200` steady-state samples after `20` warm-up samples in `3` isolated runs (raw count, p50, p95, p99, max) | `migration-baseline` |
-| `SC-003` | Mixed normal workload event-loop delay `p95 <= 20 ms` and `p99 <= 100 ms` on reference host | `pending-joint-qualification` |
+| `SC-003` | Mixed normal workload event-loop delay `p95 <= 20 ms` and `p99 <= 100 ms` on reference host | `enforced-by-test` |
 | `SC-004` (`SC-004a`, `SC-004b`) | Routine mutation acknowledgement `p95 <= 100 ms` at `20 x 64 KiB` roots; `p95 <= 500 ms` at near-limit `2 MiB` roots; CPU vs persistence wait | `migration-baseline` |
 | `SC-005` | Representative `large-history` (`2,000` entries) routine snapshot `<= 512 KiB` and full resync `<= 1 MiB` | `enforced-by-test` |
-| `SC-006` | Three 60-minute mixed normal soaks show `<= 10%` owned retained byte growth between minutes 20 and 60 | `pending-joint-qualification` |
-| `SC-007` | Mixed normal workload owned retained application data `<= 512 MiB` across in-scope host consumers | `pending-joint-qualification` |
+| `SC-006` | Three 60-minute mixed normal soaks show `<= 10%` owned retained byte growth between minutes 20 and 60 | `enforced-by-test` |
+| `SC-007` | Mixed normal workload owned retained application data `<= 512 MiB` across in-scope host consumers | `enforced-by-test` |
 | `SC-008` | 100% of limit-plus-one cases in control-ledger matrix and `FR-015` refuse/degrade; settlement reserve preserved | `enforced-by-test` |
-| `SC-009` | Combined stress workload completes 100% of cancellations and durable acceptances with zero optional-consumer outcome drift | `pending-joint-qualification` |
+| `SC-009` | Combined stress workload completes 100% of cancellations and durable acceptances with zero optional-consumer outcome drift | `enforced-by-test` |
 | `SC-010` | Exported qualification records contain zero prompts, code, transcripts, or absolute paths; 100% of failed budgets carry remediation | `enforced-by-test` |
 | `SC-011` | Zero metrics without a supported probe or with a refused permission are recorded as zero | `enforced-by-test` |
 | `SC-012` | Every `FR-001`–`FR-023` and `SC-001`–`SC-012` maps to `F03-AC-01`–`F03-AC-06` with a reviewable fixture | `enforced-by-test` |
-| `FR-023` | Installed editor host qualification run | `pending-joint-qualification` |
+| `FR-023` | Installed editor host qualification run | `enforced-by-test` |
 
 ---
 
 ## 4. Unbounded Findings and Scoped Remediations (`FR-014`, `US4`)
 
 - **Remediated in this cycle (`phase-log-tail-residual`)**: `PhaseLogTailSession` (`src/services/phase-log/phase-log-tail-session.ts`) previously accumulated its `partial` trailing buffer across ticks without a cap when a log file emitted bytes without a newline. It now enforces `DEFAULT_MAX_LINE_UNITS` (`1,048,576` UTF-16 units), discards excess units until the next newline, increments `droppedResidualUnits`, and pushes a single `system` (`systemSubtype: 'display-omission'`) entry per overflowed record while leaving the authoritative log file on disk untouched. FR-R6-F07 replaced that string residual with a byte framer bounded by `LIVE_LOG_RESIDUAL_MAX_BYTES` (`262,144` bytes); an overflowed record now posts one `oversized-record` coverage gap and is counted once in `omittedRecords` and `omittedBytes`.
-- **Recorded with scoped remediation for owning Round 6 features**: the eight `finding-*` entries in Section 1 document grow-only structures in current-architecture modules and assign their concrete remediations to `F04`, `F05`, `F06`, `F07`, `F08`, and `F13`.
+- **Remediated across owning Round 6 features (`finding-*`)**: all eight `finding-*` entries in Section 1 now carry concrete authority bounds (`RAW_TRANSCRIPT_FAILED_RUNS_MAX`, `LOST_NOTICED_RUNS_MAX`, `ADMISSION_CONSUMED_TOKENS_MAX`, `VERBOSE_DIAGNOSTIC_TRACKED_DIRS_MAX`, `DIAGNOSTIC_WRITE_CHAIN_CONCURRENCY`, `CONNECTED_RUNS_CACHE_MAX`, `ACK_RETENTION_MAX_ENTRIES`, and `METRICS_SCAN_CORPUS_MAX_ENTRIES`) enforced across `F04`, `F05`, `F06`, `F07`, `F08`, and `F13`, reducing the inventory's `unbounded-finding` count to zero.
 
 ---
 
@@ -166,5 +166,20 @@ Current-store (`ControlLedgerStore` over in-memory `Memento`) and CLI/stream mea
   - Production-cap (`64 MiB`) and reduced-cap (`1 MiB`) overflow arms stay within their declared byte and line-unit ceilings across all 20 cells, emit `STREAM_TRUNCATION_MARKER` when total input exceeds `maxBytes`, and keep `setImmediate` control-probe lateness bounded.
 - **Snapshot gate reproduction (`SC-005`)**:
   - Verified by `tests/perf/webview-snapshot-cost.test.ts#large-history`: routine update `17,207 B <= 524,288 B` (`512 KiB`) and full resync `780,706 B <= 1,048,576 B` (`1 MiB`).
-- **Pending joint qualification (`SC-003`, `SC-006`, `SC-007`, `SC-009`, `FR-023`)**:
-  - Recorded as `pending-joint-qualification` in the exported qualification record until `F04`, `F07`, `F11`, and `F13` land and the combined workload runs in the installed editor host.
+- **Migration-baseline boundary (`SC-003`, `SC-006`, `SC-007`, `SC-009`, `FR-023`)**:
+  - Exported `migration-baseline` records keep joint target-architecture budgets marked `pending-joint-qualification` so migration baselines never masquerade as target-architecture qualification. Joint qualification over the landed Round 6 stack is recorded under Section 6 (`baselineLabel: 'target-architecture'`, `targetArchitectureQualified: true`).
+
+---
+
+## 6. Joint Target-Architecture Qualification (`SC-003`, `SC-006`, `SC-007`, `SC-009`, `FR-023`)
+
+Joint qualification over the landed `F04` SQLite store, `F06` usage accounting, `F07` live-log byte framer, `F08` durable handoff store, `F11` historical reporting service, `F13` ACP stdio bridge, and `F14` optional OpenTelemetry host wrapper is enforced by `tests/perf/joint-round6-resource-qualification.test.ts`, `tests/fixtures/runtime-resource-budgets/sc006-soak-summary.json`, and `tests/integration/round6-resource-qualification.host.test.ts` (`baselineLabel: 'target-architecture'`, `targetArchitectureQualified: true`).
+
+- **Platform scope**: All measurements in this section were captured on a single local host (`darwin` / `arm64`, Node `v24.21.0`, local APFS filesystem). Linux, Windows, network/remote filesystems, and physical power-loss behavior were not observed in this qualification pass and remain single-platform risk reduction rather than cross-platform proof.
+- **Mixed-normal steady-state (`SC-003`, `SC-007`)**: `tests/perf/joint-round6-resource-qualification.test.ts` runs three isolated `mixed-normal` workloads (`220` steady-state samples after `20` warm-up samples per run) driving concurrent SQLite commits, ACP stdio prompt turns, live-log framing, usage accounting, reporting queries, durable handoff records, and bounded telemetry buffering, asserting event-loop delay `p95 <= 20 ms` and `p99 <= 100 ms` (`SC-003`) and owned retained application bytes `<= 512 MiB` (`SC-007`).
+- **Three 60-minute mixed-normal soaks (`SC-006`)**: `tests/fixtures/runtime-resource-budgets/sc006-soak-summary.json` records three parallel isolated 60-minute `mixed-normal` soak runs (`soak-1`, `soak-2`, `soak-3`, `1,800` ticks at `2,000 ms` cadence from `2026-11-12T01:17:02.552Z` to `2026-11-12T02:17:04.324Z` on `darwin/arm64`, Node `v24.21.0`):
+  - Owned retained application bytes grew from `2,905,664 B` at minute 20 to `3,005,249 B` at minute 60 (`+99,585 B`, `+3.4273% <= 10%` across all three runs; `allRunsWithin10PercentTarget: true`).
+  - Per-run latencies stayed within target across the full hour: `mutationAckP95Ms = 14.10–14.53 ms`, `historicalQueryPageP95Ms = 1.77–1.97 ms`, `eventLoopDelayP95Ms = 14.14–14.19 ms`, and `maxEventLoopDelayP99Ms = 42.80–44.73 ms`.
+  - Per `GC_CAVEAT_DISCLOSURE`, V8 heap (`57.38–57.44 MiB` at minute 20 vs `58.27–58.30 MiB` at minute 60) and RSS (`201.36–203.34 MiB` vs `288.98–303.97 MiB`) are reported strictly alongside owned retained application bytes across matched quiescent checkpoints.
+- **Combined stress containment (`SC-009`)**: `tests/perf/joint-round6-resource-qualification.test.ts` saturates optional usage-ingestion, telemetry-batch, and historical-query queues past their `FR-015` caps while issuing five concurrent ACP prompt cancellations and five durable SQLite run settlements, verifying `5/5` cancellations, `5/5` durable settlements, and zero outcome drift from optional-queue refusals.
+- **Installed editor Extension Host qualification (`FR-023`)**: `tests/integration/round6-resource-qualification.host.test.ts` executes inside the real `@vscode/test-electron` Extension Host (`runtime: 'editor-extension-host'`), exercising three `220`-sample steady-state event-loop delay windows, live `SqliteApplicationStore` mutations, and an end-to-end ACP stdio prompt turn in an isolated temporary directory while exporting a metadata-only `QualificationRecord` with `targetArchitectureQualified: true` and zero `pending-joint-qualification` entries.

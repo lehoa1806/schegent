@@ -452,8 +452,8 @@ const REGISTRY: readonly CountEntry[] = [
    */
   {
     document: 'repo/docs/reference/api-and-cli.md',
-    claim: 'all 54 metadata-classified webview mutations',
-    stated: 54,
+    claim: 'all 57 metadata-classified webview mutations',
+    stated: 57,
     producer: 'the entries of COMMAND_AUTHORITY declared gated (MUTATING_COMMAND_TYPES)',
     derive: gatedWebviewCommandCount,
     why:
@@ -464,8 +464,8 @@ const REGISTRY: readonly CountEntry[] = [
   },
   {
     document: 'repo/docs/reference/api-and-cli.md',
-    claim: 'contains exactly these 66 inbound literals',
-    stated: 66,
+    claim: 'contains exactly these 71 inbound literals',
+    stated: 71,
     producer: 'COMMAND_TYPES in repo/src/contracts/sidebar-ipc.ts',
     derive: webviewCommandCount,
     why:
@@ -475,8 +475,8 @@ const REGISTRY: readonly CountEntry[] = [
   },
   {
     document: 'repo/docs/reference/api-and-cli.md',
-    claim: '12 are read-only (`R`)',
-    stated: 12,
+    claim: '14 are read-only (`R`)',
+    stated: 14,
     producer: 'the entries of COMMAND_AUTHORITY declared read-only (READ_ONLY_COMMAND_TYPES)',
     derive: readOnlyWebviewCommandCount,
     why:

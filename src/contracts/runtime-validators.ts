@@ -69,6 +69,11 @@ import {
   CMD_OPEN_DECISION_RECORD,
   CMD_READ_STORAGE_DETAILS,
   CMD_READ_USAGE_ACCOUNTING,
+  CMD_READ_REPORT,
+  CMD_MUTATE_REPORT,
+  CMD_READ_EXECUTION_VISIBILITY,
+  CMD_OPEN_CHANGE_REVIEW,
+  CMD_DECIDE_PHASE_HANDOFF,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE, CMD_READ_METRICS,
@@ -97,6 +102,12 @@ import { validateReadFailureRecord } from './validators/failure-record';
 import { validateOpenDecisionRecord } from './validators/decision-record';
 import { validateReadStorageDetails } from './validators/artifact-lifecycle';
 import { validateReadUsageAccounting } from './validators/usage-accounting';
+import { validateMutateReport, validateReadReport } from './validators/reporting-ipc';
+import {
+  validateDecidePhaseHandoff,
+  validateOpenChangeReview,
+  validateReadExecutionVisibility
+} from './validators/execution-visibility-ipc';
 import {
   validateExportProcessYaml,
   validatePreflightProcessYaml
@@ -147,6 +158,15 @@ export { isValidResolveHistoryDescriptionResponse } from './validators/history-d
 export { isValidReadFailureRecordResponse } from './validators/failure-record';
 export { isValidReadStorageDetailsResponse } from './validators/artifact-lifecycle';
 export { isValidReadUsageAccountingResponse } from './validators/usage-accounting';
+export {
+  isValidMutateReportResponse,
+  isValidReadReportResponse
+} from './validators/reporting-ipc';
+export {
+  isValidDecidePhaseHandoffResponse,
+  isValidOpenChangeReviewResponse,
+  isValidReadExecutionVisibilityResponse
+} from './validators/execution-visibility-ipc';
 export type { IpcValidationError, IpcValidationResult } from './validators/shared';
 
 const DESCRIPTION_MAX = 4096;
@@ -301,6 +321,16 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateReadStorageDetails(obj, correlationId);
     case CMD_READ_USAGE_ACCOUNTING:
       return validateReadUsageAccounting(obj, correlationId);
+    case CMD_READ_REPORT:
+      return validateReadReport(obj, correlationId);
+    case CMD_MUTATE_REPORT:
+      return validateMutateReport(obj, correlationId);
+    case CMD_READ_EXECUTION_VISIBILITY:
+      return validateReadExecutionVisibility(obj, correlationId);
+    case CMD_OPEN_CHANGE_REVIEW:
+      return validateOpenChangeReview(obj, correlationId);
+    case CMD_DECIDE_PHASE_HANDOFF:
+      return validateDecidePhaseHandoff(obj, correlationId);
     case CMD_SET_PHASE_BREAKPOINT:
       return validatePhaseBreakpointPayload(CMD_SET_PHASE_BREAKPOINT, obj, correlationId);
     case CMD_CLEAR_PHASE_BREAKPOINT:

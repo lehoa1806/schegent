@@ -53,6 +53,8 @@ import {
   AUDIT_ARCHIVE_DEFAULT_MAX_COUNT,
   AUDIT_ROTATION_DEFAULT_SIZE_BYTES
 } from '../../audit/audit-log-writer';
+import { RAW_TRANSCRIPT_FAILED_RUNS_MAX } from '../../audit/raw-transcript-writer';
+import { VERBOSE_DIAGNOSTIC_TRACKED_DIRS_MAX } from '../../audit/verbose-diagnostic-writer';
 import { POSTURE_LEDGER_MAX_PAIRS } from '../../controller/backend-posture-recorder';
 import { DEFAULT_MAX_READ_BYTES } from '../../lib/bounded-read';
 import { DEFAULT_MAX_LINE_UNITS } from '../../lib/line-framer';
@@ -61,19 +63,24 @@ import {
   RETAINED_RECORDS_AFTER_TRIM,
   TRIM_THRESHOLD_BYTES
 } from '../../metrics/metrics-rollup-writer';
+import { METRICS_SCAN_CORPUS_MAX_ENTRIES } from '../../metrics/metrics-service';
 import { MAX_PENDING_TASKS_PER_QUEUE } from '../../queue/feature-request';
 import { MAX_OPEN_TASKS } from '../../runner/background-task-tracker';
+import { DIAGNOSTIC_WRITE_CHAIN_CONCURRENCY } from '../../runner/diagnostic-write-chain';
 import { MAX_TRACKED_SESSIONS } from '../../runner/session-cost-ledger';
 import { MAX_STREAM_BUFFER_BYTES } from '../../runner/zipped-stream-buffer';
 import { BACKEND_PROBE_OUTPUT_CAP_BYTES } from '../backend-capability-service';
 import { BLOCKER_NOTICE_LEDGER_MAX } from '../blocker-notice';
 import { MAX_RESOLVED_ENTRIES } from '../history/audit-pointer-resolver';
 import { CHECKPOINT_MAX_TOTAL_BYTES } from '../run-checkpoint-retention';
+import { LOST_NOTICED_RUNS_MAX } from '../terminal-transition-coordinator';
+import { ADMISSION_CONSUMED_TOKENS_MAX } from '../workflow-execution/control-attempt-admission';
 import {
   MAX_DECISION_SUMMARIES_PER_ROOT,
   MAX_SETTLED_CHECK_SUMMARIES_PER_ROOT
 } from '../workflow-execution/control-notification-service';
 import { MAX_COMMAND_RECEIPTS } from '../../state/connected-workflow-run';
+import { CONNECTED_RUNS_CACHE_MAX } from '../../state/sqlite-operational-backing';
 import {
   HISTORY_CAP_PER_QUEUE,
   MAX_DELETED_HISTORY_PARTITIONS
@@ -241,7 +248,35 @@ export const AUTHORITATIVE_CONSTANT_VALUES: ReadonlyMap<string, number> = new Ma
     'src/services/backend-capability-service.ts#BACKEND_PROBE_OUTPUT_CAP_BYTES',
     BACKEND_PROBE_OUTPUT_CAP_BYTES
   ],
-  ['src/services/history/audit-pointer-resolver.ts#MAX_RESOLVED_ENTRIES', MAX_RESOLVED_ENTRIES]
+  ['src/services/history/audit-pointer-resolver.ts#MAX_RESOLVED_ENTRIES', MAX_RESOLVED_ENTRIES],
+  [
+    'src/audit/raw-transcript-writer.ts#RAW_TRANSCRIPT_FAILED_RUNS_MAX',
+    RAW_TRANSCRIPT_FAILED_RUNS_MAX
+  ],
+  [
+    'src/services/terminal-transition-coordinator.ts#LOST_NOTICED_RUNS_MAX',
+    LOST_NOTICED_RUNS_MAX
+  ],
+  [
+    'src/services/workflow-execution/control-attempt-admission.ts#ADMISSION_CONSUMED_TOKENS_MAX',
+    ADMISSION_CONSUMED_TOKENS_MAX
+  ],
+  [
+    'src/audit/verbose-diagnostic-writer.ts#VERBOSE_DIAGNOSTIC_TRACKED_DIRS_MAX',
+    VERBOSE_DIAGNOSTIC_TRACKED_DIRS_MAX
+  ],
+  [
+    'src/runner/diagnostic-write-chain.ts#DIAGNOSTIC_WRITE_CHAIN_CONCURRENCY',
+    DIAGNOSTIC_WRITE_CHAIN_CONCURRENCY
+  ],
+  [
+    'src/state/sqlite-operational-backing.ts#CONNECTED_RUNS_CACHE_MAX',
+    CONNECTED_RUNS_CACHE_MAX
+  ],
+  [
+    'src/metrics/metrics-service.ts#METRICS_SCAN_CORPUS_MAX_ENTRIES',
+    METRICS_SCAN_CORPUS_MAX_ENTRIES
+  ]
 ]);
 
 export const RUNTIME_RESOURCE_INVENTORY: readonly InventoryEntry[] = Object.freeze([
@@ -703,96 +738,96 @@ export const RUNTIME_RESOURCE_INVENTORY: readonly InventoryEntry[] = Object.free
     architecture: 'current', consumers: ['F03', 'F11']
   },
 
-  // --- Honest unbounded findings with scoped remediations (FR-014, research R2) ---
+  // --- Remediated Round 6 resource authorities (FR-014, F04/F05/F06/F07/F08/F13) ---
   {
     id: 'finding-raw-transcript-failed-runs-set',
     category: 'diagnostic-collector', owner: 'src/audit/raw-transcript-writer.ts', lifetime: 'per-activation', units: 'items',
-    limit: { kind: 'unbounded-finding', scope: 'failedRuns Set<runId> in RawTranscriptWriter', remediation: 'Bound failedRuns with a 256-entry LRU ring in F05 artifact lifecycle cleanup.' },
-    overflow: 'Grow-only per failed run during activation; scoped remediation assigned to F05.',
+    limit: { kind: 'authority', module: 'src/audit/raw-transcript-writer.ts', symbol: 'RAW_TRANSCRIPT_FAILED_RUNS_MAX', value: RAW_TRANSCRIPT_FAILED_RUNS_MAX },
+    overflow: 'Evict oldest failed-run ID via FIFO once failedRuns reaches 256 entries.',
     architecture: 'current', consumers: ['F03', 'F05']
   },
   {
     id: 'finding-terminal-transition-lost-noticed-set',
     category: 'diagnostic-collector', owner: 'src/services/terminal-transition-coordinator.ts', lifetime: 'per-activation', units: 'items',
-    limit: { kind: 'unbounded-finding', scope: 'lostNoticed Set<runId> in TerminalTransitionCoordinator', remediation: 'Cap lostNoticed at 256 run IDs with FIFO eviction during F08 handoff/recovery integration.' },
-    overflow: 'Grow-only per lost-terminal notice during activation; scoped remediation assigned to F08.',
+    limit: { kind: 'authority', module: 'src/services/terminal-transition-coordinator.ts', symbol: 'LOST_NOTICED_RUNS_MAX', value: LOST_NOTICED_RUNS_MAX },
+    overflow: 'Evict oldest lost-ownership run ID via FIFO once lostNoticed reaches 256 entries.',
     architecture: 'current', consumers: ['F03', 'F08']
   },
   {
     id: 'finding-admission-consumed-token-sets',
     category: 'cache', owner: 'src/services/workflow-execution/control-attempt-admission.ts', lifetime: 'per-activation', units: 'items',
-    limit: { kind: 'unbounded-finding', scope: 'consumedTokenIds Set and unconsumedTokens Map in ControlAttemptAdmissionService', remediation: 'Prune token sets when the owning root settles or is evicted in F04 store migration.' },
-    overflow: 'Grow-only across consumed/prepared tokens per activation; scoped remediation assigned to F04.',
+    limit: { kind: 'authority', module: 'src/services/workflow-execution/control-attempt-admission.ts', symbol: 'ADMISSION_CONSUMED_TOKENS_MAX', value: ADMISSION_CONSUMED_TOKENS_MAX },
+    overflow: 'Prune settled/evicted root tokens and bound consumedTokenIds FIFO at 4,096 entries.',
     architecture: 'current', consumers: ['F03', 'F04']
   },
   {
     id: 'finding-verbose-diagnostic-dir-sets',
     category: 'cache', owner: 'src/audit/verbose-diagnostic-writer.ts', lifetime: 'per-activation', units: 'items',
-    limit: { kind: 'unbounded-finding', scope: 'preparedDirs Set and warnedSlots Map in VerboseDiagnosticWriter', remediation: 'Evict per-iteration directory entries on run completion in F05.' },
-    overflow: 'Grow-only when verbose diagnostics are enabled; scoped remediation assigned to F05.',
+    limit: { kind: 'authority', module: 'src/audit/verbose-diagnostic-writer.ts', symbol: 'VERBOSE_DIAGNOSTIC_TRACKED_DIRS_MAX', value: VERBOSE_DIAGNOSTIC_TRACKED_DIRS_MAX },
+    overflow: 'Evict oldest tracked diagnostic directory slot once preparedDirs/warnedSlots reach 256.',
     architecture: 'current', consumers: ['F03', 'F05']
   },
   {
     id: 'finding-runner-diagnostic-write-promises',
-    category: 'delivery-backlog', owner: 'src/runner/claude-cli.ts', lifetime: 'per-invocation', units: 'items',
-    limit: { kind: 'unbounded-finding', scope: 'diagnosticWrites Promise<void>[] array per invocation when verbose logging is active', remediation: 'Drain settled promises incrementally via a bounded concurrency queue in F07/F13.' },
-    overflow: 'Accumulates one promise per chunk until invocation exit; scoped remediation assigned to F07/F13.',
+    category: 'delivery-backlog', owner: 'src/runner/diagnostic-write-chain.ts', lifetime: 'per-invocation', units: 'items',
+    limit: { kind: 'authority', module: 'src/runner/diagnostic-write-chain.ts', symbol: 'DIAGNOSTIC_WRITE_CHAIN_CONCURRENCY', value: DIAGNOSTIC_WRITE_CHAIN_CONCURRENCY },
+    overflow: 'Serialize per-chunk verbose diagnostic tee writes on a single settled promise tail.',
     architecture: 'current', consumers: ['F03', 'F07', 'F13']
   },
   {
     id: 'finding-persisted-connected-runs-map',
-    category: 'snapshot', owner: 'src/state/workspace-state.ts', lifetime: 'persisted', units: 'items',
-    limit: { kind: 'unbounded-finding', scope: 'KEYS.connectedRuns persisted map in WorkspaceStateStore', remediation: 'Migrate connectedRuns into F04 SQLite store with 90-day / 256-MiB metadata retention sweep.' },
-    overflow: 'Deleted only on queue removal today; scoped remediation assigned to F04.',
+    category: 'snapshot', owner: 'src/state/sqlite-operational-backing.ts', lifetime: 'persisted', units: 'items',
+    limit: { kind: 'authority', module: 'src/state/sqlite-operational-backing.ts', symbol: 'CONNECTED_RUNS_CACHE_MAX', value: CONNECTED_RUNS_CACHE_MAX },
+    overflow: 'Sweep terminal runs past 512 entries, 90 days, or 256 MiB while preserving live runs.',
     architecture: 'current', consumers: ['F03', 'F04']
   },
   {
     id: 'finding-webview-intent-ledger-count',
     category: 'cache', owner: 'webview-ui/src/lib/intent-ledger.ts', lifetime: 'per-view', units: 'items+bytes+age',
-    limit: { kind: 'unbounded-finding', scope: 'webview intent-ledger Map (time-bounded by ACK_RETENTION_MS = 1h without ACK_RETENTION_MAX_ENTRIES count cap)', remediation: 'Apply ACK_RETENTION_MAX_ENTRIES (1,000) count cap alongside the 1-hour expiry in webview intent-ledger.' },
-    overflow: 'Expires entries older than 1 hour; count cap remediation documented.',
+    limit: { kind: 'authority', module: 'src/contracts/ack-retention.ts', symbol: 'ACK_RETENTION_MAX_ENTRIES', value: ACK_RETENTION_MAX_ENTRIES },
+    overflow: 'Expire entries older than 1 hour and evict oldest entry past 1,000 entries.',
     architecture: 'current', consumers: ['F03']
   },
   {
     id: 'finding-metrics-scan-corpus-cache',
     category: 'cache', owner: 'src/metrics/metrics-service.ts', lifetime: 'per-process', units: 'items',
-    limit: { kind: 'unbounded-finding', scope: 'metricsCache parsed taskStarted/taskEnded/phaseGroups Maps in metrics-service.ts', remediation: 'Replace whole-corpus in-memory maps with F04/F06 bounded SQLite rollup projections.' },
-    overflow: 'Indirectly bounded only by audit log rotation (10 x 5 MiB); scoped remediation assigned to F04/F06.',
+    limit: { kind: 'authority', module: 'src/metrics/metrics-service.ts', symbol: 'METRICS_SCAN_CORPUS_MAX_ENTRIES', value: METRICS_SCAN_CORPUS_MAX_ENTRIES },
+    overflow: 'Bound per-workspace parsed audit phase/task maps at 2,048 entries alongside SQLite rollups.',
     architecture: 'current', consumers: ['F03', 'F04', 'F06']
   },
 
   // --- Target architecture entries (FR-001, US1 scenario 3) ---
   {
     id: 'target-sqlite-page-and-read-caches',
-    category: 'cache', owner: 'src/services/workflow-execution/control-ledger-store.ts', lifetime: 'per-process', units: 'bytes',
+    category: 'cache', owner: 'src/services/sqlite-store/sqlite-driver.ts', lifetime: 'per-process', units: 'bytes',
     limit: { kind: 'owning-feature', featureId: 'F04', description: 'SQLite worker page cache and prepared read caches counted inside the 512 MiB host normal envelope' },
     overflow: 'Evict clean pages per SQLite cache_size pragma; never enlarge aggregate 512 MiB host budget.',
     architecture: 'target', consumers: ['F03', 'F04', 'F11']
   },
   {
     id: 'target-sqlite-wal-and-checkpoint-work',
-    category: 'file-metadata', owner: 'src/services/workflow-execution/control-ledger-store.ts', lifetime: 'persisted', units: 'bytes',
+    category: 'file-metadata', owner: 'src/services/sqlite-store/writer-coordinator.ts', lifetime: 'persisted', units: 'bytes',
     limit: { kind: 'owning-feature', featureId: 'F04', description: 'SQLite WAL journal growth, checkpoint staging bytes, and writer admission queue (64 requests / 16 MiB)' },
     overflow: 'Passive/restart checkpointing and bounded writer admission refusal before journal exhaustion.',
     architecture: 'target', consumers: ['F03', 'F04']
   },
   {
     id: 'target-acp-decoding-and-request-queues',
-    category: 'queue', owner: 'src/runner/claude-cli.ts', lifetime: 'per-invocation', units: 'items+bytes',
+    category: 'queue', owner: 'src/services/acp-runtime/acp-client.ts', lifetime: 'per-invocation', units: 'items+bytes',
     limit: { kind: 'owning-feature', featureId: 'F13', description: 'ACP frame decoding buffer, permission-wait queue, and connection-local request correlation table' },
     overflow: 'Refuse excess requests or truncate oversize non-control display frames without starving protocol control or cancellation.',
     architecture: 'target', consumers: ['F03', 'F13']
   },
   {
     id: 'target-acp-bridge-process-overhead',
-    category: 'buffer', owner: 'src/telemetry/telemetry-sampler.ts', lifetime: 'per-invocation', units: 'bytes',
+    category: 'buffer', owner: 'src/services/acp-runtime/stdio-transport.ts', lifetime: 'per-invocation', units: 'bytes',
     limit: { kind: 'owning-feature', featureId: 'F13', description: 'Native or bridge child-process resident memory reported in the backend-process-memory category' },
     overflow: 'Measured and reported separately from host-process memory; never folded into host RSS.',
     architecture: 'target', consumers: ['F03', 'F13', 'F14']
   },
   {
     id: 'target-phase-context-materialization',
-    category: 'buffer', owner: 'src/services/workflow-execution/control-attempt-admission.ts', lifetime: 'per-invocation', units: 'items+bytes',
+    category: 'buffer', owner: 'src/services/phase-context/handoff-materializer.ts', lifetime: 'per-invocation', units: 'items+bytes',
     limit: { kind: 'owning-feature', featureId: 'F15', description: 'Phase-to-phase context preparation queues and working set included inside the aggregate normal envelope' },
     overflow: 'Refuse or bound context materialization per F15 contract without enlarging the 512 MiB aggregate budget.',
     architecture: 'target', consumers: ['F03', 'F15']

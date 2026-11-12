@@ -7,10 +7,18 @@ will not do inside one, and how work in a lane reaches a branch. Every answer co
 authority, `LaneService`. The headless port validates input and returns the service's results
 unchanged.
 
-Nothing dispatches a Run into a lane yet. Runs still execute in the operator's checkout, and a
-queue cap above one still shares that one working tree (see
-[Multi-queue concurrency](multi-queue-concurrency.md)). The lane engine exists so that a later
-feature can dispatch into it; until then it is reachable only through the headless port.
+Opt-in Run dispatch into execution lanes is controlled by `schegent.lanes.enabled` (default `false`),
+with `schegent.lanes.liveCap` (default `1`, max `20`) and
+`schegent.lanes.provisioningDeadlineSeconds` (default `120`, range `1`–`600`). While
+`schegent.lanes.enabled` is `false`, Runs execute in the operator's checkout, and a queue cap above
+one still shares that one working tree (see [Multi-queue concurrency](multi-queue-concurrency.md)).
+When `schegent.lanes.enabled` is `true`, each admitted Run provisions an isolated Git worktree
+outside the workspace (`lanes/<workspaceId>/<laneId>`), routes agent `cwd`, output verification, and
+checkpoint diffs to that lane root while keeping audit, ownership, diagnostics, and handoff evidence
+in the primary workspace, and refuses admission with a named `LaneRefusalReason` rather than
+silently falling back to the shared checkout. Master Workspace + Execution Repository updates are
+coordinated through local transactional sync with compensating rollback (`src/services/nested-repo-sync/`),
+recording both revisions explicitly without claiming distributed atomicity.
 
 Implemented in:
 - [`src/contracts/execution-lanes.ts`](../../src/contracts/execution-lanes.ts)

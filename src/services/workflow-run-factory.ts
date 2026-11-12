@@ -26,6 +26,10 @@ export interface WorkflowRunFactoryDeps {
    * a record still means "written before this feature".
    */
   readonly getIterationCap?: () => number;
+  readonly provisionRunLane?: (
+    rootExecutionId: string,
+    aliasRunId?: string
+  ) => Promise<{ readonly laneId: string; readonly laneRootRef: string } | null>;
   readonly logger: SanitizedLogger;
 }
 
@@ -138,12 +142,18 @@ export class WorkflowRunFactory {
       await (this.deps.requestGitApproval?.(mutationPlan) ?? Promise.resolve(true));
     if (!approved) throw new Error('git-mutation-plan-not-approved');
     const now = Date.now();
+    const id = randomUUID();
+    const rootExecutionId = feature.workflowOccurrence?.rootRunId ?? id;
+    const provisionedLane = (await this.deps.provisionRunLane?.(rootExecutionId, id)) ?? null;
     const specifyIndex = pipeline.phases.findIndex((phase) => phase.id === 'speckit-specify');
     const startPhase = featureDir
       ? pipeline.phases[specifyIndex + 1]?.id ?? pipeline.phases[0]?.id ?? 'done'
       : pipeline.phases[0]?.id ?? 'done';
     return {
-      id: randomUUID(), featureId: feature.id, featureDir: featureDir ?? '',
+      id, featureId: feature.id, featureDir: featureDir ?? '',
+      ...(provisionedLane !== null
+        ? { laneId: provisionedLane.laneId, laneRootRef: provisionedLane.laneRootRef }
+        : {}),
       status: 'running', currentPhase: startPhase, currentIteration: 0,
       startedAt: now, lastTransitionAt: now, phasesCompleted: [], lastError: null,
       rawTranscriptMode: this.deps.getRawTranscriptMode?.() ?? 'errors-only',

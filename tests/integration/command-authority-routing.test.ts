@@ -69,6 +69,16 @@ const REQUIRED_PAYLOADS: Readonly<Partial<Record<CommandType, unknown>>> = {
   CMD_SET_CONFIRM_SUPPRESSION: { actionKey: 'queue.clean-all', suppressed: true },
   CMD_READ_METRICS: {},
   CMD_READ_USAGE_ACCOUNTING: { query: {} },
+  CMD_READ_REPORT: { op: 'listSaved' },
+  CMD_MUTATE_REPORT: { op: 'deleteSaved', reportId: 'rep-1', confirmed: true },
+  CMD_READ_EXECUTION_VISIBILITY: { op: 'runtimePosture' },
+  CMD_OPEN_CHANGE_REVIEW: { op: 'cancelOpen' },
+  CMD_DECIDE_PHASE_HANDOFF: {
+    op: 'approve',
+    handoffId: 'handoff-1',
+    expectedRevision: 1,
+    decisionId: 'dec-1'
+  },
   CMD_READ_DEFINITION_VERSION: { kind: 'phase', id: 'specify', versionId: 'v2' },
   CMD_PING_BACKEND: { runner: 'claude' },
   CMD_EXPORT_PROCESS_YAML: { resourceKind: 'phase', resourceId: 'specify' },
@@ -208,11 +218,12 @@ const gatedByDeclaration = (type: CommandType): boolean =>
   commandAuthorityOf(type).authority === 'gated';
 
 describe('every webview command is routed as the declaration says (T4)', () => {
-  it('parses 66 commands, each with a payload its own guard accepts', () => {
+  it('parses 71 commands, each with a payload its own guard accepts', () => {
     // FR-R6-F05 added the read-only CMD_READ_STORAGE_DETAILS (63 to 64).
     // FR-R6-F06 added the read-only CMD_READ_USAGE_ACCOUNTING (64 to 65).
     // FR-R6-F07 added the gated CMD_ACK_PHASE_LOG_TAIL (65 to 66).
-    expect(COMMAND_TYPES).toHaveLength(66);
+    // FR-R6-F11/F12/F15 added 5 reporting and execution-visibility commands (66 to 71).
+    expect(COMMAND_TYPES).toHaveLength(71);
     const rejected = COMMAND_TYPES.filter((type) => !COMMAND_GUARDS[type](minimalCommand(type)));
     expect(rejected, `commands whose minimal payload their guard refuses: ${rejected.join(', ')}`).toEqual([]);
   });

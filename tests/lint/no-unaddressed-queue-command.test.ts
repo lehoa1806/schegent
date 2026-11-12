@@ -216,6 +216,17 @@ const NOT_QUEUE_ADDRESSED: ReadonlyMap<string, string> = new Map([
   // FR-R6-F06 — a read of the workspace's usage accounting store; usage belongs to the
   // workspace, and a query groups across runs and queues.
   ['CMD_READ_USAGE_ACCOUNTING', WORKSPACE_SCOPED],
+  // FR-R6-F11 — historical reports and exports query and persist workspace-scoped report
+  // snapshots across runs and queues; no single queue owns a report.
+  ['CMD_READ_REPORT', WORKSPACE_SCOPED],
+  ['CMD_MUTATE_REPORT', WORKSPACE_SCOPED],
+  // FR-R6-F12 — execution visibility and change review payloads address a root run, an
+  // integration request, or a phase handoff directly; queue binding lives on the run.
+  ['CMD_READ_EXECUTION_VISIBILITY', RUN_ADDRESSED],
+  ['CMD_OPEN_CHANGE_REVIEW', RUN_ADDRESSED],
+  // FR-R6-F15 — phase handoff decisions address an immutable `(handoffId, expectedRevision)`
+  // belonging to a single Run; naming a queue on the wire could only disagree with that Run.
+  ['CMD_DECIDE_PHASE_HANDOFF', RUN_ADDRESSED],
   [
     'CMD_CREATE_QUEUE',
     `${WORKSPACE_SCOPED} A create has no id to name yet; the registry mints it.`

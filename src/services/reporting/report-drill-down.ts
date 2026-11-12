@@ -47,11 +47,28 @@ export function drillIntoRoot(
     return reportRefused('unknown-root');
   }
   const attempts = report.attempts.filter((attempt) => attempt.rootId === rootId);
+  const evidenceRefs = report.evidenceRefs?.filter((entry) => entry.rootId === rootId);
+  const acpAttributions = report.acpAttributions?.filter((entry) => entry.rootId === rootId);
+  const handoffSummaries = report.handoffSummaries?.filter((entry) => entry.rootId === rootId);
+  const reviewSummaries = report.reviewSummaries?.filter((entry) => entry.rootId === rootId);
+  const extras = {
+    ...(evidenceRefs !== undefined && evidenceRefs.length > 0 ? { evidenceRefs: Object.freeze(evidenceRefs) } : {}),
+    ...(acpAttributions !== undefined && acpAttributions.length > 0
+      ? { acpAttributions: Object.freeze(acpAttributions) }
+      : {}),
+    ...(handoffSummaries !== undefined && handoffSummaries.length > 0
+      ? { handoffSummaries: Object.freeze(handoffSummaries) }
+      : {}),
+    ...(reviewSummaries !== undefined && reviewSummaries.length > 0
+      ? { reviewSummaries: Object.freeze(reviewSummaries) }
+      : {})
+  };
   const base = {
     reportId: report.reportId,
     root: toRootRow(root, attempts.length),
     attempts: Object.freeze(attempts.map(toAttemptRow)),
-    frozenDefinitionId: root.frozenDefinitionId
+    frozenDefinitionId: root.frozenDefinitionId,
+    ...extras
   };
   const runStore: OutcomeLineageEntry = Object.freeze({ source: 'run-store', outcome: root.status });
   if (accounting === null || report.accountingRevision === null) {

@@ -100,14 +100,18 @@ describe('SystemTab', () => {
 
     await fireEvent.keyDown(debug, { key: 'End' });
     await tick();
-    expect(getByTestId('system-view-audit').getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(getByTestId('system-view-audit'));
+    expect(getByTestId('system-view-telemetry').getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(getByTestId('system-view-telemetry'));
 
-    await fireEvent.keyDown(getByTestId('system-view-audit'), { key: 'ArrowRight' });
+    await fireEvent.keyDown(getByTestId('system-view-telemetry'), { key: 'ArrowRight' });
     await tick();
     expect(getByTestId('system-view-debug').getAttribute('aria-selected')).toBe('true');
 
-    await fireEvent.keyDown(getByTestId('system-view-debug'), { key: 'Home' });
+    await fireEvent.keyDown(getByTestId('system-view-debug'), { key: 'ArrowRight' });
+    await tick();
+    expect(getByTestId('system-view-audit').getAttribute('aria-selected')).toBe('true');
+
+    await fireEvent.keyDown(getByTestId('system-view-audit'), { key: 'Home' });
     await tick();
     expect(getByTestId('system-view-debug').getAttribute('aria-selected')).toBe('true');
   });

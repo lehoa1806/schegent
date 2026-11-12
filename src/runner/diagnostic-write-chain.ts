@@ -1,7 +1,7 @@
 /**
  * FR-R6-F03 / F07 / F13 (`finding-runner-diagnostic-write-promises`) — bounded serialized chain
  * for per-chunk verbose diagnostic tee writes so an invocation never accumulates an unbounded
- * `Promise<void>[]` array across long-running streams.
+ * `Promise<void>[]` array across sustained streams.
  *
  * Zero `vscode` imports.
  */
@@ -25,3 +25,4 @@ export function createDiagnosticWriteChain(): DiagnosticWriteChain {
     }
   };
 }
+

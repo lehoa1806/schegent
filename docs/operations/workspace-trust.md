@@ -130,7 +130,7 @@ Three cases, which the host legs assert side by side because operators conflate 
 |---|---|---|
 | Restricted, set by the workspace (e.g. `schegent.trust.allowCustomPhases`) | Default; the workspace value is ignored | The workspace value applies |
 | Not restricted, set by the workspace (e.g. `schegent.loop.maxIterations`) | The workspace value applies | The workspace value applies |
-| **9 application-scoped keys** (e.g. `schegent.cli.path`, `schegent.backend.uncontainedBackends`) | The workspace value is ignored | **Still ignored** |
+| **17 application-scoped keys** (e.g. `schegent.cli.path`, `schegent.backend.uncontainedBackends`, `schegent.telemetry.export.*`) | The workspace value is ignored | **Still ignored** |
 
 The third row is the strongest of the three and does not depend on trust at all: an
 `application`-scoped setting has no workspace scope to read, so a repository cannot point Schegent at

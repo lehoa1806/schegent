@@ -67,7 +67,7 @@ import type { UnattendedWakeup } from '../services/unattended-eligibility';
 
 export interface WorkflowControllerOptions extends ResumeGuardOptions {
   cliPath: string;
-  cwd: string;
+  cwd: string; resolveRunCwd?: (run: WorkflowRun) => Promise<string>;
   iterationCap: number;
   timeoutMs: number;
   /** FR-R3-075 — absolute per-invocation wall-clock bound; see extension.ts. */
@@ -110,7 +110,7 @@ export interface WorkflowControllerDeps {
   /** FR-R3-146 (FR-002) — asked once when a backend is refused for want of a grant. */
   requestUncontainedConsent?: UncontainedConsentPort;
   recordContainmentAcceptance?: ContainmentAcceptancePort; // FR-R6-F09 -- binds an accepted fingerprint, origin `consent`.
-  checkpoints?: Pick<RunCheckpointService, 'checkpoint'>;
+  checkpoints?: Pick<RunCheckpointService, 'checkpoint'>; provisionRunLane?: (rootExecutionId: string, aliasRunId?: string) => Promise<{ readonly laneId: string; readonly laneRootRef: string } | null>; resolveRunCwd?: (run: WorkflowRun) => Promise<string>; onRunLanePaused?: (laneId: string | undefined) => void; onRunLaneResumed?: (runId: string) => void;
   /**
    * FR-R3-004 — passed straight to the driver, which brackets every phase
    * dispatch with it so `checkpoints` can attribute a patch to one Run. Carried
@@ -196,6 +196,7 @@ export class SchegentWorkflowController {
     private readonly options: WorkflowControllerOptions,
     deps: WorkflowControllerDeps = {}
   ) {
+    this.options = deps.resolveRunCwd !== undefined ? { ...options, resolveRunCwd: deps.resolveRunCwd } : options;
     this.monitor = deps.monitor ?? null;
     const auditWriter = deps.auditWriter ?? null;
     this.catalog = deps.catalog ?? EMPTY_CATALOG;
@@ -216,11 +217,9 @@ export class SchegentWorkflowController {
       // Run created after a settings edit still freezes the value this host is
       // actually running with rather than one the operator has since typed.
       getIterationCap: () => options.iterationCap,
-      logger
+      logger, provisionRunLane: deps.provisionRunLane
     });
-    // Feature 103 (T031) — the deps literal this site and
-    // `createRunSafetyWiring` both spelled out now lives with the class, in
-    // `createHistoryRecorder`; the three choices inside it are documented there.
+    // Feature 103 (T031) — the deps literal this site and `createRunSafetyWiring` both spelled out now lives in `createHistoryRecorder`.
     this.historyRecorder = createHistoryRecorder({
       historyStore: deps.historyStore ?? null,
       logger,
@@ -299,7 +298,7 @@ export class SchegentWorkflowController {
       notifier,
       logger,
       lock,
-      options,
+      options: this.options,
       backendCapabilities: deps.backendCapabilities,
       monitor: this.monitor,
       historyRecorder: this.historyRecorder,
@@ -345,16 +344,15 @@ export class SchegentWorkflowController {
       armIsContinue: (queueId) => this.sessions.acquire(queueId).isContinueGate.arm(),
       cancelActive: (queueId) => this.cancelActive(queueId),
       resumeExisting: (queueId, customPrompt) => this.resumeExisting(queueId, customPrompt),
-      onRunResumed: (runId) => this.spendWatcher?.onRunResumed(runId),
+      onRunResumed: (runId) => { this.spendWatcher?.onRunResumed(runId); deps.onRunLaneResumed?.(runId); },
       auditor: {
         appendPhaseControl: (eventType, run, payload) =>
           this.lifecycleAuditor.appendPhaseControl(eventType, run, payload),
-        emitTaskPaused: (run) =>
-          this.lifecycleAuditor.emitTaskLifecycle('task-execution-paused', run, {
+        emitTaskPaused: (run) => { deps.onRunLanePaused?.(run.laneId); return this.lifecycleAuditor.emitTaskLifecycle('task-execution-paused', run, {
             taskId: run.featureId,
             runId: run.id,
             pauseCause: 'operator-paused' as const
-          }),
+          }); },
         emitPhaseJumped: (run, phaseId) =>
           this.lifecycleAuditor.emitPhaseJumped(run, phaseId),
         appendBreakpoint: (eventType, run, payload) =>

@@ -150,5 +150,8 @@ export const R6_INTEGRATION_DDL: readonly string[] = Object.freeze([
     ledger_json TEXT NOT NULL,
     updated_at_ms INTEGER NOT NULL
   ) STRICT`,
-  `CREATE INDEX IF NOT EXISTS idx_phase_review_loop_run ON phase_review_loop_ledgers (run_id, updated_at_ms DESC)`
+  `CREATE INDEX IF NOT EXISTS idx_phase_review_loop_run ON phase_review_loop_ledgers (run_id, updated_at_ms DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_accounting_attempts_backend_phase ON accounting_attempts (backend, ifnull(phase_id, ''), attempt_id, first_event_utc, root_id, last_event_utc)`,
+  `CREATE INDEX IF NOT EXISTS idx_accounting_contributions_query_cover ON accounting_contributions (attempt_id, from_revision, to_revision, measure, unit, cost_origin, completeness, quantity, invocation_ordinal)`
 ]);
+
