@@ -16,7 +16,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { SQLITE_SCHEMA_CURRENT_VERSION } from '../../contracts/sqlite-store/schema-types';
+import { SQLITE_MIN_READER_VERSION, SQLITE_SCHEMA_CURRENT_VERSION } from '../../contracts/sqlite-store/schema-types';
 import type { NodeSqliteConnection } from './sqlite-driver';
 import { F05_LIFECYCLE_DDL, F05_LIFECYCLE_MIGRATION_NAME, F05_LIFECYCLE_MIGRATION_VERSION } from '../artifact-lifecycle/lifecycle-schema';
 import { F06_ACCOUNTING_DDL, F06_ACCOUNTING_MIGRATION_NAME, F06_ACCOUNTING_MIGRATION_VERSION } from '../usage-accounting/accounting-schema';
@@ -835,6 +835,28 @@ export const BUILTIN_SCHEMA_MIGRATIONS: readonly SchemaMigrationDefinition[] = O
 ]);
 
 export class SchemaBootstrapService {
+  /**
+   * Review gap GC-09 (2026-11-12) — refuses a database whose recorded `min_reader_version` is
+   * above what this build reads, before the future-schema check, so a downgrade gets the precise
+   * reason. Returns the recorded floor, or 0 when none is recorded.
+   */
+  private static assertReaderFloor(conn: NodeSqliteConnection, maxSupportedVersion: number): number {
+    const row = conn.get<{ meta_value: string }>(
+      `SELECT meta_value FROM schema_meta WHERE meta_key = 'min_reader_version'`
+    );
+    if (row === undefined) return 0;
+    const floor = Number(row.meta_value);
+    if (!Number.isSafeInteger(floor) || floor < 0) {
+      throw new Error('UNSUPPORTED_MIN_READER_VERSION: database records an unreadable reader floor');
+    }
+    if (floor > maxSupportedVersion) {
+      throw new Error(
+        `UNSUPPORTED_MIN_READER_VERSION: database requires a reader of schema ${floor} or later; this build reads up to ${maxSupportedVersion}`
+      );
+    }
+    return floor;
+  }
+
   public static computeMigrationChecksum(migration: SchemaMigrationDefinition): string {
     return createHash('sha256')
       .update(`${migration.version}:${migration.name}:${migration.ddlStatements.join(';\n')}`)
@@ -863,6 +885,7 @@ export class SchemaBootstrapService {
         (max, m) => (m.version > max ? m.version : max),
         SQLITE_SCHEMA_CURRENT_VERSION
       );
+      const recordedReaderFloor = SchemaBootstrapService.assertReaderFloor(conn, maxSupportedVersion);
       if (currentVersionRow) {
         const existingVersion = Number(currentVersionRow.meta_value);
         if (existingVersion > maxSupportedVersion) {
@@ -930,7 +953,7 @@ export class SchemaBootstrapService {
       };
 
       upsertMeta('schema_version', String(latestVersion));
-      upsertMeta('min_reader_version', '1');
+      upsertMeta('min_reader_version', String(Math.max(recordedReaderFloor, SQLITE_MIN_READER_VERSION)));
       upsertMeta('sqlite_version', runtimeMeta.sqliteVersion);
       upsertMeta('sqlite_source_id', runtimeMeta.sqliteSourceId);
 
