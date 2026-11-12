@@ -31,7 +31,7 @@ import type {
   LimitOrigin
 } from '../contracts/snapshot-projections';
 import type { WorkflowRun } from '../state/workflow-run';
-import { effectiveSpendBound } from './spend-bound';
+import { effectiveSpendBound, phaseSpendBoundApplies } from './spend-bound';
 
 export type { EffectiveLimit, EffectiveLimitsProjection, LimitOrigin };
 
@@ -143,7 +143,7 @@ export function resolveEffectiveLimits(input: EffectiveLimitsInput): EffectiveLi
         : {
             kind: 'bounded',
             denomination,
-            limit: { value: limit, origin: originOrPhase(phaseLimit !== undefined, layer.origin) },
+            limit: { value: limit, origin: originOrPhase(phaseSpendBoundApplies(layer.value, phaseLimit), layer.origin) },
             trust: input.spendTrust(denomination)
           }
   };

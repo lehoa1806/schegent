@@ -287,6 +287,12 @@ describe('the spend bound follows the ended Phase\'s backend (US8-2)', () => {
     expect(effectiveSpendBound({ limitUsd: 5, limitTokens: 2_000_000 }, run.pipeline?.phases[0]).limitUsd).toBe(1.5);
   });
 
+  it('a Phase bound looser than the operator\'s is not in force, and the origin stays the operator\'s', () => {
+    const result = resolveEffectiveLimits(input({ live: bounds, run: runWith({ spendBoundUsd: 9 }) }));
+
+    expect(result.spend).toMatchObject({ kind: 'bounded', limit: { value: 5, origin: 'workspace' } });
+  });
+
   it('a null limit in the applicable denomination is `none`, even when the other denomination has one', () => {
     const live = { ...bounds, limitUsd: limit<number | null>(null, 'default') };
 
