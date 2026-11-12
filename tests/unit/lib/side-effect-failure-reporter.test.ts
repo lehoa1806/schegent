@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import {
   ProtectedRunIdsUnavailableError,
   querySqliteProtectedRunIds,
+  replayTelemetrySpoolAfterSettling,
   sweepWithReadableProtection,
   type SqliteCutoverServices
 } from '../../../src/activation/sqlite-cutover-wiring';
@@ -113,5 +117,53 @@ describe('sweep protection fails closed (GC-05 follow-up, 2026-11-12)', () => {
         async () => undefined
       )
     ).rejects.toThrow(TypeError);
+  });
+});
+
+// The telemetry host spools retry-exhausted batches and can replay them, but nothing in the extension
+// called the replay, so a spooled batch was never re-sent after a restart. Activation now replays once,
+// after the spool work that configuring the destination started has settled, and reports a failure.
+describe('telemetry spool replay at activation (review gap closure, 2026-11-12)', () => {
+  it('replays only after pending spool work settles', async () => {
+    const order: string[] = [];
+    const reported: SideEffectOperation[] = [];
+    await replayTelemetrySpoolAfterSettling(
+      {
+        idle: async () => {
+          order.push('idle');
+        },
+        reconcileAndReplaySpool: async () => {
+          order.push('replay');
+          return { replayed: 0, acknowledged: 0, dropped: 0, expired: 0 };
+        }
+      },
+      (operation) => reported.push(operation)
+    );
+    expect(order).toEqual(['idle', 'replay']);
+    expect(reported).toHaveLength(0);
+  });
+
+  it('reports a failed replay as telemetry-spool instead of rejecting', async () => {
+    const reported: SideEffectOperation[] = [];
+    await expect(
+      replayTelemetrySpoolAfterSettling(
+        {
+          idle: async () => undefined,
+          reconcileAndReplaySpool: async () => {
+            throw new Error('database is not open');
+          }
+        },
+        (operation) => reported.push(operation)
+      )
+    ).resolves.toBeUndefined();
+    expect(reported).toEqual(['telemetry-spool']);
+  });
+
+  it('is called by activation once the destination is configured', () => {
+    const source = readFileSync(resolve(__dirname, '../../../src/activation/sqlite-cutover-wiring.ts'), 'utf8');
+    const configured = source.indexOf('telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());');
+    const replayed = source.indexOf('void replayTelemetrySpoolAfterSettling(telemetryHost, input.reportSideEffectFailure);');
+    expect(configured).toBeGreaterThan(-1);
+    expect(replayed).toBeGreaterThan(configured);
   });
 });

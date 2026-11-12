@@ -232,7 +232,7 @@ the batch `credential-unavailable`; a value outside the rule drops it `credentia
 | Measures in one usage record | 16 |
 | Mapping and queueing one batch of 256 records | 5 ms at p95 (`tests/perf/budgets.json`) |
 
-The host service spools undelivered batches to a private directory under the storage root, bounded at 32 MiB (`diskSpoolBytes`), and replays them while a destination and credential are still authorized.
+The host service spools undelivered batches to a private directory under the storage root, bounded at 32 MiB (`diskSpoolBytes`), and replays them once when the extension next activates, after configuring the destination, while that destination and credential are still authorized.
 
 ## Health
 
@@ -271,7 +271,8 @@ from the transport, the secret store or the ledger is caught and counted.
   ledger beside it; this guide does not describe that ledger's limits.
 - **Certificate authorities are a process setting.** `NODE_EXTRA_CA_CERTS` and the platform
   trust store decide which certificates verify. The exporter cannot narrow them.
-- **Batches do not survive a restart.** Queued and open batches are dropped at shutdown.
+- **Only spooled batches survive a restart.** Queued and open batches are dropped at shutdown. A
+  batch that exhausted its retries is spooled instead, and is replayed once at the next activation.
 - **The proxy environment is not read.** Every request goes straight to the destination, also
   when Node is started with its environment-proxy option. A network that reaches the
   destination only through a proxy cannot export. Proxy support is not provided.
