@@ -133,6 +133,42 @@ describe('RunDriver Probing (Feature 074)', () => {
     expect(deps.runner.run).toHaveBeenCalled();
   });
 
+  // Review gap GC-07 (2026-11-12) — the probe used to be skipped whenever `NODE_ENV === 'test'`, a
+  // test branch in production code that any host with that variable set would also take. It is now
+  // skipped by the explicit `skipProbing` option, or when no probe service is wired at all (the
+  // extension always wires one).
+  it.each([
+    [false, true, 1],
+    [true, true, 0],
+    [false, false, 0]
+  ] as const)('probes under any NODE_ENV (skipProbing %s, service wired %s)', async (skipProbing, wired, probes) => {
+    const run = {
+      id: 'run-1',
+      featureId: 'task-1',
+      startedAt: Date.now(),
+      status: 'running',
+      currentPhase: 'plan',
+      currentIteration: 0,
+      pipeline: { id: 'pipe-1', name: 'Pipe', phases: [{ id: 'phase1', name: 'Phase 1', instruction: 'do something', runner: 'claude', effort: 'low', model: 'claude-3-haiku-20240307' }] },
+      phasesCompleted: [],
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      phaseOverrides: [],
+      resumeTargetPhaseId: null
+    };
+    deps.store.findRunByTask.mockReturnValue({ queueId: DEFAULT_QUEUE_ID, run });
+    deps.options = { ...deps.options, skipProbing };
+    const service = deps.backendCapabilities;
+    if (!wired) deps.backendCapabilities = undefined;
+    expect(process.env.NODE_ENV).toBe('test');
+
+    await new RunDriver(deps).drive(run as unknown as WorkflowRun, 'desc');
+
+    expect(service.probeAvailability).toHaveBeenCalledTimes(probes);
+    expect(deps.runner.run).toHaveBeenCalled();
+  });
+
   it('uses the snapshotted effective backend for probing and invocation paths', async () => {
     const pathResolver = vi.fn((runner: string) => `${runner}-bin`);
     deps.options = {
