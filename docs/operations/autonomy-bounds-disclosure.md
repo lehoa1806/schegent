@@ -77,7 +77,10 @@ saying "the bound is denomination-aware".
 The bound is evaluated at a phase boundary, against the `phase-end` audit record that
 carries the usage — the same record an operator reads and `npm run audit:verify` chains.
 Spend cannot be observed mid-turn, because no backend reports it until the turn ends, so
-the overshoot is at most the phase that crossed the bound.
+the phase that crossed the bound always runs to completion. The pause is written beside that
+`phase-end` record, not before the Run moves on: if the write lands after the Run reads its own
+state, the pause takes effect at the next boundary and one more phase runs. The overshoot is
+therefore the crossing phase, and at most one phase after it.
 
 A host restart does not hand a run its whole bound again. At activation the tally of every Run
 that can still move is rebuilt: a live Run, and a `failed` one, which Retry, Restart and Resume
@@ -96,8 +99,9 @@ before it. Such a Run can pause early, once per host session.
 
 **A pause at a phase boundary, never a ceiling inside an invocation.** The bound reads the
 `phase-end` record of a phase that has already finished and been paid for. No backend reports
-spend until its turn ends, so a Run that crosses the bound overshoots by at most the phase that
-crossed it, and nothing stops an invocation partway.
+spend until its turn ends, so a Run that crosses the bound overshoots by the phase that crossed
+it, and at most one phase after it when the pause write lands late (above). Nothing stops an
+invocation partway.
 
 **The denomination is the backend's, not the figures'.** The bound compares a Run's total with the
 limit in the unit the ended phase's backend reports: USD for `claude`, tokens for `codex` and `agy`

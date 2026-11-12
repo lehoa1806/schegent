@@ -378,7 +378,7 @@
           "default": null,
           "minimum": 0.01,
           "scope": "resource",
-          "markdownDescription": "Per-run spend bound in US dollars (FR-R3-112). `null` (the default) means **no bound** \u2014 the mechanism ships enabled and unset, because a bound arriving as a surprise mid-run is worse than no bound. Crossing the bound **pauses** the run through the ordinary operator-resumable pause (cause `spend-bound-reached`); it never fails or cancels it, so nothing is destroyed. Applies to backends that report a cost \u2014 today, `claude`. For `codex` and `agy`, which report tokens and no cost, use `schegent.spend.maxTokensPerRun`. A per-phase override may be declared on a Phase as `spendBoundUsd`. The bound is checked only when a phase ends, never during an invocation, because no backend reports spend until its turn ends: the phase that crosses the bound always runs to completion, so a paused Run's total ends above the bound."
+          "markdownDescription": "Per-run spend bound in US dollars (FR-R3-112). `null` (the default) means **no bound** \u2014 the mechanism ships enabled and unset, because a bound arriving as a surprise mid-run is worse than no bound. Crossing the bound **pauses** the run through the ordinary operator-resumable pause (cause `spend-bound-reached`); it never fails or cancels it, so nothing is destroyed. Applies to backends that report a cost \u2014 today, `claude`. For `codex` and `agy`, which report tokens and no cost, use `schegent.spend.maxTokensPerRun`. A per-phase override may be declared on a Phase as `spendBoundUsd`. The bound is checked only when a phase ends, never during an invocation, because no backend reports spend until its turn ends: the phase that crosses the bound always runs to completion, and one more phase can run when the pause lands after the Run reads its state, so a paused Run's total ends above the bound."
         },
         "schegent.spend.maxTokensPerRun": {
           "type": [
@@ -388,7 +388,7 @@
           "default": null,
           "minimum": 1,
           "scope": "resource",
-          "markdownDescription": "Per-run spend bound in tokens (FR-R3-112), for backends that report tokens and no cost \u2014 today, `codex` and `agy`. `null` (the default) means **no bound**. Behaves identically to the dollar bound: crossing it pauses the run, resumable by the operator, with no terminal transition. A per-phase override may be declared on a Phase as `spendBoundTokens`. Like the dollar bound, it is checked only when a phase ends, so the phase that crosses it always runs to completion and a paused Run's total ends above the bound."
+          "markdownDescription": "Per-run spend bound in tokens (FR-R3-112), for backends that report tokens and no cost \u2014 today, `codex` and `agy`. `null` (the default) means **no bound**. Behaves identically to the dollar bound: crossing it pauses the run, resumable by the operator, with no terminal transition. A per-phase override may be declared on a Phase as `spendBoundTokens`. Like the dollar bound, it is checked only when a phase ends, so the phase that crosses it always runs to completion, one more phase can run when the pause lands late, and a paused Run's total ends above the bound."
         },
         "schegent.audit.rotation.sizeMB": {
           "type": "number",
