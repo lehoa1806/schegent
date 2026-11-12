@@ -449,9 +449,10 @@ export class RunDriver {
       // in one window the first to finish released primacy for both. `drive()`
       // now holds only its queue's execution lease.
       this.assertAuditEvidenceAvailable();
-      // Feature 074 T017 — Probe all distinct runners referenced in the pipeline at start
+      // Feature 074 T017 — Probe all distinct runners referenced in the pipeline at start. Review gap
+      // GC-07: skipped only by `skipProbing` or an unwired probe service, never by `NODE_ENV`.
       if (
-        process.env.NODE_ENV !== 'test' &&
+        this.deps.backendCapabilities !== undefined &&
         !this.deps.options.skipProbing &&
         run.phasesCompleted.length === 0 &&
         run.currentIteration === 0 &&
@@ -464,9 +465,7 @@ export class RunDriver {
         );
         for (const runnerKind of runners) {
           try {
-            const available = this.deps.backendCapabilities
-              ? await this.deps.backendCapabilities.probeAvailability(runnerKind)
-              : false;
+            const available = await this.deps.backendCapabilities.probeAvailability(runnerKind);
             if (!available) throw new Error('backend unavailable');
           } catch {
             const failureMessage =
