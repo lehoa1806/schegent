@@ -57,6 +57,14 @@ The backend choice is a privilege choice, not a cosmetic preference. A Phase's `
 | `schegent.retry.maxAttempts` | integer, `1`–`5` | `5` | resource | Maximum delayed-retry attempts before the Run and Queue pause. |
 | `schegent.retry.forceContinueOnCap` | boolean | `false` | resource | Workspace-wide **default** for what a Phase does when its `retryCondition` remains truthy at its final allowed iteration: `true` means advance and record a forced-continue runtime event, `false` means fail. A Phase's own `onRetryCap` overrides it — see below, including the third outcome this boolean cannot select. Failed and timed-out outcomes remain terminal. |
 
+A workspace or folder value of `schegent.loop.maxIterations`, `schegent.loop.maxUnchangedComparisons`,
+`schegent.spend.maxUsdPerRun`, `schegent.spend.maxTokensPerRun`, `schegent.retry.maxAttempts` or
+`schegent.retry.forceContinueOnCap` may only tighten the user's value (or the default): a lower cap,
+a cap where none was set, or `false`. A value that would raise, clear or switch off the limit is
+ignored, and activation logs a warning. See [Autonomy bounds](../operations/autonomy-bounds-disclosure.md#where-each-limit-comes-from).
+
+<!-- Source: src/config/tighten-only-limits.ts -->
+
 ### The retry-cap outcome is three-valued, and per Phase
 
 `schegent.retry.forceContinueOnCap` answers for a Phase that says nothing. A Phase that says

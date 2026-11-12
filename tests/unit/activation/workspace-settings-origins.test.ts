@@ -73,12 +73,28 @@ describe('resolveWorkspaceSettings returns each limit with its origin (E2 G5)', 
 
   it.each([
     ['user', { global: 4 }, 4],
-    ['workspace', { global: 4, workspace: 6 }, 6],
-    ['workspace-folder', { global: 4, workspace: 6, folder: 8 }, 8]
+    ['workspace', { global: 8, workspace: 6 }, 6],
+    ['workspace-folder', { global: 8, workspace: 6, folder: 4 }, 4]
   ])('the iteration cap set at %s layers is that layer\'s value', (origin, layers, value) => {
     const settings = resolve({ 'loop.maxIterations': { default: 10, ...layers } });
 
     expect(settings.limits.iterationCap).toEqual({ value, origin });
+  });
+
+  // Review gap GC-10 — a repository layer may lower the cap and never raise it.
+  it('a workspace or folder cap above the user cap is ignored, and the activation log says so', () => {
+    const logger = new SanitizedLogger();
+    const warn = vi.spyOn(logger, 'warn');
+    table = { 'loop.maxIterations': { default: 10, global: 4, workspace: 6, folder: 50 } };
+
+    const settings = resolveWorkspaceSettings({ workspaceRoot: '/workspace', logger });
+
+    expect(settings.iterationCap).toBe(4);
+    expect(settings.limits.iterationCap).toEqual({ value: 4, origin: 'user' });
+    expect(warn).toHaveBeenCalledWith(
+      'workspace setting may only tighten an operator limit; value ignored',
+      { key: 'loop.maxIterations', layers: 'workspace,workspace-folder' }
+    );
   });
 
   it('the wall-clock bound is read the same way', () => {

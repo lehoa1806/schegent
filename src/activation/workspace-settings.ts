@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import type { SanitizedLogger } from '../lib/logger';
 import { resolveProcessEnvironmentPolicy, type ProcessEnvironmentPolicy } from '../runner/spawn-env';
 import { validateWorkspaceSettings } from '../config/settings-schema-validator';
+import { RUN_LIMIT_KEYS, resolveRunLimit } from '../config/tighten-only-limits';
 import type { EffectiveLimit, LimitOrigin } from '../contracts/snapshot-projections';
 
 /** The layers `WorkspaceConfiguration.inspect` reports, as far as an origin is concerned. */
@@ -80,6 +81,16 @@ const config = vscode.workspace.getConfiguration('schegent', vscode.Uri.file(wor
 // `loop.maxIterations: 0`) surface in the runtime log at activation
 // instead of producing a confusing downstream reject. Sync, no I/O.
 validateWorkspaceSettings(config, logger, new Set());
+// Review gap GC-10 — a repository layer may tighten a spend, retry or loop limit and never loosen it.
+// The readers ignore a looser value silently on every read; activation says so once per key.
+for (const key of RUN_LIMIT_KEYS) {
+  const { ignoredLayers } = resolveRunLimit(key, config.inspect(key));
+  if (ignoredLayers.length === 0) continue;
+  logger.warn('workspace setting may only tighten an operator limit; value ignored', {
+    key,
+    layers: ignoredLayers.join(',')
+  });
+}
 const cliPath = config.get<string>('cli.path', 'claude');
 const processEnvironmentPolicy = resolveProcessEnvironmentPolicy({
   inheritEnvironment: config.get<boolean>('cli.inheritEnvironment', true),
@@ -89,7 +100,8 @@ const processEnvironmentPolicy = resolveProcessEnvironmentPolicy({
   mode: config.get<unknown>('cli.environmentMode', 'allowlist'),
   allowlist: config.get<unknown>('cli.environmentAllowlist', [])
 });
-const iterationCap = config.get<number>('loop.maxIterations', 10);
+const iterationLimit = resolveRunLimit('loop.maxIterations', config.inspect('loop.maxIterations'));
+const iterationCap = iterationLimit.value;
 const pollIntervalMinutes = config.get<number>('watchdog.pollIntervalMinutes', 30);
 // FR-R3-075 — the idle window, renamed to say what it is. The old key is
 // honored as a fallback when the operator set it explicitly and has not yet
@@ -128,7 +140,7 @@ const rotationMaxAgeDays = config.get<number>('audit.rotation.maxAgeDays', 30);
     rotationSizeMB,
     rotationMaxAgeDays,
     limits: {
-      iterationCap: { value: iterationCap, origin: originOf(config.inspect<number>('loop.maxIterations')) },
+      iterationCap: { value: iterationCap, origin: iterationLimit.origin },
       idleTimeoutSeconds: { value: timeoutSeconds, origin: idleOrigin },
       maxDurationSeconds: {
         value: maxDurationSeconds,
