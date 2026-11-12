@@ -274,6 +274,57 @@
           "scope": "application",
           "markdownDescription": "Machine-scoped ACP agent profile selection (FR-R6-F13). `auto` maps the selected backend (`claude`, `codex`, `agy`) to its qualified built-in ACP profile (`claude-acp-bridge`, `codex-acp-bridge`, `agy-acp-native`). Naming an explicit built-in profile pins ACP dispatch to that profile and refuses mismatched backend capability tuples. `application`-scoped so repository files cannot install or replace an agent profile."
         },
+        "schegent.telemetry.export.enabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "markdownDescription": "Explicit user-scoped opt-in for exporting normalized metadata-only accounting observations as OTLP metrics over HTTP (FR-R6-F14). Disabled by default; creates no listener, no ambient environment variable injection, and no secondary ingestion path. `application`-scoped so workspace files cannot enable or redirect telemetry export."
+        },
+        "schegent.telemetry.export.endpoint": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "Destination URL for optional OTLP/HTTP JSON metrics export (for example `https://collector.example.com/v1/metrics` or `http://127.0.0.1:4318/v1/metrics` when `schegent.telemetry.export.allowPlaintextLoopback` is enabled). Empty when unset. `application`-scoped so workspace files cannot redirect exported metadata."
+        },
+        "schegent.telemetry.export.protocol": {
+          "type": "string",
+          "enum": [
+            "otlp-http-json",
+            "otlp-http-protobuf",
+            "otlp-grpc"
+          ],
+          "default": "otlp-http-json",
+          "scope": "application",
+          "markdownDescription": "Declared OTLP export protocol (FR-R6-F14). Only `otlp-http-json` is supported in this build; selecting `otlp-http-protobuf` or `otlp-grpc` refuses export explicitly without opening any fallback channel."
+        },
+        "schegent.telemetry.export.allowPlaintextLoopback": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "markdownDescription": "Allow plaintext `http://` OTLP export strictly to loopback destinations (`localhost`, `127.0.0.0/8`, `[::1]`) whose resolved addresses are also verified as loopback at connect time (FR-R6-F14)."
+        },
+        "schegent.telemetry.export.credentialSecretKey": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "Identifier of a secret stored in VS Code `SecretStorage` to attach to outbound OTLP requests under `schegent.telemetry.export.credentialHeaderName`. Never store raw tokens or header values in settings; empty means unauthenticated export."
+        },
+        "schegent.telemetry.export.credentialHeaderName": {
+          "type": "string",
+          "default": "Authorization",
+          "scope": "application",
+          "markdownDescription": "HTTP header name used when `schegent.telemetry.export.credentialSecretKey` is non-empty. Must be a valid RFC 9110 header token and cannot name transport-reserved headers (`Host`, `Content-Length`, `Content-Type`, `Transfer-Encoding`, `Connection`, `User-Agent`, `Accept-Encoding`)."
+        },
+        "schegent.telemetry.export.contentPolicy": {
+          "type": "string",
+          "enum": [
+            "metadata-only",
+            "content"
+          ],
+          "default": "metadata-only",
+          "scope": "application",
+          "markdownDescription": "Explicit content-export policy selector (FR-R6-F14, F14-FR-09). `metadata-only` exports allowlisted aggregate accounting metadata without prompts, responses, tool arguments, transcripts, credentials, or raw paths. `content` is refused (`content-export-unsupported`) in mapping revision 1; enabling metadata export never enables content capture or alters local transcript retention."
+        },
         "schegent.loop.maxIterations": {
           "type": "number",
           "default": 10,

@@ -74,6 +74,8 @@ export interface UsageAccountingWiringInput {
   readonly auditWriter: { subscribe(listener: (entry: AuditEntry) => void): WiringDisposable };
   readonly subscriptions: { push(disposable: WiringDisposable): void };
   readonly logger: AccountingLogger;
+  /** Optional downstream notification after SQLite commits an accepted observation (FR-R6-F14). */
+  readonly onAcceptedObservation?: ((observationId: string) => void) | undefined;
   /** Tests only. */
   readonly queueBound?: number | undefined;
   /** Tests only; defaults to `setImmediate`. */
@@ -153,11 +155,25 @@ export function createUsageAccountingWiring(input: UsageAccountingWiringInput): 
   function apply(item: AdmittedItem, accounting: UsageAccountingService): void {
     const operation = item.kind === 'phase-end' ? 'ingestPhaseEnd' : 'recordRootOutcome';
     try {
-      const result: AccountingResult<unknown> =
-        item.kind === 'phase-end'
-          ? accounting.ingestPhaseEnd(item.snapshot)
-          : accounting.recordRootOutcome({ rootId: item.rootId, outcome: item.outcome, terminalUtc: item.terminalUtc });
-      if (!result.ok && !STORE_COUNTED_REFUSALS.has(result.refusal.code)) countGap('ingest-failed');
+      if (item.kind === 'phase-end') {
+        const result = accounting.ingestPhaseEnd(item.snapshot);
+        if (!result.ok && !STORE_COUNTED_REFUSALS.has(result.refusal.code)) {
+          countGap('ingest-failed');
+        } else if (result.ok && result.value.disposition === 'accepted') {
+          try {
+            input.onAcceptedObservation?.(result.value.observationId);
+          } catch {
+            // Downstream telemetry listener never affects local accounting.
+          }
+        }
+      } else {
+        const result: AccountingResult<unknown> = accounting.recordRootOutcome({
+          rootId: item.rootId,
+          outcome: item.outcome,
+          terminalUtc: item.terminalUtc
+        });
+        if (!result.ok && !STORE_COUNTED_REFUSALS.has(result.refusal.code)) countGap('ingest-failed');
+      }
     } catch (error) {
       countGap('ingest-failed');
       log(operation, error);
