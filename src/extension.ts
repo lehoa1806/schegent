@@ -10,6 +10,7 @@ import {
 import { resolveCliPath } from './config/cli-path-accessor';
 import { SchegentWorkflowController } from './controller/workflow-controller';
 import { SanitizedLogger } from './lib/logger';
+import { singleFlight } from './lib/single-flight';
 import {
   createRuntimeEvidenceWiring,
   type RuntimeEvidenceWiring
@@ -19,10 +20,7 @@ import { registerGuardedCommand } from './activation/guarded-command-registratio
 import { Notifier } from './ui/notifications';
 import { SchegentOutputChannel } from './ui/output-channel';
 import { runReset, type ResetHost, type ResetStageSupport } from './commands/reset';
-import {
-  completeInterruptedResetOnActivation,
-  createResetStageSupport,
-} from './commands/reset-wiring';
+import { completeInterruptedResetOnActivation, createResetStageSupport } from './commands/reset-wiring';
 import { StateProjector } from './ui/sidebar/state-projector';
 import { SidebarViewProvider } from './ui/sidebar/sidebar-view-provider';
 import { PlaceholderProjector } from './ui/sidebar/placeholder-projector';
@@ -117,7 +115,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // it calls `getCanonicalWorkspaceRoot()` via `ensureStage2()`.
   void getCanonicalWorkspaceRoot();
 
-  const ensureStage2 = async (): Promise<void> => {
+  const ensureStage2 = singleFlight(async (): Promise<void> => {
     if (stage2) return;
     const folder = getCanonicalWorkspaceRoot();
     if (!folder) return;
@@ -143,7 +141,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     sidebarProvider.setProjector(wiring.projector);
     sidebarProvider.setDispatch(wiring.dispatch);
     activeOutput = wiring.output;
-  };
+  });
 
   // Feature 218 review (F6) — every Stage 2 disposal in flight. A folder removal or
   // a reset clears `stage2` before its disposal ends; the host teardown waits on these.
@@ -436,6 +434,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       inheritProcessEnv: processEnvironmentPolicy.inheritProcessEnv,
       processEnvAllowlist: processEnvironmentPolicy.processEnvAllowlist,
       defaultRunnerKind: backendKind,
+      requireProbe: true, // GC-07 follow-up: a lost probe service fails the Run, never skips the probe
       isAuditEvidenceAvailable: () => evidenceHealth.getSnapshot().audit.status !== 'unavailable',
       // FR-R3-119 — the never-cached settings reads live together in
       // `src/activation/uncached-settings-accessors.ts`, which says why they are closures.
@@ -444,7 +443,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       // Feature 074 — resolve CLI binary path per-runner-kind. Reads the
       // setting per-invocation (never cached at activation) so the operator
       // can change `schegent.agy.path` without restarting VS Code.
-      cliPathResolver: (runnerKind: string) => resolveCliPath(runnerKind, workspaceRoot, cliPath)
+      cliPathResolver: (runnerKind) => resolveCliPath(runnerKind, workspaceRoot, cliPath)
     },
     {
       monitor,
@@ -585,7 +584,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     phaseLogTail,
     runtimeLogSink,
     runtimeLogAccessor,
-    refreshCatalog, registerDisposable: (disposable) => context.subscriptions.push(disposable)
+    refreshCatalog, registerDisposable: (disposable) => disposables.push(disposable) // GC-03: Stage 2's own
   });
 
   const uiWiring = registerStage2Ui({
@@ -614,7 +613,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   output.log(`activated; cli=${cliPath}, cap=${iterationCap}, pollIntervalMin=${pollIntervalMinutes}`);
 
   // FR-R3-103 (FR-046) — a lost fence terminates this window's children.
-  context.subscriptions.push(lock.onFenceLost(() => controller.abortOnSupersession()));
+  disposables.push(lock.onFenceLost(() => controller.abortOnSupersession())); // GC-03: disposed with Stage 2
 
   // FR-R3-136 (FR-009…FR-012) — THE TRUST GATE. Everything above constructs or
   // subscribes and writes nothing, which is why the fence line stays on this side;

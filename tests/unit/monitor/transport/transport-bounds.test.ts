@@ -31,14 +31,33 @@ const START = Date.parse('2026-03-01T00:00:00.000Z');
 const NO_ACTIVE: ReadonlySet<string> = new Set();
 
 let harness: TransportHarness;
+/** Bumped at every test's start and end; a clock setter is only good for the test that took it. */
+let testEpoch = 0;
+
+/**
+ * The clock setter for the test that calls it. A test that times out leaves its append loop
+ * running, and that loop's `vi.setSystemTime` then mocked `Date` for the tests after it, so they
+ * timed out too (seen in the gate, 2026-11-12). This setter throws once its test has ended, which
+ * stops the loop instead.
+ */
+function clockOfThisTest(): (ms: number) => void {
+  const epoch = testEpoch;
+  return (ms) => {
+    if (epoch !== testEpoch) throw new Error('transport-bounds: a finished test tried to move the clock');
+    vi.setSystemTime(ms);
+  };
+}
 
 beforeEach(async () => {
+  vi.useRealTimers();
+  testEpoch += 1;
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(START);
   harness = await createTransportHarness({ setting: 'on', ageDays: 1 });
 });
 
 afterEach(async () => {
+  testEpoch += 1;
   vi.useRealTimers();
   await harness.dispose();
 });
@@ -67,9 +86,10 @@ const exists = async (file: string): Promise<boolean> =>
 
 describe('record age (SC-003, FR-005)', () => {
   it('leaves no record older than the bound in the live Run file after appends past the bound', async () => {
+    const setClock = clockOfThisTest();
     const appends = Math.floor((1.5 * DAY_MS) / MINUTE_MS);
     for (let index = 0; index < appends; index += 1) {
-      vi.setSystemTime(START + index * MINUTE_MS);
+      setClock(START + index * MINUTE_MS);
       harness.record('run-a', `SYNTHETIC-MARKER-251-age ${index}`);
       // Flushed per append: the router reads the clock when it processes a record, not when the sink
       // accepts it, so a loop that queues them all would have it judge every record at the last time.
@@ -111,9 +131,10 @@ describe('record age (SC-003, FR-005)', () => {
 describe('the per-file bound (FR-005)', () => {
   it('holds after many appends and keeps the newest records', async () => {
     const chunk = 'x'.repeat(64 * 1024);
+    const setClock = clockOfThisTest();
     const total = 100;
     for (let index = 0; index < total; index += 1) {
-      vi.setSystemTime(START + index * 1000);
+      setClock(START + index * 1000);
       harness.record('run-a', `${chunk} n=${index}`);
       await harness.flush();
     }
@@ -207,7 +228,7 @@ describe('usage (data-model §4)', () => {
     const legacy = path.join(harness.workspaceRoot, '.schegent', `${CLI_TRANSPORT_FILE_NAME}.1`);
     await writeRecords(legacy, 'legacy', START - 2 * 60_000, 100 * 1024);
     harness.record('run-a', 'SYNTHETIC-MARKER-251-usage a');
-    vi.setSystemTime(START + 60_000);
+    clockOfThisTest()(START + 60_000);
     harness.record('run-b', 'SYNTHETIC-MARKER-251-usage b');
     await harness.flush();
     expect(harness.router.usage(), 'nothing is measured before the first Run end or pass').toBeNull();

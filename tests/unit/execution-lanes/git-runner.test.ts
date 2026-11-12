@@ -18,6 +18,7 @@ import {
   type ExecFileLikeError,
   type ExecFileLikeOptions
 } from '../../../src/services/execution-lanes/git-runner';
+import { HOST_GIT_CONFIG_OVERRIDES } from '../../../src/lib/host-git-config';
 
 interface RecordedCall {
   readonly file: string;
@@ -117,7 +118,7 @@ describe('FR-R6-F10 createExecFileGitRunner (research R5)', () => {
     expect(result).toEqual({ ok: true, stdout: 'abc\n' });
     const call = onlyCall(calls);
     expect(call.file).toBe('git');
-    expect(call.args).toEqual(['rev-parse', 'HEAD']);
+    expect(call.args).toEqual([...HOST_GIT_CONFIG_OVERRIDES, 'rev-parse', 'HEAD']);
     expect(call.options.shell).toBe(false);
     expect(call.options.cwd).toBe('/repo');
     expect(call.options.timeout).toBe(5_000);

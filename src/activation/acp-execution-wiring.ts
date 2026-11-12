@@ -8,10 +8,19 @@ import { resolve } from 'node:path';
 import * as vscode from 'vscode';
 
 import type { SanitizedLogger } from '../lib/logger';
+import { createSideEffectFailureReporter } from '../lib/side-effect-failure-reporter';
 import type { BackendRunnerFactoryOptions } from '../runner/backend-runner-factory';
 import { AcpAuthorityGate } from '../services/containment-qualification/acp-authority-gate';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import { getSqliteCutoverCoordinator } from './sqlite-cutover-wiring';
+
+/** An authorization receipt was decided while no SQLite store was attached to record it. */
+class AcpReceiptStoreDetachedError extends Error {
+  constructor() {
+    super('no SQLite store attached for the ACP authorization receipt');
+    this.name = 'AcpReceiptStoreDetachedError';
+  }
+}
 
 const VALID_SELECTORS: ReadonlySet<string> = new Set([
   'auto',
@@ -48,36 +57,57 @@ export function buildHostAcpDispatchOptions(
   deps: HostAcpDispatchWiringDeps
 ): NonNullable<BackendRunnerFactoryOptions['acpDispatch']> {
   const bridgeScriptPath = resolveBridgeScriptPath();
-  let lastKnownPrimacy = false;
+  const reportReceiptFailure = createSideEffectFailureReporter(deps.logger);
+  // The last authoritative `hasPrimacy()` verdict; null until the first one lands.
+  let lastVerifiedPrimacy: boolean | null = null;
   let ownershipGeneration = 1;
 
+  /** Asks the lock once and records the verdict; an unreadable lock is a lost one. */
+  const verifyPrimacy = async (): Promise<boolean> => {
+    let held: boolean;
+    try {
+      held = await deps.hasPrimacy();
+    } catch {
+      held = false;
+    }
+    if (lastVerifiedPrimacy === true && !held) {
+      ownershipGeneration += 1;
+    }
+    lastVerifiedPrimacy = held;
+    return held;
+  };
   const refreshPrimacyState = (): void => {
-    void deps
-      .hasPrimacy()
-      .then((held) => {
-        if (lastKnownPrimacy && !held) {
-          ownershipGeneration += 1;
-        }
-        lastKnownPrimacy = held;
-      })
-      .catch(() => {
-        lastKnownPrimacy = false;
-      });
+    void verifyPrimacy();
   };
 
+  // Review gap GC-08 (2026-11-12) — the authoritative verdict decides. "A SQLite store is attached"
+  // used to satisfy primacy outright, and it stays true in a window that opened its store while
+  // primary and then lost primacy. The follow-up the same day removed it as a stand-in too: a
+  // session awaits `primeAuthority` before it registers its scope, so a verdict is in place before
+  // its first callback, and no verdict denies. The synchronous `isHeld()` is the advisory mirror,
+  // which FR-R3-024 keeps out of decisions.
   const authorityGate = new AcpAuthorityGate(
     {
       isWorkspaceTrusted: () => deps.isWorkspaceTrusted(),
       holdsPrimacy: () => {
         refreshPrimacyState();
-        return deps.isWorkspaceTrusted() && (lastKnownPrimacy || Boolean(getSqliteCutoverCoordinator(deps.store)?.getSqliteStore()));
+        return deps.isWorkspaceTrusted() && lastVerifiedPrimacy === true;
       },
       currentOwnershipGeneration: () => ownershipGeneration
     },
     {
+      // The gate swallows a writer failure, so the writer reports its own: once per operation.
       run(sql, ...params) {
         const conn = getSqliteCutoverCoordinator(deps.store)?.getSqliteStore()?.writerConnection;
-        conn?.run(sql, ...params);
+        if (conn === undefined) {
+          reportReceiptFailure('acp-authorization-receipt', new AcpReceiptStoreDetachedError());
+          return;
+        }
+        try {
+          conn.run(sql, ...params);
+        } catch (thrown) {
+          reportReceiptFailure('acp-authorization-receipt', thrown);
+        }
       }
     }
   );
@@ -89,7 +119,13 @@ export function buildHostAcpDispatchOptions(
     authorityGate,
     primaryWorkspaceRoot: deps.workspaceRoot,
     readConfiguredProfile: () => readUncachedAcpProfileSelector(),
-    currentOwnershipGeneration: () => ownershipGeneration,
+    // Read once per session, as it registers its scope: start a verify so a verdict is in place
+    // before the session's first callback.
+    currentOwnershipGeneration: () => {
+      refreshPrimacyState();
+      return ownershipGeneration;
+    },
+    primeAuthority: async () => (await verifyPrimacy()) && deps.isWorkspaceTrusted(),
     onAcpObservation: (event) => {
       getSqliteCutoverCoordinator(deps.store)?.recordAcpObservation(event);
     }

@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 135
+    vacuity-census-denominator: 136
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **135** |
+| Gates the detector calls **controlled** (the denominator) | **136** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1686,3 +1686,15 @@ the first is the one below. None left.
 | **+1** | `execution-lanes-git-verbs.test.ts` (134 → 135) | Joined (`FR-013`, task T041). New: it walks every source file under `src/services/execution-lanes/` and fails on a destructive Git verb in any string or template text; its controls are a planted source fed through the extractor and a floor on the `worktree` literals the walk finds |
 
 The rate stays **0.0%**: all 135 still read as uncontrolled once their controls are stripped.
+
+**Denominator movement 135 → 136 (2026-11-12, review gap GC-21).** One gate joined. Attribution is by census
+membership, measured rather than assumed: the detector's own two predicates (`isScanningGate` and
+`looksControlled`) were run over each of the two gate files GC-21 added. `services-subsystem-table-parity.test.ts`
+reads as both scanning and controlled; `settings-doc-key-presence.test.ts` reads one file and one manifest, scans
+no directory, and is not a scanning gate. None left.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `services-subsystem-table-parity.test.ts` (135 → 136) | Joined (GC-21). New: it walks the subdirectories of `src/services/` and fails on one with no row in the ARCHITECTURE.md "Services subsystems" table, or a row with no directory; its control is a floor of more than 20 names on each side, so an empty walk or an emptied table cannot pass |
+
+The rate stays **0.0%**: all 136 still read as uncontrolled once their controls are stripped.

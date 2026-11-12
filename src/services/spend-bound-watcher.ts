@@ -27,8 +27,9 @@
 // append is in flight, and the driver reads the persisted snapshot a few awaits later.
 // In the ordinary case the pause takes effect at the boundary that recorded the
 // crossing. If the store write lands after that read, it takes effect at the NEXT
-// boundary — one phase of overshoot, never more, and never a pause in the middle of a
-// phase. That is the same bound the design gives anyway: spend cannot be observed
+// boundary, so one more phase runs after the one that crossed — never more than that,
+// and never a pause in the middle of a phase. The operator docs state the same bound
+// (docs/operations/autonomy-bounds-disclosure.md). That is the same bound the design gives anyway: spend cannot be observed
 // mid-turn, because no backend reports it until the turn ends.
 import type { AuditEntry } from '../audit/audit-entry';
 import { effectiveRunnerKindForPhase } from '../config/pipeline-snapshot';

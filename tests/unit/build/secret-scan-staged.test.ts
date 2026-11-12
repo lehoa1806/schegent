@@ -13,7 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PLANTED } from '../../fixtures/secret-scan-corpus';
 import { commit, git, removeSandboxes, replaceEngineWithUnloadable, sandbox, scan } from './secret-scan-harness';
 
@@ -427,22 +427,40 @@ describe('SS4: the temporary directory is gone on every exit', () => {
     expect(found.out).toContain('Secret scan (staged): FINDING');
   });
 
+  // The engine is a stub that says when it is running and then never finishes, so the signal always
+  // lands while the directory exists. Polling for the directory under the real engine missed a scan
+  // that finished between two polls on a loaded machine (Linux leg, 2026-11-12).
+  const ENGINE_THAT_HANGS = [
+    "import { writeFileSync } from 'node:fs';",
+    'export async function createEngine() {',
+    '  return {',
+    '    executeOnFiles() {',
+    "      writeFileSync(process.env.SCHEGENT_TEST_ENGINE_READY, '');",
+    '      return new Promise(() => { setInterval(() => undefined, 60_000); });',
+    '    }',
+    '  };',
+    '}',
+    ''
+  ].join('\n');
+
   it('removes the directory when the scan receives SIGTERM while the engine runs', async () => {
     const root = baseRepository({ 'clean.txt': 'nothing here\n' });
     stage(root, 'clean.txt', 'edited\n');
+    replaceEngineWithUnloadable(root, ENGINE_THAT_HANGS);
     const tmp = privateTmp();
+    const ready = join(privateTmp(), 'engine-running');
     const child = spawn(process.execPath, [join(root, 'scripts', 'scan-secrets.mjs'), '--staged'], {
       cwd: root,
-      env: { ...process.env, TMPDIR: tmp },
+      env: { ...process.env, TMPDIR: tmp, SCHEGENT_TEST_ENGINE_READY: ready },
       stdio: 'ignore'
     });
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((done) => {
       child.on('close', (code, signal) => done({ code, signal }));
     });
-    const deadline = Date.now() + 20_000;
-    while (stagedDirectoriesIn(tmp).length === 0 && Date.now() < deadline) {
-      await new Promise((wait) => setTimeout(wait, 2));
-    }
+    await vi.waitFor(() => expect(existsSync(ready), 'the engine never started').toBe(true), {
+      interval: 10,
+      timeout: 20_000
+    });
     expect(stagedDirectoriesIn(tmp).length, 'the scan never created its directory').toBeGreaterThan(0);
     child.kill('SIGTERM');
     const { code, signal } = await exited;

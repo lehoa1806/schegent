@@ -23,6 +23,7 @@ import {
   TELEMETRY_EXPORT_BOUNDS,
   TELEMETRY_MAPPING_REVISION,
   TELEMETRY_SOURCE_SCHEMA,
+  type ResolvedDestination,
   type TelemetrySecretPort,
   type TransportRequest,
   type TransportResult
@@ -520,7 +521,8 @@ describe('FR-R6-F14-B Optional OpenTelemetry Host & Headless Integration (F14-AC
         cb?.();
         await new Promise<void>((r) => setImmediate(r));
       }
-      await new Promise<void>((r) => setTimeout(r, 20));
+      // idle() waits for the unawaited spool itself; a fixed 20 ms wait read 0 under load (Linux leg).
+      await host.idle();
 
       expect(host.spool.stats().spooledBatches).toBe(1);
       const spoolDir = path.join(storageRoot, 'telemetry-spool');
@@ -586,6 +588,170 @@ describe('FR-R6-F14-B Optional OpenTelemetry Host & Headless Integration (F14-AC
       expect(remainingFiles).toEqual([]);
 
       await reopened.shutdown();
+    } finally {
+      sqliteStore.close();
+    }
+  });
+});
+
+describe('a spool that outlives its database (review gap closure, 2026-11-12)', () => {
+  const DESTINATION: ResolvedDestination = {
+    profileId: 'spool-close-profile',
+    profileRevision: 1,
+    endpoint: 'http://127.0.0.1:4318/v1/metrics',
+    plaintextLoopback: true,
+    credential: null
+  };
+  const SPOOL_DIR_NAME = 'telemetry-spool';
+
+  async function spoolFiles(storageRoot: string): Promise<string[]> {
+    return fsp.readdir(path.join(storageRoot, SPOOL_DIR_NAME)).catch(() => []);
+  }
+
+  it('resolves as not spooled, and writes nothing, when the store is already closed', async () => {
+    const storageRoot = await makeTempStorageRoot('spool-closed');
+    const sqliteStore = new SqliteApplicationStore({
+      databasePath: path.join(storageRoot, 'state.sqlite'),
+      journalMode: 'wal'
+    });
+    const host = createTelemetryHostService({
+      sqliteStore,
+      storageRoot,
+      secrets: null,
+      isWorkspaceTrusted: () => true
+    });
+    sqliteStore.close();
+
+    await expect(
+      host.spool.spoolBatch({
+        batchId: 'closed-before',
+        destination: DESTINATION,
+        authorizationGeneration: 1,
+        body: new Uint8Array([1, 2, 3])
+      })
+    ).resolves.toEqual({ spooled: false, droppedBatchIds: ['closed-before'] });
+    expect(await spoolFiles(storageRoot)).toEqual([]);
+  });
+
+  it('resolves as not spooled, and removes its file, when the store closes while the file is written', async () => {
+    const storageRoot = await makeTempStorageRoot('spool-closing');
+    const sqliteStore = new SqliteApplicationStore({
+      databasePath: path.join(storageRoot, 'state.sqlite'),
+      journalMode: 'wal'
+    });
+    const host = createTelemetryHostService({
+      sqliteStore,
+      storageRoot,
+      secrets: null,
+      isWorkspaceTrusted: () => true
+    });
+
+    const pending = host.spool.spoolBatch({
+      batchId: 'closed-during',
+      destination: DESTINATION,
+      authorizationGeneration: 1,
+      body: new Uint8Array([1, 2, 3])
+    });
+    // The spool has read its ledger and is now awaiting the file open: the window the Linux leg hit.
+    sqliteStore.close();
+
+    await expect(pending).resolves.toEqual({ spooled: false, droppedBatchIds: ['closed-during'] });
+    expect(await spoolFiles(storageRoot)).toEqual([]);
+  });
+
+  it('reports a failed spool through the side-effect reporter, and idle() waits for it', async () => {
+    const storageRoot = await makeTempStorageRoot('spool-reported');
+    const sqliteStore = new SqliteApplicationStore({
+      databasePath: path.join(storageRoot, 'state.sqlite'),
+      journalMode: 'wal'
+    });
+    const realConnection = sqliteStore.writerConnection;
+    const leakedPath = '/Users/someone/private/state.sqlite';
+    const failingConnection = new Proxy(realConnection, {
+      get(target, key) {
+        if (key === 'run') {
+          return (sql: string, ...params: unknown[]): unknown => {
+            if (sql.includes('INSERT INTO telemetry_spool_batches')) {
+              throw new Error(`disk I/O error at ${leakedPath}`);
+            }
+            return (target.run as (s: string, ...p: unknown[]) => unknown).call(target, sql, ...params);
+          };
+        }
+        const value: unknown = Reflect.get(target, key, target);
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      }
+    });
+    const storeView = new Proxy(sqliteStore, {
+      get(target, key) {
+        if (key === 'writerConnection') return failingConnection;
+        const value: unknown = Reflect.get(target, key, target);
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      }
+    });
+    const reports: Array<{ readonly operation: string; readonly thrown: unknown }> = [];
+
+    try {
+      let now = 1_700_000_000_000;
+      const pendingTimers: Array<() => void> = [];
+      const host = createTelemetryHostService({
+        sqliteStore: storeView,
+        storageRoot,
+        secrets: null,
+        isWorkspaceTrusted: () => true,
+        clock: { now: () => now },
+        timers: {
+          set: (cb) => {
+            pendingTimers.push(cb);
+            return pendingTimers.length;
+          },
+          clear: () => undefined
+        },
+        random: () => 0.5,
+        transport: {
+          async send(): Promise<TransportResult> {
+            return { kind: 'failure', errorClass: 'network' };
+          }
+        },
+        reportSideEffectFailure: (operation, thrown) => {
+          reports.push({ operation, thrown });
+        }
+      });
+      host.configureFromUserSettings({
+        enabled: true,
+        endpoint: DESTINATION.endpoint,
+        protocol: 'otlp-http-json',
+        allowPlaintextLoopback: true,
+        credentialSecretKey: '',
+        credentialHeaderName: 'Authorization',
+        contentPolicy: 'metadata-only'
+      });
+      host.offerRecords([
+        {
+          sourceSchema: TELEMETRY_SOURCE_SCHEMA,
+          kind: 'operation',
+          sourceId: 'op-spool-report',
+          sourceRevision: 1,
+          backend: 'codex',
+          modelRequested: 'gpt-5',
+          modelReported: 'gpt-5',
+          durationMs: 120,
+          outcome: 'succeeded'
+        }
+      ]);
+      host.flush();
+      await new Promise<void>((r) => setImmediate(r));
+      now += TELEMETRY_EXPORT_BOUNDS.retryBudgetMs + 5_000;
+      while (pendingTimers.length > 0) {
+        pendingTimers.shift()?.();
+        await new Promise<void>((r) => setImmediate(r));
+      }
+
+      await host.idle();
+
+      expect(reports.map((r) => r.operation)).toEqual(['telemetry-spool']);
+      expect(host.spool.stats().spooledBatches).toBe(0);
+      expect(await spoolFiles(storageRoot)).toEqual([]);
+      await host.shutdown();
     } finally {
       sqliteStore.close();
     }

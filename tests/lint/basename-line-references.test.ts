@@ -423,6 +423,14 @@ export function directoryRelative(target: string): boolean {
 }
 
 const present = envelopePresent();
+/**
+ * Corpus floors, the vacuity controls below. Without the planning envelope (a standalone clone, or
+ * the Linux leg's `git archive`) only `repo/` is read: 225 references and 34 unbackticked citations
+ * on 2026-11-12, against more than 1,000 and 600 with it. The floors fit the tree that is there, so
+ * a clone still proves the scan read something instead of failing on the tree that is not.
+ */
+const MIN_REFERENCES = present ? 1000 : 100;
+const MIN_UNMARKED = present ? 600 : 20;
 
 function treeFiles(root: string, roots: readonly string[]): readonly string[] {
   const out: string[] = [];
@@ -670,7 +678,7 @@ describe('bare-basename file:line references resolve (FR-R3-145 follow-up)', () 
     expect(index.size, 'the file index is empty; nothing below is being resolved').toBeGreaterThan(
       500
     );
-    expect(all.length, 'no bare-basename reference was extracted at all').toBeGreaterThan(1000);
+    expect(all.length, 'no bare-basename reference was extracted at all').toBeGreaterThan(MIN_REFERENCES);
     expect(
       all.filter((ref) => !ref.record && !ref.qualified).length,
       'no present-tense bare-basename reference was found; the live corpus is not being read'
@@ -837,7 +845,7 @@ describe('bare-basename file:line references resolve (FR-R3-145 follow-up)', () 
     expect(
       unmarked.length,
       'no unbackticked citation was extracted at all; the pass is reading nothing'
-    ).toBeGreaterThan(600);
+    ).toBeGreaterThan(MIN_UNMARKED);
     expect(
       live.length,
       'no unbackticked citation was found in the live tier; comment extraction is not running'
@@ -968,12 +976,13 @@ describe('bare-basename file:line references resolve (FR-R3-145 follow-up)', () 
     ]);
     // Unprefixed, the same document exists under both roots, and that is ambiguous
     // rather than resolved. `docs/security/threat-model.md` is about 1,500 lines in the
-    // envelope and about 900 in the repo; a citation past the repo's length is not ambiguous
-    // at all. The probe cites line 1000, past the repo's file with room to spare: it first
-    // cited 900, which the repo's own file reached once FR-R4-F12 added lines to it.
+    // envelope and about 1,030 in the repo; a citation past the repo's length is not ambiguous
+    // at all. The probe cites line 1300, past the repo's file with room to spare: it first
+    // cited 900, which the repo's own file reached once FR-R4-F12 added lines to it, and then
+    // 1000, which it passed when review gap GC-20 added threats T29 to T31 (2026-11-12).
     expect(resolveQualified(ref('docs/security/threat-model.md', REPO_ROOT)).length).toBe(2);
     expect(verdictOf(ref('docs/security/threat-model.md', REPO_ROOT))).toBe('ambiguous');
-    expect(verdictOf({ ...ref('docs/security/threat-model.md', REPO_ROOT), cited: 1000 })).toBe(
+    expect(verdictOf({ ...ref('docs/security/threat-model.md', REPO_ROOT), cited: 1300 })).toBe(
       'resolved'
     );
     // `repo/x` is how the envelope names a repo file, and it resolves from either side.

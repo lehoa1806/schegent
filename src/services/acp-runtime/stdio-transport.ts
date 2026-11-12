@@ -22,6 +22,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 
 import type { AcpTransport } from '../../contracts/acp-runtime';
 import { openStdinLineChannel, type StdinLineChannel } from '../../runner/child-stdin';
+import { spawnCommandFor } from '../../lib/spawn-command';
 import {
   childIsReaped,
   processTreeIsGone,
@@ -75,7 +76,8 @@ export interface ManagedCliChild {
 }
 
 function spawnDetachedProcess(input: StdioLaunch): ChildProcess {
-  const child = spawn(input.command, [...input.args], {
+  // Review gap GC-24 -- on win32 a bare name resolves along the child's PATH only, never the cwd.
+  const child = spawn(spawnCommandFor(input.command, input.env), [...input.args], {
     cwd: input.cwd,
     env: input.env,
     shell: false,

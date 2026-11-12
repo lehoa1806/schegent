@@ -18,6 +18,7 @@ Schegent contributes the settings below to VS Code under the `schegent.*` namesp
 | `schegent.backend.probeTimeoutSeconds` | integer, `1`–`30` | `5` | application | Bounds availability and model-discovery probes. |
 | `schegent.codex.path` | string | `codex` | application | Codex executable path. |
 | `schegent.agy.path` | string | `agy` | application | Agy executable path. |
+| `schegent.backend.uncontainedBackends` | array of unique `claude`, `codex`, or `agy` | `[]` | application | Backends allowed to run with no OS-enforced bound on what they can reach, named one at a time. See [The capability posture setting](#the-capability-posture-setting). |
 | `schegent.models` | object keyed by `claude`, `codex`, and `agy` | `{ "claude": [], "codex": [], "agy": [] }` | resource | Adds operator-supplied model identifiers to the Model Catalog. |
 
 <!-- Source: package.json -->
@@ -29,7 +30,7 @@ Schegent contributes the settings below to VS Code under the `schegent.*` namesp
 
 <a id="schegentclienvironmentmode"></a>
 
-The policy that `schegent.cli.environmentMode` selects reaches every backend process Schegent starts: the Phase runner, the session compactor, the credit watchdog, the backend capability probe, and the CLI version probe. A hand-edited value that is not `inherit`, `minimal`, or `allowlist`, whether misspelled, mis-cased, empty or not a string, resolves to `allowlist` and never to `inherit`.
+The policy that `schegent.cli.environmentMode` selects reaches every backend process Schegent starts: the Phase runner, the session compactor, the credit watchdog, the backend capability probe, and the CLI version probe. Isolated-lane verification checks follow it too, read at each check, except that `minimal` keeps the bootstrap names for a check so a build tool can be found on `PATH` ([execution lanes](../operations/execution-lanes.md)). A hand-edited value that is not `inherit`, `minimal`, or `allowlist`, whether misspelled, mis-cased, empty or not a string, resolves to `allowlist` and never to `inherit`.
 
 The default backend and process-environment policy are resolved during workspace-bound activation. Reload the VS Code Extension Host after changing `schegent.backend.runner`, `schegent.cli.environmentMode`, `schegent.cli.environmentAllowlist`, or `schegent.cli.inheritEnvironment`. In contrast, the three CLI executable-path settings are read for each invocation and can take effect without a reload.
 
@@ -49,13 +50,24 @@ The backend choice is a privilege choice, not a cosmetic preference. A Phase's `
 | `schegent.loop.maxUnchangedComparisons` | integer, `0`–`49` | `0` | resource | Fails a retry loop below the iteration cap after this many consecutive comparisons in which the figures its retry condition reads did not change. `0` turns it off; any other value outside `0`–`49` is read as `0`. Applies only where the phase's cap outcome is to fail. See `docs/operations/retry-contract.md`. |
 | `schegent.watchdog.pollIntervalMinutes` | number, minimum `1` | `30` | resource | Credit-watchdog polling interval in minutes. |
 | `schegent.invocation.idleTimeoutSeconds` | number, minimum `30` | `5400` | resource | Idle window for one Phase invocation: terminated after this long with no output. Renamed from `schegent.invocation.timeoutSeconds`, which is still read as a fallback while unset. |
+| `schegent.invocation.timeoutSeconds` | number, minimum `30` | `5400` | resource | Deprecated: renamed to `schegent.invocation.idleTimeoutSeconds`, because it was always an idle window, not a total-duration bound. An explicit value is still honored while the new key is unset. |
 | `schegent.invocation.maxDurationSeconds` | number, minimum `60` | `21600` | resource | Absolute wall-clock bound on one Phase invocation, armed at spawn and never reset — bounds a chatty child the idle window cannot. Default is 4x the idle default and ~1.7x the longest legitimately long phase observed (3.6 h). At **80%** of whatever this is set to, the monitor appends one `monitor-deadline-approaching` audit record — elapsed, the bound, the invocation — so the termination is not the first evidence the bound exists. The record is informational: it changes no status and stops nothing. |
-| `schegent.spend.maxUsdPerRun` | number (minimum `0.01`) or `null` | `null` | resource | Per-run spend bound in US dollars. `null` means **no bound**: the mechanism ships unset so no existing run changes behaviour on upgrade. Crossing it **pauses** the run through the ordinary operator-resumable pause (cause `spend-bound-reached`) — never a failure, never a cancellation. Applies to backends that report a cost (`claude`, in USD). The bound is a pause at a phase boundary and never a ceiling inside an invocation; a backend that reports no cost under this bound is reported once as not measurable and is never read as within budget, and no price is inferred or back-filled. After a restart the total is rebuilt from the audit log and its archives within an 8 MiB read, and a total that could not be rebuilt in full is shown as a lower bound, not as within budget. See `docs/operations/autonomy-bounds-disclosure.md`. A Phase may override it with `spendBoundUsd`. |
+| `schegent.spend.maxUsdPerRun` | number (minimum `0.01`) or `null` | `null` | resource | Per-run spend bound in US dollars. `null` means **no bound**: the mechanism ships unset so no existing run changes behaviour on upgrade. Crossing it **pauses** the run through the ordinary operator-resumable pause (cause `spend-bound-reached`) — never a failure, never a cancellation. Applies to backends that report a cost (`claude`, in USD). The bound is a pause at a phase boundary and never a ceiling inside an invocation: the phase that crosses it always runs to completion, and one more phase can run when the pause lands after the Run reads its state, so a paused Run's total ends above the bound; a backend that reports no cost under this bound is reported once as not measurable and is never read as within budget, and no price is inferred or back-filled. After a restart the total is rebuilt from the audit log and its archives within an 8 MiB read, and a total that could not be rebuilt in full is shown as a lower bound, not as within budget. See `docs/operations/autonomy-bounds-disclosure.md`. A Phase may override it with `spendBoundUsd`. |
 | `schegent.spend.maxTokensPerRun` | number (minimum `1`) or `null` | `null` | resource | Per-run spend bound in tokens, for backends that report tokens and no cost (`codex`, `agy`). `null` means **no bound**. Behaves identically to the dollar bound, including the pause, and is reported once as not measurable when the phase's backend reports no tokens. A Phase may override it with `spendBoundTokens`. |
 | `schegent.defaultWorkflowId` | empty string or `^[a-z][a-z0-9-]{0,63}$` | empty string | resource | The default Workflow. Only a Workflow id counts: a value that names no effective Workflow gives no default. The **Add work** composer preselects it when it is among the launchable Workflows and nothing is selected; preselecting opens and submits nothing. The Settings tab's **Default Workflow** select lists Workflows only and saves here. Empty means no default; Schegent ships no definitions. |
 | `schegent.defaultPipelineId` | empty string or `^[a-z][a-z0-9-]{0,63}$` | empty string | resource | Deprecated: renamed to `schegent.defaultWorkflowId`. Read only while the new key is unset at every scope, and only when its value names an effective Workflow; a stored Pipeline id is ignored. Schegent never writes it. See [Current limitations](../explanation/core-concepts.md#current-limitations). |
 | `schegent.retry.maxAttempts` | integer, `1`–`5` | `5` | resource | Maximum delayed-retry attempts before the Run and Queue pause. |
 | `schegent.retry.forceContinueOnCap` | boolean | `false` | resource | Workspace-wide **default** for what a Phase does when its `retryCondition` remains truthy at its final allowed iteration: `true` means advance and record a forced-continue runtime event, `false` means fail. A Phase's own `onRetryCap` overrides it — see below, including the third outcome this boolean cannot select. Failed and timed-out outcomes remain terminal. |
+| `schegent.queue.haltOnTaskFailure` | `halt-on-failure` or `continue` | `halt-on-failure` | window | Workspace default for what a Queue does after one of its tasks ends `failed`. `halt-on-failure` starts no further task until the operator retries or removes the failed one; `continue` keeps starting the remaining tasks. A Queue that states its own policy overrides it. |
+
+A workspace or folder value of `schegent.loop.maxIterations`, `schegent.loop.maxUnchangedComparisons`,
+`schegent.spend.maxUsdPerRun`, `schegent.spend.maxTokensPerRun`, `schegent.retry.maxAttempts`,
+`schegent.retry.forceContinueOnCap`, `schegent.invocation.idleTimeoutSeconds` or
+`schegent.invocation.maxDurationSeconds` may only tighten the user's value (or the default): a lower
+cap, a shorter timeout, a cap where none was set, or `false`. A value that would raise, clear or switch off the limit is
+ignored, and activation logs a warning. See [Autonomy bounds](../operations/autonomy-bounds-disclosure.md#where-each-limit-comes-from).
+
+<!-- Source: src/config/tighten-only-limits.ts -->
 
 ### The retry-cap outcome is three-valued, and per Phase
 
@@ -299,6 +311,47 @@ See [Agent capability posture](../architecture/agent-capability-posture.md),
 containment is actually available per backend and platform, and
 [Running Schegent on a repository you do not trust](../operations/untrusted-repositories.md) for when
 naming a backend here is and is not acceptable.
+
+## ACP agent profile
+
+| Setting | Type and accepted values | Default | Scope | Purpose |
+|---|---|---|---|---|
+| `schegent.acp.profile` | `auto`, `agy-acp-native`, `claude-acp-bridge`, or `codex-acp-bridge` | `auto` | application | Selects the ACP agent profile. `auto` maps the selected backend (`claude`, `codex`, `agy`) to `claude-acp-bridge`, `codex-acp-bridge` or `agy-acp-native`. Naming a profile that does not match the Run's backend refuses with `acp-profile-mismatch`. The setting does not turn ACP dispatch on or off; dispatch is always on. Application scope keeps repository files from installing or replacing a profile. |
+
+<!-- Source: package.json -->
+<!-- Source: src/activation/acp-execution-wiring.ts -->
+<!-- Source: src/runner/backend-runner-factory.ts -->
+
+[The ACP runtime guide](../operations/acp-runtime.md) has the profiles and refusals.
+
+## Isolated execution lanes
+
+| Setting | Type and accepted values | Default | Scope | Purpose |
+|---|---|---|---|---|
+| `schegent.lanes.enabled` | boolean | `false` | resource | Opt-in per-Run isolated Git worktree execution. When `true`, each admitted Run gets its own working tree outside the workspace and is refused with a named reason, not run in the shared checkout, when the repository or capacity prevents it. A worktree is a working-tree boundary, not a permission boundary: hooks, configuration, credentials and the object store stay shared. |
+| `schegent.lanes.liveCap` | integer, `1`-`20` | `1` | resource | Most live (`preparing`, `active` or `paused`) lanes allowed at once. |
+| `schegent.lanes.provisioningDeadlineSeconds` | integer, `1`-`600` | `120` | resource | Wall-clock deadline in seconds for provisioning one lane. |
+
+<!-- Source: package.json -->
+<!-- Source: src/config/settings-schema.ts -->
+
+## Optional telemetry export
+
+Export is off unless `schegent.telemetry.export.enabled` is `true` and the destination is valid. All of these keys are application-scoped, so workspace and folder settings are never read for them. [The export guide](../operations/telemetry-export.md) has the refusal reasons and what is sent.
+
+| Setting | Type and accepted values | Default | Scope | Purpose |
+|---|---|---|---|---|
+| `schegent.telemetry.export.enabled` | boolean | `false` | application | Opt-in for exporting metadata-only usage observations as OTLP metrics over HTTP. Opens no listener and reads no environment variable. |
+| `schegent.telemetry.export.endpoint` | string | empty | application | Destination URL, for example `https://collector.example.com/v1/metrics`. Empty means unset. The URL is used as written; no path is appended. |
+| `schegent.telemetry.export.protocol` | `otlp-http-json`, `otlp-http-protobuf`, or `otlp-grpc` | `otlp-http-json` | application | Declared protocol. Only `otlp-http-json` is supported; the other two refuse export and open no fallback channel. |
+| `schegent.telemetry.export.allowPlaintextLoopback` | boolean | `false` | application | Allows plaintext `http://` only to a loopback destination (`localhost`, `127.0.0.0/8`, `[::1]`) whose resolved addresses are also loopback at connect time. |
+| `schegent.telemetry.export.credentialSecretKey` | string | empty | application | Identifier of a VS Code `SecretStorage` entry sent as the credential header. Never put a token in a setting. Empty means unauthenticated export. |
+| `schegent.telemetry.export.credentialHeaderName` | string | `Authorization` | application | Header that carries the credential when `credentialSecretKey` is set. It must be a valid header token and cannot be a header the transport owns. |
+| `schegent.telemetry.export.contentPolicy` | `metadata-only` or `content` | `metadata-only` | application | Content selector. `metadata-only` sends no prompts, responses, tool arguments, transcripts, credentials or paths. `content` is refused with `content-export-unsupported`. Enabling export never changes local transcript retention. |
+
+<!-- Source: package.json -->
+<!-- Source: src/contracts/telemetry-export.ts -->
+<!-- Source: src/services/telemetry-host/telemetry-host-service.ts -->
 
 ## Run request budgets (not configurable)
 

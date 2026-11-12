@@ -32,10 +32,32 @@ providers.”
 
 ## Egress and the raw transcript's lifetime
 
-Claude Code sends repository content and prompts to the model vendor whatever Schegent's local capture settings are: the transport mode, the raw transcript mode and the privacy profile decide what Schegent keeps on your machine, never what the CLI sends. Schegent making no network call of its own does not keep that content on the machine, because it leaves through the CLI's own requests. On the local side, a failed, canceled or paused Run keeps its raw transcript under `errors-only` until the session retention age passes or you delete the Run's evidence, and a resumed Run that then completes cleanly has it removed.
+Claude Code sends repository content and prompts to the model vendor whatever Schegent's local capture settings are: the transport mode, the raw transcript mode and the privacy profile decide what Schegent keeps on your machine, never what the CLI sends. Schegent making no network call of its own does not keep that content on the machine, because it leaves through the CLI's own requests. The one exception to "no network call of its own" is the optional OTLP telemetry exporter described below. On the local side, a failed, canceled or paused Run keeps its raw transcript under `errors-only` until the session retention age passes or you delete the Run's evidence, and a resumed Run that then completes cleanly has it removed.
 
 <!-- Source: src/contracts/privacy-profiles.ts -->
 <!-- Source: src/audit/raw-transcript-writer.ts -->
+
+## Optional telemetry export, ACP and the SQLite store
+
+Three parts of the host touch this boundary.
+
+- **OTLP telemetry export** is the only network client in host source. It is off by default and
+  starts only when the user-scoped setting `schegent.telemetry.export.enabled` is `true` and a valid
+  destination is set. It sends usage and duration metadata (token and cost measures, durations,
+  outcomes, backend and model names) over OTLP/HTTP to the one collector you name, and never prompts,
+  responses, file content or paths. With it off, Schegent opens no connection of its own. See
+  [the export guide](../operations/telemetry-export.md).
+- **The ACP bridge** carries a Run to the backend over a local stdio pipe. It adds no host network
+  client. The bridge forwards to the same vendor the CLI would have contacted, so the egress above is
+  unchanged. See [the ACP runtime guide](../operations/acp-runtime.md).
+- **The SQLite store** holds structured state on your machine at
+  `<storage>/sqlite/<scope>/schegent-state.db`, owner-only and unencrypted, and sends nothing
+  anywhere. See [the store guide](../operations/sqlite-application-store.md).
+
+<!-- Source: src/services/telemetry-export/otlp-http-transport.ts -->
+<!-- Source: src/services/telemetry-host/telemetry-host-service.ts -->
+<!-- Source: src/runner/acp-backed-runner.ts -->
+<!-- Source: src/services/sqlite-store/storage-location-resolver.ts -->
 
 ## What remains local
 

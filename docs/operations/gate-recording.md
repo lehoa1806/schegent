@@ -320,7 +320,7 @@ observed. The recorder takes the new fields once, before it spawns the gate:
 | Field | What it says |
 |---|---|
 | `nodeDeclared`, `nodeMatchesDeclared` | The Node `.nvmrc` declares, trimmed (`null` when the file is absent, empty or over 64 bytes), and whether the Node that ran is exactly it. `nodeVersion` stays beside them |
-| `envelope.present` | Whether the planning envelope above this checkout was present. A standalone clone records `false`, and the gates that read the envelope skipped; that record is not an envelope run |
+| `envelope.present` | Whether the planning envelope above this checkout was present. A standalone clone records `false`; that record is not an envelope run. The gates that read the envelope skip or narrow without it, so a green record with `false` says nothing about the envelope's documents (see the [qualification matrix](../release/qualification-matrix.md#filling-a-cell)) |
 | `trees[].lockfileSha256` | The SHA-256 of the lockfile of `root` and of `webview-ui`, so a record names the dependency declaration it was made against |
 | `trees[].install` | `matches`, `differs` (with a count), `absent` or `unreadable`: whether npm's hidden lockfile for that tree agrees with its lockfile, ignoring the platform packages the lockfile marks optional |
 

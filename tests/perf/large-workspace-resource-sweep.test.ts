@@ -48,6 +48,12 @@ const STREAMS_PER_RUN = 2;
 const FIXTURE_DIRS = 40;
 const FILES_PER_DIR = 50;
 const FILE_BYTES = 3 * 1024;
+/**
+ * The fixture hook writes 2,000 files and commits them, which takes a few seconds on a quiet machine
+ * and ran past vitest's 10 s hook default with the load average between 10 and 42 (gate, 2026-11-12).
+ * The budget bounds a hung git, not the measurement; nothing here is timed against it.
+ */
+const FIXTURE_HOOK_TIMEOUT_MS = 60_000;
 
 /**
  * How much of each stream buffer a level fills.
@@ -100,7 +106,7 @@ beforeEach(async () => {
   }
   await git('git', ['add', '-A'], { cwd: workspaceRoot, maxBuffer: 64 * 1024 * 1024 });
   await git('git', ['commit', '-q', '-m', 'fixture'], { cwd: workspaceRoot });
-});
+}, FIXTURE_HOOK_TIMEOUT_MS);
 
 afterEach(async () => {
   await fs.rm(workspaceRoot, { recursive: true, force: true });

@@ -32,9 +32,14 @@ import { openWithinRoot } from '../../../src/lib/safe-open';
  * See `docs/operations/platform-observation-record.md`.
  */
 const IS_WINDOWS = process.platform === 'win32';
+// The skip reason is in the title only where the suite is skipped, as in the Linux fixture: on
+// Windows it used to read "skipped: this run is on win32, not win32" while it ran.
+const SUITE_TITLE = IS_WINDOWS
+  ? 'reparse-point leaf refusal on Windows'
+  : `reparse-point leaf refusal on Windows (skipped: this run is on ${process.platform}, not win32)`;
 
 describe.skipIf(!IS_WINDOWS)(
-  `reparse-point leaf refusal on Windows (skipped: this run is on ${process.platform}, not win32)`,
+  SUITE_TITLE,
   () => {
     it('refuses a leaf that is a junction', async () => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), 'win-reparse-'));

@@ -67,3 +67,21 @@ The gate watches the **date**. It cannot see a contributor report or a second ma
 those are facts about the world, and no gate in a repository can observe them. Saying so is the point:
 a gate that implied it watched all four conditions would be the overclaim this file's fourth reason
 objects to.
+
+## Review 2026-11-12 (review gap GC-18)
+
+Reopen condition 4 is now **met in part**, and the decline **stands**.
+
+- **What changed.** `npm run verify:linux` (`scripts/linux-leg.sh`) builds
+  `scripts/linux-leg/Dockerfile` and runs the install, the build, the SBOM, both typechecks, lint,
+  `contracts:check` and `test:host` on Linux against a commit piped in with `git archive`. It is the
+  operator's local replacement for the hosted CI that `FR-R3-099` retired, so the project now owns a
+  container image that runs the suite.
+- **Why the decline stands.** That image is a one-shot verification container, not a development
+  environment: it has no editor, no extension host, no browser and no shell a contributor works in,
+  so reason 2 holds unchanged. Linux is still in the `unverified` tier, because the leg covers the
+  unit tier only
+  ([platform observation record](../operations/platform-observation-record.md#local-linux-leg-2026-11-12)),
+  so reason 4 holds unchanged. What condition 4 predicted, that exposing the image to contributors
+  would cost almost nothing, is true of the toolchain half only.
+- **Review date unchanged** at 2027-02-28.

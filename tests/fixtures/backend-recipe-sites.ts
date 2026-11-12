@@ -74,8 +74,8 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
   {
     path: 'src/config/cli-path-accessor.ts',
     role: 'Path resolution',
-    how: 'equality',
-    note: 'an `if` chain over agy and codex whose fallback is Claude, so a fourth backend would resolve Claude\'s path'
+    how: 'switch',
+    note: 'an exhaustive switch with a `never` default (review gap GC-06), so a fourth backend fails to compile here until it has a path setting'
   },
 
   // ---- Permission posture and policy

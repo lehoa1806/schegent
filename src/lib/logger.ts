@@ -299,6 +299,19 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\bglpat-[A-Za-z0-9_-]{20,}\b/g,
   // Hugging Face access tokens
   /\bhf_[A-Za-z0-9]{30,}\b/g,
+  // Review gap GC-13 (2026-11-12) — formats the set had no pattern for.
+  // SendGrid API keys: `SG.`, 22 and 43 characters of the base64url set.
+  /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g,
+  // Twilio API key SIDs. An account SID (`AC` and 32 hex) is an identifier and is kept.
+  /\bSK[0-9a-f]{32}\b/g,
+  // PyPI upload tokens: a macaroon whose base64 always begins `AgE`.
+  /\bpypi-AgE[A-Za-z0-9_-]{50,}/g,
+  // HashiCorp Vault service, batch and recovery tokens (the prefixes since Vault 1.10).
+  /\bhv[sbr]\.[A-Za-z0-9_-]{24,}/g,
+  // Azure Storage SAS: the `sig` value only, so the account, path and expiry stay readable.
+  /(?<=[?&]sig=)[A-Za-z0-9%+/=]{20,}/g,
+  // Azure Storage account key in a connection string; the key name stays readable.
+  /(?<=\bAccountKey=)[A-Za-z0-9+/]{40,}={0,2}/g,
   // AWS access key IDs (long-lived IAM user credentials)
   /\bAKIA[0-9A-Z]{16}\b/g,
   // AWS temporary session access key IDs (STS / assumed-role). Same

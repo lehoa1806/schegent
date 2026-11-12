@@ -6,6 +6,8 @@ import type { SanitizedLogger } from '../lib/logger';
 import { readBoundedRange } from '../lib/bounded-read';
 import { NarrowingReporter } from '../lib/evidence-narrowing';
 import { resolveDiffBase } from '../lib/git-diff-base';
+import { withHostGitConfig } from '../lib/host-git-config';
+import { spawnCommandFor } from '../lib/spawn-command';
 import { resolveContainedLink } from '../lib/path-containment';
 import {
   RECOVERY_ENVELOPE_SUFFIX,
@@ -474,7 +476,7 @@ export class RunCheckpointService {
   private async capture(effectiveRoot: string = this.workspaceRoot): Promise<CheckpointCapture> {
     const base = await resolveDiffBase(effectiveRoot);
     const [diff, status] = await Promise.all([
-      this.runGit(['diff', '--binary', '--no-ext-diff', base.ref], DIFF_MAX_BUFFER_BYTES, 'diff-size-limit', effectiveRoot),
+      this.runGit(['diff', '--binary', '--no-ext-diff', '--no-textconv', base.ref], DIFF_MAX_BUFFER_BYTES, 'diff-size-limit', effectiveRoot),
       // `--untracked-files=normal` is explicit so a user's `status.showUntrackedFiles=no` cannot
       // turn "an untracked file exists" into a `complete` record.
       this.runGit(
@@ -504,7 +506,7 @@ export class RunCheckpointService {
     cwd: string = this.workspaceRoot
   ): Promise<string> {
     try {
-      const { stdout } = await runExecFile('git', [...args], { cwd, maxBuffer });
+      const { stdout } = await runExecFile(spawnCommandFor('git'), withHostGitConfig(args), { cwd, maxBuffer });
       return stdout;
     } catch (error) {
       if ((error as { code?: unknown }).code === MAX_BUFFER_EXCEEDED) {

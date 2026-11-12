@@ -9,8 +9,8 @@
   //
   // FR-R4-F08 (K1 to K3) — the tabs follow the roving contract the Builder, System and
   // Settings tab bars use: one tab is in the Tab order, the arrow keys, Home and End move
-  // between the three, and every tab names the one panel it controls. The handler indexes
-  // this list, so the streaming badge after the tabs is never a stop.
+  // between the three, and every tab names the one panel it controls. The handler sits on each
+  // tab, as in those bars, and indexes this list, so the streaming badge is never a stop.
 
   interface Props {
     activeTab: RunTab;
@@ -36,7 +36,7 @@
   }
 </script>
 
-<div class="tab-bar" role="tablist" onkeydown={onTabKeydown}>
+<div class="tab-bar" role="tablist" aria-label="Run detail views">
   <button
     type="button"
     role="tab"
@@ -47,6 +47,7 @@
     aria-controls="run-detail-panel"
     tabindex={activeTab === 'log' ? 0 : -1}
     data-testid="run-tab-log"
+    onkeydown={onTabKeydown}
     onclick={() => activeTab = 'log'}
   >&Sigma; Phase log</button>
   <button
@@ -59,6 +60,7 @@
     aria-controls="run-detail-panel"
     tabindex={activeTab === 'outputs' ? 0 : -1}
     data-testid="run-tab-outputs"
+    onkeydown={onTabKeydown}
     onclick={() => activeTab = 'outputs'}
   >&#128196; Run outputs</button>
   <button
@@ -71,6 +73,7 @@
     aria-controls="run-detail-panel"
     tabindex={activeTab === 'context' ? 0 : -1}
     data-testid="run-tab-context"
+    onkeydown={onTabKeydown}
     onclick={() => activeTab = 'context'}
   >&#128196; Context</button>
 

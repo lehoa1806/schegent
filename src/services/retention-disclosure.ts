@@ -361,7 +361,7 @@ export function retentionDisclosure(): readonly RetentionInventoryRow[] {
       location: '.schegent/.gitignore',
       contentClass: 'state',
       redacted: true,
-      bounds: 'one small file that keeps this directory out of commits; created beside the first evidence written, never overwritten when an operator has changed it',
+      bounds: 'one small file that keeps this directory out of commits; created beside the first evidence written, and replaced when an existing one no longer ignores every path',
       sweptBy: ['none'],
       liveProtection: 'not applicable',
       onDelete: 'kept',

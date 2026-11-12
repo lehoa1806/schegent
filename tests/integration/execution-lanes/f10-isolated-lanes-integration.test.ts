@@ -617,7 +617,10 @@ rl.on('line', (line) => {
         holdsPrimacy: () => true,
         currentOwnershipGeneration: () => 1
       }),
-      primaryWorkspaceRoot: h.fixture.root
+      primaryWorkspaceRoot: h.fixture.root,
+      // Review gap GC-18 — only darwin/arm64 qualifies an ACP profile (profiles.ts), so on any
+      // other host the turn was refused before spawn and this case failed there.
+      platform: { os: 'darwin', arch: 'arm64' }
     });
 
     // Turn 1 in rootA -> mints `sess-root-1` bound to `rootA`.

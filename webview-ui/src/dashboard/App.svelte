@@ -1,6 +1,7 @@
 <script lang="ts">
   import { setContext, tick } from 'svelte';
 
+  import IncompatibleSnapshotNotice from '../components/IncompatibleSnapshotNotice.svelte';
   import { snapshotStore } from '../lib/snapshot-store.svelte';
 
   import { DASHBOARD_NAVIGATION, type DashboardNavigation } from './navigation-context';
@@ -65,6 +66,7 @@
 </script>
 
 <div class="dashboard-root" data-testid="dashboard-app-root">
+  <IncompatibleSnapshotNotice />
   {#if ready && snapshot}
     <a class="skip-link" href="#dashboard-content">Skip to dashboard content</a>
     <header class="dashboard-topbar">

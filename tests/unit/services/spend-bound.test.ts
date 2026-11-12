@@ -153,6 +153,19 @@ describe('FR-119 — the authored per-phase override crosses the seam', () => {
     });
     expect(effective).toEqual({ limitUsd: 5, limitTokens: 42 });
   });
+
+  // Review gap GC-10 follow-up (2026-11-12) — a Phase definition is repository content, so an
+  // authored bound may tighten the operator's bound and never raise it.
+  it('lets an authored bound tighten the operator bound and never loosen it', () => {
+    expect(effectiveSpendBound({ limitUsd: 2, limitTokens: 1_000 }, { spendBoundUsd: 3.5, spendBoundTokens: 500 })).toEqual({
+      limitUsd: 2,
+      limitTokens: 500
+    });
+    expect(effectiveSpendBound({ limitUsd: null, limitTokens: null }, { spendBoundUsd: 3.5 })).toEqual({
+      limitUsd: 3.5,
+      limitTokens: null
+    });
+  });
 });
 
 describe('FR-120 / FR-120a / FR-121 — crossing the bound pauses the run', () => {

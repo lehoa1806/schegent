@@ -1,6 +1,7 @@
 # Platform observation record
 
-**Cycle platform: macOS (darwin, arm64). Node ^22 || ^24. 2026-08-25.**
+**Cycle platform: macOS (darwin, arm64). Node ^22 || ^24. 2026-08-25.** Since 2026-11-12 the same
+machine also runs a Linux container (aarch64, OrbStack); a row observed there names it.
 
 Some of this product's safety properties are platform-specific, and some of the
 fixtures that would establish them cannot run on the machine that wrote them. This
@@ -15,7 +16,7 @@ records reads, six months later, exactly like a passing one.
 
 | Class | What it means |
 |---|---|
-| **Observed here** | The fixture ran on this cycle's platform and its result is real evidence. |
+| **Observed here** | The fixture ran on this machine, on the cycle's platform or on the platform the row names, and its result is real evidence. |
 | **Unrun here** | The fixture exists and is written to run unedited on the platform it targets. It has not run on that platform. The acceptance half is **unmet**, not met. |
 | **Asserted by unit table only** | The condition cannot be produced on any filesystem available to this project, so the classification is exercised by handing the observation in directly. The code path is covered; the real-world behaviour is not measured. This is a **weaker claim** and is recorded as one. |
 
@@ -28,11 +29,12 @@ parenthetical says *by injection* is **Asserted by unit table only** — that ph
 | Acceptance half | Owner | Fixture | Class |
 |---|---|---|---|
 | A descendant keeps writing after the direct child is SIGKILLed (the defect, demonstrated) | `FR-R3-054` §2 | `tests/unit/runner/process-tree.test.ts` | **Observed here** |
-| Cancellation reaches the whole process group; the sentinel stops advancing | `FR-R3-054` §3 | `tests/unit/runner/process-tree.test.ts` | **Observed here** (POSIX) |
+| Cancellation reaches the whole process group; the sentinel stops advancing | `FR-R3-054` §3 | `tests/unit/runner/process-tree.test.ts` | **Observed here** (POSIX: on macOS, and on Linux in the local leg at `18f9beea`, 4 of 4) |
 | The same, on Windows, through `taskkill /T` | `FR-R3-054` §5 | `tests/unit/platform/windows-sentinel.test.ts` | **Unrun here** |
 | A symlink at any component of a safe-open walk is refused | `FR-R3-053` | `tests/unit/lib/safe-open*.test.ts` | **Observed here** |
 | A reparse point at the Windows leaf is refused | `FR-R3-083` §3 | `tests/unit/platform/windows-reparse.test.ts` | **Unrun here** |
 | The reparse classification itself (platform-independent) | `FR-R3-083` §3 | `tests/unit/lib/safe-open-reparse.test.ts` | **Observed here** |
+| Two names differing only by case stay two output identities on Linux (row 3 below) | `FR-R3-115`, review gap GC-18 | `tests/unit/platform/linux-case-sensitivity.test.ts` | **Observed here**, in the local Linux leg on 2026-11-12. On macOS it skips with its platform named. |
 | A mount that refuses exclusive creation is reported `unsupported` | `FR-R3-083` §4 | `tests/unit/state/mount-capability.test.ts` | **Asserted by unit table only** |
 | A mount that permits a **second** exclusive create is reported `unsupported` | `FR-R3-083` §4 | `tests/unit/state/mount-capability.test.ts` | **Asserted by unit table only** |
 | A read-only workspace is classified apart from a broken mount | `FR-R3-083` §4 | `tests/unit/state/mount-capability.test.ts` | **Asserted by unit table only** |
@@ -53,15 +55,19 @@ parenthetical says *by injection* is **Asserted by unit table only** — that ph
 to match. No measurement was obtained, and none is expected under current
 constraints.**
 
+**Amended 2026-11-12: Route B was taken for row 3.** The unit tier ran in a Linux container on this
+machine, row 3 is now observed, and rows 1 and 2 are unchanged. See
+[Local Linux leg 2026-11-12](#local-linux-leg-2026-11-12).
+
 `FR-R3-115` offered four routes and required one to be chosen on the record. Only
 Route A is **unavailable**, which is a different statement from unattractive, and
-its reason is observed rather than assumed. Route B is available, Route C is not a
-verification decision, and Route D is taken in part:
+its reason is observed rather than assumed. Route B was available and was taken on 2026-11-12 for the
+unit tier, Route C is not a verification decision, and Route D is taken in part:
 
 | Route | Status | Why |
 |---|---|---|
 | **A** — a Windows and a Linux contributor each run `npm run test:host` | Unavailable | This is a single-operator project. `.github/CODEOWNERS` names one person, and `FR-R3-115` row 5 makes that fact the premise of a different finding in the same item. There is no contributor to ask. |
-| **B** — a local container or VM on the operator's machine | **Available, not taken this cycle** | **Observed 2026-10-22**: OrbStack 2.2.3 is installed on this machine (Homebrew cask, 2026-09-20), and `orb`, `orbctl` and `docker` all resolve on `PATH` to OrbStack's own bundle. Route B is the cheapest route to closing row 3. It is not taken here because taking it means provisioning a Linux machine, installing a Node toolchain and the project's dependencies there over the network, and running the host suite, which the unattended cycle that wrote this record is not authorised to do. That is a fact about this cycle's authority, not a judgement that the route is not worth taking, and the route stays open to the operator. **Superseded:** on 2026-08-27 `docker`, `podman`, `colima`, `lima` and `orbstack` were all absent from this machine, and no container daemon was running. |
+| **B** — a local container or VM on the operator's machine | **Taken 2026-11-12, for the unit tier** | The operator asked for verification to run locally instead of on hosted CI, and `npm run verify:linux` now runs the unit tier in a Linux container under OrbStack 2.2.5. See [Local Linux leg 2026-11-12](#local-linux-leg-2026-11-12). It closes row 3 and nothing else. **Superseded:** on 2026-10-22 OrbStack 2.2.3 was installed and the route was available but not taken, because the unattended cycle that wrote this record was not authorised to provision a Linux machine; on 2026-08-27 `docker`, `podman`, `colima`, `lima` and `orbstack` were all absent from this machine, and no container daemon was running. |
 | **C** — a public-repository free tier | Not a verification decision | It is a repository-visibility decision, as the item says itself. Recorded, not taken here. |
 | **D** — decline explicitly and permanently | **Taken, in part** | See below. |
 
@@ -100,12 +106,11 @@ saying-so.
 **This decline is reviewed on or before 2026-11-27**, and
 `repo/tests/lint/dated-review-records.test.ts` fails on that day until someone re-reads it.
 `FR-R3-129` added both, for the reason the item states: *a dated decline is only honest while someone
-re-reads it.* Without a date and a check, the three conditions below expire quietly and a temporary
+re-reads it.* Without a date and a check, the conditions below expire quietly and a temporary
 decline becomes a permanent posture by nobody deciding.
 
 **What the check can and cannot see.** It reads the date above. It cannot notice that a Windows
-machine appeared, that the operator ran the suite in the installed container runtime, or that a
-contributor ran it — those
+machine appeared or that a contributor ran the suite on one — those
 are facts about the world, and no gate in a repository sees them. Those stay the operator's to watch,
 and they are the reason the date is a *ceiling* rather than a schedule: any one of them arriving
 reopens this before 2026-11-27.
@@ -133,35 +138,136 @@ Feature 282 (`FR-R5-F21`) re-read this decline ahead of its date.
 
 ### What would change this
 
-Any one of these, and this heading is rewritten rather than amended:
+**Rewritten 2026-11-12**, because one of its three conditions arrived: a container runtime on the
+operator's machine (OrbStack 2.2.5), in which `npm run test:host` ran unedited in a Linux container, and its result is recorded under
+[Local Linux leg 2026-11-12](#local-linux-leg-2026-11-12). That closed row 3. What remains is
+Windows only, and any one of these rewrites this heading again:
 
 - A Windows machine or VM becomes available to the operator (closes rows 1 and 2).
-- The operator runs `npm run test:host` unedited in the installed container runtime, in a Linux
-  machine, and reports what they saw, pass or fail (closes row 3; **not** row 1 — process-group
-  semantics are the thing under test and a Linux container cannot answer for them).
-- A contributor on either platform runs `npm run test:host` unedited and reports what
-  they saw, pass or fail. Both fixtures are written to need no edit, so this costs
-  them one command.
+- A contributor on Windows runs `npm run test:host` unedited and reports what they saw, pass or
+  fail. Both fixtures are written to need no edit, so this costs them one command.
+
+A Linux container cannot stand in for either: process-group and reparse-point semantics are the
+things under test, and only Windows has them. Moving Linux itself out of the `unverified` tier is a
+separate question with a higher bar, set out in the support surface below.
 
 ### Rows 1-3 under this decision
 
-Their **evidence class is unchanged** — they remain *Unrun here*, because no
+Rows 1 and 2 keep their **evidence class** — they remain *Unrun here*, because no
 measurement was taken and reclassifying them would be the exact conflation this page
 exists to prevent. What changes is that their status is now a **dated decision**
-rather than an open intention:
+rather than an open intention. Row 3 changed class on 2026-11-12 because a measurement was
+taken, not because the decision was revisited:
 
 | Row | Class | Disposition |
 |---|---|---|
 | Windows process-tree termination via `taskkill /T` | **Unrun here** | Declined 2026-08-27. Branch kept. |
 | Windows reparse-point refusal at a safe-open leaf | **Unrun here** | Declined 2026-08-27. Branch kept. |
-| Linux path case-sensitivity in `output-target-identity.ts:40` | **Unrun here** | Declined 2026-08-27. Route B is the way in; it is available and not taken this cycle (see *Route taken*). |
+| Linux path case-sensitivity in `output-target-identity.ts:40` | **Observed here**, in the Linux leg | Declined 2026-08-27; **closed 2026-11-12** by Route B. `tests/unit/platform/linux-case-sensitivity.test.ts` ran on Linux, see [Local Linux leg 2026-11-12](#local-linux-leg-2026-11-12). |
 
 **Observed / relied on / inferred**, kept apart as `FR-R3-099` had to learn to do:
-*observed* — on 2026-10-22, OrbStack 2.2.3 is installed, and the fixtures skip with their
-platform named (recorded 2026-08-27, not re-run here); *relied on* — that `taskkill /T` is Windows' process-tree mechanism
-and that a container does not reproduce Windows process-group semantics; *inferred* —
-that rows 1-3 will stay unmeasured until one of the conditions above changes. Nothing
-here is an observation of Windows or Linux behaviour, because none was made.
+*observed* — on 2026-11-12 the unit tier ran in a Linux container on this machine, and row 3's
+fixture passed there and failed against a mutant that folds case; the Windows fixtures skip with their
+platform named (recorded 2026-08-27, not re-run on Windows); *relied on* — that `taskkill /T` is
+Windows' process-tree mechanism, that a container does not reproduce Windows process-group semantics,
+and that the container's own filesystem behaves as a desktop Linux one does for case; *inferred* —
+that rows 1 and 2 will stay unmeasured until one of the conditions above changes. Nothing here is an
+observation of Windows behaviour, because none was made.
+
+## Local Linux leg 2026-11-12
+
+Review gap GC-18; Route B above. The operator chose local verification over hosted CI, so
+`FR-R3-099` stands, and an agent session working at their request built the leg and ran it on this
+machine. What follows was observed by that session, not by the operator in person.
+
+**What runs.** `npm run verify:linux` (`scripts/linux-leg.sh`) builds `schegent-linux-leg:node-24.19.0`
+from `node:24.19.0-bookworm-slim` plus `git`, `ca-certificates` and `procps`, and runs it as the
+image's non-root `node` user. The tree under test is a commit, piped in with `git archive`, and the script
+refuses to run while its own files differ from `HEAD`, so a dirty worktree cannot make it green. Inside, `scripts/linux-leg/run-steps.sh` runs the install, the webview
+install, the build, the SBOM, both typechecks, lint, `contracts:check` and `test:host`, every step
+whatever the one before it did, and prints each exit status. Under OrbStack 2.2.5 the container
+reports `Linux 7.2.12-orbstack-00394-gbecdd6130068 aarch64` and Node v24.19.0.
+
+**First run, at `f4966ebb`.** The SBOM step and `test:host` exited 1 and every other step exited 0.
+`test:host` ran 1,476 files and 22,598 tests: 22,542 passed, 11 failed and 45 were skipped, in
+2,239 s. Each red, with its cause:
+
+| Red | Where | Cause | Disposition |
+|---|---|---|---|
+| SBOM exit 1 | the leg | The leg built only the webview, and the SBOM is generated from the host module graph that the full build writes | The leg runs `npm run build` (`18f9beea`) |
+| `ps` and `pgrep` not found | `process-tree-surviving-helper` (T14), `shutdown-teardown-order` (T23), `global-temp-root` (T1818a) | The slim image ships no `procps`; a desktop Linux does | `procps` in the image (`18f9beea`) |
+| `acp-open-refused:profile-unqualified` | `acp-backed-runner` (the full turn), `f10-isolated-lanes-integration` (F10-AC-08) | Only darwin/arm64 qualifies an ACP profile, and both tests took the host's platform, so they would fail on an Intel Mac as well (inferred, not run) | The runner takes a platform; the tests pin darwin/arm64, and a new case asserts the refusal before launch anywhere else (`bb290c79`) |
+| Sidebar bundle over its cap | `bundle-size` (SC-010) | Not Linux-specific: review gap GC-16's notice pushed the sidebar past its cap | Fixed (`f9e82e55`) |
+| Workspace references not found | `basename-line-references` (2 cases: too few references extracted), `doc-references-outside-markdown` (2 cases: citations resolve in neither tree) | `git archive` carries `repo/` only, and these gates read the workspace's documents | Fixed later the same day: without the envelope `basename-line-references` sets its floors to what `repo/` holds (225 references and 34 unbackticked citations, against floors of 100 and 20), and `doc-references-outside-markdown` judges only explicit `repo/` citations. Observed green in a `git archive` extract committed the way the leg commits it (230 lint files passed), and in the leg's fourth run at `c1fa6239` |
+| Timed out at 600 s | `usage-accounting-acceptance` (SC-003, 100,000 money additions into a file database) | A durable commit costs about 42 times as much in the container as on macOS; see below | The case now runs in one outer transaction, so it measures the arithmetic, not one commit per write; see below |
+
+**SC-003 is consistent with a cost of `fsync`.** Run alone in the same image, the file took 829 s
+and SC-003 timed out again; on macOS the case alone took 245 s at a load average between 4 and 9. The
+store opens its database in WAL mode with `synchronous = FULL` (`src/services/sqlite-store/sqlite-driver.ts`),
+so every commit asks for an `fsync`. Measured on 2026-11-12 with 5,000 one-row commits under
+`node:sqlite`:
+
+| Where | `synchronous = FULL` | `synchronous = OFF` |
+|---|---|---|
+| Linux container, its own disk (`/tmp`) | 3,401 µs a commit | 8 µs |
+| Linux container, `tmpfs` (`/dev/shm`) | 5 µs | 5 µs |
+| macOS, APFS (`$TMPDIR`) | 82 µs | 13 µs |
+
+The timings fit a Linux `fsync` that reaches the disk and a macOS one that does not (inferred, not
+traced): SQLite asks macOS for a full flush (`F_FULLFSYNC`) only under `PRAGMA fullfsync`, which the
+store does not set. SC-003 itself was not rerun on `tmpfs` or with `synchronous = OFF`, so only the
+extra time Linux takes is attributed to `fsync`, and that attribution rests on the table above. The
+600 s budget appears to have been sized on a platform where a durable commit is cheap. The leg keeps its own disk, so it
+keeps measuring what Linux does.
+
+**SC-003 fixed in the test, 2026-11-12.** SC-003 checks exact totals, not commit cost, so neither a
+per-platform budget nor a `tmpfs` temp root was needed. The case now opens one outer transaction, which
+every accounting write joins (`src/services/usage-accounting/accounting-transaction.ts`), and commits it
+once before the exact-total check. It still uses the real file store. On macOS the case alone took
+34 s, down from 245 s. Recovery after a crash stays the business of F06-AC-07, not of this case.
+
+**Rerun, at `18f9beea`** (10:27 to 10:59 UTC). Every step exited 0 except `test:host`, which ran 1,480
+files and 22,611 tests: 22,560 passed, 6 failed and 45 were skipped, in 1,757 s. Four of the six are
+the envelope gates and one is SC-003, as in the table above. The sixth was new:
+`stdio-transport` (*reports a stdin the agent closed as one close*) passed in the first run and
+failed here. The race was in the test, not the transport: the fake agent answered before it closed its
+stdin, so a second write could reach the pipe first, be buffered and never fail. Widening that window
+with a 0.5 s sleep fails the old order every time on macOS too, and the fix closes stdin first
+(`9d45eec2`). One load-average sample on the host during this run read 15.4. The harness was then
+hardened (`5a7ab5e0`): it refuses to run while its own files differ from `HEAD`, writes the archive to
+a file before the container reads it, runs the container with `--init`, and reads the Node pin from the
+commit under test.
+
+**Third run, at `3b51e8b0`** (11:16 to 11:52 UTC), the first through the hardened harness. Every step
+exited 0 except `test:host`: 1,480 files and 22,611 tests, 22,559 passed, 7 failed and 45 skipped, in
+2,056 s. `stdio-transport` passed. Five of the seven are the envelope gates and SC-003 again. The other
+two had passed in both earlier runs, and another session's test runs were loading the host: its
+one-minute load average, sampled every two minutes from 11:25 UTC, read between 3.8 and 30.5. Both are recorded as
+load-sensitive test designs, not Linux behaviour, and neither is fixed here:
+
+- `f14b-host-integration` (F14-AC-05/06/10) waits a fixed 20 ms for a retry-exhausted batch to spool,
+  then asserts one spooled batch; it read 0. The spool arrived after the test had closed the
+  database and surfaced as an unhandled `database is not open` rejection from
+  `src/services/telemetry-host/telemetry-durable-store.ts`. Fixed later the same day: a spool that
+  starts or resumes after the store closed now drops its batch and removes its file, any other spool
+  failure is reported through the side-effect reporter (operation `telemetry-spool`), and the host's
+  `idle()` waits for unawaited spool work, which the test now awaits in place of the 20 ms.
+- `secret-scan-staged` (SS4, SIGTERM while the engine runs) polls every 2 ms for the scan's temporary
+  directory and never saw it. The directory exists only while the scan runs, so a scan that completes
+  between two delayed polls leaves nothing to see (inferred, not traced). Fixed later the same day in
+  the test: the engine is now a stub that writes a ready file and never finishes, and the signal is sent
+  once that file exists.
+
+**Fourth run, at `c1fa6239`** (14:25 to 14:33 UTC). Every step exited 0. `test:host` ran 1,480 files
+and 22,637 tests: 22,592 passed, none failed and 45 were skipped, in 326 s. Each file that was red in
+an earlier run passed: `basename-line-references`, `doc-references-outside-markdown`,
+`usage-accounting-acceptance` (234 s for the file), `stdio-transport`, `f14b-host-integration` and
+`secret-scan-staged`. The host's one-minute load average read 8.7 before the run and 6.1 after it.
+
+**Row 3.** `tests/unit/platform/linux-case-sensitivity.test.ts` (`d386f056`) creates `Report.md` and
+`report.md` side by side and asserts two output identities. In the leg image it passed, 2 of 2, and
+with `fold()` changed to always lower-case it failed, 2 of 2, so the fixture can see the defect it
+guards against. On macOS it skips with its platform named.
 
 ## The declared support surface
 
@@ -172,7 +278,7 @@ to it, and `tests/lint/platform-branch-has-record-row.test.ts` refuses a
 | Platform | Tier | Evidence |
 |---|---|---|
 | **macOS** (darwin, arm64) | **Verified** | The full host suite runs here every cycle. This record's header names the date and the platform. |
-| **Linux** | **Unverified** | Ships, and is branched for (`src/lib/output-target-identity.ts:40`). Has never executed here. Route B is available and not taken this cycle — see *Route taken*. |
+| **Linux** | **Unverified** | Ships, and is branched for (`src/lib/output-target-identity.ts:40`). The unit tier has executed here in a Linux container (`npm run verify:linux`, 2026-11-12, aarch64), and the case branch is observed, see [Local Linux leg 2026-11-12](#local-linux-leg-2026-11-12). The extension host, a browser and a real CLI have not run on Linux, and no gate record was made there, so the tier stays **Unverified**. |
 | **Windows** (win32) | **Unverified** | Ships, and is branched for in four production files, two of them safety paths. Has never executed here. Both fixtures are *Unrun here*. The one Windows result there is, [the red Windows CI leg](../release/actions-terminal-record.md#the-red-windows-ciyml-leg-versus-every-windows-path-claim) at `2a885187`, ran on CI, not on this machine, so "has never executed here" stays true of this machine; its cause is unrecovered. |
 
 **"Unverified" is a claim about evidence, not about quality.** It does not say the

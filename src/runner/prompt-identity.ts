@@ -20,9 +20,10 @@ import { createHash } from 'node:crypto';
 /**
  * Bumped when the scaffold `PromptBuilder.build` lays around the contract text and the task block
  * changes (research R10), so two rows with equal digests were composed the same way. The scaffold is
- * pinned by `tests/unit/runner/prompt-identity.test.ts` (d).
+ * pinned by `tests/unit/runner/prompt-identity.test.ts` (d). Version 2 (review gap GC-14) labels
+ * the previous-phase-message and carried-issue sections as data.
  */
-export const PROMPT_COMPOSITION_VERSION = 1;
+export const PROMPT_COMPOSITION_VERSION = 2;
 
 /**
  * The identity of the prompt an attempt sent.

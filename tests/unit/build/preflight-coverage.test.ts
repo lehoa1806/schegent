@@ -63,6 +63,14 @@ const EXCLUDED: ReadonlyArray<{ readonly script: string; readonly reason: string
       'a threshold breach rather than a broken test, and is caught by the gate before release'
   },
   {
+    script: 'coverage:headroom',
+    reason:
+      'review gap GC-17 (2026-11-12) checks that the declared host floors sit within five ' +
+      'points of the measured coverage. It reads `coverage/coverage-final.json`, which only ' +
+      '`test:coverage` writes, and that script is excluded above: the preflight has no report ' +
+      'for it to read. Stale floors are caught by the gate before release, like a breach'
+  },
+  {
     script: 'test:e2e',
     reason: 'a separate Vitest project with a 120s per-test timeout; minutes of wall clock per run'
   },
@@ -168,13 +176,15 @@ describe('the preflight chain reaches every gate CI runs', () => {
     );
   });
 
-  it('excludes exactly four scripts, each with a reason', () => {
+  it('excludes exactly five scripts, each with a reason', () => {
     // The list is asserted by NAME, not by length, so growing it is a visible diff in
     // the file whose only job is to notice gaps. `test:coverage` joined it under
     // FR-R3-100: unlike the other three it is not excluded for wall-clock but because
     // `ci:fast` reaches the identical test set without coverage instrumentation. The
     // one thing the preflight therefore cannot catch is named in its reason.
+    // `coverage:headroom` (GC-17) reads the report only `test:coverage` writes.
     expect(EXCLUDED.map((entry) => entry.script).sort()).toEqual([
+      'coverage:headroom',
       'test:coverage',
       'test:e2e',
       'test:integration',

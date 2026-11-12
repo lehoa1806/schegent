@@ -75,7 +75,9 @@ export interface WorkflowControllerOptions extends ResumeGuardOptions {
   inheritProcessEnv?: boolean;
   processEnvAllowlist?: readonly string[];
   skipProbing?: boolean;
-  cliPathResolver?: (runnerKind: string) => string;
+  /** See `RunDriverOptions.requireProbe`: the extension sets it so an unwired probe fails closed. */
+  requireProbe?: boolean;
+  cliPathResolver?: (runnerKind: BackendRunnerKind) => string;
   defaultRunnerKind?: BackendRunnerKind;
   isAuditEvidenceAvailable?: () => boolean;
   getForceContinueOnRetryCap?: () => boolean; // `retry.forceContinueOnCap`: dynamic, never cached
@@ -944,9 +946,7 @@ export class SchegentWorkflowController {
     // resuming "the" Run, it is re-arming every Run the workspace persisted, and
     // after a crash mid-concurrency there can be several. Each is then addressed
     // by its own queue. With one entry this is the previous behavior exactly.
-    for (const [queueId, run] of Object.entries(this.store.getRunMap())) {
-      await this.retryCoordinator.resumeExistingFromActivation(queueId, run);
-    }
+    await this.retryCoordinator.resumeAllFromActivation(this.store.getRunMap());
   }
 
   // Feature 034 Item 047 — rate-limit family + cause normalization +

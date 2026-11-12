@@ -37,7 +37,8 @@ import { openAcpConnection } from '../services/acp-runtime/acp-client';
 import {
   ACP_PROFILE_IDS,
   getBuiltinAcpProfile,
-  resolveAcpProfileLaunch
+  resolveAcpProfileLaunch,
+  type AcpProfilePlatform
 } from '../services/acp-runtime/profiles';
 import {
   spawnStdioTransport,
@@ -92,7 +93,18 @@ export interface AcpBackedRunnerOptions {
   readonly primaryWorkspaceRoot?: string;
   readonly protectedDatabasePaths?: readonly string[];
   readonly currentOwnershipGeneration?: () => number;
+  /**
+   * Review gap GC-08 follow-up — awaited before a session registers its scope, so the gate holds an
+   * authoritative primacy verdict before the session's first callback. `false` ends the attempt
+   * with `acp-ownership-unverified` before its prompt is sent.
+   */
+  readonly primeAuthority?: () => Promise<boolean>;
   readonly onAcpObservation?: (event: AcpRunnerObservationEvent) => void;
+  /**
+   * The platform the profile's qualification is judged against; omitted, this host's. Tests pin it
+   * so a qualified turn, or an unqualified refusal, is exercised whatever the host is.
+   */
+  readonly platform?: AcpProfilePlatform;
   readonly launchTransport?: (
     profile: AgentProfile,
     request: InvocationRequest,
@@ -212,10 +224,10 @@ export class AcpBackedRunner implements BackendRunner {
       throw new AcpProfileMismatchError(this.options.kind, configuredRaw, expectedProfileId);
     }
 
-    const profile = getBuiltinAcpProfile(
-      this.options.kind,
-      request.model !== undefined ? { model: request.model } : {}
-    );
+    const profile = getBuiltinAcpProfile(this.options.kind, {
+      ...(request.model !== undefined ? { model: request.model } : {}),
+      ...(this.options.platform !== undefined ? { platform: this.options.platform } : {})
+    });
     const generation = ++nextAcpGeneration;
     const label = RUNNER_LABEL_BY_KIND[this.options.kind];
     const invocationId = nextInvocationId(label);
@@ -508,6 +520,9 @@ export class AcpBackedRunner implements BackendRunner {
           }
           if (missingUpstream) {
             warnings.push('acp-upstream-artifact-inaccessible');
+            exitCode = 1;
+          } else if (this.options.primeAuthority !== undefined && !(await this.options.primeAuthority())) {
+            warnings.push('acp-ownership-unverified');
             exitCode = 1;
           } else {
             gate?.registerScope({

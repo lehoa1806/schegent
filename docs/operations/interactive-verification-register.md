@@ -153,7 +153,7 @@ to re-ask a question nobody can force. This waits on work that is already possib
 not been done. A debt that can be discharged any afternoon should be looked at sooner than a posture
 that depends on events outside the project.
 
-The standing decline of the Windows and Linux verification routes (`FR-R3-115`) is a separate and
-still-current posture, dated in its own record. This register does not discharge it, restate it, or
+The standing decline of the Windows verification route, and of Linux verification beyond the local
+unit-tier leg (`FR-R3-115`), is a separate and still-current posture, dated in its own record. This register does not discharge it, restate it, or
 depend on it. Both can be true: some platforms are not verified at all, and some behaviours on the
 verified platform are still owed a human.

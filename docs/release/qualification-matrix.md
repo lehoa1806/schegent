@@ -28,6 +28,13 @@ The macOS / Node 22 cell stays `unobserved` even though the floor was exercised 
 `sbom` under Node 22.23.2. It is not a gate observation: `npm run gate` did not run, and
 `npm run gate:record` recorded nothing. A cell holds only what a gate record says.
 
+The Linux / Node 24 cell stays `unobserved` for the same reason. On 2026-11-12 `npm run verify:linux`
+ran the install, the build, the SBOM, both typechecks, lint, `contracts:check` and `test:host` in a
+Linux container under Node v24.19.0 on aarch64, and what it saw is in the
+[platform observation record](../operations/platform-observation-record.md#local-linux-leg-2026-11-12).
+That is the unit tier, not `npm run gate`: no extension host, browser or real CLI ran, the workspace
+envelope was absent, and no gate record was made.
+
 ## What the one observed cell is, and is not
 
 The macOS / Node 24 cell quotes a version-3 gate record made on this machine: `npm run gate`,
@@ -64,8 +71,12 @@ recorded run, the re-run is recorded as such, as that note instructs.
    into the section "What the one observed cell is, and is not" on the same day, before any later
    `npm run gate:record` overwrites the file. A difference in any of them is carried and printed, not
    refused, so it is said beside the cell.
-3. A standalone clone records that the workspace envelope was absent. The gates that read the envelope
-   skipped, and the cell is still an observation of what did run; say so beside it.
+3. A standalone clone records that the workspace envelope was absent. The gates that read the
+   envelope skip or narrow without it: `basename-line-references` sets its corpus floors to what
+   `repo/` alone holds, and `doc-references-outside-markdown` judges only the explicit `repo/`
+   citations, since a bare one may be true of the envelope it cannot see. Until 2026-11-12 these two
+   failed instead (observed in the Linux leg). The cell is still an observation of what did run; say
+   so beside it.
 4. Installing and running a release candidate is its own observation, recorded in
    [releasing](../../RELEASE.md) and not here.
 

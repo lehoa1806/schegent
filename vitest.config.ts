@@ -138,12 +138,20 @@ export default defineConfig({
       // runs `test:coverage`, so the attested chain -- and therefore every release
       // -- is refused when any floor below regresses. A declared threshold no
       // command enforces is this round's signature defect; it was here.
+      //
+      // Review gap GC-17 (2026-11-12) — the floors had drifted 9 to 13 points below
+      // measured coverage, so a regression of that size passed. Measured that day on
+      // darwin, branch review-gap-closure: 89.07% statements / 86.28% branches /
+      // 93.73% functions / 89.07% lines. Each floor now sits about five points below
+      // its figure, still clear of the run-to-run noise above, and
+      // `npm run coverage:headroom` (scripts/check-coverage-headroom.mjs) refuses a
+      // floor that drifts more than five points under the measured value again.
 
       thresholds: {
-        statements: 80,
-        branches: 75,
-        functions: 80,
-        lines: 80
+        statements: 84,
+        branches: 81,
+        functions: 88,
+        lines: 84
       }
     },
     pool: 'threads'
