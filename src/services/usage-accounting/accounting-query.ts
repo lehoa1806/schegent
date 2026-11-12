@@ -123,11 +123,15 @@ interface ScopeSql {
   readonly params: readonly SqlParam[];
 }
 
-/** The attempts in scope: visible at the revision, inside the time range, matching the filters. */
-function attemptScope(request: AccountingQueryRequest, revision: number): ScopeSql {
+/** The attempts in scope: visible at the revision (when specified), inside the time range, matching filters. */
+function attemptScope(request: AccountingQueryRequest, revision?: number): ScopeSql {
   const groupColumns = request.groupBy.map((dimension, index) => `ifnull(${DIMENSION_SQL[dimension]}, '') AS g${String(index)}`);
-  const conditions = [`EXISTS (SELECT 1 FROM accounting_contributions c WHERE c.attempt_id = a.attempt_id AND ${VISIBLE})`];
-  const params: SqlParam[] = [revision, revision];
+  const conditions: string[] = [];
+  const params: SqlParam[] = [];
+  if (revision !== undefined) {
+    conditions.push(`EXISTS (SELECT 1 FROM accounting_contributions c WHERE c.attempt_id = a.attempt_id AND ${VISIBLE})`);
+    params.push(revision, revision);
+  }
   if (request.from !== undefined) {
     conditions.push('a.first_event_utc >= ?');
     params.push(request.from);
@@ -145,7 +149,8 @@ function attemptScope(request: AccountingQueryRequest, revision: number): ScopeS
     params.push(...request.rootIds);
   }
   const columns = [...groupColumns, 'a.attempt_id', 'a.root_id', 'a.last_event_utc'].join(', ');
-  return { sql: `SELECT ${columns} FROM accounting_attempts a WHERE ${conditions.join(' AND ')}`, params };
+  const where = conditions.length === 0 ? '' : ` WHERE ${conditions.join(' AND ')}`;
+  return { sql: `SELECT ${columns} FROM accounting_attempts a${where}`, params };
 }
 
 function groupList(count: number, prefix = ''): string {
@@ -233,18 +238,18 @@ function measureFilter(measures: readonly Measure[] | undefined): PageRange {
 /** Sums per (group, measure, unit). Throws the store's overflow error for the caller to map. */
 function readMeasureAggregates(
   conn: NodeSqliteConnection,
-  scope: ScopeSql,
   request: AccountingQueryRequest,
   groups: readonly GroupRow[],
   revision: number
 ): Map<string, MeasureAggregate> {
   const dimensions = request.groupBy.length;
+  const joinScope = attemptScope(request);
   const range = pageRange(groups, dimensions);
   const filter = measureFilter(request.measures);
   const groupColumns = dimensions === 0 ? '' : `${groupList(dimensions, 's.')}, `;
-  const from = `FROM (${scope.sql}) s JOIN accounting_contributions c ON c.attempt_id = s.attempt_id AND ${VISIBLE}
+  const from = `FROM (${joinScope.sql}) s JOIN accounting_contributions c ON c.attempt_id = s.attempt_id AND ${VISIBLE}
     WHERE ${range.sql} AND ${filter.sql}`;
-  const params = [...scope.params, revision, revision, ...range.params, ...filter.params];
+  const params = [...joinScope.params, revision, revision, ...range.params, ...filter.params];
   const aggregates = new Map<string, MeasureAggregate>();
   const sums = conn.all<RawAggregate>(
     `SELECT ${groupColumns}c.measure AS measure, c.unit AS unit,
@@ -408,7 +413,7 @@ export function runAccountingQuery(
     if (groups.length > 0) {
       let aggregates: Map<string, MeasureAggregate>;
       try {
-        aggregates = readMeasureAggregates(conn, scope, request, groups, revision);
+        aggregates = readMeasureAggregates(conn, request, groups, revision);
       } catch (error) {
         if (error instanceof Error && OVERFLOW_MESSAGE.test(error.message)) return refuse('aggregate-overflow');
         throw error;
