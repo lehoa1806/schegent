@@ -89,6 +89,10 @@ From the 2026-11-12 full repository review. Each item names its review gap (`GC-
   it. A state write past its deadline no longer blocks writes until a reset: writing resumes when that write
   settles. Failed best-effort side effects (lane settlement, usage accounting and similar) log a warning
   instead of failing silently.
+- **A telemetry spool after shutdown no longer rejects unhandled.** A retry-exhausted OTLP batch is
+  spooled by a timer nobody awaits, so it could reach the database after the window had closed it. It
+  now drops that batch and its file, and any other spool or spool-reconciliation failure logs a
+  `telemetry-spool` warning, once, by error class only.
 
 ### A failed row can restart its Phase, and a drained Run can open its decision record (FR-R5-F19 follow-up, 2026-11-06)
 
