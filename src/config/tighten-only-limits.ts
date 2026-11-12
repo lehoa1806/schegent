@@ -4,6 +4,8 @@
  * These settings are `resource` scope, so a repository's `.vscode/settings.json` reaches them, and
  * VS Code's own resolution lets the innermost layer win. That let a trusted repository raise or
  * clear the operator's spend cap, raise the retry or iteration cap, or set `forceContinueOnCap`.
+ * The follow-up (same day) adds the idle window and the wall-clock bound on one invocation, which
+ * stop a runaway child: a repository may shorten them and never lengthen them.
  * Here the operator's value is the user layer, else the manifest default, and a workspace or folder
  * value replaces it only when it is schema-valid and strictly tighter. Anything else is ignored and
  * named in `ignoredLayers`, so the caller can say so.
@@ -41,6 +43,9 @@ const tighterOptionalBound = (candidate: number, current: number): boolean => {
   return candidate !== 0 && (bound === 0 || candidate < bound);
 };
 
+/** A shorter bound is tighter. */
+const shorter = (candidate: number, current: number): boolean => candidate < current;
+
 const RUN_LIMIT_ORDERS = {
   'spend.maxUsdPerRun': tighterCeiling,
   'spend.maxTokensPerRun': tighterCeiling,
@@ -48,7 +53,9 @@ const RUN_LIMIT_ORDERS = {
   // Continuing past the retry cap leaves the gate unverified, so `false` is the tighter value.
   'retry.forceContinueOnCap': (candidate: boolean, current: boolean) => current && !candidate,
   'loop.maxIterations': (candidate: number, current: number) => candidate < current,
-  'loop.maxUnchangedComparisons': tighterOptionalBound
+  'loop.maxUnchangedComparisons': tighterOptionalBound,
+  'invocation.idleTimeoutSeconds': shorter,
+  'invocation.maxDurationSeconds': shorter
 } as const;
 
 export type RunLimitKey = keyof typeof RUN_LIMIT_ORDERS;
@@ -94,4 +101,23 @@ export function resolveRunLimit<K extends RunLimitKey>(
     }
   }
   return { value: value as RunLimitValue<K>, origin, ignoredLayers };
+}
+
+/**
+ * The idle window's layers with the deprecated `invocation.timeoutSeconds` folded in (FR-R3-075):
+ * the operator's value is the new key's user layer, else the legacy key's, so a repository cannot
+ * set the new key to discard a shorter legacy value the operator chose. The legacy key's repository
+ * layers are read only while the new key is set at no layer, which is the order the alias has
+ * always had.
+ */
+export function mergeIdleTimeoutLayers(idle: LimitLayers | undefined, legacy: LimitLayers | undefined): LimitLayers {
+  const newKeySet =
+    idle?.globalValue !== undefined || idle?.workspaceValue !== undefined || idle?.workspaceFolderValue !== undefined;
+  const repository = newKeySet ? idle : legacy;
+  return {
+    defaultValue: idle?.defaultValue,
+    globalValue: idle?.globalValue ?? legacy?.globalValue,
+    workspaceValue: repository?.workspaceValue,
+    workspaceFolderValue: repository?.workspaceFolderValue
+  };
 }

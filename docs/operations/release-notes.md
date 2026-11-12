@@ -17,8 +17,8 @@ From the 2026-11-12 full repository review. Each item names its review gap (`GC-
   innermost layer, so a repository's `.vscode/settings.json` could raise or clear the operator's spend cap,
   raise the retry or iteration cap, or set `retry.forceContinueOnCap`. The user value (else the default) is
   now the operator's limit. A workspace or folder value replaces it only when it is valid and strictly
-  tighter. An ignored value is named in a warning. Per-Phase overrides in Workflow YAML and the invocation
-  timeouts are not covered yet.
+  tighter. An ignored value is named in a warning. The idle and wall-clock invocation timeouts follow the same
+  rule, and a Phase's authored spend bound applies only where it is tighter than the operator's.
 - **Host git calls no longer run the repository's fsmonitor or hooks (GC-11).** Every git call the extension
   makes passes `core.fsmonitor=false` and an empty hooks path. Clean and smudge filters still run.
 - **A committed `.schegent/.gitignore` that does not ignore everything is repaired (GC-12).** The file is

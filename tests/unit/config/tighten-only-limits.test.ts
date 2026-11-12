@@ -5,11 +5,13 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { RUN_LIMIT_KEYS, resolveRunLimit } from '../../../src/config/tighten-only-limits';
+import { RUN_LIMIT_KEYS, mergeIdleTimeoutLayers, resolveRunLimit } from '../../../src/config/tighten-only-limits';
 
 describe('GC-10 — run limits a workspace may only tighten', () => {
-  it('covers exactly the spend, retry and loop limits', () => {
+  it('covers exactly the spend, retry, loop and invocation time limits', () => {
     expect([...RUN_LIMIT_KEYS].sort()).toEqual([
+      'invocation.idleTimeoutSeconds',
+      'invocation.maxDurationSeconds',
       'loop.maxIterations',
       'loop.maxUnchangedComparisons',
       'retry.forceContinueOnCap',
@@ -131,6 +133,35 @@ describe('GC-10 — run limits a workspace may only tighten', () => {
       expect(
         resolveRunLimit('loop.maxUnchangedComparisons', { globalValue: 3, workspaceFolderValue: 5 })
       ).toEqual({ value: 3, origin: 'user', ignoredLayers: ['workspace-folder'] });
+    });
+  });
+
+  // GC-10 follow-up (2026-11-12) — the idle window and the wall-clock bound stop a runaway invocation,
+  // so a repository may shorten them and never lengthen them.
+  describe('invocation time bounds', () => {
+    it('ignores a workspace idle window or wall-clock bound longer than the operator\'s', () => {
+      expect(resolveRunLimit('invocation.idleTimeoutSeconds', { defaultValue: 5400, workspaceValue: 86_400 })).toEqual({
+        value: 5400,
+        origin: 'default',
+        ignoredLayers: ['workspace']
+      });
+      expect(resolveRunLimit('invocation.maxDurationSeconds', { globalValue: 7200, workspaceFolderValue: 600 })).toEqual({
+        value: 600,
+        origin: 'workspace-folder',
+        ignoredLayers: []
+      });
+    });
+
+    it('takes the operator\'s legacy idle value as the baseline, and the legacy repository layers only while the new key is unset', () => {
+      expect(
+        mergeIdleTimeoutLayers({ defaultValue: 5400, workspaceValue: 9000 }, { defaultValue: 5400, globalValue: 300 })
+      ).toEqual({ defaultValue: 5400, globalValue: 300, workspaceValue: 9000, workspaceFolderValue: undefined });
+      expect(
+        mergeIdleTimeoutLayers({ defaultValue: 5400, globalValue: 600 }, { defaultValue: 5400, workspaceFolderValue: 300 })
+      ).toEqual({ defaultValue: 5400, globalValue: 600, workspaceValue: undefined, workspaceFolderValue: undefined });
+      expect(
+        mergeIdleTimeoutLayers({ defaultValue: 5400 }, { defaultValue: 5400, workspaceValue: 300 })
+      ).toEqual({ defaultValue: 5400, globalValue: undefined, workspaceValue: 300, workspaceFolderValue: undefined });
     });
   });
 });
