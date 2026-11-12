@@ -37,7 +37,8 @@ import { openAcpConnection } from '../services/acp-runtime/acp-client';
 import {
   ACP_PROFILE_IDS,
   getBuiltinAcpProfile,
-  resolveAcpProfileLaunch
+  resolveAcpProfileLaunch,
+  type AcpProfilePlatform
 } from '../services/acp-runtime/profiles';
 import {
   spawnStdioTransport,
@@ -93,6 +94,11 @@ export interface AcpBackedRunnerOptions {
   readonly protectedDatabasePaths?: readonly string[];
   readonly currentOwnershipGeneration?: () => number;
   readonly onAcpObservation?: (event: AcpRunnerObservationEvent) => void;
+  /**
+   * The platform the profile's qualification is judged against; omitted, this host's. Tests pin it
+   * so a qualified turn, or an unqualified refusal, is exercised whatever the host is.
+   */
+  readonly platform?: AcpProfilePlatform;
   readonly launchTransport?: (
     profile: AgentProfile,
     request: InvocationRequest,
@@ -212,10 +218,10 @@ export class AcpBackedRunner implements BackendRunner {
       throw new AcpProfileMismatchError(this.options.kind, configuredRaw, expectedProfileId);
     }
 
-    const profile = getBuiltinAcpProfile(
-      this.options.kind,
-      request.model !== undefined ? { model: request.model } : {}
-    );
+    const profile = getBuiltinAcpProfile(this.options.kind, {
+      ...(request.model !== undefined ? { model: request.model } : {}),
+      ...(this.options.platform !== undefined ? { platform: this.options.platform } : {})
+    });
     const generation = ++nextAcpGeneration;
     const label = RUNNER_LABEL_BY_KIND[this.options.kind];
     const invocationId = nextInvocationId(label);

@@ -10,6 +10,9 @@ import {
 import type { BackendRunner } from '../../../src/contracts/backend-runner';
 import { AcpAuthorityGate } from '../../../src/services/containment-qualification/acp-authority-gate';
 
+const QUALIFIED_PLATFORM = { os: 'darwin', arch: 'arm64' } as const;
+const UNQUALIFIED_PLATFORM = { os: 'linux', arch: 'x64' } as const;
+
 function makeDummyInnerRunner(kind: 'claude' | 'codex' | 'agy'): BackendRunner & { cliCalled: boolean } {
   const runner: BackendRunner & { cliCalled: boolean } = {
     cliCalled: false,
@@ -108,7 +111,10 @@ rl.on('line', (line) => {
         readConfiguredProfile: () => 'agy-acp-native',
         authorityGate: gate,
         primaryWorkspaceRoot: tempDir,
-        onAcpObservation: (ev) => observations.push(ev)
+        onAcpObservation: (ev) => observations.push(ev),
+        // Review gap GC-18 — the turn under test needs a qualified profile, and only darwin/arm64
+        // is qualified (profiles.ts). Pinned, so the turn runs on the Linux leg and on any Mac.
+        platform: QUALIFIED_PLATFORM
       });
 
       const result = await runner.invoke({
@@ -153,5 +159,37 @@ rl.on('line', (line) => {
       })
     ).rejects.toBeInstanceOf(AcpProfileMismatchError);
     expect(inner.cliCalled).toBe(false);
+  });
+
+  it('refuses an unqualified platform before spawning anything (FR-015)', async () => {
+    // Review gap GC-18 — what the Linux leg showed the full turn doing when nothing pinned the
+    // platform. The launcher records whether a transport was ever asked for.
+    const inner = makeDummyInnerRunner('agy');
+    let launched = false;
+    const runner = new AcpBackedRunner({
+      kind: 'agy',
+      inner,
+      readConfiguredProfile: () => 'agy-acp-native',
+      platform: UNQUALIFIED_PLATFORM,
+      launchTransport: () => {
+        launched = true;
+        throw new Error('an unqualified profile must be refused before launch');
+      }
+    });
+
+    const result = await runner.invoke({
+      cliPath: process.execPath,
+      cwd: process.cwd(),
+      prompt: 'test',
+      phase: 'implement',
+      iteration: 1,
+      timeoutMs: 5_000,
+      runId: 'run-unqualified-001'
+    });
+
+    expect(launched).toBe(false);
+    expect(inner.cliCalled).toBe(false);
+    expect(result.exitCode).toBe(1);
+    expect(result.diagnosticWarnings).toContain('acp-open-refused:profile-unqualified');
   });
 });
