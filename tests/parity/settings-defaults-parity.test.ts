@@ -399,6 +399,36 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     // surface. The JSON schema in `package.json`, `SETTINGS_SCHEMA` and the trust table constrain the
     // value, the arrangement the spend bounds above use.
     const retryLoopBoundKeys = new Set<string>(['loop.maxUnchangedComparisons']);
+    // FR-R6-F13 — application-scoped ACP profile selector read per-invocation by
+    // `readUncachedAcpProfileSelector` in `src/activation/acp-execution-wiring.ts`
+    // against `VALID_SELECTORS` and `SETTINGS_SCHEMA`. Deliberately outside
+    // `KEY_SPECS` so workspace-scoped IPC writes cannot override machine-level
+    // ACP profile selection.
+    const acpRuntimeKeys = new Set<string>(['acp.profile']);
+    // FR-R6-F10 — isolated per-Run Git worktree lane bounds read uncached by
+    // `src/activation/uncached-settings-accessors.ts` (`readLanesEnabled`,
+    // `readLanesLiveCap`, `readLanesProvisioningDeadlineMs`) and validated by
+    // `LaneService.open` plus `SETTINGS_SCHEMA`.
+    const lanesKeys = new Set<string>([
+      'lanes.enabled',
+      'lanes.liveCap',
+      'lanes.provisioningDeadlineSeconds'
+    ]);
+    // FR-R6-F14 — application/user-scoped optional OTLP export settings read strictly
+    // from `inspect()?.globalValue` by `readTelemetryExportUserSettings()` in
+    // `src/activation/uncached-settings-accessors.ts` and validated by
+    // `TelemetryHostService.configureFromUserSettings()` plus `SETTINGS_SCHEMA`.
+    // Deliberately outside `KEY_SPECS` so repository or webview payloads cannot
+    // enable or redirect telemetry export.
+    const telemetryExportKeys = new Set<string>([
+      'telemetry.export.enabled',
+      'telemetry.export.endpoint',
+      'telemetry.export.protocol',
+      'telemetry.export.allowPlaintextLoopback',
+      'telemetry.export.credentialSecretKey',
+      'telemetry.export.credentialHeaderName',
+      'telemetry.export.contentPolicy'
+    ]);
 
     const orphans: string[] = [];
     for (const key of allKeys) {
@@ -412,7 +442,10 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
         uiKeys.has(key) ||
         deprecatedAliasKeys.has(key) ||
         retryLoopBoundKeys.has(key) ||
-        spendBoundKeys.has(key);
+        spendBoundKeys.has(key) ||
+        acpRuntimeKeys.has(key) ||
+        lanesKeys.has(key) ||
+        telemetryExportKeys.has(key);
       if (!covered) orphans.push(key);
     }
 
@@ -426,7 +459,14 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     // package.json. Catches accidental removal of a contribution that a
     // domain module still expects to read.
     const allPackageKeys = new Set(allKeys);
-    for (const key of [...complexObjectKeys, ...backendRunnerKey, ...trustScopeKeys]) {
+    for (const key of [
+      ...complexObjectKeys,
+      ...backendRunnerKey,
+      ...trustScopeKeys,
+      ...acpRuntimeKeys,
+      ...lanesKeys,
+      ...telemetryExportKeys
+    ]) {
       expect(allPackageKeys.has(key)).toBe(true);
     }
 

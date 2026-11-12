@@ -440,12 +440,12 @@ async function openPrimarySqliteServices(
         telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
       }
     });
-    deps.context.subscriptions.push(configSub);
+    deps.disposables.push(configSub);
 
     const usageWiring = createUsageAccountingWiring({
       service: usageAccounting,
       auditWriter: deps.auditWriter,
-      subscriptions: deps.context.subscriptions,
+      subscriptions: deps.disposables,
       logger: deps.logger,
       onAcceptedObservation: (observationId) => {
         telemetryHost.offerAcceptedObservationById(observationId);
@@ -474,7 +474,15 @@ async function openPrimarySqliteServices(
       clock: () => Date.now(),
       random: (size) => randomBytes(size)
     });
-    await laneService.reconcile();
+    try {
+      await laneService.reconcile();
+    } catch (laneError) {
+      if (!(laneError instanceof Error) || laneError.name !== 'LaneGitError') {
+        deps.logger.warn('sqlite cutover: lane reconciliation skipped', {
+          reason: laneError instanceof Error ? laneError.name : 'unknown'
+        });
+      }
+    }
 
     const runLaneCoordinator = createRunLaneCoordinator({
       getLaneService: () => laneService,
@@ -581,6 +589,8 @@ async function openPrimarySqliteServices(
       workflowComposition
     };
   } catch (error) {
+    input.operationalMemento?.detachSqlite();
+    input.catalogFs?.detachSqlite();
     sqliteStore.close();
     deps.logger.warn('sqlite cutover: initialization failed', {
       reason: error instanceof Error ? error.name : 'unknown'

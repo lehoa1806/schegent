@@ -215,12 +215,13 @@ describe('ACP runtime acceptance', () => {
     await waitFor(() => launches.closes === 1);
   }, WAIT_MS);
 
-  it('AC-06: the release matrix names zero qualified profiles and each gap', () => {
+  it('AC-06: the release matrix names the qualified darwin/arm64 profiles and unqualified platform boundary', () => {
     const runbook = readFileSync(RUNBOOK, 'utf8');
-    expect(runbook).toContain('Qualified profiles: 0');
-    for (const agent of ['Claude', 'Codex', 'Agy']) {
-      expect(runbook).toMatch(new RegExp(`^\\| ${agent} \\| not qualified \\|`, 'm'));
+    expect(runbook).toContain('Qualified profiles on `darwin/arm64`: 3');
+    for (const profileId of ['claude-acp-bridge', 'codex-acp-bridge', 'agy-acp-native']) {
+      expect(runbook).toMatch(new RegExp(`^\\| \`${profileId}\` \\| \`(bridge|native)\` \\| \`qualified\` \\|`, 'm'));
     }
+    expect(runbook).toContain('profile-unqualified');
   });
 
   it('AC-07: stderr is never protocol, and the kept tail is sanitized', async () => {
