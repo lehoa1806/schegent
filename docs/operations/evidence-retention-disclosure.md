@@ -2,7 +2,8 @@
 
 **Audience**: any operator running Schegent. **Status**: derived — see below.
 
-Schegent writes its own evidence to your workstation and makes no network call of its own. That does
+Schegent writes its own evidence to your workstation and makes no network call of its own, apart from
+the optional OTLP telemetry export, which is off by default and sends metadata only. That does
 **not** mean your content stays there: the Claude Code CLI that Schegent drives sends repository content
 and prompts to the model vendor, whatever the capture settings below say, and no setting here changes it
 (see [local-first, not offline](../concepts/local-first-not-offline.md)). This page says what Schegent
