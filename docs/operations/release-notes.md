@@ -70,6 +70,9 @@ From the 2026-11-12 full repository review. Each item names its review gap (`GC-
   the container. It needs a running Docker daemon and refuses to run while its own files are
   uncommitted. It is not green yet: two gates that read the workspace envelope fail without it, and
   SC-003 times out on the container's disk. See the platform observation record.
+- **The editor's Node is recorded at the VS Code floor (GC-19).** A new extension-host module prints
+  the VS Code, Electron and Node versions it runs on and checks that `node:sqlite` opens and writes a
+  WAL database there. VS Code 1.107.0 runs the extension on Node 22.21.1. See the Node floor record.
 - **A launch configuration debugs one host test file (GC-23).** `Debug Current Host Test File` in
   `.vscode/launch.json` runs the open file under the debugger. The commit hook stays opt-in.
 - **Internal robustness fixes with no setting or command change (GC-02, GC-03, GC-06, GC-07, GC-08).** A failed
