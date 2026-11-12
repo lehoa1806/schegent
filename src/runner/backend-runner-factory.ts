@@ -115,6 +115,8 @@ export interface BackendRunnerFactoryOptions {
     readonly primaryWorkspaceRoot?: string;
     readonly protectedDatabasePaths?: readonly string[];
     readonly currentOwnershipGeneration?: () => number;
+    /** See `AcpBackedRunnerOptions.primeAuthority`. */
+    readonly primeAuthority?: () => Promise<boolean>;
     readonly onAcpObservation?: (event: AcpRunnerObservationEvent) => void;
   };
 }
@@ -187,6 +189,7 @@ export function createBackendRunner(
           primaryWorkspaceRoot: options.acpDispatch.primaryWorkspaceRoot,
           protectedDatabasePaths: options.acpDispatch.protectedDatabasePaths,
           currentOwnershipGeneration: options.acpDispatch.currentOwnershipGeneration,
+          primeAuthority: options.acpDispatch.primeAuthority,
           onAcpObservation: options.acpDispatch.onAcpObservation
         })
       : cliRunner;
