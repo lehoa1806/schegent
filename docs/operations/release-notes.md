@@ -65,6 +65,12 @@ From the 2026-11-12 full repository review. Each item names its review gap (`GC-
   one store is not in the other. Documented in the file-layout reference; behaviour unchanged.
 - **A launch configuration debugs one host test file (GC-23).** `Debug Current Host Test File` in
   `.vscode/launch.json` runs the open file under the debugger. The commit hook stays opt-in.
+- **Internal robustness fixes with no setting or command change (GC-02, GC-03, GC-06, GC-07, GC-08).** A failed
+  workspace-lock heartbeat is logged instead of escaping as an unhandled rejection. Stage 2 wiring runs once
+  even when two triggers race, and its listeners are disposed with it. The CLI path accessor refuses an
+  unknown backend kind instead of answering with Claude's path. The run driver probes backends whatever
+  `NODE_ENV` says. The ACP authority gate decides window primacy from the verified verdict; an attached store
+  stands in only until the first verdict lands. A receipt the gate could not record is now reported.
 - **Recovery keeps going after one failure (GC-01, GC-04, GC-05).** One failed recovery step at startup no
   longer skips the steps after it, and one Run that cannot be re-armed no longer strands the queues after
   it. A state write past its deadline no longer blocks writes until a reset: writing resumes when that write
