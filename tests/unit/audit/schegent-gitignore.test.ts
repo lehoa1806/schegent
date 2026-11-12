@@ -140,3 +140,25 @@ describe('ensureSchegentGitignore — a non-conforming existing file is repaired
     expect(await fs.readFile(outsideFile, 'utf8')).toBe('# not schegent\n');
   });
 });
+
+describe('ensureSchegentGitignore — a failed first write logs no error text (GC-12 follow-up)', () => {
+  it('names the error class only, never its message or a path', async () => {
+    const probe = await fs.open(path.join(base, 'probe'), 'w');
+    const handleProto = Object.getPrototypeOf(probe) as { write: (...args: unknown[]) => Promise<unknown> };
+    await probe.close();
+    const leaked = path.join(workspaceRoot, '.schegent', '.gitignore');
+    const write = vi.spyOn(handleProto, 'write').mockRejectedValueOnce(new Error(`EIO: i/o error, write '${leaked}'`));
+    const logger = new SanitizedLogger();
+    const warn = vi.spyOn(logger, 'warn');
+    try {
+      await ensureSchegentGitignore(workspaceRoot, logger);
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls.at(0)?.at(0)).toBe('schegent gitignore ensure failed');
+    expect(warn.mock.calls.at(0)?.at(1)).toEqual({ error: 'Error' });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(workspaceRoot);
+  });
+});
