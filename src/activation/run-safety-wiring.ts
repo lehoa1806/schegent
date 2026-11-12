@@ -214,6 +214,7 @@ export async function createRunSafetyWiring(input: {
             'diff',
             '--binary',
             '--no-ext-diff',
+            '--no-textconv',
             (await resolveDiffBase(input.workspaceRoot)).ref
           ]),
           {

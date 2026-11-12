@@ -8,6 +8,13 @@
  *
  * `/dev/null` as the hooks directory works because git looks hooks up as `<dir>/<name>`, and no
  * such path can exist under it on any platform git runs on.
+ *
+ * Two more repository-named programs are handled per call, not here. A host `diff` that writes a
+ * patch passes `--no-ext-diff --no-textconv`, so neither `diff.external` nor a
+ * `diff.<driver>.textconv` runs (a textconv also replaced the file's content in the patch). The
+ * only host merge is `merge --ff-only`, which never invokes a merge driver. Clean and smudge
+ * filters stay on by decision: switching them off would make `add -A` in a lane store the raw
+ * worktree bytes, which for an encrypting filter is the plaintext.
  */
 export const HOST_GIT_CONFIG_OVERRIDES: readonly string[] = Object.freeze([
   '-c',

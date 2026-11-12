@@ -130,4 +130,18 @@ describe('GC-11 — every host spawn of git goes through the overrides', () => {
     }
     expect(missing).toEqual([]);
   });
+
+  // `git diff` runs a repository's `diff.<driver>.textconv` program unless told not to, and
+  // `--no-ext-diff` does not stop it. Every host patch that says `--no-ext-diff` also says
+  // `--no-textconv`.
+  it('each host patch that passes --no-ext-diff also passes --no-textconv', async () => {
+    const offenders: string[] = [];
+    for (const relative of await gitSpawningModules(srcRoot)) {
+      const text = await fs.readFile(path.join(srcRoot, relative), 'utf8');
+      const extDiff = text.split("'--no-ext-diff'").length - 1;
+      const textconv = text.split("'--no-textconv'").length - 1;
+      if (textconv < extDiff) offenders.push(relative);
+    }
+    expect(offenders).toEqual([]);
+  });
 });

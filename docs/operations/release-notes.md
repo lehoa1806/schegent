@@ -20,7 +20,9 @@ From the 2026-11-12 full repository review. Each item names its review gap (`GC-
   tighter. An ignored value is named in a warning. The idle and wall-clock invocation timeouts follow the same
   rule, and a Phase's authored spend bound applies only where it is tighter than the operator's.
 - **Host git calls no longer run the repository's fsmonitor or hooks (GC-11).** Every git call the extension
-  makes passes `core.fsmonitor=false` and an empty hooks path. Clean and smudge filters still run.
+  makes passes `core.fsmonitor=false` and an empty hooks path. The checkpoint and mutation-ledger diffs
+  also pass `--no-textconv`, so a repository textconv program no longer runs or replaces file content in a
+  checkpoint patch. Clean and smudge filters still run.
 - **A committed `.schegent/.gitignore` that does not ignore everything is repaired (GC-12).** The file is
   replaced with the canonical body and a warning is logged, so transcripts and the audit log stay
   uncommitted.
