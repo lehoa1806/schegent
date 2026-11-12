@@ -190,10 +190,13 @@ describe('restrictedConfigurations parity (FR-R3-136 T1526c)', () => {
     // `schegent.lanes.enabled`, `schegent.lanes.liveCap`, and
     // `schegent.lanes.provisioningDeadlineSeconds`, all `run-shape` (`resource` scope; an
     // untrusted window starts no Runs and provisions no lanes).
+    // FR-R6-F14 (F14-FR-01, F14-FR-02, F14-FR-09) — executable-authority list 10 -> 17 with
+    // `schegent.telemetry.export.*` (`application` scope so workspace settings cannot enable,
+    // redirect, or attach credentials to outbound OTLP telemetry export).
     expect(workspaceSettableKeys()).toHaveLength(34);
     expect(Object.keys(CONFIGURATION_SENSITIVITY)).toHaveLength(34);
     expect(derivedRestrictedConfigurations()).toHaveLength(15);
-    expect(EXECUTABLE_AUTHORITY_PROPERTIES).toHaveLength(10);
+    expect(EXECUTABLE_AUTHORITY_PROPERTIES).toHaveLength(17);
 
     const histogram = new Map<SensitivityClass, number>();
     for (const entry of Object.values(CONFIGURATION_SENSITIVITY)) {

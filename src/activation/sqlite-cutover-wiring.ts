@@ -7,7 +7,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
-import type * as vscode from 'vscode';
+import * as vscode from 'vscode';
 
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { StorageDetailsReader } from '../contracts/sidebar-ipc/storage-details';
@@ -50,6 +50,11 @@ import {
   SqliteApplicationStore,
   type SwitchableCatalogFsAdapter
 } from '../services/sqlite-store';
+import type { TelemetrySecretPort } from '../contracts/telemetry-export';
+import {
+  createTelemetryHostService,
+  type TelemetryHostService
+} from '../services/telemetry-host/telemetry-host-service';
 import type { AcpAttemptBinding, AcpUsageUpdate } from '../services/usage-accounting/acp-usage-mapping';
 import { metricsRollupLegacySource } from '../services/usage-accounting/legacy-epoch';
 import {
@@ -77,7 +82,8 @@ import type { WorkspaceStateStore } from '../state/workspace-state';
 import {
   readLanesEnabled,
   readLanesLiveCap,
-  readLanesProvisioningDeadlineMs
+  readLanesProvisioningDeadlineMs,
+  readTelemetryExportUserSettings
 } from './uncached-settings-accessors';
 
 const operationalMementoByStore = new WeakMap<WorkspaceStateStore, SwitchableOperationalMemento>();
@@ -255,6 +261,7 @@ export interface SqliteCutoverServices {
   readonly artifactLifecycle: ArtifactLifecycleService;
   readonly usageAccounting: UsageAccountingService;
   readonly usageWiring: UsageAccountingWiring;
+  readonly telemetryHost: TelemetryHostService;
   readonly liveLogIndex: LiveLogIndex;
   readonly recoveryHandoff: RecoveryHandoffService;
   readonly laneService: LaneService;
@@ -271,6 +278,7 @@ export interface SqliteCutoverCoordinator {
   getSqliteStore(): SqliteApplicationStore | null;
   getArtifactLifecycle(): ArtifactLifecycleService | null;
   getUsageAccounting(): UsageAccountingService | null;
+  getTelemetryHost(): TelemetryHostService | null;
   getLiveLogIndex(): LiveLogIndex | null;
   getRecoveryHandoff(): RecoveryHandoffService | null;
   getLaneService(): LaneService | null;
@@ -291,7 +299,9 @@ export interface SqliteCutoverCoordinator {
 }
 
 export interface CreateSqliteCutoverCoordinatorDeps {
-  readonly context: Pick<vscode.ExtensionContext, 'storageUri' | 'globalStorageUri' | 'subscriptions'>;
+  readonly context: Pick<vscode.ExtensionContext, 'storageUri' | 'globalStorageUri' | 'subscriptions'> & {
+    readonly secrets?: Pick<vscode.SecretStorage, 'get'> | undefined;
+  };
   readonly workspaceRoot: string;
   readonly store: WorkspaceStateStore;
   readonly auditWriter: AuditLogWriter;
@@ -301,6 +311,19 @@ export interface CreateSqliteCutoverCoordinatorDeps {
   readonly isWorkspaceTrusted: () => boolean;
   readonly hasPrimacy: () => Promise<boolean>;
   readonly disposables: vscode.Disposable[];
+}
+
+function buildSecretPort(
+  secrets: Pick<vscode.SecretStorage, 'get'> | undefined
+): TelemetrySecretPort | null {
+  if (secrets === undefined) return null;
+  return {
+    availability: () => 'available',
+    async read(reference: string): Promise<string | null> {
+      const value = await secrets.get(reference);
+      return typeof value === 'string' && value.length > 0 ? value : null;
+    }
+  };
 }
 
 interface OpenPrimarySqliteServicesInput {
@@ -382,11 +405,29 @@ async function openPrimarySqliteServices(
     });
     await usageAccounting.importLegacyEpoch(metricsRollupLegacySource(deps.workspaceRoot));
 
+    const telemetryHost = createTelemetryHostService({
+      sqliteStore,
+      storageRoot,
+      secrets: buildSecretPort(deps.context.secrets),
+      isWorkspaceTrusted: deps.isWorkspaceTrusted,
+      serviceVersion: '0.2.0'
+    });
+    telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
+    const configSub = vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('schegent.telemetry.export')) {
+        telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
+      }
+    });
+    deps.context.subscriptions.push(configSub);
+
     const usageWiring = createUsageAccountingWiring({
       service: usageAccounting,
       auditWriter: deps.auditWriter,
       subscriptions: deps.context.subscriptions,
-      logger: deps.logger
+      logger: deps.logger,
+      onAcceptedObservation: (observationId) => {
+        telemetryHost.offerAcceptedObservationById(observationId);
+      }
     });
 
     const liveLogIndex = createLiveLogIndex(sqliteStore.writerConnection);
@@ -483,6 +524,7 @@ async function openPrimarySqliteServices(
       artifactLifecycle,
       usageAccounting,
       usageWiring,
+      telemetryHost,
       liveLogIndex,
       recoveryHandoff,
       laneService,
@@ -547,7 +589,14 @@ export function createSqliteCutoverCoordinator(
       catalogFs?.detachSqlite();
       current.usageWiring.dispose();
       current.workflowComposition.dispose();
-      current.sqliteStore.close();
+      if (current.telemetryHost.getStatus().evaluation.kind === 'disabled') {
+        void current.telemetryHost.shutdown();
+        current.sqliteStore.close();
+      } else {
+        void current.telemetryHost.shutdown().finally(() => {
+          current.sqliteStore.close();
+        });
+      }
     }
     coordinatorByStore.delete(deps.store);
   };
@@ -586,6 +635,7 @@ export function createSqliteCutoverCoordinator(
     getSqliteStore: () => activeServices?.sqliteStore ?? null,
     getArtifactLifecycle: () => activeServices?.artifactLifecycle ?? null,
     getUsageAccounting: () => activeServices?.usageAccounting ?? null,
+    getTelemetryHost: () => activeServices?.telemetryHost ?? null,
     getLiveLogIndex: () => activeServices?.liveLogIndex ?? null,
     getRecoveryHandoff: () => activeServices?.recoveryHandoff ?? null,
     getLaneService: () => activeServices?.laneService ?? null,
@@ -684,7 +734,10 @@ export function createSqliteCutoverCoordinator(
     recordAcpUsageUpdate(update, binding) {
       if (activeServices === null) return;
       try {
-        activeServices.usageAccounting.ingestAcpUsageUpdate(update, binding);
+        const res = activeServices.usageAccounting.ingestAcpUsageUpdate(update, binding);
+        if (res.ok && res.value.disposition === 'accepted') {
+          activeServices.telemetryHost.offerAcceptedObservationById(res.value.observationId);
+        }
       } catch {
         // Accounting never interrupts agent execution.
       }

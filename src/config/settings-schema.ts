@@ -185,6 +185,57 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     enum: ['auto', 'agy-acp-native', 'claude-acp-bridge', 'codex-acp-bridge'],
     docLabel: 'ACP agent profile selection'
   },
+  'schegent.telemetry.export.enabled': {
+    key: 'schegent.telemetry.export.enabled',
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    docLabel: 'Optional OTLP metadata export opt-in'
+  },
+  'schegent.telemetry.export.endpoint': {
+    key: 'schegent.telemetry.export.endpoint',
+    type: 'string',
+    default: '',
+    scope: 'application',
+    docLabel: 'Optional OTLP/HTTP metrics destination URL'
+  },
+  'schegent.telemetry.export.protocol': {
+    key: 'schegent.telemetry.export.protocol',
+    type: 'enum',
+    default: 'otlp-http-json',
+    scope: 'application',
+    enum: ['otlp-http-json', 'otlp-http-protobuf', 'otlp-grpc'],
+    docLabel: 'Declared OTLP export protocol'
+  },
+  'schegent.telemetry.export.allowPlaintextLoopback': {
+    key: 'schegent.telemetry.export.allowPlaintextLoopback',
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    docLabel: 'Allow plaintext OTLP export to verified loopback endpoints'
+  },
+  'schegent.telemetry.export.credentialSecretKey': {
+    key: 'schegent.telemetry.export.credentialSecretKey',
+    type: 'string',
+    default: '',
+    scope: 'application',
+    docLabel: 'SecretStorage key reference for OTLP credential'
+  },
+  'schegent.telemetry.export.credentialHeaderName': {
+    key: 'schegent.telemetry.export.credentialHeaderName',
+    type: 'string',
+    default: 'Authorization',
+    scope: 'application',
+    docLabel: 'HTTP header name for SecretStorage OTLP credential'
+  },
+  'schegent.telemetry.export.contentPolicy': {
+    key: 'schegent.telemetry.export.contentPolicy',
+    type: 'enum',
+    default: 'metadata-only',
+    scope: 'application',
+    enum: ['metadata-only', 'content'],
+    docLabel: 'Explicit telemetry content-export policy'
+  },
   'schegent.lanes.enabled': {
     key: 'schegent.lanes.enabled',
     type: 'boolean',

@@ -286,7 +286,14 @@ export const EXECUTABLE_AUTHORITY_PROPERTIES: readonly string[] = Object.freeze(
   'schegent.cli.environmentMode',
   'schegent.cli.inheritEnvironment',
   'schegent.cli.path',
-  'schegent.codex.path'
+  'schegent.codex.path',
+  'schegent.telemetry.export.allowPlaintextLoopback',
+  'schegent.telemetry.export.contentPolicy',
+  'schegent.telemetry.export.credentialHeaderName',
+  'schegent.telemetry.export.credentialSecretKey',
+  'schegent.telemetry.export.enabled',
+  'schegent.telemetry.export.endpoint',
+  'schegent.telemetry.export.protocol'
 ]);
 
 /** The scopes a workspace can set. VS Code treats an absent scope as `window`. */
