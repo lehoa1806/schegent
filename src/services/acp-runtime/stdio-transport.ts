@@ -212,13 +212,7 @@ class ManagedCliChildImpl implements ManagedCliChild {
   }
 
   writeStdin(text: string): boolean {
-    if (!this.child.stdin || this.child.stdin.destroyed || !this.child.stdin.writable) return false;
-    try {
-      this.child.stdin.write(text, 'utf8');
-      return true;
-    } catch {
-      return false;
-    }
+    return this.channel.write(text);
   }
 
   endStdin(): void {

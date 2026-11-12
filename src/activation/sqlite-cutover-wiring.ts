@@ -1,5 +1,5 @@
 // FR-R3-136 (T1525a) — TRUST CLASSIFICATION: DEFERRED.
-// Opening the writable SQLite store, running F04 cutover migrations, and reconciling
+// Opening the writable SQLite store, executing F04 cutover migrations, and reconciling
 // F05/F06/F07/F08 state are handed to `stage2-producers.ts` via `runSafety.replayTerminalTransitions`
 // and `runSafety.reconcileComposableWorkflowRuns`, gated on `isWorkspaceTrusted()` and `lock.hasPrimacy()`.
 // At wiring time this module only attaches a read-only SQLite snapshot if an existing DB file is present.
@@ -16,6 +16,7 @@ import { createStorageDetailsReader } from '../headless/artifact-lifecycle-api';
 import { createPhaseContextApi, type PhaseContextApi } from '../headless/phase-context-api';
 import { createUsageAccountingReader } from '../headless/usage-accounting-api';
 import type { SanitizedLogger } from '../lib/logger';
+import { resolveContainedLink } from '../lib/path-containment';
 import { openWithinRoot } from '../lib/safe-open';
 import type { AcpRunnerObservationEvent } from '../runner/acp-backed-runner';
 import {
@@ -35,7 +36,17 @@ import {
   LaneService,
   type RunLaneCoordinator
 } from '../services/execution-lanes';
+import { IntegrationStore } from '../services/execution-lanes/integration-store';
+import {
+  createChangeReviewService,
+  integrationStoreSource,
+  type ChangeReviewService
+} from '../services/change-review';
 import { createLiveLogIndex, type LiveLogIndex } from '../services/phase-log/live-log-index';
+import {
+  createReportingService,
+  type ReportingService
+} from '../services/reporting';
 import {
   createPhaseHandoffCoordinator,
   createSqliteHandoffStore,
@@ -139,7 +150,7 @@ export function deriveWorkspaceScopeId(workspaceRoot: string): string {
   return createHash('sha256').update(workspaceRoot, 'utf8').digest('hex').slice(0, 16);
 }
 
-function buildNodeLifecycleFs(): LifecycleFs {
+function buildNodeLifecycleFs(allowedRoots: readonly string[]): LifecycleFs {
   return {
     async lstat(absolutePath) {
       try {
@@ -164,7 +175,14 @@ function buildNodeLifecycleFs(): LifecycleFs {
       }
     },
     realpath: (absolutePath) => fsp.realpath(absolutePath),
-    unlink: (absolutePath) => fsp.unlink(absolutePath)
+    async unlink(absolutePath) {
+      const contained = await resolveContainedLink(absolutePath, allowedRoots);
+      if (contained.outcome === 'absent') return;
+      if (contained.outcome !== 'contained') {
+        throw new Error(`lifecycle unlink refused outside allowed roots (${contained.reason})`);
+      }
+      await fsp.unlink(contained.resolved);
+    }
   };
 }
 
@@ -267,6 +285,8 @@ export interface SqliteCutoverServices {
   readonly laneService: LaneService;
   readonly runLaneCoordinator: RunLaneCoordinator;
   readonly phaseHandoffCoordinator: PhaseHandoffCoordinator;
+  readonly reportingService: ReportingService;
+  readonly changeReviewService: ChangeReviewService;
   readonly workflowComposition: ProductionWorkflowComposition;
 }
 
@@ -284,13 +304,15 @@ export interface SqliteCutoverCoordinator {
   getLaneService(): LaneService | null;
   getRunLaneCoordinator(): RunLaneCoordinator | null;
   getPhaseHandoffCoordinator(): PhaseHandoffCoordinator | null;
+  getReportingService(): ReportingService | null;
+  getChangeReviewService(): ChangeReviewService | null;
   getPhaseContextApi(): PhaseContextApi;
   getProtectedRunIds(): ReadonlySet<string>;
   getDatabaseProtectedPaths(): readonly string[];
   onTerminalRun(summary: TerminalRunSummary): void;
   completeRootExecutionLane(params: {
     readonly rootExecutionId: string;
-    readonly laneId?: string;
+    readonly laneId?: string | undefined;
     readonly status: 'completed' | 'failed' | 'canceled';
   }): void;
   recordAcpObservation(event: AcpRunnerObservationEvent): void;
@@ -370,7 +392,7 @@ async function openPrimarySqliteServices(
     const artifactLifecycle = createArtifactLifecycleService({
       conn: sqliteStore.writerConnection,
       nowMs: () => Date.now(),
-      fs: buildNodeLifecycleFs(),
+      fs: buildNodeLifecycleFs([deps.workspaceRoot, storageRoot]),
       probe,
       byteReader: reader,
       audit: {
@@ -471,6 +493,30 @@ async function openPrimarySqliteServices(
       resolveLaneId: (runId) => runLaneCoordinator.resolveLaneIdForRun(runId)
     });
 
+    const hostTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const reportingService = createReportingService({
+      conn: sqliteStore.writerConnection,
+      readPool: sqliteStore.readPool,
+      workspaceId: scopeId,
+      workspaceRoot: deps.workspaceRoot,
+      nowMs: () => Date.now(),
+      monotonicMs: () => performance.now(),
+      hostTimezone,
+      accounting: usageAccounting,
+      logger: {
+        warn: (code, ctx) => {
+          deps.logger.warn(code, ctx);
+        }
+      }
+    });
+    await reportingService.reconcileExports();
+
+    const changeReviewService = createChangeReviewService({
+      source: integrationStoreSource(new IntegrationStore(sqliteStore.writerConnection), scopeId),
+      git: createExecFileGitRunner(),
+      cwd: deps.workspaceRoot
+    });
+
     const durableHandoffSeam: DurableArtifactHandoverSeam = Object.freeze({
       status: 'qualified' as const,
       requestHandover(req: Parameters<DurableArtifactHandoverSeam['requestHandover']>[0]) {
@@ -530,6 +576,8 @@ async function openPrimarySqliteServices(
       laneService,
       runLaneCoordinator,
       phaseHandoffCoordinator,
+      reportingService,
+      changeReviewService,
       workflowComposition
     };
   } catch (error) {
@@ -641,6 +689,8 @@ export function createSqliteCutoverCoordinator(
     getLaneService: () => activeServices?.laneService ?? null,
     getRunLaneCoordinator: () => activeServices?.runLaneCoordinator ?? null,
     getPhaseHandoffCoordinator: () => activeServices?.phaseHandoffCoordinator ?? null,
+    getReportingService: () => activeServices?.reportingService ?? null,
+    getChangeReviewService: () => activeServices?.changeReviewService ?? null,
     getPhaseContextApi: () => createPhaseContextApi(() => activeServices?.phaseHandoffCoordinator ?? null),
     getProtectedRunIds: () => querySqliteProtectedRunIds(activeServices),
     getDatabaseProtectedPaths: () => [
@@ -754,6 +804,9 @@ function querySqliteProtectedRunIds(services: SqliteCutoverServices | null): Rea
   if (services === null) return result;
   for (const lanePinnedRunId of services.runLaneCoordinator.getProtectedRunIds()) {
     result.add(lanePinnedRunId);
+  }
+  for (const exportPinnedRunId of services.reportingService.activeExportRootIds()) {
+    result.add(exportPinnedRunId);
   }
   try {
     const rows = services.sqliteStore.writerConnection.all<{ readonly run_id: string }>(

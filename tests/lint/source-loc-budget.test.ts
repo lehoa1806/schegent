@@ -718,7 +718,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // command (its literal import, validator import and switch arm) adds 4 lines and lands the
   // file at 758 by this gate's count, inside `tightMargin`'s band. Measurement plus 26, the
   // rule the entry above it states.
-  { path: 'src/contracts/runtime-validators.ts', maxLines: 784 },
+  // Features 310/311/314 (FR-R6-F11/F12/F15, 2026-11-12) — 784 -> 814: the reporting and
+  // execution-visibility command families (five literal imports, two validator module imports,
+  // response guard re-exports and five switch arms) add 30 lines and land the file at 788 by
+  // this gate's count. Measurement plus 26, keeping domain payload validation in focused modules.
+  { path: 'src/contracts/runtime-validators.ts', maxLines: 814 },
   // P4 IPC-family extraction ratchet: 1,250 → 885. The stable barrel retains
   // literals and guards while domain wire shapes live in focused modules.
   // Feature 084 (T071) — 885 → 950 for the process-YAML command family. Its
@@ -826,7 +830,13 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // command (its constant, `COMMAND_TYPES` member, barrel re-exports, union member, guard and
   // guard-map row) and the batch message that replaced the one-entry push add 10 lines and land
   // the file at 1182 by this gate's count, inside the band. Measurement plus 26, the same rule.
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1208 },
+  // Features 310/311/314 (FR-R6-F11/F12/F15, 2026-11-12) — 1208 -> 1296: five commands across
+  // `sidebar-ipc/reporting.ts` and `sidebar-ipc/execution-visibility.ts` (five constants,
+  // `COMMAND_TYPES` members, barrel re-exports, union members, discriminator guards and
+  // `COMMAND_GUARDS` rows) add 85 lines and land the file at 1268 by this gate's count;
+  // payload types stay in their sub-modules. Measurement plus 28 keeps headroom outside
+  // `tightMargin(1296)` (25 lines).
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1296 },
   // Waived, not budgeted. Feature 063's operator decision retired the ceiling
   // on this file and on queue-manager.ts below; it did not set a large one. The
   // entries used to say `maxLines: 10_000` against files of 2,500 and 1,821,

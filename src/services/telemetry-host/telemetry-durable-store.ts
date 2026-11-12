@@ -19,6 +19,7 @@ import {
   type ResolvedDestination,
   type TelemetryLedgerPort
 } from '../../contracts/telemetry-export';
+import { resolveContainedLink } from '../../lib/path-containment';
 import { openWithinRoot } from '../../lib/safe-open';
 import type { SqliteApplicationStore } from '../sqlite-store';
 
@@ -320,7 +321,9 @@ export function createTelemetrySpoolStore(params: {
   async function unlinkQuietly(relPath: string): Promise<void> {
     if (!relPath.startsWith(`${SPOOL_SUBDIR}/`) || relPath.includes('..')) return;
     try {
-      await fsp.unlink(path.join(storageRoot, relPath));
+      const contained = await resolveContainedLink(path.join(storageRoot, relPath), [storageRoot]);
+      if (contained.outcome !== 'contained') return;
+      await fsp.unlink(contained.resolved);
     } catch {
       // Missing or already removed spool leaf.
     }

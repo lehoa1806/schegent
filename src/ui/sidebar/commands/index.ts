@@ -37,6 +37,11 @@ import {
   CMD_READ_FAILURE_RECORD,
   CMD_READ_STORAGE_DETAILS,
   CMD_READ_USAGE_ACCOUNTING,
+  CMD_READ_REPORT,
+  CMD_MUTATE_REPORT,
+  CMD_READ_EXECUTION_VISIBILITY,
+  CMD_OPEN_CHANGE_REVIEW,
+  CMD_DECIDE_PHASE_HANDOFF,
   CMD_READ_PHASE_LOG,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_REMOVE_TASK_PHASE,
@@ -104,6 +109,11 @@ import { handler as openDecisionRecord } from './cmd-open-decision-record';
 import { handler as readFailureRecord } from './cmd-read-failure-record';
 import { handler as readStorageDetails } from './cmd-read-storage-details';
 import { handler as readUsageAccounting } from './cmd-read-usage-accounting';
+import { handler as readReport } from './cmd-read-report';
+import { handler as mutateReport } from './cmd-mutate-report';
+import { handler as readExecutionVisibility } from './cmd-read-execution-visibility';
+import { handler as openChangeReview } from './cmd-open-change-review';
+import { handler as decidePhaseHandoff } from './cmd-decide-phase-handoff';
 import { handler as readPhaseLog } from './cmd-read-phase-log';
 import { handler as removeQueueItem } from './cmd-remove-queue-item';
 import { handler as removeTaskPhase } from './cmd-remove-task-phase';
@@ -187,6 +197,11 @@ export const HANDLER_TABLE: CommandHandlerTable = Object.freeze({
   [CMD_READ_FAILURE_RECORD]: readFailureRecord,
   [CMD_READ_STORAGE_DETAILS]: readStorageDetails,
   [CMD_READ_USAGE_ACCOUNTING]: readUsageAccounting,
+  [CMD_READ_REPORT]: readReport,
+  [CMD_MUTATE_REPORT]: mutateReport,
+  [CMD_READ_EXECUTION_VISIBILITY]: readExecutionVisibility,
+  [CMD_OPEN_CHANGE_REVIEW]: openChangeReview,
+  [CMD_DECIDE_PHASE_HANDOFF]: decidePhaseHandoff,
   [CMD_READ_PHASE_LOG]: readPhaseLog,
   [CMD_REMOVE_QUEUE_ITEM]: removeQueueItem,
   [CMD_REMOVE_TASK_PHASE]: removeTaskPhase,

@@ -126,6 +126,52 @@ export interface OutcomeLineageEntry {
   readonly outcome: string;
 }
 
+/** F11-FR-10: metadata-only artifact availability reference without any filesystem path or URI. */
+export interface ReportEvidenceReference {
+  readonly artifactId: string;
+  readonly rootId: string;
+  readonly attemptId: string | null;
+  readonly storeKind: string;
+  readonly availability: string;
+  readonly byteSize: number;
+  readonly retentionClass: string;
+}
+
+/** F11-FR-23: cutoff-pinned ACP profile/attempt attribution; history replay adds no live count. */
+export interface AttemptAcpAttribution {
+  readonly attemptId: string;
+  readonly rootId: string;
+  readonly backendKind: string | null;
+  readonly modelId: string | null;
+  readonly profileId: string | null;
+  readonly laneId: string | null;
+  readonly liveObservations: number;
+}
+
+/** F11-FR-23: cutoff-pinned accepted handoff metadata joined to its source attempt. */
+export interface AttemptHandoffSummary {
+  readonly handoffId: string;
+  readonly rootId: string;
+  readonly sourceAttemptId: string;
+  readonly targetPhaseId: string;
+  readonly revision: number;
+  readonly status: string;
+  readonly recordBytes: number;
+}
+
+/** F11-FR-23: cutoff-pinned review-loop finding counts without prose or paths. */
+export interface RootReviewLoopSummary {
+  readonly loopId: string;
+  readonly rootId: string;
+  readonly nodeId: string;
+  readonly iteration: number;
+  readonly verdict: string;
+  readonly candidateRef: string | null;
+  readonly openFindings: number;
+  readonly resolvedFindings: number;
+  readonly totalFindings: number;
+}
+
 export interface RootDrillDown {
   readonly reportId: string;
   readonly root: RootRow;
@@ -135,4 +181,8 @@ export interface RootDrillDown {
   /** F06 rows for this root at the report's revision; null when accounting is not available. */
   readonly usage: readonly UsageRow[] | null;
   readonly omissions: readonly ReportOmission[];
+  readonly evidenceRefs?: readonly ReportEvidenceReference[];
+  readonly acpAttributions?: readonly AttemptAcpAttribution[];
+  readonly handoffSummaries?: readonly AttemptHandoffSummary[];
+  readonly reviewSummaries?: readonly RootReviewLoopSummary[];
 }

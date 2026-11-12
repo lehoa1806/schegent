@@ -49,7 +49,7 @@ describe('sidebar command metadata', () => {
       const missing = COMMAND_TYPES.filter((type) => !keys.includes(type));
       const extra = keys.filter((key) => !declared.has(key));
 
-      expect(COMMAND_TYPES.length, 'the 66 commands were parsed').toBe(66);
+      expect(COMMAND_TYPES.length, 'the 71 commands were parsed').toBe(71);
       expect(missing, `commands with no authority entry: ${missing.join(', ')}`).toEqual([]);
       expect(extra, `keys that are not commands: ${extra.join(', ')}`).toEqual([]);
       expect(keys).toHaveLength(COMMAND_TYPES.length);
@@ -91,10 +91,11 @@ describe('sidebar command metadata', () => {
     // FR-R6-F05 added the read-only CMD_READ_STORAGE_DETAILS (10 to 11 read-only, 63 to 64).
     // FR-R6-F06 added the read-only CMD_READ_USAGE_ACCOUNTING (11 to 12 read-only, 64 to 65).
     // FR-R6-F07 added the gated CMD_ACK_PHASE_LOG_TAIL (53 to 54 gated, 65 to 66).
-    it('counts 54 gated and 12 read-only commands over 66', () => {
-      expect(MUTATING_COMMAND_TYPES).toHaveLength(54);
-      expect(READ_ONLY_COMMAND_TYPES).toHaveLength(12);
-      expect(MUTATING_COMMAND_TYPES.length + READ_ONLY_COMMAND_TYPES.length).toBe(66);
+    // FR-R6-F11/F12/F15 added 2 read-only and 3 gated commands (54 to 57 gated, 12 to 14 read-only, 66 to 71).
+    it('counts 57 gated and 14 read-only commands over 71', () => {
+      expect(MUTATING_COMMAND_TYPES).toHaveLength(57);
+      expect(READ_ONLY_COMMAND_TYPES).toHaveLength(14);
+      expect(MUTATING_COMMAND_TYPES.length + READ_ONLY_COMMAND_TYPES.length).toBe(71);
     });
 
     it('treats a type outside the union as gated and serialized (fail-closed)', () => {

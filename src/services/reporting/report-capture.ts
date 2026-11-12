@@ -13,10 +13,14 @@
 import { reportFailed, reportOk, type ReportResult } from '../../contracts/reporting/report-outcomes';
 import type { ReportQuery } from '../../contracts/reporting/report-query';
 import type {
+  AttemptAcpAttribution,
+  AttemptHandoffSummary,
   LegacyUsageSummary,
   ReportCoverage,
+  ReportEvidenceReference,
   ReportOmission,
-  ReportRow
+  ReportRow,
+  RootReviewLoopSummary
 } from '../../contracts/reporting/report-rows';
 import { toUtcIso } from './report-time';
 import { readUsage, usageRequestOf, type AccountingPort, type UsageReadOptions } from './report-usage';
@@ -62,13 +66,30 @@ export interface Capture {
   readonly attempts: readonly SnapshotAttempt[];
   readonly accountingRevision: number | null;
   readonly omissions: readonly ReportOmission[];
+  readonly evidenceRefs?: readonly ReportEvidenceReference[];
+  readonly acpAttributions?: readonly AttemptAcpAttribution[];
+  readonly handoffSummaries?: readonly AttemptHandoffSummary[];
+  readonly reviewSummaries?: readonly RootReviewLoopSummary[];
   readonly usage?: UsageCapture;
 }
 
-/** The source rows of a capture in identity order (R10): roots then attempts, or F06 rows then legacy. */
+/** The source rows of a capture in identity order (R10): roots then attempts (plus joined cutoff facts), or F06 rows then legacy. */
 export function sourcesOf(capture: Capture): readonly (readonly unknown[])[] {
   if (capture.usage === undefined) {
-    return [capture.roots, capture.attempts];
+    const groups: (readonly unknown[])[] = [capture.roots, capture.attempts];
+    if (capture.evidenceRefs !== undefined && capture.evidenceRefs.length > 0) {
+      groups.push(capture.evidenceRefs);
+    }
+    if (capture.acpAttributions !== undefined && capture.acpAttributions.length > 0) {
+      groups.push(capture.acpAttributions);
+    }
+    if (capture.handoffSummaries !== undefined && capture.handoffSummaries.length > 0) {
+      groups.push(capture.handoffSummaries);
+    }
+    if (capture.reviewSummaries !== undefined && capture.reviewSummaries.length > 0) {
+      groups.push(capture.reviewSummaries);
+    }
+    return groups;
   }
   return [capture.usage.rows, capture.usage.legacy === undefined ? [] : [capture.usage.legacy]];
 }
@@ -101,7 +122,10 @@ function captureRuns(source: ReportSource, query: ReportQuery, cutoffMs: number)
   if (!captured.ok) {
     return captured;
   }
-  return reportOk({ roots: captured.value.roots, attempts: captured.value.attempts, ...pinned });
+  return reportOk({
+    ...captured.value,
+    ...pinned
+  });
 }
 
 function usageOptions(cap: number, signal: AbortSignal | undefined): UsageReadOptions {

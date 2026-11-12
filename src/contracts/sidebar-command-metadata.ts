@@ -34,6 +34,11 @@ import {
   CMD_READ_FAILURE_RECORD,
   CMD_READ_STORAGE_DETAILS,
   CMD_READ_USAGE_ACCOUNTING,
+  CMD_READ_REPORT,
+  CMD_MUTATE_REPORT,
+  CMD_READ_EXECUTION_VISIBILITY,
+  CMD_OPEN_CHANGE_REVIEW,
+  CMD_DECIDE_PHASE_HANDOFF,
   CMD_OPEN_DECISION_RECORD,
   CMD_READ_METRICS,
   CMD_READ_PHASE_LOG,
@@ -262,6 +267,15 @@ export const COMMAND_AUTHORITY = Object.freeze({
   // FR-R6-F07: the ack only moves a tail the gated start opened, so it is gated
   // with it; it appends no row of its own.
   [CMD_ACK_PHASE_LOG_TAIL]: gatedConcurrent('advances delivery on a tail the gated start opened'),
+  [CMD_MUTATE_REPORT]: gatedConcurrent(
+    'writes an operator-chosen report export file or mutates a saved report record in SQLite'
+  ),
+  [CMD_OPEN_CHANGE_REVIEW]: gatedConcurrent(
+    'spawns bounded git reads to open, refresh, classify, page or close an immutable candidate change review'
+  ),
+  [CMD_DECIDE_PHASE_HANDOFF]: gated(
+    'writes an expected-revision manual phase handoff decision in the SQLite handoff store'
+  ),
 
   // The nine that stay read-only. Each reason says what the command does and that it
   // has none of the four effects (`tests/unit/contracts/sidebar-command-metadata.test.ts`
@@ -301,6 +315,12 @@ export const COMMAND_AUTHORITY = Object.freeze({
   ),
   [CMD_READ_USAGE_ACCOUNTING]: readOnly(
     'reads one revision-pinned page of the usage accounting store; starts no process, writes no persisted state or file, appends no audit row and ingests, corrects or imports nothing'
+  ),
+  [CMD_READ_REPORT]: readOnly(
+    'runs a read-only historical report query, page read, drill-down or saved-report lookup; starts no process, writes no persisted state or file and appends no audit row'
+  ),
+  [CMD_READ_EXECUTION_VISIBILITY]: readOnly(
+    'reads bounded SQLite projections for attempt visibility, lane posture and telemetry preview; starts no process, writes no persisted state or file and appends no audit row'
   )
 } satisfies Record<CommandType, CommandAuthority>);
 
