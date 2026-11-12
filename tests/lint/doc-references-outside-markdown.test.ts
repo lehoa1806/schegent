@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
+import { envelopePresent } from './envelope-presence';
 
 /**
  * FR-R3-063 — documentation paths cited from places `docs:check` cannot see.
@@ -38,13 +39,17 @@ const ROOT = resolve(__dirname, '..', '..');
  * only there. The fallback is for the bare form, which in a two-tree workspace
  * genuinely names either.
  *
- * IN A STANDALONE `repo/` CHECKOUT the second root does not exist and an
- * envelope-side citation goes red here. That is the right outcome and not a
- * portability bug: the standalone clone is not a supported layout of this
- * project, and a fallback that quietly passed when the tree it needs is missing
- * would be the vacuous-gate failure this item is about.
+ * IN A STANDALONE `repo/` CHECKOUT the second root does not exist, so a bare
+ * citation that misses `repo/` may still be a true envelope-side one and cannot
+ * be judged. Only the explicit `repo/docs/...` citations are judged there.
+ * This reverses an earlier reading that a standalone clone is unsupported and
+ * should go red: FR-R3-118 promises that a clone reaches a green gate, and the
+ * Linux leg (review gap GC-18, 2026-11-12) is one. Passing the unjudgeable
+ * citations is not the vacuous pass warned of above, because the controls below
+ * still prove the resolver refuses and that the envelope is really absent.
  */
 const RESOLUTION_ROOTS = [ROOT, resolve(ROOT, '..')] as const;
+const ENVELOPE_HERE = envelopePresent();
 
 /** Where a doc path can be cited from. */
 const SCANNED_DIRS = ['src', 'webview-ui/src', 'scripts'] as const;
@@ -169,7 +174,8 @@ describe('documentation paths cited outside Markdown resolve (FR-R3-063)', () =>
   });
 
   it('resolves every cited path, or names it as knowingly absent with a reason', () => {
-    const broken = all
+    const judged = ENVELOPE_HERE ? all : all.filter((c) => c.repoSide);
+    const broken = judged
       .filter((c) => !resolvesForReader(c.target, c.repoSide))
       .filter((c) => !KNOWN_ABSENT.has(c.target))
       .map((c) => `${c.from}:${c.line} -> ${c.target}`);
@@ -209,9 +215,11 @@ describe('documentation paths cited outside Markdown resolve (FR-R3-063)', () =>
     // One real file per tree, so a broken root shows up here rather than as a
     // clean run. Both are load-bearing documents that will not quietly vanish.
     expect(resolvesForReader('docs/development/lint-gate-census.md', true)).toBe(true);
+    // Without the envelope the same file must NOT resolve, or the absence that narrows the
+    // judgement above is not real.
     expect(
       resolvesForReader('docs/architecture/release-posture-engineering-preview.md', false)
-    ).toBe(true);
+    ).toBe(ENVELOPE_HERE);
     // And the envelope-side one is NOT reachable as a repo-side citation, which
     // is the precision the ordered roots exist to keep.
     expect(

@@ -71,10 +71,12 @@ recorded run, the re-run is recorded as such, as that note instructs.
    into the section "What the one observed cell is, and is not" on the same day, before any later
    `npm run gate:record` overwrites the file. A difference in any of them is carried and printed, not
    refused, so it is said beside the cell.
-3. A standalone clone records that the workspace envelope was absent. Not every gate that reads the
-   envelope skips without it: `basename-line-references` and `doc-references-outside-markdown` fail
-   instead (observed in the Linux leg on 2026-11-12, inferred for a standalone clone). The cell is
-   still an observation of what did run; say so beside it, and name those two reds.
+3. A standalone clone records that the workspace envelope was absent. The gates that read the
+   envelope skip or narrow without it: `basename-line-references` sets its corpus floors to what
+   `repo/` alone holds, and `doc-references-outside-markdown` judges only the explicit `repo/`
+   citations, since a bare one may be true of the envelope it cannot see. Until 2026-11-12 these two
+   failed instead (observed in the Linux leg). The cell is still an observation of what did run; say
+   so beside it.
 4. Installing and running a release candidate is its own observation, recorded in
    [releasing](../../RELEASE.md) and not here.
 
