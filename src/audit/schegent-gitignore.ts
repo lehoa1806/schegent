@@ -69,7 +69,8 @@ export async function ensureSchegentGitignore(
   try {
     await opened.handle.write(SCHEGENT_GITIGNORE_BODY, null, 'utf8');
   } catch (err) {
-    logger.warn(`schegent gitignore ensure failed: ${(err as Error).message}`);
+    // The message of a write error names the absolute path; the class is enough to act on.
+    logger.warn('schegent gitignore ensure failed', { error: err instanceof Error ? err.name : typeof err });
   } finally {
     await opened.handle.close().catch(() => undefined);
   }
