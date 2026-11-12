@@ -75,7 +75,7 @@ const PROOF = /[Cc]ontain/;
  * reason. This list should stay short; an entry is a recorded decision, and a
  * long one would mean the rule had stopped describing the codebase.
  */
-const ALLOWLIST: readonly { readonly file: string; readonly call: string; readonly why: string }[] =
+const ALLOWLIST: readonly { readonly file: string; readonly call: string; why: string }[] =
   [
     {
       file: 'src/audit/raw-transcript-writer.ts',
@@ -84,6 +84,14 @@ const ALLOWLIST: readonly { readonly file: string; readonly call: string; readon
         'FileHandle.truncate names no path. The handle was opened through the ' +
         'guarded write path, so containment is already proven and re-proving ' +
         'it here would check a different thing than the one being truncated.'
+    },
+    {
+      file: 'src/services/phase-context/handoff-materializer.ts',
+      call: 'openedDest.handle.truncate(',
+      why:
+        'FR-R6-F15: FileHandle.truncate names no path. `openedDest.handle` was opened immediately ' +
+        'above through `openWithinRoot(input.targetRoot, destSegments, ...)` and is truncated to 0 ' +
+        'on copy failure so unverified partial bytes are never left on disk.'
     }
   ];
 

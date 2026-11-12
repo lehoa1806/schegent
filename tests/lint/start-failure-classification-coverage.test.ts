@@ -12,6 +12,7 @@ import { UncontainedBackendRefusedError } from '../../src/services/backend-conta
 import { ContainmentAdmissionRefusedError } from '../../src/services/containment-qualification/admission-refusal';
 import { SpawnRefusedAfterCloseError } from '../../src/runner/spawn-refused-after-close';
 import { AgentStdinRefusedError } from '../../src/services/acp-runtime/stdio-transport';
+import { IsolatedLaneProvisionRefusedError } from '../../src/services/execution-lanes/run-lane-binding';
 import { UnattendedAdmissionRefused } from '../../src/controller/resume-pause-fields';
 import { ALL_PHASE_CAPABILITIES } from '../../src/contracts/phase-capabilities';
 
@@ -105,6 +106,12 @@ const REFUSALS: ReadonlyArray<{ readonly name: string; readonly make: () => Erro
     // from `write`, and the JSON-RPC connection catches it at both of its write sites and fails
     // the connection `transport-closed`; it never reaches an operator-facing start path.
     make: () => new AgentStdinRefusedError()
+  },
+  {
+    name: 'IsolatedLaneProvisionRefusedError',
+    // FR-R6-F10: 66 characters at its longest LaneRefusalReason (`provisioning-deadline-exceeded`),
+    // well below UNEXPECTED_MESSAGE_MAX (240), so nothing is severed by the catch-all bound.
+    make: () => new IsolatedLaneProvisionRefusedError('provisioning-deadline-exceeded')
   }
 ];
 

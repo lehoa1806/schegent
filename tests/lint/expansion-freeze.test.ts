@@ -238,12 +238,14 @@ describe('FR-R6-F14 — the exporter is the only network client, and nothing rea
     expect(users).toEqual([]);
   });
 
-  it('no file outside the exporter directory imports the exporter', () => {
+  it('only the F14-B telemetry host service imports the exporter outside its directory', () => {
     const importers = SOURCES.filter(
       ([path, source]) =>
         !isExporterFile(path) && importsOf(path, source).some((specifier) => `${specifier}/`.startsWith(EXPORTER_DIR))
     ).map(([path]) => path);
-    expect(importers, 'wiring the exporter is package F14-B, with its own settings and consent surface').toEqual([]);
+    expect(importers, 'F14-B pins the single host coordinator allowed to construct the exporter').toEqual([
+      'src/services/telemetry-host/telemetry-host-service.ts'
+    ]);
   });
 
   it('the exporter imports nothing outside its closed list', () => {

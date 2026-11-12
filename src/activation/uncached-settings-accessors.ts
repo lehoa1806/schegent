@@ -19,6 +19,7 @@ import * as vscode from 'vscode';
 import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
 import type { EffectiveLimit } from '../contracts/snapshot-projections';
 import { normalizeMaxUnchangedComparisons } from '../contracts/unchanged-comparison-bound';
+import type { TelemetryUserSettingsInput } from '../services/telemetry-host/telemetry-host-service';
 import type { RawTranscriptMode } from '../state/workflow-run';
 import { originOf } from './workspace-settings';
 
@@ -148,4 +149,51 @@ export function readTransportCaptureMode(workspaceRoot: string): unknown {
 export function readSessionRetentionMaxAgeDays(workspaceRoot: string): number {
   const value = section(workspaceRoot).get<number>('logging.sessionRetentionMaxAgeDays', 30);
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 30;
+}
+
+/**
+ * FR-R6-F10 — opt-in isolated per-Run Git worktree execution, read per admission so toggling
+ * `schegent.lanes.enabled` takes effect on the next admitted Run without relocating active Runs.
+ */
+export function readLanesEnabled(workspaceRoot: string): boolean {
+  return section(workspaceRoot).get<boolean>('lanes.enabled', false) === true;
+}
+
+/** FR-R6-F10 — live isolated lane cap (1..20, default 1). */
+export function readLanesLiveCap(workspaceRoot: string): number {
+  const value = section(workspaceRoot).get<number>('lanes.liveCap', 1);
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 20 ? value : 1;
+}
+
+/** FR-R6-F10 — isolated lane provisioning deadline in milliseconds (1..600s, default 120s). */
+export function readLanesProvisioningDeadlineMs(workspaceRoot: string): number {
+  const value = section(workspaceRoot).get<number>('lanes.provisioningDeadlineSeconds', 120);
+  const secs =
+    typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 600 ? value : 120;
+  return secs * 1_000;
+}
+
+/**
+ * FR-R6-F14 (F14-FR-01, F14-FR-02, F14-FR-09) — reads user/application-scoped OTLP export settings
+ * strictly from `inspect()?.globalValue` (falling back to manifest defaults), never from workspace
+ * or folder scopes so repository settings cannot enable or redirect telemetry export.
+ */
+export function readTelemetryExportUserSettings(): TelemetryUserSettingsInput {
+  const config = vscode.workspace.getConfiguration('schegent');
+  const readGlobal = <T>(key: string, fallback: T): T => {
+    const inspected = config.inspect<T>(key);
+    return inspected?.globalValue !== undefined ? inspected.globalValue : fallback;
+  };
+  return {
+    enabled: readGlobal<boolean>('telemetry.export.enabled', false) === true,
+    endpoint: String(readGlobal<string>('telemetry.export.endpoint', '')),
+    protocol: String(readGlobal<string>('telemetry.export.protocol', 'otlp-http-json')),
+    allowPlaintextLoopback:
+      readGlobal<boolean>('telemetry.export.allowPlaintextLoopback', false) === true,
+    credentialSecretKey: String(readGlobal<string>('telemetry.export.credentialSecretKey', '')),
+    credentialHeaderName: String(
+      readGlobal<string>('telemetry.export.credentialHeaderName', 'Authorization')
+    ),
+    contentPolicy: String(readGlobal<string>('telemetry.export.contentPolicy', 'metadata-only'))
+  };
 }

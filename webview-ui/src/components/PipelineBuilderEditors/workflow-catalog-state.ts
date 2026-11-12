@@ -1544,7 +1544,9 @@ function copyConnection(connection: WorkflowConnection): WorkflowConnection {
       : {}),
     ...(connection.priority !== undefined ? { priority: connection.priority } : {}),
     ...(connection.isDefault !== undefined ? { isDefault: connection.isDefault } : {}),
-    ...(connection.selection !== undefined ? { selection: connection.selection } : {})
+    ...(connection.selection !== undefined ? { selection: connection.selection } : {}),
+    // F15-FR-01: an authored handoff policy must survive any edge edit made in the builder.
+    ...(connection.contextPolicy !== undefined ? { contextPolicy: connection.contextPolicy } : {})
   };
 }
 

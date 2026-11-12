@@ -185,6 +185,82 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     enum: ['auto', 'agy-acp-native', 'claude-acp-bridge', 'codex-acp-bridge'],
     docLabel: 'ACP agent profile selection'
   },
+  'schegent.telemetry.export.enabled': {
+    key: 'schegent.telemetry.export.enabled',
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    docLabel: 'Optional OTLP metadata export opt-in'
+  },
+  'schegent.telemetry.export.endpoint': {
+    key: 'schegent.telemetry.export.endpoint',
+    type: 'string',
+    default: '',
+    scope: 'application',
+    docLabel: 'Optional OTLP/HTTP metrics destination URL'
+  },
+  'schegent.telemetry.export.protocol': {
+    key: 'schegent.telemetry.export.protocol',
+    type: 'enum',
+    default: 'otlp-http-json',
+    scope: 'application',
+    enum: ['otlp-http-json', 'otlp-http-protobuf', 'otlp-grpc'],
+    docLabel: 'Declared OTLP export protocol'
+  },
+  'schegent.telemetry.export.allowPlaintextLoopback': {
+    key: 'schegent.telemetry.export.allowPlaintextLoopback',
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    docLabel: 'Allow plaintext OTLP export to verified loopback endpoints'
+  },
+  'schegent.telemetry.export.credentialSecretKey': {
+    key: 'schegent.telemetry.export.credentialSecretKey',
+    type: 'string',
+    default: '',
+    scope: 'application',
+    docLabel: 'SecretStorage key reference for OTLP credential'
+  },
+  'schegent.telemetry.export.credentialHeaderName': {
+    key: 'schegent.telemetry.export.credentialHeaderName',
+    type: 'string',
+    default: 'Authorization',
+    scope: 'application',
+    docLabel: 'HTTP header name for SecretStorage OTLP credential'
+  },
+  'schegent.telemetry.export.contentPolicy': {
+    key: 'schegent.telemetry.export.contentPolicy',
+    type: 'enum',
+    default: 'metadata-only',
+    scope: 'application',
+    enum: ['metadata-only', 'content'],
+    docLabel: 'Explicit telemetry content-export policy'
+  },
+  'schegent.lanes.enabled': {
+    key: 'schegent.lanes.enabled',
+    type: 'boolean',
+    default: false,
+    scope: 'resource',
+    docLabel: 'Provision isolated per-run Git worktrees'
+  },
+  'schegent.lanes.liveCap': {
+    key: 'schegent.lanes.liveCap',
+    type: 'integer',
+    default: 1,
+    min: 1,
+    max: 20,
+    scope: 'resource',
+    docLabel: 'Maximum concurrent live isolated execution lanes'
+  },
+  'schegent.lanes.provisioningDeadlineSeconds': {
+    key: 'schegent.lanes.provisioningDeadlineSeconds',
+    type: 'integer',
+    default: 120,
+    min: 1,
+    max: 600,
+    scope: 'resource',
+    docLabel: 'Isolated lane provisioning deadline (seconds)'
+  },
   'schegent.loop.maxIterations': {
     key: 'schegent.loop.maxIterations',
     type: 'number',
@@ -508,19 +584,19 @@ export function isSchemaCompliantValue(
       );
     case 'boolean':
       return typeof value === 'boolean';
-    case 'array':
+    case 'array': {
       if (!Array.isArray(value)) return false;
-      if (entry.itemType === undefined) return true;
+      const itemType = entry.itemType;
+      if (itemType === undefined) return true;
       return value.every((item) => {
         const typeMatches = (() => {
-          switch (entry.itemType) {
+          switch (itemType) {
             case 'string': return typeof item === 'string';
             case 'integer': return typeof item === 'number' && Number.isInteger(item);
             case 'number': return typeof item === 'number' && Number.isFinite(item);
             case 'boolean': return typeof item === 'boolean';
             case 'object': return typeof item === 'object' && item !== null && !Array.isArray(item);
             case 'enum': return typeof item === 'string';
-            case undefined: return true;
           }
         })();
         return typeMatches && (
@@ -528,6 +604,7 @@ export function isSchemaCompliantValue(
           (typeof item === 'string' && new RegExp(entry.itemPattern).test(item))
         );
       });
+    }
     case 'object':
       return typeof value === 'object' && value !== null && !Array.isArray(value);
     case 'enum':

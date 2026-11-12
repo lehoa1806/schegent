@@ -1093,7 +1093,15 @@ describe('Feature 086 T070 — a Workflow document carries the definition and no
     spendboundtokens:
       'FR-R3-112 — the per-phase spend bound denominated in MODEL USAGE tokens, which is the ' +
       'unit `codex` and `agy` report. The leak word `token` guards against credential tokens; ' +
-      'this is a number of tokens consumed, and the field carries a bound an operator authored'
+      'this is a number of tokens consumed, and the field carries a bound an operator authored',
+    session:
+      'FR-R6-F15 — authored Workflow connection `contextPolicy.session` policy enum (`fresh` or ' +
+      '`reuse-if-compatible`), declaring whether a downstream node requires a fresh ACP session; ' +
+      'never a runtime or provider session identifier',
+    sourcenodepath:
+      'FR-R6-F15 — authored Workflow connection `contextPolicy` graph node selector naming an ' +
+      'upstream node path within the Workflow definition graph, never a host or workspace ' +
+      'filesystem path'
   };
 
   it('declares no leak-shaped key in the schema itself (FR-060, SC-019)', () => {

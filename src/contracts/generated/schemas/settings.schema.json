@@ -350,6 +350,42 @@
           "itemPattern": null
         },
         {
+          "key": "schegent.lanes.enabled",
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.lanes.liveCap",
+          "type": "integer",
+          "default": 1,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1,
+          "maximum": 20,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.lanes.provisioningDeadlineSeconds",
+          "type": "integer",
+          "default": 120,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1,
+          "maximum": 600,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
           "key": "schegent.logging.rawTranscriptMode",
           "type": "enum",
           "default": "errors-only",
@@ -581,6 +617,97 @@
           "scope": "resource",
           "enum": null,
           "minimum": 0.01,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.telemetry.export.allowPlaintextLoopback",
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.telemetry.export.contentPolicy",
+          "type": "enum",
+          "default": "metadata-only",
+          "scope": "application",
+          "enum": [
+            "metadata-only",
+            "content"
+          ],
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.telemetry.export.credentialHeaderName",
+          "type": "string",
+          "default": "Authorization",
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.telemetry.export.credentialSecretKey",
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.telemetry.export.enabled",
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.telemetry.export.endpoint",
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.telemetry.export.protocol",
+          "type": "enum",
+          "default": "otlp-http-json",
+          "scope": "application",
+          "enum": [
+            "otlp-http-json",
+            "otlp-http-protobuf",
+            "otlp-grpc"
+          ],
+          "minimum": null,
           "maximum": null,
           "pattern": null,
           "itemType": null,

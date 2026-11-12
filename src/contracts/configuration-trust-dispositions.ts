@@ -190,6 +190,24 @@ export const CONFIGURATION_SENSITIVITY = Object.freeze({
     sensitivity: 'run-shape',
     reason: 'bounds a CLI invocation that an untrusted window never starts'
   },
+  'schegent.lanes.enabled': {
+    sensitivity: 'run-shape',
+    reason:
+      'opts a Run into host-provisioned Git worktree isolation, and an untrusted window ' +
+      'starts no Runs and provisions no lanes'
+  },
+  'schegent.lanes.liveCap': {
+    sensitivity: 'run-shape',
+    reason:
+      'bounds concurrent live isolated lanes for Runs started after trusting the folder; ' +
+      'an untrusted window provisions nothing'
+  },
+  'schegent.lanes.provisioningDeadlineSeconds': {
+    sensitivity: 'run-shape',
+    reason:
+      'bounds Git worktree provisioning time for Runs started after trusting the folder; ' +
+      'an untrusted window spawns no Git probes'
+  },
   'schegent.loop.maxIterations': {
     sensitivity: 'run-shape',
     reason: 'bounds phase iteration inside a run'
@@ -268,7 +286,14 @@ export const EXECUTABLE_AUTHORITY_PROPERTIES: readonly string[] = Object.freeze(
   'schegent.cli.environmentMode',
   'schegent.cli.inheritEnvironment',
   'schegent.cli.path',
-  'schegent.codex.path'
+  'schegent.codex.path',
+  'schegent.telemetry.export.allowPlaintextLoopback',
+  'schegent.telemetry.export.contentPolicy',
+  'schegent.telemetry.export.credentialHeaderName',
+  'schegent.telemetry.export.credentialSecretKey',
+  'schegent.telemetry.export.enabled',
+  'schegent.telemetry.export.endpoint',
+  'schegent.telemetry.export.protocol'
 ]);
 
 /** The scopes a workspace can set. VS Code treats an absent scope as `window`. */

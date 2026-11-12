@@ -89,7 +89,7 @@ function declaredMutations(outputs: readonly PhaseRunOutput[]): PhaseMutationRep
 
 interface RunDriverOptions {
   readonly cliPath: string;
-  readonly cwd: string;
+  readonly cwd: string; readonly resolveRunCwd?: (run: WorkflowRun) => Promise<string>;
   readonly iterationCap: number;
   readonly timeoutMs: number;
   /** FR-R3-075 — absolute per-invocation wall-clock bound (no per-phase form). */
@@ -371,8 +371,9 @@ export class RunDriver {
     // through it exactly once and it already sits inside the Run's attribution
     // window. The frozen plan is READ, never rewritten (FR-017): the verdict
     // gates execution and is not a correction to what the operator approved.
+    const execCwd = (await this.deps.options.resolveRunCwd?.(run)) ?? this.deps.options.cwd;
     const verdict = await judgeOutputTargetsAtDispatch(
-      this.deps.options.cwd,
+      execCwd,
       run.envelope?.outputs ?? []
     );
     if (verdict.outcome === 'refused') {
@@ -649,7 +650,7 @@ export class RunDriver {
           // specifies a runner, use the cliPathResolver to pick the
           // correct binary; otherwise fall back to the global cliPath.
           cliPath: this.resolveCliPath(effectiveRunnerKind),
-          cwd: this.deps.options.cwd,
+          cwd: (await this.deps.options.resolveRunCwd?.(run)) ?? this.deps.options.cwd, evidenceRoot: this.deps.options.cwd,
           timeoutMs: activePhaseDef?.timeoutSeconds
             ? activePhaseDef.timeoutSeconds * 1000
             : this.deps.options.timeoutMs,
@@ -1269,7 +1270,7 @@ export class RunDriver {
     if (!outputs || outputs.length === 0) return [];
 
     return resolveRunOutputs(outputs, {
-      workspaceRoot: this.deps.options.cwd,
+      workspaceRoot: (await this.deps.options.resolveRunCwd?.(run)) ?? this.deps.options.cwd,
       probe: createBoundedOutputProbe()
     });
   }

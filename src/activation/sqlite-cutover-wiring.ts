@@ -1,13 +1,13 @@
 // FR-R3-136 (T1525a) — TRUST CLASSIFICATION: DEFERRED.
-// Opening the writable SQLite store, running F04 cutover migrations, and reconciling
+// Opening the writable SQLite store, executing F04 cutover migrations, and reconciling
 // F05/F06/F07/F08 state are handed to `stage2-producers.ts` via `runSafety.replayTerminalTransitions`
 // and `runSafety.reconcileComposableWorkflowRuns`, gated on `isWorkspaceTrusted()` and `lock.hasPrimacy()`.
 // At wiring time this module only attaches a read-only SQLite snapshot if an existing DB file is present.
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
-import type * as vscode from 'vscode';
+import * as vscode from 'vscode';
 
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { StorageDetailsReader } from '../contracts/sidebar-ipc/storage-details';
@@ -16,6 +16,7 @@ import { createStorageDetailsReader } from '../headless/artifact-lifecycle-api';
 import { createPhaseContextApi, type PhaseContextApi } from '../headless/phase-context-api';
 import { createUsageAccountingReader } from '../headless/usage-accounting-api';
 import type { SanitizedLogger } from '../lib/logger';
+import { resolveContainedLink } from '../lib/path-containment';
 import { openWithinRoot } from '../lib/safe-open';
 import type { AcpRunnerObservationEvent } from '../runner/acp-backed-runner';
 import {
@@ -29,7 +30,23 @@ import {
   type OwnerResolver,
   type StorageScanRoot
 } from '../services/artifact-lifecycle';
+import {
+  createExecFileGitRunner,
+  createRunLaneCoordinator,
+  LaneService,
+  type RunLaneCoordinator
+} from '../services/execution-lanes';
+import { IntegrationStore } from '../services/execution-lanes/integration-store';
+import {
+  createChangeReviewService,
+  integrationStoreSource,
+  type ChangeReviewService
+} from '../services/change-review';
 import { createLiveLogIndex, type LiveLogIndex } from '../services/phase-log/live-log-index';
+import {
+  createReportingService,
+  type ReportingService
+} from '../services/reporting';
 import {
   createPhaseHandoffCoordinator,
   createSqliteHandoffStore,
@@ -44,6 +61,11 @@ import {
   SqliteApplicationStore,
   type SwitchableCatalogFsAdapter
 } from '../services/sqlite-store';
+import type { TelemetrySecretPort } from '../contracts/telemetry-export';
+import {
+  createTelemetryHostService,
+  type TelemetryHostService
+} from '../services/telemetry-host/telemetry-host-service';
 import type { AcpAttemptBinding, AcpUsageUpdate } from '../services/usage-accounting/acp-usage-mapping';
 import { metricsRollupLegacySource } from '../services/usage-accounting/legacy-epoch';
 import {
@@ -68,6 +90,12 @@ import type { WorkspaceLockManager } from '../state/lock';
 import type { SwitchableOperationalMemento } from '../state/sqlite-operational-backing';
 import { isTerminalRunStatus } from '../state/workflow-run';
 import type { WorkspaceStateStore } from '../state/workspace-state';
+import {
+  readLanesEnabled,
+  readLanesLiveCap,
+  readLanesProvisioningDeadlineMs,
+  readTelemetryExportUserSettings
+} from './uncached-settings-accessors';
 
 const operationalMementoByStore = new WeakMap<WorkspaceStateStore, SwitchableOperationalMemento>();
 const catalogFsByStore = new WeakMap<WorkspaceStateStore, SwitchableCatalogFsAdapter>();
@@ -122,7 +150,7 @@ export function deriveWorkspaceScopeId(workspaceRoot: string): string {
   return createHash('sha256').update(workspaceRoot, 'utf8').digest('hex').slice(0, 16);
 }
 
-function buildNodeLifecycleFs(): LifecycleFs {
+function buildNodeLifecycleFs(allowedRoots: readonly string[]): LifecycleFs {
   return {
     async lstat(absolutePath) {
       try {
@@ -147,7 +175,14 @@ function buildNodeLifecycleFs(): LifecycleFs {
       }
     },
     realpath: (absolutePath) => fsp.realpath(absolutePath),
-    unlink: (absolutePath) => fsp.unlink(absolutePath)
+    async unlink(absolutePath) {
+      const contained = await resolveContainedLink(absolutePath, allowedRoots);
+      if (contained.outcome === 'absent') return;
+      if (contained.outcome !== 'contained') {
+        throw new Error(`lifecycle unlink refused outside allowed roots (${contained.reason})`);
+      }
+      await fsp.unlink(contained.resolved);
+    }
   };
 }
 
@@ -244,9 +279,14 @@ export interface SqliteCutoverServices {
   readonly artifactLifecycle: ArtifactLifecycleService;
   readonly usageAccounting: UsageAccountingService;
   readonly usageWiring: UsageAccountingWiring;
+  readonly telemetryHost: TelemetryHostService;
   readonly liveLogIndex: LiveLogIndex;
   readonly recoveryHandoff: RecoveryHandoffService;
+  readonly laneService: LaneService;
+  readonly runLaneCoordinator: RunLaneCoordinator;
   readonly phaseHandoffCoordinator: PhaseHandoffCoordinator;
+  readonly reportingService: ReportingService;
+  readonly changeReviewService: ChangeReviewService;
   readonly workflowComposition: ProductionWorkflowComposition;
 }
 
@@ -258,20 +298,32 @@ export interface SqliteCutoverCoordinator {
   getSqliteStore(): SqliteApplicationStore | null;
   getArtifactLifecycle(): ArtifactLifecycleService | null;
   getUsageAccounting(): UsageAccountingService | null;
+  getTelemetryHost(): TelemetryHostService | null;
   getLiveLogIndex(): LiveLogIndex | null;
   getRecoveryHandoff(): RecoveryHandoffService | null;
+  getLaneService(): LaneService | null;
+  getRunLaneCoordinator(): RunLaneCoordinator | null;
   getPhaseHandoffCoordinator(): PhaseHandoffCoordinator | null;
+  getReportingService(): ReportingService | null;
+  getChangeReviewService(): ChangeReviewService | null;
   getPhaseContextApi(): PhaseContextApi;
   getProtectedRunIds(): ReadonlySet<string>;
   getDatabaseProtectedPaths(): readonly string[];
   onTerminalRun(summary: TerminalRunSummary): void;
+  completeRootExecutionLane(params: {
+    readonly rootExecutionId: string;
+    readonly laneId?: string | undefined;
+    readonly status: 'completed' | 'failed' | 'canceled';
+  }): void;
   recordAcpObservation(event: AcpRunnerObservationEvent): void;
   recordAcpUsageUpdate(update: AcpUsageUpdate, binding: AcpAttemptBinding | null): void;
   close(): void;
 }
 
 export interface CreateSqliteCutoverCoordinatorDeps {
-  readonly context: Pick<vscode.ExtensionContext, 'storageUri' | 'globalStorageUri' | 'subscriptions'>;
+  readonly context: Pick<vscode.ExtensionContext, 'storageUri' | 'globalStorageUri' | 'subscriptions'> & {
+    readonly secrets?: Pick<vscode.SecretStorage, 'get'> | undefined;
+  };
   readonly workspaceRoot: string;
   readonly store: WorkspaceStateStore;
   readonly auditWriter: AuditLogWriter;
@@ -281,6 +333,289 @@ export interface CreateSqliteCutoverCoordinatorDeps {
   readonly isWorkspaceTrusted: () => boolean;
   readonly hasPrimacy: () => Promise<boolean>;
   readonly disposables: vscode.Disposable[];
+}
+
+function buildSecretPort(
+  secrets: Pick<vscode.SecretStorage, 'get'> | undefined
+): TelemetrySecretPort | null {
+  if (secrets === undefined) return null;
+  return {
+    availability: () => 'available',
+    async read(reference: string): Promise<string | null> {
+      const value = await secrets.get(reference);
+      return typeof value === 'string' && value.length > 0 ? value : null;
+    }
+  };
+}
+
+interface OpenPrimarySqliteServicesInput {
+  readonly deps: CreateSqliteCutoverCoordinatorDeps;
+  readonly scopeId: string;
+  readonly storageRoot: string;
+  readonly expectedDatabasePath: string;
+  readonly hasWorkspaceStorage: boolean;
+  readonly operationalMemento: SwitchableOperationalMemento | undefined;
+  readonly catalogFs: SwitchableCatalogFsAdapter | undefined;
+}
+
+async function openPrimarySqliteServices(
+  input: OpenPrimarySqliteServicesInput
+): Promise<SqliteCutoverServices | null> {
+  const { deps, scopeId, storageRoot, expectedDatabasePath, hasWorkspaceStorage } = input;
+  let sqliteStore: SqliteApplicationStore;
+  try {
+    sqliteStore = await SqliteApplicationStore.openAtTrustedLocation({
+      trustedRootDir: storageRoot,
+      relativeSegments: ['sqlite', scopeId],
+      databaseFileName: 'schegent-state.db',
+      sourceKind: hasWorkspaceStorage ? 'host_storage_uri' : 'host_global_storage_uri'
+    });
+  } catch (error) {
+    deps.logger.warn('sqlite cutover: failed to open application store', {
+      reason: error instanceof Error ? error.name : 'unknown'
+    });
+    return null;
+  }
+
+  try {
+    input.operationalMemento?.attachSqlite(sqliteStore, scopeId);
+    input.operationalMemento?.configureDetachedTrustedSqliteWriter({
+      databasePath: expectedDatabasePath,
+      scopeId,
+      canWrite: () => deps.isWorkspaceTrusted()
+    });
+    if (input.catalogFs !== undefined) {
+      await input.catalogFs.attachSqlite(sqliteStore, scopeId);
+    }
+
+    const { probe, reader } = buildContainedProbeAndReader(deps.workspaceRoot);
+    const artifactLifecycle = createArtifactLifecycleService({
+      conn: sqliteStore.writerConnection,
+      nowMs: () => Date.now(),
+      fs: buildNodeLifecycleFs([deps.workspaceRoot, storageRoot]),
+      probe,
+      byteReader: reader,
+      audit: {
+        recordLifecycleMutation: (rec) => {
+          deps.logger.info('artifact-lifecycle: mutation', {
+            kind: rec.operationKind,
+            opId: rec.operationId,
+            result: rec.result
+          });
+        }
+      },
+      scanRoots: buildScanRoots(deps.workspaceRoot),
+      accessPolicy: DENY_ALL_ACCESS_POLICY,
+      resolveOwner: buildOwnerResolver(deps.store),
+      workspaceRoot: deps.workspaceRoot,
+      workspaceId: scopeId,
+      pinnedRunIds: deps.pinnedRunIds
+    });
+
+    await artifactLifecycle.reconcileAfterRestart({
+      trusted: true,
+      primary: true,
+      auditHealthy: true
+    });
+
+    const usageAccounting = createUsageAccountingService({
+      conn: sqliteStore.writerConnection,
+      nowUtc: () => new Date().toISOString(),
+      monotonicMs: () => performance.now(),
+      workspaceId: scopeId,
+      logger: deps.logger
+    });
+    await usageAccounting.importLegacyEpoch(metricsRollupLegacySource(deps.workspaceRoot));
+
+    const telemetryHost = createTelemetryHostService({
+      sqliteStore,
+      storageRoot,
+      secrets: buildSecretPort(deps.context.secrets),
+      isWorkspaceTrusted: deps.isWorkspaceTrusted,
+      serviceVersion: '0.2.0'
+    });
+    telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
+    const configSub = vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('schegent.telemetry.export')) {
+        telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
+      }
+    });
+    deps.disposables.push(configSub);
+
+    const usageWiring = createUsageAccountingWiring({
+      service: usageAccounting,
+      auditWriter: deps.auditWriter,
+      subscriptions: deps.disposables,
+      logger: deps.logger,
+      onAcceptedObservation: (observationId) => {
+        telemetryHost.offerAcceptedObservationById(observationId);
+      }
+    });
+
+    const liveLogIndex = createLiveLogIndex(sqliteStore.writerConnection);
+
+    const recoveryHandoff = createRecoveryHandoffService({
+      conn: sqliteStore.writerConnection,
+      lifecycle: artifactLifecycle,
+      probe,
+      envelopes: deps.envelopes,
+      clock: () => Date.now()
+    });
+    recoveryHandoff.reopen();
+
+    const laneService = LaneService.open({
+      connection: sqliteStore.writerConnection,
+      workspaceRoot: deps.workspaceRoot,
+      storageDir: storageRoot,
+      workspaceId: scopeId,
+      liveLaneCap: readLanesLiveCap(deps.workspaceRoot),
+      provisioningDeadlineMs: readLanesProvisioningDeadlineMs(deps.workspaceRoot),
+      git: createExecFileGitRunner(),
+      clock: () => Date.now(),
+      random: (size) => randomBytes(size)
+    });
+    try {
+      await laneService.reconcile();
+    } catch (laneError) {
+      if (!(laneError instanceof Error) || laneError.name !== 'LaneGitError') {
+        deps.logger.warn('sqlite cutover: lane reconciliation skipped', {
+          reason: laneError instanceof Error ? laneError.name : 'unknown'
+        });
+      }
+    }
+
+    const runLaneCoordinator = createRunLaneCoordinator({
+      getLaneService: () => laneService,
+      isLanesEnabled: () => readLanesEnabled(deps.workspaceRoot),
+      primaryWorkspaceRoot: deps.workspaceRoot
+    });
+    await runLaneCoordinator.refreshCacheFromStore();
+
+    const handoffStore = createSqliteHandoffStore(sqliteStore.writerConnection);
+    const phaseHandoffCoordinator = createPhaseHandoffCoordinator({
+      store: handoffStore,
+      primaryWorkspaceRoot: deps.workspaceRoot,
+      workspaceId: scopeId,
+      lifecycle: artifactLifecycle,
+      resolveExecutionRoot: (runId) => runLaneCoordinator.resolveExecutionRootSyncOrCached(runId),
+      resolveLaneId: (runId) => runLaneCoordinator.resolveLaneIdForRun(runId)
+    });
+
+    const hostTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const reportingService = createReportingService({
+      conn: sqliteStore.writerConnection,
+      readPool: sqliteStore.readPool,
+      workspaceId: scopeId,
+      workspaceRoot: deps.workspaceRoot,
+      nowMs: () => Date.now(),
+      monotonicMs: () => performance.now(),
+      hostTimezone,
+      accounting: usageAccounting,
+      logger: {
+        warn: (code, ctx) => {
+          deps.logger.warn(code, ctx);
+        }
+      }
+    });
+    await reportingService.reconcileExports();
+
+    const changeReviewService = createChangeReviewService({
+      source: integrationStoreSource(new IntegrationStore(sqliteStore.writerConnection), scopeId),
+      git: createExecFileGitRunner(),
+      cwd: deps.workspaceRoot
+    });
+
+    const durableHandoffSeam: DurableArtifactHandoverSeam = Object.freeze({
+      status: 'qualified' as const,
+      requestHandover(req: Parameters<DurableArtifactHandoverSeam['requestHandover']>[0]) {
+        for (const artifactId of req.artifactIds) {
+          const check = artifactLifecycle.getArtifact(artifactId);
+          if (!check.ok) {
+            return {
+              accepted: false,
+              refusal: createWorkflowRefusalOutcome({
+                category: 'missing-collaborator',
+                reasonCode: `durable-handoff-artifact-unavailable:${check.refusal.code}`,
+                message: check.refusal.message,
+                rootExecutionId: req.rootExecutionId,
+                invocationId: req.invocationId,
+                attemptsConsumed: 0
+              })
+            };
+          }
+        }
+        return { accepted: true };
+      }
+    });
+
+    const workflowComposition = getOrCreateProductionWorkflowComposition(deps.store, {
+      workspaceRoot: deps.workspaceRoot,
+      isWorkspaceTrusted: deps.isWorkspaceTrusted,
+      durableHandoffSeam,
+      phaseHandoffCoordinator,
+      cutoverAuthorityGuard: createCutoverAuthorityGuard({
+        mode: 'post-cutover-strict',
+        storeAuthority: 'sqlite-f04',
+        runtimeAuthority: 'acp-f13'
+      }),
+      assessBackendCapability: (backendId, capability) => {
+        if (capability === 'durable-handoff') {
+          return Object.freeze({
+            backendId,
+            capability,
+            status: 'verified' as const,
+            source: 'fixture-adapter' as const,
+            reasonCode: `capability-verified:${backendId}:durable-handoff`
+          });
+        }
+        return defaultCapabilityAssessment(backendId, capability);
+      }
+    });
+    registerProductionWorkflowComposition(deps.store, workflowComposition);
+
+    return {
+      sqliteStore,
+      artifactLifecycle,
+      usageAccounting,
+      usageWiring,
+      telemetryHost,
+      liveLogIndex,
+      recoveryHandoff,
+      laneService,
+      runLaneCoordinator,
+      phaseHandoffCoordinator,
+      reportingService,
+      changeReviewService,
+      workflowComposition
+    };
+  } catch (error) {
+    input.operationalMemento?.detachSqlite();
+    input.catalogFs?.detachSqlite();
+    sqliteStore.close();
+    deps.logger.warn('sqlite cutover: initialization failed', {
+      reason: error instanceof Error ? error.name : 'unknown'
+    });
+    return null;
+  }
+}
+
+function isChildOfActiveComposableRun(store: WorkspaceStateStore, featureId: string | undefined): boolean {
+  if (featureId === undefined) return false;
+  for (const wfRun of Object.values(store.getConnectedRuns())) {
+    if (wfRun.invocations === undefined) continue;
+    for (const frame of Object.values(wfRun.invocations)) {
+      for (const attempts of Object.values(frame.attemptsByNodeId)) {
+        if (attempts.some((a) => a.queueItemId === featureId)) {
+          const rootFrame = Object.values(wfRun.invocations).find(
+            (f) => f.parentInvocationId === null
+          );
+          const status = rootFrame?.status;
+          return status === 'in-flight' || status === 'waiting-for-handoff' || status === 'paused';
+        }
+      }
+    }
+  }
+  return false;
 }
 
 export function createSqliteCutoverCoordinator(
@@ -312,7 +647,14 @@ export function createSqliteCutoverCoordinator(
       catalogFs?.detachSqlite();
       current.usageWiring.dispose();
       current.workflowComposition.dispose();
-      current.sqliteStore.close();
+      if (current.telemetryHost.getStatus().evaluation.kind === 'disabled') {
+        void current.telemetryHost.shutdown();
+        current.sqliteStore.close();
+      } else {
+        void current.telemetryHost.shutdown().finally(() => {
+          current.sqliteStore.close();
+        });
+      }
     }
     coordinatorByStore.delete(deps.store);
   };
@@ -325,164 +667,16 @@ export function createSqliteCutoverCoordinator(
       return null;
     }
     if (activeServices !== null) return activeServices;
-
-    let sqliteStore: SqliteApplicationStore;
-    try {
-      sqliteStore = await SqliteApplicationStore.openAtTrustedLocation({
-        trustedRootDir: storageRoot,
-        relativeSegments: ['sqlite', scopeId],
-        databaseFileName: 'schegent-state.db',
-        sourceKind: hasWorkspaceStorage ? 'host_storage_uri' : 'host_global_storage_uri'
-      });
-    } catch (error) {
-      deps.logger.warn('sqlite cutover: failed to open application store', {
-        reason: error instanceof Error ? error.name : 'unknown'
-      });
-      return null;
-    }
-
-    try {
-      operationalMemento?.attachSqlite(sqliteStore, scopeId);
-      operationalMemento?.configureDetachedTrustedSqliteWriter({
-        databasePath: expectedDatabasePath,
-        scopeId,
-        canWrite: () => deps.isWorkspaceTrusted()
-      });
-      if (catalogFs !== undefined) {
-        await catalogFs.attachSqlite(sqliteStore, scopeId);
-      }
-
-      const { probe, reader } = buildContainedProbeAndReader(deps.workspaceRoot);
-      const artifactLifecycle = createArtifactLifecycleService({
-        conn: sqliteStore.writerConnection,
-        nowMs: () => Date.now(),
-        fs: buildNodeLifecycleFs(),
-        probe,
-        byteReader: reader,
-        audit: {
-          recordLifecycleMutation: (rec) => {
-            deps.logger.info('artifact-lifecycle: mutation', {
-              kind: rec.operationKind,
-              opId: rec.operationId,
-              result: rec.result
-            });
-          }
-        },
-        scanRoots: buildScanRoots(deps.workspaceRoot),
-        accessPolicy: DENY_ALL_ACCESS_POLICY,
-        resolveOwner: buildOwnerResolver(deps.store),
-        workspaceRoot: deps.workspaceRoot,
-        workspaceId: scopeId,
-        pinnedRunIds: deps.pinnedRunIds
-      });
-
-      await artifactLifecycle.reconcileAfterRestart({
-        trusted: true,
-        primary: true,
-        auditHealthy: true
-      });
-
-      const usageAccounting = createUsageAccountingService({
-        conn: sqliteStore.writerConnection,
-        nowUtc: () => new Date().toISOString(),
-        monotonicMs: () => performance.now(),
-        workspaceId: scopeId,
-        logger: deps.logger
-      });
-      await usageAccounting.importLegacyEpoch(metricsRollupLegacySource(deps.workspaceRoot));
-
-      const usageWiring = createUsageAccountingWiring({
-        service: usageAccounting,
-        auditWriter: deps.auditWriter,
-        subscriptions: deps.context.subscriptions,
-        logger: deps.logger
-      });
-
-      const liveLogIndex = createLiveLogIndex(sqliteStore.writerConnection);
-
-      const recoveryHandoff = createRecoveryHandoffService({
-        conn: sqliteStore.writerConnection,
-        lifecycle: artifactLifecycle,
-        probe,
-        envelopes: deps.envelopes,
-        clock: () => Date.now()
-      });
-      recoveryHandoff.reopen();
-
-      const handoffStore = createSqliteHandoffStore(sqliteStore.writerConnection);
-      const phaseHandoffCoordinator = createPhaseHandoffCoordinator({
-        store: handoffStore,
-        primaryWorkspaceRoot: deps.workspaceRoot,
-        workspaceId: scopeId,
-        lifecycle: artifactLifecycle
-      });
-
-      const durableHandoffSeam: DurableArtifactHandoverSeam = Object.freeze({
-        status: 'qualified' as const,
-        requestHandover(req: Parameters<DurableArtifactHandoverSeam['requestHandover']>[0]) {
-          for (const artifactId of req.artifactIds) {
-            const check = artifactLifecycle.getArtifact(artifactId);
-            if (!check.ok) {
-              return {
-                accepted: false,
-                refusal: createWorkflowRefusalOutcome({
-                  category: 'missing-collaborator',
-                  reasonCode: `durable-handoff-artifact-unavailable:${check.refusal.code}`,
-                  message: check.refusal.message,
-                  rootExecutionId: req.rootExecutionId,
-                  invocationId: req.invocationId,
-                  attemptsConsumed: 0
-                })
-              };
-            }
-          }
-          return { accepted: true };
-        }
-      });
-
-      const workflowComposition = getOrCreateProductionWorkflowComposition(deps.store, {
-        workspaceRoot: deps.workspaceRoot,
-        isWorkspaceTrusted: deps.isWorkspaceTrusted,
-        durableHandoffSeam,
-        phaseHandoffCoordinator,
-        cutoverAuthorityGuard: createCutoverAuthorityGuard({
-          mode: 'post-cutover-strict',
-          storeAuthority: 'sqlite-f04',
-          runtimeAuthority: 'acp-f13'
-        }),
-        assessBackendCapability: (backendId, capability) => {
-          if (capability === 'durable-handoff') {
-            return Object.freeze({
-              backendId,
-              capability,
-              status: 'verified' as const,
-              source: 'fixture-adapter' as const,
-              reasonCode: `capability-verified:${backendId}:durable-handoff`
-            });
-          }
-          return defaultCapabilityAssessment(backendId, capability);
-        }
-      });
-      registerProductionWorkflowComposition(deps.store, workflowComposition);
-
-      activeServices = {
-        sqliteStore,
-        artifactLifecycle,
-        usageAccounting,
-        usageWiring,
-        liveLogIndex,
-        recoveryHandoff,
-        phaseHandoffCoordinator,
-        workflowComposition
-      };
-      return activeServices;
-    } catch (error) {
-      sqliteStore.close();
-      deps.logger.warn('sqlite cutover: initialization failed', {
-        reason: error instanceof Error ? error.name : 'unknown'
-      });
-      return null;
-    }
+    activeServices = await openPrimarySqliteServices({
+      deps,
+      scopeId,
+      storageRoot,
+      expectedDatabasePath,
+      hasWorkspaceStorage,
+      operationalMemento,
+      catalogFs
+    });
+    return activeServices;
   };
 
   const coordinator: SqliteCutoverCoordinator = {
@@ -499,9 +693,14 @@ export function createSqliteCutoverCoordinator(
     getSqliteStore: () => activeServices?.sqliteStore ?? null,
     getArtifactLifecycle: () => activeServices?.artifactLifecycle ?? null,
     getUsageAccounting: () => activeServices?.usageAccounting ?? null,
+    getTelemetryHost: () => activeServices?.telemetryHost ?? null,
     getLiveLogIndex: () => activeServices?.liveLogIndex ?? null,
     getRecoveryHandoff: () => activeServices?.recoveryHandoff ?? null,
+    getLaneService: () => activeServices?.laneService ?? null,
+    getRunLaneCoordinator: () => activeServices?.runLaneCoordinator ?? null,
     getPhaseHandoffCoordinator: () => activeServices?.phaseHandoffCoordinator ?? null,
+    getReportingService: () => activeServices?.reportingService ?? null,
+    getChangeReviewService: () => activeServices?.changeReviewService ?? null,
     getPhaseContextApi: () => createPhaseContextApi(() => activeServices?.phaseHandoffCoordinator ?? null),
     getProtectedRunIds: () => querySqliteProtectedRunIds(activeServices),
     getDatabaseProtectedPaths: () => [
@@ -525,9 +724,29 @@ export function createSqliteCutoverCoordinator(
             delivered: summary.status === 'completed'
           });
         }
+        if (
+          (summary.status === 'completed' ||
+            summary.status === 'failed' ||
+            summary.status === 'canceled') &&
+          !isChildOfActiveComposableRun(deps.store, matchedRun?.featureId)
+        ) {
+          void activeServices.runLaneCoordinator.onRunTerminal({
+            runId: summary.runId,
+            laneId: matchedRun?.laneId,
+            status: summary.status
+          });
+        }
       } catch {
-        // Best-effort handoff dispatch settlement.
+        // Best-effort handoff dispatch and lane settlement.
       }
+    },
+    completeRootExecutionLane(params) {
+      if (activeServices === null) return;
+      void activeServices.runLaneCoordinator.onRunTerminal({
+        runId: params.rootExecutionId,
+        laneId: params.laneId,
+        status: params.status
+      });
     },
     recordAcpObservation(event) {
       if (activeServices === null) return;
@@ -575,7 +794,10 @@ export function createSqliteCutoverCoordinator(
     recordAcpUsageUpdate(update, binding) {
       if (activeServices === null) return;
       try {
-        activeServices.usageAccounting.ingestAcpUsageUpdate(update, binding);
+        const res = activeServices.usageAccounting.ingestAcpUsageUpdate(update, binding);
+        if (res.ok && res.value.disposition === 'accepted') {
+          activeServices.telemetryHost.offerAcceptedObservationById(res.value.observationId);
+        }
       } catch {
         // Accounting never interrupts agent execution.
       }
@@ -590,6 +812,12 @@ export function createSqliteCutoverCoordinator(
 function querySqliteProtectedRunIds(services: SqliteCutoverServices | null): ReadonlySet<string> {
   const result = new Set<string>();
   if (services === null) return result;
+  for (const lanePinnedRunId of services.runLaneCoordinator.getProtectedRunIds()) {
+    result.add(lanePinnedRunId);
+  }
+  for (const exportPinnedRunId of services.reportingService.activeExportRootIds()) {
+    result.add(exportPinnedRunId);
+  }
   try {
     const rows = services.sqliteStore.writerConnection.all<{ readonly run_id: string }>(
       `SELECT DISTINCT al.owner_run_id AS run_id

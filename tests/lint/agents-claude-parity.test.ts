@@ -169,7 +169,9 @@ const HARD_RULE_ANCHORS: ReadonlyArray<string> = [
   're-inspecting the same document plans landed drafts as `skip`',
   "`process_yaml_resource_kinds` is narrowed to\n  `['phase', 'workflow', 'modelcatalog']`",
   // Feature 303 (FR-R6-F04) — SQLite operational store cutover amendment to rule 58.
-  'commits through the single serialized `sqliteoperationalbacking`'
+  'commits through the single serialized `sqliteoperationalbacking`',
+  // Feature 309 (FR-R6-F10) — opt-in isolated lane dispatch amendment to rule 59.
+  'isolated-lane-fallback-forbidden'
 ];
 
 /** The authoritative file — the only one that carries the rule set. */

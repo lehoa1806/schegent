@@ -29,7 +29,7 @@ import type { Notifier } from '../ui/notifications';
 import type { ContainmentAcceptancePort } from '../controller/uncontained-consent-gate';
 import { createSpendBoundWatcher, spendSeedTargets } from '../services/spend-bound-watcher';
 import { readSpendReplay } from '../services/spend-bound-replay';
-import { readSpendLimits } from './uncached-settings-accessors';
+import { readLanesEnabled, readSpendLimits } from './uncached-settings-accessors';
 import { RunCheckpointService } from '../services/run-checkpoint-service';
 import { recoveryPinnedRunPredicate } from '../services/artifact-lifecycle/run-recovery-pins';
 import { RunCheckpointRetentionService } from '../services/run-checkpoint-retention';
@@ -55,6 +55,7 @@ import type { DurableAttemptEvidenceResult } from '../services/workflow-executio
 import { createBackendAvailabilityWiring } from './backend-wiring';
 import {
   createSqliteCutoverCoordinator,
+  getSqliteCutoverCoordinator,
   getWorkspaceLockForStore
 } from './sqlite-cutover-wiring';
 import type { BackendCapabilityService } from '../services/backend-capability-service';
@@ -311,12 +312,23 @@ export async function createRunSafetyWiring(input: {
   // those names are run ids the checkpoint service wrote when the runs they
   // belong to were persisted. The influence is real and one step longer than the
   // old sentence claimed.
+  const resolveRunCwd = async (run: WorkflowRun): Promise<string> => {
+    const coord = sqliteCutover?.getRunLaneCoordinator();
+    if (!coord) return input.workspaceRoot;
+    return coord.resolveExecutionRoot({
+      runId: run.id,
+      laneId: run.laneId,
+      laneRootRef: run.laneRootRef
+    });
+  };
   const checkpoints = new RunCheckpointService(
     input.context.globalStorageUri.fsPath,
     input.workspaceRoot,
     input.logger,
     () => inFlightRuns().length,
-    mutationLedger
+    mutationLedger,
+    undefined,
+    resolveRunCwd
   );
   const lockRegistration = getWorkspaceLockForStore(input.store);
   const sqliteCutover = lockRegistration
@@ -333,6 +345,12 @@ export async function createRunSafetyWiring(input: {
         disposables: lockRegistration.disposables
       })
     : undefined;
+  const provisionRunLane = async (rootExecutionId: string, aliasRunId?: string) => {
+    if (!readLanesEnabled(input.workspaceRoot)) return null;
+    await sqliteCutover?.activatePrimary();
+    const coord = sqliteCutover?.getRunLaneCoordinator();
+    return coord ? coord.provisionForRun(rootExecutionId, aliasRunId) : null;
+  };
   const sweepCheckpointRetention = (): Promise<unknown> => checkpointRetention.sweep();
   return {
     terminalTransitions,
@@ -344,6 +362,10 @@ export async function createRunSafetyWiring(input: {
     sweepCheckpointRetention,
     bindGuardedRun,
     checkpoints,
+    provisionRunLane,
+    resolveRunCwd,
+    onRunLanePaused: (laneId: string | undefined) => sqliteCutover?.getRunLaneCoordinator()?.onRunPaused(laneId),
+    onRunLaneResumed: (runId: string) => sqliteCutover?.getRunLaneCoordinator()?.onRunResumed(runId),
     // Feature 098 (SEC-02) — a real, awaited approve/cancel decision bound to
     // the mutation fingerprint. `showWarningMessage` with `modal: true` adds
     // its own Cancel button and resolves `undefined` on dismissal, so the only
@@ -720,11 +742,23 @@ export async function recordConnectedWorkflowTransition(
                   ? { workspaceRoot: input.workspaceRoot }
                   : {})
               });
+            const cutover =
+              'getRawControlLedger' in input.store
+                ? getSqliteCutoverCoordinator(input.store as WorkspaceStateStore)
+                : undefined;
+            const execRoot =
+              (await cutover?.getRunLaneCoordinator()?.resolveExecutionRoot({
+                runId: run.id,
+                laneId: run.laneId,
+                laneRootRef: run.laneRootRef
+              })) ??
+              input.workspaceRoot ??
+              '';
             const phase =
               workflowRun.frozenClosure?.phasesById[matchedAttempt.targetDefinitionId];
             const evaluated = await composition.evaluateSettlementOutcome({
               attemptId: matchedAttempt.attemptId,
-              workspaceRoot: input.workspaceRoot ?? '',
+              workspaceRoot: execRoot,
               status: run.status,
               phase,
               declaredOutputs: buildDeclaredOutputsFromRun(run.runOutputs),
@@ -757,6 +791,23 @@ export async function recordConnectedWorkflowTransition(
                 ? { failureCode: evaluated.failureCode }
                 : {})
             });
+            const refreshedWf = input.store.getConnectedRuns()[workflowRun.connectedRunId] as
+              | ConnectedWorkflowRun
+              | undefined;
+            const rootStatus = Object.values(refreshedWf?.invocations ?? {}).find(
+              (f) => f.parentInvocationId === null
+            )?.status;
+            if (
+              rootStatus === 'completed' ||
+              rootStatus === 'failed' ||
+              rootStatus === 'canceled'
+            ) {
+              cutover?.completeRootExecutionLane({
+                rootExecutionId: workflowRun.connectedRunId,
+                laneId: run.laneId,
+                status: rootStatus
+              });
+            }
             return;
           }
         }

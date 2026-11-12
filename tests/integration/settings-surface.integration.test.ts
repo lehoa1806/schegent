@@ -445,6 +445,131 @@ const EXEMPTIONS: ReadonlyMap<string, Exemption> = new Map<string, Exemption>([
         'must be deleted in the same diff, as the ledger\'s own `already rendered` failure requires.',
       reviewBy: PERMANENT
     }
+  ],
+
+  // ── Owned by FR-R6-F13: application-scoped ACP profile selection. ─────────
+  [
+    'acp.profile',
+    {
+      owner: 'FR-R6-F13 — native VS Code User Settings UI',
+      reason:
+        'An `application`-scoped enum (`auto`, `agy-acp-native`, `claude-acp-bridge`, `codex-acp-bridge`) ' +
+        'configured in the native VS Code User Settings UI and read uncached by `acp-execution-wiring.ts`. ' +
+        'Deliberately excluded from `KEY_SPECS` and `GeneralSettingsTab.svelte` so workspace-scoped IPC ' +
+        'draft saves cannot override machine-level ACP profile selection.',
+      reviewBy: PERMANENT
+    }
+  ],
+
+  // ── Owned by FR-R6-F10: isolated per-Run Git worktree lane settings. ──────
+  [
+    'lanes.enabled',
+    {
+      owner: 'FR-R6-F10 — native VS Code Settings UI and ChangeReviewPanel.svelte',
+      reason:
+        'Configured in the native VS Code Settings UI (`readLanesEnabled` in `uncached-settings-accessors.ts`) ' +
+        'so toggling isolated Git worktree lanes applies to subsequent Run admissions without a `KEY_SPECS` ' +
+        'draft field, while active per-Run lane posture and integration status are surfaced in `ChangeReviewPanel.svelte`.',
+      reviewBy: PERMANENT
+    }
+  ],
+  [
+    'lanes.liveCap',
+    {
+      owner: 'FR-R6-F10 — native VS Code Settings UI and ChangeReviewPanel.svelte',
+      reason:
+        'Integer cap (`[1, 20]`, default `1`) configured in the native VS Code Settings UI and enforced by ' +
+        '`LaneService.open`; deliberately outside `KEY_SPECS` alongside `lanes.enabled` while per-Run lane ' +
+        'state is inspected in `ChangeReviewPanel.svelte`.',
+      reviewBy: PERMANENT
+    }
+  ],
+  [
+    'lanes.provisioningDeadlineSeconds',
+    {
+      owner: 'FR-R6-F10 — native VS Code Settings UI and ChangeReviewPanel.svelte',
+      reason:
+        'Integer provisioning deadline (`[1, 600]` seconds, default `120`) configured in the native VS Code ' +
+        'Settings UI and enforced by `LaneService.open`; deliberately outside `KEY_SPECS` alongside `lanes.enabled`.',
+      reviewBy: PERMANENT
+    }
+  ],
+
+  // ── Owned by FR-R6-F14: user-scoped OTLP export settings & read-only disclosure. ─
+  [
+    'telemetry.export.enabled',
+    {
+      owner: 'FR-R6-F14 — native VS Code User Settings UI and TelemetryExportStatusCard.svelte',
+      reason:
+        'User-only (`application`-scoped) OTLP opt-in read strictly from `inspect()?.globalValue` so repository ' +
+        'settings and webview `KEY_SPECS` writes can never enable telemetry export (`F14-FR-01`, `F14-FR-02`); ' +
+        'effective status and allowlisted-field disclosure are rendered read-only by `TelemetryExportStatusCard.svelte`.',
+      reviewBy: PERMANENT
+    }
+  ],
+  [
+    'telemetry.export.endpoint',
+    {
+      owner: 'FR-R6-F14 — native VS Code User Settings UI and TelemetryExportStatusCard.svelte',
+      reason:
+        'User-only (`application`-scoped) OTLP destination URL read strictly from `inspect()?.globalValue` so ' +
+        'workspace settings and webview IPC writes can never redirect telemetry export (`F14-FR-02`, `F14-FR-09`); ' +
+        'effective authorization status is disclosed read-only in `TelemetryExportStatusCard.svelte`.',
+      reviewBy: PERMANENT
+    }
+  ],
+  [
+    'telemetry.export.protocol',
+    {
+      owner: 'FR-R6-F14 — native VS Code User Settings UI and TelemetryExportStatusCard.svelte',
+      reason:
+        'User-only (`application`-scoped) OTLP protocol selector (`otlp-http-json` supported; unsupported ' +
+        'protocols explicitly refused) read strictly from `inspect()?.globalValue` and disclosed read-only ' +
+        'in `TelemetryExportStatusCard.svelte`.',
+      reviewBy: PERMANENT
+    }
+  ],
+  [
+    'telemetry.export.allowPlaintextLoopback',
+    {
+      owner: 'FR-R6-F14 — native VS Code User Settings UI and TelemetryExportStatusCard.svelte',
+      reason:
+        'User-only (`application`-scoped) loopback plaintext override read strictly from `inspect()?.globalValue` ' +
+        'so repository settings and webview IPC writes cannot downgrade transport security (`F14-FR-09`); ' +
+        'refusal/authorization posture is disclosed read-only in `TelemetryExportStatusCard.svelte`.',
+      reviewBy: PERMANENT
+    }
+  ],
+  [
+    'telemetry.export.credentialSecretKey',
+    {
+      owner: 'FR-R6-F14 — native VS Code User Settings UI, SecretStorage, and TelemetryExportStatusCard.svelte',
+      reason:
+        'User-only (`application`-scoped) `SecretStorage` key reference read strictly from `inspect()?.globalValue`; ' +
+        'inline secrets in settings are refused (`F14-FR-08`) and webview IPC writes are excluded by design.',
+      reviewBy: PERMANENT
+    }
+  ],
+  [
+    'telemetry.export.credentialHeaderName',
+    {
+      owner: 'FR-R6-F14 — native VS Code User Settings UI and TelemetryExportStatusCard.svelte',
+      reason:
+        'User-only (`application`-scoped) HTTP header name paired with `telemetry.export.credentialSecretKey`, ' +
+        'read strictly from `inspect()?.globalValue` and excluded from webview `KEY_SPECS` writes by design.',
+      reviewBy: PERMANENT
+    }
+  ],
+  [
+    'telemetry.export.contentPolicy',
+    {
+      owner: 'FR-R6-F14 — native VS Code User Settings UI and TelemetryExportStatusCard.svelte',
+      reason:
+        'User-only (`application`-scoped) content-export policy (`metadata-only` supported; `content` refused with ' +
+        '`content-export-unsupported`) read strictly from `inspect()?.globalValue` and disclosed read-only in ' +
+        '`TelemetryExportStatusCard.svelte`.',
+      reviewBy: PERMANENT
+    }
   ]
 ]);
 

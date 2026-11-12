@@ -113,6 +113,13 @@ const ACCOUNTED_INVOKE_SITES: ReadonlyArray<{ file: string; why: string }> = [
       'invoke that PhaseRunner.run (and the compactor and watchdog above) already made, after the ' +
       'containment admission; it starts no Run of its own, so the posture recorded by the funnel ' +
       'still covers the call it forwards.'
+  },
+  {
+    file: 'src/runner/acp-backed-runner.ts',
+    why:
+      'FR-R6-F13: the ACP BackendRunner decorator built by BackendRunnerFactory inside ' +
+      'SpawnGatedRunner. Its only `.invoke(` delegates pre-cutover `legacyDrain` invocations to ' +
+      '`this.options.inner` after PhaseRunner.run has already recorded the Run posture.'
   }
 ];
 

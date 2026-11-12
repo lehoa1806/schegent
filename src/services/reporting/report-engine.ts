@@ -240,6 +240,16 @@ export function createReportEngine(options: ReportEngineOptions): ReportEngine {
         calculationVersion: REPORT_CALCULATION_VERSION,
         roots: capture.value.roots,
         attempts: capture.value.attempts,
+        ...(capture.value.evidenceRefs !== undefined ? { evidenceRefs: capture.value.evidenceRefs } : {}),
+        ...(capture.value.acpAttributions !== undefined
+          ? { acpAttributions: capture.value.acpAttributions }
+          : {}),
+        ...(capture.value.handoffSummaries !== undefined
+          ? { handoffSummaries: capture.value.handoffSummaries }
+          : {}),
+        ...(capture.value.reviewSummaries !== undefined
+          ? { reviewSummaries: capture.value.reviewSummaries }
+          : {}),
         rows: built.value.rows,
         coverage: built.value.coverage,
         timeBasis: context.query.view === 'usage' ? 'accounting-event' : 'root-created',

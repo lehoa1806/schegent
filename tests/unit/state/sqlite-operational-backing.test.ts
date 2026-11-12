@@ -6,6 +6,7 @@ import { SqliteApplicationStore, createSwitchableCatalogFsAdapter } from '../../
 import {
   CONNECTED_RUNS_CACHE_MAX,
   PostCutoverMementoWriteForbiddenError,
+  SqliteCutoverMigrationIncompleteError,
   createSwitchableOperationalMemento
 } from '../../../src/state/sqlite-operational-backing';
 import { KEYS, type Memento } from '../../../src/state/workspace-state';
@@ -136,6 +137,66 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
     }
   });
 
+  it('keeps legacy authority when the non-run copy fails, and a later attach imports every key (F04-FR-13/14/15)', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'schegent-sqlite-backing-'));
+    try {
+      const dbPath = join(tempDir, 'schegent-state.db');
+      const base = createMemoryMemento({
+        [KEYS.run]: {
+          default: {
+            id: 'run-legacy-2',
+            featureId: 'feat-2',
+            featureDir: 'specs/002-feat',
+            status: 'paused',
+            currentPhase: 'plan',
+            currentIteration: 1,
+            startedAt: 1_700_000_000_000,
+            lastTransitionAt: 1_700_000_050_000,
+            phasesCompleted: [],
+            lastError: null
+          }
+        },
+        [KEYS.queueDefaultId]: 'alpha',
+        [KEYS.history]: [{ id: 'h-1' }]
+      });
+      let failHistoryRead = true;
+      const legacy: Memento & { writes: number } = {
+        get writes() {
+          return base.writes;
+        },
+        get<T>(key: string): T | undefined {
+          if (failHistoryRead && key === KEYS.history) throw new Error('simulated host crash mid-copy');
+          return base.get<T>(key);
+        },
+        update: (key, value) => base.update(key, value)
+      };
+      const sqliteStore = new SqliteApplicationStore({ databasePath: dbPath, journalMode: 'wal' });
+
+      const first = createSwitchableOperationalMemento(legacy);
+      expect(() => first.attachSqlite(sqliteStore, 'scope-gamma', () => 1_700_000_100_000)).toThrow(
+        SqliteCutoverMigrationIncompleteError
+      );
+      expect(sqliteStore.cutoverGuard.getSentinel('scope-gamma')?.authority).not.toBe('sqlite');
+      expect(first.isSqliteAttached()).toBe(false);
+      expect(first.get<string>(KEYS.queueDefaultId)).toBe('alpha');
+      await first.update(KEYS.queueDefaultId, 'beta');
+      expect(base.get<string>(KEYS.queueDefaultId)).toBe('beta');
+
+      failHistoryRead = false;
+      const second = createSwitchableOperationalMemento(legacy);
+      const backing = second.attachSqlite(sqliteStore, 'scope-gamma', () => 1_700_000_200_000);
+      expect(backing.migrationOutcome?.completed).toBe(true);
+      expect(sqliteStore.cutoverGuard.getSentinel('scope-gamma')?.authority).toBe('sqlite');
+      expect(second.get<string>(KEYS.queueDefaultId)).toBe('beta');
+      expect(second.get<readonly { id: string }[]>(KEYS.history)).toEqual([{ id: 'h-1' }]);
+      expect(second.get<Record<string, { id: string } | undefined>>(KEYS.run)?.default?.id).toBe('run-legacy-2');
+
+      sqliteStore.close();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('prunes terminal connectedRuns at CONNECTED_RUNS_CACHE_MAX (512) while preserving every non-terminal run (F03)', async () => {
     const sqliteStore = SqliteApplicationStore.openInMemory();
     try {
@@ -160,7 +221,7 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
             fromNodeId: 'n1',
             toNodeId: 'n2',
             pausedAt: now - 5_000
-          } as unknown as ConnectedWorkflowRun['pendingHandoff']
+          } as unknown as NonNullable<ConnectedWorkflowRun['pendingHandoff']>
         };
       }
       // 600 terminal runs
