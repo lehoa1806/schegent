@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -79,6 +79,28 @@ describe('FR-R3-101 — the debugger looks where the bundler writes', () => {
     const contributing = read('CONTRIBUTING.md');
     expect(contributing).toContain('tasks.json');
     expect(contributing.toLowerCase()).toContain('auto-detect');
+  });
+
+  it('GC-23: a configuration debugs the open host test file through vitest', () => {
+    // The review found one launch configuration and none for a single test file, so a contributor
+    // debugging one failing host test had to hand-write it. Line comments are stripped the way
+    // `procedure-surface-registry.test.ts` strips them, since the file is JSONC.
+    const parsed = JSON.parse(
+      read('.vscode/launch.json')
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('//'))
+        .join('\n')
+    ) as {
+      configurations?: ReadonlyArray<{ name?: string; type?: string; program?: string; args?: string[] }>;
+    };
+    const debugTest = (parsed.configurations ?? []).find(
+      (candidate) => candidate.name === 'Debug Current Host Test File'
+    );
+    expect(debugTest, 'launch.json must define "Debug Current Host Test File"').toBeDefined();
+    expect(debugTest?.type).toBe('node');
+    expect(debugTest?.program).toBe('${workspaceFolder}/node_modules/vitest/vitest.mjs');
+    expect(debugTest?.args).toEqual(['run', '${relativeFile}']);
+    expect(existsSync(resolve(ROOT, 'node_modules', 'vitest', 'vitest.mjs'))).toBe(true);
   });
 
   it('NON-VACUITY: a glob naming the wrong directory is detected', () => {

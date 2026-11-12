@@ -263,10 +263,12 @@ enforcement. It writes nothing.
 <!-- Source: scripts/review-due-report.mjs -->
 
 **`.vscode/launch.json` exists** — `FR-R3-073` added it, and this sentence denied it until
-2026-08-26 (`FR-R3-101`). Its single `Run Extension` configuration is the interactive F5 path,
+2026-08-26 (`FR-R3-101`). Its `Run Extension` configuration is the interactive F5 path,
 and its `outFiles` names `dist/**` because that is where `esbuild.config.mjs` bundles the host;
 it named `out/**` until the same date, which is the integration-test compile target, so F5
-breakpoints bound against the wrong artifact and never hit.
+breakpoints bound against the wrong artifact and never hit. Its second configuration, `Debug
+Current Host Test File`, runs the host test file open in the editor under the debugger with the
+root vitest config (`webview-ui/` tests have their own config and are not covered by it).
 
 **`.vscode/tasks.json` genuinely does not exist**, and the launch configuration names a
 `preLaunchTask` of `npm: build` anyway. That works because VS Code auto-detects npm scripts as
