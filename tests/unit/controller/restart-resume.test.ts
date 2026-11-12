@@ -213,3 +213,27 @@ describe('FR-013 — restart handshake for pendingRetryAt', () => {
     expect(deadlineTimer.sets).toHaveLength(0);
   });
 });
+
+// Review gap GC-01 (2026-11-12) — one Run that cannot be re-armed must not strand the others.
+describe('activation resume isolates each persisted Run', () => {
+  it('re-arms the second queue when the first throws, and logs the failure', async () => {
+    const { controller, store } = makeController(memento, deadlineTimer);
+    await store.initialize();
+    const first = { id: 'run-a' } as WorkflowRun;
+    const second = { id: 'run-b' } as WorkflowRun;
+    vi.spyOn(store, 'getRunMap').mockReturnValue({ 'queue-a': first, 'queue-b': second });
+    const coordinator = (controller as unknown as {
+      retryCoordinator: { resumeExistingFromActivation: (q: string, r: WorkflowRun) => Promise<void> };
+    }).retryCoordinator;
+    const visited: string[] = [];
+    vi.spyOn(coordinator, 'resumeExistingFromActivation').mockImplementation(async (queueId) => {
+      visited.push(queueId);
+      if (queueId === 'queue-a') throw new Error('poisoned run');
+    });
+
+    await expect(controller.resumeExistingFromActivation()).resolves.toBeUndefined();
+
+    expect(visited).toEqual(['queue-a', 'queue-b']);
+  });
+});
+

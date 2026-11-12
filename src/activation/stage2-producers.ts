@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import type { SanitizedLogger } from '../lib/logger';
+import { errorMessage } from '../lib/errors';
 import { checkLiveness, createLivenessProbe } from '../services/process-liveness';
 import { resumePersistedRuns } from '../services/resume-decision';
 import { resumeUnattended } from '../services/unattended-resume';
@@ -334,8 +335,14 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
       logger.info('scheduled-start re-arm skipped: window is not primary');
     }
 
+    // Review gap GC-01 — each installer is isolated like `reArm` above: a throw here used to skip
+    // every installer below it, the activation drain included, behind a latch already set.
     if (lockResult.acquired) {
-      await watchdog.reattachOnActivation();
+      try {
+        await watchdog.reattachOnActivation();
+      } catch (err) {
+        logger.warn(`watchdog reattach failed: ${errorMessage(err)}`);
+      }
     } else {
       // FR-R3-070 — non-primary: the persisted poll deadline remains for the
       // primary window to reattach.
@@ -346,7 +353,11 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
     // pending delayed-retry deadline, re-arm the watchdog (or resume
     // immediately if it has already elapsed).
     if (lockResult.acquired) {
-      await controller.resumeExistingFromActivation();
+      try {
+        await controller.resumeExistingFromActivation();
+      } catch (err) {
+        logger.warn(`delayed-retry re-arm failed: ${errorMessage(err)}`);
+      }
     } else {
       // FR-R3-070 — the path that used to fire setImmediate(resumeExisting)
       // before the election was decided; the elapsed deadline stays persisted.
@@ -380,6 +391,8 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
         resume: (queueId) => void resumeUnattended(queueId, unattended),
         notify: (message) => void vscode.window.showWarningMessage(message),
         log: (message) => logger.info(message)
+      }).catch((err: unknown) => {
+        logger.warn(`persisted-run resume failed: ${errorMessage(err)}`);
       });
     } else {
       logger.info('persisted-run resume skipped: window is not primary');

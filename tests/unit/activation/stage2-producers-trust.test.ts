@@ -464,3 +464,59 @@ describe('stage 2 producers: nothing happens in an untrusted window', () => {
     }
   });
 });
+
+// Review gap GC-01 (2026-11-12) — one failing recovery installer must not cancel the others.
+//
+// `reArm` was already isolated; the watchdog reattach, the delayed-retry resume and the persisted-run
+// sweep were not. A throw from the watchdog skipped every later installer, including the activation
+// drain, and the latch above them stayed set, so nothing asked again until a reload. These cases fail
+// one installer at a time and require the rest to run, and the failure to be logged.
+describe('stage 2 producers: a failing recovery installer does not stop the rest', () => {
+  type Slot = Record<string, unknown>;
+  type Mutable = { watchdog: Slot; controller: Slot; store: Slot };
+  const settle = async (): Promise<void> => {
+    for (let round = 0; round < 8; round += 1) await Promise.resolve();
+  };
+
+  it('still resumes, sweeps and drains when the watchdog reattach throws', async () => {
+    const r = recorder({ trusted: true });
+    (r.deps as unknown as Mutable).watchdog.reattachOnActivation = async () => {
+      throw new Error('reattach exploded');
+    };
+
+    await createStage2Producers(r.deps).run();
+    await settle();
+
+    expect(r.calls).toContain('controller.resumeExistingFromActivation');
+    expect(r.calls).toContain('store.getRunMap');
+    expect(r.calls).toContain('controller.scheduleAutoDrain');
+    expect(r.lines.some((line) => line.includes('watchdog reattach failed'))).toBe(true);
+  });
+
+  it('still sweeps and drains when the delayed-retry resume throws', async () => {
+    const r = recorder({ trusted: true });
+    (r.deps as unknown as Mutable).controller.resumeExistingFromActivation = async () => {
+      throw new Error('resume exploded');
+    };
+
+    await createStage2Producers(r.deps).run();
+    await settle();
+
+    expect(r.calls).toContain('store.getRunMap');
+    expect(r.calls).toContain('controller.scheduleAutoDrain');
+    expect(r.lines.some((line) => line.includes('delayed-retry re-arm failed'))).toBe(true);
+  });
+
+  it('logs, rather than leaks, a persisted-run sweep that rejects', async () => {
+    const r = recorder({ trusted: true });
+    (r.deps as unknown as Mutable).store.getRunMap = () => {
+      throw new Error('run map unreadable');
+    };
+
+    await createStage2Producers(r.deps).run();
+    await settle();
+
+    expect(r.calls).toContain('controller.scheduleAutoDrain');
+    expect(r.lines.some((line) => line.includes('persisted-run resume failed'))).toBe(true);
+  });
+});
