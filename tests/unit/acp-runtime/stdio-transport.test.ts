@@ -15,12 +15,16 @@ const INITIALIZE = `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initializ
 const WAIT = { timeout: 5_000, interval: 10 };
 
 /**
- * A shell agent that answers the first line it reads, closes its own stdin and lives on. A Node
+ * A shell agent that reads the first line, closes its own stdin, answers and lives on. A Node
  * agent cannot be used here: Node keeps descriptor 0 open after `process.stdin.destroy()`, and
  * libuv aborts the process on an explicit close of it.
+ *
+ * It closes stdin BEFORE it answers, so the answer's arrival proves the read end is gone. Answering
+ * first raced (review gap GC-18, Linux leg 2026-11-12, under load): a second write that reached the
+ * pipe before `exec 0<&-` ran was buffered, never failed, and no close was ever reported.
  */
 const INIT_ANSWER = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: 1 } });
-const CLOSES_STDIN_AND_LIVES = `IFS= read -r _line; printf '%s\\n' '${INIT_ANSWER}'; exec 0<&-; exec sleep 30`;
+const CLOSES_STDIN_AND_LIVES = `IFS= read -r _line; exec 0<&-; printf '%s\\n' '${INIT_ANSWER}'; exec sleep 30`;
 
 interface Captured {
   readonly transport: AcpTransport;
