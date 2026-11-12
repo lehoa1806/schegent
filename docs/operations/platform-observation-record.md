@@ -199,7 +199,7 @@ reports `Linux 7.2.12-orbstack-00394-gbecdd6130068 aarch64` and Node v24.19.0.
 | `acp-open-refused:profile-unqualified` | `acp-backed-runner` (the full turn), `f10-isolated-lanes-integration` (F10-AC-08) | Only darwin/arm64 qualifies an ACP profile, and both tests took the host's platform, so they would fail on an Intel Mac as well (inferred, not run) | The runner takes a platform; the tests pin darwin/arm64, and a new case asserts the refusal before launch anywhere else (`bb290c79`) |
 | Sidebar bundle over its cap | `bundle-size` (SC-010) | Not Linux-specific: review gap GC-16's notice pushed the sidebar past its cap | Fixed (`f9e82e55`) |
 | Workspace references not found | `basename-line-references` (2 cases: too few references extracted), `doc-references-outside-markdown` (2 cases: citations resolve in neither tree) | `git archive` carries `repo/` only, and these gates read the workspace's documents | Recorded, not fixed. They fail without the envelope rather than skip, so a standalone clone would fail them too (inferred, not run); the qualification matrix's "the gates that read the envelope skipped" is not true of these two |
-| Timed out at 600 s | `usage-accounting-acceptance` (SC-003, 100,000 money additions into a file database) | A durable commit costs about 42 times as much in the container as on macOS; see below | Recorded, not fixed; see below |
+| Timed out at 600 s | `usage-accounting-acceptance` (SC-003, 100,000 money additions into a file database) | A durable commit costs about 42 times as much in the container as on macOS; see below | The case now runs in one outer transaction, so it measures the arithmetic, not one commit per write; see below |
 
 **SC-003 is consistent with a cost of `fsync`.** Run alone in the same image, the file took 829 s
 and SC-003 timed out again; on macOS the case alone took 245 s at a load average between 4 and 9. The
@@ -218,8 +218,13 @@ traced): SQLite asks macOS for a full flush (`F_FULLFSYNC`) only under `PRAGMA f
 store does not set. SC-003 itself was not rerun on `tmpfs` or with `synchronous = OFF`, so only the
 extra time Linux takes is attributed to `fsync`, and that attribution rests on the table above. The
 600 s budget appears to have been sized on a platform where a durable commit is cheap. The leg keeps its own disk, so it
-keeps measuring what Linux does. Whether SC-003 gets a per-platform budget, the leg gets a `tmpfs`
-temp root, or the red is accepted is the operator's decision and is not taken here.
+keeps measuring what Linux does.
+
+**SC-003 fixed in the test, 2026-11-12.** SC-003 checks exact totals, not commit cost, so neither a
+per-platform budget nor a `tmpfs` temp root was needed. The case now opens one outer transaction, which
+every accounting write joins (`src/services/usage-accounting/accounting-transaction.ts`), and commits it
+once before the exact-total check. It still uses the real file store. On macOS the case alone took
+34 s, down from 245 s. Recovery after a crash stays the business of F06-AC-07, not of this case.
 
 **Rerun, at `18f9beea`** (10:27 to 10:59 UTC). Every step exited 0 except `test:host`, which ran 1,480
 files and 22,611 tests: 22,560 passed, 6 failed and 45 were skipped, in 1,757 s. Four of the six are
