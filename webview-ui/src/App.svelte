@@ -3,6 +3,7 @@
   import StatsStrip from './components/StatsStrip.svelte';
   import CurrentTask from './components/CurrentTask.svelte';
   import DashboardLink from './components/DashboardLink.svelte';
+  import IncompatibleSnapshotNotice from './components/IncompatibleSnapshotNotice.svelte';
   import { snapshotStore } from './lib/snapshot-store.svelte';
 
   const ready = $derived(snapshotStore.isReady);
@@ -20,6 +21,7 @@
     <span class="brand-name">Schegent</span>
     <span class="connection-state" class:connected={ready}>{ready ? 'Connected' : 'Connecting'}</span>
   </header>
+  <IncompatibleSnapshotNotice />
   {#if ready}
     <StatusBar />
     <StatsStrip />
