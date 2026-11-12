@@ -434,6 +434,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       inheritProcessEnv: processEnvironmentPolicy.inheritProcessEnv,
       processEnvAllowlist: processEnvironmentPolicy.processEnvAllowlist,
       defaultRunnerKind: backendKind,
+      requireProbe: true, // GC-07 follow-up: a lost probe service fails the Run, never skips the probe
       isAuditEvidenceAvailable: () => evidenceHealth.getSnapshot().audit.status !== 'unavailable',
       // FR-R3-119 — the never-cached settings reads live together in
       // `src/activation/uncached-settings-accessors.ts`, which says why they are closures.
