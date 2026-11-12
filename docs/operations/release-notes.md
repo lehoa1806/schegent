@@ -63,6 +63,13 @@ From the 2026-11-12 full repository review. Each item names its review gap (`GC-
   `storageUri`, which VS Code keys by how the workspace was opened, so the same folder opened directly and
   through a `.code-workspace` file has two stores. The two windows are never primary at once, but state in
   one store is not in the other. Documented in the file-layout reference; behaviour unchanged.
+- **The unit tier runs on Linux, locally (GC-18).** `npm run verify:linux` runs the install, the build,
+  the SBOM, both typechecks, lint, `contracts:check` and `test:host` in a Linux container against a
+  commit, as the local replacement for hosted CI. Linux path case-sensitivity in output-target identity is
+  now observed there. Linux stays in the `unverified` tier: no extension host, browser or real CLI runs in
+  the container. It needs a running Docker daemon and refuses to run while its own files are
+  uncommitted. It is not green yet: two gates that read the workspace envelope fail without it, and
+  SC-003 times out on the container's disk. See the platform observation record.
 - **A launch configuration debugs one host test file (GC-23).** `Debug Current Host Test File` in
   `.vscode/launch.json` runs the open file under the debugger. The commit hook stays opt-in.
 - **Internal robustness fixes with no setting or command change (GC-02, GC-03, GC-06, GC-07, GC-08).** A failed
