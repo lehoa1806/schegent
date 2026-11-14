@@ -372,8 +372,8 @@ describe('DefinitionHistoryPanel — the body is read-only (US4, T048, FR-030)',
 
   // Feature 186 (US3, T023, FR-004, D-4) — `.body-content` carries no inline
   // max-height or overflow: every host that mounts this panel already supplies
-  // one scroll region of its own (`.pane-right` on Phases, `.wf-inspector` on
-  // Pipelines and Workflows), and a version body capped at its own height
+  // one scroll region of its own (the Builder's `.page` on a Phase's page, the
+  // inspector's `.ins-body` on Workflows), and a version body capped at its own height
   // inside any of those is a scroll region nested inside another one, which is
   // exactly what FR-004 forbids.
   it('lets the version body flow inside its host’s scroll region rather than carrying its own', async () => {

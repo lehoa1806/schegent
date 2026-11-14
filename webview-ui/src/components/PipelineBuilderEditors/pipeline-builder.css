@@ -1,81 +1,61 @@
-.pb { display: flex; flex-direction: column; flex: 1; min-height: 0; box-sizing: border-box; padding: var(--schegent-space-4) var(--schegent-space-5) var(--schegent-space-5); gap: var(--schegent-space-3); color: var(--schegent-fg); }
-.pb .header h2 { margin: 0; color: var(--schegent-fg); font-size: var(--schegent-text-heading); font-weight: 650; letter-spacing: -0.025em; }
-.pb .header p { margin: 5px 0 12px; color: var(--schegent-muted-fg); font-size: var(--schegent-text-secondary); }
-.pb .builder-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--schegent-divider); }
-.pb .tab-btn { position: relative; min-height: 38px; background: transparent; border: none; color: var(--schegent-muted-fg); padding: 7px 14px; border-radius: 0; cursor: pointer; font-weight: 500; }
-.pb .tab-btn:hover { color: var(--schegent-fg); background: var(--schegent-surface-hover); }
-/* FR-R3-131 (T1498) — accent on the inset underline, contrast-safe foreground on
-   the label. `#builder-tab-pipelines` was three of the thirty baselined findings. */
-.pb .tab-btn.active { color: var(--schegent-color-active-fg); box-shadow: inset 0 -2px 0 var(--schegent-color-active); background: var(--schegent-surface-active); }
-.pb .builder-canvas { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
-.pb .toolbar { display: flex; gap: 8px; }
-.pb .split-pane { display: flex; gap: 0; flex: 1; overflow: hidden; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); }
-.pb .pane-left { width: 270px; border-right: 1px solid var(--schegent-divider); overflow-y: auto; padding: 8px; display: flex; flex-direction: column; background: var(--schegent-shell-bg); }
-.pb .pane-right { flex: 1; overflow-y: auto; display: flex; flex-direction: column; padding: 12px; background: var(--schegent-pane-bg); }
+/* The Builder is a page like Settings: `.page` (sg-pages.css) pads and scrolls it, `.phead` heads it
+   and `.tabs` switches its catalogs. The base button, its primary, secondary and ghost kinds, the
+   icon button and the toolbar come from the sg sheets too. What follows is what the Builder's own
+   editors still draw. */
+.pb { display: flex; flex: 1; min-height: 0; color: var(--schegent-fg); }
+/* The panel stacks a catalog's notices above its page; each page lays out its own content. */
+.pb .builder-canvas { display: flex; flex-direction: column; gap: var(--schegent-space-3); min-width: 0; }
+/* The Workflow editor (sg-builder.css `.editor`) sits under the tabs, whose bottom margin already
+   spaces it, so it drops the redesign's top padding. */
+.pb .builder-canvas > .editor { padding-top: 0; }
+/* The redesign's editor fills the window, so the canvas and the inspector scroll inside the shell
+   instead of the page scrolling past them. Only the Workflows tab does: `:has()` leaves the Phases
+   and Models tabs on page scrolling. The minimum is the redesign's 640px app less its head; below
+   it, and once the panes stack at 760px, the page scrolls again. */
+@media (min-width: 761px) {
+  .pb .page:has(> .builder-canvas > .editor) { display: flex; flex-direction: column; }
+  .pb .page > .builder-canvas:has(> .editor) { flex: 1 1 0; min-height: 520px; }
+}
 .pb .phase-list { display: flex; flex-direction: column; gap: 4px; }
 .pb .phase-list-item { text-align: left; background: transparent; border: 1px solid transparent; padding: 8px; border-radius: var(--schegent-radius-sm); cursor: pointer; color: var(--schegent-fg); transition: background var(--schegent-duration-fast) var(--schegent-ease-out); }
 .pb .phase-list-item:hover { background: var(--schegent-hover-bg); }
 .pb .phase-list-item.selected { background: var(--schegent-surface-active); border-color: var(--vscode-focusBorder); }
 .pb .phase-list-title { font-weight: 500; margin-bottom: 4px; }
 .pb .phase-list-id { font-size: 0.85em; color: var(--schegent-muted-fg); }
-/* Feature 101 (US1, T037) — the row stacks: the selection button and its move
-   controls on one line, the lifecycle chrome beneath them. `.phase-list-main`
-   is the line the row used to be, so the flex rule below moved onto it
-   unchanged; only the outer container turned into a column. The Workflow list
-   has no move controls and one child on that line, which the same rule
-   handles. */
+/* On the selected row the secondary text takes the row's own foreground, as the redesign's picker
+   option does (`sg-builder.css`). The muted grey on the active tint measured 4.36:1 in a dark
+   theme, under WCAG AA's 4.5:1, once the accessibility scan drew real theme colours (decision 13
+   of the webview redesign review). The title keeps its weight and the rest its smaller size. */
+.pb .phase-list-item.selected :is(.phase-list-id, .row-ports) { color: inherit; }
+/* Feature 101 (US1, T037) — the row stacks: the selection button on one line, the lifecycle chrome
+   beneath it. The Workflow library list draws these rows; the Phases tab lists its Phases in a
+   table of its own (`PhaseCatalogList.svelte`). */
 .pb .phase-list-row { display: flex; flex-direction: column; gap: 2px; }
-.pb .phase-list-main { display: flex; align-items: center; gap: 4px; }
 .pb .phase-list-row .phase-list-item { flex: 1; }
-.pb .phase-list-actions { display: flex; flex-direction: column; gap: 2px; }
 .pb .empty-selection { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--schegent-muted-fg); font-style: italic; padding: 16px; }
-.pb .full-height { flex: 1; }
-.pb .editor-card { background: transparent; border: 0; border-radius: 0; padding: 4px; display: flex; flex-direction: column; gap: 12px; }
-.pb .card-header-complex { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
-.pb .header-actions { display: flex; gap: 8px; align-items: center; }
-.pb .title-input { font-size: 1.2em; font-weight: 600; background: transparent; border: none; border-bottom: 1px solid transparent; color: var(--schegent-fg); padding: 4px; flex: 1; min-width: 200px; }
-.pb .title-input:focus { outline: none; border-bottom-color: var(--vscode-focusBorder); }
-.pb .card-body { display: flex; flex-direction: column; gap: 12px; flex: 1; }
-.pb .card-body label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9em; color: var(--schegent-muted-fg); }
 .pb .text-input, .pb .select-input { background: var(--schegent-input-bg); border: 1px solid var(--schegent-divider); color: var(--schegent-fg); padding: 8px; border-radius: 4px; font-family: inherit; font-size: 1em; }
 .pb .text-input:focus, .pb .select-input:focus { outline: none; border-color: var(--vscode-focusBorder); }
-.pb .text-area { background: var(--vscode-input-background); color: var(--schegent-fg); border: 1px solid var(--sch-glass-border); border-radius: var(--schegent-radius); padding: 6px 8px; font-family: inherit; width: 100%; box-sizing: border-box; resize: vertical; }
-.pb .btn { padding: 6px 12px; border-radius: 4px; border: none; cursor: pointer; font-weight: 500; background: var(--schegent-hover-bg); color: var(--schegent-fg); }
-.pb .btn:hover:not(:disabled) { background: var(--schegent-divider); }
-.pb .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.pb .btn-primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
-.pb .btn-primary:hover { background: var(--vscode-button-hoverBackground); }
-.pb .btn-secondary { background: transparent; border: 1px solid var(--vscode-button-background); color: var(--vscode-button-background); }
-.pb .btn-secondary:hover { background: var(--vscode-list-hoverBackground); }
 .pb .btn-destructive { background: transparent; border: 1px solid var(--vscode-errorForeground); color: var(--schegent-error-text); }
 .pb .btn-destructive:hover { background: var(--vscode-inputValidation-errorBackground); }
-.pb .btn-ghost { background: transparent; border: 1px solid var(--schegent-divider); color: var(--schegent-fg); }
-.pb .btn-ghost:hover { background: var(--schegent-hover-bg); }
-.pb .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.pb .form-field { display: flex; flex-direction: column; gap: 4px; }
-.pb .form-field.full-width { grid-column: 1 / -1; }
-.pb .form-label { font-size: 0.85em; font-weight: 600; color: var(--schegent-muted-fg); }
-.pb .checkbox-field { flex-direction: row; align-items: center; gap: 8px; }
-.pb .retry-condition-row { border-top: 1px solid var(--schegent-divider); padding-top: 12px; }
+/* The Workflow editors' fields. The Phase editor's fields are sg-core's `.field`; they keep the
+   `form-field` and `form-label` names the Builder's tests find a field by, so these rules skip
+   them. `:where` keeps each rule at the weight it had before the skip. */
+.pb .form-field:where(:not(.field)) { display: flex; flex-direction: column; gap: 4px; }
+.pb .form-label:where(:not(.field > *)) { font-size: 0.85em; font-weight: 600; color: var(--schegent-muted-fg); }
+.pb .checkbox-field:where(:not(.field)) { flex-direction: row; align-items: center; gap: 8px; }
 /* Feature 184 (FR-R3-141, T034) — the Pipeline sequence editor's rules left with it.
    `.phases-sequence-editor`, `.sequence-select`, `.sequence-actions` and the
    `.custom-tooltip` hover card were the `<select>` row's own; the canvas states the
    Phase in the card's `title`. `.sequence-label`, `.sequence-list`, `.sequence-item`
-   and `.sequence-number` STAY: `PipelinePortsEditor.svelte` still uses all four, and
-   the split-pane rules stay for `PhaseCatalogEditor.svelte`, which this feature does
-   not touch. */
+   and `.sequence-number` STAY: `PipelinePortsEditor.svelte` still uses all four. */
 .pb .sequence-label { font-size: 0.9em; color: var(--schegent-muted-fg); }
 .pb .sequence-list { display: flex; flex-direction: column; gap: 2px; background: var(--schegent-list-bg); padding: 8px; border: 1px solid var(--schegent-divider); border-radius: var(--schegent-radius-sm); flex: 1; overflow-y: auto; }
 .pb .sequence-item { display: flex; align-items: center; gap: 8px; background: transparent; border: 1px solid transparent; padding: 8px; border-radius: var(--schegent-radius-sm); position: relative; }
 .pb .sequence-item:hover { background: var(--schegent-surface-hover); border-color: var(--schegent-divider); }
 .pb .sequence-number { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: var(--vscode-editor-background); border-radius: 50%; font-size: 0.8em; font-weight: bold; color: var(--schegent-muted-fg); }
-.pb .icon-btn { background: transparent; border: 1px solid var(--schegent-divider); border-radius: 4px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--schegent-fg); }
-.pb .icon-btn:hover:not(:disabled) { background: var(--schegent-hover-bg); }
-.pb .icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 .pb .destructive-icon:hover { background: var(--vscode-inputValidation-errorBackground); color: var(--schegent-error-text); border-color: var(--vscode-errorForeground); }
 .pb .graph-editor { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; flex: 1; }
 .pb .graph-editor .sequence-item { flex-wrap: wrap; }
-.pb .condition-value { display: flex; align-items: center; gap: 4px; }
 /* Feature 083 (US5, T056) — the node and connection lists are <ol>: their order
    is authored and meaningful (FR-049), so the semantics carry the position and
    the count to assistive technology while the markers stay hidden. */
@@ -93,37 +73,15 @@
 .pb .row-defect-list { margin: 0; padding-left: 16px; }
 .pb .row-ports { display: flex; flex-wrap: wrap; gap: 4px; font-size: 0.85em; color: var(--schegent-muted-fg); }
 .pb .add-phase-row { display: flex; gap: 8px; margin-top: 8px; }
-.pb .flex-1 { flex: 1; }
-.pb .models-container { display: flex; flex-direction: column; gap: 12px; flex: 1; }
-.pb .model-form { display: flex; gap: 8px; flex: 1; }
-.pb .models-list { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; }
-.pb .model-list-item { display: flex; align-items: center; background: transparent; border-bottom: 1px solid var(--schegent-divider); padding: 8px 12px; border-radius: 0; }
-/* FR-R4-F08 (P9, FR-028) — the static inline styles of the Builder's editors, as classes. A static
-   `style="..."` is a `style-src-attr` violation under the policy the extension ships, so each moved
-   here with its declarations unchanged (`.flex-1` above already carried `flex: 1`). These sit after
-   every rule they could meet on the same element, at the same specificity, so none is outranked. */
-.pb .models-toolbar { margin-bottom: 24px; }
-.pb .backend-panel { margin-bottom: 32px; padding: 16px; background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); border-radius: var(--schegent-radius); }
-.pb .backend-heading { margin-bottom: 16px; text-transform: capitalize; }
-.pb .backend-toolbar { margin-bottom: 16px; }
-.pb .btn-offset { margin-left: 12px; }
-.pb .push-right { margin-left: auto; }
-.pb .save-error-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-errorForeground); border-radius: var(--schegent-radius); color: var(--schegent-error-text); font-size: 0.9em; }
-.pb .save-error-icon { font-size: 1.1em; flex-shrink: 0; }
-.pb .save-error-text { flex: 1; word-break: break-word; }
-.pb .save-error-dismiss { background: transparent; border: none; color: var(--schegent-error-text); cursor: pointer; padding: 2px 6px; font-size: 1em; border-radius: 4px; }
-.pb .save-error-dismiss:hover { background: var(--vscode-inputValidation-errorBackground); }
-.pb .catalog-error, .pb .field-errors, .pb .status-invalid { color: var(--schegent-error-text); }
+/* A catalog's own states on every tab: loading, a failed read, an empty catalog and nothing
+   selected. The error colour below weighs as much, so it wins by coming later. */
+.pb .catalog-state { padding: var(--schegent-space-3) 0; color: var(--schegent-muted-fg); }
+/* A refused write's banner (sg-core.css `.attn`) ends in its dismiss button, set into the corner. */
+.pb .attn > .icon-btn { margin: calc(-1 * var(--schegent-space-1)) calc(-1 * var(--schegent-space-1)) 0 0; }
+/* The validity colours reach only the Workflow editors' badges. A definition row's validity is a
+   status chip, coloured by sg-core's `s-*` tones, and these would outrank them. */
+.pb .catalog-error, .pb .field-errors, .pb .status-badge.status-invalid { color: var(--schegent-error-text); }
 .pb .phase-badges { display: flex; gap: 4px; }
 .pb .status-badge { font-size: 0.72em; }
-.pb .status-effective { color: var(--vscode-testing-iconPassed); }
+.pb .status-badge.status-effective { color: var(--vscode-testing-iconPassed); }
 .pb [aria-invalid='true'] { border-color: var(--vscode-errorForeground); }
-
-@media (max-width: 760px) {
-  .pb { padding: 16px; overflow-y: auto; }
-  .pb .builder-tabs { overflow-x: auto; }
-  .pb .tab-btn { flex: 0 0 auto; }
-  .pb .split-pane { flex-direction: column; overflow-y: auto; }
-  .pb .pane-left { width: auto; max-height: 240px; border-right: 0; }
-  .pb .form-grid { grid-template-columns: 1fr; }
-}

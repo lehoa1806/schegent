@@ -9,6 +9,8 @@
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { isMenuItemOff } from '../sg/__tests__/menu-item-state';
+
 const exportSpy = vi.fn<(resourceId: string) => void>();
 vi.mock('../../lib/process-yaml-ipc', () => ({
   exportPhaseYaml: (resourceId: string) => exportSpy(resourceId)
@@ -93,5 +95,50 @@ describe('Feature 084 T067 — the control names itself and its reason', () => {
     // id selector would read as a pseudo-class.
     expect(document.querySelectorAll(`[id="${firstId}"]`)).toHaveLength(1);
     expect(document.querySelectorAll(`[id="${secondId}"]`)).toHaveLength(1);
+  });
+});
+
+describe('the control as an item of a menu', () => {
+  // The Phase editor offers Export from its "More phase actions" menu, so the
+  // control renders as one of the menu's items rather than as a button of its own.
+  it('is a menu item that asks the host for the Phase', async () => {
+    const { getByTestId } = render(ProcessExportButton, {
+      props: { phaseId: 'specify', menuitem: true }
+    });
+    const item = getByTestId('process-export-button');
+    expect(item.getAttribute('role')).toBe('menuitem');
+    expect(item.textContent.trim()).toBe('Export…');
+    expect(item.getAttribute('aria-label')).toBe('Export specify');
+
+    await fireEvent.click(item);
+    expect(exportSpy).toHaveBeenCalledWith('specify');
+  });
+
+  it('says why inside the item, so a closed menu leaves no reason behind', async () => {
+    const { container, getByTestId } = render(ProcessExportButton, {
+      props: { phaseId: 'broken', resolves: false, rowKey: 'user:broken', menuitem: true }
+    });
+    const item = getByTestId('process-export-button');
+    const reason = getByTestId('process-export-disabled-reason');
+
+    // Off, and still in reach of the arrow keys, so the reason inside it can be
+    // read (decision 5 of the port review, 2026-11-14).
+    expect(isMenuItemOff(item)).toBe(true);
+    expect(item.contains(reason)).toBe(true);
+    expect(item.getAttribute('aria-describedby')).toBe(reason.id);
+    // No wrapper either: a menu's children are its items and its separators.
+    expect(container.querySelector('.export-control')).toBeNull();
+
+    // The menu refuses the click first; the item refuses it on its own as well.
+    await fireEvent.click(item);
+    expect(exportSpy).not.toHaveBeenCalled();
+  });
+
+  it('is on, and says nothing more, when the row resolves', () => {
+    const { getByTestId, queryByTestId } = render(ProcessExportButton, {
+      props: { phaseId: 'specify', menuitem: true }
+    });
+    expect(isMenuItemOff(getByTestId('process-export-button'))).toBe(false);
+    expect(queryByTestId('process-export-disabled-reason')).toBeNull();
   });
 });

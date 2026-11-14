@@ -68,6 +68,19 @@
       restore: "Restore this version",
     });
 
+  /**
+   * sg-core's button tone for each action. The two that take something away
+   * (the draft, the active version) read in the danger tone; the two that put a
+   * version live are secondary, because the page's Save already holds primary.
+   */
+  const ACTION_TONE: Readonly<Record<DefinitionRowAction, string>> =
+    Object.freeze({
+      publish: "btn-secondary",
+      "discard-draft": "btn-danger",
+      deactivate: "btn-danger",
+      restore: "btn-secondary",
+    });
+
   const RESTORE_ONLY: readonly DefinitionRowAction[] = Object.freeze<
     DefinitionRowAction[]
   >(["restore"]);
@@ -264,7 +277,7 @@
       {#each offered as action (action)}
         <button
           type="button"
-          class="action-button action-{action}"
+          class="btn btn-sm {ACTION_TONE[action]} action-{action}"
           data-testid="definition-action-{action}-{handle}"
           disabled={pending !== null}
           onclick={(event) => void run(action, event)}
@@ -304,59 +317,33 @@
 </div>
 
 <style>
+  /* sg-core's `.btn`, `.btn-sm` and the tone classes draw the buttons, their
+     hover and their disabled state. */
   .definition-actions {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--schegent-space-2);
   }
 
   .action-buttons {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
-  }
-
-  .action-button {
-    background: transparent;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 2px;
-    color: var(--vscode-foreground);
-    cursor: pointer;
-    font-size: 0.85em;
-    padding: 1px 6px;
-  }
-
-  .action-button:hover:not(:disabled) {
-    background: var(--vscode-toolbar-hoverBackground);
-  }
-
-  .action-button:disabled {
-    cursor: default;
-    opacity: 0.5;
-  }
-
-  .action-publish {
-    border-color: var(--vscode-button-background);
-  }
-
-  .action-discard-draft,
-  .action-deactivate {
-    color: var(--vscode-errorForeground);
+    gap: var(--schegent-space-1-5);
   }
 
   .action-refusal {
-    border-left: 2px solid var(--vscode-errorForeground);
-    font-size: 0.85em;
-    padding-left: 6px;
+    border-left: 2px solid var(--schegent-error-text);
+    font-size: var(--schegent-text-secondary);
+    padding-left: var(--schegent-space-2);
   }
 
   .refusal-headline {
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-error-text);
     margin: 0;
   }
 
   .action-refusal ul {
-    margin: 2px 0 0;
+    margin: var(--schegent-space-1) 0 0;
     padding-left: 18px;
   }
 

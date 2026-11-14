@@ -50,12 +50,12 @@
      term surviving in the one place a sighted reader never looks.
      `tests/lint/no-legacy-surface-name.test.ts` is why it cannot come back, and
      why this comment does not spell it out. -->
-<div class="builder-tabs" role="tablist" aria-label="Builder catalogs">
+<div class="tabs builder-tabs" role="tablist" aria-label="Builder sections">
   {#each BUILDER_TABS as tab (tab.id)}
     <button
       id="builder-tab-{tab.id}"
       type="button"
-      class="tab-btn {activeTab === tab.id ? 'active' : ''}"
+      class="tab tab-btn {activeTab === tab.id ? 'active' : ''}"
       role="tab"
       aria-selected={activeTab === tab.id}
       aria-controls="builder-panel-{tab.id}"
