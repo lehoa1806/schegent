@@ -30,6 +30,10 @@
       ? 'At least this much: one or more counted runs reported no cost.'
       : 'Every counted run reported a cost.'
   );
+  // The tile's context line says the same in a few words, since a title shows on hover only.
+  const costNote = $derived(
+    cumulative.costUsdIsPartial ? 'At least: some runs reported no cost' : 'Every run reported a cost'
+  );
 
   const totalsWindow = $derived.by(() => {
     const { available, earliest, runs } = coverage.totals;
@@ -41,103 +45,69 @@
   });
 </script>
 
+<!-- The mockup's four tiles: a label, the figure, and a line of context. The
+     failed, canceled and backend-call counts ride in the context lines. -->
 <section class="cumulative" aria-label="All-time totals" data-testid="metrics-cumulative">
-  <dl class="cumulative-strip" data-testid="metrics-cumulative-cards">
-    <div class="cumulative-item">
-      <dt class="cumulative-label">Runs Recorded</dt>
-      <dd class="cumulative-value" data-testid="metrics-cumulative-runs">{cumulative.runs}</dd>
+  <dl class="grid g4 tiles" data-testid="metrics-cumulative-cards">
+    <div class="tile">
+      <dt class="lbl">Runs</dt>
+      <dd class="val" data-testid="metrics-cumulative-runs">{cumulative.runs}</dd>
+      <dd class="ctx">All time</dd>
     </div>
-    <div class="cumulative-item">
-      <dt class="cumulative-label">Completed</dt>
-      <dd class="cumulative-value" data-testid="metrics-cumulative-completed">{cumulative.completedRuns}</dd>
+    <div class="tile">
+      <dt class="lbl">Completed</dt>
+      <dd class="val" data-testid="metrics-cumulative-completed">{cumulative.completedRuns}</dd>
+      <dd class="ctx">
+        of {cumulative.runs} ·
+        <span data-testid="metrics-cumulative-failed">{cumulative.failedRuns}</span> failed ·
+        <span data-testid="metrics-cumulative-canceled">{cumulative.canceledRuns}</span> canceled
+      </dd>
     </div>
-    <div class="cumulative-item">
-      <dt class="cumulative-label">Failed</dt>
-      <dd class="cumulative-value" data-testid="metrics-cumulative-failed">{cumulative.failedRuns}</dd>
+    <div class="tile">
+      <dt class="lbl">Run time</dt>
+      <dd class="val" data-testid="metrics-cumulative-elapsed">{formatDuration(cumulative.durationMs)}</dd>
+      <dd class="ctx">
+        <span data-testid="metrics-cumulative-invocations">{cumulative.backendInvocations}</span> backend calls
+      </dd>
     </div>
-    <div class="cumulative-item">
-      <dt class="cumulative-label">Canceled</dt>
-      <dd class="cumulative-value" data-testid="metrics-cumulative-canceled">{cumulative.canceledRuns}</dd>
-    </div>
-    <div class="cumulative-item">
-      <dt class="cumulative-label">Total Elapsed</dt>
-      <dd class="cumulative-value" data-testid="metrics-cumulative-elapsed">{formatDuration(cumulative.durationMs)}</dd>
-    </div>
-    <div class="cumulative-item">
-      <dt class="cumulative-label">Total Cost</dt>
+    <div class="tile">
+      <dt class="lbl">Cost</dt>
       <dd
-        class="cumulative-value"
+        class="val"
         class:cost-partial={cumulative.costUsdIsPartial}
         title={costTitle}
         data-testid="metrics-cumulative-cost"
       >{costLabel}</dd>
-    </div>
-    <div class="cumulative-item">
-      <dt class="cumulative-label">Backend Calls</dt>
-      <dd class="cumulative-value" data-testid="metrics-cumulative-invocations">{cumulative.backendInvocations}</dd>
+      <dd class="ctx">{costNote}</dd>
     </div>
   </dl>
   <p
-    class="cumulative-window"
+    class="countline"
     class:unavailable={!coverage.totals.available}
     data-testid="metrics-totals-coverage-window"
   >{totalsWindow}</p>
 </section>
 
 <style>
-  .cumulative {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .cumulative-strip {
-    display: flex;
-    flex-wrap: wrap;
+  .tiles {
     margin: 0;
-    padding: 8px 0;
-    border-block-start: 1px solid var(--schegent-divider);
   }
-  .cumulative-item {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    flex: 1 1 110px;
+  .tiles dd {
+    margin: 0;
+  }
+  .tile {
     min-width: 0;
-    padding: 4px var(--schegent-pad);
   }
-  .cumulative-item + .cumulative-item {
-    border-inline-start: 1px solid var(--schegent-divider);
+  .tiles .val {
+    overflow-wrap: anywhere;
   }
-  .cumulative-label {
-    order: 2;
-    color: var(--schegent-muted-fg);
-    font-size: 0.8em;
-  }
-  .cumulative-value {
-    order: 1;
-    margin: 0;
-    font-size: 1.2em;
-    font-weight: 600;
-  }
-  .cumulative-value.cost-partial {
+  .tiles .val.cost-partial {
     color: var(--schegent-muted-fg);
   }
-  .cumulative-window {
-    margin: 0;
-    color: var(--schegent-muted-fg);
-    font-size: 0.8em;
+  .countline {
     line-height: 1.4;
   }
-  .cumulative-window.unavailable {
+  .countline.unavailable {
     font-style: italic;
-  }
-
-  @media (max-width: 560px) {
-    .cumulative-item {
-      flex-basis: 50%;
-    }
-    .cumulative-item:nth-child(odd) {
-      border-inline-start: 0;
-    }
   }
 </style>
