@@ -274,7 +274,7 @@ button {
     transform var(--schegent-duration-fast) var(--schegent-ease-out);
 }
 
-button:active:not(:disabled) {
+button:active:not(:disabled, [aria-disabled='true']) {
   transform: translateY(1px);
 }
 
@@ -338,4 +338,79 @@ a:focus-visible {
     transition-duration: 0ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Redesign tokens.
+ *
+ * The values the two redesign mockups (`schegent_redesign_surfaces.html` and
+ * `workflow_builder_redesign.html`) draw with, expressed on the theme layer above. The
+ * stylesheets in `src/lib/sg/` are the only consumers so far; `webview-ui/README.md` maps each
+ * mockup variable to its token.
+ *
+ * This first block adds what the mockups need and the product did not have. Every name in it is
+ * new, so nothing here changes a shipped surface.
+ *
+ * The status-text tokens follow `--schegent-error-text`: the saturated colour keeps the dot, the
+ * icon and the border, and text mixes 55% of it toward the foreground so that it holds WCAG AA on
+ * the surfaces the mockups put it on. `src/lib/__tests__/sg-stylesheets.test.ts` reads the share
+ * from these declarations and checks the result against both mockup palettes. */
+:root {
+  --schegent-link-fg: var(--vscode-textLink-foreground, #3794ff);
+  --schegent-selection-bg: var(--vscode-list-activeSelectionBackground, var(--schegent-surface-selected));
+  --schegent-selection-fg: var(--vscode-list-activeSelectionForeground, var(--schegent-fg));
+  --schegent-color-workflow: var(--vscode-charts-purple, #b180d7);
+
+  --schegent-status-active-text: color-mix(in srgb, var(--schegent-color-active) 55%, var(--schegent-fg));
+  --schegent-status-completed-text: color-mix(in srgb, var(--schegent-color-completed) 55%, var(--schegent-fg));
+  --schegent-status-warning-text: color-mix(in srgb, var(--schegent-color-warning) 55%, var(--schegent-fg));
+  --schegent-status-error-text: var(--schegent-error-text);
+  --schegent-workflow-text: color-mix(in srgb, var(--schegent-color-workflow) 55%, var(--schegent-fg));
+
+  --schegent-shadow-popover: 0 2px 8px var(--vscode-widget-shadow, rgb(0 0 0 / 0.36));
+  --schegent-ring-selected: 0 0 0 1px var(--schegent-focus-border);
+  /* A high contrast theme marks a selection with an outline, not a fill: its list selection
+     background is undefined or the page's own black. A selected state drawn as a fill alone
+     also draws this ring, transparent until the block below sets it. */
+  --schegent-selection-outline: transparent;
+  /* The border a high contrast theme draws around every control. VS Code defines the colour in
+     those themes alone, so it is transparent in any other unless the theme asks for it. */
+  --schegent-contrast-border: var(--vscode-contrastBorder, transparent);
+  --schegent-chart-series-1: var(--schegent-color-active);
+  --schegent-chart-grid: color-mix(in srgb, var(--schegent-fg) 12%, var(--schegent-bg));
+  --schegent-canvas-dot: color-mix(in srgb, var(--schegent-fg) 10%, var(--schegent-bg));
+
+  /* Half steps between the spacing tokens above, for the mockups' 2, 6, 10, 14, 20 and 28px. */
+  --schegent-space-0-5: 2px;
+  --schegent-space-1-5: 6px;
+  --schegent-space-2-5: 10px;
+  --schegent-space-3-5: 14px;
+  --schegent-space-4-5: 20px;
+  --schegent-space-5-5: 28px;
+}
+
+/* VS Code names a high contrast theme, dark or light, in a class on the body. There the selection
+ * ring takes the outline the theme's own lists draw. */
+.vscode-high-contrast,
+.vscode-high-contrast-light {
+  --schegent-selection-outline: var(--vscode-contrastActiveBorder, var(--schegent-focus-border));
+}
+
+/* The mockups' geometry and type ramp differ from the shipped product's, so they are scoped to
+ * the opt-in `.sg` root instead of being changed at `:root`. A surface takes the redesign values
+ * by carrying the class; everything outside it keeps the values above. The font sizes are the
+ * mockups' pixel sizes at the 13px default, written in rem so they follow `--vscode-font-size`. */
+.sg {
+  --schegent-radius: 8px;
+  --schegent-radius-sm: 5px;
+  --schegent-control-height: 28px;
+  --schegent-control-height-compact: 24px;
+
+  --schegent-text-micro: calc(10rem / 13);
+  --schegent-text-caption: calc(11rem / 13);
+  --schegent-text-secondary: calc(12rem / 13);
+  --schegent-text-body: 1rem;
+  --schegent-text-subheading: calc(14rem / 13);
+  --schegent-text-title: calc(15rem / 13);
+  --schegent-text-heading: calc(18rem / 13);
+  --schegent-text-display: calc(24rem / 13);
 }

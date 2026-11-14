@@ -281,6 +281,30 @@ describe('ConfirmDialog', () => {
     opener.remove();
   });
 
+  it('returns focus to the menu button when the action came from a menu that has since closed', async () => {
+    // A menu hides as soon as one of its items is chosen, and a hidden item cannot take focus,
+    // so the place the operator came from is the button that opens the menu.
+    const wrap = document.createElement('span');
+    const opener = document.createElement('button');
+    opener.setAttribute('aria-haspopup', 'menu');
+    const menu = document.createElement('div');
+    menu.setAttribute('role', 'menu');
+    menu.hidden = true;
+    const item = document.createElement('button');
+    item.setAttribute('role', 'menuitem');
+    menu.append(item);
+    wrap.append(opener, menu);
+    document.body.appendChild(wrap);
+
+    const { unmount } = renderDialog(makeRequest({ originatingElement: item }));
+    await tick();
+    unmount();
+    await tick();
+
+    expect(document.activeElement).toBe(opener);
+    wrap.remove();
+  });
+
   it('safely no-ops the focus-restoration when originatingElement is null', async () => {
     const { unmount } = renderDialog(makeRequest({ originatingElement: null }));
     await tick();

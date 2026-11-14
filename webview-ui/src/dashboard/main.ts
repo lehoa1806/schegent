@@ -1,4 +1,7 @@
 import { mount } from 'svelte';
+// The redesign sheets load ahead of the component tree, so a component style wins a tie.
+import '../lib/sg/sg-core.css';
+import '../lib/sg/sg-pages.css';
 import App from './App.svelte';
 import '../lib/theme.css';
 import './style.css';
