@@ -1,6 +1,6 @@
 <script lang="ts">
   // Feature 020 T036 — iteration stepper for loopable phases. Hidden
-  // when the manifest reports ≤ 1 iteration. "iter N / total" label,
+  // when the manifest reports ≤ 1 iteration. "Iteration N of total" label,
   // prev/next buttons clamped to the available iterations (which arrive
   // newest-first from the host).
 
@@ -32,8 +32,10 @@
   }
 </script>
 
+<!-- Drawn as the redesign's segmented control (`.seg`), the group its log uses to pick an
+     attempt: older, the iteration shown, newer. -->
 {#if visible}
-  <div class="stepper" data-testid="phase-log-iter-stepper">
+  <div class="seg stepper" role="group" aria-label="Iteration" data-testid="phase-log-iter-stepper">
     <button
       type="button"
       data-testid="phase-log-iter-prev"
@@ -41,10 +43,10 @@
       disabled={!canPrev}
       aria-label="Older iteration"
     >
-      ‹
+      <svg class="i" aria-hidden="true"><use href="#i-collapse"></use></svg>
     </button>
     <span class="label" data-testid="phase-log-iter-label">
-      iter {currentN ?? '—'} / {total}
+      Iteration {currentN ?? '—'} of {total}
     </span>
     <button
       type="button"
@@ -53,27 +55,36 @@
       disabled={!canNext}
       aria-label="Newer iteration"
     >
-      ›
+      <svg class="i" aria-hidden="true"><use href="#i-right"></use></svg>
     </button>
   </div>
 {/if}
 
 <style>
+  /* At the start of the log's toolbar row, at its own width, in secondary text. */
   .stepper {
+    flex: none;
+    font-size: var(--schegent-text-secondary);
+  }
+  .stepper button {
     display: inline-flex;
     align-items: center;
-    gap: 0.25rem;
-    font-size: 0.8rem;
+    padding: 3px var(--schegent-space-1-5);
   }
-  button {
-    min-width: 1.5rem;
+  .stepper button:hover:not(:disabled) {
+    background: var(--schegent-list-hover);
   }
-  button[disabled] {
+  .stepper button:disabled {
     opacity: 0.4;
-    cursor: not-allowed;
+    cursor: default;
   }
   .label {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 var(--schegent-space-2-5);
+    border-inline: 1px solid var(--schegent-border);
+    color: var(--schegent-muted-fg);
     font-variant-numeric: tabular-nums;
-    opacity: 0.8;
+    white-space: nowrap;
   }
 </style>

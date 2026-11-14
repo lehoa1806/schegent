@@ -26,86 +26,65 @@
   }
 
   const { outputs }: Props = $props();
+
+  // The redesign's status chip colours: done for an output that was written, warning for one the
+  // Phases never produced.
+  const STATUS_CHIP: Record<RunOutputRecord['status'], string> = {
+    resolved: 's-ok',
+    unresolved: 's-warn'
+  };
 </script>
 
+<!-- Drawn as the redesign's outputs table: each output, its state as the redesign's status chip
+     and where it was written. An output that did not resolve keeps its row with a warning chip.
+     The tab names the table, so it carries no title. -->
 {#if outputs.length > 0}
   <section class="run-outputs" data-testid="run-outputs">
-    <header class="zone-title">Run Outputs</header>
-    <ul class="output-list">
-      {#each outputs as output, index (index)}
-        <li class="output-row" data-testid={`run-output-record-${output.name}`}>
-          <span class="output-name" data-output-name>{output.name}</span>
-          <span
-            class="output-status"
-            class:unresolved={output.status === 'unresolved'}
-            data-testid={`run-output-status-${output.name}`}
-          >
-            {output.status}
-          </span>
-          {#if output.reference !== undefined}
-            <span class="output-reference" data-testid={`run-output-reference-${output.name}`}
-              >{output.reference}</span
-            >
-          {:else}
-            <span class="output-absent">no location recorded</span>
-          {/if}
-        </li>
-      {/each}
-    </ul>
+    <div class="table-wrap">
+      <table class="t fit">
+        <thead>
+          <tr>
+            <th scope="col">Output</th>
+            <th scope="col">Status</th>
+            <th scope="col">Where</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each outputs as output, index (index)}
+            <tr data-testid={`run-output-record-${output.name}`}>
+              <td class="output-name" data-output-name>{output.name}</td>
+              <td>
+                <span
+                  class="chip output-status {STATUS_CHIP[output.status]}"
+                  data-testid={`run-output-status-${output.name}`}
+                  ><span class="dot" aria-hidden="true"></span>{output.status}</span
+                >
+              </td>
+              <td>
+                {#if output.reference !== undefined}
+                  <span class="mono output-reference" data-testid={`run-output-reference-${output.name}`}
+                    >{output.reference}</span
+                  >
+                {:else}
+                  <span class="muted">no location recorded</span>
+                {/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
   </section>
 {/if}
 
 <style>
-  .run-outputs {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
+  /* A long name or location wraps inside its cell rather than widening the table. */
+  .output-name,
+  .output-reference {
+    overflow-wrap: anywhere;
   }
-  .zone-title {
-    font-size: 0.9em;
-    font-weight: 600;
-    color: var(--schegent-muted-fg);
-    margin: 0 0 var(--schegent-gap) 0;
-    letter-spacing: 0.05em;
-  }
-  .output-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    overflow-y: auto;
-  }
-  .output-row {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    min-width: 0;
-  }
-  .output-name {
-    font-weight: 600;
-    font-size: 0.85em;
-    flex-shrink: 0;
-  }
+  /* The status reads in the chip's sentence case; the text stays the recorded word. */
   .output-status {
-    font-size: 0.75em;
-    opacity: 0.8;
-  }
-  .output-status.unresolved {
-    color: var(--vscode-editorWarning-foreground, var(--schegent-muted-fg));
-    opacity: 1;
-  }
-  .output-reference,
-  .output-absent {
-    font-size: 0.8em;
-    opacity: 0.85;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
-  }
-  .output-absent {
-    font-style: italic;
+    text-transform: capitalize;
   }
 </style>

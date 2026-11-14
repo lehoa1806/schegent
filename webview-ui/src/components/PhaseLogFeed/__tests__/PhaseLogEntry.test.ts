@@ -275,3 +275,35 @@ describe('FR-R6-F07 T036 — coverage-gap rows', () => {
     expect(container.querySelector('img')).toBeNull();
   });
 });
+
+// The redesign draws each entry as one line of a log: the time of day, the kind of entry as a
+// word, then the body. A stamp without a zone parses as local time, so these hold in any zone.
+describe('PhaseLogEntry as a log line', () => {
+  it('shows the local time of day and keeps the full stamp in datetime', () => {
+    const ts = '2026-05-14T09:03:04';
+    const { getByTestId } = render(PhaseLogEntry, {
+      props: { entry: entry({ ts, kind: 'assistant-text', body: { text: 'hello' } }) }
+    });
+    const time = getByTestId('phase-log-entry').querySelector('time');
+    expect(time?.textContent).toBe('09:03:04');
+    expect(time?.getAttribute('datetime')).toBe(ts);
+  });
+
+  it('shows a stamp that does not parse as it came', () => {
+    const { getByTestId } = render(PhaseLogEntry, {
+      props: { entry: entry({ ts: 'garbled', kind: 'assistant-text', body: { text: 'hello' } }) }
+    });
+    expect(getByTestId('phase-log-entry').querySelector('time')?.textContent).toBe('garbled');
+  });
+
+  it.each([
+    ['assistant-text', { text: 'hello' }, 'assistant'],
+    ['tool-use', { toolName: 'Read', toolInput: '{"file":"x"}' }, 'tool'],
+    ['tool-result', { toolResult: 'ok' }, 'output']
+  ] as const)('names a %s entry by a word', (kind, body, word) => {
+    const { getByTestId } = render(PhaseLogEntry, {
+      props: { entry: entry({ kind, body }) }
+    });
+    expect(getByTestId('phase-log-entry').querySelector('.kind')?.textContent).toBe(word);
+  });
+});

@@ -240,12 +240,15 @@
   }
 </script>
 
+<!-- Drawn as the redesign's small buttons (`.btn`, `.btn-sm` in `sg-core.css`), Delete last and in the
+     danger style, as the redesign orders an action list. A control the gate refuses keeps its
+     place and is announced as unavailable, so it is dimmed by `aria-disabled`, not `disabled`. -->
 <div class="phase-control-menu" data-testid="phase-control-menu">
   {#if gate.isManuallyPaused}
     <div class="resume-group">
       <input
         type="text"
-        class="resume-prompt-input"
+        class="input resume-prompt-input"
         aria-label="Resume prompt"
         placeholder="Custom prompt... (optional)"
         bind:value={resumePromptStr}
@@ -253,6 +256,7 @@
       />
       <button
         type="button"
+        class="btn btn-secondary btn-sm"
         data-testid="phase-control-resume"
         aria-label="Resume active phase"
         aria-disabled={aria(gate.resumeDisabled)}
@@ -263,6 +267,7 @@
   {:else}
     <button
       type="button"
+      class="btn btn-secondary btn-sm"
       data-testid="phase-control-pause"
       aria-label="Pause active phase"
       aria-disabled={aria(gate.pauseDisabled)}
@@ -273,6 +278,7 @@
   {#if isWaitingRetry}
     <button
       type="button"
+      class="btn btn-secondary btn-sm"
       data-testid="phase-control-retry-now"
       aria-label="Retry the active phase now instead of waiting out the backoff"
       aria-disabled={aria(gate.retryNowDisabled)}
@@ -282,6 +288,7 @@
   {/if}
   <button
     type="button"
+    class="btn btn-secondary btn-sm"
     data-testid="phase-control-restart"
     aria-label="Restart active phase"
     aria-disabled={aria(gate.restartDisabled)}
@@ -290,6 +297,7 @@
   >Restart</button>
   <button
     type="button"
+    class="btn btn-secondary btn-sm"
     data-testid="phase-control-skip"
     aria-label="Skip active phase"
     aria-disabled={aria(gate.skipDisabled)}
@@ -299,6 +307,7 @@
   {#if gate.selectedHasOverride}
     <button
       type="button"
+      class="btn btn-secondary btn-sm"
       data-testid="phase-control-enable"
       aria-label="Enable selected phase"
       aria-disabled={aria(gate.enableDisabled)}
@@ -308,6 +317,7 @@
   {:else}
     <button
       type="button"
+      class="btn btn-secondary btn-sm"
       data-testid="phase-control-disable"
       aria-label="Disable selected phase"
       aria-disabled={aria(gate.disableDisabled)}
@@ -315,18 +325,10 @@
       onclick={onDisable}
     >Disable</button>
   {/if}
-  <button
-    type="button"
-    class="destructive"
-    data-testid="phase-control-delete"
-    aria-label="Delete selected phase from workflow"
-    aria-disabled={aria(gate.deleteDisabled)}
-    title="Remove the selected phase from this task's workflow (requires confirmation)"
-    onclick={onDelete}
-  >Delete</button>
   {#if gate.showSetBreakpoint}
     <button
       type="button"
+      class="btn btn-secondary btn-sm"
       data-testid="phase-control-set-breakpoint"
       aria-label="Pause workflow when this phase is reached"
       title="Pause workflow when this phase is reached"
@@ -336,12 +338,22 @@
   {#if gate.showClearBreakpoint}
     <button
       type="button"
+      class="btn btn-secondary btn-sm"
       data-testid="phase-control-clear-breakpoint"
       aria-label="Cancel scheduled pause for this phase"
       title="Cancel scheduled pause for this phase"
       onclick={onClearBreakpoint}
     >Cancel scheduled pause</button>
   {/if}
+  <button
+    type="button"
+    class="btn btn-danger btn-sm"
+    data-testid="phase-control-delete"
+    aria-label="Delete selected phase from workflow"
+    aria-disabled={aria(gate.deleteDisabled)}
+    title="Remove the selected phase from this task's workflow (requires confirmation)"
+    onclick={onDelete}
+  >Delete</button>
   {#if controlMessage !== null}
     <p class="control-message" role="alert" data-testid="phase-control-message">{controlMessage}</p>
   {/if}
@@ -351,79 +363,39 @@
   .phase-control-menu {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    gap: var(--schegent-space-1);
     align-items: center;
   }
 
   /* FR-R3-154 (T1646) — takes the whole row rather than sitting between two
      buttons: the menu is a wrapping flex row, so an inline sentence would
-     reflow the controls it is reporting on. Colour matches
-     `QueueDetailTier`'s `.refusal`. */
+     reflow the controls it is reporting on. In error text, as the queue's own
+     refusals read. */
   .control-message {
     flex-basis: 100%;
-    margin: 2px 0 0;
-    font-size: 12px;
-    color: var(--vscode-errorForeground);
-  }
-
-  button {
-    min-height: 24px;
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: transparent;
-    color: var(--schegent-muted-fg);
-    font: inherit;
-    padding: 0 8px;
-    cursor: pointer;
-    transition: transform 0.1s ease, opacity 0.1s ease;
-  }
-
-  button:active:not([aria-disabled='true']) {
-    transform: scale(0.93);
-    opacity: 0.8;
-  }
-
-  button:hover:not([aria-disabled='true']) {
-    color: var(--schegent-fg);
-    border-color: var(--schegent-color-active);
-  }
-
-  button[aria-disabled='true'] {
-    opacity: 0.55;
-    cursor: not-allowed;
-  }
-
-  button.destructive {
-    border-color: var(--vscode-inputValidation-errorBorder);
+    margin: var(--schegent-space-0-5) 0 0;
+    font-size: var(--schegent-text-secondary);
     color: var(--schegent-error-text);
   }
 
-  button.destructive:hover:not([aria-disabled='true']) {
-    color: var(--schegent-error-text);
-    border-color: var(--vscode-inputValidation-errorBorder);
-    background: color-mix(in srgb, var(--vscode-inputValidation-errorBorder) 15%, transparent);
+  /* Dimmed as `sg-core.css` dims a disabled button. */
+  .btn[aria-disabled='true'] {
+    opacity: 0.4;
+    cursor: default;
   }
 
+  /* The prompt takes the row, so Resume sits at its end. */
   .resume-group {
     display: flex;
-    gap: 4px;
+    flex-basis: 100%;
+    gap: var(--schegent-space-1);
     align-items: center;
   }
 
-  .resume-prompt-input {
-    min-height: 24px;
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: var(--vscode-input-background);
-    color: var(--vscode-input-foreground);
-    padding: 0 8px;
-    font: inherit;
-    width: 200px;
-    outline: none;
-    transition: border-color 0.2s ease;
-  }
-
-  .resume-prompt-input:focus {
-    border-color: var(--vscode-focusBorder);
+  /* Element and class, so the compact height wins over the shared `.input` height. */
+  input.resume-prompt-input {
+    flex: 1;
+    min-width: 0;
+    height: var(--schegent-control-height-compact);
   }
 </style>
