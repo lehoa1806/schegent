@@ -252,20 +252,12 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // Prose, not a status literal; it moved here with the note from the retired Queue input form.
   'webview-ui/src/components/QueueTaskComposer.svelte',
   'webview-ui/src/components/StatusBar.svelte',
-  // Feature 103 — one CSS selector, `.status-running .status-badge`, one of the
-  // six that colour a row's status badge from the `status-{row.status}` class
-  // the row already carries. Character-identical in kind to the
-  // `.status-running .dot` rule `StatusBar.svelte` above is listed for, and
-  // reached for the same reason: FR-003 folds runs that are still going into
-  // history, so a history row now renders the live statuses as well as the
-  // terminal ones. That comparison used to name three entries; FR-R3-140
-  // deleted two of them, `MonitorPill.svelte` and `StatusHeader.svelte`, along
-  // with `ControlPanel.svelte` from the line above. No TypeScript in this file
-  // names the literal — the status reaches it as data, and the outcome filter
-  // that does name it lives in `webview-ui/src/lib/format.ts`, with the rest of
-  // the status vocabulary.
-  'webview-ui/src/components/HistoryRunRow.svelte',
   'webview-ui/src/lib/format.ts',
+  // History's run status chip: a `Record<WorkflowStatus, ...>` of each status's colour class and
+  // mark, so the union's live member is one of its keys. Status vocabulary of the same kind as
+  // `format.ts` above; it is a module of its own only so the sidebar's synchronous chunk, which
+  // carries `format.ts` and which SC-010 budgets, does not carry a chip only History draws.
+  'webview-ui/src/lib/run-status-chip.ts',
   // Feature 063 — UI copy strings ("currently running and will be
   // terminated.", "abort the running task") and template variable name
   // (`runningSuffix`). No pinned status discriminator literal.

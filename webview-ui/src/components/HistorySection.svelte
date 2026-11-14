@@ -10,10 +10,10 @@
   // provisional records to invent them.
   //
   // The per-row markup moved to `HistoryRunRow.svelte` (see its header). What
-  // stays here is what is genuinely per-list: the column header, the two empty
-  // states, and the evidence state, which is keyed by run id across all rows
-  // because only one Audit request should be in flight per run no matter how
-  // the list is re-composed around it.
+  // stays here is what is genuinely per-list: the table and its column headers,
+  // the empty state, and the evidence state, which is keyed by run id across all
+  // rows because only one Audit request should be in flight per run no matter
+  // how the list is re-composed around it.
 
   import {
     NO_CATALOG_NAMES,
@@ -36,6 +36,12 @@
     isPrimary: boolean;
     selectedTaskId?: string | null;
     onTaskSelect?: (taskId: string) => void;
+    /**
+     * Recorded on the section as `data-variant` and handed to every row, which
+     * marks a ledger row as one. Since the redesign both variants draw the same
+     * table: the ledger's columns are the table's columns, and a narrow pane
+     * scrolls the table sideways rather than restacking each row.
+     */
     variant?: 'compact' | 'ledger';
     /**
      * FR-021 — display names for the definition and Workflow ids a row carries.
@@ -177,9 +183,9 @@
 
 <section
   class="history"
-  class:ledger={variant === 'ledger'}
   aria-label="Run history"
   data-testid="history-section"
+  data-variant={variant}
 >
   {#if empty}
     <!-- FR-007 — the empty history states that nothing has been recorded. The
@@ -191,94 +197,59 @@
       <span>Runs appear here as soon as they start, and stay once they finish.</span>
     </div>
   {:else}
-    {#if variant === 'ledger'}
-      <div class="ledger-columns" aria-hidden="true">
-        <span>Run / feature</span>
-        <span>Definition / version</span>
-        <span>Queue</span>
-        <span>Status</span>
-        <span>Duration</span>
-        <span>Updated</span>
-        <span>Actions</span>
-      </div>
-    {/if}
-    <ul>
-      {#each rows as row (row.runId)}
-        <HistoryRunRow
-          {row}
-          {variant}
-          {catalogNames}
-          {rerunDisabled}
-          selected={selectedTaskId === row.runId}
-          onSelect={onTaskSelect}
-          evidence={evidence[row.runId]}
-          auditPending={pending[row.runId] ?? false}
-          {onRerun}
-          {onOpenAudit}
-          {onOpenDetails}
-        />
-      {/each}
-    </ul>
+    <div class="table-wrap">
+      <table class="t">
+        <caption class="sr-only">Runs, newest first</caption>
+        <thead>
+          <tr>
+            <th scope="col">Run</th>
+            <th scope="col">Queue</th>
+            <th scope="col">Status</th>
+            <th scope="col" class="num">Duration</th>
+            <!-- FR-005 fixes the order, newest first, so the column says so
+                 without offering to change it. -->
+            <th scope="col" aria-sort="descending">
+              <span class="sorted">Updated<svg class="i" aria-hidden="true"><use href="#i-chev"></use></svg></span>
+            </th>
+            <th scope="col"><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each rows as row (row.runId)}
+            <HistoryRunRow
+              {row}
+              {variant}
+              {catalogNames}
+              {rerunDisabled}
+              selected={selectedTaskId === row.runId}
+              onSelect={onTaskSelect}
+              evidence={evidence[row.runId]}
+              auditPending={pending[row.runId] ?? false}
+              {onRerun}
+              {onOpenAudit}
+              {onOpenDetails}
+            />
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {/if}
 </section>
 
 <style>
-  .history {
-    padding: 0;
-  }
+  /* The empty state sits where the table would, in the table's own frame. */
   .empty {
-    display: flex;
-    min-height: 160px;
-    align-items: center;
-    justify-content: center;
-    flex-direction: column;
-    gap: 5px;
-    color: var(--schegent-muted-fg);
-    margin: 0;
-    padding: 20px;
-    text-align: center;
-  }
-  .empty strong {
-    color: var(--schegent-fg);
-    font-size: 0.9rem;
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius);
   }
   .empty span {
+    display: block;
     max-width: 38ch;
-    font-size: 0.82rem;
-    line-height: 1.45;
+    margin-inline: auto;
   }
-  ul {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .ledger ul {
-    gap: 0;
-  }
-
-  .ledger-columns {
-    display: grid;
-    /* Character-identical to `.entry.ledger` in `HistoryRunRow.svelte`, and to
-       that file's breakpoint below. Two declarations because Svelte scopes CSS
-       per component and the header lives here while the rows live there. */
-    grid-template-columns:
-      minmax(200px, 1fr) minmax(150px, 1.2fr) 120px 104px 96px 116px 180px;
-    gap: 12px;
-    padding: 9px 14px;
-    border-bottom: 1px solid var(--schegent-divider);
-    color: var(--schegent-muted-fg);
-    font-size: var(--schegent-text-caption);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
-  @media (max-width: 1000px) {
-    .ledger-columns {
-      display: none;
-    }
+  .sorted {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--schegent-space-0-5);
   }
 </style>

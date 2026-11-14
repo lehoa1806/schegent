@@ -165,13 +165,16 @@
     Silent when the Run retains nothing raw — see `retainsRawTranscript`.
   -->
   {#if retainsRawTranscript}
-    <p class="raw-retention" data-testid="history-evidence-raw-retention">
-      <strong>An unredacted raw transcript is held for this run</strong> — operator prompts,
-      source, and model output — for up to {retentionMaxAgeDays}
-      day{retentionMaxAgeDays === 1 ? '' : 's'} or until the session-artifact byte budget evicts it.
-      To remove it now, run <code>Schegent: Delete Run Evidence</code> from the Command Palette; to
-      keep a copy elsewhere first, <code>Schegent: Export Run Evidence</code>.
-    </p>
+    <div class="attn warn raw-retention" data-testid="history-evidence-raw-retention">
+      <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+      <p class="body small">
+        <strong>An unredacted raw transcript is held for this run</strong> — operator prompts,
+        source, and model output — for up to {retentionMaxAgeDays}
+        day{retentionMaxAgeDays === 1 ? '' : 's'} or until the session-artifact byte budget evicts it.
+        To remove it now, run <code>Schegent: Delete Run Evidence</code> from the Command Palette; to
+        keep a copy elsewhere first, <code>Schegent: Export Run Evidence</code>.
+      </p>
+    </div>
   {/if}
 
   {#if resolved}
@@ -209,46 +212,39 @@
 </section>
 
 <style>
-  .raw-retention {
-    margin: 0 0 var(--schegent-space-2, 8px);
-    padding: 6px 8px;
-    border-left: 3px solid var(--vscode-editorWarning-foreground);
-    /* Theme tokens only: FR-R3-131 baselined 30 contrast violations and this adds
-       no new hard-coded colour. */
-    color: var(--vscode-foreground);
-    background: var(--vscode-editorWidget-background);
-    font-size: 0.95em;
-  }
-
+  /* A section of the drawer's body, not a box inside it: the drawer's heading
+     rule styles the h3, and this margin stands in for the one that rule takes
+     from a heading that opens its container. */
   .evidence-panel {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: var(--schegent-space-3);
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-surface);
-  }
-  .evidence-panel h3 {
-    margin: 0;
-    font-size: var(--schegent-text-secondary);
-    font-weight: 600;
+    margin-top: var(--schegent-space-4);
   }
   .message {
     margin: 0;
+    font-size: var(--schegent-text-secondary);
     line-height: 1.45;
     text-wrap: pretty;
   }
   /* FR-029 — a pruned pointer is not an error. Only a resolution that failed
-     borrows the error colour; everything else reads as ordinary text. */
+     borrows the error colour; everything else reads as the section's quiet
+     caption. */
   .tone-info .message {
-    color: var(--schegent-fg);
+    color: var(--schegent-muted-fg);
   }
   .tone-error .message {
     color: var(--schegent-error-text);
   }
-  .note {
+  /* The sheet's warning box, with its own spacing inside the section. Theme
+     tokens only: FR-R3-131 baselined 30 contrast violations and this adds no
+     new hard-coded colour. */
+  .attn.raw-retention {
+    margin: var(--schegent-space-2) 0 0;
+  }
+  .raw-retention .body {
     margin: 0;
+    line-height: 1.45;
+  }
+  .note {
+    margin: var(--schegent-space-1-5) 0 0;
     color: var(--schegent-muted-fg);
     font-size: var(--schegent-text-caption);
     line-height: 1.4;
@@ -256,15 +252,15 @@
   .entries {
     display: flex;
     flex-direction: column;
-    gap: 3px;
-    margin: 4px 0 0;
+    gap: var(--schegent-space-1);
+    margin: var(--schegent-space-2) 0 0;
     padding: 0;
     list-style: none;
   }
   .entry {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--schegent-gap);
+    gap: var(--schegent-space-2);
     align-items: baseline;
     color: var(--schegent-muted-fg);
     font-size: var(--schegent-text-caption);
