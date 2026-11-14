@@ -8,7 +8,7 @@ These workflows use only operator surfaces that are registered by the extension 
 
 Use this path when you want enqueueing and execution to be separate decisions. If the catalog has no Workflow yet, import one of the `.workflow.yaml` packages in [`examples/`](../../examples/README.md) first: each package is one import and includes the Phases it needs, and [the quickstart](../tutorials/user-quickstart.md) walks the whole path.
 
-1. Open the dashboard, select **Queues**, then open the target queue card.
+1. Open the dashboard, select **Queues**, then select the target queue's name.
 2. Select **Add work**.
 3. Under **Workflows**, the workspace's default Workflow is preselected when launchable, or select another published Workflow to open its compact summary and start form in one step. Enter **Instructions** (and any declared inputs, optional attachments, or output targets), then select **Add task**.
    - To enqueue multiple tasks in one submission, place `---schegent-task---` on its own line between task instructions. The submit button updates to **Add N tasks** and dispatches each segment sequentially with the same Workflow, start node, declared inputs, attachments, and output targets. If any task in the batch is refused or times out, the batch halts, removes the already-accepted segments from **Instructions**, and leaves the remaining segments in place so you can fix the issue and resubmit without duplicating earlier tasks.
@@ -42,8 +42,8 @@ After scheduling, the queue shows its resolved local fire time. Use **Cancel** t
    - **Concurrent runs**: an integer from `1` through `20`.
    - **Default queue**: the queue that receives an otherwise unaddressed task.
 
-3. Open a queue and select **Settings** to rename it.
-4. For a pending task, use **Move to…** to transfer it to another queue, or the arrow/drag controls to change its order within the queue.
+3. To rename a queue, open it, open **More queue actions**, and select **Rename…**.
+4. For a pending task, use **Move to…** to transfer it to another queue. To change its order within the queue, drag its handle, or open the task's actions menu and select **Move up** or **Move down**.
 
 There may be at most 20 queues. A queue name is 1–64 characters after trimming and must be unique case-insensitively. Queue positions are contiguous, and pending work is processed in ascending position order.
 <!-- Source: webview-ui/src/components/drilldown/QueuesTier.svelte -->
@@ -53,7 +53,7 @@ There may be at most 20 queues. A queue name is 1–64 characters after trimming
 <!-- Source: src/queue/queue-registry.ts -->
 <!-- Source: src/queue/queue-manager.ts -->
 
-To delete a queue, open it and select **Delete Queue**. The host first calculates the impact and the confirmation names its pending-task and connected-run counts. The default queue cannot be deleted, and no queue with an in-flight task can be deleted. To delete the current default, first make a different queue the default in **Queue Settings**.
+To delete a queue, open it, open **More queue actions**, and select **Delete queue…**. The host first calculates the impact and the confirmation names its pending-task and connected-run counts. The default queue cannot be deleted, and no queue with an in-flight task can be deleted. To delete the current default, first make a different queue the default in **Queue Settings**.
 <!-- Source: webview-ui/src/components/drilldown/QueueDetailTier.svelte -->
 <!-- Source: webview-ui/src/lib/queue-control-ipc.ts -->
 <!-- Source: src/ui/sidebar/commands/cmd-delete-queue.ts -->
@@ -89,7 +89,7 @@ When a run fails, its notice names a cause and the action worth taking. What eac
 ## 4. Repeat a historical run with current definitions
 
 1. Open **History**.
-2. Locate a terminal run and select **Rerun**, or open its detail and select **Run again**.
+2. Locate a terminal run, open its actions menu, and select **Run again…**. Alternatively, select the run's name to open its detail, then select **Run again…** at the foot of the detail.
 3. Read the **Repeat this run** notices before editing the form. The panel explicitly reports:
 
    - when the Active version differs from the version frozen by the old run;
