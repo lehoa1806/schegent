@@ -64,6 +64,17 @@ const STATE_BADGE_LABELS: Readonly<Record<DefinitionState, string>> = Object.fre
 });
 
 /**
+ * Each state's status colour, as the sg-core tone class its chip takes: a draft
+ * is work in progress, a published definition is done, and a published one with
+ * unpublished changes on top asks for attention.
+ */
+export const STATE_TONE_CLASSES: Readonly<Record<DefinitionState, string>> = Object.freeze({
+  draft: 's-draft',
+  active: 's-ok',
+  'active-with-draft': 's-warn'
+});
+
+/**
  * The offer matrix from quickstart.md §3, as a table rather than a chain of
  * conditions: a table has one row per state, so a state added to the union
  * without an offer decided for it fails to type-check instead of falling

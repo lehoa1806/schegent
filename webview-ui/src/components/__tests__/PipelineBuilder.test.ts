@@ -29,6 +29,7 @@ import {
 import { saveModels as saveModelsHelper } from '../../lib/save-models';
 import { useConfirm } from '../../lib/use-confirm';
 import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
+import { isMenuItemOff } from '../sg/__tests__/menu-item-state';
 
 let mockedWebviewState: unknown = undefined;
 vi.mock('../../lib/vscode-api', () => ({
@@ -205,6 +206,21 @@ function savedBody(call = 0): Record<string, unknown> {
   return vi.mocked(saveDraftHelper).mock.calls[call][0].body as Record<string, unknown>;
 }
 
+const PHASE_ROW_TESTID = 'phases-list-item-';
+
+/**
+ * The Phase ids the Phases list shows, in its order.
+ *
+ * The redesign draws the list as a table and sets each id beside the name rather
+ * than in an element of its own, so the order is read off the name buttons' test
+ * ids, which end in the id.
+ */
+function getPhaseIds(container: HTMLElement): string[] {
+  return Array.from(container.querySelectorAll(`[data-testid^="${PHASE_ROW_TESTID}"]`)).map(
+    (row) => (row.getAttribute('data-testid') ?? '').slice(PHASE_ROW_TESTID.length)
+  );
+}
+
 describe('PipelineBuilder — restored 3-tab design', () => {
   const REMOVABLE_PHASE: PhaseDefinition = Object.freeze({
     id: 'remove-me', name: 'Remove me', version: 1, instruction: 'Run.'
@@ -269,11 +285,11 @@ describe('PipelineBuilder — restored 3-tab design', () => {
 
     // A decline is not a rejection to report: the operator closed a dialog.
     expect(container.querySelector('[data-testid="save-error-banner"]')).toBeNull();
-    // And the row is still there, still deletable — the pending flag cleared.
-    expect(container.querySelector('[data-testid="phases-list-item-remove-me"]')).not.toBeNull();
-    expect(
-      (container.querySelector('[data-testid="phases-remove"]') as HTMLButtonElement).disabled
-    ).toBe(false);
+    // And the row is still there, still deletable — the pending flag cleared. The
+    // redesign shows the open Phase's editor page in place of the list, so the row
+    // is read off that page: still open on the Phase, its Deactivate… enabled again.
+    expect(container.querySelector('[data-testid="phases-editor-remove-me"]')).not.toBeNull();
+    expect(isMenuItemOff(container.querySelector('[data-testid="phases-remove"]'))).toBe(false);
   });
 
   it('duplicates a Phase into a version-1 draft', async () => {
@@ -517,10 +533,9 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     });
     await fireEvent.click(container.querySelector('[data-testid="phases-add"]')!);
     expect(container.textContent).toContain('new-phase');
-    const discard = [...container.querySelectorAll('button')].find(
-      (button) => button.textContent?.trim() === 'Discard Draft'
-    );
-    await fireEvent.click(discard!);
+    // The redesign moved "Discard Draft" into the editor page's "More phase actions"
+    // menu, where it reads "Revert unsaved changes".
+    await fireEvent.click(container.querySelector('[data-testid="phases-revert"]')!);
     await tick();
     expect(container.textContent).not.toContain('new-phase');
     expect(saveDraftHelper).not.toHaveBeenCalled();
@@ -714,8 +729,9 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     const snap = buildSnapshot([], [], ['claude-sonnet-5-5', 'claude-opus-5-5']);
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     await switchTab(container, 'Models');
+    // Builder redesign: the Models tab's "Save All Models" reads "Save".
     const saveBtn = [...container.querySelectorAll('button')].find(
-      (btn) => btn.textContent?.trim() === 'Save All Models'
+      (btn) => btn.textContent?.trim() === 'Save'
     ) as HTMLButtonElement | undefined;
     expect(saveBtn).toBeDefined();
     await fireEvent.click(saveBtn!);
@@ -1063,9 +1079,11 @@ describe('PipelineBuilder — BUG-002 cross-tab phase visibility', () => {
     await fireEvent.click(addPhaseBtn);
     await tick();
 
-    // Verify the new phase appears in the Phases tab sidebar
-    const phaseItems = container.querySelectorAll('.phase-list-item');
-    expect(phaseItems.length).toBe(2); // existing + new
+    // Verify the new phase appears in the Phases list. Adding opens the new Phase's
+    // editor page, which the redesign shows in place of the list and the Builder's
+    // tabs, so its breadcrumb leads back to both first.
+    await fireEvent.click(container.querySelector('[data-testid="phases-editor-back"]')!);
+    expect(getPhaseIds(container)).toHaveLength(2); // existing + new
 
     // 2. Switch to Workflows tab before saving.
     await switchTab(container, 'Workflows');
@@ -1136,14 +1154,6 @@ describe('PipelineBuilder — BUG-012 phase list reordering', () => {
     });
     await tick();
     return container;
-  }
-
-  function getPhaseIds(container: HTMLElement): string[] {
-    return Array.from(container.querySelectorAll('.phase-list-item'))
-      .map((el) => {
-        const idEl = el.querySelector('.phase-list-id');
-        return idEl?.textContent?.trim() ?? '';
-      });
   }
 
   it('move down swaps a phase with the one below it', async () => {
@@ -1288,19 +1298,20 @@ describe('PipelineBuilder — BUG-012 addPhase append regression guard', () => {
     await fireEvent.click(addBtn);
     await tick();
 
-    let ids = Array.from(container.querySelectorAll('.phase-list-item'))
-      .map((el) => el.querySelector('.phase-list-id')?.textContent?.trim() ?? '');
-    expect(ids).toEqual(['existing-1', 'new-phase']);
+    // Adding opens the new Phase's editor page, which the redesign shows in place of
+    // the list; the list comes back with an add button of its own, so it is queried
+    // again rather than read off the first one.
+    await fireEvent.click(container.querySelector('[data-testid="phases-editor-back"]')!);
+    expect(getPhaseIds(container)).toEqual(['existing-1', 'new-phase']);
 
-    expect(addBtn.disabled).toBe(true);
+    const addAgain = container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement;
+    expect(addAgain.disabled).toBe(true);
 
     // An atomic Phase save carries one explicit mutation only.
-    await fireEvent.click(addBtn);
+    await fireEvent.click(addAgain);
     await tick();
 
-    ids = Array.from(container.querySelectorAll('.phase-list-item'))
-      .map((el) => el.querySelector('.phase-list-id')?.textContent?.trim() ?? '');
-    expect(ids).toEqual(['existing-1', 'new-phase']);
+    expect(getPhaseIds(container)).toEqual(['existing-1', 'new-phase']);
   });
 
   it('no order or position dropdown exists in the phase form grid', async () => {
@@ -1640,6 +1651,8 @@ describe('PipelineBuilder — Phase and Workflow cross-links', () => {
   });
 });
 
+// The redesign heads the open Phase's editor page with its name as a title rather
+// than an input, so these edit the name in the Basics form's field.
 describe('PipelineBuilder — FR-R5-F10 draft persistence and bounded undo history', () => {
   const PHASE_ONE: PhaseDefinition = Object.freeze({
     id: 'phase-one',
@@ -1669,7 +1682,7 @@ describe('PipelineBuilder — FR-R5-F10 draft persistence and bounded undo histo
     await tick();
 
     const nameInput = first.container.querySelector(
-      '[data-testid="phases-name-phase-one"]'
+      '[data-testid="phases-name-field-phase-one"]'
     ) as HTMLInputElement;
     await fireEvent.input(nameInput, { target: { value: 'Phase One Edited' } });
     await tick();
@@ -1686,7 +1699,7 @@ describe('PipelineBuilder — FR-R5-F10 draft persistence and bounded undo histo
     await tick();
 
     const restoredName = second.container.querySelector(
-      '[data-testid="phases-name-phase-one"]'
+      '[data-testid="phases-name-field-phase-one"]'
     ) as HTMLInputElement | null;
     expect(restoredName).not.toBeNull();
     expect(restoredName?.value).toBe('Phase One Edited');
@@ -1705,7 +1718,7 @@ describe('PipelineBuilder — FR-R5-F10 draft persistence and bounded undo histo
     );
     await tick();
     await fireEvent.input(
-      first.container.querySelector('[data-testid="phases-name-phase-one"]') as HTMLInputElement,
+      first.container.querySelector('[data-testid="phases-name-field-phase-one"]') as HTMLInputElement,
       { target: { value: 'Dirty Phase One' } }
     );
     await tick();
@@ -1730,16 +1743,21 @@ describe('PipelineBuilder — FR-R5-F10 draft persistence and bounded undo histo
     await tick();
 
     const restoredOne = second.container.querySelector(
-      '[data-testid="phases-name-phase-one"]'
+      '[data-testid="phases-name-field-phase-one"]'
     ) as HTMLInputElement | null;
     expect(restoredOne?.value).toBe('Dirty Phase One');
 
+    // The restored selection reopens Phase One's editor page, which stands in for
+    // the list, so the breadcrumb leads back to the list before Phase Two is opened.
+    await fireEvent.click(
+      second.container.querySelector('[data-testid="phases-editor-back"]') as HTMLButtonElement
+    );
     await fireEvent.click(
       second.container.querySelector('[data-testid="phases-list-item-phase-two"]') as HTMLButtonElement
     );
     await tick();
     const updatedTwo = second.container.querySelector(
-      '[data-testid="phases-name-phase-two"]'
+      '[data-testid="phases-name-field-phase-two"]'
     ) as HTMLInputElement | null;
     expect(updatedTwo?.value).toBe('Phase Two Updated From Host');
   });
@@ -1757,7 +1775,7 @@ describe('PipelineBuilder — FR-R5-F10 draft persistence and bounded undo histo
     await tick();
 
     const nameInput = container.querySelector(
-      '[data-testid="phases-name-phase-one"]'
+      '[data-testid="phases-name-field-phase-one"]'
     ) as HTMLInputElement;
 
     for (let i = 1; i <= 60; i += 1) {
@@ -1770,9 +1788,11 @@ describe('PipelineBuilder — FR-R5-F10 draft persistence and bounded undo histo
     } | undefined)?.builderState?.phaseSlice;
     expect(persisted?.history?.length).toBeLessThanOrEqual(50);
 
-    const buttons = Array.from(container.querySelectorAll('.toolbar button')) as HTMLButtonElement[];
-    const undoBtn = buttons.find((b) => b.textContent.trim() === 'Undo')!;
-    const redoBtn = buttons.find((b) => b.textContent.trim() === 'Redo')!;
+    // The redesign's editor page puts Undo and Redo in its header as icon buttons,
+    // named by their labels rather than their text.
+    const editorPage = container.querySelector('[data-testid="phases-editor-phase-one"]')!;
+    const undoBtn = editorPage.querySelector('[aria-label="Undo"]') as HTMLButtonElement;
+    const redoBtn = editorPage.querySelector('[aria-label="Redo"]') as HTMLButtonElement;
     await fireEvent.click(undoBtn);
     await tick();
     expect(redoBtn.disabled).toBe(false);

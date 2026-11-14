@@ -161,9 +161,36 @@ function renderPanel(opts: ListOpts = {}) {
   });
 }
 
+/** The id prefix every symbol in the webview's icon sprite carries. */
+const SPRITE_HREF_PREFIX = '#i-';
+
+/**
+ * The surface's own icons, written in its templates: a reference into the
+ * dashboard's one sprite, `<svg class="i" aria-hidden="true"><use href="#i-…">`.
+ * The row's validity chip draws its check or warning mark this way. Set aside
+ * by that exact shape and nothing looser, so an `svg` carrying any other
+ * attribute or child (MARKUP_NOTE's `onload` among them) still counts. The
+ * same test as `history-text-is-inert.test.ts` uses.
+ */
+function isSpriteIcon(el: Element): boolean {
+  const use = el.firstElementChild;
+  return (
+    el.tagName.toLowerCase() === 'svg' &&
+    el.getAttributeNames().every((name) => name === 'class' || name === 'aria-hidden') &&
+    el.classList.contains('i') &&
+    el.getAttribute('aria-hidden') === 'true' &&
+    el.childElementCount === 1 &&
+    use?.tagName.toLowerCase() === 'use' &&
+    use.getAttributeNames().join() === 'href' &&
+    (use.getAttribute('href') ?? '').startsWith(SPRITE_HREF_PREFIX)
+  );
+}
+
 /** Every element name from INJECTED that actually made it into the DOM. */
 function injectedTags(container: HTMLElement): string[] {
-  return [...container.querySelectorAll(INJECTED)].map((node) => node.tagName.toLowerCase());
+  return [...container.querySelectorAll(INJECTED)]
+    .filter((node) => !isSpriteIcon(node))
+    .map((node) => node.tagName.toLowerCase());
 }
 
 async function openHistory(container: HTMLElement): Promise<void> {

@@ -138,7 +138,7 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
   { path: 'webview-ui/src/components/settings/BackendHealthSection.svelte', role: 'Webview', how: 'record' },
   { path: 'webview-ui/src/components/settings/general/BackendEnvironmentGroup.svelte', role: 'Webview', how: 'record' },
   { path: 'webview-ui/src/components/settings/RawJsonPhaseEditor.svelte', role: 'Webview', how: 'literal' },
-  { path: 'webview-ui/src/components/PipelineBuilderEditors/PhaseCatalogEditor.svelte', role: 'Webview', how: 'equality' },
+  { path: 'webview-ui/src/components/PipelineBuilderEditors/PhaseEditorForm.svelte', role: 'Webview', how: 'equality' },
   { path: 'webview-ui/src/components/PipelineBuilderEditors/ModelCatalogEditor.svelte', role: 'Webview', how: 'equality' },
   { path: 'webview-ui/src/components/PipelineBuilderEditors/model-catalog-state.ts', role: 'Webview', how: 'literal' },
 

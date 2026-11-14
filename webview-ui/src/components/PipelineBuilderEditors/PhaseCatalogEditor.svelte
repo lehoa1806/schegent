@@ -1,27 +1,17 @@
 <script lang="ts">
-  import type { BuilderLifecycle, PhaseDefinition, WorkflowSnapshot } from '../../lib/snapshot-types';
-  import CatalogEmptyState from '../Builder/CatalogEmptyState.svelte';
-  import DefinitionLifecycleRow from '../Builder/DefinitionLifecycleRow.svelte';
-  import DefinitionLifecyclePanel from '../Builder/DefinitionLifecyclePanel.svelte';
-  import ProcessExportButton from '../ProcessImport/ProcessExportButton.svelte';
-  import ProcessImportPreflight from '../ProcessImport/ProcessImportPreflight.svelte';
-  import {
-    importDisabledReason,
-    phaseExportAvailability,
-    storedWritableLayers
-  } from '../ProcessImport/process-exchange-entry';
-  import RawJsonPhaseEditor from '../settings/RawJsonPhaseEditor.svelte';
-  import RetryConditionEditor from '../settings/RetryConditionEditor.svelte';
+  // The Phases tab: the list page, or the open Phase's editor page in its place.
+  //
+  // This component keeps what both pages share — the catalog's loading and error states, the trust
+  // banners, the catalog's warnings and the save error — and decides which page shows. The pages
+  // themselves are `PhaseCatalogList.svelte` and `PhaseEditorPage.svelte`; every handler reaches
+  // them unchanged from PipelineBuilder.
+  import type { BuilderLifecycle, WorkflowSnapshot } from '../../lib/snapshot-types';
+  import { importDisabledReason, storedWritableLayers } from '../ProcessImport/process-exchange-entry';
   import TrustBanner from '../TrustBanner.svelte';
-  import { mergeDetectedModels } from './model-catalog-state';
-  import { authoredPhaseDocument } from './phase-catalog-state';
-  import { dependentWorkflowsForPhase } from './workflow-catalog-state';
-  import RetryCapOutcomeEditor from './RetryCapOutcomeEditor.svelte';
+  import PhaseCatalogList from './PhaseCatalogList.svelte';
+  import { phaseEditorOpen, type PhaseStatusView } from './phase-catalog-view';
+  import PhaseEditorPage from './PhaseEditorPage.svelte';
   import type { MutablePhase, PhaseEditState } from './types';
-
-  const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-  const RUNNER_KINDS = ['claude', 'codex', 'agy'] as const;
-  // Feature 098 T018 — runner sideEffects containment is enforced by the host save gate and runner.
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -101,43 +91,6 @@
       (editableSourceKey !== null && selectedPhase?.sourceKey !== editableSourceKey)
   );
 
-  function directiveKind(phase: MutablePhase): 'instruction' | 'skill' {
-    return typeof phase.skill === 'string' ? 'skill' : 'instruction';
-  }
-
-  function changeDirectiveKind(index: number, kind: 'instruction' | 'skill'): void {
-    if (kind === 'skill') {
-      onphasechange(index, { instruction: undefined, skill: '' });
-    } else {
-      onphasechange(index, { instruction: '', skill: undefined });
-    }
-  }
-
-  function isRetryEnabled(phase: MutablePhase): boolean {
-    return typeof phase.retryCondition === 'string';
-  }
-
-  function modelsFor(phase: MutablePhase): readonly string[] {
-    const runner = phase.runner || snapshot.defaultRunnerKind || 'claude';
-    return mergeDetectedModels(
-      snapshot.configuredModels?.[runner] ?? [],
-      snapshot.availableModels?.[runner] ?? []
-    );
-  }
-
-  function configuredModelUnavailable(phase: MutablePhase): boolean {
-    return !!phase.model && !modelsFor(phase).includes(phase.model);
-  }
-
-  function effortOptionDisabled(phase: MutablePhase, effort: string): boolean {
-    const runner = phase.runner || snapshot.defaultRunnerKind || 'claude';
-    return runner === 'agy' && (effort === 'xhigh' || effort === 'max');
-  }
-
-  function phaseErrorId(phase: MutablePhase): string | undefined {
-    return phase.sourceErrors.length > 0 ? `phase-errors-${phase.id}` : undefined;
-  }
-
   const importLayers = $derived(
     storedWritableLayers(
       snapshot.phaseCatalog?.records ?? [],
@@ -164,302 +117,149 @@
     }
     return out;
   });
-  const selectedPhaseDependents = $derived(
-    selectedPhase ? dependentWorkflowsForPhase(selectedPhase.id, allWorkflowDefinitions) : []
-  );
+  /** Read here rather than in the snippet below: a snippet does not keep the branch's narrowing. */
+  const catalogWarnings = $derived(snapshot.phaseCatalog?.warnings ?? []);
+
+  // The list's search and filter live here, not in the list, so a Phase opened from a filtered
+  // list comes back to the same filtered list.
+  let query = $state('');
+  let view = $state<PhaseStatusView>('all');
+
+  // Which row takes focus when the list comes back. Read once, by the list as it mounts; nothing
+  // draws it, so it is a plain variable rather than state.
+  let returnFocusKey: string | null = null;
+
+  function lifecycleOf(sourceKey: string): BuilderLifecycle | undefined {
+    return lifecycleByKey.get(sourceKey);
+  }
+
+  function takeReturnFocus(): string | null {
+    const key = returnFocusKey;
+    returnFocusKey = null;
+    return key;
+  }
+
+  function closeEditor(sourceKey: string): void {
+    returnFocusKey = sourceKey;
+    onselect(null);
+  }
+
+  /** Reverting may close the editor too, so the list it returns to puts focus back on the row. */
+  function resetPhase(index: number): void {
+    returnFocusKey = phases.at(index)?.sourceKey ?? null;
+    onreset(index);
+  }
 </script>
 
-<!--
-  FR-R3-143 (T040) — the deciding step is read off the projection this editor
-  already holds, not threaded down as two more props. `showTrustBanner` answers
-  "is it denied"; `resolvedScope` answers "by whom", and both come from the same
-  snapshot, so a separate prop pair could only ever go out of step with the flag
-  beside it. `undefined` reaches the banner as `undefined` and it names no layer.
--->
-{#if showTrustBanner}
-  <TrustBanner variant="phases" decidedBy={snapshot.resolvedScope?.phases} />
-{/if}
-{#if showRetryTrustBanner}
-  <TrustBanner
-    variant="retry-conditions"
-    decidedBy={snapshot.resolvedScope?.retryConditions}
-  />
-{/if}
+{#snippet trustBanners()}
+  <!--
+    FR-R3-143 (T040) — the deciding step is read off the projection this editor
+    already holds, not threaded down as two more props. `showTrustBanner` answers
+    "is it denied"; `resolvedScope` answers "by whom", and both come from the same
+    snapshot, so a separate prop pair could only ever go out of step with the flag
+    beside it. `undefined` reaches the banner as `undefined` and it names no layer.
+  -->
+  {#if showTrustBanner}
+    <TrustBanner variant="phases" decidedBy={snapshot.resolvedScope?.phases} />
+  {/if}
+  {#if showRetryTrustBanner}
+    <TrustBanner
+      variant="retry-conditions"
+      decidedBy={snapshot.resolvedScope?.retryConditions}
+    />
+  {/if}
+{/snippet}
+
+<!-- What either page shows above its content: the trust banners, the catalog's warnings and the
+     last save's refusal, each as the redesign's attention banner. -->
+{#snippet notices()}
+  {@render trustBanners()}
+  {#if catalogWarnings.length > 0}
+    <div class="attn warn" role="status" aria-live="polite">
+      <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+      <div class="body">
+        {#each catalogWarnings as warning}
+          <div>{warning.message}</div>
+        {/each}
+      </div>
+    </div>
+  {/if}
+  {#if saveError}
+    <div class="attn" data-testid="save-error-banner" role="alert">
+      <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+      <div class="body">Save rejected: {saveError}</div>
+      <button type="button" class="icon-btn" aria-label="Dismiss Phase save error" onclick={ondismisssaveerror}><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button>
+    </div>
+  {/if}
+{/snippet}
+
 {#if !snapshot.phaseCatalog}
+  {@render trustBanners()}
   <div class="catalog-state" role="status" aria-live="polite" aria-busy="true" data-testid="phase-catalog-loading">
     Loading authoritative Phase catalog…
   </div>
 {:else if snapshot.phaseCatalog.state === 'error'}
+  {@render trustBanners()}
   <div class="catalog-state catalog-error" role="alert" data-testid="phase-catalog-error">
     {snapshot.phaseCatalog.error?.message ?? 'The Phase catalog could not be loaded. Reload the view to retry.'}
   </div>
+{:else if phaseEditorOpen({ catalogState: snapshot.phaseCatalog.state, selectedIndex, phaseCount: phases.length }) && selectedPhase && selectedIndex !== null}
+  {@const phase = selectedPhase}
+  <PhaseEditorPage
+    {snapshot}
+    {phase}
+    index={selectedIndex}
+    phaseCount={phases.length}
+    editState={selectedEditState ?? { rawJsonMode: false }}
+    lifecycle={lifecycleByKey.get(phase.sourceKey)}
+    workflows={allWorkflowDefinitions}
+    readOnly={selectedReadOnly}
+    {historyIndex}
+    {historyLength}
+    {trusted}
+    {retryConditionsTrusted}
+    {savePending}
+    {mutationActive}
+    {editableSourceKey}
+    {notices}
+    onclose={() => closeEditor(phase.sourceKey)}
+    {onremove}
+    onreset={resetPhase}
+    {onphasechange}
+    {onmoveup}
+    {onmovedown}
+    {onundo}
+    {onredo}
+    {onsave}
+    {ontoggleraw}
+    {onrawsave}
+    {ontoggleretry}
+    {onretrychange}
+    {onduplicate}
+    {onopenworkflow}
+  />
 {:else}
-<div class="toolbar">
-  <button class="btn btn-primary" data-testid="phases-add" onclick={onadd} disabled={!trusted || savePending || mutationActive}>Add Phase</button>
-  <button class="btn" disabled={!trusted || savePending || historyIndex <= 0} onclick={onundo}>Undo</button>
-  <button class="btn" disabled={!trusted || savePending || historyIndex >= historyLength - 1} onclick={onredo}>Redo</button>
-  <button class="btn btn-secondary push-right" data-testid="phases-save-all" onclick={onsave} disabled={!trusted || savePending || !mutationActive}>{savePending ? 'Saving…' : 'Save Phase'}</button>
-</div>
-{#if snapshot.phaseCatalog.warnings.length > 0}
-  <div class="catalog-warning" role="status" aria-live="polite">
-    {#each snapshot.phaseCatalog.warnings as warning}
-      <div>{warning.message}</div>
-    {/each}
-  </div>
-{/if}
-{#if saveError}
-  <div class="save-error-banner" data-testid="save-error-banner" role="alert">
-    <span class="save-error-icon">⚠</span>
-    <span class="save-error-text">Save rejected: {saveError}</span>
-    <button class="save-error-dismiss" aria-label="Dismiss Phase save error" onclick={ondismisssaveerror}>✕</button>
-  </div>
-{/if}
-<!-- Feature 101 (US6, T065, FR-032/FR-033) — the front door, and it brings its
-     own import region. Ordered after the trust check by construction: an
-     untrusted workspace never renders this editor at all (PipelineBuilder gates
-     the three definition tabs), so guidance can never point at an action that
-     cannot succeed. It self-guards on the count, so the condition for showing it
-     is stated once, in the component that owns it. -->
-<CatalogEmptyState kind="phase" count={phases.length} disabledReason={importUnavailable} />
-{#if phases.length > 0}
-  <!-- FR-053 — the import entry point. Its own region rather than a toolbar button,
-       because the preflight it opens renders in place: the plan, the scope choice,
-       and the per-row result all belong to this landmark. Withheld while the
-       catalog is empty because the empty state above already offers one, and two
-       import regions on one screen is two answers to one question. -->
-  <ProcessImportPreflight layers={importLayers} disabledReason={importUnavailable} />
-{/if}
-<div class="split-pane">
-  <div class="pane-left">
-    <div class="phase-list">
-      {#each phases as phase, index (phase.sourceKey)}
-        <div class="phase-list-row">
-          <div class="phase-list-main">
-            <button class="phase-list-item {selectedIndex === index ? 'selected' : ''}" data-testid="phases-list-item-{phase.id}" aria-current={selectedIndex === index ? 'true' : undefined} onclick={() => onselect(index)}>
-              <div class="phase-list-title">{phase.name || 'Untitled Phase'}</div>
-              <div class="phase-list-id">{phase.id}</div>
-              <!-- Feature 099 (T494a, FR-043) — no scope badge. A badge that can
-                   only ever read one value is not a badge.
-                   Feature 101 (T037) — the validity badge left with the lifecycle
-                   chrome below. Model availability is a runtime fact about the
-                   backend, not a lifecycle state, so it stayed. -->
-              {#if phase.modelAvailable === false}
-                <div class="phase-badges"><span class="status-badge">model unavailable</span></div>
-              {/if}
-            </button>
-            <div class="phase-list-actions">
-              <!-- Feature 099 (T494a, FR-043) — the two guards these lost asked
-                   whether the row or its neighbour sat in a different layer. One
-                   layer, so every row is reorderable against every other. -->
-              <button class="icon-btn" aria-label="Move {phase.name} up" data-testid="phases-move-up-{phase.id}" disabled={!trusted || savePending || mutationActive || index === 0} onclick={() => onmoveup(index)}>↑</button>
-              <button class="icon-btn" aria-label="Move {phase.name} down" data-testid="phases-move-down-{phase.id}" disabled={!trusted || savePending || mutationActive || index === phases.length - 1} onclick={() => onmovedown(index)}>↓</button>
-            </div>
-          </div>
-          <!-- Outside the selection button, not inside it: T042 hung the
-               lifecycle actions off this row, and a control nested in a button is
-               invalid markup and unreachable by keyboard.
-               `definitionName` falls back the same way the title above does: the
-               confirmations name what the operator sees, and an untitled row shows
-               that placeholder, not an empty string. -->
-          <DefinitionLifecycleRow
-            definitionId={phase.id}
-            lifecycle={lifecycleByKey.get(phase.sourceKey)}
-            validity={phase.sourceStatus}
-          />
-        </div>
-      {/each}
-    </div>
-  </div>
-  <div class="pane-right">
-    {#if selectedPhase && selectedIndex !== null && selectedEditState}
-      {@const phase = selectedPhase}
-      {@const index = selectedIndex}
-      {@const exportable = phaseExportAvailability(phase)}
-      <div class="editor-card full-height" data-testid="phases-editor-{phase.id}">
-        <div class="card-header-complex">
-          <input class="title-input" data-testid="phases-name-{phase.id}" aria-label="Phase name" value={phase.name} readonly={selectedReadOnly} oninput={(event) => onphasechange(index, { name: event.currentTarget.value })} placeholder="Phase Name" />
-          <div class="header-actions">
-            {#if !selectedReadOnly}
-              <button class="btn btn-ghost" data-testid="phases-raw-json-toggle" disabled={selectedReadOnly} onclick={() => ontoggleraw(phase.sourceKey)}>
-                {selectedEditState.rawJsonMode ? 'Form view' : 'Edit as Raw JSON'}
-              </button>
-            {/if}
-            <button class="btn btn-ghost" onclick={() => onselect(null)}>Cancel</button>
-            <button class="btn btn-ghost" disabled={selectedReadOnly} onclick={() => onreset(index)}>Discard Draft</button>
-            <button class="btn btn-ghost" data-testid="phases-duplicate" disabled={!trusted || savePending || mutationActive} onclick={() => onduplicate(index)}>Duplicate Phase</button>
-            <!-- FR-052 — Export is per phase, writes a file the operator names
-                 and changes no catalog state; shown here in the editor header
-                 rather than the sidebar to reduce visual clutter. -->
-            <ProcessExportButton
-              phaseId={phase.id}
-              rowKey={phase.sourceKey}
-              resolves={exportable.resolves}
-              disabledReason={exportable.disabledReason}
-            />
-            {#if !selectedReadOnly}<button class="btn btn-secondary" disabled={!trusted || savePending} onclick={onsave}>Save Phase</button>{/if}
-            {#if !selectedReadOnly}<button class="btn btn-destructive" data-testid="phases-remove" disabled={!trusted || savePending} onclick={(event) => onremove(index, event.currentTarget)}>Delete Phase</button>{/if}
-          </div>
-        </div>
-
-        <!-- Feature 186 (US1, T008, D-1, D-3) — the open Phase's lifecycle
-             facts and actions. -->
-        <div class="phase-badges" data-testid="phase-dependent-workflows">
-          {#if selectedPhaseDependents.length === 0}
-            <span class="wf-badge">Used by 0 Workflows</span>
-          {:else}
-            <span class="wf-badge">
-              Used by {selectedPhaseDependents.length}
-              {selectedPhaseDependents.length === 1 ? 'Workflow' : 'Workflows'}:
-              {#each selectedPhaseDependents as w, i (w.workflowId)}
-                {i > 0 ? ', ' : ''}
-                {#if onopenworkflow}
-                  <button type="button" class="btn btn-ghost btn-sm" data-testid="phase-dependent-workflow-{w.workflowId}" onclick={() => onopenworkflow(w.workflowId)}>{w.name || w.workflowId}</button>
-                {:else}
-                  {w.name || w.workflowId}
-                {/if}
-              {/each}
-            </span>
-          {/if}
-        </div>
-        <DefinitionLifecyclePanel
-          kind="phase"
-          definitionId={phase.id}
-          definitionName={phase.name || 'Untitled Phase'}
-          lifecycle={lifecycleByKey.get(phase.sourceKey)}
-          defects={phase.sourceErrors}
-        />
-
-        {#if selectedEditState.rawJsonMode}
-          <RawJsonPhaseEditor
-            phase={authoredPhaseDocument(phase)}
-            onsave={(parsed) => onrawsave(index, parsed as Record<string, unknown>)}
-          />
-        {:else}
-          <div class="form-grid">
-            <label class="form-field">
-              <span class="form-label">Name</span>
-              <input class="text-input" data-testid="phases-name-field-{phase.id}" value={phase.name} readonly={selectedReadOnly} aria-invalid={phase.sourceErrors.some((error) => error.field === 'name') ? 'true' : undefined} aria-describedby={phaseErrorId(phase)} oninput={(event) => onphasechange(index, { name: event.currentTarget.value })} placeholder="Phase display name" />
-            </label>
-            <label class="form-field">
-              <span class="form-label">ID</span>
-              <input class="text-input" value={phase.id} readonly={phase.persisted} aria-invalid={phase.sourceErrors.some((error) => error.field === 'phaseId') ? 'true' : undefined} aria-describedby={phaseErrorId(phase)} oninput={(event) => onphasechange(index, { id: event.currentTarget.value })} placeholder="phase-id" />
-              {#if phase.persisted}<span class="field-help">Duplicate this Phase to create a new identity.</span>{/if}
-            </label>
-            <!-- FR-R5-F10 (NF-11) — The authored `version` is a field of the
-                 definition, shown read-only. It is not the catalog's version id
-                 (`v1`, `v2`, …), which the catalog store assigns to each record it
-                 writes; `catalog.revision` and `expectedDraftVersion` track draft
-                 edits separately. -->
-            <label class="form-field">
-              <span class="form-label">Version</span>
-              <input class="text-input" value={phase.version} readonly />
-            </label>
-            <label class="form-field full-width">
-              <span class="form-label">Description</span>
-              <textarea class="text-area" rows="2" value={phase.description ?? ''} readonly={selectedReadOnly} oninput={(event) => onphasechange(index, { description: event.currentTarget.value || undefined })} placeholder="Optional Phase description"></textarea>
-            </label>
-            <label class="form-field">
-              <span class="form-label">Directive</span>
-              <select class="select-input" value={directiveKind(phase)} disabled={selectedReadOnly} onchange={(event) => changeDirectiveKind(index, event.currentTarget.value as 'instruction' | 'skill')}>
-                <option value="instruction">Instruction</option>
-                <option value="skill">Skill reference</option>
-              </select>
-            </label>
-            {#if directiveKind(phase) === 'instruction'}
-              <label class="form-field full-width">
-                <span class="form-label">Instruction</span>
-                <textarea class="text-area" rows="6" value={phase.instruction ?? ''} readonly={selectedReadOnly} aria-invalid={phase.sourceErrors.some((error) => error.field === 'instruction' || error.field === 'directive') ? 'true' : undefined} aria-describedby={phaseErrorId(phase)} oninput={(event) => onphasechange(index, { instruction: event.currentTarget.value })} placeholder="Phase instructions..."></textarea>
-              </label>
-            {:else}
-              <label class="form-field full-width">
-                <span class="form-label">Skill reference</span>
-                <input class="text-input" value={phase.skill ?? ''} readonly={selectedReadOnly} aria-invalid={phase.sourceErrors.some((error) => error.field === 'skill' || error.field === 'directive') ? 'true' : undefined} aria-describedby={phaseErrorId(phase)} oninput={(event) => onphasechange(index, { skill: event.currentTarget.value })} placeholder="skill-name" />
-              </label>
-            {/if}
-            <label class="form-field flex-1">
-              <span class="form-label">Model</span>
-              <select class="select-input" data-testid="phases-model-{phase.id}" value={phase.model ?? ''} disabled={selectedReadOnly} onchange={(event) => onphasechange(index, { model: event.currentTarget.value || undefined })}>
-                <option value="">[Inherit / Default Backend Model]</option>
-                {#if configuredModelUnavailable(phase)}
-                  <option value={phase.model}>{phase.model} (Unavailable)</option>
-                {/if}
-                {#each modelsFor(phase) as model}
-                  <option value={model}>{model}</option>
-                {/each}
-              </select>
-            </label>
-            <label class="form-field flex-1">
-              <span class="form-label">Effort</span>
-              <select class="select-input" data-testid="phases-effort-{phase.id}" value={phase.effort ?? ''} disabled={selectedReadOnly} onchange={(event) => { const value = event.currentTarget.value; onphasechange(index, { effort: value ? (value as PhaseDefinition['effort']) : undefined }); }}>
-                <option value="">[Inherit]</option>
-                {#each EFFORT_LEVELS as effort}
-                  <option value={effort} disabled={effortOptionDisabled(phase, effort)}>{effort}</option>
-                {/each}
-              </select>
-            </label>
-            <label class="form-field flex-1">
-              <!-- Feature 099 (T488, FR-041) — no precedence badge. It named the
-                   layer whose `runner` won; precedence is the answer to "which
-                   layer won", and one layer answers it by existing. -->
-              <span class="form-label">Runner</span>
-              <select class="select-input" data-testid="phases-runner-{phase.id}" value={phase.runner ?? ''} disabled={selectedReadOnly} onchange={(event) => { const value = event.currentTarget.value; onphasechange(index, { runner: value ? (value as PhaseDefinition['runner']) : undefined }); }}>
-                <option value="">[Inherit / Default]</option>
-                {#each RUNNER_KINDS as runner}
-                  <option value={runner}>{runner}{!snapshot.availableBackends.includes(runner) ? ' (Unavailable)' : ''}</option>
-                {/each}
-              </select>
-            </label>
-            <label class="form-field">
-              <span class="form-label">Timeout seconds</span>
-              <input class="text-input" type="number" min="1" max="3600" value={phase.timeoutSeconds ?? ''} readonly={selectedReadOnly} oninput={(event) => onphasechange(index, { timeoutSeconds: event.currentTarget.value === '' ? undefined : Number(event.currentTarget.value) })} />
-            </label>
-            <label class="form-field checkbox-field">
-              <input type="checkbox" checked={phase.loopable === true} disabled={selectedReadOnly} onchange={(event) => onphasechange(index, { loopable: event.currentTarget.checked })} />
-              <span class="form-label">Loopable</span>
-            </label>
-            <label class="form-field checkbox-field">
-              <input
-                type="checkbox"
-                data-testid="phases-required-{phase.id}"
-                checked={phase.isRequired !== false}
-                disabled={selectedReadOnly}
-                onchange={(event) => onphasechange(index, { isRequired: event.currentTarget.checked })}
-              />
-              <span class="form-label">Required</span>
-            </label>
-            <label class="form-field checkbox-field">
-              <input type="checkbox" data-testid="phases-retry-toggle" checked={isRetryEnabled(phase)} onchange={() => ontoggleretry(index)} disabled={!retryConditionsTrusted || selectedReadOnly} />
-              <span class="form-label">Retry Condition</span>
-            </label>
-            {#if isRetryEnabled(phase)}
-              <div class="form-field full-width retry-condition-row">
-                <RetryConditionEditor
-                  source={phase.retryCondition ?? ''}
-                  instruction={phase.instruction ?? ''}
-                  onchange={(event) => onretrychange(index, event)}
-                  readonly={!retryConditionsTrusted || selectedReadOnly}
-                />
-              </div>
-              <RetryCapOutcomeEditor
-                {phase}
-                workspaceDefault={snapshot.generalSettings?.retryForceContinueOnCap}
-                readonly={!retryConditionsTrusted || selectedReadOnly}
-                onchange={(outcome) => onphasechange(index, { onRetryCap: outcome })}
-              />
-            {/if}
-            {#if phase.sourceErrors.length > 0}
-              <div class="field-errors full-width" id={phaseErrorId(phase)} role="alert">
-                {#each phase.sourceErrors as error}
-                  <div><strong>{error.field}:</strong> {error.message}</div>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </div>
-    {:else}
-      <div class="empty-selection">Select a phase to edit or add a new one.</div>
-    {/if}
-  </div>
-</div>
+  <PhaseCatalogList
+    {phases}
+    {lifecycleOf}
+    {importLayers}
+    {importUnavailable}
+    {historyIndex}
+    {historyLength}
+    {trusted}
+    {savePending}
+    {mutationActive}
+    {editableSourceKey}
+    bind:query
+    bind:view
+    {takeReturnFocus}
+    {notices}
+    {onselect}
+    {onadd}
+    {onmoveup}
+    {onmovedown}
+    {onundo}
+    {onredo}
+    {onsave}
+  />
 {/if}
