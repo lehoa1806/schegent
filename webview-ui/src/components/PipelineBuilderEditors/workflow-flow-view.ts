@@ -16,10 +16,13 @@ import type {
   PortablePhaseDefinition,
   PortablePipelineDefinition,
   PortableWorkflowDefinition,
-  WorkflowNode
+  WorkflowConnection,
+  WorkflowNode,
+  WorkflowNodeControl
 } from '../../lib/snapshot-types';
-import type { FlowNodeSlot } from './workflow-flow-layout';
+import { describeWorkflowBranch, type FlowNodeSlot } from './workflow-flow-layout';
 import type { WorkflowDraftError } from './workflow-catalog-state';
+import { phaseRunsOn, RUNS_ON_SEPARATOR } from './phase-catalog-view';
 
 export interface WorkflowBreadcrumbEntry {
   readonly workflowId: string;
@@ -51,6 +54,8 @@ export function isSameFlowSelection(
 /** Everything a node card and a subtree read, forwarded unchanged through the recursion. */
 export interface WorkflowFlowView {
   readonly nodes: readonly WorkflowNode[];
+  /** The authored list, which an arm reads for what the layout does not carry: its handoff. */
+  readonly connections: readonly WorkflowConnection[];
   readonly slotsById: ReadonlyMap<string, FlowNodeSlot>;
   readonly pipelines: readonly PortablePipelineDefinition[];
   readonly phases?: readonly PortablePhaseDefinition[];
@@ -109,16 +114,29 @@ export function childWorkflowOfNode(
     : null;
 }
 
+export type WorkflowNodeTargetKind = 'phase' | 'workflow' | 'pipeline';
+
+/**
+ * What a node runs. A node naming a Phase is a Phase node whatever its `kind`
+ * says, and likewise a child Workflow; anything else is a legacy Pipeline node.
+ */
+export function nodeTargetKind(node: WorkflowNode): WorkflowNodeTargetKind {
+  if (node.kind === 'phase' || node.phaseId !== undefined) return 'phase';
+  if (node.kind === 'workflow' || node.workflowId !== undefined) return 'workflow';
+  return 'pipeline';
+}
+
 export function nodeTargetSummary(
   view: WorkflowFlowView,
   node: WorkflowNode
 ): {
-  readonly kind: 'phase' | 'workflow' | 'pipeline';
+  readonly kind: WorkflowNodeTargetKind;
   readonly id: string;
   readonly name: string;
   readonly resolved: boolean;
 } {
-  if (node.kind === 'phase' || node.phaseId !== undefined) {
+  const kind = nodeTargetKind(node);
+  if (kind === 'phase') {
     const id = node.phaseId ?? '';
     const phase = phaseOfNode(view, node);
     return {
@@ -128,7 +146,7 @@ export function nodeTargetSummary(
       resolved: phase !== null
     };
   }
-  if (node.kind === 'workflow' || node.workflowId !== undefined) {
+  if (kind === 'workflow') {
     const id = node.workflowId ?? '';
     const child = childWorkflowOfNode(view, node);
     return {
@@ -148,14 +166,152 @@ export function nodeTargetSummary(
   };
 }
 
+/** "1 step", "3 steps". */
+const counted = (count: number, noun: string): string =>
+  `${count} ${noun}${count === 1 ? '' : 's'}`;
+
+/**
+ * The card's summary line: what the target runs on, or how much it holds. Null
+ * when the catalog lacks the target. The unknown badge says so, and a summary
+ * would read as if the target were there.
+ */
+export function nodeRunSummary(view: WorkflowFlowView, node: WorkflowNode): string | null {
+  const kind = nodeTargetKind(node);
+  if (kind === 'phase') {
+    const phase = phaseOfNode(view, node);
+    return phase ? phaseRunsOn(phase) : null;
+  }
+  if (kind === 'workflow') {
+    const child = childWorkflowOfNode(view, node);
+    return child
+      ? ['child Workflow', counted(child.nodes.length, 'step')].join(RUNS_ON_SEPARATOR)
+      : null;
+  }
+  const pipeline = pipelineOf(view, node);
+  return pipeline
+    ? ['Pipeline', counted(pipeline.phaseIds.length, 'Phase')].join(RUNS_ON_SEPARATOR)
+    : null;
+}
+
+/** The badge a node's run control earns: a call that runs once per item, or again. */
+export function nodeControlLabel(control: WorkflowNodeControl): string {
+  return control.kind === 'for-each'
+    ? 'For each item'
+    : `Repeats up to ${counted(control.maxIterations, 'time')}`;
+}
+
+/**
+ * The words a defective card or arm shows beside its red border, so the defect
+ * is not carried by colour alone: "1 issue", "2 issues".
+ */
+export function issueCountLabel(count: number): string {
+  return counted(count, 'issue');
+}
+
 /**
  * The card's title. The operator's `label` when they set one, and the node
  * identifier when they did not — never the Pipeline/Phase/Workflow name, which
- * is the *body*. A card titled by its target definition would render two nodes
- * that share one Phase or child Workflow as the same card, which is exactly the
- * distinction `nodeId` exists to carry.
+ * the card prints by identifier under the title. A card titled by its target
+ * definition would render two nodes that share one Phase or child Workflow as
+ * the same card, which is exactly the distinction `nodeId` exists to carry.
  */
 export function nodeTitle(node: WorkflowNode): string {
   const label = node.label?.trim();
   return label !== undefined && label.length > 0 ? label : node.nodeId;
+}
+
+/** A node's title by identifier, or the identifier itself for a node the list lacks. */
+export function nodeTitleById(view: Pick<WorkflowFlowView, 'nodes'>, nodeId: string): string {
+  const found = view.nodes.find((entry) => entry.nodeId === nodeId);
+  return found ? nodeTitle(found) : nodeId;
+}
+
+/**
+ * The name an arm's button announces. The visible chip carries the condition
+ * alone, which does not say which two cards the arm joins, and a plain arm has
+ * no visible words at all. `label` is null for an unconditional arm. `issues`
+ * is how many defects the arm has, which its chip also shows.
+ */
+export function armName(
+  source: string,
+  target: string,
+  label: string | null,
+  manual: boolean,
+  issues = 0
+): string {
+  const named =
+    label === null
+      ? `Connection from ${source} to ${target}${manual ? ': manual handoff' : ''}`
+      : `Branch from ${source} to ${target}: ${label}${manual ? ', manual handoff' : ''}`;
+  return issues > 0 ? `${named}, ${issueCountLabel(issues)}` : named;
+}
+
+/**
+ * An arm's name read from its connection, for a place that has no layout to hand:
+ * the words `armName` gives its button, each end titled as its card is.
+ */
+export function connectionName(
+  nodes: readonly WorkflowNode[],
+  connection: WorkflowConnection
+): string {
+  return armName(
+    nodeTitleById({ nodes }, connection.from.nodeId),
+    nodeTitleById({ nodes }, connection.to.nodeId),
+    describeWorkflowBranch(connection).label,
+    connection.handoff === 'manual'
+  );
+}
+
+const NOTHING_SELECTED = 'Nothing selected. Showing the Workflow.';
+
+/**
+ * What the status line says once the operator selects something, as the workflow
+ * builder mockup's editor says it: a card by its title, an arm by its button's
+ * name. A selection that addresses nothing reads as the Workflow, which is what
+ * the inspector falls back to showing.
+ */
+export function selectionAnnouncement(
+  nodes: readonly WorkflowNode[],
+  connections: readonly WorkflowConnection[],
+  selection: WorkflowFlowSelection
+): string {
+  if (selection.kind === 'node') {
+    const node = nodes.at(selection.index);
+    if (node) return `Selected ${nodeTitle(node)}.`;
+  }
+  if (selection.kind === 'connection') {
+    const connection = connections.at(selection.index);
+    if (connection) return `Selected ${connectionName(nodes, connection)}.`;
+  }
+  return NOTHING_SELECTED;
+}
+
+const inRange = (index: number, count: number): boolean => index >= 0 && index < count;
+
+/**
+ * Where the selection lands after `moveWorkflowNode(index, delta)` on a list of
+ * `count` nodes. Selection addresses the list by index, so without this the
+ * inspector would stay on the old index and show whichever node moved into it.
+ * The moved node keeps the selection, a node the move passed over shifts one
+ * place toward the vacated index, and a move off either end changes nothing,
+ * as the move itself does.
+ */
+export function selectionAfterMove(
+  selection: WorkflowFlowSelection,
+  index: number,
+  delta: number,
+  count: number
+): WorkflowFlowSelection {
+  if (selection.kind !== 'node') return selection;
+  const target = index + delta;
+  if (!inRange(index, count) || !inRange(target, count)) return selection;
+  const selected = selection.index;
+  if (selected === index) return { kind: 'node', index: target };
+  if (index < target && selected > index && selected <= target) {
+    return { kind: 'node', index: selected - 1 };
+  }
+  if (target < index && selected >= target && selected < index) {
+    return { kind: 'node', index: selected + 1 };
+  }
+  return selection;
 }

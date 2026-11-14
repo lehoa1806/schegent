@@ -67,6 +67,10 @@ const STATE_BADGE_LABELS: Readonly<Record<DefinitionState, string>> = Object.fre
  * Each state's status colour, as the sg-core tone class its chip takes: a draft
  * is work in progress, a published definition is done, and a published one with
  * unpublished changes on top asks for attention.
+ *
+ * Shared, because two surfaces draw the state chip: every list row
+ * (`DefinitionLifecycleRow`) and the Workflow editor's head, which cannot mount
+ * the row component while the Library list beside it renders the same ids.
  */
 export const STATE_TONE_CLASSES: Readonly<Record<DefinitionState, string>> = Object.freeze({
   draft: 's-draft',

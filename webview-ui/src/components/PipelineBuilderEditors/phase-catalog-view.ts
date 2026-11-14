@@ -1,5 +1,6 @@
 // The Phases tab's list page: which rows the status filter and the search keep, the count under
-// the list, and when the tab shows the open Phase's editor page instead of the list.
+// the list, and when the tab shows the open Phase's editor page instead of the list. It also says
+// what a Phase runs on, the summary line a Workflow step's card shows for a Phase.
 // The editor page's form and its Summary share one fact from here too: the id of the error list.
 //
 // Presentation only. The filter changes which rows are drawn, never their order: the list stays
@@ -25,6 +26,11 @@ const VIEW_STATES: Readonly<Record<'active' | 'draft', readonly DefinitionState[
   active: ['active', 'active-with-draft'],
   draft: ['draft', 'active-with-draft']
 };
+
+/** What a Phase runs on when it sets no backend, model or effort of its own. */
+export const RUNS_ON_INHERITED = 'inherits workflow defaults';
+/** Between the parts of what a Phase runs on, and of every other Workflow card summary line. */
+export const RUNS_ON_SEPARATOR = ' · ';
 
 /** What the filter reads from a row. `state` is absent for a row with no stored lifecycle yet. */
 export interface PhaseRowFacts {
@@ -55,6 +61,18 @@ function matchesQuery(row: PhaseRowFacts, query: string): boolean {
  */
 export function phaseRowVisible(row: PhaseRowFacts, view: PhaseStatusView, query: string): boolean {
   return matchesView(row, view) && matchesQuery(row, query);
+}
+
+/** The backend, model and effort a Phase sets, as a Workflow step's card reads them. */
+export function phaseRunsOn(phase: {
+  readonly runner?: string;
+  readonly model?: string;
+  readonly effort?: string;
+}): string {
+  const parts = [phase.runner, phase.model, phase.effort].filter(
+    (part): part is string => typeof part === 'string' && part !== ''
+  );
+  return parts.length > 0 ? parts.join(RUNS_ON_SEPARATOR) : RUNS_ON_INHERITED;
 }
 
 /** What decides whether the Phases tab shows the editor page. */

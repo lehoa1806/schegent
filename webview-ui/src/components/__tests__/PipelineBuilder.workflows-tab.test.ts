@@ -28,6 +28,7 @@ import type {
 } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
 import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
+import { isMenuItemOff } from '../sg/__tests__/menu-item-state';
 
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: vi.fn(() => ({ correlationId: 'corr-workflows-tab-test' }))
@@ -202,9 +203,9 @@ describe('PipelineBuilder — Workflow trust gating (083)', () => {
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot(), initialTab: 'workflows' }
     });
-    const add = container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement;
+    const add = container.querySelector('[data-testid="workflows-add"]');
     const save = container.querySelector('[data-testid="workflows-save-all"]') as HTMLButtonElement;
-    expect(add.disabled).toBe(false);
+    expect(isMenuItemOff(add)).toBe(false);
     expect(save).not.toBeNull();
     expect(container.querySelector('[data-testid="trust-banner-workflows"]')).toBeNull();
   });
@@ -233,16 +234,14 @@ describe('PipelineBuilder — Workflow trust gating (083)', () => {
     const { container } = render(PipelineBuilder, {
       props: { snapshot: withoutField as unknown as WorkflowSnapshot, initialTab: 'workflows' }
     });
-    const add = container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement;
-    expect(add.disabled).toBe(true);
+    expect(isMenuItemOff(container.querySelector('[data-testid="workflows-add"]'))).toBe(true);
   });
 
   it('disables Workflow mutations in a secondary window', () => {
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot({ isPrimary: false }), initialTab: 'workflows' }
     });
-    const add = container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement;
-    expect(add.disabled).toBe(true);
+    expect(isMenuItemOff(container.querySelector('[data-testid="workflows-add"]'))).toBe(true);
   });
 
   it('reports the ceiling once, and no per-capability banner beside it', () => {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Feature 083 (US5, T059) — the Library's action bar.
+  // Feature 083 (US5, T059) — the Workflow editor head's actions.
   //
   // Split out of WorkflowCatalogEditor so that file stays inside the
   // repository-wide 500-line Svelte budget. It holds no rules: every control is
@@ -26,8 +26,19 @@
   // addressed by id and removal is one confirmed deactivation each. A button whose
   // atomicity the store does not provide is a button that lies, so it is deleted
   // rather than reimplemented as a loop behind a single prompt.
+  //
+  // The redesign (workflow_builder_redesign.html, the editor head) sets these at
+  // the right end of the head's row, beside WorkflowFlowTopBar's breadcrumb: Undo
+  // and Redo as icon buttons, every other action in the "More workflow actions"
+  // menu, and Save as the one primary button. The mockup's Publish stays in the
+  // inspector's lifecycle panel, as on the Phase editor, and its Version history
+  // is that panel's History. "New workflow" joins the menu: the mockup moves it to
+  // a list page (its pin 3), and this product's list is the switcher's. Save
+  // carries no shortcut hint, because the Builder binds no shortcut.
+  import { flushSync } from 'svelte';
   import type { WorkflowExportInclusion } from '../../lib/messages';
   import { exportWorkflowYaml } from '../../lib/process-yaml-ipc';
+  import SgMenu from '../sg/SgMenu.svelte';
   import type { MutableWorkflow } from './types';
 
   /**
@@ -51,6 +62,9 @@
       { value: 'references-only', label: 'References only' },
       { value: 'include-closure', label: 'Include child Workflows and Phases' }
     ];
+
+  /** The reason's id: Export's description, on the menu item that offers it. */
+  const EXPORT_REASON_ID = 'workflows-export-reason';
 
   interface Props {
     savePending: boolean;
@@ -114,6 +128,9 @@
       : 'Save this Workflow first. Export writes the definition the catalog holds, not an unsaved draft.'
   );
 
+  /** Nothing to export, or a draft the catalog does not hold yet. */
+  const exportDisabled = $derived(selected === null || exportDisabledReason !== null);
+
   /**
    * Feature 086 T023 (FR-013) — the inclusion choice, made BEFORE the document is
    * produced rather than discovered in the save dialog after it.
@@ -124,6 +141,40 @@
    * one session's exports, and the default is the smallest document (FR-013).
    */
   let inclusion = $state<WorkflowExportInclusion>('references-only');
+
+  /**
+   * Which Workflow the export panel is open for, or null while it is closed.
+   *
+   * The mockup's "Export YAML…" exports at once; here it takes one more input,
+   * the inclusion depth above, so the item opens a small panel under the actions
+   * instead. Keyed to the selection, so choosing another Workflow never leaves
+   * the panel offering the first one's export.
+   */
+  let exportFor = $state<string | null>(null);
+  const exportShown = $derived(!exportDisabled && exportFor === selected?.sourceKey);
+
+  let actions = $state<HTMLDivElement | undefined>(undefined);
+  let exportPanel = $state<HTMLDivElement | undefined>(undefined);
+  let inclusionSelect = $state<HTMLSelectElement | undefined>(undefined);
+
+  /**
+   * Flushed first, so the select is rendered and focusable before the menu closes
+   * behind this click: the menu then finds focus outside itself and leaves it
+   * there. Set, then flushed with no callback: the callback form keeps a branch of
+   * Svelte's runtime in the chunk the sidebar loads at startup.
+   */
+  function openExport(): void {
+    if (selected === null) return;
+    exportFor = selected.sourceKey;
+    flushSync();
+    inclusionSelect?.focus();
+  }
+
+  /** Closes the panel and hands focus back to the menu button it came from. */
+  function closeExport(): void {
+    exportFor = null;
+    actions?.querySelector<HTMLElement>('[aria-haspopup="menu"]')?.focus();
+  }
 
   /**
    * FR-013 / FR-015 — references only unless the operator asked for the
@@ -142,120 +193,184 @@
   function onExport(): void {
     if (exportDisabledReason !== null || selected === null) return;
     exportWorkflowYaml(selected.workflowId, inclusion);
+    closeExport();
   }
+
+  /** Escape leaves the panel without exporting. The menu behind it is closed already. */
+  function onExportKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeExport();
+  }
+
+  /**
+   * Focus moving to a control outside the panel closes it. Focus that goes
+   * nowhere (a press on the page, another window) leaves that to the press.
+   */
+  function onExportFocusOut(event: FocusEvent): void {
+    const next = event.relatedTarget;
+    if (!(next instanceof Node) || exportPanel?.contains(next) === true) return;
+    exportFor = null;
+  }
+
+  // A press outside the open panel dismisses it, as one outside the menu
+  // dismisses the menu.
+  $effect(() => {
+    if (!exportShown) return;
+    function onPointerDown(event: MouseEvent): void {
+      if (event.target instanceof Node && exportPanel?.contains(event.target) === true) return;
+      exportFor = null;
+    }
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  });
 </script>
 
-<div class="toolbar">
-  <button
-    class="btn btn-secondary"
-    data-testid="workflows-duplicate"
-    disabled={duplicateDisabled}
-    onclick={onduplicate}
-  >
-    Duplicate
-  </button>
-  <button
-    class="btn btn-primary"
-    data-testid="workflows-add"
-    onclick={onadd}
-    disabled={mutatingDisabled}
-  >
-    Add Workflow
-  </button>
-  <button
-    class="btn btn-secondary destructive"
-    data-testid="workflows-remove"
-    disabled={removeDisabled}
-    onclick={onremove}
-  >
-    Delete
-  </button>
+<div class="push" bind:this={actions}>
   {#if onundo}
     <button
-      class="btn btn-secondary"
+      type="button"
+      class="icon-btn"
+      id="wf-undo"
       data-testid="workflows-undo"
+      aria-label="Undo"
+      title="Undo"
       disabled={mutatingDisabled || !canUndo}
-      onclick={onundo}
+      onclick={onundo}><svg class="i" aria-hidden="true"><use href="#i-undo"></use></svg></button
     >
-      Undo
-    </button>
   {/if}
   {#if onredo}
     <button
-      class="btn btn-secondary"
+      type="button"
+      class="icon-btn"
       data-testid="workflows-redo"
+      aria-label="Redo"
+      title="Redo"
       disabled={mutatingDisabled || !canRedo}
-      onclick={onredo}
+      onclick={onredo}><svg class="i" aria-hidden="true"><use href="#i-redo"></use></svg></button
     >
-      Redo
-    </button>
   {/if}
-  {#if onreset}
+  {#if onundo || onredo}
+    <span class="sep" aria-hidden="true"></span>
+  {/if}
+  <SgMenu label="More workflow actions" testid="workflows-menu">
     <button
-      class="btn btn-secondary"
-      data-testid="workflows-discard"
-      disabled={mutatingDisabled || !canReset}
-      onclick={onreset}
+      type="button"
+      role="menuitem"
+      data-testid="workflows-add"
+      aria-disabled={mutatingDisabled}
+      onclick={onadd}
+      ><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>New workflow</button
     >
-      Discard Edits
-    </button>
-  {/if}
-  <!-- FR-013 — the choice sits beside the control it changes, so it is made
-       before the document is produced rather than after. Disabled on exactly the
-       condition Export is: there is no depth to choose for a row that cannot be
-       exported at all. -->
-  <label class="scope-select">
-    Include
-    <select
-      data-testid="workflows-export-inclusion"
-      value={inclusion}
-      disabled={selected === null || exportDisabledReason !== null}
-      aria-label="Workflow export inclusion"
-      title="How much of the Workflow's dependencies the document carries"
-      onchange={(event) => (inclusion = event.currentTarget.value as WorkflowExportInclusion)}
+    <hr />
+    <button
+      type="button"
+      role="menuitem"
+      data-testid="workflows-duplicate"
+      aria-disabled={duplicateDisabled}
+      onclick={onduplicate}
+      ><svg class="i" aria-hidden="true"><use href="#i-copy"></use></svg>Duplicate</button
     >
-      {#each INCLUSIONS as depth (depth.value)}
-        <option value={depth.value}>{depth.label}</option>
-      {/each}
-    </select>
-  </label>
-  <!-- Export is read-only: it needs neither trust nor an idle save, because it
-       writes nothing this extension owns. -->
+    <!-- Export is read-only: it needs neither trust nor an idle save, because it
+         writes nothing this extension owns. When it cannot run, the reason sits
+         under its word, so an operator does not have to guess why it is dead.
+         The label keeps the reason out of the item's name; it is the description. -->
+    <button
+      type="button"
+      role="menuitem"
+      class="export-item"
+      data-testid="workflows-export-open"
+      aria-disabled={exportDisabled}
+      aria-label="Export YAML"
+      aria-describedby={exportDisabledReason !== null ? EXPORT_REASON_ID : undefined}
+      onclick={openExport}
+      ><svg class="i" aria-hidden="true"><use href="#i-export"></use></svg><span
+        class="export-word">Export YAML…</span
+      >{#if exportDisabledReason !== null}<span
+          class="export-why"
+          id={EXPORT_REASON_ID}
+          data-testid="workflows-export-disabled-reason">{exportDisabledReason}</span
+        >{/if}</button
+    >
+    {#if onreset}
+      <button
+        type="button"
+        role="menuitem"
+        data-testid="workflows-discard"
+        aria-disabled={mutatingDisabled || !canReset}
+        onclick={onreset}
+        ><svg class="i" aria-hidden="true"><use href="#i-undo"></use></svg>Revert unsaved changes</button
+      >
+    {/if}
+    <hr />
+    <!-- A deactivation, not a delete (`deactivateDefinition`): the Workflow stays
+         in the catalog and can be restored, so the item says what it does. The
+         confirmation returns focus to this menu's button. -->
+    <button
+      type="button"
+      role="menuitem"
+      data-testid="workflows-remove"
+      aria-disabled={removeDisabled}
+      onclick={onremove}>Deactivate…</button
+    >
+  </SgMenu>
   <button
-    class="btn btn-secondary"
-    data-testid="workflows-export"
-    disabled={selected === null || exportDisabledReason !== null}
-    title={exportDisabledReason ?? 'Export the selected Workflow as a document'}
-    aria-describedby={exportDisabledReason !== null ? 'workflows-export-reason' : undefined}
-    onclick={onExport}
-  >
-    Export Workflow
-  </button>
-  <button
-    class="btn btn-secondary push-right"
+    type="button"
+    class="btn btn-primary"
     data-testid="workflows-save-all"
-    onclick={onsave}
     disabled={saveDisabled}
+    onclick={onsave}>{savePending ? 'Saving…' : 'Save'}</button
   >
-    {savePending ? 'Saving…' : 'Save Workflow'}
-  </button>
-</div>
-
-<!--
-  Same principle as the Save prerequisite below: the reason sits with the control
-  it disables, so an operator does not have to guess why Export is dead.
--->
-{#if exportDisabledReason !== null}
+  <!-- FR-013 — the depth is chosen before the document is produced rather than
+       after. Disabled on exactly the condition Export is: there is no depth to
+       choose for a row that cannot be exported at all. -->
   <div
-    class="catalog-state"
-    role="status"
-    aria-live="polite"
-    id="workflows-export-reason"
-    data-testid="workflows-export-disabled-reason"
+    class="export-pop"
+    role="dialog"
+    tabindex="-1"
+    aria-label="Export YAML"
+    data-testid="workflows-export-panel"
+    hidden={!exportShown}
+    bind:this={exportPanel}
+    onkeydown={onExportKeydown}
+    onfocusout={onExportFocusOut}
   >
-    {exportDisabledReason}
+    <label class="field">
+      <span>Include</span>
+      <select
+        class="input"
+        data-testid="workflows-export-inclusion"
+        bind:this={inclusionSelect}
+        value={inclusion}
+        disabled={exportDisabled}
+        title="How much of the Workflow's dependencies the document carries"
+        onchange={(event) => (inclusion = event.currentTarget.value as WorkflowExportInclusion)}
+      >
+        {#each INCLUSIONS as depth (depth.value)}
+          <option value={depth.value}>{depth.label}</option>
+        {/each}
+      </select>
+    </label>
+    <div class="export-acts">
+      <button
+        type="button"
+        class="btn btn-ghost btn-sm"
+        data-testid="workflows-export-cancel"
+        onclick={closeExport}>Cancel</button
+      >
+      <button
+        type="button"
+        class="btn btn-primary btn-sm"
+        data-testid="workflows-export"
+        disabled={exportDisabled}
+        title={exportDisabledReason ?? 'Export the selected Workflow as a document'}
+        aria-describedby={exportDisabledReason !== null ? EXPORT_REASON_ID : undefined}
+        onclick={onExport}>Export</button
+      >
+    </div>
   </div>
-{/if}
+</div>
 
 <!--
   The explanation sits with the control it explains: a disabled Save with no
@@ -264,12 +379,71 @@
 -->
 {#if noPipelines}
   <div
-    class="catalog-state"
+    class="attn warn head-note"
     role="status"
     aria-live="polite"
     data-testid="workflows-no-pipelines"
   >
-    No effective Phase is available. Every Workflow step runs a Phase or child Workflow, so add or
-    publish at least one valid Phase in the Phases tab before saving a Workflow.
+    <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+    <div class="body">
+      No effective Phase is available. Every Workflow step runs a Phase or child Workflow, so add
+      or publish at least one valid Phase in the Phases tab before saving a Workflow.
+    </div>
   </div>
 {/if}
+
+<style>
+  /* sg-builder.css lays out the row (`.ed-head .push`) and sg-pages.css draws the
+     menu and its items; this sheet adds only what these actions need beyond them. */
+
+  /* sg-pages.css draws an item that is off; Export's reason keeps its own colour
+     there, so it stays readable while the word and icon dim. */
+
+  /* The reason takes a row of its own, under the word. A grid rather than a
+     wrapping flex row: the menu sizes itself to its widest item, and a flex
+     row's widest size holds every item on one line, so the reason would sit
+     beside the word. `:global(.menu)` outranks sg-pages' `.menu button`, which
+     makes every item a flex row. */
+  :global(.menu) .export-item {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    row-gap: var(--schegent-space-0-5);
+  }
+  .export-why {
+    grid-column: 2;
+    max-width: 32ch;
+    white-space: normal;
+    font-size: var(--schegent-text-caption);
+    color: var(--schegent-muted-fg);
+  }
+
+  /* Anchored under the actions (sg-builder.css makes `.push` its containing
+     block) and over the canvas. Toggled with `hidden`, so no `display` here: one
+     would override the attribute. */
+  .export-pop {
+    position: absolute;
+    top: calc(100% + var(--schegent-space-1));
+    right: 0;
+    z-index: var(--schegent-z-popover);
+    width: 280px;
+    padding: var(--schegent-space-3);
+    background: var(--schegent-surface);
+    color: var(--schegent-fg);
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius-sm);
+    box-shadow: var(--schegent-shadow-popover);
+  }
+  .export-acts {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--schegent-space-1-5);
+  }
+
+  /* A line of its own under the head's row, whatever the DOM order. Two classes,
+     to outrank sg-core's `.attn` margin rather than tie with it. */
+  .attn.head-note {
+    order: 1;
+    flex: 0 0 100%;
+    margin: 0;
+  }
+</style>

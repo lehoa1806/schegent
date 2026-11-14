@@ -411,7 +411,7 @@ export function makeWorkflowNodeDraft(
 }
 
 /**
- * Append a node that runs `target` — what the Actions palette does.
+ * Append a node that runs `target` — what the "Add steps" palette does.
  *
  * The FIRST node of an empty Workflow is also marked a start. `startNodeIds` must
  * be non-empty (FR-015) and a lone node that starts nothing is reachable from

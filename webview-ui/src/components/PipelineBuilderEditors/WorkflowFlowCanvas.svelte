@@ -10,6 +10,12 @@
   // heading rather than being hidden. A canvas that draws only the reachable graph
   // would hide the very node the operator has to connect or delete to make the
   // save pass, with the host's defect pointing at something invisible.
+  //
+  // The surface is the redesign's `.canvas-wrap` (sg-builder.css): the dotted
+  // ground and the region a screen reader can jump to. The redesign places its
+  // cards at fixed coordinates with SVG edges between them; this canvas keeps the
+  // layout module's lanes and draws each edge in CSS (workflow-flow.css), so a
+  // card never needs a coordinate, and the CSP never sees a computed `style`.
   import type {
     CandidateBlockControl,
     PortablePhaseDefinition,
@@ -79,6 +85,7 @@
 
   const view = $derived<WorkflowFlowView>({
     nodes: props.nodes,
+    connections: props.connections,
     slotsById,
     pipelines: props.pipelines,
     phases: props.phases,
@@ -99,7 +106,12 @@
   });
 </script>
 
-<div class="wf-canvas" data-testid="workflow-canvas">
+<div
+  class="canvas-wrap wf-canvas"
+  data-testid="workflow-canvas"
+  role="region"
+  aria-label="Workflow graph canvas"
+>
   {#if candidateBlockPath}
     <div
       class="wf-candidate-block-banner"
@@ -138,7 +150,7 @@
   {/if}
   {#if props.nodes.length === 0}
     <div class="empty-selection" data-testid="workflow-canvas-empty">
-      No nodes yet. Add one from Actions.
+      No steps yet. Add one from the Add steps panel.
     </div>
   {:else}
     <div class="wf-lanes">
@@ -154,11 +166,12 @@
         <div class="wf-lane" data-testid="workflow-lane-detached">
           <!-- Says what is wrong AND why it matters: an unreachable node blocks
                the save, and "not connected" alone does not convey that. -->
-          <span class="wf-lane-note is-defect" data-testid="workflow-lane-detached-note">
+          <div class="lane-note wf-lane-note" data-testid="workflow-lane-detached-note">
+            <svg class="i" aria-hidden="true"><use href="#i-warn"></use></svg>
             {roots.length === 0
               ? 'No start node is set, so nothing below can run. Select a node and mark it a start.'
-              : 'Reachable from no start. Connect these or remove them before saving.'}
-          </span>
+              : 'Not reachable from a start. Connect these or remove them before saving.'}
+          </div>
           {#each detachedRoots as slot (slot.nodeId)}
             <WorkflowFlowSubtree {view} {slot} />
           {/each}

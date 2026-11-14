@@ -1407,9 +1407,7 @@ describe('PipelineBuilder — confirmed Workflow removal (US7, T054)', () => {
     await tick();
 
     expect(container.querySelector('[data-testid="workflow-save-error-banner"]')).toBeNull();
-    expect(
-      (container.querySelector('[data-testid="workflows-remove"]') as HTMLButtonElement).disabled
-    ).toBe(false);
+    expect(isMenuItemOff(container.querySelector('[data-testid="workflows-remove"]'))).toBe(false);
   });
 });
 
@@ -1501,15 +1499,19 @@ describe('PipelineBuilder — Workflow canvas behaviour (Feature 184 / 264)', ()
       target: { value: 'Edited' }
     });
     await tick();
+    // A node's operations live in the selected card's toolbar.
+    await fireEvent.click(at(container, 'workflow-node-0') as HTMLElement);
+    await tick();
     for (const control of [
       'workflows-save-all',
-      'workflows-remove',
-      'workflows-duplicate',
-      'workflows-discard',
       'workflow-palette-phase-speckit-plan',
       'workflow-node-remove-0'
     ]) {
       expect((at(container, control) as HTMLButtonElement).disabled).toBe(false);
+    }
+    // The toolbar's menu items say they are off with `aria-disabled` instead.
+    for (const item of ['workflows-remove', 'workflows-duplicate', 'workflows-discard']) {
+      expect(isMenuItemOff(at(container, item)), item).toBe(false);
     }
   });
 });

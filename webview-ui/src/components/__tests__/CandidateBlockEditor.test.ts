@@ -1,7 +1,7 @@
 // FR-R5-F32 (F32-T02, F32-T03, F32-T07) — Component tests for CandidateBlockEditor
 // and candidate-block canvas path layout helpers.
 
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { PortablePhaseDefinition } from '../../lib/snapshot-types';
@@ -223,5 +223,60 @@ describe('CandidateBlockEditor — collapsed/expanded canvas path & focus preser
     expect(getByTestId('candidate-row-select-candidate-2').getAttribute('aria-pressed')).toBe(
       'true'
     );
+  });
+});
+
+// Decisions 9 and 10 of the redesign review. The editor sits under the inspector's own
+// "Candidate block" summary, so it is named the same and carries no heading of its own. Its
+// controls are drawn the way the rest of the inspector draws them: sprite icons on its icon
+// buttons, and each value in the shared field, a caption over its input.
+describe('CandidateBlockEditor — drawn the way the rest of the inspector is', () => {
+  function renderEnabled() {
+    const row = enableCandidateBlockControl(makeDraftWorkflow(), 'phase-claude-impl');
+    return render(CandidateBlockEditor, {
+      props: { row, phases: PHASES, readonly: false, onedit: () => undefined }
+    });
+  }
+
+  it('is the region named like the summary above it, with no heading of its own', () => {
+    const { getByRole, getByTestId } = renderEnabled();
+    const editor = getByRole('region', { name: 'Candidate block' });
+    expect(editor).toBe(getByTestId('candidate-block-editor'));
+    expect(within(editor).queryAllByRole('heading')).toEqual([]);
+  });
+
+  it.each([
+    ['candidate-row-up-1', '#i-up', 'Move candidate candidate-2 earlier'],
+    ['candidate-row-down-0', '#i-down', 'Move candidate candidate-1 later'],
+    ['candidate-row-remove-0', '#i-x', 'Remove candidate candidate-1']
+  ])('draws %s as the sprite icon %s and keeps its name', (testId, href, name) => {
+    const { getByTestId } = renderEnabled();
+    const button = getByTestId(testId);
+    expect(button.textContent.trim()).toBe('');
+    expect(button.querySelector('use')?.getAttribute('href')).toBe(href);
+    expect(button.getAttribute('aria-label')).toBe(name);
+  });
+
+  it('draws Add candidate with the plus icon and no glyph in its words', () => {
+    const { getByTestId } = renderEnabled();
+    const add = getByTestId('candidate-block-add-row');
+    expect(add.textContent.trim()).toBe('Add candidate');
+    expect(add.querySelector('use')?.getAttribute('href')).toBe('#i-plus');
+  });
+
+  it('puts every value in the shared field, a caption over its input', () => {
+    const { getByTestId } = renderEnabled();
+    const controls = getByTestId('candidate-block-expanded-view').querySelectorAll(
+      'input:not([type="checkbox"]), select'
+    );
+    // Four block policies, then four per candidate.
+    expect(controls).toHaveLength(12);
+    for (const control of controls) {
+      const field = control.closest('label');
+      expect(field?.classList.contains('field')).toBe(true);
+      expect(field?.firstElementChild?.tagName).toBe('SPAN');
+      expect(field?.firstElementChild?.textContent.trim()).not.toBe('');
+      expect(control.classList.contains('input')).toBe(true);
+    }
   });
 });
