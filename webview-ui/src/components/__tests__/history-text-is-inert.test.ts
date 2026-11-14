@@ -104,10 +104,32 @@ const catalogNames: CatalogNames = Object.freeze({
   workflows: new Map([[WORKFLOW_ID, MARKUP_WORKFLOW]])
 });
 
+/**
+ * The surface's own icons, written in its templates: a reference into the
+ * dashboard's one sprite, `<svg class="i" aria-hidden="true"><use href="#i-…">`.
+ * Set aside by that exact shape and nothing looser, so an `svg` carrying any
+ * other attribute or child (the payload's `onload` among them) still counts.
+ */
+function isSpriteIcon(el: Element): boolean {
+  const use = el.firstElementChild;
+  return (
+    el.tagName.toLowerCase() === 'svg' &&
+    el.getAttributeNames().every((name) => name === 'class' || name === 'aria-hidden') &&
+    el.classList.contains('i') &&
+    el.getAttribute('aria-hidden') === 'true' &&
+    el.childElementCount === 1 &&
+    use?.tagName.toLowerCase() === 'use' &&
+    use.getAttributeNames().join() === 'href' &&
+    (use.getAttribute('href') ?? '').startsWith('#i-')
+  );
+}
+
 /** The two halves of the claim, asserted together everywhere they are made. */
 function expectInert(container: HTMLElement, escaped: readonly string[]): void {
   expect(
-    Array.from(container.querySelectorAll(INJECTED)).map((el) => el.tagName.toLowerCase()),
+    Array.from(container.querySelectorAll(INJECTED))
+      .filter((el) => !isSpriteIcon(el))
+      .map((el) => el.tagName.toLowerCase()),
     'markup in operator text became elements'
   ).toEqual([]);
   for (const fragment of escaped) {
