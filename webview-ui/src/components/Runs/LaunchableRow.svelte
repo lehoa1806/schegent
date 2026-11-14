@@ -25,6 +25,11 @@
   // The control is never barred. A window that cannot start runs can still read
   // both lists and select within them (FR-015) — what it cannot do is Trigger,
   // and that is the detail panel's control to withhold, not this one.
+  //
+  // Drawn as the redesign's picker row: the kind's icon, the name in bold, and
+  // the description with the version beneath it. The redesign draws the picker
+  // as radios; this stays a toggle, because pressing the chosen row again clears
+  // the choice, which a radio cannot do.
   import type { Launchable } from '../../lib/snapshot-types';
 
   interface Props {
@@ -41,20 +46,17 @@
 <li class="launchable-row" data-testid="launchable-row-{entry.kind}-{entry.id}">
   <button
     type="button"
-    class="row-select"
-    class:selected
+    class="pick row-select"
     data-testid="launchable-select-{entry.kind}-{entry.id}"
     aria-pressed={selected}
     onclick={() => onSelect()}
   >
-    <span class="row-head">
-      <span class="row-name">{entry.name}</span>
-      <span class="state-badge">Active</span>
-      <span class="row-version" title="Active version">{entry.activeVersionId}</span>
+    <span class="kicon {entry.kind === 'workflow' ? 'k-workflow' : 'k-phase'}"
+    ><svg class="i" aria-hidden="true"><use href={entry.kind === 'workflow' ? '#i-workflow' : '#i-phase'}></use></svg></span>
+    <span class="row-text">
+      <span class="t">{entry.name} <span class="tag">Active</span></span>
+      <span class="d">{#if entry.description}{entry.description} ·{/if} <span class="mono" title="Active version">{entry.activeVersionId}</span></span>
     </span>
-    {#if entry.description}
-      <span class="row-description">{entry.description}</span>
-    {/if}
   </button>
 </li>
 
@@ -64,52 +66,15 @@
     min-width: 0;
   }
 
-  .row-select {
-    background: none;
-    border: 1px solid transparent;
-    border-radius: 2px;
-    color: inherit;
-    cursor: pointer;
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    font: inherit;
-    gap: 2px;
+  .row-text {
     min-width: 0;
-    padding: 4px 8px;
-    text-align: left;
   }
 
-  .row-select.selected {
-    border-color: var(--vscode-focusBorder);
+  .tag {
+    font-weight: 400;
   }
 
-  .row-head {
-    align-items: baseline;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .row-name {
-    font-weight: 600;
-  }
-
-  .state-badge {
-    background: var(--vscode-badge-background);
-    border-radius: 2px;
-    color: var(--vscode-badge-foreground);
-    font-size: 0.8em;
-    padding: 0 4px;
-  }
-
-  .row-version {
-    color: var(--vscode-descriptionForeground);
-    font-size: 0.85em;
-  }
-
-  .row-description {
-    color: var(--vscode-descriptionForeground);
-    font-size: 0.85em;
+  .mono {
+    font-size: inherit;
   }
 </style>

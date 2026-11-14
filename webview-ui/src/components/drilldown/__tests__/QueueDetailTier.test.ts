@@ -18,6 +18,7 @@ const LEDGER_IDENTITY = expect.objectContaining({ correlationId: expect.any(Stri
 
 import QueueDetailTier from '../QueueDetailTier.svelte';
 import { buildSnapshot as launchSnapshot } from '../../Runs/__tests__/launch-fixture';
+import { isMenuItemOff } from '../../sg/__tests__/menu-item-state';
 import {
   CMD_ACK,
   CMD_CLEAR_QUEUE,
@@ -469,19 +470,19 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
   it('disables Clear Done when this queue has no completed Tasks', () => {
     const { getByTestId } = mount(buildSnapshot([task('p', { status: 'pending' })]));
 
-    expect((getByTestId('dashboard-queue-clear-done') as HTMLButtonElement).disabled).toBe(true);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clear-done'))).toBe(true);
   });
 
   it('enables Clear Done once this queue has a completed Task', () => {
     const { getByTestId } = mount(buildSnapshot([task('done', { status: 'completed' })]));
 
-    expect((getByTestId('dashboard-queue-clear-done') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clear-done'))).toBe(false);
   });
 
   it('disables Clean All only when every reset surface is empty (FR-008 idle gate)', () => {
     const { getByTestId } = mount(buildSnapshot([]));
 
-    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(true);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(true);
   });
 
   it.each([
@@ -491,7 +492,7 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
   ])('enables Clean All when this queue has %s', (_label, oneTask) => {
     const { getByTestId } = mount(buildSnapshot([oneTask]));
 
-    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(false);
   });
 
   it('enables Clean All when this queue has an in-flight Task, even with nothing else to reset', () => {
@@ -501,13 +502,13 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
       })
     );
 
-    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(false);
   });
 
   it('enables Clean All when this queue is paused, even with an otherwise empty queue', () => {
     const { getByTestId } = mount(buildSnapshot([], { lifecycle: 'operator-paused' }));
 
-    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(false);
   });
 
   // Code-review finding (LC-Q-05) — an armed scheduled start is itself
@@ -525,7 +526,7 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
       })
     );
 
-    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(false);
   });
 
   // The negative half of the case above, and the reason it cannot quietly go
@@ -540,7 +541,7 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
       buildSnapshot([], { lifecycle: 'idle-pending', betaScheduledStartAt: null })
     );
 
-    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(true);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(true);
   });
 
   it('mounts the task composer, loading, before either catalog has resolved (FR-002)', async () => {
@@ -856,17 +857,22 @@ describe('QueueDetailTier — deleting a queue (US1)', () => {
     await vi.waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
   });
 
-  it('disables the control with a stated reason on the default queue (FR-003)', () => {
+  it('disables the control with a stated reason on the default queue (FR-003)', async () => {
     const { getByTestId } = mount(buildSnapshot([]), { queueId: 'default' });
 
-    expect((getByTestId('queue-delete') as HTMLButtonElement).disabled).toBe(true);
+    expect(isMenuItemOff(getByTestId('queue-delete'))).toBe(true);
     expect(getByTestId('queue-delete-disabled-reason').textContent).toMatch(/default queue/i);
+
+    // The item is off but still takes the click, so the menu is what refuses it.
+    await fireEvent.click(getByTestId('queue-delete'));
+    expect(postCommandSpy).not.toHaveBeenCalled();
+    expect(useConfirm).not.toHaveBeenCalled();
   });
 
   it('leaves the control live on a non-default queue', () => {
     const { getByTestId, queryByTestId } = mount(buildSnapshot([]));
 
-    expect((getByTestId('queue-delete') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('queue-delete'))).toBe(false);
     expect(queryByTestId('queue-delete-disabled-reason')).toBeNull();
   });
 
@@ -1408,7 +1414,7 @@ describe('QueueDetailTier — a Run that has ended is not a Run in flight', () =
         })
       );
 
-      expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+      expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(false);
     }
   );
 });
@@ -1584,5 +1590,144 @@ describe('QueueDetailTier — published Workflow task composition', () => {
     const view = mount({ ...snapshot(), isPrimary: false }, { isPrimary: false });
     expect(view.queryByTestId('queue-composer-open')).toBeNull();
     expect(view.queryByTestId('queue-task-composer')).toBeNull();
+  });
+});
+
+// The redesign's queue page (docs/mockup/schegent_redesign_surfaces.html): a breadcrumb back to
+// Queues, the name with its state chips, one primary action and the rest in one "More queue
+// actions" menu with the destructive item last (design rule 4), and adding a task in a drawer
+// beside the page (rule 7) that takes focus and hands it back when it closes (rule 10).
+describe('QueueDetailTier — the redesign’s page header and add-task drawer', () => {
+  const HALTED = Object.freeze({
+    kind: 'halted' as const,
+    taskId: 'broken',
+    taskName: 'task broken',
+    at: '2026-08-12T00:00:00.000Z'
+  });
+
+  it('goes back through a Queues breadcrumb', () => {
+    const back = mount(buildSnapshot([])).getByTestId('queue-detail-back');
+
+    expect(back.textContent).toBe('Queues');
+    expect(back.closest('nav')?.getAttribute('aria-label')).toBe('Breadcrumb');
+  });
+
+  it('draws the lifecycle as a status chip, with a Halted chip beside it while the queue is halted', () => {
+    const paused = mount(buildSnapshot([], { lifecycle: 'operator-paused' }));
+    const chip = paused.getByTestId('queue-detail-lifecycle');
+    expect(chip.classList.contains('chip')).toBe(true);
+    expect(chip.classList.contains('s-warn')).toBe(true);
+    expect(chip.querySelector('use')?.getAttribute('href')).toBe('#i-pause');
+    expect(paused.queryByTestId('queue-detail-halted')).toBeNull();
+    cleanup();
+
+    const halted = mount(
+      buildSnapshot([task('broken', { status: 'failed' })], { lifecycle: 'idle-pending', startFailure: HALTED })
+    );
+    expect(halted.getByTestId('queue-detail-lifecycle').classList.contains('s-idle')).toBe(true);
+    expect(halted.getByTestId('queue-detail-halted').textContent).toBe('Halted');
+    expect(halted.getByTestId('queue-detail-halted').classList.contains('s-err')).toBe(true);
+  });
+
+  it('tags the workspace default queue and no other', () => {
+    const onDefault = mount(buildSnapshot([]), { queueId: 'default' });
+    expect(onDefault.getByText('Default queue').classList.contains('tag')).toBe(true);
+    cleanup();
+
+    expect(mount(buildSnapshot([])).queryByText('Default queue')).toBeNull();
+  });
+
+  it('keeps Add work as the one primary action and every other queue action in one menu, destructive last', () => {
+    const view = mount(buildSnapshot([task('done', { status: 'completed' })]));
+    const add = view.getByTestId('queue-composer-open');
+    expect(add.classList.contains('btn-primary')).toBe(true);
+    // "Add work" is what the `schegent.schedule` message, the default-Workflow setting and the
+    // docs tell the operator to select; the drawer it opens is headed "Add task to <queue>".
+    expect(add.textContent).toBe('Add work');
+
+    expect(view.container.querySelectorAll('[role="menu"][aria-label="More queue actions"]')).toHaveLength(1);
+    const menu = view.getByTestId('queue-delete').closest('[role="menu"]');
+    const items = Array.from(menu?.querySelectorAll('[role="menuitem"]') ?? []);
+    expect(items.map((item) => item.textContent)).toEqual([
+      'Rename…',
+      'Clear completed tasks…',
+      'Clear everything…',
+      'Delete queue…'
+    ]);
+    expect(items.at(-1)?.classList.contains('danger')).toBe(true);
+  });
+
+  it('opens Add task in a drawer beside the page, named for this queue', async () => {
+    const view = mount(buildSnapshot([task('a'), task('b')]));
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+
+    const drawer = view.getByTestId('queue-composer');
+    expect(drawer.tagName).toBe('ASIDE');
+    expect(drawer.parentElement).toBe(view.getByTestId('queue-detail-tier'));
+    expect(document.getElementById(drawer.getAttribute('aria-labelledby') ?? '')?.textContent).toBe(
+      'Add task to nightly'
+    );
+    expect(view.getByTestId('queue-composer-position').textContent).toBe('Runs after the 2 pending tasks.');
+
+    await view.rerender({ snapshot: buildSnapshot([task('a')]) });
+    expect(view.getByTestId('queue-composer-position').textContent).toBe('Runs after the 1 pending task.');
+  });
+
+  it('says so when nothing is pending ahead of the new task', async () => {
+    const view = mount(buildSnapshot([]));
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+
+    expect(view.getByTestId('queue-composer-position').textContent).toBe('No pending tasks ahead of it.');
+  });
+
+  it('moves focus into the drawer it opens', async () => {
+    const view = mount(buildSnapshot([]));
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+
+    await vi.waitFor(() =>
+      expect(view.getByTestId('queue-composer').contains(document.activeElement)).toBe(true)
+    );
+  });
+
+  it('closes the drawer from its Close button and on Escape', async () => {
+    const view = mount(buildSnapshot([]));
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    await fireEvent.click(view.getByTestId('queue-composer-close'));
+    expect(view.queryByTestId('queue-composer')).toBeNull();
+
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    await fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(view.queryByTestId('queue-composer')).toBeNull();
+  });
+
+  it('lets Escape close an open menu before it closes the drawer', async () => {
+    const view = mount(buildSnapshot([]));
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    await fireEvent.click(view.getByRole('button', { name: 'More queue actions' }));
+    const rename = view.getByTestId('queue-config-open');
+    await fireEvent.keyDown(rename, { key: 'Escape' });
+
+    expect(rename.closest('[role="menu"]')?.hasAttribute('hidden')).toBe(true);
+    expect(view.getByTestId('queue-composer')).toBeTruthy();
+
+    await fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(view.queryByTestId('queue-composer')).toBeNull();
+  });
+
+  it('hands focus back to Add work when the drawer closes with focus inside it', async () => {
+    const view = mount(buildSnapshot([]));
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    const cancel = view.getByTestId('queue-composer-cancel');
+    cancel.focus();
+    await fireEvent.click(cancel);
+
+    await vi.waitFor(() => expect(document.activeElement).toBe(view.getByTestId('queue-composer-open')));
+  });
+
+  it('puts the cursor in the name field when Rename… is chosen', async () => {
+    const view = mount(buildSnapshot([]));
+    await fireEvent.click(view.getByTestId('queue-config-open'));
+
+    await vi.waitFor(() => expect(document.activeElement).toBe(view.getByTestId('queue-rename-name')));
   });
 });

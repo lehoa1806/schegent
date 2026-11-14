@@ -20,7 +20,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { queueLifecycleLabel, queueRuntimeLabel } from '../queue-lifecycle-label';
+import { queueLifecycleLabel, queueRuntimeLabel, queueRuntimeTone } from '../queue-lifecycle-label';
 import type { QueueLifecycle } from '../snapshot-types';
 import { buildInFlightRun, buildQueueRuntime } from './queue-runtime-fixture';
 
@@ -112,6 +112,36 @@ describe('queueRuntimeLabel — what the queue is actually doing', () => {
       });
       expect(queueRuntimeLabel(idle)).toBe(queueLifecycleLabel(lifecycle));
       expect(queueRuntimeLabel(busy)).toBe(queueLifecycleLabel(lifecycle));
+    }
+  });
+});
+
+describe('queueRuntimeTone — the colour of the badge', () => {
+  // The Queues list and the queue's own page badge the same queue, so they share
+  // one answer to "working, held or neither".
+  it('marks a queue working only while a Run executes on it', () => {
+    const working = buildQueueRuntime({
+      lifecycle: 'running',
+      inFlightRun: buildInFlightRun({ status: 'running' })
+    });
+    const wedged = buildQueueRuntime({ lifecycle: 'running', inFlightRun: null, pendingCount: 21 });
+
+    expect(queueRuntimeTone(working)).toBe('s-run');
+    expect(queueRuntimeTone(wedged)).toBe('s-idle');
+  });
+
+  it('marks a paused queue held even while its current Run finishes', () => {
+    const pausedMidRun = buildQueueRuntime({
+      lifecycle: 'operator-paused',
+      inFlightRun: buildInFlightRun({ status: 'running' })
+    });
+
+    expect(queueRuntimeTone(pausedMidRun)).toBe('s-warn');
+  });
+
+  it('marks every other idle queue as neither', () => {
+    for (const lifecycle of ['idle-pending', 'active-empty'] as const) {
+      expect(queueRuntimeTone(buildQueueRuntime({ lifecycle }))).toBe('s-idle');
     }
   });
 });

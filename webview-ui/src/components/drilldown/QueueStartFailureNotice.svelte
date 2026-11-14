@@ -49,44 +49,52 @@
   const age = $derived(startFailure === null ? '' : formatRelativeTime(startFailure.at, nowMs));
 </script>
 
+<!-- Each report is drawn as the redesign's attention banner (`.attn` in `sg-core.css`): the
+     warning icon, what happened in bold with how long ago, then what happens next. -->
 {#if startFailure !== null && startFailure.kind === 'admission'}
-  <div class="start-failure" role="status" data-testid="queue-start-failure-{queueId}">
-    <div class="headline">
-      <span class="attempt">{attempt} failed</span>
-      <span class="age" data-testid="queue-start-failure-age-{queueId}">{age}</span>
+  <div class="attn" role="status" data-testid="queue-start-failure-{queueId}">
+    <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+    <div class="body">
+      <div class="headline">
+        <b>{attempt} failed.</b>
+        <span class="small muted" data-testid="queue-start-failure-age-{queueId}">{age}</span>
+      </div>
+      <span class="summary" data-testid="queue-start-failure-summary-{queueId}">
+        {#if startFailure.summary !== null}
+          {startFailure.summary}
+        {:else}
+          The error carried no message.
+        {/if}
+      </span>
+      <span class="small muted">Schegent will offer this queue again when a run ends.</span>
     </div>
-    <span class="summary" data-testid="queue-start-failure-summary-{queueId}">
-      {#if startFailure.summary !== null}
-        {startFailure.summary}
-      {:else}
-        The error carried no message.
-      {/if}
-    </span>
-    <span class="retry-note">Schegent will offer this queue again when a run ends.</span>
   </div>
 {:else if startFailure !== null && startFailure.kind === 'halted'}
   <!-- Feature 195 (T029, FR-007, FR-009) — the halt-on-failure report. Named
        here, in the component that already owns "why this queue did not
        start", rather than a second notice: the operator reads one place for
        either reason a start did not happen. -->
-  <div class="start-failure halted" role="status" data-testid="queue-halted-{queueId}">
-    <div class="headline">
-      <span class="attempt">Halted</span>
-      <span class="age" data-testid="queue-halted-age-{queueId}">{age}</span>
+  <div class="attn" role="status" data-testid="queue-halted-{queueId}">
+    <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+    <div class="body">
+      <div class="headline">
+        <b>Halted.</b>
+        <span class="small muted" data-testid="queue-halted-age-{queueId}">{age}</span>
+      </div>
+      <span class="summary" data-testid="queue-halted-task-{queueId}">
+        Stopped because <strong>{startFailure.taskName}</strong> failed.
+      </span>
+      <!-- Feature 195 (T064, FR-025) — was "Retry or remove that task". FR-009
+           named two exits and was explicit that it is not a closed enumeration;
+           FR-025 adds the third, for the task whose work already happened outside
+           the tool. Prose only, no button: this component is read-only by intent
+           (see its header), and the control itself is on `QueueItemActions`,
+           which the queue header renders for this same row. -->
+      <span class="small muted">
+        Retry or remove that task to let this queue continue — or, if its work was
+        already completed elsewhere, mark it completed from the queue.
+      </span>
     </div>
-    <span class="summary" data-testid="queue-halted-task-{queueId}">
-      Stopped because <strong>{startFailure.taskName}</strong> failed.
-    </span>
-    <!-- Feature 195 (T064, FR-025) — was "Retry or remove that task". FR-009
-         named two exits and was explicit that it is not a closed enumeration;
-         FR-025 adds the third, for the task whose work already happened outside
-         the tool. Prose only, no button: this component is read-only by intent
-         (see its header), and the control itself is on `QueueItemActions`,
-         which the queue header renders for this same row. -->
-    <span class="retry-note">
-      Retry or remove that task to let this queue continue — or, if its work was
-      already completed elsewhere, mark it completed from the queue.
-    </span>
   </div>
 {:else if startFailure !== null && startFailure.kind === 'stranded-run'}
   <!-- BUG-004 — the run with no task row. Here rather than in a notice of its
@@ -95,52 +103,35 @@
        be retried, this one describes a queue that will not try again. The note
        names a reload because no control can reach the run — every cancel,
        resume and retry resolves the task row first, and there is none. -->
-  <div class="start-failure halted" role="status" data-testid="queue-stranded-run-{queueId}">
-    <div class="headline">
-      <span class="attempt">Blocked</span>
-      <span class="age" data-testid="queue-stranded-run-age-{queueId}">{age}</span>
+  <div class="attn" role="status" data-testid="queue-stranded-run-{queueId}">
+    <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+    <div class="body">
+      <div class="headline">
+        <b>Blocked.</b>
+        <span class="small muted" data-testid="queue-stranded-run-age-{queueId}">{age}</span>
+      </div>
+      <span class="summary" data-testid="queue-stranded-run-detail-{queueId}">
+        A run with no task is holding this queue, stopped in
+        <strong>{startFailure.phase}</strong>.
+      </span>
+      <span class="small muted">Reload the window to release it.</span>
     </div>
-    <span class="summary" data-testid="queue-stranded-run-detail-{queueId}">
-      A run with no task is holding this queue, stopped in
-      <strong>{startFailure.phase}</strong>.
-    </span>
-    <span class="retry-note">Reload the window to release it.</span>
   </div>
 {/if}
 
 <style>
-  .start-failure {
+  .body {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding: 8px 12px;
-    margin: 0 20px;
-    background: color-mix(
-      in srgb,
-      var(--vscode-notificationsErrorIcon-foreground, var(--vscode-charts-red)) 12%,
-      transparent
-    );
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
-    color: var(--schegent-fg);
-    font-size: 0.85em;
+    gap: var(--schegent-space-0-5);
+    min-width: 0;
   }
 
   .headline {
     display: flex;
+    flex-wrap: wrap;
     align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .attempt {
-    font-weight: 600;
-  }
-
-  .age,
-  .retry-note {
-    opacity: 0.75;
-    font-size: 0.9em;
+    gap: var(--schegent-space-2);
   }
 
   .summary {

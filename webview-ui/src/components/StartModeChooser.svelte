@@ -142,6 +142,8 @@
   }
 </script>
 
+<!-- Drawn with the redesign's controls: its buttons, fields and link buttons. The chooser has
+     no frame of its own; whichever surface opens it draws one around it. -->
 <div class="start-mode-chooser" data-testid="start-mode-chooser" role="group" aria-label="Start mode">
   <div class="chooser-header">
     <p class="chooser-title">Start the queue</p>
@@ -150,7 +152,7 @@
   <div class="primary-affordances">
     <button
       type="button"
-      class="affordance affordance-now"
+      class="btn btn-primary"
       data-testid="start-mode-chooser-now"
       onclick={onStartNowClick}
     >
@@ -159,7 +161,7 @@
 
     <button
       type="button"
-      class="affordance affordance-in"
+      class="btn btn-secondary affordance"
       class:active={activeAffordance === 'in-duration'}
       data-testid="start-mode-chooser-in-duration-toggle"
       aria-expanded={activeAffordance === 'in-duration' ? 'true' : 'false'}
@@ -173,7 +175,7 @@
 
     <button
       type="button"
-      class="affordance affordance-at"
+      class="btn btn-secondary affordance"
       class:active={activeAffordance === 'at-clock-time'}
       data-testid="start-mode-chooser-at-clock-time-toggle"
       aria-expanded={activeAffordance === 'at-clock-time' ? 'true' : 'false'}
@@ -188,9 +190,10 @@
 
   {#if activeAffordance === 'in-duration'}
     <div class="duration-panel" data-testid="start-mode-chooser-in-duration-panel">
-      <label class="duration-label">
+      <label class="field">
         <span>Hours</span>
         <input
+          class="input"
           type="number"
           min="0"
           max="168"
@@ -200,9 +203,10 @@
           aria-label="Hours from now"
         />
       </label>
-      <label class="duration-label">
+      <label class="field">
         <span>Minutes</span>
         <input
+          class="input"
           type="number"
           min="0"
           max="59"
@@ -214,7 +218,7 @@
       </label>
       <button
         type="button"
-        class="confirm-button"
+        class="btn btn-primary"
         data-testid="start-mode-chooser-in-duration-confirm"
         onclick={onConfirmInDuration}
       >
@@ -225,9 +229,10 @@
 
   {#if activeAffordance === 'at-clock-time'}
     <div class="clock-panel" data-testid="start-mode-chooser-at-clock-time-panel">
-      <label class="clock-label">
+      <label class="field">
         <span>Hour</span>
         <input
+          class="input"
           type="number"
           min="0"
           max="23"
@@ -237,9 +242,10 @@
           aria-label="Hour of day"
         />
       </label>
-      <label class="clock-label">
+      <label class="field">
         <span>Minute</span>
         <input
+          class="input"
           type="number"
           min="0"
           max="59"
@@ -251,7 +257,7 @@
       </label>
       <button
         type="button"
-        class="confirm-button"
+        class="btn btn-primary"
         data-testid="start-mode-chooser-at-clock-time-confirm"
         onclick={onConfirmAtClockTime}
       >
@@ -273,7 +279,7 @@
   <div class="secondary-affordances">
     <button
       type="button"
-      class="affordance-link"
+      class="linkbtn"
       data-testid="start-mode-chooser-cancel-schedule"
       onclick={onCancelScheduleClick}
     >
@@ -281,7 +287,7 @@
     </button>
     <button
       type="button"
-      class="affordance-link"
+      class="linkbtn"
       data-testid="start-mode-chooser-restart-dismiss"
       onclick={onCloseClick}
     >
@@ -294,88 +300,51 @@
   .start-mode-chooser {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 12px;
-    background: var(--vscode-list-hoverBackground);
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
+    gap: var(--schegent-space-3);
+    min-width: 0;
   }
-  .chooser-header { display: flex; flex-direction: column; gap: 4px; }
-  .chooser-title { margin: 0; font-weight: 600; color: var(--schegent-fg); }
-  .primary-affordances {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .affordance {
-    flex: 1 1 auto;
-    min-width: 100px;
-    padding: 8px 12px;
-    background: var(--vscode-button-secondaryBackground, transparent);
-    color: var(--schegent-fg);
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
-    cursor: pointer;
-    font-size: 0.9em;
-  }
-  .affordance:hover { background: var(--vscode-list-activeSelectionBackground); }
-  .affordance.active {
-    border-color: var(--schegent-focus-border);
-    box-shadow: var(--sch-glow-active);
-  }
-  .affordance-now {
-    background: var(--sch-accent-gradient);
-    color: var(--vscode-button-foreground);
-    border-color: transparent;
-  }
-  .duration-panel, .clock-panel {
-    display: flex;
-    align-items: flex-end;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .duration-label, .clock-label {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    font-size: 0.8em;
-    color: var(--schegent-fg);
-  }
-  .duration-label input, .clock-label input {
-    width: 80px;
-    padding: 4px 8px;
-    background: var(--vscode-input-background);
-    color: var(--vscode-input-foreground);
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
-    font: inherit;
-  }
-  .confirm-button {
-    padding: 6px 12px;
-    background: var(--sch-accent-gradient);
-    color: var(--vscode-button-foreground);
-    border: none;
-    border-radius: var(--schegent-radius);
-    cursor: pointer;
-  }
-  .chooser-error {
+
+  .chooser-title {
     margin: 0;
-    color: var(--schegent-error-text);
-    font-size: 0.85em;
+    font-weight: 600;
   }
+
+  .primary-affordances,
+  .duration-panel,
+  .clock-panel,
   .secondary-affordances {
     display: flex;
-    justify-content: space-between;
-    gap: 8px;
     flex-wrap: wrap;
+    gap: var(--schegent-space-2);
   }
-  .affordance-link {
-    background: transparent;
-    border: none;
-    color: var(--vscode-textLink-foreground);
-    cursor: pointer;
-    padding: 4px 8px;
-    font-size: 0.85em;
-    text-decoration: underline;
+
+  /* The open toggle is drawn as the redesign draws a chosen pick: the focus border and ring. */
+  .affordance.active {
+    border-color: var(--schegent-focus-border);
+    box-shadow: var(--schegent-ring-selected);
+  }
+
+  /* The fields stand in a row with their Schedule button, level with its foot. */
+  .duration-panel,
+  .clock-panel {
+    align-items: flex-end;
+  }
+
+  .field {
+    margin-bottom: 0;
+  }
+
+  .input {
+    width: 80px;
+  }
+
+  .chooser-error {
+    margin: 0;
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-error-text);
+  }
+
+  .secondary-affordances {
+    justify-content: space-between;
   }
 </style>

@@ -201,6 +201,7 @@
   {#if showInFlightCancel}
     <button
       type="button"
+      class="icon-btn"
       data-testid="queue-item-cancel-{item.id}"
       aria-label={`Cancel '${labelHint}'`}
       title={`Cancel '${labelHint}'`}
@@ -212,6 +213,7 @@
     {#if showPendingEdit}
       <button
         type="button"
+        class="icon-btn"
         data-testid="queue-item-edit-{item.id}"
         aria-label={`Edit '${labelHint}'`}
         title={`Edit '${labelHint}'`}
@@ -226,6 +228,7 @@
     {/if}
     <button
       type="button"
+      class="icon-btn"
       data-testid="queue-item-remove-{item.id}"
       aria-label={`Remove '${labelHint}' from queue`}
       title={`Remove '${labelHint}' from queue`}
@@ -243,6 +246,7 @@
   {#if showRetry}
     <button
       type="button"
+      class="icon-btn"
       data-testid="queue-item-retry-{item.id}"
       aria-label={`Retry feature '${labelHint}'`}
       title={`Retry feature '${labelHint}'`}
@@ -253,6 +257,7 @@
   {#if showAttestCompleted}
     <button
       type="button"
+      class="icon-btn"
       data-testid="queue-item-attest-{item.id}"
       aria-label={`Mark '${labelHint}' as completed`}
       title={`Mark '${labelHint}' as completed`}
@@ -266,6 +271,7 @@
   {#if showRestartCanceled}
     <button
       type="button"
+      class="icon-btn"
       data-testid="queue-item-restart-{item.id}"
       aria-label={`Restart canceled task '${labelHint}'`}
       title={`Restart canceled task '${labelHint}'`}
@@ -279,8 +285,8 @@
 
 {#if editOpen}
   <form class="inline-form" data-testid="queue-item-edit-form-{item.id}" onsubmit={(event) => { event.preventDefault(); void onSaveEdit(event); }}>
-    <input bind:value={editDraft} data-testid="queue-item-edit-input-{item.id}" aria-label="Edit task description for {labelHint}" title="Edit task description" />
-    <button type="submit" data-testid="queue-item-edit-save-{item.id}" aria-disabled={ariaDisabled} title="Save edits">Save</button>
+    <input class="input" bind:value={editDraft} data-testid="queue-item-edit-input-{item.id}" aria-label="Edit task description for {labelHint}" title="Edit task description" />
+    <button type="submit" class="btn btn-secondary btn-sm" data-testid="queue-item-edit-save-{item.id}" aria-disabled={ariaDisabled} title="Save edits">Save</button>
   </form>
 {/if}
 
@@ -291,56 +297,49 @@
 -->
 
 <style>
+  /* The redesign's icon buttons: borderless, square, muted until pointed at. */
   .actions {
     display: inline-flex;
     flex-direction: row;
-    gap: 4px;
+    gap: var(--schegent-space-0-5);
     align-items: center;
   }
-  button {
-    background: transparent;
+  .icon-btn {
     color: var(--schegent-muted-fg);
-    border: 1px solid var(--schegent-border);
-    min-width: 22px;
-    min-height: 22px;
-    border-radius: var(--schegent-radius-sm);
-    padding: 0 4px;
     font: inherit;
-    cursor: pointer;
     transition:
       background-color var(--schegent-duration-fast) var(--schegent-ease-out),
       color var(--schegent-duration-fast) var(--schegent-ease-out),
       opacity var(--schegent-duration-fast) var(--schegent-ease-out);
   }
-  button[aria-disabled='true'] {
-    opacity: 0.55;
+  /* Barred controls stay focusable (aria-disabled), so they are dimmed here rather than by
+     the shared `:disabled` rule, and they do not light up under the pointer. */
+  .icon-btn[aria-disabled='true'] {
+    opacity: 0.4;
     cursor: not-allowed;
   }
-  button:hover:not([aria-disabled='true']) {
-    color: var(--schegent-fg);
-    background: var(--schegent-surface-hover);
+  .icon-btn[aria-disabled='true']:hover {
+    background: transparent;
   }
-  button:active:not([aria-disabled='true']) {
+  .icon-btn:hover:not([aria-disabled='true']) {
+    color: var(--schegent-fg);
+  }
+  .icon-btn:active:not([aria-disabled='true']) {
     opacity: 0.8;
   }
   .inline-form {
     display: inline-flex;
-    gap: 4px;
-    margin-left: 4px;
+    gap: var(--schegent-space-1);
+    margin-left: var(--schegent-space-1);
     align-items: center;
   }
-  input {
+  .input {
+    width: auto;
     min-width: 120px;
-    background: var(--vscode-input-background);
-    color: var(--vscode-input-foreground);
-    border: 1px solid var(--vscode-input-border, var(--schegent-border));
-    border-radius: var(--schegent-radius);
-    padding: 0 6px;
-    font: inherit;
   }
   .remove-error {
     color: var(--schegent-error-text);
-    font-size: 0.85em;
-    margin-left: 4px;
+    font-size: var(--schegent-text-secondary);
+    margin-left: var(--schegent-space-1);
   }
 </style>
