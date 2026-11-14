@@ -21,6 +21,10 @@ list open, so the scan covers one interaction state, not only mounted routes.
 - Themes come from the visual suite's `ThemeName`: `light`, `dark`, `high-contrast`. Contrast
   findings are theme-specific and the product renders in the host's theme, so one theme is not a
   sample of three.
+- Each theme is drawn in the colours the visual suite photographs it in
+  (`tests/visual/theme-palette.ts`), not only given its body class. VS Code paints a theme through
+  its `--vscode-*` variables, and a page without them draws the same fallback colours in every
+  theme, which is all this scan measured until 2026-11-14.
 - The pages are served by `tests/visual/serve-built-webviews.mjs` — the harness the visual suite
   already uses. A second way to build and serve the app would be a second authority on how the app
   boots.

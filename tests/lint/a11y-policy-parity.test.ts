@@ -19,9 +19,10 @@
 //   3. both policy statements name that same level, so the restored statement
 //      cannot drift back into an unbacked claim;
 //   4. the a11y harness and the visual suite agree on the boot contract — the
-//      theme class names and the snapshot message shape — since the two suites
-//      set up the same app and a silent divergence would mean the scan measured
-//      a page the product never renders.
+//      theme class names, the palette each theme is painted in, and the
+//      snapshot message shape — since the two suites set up the same app and a
+//      silent divergence would mean the scan measured a page the product never
+//      renders.
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -122,6 +123,25 @@ describe('FR-R3-091 — the conformance target is one claim, not three', () => {
     // never sees.
     expect(harness).toContain('workflowSnapshot');
     expect(visual).toContain('workflowSnapshot');
+  });
+
+  it('the scan paints each theme in the colours the visual suite photographs', () => {
+    // Decision 13 of the webview redesign review. The harness set the body's theme class and no
+    // `--vscode-*` variable, so every theme drew theme.css's fallback colours and the scan checked
+    // one palette three times. VS Code paints a theme through those variables, and contrast is a
+    // property of the colours, so both suites now take the palette from one module.
+    expect(harness).toContain("from '../visual/theme-palette'");
+    expect(harness).toContain('themeCss(theme)');
+    expect(visual).toContain("from './theme-palette'");
+    // A spec that sets the theme class itself, rather than through the harness, paints it too.
+    const a11yDir = resolve(REPO_ROOT, 'tests/a11y');
+    for (const name of readdirSync(a11yDir).filter((entry) => entry.endsWith('.spec.ts'))) {
+      const source = read(resolve(a11yDir, name));
+      if (!source.includes('THEME_CLASS[')) continue;
+      expect(source, `${name} sets a theme class, so it must paint that theme too`).toContain(
+        'applyThemePalette(page, theme)'
+      );
+    }
   });
 
   it('one server, not two: the a11y config starts the visual suite\'s own script', () => {
