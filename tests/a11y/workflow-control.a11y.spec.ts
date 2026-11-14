@@ -11,7 +11,7 @@ import {
   POLICY_SMOKE_WORKFLOW_ID,
   policySmokeSnapshot
 } from '../visual/fixtures/policy-smoke-snapshot';
-import { THEME_CLASS, THEMES, type ThemeName } from './a11y-harness';
+import { applyThemePalette, THEME_CLASS, THEMES, type ThemeName } from './a11y-harness';
 
 const require = createRequire(__filename);
 const AXE_PATH = require.resolve('axe-core/axe.min.js');
@@ -137,6 +137,7 @@ async function mountControlDashboard(page: Page, theme: ThemeName): Promise<void
     );
     doc.body.classList.add(cls);
   }, themeClass);
+  await applyThemePalette(page, theme);
   const snapshot = buildA11yControlSnapshot();
   await page.evaluate((payload) => {
     const host = globalThis as unknown as { dispatchEvent(event: unknown): boolean };

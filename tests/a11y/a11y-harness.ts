@@ -11,18 +11,26 @@
 // clean accessibility tree for surfaces that render almost nothing, which is a
 // false assurance of exactly the kind this item exists to prevent.
 //
+// The COLOURS are shared as well — `tests/visual/theme-palette.ts`, the sheet of
+// `--vscode-*` variables the visual suite photographs each theme in. VS Code
+// paints a theme through those variables, and a page given only the body class
+// draws `theme.css`'s fallbacks in every theme: until decision 13 of the webview
+// redesign review, this scan checked that one palette three times. The sheet
+// also stops animation and transitions, so no colour is measured mid-change.
+//
 // WHAT IS NOT SHARED, stated rather than left to be discovered: the visual
-// suite's `installDeterministicHost` also pins fonts, animation, chunk counting
-// and error capture — machinery a screenshot needs and a rule engine does not.
+// suite's `installDeterministicHost` also pins fonts, chunk counting and error
+// capture — machinery a screenshot needs and a rule engine does not.
 // Rather than extract 800 lines of carefully-reasoned spec mid-change, the boot
-// CONTRACT the two must agree on — the theme class names and the message shape
-// that publishes a snapshot — is asserted by
+// CONTRACT the two must agree on — the theme class names, the palette and the
+// message shape that publishes a snapshot — is asserted by
 // `tests/lint/a11y-policy-parity.test.ts`, so the two cannot drift apart
 // silently.
 import type { Page } from '@playwright/test';
 import { workflowSnapshot } from '../visual/fixtures/workflow-snapshot';
+import { themeCss, type ThemeName } from '../visual/theme-palette';
 
-export type ThemeName = 'light' | 'dark' | 'high-contrast';
+export type { ThemeName };
 
 /** The body class VS Code sets for each theme. Pinned against the visual suite. */
 export const THEME_CLASS: Readonly<Record<ThemeName, string>> = {
@@ -32,6 +40,16 @@ export const THEME_CLASS: Readonly<Record<ThemeName, string>> = {
 };
 
 export const THEMES: readonly ThemeName[] = ['light', 'dark', 'high-contrast'];
+
+/**
+ * Paint `theme`'s colours the way VS Code does, through its `--vscode-*` variables. Call it once
+ * the body carries the theme's class and before the snapshot is published. A spec that sets the
+ * class itself, rather than opening its page through this harness, calls it too; the parity gate
+ * holds it to that.
+ */
+export async function applyThemePalette(page: Page, theme: ThemeName): Promise<void> {
+  await page.addStyleTag({ content: themeCss(theme) });
+}
 
 function inlineJson(value: unknown): string {
   // Annotated `string | undefined` because that is what it is: `JSON.stringify`
@@ -107,6 +125,7 @@ async function openWebview(page: Page, theme: ThemeName, webview: WebviewName): 
     );
     document.body.classList.add(${JSON.stringify(THEME_CLASS[theme])});
   `);
+  await applyThemePalette(page, theme);
   await page.evaluate(
     `window.dispatchEvent(new MessageEvent('message', { data: { type: 'STATE_SNAPSHOT', payload: ${inlineJson(
       workflowSnapshot
