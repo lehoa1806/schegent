@@ -1,0 +1,20 @@
+/* The System logs as the `.sg` table. Their tests pin each log as an `ol` of `li` rows, so the
+   rows are a list drawn as a table rather than a `table.t`: the list and each row are subgrids
+   of `.ltable`, which keeps the columns aligned the way table cells are, and the header row is
+   hidden from assistive technology because the list carries no table semantics. The header and
+   cells copy `.sg .t th` and `.sg .t td`; `.fit` drops the table's narrow-window width the way
+   `table.t.fit` does, for a log with no rows. */
+.system .ltable { display: grid; min-width: 640px; }
+.system .ltable.fit { min-width: 0; }
+.system .ltable > .lhead,
+.system .ltable > ol,
+.system .ltable > ol > li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; }
+.system .ltable > ol { margin: 0; padding: 0; list-style: none; }
+.system .ltable > .lhead { border-bottom: 1px solid var(--schegent-border); background: var(--schegent-shell-bg); }
+.system .lhead > span { padding: 7px var(--schegent-space-3); color: var(--schegent-muted-fg); font-size: var(--schegent-text-secondary); font-weight: 600; white-space: nowrap; }
+.system .ltable > ol > li { border-bottom: 1px solid var(--schegent-border); }
+.system .ltable > ol > li:last-child { border-bottom: 0; }
+.system .ltable > ol > li:hover { background: var(--schegent-list-hover); }
+.system .ltable .cell { min-width: 0; padding: var(--schegent-space-2) var(--schegent-space-3); }
+.system .ltable .time { white-space: nowrap; }
+.system .ltable > .empty { grid-column: 1 / -1; margin: 0; }
