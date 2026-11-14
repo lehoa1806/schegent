@@ -27,6 +27,7 @@
   // Operator-authored strings — the description, Pipeline and queue names — are
   // interpolated with `{}`, which escapes. Nothing here uses `{@html}`.
 
+  import { untrack } from 'svelte';
   import RunLauncher from './RunLauncher/RunLauncher.svelte';
   import { resolveHistoryDescription } from '../lib/history-description-ipc';
   import { rerunUnavailableMessage, type RerunTarget } from '../lib/history-rerun';
@@ -120,7 +121,11 @@
     const runId = wantedRunId;
     descriptionAnswer = null;
     let current = true;
-    void resolveHistoryDescription(runId).then((result) => {
+    // Asked untracked. The helper marks the request pending in the snapshot
+    // store, which reads the store's pending set and replaces it; read tracked,
+    // that set makes this effect depend on its own write, and it asks again
+    // until Svelte stops it with `effect_update_depth_exceeded`.
+    void untrack(() => resolveHistoryDescription(runId)).then((result) => {
       if (!current) return;
       descriptionAnswer =
         result.outcome === 'resolved' || result.outcome === 'legacy'

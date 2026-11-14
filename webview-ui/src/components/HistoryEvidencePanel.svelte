@@ -18,6 +18,7 @@
   // The read is per-open and unconditional: the panel is only ever mounted for
   // a run the operator drilled into (FR-023), so there is nothing to throttle.
 
+  import { untrack } from 'svelte';
   import { resolveAuditPointer, type ResolveAuditPointerResult } from '../lib/history-evidence-ipc';
   import { formatAbsoluteTime } from '../lib/format';
 
@@ -77,7 +78,11 @@
     const wanted = wantedRunId;
     let live = true;
     result = null;
-    void resolveAuditPointer(wanted).then((answer) => {
+    // Asked untracked. The helper marks the request pending in the snapshot
+    // store, which reads the store's pending set and replaces it; read tracked,
+    // that set makes this effect depend on its own write, and it asks again
+    // until Svelte stops it with `effect_update_depth_exceeded`.
+    void untrack(() => resolveAuditPointer(wanted)).then((answer) => {
       // A late answer for a run the panel has moved off would otherwise
       // overwrite the current one with evidence about a different run.
       if (live) result = answer;
