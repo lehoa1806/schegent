@@ -143,21 +143,39 @@
   }
 </script>
 
+<!--
+  The redesign's setting row (`.srow`): the label and its notes on the left; on the right the
+  control, then the scope beside this row's own Save and Reset. A changed row carries the mockup's
+  dot beside its label.
+-->
 <div
-  class="field-row"
+  class="srow field-row"
   data-testid="general-settings-field-{spec.key}"
   data-changed={changed}
   data-status={status?.status ?? 'idle'}
 >
   <div class="field-label">
-    <span class="field-name" id={fieldLabelId(spec.key)}>{spec.label}</span>
-    <span class="field-scope" data-testid="general-settings-scope-{spec.key}">
-      Scope: {scopeLabel}
-    </span>
+    <div class="lab">
+      <span class="field-name" id={fieldLabelId(spec.key)}>{spec.label}</span>
+      {#if changed}
+        <span class="mod" role="img" aria-label="Changed, not saved"></span>
+      {/if}
+    </div>
+    {#if spec.note}
+      <!-- FR-R3-143 (T031, T032) — static text, deliberately not a hover-text:
+           a disclosure the operator has to hover to find is one they change the
+           setting without. No `controlId`, so it creates no dangling surface. -->
+      <p class="desc field-note" data-testid="general-settings-note-{spec.key}">{spec.note}</p>
+    {/if}
+    {#if spec.key === 'transportCaptureMode' && transportUsage !== undefined && isTransportUsage(transportUsage)}
+      <!-- FR-R4-F04 (FR-003, O4) — what is kept and when it ages out, from the host's cached measure. Static
+           text for the reason the note above is; nothing is shown until the host has measured. -->
+      <p class="desc field-note" data-testid="general-settings-transport-usage">{transportUsageLine(transportUsage)}</p>
+    {/if}
   </div>
-  <div class="field-input">
+  <div class="ctl">
     {#if spec.kind === 'boolean'}
-      <label class="checkbox-label">
+      <label class="toggle">
         <input
           type="checkbox"
           aria-labelledby={fieldLabelId(spec.key)}
@@ -174,7 +192,7 @@
       <input
         type="number"
         aria-labelledby={fieldLabelId(spec.key)}
-        class="text-input"
+        class="input num"
         min={spec.min}
         max={spec.max}
         data-testid="general-settings-input-{spec.key}"
@@ -186,7 +204,7 @@
       />
     {:else if spec.kind === 'workflow-select'}
       <select
-        class="select-input"
+        class="input"
         aria-labelledby={fieldLabelId(spec.key)}
         data-testid="general-settings-input-{spec.key}"
         bind:value={draft.defaultWorkflowId}
@@ -210,10 +228,12 @@
         {/each}
       </select>
     {:else if spec.kind === 'number-optional'}
+      <!-- No `num`: this field's unset state is its placeholder, a sentence ("Unset — no
+           bound") that the narrow number field would cut off, so it keeps the full width. -->
       <input
         type="number"
         aria-labelledby={fieldLabelId(spec.key)}
-        class="text-input"
+        class="input"
         min={spec.min}
         max={spec.max}
         step={numberStep}
@@ -228,7 +248,7 @@
       />
     {:else if spec.kind === 'level-select'}
       <select
-        class="select-input"
+        class="input"
         aria-labelledby={fieldLabelId(spec.key)}
         data-testid="general-settings-input-{spec.key}"
         bind:value={draft.runtimeLogLevel}
@@ -244,7 +264,7 @@
       </select>
     {:else if spec.kind === 'raw-transcript-select'}
       <select
-        class="select-input"
+        class="input"
         aria-labelledby={fieldLabelId(spec.key)}
         data-testid="general-settings-input-{spec.key}"
         bind:value={draft.rawTranscriptMode}
@@ -262,7 +282,7 @@
            labels, which is what makes it generic; a kind whose labels differ
            from its values stays bespoke (see `FieldKind` in field-types.ts). -->
       <select
-        class="select-input"
+        class="input"
         aria-labelledby={fieldLabelId(spec.key)}
         data-testid="general-settings-input-{spec.key}"
         value={draft[spec.key as EnumKey]}
@@ -291,7 +311,7 @@
       <input
         type="text"
         aria-labelledby={fieldLabelId(spec.key)}
-        class="text-input"
+        class="input"
         placeholder={spec.placeholder ?? ''}
         data-testid="general-settings-input-{spec.key}"
         value={draft[spec.key as StringKey]}
@@ -302,153 +322,96 @@
         }}
       />
     {/if}
-    {#if spec.note}
-      <!-- FR-R3-143 (T031, T032) — static text, deliberately not a hover-text:
-           a disclosure the operator has to hover to find is one they change the
-           setting without. No `controlId`, so it creates no dangling surface. -->
-      <p class="field-note" data-testid="general-settings-note-{spec.key}">{spec.note}</p>
-    {/if}
-    {#if spec.key === 'transportCaptureMode' && transportUsage !== undefined && isTransportUsage(transportUsage)}
-      <!-- FR-R4-F04 (FR-003, O4) — what is kept and when it ages out, from the host's cached measure. Static
-           text for the reason the note above is; nothing is shown until the host has measured. -->
-      <p class="field-note" data-testid="general-settings-transport-usage">{transportUsageLine(transportUsage)}</p>
-    {/if}
-  </div>
-  <div class="field-actions">
-    <button
-      type="button"
-      class="btn btn-primary"
-      data-testid="general-settings-save-{spec.key}"
-      disabled={!changed || status?.status === 'pending'}
-      onclick={onSave}
-      use:hoverTextAnchor={{
-        controlId: saveId(spec.key),
-        description: GENERAL_SETTINGS_DESCRIPTIONS[saveId(spec.key)]
-      }}
-    >Save</button>
-    <button
-      type="button"
-      class="btn btn-ghost"
-      data-testid="general-settings-reset-{spec.key}"
-      disabled={!changed}
-      onclick={onReset}
-      use:hoverTextAnchor={{
-        controlId: resetId(spec.key),
-        description: GENERAL_SETTINGS_DESCRIPTIONS[resetId(spec.key)]
-      }}
-    >Reset</button>
-    {@render actionsAppend?.()}
-  </div>
-  {#if status}
-    <div
-      class="field-status status-{status.status}"
-      data-testid="general-settings-status-{spec.key}"
-      role={status.status === 'rejected' ? 'alert' : 'status'}
-    >
-      {#if status.status === 'pending'}
-        <span class="status-text">Saving…</span>
-      {:else if status.status === 'accepted'}
-        <span class="status-text">Saved</span>
-      {:else if status.status === 'unknown'}
-        <span class="status-text">{OUTCOME_NOT_YET_KNOWN_TEXT}</span>
-      {:else}
-        <span class="status-text">Rejected{status.reason ? `: ${status.reason}` : ''}</span>
-      {/if}
+    <div class="field-meta">
+      <span class="hint" data-testid="general-settings-scope-{spec.key}">Scope: {scopeLabel}</span>
+      <span class="field-actions">
+        <button
+          type="button"
+          class="btn btn-primary btn-sm"
+          data-testid="general-settings-save-{spec.key}"
+          disabled={!changed || status?.status === 'pending'}
+          onclick={onSave}
+          use:hoverTextAnchor={{
+            controlId: saveId(spec.key),
+            description: GENERAL_SETTINGS_DESCRIPTIONS[saveId(spec.key)]
+          }}
+        >Save</button>
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          data-testid="general-settings-reset-{spec.key}"
+          disabled={!changed}
+          onclick={onReset}
+          use:hoverTextAnchor={{
+            controlId: resetId(spec.key),
+            description: GENERAL_SETTINGS_DESCRIPTIONS[resetId(spec.key)]
+          }}
+        >Reset</button>
+        {@render actionsAppend?.()}
+      </span>
     </div>
-  {/if}
+    {#if status}
+      <div
+        class="field-status status-{status.status}"
+        data-testid="general-settings-status-{spec.key}"
+        role={status.status === 'rejected' ? 'alert' : 'status'}
+      >
+        {#if status.status === 'pending'}
+          <span class="status-text">Saving…</span>
+        {:else if status.status === 'accepted'}
+          <span class="status-text">Saved</span>
+        {:else if status.status === 'unknown'}
+          <span class="status-text">{OUTCOME_NOT_YET_KNOWN_TEXT}</span>
+        {:else}
+          <span class="status-text">Rejected{status.reason ? `: ${status.reason}` : ''}</span>
+        {/if}
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style>
-  .field-row {
-    display: grid;
-    grid-template-columns: minmax(180px, 0.8fr) minmax(260px, 1.2fr) auto;
-    grid-template-rows: auto auto;
-    grid-template-areas:
-      "label input actions"
-      "status status status";
-    gap: 4px 12px;
-    padding: 12px;
-    border: 0;
-    border-bottom: 1px solid var(--schegent-divider);
-    background: transparent;
-    align-items: center;
-  }
-  .field-row[data-changed="true"] {
-    background: var(--schegent-surface-selected);
-    box-shadow: inset 0 0 0 1px var(--schegent-focus-border);
-  }
-  .field-label {
-    grid-area: label;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .field-name { font-weight: 600; }
-  .field-scope {
-    font-size: 0.75em;
-    color: var(--schegent-muted-fg);
-    letter-spacing: 0.02em;
-  }
-  .field-input { grid-area: input; }
-  .field-note {
-    margin: 4px 0 0;
-    font-size: 0.8em;
+  /* The `.sg .srow` rules draw the row. These place what the mockup's row has no slot for: the
+     notes under the label, a required number's narrow input (the mockup's width for a value),
+     and the per-row Save, Reset and status. */
+  .field-label .desc {
+    margin: var(--schegent-space-1) 0 0;
     line-height: 1.4;
-    color: var(--schegent-muted-fg);
   }
-  .field-actions {
-    grid-area: actions;
+
+  .ctl .num {
+    width: 110px;
+  }
+
+  .ctl .toggle {
+    align-self: flex-start;
+    cursor: pointer;
+  }
+
+  /* The scope line: the hint, then Save and Reset at its end. The actions box lays its buttons
+     straight into this row, so the help line the hover-text action writes after a button with a
+     short description (`.hover-text-inline-help`, a full-width flex item) drops under the whole
+     row instead of taking the buttons off the scope line with it. */
+  .ctl .field-meta {
     display: flex;
-    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--schegent-space-1) var(--schegent-space-2);
   }
-  .field-status {
-    grid-area: status;
-    font-size: 0.85em;
+
+  .field-meta .hint {
+    margin-right: auto;
+  }
+
+  .field-meta .field-actions {
+    display: contents;
+  }
+
+  .ctl .field-status {
+    font-size: var(--schegent-text-secondary);
   }
   .field-status.status-pending,
   .field-status.status-unknown { color: var(--schegent-muted-fg); }
   .field-status.status-accepted { color: var(--vscode-charts-green); }
   .field-status.status-rejected { color: var(--schegent-error-text); }
-  .text-input, .select-input {
-    background: var(--vscode-input-background);
-    border: 1px solid var(--sch-glass-border);
-    color: var(--schegent-fg);
-    padding: 4px 8px;
-    border-radius: var(--schegent-radius-sm);
-    width: 100%;
-    box-sizing: border-box;
-  }
-  .text-input:focus, .select-input:focus {
-    outline: none;
-    border-color: var(--schegent-focus-border);
-  }
-  .checkbox-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-  }
-  .btn {
-    padding: 4px 12px;
-    border-radius: var(--schegent-radius);
-    font-size: 0.9em;
-    font-weight: 500;
-    cursor: pointer;
-    border: 1px solid transparent;
-  }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-primary { background: var(--schegent-button-bg); color: var(--schegent-button-fg); }
-  .btn-primary:hover:not(:disabled) { background: var(--schegent-button-hover); }
-  .btn-ghost { background: transparent; color: var(--schegent-muted-fg); }
-  .btn-ghost:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
-  @media (max-width: 720px) {
-    .field-row {
-      grid-template-columns: 1fr;
-      grid-template-areas:
-        "label"
-        "input"
-        "actions"
-        "status";
-    }
-  }
 </style>

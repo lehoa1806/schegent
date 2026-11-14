@@ -80,6 +80,7 @@
   }
 
   const DESCRIPTION_ID = 'privacy-profile-description';
+  const LABEL_ID = 'privacy-profile-label';
 
   async function apply(name: PrivacyProfileName): Promise<void> {
     const profile = PROFILES.find((entry) => entry.name === name);
@@ -104,99 +105,72 @@
   }
 </script>
 
-<div class="privacy-profiles" data-testid="privacy-profiles">
-  <strong>Evidence privacy profile:</strong>
-  <span data-testid="privacy-profile-detected">
-    {#if detected.kind === 'profile'}
-      {detected.name}
-    {:else}
-      custom &mdash; differs from {detected.nearest} in
-      {detected.differs.map((field) => FIELD_LABELS[field]).join(', ')}
-    {/if}
-  </span>
-  <span class="profile-actions">
-    {#each PROFILES as profile (profile.name)}
-      <button
-        type="button"
-        class="btn"
-        data-testid="privacy-profile-apply-{profile.name}"
-        aria-describedby={DESCRIPTION_ID}
-        title={profile.audience}
-        disabled={applying !== null}
-        onclick={() => void apply(profile.name)}
-      >Apply {profile.name}</button>
-    {/each}
-  </span>
-  {#if refusal !== null}
-    <p class="profile-refusal" role="alert" data-testid="privacy-profile-refusal">
-      {notYetKnown ? refusal : `The profile was not applied. ${refusal}`}
+<!--
+  The redesign's evidence profile row: the three profiles as one segmented control, the one the
+  current values match pressed. A press still applies that profile at once, as these buttons always
+  have; "custom" presses none, and the line under the control names the fields that differ.
+-->
+<div class="srow privacy-profiles" data-testid="privacy-profiles">
+  <div>
+    <div class="lab" id={LABEL_ID}>Evidence privacy profile</div>
+    <p class="desc" id={DESCRIPTION_ID}>
+      A profile sets five settings and states what it does not change &mdash; the checkpoint store's
+      fixed 14-day bound, the retained redacted audit log, backend CLI session stores under your home
+      directory (which Schegent's retention, export, and delete controls do not manage), and that
+      <code>.gitignore</code> does not stop backup or sync tooling. See the settings reference for
+      each profile's audience and residual.
     </p>
-  {/if}
-  <p class="hint" id={DESCRIPTION_ID}>
-    A profile sets five settings and states what it does not change &mdash; the checkpoint store's
-    fixed 14-day bound, the retained redacted audit log, backend CLI session stores under your home
-    directory (which Schegent's retention, export, and delete controls do not manage), and that
-    <code>.gitignore</code> does not stop backup or sync tooling. See the settings reference for
-    each profile's audience and residual.
-  </p>
+  </div>
+  <div class="ctl">
+    <div class="seg" role="group" aria-labelledby={LABEL_ID}>
+      {#each PROFILES as profile (profile.name)}
+        <button
+          type="button"
+          data-testid="privacy-profile-apply-{profile.name}"
+          aria-pressed={detected.kind === 'profile' && detected.name === profile.name}
+          aria-describedby={DESCRIPTION_ID}
+          title={profile.audience}
+          disabled={applying !== null}
+          onclick={() => void apply(profile.name)}
+        >{profile.name}</button>
+      {/each}
+    </div>
+    <span class="hint" data-testid="privacy-profile-detected">
+      {#if detected.kind === 'profile'}
+        Current profile: {detected.name}
+      {:else}
+        Current profile: custom &mdash; differs from {detected.nearest} in
+        {detected.differs.map((field) => FIELD_LABELS[field]).join(', ')}
+      {/if}
+    </span>
+    {#if refusal !== null}
+      <p class="profile-refusal" role="alert" data-testid="privacy-profile-refusal">
+        {notYetKnown ? refusal : `The profile was not applied. ${refusal}`}
+      </p>
+    {/if}
+  </div>
 </div>
 
 <style>
-  .privacy-profiles {
-    margin: 8px 0;
-    padding: 8px;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 4px;
-    font-size: 0.95em;
+  .desc {
+    margin: 0;
   }
 
-  .profile-actions {
-    display: inline-flex;
-    gap: 6px;
-    margin-left: 8px;
+  /* FR-R3-131 (T1498) — these buttons once carried a `.btn` class that no sheet reaching them
+   * styled, so they drew in the user-agent `ButtonFace`/`ButtonText` pair and failed contrast in
+   * all three themes. The `.sg .seg` rules style them now: a transparent ground, the inherited
+   * text colour, and the theme's selection pair on the pressed profile. */
+  .seg button {
+    text-transform: capitalize;
   }
 
-  /* FR-R3-131 (T1498) — `.btn` was a borrowed name, not a style.
-   *
-   * FR-R3-127 gave these buttons `class="btn"` on the assumption that a shared
-   * sheet styled it. The only `.btn` rules in the webview are scoped under `.pb`
-   * (pipeline-builder.css), which never reaches here, so all three buttons rendered
-   * with the user-agent default -- `ButtonFace`/`ButtonText` -- and failed contrast
-   * in all three themes. The a11y scan needs Playwright and runs in the deferred
-   * whole-suite tier, so the nine findings were not visible in FR-R3-127's own
-   * verification; this cycle is where they surfaced.
-   *
-   * Styled with the secondary button pair: these apply a profile, but the primary
-   * action of the settings surface is Save. */
-  .profile-actions .btn {
-    padding: 4px 10px;
-    border: 1px solid var(--vscode-button-border, transparent);
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: inherit;
-    background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
-    color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
-  }
-
-  .profile-actions .btn:hover:not(:disabled) {
-    background: var(
-      --vscode-button-secondaryHoverBackground,
-      var(--vscode-button-hoverBackground)
-    );
-  }
-
-  .profile-actions .btn:disabled {
-    opacity: 0.5;
+  .seg button:disabled {
+    opacity: 0.4;
     cursor: not-allowed;
   }
 
   .profile-refusal {
-    margin: 4px 0 0;
+    margin: 0;
     color: var(--vscode-errorForeground);
-  }
-
-  .hint {
-    margin: 6px 0 0;
-    color: var(--vscode-descriptionForeground);
   }
 </style>

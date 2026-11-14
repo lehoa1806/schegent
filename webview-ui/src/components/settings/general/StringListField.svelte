@@ -98,9 +98,15 @@
   }
 </script>
 
+<!--
+  The redesign’s list language, as on the signature table: a bordered box with a rule between
+  rows, each name in the code face and a remove icon at the row’s end; the entry field and its
+  Add button sit under it.
+-->
 <div class="string-list" data-testid="string-list-{controlIdPrefix}">
   {#if value.length === 0}
-    <p class="empty" data-testid="string-list-empty-{controlIdPrefix}">Empty — nothing extra is forwarded.</p>
+    <!-- Not `.empty`: the page sheet sets that class as the large centred empty state. -->
+    <p class="list-empty small muted" data-testid="string-list-empty-{controlIdPrefix}">Empty — nothing extra is forwarded.</p>
   {:else}
     <ul class="entries">
       <!--
@@ -120,7 +126,7 @@
           <code>{name}</code>
           <button
             type="button"
-            class="remove"
+            class="icon-btn remove"
             data-testid="general-settings-remove-{controlIdPrefix}-{i}"
             aria-label="Remove {name}"
             onclick={() => remove(i)}
@@ -128,7 +134,7 @@
               controlId: `${controlIdPrefix}-remove-${i}`,
               description: removeDescription
             }}
-          >Remove</button>
+          ><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button>
         </li>
       {/each}
     </ul>
@@ -136,7 +142,7 @@
   <div class="add-row">
     <input
       type="text"
-      class="text-input"
+      class="input mono"
       aria-labelledby={labelledBy}
       aria-invalid={error !== ''}
       data-testid="general-settings-input-{controlIdPrefix}"
@@ -149,17 +155,17 @@
     />
     <button
       type="button"
-      class="add"
+      class="btn btn-secondary add"
       data-testid="general-settings-add-{controlIdPrefix}"
       onclick={add}
       use:hoverTextAnchor={{
         controlId: `${controlIdPrefix}-add`,
         description: addDescription
       }}
-    >Add</button>
+    ><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>Add</button>
   </div>
   {#if error !== ''}
-    <p class="error" data-testid="string-list-error-{controlIdPrefix}" role="alert">{error}</p>
+    <p class="error small" data-testid="string-list-error-{controlIdPrefix}" role="alert">{error}</p>
   {/if}
 </div>
 
@@ -167,67 +173,51 @@
   .string-list {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--schegent-space-1-5);
   }
   .entries {
     list-style: none;
     margin: 0;
     padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius);
   }
   .entries li {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    padding: 2px 6px;
-    border: 1px solid var(--schegent-divider);
-    border-radius: var(--schegent-radius-sm);
+    gap: var(--schegent-space-2);
+    padding: var(--schegent-space-0-5) var(--schegent-space-0-5) var(--schegent-space-0-5)
+      var(--schegent-space-2-5);
+    border-bottom: 1px solid var(--schegent-border);
   }
-  .empty {
-    margin: 0;
-    font-size: 0.85em;
-    color: var(--schegent-muted-fg);
+  .entries li:last-child {
+    border-bottom: 0;
   }
-  .add-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+  .entries li:hover {
+    background: var(--schegent-list-hover);
   }
-  .text-input {
-    background: var(--vscode-input-background);
-    border: 1px solid var(--sch-glass-border);
-    color: var(--schegent-fg);
-    padding: 4px 8px;
-    border-radius: var(--schegent-radius-sm);
-    flex: 1 1 auto;
+  .entries code {
     min-width: 0;
-    box-sizing: border-box;
+    font-family: var(--schegent-mono-font);
+    font-size: var(--schegent-text-secondary);
+    overflow-wrap: anywhere;
   }
-  .text-input:focus {
-    outline: none;
-    border-color: var(--schegent-focus-border);
-  }
-  .add,
-  .remove {
-    min-height: var(--schegent-control-height-compact);
-    padding: 4px 12px;
-    border-radius: var(--schegent-radius);
-    font-size: 0.9em;
-    cursor: pointer;
-    border: 1px solid transparent;
-    background: transparent;
-    color: var(--schegent-muted-fg);
-  }
-  .add:hover,
-  .remove:hover {
-    background: var(--vscode-list-hoverBackground);
-  }
+  .list-empty,
   .error {
     margin: 0;
-    font-size: 0.85em;
+  }
+  .error {
     color: var(--schegent-error-text);
+  }
+  /* The entry field and its button share the control height, so they line up. */
+  .add-row {
+    display: flex;
+    gap: var(--schegent-space-1-5);
+  }
+  .add-row .input {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
   }
 </style>

@@ -94,112 +94,81 @@
   );
 </script>
 
+<!--
+  The redesign’s trust rows: each capability as a setting row, the deciding step as its
+  description and the resolved value as a status chip where a control would be. The setting key
+  and the way to the settings editor sit under the chip, as a row’s scope line does.
+-->
 <div class="trust-disclosure" data-testid="trust-disclosure">
-  <p class="preamble">
+  <p class="preamble small muted">
     These two are resolved against VS Code Workspace Trust, so Schegent shows what is in force
     rather than a switch it cannot honour.
   </p>
   {#each rows as row (row.key)}
-    <div class="trust-row" data-testid="trust-row-{row.capability}">
-      <div class="row-head">
-        <span class="label">{row.label}</span>
-        <span
-          class="effective"
-          class:denied={!row.allowed}
-          data-testid="trust-effective-{row.capability}"
-        >{row.allowed ? 'Allowed' : 'Denied'}</span>
+    <div class="srow trust-row" data-testid="trust-row-{row.capability}">
+      <div>
+        <div class="lab">{row.label}</div>
+        {#if row.decidedBy}
+          <p class="desc decided-by" data-testid="trust-decided-by-{row.capability}">{row.decidedBy}</p>
+        {:else}
+          <!--
+            The host did not project a deciding step. Saying "unknown" is the
+            honest reading and the only one that cannot mislead; the effective
+            value above is still correct.
+          -->
+          <p class="desc decided-by" data-testid="trust-decided-by-{row.capability}">
+            Deciding layer unknown — this host build does not report it.
+          </p>
+        {/if}
       </div>
-      <code class="setting-key">schegent.{row.key}</code>
-      {#if row.decidedBy}
-        <p class="decided-by" data-testid="trust-decided-by-{row.capability}">{row.decidedBy}</p>
-      {:else}
-        <!--
-          The host did not project a deciding step. Saying "unknown" is the
-          honest reading and the only one that cannot mislead; the effective
-          value above is still correct.
-        -->
-        <p class="decided-by" data-testid="trust-decided-by-{row.capability}">
-          Deciding layer unknown — this host build does not report it.
-        </p>
-      {/if}
-      <button
-        type="button"
-        class="change-in-settings"
-        data-testid="trust-open-settings-{row.capability}"
-        onclick={openTrustSettings}
-        use:hoverTextAnchor={{
-          controlId: `trust-${row.capability}-open-settings`,
-          description: GENERAL_SETTINGS_DESCRIPTIONS[`trust-${row.capability}-open-settings`]
-        }}
-      >Change in Settings</button>
+      <div class="ctl">
+        <span
+          class="chip effective"
+          class:s-ok={row.allowed}
+          class:s-err={!row.allowed}
+          data-testid="trust-effective-{row.capability}"
+        >{#if row.allowed}<svg class="i" aria-hidden="true"><use href="#i-check"></use></svg>{:else}<svg
+              class="i"
+              aria-hidden="true"><use href="#i-x"></use></svg>{/if}{row.allowed ? 'Allowed' : 'Denied'}</span>
+        <code class="setting-key">schegent.{row.key}</code>
+        <button
+          type="button"
+          class="btn btn-secondary btn-sm change-in-settings"
+          data-testid="trust-open-settings-{row.capability}"
+          onclick={openTrustSettings}
+          use:hoverTextAnchor={{
+            controlId: `trust-${row.capability}-open-settings`,
+            description: GENERAL_SETTINGS_DESCRIPTIONS[`trust-${row.capability}-open-settings`]
+          }}
+        >Change in Settings</button>
+      </div>
     </div>
   {/each}
 </div>
 
 <style>
+  /* The rows above end without a rule; this one opens the disclosure as a row’s bottom rule
+     would. */
   .trust-disclosure {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 10px;
-    border-top: 1px solid var(--schegent-divider);
+    border-top: 1px solid var(--schegent-border);
   }
   .preamble {
-    margin: 0;
-    font-size: 0.85em;
-    color: var(--schegent-muted-fg);
-    line-height: 1.5;
-  }
-  .trust-row {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
-    padding: 8px 10px;
-    border: 1px solid var(--schegent-divider);
-    border-radius: var(--schegent-radius-sm);
-  }
-  .row-head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 8px;
-  }
-  .label {
-    font-weight: 600;
-    font-size: 0.92em;
-  }
-  .effective {
-    font-size: 0.85em;
-    padding: 1px 6px;
-    border-radius: var(--schegent-radius-sm);
-    background: var(--vscode-textBlockQuote-background);
-    color: var(--vscode-foreground);
-  }
-  .effective.denied {
-    color: var(--schegent-error-text);
-  }
-  .setting-key {
-    font-size: 0.8em;
-    color: var(--schegent-muted-fg);
+    margin: var(--schegent-space-2) 0 0;
+    line-height: 1.45;
   }
   .decided-by {
-    margin: 0;
-    font-size: 0.85em;
-    line-height: 1.5;
-    color: var(--schegent-muted-fg);
+    margin: var(--schegent-space-1) 0 0;
+    line-height: 1.4;
   }
-  .change-in-settings {
-    min-height: var(--schegent-control-height-compact);
-    padding: 4px 12px;
-    border-radius: var(--schegent-radius);
-    font-size: 0.9em;
-    cursor: pointer;
-    border: 1px solid transparent;
-    background: transparent;
-    color: var(--schegent-muted-fg);
+  /* The control column is a flex column; the chip and the button keep their own width. */
+  .ctl .effective,
+  .ctl .change-in-settings {
+    align-self: flex-start;
   }
-  .change-in-settings:hover {
-    background: var(--vscode-list-hoverBackground);
+  .ctl .setting-key {
+    font-family: var(--schegent-mono-font);
+    font-size: var(--schegent-text-caption);
+    color: var(--schegent-muted-fg);
+    overflow-wrap: anywhere;
   }
 </style>

@@ -8,6 +8,12 @@
   let posture = $state<RuntimePostureVisibility | null>(null);
   let notice = $state('');
 
+  /** The `.sg` status tone of a delivery state other than healthy; any other state reads as active. */
+  const DELIVERY_TONES: Partial<Record<string, string>> = {
+    retrying: 's-warn',
+    degraded: 's-err'
+  };
+
   $effect(() => {
     untrack(() => {
       void refreshPosture();
@@ -33,117 +39,148 @@
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
     return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
   }
+
+  function deliveryTone(stateKind: string): string {
+    return DELIVERY_TONES[stateKind] ?? 's-run';
+  }
+
+  function stateWithReason(stateKind: string, reasonCode: string | null): string {
+    return reasonCode === null ? stateKind : `${stateKind} (${reasonCode})`;
+  }
 </script>
 
-<section class="runtime-health" aria-label="Telemetry and isolated lane health" data-testid="telemetry-runtime-health-panel">
-  <header class="rh-header">
-    <div>
-      <h2>OTLP telemetry &amp; execution lane posture</h2>
-      <p class="rh-sub">Metadata-only export health, spool bounds, cardinality guard, and isolated worktree lanes.</p>
+<section class="runtime" aria-label="Telemetry and isolated lane health" data-testid="telemetry-runtime-health-panel">
+  <div class="toolbar">
+    <p class="notice small muted" role="status" aria-live="polite" data-testid="runtime-health-notice">{notice}</p>
+    <div class="push">
+      <button
+        type="button"
+        class="icon-btn refresh"
+        aria-label="Refresh runtime posture"
+        title="Refresh"
+        disabled={loading}
+        data-testid="runtime-health-refresh"
+        onclick={() => void refreshPosture()}
+      ><svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg></button>
     </div>
-    <button
-      type="button"
-      class="btn"
-      disabled={loading}
-      data-testid="runtime-health-refresh"
-      onclick={() => void refreshPosture()}
-    >
-      {loading ? 'Refreshing…' : 'Refresh'}
-    </button>
-  </header>
-
-  <p class="rh-status" role="status" aria-live="polite" data-testid="runtime-health-notice">{notice}</p>
+  </div>
 
   {#if posture === null}
-    <p class="rh-sub">Reading runtime posture…</p>
+    <p class="empty">Reading runtime posture…</p>
   {:else if !posture.available}
-    <p class="rh-sub" data-testid="runtime-health-unavailable">
+    <p class="empty" data-testid="runtime-health-unavailable">
       SQLite runtime store: {availabilityPhrase('unavailable')}. OTLP export remains fail-closed ({posture.telemetry.stateKind}).
     </p>
   {:else}
-    <div class="rh-cards">
-      <section class="rh-card" aria-label="OpenTelemetry export health" data-testid="otlp-health-card">
-        <h3>OpenTelemetry export</h3>
-        <dl class="rh-dl">
-          <div>
-            <dt>Authorization</dt>
-            <dd><span class="badge">{posture.telemetry.enabled ? 'Authorized' : 'Disabled / Refused'}</span></dd>
-          </div>
-          <div>
-            <dt>Delivery health</dt>
-            <dd>
-              <span class="badge">{posture.telemetry.stateKind}</span>
-              {#if posture.telemetry.reasonCode !== null}
-                ({posture.telemetry.reasonCode})
-              {/if}
-            </dd>
-          </div>
-          <div>
-            <dt>Protocol &amp; policy</dt>
-            <dd>{posture.telemetry.protocol ?? 'inactive'} &middot; {posture.telemetry.contentPolicyMode}</dd>
-          </div>
-          <div>
-            <dt>Export ledger copies</dt>
-            <dd>
-              {posture.telemetry.exportedCopyCount} exported,
-              {posture.telemetry.pendingCopyCount} pending,
+    <div class="grid g2">
+      <section class="card" aria-label="OpenTelemetry export health" data-testid="otlp-health-card">
+        <div class="titlerow">
+          <h2>Telemetry export</h2>
+          {#if !posture.telemetry.enabled}
+            <span class="chip s-idle"><span class="dot"></span>Off</span>
+          {:else if posture.telemetry.stateKind === 'healthy'}
+            <span class="chip s-ok"><svg class="i" aria-hidden="true"><use href="#i-check"></use></svg>Healthy</span>
+          {:else}
+            <span class="chip {deliveryTone(posture.telemetry.stateKind)}"><span class="dot"></span><span class="word">{posture.telemetry.stateKind}</span></span>
+          {/if}
+        </div>
+        <p class="small muted" data-testid="otlp-preview-disclosure">{posture.telemetry.previewSummary}</p>
+        <dl class="kv">
+          <dt>Authorization</dt>
+          <dd>{posture.telemetry.enabled ? 'Authorized' : 'Disabled / Refused'}</dd>
+          <dt>Waiting to send</dt>
+          <dd>{posture.telemetry.pendingCopyCount}</dd>
+          <dt>Disk used</dt>
+          <dd>{fmtBytes(posture.telemetry.spooledBytes)} of {fmtBytes(posture.telemetry.spoolCeilingBytes)}</dd>
+        </dl>
+        <details class="diag">
+          <summary>Diagnostics</summary>
+          <dl class="kv">
+            <dt>State</dt>
+            <dd class="mono">{stateWithReason(posture.telemetry.stateKind, posture.telemetry.reasonCode)}</dd>
+            <dt>Protocol</dt>
+            <dd class="mono">{posture.telemetry.protocol ?? 'inactive'} &middot; {posture.telemetry.contentPolicyMode}</dd>
+            <dt>Ledger</dt>
+            <dd class="mono">
+              {posture.telemetry.exportedCopyCount} exported &middot; {posture.telemetry.pendingCopyCount} pending &middot;
               {posture.telemetry.droppedCopyCount} dropped
             </dd>
-          </div>
-          <div>
-            <dt>Durable disk spool</dt>
-            <dd>
-              {posture.telemetry.spooledBatchCount} batch(es) &middot;
-              {fmtBytes(posture.telemetry.spooledBytes)} / {fmtBytes(posture.telemetry.spoolCeilingBytes)}
-            </dd>
-          </div>
-          <div>
-            <dt>Metric series cardinality</dt>
-            <dd>
+            <dt>Spool</dt>
+            <dd class="mono">{posture.telemetry.spooledBatchCount} batch(es)</dd>
+            <dt>Series</dt>
+            <dd class="mono">
               {posture.telemetry.activeSeriesCount} / {posture.telemetry.seriesCap} active sets
               ({posture.telemetry.overflowCount} overflow folded)
             </dd>
-          </div>
-        </dl>
-        <p class="rh-preview" data-testid="otlp-preview-disclosure">{posture.telemetry.previewSummary}</p>
+          </dl>
+        </details>
       </section>
 
-      <section class="rh-card" aria-label="Isolated execution lanes" data-testid="lanes-health-card">
-        <h3>Isolated execution lanes</h3>
-        <dl class="rh-dl">
-          <div>
-            <dt>Feature posture</dt>
-            <dd><span class="badge">{posture.lanes.enabled ? 'Enabled' : 'Disabled (shared workspace)'}</span></dd>
-          </div>
-          <div>
-            <dt>Live worktree cap</dt>
-            <dd>{posture.lanes.activeLanes} / {posture.lanes.liveLaneCap} active lane(s)</dd>
-          </div>
-          <div>
-            <dt>Recorded lanes</dt>
-            <dd>{posture.lanes.totalLanes} total</dd>
-          </div>
-          <div>
-            <dt>Pending integrations</dt>
-            <dd>{posture.lanes.pendingIntegrations} awaiting verification, review, or landing</dd>
-          </div>
+      <section class="card" aria-label="Isolated execution lanes" data-testid="lanes-health-card">
+        <div class="titlerow">
+          <h2>Isolated workspaces</h2>
+          {#if posture.lanes.enabled}
+            <span class="chip s-ok"><svg class="i" aria-hidden="true"><use href="#i-check"></use></svg>On</span>
+          {:else}
+            <span class="chip s-idle"><span class="dot"></span>Off</span>
+          {/if}
+        </div>
+        <p class="small muted">
+          {posture.lanes.enabled
+            ? 'Each run works in its own copy of the repository and merges back when it finishes.'
+            : 'Runs work in the shared workspace.'}
+        </p>
+        <dl class="kv">
+          <dt>In use</dt>
+          <dd>{posture.lanes.activeLanes} / {posture.lanes.liveLaneCap} active lane(s)</dd>
+          <dt>Waiting to merge</dt>
+          <dd>{posture.lanes.pendingIntegrations} awaiting verification, review, or landing</dd>
+          <dt>Recorded</dt>
+          <dd>{posture.lanes.totalLanes} total</dd>
         </dl>
+        <details class="diag">
+          <summary>Diagnostics</summary>
+          <dl class="kv">
+            <dt>Store</dt>
+            <dd class="mono">SQLite runtime store: ok</dd>
+            <dt>Worktree cap</dt>
+            <dd class="mono">{posture.lanes.liveLaneCap}</dd>
+          </dl>
+        </details>
       </section>
     </div>
   {/if}
 </section>
 
 <style>
-  .runtime-health { display: flex; flex-direction: column; gap: 12px; padding: 14px; width: 100%; overflow-y: auto; box-sizing: border-box; }
-  .rh-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 10px; }
-  .rh-header h2, .rh-card h3 { margin: 0; font-size: 0.95rem; }
-  .rh-sub, .rh-status, .rh-preview { margin: 2px 0 0; font-size: 0.84em; color: var(--schegent-muted-fg); }
-  .rh-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
-  .rh-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); background: var(--schegent-surface); }
-  .rh-dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin: 0; font-size: 0.84em; }
-  .rh-dl dt { color: var(--schegent-muted-fg); }
-  .rh-dl dd { margin: 2px 0 0; }
-  .badge { display: inline-block; padding: 1px 6px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius-sm, 4px); }
-  .btn { padding: 4px 10px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); cursor: pointer; font: inherit; font-size: 0.85em; }
-  .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  .notice {
+    margin: 0;
+  }
+
+  .runtime .empty {
+    margin: 0;
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius);
+    line-height: 1.5;
+  }
+
+  .card > p {
+    margin: var(--schegent-space-3) 0;
+  }
+
+  .word {
+    text-transform: capitalize;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .refresh:disabled .i {
+      animation: runtime-turn 0.9s linear infinite;
+    }
+  }
+
+  @keyframes runtime-turn {
+    to {
+      transform: rotate(360deg);
+    }
+  }
 </style>
