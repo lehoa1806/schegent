@@ -3,14 +3,16 @@
   // Published Workflows use the same validated composition forms as before;
   // every submitted task explicitly targets this Queue.
 
+  import { tick, untrack, type Snippet } from 'svelte';
   import QueueDetailRows from './QueueDetailRows.svelte';
-  import QueueTaskComposer from '../QueueTaskComposer.svelte';
+  import QueueComposerDrawer from './QueueComposerDrawer.svelte';
   import QueueControls from '../QueueControls.svelte';
   import QueueIdlePendingPanel from './QueueIdlePendingPanel.svelte';
   import QueueStartFailureNotice from './QueueStartFailureNotice.svelte';
+  import SgMenu from '../sg/SgMenu.svelte';
   import { postCommand } from '../../lib/vscode-api';
   import { CMD_RENAME_QUEUE, CMD_PAUSE_QUEUE, CMD_RESUME_QUEUE } from '../../lib/messages';
-  import { queueRuntimeLabel } from '../../lib/queue-lifecycle-label';
+  import { queueRuntimeLabel, queueRuntimeTone } from '../../lib/queue-lifecycle-label';
   import {
     defaultQueueId, findQueueRuntime, haltedStartFailure,
     isWorkingARun, ownsRun
@@ -145,16 +147,40 @@
   });
   let minPendingCountSinceOpen = 0;
   let pendingRiseObserved = $state(false);
+  // The composer opens in a drawer beside the page (design rule 7). Focus moves
+  // into it and comes back to Add work when it closes (rule 10).
+  const drawerOpen = $derived(isPrimary && composerOpen);
+  let tierRoot = $state<HTMLElement | null>(null);
+  let drawer = $state<HTMLElement | null>(null);
+  let addTaskButton = $state<HTMLButtonElement | null>(null);
 
-  function openComposer(): void {
+  async function openComposer(): Promise<void> {
     minPendingCountSinceOpen = pendingCount;
     pendingRiseObserved = false;
     batchState = { inFlight: false, halted: false, accepted: 0, total: 0 };
     composerOpen = true;
+    await tick();
+    (drawer?.querySelector('textarea') ?? drawer?.querySelector('h2'))?.focus();
   }
 
+  // Focus comes back only when the drawer had it: one that closes on its own after a
+  // snapshot leaves alone focus the operator has since moved, or a window not in use.
   function closeComposer(): void {
+    const active = document.activeElement;
+    const focusLeftBehind =
+      document.hasFocus() && (active === document.body || drawer?.contains(active) === true);
     composerOpen = false;
+    if (focusLeftBehind) void tick().then(() => addTaskButton?.focus());
+  }
+
+  // Escape closes the drawer, unless something nearer already answered it — an open
+  // menu or a confirmation dialog — or it was pressed outside this page.
+  function closeComposerOnEscape(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || !composerOpen) return;
+    const target = event.target;
+    if (target === document.body || (target instanceof Node && tierRoot?.contains(target) === true)) {
+      closeComposer();
+    }
   }
 
   function onBatchStateChange(next: BatchSubmissionState): void {
@@ -175,20 +201,33 @@
       pendingRiseObserved = true;
     }
     if (pendingRiseObserved && !batchState.inFlight && !batchState.halted) {
-      composerOpen = false;
+      // Untracked: closing reads which element has focus, which is not this effect's input.
+      untrack(closeComposer);
     }
   });
 
-  function openConfig(): void {
+  // Rename… opens a field under the header and puts the cursor in it; closing the field
+  // returns focus to the menu it came from.
+  let renameRow = $state<HTMLElement | null>(null);
+  let renameInput = $state<HTMLInputElement | null>(null);
+  let actionBar = $state<HTMLElement | null>(null);
+
+  async function openConfig(): Promise<void> {
     configuring = true;
     draftName = queueName;
     refusal = null;
+    await tick();
+    renameInput?.focus();
   }
 
   function closeConfig(): void {
+    const focusLeftBehind = renameRow?.contains(document.activeElement) === true;
     configuring = false;
     draftName = '';
     refusal = null;
+    if (focusLeftBehind) {
+      void tick().then(() => actionBar?.querySelector<HTMLElement>('[aria-haspopup="menu"]')?.focus());
+    }
   }
 
   function submitRename(): void {
@@ -271,48 +310,80 @@
   }
 </script>
 
-<main class="queue-detail-tier" data-testid="queue-detail-tier" aria-label="Queue detail">
-  <header class="tier-header">
-    <button type="button" class="back" data-testid="queue-detail-back" onclick={onBack}>
-      &larr; Queues
-    </button>
-    <div class="identity">
-      <h1 data-testid="queue-detail-title">{queueName}</h1>
-      <p class="meta">
-        <span class="lifecycle" data-testid="queue-detail-lifecycle">
-          {runtime === null ? 'Unknown' : queueRuntimeLabel(runtime)}
-        </span>
-        <span class="throughput" data-testid="queue-detail-throughput">
-          <span class="count-completed">{completedCount} completed</span>
-          <span class="sep">&middot;</span>
-          <span class="count-failed">{failedCount} failed</span>
-          <span class="sep">&middot;</span>
-          <span class="count-pending">{pendingCount} pending</span>
-        </span>
-      </p>
-    </div>
-    {#if isPrimary}
-      <div class="actions">
-        <div class="action-group action-group--primary">
-          {#if !composerOpen}
-            <button
-              type="button"
-              class="primary"
-              data-testid="queue-composer-open"
-              aria-label="Add work"
-              onclick={openComposer}
-            >Add work</button>
+<svelte:document onkeydown={closeComposerOnEscape} />
+
+<!-- The header's actions after Start or Pause (design rules 4 and 5): Add work, the page's one
+     primary action, then every other queue action in one menu, the destructive ones last. The
+     mockup's label is "Add task"; "Add work" is the name the `schegent.schedule` message, the
+     default-Workflow setting and the docs send the operator to. -->
+{#snippet headerActions(clearItems: Snippet)}
+  {#if !composerOpen}
+    <button
+      type="button"
+      class="btn btn-primary"
+      data-testid="queue-composer-open"
+      bind:this={addTaskButton}
+      onclick={openComposer}
+    ><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>Add work</button>
+  {/if}
+  <SgMenu label="More queue actions">
+    {#if !configuring}
+      <button type="button" role="menuitem" data-testid="queue-config-open" onclick={openConfig}>Rename…</button>
+      <hr />
+    {/if}
+    {@render clearItems()}
+    <!--
+      FR-003 — the default queue is the one every unrouted Task lands on, so
+      deleting it has no coherent outcome. The item stays in the menu, disabled,
+      with its reason shown under the header, rather than disappearing: an absent
+      control is the shape this whole feature exists to fix. It is off through
+      `aria-disabled`, which keeps it in reach of the arrow keys, and the menu
+      refuses a click on it.
+    -->
+    <button
+      type="button"
+      role="menuitem"
+      class="danger"
+      data-testid="queue-delete"
+      aria-disabled={isDefaultQueue || busy}
+      aria-describedby={isDefaultQueue ? 'queue-delete-reason' : undefined}
+      onclick={deleteThisQueue}
+    >Delete queue…</button>
+  </SgMenu>
+{/snippet}
+
+<main
+  class="queue-detail-tier"
+  class:page-split={drawerOpen}
+  data-testid="queue-detail-tier"
+  aria-label="Queue detail"
+  bind:this={tierRoot}
+>
+  <div class="tier-page" class:page={drawerOpen}>
+    <!-- Design rule 4: where you are, what this queue is and its state, then what you can do.
+         A div, not a header: the dashboard counts the icons its headers draw. -->
+    <div class="phead">
+      <div>
+        <nav class="crumbs" aria-label="Breadcrumb">
+          <button type="button" class="linkbtn" data-testid="queue-detail-back" onclick={onBack}>Queues</button>
+          <span class="muted" aria-hidden="true">/</span>
+        </nav>
+        <div class="titlerow">
+          <h1 data-testid="queue-detail-title">{queueName}</h1>
+          <span class="chip {runtime === null ? 's-idle' : queueRuntimeTone(runtime)}" data-testid="queue-detail-lifecycle">
+            {#if paused}<svg class="i" aria-hidden="true"><use href="#i-pause"></use></svg>{:else}<span class="dot" aria-hidden="true"></span>{/if}{runtime === null ? 'Unknown' : queueRuntimeLabel(runtime)}
+          </span>
+          {#if haltedFailure !== null}
+            <span class="chip s-err" data-testid="queue-detail-halted"><svg class="i" aria-hidden="true"><use href="#i-warn"></use></svg>Halted</span>
           {/if}
-          {#if !configuring}
-            <button
-              type="button"
-              data-testid="queue-config-open"
-              aria-label="Queue settings"
-              onclick={openConfig}
-            >Settings</button>
-          {/if}
+          {#if isDefaultQueue}<span class="tag">Default queue</span>{/if}
         </div>
-        <div class="action-group action-group--controls">
+        <div class="meta" data-testid="queue-detail-throughput">
+          {completedCount} completed · {failedCount} failed · {pendingCount} pending
+        </div>
+      </div>
+      {#if isPrimary}
+        <div class="actions" bind:this={actionBar}>
           <QueueControls
             {isPrimary}
             {queueId}
@@ -327,161 +398,87 @@
             {onPause}
             {onClearDone}
             {onClean}
+            actions={headerActions}
           />
-          <!--
-            FR-003 — the default queue is the one every unrouted Task lands on, so
-            deleting it has no coherent outcome. The control stays visible and
-            disabled with the reason attached, rather than disappearing: an absent
-            button is the shape this whole feature exists to fix.
-          -->
-          <button
-            type="button"
-            class="danger"
-            data-testid="queue-delete"
-            aria-label="Delete queue"
-            disabled={isDefaultQueue || busy}
-            aria-describedby={isDefaultQueue ? 'queue-delete-reason' : undefined}
-            onclick={deleteThisQueue}
-          >Delete Queue</button>
         </div>
+      {/if}
+    </div>
+
+    {#if isPrimary && isDefaultQueue}
+      <p class="hint" id="queue-delete-reason" data-testid="queue-delete-disabled-reason">
+        The default queue cannot be deleted. Make another queue the default first.
+      </p>
+    {/if}
+
+    <!-- Design rule 6: a refused action is a problem, so it shows in an attention banner. -->
+    {#if refusal !== null}
+      <div class="attn" role="alert" data-testid="queue-control-refusal">
+        <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg><span class="body">{refusal}</span>
       </div>
     {/if}
-  </header>
 
-  {#if isPrimary && isDefaultQueue}
-    <p class="hint" id="queue-delete-reason" data-testid="queue-delete-disabled-reason">
-      The default queue cannot be deleted. Make another queue the default first.
-    </p>
+    {#if configuring}
+      <div class="config-row" bind:this={renameRow}>
+        <input
+          type="text"
+          class="input"
+          data-testid="queue-rename-name"
+          aria-label="Queue name"
+          bind:value={draftName}
+          bind:this={renameInput}
+        />
+        <button type="button" class="btn btn-primary" data-testid="queue-rename-submit" onclick={submitRename}>Rename</button>
+        <button type="button" class="btn btn-secondary" data-testid="queue-rename-cancel" onclick={closeConfig}>Cancel</button>
+      </div>
+    {/if}
+
+    <!-- Feature 187 (FR-001) — above the idle-pending panel, because the two say
+         opposite things about the same queue and only one of them is news: "this
+         queue is waiting for you to start it" reads as normal, and "the last start
+         already failed" is why it is still waiting. Ungated by `isPrimary`, unlike
+         the panel below, which owns a Start a secondary window may not dispatch. -->
+    <QueueStartFailureNotice {queueId} startFailure={runtime?.startFailure ?? null} />
+
+    {#if isPrimary}
+      <QueueIdlePendingPanel {snapshot} {queueId} />
+    {/if}
+
+    <QueueDetailRows
+      {snapshot}
+      {queueId}
+      {isPrimary}
+      {selectedRunId}
+      {onSelectRun}
+      onRefusal={(text) => (refusal = text)}
+    />
+  </div>
+
+  {#if drawerOpen}
+    <!-- Design rule 7: a form that adds something opens in a drawer beside the page, so the
+         queue it adds to stays in view. Feature 285 (OD-2, FR-002): always the composer. Its
+         sections render their own loading arm until the catalogs resolve; the Pipeline-listing
+         form is retired. -->
+    <aside class="drawer" aria-labelledby="queue-composer-heading" data-testid="queue-composer" bind:this={drawer}>
+      <QueueComposerDrawer {snapshot} {queueId} {queueName} {pendingCount} {onBatchStateChange} onClose={closeComposer} />
+    </aside>
   {/if}
-
-  {#if refusal !== null}
-    <p class="refusal" role="alert" data-testid="queue-control-refusal">{refusal}</p>
-  {/if}
-
-  {#if configuring}
-    <div class="config-row">
-      <input
-        type="text"
-        data-testid="queue-rename-name"
-        aria-label="Queue name"
-        bind:value={draftName}
-      />
-      <button type="button" class="primary" data-testid="queue-rename-submit" onclick={submitRename}>
-        Rename
-      </button>
-      <button type="button" data-testid="queue-rename-cancel" onclick={closeConfig}>Cancel</button>
-    </div>
-  {/if}
-
-  <!-- Feature 187 (FR-001) — above the idle-pending panel, because the two say
-       opposite things about the same queue and only one of them is news: "this
-       queue is waiting for you to start it" reads as normal, and "the last start
-       already failed" is why it is still waiting. Ungated by `isPrimary`, unlike
-       the panel below, which owns a Start a secondary window may not dispatch. -->
-  <QueueStartFailureNotice {queueId} startFailure={runtime?.startFailure ?? null} />
-
-  {#if isPrimary}
-    <QueueIdlePendingPanel {snapshot} {queueId} />
-  {/if}
-
-  {#if isPrimary && composerOpen}
-    <div class="composer-row" data-testid="queue-composer">
-      <!-- Feature 285 (OD-2, FR-002): always the composer. Its sections render their own
-           loading arm until the catalogs resolve; the Pipeline-listing form is retired. -->
-      <QueueTaskComposer {snapshot} {queueId} {onBatchStateChange} />
-      <button type="button" data-testid="queue-composer-cancel" onclick={closeComposer}>
-        Cancel
-      </button>
-    </div>
-  {/if}
-
-  <QueueDetailRows
-    {snapshot}
-    {queueId}
-    {isPrimary}
-    {selectedRunId}
-    {onSelectRun}
-    onRefusal={(text) => (refusal = text)}
-  />
 </main>
 
 <style>
-  .queue-detail-tier {
-    display: flex; flex-direction: column; gap: 12px;
-    min-height: 0; overflow-y: auto;
+  /* A plain block on the operations page until the add-task drawer opens. Then the tier
+     splits into its page and the drawer, each scrolling on its own; narrower than 860px,
+     where the redesign hides its drawers, the drawer takes the whole width instead. */
+  .queue-detail-tier { min-height: 0; }
+  .page-split { display: flex; flex: 1; }
+  .hint { margin: 0 0 var(--schegent-space-3); }
+  .config-row {
+    display: flex; gap: var(--schegent-space-1-5); align-items: center;
+    margin-bottom: var(--schegent-space-3);
   }
-  .tier-header {
-    display: grid;
-    grid-template-areas: 'back back' 'identity action';
-    grid-template-columns: 1fr auto;
-    gap: 8px; align-items: end; padding: 16px 20px 0;
-  }
-  .back {
-    grid-area: back; justify-self: start; padding: 2px 0;
-    border: 0; background: transparent;
-    color: var(--vscode-descriptionForeground);
-  }
-  .identity { grid-area: identity; }
-  .tier-header h1 {
-    margin: 0 0 4px; font-size: 20px; font-weight: 600;
-    color: var(--vscode-editor-foreground);
-  }
-  .meta {
-    display: flex; gap: 12px; margin: 0; font-size: 12px;
-    color: var(--vscode-descriptionForeground);
-  }
-  .lifecycle { color: var(--vscode-textLink-foreground); }
-
-  /* Throughput status colors — each count uses its semantic color */
-  .throughput { display: inline-flex; align-items: center; gap: 6px; }
-  .count-completed { color: var(--schegent-color-completed); }
-  .count-failed { color: var(--schegent-color-error); }
-  .count-pending { color: var(--schegent-color-active); }
-  .sep { color: var(--schegent-muted-fg); user-select: none; }
-
-  button {
-    font: inherit; color: var(--vscode-foreground);
-    background: var(--vscode-button-secondaryBackground, transparent);
-    border: 1px solid var(--vscode-widget-border, transparent);
-    border-radius: 4px; padding: 6px 12px; cursor: pointer;
-  }
-  button.primary {
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
-    border-color: var(--vscode-button-border, transparent);
-  }
-  button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
-
-  /* Primary actions (left) | separator | queue-state / destructive (right) */
-  .actions { grid-area: action; display: flex; gap: 8px; align-items: center; }
-  .action-group { display: flex; gap: 6px; align-items: center; }
-  .action-group--controls {
-    display: flex; gap: 6px; align-items: center;
-    border-left: 1px solid var(--schegent-divider);
-    padding-left: 8px;
-  }
-
-  button.danger {
-    color: var(--vscode-errorForeground);
-    border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-widget-border, transparent));
-  }
-  button:disabled { opacity: 0.5; cursor: default; }
-
-  .hint, .refusal { margin: 0; padding: 0 20px; font-size: 12px; }
-  .hint { color: var(--vscode-descriptionForeground); }
-  .refusal { color: var(--vscode-errorForeground); }
-
-  .config-row { display: flex; gap: 8px; align-items: center; padding: 0 20px; }
-  .config-row input {
-    flex: 1; font: inherit; padding: 6px 8px;
-    color: var(--vscode-input-foreground);
-    background: var(--vscode-input-background);
-    border: 1px solid var(--vscode-input-border, transparent);
-    border-radius: 4px;
-  }
-  .composer-row {
-    display: flex; flex-direction: column;
-    align-items: stretch; gap: 8px; padding: 0 20px;
+  .config-row .input { flex: 1; min-width: 0; }
+  @media (max-width: 860px) {
+    .page-split > .tier-page { display: none; }
+    .page-split > .drawer { flex: 1; width: auto; border-left: 0; }
   }
 </style>
 

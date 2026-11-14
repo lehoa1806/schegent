@@ -38,39 +38,37 @@
   }
 </script>
 
+<!-- Drawn as the redesign's warning banner (`.attn.warn` in `sg-core.css`), as the queue's own
+     notices are: the icon, what stopped, and the one action at the end. A refused Resume is said
+     under the headline, inside the banner it answers. -->
 {#if creditPolling.state === 'stopped'}
-  <div class="credit-polling stopped" role="status" data-testid="credit-polling-stopped-{queueId}">
-    <span class="headline">Credit polling stopped</span>
+  <div class="attn warn" role="status" data-testid="credit-polling-stopped-{queueId}">
+    <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+    <span class="body">
+      <b>Credit polling stopped</b>
+      {#if refusal !== null}
+        <span class="refusal" role="alert" data-testid="credit-polling-refusal-{queueId}">{refusal}</span>
+      {/if}
+    </span>
     <button
       type="button"
-      class="resume"
+      class="btn btn-secondary btn-sm"
       data-testid="credit-polling-resume-{queueId}"
       disabled={pending}
       onclick={resume}
     >Resume</button>
-    {#if refusal !== null}
-      <span class="refusal" role="alert" data-testid="credit-polling-refusal-{queueId}">{refusal}</span>
-    {/if}
   </div>
 {:else if creditPolling.state === 'unreachable'}
-  <div class="credit-polling unreachable" role="status" data-testid="credit-polling-unreachable-{queueId}">
-    <span class="headline">Status unreachable</span>
+  <div class="attn warn" role="status" data-testid="credit-polling-unreachable-{queueId}">
+    <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+    <span class="body"><b>Status unreachable</b></span>
   </div>
 {/if}
 
 <style>
-  .credit-polling {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 0.75rem;
-    border: 1px solid var(--vscode-editorWarning-foreground, currentColor);
-    border-radius: 4px;
-  }
-  .headline {
-    font-weight: 600;
-  }
+  /* In error text, as the queue's own refusals read. */
   .refusal {
-    color: var(--vscode-errorForeground, currentColor);
+    display: block;
+    color: var(--schegent-error-text);
   }
 </style>

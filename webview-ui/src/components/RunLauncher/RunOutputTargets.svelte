@@ -66,26 +66,32 @@
   }
 </script>
 
+<!-- Drawn as the redesign's form fields, as the contract's are: the output's name above its box,
+     its declared type and description in a caption under it, which the box names as its
+     description. Replace and run is a small secondary button under the refusal it answers. -->
 <section class="outputs-section" data-testid="run-launcher-outputs">
   <h4 class="section-heading">Output targets</h4>
-  <p class="section-note">Where each declared output is written. Paths are workspace-relative.</p>
+  <p class="hint note">Where each declared output is written. Paths are workspace-relative.</p>
 
   {#each ports as port (port.portId)}
     <div class="port-row" data-port-control>
       <label class="port-label" for={`run-output-${port.portId}`}>{port.label}</label>
-      <span class="port-type">{port.type}</span>
-      {#if port.description}
-        <p class="port-description">{port.description}</p>
-      {/if}
       <input
         id={`run-output-${port.portId}`}
         data-testid={`run-output-${port.portId}`}
-        class="port-input"
+        class="input"
         type="text"
+        aria-describedby={`run-output-hint-${port.portId}`}
         {disabled}
         value={targets[port.portId] ?? ''}
         oninput={(event) => onTargetChange(port.portId, event.currentTarget.value)}
       />
+      <p class="hint port-hint" id={`run-output-hint-${port.portId}`}>
+        <span class="port-type">{port.type}</span>
+        {#if port.description}
+          <span>{port.description}</span>
+        {/if}
+      </p>
 
       {#if port.type === EXTERNAL_SIDE_EFFECT_PORT_TYPE}
         <label class="side-effect-label">
@@ -109,7 +115,7 @@
       {#if overwriteRequested.has(port.portId)}
         <button
           type="button"
-          class="overwrite-button"
+          class="btn btn-secondary btn-sm overwrite-button"
           data-testid={`run-output-overwrite-${port.portId}`}
           {disabled}
           onclick={(event) => confirmOverwrite(port, event.currentTarget)}
@@ -122,63 +128,47 @@
 </section>
 
 <style>
-  .outputs-section {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
   .section-heading {
-    margin: 0;
-    font-size: 0.95em;
+    font-size: var(--schegent-text-secondary);
+    font-weight: 600;
   }
-  .section-note {
+  .note,
+  .port-hint,
+  .field-error {
     margin: 0;
-    font-size: 0.85em;
-    opacity: 0.8;
+  }
+  .note {
+    margin-top: var(--schegent-space-1);
   }
   .port-row {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--schegent-space-1);
+    margin-top: var(--schegent-space-3);
   }
   .port-label {
-    font-weight: 600;
-    font-size: 0.9em;
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-muted-fg);
+  }
+  .port-hint {
+    display: flex;
+    flex-wrap: wrap;
+    column-gap: var(--schegent-space-1-5);
   }
   .port-type {
-    font-size: 0.8em;
-    opacity: 0.8;
+    font-family: var(--schegent-mono-font);
   }
-  .port-description {
-    margin: 0;
-    font-size: 0.85em;
-    opacity: 0.8;
-  }
-  .port-input {
-    padding: 4px 6px;
-    background: var(--vscode-input-background);
-    color: var(--vscode-input-foreground);
-    border: 1px solid var(--vscode-input-border, transparent);
-    border-radius: var(--schegent-radius);
-  }
+  /* The sheet lays a label round a checkbox out in a row; the sentence here runs to two lines,
+     so the box stays at the first. */
   .side-effect-label {
-    display: flex;
     align-items: flex-start;
-    gap: 6px;
-    font-size: 0.85em;
+    font-size: var(--schegent-text-secondary);
   }
   .field-error {
-    margin: 0;
-    font-size: 0.85em;
+    font-size: var(--schegent-text-caption);
     color: var(--schegent-error-text);
   }
   .overwrite-button {
     align-self: flex-start;
-    padding: 4px 10px;
-    background: var(--vscode-button-secondaryBackground);
-    color: var(--vscode-button-secondaryForeground);
-    border: none;
-    border-radius: var(--schegent-radius);
-    cursor: pointer;
   }
 </style>

@@ -55,64 +55,60 @@
 </script>
 
 {#if disclosed.length > 0 || capabilityNotices.length > 0}
-  <div class="launch-authority-notice" data-testid="launch-authority-notice" role="note">
-    {#each disclosed as item (item.kind)}
-      <div class="notice-block">
-        <p class="notice-text" data-testid="launch-authority-notice-text-{item.kind}">
-          {item.notice}
+  <!-- Drawn as the redesign's warning banner (`.attn.warn` in `sg-core.css`): the warning icon from
+       the dashboard's sprite, then each notice on a line of its own, a posture notice with its
+       link under it, the way the mockup's halted banner sets its link under its sentence. -->
+  <div class="attn warn launch-authority-notice" data-testid="launch-authority-notice" role="note">
+    <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+    <div class="body small">
+      {#each disclosed as item (item.kind)}
+        <div class="notice-block">
+          <p class="notice-text" data-testid="launch-authority-notice-text-{item.kind}">
+            {item.notice}
+          </p>
+          {#if navigation !== undefined}
+            <button
+              type="button"
+              class="linkbtn"
+              data-testid="launch-authority-review-settings-{item.kind}"
+              onclick={() => navigation.openBackendSettings()}
+            >
+              Review in Settings
+            </button>
+          {/if}
+        </div>
+      {/each}
+      {#each capabilityNotices as capability, index (index)}
+        <p class="notice-text" data-testid="launch-authority-capability-{index}">
+          {capability.text}
         </p>
-        {#if navigation !== undefined}
-          <button
-            type="button"
-            class="notice-link"
-            data-testid="launch-authority-review-settings-{item.kind}"
-            onclick={() => navigation.openBackendSettings()}
-          >
-            Review in Settings
-          </button>
-        {/if}
-      </div>
-    {/each}
-    {#each capabilityNotices as capability, index (index)}
-      <p class="notice-text" data-testid="launch-authority-capability-{index}">
-        {capability.text}
-      </p>
-    {/each}
+      {/each}
+    </div>
   </div>
 {/if}
 
 <style>
-  .launch-authority-notice {
-    border-left: 3px solid var(--vscode-editorWarning-foreground, var(--vscode-focusBorder));
+  /* The banner sits in a column that spaces its children itself. */
+  .attn.launch-authority-notice {
+    margin-bottom: 0;
+  }
+
+  .body,
+  .notice-block {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 4px 8px;
+  }
+
+  .body {
+    gap: var(--schegent-space-1-5);
   }
 
   .notice-block {
     align-items: flex-start;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+    gap: var(--schegent-space-0-5);
   }
 
   .notice-text {
-    font-size: 0.85em;
     margin: 0;
-  }
-
-  .notice-link {
-    background: none;
-    border: none;
-    color: var(--vscode-textLink-foreground);
-    cursor: pointer;
-    font-size: 0.85em;
-    padding: 0;
-    text-decoration: underline;
-  }
-
-  .notice-link:hover {
-    color: var(--vscode-textLink-activeForeground);
   }
 </style>

@@ -60,17 +60,20 @@
   );
 </script>
 
+<!-- Drawn as the redesign's form fields, as the contract's are: the name above the box, its hint in
+     a caption under it, which the box names as its description. Folded, the section is the
+     redesign's disclosure (`details.diag` in `sg-pages.css`): a rule above, a muted summary. -->
 {#snippet fieldRows()}
   {#each visibleFields as field (field.key)}
     <div class="supplemental-row">
       <label class="supplemental-label" for={`run-supplemental-${field.key}`}>{field.label}</label>
-      <span class="supplemental-hint">{field.hint}</span>
       {#if MULTILINE_KEYS.has(field.key)}
         <textarea
           id={`run-supplemental-${field.key}`}
           data-testid={`run-supplemental-${field.key}`}
-          class="supplemental-input"
+          class="input"
           rows="3"
+          aria-describedby={`run-supplemental-hint-${field.key}`}
           {disabled}
           value={values[field.key] ?? ''}
           oninput={(event) => onChange(field.key, event.currentTarget.value)}
@@ -79,13 +82,15 @@
         <input
           id={`run-supplemental-${field.key}`}
           data-testid={`run-supplemental-${field.key}`}
-          class="supplemental-input"
+          class="input"
           type="text"
+          aria-describedby={`run-supplemental-hint-${field.key}`}
           {disabled}
           value={values[field.key] ?? ''}
           oninput={(event) => onChange(field.key, event.currentTarget.value)}
         />
       {/if}
+      <p class="hint supplemental-hint" id={`run-supplemental-hint-${field.key}`}>{field.hint}</p>
       {#if errors.has(field.key)}
         <p class="field-error" data-testid={`run-launcher-error-supplemental-${field.key}`}>
           {errors.get(field.key)}
@@ -96,77 +101,55 @@
 {/snippet}
 
 {#if collapsible}
-  <details
-    class="supplemental-section supplemental-disclosure"
-    data-testid="run-launcher-supplemental"
-    open={shouldAutoOpen}
-  >
-    <summary class="section-heading disclosure-summary">Attachments &amp; references (optional)</summary>
+  <details class="diag" data-testid="run-launcher-supplemental" open={shouldAutoOpen}>
+    <summary>Attachments &amp; references (optional)</summary>
     <div class="disclosure-body">
-      <p class="section-note">Optional material for this session. Not part of the Workflow's contract.</p>
+      <p class="small muted note">Optional material for this session. Not part of the Workflow's contract.</p>
       {@render fieldRows()}
     </div>
   </details>
 {:else}
-  <section class="supplemental-section" data-testid="run-launcher-supplemental">
+  <section data-testid="run-launcher-supplemental">
     <h4 class="section-heading">Supplemental inputs</h4>
-    <p class="section-note">Optional material for this session. Not part of the Workflow's contract.</p>
+    <p class="hint note">Optional material for this session. Not part of the Workflow's contract.</p>
     {@render fieldRows()}
   </section>
 {/if}
 
 <style>
-  .supplemental-section {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
+  .section-heading {
+    font-size: var(--schegent-text-secondary);
+    font-weight: 600;
   }
-  .supplemental-disclosure {
+  .note,
+  .supplemental-hint,
+  .field-error {
     margin: 0;
   }
-  .disclosure-summary {
-    cursor: pointer;
+  .section-heading + .note {
+    margin-top: var(--schegent-space-1);
+  }
+  .diag > summary {
     user-select: none;
   }
   .disclosure-body {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    margin-top: 8px;
-  }
-  .section-heading {
-    margin: 0;
-    font-size: 0.95em;
-  }
-  .section-note {
-    margin: 0;
-    font-size: 0.85em;
-    opacity: 0.8;
+    margin-top: var(--schegent-space-2);
   }
   .supplemental-row {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--schegent-space-1);
+    margin-top: var(--schegent-space-3);
   }
   .supplemental-label {
-    font-weight: 600;
-    font-size: 0.9em;
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-muted-fg);
   }
-  .supplemental-hint {
-    font-size: 0.8em;
-    opacity: 0.8;
-  }
-  .supplemental-input {
-    padding: 4px 6px;
-    background: var(--vscode-input-background);
-    color: var(--vscode-input-foreground);
-    border: 1px solid var(--vscode-input-border, transparent);
-    border-radius: var(--schegent-radius);
-    font-family: inherit;
+  textarea.input {
+    resize: vertical;
   }
   .field-error {
-    margin: 0;
-    font-size: 0.85em;
+    font-size: var(--schegent-text-caption);
     color: var(--schegent-error-text);
   }
 </style>

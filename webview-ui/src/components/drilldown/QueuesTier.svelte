@@ -5,14 +5,15 @@
   // is added to `DashboardRoute` for it: the tiers are sub-locations addressed by
   // `DashboardLocation`, and `OperationsSurface.svelte` owns that location.
   //
-  // Every card is a `<button>`, not a clickable `<div>`: FR-059 requires the
+  // Every queue's name is a `<button>`, not a clickable row: FR-059 requires the
   // tiers be operable from the keyboard, and a button is focusable, Enter/Space
   // activated and announced as an action without a single `tabindex` or `role`.
   //
   // This component owns the surface's one `<main>` landmark, so the operations
   // route keeps exactly one however deep the operator has drilled.
   //
-  // Mockup: docs/mockup/schegent_mockup.html `view-active-queue`.
+  // Mockup: docs/mockup/schegent_redesign_surfaces.html, Queues list. The page is the mockup's
+  // table; the `.sg` sheets draw it, and the few rules below only place the tier's own pieces.
 
   // Feature 095 (T027, US3) — the workspace queue settings open from this tier,
   // because both values are workspace-scoped. They are deliberately not folded
@@ -22,11 +23,11 @@
   import { postCommand } from '../../lib/vscode-api';
   import { CMD_CREATE_QUEUE } from '../../lib/messages';
   import { sendCreateQueueIntent, type CreateQueueOutcome } from '../../lib/queue-create-ipc';
-  import { queueRuntimeLabel } from '../../lib/queue-lifecycle-label';
+  import { queueRuntimeLabel, queueRuntimeTone } from '../../lib/queue-lifecycle-label';
   import { haltedStartFailure } from '../../lib/queue-runtime-view';
   import { snapshotStore } from '../../lib/snapshot-store.svelte';
   import QueueConfigModal from '../QueueConfigModal.svelte';
-  import type { QueueRuntime } from '../../lib/snapshot-types';
+  import type { QueueItem, QueueRuntime } from '../../lib/snapshot-types';
 
   interface Props {
     /** Every registered queue's runtime, as the v4 snapshot publishes them. */
@@ -54,6 +55,11 @@
   // operator arranged. Sorting here rather than trusting array order means a
   // caller that filters or concatenates cannot reshuffle the tier.
   const ordered = $derived([...queues].sort((a, b) => a.position - b.position));
+  // Workspace-scoped, and what Queue Settings changes.
+  const defaultQueueId = $derived(snapshotStore.queueSettings.defaultQueueId);
+  // FR-R3-124 — the count only. A line naming the concurrency cap would make this list a surface
+  // that owes the shared-tree disclosure; Queue Settings, where the cap is chosen, states both.
+  const countLine = $derived(`${ordered.length} ${ordered.length === 1 ? 'queue' : 'queues'}`);
 
   let creating = $state(false);
   let draftName = $state('');
@@ -130,33 +136,37 @@
   function runLabel(runtime: QueueRuntime): string | null {
     return runtime.inFlightRun?.feature?.label ?? null;
   }
+
+  // A fold over the queue's own rows, as the queue detail counts its throughput.
+  function countTasks(runtime: QueueRuntime, status: QueueItem['status']): number {
+    return runtime.tasks.filter((task) => task.status === status).length;
+  }
 </script>
 
-<main
-  class="queues-tier"
-  data-testid="queues-tier"
-  aria-label="Queues"
-  tabindex="-1"
-  bind:this={tierRoot}
->
-  <header class="tier-header">
+<main data-testid="queues-tier" aria-label="Queues" tabindex="-1" bind:this={tierRoot}>
+  <div class="phead">
     <div>
       <h1>Queues</h1>
-      <p>Monitor and manage parallel execution queues and lifecycles.</p>
+      <div class="purpose">Monitor and manage parallel execution queues and lifecycles.</div>
     </div>
     {#if isPrimary}
-      <div class="header-actions">
-        <button type="button" data-testid="queue-settings-open" onclick={openConfig}>
+      <div class="actions">
+        <button
+          type="button"
+          class="btn btn-secondary"
+          data-testid="queue-settings-open"
+          onclick={openConfig}
+        >
           Queue Settings
         </button>
         {#if !creating}
-          <button type="button" class="primary" data-testid="queue-create" onclick={openCreate}>
-            New Queue
+          <button type="button" class="btn btn-primary" data-testid="queue-create" onclick={openCreate}>
+            <svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>New Queue
           </button>
         {/if}
       </div>
     {/if}
-  </header>
+  </div>
 
   {#if configuring}
     <!-- FR-R3-130 (T1495) — the machine's memory, so the dialog can say what the
@@ -173,9 +183,10 @@
   {/if}
 
   {#if creating}
-    <div class="create-row">
+    <div class="toolbar">
       <input
         type="text"
+        class="input create-name"
         data-testid="queue-create-name"
         placeholder="Queue name"
         aria-label="New queue name"
@@ -184,214 +195,156 @@
       />
       <button
         type="button"
-        class="primary"
+        class="btn btn-primary"
         data-testid="queue-create-submit"
         disabled={createPending}
         onclick={submitCreate}
       >
         {createPending ? 'Creating…' : 'Create'}
       </button>
-      <button type="button" data-testid="queue-create-cancel" onclick={cancelCreate}>Cancel</button>
+      <button type="button" class="btn btn-secondary" data-testid="queue-create-cancel" onclick={cancelCreate}>
+        Cancel
+      </button>
     </div>
     {#if createError !== null}
-      <p class="create-error" role="alert" data-testid="queue-create-error">{createError}</p>
+      <p class="create-error small s-err" role="alert" data-testid="queue-create-error">{createError}</p>
     {/if}
   {/if}
+
+  <!-- Feature 195 (FR-007, FR-008) — a halted queue says so above the list, with the task that
+       stopped it, so the operator does not have to find it row by row. Reading it is not an
+       action, so a secondary window shows it too. -->
+  {#each ordered as runtime (runtime.queueId)}
+    {@const halted = haltedStartFailure(runtime)}
+    {#if halted !== null}
+      <div class="attn" role="status" data-testid="queues-halted-notice-{runtime.queueId}">
+        <span class="ic"><svg class="i" aria-hidden="true"><use href="#i-warn"></use></svg></span>
+        <div class="body">
+          <b>{runtime.name} is halted.</b> “{halted.taskName}” failed, so the queue stopped before the next task.
+          <div class="acts">
+            <button
+              type="button"
+              class="btn btn-secondary btn-sm"
+              data-testid="queues-halted-review-{runtime.queueId}"
+              aria-label="Review the failure in {runtime.name}"
+              onclick={() => onSelectQueue(runtime.queueId)}
+            >
+              Review the failure
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
+  {/each}
 
   {#if ordered.length === 0}
     <p class="empty" data-testid="queues-empty">No queues have been registered yet.</p>
   {:else}
-    <div class="queue-grid">
-      {#each ordered as runtime (runtime.queueId)}
-        <button
-          type="button"
-          class="queue-card"
-          data-testid="queue-card-{runtime.queueId}"
-          data-selected={runtime.queueId === selectedQueueId ? 'true' : 'false'}
-          aria-label="Open queue {runtime.name}"
-          onclick={() => onSelectQueue(runtime.queueId)}
-          onkeydown={(event) => onCardKeyDown(event, runtime.queueId)}
-        >
-          <span class="card-head">
-            <span class="queue-name">{runtime.name}</span>
-            <span class="lifecycle" data-testid="queue-lifecycle-{runtime.queueId}">
-              {queueRuntimeLabel(runtime)}
-            </span>
-            <!-- Feature 187 (FR-004) — beside the badge, not instead of it. The
-                 lifecycle is still true; the failed start is why the queue is
-                 still in it. Compact by intent: this list distinguishes which
-                 queue to look at, and the detail tier says what happened. -->
-            {#if haltedStartFailure(runtime) !== null}
-              <!-- Feature 195 (T030, FR-007, FR-008) — named and distinct from
-                   a plain "Start failed": the operator reads the failed
-                   task's name from the list without drilling in. -->
-              <span
-                class="start-failed halted"
-                data-testid="queue-halted-{runtime.queueId}"
-                aria-label="Halted: {haltedStartFailure(runtime)?.taskName} failed"
-                title="Halted — {haltedStartFailure(runtime)?.taskName} failed. Retry or remove it to continue."
-              >
-                Halted: {haltedStartFailure(runtime)?.taskName}
-              </span>
-            {:else if runtime.startFailure !== null}
-              <span
-                class="start-failed"
-                data-testid="queue-start-failed-{runtime.queueId}"
-                aria-label="Last start attempt failed"
-                title="Last start attempt failed — open this queue for details"
-              >
-                Start failed
-              </span>
-            {/if}
-          </span>
-          <span class="card-body">
-            {#if runLabel(runtime) !== null}
-              <span class="active-run" data-testid="queue-active-run-{runtime.queueId}">
-                {runLabel(runtime)}
-              </span>
-            {/if}
-            <span class="pending" data-testid="queue-pending-{runtime.queueId}">
-              {runtime.pendingCount} pending
-            </span>
-          </span>
-        </button>
-      {/each}
+    <div class="table-wrap">
+      <table class="t">
+        <caption class="sr-only">Queues</caption>
+        <thead>
+          <tr>
+            <th scope="col">Queue</th>
+            <th scope="col">Status</th>
+            <th scope="col">Current run</th>
+            <th scope="col" class="num">Pending</th>
+            <th scope="col" class="num">Completed</th>
+            <th scope="col" class="num">Failed</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each ordered as runtime (runtime.queueId)}
+            {@const halted = haltedStartFailure(runtime)}
+            {@const failedCount = countTasks(runtime, 'failed')}
+            <tr class:sel={runtime.queueId === selectedQueueId}>
+              <td>
+                <button
+                  type="button"
+                  class="rowname"
+                  data-testid="queue-card-{runtime.queueId}"
+                  data-selected={runtime.queueId === selectedQueueId ? 'true' : 'false'}
+                  aria-label="Open queue {runtime.name}"
+                  onclick={() => onSelectQueue(runtime.queueId)}
+                  onkeydown={(event) => onCardKeyDown(event, runtime.queueId)}
+                >
+                  {runtime.name}
+                </button>
+                {#if runtime.queueId === defaultQueueId}
+                  <span class="tag" data-testid="queue-default-tag">Default</span>
+                {/if}
+              </td>
+              <td>
+                <span class="status">
+                  <span class="chip {queueRuntimeTone(runtime)}" data-testid="queue-lifecycle-{runtime.queueId}">
+                    {#if runtime.lifecycle === 'operator-paused'}
+                      <svg class="i" aria-hidden="true"><use href="#i-pause"></use></svg>
+                    {:else}
+                      <span class="dot" aria-hidden="true"></span>
+                    {/if}
+                    {queueRuntimeLabel(runtime)}
+                  </span>
+                  <!-- Feature 187 (FR-004) — beside the badge, not instead of it. The
+                       lifecycle is still true; the failed start is why the queue is
+                       still in it. Compact by intent: this list distinguishes which
+                       queue to look at, and the detail tier says what happened. -->
+                  {#if halted !== null}
+                    <!-- Feature 195 (T030, FR-007, FR-008) — named and distinct from a plain
+                         "Start failed". The notice above the table names the task on screen;
+                         the chip names it to a screen reader reading the row. -->
+                    <span
+                      class="chip s-err"
+                      data-testid="queue-halted-{runtime.queueId}"
+                      aria-label="Halted: {halted.taskName} failed"
+                      title="Halted — {halted.taskName} failed. Retry or remove it to continue."
+                    >
+                      <svg class="i" aria-hidden="true"><use href="#i-warn"></use></svg>Halted<span class="sr-only">: {halted.taskName}</span>
+                    </span>
+                  {:else if runtime.startFailure !== null}
+                    <span
+                      class="chip s-err"
+                      data-testid="queue-start-failed-{runtime.queueId}"
+                      aria-label="Last start attempt failed"
+                      title="Last start attempt failed — open this queue for details"
+                    >
+                      <svg class="i" aria-hidden="true"><use href="#i-warn"></use></svg>Start failed
+                    </span>
+                  {/if}
+                </span>
+              </td>
+              <td>
+                {#if runLabel(runtime) !== null}
+                  <span data-testid="queue-active-run-{runtime.queueId}">{runLabel(runtime)}</span>
+                {:else}
+                  <span class="muted">—</span>
+                {/if}
+              </td>
+              <td class="num" data-testid="queue-pending-{runtime.queueId}">{runtime.pendingCount}</td>
+              <td class="num" data-testid="queue-completed-{runtime.queueId}">{countTasks(runtime, 'completed')}</td>
+              <td class="num" class:s-err={failedCount > 0} data-testid="queue-failed-{runtime.queueId}">{failedCount}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
     </div>
+    <p class="countline" data-testid="queues-countline">{countLine}</p>
   {/if}
 </main>
 
 <style>
-  .queues-tier {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    padding: 20px;
-    overflow-y: auto;
+  .create-name {
+    width: 260px;
+    max-width: 100%;
   }
 
-  .tier-header {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 16px;
-  }
-
-  .tier-header h1 {
-    margin: 0 0 4px;
-    font-size: 20px;
-    font-weight: 600;
-    color: var(--vscode-editor-foreground);
-  }
-
-  .tier-header p {
-    margin: 0;
-    font-size: 12px;
-    color: var(--vscode-descriptionForeground);
-  }
-
-  button {
-    font: inherit;
-    color: var(--vscode-foreground);
-    background: var(--vscode-button-secondaryBackground, transparent);
-    border: 1px solid var(--vscode-widget-border, transparent);
-    border-radius: 4px;
-    padding: 6px 12px;
-    cursor: pointer;
-  }
-
-  button.primary {
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
-    border-color: var(--vscode-button-border, transparent);
-  }
-
-  button:focus-visible {
-    outline: 1px solid var(--vscode-focusBorder);
-    outline-offset: 2px;
-  }
-
-  .create-row {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
-
-  .create-row input {
-    flex: 1;
-    font: inherit;
-    padding: 6px 8px;
-    color: var(--vscode-input-foreground);
-    background: var(--vscode-input-background);
-    border: 1px solid var(--vscode-input-border, transparent);
-    border-radius: 4px;
-  }
-
+  .create-error,
   .empty {
-    margin: 0;
-    font-size: 12px;
-    color: var(--vscode-descriptionForeground);
+    margin: 0 0 var(--schegent-space-3);
   }
 
-  .queue-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 12px;
-  }
-
-  .queue-card {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 12px;
-    text-align: left;
-    background: var(--vscode-editorWidget-background);
-    border-top: 2px solid var(--vscode-focusBorder);
-  }
-
-  .queue-card[data-selected='true'] {
-    background: var(--vscode-list-activeSelectionBackground, var(--vscode-editorWidget-background));
-  }
-
-  .card-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .queue-name {
-    font-weight: 600;
-    color: var(--vscode-editor-foreground);
-  }
-
-  .lifecycle {
-    font-size: 11px;
-    color: var(--vscode-textLink-foreground);
-  }
-
-  .start-failed {
-    font-size: 11px;
-    font-weight: 600;
-    padding: 1px 6px;
-    border-radius: var(--schegent-radius);
-    color: var(--vscode-notificationsErrorIcon-foreground, var(--vscode-charts-red));
-    background: color-mix(
-      in srgb,
-      var(--vscode-notificationsErrorIcon-foreground, var(--vscode-charts-red)) 14%,
-      transparent
-    );
-    white-space: nowrap;
-  }
-
-  .card-body {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    font-size: 12px;
-    color: var(--vscode-descriptionForeground);
-  }
-
-  .active-run {
-    color: var(--vscode-editor-foreground);
+  .status {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: var(--schegent-space-1);
   }
 </style>
