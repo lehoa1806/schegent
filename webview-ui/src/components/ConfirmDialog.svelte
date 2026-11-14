@@ -13,7 +13,8 @@
   //   DOM order so the natural tab order matches the focus-trap rule
   //   without any JS reshuffling (research.md R-011).
   // - Escape calls onCancel
-  // - Focus restored to `originatingElement` on unmount
+  // - Focus restored to `originatingElement` on unmount, or to the button that
+  //   opens its menu when it is an item of a menu that has since closed
 
   import { onMount, tick } from 'svelte';
   import { SUPPRESSION_CHECKBOX_LABEL, type Severity } from '../lib/action-copy';
@@ -50,13 +51,27 @@
   let confirmButtonEl: HTMLButtonElement | null = $state(null);
   let suppressionInputEl: HTMLInputElement | null = $state(null);
 
+  /**
+   * Where focus goes back to. A menu hides as soon as one of its items is
+   * chosen, and a hidden item cannot take focus, so an action that came from a
+   * closed menu returns focus to the button that opens the menu.
+   */
+  function focusReturnTarget(origin: HTMLElement | null): HTMLElement | null {
+    const menu = origin?.closest<HTMLElement>('[role="menu"]');
+    if (!menu?.hidden) return origin;
+    const opener = Array.from(menu.parentElement?.children ?? []).find(
+      (sibling) => sibling.getAttribute('aria-haspopup') === 'menu'
+    );
+    return opener instanceof HTMLElement ? opener : origin;
+  }
+
   onMount(() => {
     void tick().then(() => {
       cancelButtonEl?.focus();
     });
     return () => {
       // Restore focus to the element that opened us.
-      request.originatingElement?.focus?.();
+      focusReturnTarget(request.originatingElement)?.focus?.();
     };
   });
 

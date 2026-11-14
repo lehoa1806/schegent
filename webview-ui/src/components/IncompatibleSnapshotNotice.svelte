@@ -26,14 +26,17 @@
 {/if}
 
 <style>
+  /* Drawn as the redesign's warning notice (`.attn.warn` in `sg-core.css`), without its icon:
+     both views mount this, and the sidebar does not load the icon sprite. */
   .incompatible {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    margin: 8px 10px;
-    padding: 8px 10px;
-    border: 1px solid var(--schegent-color-warning);
-    border-radius: 4px;
+    gap: var(--schegent-space-1);
+    margin: var(--schegent-space-2) var(--schegent-space-3);
+    padding: var(--schegent-space-2-5) var(--schegent-space-3);
+    border: 1px solid color-mix(in srgb, var(--schegent-color-warning) 55%, transparent);
+    border-radius: var(--schegent-radius);
+    background: color-mix(in srgb, var(--schegent-color-warning) 9%, transparent);
     color: var(--schegent-fg);
     overflow-wrap: anywhere;
   }
