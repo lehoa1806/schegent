@@ -68,20 +68,15 @@ const SURFACE_CONTRACTS: Readonly<Record<SurfaceName, SurfaceContract>> = {
     present: ['queues-tier', `queue-card-${FIXTURE_QUEUE_ID}`, 'queue-create'],
     absent: ['queues-empty']
   },
-  // Feature 098 (T067, FR-043) — `pipelines-discard` is here because the
-  // fixture's two Pipelines used to claim `scope: 'built-in'`, a state no
-  // installation can now reach: the built-in layer holds no rows, so every
-  // Pipeline an operator has is one they imported into `user` or `workspace`.
-  // The fixture now says `workspace`, and this landmark is what holds it there
-  // — the control renders only for a scope that is not `built-in`. The scope
-  // also appears twice in the photograph itself (a badge in the list, and the
-  // testid of each list row), so a regression would show up as a pixel diff;
-  // this fails with the landmark's name instead.
+  // The Workflow editor head shows Save as its one button and keeps Revert,
+  // Duplicate, Export and Deactivate in the "More workflow actions" menu. A
+  // closed menu's items are hidden, and `toBeVisible` fails on a hidden
+  // element, so the menu's trigger is the landmark for that group.
   builder: {
     present: [
       'pipeline-builder-root',
       'workflows-save-all',
-      'workflows-discard'
+      'workflows-menu'
     ],
     absent: [
       'workflow-catalog-error',
@@ -603,6 +598,65 @@ for (const theme of ['light', 'dark', 'high-contrast'] as const) {
 }
 
 /**
+ * Room a number field keeps for its spin button. Chromium lays the button out on
+ * every enabled number field and only fades it in on hover, so the text never
+ * gets that width back.
+ */
+const NUMBER_SPIN_BUTTON_ALLOWANCE_PX = 20;
+
+/**
+ * A placeholder that names a field's unset state ("Unset — no bound") is the
+ * only place the operator reads that state, and a field too narrow for it says
+ * something else ("Unset — no"). The pixel gate cannot hold this: a cut-off
+ * placeholder is a stable picture, and the next baseline refresh adopts it.
+ *
+ * The text is measured in the field's own font rather than read back from the
+ * layout, because nothing a script can reach reports a placeholder's overflow.
+ */
+test('every settings placeholder fits inside its field', async ({ page }) => {
+  const settings = await openSurface(page, 'settings', 'light');
+  const { measured, cutOff } = await settings
+    .locator('input[placeholder]:not([placeholder=""]), textarea[placeholder]:not([placeholder=""])')
+    .evaluateAll((fields, spinButtonAllowance) => {
+      // Through `ownerDocument`, as `collectUndersizedTargets` reaches the page:
+      // the tests' TypeScript program has no DOM globals.
+      const named: string[] = [];
+      const tooNarrow: string[] = [];
+      for (const field of fields) {
+        const style = field.ownerDocument.defaultView?.getComputedStyle(field);
+        const context = field.ownerDocument.createElement('canvas').getContext('2d');
+        if (!style || !context || field.getClientRects().length === 0) continue;
+        const placeholder = field.getAttribute('placeholder') ?? '';
+        context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        const needed = context.measureText(placeholder).width;
+        const spinButton = field.getAttribute('type') === 'number' ? spinButtonAllowance : 0;
+        const room =
+          field.clientWidth -
+          Number.parseFloat(style.paddingLeft) -
+          Number.parseFloat(style.paddingRight) -
+          spinButton;
+        const name = field.getAttribute('data-testid') ?? field.outerHTML.slice(0, 140);
+        named.push(name);
+        if (needed > room) {
+          tooNarrow.push(
+            `${name}: "${placeholder}" needs ${Math.ceil(needed)}px and has ${Math.floor(room)}px`
+          );
+        }
+      }
+      return { measured: named, cutOff: tooNarrow };
+    }, NUMBER_SPIN_BUTTON_ALLOWANCE_PX);
+  // Named, because the empty list below passes just as well when nothing was measured.
+  expect(measured, 'the fields this was written for were measured').toEqual(
+    expect.arrayContaining([
+      'general-settings-input-spendMaxUsdPerRun',
+      'general-settings-input-claudeAutoCompactPctOverride'
+    ])
+  );
+  expect(cutOff, 'a settings field cuts off its own placeholder').toEqual([]);
+  assertNoPageErrors(page, 'settings placeholders');
+});
+
+/**
  * T587d — the half of SC-009b the unit suite cannot hold.
  *
  * `App.route-loading.test.ts` covers the *mechanism* of recovery: a mount
@@ -906,5 +960,52 @@ test.describe('responsive accessibility hardening', () => {
     expect(overflow, 'the seeded allowlist row must not widen the page').toBeLessThanOrEqual(1);
 
     assertNoPageErrors(page, 'settings coarse-pointer deep walk');
+  });
+});
+
+/**
+ * Finding 68 of the webview redesign review. Below 761px the Workflows tab stacks its panes, so the
+ * Add steps palette folds up over the canvas instead of in towards it, and its toggle's chevron
+ * turns a quarter with it: up to collapse, down to expand. The builder photographs keep the
+ * side-by-side width, where it points left and right as the redesign draws it.
+ */
+test.describe('the stacked Workflows tab', () => {
+  test.use({ viewport: { width: 760, height: 900 } });
+
+  test('the Add steps toggle points the way the stacked palette folds', async ({ page }) => {
+    await installDeterministicHost(page);
+    await page.goto('/dashboard.html');
+    await page.addStyleTag({ content: themeCss('dark') });
+    await publishSnapshot(page);
+    await page.getByTestId('dashboard-route-builder').click();
+    await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
+    await page.getByRole('tab', { name: 'Workflows' }).click();
+    const picker = page.getByTestId('workflow-picker-toggle');
+    if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
+    await page.getByTestId('workflows-list-item-dev-new-feature').click();
+
+    const toggle = page.getByTestId('workflow-palette-toggle');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    // Degrees the chevron is turned clockwise, read from the computed transform.
+    const chevronTurn = (): Promise<unknown> =>
+      page.evaluate(`(() => {
+        const icon = document.querySelector('[data-testid="workflow-palette-toggle"] svg');
+        const matrix = new DOMMatrix(getComputedStyle(icon).transform);
+        return Math.round((Math.atan2(matrix.b, matrix.a) * 180) / Math.PI);
+      })()`);
+    await expect(toggle.locator('use')).toHaveAttribute('href', '#i-collapse');
+    await expect.poll(chevronTurn, 'the collapse chevron points up').toBe(90);
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(toggle.locator('use')).toHaveAttribute('href', '#i-expand');
+    await expect.poll(chevronTurn, 'the expand chevron points down').toBe(90);
+    // Collapsed, the stacked palette is a bar across the page rather than a 40px rail.
+    await expect(
+      page.getByTestId('workflow-action-palette').getByText('Add steps', { exact: true }),
+      'the collapsed bar keeps its title'
+    ).toBeVisible();
+
+    assertNoPageErrors(page, 'stacked Workflows tab');
   });
 });
