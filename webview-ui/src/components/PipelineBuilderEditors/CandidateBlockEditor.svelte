@@ -116,20 +116,19 @@
   }
 </script>
 
+<!-- The inspector's "Candidate block" summary heads this section, so the section takes the
+     same name and has no heading of its own. -->
 <section
   class="cb-editor"
   data-testid="candidate-block-editor"
-  aria-label="Candidate Block Control"
+  aria-label="Candidate block"
 >
   <div class="cb-header">
-    <div class="cb-title-group">
-      <h4 class="cb-heading">Candidate Block Control</h4>
-      {#if control}
-        <span class="wf-badge" data-testid="candidate-block-count-badge">
-          {control.candidates.length} / {MAX_CANDIDATES_PER_BLOCK} candidates
-        </span>
-      {/if}
-    </div>
+    {#if control}
+      <span class="wf-badge" data-testid="candidate-block-count-badge">
+        {control.candidates.length} / {MAX_CANDIDATES_PER_BLOCK} candidates
+      </span>
+    {/if}
     <div class="cb-header-actions">
       {#if control}
         <button type="button" class="btn btn-ghost btn-sm" data-testid="candidate-block-expand-toggle" aria-expanded={expanded} onclick={() => (expanded = !expanded)}>
@@ -160,10 +159,10 @@
     {:else}
       <div class="cb-expanded-body" data-testid="candidate-block-expanded-view">
         <div class="cb-policy-grid" data-testid="candidate-block-policy-fields">
-          <label class="wf-field">
-            Availability Policy
+          <label class="field">
+            <span>Availability Policy</span>
             <select
-              class="select-input"
+              class="input"
               data-testid="candidate-block-availability-policy"
               aria-label="Candidate block availability policy"
               value={control.availabilityPolicy ?? DEFAULT_CANDIDATE_AVAILABILITY_POLICY}
@@ -176,11 +175,11 @@
             </select>
           </label>
 
-          <label class="wf-field">
-            Max Dispatches (1–{MAX_CANDIDATE_BLOCK_DISPATCHES})
+          <label class="field">
+            <span>Max Dispatches (1–{MAX_CANDIDATE_BLOCK_DISPATCHES})</span>
             <input
               type="number"
-              class="text-input"
+              class="input"
               min="1"
               max={MAX_CANDIDATE_BLOCK_DISPATCHES}
               data-testid="candidate-block-max-dispatches"
@@ -191,11 +190,11 @@
             />
           </label>
 
-          <label class="wf-field">
-            Monitoring Window (ms)
+          <label class="field">
+            <span>Monitoring Window (ms)</span>
             <input
               type="number"
-              class="text-input"
+              class="input"
               min="1000"
               step="1000"
               data-testid="candidate-block-monitoring-window-ms"
@@ -209,11 +208,11 @@
             />
           </label>
 
-          <label class="wf-field">
-            Spend Ceiling (micro-USD, optional)
+          <label class="field">
+            <span>Spend Ceiling (micro-USD, optional)</span>
             <input
               type="number"
-              class="text-input"
+              class="input"
               min="0"
               step="1000"
               placeholder="Count-only (no USD ceiling)"
@@ -234,7 +233,8 @@
         <div class="cb-candidates-header">
           <span class="form-label">Ordered Candidates (1–{MAX_CANDIDATES_PER_BLOCK})</span>
           <button type="button" class="btn btn-secondary btn-sm" data-testid="candidate-block-add-row" disabled={isReadonly || control.candidates.length >= MAX_CANDIDATES_PER_BLOCK} onclick={handleAddCandidate}>
-            + Add candidate
+            <svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>
+            Add candidate
           </button>
         </div>
 
@@ -253,17 +253,17 @@
                 </button>
 
                 <div class="cb-candidate-row-actions">
-                  <button type="button" class="icon-btn" data-testid="candidate-row-up-{index}" aria-label="Move candidate {cand.candidateId} earlier" disabled={isReadonly || index === 0} onclick={() => handleMoveCandidate(index, -1, cand.candidateId)}>↑</button>
-                  <button type="button" class="icon-btn" data-testid="candidate-row-down-{index}" aria-label="Move candidate {cand.candidateId} later" disabled={isReadonly || index === control.candidates.length - 1} onclick={() => handleMoveCandidate(index, 1, cand.candidateId)}>↓</button>
-                  <button type="button" class="icon-btn destructive-icon" data-testid="candidate-row-remove-{index}" aria-label="Remove candidate {cand.candidateId}" disabled={isReadonly || control.candidates.length <= MIN_CANDIDATES_PER_BLOCK} onclick={() => handleRemoveCandidate(index)}>✕</button>
+                  <button type="button" class="icon-btn" data-testid="candidate-row-up-{index}" aria-label="Move candidate {cand.candidateId} earlier" title="Move earlier" disabled={isReadonly || index === 0} onclick={() => handleMoveCandidate(index, -1, cand.candidateId)}><svg class="i" aria-hidden="true"><use href="#i-up"></use></svg></button>
+                  <button type="button" class="icon-btn" data-testid="candidate-row-down-{index}" aria-label="Move candidate {cand.candidateId} later" title="Move later" disabled={isReadonly || index === control.candidates.length - 1} onclick={() => handleMoveCandidate(index, 1, cand.candidateId)}><svg class="i" aria-hidden="true"><use href="#i-down"></use></svg></button>
+                  <button type="button" class="icon-btn destructive-icon" data-testid="candidate-row-remove-{index}" aria-label="Remove candidate {cand.candidateId}" title="Remove" disabled={isReadonly || control.candidates.length <= MIN_CANDIDATES_PER_BLOCK} onclick={() => handleRemoveCandidate(index)}><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button>
                 </div>
               </div>
 
               <div class="cb-candidate-fields">
-                <label class="wf-field">
-                  Bound Phase
+                <label class="field">
+                  <span>Bound Phase</span>
                   <select
-                    class="select-input"
+                    class="input"
                     data-testid="candidate-row-phase-{index}"
                     aria-label="Candidate {cand.candidateId} bound Phase"
                     value={currentPhaseId}
@@ -279,11 +279,11 @@
                   </select>
                 </label>
 
-                <label class="wf-field">
-                  Priority
+                <label class="field">
+                  <span>Priority</span>
                   <input
                     type="number"
-                    class="text-input"
+                    class="input"
                     min="1"
                     max="100"
                     data-testid="candidate-row-priority-{index}"
@@ -297,11 +297,11 @@
                   />
                 </label>
 
-                <label class="wf-field">
-                  Max Attempts (1–{MAX_CANDIDATE_ATTEMPTS})
+                <label class="field">
+                  <span>Max Attempts (1–{MAX_CANDIDATE_ATTEMPTS})</span>
                   <input
                     type="number"
-                    class="text-input"
+                    class="input"
                     min="1"
                     max={MAX_CANDIDATE_ATTEMPTS}
                     data-testid="candidate-row-max-attempts-{index}"
@@ -320,11 +320,11 @@
                   />
                 </label>
 
-                <label class="wf-field">
-                  Initial Retry Delay (ms)
+                <label class="field">
+                  <span>Initial Retry Delay (ms)</span>
                   <input
                     type="number"
-                    class="text-input"
+                    class="input"
                     min="0"
                     step="500"
                     data-testid="candidate-row-retry-delay-{index}"
@@ -412,11 +412,13 @@
 
 <style>
   .cb-editor { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); }
-  .cb-header, .cb-title-group, .cb-header-actions, .cb-topology-summary, .cb-candidates-header, .cb-candidate-row-head, .cb-candidate-row-actions, .cb-candidate-trial-row, .cb-phase-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .cb-header, .cb-header-actions, .cb-topology-summary, .cb-candidates-header, .cb-candidate-row-head, .cb-candidate-row-actions, .cb-candidate-trial-row, .cb-phase-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .cb-header, .cb-candidates-header, .cb-candidate-row-head, .cb-candidate-trial-row { justify-content: space-between; }
-  .cb-heading { margin: 0; font-size: 0.9em; }
   .cb-expanded-body { display: flex; flex-direction: column; gap: 8px; }
   .cb-policy-grid, .cb-candidate-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 6px; }
+  /* The grid's gap spaces these fields, so they drop the margin the inspector gives a field
+     (`.sg .ins-body .field`, three classes); with the scoping class this rule weighs four. */
+  .cb-editor .cb-policy-grid .field, .cb-editor .cb-candidate-fields .field { margin-bottom: 0; }
   .cb-candidate-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .cb-candidate-row { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); }
   .cb-candidate-row.is-selected { border-color: var(--vscode-focusBorder, var(--vscode-panel-border)); }

@@ -5,6 +5,7 @@ import {
   phaseEditorOpen,
   phaseErrorId,
   phaseRowVisible,
+  phaseRunsOn,
   type PhaseRowFacts
 } from '../PipelineBuilderEditors/phase-catalog-view';
 
@@ -75,6 +76,26 @@ describe('phaseRowVisible', () => {
   it('applies the view and the search together', () => {
     expect(phaseRowVisible(row({ state: 'draft' }), 'active', 'specify')).toBe(false);
     expect(phaseRowVisible(row({ state: 'draft' }), 'draft', 'specify')).toBe(true);
+  });
+});
+
+describe('phaseRunsOn', () => {
+  it('joins the backend, model and effort the phase sets', () => {
+    expect(phaseRunsOn({ runner: 'claude', model: 'opus', effort: 'high' })).toBe(
+      'claude · opus · high'
+    );
+  });
+
+  it('leaves out the parts the phase leaves to the workflow', () => {
+    expect(phaseRunsOn({ model: 'opus', effort: 'high' })).toBe('opus · high');
+    expect(phaseRunsOn({ runner: 'codex' })).toBe('codex');
+  });
+
+  it('says the phase inherits when it sets none of them', () => {
+    expect(phaseRunsOn({})).toBe('inherits workflow defaults');
+    expect(phaseRunsOn({ runner: undefined, model: '', effort: undefined })).toBe(
+      'inherits workflow defaults'
+    );
   });
 });
 
