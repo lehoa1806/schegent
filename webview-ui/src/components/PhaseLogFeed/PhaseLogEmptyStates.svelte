@@ -59,11 +59,14 @@
   let { banner, noPhaseSelected = false, skippedLines = 0 }: Props = $props();
 </script>
 
+<!-- Drawn as the redesign's empty state (`.empty` in `sg-core.css`), the way its run page says a
+     step has no log yet: a headline in the foreground, then the muted reason, centred where the
+     log would be. -->
 {#if noPhaseSelected}
   <!-- Ordered first on purpose: deselecting a phase can leave the previous
        tuple's banner in state for a frame, and "no log for this phase yet" is
        false once there is no this-phase. -->
-  <div class="card" data-testid="phase-log-empty-no-phase">
+  <div class="empty" data-testid="phase-log-empty-no-phase">
     <p class="title">No phase selected</p>
     <p class="hint">
       Pick a phase from the strip to read its log. A run that has
@@ -73,7 +76,7 @@
   </div>
 {:else if banner?.kind === 'phase-running-no-output'}
   <div
-    class="card"
+    class="empty"
     data-testid="phase-log-empty-phase-running-no-output"
     data-empty-kind="phase-running-no-output"
   >
@@ -84,7 +87,7 @@
   </div>
 {:else if banner?.kind === 'phase-not-recorded'}
   <div
-    class="card"
+    class="empty"
     data-testid="phase-log-empty-phase-not-recorded"
     data-empty-kind="phase-not-recorded"
   >
@@ -96,7 +99,7 @@
   </div>
 {:else if banner?.kind === 'diagnostics-disabled'}
   <div
-    class="card guidance"
+    class="empty guidance"
     data-testid="phase-log-empty-diagnostics-disabled"
     data-empty-kind="diagnostics-disabled"
   >
@@ -107,6 +110,7 @@
     </p>
     <button
       type="button"
+      class="btn btn-secondary"
       data-testid="phase-log-empty-open-settings"
       onclick={openVerboseSetting}
     >
@@ -115,7 +119,7 @@
   </div>
 {:else if banner?.kind === 'no-iteration-recorded'}
   <div
-    class="card"
+    class="empty"
     data-testid="phase-log-empty-no-iteration-recorded"
     data-empty-kind="no-iteration-recorded"
   >
@@ -126,7 +130,7 @@
   </div>
 {:else if banner?.kind === 'record-path-refused'}
   <div
-    class="card"
+    class="empty"
     data-testid="phase-log-empty-record-path-refused"
     data-empty-kind="record-path-refused"
   >
@@ -138,7 +142,7 @@
   </div>
 {:else if banner?.kind === 'record-vanished'}
   <div
-    class="card"
+    class="empty"
     data-testid="phase-log-empty-record-vanished"
     data-empty-kind="record-vanished"
   >
@@ -150,7 +154,7 @@
   </div>
 {:else if banner?.kind === 'nothing-displayable'}
   <div
-    class="card"
+    class="empty"
     data-testid="phase-log-empty-nothing-displayable"
     data-empty-kind="nothing-displayable"
   >
@@ -171,29 +175,22 @@
 {/if}
 
 <style>
-  .card {
-    padding: var(--schegent-pad, 0.75rem);
-    border: 1px dashed var(--schegent-border, currentColor);
-    border-radius: 4px;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    opacity: 0.85;
+  /* A whole row of the feed. */
+  .empty {
+    flex-basis: 100%;
+    min-width: 0;
   }
   .title {
+    margin: 0 0 var(--schegent-space-1);
+    color: var(--schegent-fg);
+    font-size: var(--schegent-text-subheading);
     font-weight: 600;
-    margin: 0;
   }
   .hint {
-    margin: 0;
-    font-size: 0.85rem;
-    opacity: 0.85;
+    max-width: 60ch;
+    margin: 0 auto;
   }
   code {
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.85em;
-  }
-  button {
-    align-self: flex-start;
+    font-family: var(--schegent-mono-font);
   }
 </style>

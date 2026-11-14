@@ -175,14 +175,16 @@
   }
 </script>
 
+<!-- `.page` is the redesign's scrolling page: its padding and overflow, so a tier draws no frame of
+     its own and every tier sits at the same edges. -->
 <div
-  class="operations-surface"
+  class="operations-surface page"
   data-testid="operations-scroll"
   bind:this={scroller}
   onscroll={rememberOffset}
 >
   {#if resolved.notice !== null}
-    <p class="fallback-notice" data-testid="operations-fallback-notice" role="status">
+    <p class="fallback-notice attn warn" data-testid="operations-fallback-notice" role="status">
       {resolved.notice}
     </p>
   {/if}
@@ -244,29 +246,38 @@
 <style>
   .operations-surface {
     display: flex;
+    flex: 1;
     flex-direction: column;
+    min-width: 0;
     min-height: 0;
     height: 100%;
     overflow-y: auto;
   }
 
   .fallback-notice {
-    margin: 0;
-    padding: 8px 20px;
-    font-size: 12px;
-    color: var(--vscode-notificationsWarningIcon-foreground, var(--vscode-descriptionForeground));
-    background: var(--vscode-editorWidget-background);
+    margin-top: 0;
+  }
+
+  /* While queue detail splits into its page and the add-task drawer, the split is the page:
+     each half scrolls on its own and the drawer runs to the edges, as the redesign draws it,
+     so the surface stops padding and scrolling. */
+  .operations-surface:has(> :global(.page-split)) {
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .operations-surface:has(> :global(.page-split)) > .fallback-notice {
+    margin: var(--schegent-space-4) var(--schegent-space-4-5) 0;
   }
 
   .tier-loading,
   .tier-error {
     margin: 0;
-    padding: 16px 20px;
-    font-size: 12px;
-    color: var(--vscode-descriptionForeground);
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-muted-fg);
   }
 
   .tier-error {
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-status-error-text);
   }
 </style>

@@ -62,6 +62,8 @@
   }
 </script>
 
+<!-- Drawn in the redesign's quiet caption type above the log: one line of key = value pairs that
+     wraps, the key and the equals sign muted, and a chevron that turns as the full list opens. -->
 {#if lines.length > 0}
   <div
     class="metadata-strip"
@@ -75,10 +77,10 @@
       aria-expanded={expanded}
       onclick={toggle}
     >
-      <span class="caret" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+      <svg class="i caret" aria-hidden="true"><use href="#i-right"></use></svg>
       <span class="summary">
         {#each dedupedOrdered as line (line.key)}
-          <span class="kv">
+          <span class="pair">
             <span class="k">{line.rawKey}</span>
             <span class="eq">=</span>
             <span class="v">{displayValue(line)}</span>
@@ -101,62 +103,69 @@
 {/if}
 
 <style>
+  /* Sticky at the top of the log's column, so the session's facts stay in view as it scrolls. */
   .metadata-strip {
-    border: 1px solid var(--schegent-border, var(--vscode-panel-border, transparent));
-    border-radius: 3px;
-    background: var(--vscode-editorWidget-background, transparent);
-    padding: 0.125rem 0.25rem;
-    font-size: 0.75rem;
     position: sticky;
     top: 0;
     z-index: 1;
     overflow: hidden;
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius-sm);
+    background: var(--schegent-surface);
+    font-family: var(--schegent-mono-font);
+    font-size: var(--schegent-text-caption);
   }
   .toggle {
     display: flex;
-    align-items: center;
-    gap: 0.25rem;
+    align-items: flex-start;
+    gap: var(--schegent-space-1-5);
     width: 100%;
+    padding: var(--schegent-space-1) var(--schegent-space-2);
+    border: 0;
     background: transparent;
-    color: inherit;
-    border: none;
-    padding: 0.125rem 0.25rem;
     cursor: pointer;
-    font: inherit;
     text-align: left;
   }
-  .caret {
+  .toggle:hover {
+    background: var(--schegent-list-hover);
+  }
+  /* The strip clips its overflow, so the ring sits inside the toggle. */
+  .toggle:focus-visible {
+    outline-offset: -2px;
+  }
+  .toggle .caret {
     flex-shrink: 0;
-    opacity: 0.7;
+    width: 14px;
+    height: 14px;
+    margin-top: 1px;
+    color: var(--schegent-muted-fg);
+    transition: transform var(--schegent-duration-base) var(--schegent-ease-out);
+  }
+  .metadata-strip[data-expanded='true'] .caret {
+    transform: rotate(90deg);
   }
   .summary {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
     flex: 1;
+    flex-wrap: wrap;
+    gap: var(--schegent-space-0-5) var(--schegent-space-3);
     min-width: 0;
   }
-  .kv {
-    font-family: var(--vscode-editor-font-family, monospace);
-    word-break: break-all;
+  .pair,
+  .row {
+    overflow-wrap: anywhere;
   }
-  .kv .k {
-    opacity: 0.7;
-  }
-  .kv .eq {
-    opacity: 0.5;
+  .k,
+  .eq {
+    color: var(--schegent-muted-fg);
   }
   .expanded-list {
-    list-style: none;
-    margin: 0.25rem 0 0;
-    padding: 0.25rem;
-    border-top: 1px solid var(--schegent-border, var(--vscode-panel-border, transparent));
     display: flex;
     flex-direction: column;
-    gap: 0.125rem;
-  }
-  .row {
-    font-family: var(--vscode-editor-font-family, monospace);
-    word-break: break-word;
+    gap: var(--schegent-space-0-5);
+    margin: 0;
+    padding: var(--schegent-space-1-5) var(--schegent-space-2) var(--schegent-space-2);
+    border-top: 1px solid var(--schegent-border);
+    list-style: none;
   }
 </style>

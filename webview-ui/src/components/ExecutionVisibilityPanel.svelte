@@ -71,6 +71,21 @@
     return h.revisions.find((r) => r.revision === h.revision)?.state ?? 'unknown';
   }
 
+  // The redesign folds diagnostics under a quiet summary line. The disclosure opens itself when it
+  // has something for the operator: a handoff waiting on this window's approval, whose button is
+  // here and nowhere else, or a notice. It never folds itself, so an approval's result stays shown.
+  let expanded = $state(false);
+  const needsAttention = $derived(
+    notice !== '' ||
+      (isPrimary &&
+        detail !== null &&
+        detail.available &&
+        detail.handoffs.some((h) => latestRevisionState(h) === 'waiting-approval'))
+  );
+  $effect(() => {
+    if (needsAttention) expanded = true;
+  });
+
   async function approveHandoff(h: HandoffExplanation): Promise<void> {
     const decisionId = `approve-${h.handoffId}-r${h.revision}`;
     const env = await requestDecidePhaseHandoff({
@@ -126,169 +141,241 @@
   }
 </script>
 
-<section class="exec-visibility" aria-label="Execution visibility and handoffs" data-testid="execution-visibility-panel">
-  <header class="ev-header">
-    <div>
-      <h2>Execution visibility</h2>
-      <p class="ev-sub">Hierarchy, evidence availability, recovery certainty, ACP state, and phase handoffs.</p>
-    </div>
-    <button
-      type="button"
-      class="btn"
-      disabled={loading}
-      data-testid="execution-visibility-refresh"
-      onclick={() => void loadVisibility()}
-    >
-      {loading ? 'Refreshing…' : 'Refresh visibility'}
-    </button>
-  </header>
+<!-- Drawn as the redesign's diagnostics disclosure (`details.diag`): a quiet summary line, then the
+     readings as the redesign's key and value rows, the workspace lane and the handoffs. -->
+<details class="diag exec-visibility" data-testid="execution-visibility-panel" bind:open={expanded}>
+  <summary>Diagnostics: execution evidence, handoffs and change review</summary>
 
-  {#if notice !== ''}
-    <p class="ev-notice" role="status" aria-live="polite" data-testid="execution-visibility-notice">{notice}</p>
-  {/if}
+  <div class="ev-body">
+    {#if notice !== ''}
+      <p class="ev-notice" role="status" aria-live="polite" data-testid="execution-visibility-notice">{notice}</p>
+    {/if}
 
-  {#if detail === null}
-    <p class="ev-note">Loading execution visibility…</p>
-  {:else if !detail.available}
-    <p class="ev-note" data-testid="execution-visibility-unavailable">
-      {availabilityPhrase('unavailable')} ({detail.unavailableReason ?? 'store-unavailable'}).
-    </p>
-  {:else}
-    <dl class="ev-grid" data-testid="execution-visibility-posture">
-      <div>
-        <dt>Hierarchy &amp; quality</dt>
-        <dd data-testid="ev-quality">
-          <span class="badge">{qualityLabel(detail.hierarchy.dataQuality)}</span>
-          &middot; {detail.hierarchy.invocationCount} step(s), {detail.hierarchy.attemptCount} attempt(s)
-        </dd>
-      </div>
-      <div>
-        <dt>Artifact evidence</dt>
-        <dd data-testid="ev-evidence">
-          {#if detail.evidence.length === 0}
-            {availabilityPhrase('missing')}
-          {:else}
-            {detail.evidence.filter((e) => e.availability === 'present').length} present / {detail.evidence.length} recorded
-          {/if}
-        </dd>
-      </div>
-      <div>
-        <dt>Live log stream</dt>
-        <dd data-testid="ev-livelog">
-          <span class="badge">{streamLabel(detail.liveLog.streamState)}</span>
-          &middot; {detail.liveLog.segmentCount} seg, {detail.liveLog.gapCount} gap(s)
-        </dd>
-      </div>
-      <div>
-        <dt>Recovery certainty</dt>
-        <dd data-testid="ev-recovery">
-          <span class="badge">{recoveryLabel(detail.recovery.posture)}</span>
-          {#if detail.recovery.reasonCode !== null}
-            ({detail.recovery.reasonCode})
-          {/if}
-        </dd>
-      </div>
-      <div>
-        <dt>ACP runtime state</dt>
-        <dd data-testid="ev-acp">
-          <span class="badge">{detail.acp.runtimeState}</span>
-          {#if detail.acp.profileId !== null || detail.acp.backendKind !== null}
-            &middot; {detail.acp.profileId ?? detail.acp.backendKind}
-          {/if}
-          {#if detail.acp.pendingPermissions > 0}
-            ({detail.acp.pendingPermissions} permission pending)
-          {/if}
-        </dd>
-      </div>
-    </dl>
-
-    <ChangeReviewPanel lane={detail.lane} {isPrimary} />
-
-    <section class="ev-subblock" aria-label="Phase context handoffs" data-testid="ev-handoffs-section">
-      <h3>Phase handoffs ({detail.handoffs.length}) &amp; review loops ({detail.reviewLoops.length})</h3>
-      {#if detail.handoffs.length === 0 && detail.reviewLoops.length === 0}
-        <p class="ev-note">No phase handoffs or review-loop ledgers recorded for this run.</p>
+    <!-- The readings, with Refresh at the end of their row. -->
+    <div class="ev-head">
+      {#if detail === null}
+        <p class="ev-note">Loading execution visibility…</p>
+      {:else if !detail.available}
+        <p class="ev-note" data-testid="execution-visibility-unavailable">
+          {availabilityPhrase('unavailable')} ({detail.unavailableReason ?? 'store-unavailable'}).
+        </p>
       {:else}
-        {#if detail.handoffs.length > 0}
-          <ul class="ev-list">
-            {#each detail.handoffs as h (h.handoffId)}
-              <li class="ev-list-row" data-testid={`ev-handoff-${h.handoffId}`}>
-                <div>
-                  <strong>{h.identity.targetNodePath}</strong> (rev {h.revision}, {latestRevisionState(h)}, mode {h.approval})
-                  &middot; {h.sources.length} source(s), {h.omissions.length + h.omissionsUnlisted} omission(s)
-                </div>
-                {#if isPrimary && latestRevisionState(h) === 'waiting-approval'}
-                  <div class="ev-actions">
-                    <button
-                      type="button"
-                      class="btn"
-                      data-testid={`ev-handoff-approve-${h.handoffId}`}
-                      onclick={() => void approveHandoff(h)}
+        <dl class="kv ev-grid" data-testid="execution-visibility-posture">
+          <div>
+            <dt>Hierarchy</dt>
+            <dd data-testid="ev-quality">
+              {qualityLabel(detail.hierarchy.dataQuality)}
+              <span class="muted"
+                >&middot; {detail.hierarchy.invocationCount} step(s), {detail.hierarchy.attemptCount} attempt(s)</span
+              >
+            </dd>
+          </div>
+          <div>
+            <dt>Evidence</dt>
+            <dd data-testid="ev-evidence">
+              {#if detail.evidence.length === 0}
+                {availabilityPhrase('missing')}
+              {:else}
+                {detail.evidence.filter((e) => e.availability === 'present').length} present / {detail.evidence.length} recorded
+              {/if}
+            </dd>
+          </div>
+          <div>
+            <dt>Live log</dt>
+            <dd data-testid="ev-livelog">
+              {streamLabel(detail.liveLog.streamState)}
+              <span class="muted">&middot; {detail.liveLog.segmentCount} seg, {detail.liveLog.gapCount} gap(s)</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Recovery</dt>
+            <dd data-testid="ev-recovery">
+              {recoveryLabel(detail.recovery.posture)}
+              {#if detail.recovery.reasonCode !== null}
+                <span class="muted mono">({detail.recovery.reasonCode})</span>
+              {/if}
+            </dd>
+          </div>
+          <div>
+            <dt>ACP state</dt>
+            <dd data-testid="ev-acp">
+              {detail.acp.runtimeState}
+              {#if detail.acp.profileId !== null || detail.acp.backendKind !== null}
+                <span class="muted">&middot; {detail.acp.profileId ?? detail.acp.backendKind}</span>
+              {/if}
+              {#if detail.acp.pendingPermissions > 0}
+                <span class="muted">({detail.acp.pendingPermissions} permission pending)</span>
+              {/if}
+            </dd>
+          </div>
+        </dl>
+      {/if}
+      <button
+        type="button"
+        class="btn btn-secondary btn-sm ev-refresh"
+        disabled={loading}
+        data-testid="execution-visibility-refresh"
+        onclick={() => void loadVisibility()}
+      >
+        {loading ? 'Refreshing…' : 'Refresh'}
+      </button>
+    </div>
+
+    {#if detail !== null && detail.available}
+      <ChangeReviewPanel lane={detail.lane} {isPrimary} />
+
+      <section class="ev-subblock" aria-label="Phase context handoffs" data-testid="ev-handoffs-section">
+        <h3>Phase handoffs ({detail.handoffs.length}) &amp; review loops ({detail.reviewLoops.length})</h3>
+        {#if detail.handoffs.length === 0 && detail.reviewLoops.length === 0}
+          <p class="ev-note">No phase handoffs or review-loop ledgers recorded for this run.</p>
+        {:else}
+          {#if detail.handoffs.length > 0}
+            <ul class="ev-list">
+              {#each detail.handoffs as h (h.handoffId)}
+                <li class="ev-list-row" data-testid={`ev-handoff-${h.handoffId}`}>
+                  <div>
+                    <strong>{h.identity.targetNodePath}</strong> (rev {h.revision}, {latestRevisionState(h)}, mode {h.approval})
+                    <span class="muted"
+                      >&middot; {h.sources.length} source(s), {h.omissions.length + h.omissionsUnlisted} omission(s)</span
                     >
-                      Approve handoff
-                    </button>
-                    <button
-                      type="button"
-                      class="btn"
-                      data-testid={`ev-handoff-edit-${h.handoffId}`}
-                      onclick={() => {
-                        editingHandoffId = editingHandoffId === h.handoffId ? null : h.handoffId;
+                  </div>
+                  {#if isPrimary && latestRevisionState(h) === 'waiting-approval'}
+                    <div class="ev-actions">
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-sm"
+                        data-testid={`ev-handoff-approve-${h.handoffId}`}
+                        onclick={() => void approveHandoff(h)}
+                      >
+                        Approve handoff
+                      </button>
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-sm"
+                        data-testid={`ev-handoff-edit-${h.handoffId}`}
+                        onclick={() => {
+                          editingHandoffId = editingHandoffId === h.handoffId ? null : h.handoffId;
+                        }}
+                      >
+                        Edit summary
+                      </button>
+                    </div>
+                  {/if}
+                  {#if editingHandoffId === h.handoffId}
+                    <form
+                      class="ev-edit-form"
+                      onsubmit={(e) => {
+                        e.preventDefault();
+                        void submitEditedHandoff(h);
                       }}
                     >
-                      Edit summary
-                    </button>
-                  </div>
-                {/if}
-                {#if editingHandoffId === h.handoffId}
-                  <form
-                    class="ev-edit-form"
-                    onsubmit={(e) => {
-                      e.preventDefault();
-                      void submitEditedHandoff(h);
-                    }}
-                  >
-                    <label>
-                      <span>Replacement summary note</span>
-                      <input type="text" bind:value={editedNote} required maxlength="500" data-testid={`ev-handoff-input-${h.handoffId}`} />
-                    </label>
-                    <button type="submit" class="btn" data-testid={`ev-handoff-save-${h.handoffId}`}>Save &amp; supersede</button>
-                  </form>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        {/if}
+                      <label>
+                        <span>Replacement summary note</span>
+                        <input
+                          type="text"
+                          class="input"
+                          bind:value={editedNote}
+                          required
+                          maxlength="500"
+                          data-testid={`ev-handoff-input-${h.handoffId}`}
+                        />
+                      </label>
+                      <button type="submit" class="btn btn-secondary" data-testid={`ev-handoff-save-${h.handoffId}`}
+                        >Save &amp; supersede</button
+                      >
+                    </form>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
 
-        {#if detail.reviewLoops.length > 0}
-          <ul class="ev-list" data-testid="ev-review-loops-list">
-            {#each detail.reviewLoops as rl (rl.loopId)}
-              <li class="ev-list-row">
-                Review loop <strong>{rl.nodeId}</strong> (iter {rl.iteration}):
-                <span class="badge">{rl.verdict}</span>
-                &middot; {rl.openFindings} open / {rl.resolvedFindings} resolved ({rl.totalFindings} total findings)
-              </li>
-            {/each}
-          </ul>
+          {#if detail.reviewLoops.length > 0}
+            <ul class="ev-list" data-testid="ev-review-loops-list">
+              {#each detail.reviewLoops as rl (rl.loopId)}
+                <li class="ev-list-row">
+                  <div>
+                    Review loop <strong>{rl.nodeId}</strong> (iter {rl.iteration}):
+                    <span class="tag">{rl.verdict}</span>
+                    <span class="muted"
+                      >&middot; {rl.openFindings} open / {rl.resolvedFindings} resolved ({rl.totalFindings} total findings)</span
+                    >
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         {/if}
-      {/if}
-    </section>
-  {/if}
-</section>
+      </section>
+    {/if}
+  </div>
+</details>
 
 <style>
-  .exec-visibility { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--schegent-divider, var(--schegent-border)); }
-  .ev-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 8px; }
-  .ev-header h2, .ev-subblock h3 { margin: 0; font-size: 0.92rem; }
-  .ev-sub, .ev-note, .ev-notice { margin: 2px 0 0; font-size: 0.82em; color: var(--schegent-muted-fg); }
-  .ev-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin: 0; font-size: 0.82em; }
-  .ev-grid dt { color: var(--schegent-muted-fg); }
-  .ev-grid dd { margin: 2px 0 0; }
-  .badge { display: inline-block; padding: 1px 6px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius-sm, 4px); font-size: 0.85em; }
-  .btn { padding: 3px 9px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius-sm, 4px); background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); cursor: pointer; font: inherit; font-size: 0.84em; }
-  .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-  .ev-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 0.82em; }
-  .ev-list-row { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius-sm, 4px); }
-  .ev-actions, .ev-edit-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px; }
-  .ev-edit-form label { display: flex; flex-direction: column; gap: 2px; }
-  .ev-edit-form input { padding: 3px 6px; border: 1px solid var(--schegent-border); background: transparent; color: var(--schegent-fg); font: inherit; }
+  /* The open disclosure's body: the bar, the readings, the lane and the handoffs, a step apart. */
+  .ev-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--schegent-space-3);
+    margin-top: var(--schegent-space-2);
+  }
+  /* The readings at the start, Refresh at the end of their row; below them when the row is tight. */
+  .ev-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--schegent-space-2) var(--schegent-space-4);
+  }
+  .ev-note,
+  .ev-notice {
+    margin: 0;
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-secondary);
+  }
+  /* Each reading's wrapper steps aside, so its term and value sit in the key and value columns. */
+  .ev-grid > div {
+    display: contents;
+  }
+  .ev-subblock {
+    display: flex;
+    flex-direction: column;
+    gap: var(--schegent-space-1-5);
+  }
+  /* The redesign's card heading. */
+  .ev-subblock h3 {
+    font-size: var(--schegent-text-body);
+    font-weight: 600;
+  }
+  .ev-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--schegent-space-1-5);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--schegent-text-secondary);
+  }
+  .ev-list-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--schegent-space-2);
+    padding: var(--schegent-space-2) var(--schegent-space-3);
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius-sm);
+  }
+  .ev-actions,
+  .ev-edit-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--schegent-space-1-5);
+  }
+  .ev-edit-form label {
+    display: flex;
+    flex: 1 1 16rem;
+    flex-direction: column;
+    gap: var(--schegent-space-1);
+    color: var(--schegent-muted-fg);
+  }
 </style>

@@ -36,65 +36,55 @@
   }
 </script>
 
-<div class="tab-bar" role="tablist" aria-label="Run detail views">
+<!-- Drawn as the redesign's tabs (`.tabs` and `.tab` in `sg-pages.css`), which mark the selected
+     tab by `aria-selected`. The labels stay the product's own, the names the docs use, without the
+     glyphs that led them. The streaming badge is a status chip at the bar's end, worded as the
+     redesign words its chips. -->
+<div class="tabs" role="tablist" aria-label="Run detail views">
   <button
     type="button"
     role="tab"
     id="run-tab-log"
-    class="tab-btn"
-    class:active={activeTab === 'log'}
+    class="tab"
     aria-selected={activeTab === 'log'}
     aria-controls="run-detail-panel"
     tabindex={activeTab === 'log' ? 0 : -1}
     data-testid="run-tab-log"
     onkeydown={onTabKeydown}
     onclick={() => activeTab = 'log'}
-  >&Sigma; Phase log</button>
+  >Phase log</button>
   <button
     type="button"
     role="tab"
     id="run-tab-outputs"
-    class="tab-btn"
-    class:active={activeTab === 'outputs'}
+    class="tab"
     aria-selected={activeTab === 'outputs'}
     aria-controls="run-detail-panel"
     tabindex={activeTab === 'outputs' ? 0 : -1}
     data-testid="run-tab-outputs"
     onkeydown={onTabKeydown}
     onclick={() => activeTab = 'outputs'}
-  >&#128196; Run outputs</button>
+  >Run outputs</button>
   <button
     type="button"
     role="tab"
     id="run-tab-context"
-    class="tab-btn"
-    class:active={activeTab === 'context'}
+    class="tab"
     aria-selected={activeTab === 'context'}
     aria-controls="run-detail-panel"
     tabindex={activeTab === 'context' ? 0 : -1}
     data-testid="run-tab-context"
     onkeydown={onTabKeydown}
     onclick={() => activeTab = 'context'}
-  >&#128196; Context</button>
+  >Context</button>
 
   {#if isExecuting}
-    <span class="streaming-badge" data-testid="run-streaming-badge">
-      <span class="streaming-dot"></span>
-      STREAMING
-    </span>
+    <span class="chip s-run push" data-testid="run-streaming-badge"><span class="dot" aria-hidden="true"></span>Streaming</span>
   {/if}
 </div>
 
 <style>
-  .tab-bar { display: flex; align-items: center; gap: 0; border-bottom: 1px solid var(--schegent-divider, color-mix(in srgb, var(--vscode-descriptionForeground) 15%, transparent)); padding-left: 14px; flex-shrink: 0; }
-  .tab-btn { font: inherit; font-size: 12px; padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; white-space: nowrap; }
-  .tab-btn:hover { color: var(--vscode-editor-foreground); }
-  .tab-btn.active { color: var(--vscode-editor-foreground); border-bottom-color: var(--vscode-focusBorder); }
-
-  .streaming-badge { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: var(--schegent-color-active); padding-right: 8px; }
-  .streaming-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--schegent-color-active); animation: pulse-stream 1.8s ease-in-out infinite; }
-  @keyframes pulse-stream {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.5; transform: scale(1.3); }
-  }
+  /* The bar keeps its height while the panel under it scrolls. */
+  .tabs { flex-shrink: 0; align-items: center; }
+  .tab:hover { color: var(--schegent-fg); }
 </style>

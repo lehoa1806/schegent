@@ -142,10 +142,13 @@
   }
 </script>
 
-<section class="change-review" aria-label="Workspace lane and candidate change review" data-testid="change-review-panel">
+<!-- Drawn as one of the redesign's cards inside the run's diagnostics: a heading with the lane's
+     kind as a tag, the lane and the review's standing as key and value rows, the review's actions as
+     small secondary buttons and each changed file as its kind tag and its path in the code font. -->
+<section class="card change-review" aria-label="Workspace lane and candidate change review" data-testid="change-review-panel">
   <header class="cr-header">
     <h3>Execution workspace &amp; change review</h3>
-    <span class="badge" data-testid="lane-mode-badge">
+    <span class="tag" data-testid="lane-mode-badge">
       {lane.mode === 'isolated-lane' ? 'Isolated Git lane' : 'Shared workspace'}
     </span>
   </header>
@@ -155,7 +158,7 @@
       This execution ran in the shared workspace without an isolated candidate branch.
     </p>
   {:else}
-    <dl class="cr-meta">
+    <dl class="kv cr-rows">
       <div>
         <dt>Lane</dt>
         <dd>{lane.laneId ?? 'Not recorded'} ({lane.laneState ?? 'unknown'})</dd>
@@ -178,7 +181,7 @@
       <div class="cr-actions">
         <button
           type="button"
-          class="btn"
+          class="btn btn-secondary btn-sm"
           disabled={loading}
           data-testid="change-review-inspect-btn"
           onclick={() => void openReview(false)}
@@ -187,7 +190,7 @@
         </button>
         <button
           type="button"
-          class="btn"
+          class="btn btn-secondary btn-sm"
           disabled={loading}
           data-testid="change-review-open-editor-btn"
           onclick={() => void openReview(true)}
@@ -197,7 +200,7 @@
         {#if loading}
           <button
             type="button"
-            class="btn"
+            class="btn btn-secondary btn-sm"
             data-testid="change-review-cancel-btn"
             onclick={() => void cancelOpen()}
           >
@@ -207,7 +210,7 @@
         {#if descriptor !== null}
           <button
             type="button"
-            class="btn"
+            class="btn btn-secondary btn-sm"
             disabled={loading}
             data-testid="change-review-recheck-btn"
             onclick={() => void recheckFreshness()}
@@ -216,7 +219,7 @@
           </button>
           <button
             type="button"
-            class="btn"
+            class="btn btn-secondary btn-sm"
             disabled={loading}
             data-testid="change-review-close-btn"
             onclick={() => void closeActiveReview()}
@@ -240,31 +243,39 @@
     {/if}
 
     {#if descriptor !== null}
-      <div class="cr-posture" data-testid="change-review-posture" data-review-state={descriptor.state}>
-        <span class="badge">{stateLabel(descriptor)}</span>
-        <span>
-          Approval: {descriptor.approval.eligible ? 'Eligible' : `Ineligible (${descriptor.approval.reason})`}
-        </span>
-        <span>
-          Landing: {descriptor.landing.eligible ? 'Eligible' : `Ineligible (${descriptor.landing.reason})`}
-        </span>
+      <dl class="kv cr-rows" data-testid="change-review-posture" data-review-state={descriptor.state}>
+        <div>
+          <dt>Freshness</dt>
+          <dd>{stateLabel(descriptor)}</dd>
+        </div>
+        <div>
+          <dt>Approval</dt>
+          <dd>{descriptor.approval.eligible ? 'Eligible' : `Ineligible (${descriptor.approval.reason})`}</dd>
+        </div>
+        <div>
+          <dt>Landing</dt>
+          <dd>{descriptor.landing.eligible ? 'Eligible' : `Ineligible (${descriptor.landing.reason})`}</dd>
+        </div>
         {#if descriptor.truncated}
-          <span>{availabilityPhrase('partial')} (loaded {descriptor.loaded} of {descriptor.total})</span>
+          <div>
+            <dt>Files</dt>
+            <dd>{availabilityPhrase('partial')} (loaded {descriptor.loaded} of {descriptor.total})</dd>
+          </div>
         {/if}
-      </div>
+      </dl>
 
       {#if entries.length > 0}
         <ul class="cr-files" data-testid="change-review-file-list">
           {#each entries as entry (entry.index)}
             <li class="cr-file-item">
-              <span class="badge">{entry.kind}</span>
+              <span class="tag">{entry.kind}</span>
               <!-- FR-013: repository filenames rendered strictly as inert text -->
               <span class="cr-path">{entry.newPath ?? entry.oldPath ?? '(unnamed)'}</span>
               {#if entry.kind === 'renamed' && entry.oldPath !== null}
-                <span class="cr-sub">(from {entry.oldPath}, {entry.similarity ?? 0}% match)</span>
+                <span class="muted">(from {entry.oldPath}, {entry.similarity ?? 0}% match)</span>
               {/if}
               {#if entry.binary}
-                <span class="cr-sub">[binary]</span>
+                <span class="muted">[binary]</span>
               {/if}
             </li>
           {/each}
@@ -274,7 +285,7 @@
       {#if nextCursor !== null}
         <button
           type="button"
-          class="btn"
+          class="btn btn-secondary btn-sm cr-load-more"
           disabled={loading}
           data-testid="change-review-load-more"
           onclick={() => void loadNextPage()}
@@ -287,19 +298,65 @@
 </section>
 
 <style>
-  .change-review { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius-sm, 4px); }
-  .cr-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
-  .cr-header h3 { margin: 0; font-size: 0.9rem; }
-  .cr-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; margin: 0; font-size: 0.82em; }
-  .cr-meta dt { color: var(--schegent-muted-fg); }
-  .cr-meta dd { margin: 1px 0 0; word-break: break-all; }
-  .cr-actions, .cr-posture { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 0.82em; }
-  .btn { padding: 3px 9px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius-sm, 4px); background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); cursor: pointer; font: inherit; font-size: 0.85em; }
-  .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-  .badge { display: inline-block; padding: 1px 6px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius-sm, 4px); font-size: 0.85em; }
-  .cr-note, .cr-warning { margin: 0; font-size: 0.82em; color: var(--schegent-muted-fg); }
-  .cr-files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
-  .cr-file-item { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 0.82em; }
-  .cr-path { font-family: var(--vscode-editor-font-family, monospace); word-break: break-all; }
-  .cr-sub { color: var(--schegent-muted-fg); }
+  .change-review {
+    display: flex;
+    flex-direction: column;
+    gap: var(--schegent-space-2-5);
+  }
+  .cr-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--schegent-space-2);
+  }
+  /* The redesign's card heading. */
+  .cr-header h3 {
+    font-size: var(--schegent-text-body);
+    font-weight: 600;
+  }
+  /* Each row's wrapper steps aside, so its term and value sit in the key and value columns; an id
+     or a ref breaks anywhere rather than widening the card. */
+  .cr-rows > div {
+    display: contents;
+  }
+  .cr-rows dd {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .cr-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--schegent-space-1-5);
+  }
+  .cr-note,
+  .cr-warning {
+    margin: 0;
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-secondary);
+  }
+  .cr-files {
+    display: flex;
+    flex-direction: column;
+    gap: var(--schegent-space-1);
+    max-height: 220px;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+    font-size: var(--schegent-text-secondary);
+  }
+  .cr-file-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--schegent-space-1-5);
+  }
+  .cr-path {
+    min-width: 0;
+    font-family: var(--schegent-mono-font);
+    overflow-wrap: anywhere;
+  }
+  .cr-load-more {
+    align-self: flex-start;
+  }
 </style>

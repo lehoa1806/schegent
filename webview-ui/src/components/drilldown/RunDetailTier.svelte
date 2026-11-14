@@ -15,7 +15,8 @@
   // activity, which under concurrent Runs is some other queue's feed. Reading it
   // here would be exactly the cross-queue bleed FR-051 and FR-052 forbid.
   //
-  // Mockup: docs/mockup/schegent_mockup.html `view-run-detail`.
+  // Mockup: docs/mockup/schegent_redesign_surfaces.html, run detail. The steps and the selected
+  // step's views stand side by side, as there; the limits keep their card above both (spec 240 D11).
 
   import PhaseProgression from '../PhaseProgression.svelte';
   import QueueItemActions from '../QueueItemActions.svelte';
@@ -27,6 +28,7 @@
   import RunTabBar, { type RunTab } from './RunTabBar.svelte';
   import ExecutionVisibilityPanel from '../ExecutionVisibilityPanel.svelte';
   import { findQueueRuntime } from '../../lib/queue-runtime-view';
+  import { queueRowStatusChip } from '../../lib/queue-row-status';
   import { formatDuration } from '../../lib/format-duration';
   import type { PhaseTile, QueueItemStatus } from '../../lib/snapshot-types';
   import { resolveTaskPipelineName } from '../../lib/resolve-pipeline-name';
@@ -268,17 +270,55 @@
 </script>
 
 <main class="run-detail-tier" class:workflow-branch={connectedRun !== null} data-testid="run-detail-tier" aria-label="Run detail">
-  <header class="tier-header">
-    <button
-      type="button"
-      class="back"
-      data-testid="run-detail-back"
-      onclick={onBack}
-      onkeydown={onBackKeyDown}
-    >
-      &larr; {backLabel}
-    </button>
-  </header>
+  <!-- The redesign's page header: a crumb back to where the Run was opened from, then, for a
+       Task, its title with its status chip, the meta line and the Task's own actions. -->
+  <div class="phead">
+    <div>
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <button
+          type="button"
+          class="linkbtn"
+          data-testid="run-detail-back"
+          onclick={onBack}
+          onkeydown={onBackKeyDown}
+        >{backLabel}</button>
+        <span class="muted" aria-hidden="true">/</span>
+      </nav>
+      {#if connectedRun === null && task !== null}
+        {@const chip = queueRowStatusChip(task.status)}
+        <div class="titlerow">
+          <h1
+            class="run-prompt"
+            data-testid="run-detail-prompt"
+            title={task.label}
+          >{task.label.length > 64 ? task.label.slice(0, 64) + '…' : task.label}</h1>
+          <span class="chip {chip.tone}" data-testid="run-detail-status">{#if chip.icon === null}<span class="dot" aria-hidden="true"></span>{:else}<svg class="i" aria-hidden="true"><use href={chip.icon}></use></svg>{/if}{statusLabel(task.status)}</span>
+        </div>
+        <div class="meta run-meta" data-testid="run-detail-meta">
+          <span data-testid="run-detail-pipeline">{pipelineName}</span>
+          {#if elapsedLabel !== null}
+            <span aria-hidden="true">&middot;</span>
+            <span>{elapsedLabel}</span>
+          {/if}
+          {#if phaseOfTotal !== null}
+            <span aria-hidden="true">&middot;</span>
+            <span>{phaseOfTotal}</span>
+          {/if}
+          {#if currentIteration > 1}
+            <span aria-hidden="true">&middot;</span>
+            <span>iteration {currentIteration}</span>
+          {/if}
+          <span aria-hidden="true">&middot;</span>
+          <span class="mono">{task.id.length > 10 ? task.id.slice(0, 10) : task.id}</span>
+        </div>
+      {/if}
+    </div>
+    {#if connectedRun === null && task !== null && isPrimary}
+      <div class="actions" data-testid="run-detail-controls">
+        <QueueItemActions item={task} {isPrimary} />
+      </div>
+    {/if}
+  </div>
 
   {#if connectedRun !== null}
     <!-- Workflow-backed: the relocated topology view, unchanged (FR-066). -->
@@ -291,45 +331,6 @@
       {returnFocusKey}
     />
   {:else if task !== null}
-    <!-- Header block: title + meta line + action buttons -->
-    <div class="run-header-block">
-      <div class="run-header-top">
-        <h1
-          class="run-prompt"
-          data-testid="run-detail-prompt"
-          title={task.label}
-        >{task.label.length > 64 ? task.label.slice(0, 64) + '…' : task.label}</h1>
-        {#if isPrimary}
-          <div class="header-actions" data-testid="run-detail-controls">
-            <QueueItemActions item={task} {isPrimary} />
-          </div>
-        {/if}
-      </div>
-
-      <p class="run-meta" data-testid="run-detail-meta">
-        <span class="meta-id">{task.id.length > 10 ? task.id.slice(0, 10) : task.id}</span>
-        <span class="meta-sep">&middot;</span>
-        <span class="meta-pipeline" data-testid="run-detail-pipeline">{pipelineName}</span>
-        <span class="meta-sep">&middot;</span>
-        <span
-          class="meta-status status-{task.status}"
-          data-testid="run-detail-status"
-        >{statusLabel(task.status)}</span>
-        {#if elapsedLabel !== null}
-          <span class="meta-sep">&middot;</span>
-          <span class="meta-elapsed">{elapsedLabel}</span>
-        {/if}
-        {#if phaseOfTotal !== null}
-          <span class="meta-sep">&middot;</span>
-          <span class="meta-phase-of">{phaseOfTotal}</span>
-        {/if}
-        {#if currentIteration > 1}
-          <span class="meta-sep">&middot;</span>
-          <span class="meta-iteration">iteration {currentIteration}</span>
-        {/if}
-      </p>
-    </div>
-
     {#if creditPolling !== null}
       <CreditPollingNotice {queueId} {creditPolling} />
     {/if}
@@ -390,13 +391,25 @@
               {liveTarget}
             />
           {:else if activeTab === 'outputs'}
-            <RunOutputs {outputs} />
+            {#if outputs.length > 0}
+              <RunOutputs {outputs} />
+            {:else}
+              <!-- The redesign's empty note, where `RunOutputs` draws nothing. Outputs reach this
+                   tier only while the Run executes, so the note says which case this is. -->
+              <div class="empty" data-testid="run-outputs-empty">
+                {#if isExecuting}
+                  <strong>No outputs yet</strong>Outputs appear here as the run records them.
+                {:else}
+                  <strong>No outputs to show</strong>This tab lists outputs while the run executes.
+                {/if}
+              </div>
+            {/if}
           {:else}
             <!-- FR-R3-008 (T380) — the same two questions the live feed answers from
                  memory, answered from the persisted record so they survive a window
                  reload. Both read `unknown` on a Run written before the feature; see
                  `run-liveness-view.ts` for why that is not zero. -->
-            <dl class="run-liveness" data-testid="run-detail-liveness">
+            <dl class="kv run-liveness" data-testid="run-detail-liveness">
               <dt>Activity</dt>
               <dd data-testid="run-detail-last-activity" data-known={livenessView.known}>
                 {livenessView.label}
@@ -421,51 +434,40 @@
   {:else}
     <!-- FR-062 — the destination resolved to nothing. Say so; the surface above
          decides whether to fall back, and this view must not look merely empty. -->
-    <p class="missing" data-testid="run-detail-missing">
+    <p class="empty missing" data-testid="run-detail-missing">
       This run no longer exists on {queueName}.
     </p>
   {/if}
 </main>
 
 <style>
-  .run-detail-tier { display: flex; flex-direction: column; gap: 12px; padding: 16px 20px; height: 100%; min-height: 0; overflow: hidden; }
+  /* The page (`.page` on the surface) pads the tier, and the blocks space themselves by their own
+     bottom margins, as the redesign's page header, banner and card do. The tier stays the height of
+     the surface, so the steps and the selected step's views each scroll on their own. */
+  .run-detail-tier { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
   /* BUG-001 (FR-008): the topology grows with its nodes; `operations-scroll` owns the overflow. */
   .run-detail-tier.workflow-branch { height: auto; overflow: visible; }
-  .tier-header { display: flex; align-items: center; }
-  .back { font: inherit; padding: 2px 0; border: 0; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; }
-  .back:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
 
-  .run-header-block { display: flex; flex-direction: column; gap: 6px; }
-  .run-header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-  .run-prompt { margin: 0; font-size: 18px; font-weight: 600; color: var(--vscode-editor-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; }
-  .header-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .phead { flex-shrink: 0; }
+  /* The label is already cut at 64 characters, so it wraps rather than cutting again. */
+  .run-prompt { overflow-wrap: anywhere; }
+  .run-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--schegent-space-1-5); font-variant-numeric: tabular-nums; }
 
-  .run-meta { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--vscode-descriptionForeground); }
-  .meta-id { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; color: var(--vscode-descriptionForeground); }
-  .meta-sep { color: var(--vscode-descriptionForeground); opacity: 0.5; }
-  .meta-pipeline { font-size: 12px; padding: 1px 7px; border-radius: 4px; background: color-mix(in srgb, var(--vscode-descriptionForeground) 12%, transparent); }
-  .meta-status { font-size: 11px; font-weight: 600; text-transform: uppercase; padding: 1px 8px; border-radius: 4px; }
-  /* Same status-to-token mapping the Queue Detail rows use, so one status
-     reads the same colour in both tiers. FR-021 — theme variables only. */
-  .meta-status.status-in-flight { background: color-mix(in srgb, var(--schegent-color-active) 18%, transparent); color: var(--schegent-color-active); }
-  .meta-status.status-completed { background: color-mix(in srgb, var(--schegent-color-completed) 18%, transparent); color: var(--schegent-color-completed); }
-  .meta-status.status-pending { background: transparent; color: var(--vscode-descriptionForeground); }
-  .meta-status.status-paused { background: color-mix(in srgb, var(--schegent-color-warning) 18%, transparent); color: var(--schegent-color-warning); }
-  .meta-status.status-failed { background: color-mix(in srgb, var(--schegent-color-error) 18%, transparent); color: var(--schegent-color-error); }
-  .meta-status.status-canceled { background: transparent; color: var(--vscode-descriptionForeground); opacity: 0.7; }
-  .meta-elapsed, .meta-phase-of, .meta-iteration { font-variant-numeric: tabular-nums; }
+  /* The redesign's split: the step list at 260 pixels, the selected step's views beside it. The
+     row is the tier's remaining height, never the content's, so each column scrolls inside it. */
+  .run-columns { flex: 1 1 0; min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: var(--schegent-space-4); }
+  .run-left-panel { min-height: 0; overflow-y: auto; }
+  .run-right-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+  .tab-panel { flex: 1 1 0; min-height: 0; overflow-y: auto; }
 
-  .run-columns { display: flex; gap: 0; flex: 1 1 0; min-height: 0; overflow: hidden; }
-  .run-left-panel { flex: 0 0 260px; border-right: 1px solid var(--schegent-divider, color-mix(in srgb, var(--vscode-descriptionForeground) 15%, transparent)); padding-right: 14px; overflow-y: auto; }
-  .run-right-panel { flex: 1 1 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+  .run-liveness dd { overflow-wrap: anywhere; }
+  .run-liveness dd[data-known='false'], .run-liveness .detail { color: var(--schegent-muted-fg); }
+  .live-feed { margin: var(--schegent-space-3) 0 0; font-size: var(--schegent-text-secondary); color: var(--schegent-muted-fg); }
+  .missing { margin: 0; }
 
-  .tab-panel { flex: 1 1 0; min-height: 0; overflow-y: auto; padding-left: 14px; padding-top: 8px; height: 100%; }
-
-  .run-liveness { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0; font-size: 12px; }
-  .run-liveness dt { color: var(--vscode-descriptionForeground); text-transform: uppercase; font-size: 11px; }
-  .run-liveness dd { margin: 0; color: var(--vscode-editor-foreground); overflow-wrap: anywhere; }
-  .run-liveness dd[data-known='false'] { color: var(--vscode-descriptionForeground); font-style: italic; }
-  .run-liveness .detail { color: var(--vscode-descriptionForeground); }
-  .live-feed { margin: 12px 0 0; font-size: 12px; color: var(--vscode-descriptionForeground); }
-  .missing { margin: 0; font-size: 12px; color: var(--vscode-descriptionForeground); }
+  /* One column where the redesign stacks its split: the steps take what they need, up to two
+     fifths of the height, and the views the rest. */
+  @media (max-width: 860px) {
+    .run-columns { grid-template-columns: minmax(0, 1fr); grid-template-rows: fit-content(40%) minmax(0, 1fr); }
+  }
 </style>

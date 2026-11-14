@@ -1,7 +1,7 @@
 <script lang="ts">
-  // Feature 020 T035 — single phase-log entry row. Renders the kind
-  // icon, body (kind-dependent), timestamp, truncation indicator, and
-  // error-flag visual for `tool-result` with `isError === true`.
+  // Feature 020 T035 — single phase-log entry row. Renders the time of
+  // day, the kind as a word, body (kind-dependent), truncation indicator,
+  // and error-flag visual for `tool-result` with `isError === true`.
   //
   // Body strings have been sanitized by the host before crossing the
   // IPC boundary; the component renders them as text only (no `{@html}`,
@@ -17,6 +17,7 @@
     coverageGapLabel,
     coverageGapReason
   } from '../../lib/activity-feed/coverage-gap-label';
+  import { formatTimeOfDay } from '../../lib/format-time-of-day';
 
   interface Props {
     readonly entry: PhaseLogDisplayEntry;
@@ -24,16 +25,23 @@
 
   let { entry }: Props = $props();
 
-  const ICONS: Record<PhaseLogDisplayEntry['kind'], string> = {
-    'assistant-text': '✎',
-    'tool-use': '▶',
-    'tool-result': '✓',
-    system: '·',
-    result: '◆',
-    'truncated-head': '…',
-    'tail-ended': '⏹',
-    'coverage-gap': '!'
+  // The redesign's log names each line's kind in a word ("tool"); the
+  // kinds it does not draw take the nearest word, and the log's own notices
+  // (hidden head, ended tail, coverage gap) read "note".
+  const KIND_LABELS: Record<PhaseLogDisplayEntry['kind'], string> = {
+    'assistant-text': 'assistant',
+    'tool-use': 'tool',
+    'tool-result': 'output',
+    system: 'system',
+    result: 'result',
+    'truncated-head': 'note',
+    'tail-ended': 'note',
+    'coverage-gap': 'note'
   };
+
+  // The local time of day, as the redesign's log reads; the full stamp stays
+  // in `datetime` and the tooltip, and one that does not parse shows as it came.
+  const timeLabel = $derived(entry.ts ? formatTimeOfDay(entry.ts, { seconds: true }) || entry.ts : '');
 
   const isError = $derived(entry.kind === 'tool-result' && entry.body.isError === true);
 
@@ -84,7 +92,10 @@
   data-kind={entry.kind}
   data-is-error={isError ? 'true' : 'false'}
 >
-  <span class="icon" aria-hidden="true">{ICONS[entry.kind]}</span>
+  {#if entry.ts}
+    <time class="ts" datetime={entry.ts} title={entry.ts}>{timeLabel}</time>
+  {/if}
+  <span class="kind">{KIND_LABELS[entry.kind]}</span>
   <div class="body">
     {#if entry.kind === 'assistant-text'}
       {#if auditFooter.matched}
@@ -131,57 +142,62 @@
       </span>
     {/if}
   </div>
-  {#if entry.ts}
-    <time class="ts" datetime={entry.ts}>{entry.ts}</time>
-  {/if}
 </li>
 
 <style>
+  /* One line of the redesign's log (`.log` in its run page): time, kind and
+     text in three columns, every other line tinted. The columns are placed,
+     so a line without a stamp keeps its kind and text where they belong.
+     The redesign's 70px and 74px columns, in characters so they follow the
+     editor font. */
   .entry {
     display: grid;
-    grid-template-columns: 1.25rem 1fr auto;
-    gap: 0.5rem;
-    padding: 0.3rem 0.5rem;
-    border-bottom: 1px solid var(--schegent-border, transparent);
-    font-size: var(--schegent-text-secondary);
-    align-items: start;
+    grid-template-columns: 9.75ch 10.25ch minmax(0, 1fr);
+    gap: var(--schegent-space-2);
+    padding: 3px var(--schegent-space-2-5);
+    align-items: baseline;
   }
-  .icon {
-    opacity: 0.7;
-    text-align: center;
+  .entry:nth-child(odd) {
+    background: color-mix(in srgb, var(--schegent-list-hover) 50%, transparent);
   }
-  .body {
-    display: flex;
-    flex-direction: column;
-    gap: 0.125rem;
-    word-break: break-word;
-  }
-  .ts {
+  .ts,
+  .kind {
+    grid-row: 1;
     color: var(--schegent-muted-fg);
-    font-family: var(--schegent-mono-font);
-    font-size: var(--schegent-text-caption);
-    opacity: 0.8;
     white-space: nowrap;
   }
-  .tool-name {
-    font-weight: 600;
+  /* A stamp that does not parse shows as sent, cut to the column; the title holds it whole. */
+  .ts {
+    grid-column: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .tool-input,
+  .kind {
+    grid-column: 2;
+  }
+  .body {
+    grid-row: 1;
+    grid-column: 3;
+    display: flex;
+    flex-direction: column;
+    gap: var(--schegent-space-0-5);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
   .tool-result {
-    font-family: var(--vscode-editor-font-family, monospace);
     white-space: pre-wrap;
   }
   .tool-result.error {
     color: var(--schegent-error-text);
   }
   .truncation {
-    font-size: 0.7rem;
-    opacity: 0.6;
-    font-style: italic;
+    font-size: var(--schegent-text-caption);
+    color: var(--schegent-muted-fg);
   }
   .dropped,
+  .tail-ended,
   .coverage-gap {
+    color: var(--schegent-muted-fg);
     font-style: italic;
-    opacity: 0.7;
   }
 </style>
