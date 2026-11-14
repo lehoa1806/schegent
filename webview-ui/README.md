@@ -6,7 +6,7 @@ Svelte 5 + Vite 7 app that renders both the Schegent **sidebar** and the **dashb
 
 | Surface | Entry | Purpose |
 |---|---|---|
-| Sidebar | `webview-ui/src/App.svelte` (mounted via `index.html`) | Compact, non-scrolling **status bar** (~160px). Four zones: Status Row, Stats Strip (done/pending/failed counters + active phase line), Current Task (freshness + activity + optional CLI monitor row), and a single **Open Dashboard** button. |
+| Sidebar | `webview-ui/src/App.svelte` (mounted via `index.html`) | Compact, non-scrolling **status view** in the redesign's sidebar layout: a header with the connection dot, then four zones. Status Row ("Current run": status chip, feature, elapsed time, secondary-window badge), Stats Strip ("Progress": active phase line and step bar, done/pending/failed rows, stream pressure, health), Current Task ("Activity": freshness and the last run event, with the CLI monitor and process lines folded under "Process details"), and a single **Open Dashboard** button in the footer. |
 | Dashboard | `webview-ui/src/dashboard/App.svelte` (mounted via `dashboard.html`; route components live under `webview-ui/src/components/`) | Full-window operator console: queue management across up to twenty queues, pending-task edit/reorder, history rerun, monitor tail, audit drill-in, controls (cancel / resume / retry-active-run), phase tiles. All previously-sidebar capabilities live here. Its `runs` route owns the **launch surface** — the one place a run is started (spec 102). |
 
 The Dashboard's default route (`operations`) is itself three drill-down tiers (see "Drill-down locations under `operations`" below). Feature 097 deleted `Dashboard.svelte` and its subtree and redistributed its content: tier 2 (`drilldown/QueueDetailTier.svelte`) now owns the task list (`QueueDetailRows.svelte`), queue controls (`QueueControls.svelte`), the on-demand task composer, and the scheduled-start indicator (`QueueIdlePendingPanel.svelte`); tier 3 (`drilldown/RunDetailTier.svelte`) now owns a single run's phase progression, phase log feed, and outputs.
@@ -45,10 +45,376 @@ webview-ui/
 │       ├── snapshot-store.svelte.ts — latest WorkflowSnapshot + pending-correlation ids
 │       ├── snapshot-types.ts — re-exports of host-projected types
 │       ├── vscode-api.ts — typed postCommand / onHostMessage
-│       └── theme.css     — --schegent-* tokens with --vscode-* fallback
+│       ├── theme.css     — --schegent-* tokens with --vscode-* fallback
+│       └── sg/           — redesign stylesheets, every rule scoped under .sg
+│                           (see "Redesign design language")
 ├── index.html            — sidebar HTML shell (CSP placeholders)
 └── dashboard.html        — dashboard HTML shell (CSP placeholders)
 ```
+
+## Redesign design language
+
+The two redesign mockups, `schegent_redesign_surfaces.html` and `workflow_builder_redesign.html`, are ported into the webview in three parts. The planning workspace keeps the mockups under its `docs/mockup/` directory.
+
+- **Tokens**: the "Redesign tokens" section at the end of `webview-ui/src/lib/theme.css`.
+- **Rules**: the stylesheets under `webview-ui/src/lib/sg/`.
+- **Contract**: `webview-ui/src/lib/__tests__/sg-stylesheets.test.ts`, which checks the sheets, the entry points and the token section against the rules below.
+
+Every rule sits under the class `sg`, and both shells carry it on their root element: `main.sg.sidebar` in `App.svelte` and `div.sg.dash` in `dashboard/App.svelte`. Inside either shell a component gets the sheets' element rules (headings, the focus ring, `summary`, `fieldset` and `legend`) and the tokens `.sg` redefines. It takes the rest of the design by using the mockups' class names.
+
+### Scope and loading
+
+On the element that carries it, `sg` does two things. It makes the rules in the `sg/` sheets apply to that subtree. It also gives that subtree the mockups' corner radii, control heights and type ramp, because the `.sg` rule in `theme.css` redefines those tokens. The same tokens keep the product's values at `:root`, so nothing outside an `sg` element changes. Content rendered outside the element, such as a popover appended to `document.body`, gets neither the rules nor the redefined values.
+
+| Sheet | Holds | Loaded by |
+|---|---|---|
+| `sg-core.css` | The scope base, utilities, buttons, inputs, the segmented control, status chips and tags, the attention banner, kind icons and form primitives | Both entries |
+| `sg-sidebar.css` | The sidebar frame, header, sections, progress bar, rows and footer | `webview-ui/src/main.ts` |
+| `sg-pages.css` | The dashboard shell, page header, toolbar, tables, menus, cards, tabs and the detail drawer | `webview-ui/src/dashboard/main.ts` |
+| `sg-run-detail.css` | The step list and the log of the run detail page | No importer yet |
+| `sg-metrics.css` | Stat tiles, the bar chart and its tooltip | `webview-ui/src/components/MetricsDashboard/MetricsDashboard.svelte` |
+| `sg-settings.css` | The settings navigation, the setting rows and the backend grid | `webview-ui/src/components/SettingsSurface.svelte` |
+| `sg-builder.css` | The workflow list, editor header, palette, canvas, outline, inspector and step picker, and the phase editor form | `webview-ui/src/components/PipelineBuilder.svelte` |
+
+The last four sheets are route sheets. Each is meant to be imported by the root component of the route that uses it, so that its bytes load with the route. The Metrics page imports `sg-metrics.css` this way, the Settings page `sg-settings.css` and the Builder `sg-builder.css`. The run page does not import `sg-run-detail.css`, for the reason given under "Run page" below.
+
+A route sheet stays in the document once its route has loaded, so its rules also reach every page opened after it. For that reason `sg-builder.css` writes its rules for the badge, the note and the status line under the part that holds each one in the mockup (`.node .badge`, `.inspector .note` and `.editor .status-line`), because other pages use those class names for their own elements.
+
+The contract test enforces these rules:
+
+- **Every selector starts at `.sg`.** No rule can match outside the scope.
+- **Colour comes only from `--schegent-*` tokens.** A sheet holds no raw colour and no `--vscode-*` variable, so `theme.css` stays the one place that reads a VS Code colour.
+- **An entry imports its sheets before its component tree.** A scoped component selector and an `.sg .x` selector have the same specificity, so the later rule wins. With the sheets first, a component style wins a tie.
+- **An entry never imports a route sheet.** `tests/unit/ui/sidebar/bundle-size.test.ts` caps the startup stylesheets.
+- **No sheet name contains `dashboard`.** `webview-ui/vite.config.ts` emits any stylesheet whose source name contains that word as `dashboard.css`, and the packaging policy in `scripts/check-vsix-smoke.mjs` admits only the stylesheet names it expects.
+- **`!important` appears once**, on the rule that keeps a `hidden` element hidden.
+
+### Mockup variable to token
+
+A sheet never reads a mockup variable. Each one maps to a token:
+
+| Mockup variable | Token |
+|---|---|
+| `--vscode-editor-background` | `--schegent-bg` |
+| `--vscode-foreground` | `--schegent-fg` |
+| `--vscode-descriptionForeground`, `--idle` | `--schegent-muted-fg` |
+| `--vscode-sideBar-background` | `--schegent-shell-bg` |
+| `--vscode-editorWidget-background` | `--schegent-surface` |
+| `--vscode-input-background` | `--schegent-input-bg`, with `--schegent-input-fg` and `--schegent-input-border` |
+| `--vscode-list-hoverBackground` | `--schegent-list-hover` for a hover state, `--schegent-surface-subtle` for a static fill |
+| `--vscode-list-activeSelectionBackground` | `--schegent-selection-bg`, always with `--schegent-selection-fg` |
+| `--vscode-widget-border` | `--schegent-border` |
+| `--vscode-button-background`, `-foreground`, `-hoverBackground` | `--schegent-button-bg`, `--schegent-button-fg`, `--schegent-button-hover` |
+| `--vscode-button-secondaryBackground`, `-secondaryForeground` | `--schegent-button-secondary-bg`, `--schegent-button-secondary-fg` |
+| `--vscode-focusBorder` | `--schegent-focus-border` |
+| `--vscode-textLink-foreground` | `--schegent-link-fg` |
+| `--ok`, `--err`, `--warn`, `--run`, and the builder's `--vscode-charts-green`, `-red`, `-yellow`, `-blue` | For a mark: `--schegent-color-completed`, `-error`, `-warning`, `-active`. For text: `--schegent-status-completed-text`, `-error-text`, `-warning-text`, `-active-text` |
+| `--purple`, `--vscode-charts-purple` | `--schegent-color-workflow` for a mark, `--schegent-workflow-text` for text |
+| `--series-1` | `--schegent-chart-series-1` |
+| `--grid` | `--schegent-chart-grid` |
+| `--canvas-dot` | `--schegent-canvas-dot` |
+| `--shadow-pop` | `--schegent-shadow-popover` |
+| `--font` | Inherited from `body`, which uses `--sch-font-primary` |
+| `--mono` | `--schegent-mono-font` |
+| `--radius`, `--radius-sm` | `--schegent-radius`, `--schegent-radius-sm`, with the mockups' values under `.sg` |
+| Pixel font sizes | `--schegent-text-micro` to `--schegent-text-display`, in rem so that they follow `--vscode-font-size` |
+| Pixel spacing | `--schegent-space-*`, including the half steps the port added |
+
+The surfaces mockup also defines `--vscode-activityBar-background`. None of its rules reads it, so it has no token.
+
+### Status colour
+
+A status class such as `.s-ok` or `.run-fail` sets two things. `color` is a text colour that holds WCAG AA. `--sg-status-color` is the saturated colour, and the dot, icon or ring beside the text draws with it. The text never does. The text tokens follow `--schegent-error-text`: each mixes its saturated colour toward the foreground. The contract test reads the mix from `theme.css` and computes the contrast on each surface the sheets put status text on, for both mockup palettes.
+
+### Where the port departs from the mockups
+
+Each difference below is deliberate. Before restoring a mockup value, check the reason given with it.
+
+Contrast and state:
+
+- **Status text uses the mixed text token.** The saturated colours fall below 4.5:1 as small text on some of the surfaces. Marks keep the saturated colour.
+- **A selected item sets the selection foreground with the selection background.** The mockups set only the background. Text and marks inside a selected row, step, option or navigation item inherit the selection foreground, because a status or link colour has no known contrast against a theme's selection background.
+- **A selected table row does not change on hover.** In the mockups the hover background replaces the selection background.
+- **The navigation count badge writes in `--schegent-bg`.** The mockups use white, which is below 4.5:1 on the dark palette's error colour.
+- **`.kbd` has no opacity.** The mockup's opacity lowers the contrast of its text.
+- **The focus ring is the product's**: 2px with a 2px offset, where the mockups draw 1px. It is inset on a control that fills a container which clips it.
+- **A disabled `.btn` is dimmed like a disabled `.icon-btn`**, and the button hover rules skip a disabled button. The mockups style only the disabled icon button.
+- **A menu item that is off stays in reach of the arrow keys.** It is off through `aria-disabled`, not `disabled`, so a keyboard user can land on it and read it, or the reason inside it. `SgMenu` refuses a click, Enter or Space on it before the item's own handler runs, and stays open. The item is drawn in `--schegent-disabled-fg` with no hover highlight, and under focus it takes `--schegent-list-hover` in place of the selection. The mockups draw no disabled menu item; the builder mockup marks a palette entry that cannot be added the same way.
+- **Inputs use `--schegent-input-border`**, the theme's own input border. The mockups use the widget border.
+- **A selected edge label keeps the foreground text colour** and shows selection with its border and ring. The mockup colours the text with the focus colour, which is below 4.5:1 on the dark palette.
+- **A `.btn` draws the theme's button border** (`--schegent-button-border`, transparent when the theme sets none). The mockups' border is always transparent, which leaves a button with no edge in a high contrast theme.
+- **A selection drawn as a fill also draws a 1px inset outline**, `--schegent-selection-outline`. It is transparent except in a high contrast theme, where the list selection background is undefined or the page's own black, so the fill alone would not show. There it takes the theme's `contrastActiveBorder`, as the theme's own lists do. A pressed `.seg` button, a selected step, a selected queue page row and a selected table row draw it. The table row draws it as an outline set 1px inside its edge, because a table row does not reliably paint an inset shadow.
+
+Theme:
+
+- **The chart series colour comes from the theme's blue chart colour.** The mockups' `--series-1` is a fixed colour for each theme.
+- **Badge text is the caption step.** The mockup's 10.5px is not a step of the type ramp.
+
+Frame and structure:
+
+- **Frame rules are left out**: the mockup window, the sidebar's width and border, viewport heights and minimum heights, the fixed canvas size, and the rule that hides the sidebar at a narrow width. The webview is the frame.
+- **The drawer is not hidden at a narrow width.** Hiding it would remove the detail view and leave no other way to reach it. The component decides what a narrow layout does.
+- **The edge label and the insert button centre with `translate`.** The mockup centres them with `transform`. `theme.css` sets `transform` on a pressed button, which would replace the centring for as long as the press lasts.
+- **The step list clips its corners**, so that a selected step's background does not paint over the rounded border.
+- **Table rules apply to `table.t` only.** The builder mockup styles bare `table`, `th` and `td`, which under `.sg` would restyle every table in an adopted surface. The binding table therefore has no row hover.
+- **The menu's offset follows the control height.** The mockup uses a fixed distance.
+- **A `.btn` centres its label.** The mockups' buttons are only as wide as their label, so their rule leaves the label at the start. A product container that stretches a button, such as the builder inspector's column of port buttons, would otherwise draw the label against the left edge.
+- **Where the two mockups define one class differently** (`.chip`, `.seg`, `.menu`, `.tab`), the surfaces mockup is the definition and the builder's variant is a contextual rule.
+- **The page header's action rule matches only its own `.actions` child** (`.phead > .actions`). The mockup's descendant rule also restyles an `.actions` group a component puts inside it, such as `QueueItemActions` in the run page's header.
+- **The table wrapper is positioned** (`position: relative`), so an absolutely positioned part of a cell, such as a visually hidden column header, scrolls and clips with the table. The mockup's wrapper is not positioned, and on a narrow window such a part widens the page.
+
+Sidebar:
+
+- **The sidebar fills the view and grows past it** rather than opening a scroll region of its own. The sidebar view contract (`specs/006-sidebar-compact-status-bar/contracts/sidebar-view-contract.md`) has the view fit by showing less, never by scrolling inside itself.
+- **Its sections are headed "Current run", "Progress" and "Activity".** The mockup's "Now running" contradicts the status chip when the run is idle, paused or over, and its "Today" would say the counts are for one day, which they are not.
+- **The progress bar is a native `<progress>`.** The mockup sizes a span with an inline width. A `style:` directive would add Svelte's style helper to the sidebar's startup bundle, which `tests/unit/ui/sidebar/bundle-size.test.ts` caps, and the native element carries the progressbar role and its values itself.
+- **The progress section's counts use the sprite's check, dot and cross, drawn inline**, and anything short of healthy is the attention banner (`.attn`), whose accent draws the frame and the tint while the words keep the text colour.
+- **The current run's process details are folded**, as the mockup's "Process details" are, and shown only while there is a process to describe.
+
+Queues:
+
+- **A task that has not started is "Pending"**: in the queues table, the queue page's status chips and filter, the add-task drawer and the order hint. The mockup says "Waiting". "Pending" is the product's status label, so a row and the run it opens name the status the same way.
+- **The header's add button says "Add work".** It is the name the `schegent.schedule` command's message, the `schegent.defaultWorkflowId` setting and the docs send the operator to. The mockup's says "Add task". The drawer the button opens is headed "Add task to" and the queue's name, and its submit button says "Add task".
+- **A queue page row is a button on a grid the rows share, not a table row.** The button opens the run. The controls that act on the task (the drag handle, the move select and the row menu) sit beside it, never inside it (BUG-003).
+- **Start queue is a secondary button in the header**, like Pause and Resume, because adding a task is the page's one primary action. In the notice that says a queue is waiting to be started, Start queue is primary, because it is what resolves the notice.
+- **The queue's "More queue actions" menu holds Rename…, Clear completed tasks…, Clear everything… and Delete queue…** The mockup's Start later… and Queue settings… live elsewhere in the product: a scheduled start is chosen in the notice that offers the start, and queue settings are workspace-wide, opened from the queues list.
+- **Clear completed tasks… ends in an ellipsis** because it asks before acting, which is what the mockups' own rule says a trailing ellipsis means.
+- **The incompatible-state notice has no icon.** Both views mount it, and the sidebar does not load the icon sprite.
+- **Below 860px the add-task drawer takes the page's whole width**, where the mockup hides it (see "Frame and structure").
+
+Add-task drawer:
+
+- **Add task sits at the foot of the form, not in the drawer's footer.** The form owns the submission and says under the button what became of it. The drawer's footer keeps Cancel.
+- **Picker rows are toggle buttons (`aria-pressed`), not radios.** Pressing the chosen row again clears the choice, which a radio cannot do.
+- **The form's sections are not numbered.** A section's name is also its region's accessible name.
+- **The instructions hint is the product's.** It also says that split tasks share the declared inputs, attachments and output targets.
+- **The instructions box resizes vertically only**, so dragging its corner cannot widen it past the drawer.
+- **The declared inputs keep their section, "Workflow contract", and its note.** The mockup's "3. Inputs" shows one field. Each box has a caption under it with the input's declared type in the code font and its description, and the box names that caption as its description (`aria-describedby`).
+- **A required input says "(required)" after its name**, muted the way the mockup writes "(optional)". A definition declares which inputs are required, not which are optional.
+- **Output targets are fields, under "Output targets"**, drawn like the inputs. The mockup only names outputs in its "Start point, outputs and run limits" disclosure. An output written outside the workspace asks for its checkbox under its box, and "Replace and run" is a small secondary button.
+- **Attachments are a disclosure the mockup does not have**, "Attachments & references (optional)", drawn as its `details.diag`. It opens by itself when one of its fields holds a value or an error.
+- **The workspace-trust banner and the launch authority notice are the warning banner** (`.attn.warn`), which the mockup's drawer does not show. "Review in Settings" is a link under the sentence it belongs to.
+
+Run page:
+
+- **The crumb has one level**: a link back to where the run was opened from, named after that queue or workflow. The mockup shows "Queues / Default". The tier has one way back, its `onBack` prop, and a second level would need a new one.
+- **The meta line is the product's**: the pipeline, the elapsed time, the phase of the total, the iteration from the second on, and the run id's first ten characters in the code font. The mockup shows when the run started and its spend so far, and puts the run id in the diagnostics with a copy button.
+- **The header keeps the task's icon buttons** (`QueueItemActions`: cancel, edit, remove, retry, mark completed, restart), drawn as the mockup's borderless icon buttons. The mockup has Pause and a "More run actions" menu. Tests pin the buttons, their text glyphs and their accessible names.
+- **The run's limits are a card above both columns**, two pairs to a row while the page is wide. The mockup shows "Limits for this step" in the Details tab; spec 240 (D11) puts the limits above the columns.
+- **The step list is headed "Phases", and the phase controls sit under that heading as small buttons**, Delete last in the danger style. The mockup has an "Actions for step" menu in the selected step's title row, which the product does not draw. A control the gate refuses keeps its place, dimmed by `aria-disabled`.
+- **The step being viewed is marked by `aria-pressed` and the selection colours.** `aria-current="step"` stays on the step that is executing; the mockup puts it on the viewed step. A selected step's text and ring take the selection foreground, and the other steps show the list hover, which the mockup lacks.
+- **The rings show more states.** A paused step, one waiting to retry and a scheduled breakpoint use the warning colour; a disabled step uses the disabled colour, with its name struck through.
+- **A step's count comes before its time**, and each note (halted at a breakpoint, the retry countdown, the phase message) takes its own line under the name.
+- **The run page does not import `sg-run-detail.css`.** The step list and the log are drawn by their components' own styles: the sheet's `[aria-current='step']` rule would paint the executing step as the selected one, and the product's log is a list of entries, not the mockup's rows of `div`s.
+- **The tabs keep the product's names**, "Phase log", "Run outputs" and "Context", the names the docs use. The mockup's are Log, Outputs and Details. A "Streaming" status chip ends the bar while the log tails.
+- **The Context tab holds the product's readings**: activity and progress, the live feed line, then the diagnostics. It has no Limits or Runner card: the limits card sits above the columns, and the runner is the tag in the log's toolbar.
+
+Run log:
+
+- **The toolbar is the iteration stepper, the trail, a "Live" button and the copy icon.** The mockup has a button per attempt, a "Filter log" field and a "Follow live output" checkbox.
+- **The stepper is a `.seg` of older, the iteration shown, and newer**, first in the row and hidden while there is one iteration. A loop can run more iterations than a row of buttons holds.
+- **There is no filter field.** The product has no log filter, and adding one is new behaviour, not a restyle.
+- **"Live" is a ghost button, not a checkbox.** It jumps to the executing phase, and with nothing in flight a click arms Live Mode for the next one (FR-008). It holds no checked state for a checkbox to show.
+- **The trail (queue › task › phase, with the runner tag) stays**, muted, with the phase in the foreground. The phase keeps its name when the row is tight.
+- **Each line's kind is one word.** Kinds the mockup does not draw take the nearest word, and the log's own notices (hidden head, ended tail, coverage gap) read "note".
+- **Times are local, as HH:MM:SS.** The full stamp stays in `datetime` and the tooltip, and one that does not parse shows as it came.
+- **The time and kind columns are sized in `ch`** from the mockup's 70px and 74px, so they follow the editor font.
+- **A tool call's block arguments** (several lines, an object, a list) take lines of their own under their key.
+- **The log keeps the product's height cap**, `min(60vh, 480px)`, where the mockup's is 360px; its "Live" chip above the list and its "new entries" button stay too.
+- **Parts the mockup does not draw**, the audit completion card, the metadata strip and multi-line code blocks, are built from its pieces: status chips, caption type and the log's frame.
+
+Run outputs:
+
+- **The outputs table's columns are Output, Status and Where.** The product's record has no "From" step for an output. It says instead whether the output was written, as a done chip or, for one the phases never produced, a warning chip.
+- **Where is the path as text in the code font, not a link.** The IPC contract has no command that opens an output.
+- **The table has no title**, because the tab names it.
+- **The empty note depends on whether the run executes**, since outputs reach the page only while it does.
+
+Diagnostics:
+
+- **The disclosure opens itself** when a handoff waits on this window's approval, whose button is nowhere else, or when it has a notice. It never closes itself, so an approval's result stays shown. The mockup's disclosure starts closed.
+- **The readings are Hierarchy, Evidence, Live log, Recovery and ACP state** as key and value rows, with Refresh at the end of their row. The panel's own heading, sub line and section label are gone, because the summary line names it.
+- **Its actions are small secondary buttons, Approve handoff included.** The mockup draws no handoff.
+- **The change review is a card**: Lane, Candidate, Integration and Comparison revision, then Freshness, Approval, Landing and Files as key and value rows, each file as its kind tag and its path in the code font.
+- **History's run detail mounts the same panel**, so all of the above applies there too.
+
+History:
+
+- **The columns are Run, Queue, Status, Duration and Updated.** A history row carries no cost, so there is no Cost column; the drawer reads the cost for the one run it shows. No column sorts: the list is newest first by last update (FR-005), and "Updated" carries `aria-sort` and the chevron.
+- **The line under a run's name always has three parts**, the definition, the version and how the run started, "Standalone" included, and says when a part was not recorded (FR-011). The mockup shows the origin only for a workflow run.
+- **The outcomes are All, Running, Paused, Completed, Failed and Canceled**, the product's run statuses.
+- **The pills are Any time, Definition, Version, Queue and Kind.** The mockup's are "Last 7 days", Workflow, Queue and Started as. Definition covers Pipelines and Workflows, and Version appears once a definition is chosen (FR-018). Kind is named after its options, "All kinds", "Standalone" and "Workflow member"; the row and the drawer call the same value "Started as". The time pill shows as chosen only once a window or a custom range is picked. Each pill is a native select, transparent over the pill's face, so the platform's own picker opens where the pill is, and the pill draws the select's focus ring.
+- **The search field says "Search by run ID, queue, or description"**, the product's placeholder, and is `calc(19em + 40px)` wide so the placeholder fits. The mockup's is "Search runs", 260px.
+- **The filters stay one group, "History filters", drawn with `display: contents`**, so each control wraps on its own beside the search. On a toolbar 30em wide or less, the outcome control becomes a grid of three, two or one across, and a label wraps inside its cell.
+- **A row's menu holds Run again…, Open audit log and Open details.** Run again… is disabled while the run is not finished and says so. The mockup's "Open audit events" is the product's audit log, and its "Copy run ID" is in the drawer's footer.
+- **The count line reads "N of M runs"** (FR-052). The mockup's names a total and a time window.
+- **Escape closes the drawer**, and the rerun form first when it is open. When focus was in the drawer, it goes back to the control that opened it, or to the run's name when that control has gone, such as an item of a menu that has closed.
+
+History drawer:
+
+- **The Run list is the product's record**: Definition and Version on separate rows, Started as, Queue, Started, Ended, Duration, Cost and Phases. Phases reads "N total, N completed, N skipped". Cost and Phases read "Reading…" while the record loads, and "Not reported" or "Could not be read" when there is nothing to show.
+- **"Why it failed." shows for every failed run**, with the code in parentheses after the cause, or a sentence that says no cause was recorded or that it could not be read.
+- **The run's text is headed "Description"**, not "Instructions", and says when none was kept.
+- **Evidence is the product's evidence panel.** It warns, as a warning banner, that the raw transcript is kept unredacted and names the commands that delete or export it. It has no links under it: the row's menu opens the audit log, and the product has no event list.
+- **Diagnostics holds the Run ID only.** The version is in the Run list.
+- **Copy run ID swaps its icon for a check** and reads "Copied", or "Copy blocked" when the clipboard refuses. Its accessible name keeps the run ID.
+- **Run again… opens "Repeat this run" inside the drawer**, which the mockup does not draw: a Close button, the product's notices about the version, workflow and queue the run will use, and the launch form. The form sits on the drawer's gutter, because the panel removes the launcher's own padding. Opening another run replaces the form.
+
+Metrics:
+
+- **The tabs are Overview and Reports.** The mockup's Steps tab is the Steps table on Overview.
+- **The header's switch is the run detail scope, "Live log" or "With archives"**, where the mockup's is a time range. The audit read takes no time range. The one scope it takes is whether the run detail reaches into the archived logs. The switch and Refresh show on Overview only, because a report sets its own window.
+- **The tiles are the all-time totals, with the product's context lines**: "All time", "of N · N failed · N canceled", "N backend calls", and whether every run reported a cost. The mockup compares runs with the previous 30 days and gives a median per run, which the totals do not record. A cost that some runs did not report ends in "+". The line under the tiles says what the durable rollup covers.
+- **The run detail keeps its own window line and strip of totals** (Completed, Run time, Cost and Backend calls). It is folded from the retained audit log, which retention prunes, so it can cover fewer runs than the tiles.
+- **Cost per day is labelled with its first and last day**, not "Last 30 days". The axis climbs in three equal steps of 1, 2, 2.5, 5 or 10 times a power of ten. A bar is at most 48px wide. Past 120 days the chart samples the days, while the table lists every day.
+- **Each bar takes focus, and the arrow keys, Home and End move between bars.** The tip sits over the bar and gives the day, its cost and the cost to date. The line under the chart says the same in words for a screen reader. The mockup's tip follows the pointer and shows the day's cost only. The chart is a group named after its range and its highest day.
+- **"Show as table" has no `aria-pressed`.** Its label changes to "Show chart", which already says which view shows. The table's columns are Day, Cost and Cumulative, with each day as its ISO date. The mockup's are Day, Runs and Cost, but the timeline has no run count for a day.
+- **The Steps table shows all eleven columns**: Step, Runs, Median, p90, p99, Longest, Shortest, Average, Total time, Backend calls and Cost. It has no Columns menu, search or sorting, and Overview has no "Slowest steps" table. The mockup's Steps tab shows seven of the eleven, sortable and with a search.
+- **The Runs table and each run's phase detail stay** under the Steps table, which the mockup does not draw. The columns are Run, Started, Finished, Duration, Steps, Cost and Status, and they sort. A run's phases are behind its expand button, and a pager with Previous and Next ends the table.
+- **While the overview loads, "Scanning audit history…" shows above four blank tiles**, each as tall as a loaded tile at any font size.
+
+Metrics reports:
+
+- **The form keeps the product's fields**: Report and Window, then Workflow ID and Outcome (or Backend for "Usage and cost"), then Sort by. Workflow ID, Outcome and Backend are text fields, because the product has no list of workflows or outcomes to offer. The mockup's Workflow and Outcome are selects, and its window is the page's time range.
+- **A status line under the form says what the last action did**, such as how many rows loaded and at which cutoff. It is the form's live region. While a report runs, its button reads "Running…" and Cancel shows beside it.
+- **The results heading is the report's name**, and the line beside it reads "N row(s) · as of" and the cutoff as "YYYY-MM-DD HH:MM UTC". The mockup's heading adds the window, and its line gives the time only.
+- **The columns follow the kind of row the report returns**: runs, attempts, groups or usage. A run row has the mockup's Run, Workflow, Status, Attempts, Duration and Details, with the run and the workflow as IDs in the code font, because a report row carries no names. A group with no key reads "All runs".
+- **The headers are not sort buttons.** The rows come in the form's Sort by order, and the first column's `aria-sort` states it.
+- **"Details" opens the run's drill-down**, and its accessible name is "Details for" and the run ID. "Load next page" follows the table while the report has more rows.
+- **The Export button stays enabled while a save or an export is in flight, and its items are disabled instead.** A button disabled while it holds focus drops the focus.
+- **"What this report covers" holds the product's coverage list**: the cutoff with its time basis, Runs, Attempts, Unknown durations and Accounting revision. Each omission and the note on what a CSV export holds follow it. The mockup writes one sentence.
+- **The drill-down is a card under the results**, which the mockup does not draw. Its title row holds "Root execution" with the run ID, the outcome chip and a close button. Its facts are a key and value list. The attempts, the pinned usage accounting, the artifact and ACP metadata and the stated omissions follow them.
+- **A report's status chip says the store's word, capitalised**, such as "Succeeded", "Cancelled" or "Timed out", in the tone and mark History gives the same state. The Outcome field matches the store's spelling, so the chip tells the reader what to type there.
+- **Saved reports list Report ID, Report and Cutoff.** A saved report has no name and no last-run time. A row's menu holds the mockup's Run now, Check it still matches and Delete…. Delete… asks again in the row, with "Confirm delete" and "Keep", before it acts.
+- **On a narrow window the form's fields wrap at their fixed widths**, and each table scrolls inside its wrapper.
+
+System:
+
+- **The heading stays "System Log"**, the route's name in the nav and in the status line. The purpose line under it is the mockup's.
+- **There is no search, level filter, event filter or "Open log file".** The product has no log filter and no command that opens the log file, and adding either is new behaviour, not a restyle.
+- **Each log is a list drawn as the mockup's table.** Tests pin a log as an `ol` of `li` rows, so the list and its rows are subgrids of one grid (`components/system-shared.css`), and the header row is hidden from assistive technology, which reads each row by its label. A log scrolls inside its frame on a narrow window, and an empty one drops the table's 640px width.
+- **The Time column gives the date with the time**, where the mockup's gives the time only.
+- **A level chip shows the log's own word with its first letter capitalised**: Debug, Info, Warn and Error, where the mockup writes "Warning". The tones are the mockup's.
+- **The Event column keeps the category's glyph** before the word for it, such as "Backend call" or "Step change". A category the webview does not know shows the system glyph and its name as recorded. The outcome sits under the event in its status colour, or a dash when the entry has none.
+- **The Task column replaces Run**: the task ID in the code font with the phase under it, as text. An audit entry carries no run title, and the tab has no way to open a run.
+- **"Invocation details are intentionally omitted." sits under each backend call's summary**, in place of the mockup's line under the table.
+- **Refresh is an icon button at the end of the Runtime tab's status row**, where the mockup puts it in the page header for every tab. The runtime panel owns its read, and the logs arrive with each snapshot, so they have nothing to refresh.
+- **The telemetry chip shows the delivery state**: "Healthy" with a check, "Retrying" in the warning colour, "Degraded" in the error colour and any other state in the active one, or "Off" while export is off. The lanes chip is "On" with a check, or "Off".
+- **The sentence under "Telemetry export" is the host's export disclosure** (`previewSummary`). The mockup's gives the reason export is off. The posture carries that reason as a code, which Diagnostics shows after the state, as the mockup does.
+- **There is no "Allow in Settings".** Export is enabled by the VS Code setting `schegent.telemetry.export.enabled`, and the dashboard has no control for it and no command that opens it.
+- **The cards keep the product's readings and words**: Authorization, sizes in KiB and MiB, "2 / 4 active lane(s)", "N awaiting verification, review, or landing" and "N total", and in Diagnostics the ledger as "N exported · N pending · N dropped", the spool's batches and the series with their overflow. Tests pin "Authorized", "14 exported" and the lane count. The posture has no run title for "Waiting to merge" and no count for a month.
+- **While the posture loads, and when the runtime store cannot be read, a boxed note takes the cards' place.**
+
+Settings:
+
+- **The sections are two tabs, General and Fatal Signatures**, drawn as the mockup's section list but kept as a vertical tab list (`role="tablist"` with `aria-selected`), where the mockup's is a `nav` marked with `aria-current`. The mockup's seven sections fold into General's four groups (backend and process environment; execution, queues and retry; audit, transcripts and runtime logging; UI and trust) and the Fatal Signatures tab. There is no Queues section, because queue settings open from the queues list (see "Queues").
+- **Each group is an open disclosure** whose summary is set as a section heading with the native marker, and General shows all four in one scroll. The mockup shows one section at a time.
+- **The section list stops sticking below 860px**, where it stacks above the rows. The mockup's stays sticky there, and since it has no background of its own, the rows scroll under its buttons.
+- **Below 560px a row's control drops under its label**, and a backend card's check drops under the backend's name. The mockup's two row columns need 420px side by side and would widen the page.
+- **There is no search, and the page header has no Revert or Save.** Only the General tab drafts edits, so its header holds "Unsaved changes", Reset All and Save All Changes. Each row also saves on its own, with Save and Reset at the end of its scope line. The chip has no count. The Fatal Signatures tab has a Reset and Save of its own (see "Fatal Signatures").
+- **A row's scope line reads "Scope:" and the scope's name**, such as "Scope: Default". The mockup's reads "Applies to:" and who the setting applies to. A row with an unsaved edit has the mockup's dot beside its label. The section list has no dot, because the draft lives inside the tab and the list does not see it.
+- **A short control description shows as a line under its row's scope line, and a longer one as a popover** (see "Settings hover-text primitive (spec 018)"). The mockup has no control descriptions.
+- **The evidence privacy profile is a row in the General header**, with the mockup's segmented control, where the mockup gives it a section of its own. Its buttons carry `aria-pressed`, and a "Current profile" line under them names the profile the settings match, or the nearest one and how the settings differ. The session line under it keeps the product's words, "Unredacted local session artifacts:", where the mockup's reads "Stored locally:".
+- **The two trust rows come after the UI toggles**, where the mockup puts its trust row first, under the product's line on why they cannot be switched here. Each shows its effective value as the mockup's status chip where a control would be: "Allowed" with a check or "Denied" with a cross. The setting's key and a "Change in Settings" button sit under the chip, in place of the mockup's "Applies to: VS Code workspace trust".
+
+Settings backends:
+
+- **The backend list keeps the heading "Backend Health"** and the product's line under it. The mockup's heading reads "Installed backends".
+- **A backend card keeps the product's tags**: "In use", then "Discovered" or "Not found", where the mockup's second tag reads "Found". The last check is the mockup's status chip, such as "Healthy · 120 ms", with a dot while the check runs and the warning mark when the backend is unavailable.
+- **The check is "Ping", a secondary button at the card's right**, where the mockup's is "Test". There is no "…" menu, Details link or "Set path…" button. The path is not a line under the name: it stays the editable path row in the card, after the "not found" sentence when there is one, and the backend's own settings follow it.
+- **The line under the name is the containment posture**: "Containment:" and "Mechanism:", each value in the code font. The mockup's reads "Sandboxed · Details".
+- **"Allow uncontained" is a danger button and "Revoke uncontained permission" a secondary one**, with the refusal the host sends under them.
+- **"Process environment" is a heading inside the group, as in the mockup**, over the product's rows: Environment Mode, Environment Allowlist, Inherit Host Environment (legacy) and Backend Probe Timeout, then the effective policy line. The allowlist is a list of names, each with a cross button that removes it, above an entry field and an Add button. The mockup's is a text area with one name per line. The list refuses a name that does not match the setting's pattern when it is added, so it never holds an invalid entry, which a text area could not promise.
+
+Fatal Signatures:
+
+- **The built-in list comes first**, as spec 011's contract requires ("Built-ins always render first", `specs/011-webui-config-editor/contracts/fatal-signatures.md`). The mockup puts the operator's additions first.
+- **The headings and the lines under them are the product's**: "Fatal Signatures", "Built-in registry" and "Operator additions". The mockup's are "Built in" and "Your additions", with one line for the whole page. The built-in heading carries the mockup's "read-only" tag, which marks the list once, so a row no longer carries its own "Built-in" badge.
+- **The tab header holds "Unsaved changes", Reset and Save**, as the General header does. The mockup saves from the page header.
+- **The additions are the mockup's table**: a "Text to match" column of inputs in the code font, and a remove column with a visually hidden header ("Remove") and a cross button in each row, named "Remove fatal signature" and the row's number. The add button reads "Add", which the empty list's line names ("Click + Add to create one"). The mockup's reads "Add text".
+- **The warnings and the save status are small lines under the add button**: a warning in the warning tone, "Saved." in the success tone and a rejected save in the error tone.
+
+Builder:
+
+- **The Workflows tab is the workflow builder mockup's editor**, with the departures listed under "Workflow editor", "Workflow canvas" and "Workflow inspector" below. The surfaces mockup's Workflows tab is a card that links to it.
+- **The Phases list cannot be sorted.** Its rows keep the catalog's authored order, which a row's Move up and Move down buttons change, and a sorted view would hide the order those moves act on. The mockup's Phase, Used by and Modified headers sort.
+- **The status filter reads All, Active, Draft and Invalid**, the words of the product's state chip. The mockup's reads "Published" where the product says "Active".
+- **The Status column holds the product's two chips.** The state chip reads "Draft", "Active" or "Active with draft", in the mockup's tones, and shows only when the host sent the Phase's lifecycle. The validity chip reads "effective" or "invalid" in lowercase, with a check or a warning mark, on every row, because FR-015 keeps the word as it was. The mockup's column reads "Published vN" (with "Draft changes" beside it when a draft sits on top), "Draft" or "Invalid · N issue". A row with an unsaved edit also carries an "Unsaved changes" chip, and a Phase whose model is not available a "model unavailable" chip in the error tone, which the mockup shows in its Runs on cell instead.
+- **A row shows only the Phase's name, its id, its chips and two buttons, Move up and Move down, as the list did before the redesign.** FR-003 of feature 186 lets a row in a definition list show only the definition's name, id, and state and validity badges, so the mockup's description line, its Runs on, Used by and Modified columns and its row menu are not drawn. The name opens the Phase's editor page, which shows what the Phase runs on, what uses it and when it changed, and holds Duplicate, Export… and Deactivate…. The mockup's row menu holds Open, Duplicate, Export…, Deactivate… and Delete….
+- **Moves are refused while a search or a status other than All is set.** The filter only hides rows, and every write still addresses the whole list by position.
+- **While an edit is pending, the toolbar shows "Unsaved changes", Undo, Redo and Save, and New phase and the moves wait until it is saved.** A move is the list's own edit. A Phase's other edits are made, undone and saved on its editor page. The mockup's toolbar holds only Import… and New phase.
+- **"Import…" is in the import region under the list**, headed "Import a Phase, Workflow, or Model Catalog document". The region shows what an import would change and commits it only with its own "Confirm import", which a toolbar button has no room for. The mockup's "Import…" is in the toolbar. The Models tab shows the same region under its editor.
+
+Phase editor:
+
+- **The header's chip reads "Unsaved changes" with no count**, as on the Settings page. The mockup's reads "2 unsaved changes".
+- **Undo and Redo are titled "Undo" and "Redo".** The editor binds no keyboard shortcut, so the mockup's "(Ctrl/Cmd+Z)" would name one that does nothing.
+- **Save is the primary button, and the header has no Publish or Version history.** Both are in the summary's lifecycle panel, the one every definition shows: Publish when the state allows it, and History, which opens the version history. The mockup puts Publish beside Save and Version history in the menu.
+- **The "More phase actions" menu adds Move up and Move down, and has no Delete…**: the catalog deactivates a Phase rather than deleting it. Export… is disabled for a Phase with errors and shows the reason inside the item. Revert unsaved changes is disabled while there is nothing to revert. The mockup's menu holds Edit as JSON, Duplicate, Export…, Version history, Revert unsaved changes, Deactivate… and Delete….
+- **Basics keeps the Phase's other fields**: the ID, read-only once the Phase is saved, the Version, always read-only, and the Loopable and Required checks. The Description has two lines. The mockup's Basics holds the Name, a one-line Description and the ID hint.
+- **A skill is typed into a text input in the code font.** The webview has no list of the skills a backend offers. The mockup's Skill is a select.
+- **The Backend's first option reads "Workflow default"**, where the mockup's names the backend it resolves to ("Workflow default (claude)"). A Phase leaves its backend to the workflow that runs it, and the form does not resolve it. A backend that is not available is marked "(Unavailable)".
+- **The time limit is in seconds, from 1 to 3600**, because the Phase stores `timeoutSeconds`. The mockup's reads "45 min".
+- **Retries keeps the product's condition editor and outcome labels.** The condition is the retry condition editor the queue settings also use. The outcome, "When retries run out", reads "Fail the task", "Continue with a warning" or "Continue, marked unverified": each label says what the run does, and the third records that the condition was never satisfied. The mockup's condition rows, its "Valid. Write as an expression" line and its "When attempts run out" with "Fail the run", "Continue with a warning" and "Continue" are not ported.
+- **There is no Attempts field.** A Phase stores no attempt count, so adding one is new behaviour, not a restyle.
+- **The summary shows Used by, then the lifecycle panel**: Created, Modified and Active version continue Used by's key and value list, on one key column; a Phase with source errors then shows a collapsed defect count, the same errors Issues lists; a draft's changed fields follow under "Publishing would change:"; then the actions as small buttons. The changed fields take the place of the mockup's "Publishing changes" list, and the mockup's "Published v2 · Nov 7" and "Draft · Edited 3 min ago" lines are not ported. Issues follows, as in the mockup.
+
+Builder models:
+
+- **The toolbar has no unsaved chip, and Save is always enabled.** The editor holds the catalog being edited and no saved copy to compare it with. The mockup's toolbar shows "1 unsaved change".
+- **Export… keeps the accessible name "Export Model Catalog"**, which `docs/operations/process-yaml.md` and the editor's tests name.
+- **A section's heading holds the backend's name only.** The count and the Detect and Add model buttons sit beside it in the section head, so the heading's accessible name is the name alone. The mockup's `h2` holds all three. The count reads "no models", "1 model" or "N models".
+- **An empty section reads "No codex models yet"**, with the backend's name, and a line that says how to fill it: Detect adds the models the backend reported, or Add model takes an id. The editor learns only what each backend's CLI reported, and a CLI that cannot list its models reports nothing, so it cannot tell a backend that is not installed from one that listed none. The mockup's card reads "agy is not installed" with "Set path in Settings".
+- **There is no Used by column, and every row has Remove.** The editor is given no Phases to count. Each row is a catalog entry, whether Detect or the operator added it, so each can be removed. The mockup offers Remove only for a model "Added by you".
+- **A model id is an input with no border until it is hovered or focused**, and the rows are keyed by position, so editing an id keeps focus. The mockup's ids are text.
+- **Add model opens a form under the section head, one section at a time.** Cancel, Escape, choosing Add model again or opening another section's form closes it and drops the draft, and focus returns to the button. A duplicate id is refused with an alert under the input, tied to it by `aria-describedby`. The mockup's Add model opens nothing.
+- **With no backend to list, the tab shows a "No backends available" card.** The mockup has no such state.
+
+Workflow editor:
+
+- **The root crumb "Workflows" is a button that opens the switcher's list**, with focus on the open Workflow's row, or on the first row. There is no list page: the switcher's list is the list view, and it keeps each row's purpose, Pipeline sequence, ports, validation state and lifecycle badges. The mockup's root is a link to a list page.
+- **The head's chips are the product's**: the state chip, and the validity chip in lowercase with a check or a warning mark, as on the Phases list (FR-015). "Unsaved draft" marks a Workflow that has never been saved, and "Unsaved changes" an unsaved edit, with no count. The mockup's chips read "Published v3" and "3 unsaved changes".
+- **Undo and Redo are titled "Undo" and "Redo".** The Builder binds no undo key, so the mockup's "(Ctrl/Cmd+Z)" would name one that does nothing.
+- **Save is the head's primary button, with no ⌘S, and the head has no Publish.** No save key is bound. Publish and History are in the lifecycle panel under the Workflow's Status, the one every definition shows. The mockup's Save is a secondary button with ⌘S, beside a primary Publish.
+- **The "More workflow actions" menu holds New workflow, Duplicate, Export YAML…, Revert unsaved changes and Deactivate…** The catalog deactivates a Workflow rather than deleting it, so there is no Delete workflow…, and Version history is the lifecycle panel's History. A disabled Export YAML… shows the reason inside the item. The mockup's menu holds Duplicate, Export YAML…, Version history, Revert unsaved changes, Deactivate and Delete workflow….
+- **Export YAML… opens a panel first**, whose Include select sets how much of the Workflow's dependencies the document carries (FR-013). The mockup's exports at once.
+- **What the canvas does is said on the dashboard's status line**, not on a line of the editor's own. A selection reads "Selected" and the step's title or the branch's name, and selecting nothing reads "Nothing selected. Showing the Workflow." An add from the palette, from either `+`, from Split or from the inspector's "Add a branch from this step" reads "Added" and what it added; an add that is refused adds nothing and says nothing. A delete reads "Deleted", the name and "Undo restores it.", and focus moves to Undo, as in the mockup. The mockup's line ends its empty selection with "workflow summary.", says an add "would" happen, and ends a delete with "Press Ctrl/Cmd+Z to undo." Its opening hint and its zoom, fit, tidy, outline and picker messages belong to controls left out (under "Workflow canvas"), and its "would run here" stands in for menu items that here do run. Its "Control changed." and "Kept the … settings." are not ported: Switch and Keep send focus back to the Control choice, whose checked option says what the step now does.
+
+Workflow canvas:
+
+- **The canvas is laid out rather than placed.** The mockup gives each card coordinates and draws its edges in an SVG. Here the steps stand in lanes and each edge is a CSS line, so no position is computed. The edge geometry is the mockup's: a plain edge spans 46px with its `+` halfway down, a labelled one 88px with its chip's centre at 42% and its `+` at 80%, and the stroke is 1.4px, 2.2px when selected.
+- **Steps are drawn in the order the flow offers them**, from each start down, with a fork's arms in equal columns. Steps no start reaches go in a lane below, in authored order, under a note that says why they block a save: "Not reachable from a start. Connect these or remove them before saving."
+- **An arm into a step drawn elsewhere is dashed and ends in a chip that names the step**, with the loop mark, so a diamond reads without drawing a step twice. The mockup dashes only its loop back.
+- **A Workflow with a Candidate Block opens its canvas with a banner**, above the steps, that states the block's selection mode, availability policy, return path and exits, and lists its candidates in order. The mockup's Workflow has none.
+- **A card is a box holding one button.** The selected card's toolbar and a child Workflow's preview line are controls of their own, and a button cannot hold another. The button carries the selection, `aria-pressed` and the card's description, and a card with a defect gets the error border and an issue badge. The mockup's card is itself the button.
+- **A plain arm's line is its button**, 24px wide. On a touch screen the line keeps 24px above and below its `+`, which grows to 44px. The mockup's plain edge has a visually hidden button.
+- **The palette's Logic group holds Split alone**, which adds a branch from the selected step and is disabled until one is selected. A condition and an approval are a branch's settings, Condition and the manual handoff, as in the mockup's own branch inspector, and Repeat and For each are a child Workflow step's Control. The host refuses a cycle (`graph-cycle`), so there is no Loop back; Repeat is how a step runs again. The mockup's Logic group lists Condition, Approval, Loop back, Repeat until and For each as steps.
+- **The palette's other groups are the mockup's, Phases and child Workflows**, never the open one. Pipelines are accepted but not offered: they are transitional, and count only toward whether the catalog is empty. The palette also styles states the mockup does not show: a disabled item, a long identifier, the notes 'No step matches "…".' and "No effective Phases or Workflows", and a collapsed head whose toggle fits the 40px rail.
+- **A `+` adds a step at once**: the first Phase, or the first Pipeline when there is no Phase, and the Step tab changes what it runs. The mockup's `+` opens a picker titled for where the step goes.
+- **The selected card's toolbar holds Move earlier, Move later and Delete.** The moves are the product's: they change the step's place in the authored list, the order its definition saves. Of the mockup's other buttons, Add after is the `+`, Open definition is the Step tab's Definition link and a child Workflow's preview line, and Replace… and Duplicate have no operation behind them yet; a button that does nothing is worse than none. On a touch screen 560px wide or less, the buttons stack. In a fork, a card with an arm to its right has its toolbar over its top-right corner, because beside the card it would cover that arm's card; on a touch screen that toolbar stands beside the card with its buttons stacked, at any width, and the fork's arms stand 64px apart to hold it. Its buttons are a group named for the step, each a Tab stop of its own as every control on the canvas is; a `toolbar` role would promise arrow keys between them. The mockup's toolbar holds Add after, Replace…, Duplicate, Open definition and Delete and declares the `toolbar` role without the arrow keys, and the mockup draws no fork side by side.
+- **Delete and Backspace delete the selected step only while focus is on its card**: the card's own button, its toolbar or its preview line. They take the toolbar's Delete path, so the status line names the step and focus moves to Undo. A key held with Ctrl, Cmd, Alt or Shift is left to whatever binds it, a key held down deletes one step, and a read-only Workflow deletes nothing. The mockup listens on the whole page and skips only its text fields. Here the panel also holds the inspector's fields, the toolbar and the other cards, and a key meant for one of them must not delete a step the operator is not on.
+- **A child Workflow's steps are listed on request.** Its preview line offers the list and a link that opens the definition. Listing walks every nested call down to its depth limit, work a closed card does not need. The mockup always lists the child's steps under its card.
+- **Zoom, Fit, Tidy, the Outline view and the picker are not ported.** A laid-out canvas grows with its content and scrolls, so Fit has nothing to fit and Tidy nothing to tidy, and the webview zooms with the editor window. The cards are buttons in reading order, so the keyboard and a screen reader already meet the steps as an outline. The `+` takes the picker's place.
+- **Below 761px the panes stack** and the page scrolls: the palette, at most 200px tall, over the canvas, and the inspector under it. A fork keeps its columns and the canvas scrolls sideways, as the mockup's does. The mockup's only narrow rule, a 200px palette and a 280px inspector below 1101px, is kept.
+
+Workflow inspector:
+
+- **Each mode's head stays put while its body scrolls**, and a step's or a branch's head has a "Back to the Workflow" button, so the Workflow's settings are one press away from any selection. The mockup's step and branch heads have no way back.
+- **The Workflow's summary and settings share one page**: Status (State, Steps, Used by, then the lifecycle panel), Issues, then sections that open and close: General, open first, Inputs and outputs, Execution defaults, and Candidate block, open when the Workflow carries one. Every field stays one scroll away, and the execution defaults, with Recommended next, are fields rather than a list. The mockup gives the summary and the settings a page each, joined by a "Workflow settings" button.
+- **The open tab carries over to the next step, except Control on a step that cannot loop**, which opens on Step, because there Control offers only Once. The mockup keeps Control open.
+- **The Step tab picks what a step runs with two selects**, its type (Phase or Child Workflow) and its target, and holds "Add a branch from this step". A Phase step shows no Execution list: a step stores no execution settings of its own to override. The mockup's Runs is one picker, and its Execution list offers "Override for this step…".
+- **The Data tab is read-only.** It shows where each input comes from, as the host counts it: a binding, a connection into the input, or the step's own For each item. Bindings are edited in the Workflow's Inputs and outputs, so this tab is not a second editor for them. The mockup edits a step's bindings in its Data tab.
+- **The Advanced tab holds the step's identifier.** A step stores no retry settings or notes, and a Phase's retries are set in the Phase editor, which has no attempt count. The mockup's Advanced tab also shows the Phase's attempts and what happens at the cap, and a Notes field.
+- **A branch's head reads "Branch" and its number**, with the two steps it joins under it. The mockup's reads "Branch", or "Loop back" for its else arm.
+- **A branch's body adds Comes from**, a select over the steps and their ports, so a branch's source can change as its target can and can never name something that does not exist (FR-042). Its other sections are the mockup's: Goes to, Condition, with "Always taken." when there is none, and Handoff. Every control that decides what a condition means is a select over a closed set (FR-021), and the one free-text control is the literal compared against (FR-024).
+
+### Left to the component
+
+- **Inline styles.** The mockups set positions, widths and one-off spacing in `style` attributes. `tests/lint/no-static-inline-style.test.ts` forbids a static `style` attribute. A computed value, such as the depth of a step in a child Workflow's preview or a popover's position, goes through a `style:` directive. There are two exceptions: the sidebar's progress bar is a native `<progress>` (above), and a fork's arm count is a `style` attribute that sets `--wf-arms`, the one dynamic attribute the test counts. A one-off variant goes in the component's own style block.
+- **Mockup chrome.** The annotation bar, the numbered pins, the legend and the rules page are not ported.
+- **Icons.** The mockups' icon symbols are `components/sg/SgSprite.svelte`, which the dashboard shell renders once. A call site is `<svg class="i" aria-hidden="true"><use href="#i-name" /></svg>`. The sidebar does not load the sprite, because its startup bundle has no room for it, so it draws its four icons (the logo and the three counter marks) inline with the sprite's paths.
+- **Two class names are the port's own.** `sg` is the scope. `fit` lets a `table.t` shrink below its minimum width.
+- **Class values are quoted.** Write `class="x {y}"`, never `class={expr}`. Svelte passes a bare expression through its `clsx` helper, and the helper then lands in the chunk the sidebar loads at startup, which `tests/unit/ui/sidebar/bundle-size.test.ts` caps.
 
 ## IPC contract
 
@@ -142,8 +508,9 @@ again by feature 097 — not merely hidden — so neither has a
 one of the five standing commands is a member of `MUTATING_COMMAND_TYPES`
 (`src/contracts/sidebar-command-metadata.ts`), so every one is primary-host
 gated, and every one has a host handler under `src/ui/sidebar/commands/`.
-`CMD_REORDER_TASK` still drives both drag-and-drop and the up/down arrows
-*within* a queue; `CMD_MOVE_TASK` is the across-queues move.
+`CMD_REORDER_TASK` still drives drag-and-drop *within* a queue, while the
+row menu's **Move up** and **Move down** post `CMD_MOVE_QUEUE_ITEM_UP` and
+`CMD_MOVE_QUEUE_ITEM_DOWN`; `CMD_MOVE_TASK` is the across-queues move.
 
 All five now have webview call sites. Feature 092 shipped them with
 none — handler, validator, refusal codes and audit events on the host, and
@@ -726,14 +1093,29 @@ Ownership, given the per-component LOC budget `PipelineBuilder.svelte` sits unde
 |---|---|
 | [`WorkflowCatalogEditor.svelte`](src/components/PipelineBuilderEditors/WorkflowCatalogEditor.svelte) | The Library, drill-down navigation stack, draft lifecycle, revision handshake, and the save |
 | [`WorkflowLibraryList.svelte`](src/components/PipelineBuilderEditors/WorkflowLibraryList.svelte) | The row list, each row's Phase/child-Workflow node sequence, and its input/output ports |
+| [`WorkflowFlowTopBar.svelte`](src/components/PipelineBuilderEditors/WorkflowFlowTopBar.svelte) | The head's left half: the breadcrumb, the switcher that opens `WorkflowLibraryList.svelte`, and the state, validity and unsaved chips |
 | [`WorkflowToolbar.svelte`](src/components/PipelineBuilderEditors/WorkflowToolbar.svelte) | The action bar, the "no effective Phase" explanation beside the control it disables, and Export |
+| [`WorkflowFlowBuilder.svelte`](src/components/PipelineBuilderEditors/WorkflowFlowBuilder.svelte) | The three panes, the selection that ties them together, and what the dashboard's status line says the canvas selected, added or deleted |
+| [`WorkflowActionPalette.svelte`](src/components/PipelineBuilderEditors/WorkflowActionPalette.svelte) | The "Add steps" palette: Phases, child Workflows and Split, the search that `/` focuses, and the collapse to the rail |
 | [`WorkflowFlowCanvas.svelte`](src/components/PipelineBuilderEditors/WorkflowFlowCanvas.svelte) | The graph surface: one subtree per start, plus the separate lane for nodes no start reaches |
 | [`WorkflowFlowSubtree.svelte`](src/components/PipelineBuilderEditors/WorkflowFlowSubtree.svelte) | One card and everything below it, rendering itself per arm so a fork nests instead of flattening |
-| [`WorkflowFlowNode.svelte`](src/components/PipelineBuilderEditors/WorkflowFlowNode.svelte) | One Phase or child Workflow node card — selection, inline child preview, drill-down Open action, and reorder/remove buttons |
-| [`WorkflowInspector.svelte`](src/components/PipelineBuilderEditors/WorkflowInspector.svelte) | Workflow identity, dependent parent Workflows, node kind/target/retry/timeout overrides, execution defaults, `recommendedNext`, and `WorkflowPortsAndBindingsEditor.svelte` |
+| [`WorkflowFlowNode.svelte`](src/components/PipelineBuilderEditors/WorkflowFlowNode.svelte) | One step card: the box, the one button that selects it, its badges and its visually hidden defect list, then `WorkflowNodeToolbar.svelte` while it is selected and `WorkflowChildPreview.svelte` on a child Workflow step. While selected, the box takes Delete and Backspace from its own buttons |
+| [`WorkflowNodeToolbar.svelte`](src/components/PipelineBuilderEditors/WorkflowNodeToolbar.svelte) | The selected card's Move earlier, Move later and Delete |
+| [`WorkflowChildPreview.svelte`](src/components/PipelineBuilderEditors/WorkflowChildPreview.svelte) | A child Workflow card's preview line: the child's steps, listed on request, and the link that opens its definition |
+| [`WorkflowInspector.svelte`](src/components/PipelineBuilderEditors/WorkflowInspector.svelte) | Which inspector shows: a branch, a step, or, with neither selected, the Workflow |
+| [`WorkflowSettingsInspector.svelte`](src/components/PipelineBuilderEditors/WorkflowSettingsInspector.svelte) | The Workflow: status, dependent parent Workflows, issues, identity, `WorkflowPortsAndBindingsEditor.svelte`, execution defaults, `recommendedNext`, and the Candidate Block |
+| [`WorkflowNodeInspector.svelte`](src/components/PipelineBuilderEditors/WorkflowNodeInspector.svelte) | One step, in four tabs: Step (what it runs, its label, whether the Workflow may begin there, and adding a branch), Data, Control and Advanced |
+| [`WorkflowNodeControlChoice.svelte`](src/components/PipelineBuilderEditors/WorkflowNodeControlChoice.svelte) | How a step runs, once, Repeat or For each, asking before a switch discards a control's settings |
+| [`WorkflowNodeControlEditor.svelte`](src/components/PipelineBuilderEditors/WorkflowNodeControlEditor.svelte) | The settings of the Repeat or For each a child Workflow step carries |
 | [`WorkflowPortsAndBindingsEditor.svelte`](src/components/PipelineBuilderEditors/WorkflowPortsAndBindingsEditor.svelte) | Public Workflow `inputs`, `outputs`, and node `bindings` |
-| [`WorkflowBranchInspector.svelte`](src/components/PipelineBuilderEditors/WorkflowBranchInspector.svelte) | One branch — its endpoints, handoff mode (`auto`/`manual`), and its condition |
+| [`CandidateBlockEditor.svelte`](src/components/PipelineBuilderEditors/CandidateBlockEditor.svelte) | The Candidate block section's body (FR-R5-F32): turning the block on and off, its availability policy, dispatch cap, monitoring window and spend ceiling, then its ordered candidates, each with its Phase, priority, attempts, retry delay and counted trial, and that Phase's runner, model and instruction shown read-only |
+| [`WorkflowBranchInspector.svelte`](src/components/PipelineBuilderEditors/WorkflowBranchInspector.svelte) | One branch — its endpoints, handoff mode (`auto`/`manual`), and its condition, through `WorkflowConditionFields.svelte` |
+| [`WorkflowConditionFields.svelte`](src/components/PipelineBuilderEditors/WorkflowConditionFields.svelte) | A branch's condition: closed-set selects for everything that decides its meaning (FR-021), and the one free-text literal (FR-024) |
 | [`workflow-flow-layout.ts`](src/components/PipelineBuilderEditors/workflow-flow-layout.ts) | Pure layout — placement, arm order, and the `isJump` verdict that terminates the recursion; pinned by [`workflow-flow-layout.test.ts`](src/components/__tests__/workflow-flow-layout.test.ts) |
+| [`workflow-flow-view.ts`](src/components/PipelineBuilderEditors/workflow-flow-view.ts) | What the canvas components pass between themselves, where the selection goes after a move, and the names the status line gives a selection; pinned by [`workflow-flow-view.test.ts`](src/components/__tests__/workflow-flow-view.test.ts) |
+| [`workflow-node-control.ts`](src/components/PipelineBuilderEditors/workflow-node-control.ts) | The three ways a step runs, and the default Repeat and ForEach controls (FR-R5-F33 / FR-R5-F34) |
+| [`workflow-node-data.ts`](src/components/PipelineBuilderEditors/workflow-node-data.ts) | Where each input of a step comes from, for the Data tab, read the way the host decides an input is bound |
+| [`workflow-field-words.ts`](src/components/PipelineBuilderEditors/workflow-field-words.ts) | The words the inspector shows for contract values; every select keeps the value it saves |
 | [`WorkflowRowDefects.svelte`](src/components/PipelineBuilderEditors/WorkflowRowDefects.svelte) | Field-associated defect regions (`aria-describedby` → `role="alert"`) |
 | [`workflow-catalog-state.ts`](src/components/PipelineBuilderEditors/workflow-catalog-state.ts) | Pure draft logic — every edit routes through `applyGraphEdit`, so no rule is expressible in markup |
 | [`workflow-catalog-actions.ts`](src/components/PipelineBuilderEditors/workflow-catalog-actions.ts) | The destructive writes, each with its confirmation in the same scope as the mutation it authorises |
@@ -1171,14 +1553,17 @@ fails the build on any drift. No new snapshot envelope keys; no
 `AUDIT_SCHEMA_VERSION` or `STATE_SCHEMA_VERSION` bump.
 
 [`MetricsDashboard.svelte`](src/components/MetricsDashboard/MetricsDashboard.svelte) renders
-the tab: summary cards, a sortable/paginated task table with
-expandable per-phase detail, a phase-type analytics table, and an
-inline-SVG cumulative daily-cost chart (no new charting dependency).
+the tab. Its Overview shows the all-time totals as four tiles, the
+retained run detail's totals, an inline-SVG bar chart of cost per day
+with the running total in its tip and its table view (no new charting
+dependency), the Steps table of phase-type analytics, and a
+sortable, paginated Runs table with expandable per-phase detail. Its
+Reports tab is `HistoricalReportsPanel.svelte`.
 Under normal application-generated audit logs, `TaskRecord.description` is
 always an internally-generated `taskId` or `runId` — never
 operator-authored free text. Rendering safety does not depend on that
-assumption holding, though: the table uses Svelte's default auto-escaping
-with no `{@html}` usage anywhere in the component (FR-017), so a
+assumption holding, though: every component in the folder uses Svelte's
+default auto-escaping, with no `{@html}` usage anywhere (FR-017), so a
 hand-edited or adversarial log entry still can't inject markup.
 
 ### IPC additions (spec 101 — Builder surface)

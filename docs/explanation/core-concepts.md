@@ -142,7 +142,7 @@ Queue and Run are distinct. The Queue answers what should start next and whether
 There is one way to launch a Workflow:
 
 1. Open the dashboard, select **Queues**, and open a Queue.
-2. Select **Add work**. The task composer, headed **Add task**, lists the published Workflows under **Workflows**.
+2. Select **Add work**. The task composer opens in a drawer headed **Add task to** and the Queue's name, and lists the published Workflows under **Workflows**.
 3. Select a Workflow, then select **Trigger**.
 4. Fill in the trigger form and select **Add task**.
 
