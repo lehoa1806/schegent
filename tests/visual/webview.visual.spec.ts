@@ -1145,3 +1145,39 @@ test('the open Workflow list comes after the switcher on screen as in the tab or
 
   assertNoPageErrors(page, 'Workflow picker order');
 });
+
+/**
+ * The space under the Builder's tabs. The workflow builder mockup draws its editor 10px under its
+ * tabs, and the surfaces mockup, which leaves the Workflows tab to it, spaces its other pages 14px
+ * under theirs. Finding 66 of the webview port review.
+ */
+test('the Workflow editor stands as far under the tabs as the builder mockup draws it', async ({
+  page
+}) => {
+  await installDeterministicHost(page);
+  await page.goto('/dashboard.html');
+  await page.addStyleTag({ content: themeCss('dark') });
+  await publishSnapshot(page);
+  await page.getByTestId('dashboard-route-builder').click();
+  await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
+  // Pixels from the tabs' bottom edge down to the top of the box the selector names.
+  const gapUnderTabs = (selector: string): Promise<unknown> =>
+    page.evaluate(`(() => {
+      const tabs = document.querySelector('.builder-tabs').getBoundingClientRect();
+      const below = document.querySelector('${selector}').getBoundingClientRect();
+      return Math.round((below.top - tabs.bottom) * 10) / 10;
+    })()`);
+  await expect.poll(() => gapUnderTabs('.builder-canvas'), 'under the Phases tab').toBe(14);
+
+  await page.getByRole('tab', { name: 'Workflows' }).click();
+  const head = '[data-testid="workflow-catalog-editor"] .ed-head';
+  await expect(page.locator(head)).toBeVisible();
+  await expect.poll(() => gapUnderTabs(head), 'with no Workflow open').toBe(10);
+  const picker = page.getByTestId('workflow-picker-toggle');
+  if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
+  await page.getByTestId('workflows-list-item-dev-new-feature').click();
+  await expect(page.getByTestId('workflow-field-name')).toBeVisible();
+  await expect.poll(() => gapUnderTabs(head), 'with a Workflow open').toBe(10);
+
+  assertNoPageErrors(page, 'Builder tabs spacing');
+});
