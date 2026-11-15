@@ -18,7 +18,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { disposeIntentLedger } from '../../lib/intent-ledger';
-import { CMD_READ_METRICS } from '../../lib/messages';
 import type { HistoryRow } from '../../lib/history-rows';
 
 const postCommandSpy = vi.fn<(type: string, payload?: unknown) => { correlationId: string }>();
@@ -50,9 +49,15 @@ function historyRow(runId: string): HistoryRow {
   return Object.freeze(row);
 }
 
-/** The payloads posted for one command, in order. */
-function requestsFor(command: string): unknown[] {
-  return postCommandSpy.mock.calls.filter(([type]) => type === command).map(([, payload]) => payload);
+/**
+ * The run-scoped metrics reads posted, in order: every payload that carries `runIds`, which only
+ * the metrics read does. Found by payload, because only `lib/metrics-ipc.ts` may name the metrics
+ * command (`tests/lint/no-inline-read-metrics-ipc.test.ts`).
+ */
+function metricsReads(): unknown[] {
+  return postCommandSpy.mock.calls
+    .map(([, payload]) => payload)
+    .filter((payload) => typeof payload === 'object' && payload !== null && 'runIds' in payload);
 }
 
 function mount(runId: string) {
@@ -80,7 +85,7 @@ describe("the run detail reads the run's metrics once per run", () => {
     mount('run-1');
     await tick();
 
-    expect(requestsFor(CMD_READ_METRICS)).toEqual([{ runIds: ['run-1'] }]);
+    expect(metricsReads()).toEqual([{ runIds: ['run-1'] }]);
   });
 
   it('reads nothing more when a host push rebuilds the same run row', async () => {
@@ -89,7 +94,7 @@ describe("the run detail reads the run's metrics once per run", () => {
     await rerender({ row: historyRow('run-1') });
     await tick();
 
-    expect(requestsFor(CMD_READ_METRICS)).toEqual([{ runIds: ['run-1'] }]);
+    expect(metricsReads()).toEqual([{ runIds: ['run-1'] }]);
   });
 
   it('reads once more for the next run, and stops there', async () => {
@@ -98,6 +103,6 @@ describe("the run detail reads the run's metrics once per run", () => {
     await rerender({ row: historyRow('run-2') });
     await tick();
 
-    expect(requestsFor(CMD_READ_METRICS)).toEqual([{ runIds: ['run-1'] }, { runIds: ['run-2'] }]);
+    expect(metricsReads()).toEqual([{ runIds: ['run-1'] }, { runIds: ['run-2'] }]);
   });
 });
