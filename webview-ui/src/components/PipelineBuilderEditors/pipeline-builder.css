@@ -26,7 +26,7 @@
    option does (`sg-builder.css`). The muted grey on the active tint measured 4.36:1 in a dark
    theme, under WCAG AA's 4.5:1, once the accessibility scan drew real theme colours (decision 13
    of the webview redesign review). The title keeps its weight and the rest its smaller size. */
-.pb .phase-list-item.selected :is(.phase-list-id, .row-ports) { color: inherit; }
+.pb .phase-list-item.selected .phase-list-id { color: inherit; }
 /* Feature 101 (US1, T037) — the row stacks: the selection button on one line, the lifecycle chrome
    beneath it. The Workflow library list draws these rows; the Phases tab lists its Phases in a
    table of its own (`PhaseCatalogList.svelte`). */
@@ -71,7 +71,6 @@
 .pb .row-defects { display: flex; align-items: flex-start; gap: 6px; width: 100%; font-size: 0.85em; color: var(--schegent-error-text); }
 .pb .row-defect-cue { flex: 0 0 auto; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; font-weight: 600; text-transform: uppercase; font-size: 0.85em; }
 .pb .row-defect-list { margin: 0; padding-left: 16px; }
-.pb .row-ports { display: flex; flex-wrap: wrap; gap: 4px; font-size: 0.85em; color: var(--schegent-muted-fg); }
 .pb .add-phase-row { display: flex; gap: 8px; margin-top: 8px; }
 /* A catalog's own states on every tab: loading, a failed read, an empty catalog and nothing
    selected. The error colour below weighs as much, so it wins by coming later. */
@@ -81,7 +80,6 @@
 /* The validity colours reach only the Workflow editors' badges. A definition row's validity is a
    status chip, coloured by sg-core's `s-*` tones, and these would outrank them. */
 .pb .catalog-error, .pb .field-errors, .pb .status-badge.status-invalid { color: var(--schegent-error-text); }
-.pb .phase-badges { display: flex; gap: 4px; }
 .pb .status-badge { font-size: 0.72em; }
 .pb .status-badge.status-effective { color: var(--vscode-testing-iconPassed); }
 .pb [aria-invalid='true'] { border-color: var(--vscode-errorForeground); }

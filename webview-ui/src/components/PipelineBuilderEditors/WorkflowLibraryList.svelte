@@ -2,18 +2,13 @@
   // Feature 083 (US5, T055/T056, FR-036) — the Library list.
   //
   // Split out of WorkflowCatalogEditor so that file stays inside the
-  // repository-wide 500-line Svelte budget. A row summarises the whole
-  // definition — purpose, Pipeline sequence, derived ports, validation state —
-  // so an operator who did not author it can tell what it does and whether it
-  // currently resolves, without selecting it first.
+  // repository-wide 500-line Svelte budget.
   //
-  // Feature 099 (T494a, FR-043) — the summary no longer opens on a scope. There
-  // is one layer, so the badge could only ever read one value and the row key
-  // could only ever carry one segment.
-  //
-  // The derived ports are the host's projection, never recomputed here: they
-  // exist on no persisted row (FR-048), so a row the host has not projected
-  // says so rather than showing an empty list that would read as "none".
+  // Feature 186 (FR-003) — a row shows the name, the id and the state and
+  // validity badges, and nothing else. It used to summarise the whole definition
+  // (purpose, Pipeline sequence, derived ports, node count); the open Workflow
+  // shows that now: the purpose in `WorkflowSettingsInspector`'s General
+  // section, the ports in its Inputs and outputs section, the steps on the canvas.
   //
   // Feature 101 (US1, T037) — T037 names `WorkflowCatalogEditor.svelte`, but the
   // Workflow list rows were split out here for that file's 500-line budget, so
@@ -48,64 +43,6 @@
       >
         <div class="phase-list-title">{row.name || "Untitled Workflow"}</div>
         <div class="phase-list-id">{row.workflowId}</div>
-        <div class="phase-list-purpose">
-          {row.description || "No purpose recorded."}
-        </div>
-        <div class="row-ports" data-testid="workflow-row-sequence">
-          {#if row.nodes.length === 0}
-            <span>No steps yet</span>
-          {:else}
-            <!-- Authored order, never sorted: the sequence the operator wrote
-                 is part of the definition's meaning (FR-049). -->
-            {#each row.nodes as node, index (node.nodeId)}
-              <span
-                >{index > 0 ? "→ " : ""}{node.pipelineId ??
-                  node.phaseId ??
-                  node.workflowId ??
-                  node.nodeId}</span
-              >
-            {/each}
-          {/if}
-        </div>
-        <div class="row-ports" data-testid="workflow-row-inputs">
-          <span>Inputs:</span>
-          {#if row.derivedInputs.length > 0}
-            {#each row.derivedInputs as port (port.nodeId + port.portId)}
-              <span>{port.label || port.portId}</span>
-            {/each}
-          {:else if (row.inputs ?? []).length > 0}
-            <!-- Keyed by position: a draft's port-id field accepts any text, so two declared
-                 ports can share an id while it is being edited. -->
-            {#each row.inputs ?? [] as port, index (index)}
-              <span>{port.label || port.portId}</span>
-            {/each}
-          {:else}
-            <span>{row.persisted ? "none" : "derived once saved"}</span>
-          {/if}
-        </div>
-        <div class="row-ports" data-testid="workflow-row-outputs">
-          <span>Outputs:</span>
-          {#if row.derivedOutputs.length > 0}
-            {#each row.derivedOutputs as port (port.nodeId + port.portId)}
-              <span>{port.label || port.portId}</span>
-            {/each}
-          {:else if (row.outputs ?? []).length > 0}
-            {#each row.outputs ?? [] as port, index (index)}
-              <span>{port.label || port.portId}</span>
-            {/each}
-          {:else}
-            <span>{row.persisted ? "none" : "derived once saved"}</span>
-          {/if}
-        </div>
-        <!-- Feature 101 (T037) — the validity badge left with the lifecycle
-             chrome below. The node count is a fact about the graph, not about
-             the definition's lifecycle, so it stayed. -->
-        <div class="phase-badges">
-          <span class="node-count">
-            {row.nodes.length}
-            {row.nodes.length === 1 ? "node" : "nodes"}
-          </span>
-        </div>
       </button>
       <!-- Outside the selection button, not inside it: a control nested in a
            button is invalid markup and unreachable by keyboard.
