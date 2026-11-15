@@ -1536,16 +1536,24 @@ Feature 073 adds a **read-only** rollup surface for the Dashboard's
 Metrics tab, derived entirely from the existing `.schegent/audit.log`
 (no new persistent storage):
 
-- `CMD_READ_METRICS` — payload `{ includeArchived?: boolean }` (default
-  `false`). Returns `{ tasks, phaseTypeAggregates, costTimeline,
-  oldestIncludedTimestamp?, includesArchived, totalScannedEntries,
-  parseWarnings }` inside the standard `CMD_ACK` envelope. There is no
-  push-message counterpart — unlike the Phase Log Feed, Metrics has no
-  live tail.
+- `CMD_READ_METRICS` — payload
+  `{ includeArchives?: boolean, runIds?: string[] }`. `includeArchives`
+  defaults to `false`; feature 103 added `runIds`, at most 64 run ids,
+  to ask for those runs' summaries. Returns `{ tasks,
+  phaseTypeAggregates, costTimeline, oldestIncludedTimestamp?,
+  cumulative, coverage, runSummaries?, meta: { includesArchives,
+  totalScannedEntries, parseWarnings } }` inside the standard `CMD_ACK`
+  envelope, with `runSummaries` present only when the request carried
+  `runIds`. There is no push-message counterpart — unlike the Phase Log
+  Feed, Metrics has no live tail.
 
-`CMD_READ_METRICS` is **read-only** and is NOT a member of
-`MUTATING_COMMANDS` (mirrors the spec 020 phase-log commands above) —
-a secondary VS Code host may dispatch it too. The single call site is
+`CMD_READ_METRICS` was read-only and outside `MUTATING_COMMANDS`,
+like the spec 020 phase-log commands above, so a secondary VS Code host
+could dispatch it. `FR-R4-F05` gates it with them, because it appends a
+`metrics-view-opened` row once per session: `COMMAND_AUTHORITY` declares
+it gated and not serialized, so an untrusted workspace and a secondary
+window are refused, and the handler keeps its own primacy check. The
+single call site is
 [`webview-ui/src/lib/metrics-ipc.ts`](src/lib/metrics-ipc.ts); a
 repo-grep regression at
 [`../tests/lint/no-inline-read-metrics-ipc.test.ts`](../tests/lint/no-inline-read-metrics-ipc.test.ts)
