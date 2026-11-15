@@ -1,6 +1,9 @@
 // FR-R5-F32 (F32-T02, F32-T03, F32-T07) — Component tests for CandidateBlockEditor
 // and candidate-block canvas path layout helpers.
 
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { cleanup, fireEvent, render, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -278,5 +281,21 @@ describe('CandidateBlockEditor — drawn the way the rest of the inspector is', 
       expect(field?.firstElementChild?.textContent.trim()).not.toBe('');
       expect(control.classList.contains('input')).toBe(true);
     }
+  });
+
+  // jsdom applies no component CSS, so the rules are read from the component's source.
+  it('borders its parts with the redesign tokens and rings the selected candidate', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const source = readFileSync(
+      join(here, '..', 'PipelineBuilderEditors', 'CandidateBlockEditor.svelte'),
+      'utf8'
+    );
+    const style = /<style>([\s\S]*?)<\/style>/.exec(source);
+    expect(style).not.toBeNull();
+    const rules = style ? style[1] : '';
+    expect(rules).not.toContain('--vscode-');
+    expect(rules).toMatch(
+      /\.cb-candidate-row\.is-selected \{ border-color: var\(--schegent-focus-border\); box-shadow: var\(--schegent-ring-selected\); \}/
+    );
   });
 });
