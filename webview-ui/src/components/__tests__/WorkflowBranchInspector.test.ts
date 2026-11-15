@@ -53,6 +53,9 @@ const PLAIN: WorkflowConnection = {
   to: { nodeId: 'ship', portId: 'brief' }
 };
 
+/** The same arm marked as a return; it still names the node and port it had. */
+const RETURNING: WorkflowConnection = { ...PLAIN, to: { ...PLAIN.to, kind: 'return' } };
+
 const conditional = (condition: WorkflowCondition): WorkflowConnection => ({ ...PLAIN, condition });
 
 const STATUS_CONDITION: WorkflowCondition = {
@@ -153,6 +156,18 @@ describe('branch endpoints', () => {
       target: { value: 'draft' }
     });
     expect(spies.onretarget).toHaveBeenCalledWith(0, 'to', { nodeId: 'draft' });
+  });
+
+  it('raises a retarget that sets the return mark, and one that clears it', async () => {
+    const { getByTestId, spies } = mount(PLAIN);
+    await fireEvent.click(getByTestId('workflow-connection-return-0'));
+    expect(spies.onretarget).toHaveBeenLastCalledWith(0, 'to', { kind: 'return' });
+
+    cleanup();
+    const returning = mount(RETURNING);
+    expect((returning.getByTestId('workflow-connection-return-0') as HTMLInputElement).checked).toBe(true);
+    await fireEvent.click(returning.getByTestId('workflow-connection-return-0'));
+    expect(returning.spies.onretarget).toHaveBeenLastCalledWith(0, 'to', { kind: 'node' });
   });
 
   it('offers no condition controls until the branch is marked conditional', () => {
