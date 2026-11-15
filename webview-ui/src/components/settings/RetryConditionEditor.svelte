@@ -216,12 +216,12 @@
     font-size: 0.75em;
   }
   .rc-input {
-    background: var(--vscode-input-background);
+    background: var(--schegent-input-bg);
     color: var(--schegent-fg);
     border: 1px solid var(--sch-glass-border);
     border-radius: var(--schegent-radius);
     padding: 6px 8px;
-    font-family: var(--vscode-editor-font-family, monospace);
+    font-family: var(--schegent-mono-font);
     font-size: 0.9em;
     resize: vertical;
   }
@@ -246,7 +246,7 @@
     height: 8px;
     border-radius: 50%;
   }
-  .rc-pip-ok { background: var(--vscode-charts-green); }
+  .rc-pip-ok { background: var(--schegent-color-completed); }
   .rc-pip-err { background: var(--schegent-color-error); }
   .rc-warning {
     color: var(--schegent-color-warning);
@@ -258,9 +258,9 @@
     line-height: 1.4;
   }
   .rc-missing code {
-    background: var(--vscode-textCodeBlock-background);
+    background: var(--schegent-code-bg);
     padding: 1px 4px;
     border-radius: 3px;
-    font-family: var(--vscode-editor-font-family, monospace);
+    font-family: var(--schegent-mono-font);
   }
 </style>

@@ -166,7 +166,7 @@
     display: grid;
     place-items: center;
     padding: 16px;
-    background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent);
+    background: color-mix(in srgb, var(--schegent-bg) 72%, transparent);
   }
 
   .confirm-dialog {
@@ -175,13 +175,13 @@
     width: min(480px, 100%);
     border: 1px solid var(--schegent-border);
     border-radius: var(--schegent-radius);
-    background: var(--vscode-editor-background);
+    background: var(--schegent-bg);
     color: var(--schegent-fg);
     padding: 16px;
   }
 
   .severity-destructive {
-    border-color: var(--vscode-inputValidation-errorBorder);
+    border-color: var(--schegent-error-border);
   }
 
   h2 {
@@ -242,7 +242,7 @@
   }
 
   .btn-destructive {
-    border-color: var(--vscode-inputValidation-errorBorder);
+    border-color: var(--schegent-error-border);
     color: var(--schegent-error-text);
   }
 

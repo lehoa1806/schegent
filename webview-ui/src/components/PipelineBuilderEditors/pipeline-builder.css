@@ -22,7 +22,7 @@
 .pb .phase-list { display: flex; flex-direction: column; gap: 4px; }
 .pb .phase-list-item { text-align: left; background: transparent; border: 1px solid transparent; padding: 8px; border-radius: var(--schegent-radius-sm); cursor: pointer; color: var(--schegent-fg); transition: background var(--schegent-duration-fast) var(--schegent-ease-out); }
 .pb .phase-list-item:hover { background: var(--schegent-hover-bg); }
-.pb .phase-list-item.selected { background: var(--schegent-surface-active); border-color: var(--vscode-focusBorder); }
+.pb .phase-list-item.selected { background: var(--schegent-surface-active); border-color: var(--schegent-focus-border); }
 .pb .phase-list-title { font-weight: 500; margin-bottom: 4px; }
 .pb .phase-list-id { font-size: 0.85em; color: var(--schegent-muted-fg); }
 /* On the selected row the secondary text takes the row's own foreground, as the redesign's picker
@@ -37,14 +37,14 @@
 .pb .phase-list-row .phase-list-item { flex: 1; }
 .pb .empty-selection { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--schegent-muted-fg); font-style: italic; padding: 16px; }
 .pb .text-input, .pb .select-input { background: var(--schegent-input-bg); border: 1px solid var(--schegent-divider); color: var(--schegent-fg); padding: 8px; border-radius: 4px; font-family: inherit; font-size: 1em; }
-.pb .text-input:focus, .pb .select-input:focus { outline: none; border-color: var(--vscode-focusBorder); }
+.pb .text-input:focus, .pb .select-input:focus { outline: none; border-color: var(--schegent-focus-border); }
 /* The Workflow editors' fields. The Phase editor's fields are sg-core's `.field`; they keep the
    `form-field` and `form-label` names the Builder's tests find a field by, so these rules skip
    them. `:where` keeps each rule at the weight it had before the skip. */
 .pb .form-field:where(:not(.field)) { display: flex; flex-direction: column; gap: 4px; }
 .pb .form-label:where(:not(.field > *)) { font-size: 0.85em; font-weight: 600; color: var(--schegent-muted-fg); }
 .pb .checkbox-field:where(:not(.field)) { flex-direction: row; align-items: center; gap: 8px; }
-.pb .destructive-icon:hover { background: var(--vscode-inputValidation-errorBackground); color: var(--schegent-error-text); border-color: var(--vscode-errorForeground); }
+.pb .destructive-icon:hover { background: var(--schegent-error-bg); color: var(--schegent-error-text); border-color: var(--schegent-error-border); }
 /* Feature 083 (US5, T056, FR-044) — the defect block a node or connection row names in its
    `aria-describedby` (`WorkflowRowDefects.svelte`). It says "Error" as well as turning red: colour
    alone reaches neither a screen-reader user nor a monochrome display. */
@@ -61,4 +61,4 @@
 .pb .catalog-error, .pb .field-errors, .pb .status-badge.status-invalid { color: var(--schegent-error-text); }
 .pb .status-badge { font-size: 0.72em; }
 .pb .status-badge.status-effective { color: var(--schegent-status-completed-text); }
-.pb [aria-invalid='true'] { border-color: var(--vscode-errorForeground); }
+.pb [aria-invalid='true'] { border-color: var(--schegent-error-border); }

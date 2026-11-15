@@ -36,7 +36,7 @@
 }
 
 .preflight .preflight-id {
-  font-family: var(--vscode-editor-font-family, monospace);
+  font-family: var(--schegent-mono-font);
 }
 
 .preflight .preflight-missing-id {
