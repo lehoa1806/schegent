@@ -20,7 +20,12 @@ import type {
   WorkflowNode,
   WorkflowNodeControl
 } from '../../lib/snapshot-types';
-import { describeWorkflowBranch, type FlowNodeSlot } from './workflow-flow-layout';
+import {
+  describeWorkflowBranch,
+  isReturnConnection,
+  type FlowBranch,
+  type FlowNodeSlot
+} from './workflow-flow-layout';
 import type { WorkflowDraftError } from './workflow-catalog-state';
 import { phaseRunsOn, RUNS_ON_SEPARATOR } from './phase-catalog-view';
 
@@ -225,6 +230,32 @@ export function nodeTitleById(view: Pick<WorkflowFlowView, 'nodes'>, nodeId: str
 }
 
 /**
+ * What the far end of a return arm reads as: on the pill the canvas ends the arm
+ * at, in the arm's name, and in the branch inspector's head. The run returns from
+ * the Workflow there, so the far end is the return, never the card its endpoint
+ * names.
+ */
+export const RETURN_TITLE = 'Return';
+
+/** The title of the far end of an arm: the card it enters, or the return. */
+export function connectionTargetTitle(
+  nodes: readonly WorkflowNode[],
+  connection: WorkflowConnection
+): string {
+  return isReturnConnection(connection)
+    ? RETURN_TITLE
+    : nodeTitleById({ nodes }, connection.to.nodeId);
+}
+
+/** The title of the far end of a laid-out arm, which has no target for a return. */
+export function branchTargetTitle(
+  view: Pick<WorkflowFlowView, 'nodes'>,
+  branch: Pick<FlowBranch, 'targetNodeId'>
+): string {
+  return branch.targetNodeId === null ? RETURN_TITLE : nodeTitleById(view, branch.targetNodeId);
+}
+
+/**
  * The name an arm's button announces. The visible chip carries the condition
  * alone, which does not say which two cards the arm joins, and a plain arm has
  * no visible words at all. `label` is null for an unconditional arm. `issues`
@@ -254,7 +285,7 @@ export function connectionName(
 ): string {
   return armName(
     nodeTitleById({ nodes }, connection.from.nodeId),
-    nodeTitleById({ nodes }, connection.to.nodeId),
+    connectionTargetTitle(nodes, connection),
     describeWorkflowBranch(connection).label,
     connection.handoff === 'manual'
   );

@@ -7,7 +7,8 @@
   // back with `isJump`, and a jump renders a reference rather than descending. A
   // cycle and a diamond both arrive here as jumps, so neither can recurse forever,
   // and this component has no cycle check of its own to keep in step with the
-  // layout's.
+  // layout's. A return arm comes back with no target and ends at a Return pill, as
+  // a branch that completes ends at End: the run leaves the Workflow there.
   //
   // An arm is drawn as the redesign draws an edge (sg-builder.css): a line with an
   // arrowhead, a chip on it when the arm has a condition, waits for the operator or
@@ -18,9 +19,11 @@
   import type { FlowNodeSlot } from './workflow-flow-layout';
   import {
     armName,
+    branchTargetTitle,
     isSameFlowSelection,
     issueCountLabel,
     nodeTitleById,
+    RETURN_TITLE,
     type WorkflowFlowView
   } from './workflow-flow-view';
   import WorkflowFlowNode from './WorkflowFlowNode.svelte';
@@ -68,14 +71,17 @@
     >
       {#each slot.branches as branch (branch.connectionIndex)}
         {@const defects = view.connectionDefects[branch.connectionIndex] ?? []}
-        {@const child = branch.isJump ? undefined : view.slotsById.get(branch.targetNodeId)}
+        {@const child =
+          branch.isJump || branch.targetNodeId === null
+            ? undefined
+            : view.slotsById.get(branch.targetNodeId)}
         {@const selected = isSameFlowSelection(
           { kind: 'connection', index: branch.connectionIndex },
           view.selection
         )}
         {@const manual = view.connections.at(branch.connectionIndex)?.handoff === 'manual'}
         {@const chip = branch.label !== null || manual || defects.length > 0}
-        {@const targetTitle = nodeTitleById(view, branch.targetNodeId)}
+        {@const targetTitle = branchTargetTitle(view, branch)}
         <div class="wf-branch">
           <div
             class="wf-edge"
@@ -125,6 +131,10 @@
           </div>
           {#if child}
             <WorkflowFlowSubtree {view} slot={child} />
+          {:else if branch.targetNodeId === null}
+            <!-- A return: the run leaves the Workflow here, whatever node the
+                 endpoint names, so the arm ends as a completed branch does. -->
+            <span class="wf-end" data-testid="workflow-return-{branch.connectionIndex}">{RETURN_TITLE}</span>
           {:else}
             <!-- The target is drawn elsewhere in the flow. Naming it is what keeps
                  a diamond and a cycle readable without drawing either twice. -->
