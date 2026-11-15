@@ -186,14 +186,16 @@
 .pb .inspector .field-errors { margin: 0; padding-left: calc(var(--schegent-space-4) + var(--schegent-space-0-5)); }
 
 /* A branch: its rule above the first heading, each value with its remove button
-   level with the field, and the actions closing the body, the delete set apart. */
+   level with the field, then the moves, and the delete closing the body on a line of
+   its own, at the left, as in the redesign. */
 .pb .wf-branch-rule { margin: 0 0 var(--schegent-space-2); }
 .pb .ins-body .wf-cond-value { display: flex; align-items: flex-end; gap: var(--schegent-space-1-5); }
 .pb .ins-body .wf-cond-value > .field { flex: 1; min-width: 0; }
 .pb .ins-body .wf-cond-value > .icon-btn, .pb .ins-body .repeat-carry-row > .icon-btn { margin-bottom: var(--schegent-space-2-5); }
 .pb .ins-body .wf-cond-add { margin: 0 0 var(--schegent-space-2-5); }
 .pb .wf-branch-actions { display: flex; align-items: center; gap: var(--schegent-space-1); margin-top: var(--schegent-space-3); }
-.pb .wf-branch-actions > .wf-delete { margin-left: auto; padding: 0 var(--schegent-space-1-5); color: var(--schegent-status-error-text); }
+.pb .wf-branch-delete { margin-top: var(--schegent-space-3); }
+.pb .wf-branch-delete > .wf-delete { padding: 0 var(--schegent-space-1-5); color: var(--schegent-status-error-text); }
 
 /* A step's Repeat or For each settings, under its choice of how it runs. */
 .pb .ins-body .wf-node-control > h3:first-child { margin-top: var(--schegent-space-4); }

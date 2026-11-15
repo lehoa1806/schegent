@@ -3,7 +3,10 @@
   // row, minus the horizontal cramming — the canvas selects the arm and this panel
   // edits it. A head names the branch and the two steps it joins; the body follows
   // the mockup: where it goes, where it comes from, when it is taken, and how the
-  // run hands over.
+  // run hands over. It ends as the mockup's does, with Delete on a line of its own.
+  // The moves above it are the product's: they move the branch within the
+  // Workflow's saved list of branches, whose order breaks a tie in priority among
+  // the branches from one step.
   //
   // The condition controls live in `WorkflowConditionFields`, carried over
   // unchanged in substance: every control that decides a condition's meaning is a
@@ -372,6 +375,8 @@
           onclick={() => p.onmove(p.index, 1)}
           ><svg class="i" aria-hidden="true"><use href="#i-chev"></use></svg></button
         >
+      </div>
+      <p class="wf-branch-delete">
         <button
           type="button"
           class="btn btn-ghost wf-delete"
@@ -379,7 +384,7 @@
           onclick={() => p.onremove(p.index)}
           ><svg class="i" aria-hidden="true"><use href="#i-trash"></use></svg>Delete this branch</button
         >
-      </div>
+      </p>
     {/if}
   </div>
 </div>
