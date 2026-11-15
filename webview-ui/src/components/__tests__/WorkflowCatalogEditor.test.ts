@@ -174,7 +174,7 @@ const lifecycleRowFor = (container: HTMLElement, workflowId: string): HTMLElemen
   return row as HTMLElement;
 };
 
-// ── Row content (FR-036, FR-048, FR-049, US5 scenario 2) ────────────────────
+// ── Row content (feature 186 FR-003; feature 083 FR-048, US5 scenario 2) ────
 
 describe('WorkflowCatalogEditor row content (US5, T055)', () => {
   it('reports validation state on every row', () => {
@@ -192,42 +192,43 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
     expect(lifecycleRowFor(container, 'broken-one').textContent).toContain('invalid');
   });
 
-  it('shows the purpose, so the list is readable by someone who did not author it', () => {
+  // Feature 186 (FR-003): a row shows the name, the id and the two badges, and nothing else.
+  // Feature 083 (US5 scenario 2) had the row summarise the whole definition. That summary is on
+  // the open Workflow now: the purpose in General, the steps on the canvas, and the inputs and
+  // outputs in their own section, where the redesign keeps a Workflow's ports.
+  it('shows only the name and the id in a row, beside its two badges (feature 186, FR-003)', () => {
     const { container } = mount([record()]);
+    const row = rowFor(container, 'design-then-build');
 
-    expect(rowFor(container, 'design-then-build').textContent).toContain(
+    expect([...row.children].map((part) => part.textContent.trim())).toEqual([
+      'Design then Build',
+      'design-then-build'
+    ]);
+    expect(row.parentElement?.children).toHaveLength(2);
+    expect(row.parentElement?.lastElementChild).toBe(lifecycleRowFor(container, 'design-then-build'));
+  });
+
+  it('shows the purpose on the open Workflow, so it reads to someone who did not author it', async () => {
+    const { container, getByTestId } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    expect((getByTestId('workflow-field-description') as HTMLTextAreaElement).value).toBe(
       'Review the design, then build it.'
     );
   });
 
-  it('shows the Pipeline sequence in authored node order, not sorted (FR-049)', () => {
-    const { container } = mount([record()]);
-    const sequence = rowFor(container, 'design-then-build').querySelector(
-      '[data-testid="workflow-row-sequence"]'
-    );
+  it('shows the derived inputs and outputs on the open Workflow, which exist on no persisted row (FR-048)', async () => {
+    const { container, getByTestId } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
 
-    expect(sequence, 'each row must carry a Pipeline sequence').not.toBeNull();
-    const text = sequence?.textContent ?? '';
-    // Authored order is build-then-design. Position, not membership: a sorted
-    // or dependency-ordered render would still contain both names.
-    expect(text.indexOf('build-it')).toBeGreaterThanOrEqual(0);
-    expect(text.indexOf('build-it')).toBeLessThan(text.indexOf('design-review'));
+    expect(getByTestId('workflow-port-summary-inputs').textContent).toContain('Goal');
+    expect(getByTestId('workflow-port-summary-outputs').textContent).toContain('Artifact');
   });
 
-  it('shows the derived inputs and outputs, which exist on no persisted row (FR-048)', () => {
-    const { container } = mount([record()]);
-    const row = rowFor(container, 'design-then-build');
-    const inputs = row.querySelector('[data-testid="workflow-row-inputs"]');
-    const outputs = row.querySelector('[data-testid="workflow-row-outputs"]');
-
-    expect(inputs?.textContent).toContain('Goal');
-    expect(outputs?.textContent).toContain('Artifact');
-  });
-
-  it('lists every declared port of a row with no derived ports, repeated ids included', () => {
-    // An unsaved draft derives nothing, so its row falls back to the declared ports, and the
+  it('lists every declared port of an open Workflow with no derived ports, repeated ids included', async () => {
+    // An unsaved draft derives nothing, so its summary falls back to the declared ports, and the
     // port-id field accepts any text, so two ports can share an id while it is being edited. Keying
-    // the rows by that id makes Svelte throw `each_key_duplicate`, which replaces the whole route.
+    // a list by that id makes Svelte throw `each_key_duplicate`, which replaces the whole route.
     const declared = {
       ...record().definition,
       inputs: [
@@ -239,13 +240,13 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
         { portId: 'report', label: 'Second report', type: 'markdown' }
       ]
     } as unknown as WorkflowCatalogSourceProjection['definition'];
-    const { container } = mount([
+    const { container, getByTestId } = mount([
       record({ derivedInputs: [], derivedOutputs: [], definition: declared })
     ]);
-    const row = rowFor(container, 'design-then-build');
+    await fireEvent.click(rowFor(container, 'design-then-build'));
 
-    const inputs = row.querySelector('[data-testid="workflow-row-inputs"]')?.textContent ?? '';
-    const outputs = row.querySelector('[data-testid="workflow-row-outputs"]')?.textContent ?? '';
+    const inputs = getByTestId('workflow-port-summary-inputs').textContent;
+    const outputs = getByTestId('workflow-port-summary-outputs').textContent;
     expect(inputs).toContain('First topic');
     expect(inputs).toContain('Second topic');
     expect(outputs).toContain('First report');
@@ -280,8 +281,8 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
     }
   });
 
-  // Feature 186 (US3, T018, FR-003) — the row keeps its identity summary and its
-  // two badges; no lifecycle write control reaches it, even when a lifecycle is
+  // Feature 186 (US3, T018, FR-003) — the row keeps its name, its id and its two
+  // badges; no lifecycle write control reaches it, even when a lifecycle is
   // projected. Written to pin the post-relocation state regardless of whether
   // such a control was still reachable before it.
   it('carries no lifecycle write control on any row, even with a lifecycle projected', () => {

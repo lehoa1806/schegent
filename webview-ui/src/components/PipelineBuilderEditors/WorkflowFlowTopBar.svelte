@@ -10,9 +10,8 @@
   //
   // The switcher opens the Library list, which is the redesign's list view in this
   // product: there is no separate list page. Keeping `WorkflowLibraryList` rather
-  // than reimplementing a picker keeps its row summary — purpose, Pipeline
-  // sequence, derived ports, validation state — and its lifecycle badges. A
-  // bespoke dropdown would have dropped all of it.
+  // than reimplementing a picker keeps one row per Workflow, as the Phases list
+  // has: the name, the id and the lifecycle badges (feature 186, FR-003).
   //
   // The head draws its own state and validity chips rather than mounting
   // `DefinitionLifecycleRow`: the list below it mounts one per row, and the open
