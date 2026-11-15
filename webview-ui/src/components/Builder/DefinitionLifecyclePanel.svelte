@@ -4,7 +4,7 @@
   // (`:77-145` before this split).
   //
   // Mounted on the surface that shows the *open* definition — the Phase editor
-  // card, and the Pipeline and Workflow inspectors — never on a list row. The row
+  // page and the Workflow settings inspector — never on a list row. The row
   // keeps only its two badges (`DefinitionLifecycleRow.svelte`); everything else
   // that used to render beside them lives here now: Created, Modified, Active
   // version, the collapsed defect list, `ChangedFieldSummary`, the four lifecycle
