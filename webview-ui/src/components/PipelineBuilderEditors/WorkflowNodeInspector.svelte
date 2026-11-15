@@ -360,7 +360,7 @@
               {:else if isRequiredInput(input.portId)}
                 <td class="wf-unbound-required">Not bound</td>
               {:else}
-                <td class="muted">{kind === 'workflow' ? 'Not bound (optional)' : 'Not bound'}</td>
+                <td class="muted">Not bound (optional)</td>
               {/if}
             </tr>
           {/each}
