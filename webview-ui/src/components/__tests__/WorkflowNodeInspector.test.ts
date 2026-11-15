@@ -13,6 +13,7 @@ import {
   MAX_REPEAT_ITERATIONS,
   MIN_FOR_EACH_MAX_ITEMS,
   MIN_REPEAT_ITERATIONS,
+  type PortablePipelineDefinition,
   type PortableWorkflowDefinition,
   type WorkflowNode
 } from '../../lib/snapshot-types';
@@ -70,13 +71,15 @@ function makeRow(childOverrides: Partial<WorkflowNode> = {}): MutableWorkflow {
   };
 }
 
-function renderInspector(options: { row?: MutableWorkflow; index?: number; editable?: boolean } = {}) {
+function renderInspector(
+  options: { row?: MutableWorkflow; index?: number; editable?: boolean; pipelines?: readonly PortablePipelineDefinition[] } = {}
+) {
   const onnodepatch = vi.fn();
   const onselectworkflow = vi.fn();
   const props = {
     row: options.row ?? makeRow(),
     selection: { kind: 'node', index: options.index ?? 0 } as const,
-    pipelines: [],
+    pipelines: options.pipelines ?? [],
     phases: [{ phaseId: 'phase-plan', name: 'Plan', version: 1 }],
     workflows: [CHILD],
     defects: EMPTY_DEFECTS,
@@ -253,6 +256,26 @@ describe('the Data tab', () => {
     expect(cells('workflow-node-input-0-feedback')).toEqual(['feedback', 'Not bound']);
     expect(cells('workflow-node-input-0-attempt-note')).toEqual(['attempt-note', 'Not bound (optional)']);
     expect(screen.getByText("Bindings are edited in the Workflow's Inputs and outputs.")).toBeTruthy();
+  });
+
+  // The host requires only a child Workflow's inputs (`missing-required-input`). An
+  // unbound input of a Pipeline step becomes an optional input of the launch, so it is
+  // optional here whatever its Pipeline declares.
+  it('calls an unbound input of a Pipeline step optional', async () => {
+    const base = makeRow();
+    const build = {
+      pipelineId: 'pl-build', name: 'Build', version: 1, phaseIds: [], bindings: [], recommendedNext: [],
+      inputs: [{ portId: 'spec', label: 'Spec', type: 'text', required: true }],
+      outputs: []
+    } as unknown as PortablePipelineDefinition;
+    renderInspector({
+      row: { ...base, nodes: [...base.nodes, { nodeId: 'node-build', pipelineId: 'pl-build' }] },
+      index: 3,
+      pipelines: [build]
+    });
+    await fireEvent.click(screen.getByRole('tab', { name: 'Data' }));
+    const cells = Array.from(screen.getByTestId('workflow-node-input-3-spec').children, (cell) => cell.textContent.trim());
+    expect(cells).toEqual(['spec', 'Not bound (optional)']);
   });
 
   it('says so when a step declares no inputs and no outputs', async () => {
