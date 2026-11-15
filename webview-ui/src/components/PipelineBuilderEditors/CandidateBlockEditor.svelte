@@ -160,7 +160,7 @@
       <div class="cb-expanded-body" data-testid="candidate-block-expanded-view">
         <div class="cb-policy-grid" data-testid="candidate-block-policy-fields">
           <label class="field">
-            <span>Availability Policy</span>
+            <span>Availability policy</span>
             <select
               class="input"
               data-testid="candidate-block-availability-policy"
@@ -176,7 +176,7 @@
           </label>
 
           <label class="field">
-            <span>Max Dispatches (1–{MAX_CANDIDATE_BLOCK_DISPATCHES})</span>
+            <span>Max dispatches (1–{MAX_CANDIDATE_BLOCK_DISPATCHES})</span>
             <input
               type="number"
               class="input"
@@ -191,7 +191,7 @@
           </label>
 
           <label class="field">
-            <span>Monitoring Window (ms)</span>
+            <span>Monitoring window (ms)</span>
             <input
               type="number"
               class="input"
@@ -209,7 +209,7 @@
           </label>
 
           <label class="field">
-            <span>Spend Ceiling (micro-USD, optional)</span>
+            <span>Spend ceiling (micro-USD, optional)</span>
             <input
               type="number"
               class="input"
@@ -298,7 +298,7 @@
                 </label>
 
                 <label class="field">
-                  <span>Max Attempts (1–{MAX_CANDIDATE_ATTEMPTS})</span>
+                  <span>Max attempts (1–{MAX_CANDIDATE_ATTEMPTS})</span>
                   <input
                     type="number"
                     class="input"
@@ -321,7 +321,7 @@
                 </label>
 
                 <label class="field">
-                  <span>Initial Retry Delay (ms)</span>
+                  <span>Initial retry delay (ms)</span>
                   <input
                     type="number"
                     class="input"

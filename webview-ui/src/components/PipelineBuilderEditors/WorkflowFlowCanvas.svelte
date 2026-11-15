@@ -139,7 +139,7 @@
     >
       <div class="wf-candidate-block-head">
         <span class="wf-badge" data-testid="workflow-canvas-candidate-selection-mode">
-          Candidate Block · Exclusive single-active selection
+          Candidate block · Exclusive single-active selection
         </span>
         <span class="wf-badge" data-testid="workflow-canvas-candidate-policy">
           {candidateBlockPath.availabilityPolicy}
