@@ -60,6 +60,10 @@
 .sg .t tr.sel :is(.s-run, .s-ok, .s-err, .s-warn, .s-idle, .s-draft, .st-published, .st-draft, .st-invalid, .st-inactive, .st-modified, .run-ok, .run-fail) { color: inherit; --sg-status-color: currentColor; }
 .sg .t td.num, .sg .t th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .sg .rowname { background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600; color: var(--schegent-link-fg); text-align: left; }
+/* A coarse pointer makes every button at least 44px wide (theme.css), so a row name narrower than
+   that ends before its box does. What follows the name on its line, a tag or an id, takes the line
+   below rather than sitting after that gap. */
+@media (pointer: coarse) { .sg button.rowname:has(+ span) { display: block; } }
 .sg .sub { font-size: var(--schegent-text-secondary); color: var(--schegent-muted-fg); }
 .sg .countline { margin: var(--schegent-space-2) var(--schegent-space-0-5); color: var(--schegent-muted-fg); font-size: var(--schegent-text-secondary); }
 .sg .bar { display: flex; gap: var(--schegent-space-0-5); width: 140px; height: 6px; margin: var(--schegent-space-1) 0 3px; }
