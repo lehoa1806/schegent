@@ -1074,3 +1074,69 @@ test.describe('the stacked Workflows tab', () => {
     assertNoPageErrors(page, 'stacked Workflows tab');
   });
 });
+
+/** One control of the Workflow editor's head, as the keyboard meets it, and where it is drawn. */
+interface HeadStop {
+  readonly unit: unknown;
+  readonly name: string;
+  readonly top: number;
+  readonly bottom: number;
+  readonly left: number;
+}
+
+/**
+ * Where the Workflow editor's head breaks reading order, as "from -> to" pairs of the controls
+ * the keyboard meets in turn. Read left to right and top to bottom, each control must sit on the
+ * same line as the one before it and to its right, or on a later line. The open Workflow list
+ * counts as one control, its own box, so rows scrolled out of its height stay out of the measure.
+ */
+async function editorHeadOrderBreaks(page: Page): Promise<string[]> {
+  return page.locator('[data-testid="workflow-catalog-editor"] .ed-head').evaluate((head) => {
+    const list = head.querySelector('[data-testid="workflow-picker-list"]');
+    const stops: HeadStop[] = [];
+    for (const element of head.querySelectorAll('button, a[href], input, select, textarea, [tabindex]')) {
+      if (element.tabIndex < 0 || element.matches(':disabled') || !element.checkVisibility()) continue;
+      const unit = list?.contains(element) === true ? list : element;
+      if (stops.at(-1)?.unit === unit) continue;
+      const { top, bottom, left } = unit.getBoundingClientRect();
+      const name = unit.getAttribute('data-testid') ?? unit.getAttribute('aria-label') ?? unit.tagName;
+      stops.push({ unit, name, top, bottom, left });
+    }
+    return stops.slice(1).flatMap((stop, index) => {
+      const before = stops[index];
+      const laterLine = stop.top >= before.bottom - 1;
+      const sameLineAfter = stop.top < before.bottom && stop.bottom > before.top && stop.left >= before.left;
+      return laterLine || sameLineAfter ? [] : [`${before.name} -> ${stop.name}`];
+    });
+  });
+}
+
+/**
+ * The open Workflow list is the switcher's: it comes straight after the switcher in the DOM and
+ * the tab order, so it must come straight after the switcher's line on screen too, with the
+ * head's actions after it. Drawn below the actions, a list the keyboard reaches before them sends
+ * focus down and then back up the page (WCAG 2.4.3). Finding 54 of the webview port review.
+ */
+test('the open Workflow list comes after the switcher on screen as in the tab order', async ({
+  page
+}) => {
+  await installDeterministicHost(page);
+  await page.goto('/dashboard.html');
+  await page.addStyleTag({ content: themeCss('dark') });
+  await publishSnapshot(page);
+  await page.getByTestId('dashboard-route-builder').click();
+  await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
+  await page.getByRole('tab', { name: 'Workflows' }).click();
+  const picker = page.getByTestId('workflow-picker-toggle');
+  if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
+  await expect(page.getByTestId('workflow-picker-list')).toBeVisible();
+  expect(await editorHeadOrderBreaks(page), 'with no Workflow open').toEqual([]);
+
+  await page.getByTestId('workflows-list-item-dev-new-feature').click();
+  await expect(page.getByTestId('workflow-field-name')).toBeVisible();
+  await picker.click();
+  await expect(page.getByTestId('workflow-picker-list')).toBeVisible();
+  expect(await editorHeadOrderBreaks(page), 'with a Workflow open').toEqual([]);
+
+  assertNoPageErrors(page, 'Workflow picker order');
+});

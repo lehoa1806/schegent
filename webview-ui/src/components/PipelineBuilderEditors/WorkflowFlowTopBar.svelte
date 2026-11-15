@@ -209,11 +209,12 @@
   }
 
   /* Feature 186 (US2/US3, T016, FR-005, D-5) — the list stays in document flow,
-     so its default-open state pushes the canvas and the guidance down instead of
-     covering them. A full-width basis breaks it onto a line of its own, and
-     `order` puts that line under the actions, whatever the DOM order. */
+     so its default-open state pushes the head's actions, the canvas and the
+     guidance down instead of covering them. A full-width basis breaks it onto a
+     line of its own, under the switcher's, and the actions follow it there: on
+     screen, as in the DOM and the tab order, the switcher's list comes straight
+     after the switcher. */
   .wf-picker-pop {
-    order: 1;
     flex: 0 0 100%;
     max-height: 340px;
     overflow-y: auto;

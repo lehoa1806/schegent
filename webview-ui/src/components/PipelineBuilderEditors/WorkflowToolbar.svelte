@@ -28,7 +28,8 @@
   // rather than reimplemented as a loop behind a single prompt.
   //
   // The redesign (workflow_builder_redesign.html, the editor head) sets these at
-  // the right end of the head's row, beside WorkflowFlowTopBar's breadcrumb: Undo
+  // the right end of the head's row, beside WorkflowFlowTopBar's breadcrumb (the
+  // switcher's open list pushes them onto a line under it, feature 186 D-5): Undo
   // and Redo as icon buttons, every other action in the "More workflow actions"
   // menu, and Save as the one primary button. The mockup's Publish stays in the
   // inspector's lifecycle panel, as on the Phase editor, and its Version history
