@@ -8,7 +8,7 @@ import {
 import { validateWorkflowDefinition } from '../../../src/config/workflow-definition-validator';
 import { validateWorkflowGraph } from '../../../src/config/workflow-graph-validator';
 import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
-import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
+import type { WorkflowConnection, WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
 
 function makeCandidatePhase(
   phaseId: string,
@@ -303,6 +303,43 @@ describe('workflow-control-validator (FR-R5-F25 / SPEC-03)', () => {
       expect(res.errors.map((e) => e.code)).toContain('duplicate-field-id');
       expect(res.errors.map((e) => e.code)).toContain('unknown-decision-result-field');
       expect(res.errors.map((e) => e.code)).toContain('invalid-decision-result-binding-source');
+    });
+
+    it('counts a branch as a return only when its target is marked as one', () => {
+      // `finish` alone binds the required field. A marked return from `gate` leaves
+      // before `finish` runs; an unmarked arm naming a `return` step returns nothing.
+      const withEnd = (to: WorkflowConnection['to']): WorkflowDefinition => ({
+        workflowId: 'wf-return-mark',
+        name: 'Return Mark',
+        version: 1,
+        nodes: [
+          { nodeId: 'gate', kind: 'phase', phaseId: 'phase-1' },
+          { nodeId: 'finish', kind: 'phase', phaseId: 'phase-1' }
+        ],
+        connections: [
+          { from: { nodeId: 'gate' }, to },
+          { from: { nodeId: 'gate' }, to: { nodeId: 'finish' } }
+        ],
+        startNodeIds: ['gate'],
+        decisionResults: {
+          version: 1,
+          fields: [{ fieldId: 'approved', type: 'boolean', required: true }],
+          bindings: [{ fieldId: 'approved', source: { kind: 'node-result', nodeId: 'finish', fieldId: 'approved' } }]
+        }
+      });
+      const check = (definition: WorkflowDefinition) =>
+        validateWorkflowControlsInGraph({
+          definition,
+          acyclic: true,
+          edges: [{ from: 'gate', to: 'finish' }],
+          phasesById: new Map([['phase-1', makeCandidatePhase('phase-1')]]),
+          workflowsById: new Map()
+        }).map((e) => [e.field, e.code]);
+
+      expect(check(withEnd({ nodeId: 'finish', kind: 'return' }))).toEqual([
+        ['decisionResults.fields[0].fieldId', 'missing-decision-result-on-branch']
+      ]);
+      expect(check(withEnd({ nodeId: 'return' }))).toEqual([]);
     });
   });
 

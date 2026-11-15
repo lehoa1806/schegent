@@ -864,7 +864,7 @@ function validateOrdinaryWorkflowDecisionResults(
   for (const id of nodeById.keys()) outgoingByNode.set(id, []);
   for (const conn of definition.connections) {
     if (!nodeById.has(conn.from.nodeId)) continue;
-    const isRet = conn.to.kind === 'return' || (conn.to.nodeId === 'return' && !nodeById.has('return'));
+    const isRet = conn.to.kind === 'return';
     if (isRet) returnSources.add(conn.from.nodeId);
     else if (nodeById.has(conn.to.nodeId)) outgoingByNode.get(conn.from.nodeId)?.push(conn.to.nodeId);
   }
