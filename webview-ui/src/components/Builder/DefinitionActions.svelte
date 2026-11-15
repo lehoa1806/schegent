@@ -4,9 +4,11 @@
   //
   // Two surfaces, one component. A row offers what its state admits — Publish and
   // Discard draft where a draft exists, Deactivate where something is live — and a
-  // history entry offers Restore this version and nothing else (FR-019). Splitting
-  // that into two components would put the dispatch, the pending lock, and the
-  // refusal report in two places for four actions that share all three.
+  // history entry offers Restore this version and nothing else (FR-019), or nothing
+  // at all on a Draft's only entry, which is the draft itself
+  // (`historyEntryActions`). Splitting that into two components would put the
+  // dispatch, the pending lock, and the refusal report in two places for four
+  // actions that share all three.
   //
   // Nothing is posted from here. Every one of the four goes through
   // `lib/catalog-lifecycle.ts` (FR-025), which is also where the two confirmations
@@ -35,6 +37,7 @@
   } from "../../lib/catalog-lifecycle";
   import {
     deriveDefinitionRowView,
+    historyEntryActions,
     type DefinitionRowAction,
   } from "./definition-row-state";
 
@@ -80,13 +83,6 @@
       deactivate: "btn-danger",
       restore: "btn-secondary",
     });
-
-  const RESTORE_ONLY: readonly DefinitionRowAction[] = Object.freeze<
-    DefinitionRowAction[]
-  >(["restore"]);
-  const NONE: readonly DefinitionRowAction[] = Object.freeze<
-    DefinitionRowAction[]
-  >([]);
 
   /**
    * What a refusal means, in the operator's words.
@@ -138,9 +134,7 @@
 
   const offered = $derived<readonly DefinitionRowAction[]>(
     surface === "history"
-      ? versionId
-        ? RESTORE_ONLY
-        : NONE
+      ? historyEntryActions(lifecycle, versionId)
       : deriveDefinitionRowView(lifecycle).actions,
   );
 

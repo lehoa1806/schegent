@@ -510,6 +510,46 @@ describe('DefinitionHistoryPanel — Restore lands in Draft (US4, T047, FR-024)'
     ).toBe('v3');
   });
 
+  it("offers no Restore on a Draft saved once: its one entry is the draft (finding 39)", () => {
+    // Restoring the draft onto itself changes nothing, so the entry keeps View
+    // and drops the action that would report a restore that did not happen.
+    const { container } = renderPanel({
+      lifecycle: lifecycle({
+        state: 'draft',
+        activeVersionId: undefined,
+        expectedDraftVersion: 'v1',
+        versions: [version({ versionId: 'v1', publishedAt: null })]
+      })
+    });
+    expect(entryIds(container)).toEqual(['v1']);
+    expect(
+      container.querySelector('[data-testid="definition-history-open-speckit-specify-v1"]')
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="definition-action-restore-speckit-specify-v1"]')
+    ).toBeNull();
+  });
+
+  it('offers Restore on each entry of a Draft saved twice, both never published', () => {
+    const { container } = renderPanel({
+      lifecycle: lifecycle({
+        state: 'draft',
+        activeVersionId: undefined,
+        expectedDraftVersion: 'v2',
+        versions: [
+          version({ versionId: 'v2', publishedAt: null }),
+          version({ versionId: 'v1', publishedAt: null })
+        ]
+      })
+    });
+    for (const versionId of ['v2', 'v1']) {
+      expect(
+        container.querySelector(`[data-testid="definition-action-restore-speckit-specify-${versionId}"]`),
+        `expected Restore on ${versionId}`
+      ).not.toBeNull();
+    }
+  });
+
   it('routes Restore through the shared lifecycle helper, never inline (FR-025)', () => {
     const source = readFileSync(resolve(__dirname, '../DefinitionHistoryPanel.svelte'), 'utf8');
     expect(source).not.toContain('postCommand(');
