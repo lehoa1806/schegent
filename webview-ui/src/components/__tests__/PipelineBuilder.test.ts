@@ -1803,4 +1803,43 @@ describe('PipelineBuilder — FR-R5-F10 draft persistence and bounded undo histo
     await tick();
     expect(redoBtn.disabled).toBe(true);
   });
+
+  // Finding 17 of the webview port review. A step from before a save holds rows
+  // the catalog has moved on from, and stepping back to it leaves no pending
+  // edit, so Save stayed off while the editor showed what the save replaced.
+  it('starts Undo afresh from the rows a save is adopted as', async () => {
+    const { container, rerender } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([PHASE_ONE]), initialTab: 'phases' }
+    });
+    await tick();
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-list-item-phase-one"]') as HTMLButtonElement
+    );
+    await tick();
+    const nameInput = () =>
+      container.querySelector('[data-testid="phases-name-field-phase-one"]') as HTMLInputElement;
+    const undoBtn = () =>
+      container.querySelector('[data-testid="phases-editor-phase-one"] [aria-label="Undo"]') as HTMLButtonElement;
+
+    await fireEvent.input(nameInput(), { target: { value: 'Saved Name' } });
+    await tick();
+    await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
+    await tick();
+    const saved = buildSnapshot([{ ...PHASE_ONE, name: 'Saved Name' }]);
+    await rerender({
+      snapshot: { ...saved, phaseCatalog: { ...saved.phaseCatalog!, revision: 'rev-2' } },
+      initialTab: 'phases'
+    });
+    await tick();
+
+    expect(nameInput().value).toBe('Saved Name');
+    expect(undoBtn().disabled).toBe(true);
+
+    await fireEvent.input(nameInput(), { target: { value: 'Next Edit' } });
+    await tick();
+    expect(undoBtn().disabled).toBe(false);
+    await fireEvent.click(undoBtn());
+    await tick();
+    expect(nameInput().value).toBe('Saved Name');
+  });
 });
