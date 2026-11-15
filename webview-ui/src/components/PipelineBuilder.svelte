@@ -28,8 +28,8 @@
     type PhaseCatalogMutation
   } from './PipelineBuilderEditors/phase-catalog-state';
   import {
-    addPhaseRow, duplicatePhaseRow, movePhaseRow, phasesAtHistoryStep, resetPhaseRow,
-    retryConditionToggle, updatePhaseRow, withPhaseHistoryEntry, withRawJsonToggled,
+    addPhaseRow, duplicatePhaseRow, movePhaseRow, phaseHistoryFrom, phasesAtHistoryStep,
+    resetPhaseRow, retryConditionToggle, updatePhaseRow, withPhaseHistoryEntry, withRawJsonToggled,
     type PhaseMutationEdit, type PhaseRowsEdit
   } from './PipelineBuilderEditors/phase-catalog-actions';
   import { initialModels, withModelAdded, withModelRemoved, withModelReplaced, withModelsDetected } from './PipelineBuilderEditors/model-catalog-state';
@@ -134,7 +134,10 @@
         // the `DefinitionLifecyclePanel` that is the only way to publish the
         // draft that save had written.
         const openPhase = identityAt(phases, selectedPhaseIndex, phaseIdentity);
-        phases = catalog.records.map(sourceRecordToMutable);
+        const adopted = catalog.records.map(sourceRecordToMutable);
+        phases = adopted;
+        const fresh = phaseHistoryFrom(adopted);
+        phaseHistory = fresh.history; phaseHistoryIndex = fresh.index;
         adoptedPhaseRevision = revision;
         phaseSavePending = false;
         phaseMutation = null;

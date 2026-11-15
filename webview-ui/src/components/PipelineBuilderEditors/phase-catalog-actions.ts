@@ -233,6 +233,17 @@ export function withPhaseHistoryEntry(
 }
 
 /**
+ * The undo stack for rows adopted from the catalog: one step, a copy of them.
+ *
+ * A step from before an adoption holds rows the catalog has moved on from, and
+ * stepping back to one leaves no pending edit for Save to write. So Undo starts
+ * afresh at every adoption, as the Workflow editor's does once a save lands.
+ */
+export function phaseHistoryFrom(phases: readonly MutablePhase[]): PhaseHistoryEdit {
+  return { history: [JSON.parse(JSON.stringify(phases)) as MutablePhase[]], index: 0 };
+}
+
+/**
  * A deep copy of the rows at `step`. Copied rather than handed out by
  * reference: the stack holds the rows the editor is about to bind to, and a
  * shared reference would let the next keystroke edit the history entry it came
