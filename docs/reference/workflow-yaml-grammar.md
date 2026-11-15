@@ -142,7 +142,7 @@ Endpoint keys (`from` and `to`):
 | `portId` | An optional identifier. When the node is a child Workflow it must name a port that Workflow declares (an output on `from`, an input on `to`). On a Phase node it is accepted as written. | `invalid-pattern`, `unresolved-endpoint` |
 | `kind` | `to` only: `node` or `return`. `from` may not declare `kind`. | `invalid-enum` |
 
-A `to` endpoint is a return endpoint when its `kind` is `return`, or when its `nodeId` is `return` and no node has that id. A return endpoint is the exit of a branch and not an edge of the graph, so it takes no part in the cycle check.
+A `to` endpoint is a return endpoint when its `kind` is `return`. Without that `kind` it names a node like any other endpoint, so `nodeId: return` on its own needs a declared node with that id (`unresolved-endpoint`). A return endpoint is the exit of a branch and not an edge of the graph, so it takes no part in the cycle check.
 
 ### Conditions
 
