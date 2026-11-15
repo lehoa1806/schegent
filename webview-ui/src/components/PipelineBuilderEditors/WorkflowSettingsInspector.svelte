@@ -11,7 +11,7 @@
     type BuilderLifecycle,
     type PortablePhaseDefinition
   } from '../../lib/snapshot-types';
-  import type { WorkflowDraftError } from './workflow-catalog-state';
+  import { savedDefectsOutsideIssues, type WorkflowDraftError } from './workflow-catalog-state';
   import type { WorkflowGraphActions } from './workflow-catalog-actions';
   import type { MutableWorkflow } from './types';
   import { buildWorkflowFlowLayout } from './workflow-flow-layout';
@@ -153,12 +153,14 @@
           <dd class="muted">No other Workflow</dd>
         {/if}
       </dl>
+      <!-- The panel keeps on demand only the saved defects the Issues list below leaves out,
+           so none is listed twice. -->
       <DefinitionLifecyclePanel
         kind="workflow"
         definitionId={p.row.workflowId}
         definitionName={title}
         lifecycle={p.lifecycle}
-        defects={p.row.sourceErrors}
+        defects={savedDefectsOutsideIssues(p.row)}
       />
     </div>
 

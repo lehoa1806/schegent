@@ -200,13 +200,14 @@
         </dd>
       </dl>
       <!-- Feature 186 (US1, T008, D-1, D-3) — the open Phase's lifecycle
-           facts and actions. -->
+           facts and actions. Its defect list stays empty: the Issues list below
+           shows every saved defect, so none is listed twice. -->
       <DefinitionLifecyclePanel
         kind="phase"
         definitionId={phase.id}
         definitionName={phase.name || 'Untitled Phase'}
         {lifecycle}
-        defects={phase.sourceErrors}
+        defects={[]}
       />
       <h3>Issues</h3>
       {#if phase.sourceErrors.length > 0}
