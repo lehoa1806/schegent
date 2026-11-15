@@ -1539,9 +1539,12 @@ for the migration walkthrough.
 
 ### IPC additions (spec 073 — Metrics dashboard)
 
-Feature 073 adds a **read-only** rollup surface for the Dashboard's
-Metrics tab, derived entirely from the existing `.schegent/audit.log`
-(no new persistent storage):
+Feature 073 adds a rollup surface for the Dashboard's Metrics tab,
+derived from the existing `.schegent/audit.log` (FR-R3-009 later added
+`.schegent/metrics-rollup.jsonl` for its all-time totals). It is not
+read-only: the first read in a session appends a `metrics-view-opened`
+row to the audit log, which is why its one command is gated (see the
+note after the list):
 
 - `CMD_READ_METRICS` — payload
   `{ includeArchives?: boolean, runIds?: string[] }`. `includeArchives`
