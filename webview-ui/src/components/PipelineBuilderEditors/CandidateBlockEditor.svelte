@@ -411,7 +411,7 @@
 </section>
 
 <style>
-  .cb-editor { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); }
+  .cb-editor { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); }
   .cb-header, .cb-header-actions, .cb-topology-summary, .cb-candidates-header, .cb-candidate-row-head, .cb-candidate-row-actions, .cb-candidate-trial-row, .cb-phase-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .cb-header, .cb-candidates-header, .cb-candidate-row-head, .cb-candidate-trial-row { justify-content: space-between; }
   .cb-expanded-body { display: flex; flex-direction: column; gap: 8px; }
@@ -420,10 +420,11 @@
      (`.sg .ins-body .field`, three classes); with the scoping class this rule weighs four. */
   .cb-editor .cb-policy-grid .field, .cb-editor .cb-candidate-fields .field { margin-bottom: 0; }
   .cb-candidate-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-  .cb-candidate-row { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); }
-  .cb-candidate-row.is-selected { border-color: var(--vscode-focusBorder, var(--vscode-panel-border)); }
+  .cb-candidate-row { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); }
+  /* Selected as a canvas node is (`.sg .node.sel`): the focus border and its one-pixel ring. */
+  .cb-candidate-row.is-selected { border-color: var(--schegent-focus-border); box-shadow: var(--schegent-ring-selected); }
   .cb-candidate-select-btn { background: transparent; border: none; color: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 0; text-align: left; }
   .cb-node-ref { font-size: 0.8em; opacity: 0.75; }
-  .cb-phase-identity { display: flex; flex-direction: column; gap: 4px; padding-top: 4px; border-top: 1px dashed var(--vscode-panel-border); font-size: 0.8em; }
+  .cb-phase-identity { display: flex; flex-direction: column; gap: 4px; padding-top: 4px; border-top: 1px dashed var(--schegent-border); font-size: 0.8em; }
   .cb-phase-instruction, .cb-collapsed-summary { margin: 0; font-size: 0.82em; opacity: 0.9; word-break: break-word; }
 </style>
