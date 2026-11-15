@@ -8,7 +8,14 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WorkflowInspector from '../PipelineBuilderEditors/WorkflowInspector.svelte';
-import type { PortableWorkflowDefinition, WorkflowNode } from '../../lib/snapshot-types';
+import {
+  MAX_FOR_EACH_MAX_ITEMS,
+  MAX_REPEAT_ITERATIONS,
+  MIN_FOR_EACH_MAX_ITEMS,
+  MIN_REPEAT_ITERATIONS,
+  type PortableWorkflowDefinition,
+  type WorkflowNode
+} from '../../lib/snapshot-types';
 import type { MutableWorkflow } from '../PipelineBuilderEditors/types';
 import type { AnchoredWorkflowDefects } from '../PipelineBuilderEditors/workflow-catalog-state';
 import { defaultForEachControl, defaultRepeatControl } from '../PipelineBuilderEditors/workflow-node-control';
@@ -102,6 +109,18 @@ async function settle(): Promise<void> {
   await Promise.resolve();
 }
 
+// Finding 147 — the port wrote the step inspector's words after the workflow builder mockup:
+// each tab's section heads, the names of its fields, its notes and its empty states. Each
+// tabpanel is named by its tab, so a field is found by its own label, never by a tab's word.
+const labelled = (text: string) => screen.getByLabelText(text).getAttribute('data-testid');
+const expectLabels = (expected: Readonly<Record<string, string>>) => {
+  const found = Object.fromEntries(Object.keys(expected).map((label) => [label, labelled(label)]));
+  expect(found).toEqual(expected);
+};
+const sectionHeadings = () => screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent.trim());
+const optionTexts = (testId: string) =>
+  Array.from((screen.getByTestId(testId) as HTMLSelectElement).options, (option) => option.textContent.trim());
+
 describe('the step head', () => {
   it('names the step, says what it runs and leads back to the Workflow', async () => {
     const { onselectworkflow } = renderInspector({ row: makeRow({ label: 'Review loop' }) });
@@ -177,6 +196,45 @@ describe('the step tabs', () => {
   });
 });
 
+describe('the Step tab', () => {
+  it('heads what the step runs and how, and names its fields, notes and branch action', () => {
+    renderInspector();
+    expect(sectionHeadings()).toEqual(['Runs', 'Execution']);
+    expectLabels({
+      'Step type': 'workflow-node-kind-select-0',
+      'Child Workflow': 'workflow-node-workflow-select-0',
+      'Label on canvas': 'workflow-node-label-0',
+      'Start step (the Workflow may begin here)': 'workflow-node-start-0'
+    });
+    expect(optionTexts('workflow-node-kind-select-0')).toEqual(['Phase', 'Child Workflow']);
+    expect(screen.getByText('Changing what this step runs keeps its connections.')).toBeTruthy();
+    expect(screen.getByText('Each step of the child Workflow uses its own settings.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add a branch from this step' }).getAttribute('data-testid')).toBe(
+      'workflow-node-branch-add-0'
+    );
+  });
+
+  it('lists a target the catalog lacks first, marked not effective', async () => {
+    const base = makeRow({ workflowId: 'wf-gone' });
+    const row = {
+      ...base,
+      nodes: base.nodes.map((node) => (node.nodeId === 'node-plan' ? { ...node, phaseId: 'phase-gone' } : node))
+    };
+    const view = renderInspector({ row });
+    expect(optionTexts('workflow-node-workflow-select-0')).toEqual(['wf-gone (not effective)', 'Child Review Workflow']);
+
+    await view.rerender({ ...view.props, selection: { kind: 'node', index: 1 } });
+    expectLabels({ Phase: 'workflow-node-phase-select-1' });
+    expect(optionTexts('workflow-node-phase-select-1')).toEqual(['phase-gone (not effective)', 'Plan']);
+  });
+
+  it('names the Pipeline a Pipeline step runs', () => {
+    const base = makeRow();
+    renderInspector({ row: { ...base, nodes: [...base.nodes, { nodeId: 'node-build', pipelineId: 'pl-build' }] }, index: 3 });
+    expect(screen.getByText('Pipeline', { selector: 'dt' }).nextElementSibling?.textContent).toBe('pl-build');
+  });
+});
+
 describe('the Data tab', () => {
   it('lists where each input of the child Workflow comes from, and what the step puts out', async () => {
     renderInspector();
@@ -184,6 +242,25 @@ describe('the Data tab', () => {
     expect(screen.getByTestId('workflow-node-input-0-feedback').textContent).toContain('Workflow input brief');
     expect(screen.getByTestId('workflow-node-input-0-attempt-note').textContent).toContain('Not bound');
     expect(screen.getByTestId('workflow-node-ports-0').textContent).toContain('verdict');
+  });
+
+  it('heads the inputs and outputs, names the columns and says which unbound input is optional', async () => {
+    renderInspector({ row: { ...makeRow(), bindings: [] } });
+    await fireEvent.click(screen.getByRole('tab', { name: 'Data' }));
+    expect(sectionHeadings()).toEqual(['Inputs', 'Outputs']);
+    expect(screen.getAllByRole('columnheader').map((cell) => cell.textContent.trim())).toEqual(['Input', 'Comes from']);
+    const cells = (testId: string) => Array.from(screen.getByTestId(testId).children, (cell) => cell.textContent.trim());
+    expect(cells('workflow-node-input-0-feedback')).toEqual(['feedback', 'Not bound']);
+    expect(cells('workflow-node-input-0-attempt-note')).toEqual(['attempt-note', 'Not bound (optional)']);
+    expect(screen.getByText("Bindings are edited in the Workflow's Inputs and outputs.")).toBeTruthy();
+  });
+
+  it('says so when a step declares no inputs and no outputs', async () => {
+    renderInspector({ index: 1 });
+    await fireEvent.click(screen.getByRole('tab', { name: 'Data' }));
+    expect(screen.queryByRole('table')).toBeNull();
+    expect(screen.getByText('No inputs are declared or bound.')).toBeTruthy();
+    expect(screen.getByTestId('workflow-node-ports-1').textContent.trim()).toBe('No outputs are declared.');
   });
 });
 
@@ -247,5 +324,62 @@ describe('the Control tab', () => {
   it('locks the choice when the Workflow is read-only', async () => {
     await openControl({ editable: false });
     for (const input of screen.getAllByRole('radio')) expect((input as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it('heads the Repeat settings and names each field, with the bounds on iterations', async () => {
+    await openControl({ row: makeRow({ control: defaultRepeatControl(CHILD) }) });
+    expect(sectionHeadings()).toEqual(['Repeat']);
+    expectLabels({
+      'Until result field': 'repeat-until-field',
+      Comparison: 'repeat-until-operator',
+      Value: 'repeat-until-value',
+      [`Max iterations (${MIN_REPEAT_ITERATIONS}–${MAX_REPEAT_ITERATIONS})`]: 'repeat-max-iterations',
+      'When the iterations run out': 'repeat-on-exhausted'
+    });
+    expect(screen.getByRole('heading', { level: 4 }).textContent.trim()).toBe('Carried into the next iteration');
+    expect(screen.getByText("Nothing is carried: every iteration gets the step's own inputs.")).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add a carry mapping' }).getAttribute('data-testid')).toBe('add-repeat-carry');
+  });
+
+  it('names a carry mapping’s fields, and numbers them by row', async () => {
+    const control = { ...defaultRepeatControl(CHILD), carry: [{ fieldId: 'notes', inputPortId: 'feedback' }] };
+    await openControl({ row: makeRow({ control }) });
+    expectLabels({ 'Result field': 'repeat-carry-field-0', 'Child input': 'repeat-carry-port-0' });
+    expect(screen.getByRole('textbox', { name: 'Result field, carry 1' })).toBe(screen.getByTestId('repeat-carry-field-0'));
+    expect(screen.getByRole('textbox', { name: 'Child input, carry 1' })).toBe(screen.getByTestId('repeat-carry-port-0'));
+    expect(screen.getByRole('button', { name: 'Remove carry mapping 1' }).getAttribute('data-testid')).toBe(
+      'remove-repeat-carry-0'
+    );
+    expect(screen.queryByText("Nothing is carried: every iteration gets the step's own inputs.")).toBeNull();
+  });
+
+  it('heads the For each settings and names each field, asking for a step only to read its output', async () => {
+    const view = await openControl({ row: makeRow({ control: defaultForEachControl(CHILD) }) });
+    expect(sectionHeadings()).toEqual(['For each']);
+    expectLabels({
+      'Collection from': 'foreach-collection-source',
+      'Collection port': 'foreach-collection-port-id',
+      'Child input for each item (a required text input)': 'foreach-item-input-port-id',
+      'Item key field (optional)': 'foreach-item-key-field',
+      [`Max items (${MIN_FOR_EACH_MAX_ITEMS}–${MAX_FOR_EACH_MAX_ITEMS})`]: 'foreach-max-items',
+      'When an item fails': 'foreach-on-item-error'
+    });
+    expect(screen.queryByLabelText('Step id')).toBeNull();
+
+    const fromStep = {
+      ...defaultForEachControl(CHILD),
+      collection: { source: 'node-output', nodeId: 'node-plan', portId: 'items' } as const
+    };
+    await view.rerender({ ...view.props, row: makeRow({ control: fromStep }) });
+    expectLabels({ 'Step id': 'foreach-collection-node-id' });
+  });
+});
+
+describe('the Advanced tab', () => {
+  it('heads the step’s identity and names its id', async () => {
+    renderInspector();
+    await fireEvent.click(screen.getByRole('tab', { name: 'Advanced' }));
+    expect(sectionHeadings()).toEqual(['Identity']);
+    expect(screen.getByText('Node id', { selector: 'dt' }).nextElementSibling?.textContent).toBe('node-review');
   });
 });

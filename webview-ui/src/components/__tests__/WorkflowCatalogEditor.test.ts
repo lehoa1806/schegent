@@ -255,6 +255,66 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
     expect(getByTestId('workflow-step-count').textContent.trim()).toBe('4 (2 not reachable)');
   });
 
+  // Finding 147 — the port wrote the Workflow inspector's words after the workflow builder
+  // mockup: its section heads, the names of its Status facts and fields, and what a side with no
+  // port reads. Nothing held them, so a rename went unnoticed.
+  it('heads the open Workflow’s sections and names its Status facts and fields', async () => {
+    const { container, getByTestId, getByText } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const inspector = getByTestId('workflow-settings-inspector');
+    const texts = (selector: string): string[] =>
+      [...inspector.querySelectorAll(selector)].map((element) => element.textContent.trim());
+    const fieldWords = (testId: string): string | undefined =>
+      inspector.querySelector(`[data-testid="${testId}"]`)?.closest('label')?.querySelector('span')?.textContent.trim();
+    const firstOption = (testId: string): string | undefined =>
+      Array.from(inspector.querySelector<HTMLSelectElement>(`[data-testid="${testId}"]`)?.options ?? [])
+        .at(0)
+        ?.textContent.trim();
+
+    expect(texts('h3')).toEqual(['Status', 'General', 'Inputs and outputs', 'Execution defaults', 'Candidate block']);
+    expect(texts('dt')).toEqual(['State', 'Steps', 'Used by', 'Inputs', 'Outputs']);
+    expect(getByText('Used by', { selector: 'dt' }).nextElementSibling?.textContent.trim()).toBe('No other Workflow');
+    expect(getByText('What a parent Workflow passes in and gets back when it uses this one as a step.')).toBeTruthy();
+    const fields = [
+      'workflow-field-name',
+      'workflow-field-workflowId',
+      'workflow-field-description',
+      'workflow-default-runner',
+      'workflow-default-model',
+      'workflow-default-effort',
+      'workflow-recommended-next'
+    ];
+    expect(Object.fromEntries(fields.map((testId) => [testId, fieldWords(testId)]))).toEqual({
+      'workflow-field-name': 'Name',
+      'workflow-field-workflowId': 'Identifier',
+      'workflow-field-description': 'Description',
+      'workflow-default-runner': 'Runner',
+      'workflow-default-model': 'Model',
+      'workflow-default-effort': 'Effort',
+      'workflow-recommended-next': 'Recommended next (Workflow ids, comma-separated)'
+    });
+    expect(firstOption('workflow-default-runner')).toBe('Inherit');
+    expect(firstOption('workflow-default-effort')).toBe('Inherit');
+  });
+
+  it('says what a side with no port reads: none once saved, not yet known on a draft', async () => {
+    const { container, getByTestId } = mount([record({ derivedInputs: [], derivedOutputs: [] })]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const ports = (): string[] => [
+      getByTestId('workflow-port-summary-inputs').textContent.trim(),
+      getByTestId('workflow-port-summary-outputs').textContent.trim()
+    ];
+    expect(ports()).toEqual(['none', 'none']);
+
+    await fireEvent.click(getByTestId('workflows-add'));
+    expect(ports()).toEqual(['derived once saved', 'derived once saved']);
+    const headings = [...getByTestId('workflow-settings-inspector').querySelectorAll('h3')].map((heading) =>
+      heading.textContent.trim()
+    );
+    expect(headings).toContain('Issues (1)');
+    expect(getByTestId('workflow-field-errors').children).toHaveLength(1);
+  });
+
   it('lists every declared port of an open Workflow with no derived ports, repeated ids included', async () => {
     // An unsaved draft derives nothing, so its summary falls back to the declared ports, and the
     // port-id field accepts any text, so two ports can share an id while it is being edited. Keying
