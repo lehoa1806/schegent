@@ -252,6 +252,10 @@
     if (!selected || !editable) return;
     const current = selected;
     const next = edit(current);
+    // An edit that changes nothing is no step. A + with no Phase or Pipeline to
+    // add hands the row back as it was; recorded, it would mark a stored row
+    // edited and push a copy that takes the place of the step Redo holds.
+    if (next === current || JSON.stringify(next) === JSON.stringify(current)) return;
     historyByKey = pushWorkflowHistory(historyByKey, current.sourceKey, current, next);
     if (current.persisted) {
       editedByKey = { ...editedByKey, [current.sourceKey]: next };

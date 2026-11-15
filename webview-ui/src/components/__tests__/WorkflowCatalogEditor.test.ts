@@ -621,6 +621,68 @@ describe('WorkflowCatalogEditor says on the status line what the canvas did', ()
   });
 });
 
+// ── A + that adds nothing (finding 211 of the webview port review) ─────────
+
+describe('WorkflowCatalogEditor leaves a Workflow as it was when a + adds nothing', () => {
+  const at = (container: HTMLElement, testid: string): HTMLElement =>
+    container.querySelector(`[data-testid="${testid}"]`) as HTMLElement;
+
+  // With no Phase and no Pipeline in the catalogs, a + on the canvas has
+  // nothing to add, and the edit it applies hands the Workflow back unchanged.
+  const mountWithoutBlocks = () =>
+    render(WorkflowCatalogEditor, {
+      snapshot: {
+        ...snapshot([record()]),
+        pipelineCatalog: { state: 'ready', records: [], effective: [], revision: 'w', warnings: [] }
+      } as unknown as WorkflowSnapshot,
+      trusted: true
+    });
+
+  const isOff = (container: HTMLElement, testid: string): boolean =>
+    (at(container, testid) as HTMLButtonElement).disabled;
+
+  it('keeps a stored Workflow clean, with nothing to undo or revert', async () => {
+    const { container } = mountWithoutBlocks();
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    await fireEvent.click(at(container, 'workflow-insert-after-build'));
+    await tick();
+
+    expect(at(container, 'workflow-topbar-dirty')).toBeNull();
+    expect(isOff(container, 'workflows-undo')).toBe(true);
+    expect(isMenuItemOff(at(container, 'workflows-discard'))).toBe(true);
+  });
+
+  it('keeps the last real edit one Undo away', async () => {
+    const { container } = mountWithoutBlocks();
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    await fireEvent.click(at(container, 'workflow-node-remove-1'));
+    expect(at(container, 'workflow-node-title-1')).toBeNull();
+
+    await fireEvent.click(at(container, 'workflow-insert-after-build'));
+    await tick();
+    await fireEvent.click(at(container, 'workflows-undo'));
+
+    expect(at(container, 'workflow-node-title-1').textContent.trim()).toBe('design');
+  });
+
+  it('keeps a step that Undo took back ready to redo', async () => {
+    const { container } = mountWithoutBlocks();
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    await fireEvent.click(at(container, 'workflow-node-remove-1'));
+    await fireEvent.click(at(container, 'workflows-undo'));
+
+    await fireEvent.click(at(container, 'workflow-insert-after-build'));
+    await tick();
+
+    expect(isOff(container, 'workflows-redo')).toBe(false);
+    await fireEvent.click(at(container, 'workflows-redo'));
+    expect(at(container, 'workflow-node-title-1')).toBeNull();
+  });
+});
+
 // ── Duplicate (US5 scenario 5) ─────────────────────────────────────────────
 
 describe('WorkflowCatalogEditor duplicate (US5, T055)', () => {
