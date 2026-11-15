@@ -1842,4 +1842,47 @@ describe('PipelineBuilder — FR-R5-F10 draft persistence and bounded undo histo
     await tick();
     expect(nameInput().value).toBe('Saved Name');
   });
+
+  // A save refused as stale replays its edit over the newer catalog's rows, and
+  // the edit stays pending. A step from before the replay holds the rows the
+  // newer catalog replaced, so Undo and then Save would write them back.
+  it('starts Undo afresh from the rows a refused save is rebased onto', async () => {
+    vi.mocked(saveDraftHelper).mockResolvedValueOnce({
+      status: 'rejected', reason: 'stale-catalog',
+      result: { currentRevision: 'rev-2' }
+    });
+    const { container, rerender } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([PHASE_ONE, PHASE_TWO]), initialTab: 'phases' }
+    });
+    await tick();
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-list-item-phase-one"]') as HTMLButtonElement
+    );
+    await tick();
+    const nameInput = () =>
+      container.querySelector('[data-testid="phases-name-field-phase-one"]') as HTMLInputElement;
+    const undoBtn = () =>
+      container.querySelector('[data-testid="phases-editor-phase-one"] [aria-label="Undo"]') as HTMLButtonElement;
+
+    await fireEvent.input(nameInput(), { target: { value: 'Local Edit' } });
+    await tick();
+    await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
+    await tick();
+    const newer = buildSnapshot([PHASE_ONE, { ...PHASE_TWO, name: 'Concurrent Edit' }]);
+    await rerender({
+      snapshot: { ...newer, phaseCatalog: { ...newer.phaseCatalog!, revision: 'rev-2' } },
+      initialTab: 'phases'
+    });
+    await tick();
+
+    expect(nameInput().value).toBe('Local Edit');
+    expect(undoBtn().disabled).toBe(true);
+
+    await fireEvent.input(nameInput(), { target: { value: 'Next Edit' } });
+    await tick();
+    await fireEvent.click(undoBtn());
+    await tick();
+    expect(nameInput().value).toBe('Local Edit');
+    expect(undoBtn().disabled).toBe(true);
+  });
 });
