@@ -6,7 +6,8 @@
   // Three buttons where the redesign has five, and only Delete is one of its five.
   // Move earlier and Move later are the product's: they move the step within the
   // Workflow's authored list of steps, the order its definition saves (the canvas
-  // draws reachable steps in offer order whatever that list says). Of the
+  // draws reachable steps in offer order whatever that list says, so the builder
+  // says on the status line where a moved step went). Of the
   // redesign's others, "Add after" is the `+` under a terminal card and on every
   // arm, "Open definition" is the child Workflow's preview line, and Replace and
   // Duplicate have no operation behind them in the Builder yet; a button that does

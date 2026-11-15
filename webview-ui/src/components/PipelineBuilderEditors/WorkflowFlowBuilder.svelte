@@ -16,8 +16,9 @@
   //
   // What the operator does on the canvas is said on the dashboard's status line, as
   // the workflow builder mockup's editor says it: what is now selected, what an add
-  // put on the canvas, and what a delete took away. The effect below says nothing,
-  // because the operator did not make that change.
+  // put on the canvas, and what a delete took away. A move says where the step now
+  // stands in the saved order, which its card most often does not show. The effect
+  // below says nothing, because the operator did not make that change.
   import { tick } from 'svelte';
   import { statusLine } from '../../lib/status-line.svelte';
   import type {
@@ -30,6 +31,7 @@
   import type { WorkflowGraphActions } from './workflow-catalog-actions';
   import {
     connectionName,
+    moveAnnouncement,
     nodeTitle,
     selectionAfterMove,
     selectionAnnouncement,
@@ -169,8 +171,22 @@
    */
   function moveNode(index: number, delta: number): void {
     const count = p.row.nodes.length;
+    const nodeId = p.row.nodes.at(index)?.nodeId;
     p.graph.moveNode(index, delta);
     selection = selectionAfterMove(selection, index, delta, count);
+    if (nodeId !== undefined) void announceMoved(nodeId, index);
+  }
+
+  /**
+   * A move changes the step's place in the saved order, and the canvas places the
+   * steps a run can reach by their connections, so the card most often stays put.
+   * The line says where the step went once the row holds it there; a move that
+   * changed nothing says nothing, as a refused add does.
+   */
+  async function announceMoved(nodeId: string, from: number): Promise<void> {
+    await tick();
+    const said = moveAnnouncement(p.row.nodes, nodeId, from);
+    if (said !== null) statusLine.announce(said);
   }
 </script>
 

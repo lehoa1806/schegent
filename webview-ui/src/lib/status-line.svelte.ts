@@ -4,8 +4,8 @@
 // window, so a screen reader reads each new message once and a sighted operator can glance at it.
 // A view calls `statusLine.announce` after a change it made itself and that is not otherwise
 // obvious: which page is showing, which row's details opened, what the Workflow Builder's canvas
-// selected, added or deleted. It is not a log and keeps no history; the next message replaces the
-// last.
+// selected, added, moved or deleted. It is not a log and keeps no history; the next message
+// replaces the last.
 //
 // Only dashboard code imports this module. The sidebar has no status line.
 

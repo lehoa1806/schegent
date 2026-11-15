@@ -7,12 +7,14 @@
 // `moveWorkflowNode`; this only has to agree with it.
 //
 // The status line names a selection in the words the canvas already gives it: a
-// card by its title, an arm by the name its button carries.
+// card by its title, an arm by the name its button carries. After a move it says
+// where the step now stands in the saved order, which a card often does not show.
 
 import { describe, expect, it } from 'vitest';
 import type { WorkflowConnection, WorkflowNode } from '../../lib/snapshot-types';
 import {
   connectionName,
+  moveAnnouncement,
   selectionAfterMove,
   selectionAnnouncement
 } from '../PipelineBuilderEditors/workflow-flow-view';
@@ -113,5 +115,31 @@ describe('selectionAnnouncement', () => {
     expect(selectionAnnouncement(NODES, [], { kind: 'connection', index: 0 })).toBe(
       'Nothing selected. Showing the Workflow.'
     );
+  });
+});
+
+describe('moveAnnouncement', () => {
+  // Finding 93: a move changes a step's place in the saved order, and the canvas
+  // places the steps a run can reach by their connections, so the moved card most
+  // often stays where it was. The line says where the step went and why.
+  const MOVED: readonly WorkflowNode[] = [
+    { nodeId: 'plan', pipelineId: 'authoring', label: 'Plan' },
+    { nodeId: 'ship', pipelineId: 'release', label: 'Ship' },
+    { nodeId: 'review', pipelineId: 'authoring' }
+  ];
+  const NOTE = 'The canvas places the steps a run can reach by their connections, not by this order.';
+
+  it('names the moved step by its title and its new place in the saved order', () => {
+    expect(moveAnnouncement(MOVED, 'ship', 2)).toBe(
+      `Moved Ship to position 2 of 3 in the saved step order. ${NOTE}`
+    );
+    expect(moveAnnouncement(MOVED, 'review', 1)).toBe(
+      `Moved review to position 3 of 3 in the saved step order. ${NOTE}`
+    );
+  });
+
+  it('says nothing when the step stands where it stood, or is gone', () => {
+    expect(moveAnnouncement(MOVED, 'plan', 0)).toBeNull();
+    expect(moveAnnouncement(MOVED, 'gone', 0)).toBeNull();
   });
 });
