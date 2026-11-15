@@ -283,6 +283,21 @@ describe('CandidateBlockEditor — drawn the way the rest of the inspector is', 
     }
   });
 
+  // A pill holds a short value, and this one held a sentence, which wrapped inside the inspector
+  // at every width: two lines in a fully rounded badge.
+  it('states its selection mode as a line of text and keeps the pills for short values', () => {
+    const { getByTestId } = renderEnabled();
+    const mode = getByTestId('candidate-block-selection-mode');
+    expect(mode.tagName).toBe('P');
+    expect(mode.classList.contains('wf-badge')).toBe(false);
+    expect(mode.textContent.trim()).toBe(
+      'Exclusive single-active candidate selection (no parallel execution)'
+    );
+    for (const testId of ['candidate-block-return-path', 'candidate-block-terminal-exits']) {
+      expect(getByTestId(testId).classList.contains('wf-badge')).toBe(true);
+    }
+  });
+
   // jsdom applies no component CSS, so the rules are read from the component's source.
   it('borders its parts with the redesign tokens and rings the selected candidate', () => {
     const here = dirname(fileURLToPath(import.meta.url));
