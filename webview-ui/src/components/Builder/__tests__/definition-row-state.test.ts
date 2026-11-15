@@ -17,10 +17,15 @@ import { resolve } from 'node:path';
 import {
   EM_DASH,
   deriveDefinitionRowView,
-  formatDefinitionTimestamp
+  formatDefinitionTimestamp,
+  historyEntryActions
 } from '../definition-row-state';
 import { formatAbsoluteTime } from '../../../lib/format';
-import type { BuilderLifecycle, DefinitionState } from '../../../lib/snapshot-types';
+import type {
+  BuilderLifecycle,
+  BuilderVersionEntry,
+  DefinitionState
+} from '../../../lib/snapshot-types';
 
 const CREATED_AT = Date.parse('2026-03-01T09:15:00.000Z');
 const UPDATED_AT = Date.parse('2026-03-04T18:42:30.000Z');
@@ -206,5 +211,55 @@ describe('definition-row-state — the view is inert (US1, T034, FR-010)', () =>
     expect(source).not.toMatch(/from '.*catalog-lifecycle'/);
     expect(source).not.toContain('postCommand');
     expect(source).not.toContain('postMessage');
+  });
+});
+
+// ── What a history entry offers (finding 39 of the webview port review) ──────
+
+function entry(versionId: string, publishedAt: number | null): BuilderVersionEntry {
+  return Object.freeze({ versionId, createdAt: CREATED_AT, publishedAt, isActive: false, note: null });
+}
+
+describe('definition-row-state — a history entry offers Restore where it has a version to bring back (FR-019)', () => {
+  it("withholds Restore on a Draft's only entry, which is the draft itself", () => {
+    // A Draft always holds a draft pointer, and the pointer always names a
+    // retained version. With one entry retained, that entry is the draft, and
+    // restoring it copies the draft onto itself: nothing to restore to.
+    const saved = lifecycle({ state: 'draft', versions: Object.freeze([entry('v1', null)]) });
+    expect(historyEntryActions(saved, 'v1')).toEqual([]);
+  });
+
+  it('withholds it too when that one entry was published once and taken out of service', () => {
+    // Deactivation aims the draft pointer at the version that was active, so the
+    // one entry is still the draft, publishedAt or not.
+    const deactivated = lifecycle({
+      state: 'draft',
+      versions: Object.freeze([entry('v1', UPDATED_AT)])
+    });
+    expect(historyEntryActions(deactivated, 'v1')).toEqual([]);
+  });
+
+  it('offers Restore on every entry of a Draft with more than one, never-published ones included', () => {
+    // An earlier draft, or one a restore replaced, stays in history so it can be
+    // brought back. Which of these the draft holds is not something the surface is
+    // told, so it offers Restore on each.
+    const resaved = lifecycle({
+      state: 'draft',
+      versions: Object.freeze([entry('v2', null), entry('v1', null)])
+    });
+    expect(historyEntryActions(resaved, 'v2')).toEqual(['restore']);
+    expect(historyEntryActions(resaved, 'v1')).toEqual(['restore']);
+  });
+
+  it('offers Restore on the only entry of an Active definition: it lands in Draft', () => {
+    const live = lifecycle({
+      state: 'active',
+      versions: Object.freeze([{ ...entry('ver-7', UPDATED_AT), isActive: true }])
+    });
+    expect(historyEntryActions(live, 'ver-7')).toEqual(['restore']);
+  });
+
+  it('offers nothing to an entry without a version id', () => {
+    expect(historyEntryActions(lifecycle(), undefined)).toEqual([]);
   });
 });

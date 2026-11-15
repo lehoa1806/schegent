@@ -7,6 +7,7 @@
 //   Created / Modified strings  from `createdAt`/`updatedAt` — no comparison, no ordering
 //   the active-version cell     from `activeVersionId` presence — not which version is active
 //   which actions to offer      from `state`             — not whether one would succeed
+//   Restore on a history entry  from `state`, `versions` — never a guess at the draft's entry
 //
 // Formatting epoch milliseconds is not state computation: it is the display
 // concern the store deliberately refused, and no string this module produces is
@@ -122,6 +123,37 @@ const MAX_EPOCH_MS = 8_640_000_000_000_000;
 export function formatDefinitionTimestamp(epochMs: number): string {
   if (!Number.isFinite(epochMs) || Math.abs(epochMs) > MAX_EPOCH_MS) return EM_DASH;
   return formatAbsoluteTime(new Date(epochMs).toISOString());
+}
+
+const RESTORE_ONLY: readonly DefinitionRowAction[] = Object.freeze<DefinitionRowAction[]>([
+  'restore'
+]);
+const NO_ACTIONS: readonly DefinitionRowAction[] = Object.freeze<DefinitionRowAction[]>([]);
+
+/**
+ * What one history entry offers: Restore this version (FR-019), except on an
+ * entry that has nothing to bring back.
+ *
+ * That entry is a Draft's only one. A Draft always holds a draft pointer, and
+ * the pointer always names a retained version, so with one retained the entry is
+ * the draft itself, and restoring it copies the draft onto itself. Every other
+ * entry offers Restore, a never-published one included: an earlier draft, or one
+ * a restore replaced, stays in history to be brought back (feature 100, FR-029b).
+ *
+ * Past that one case the surface cannot tell which entry the draft holds, and
+ * does not guess. The raw pointer is not projected, and the newest entry is not
+ * always the draft: deactivation aims the pointer at the version that was active
+ * without writing an entry (feature 100, FR-024a).
+ */
+export function historyEntryActions(
+  lifecycle: BuilderLifecycle,
+  versionId: string | undefined
+): readonly DefinitionRowAction[] {
+  if (!versionId) return NO_ACTIONS;
+  const { state, versions } = lifecycle;
+  const isTheDraft =
+    state === 'draft' && versions.length === 1 && versions[0].versionId === versionId;
+  return isTheDraft ? NO_ACTIONS : RESTORE_ONLY;
 }
 
 export function deriveDefinitionRowView(lifecycle: BuilderLifecycle): DefinitionRowView {
