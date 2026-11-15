@@ -64,6 +64,12 @@
    that ends before its box does. What follows the name on its line, a tag or an id, takes the line
    below rather than sitting after that gap. */
 @media (pointer: coarse) { .sg button.rowname:has(+ span) { display: block; } }
+/* The same block makes the name's button at least 44px tall and centres its label in that height,
+   while a table cell starts at its top, so a name on one line sat about 12px below the rest of its
+   row. Under a coarse pointer such a row lines its cells up on their first line of text instead.
+   A cell of icon buttons stays at the top: it has no text to line up, and an icon's baseline is its
+   foot, lower in the 44px than a name's, so lining it up would push the whole row down. */
+@media (pointer: coarse) { .sg .t tr:has(button.rowname) > td:not(:has(.icon-btn)) { vertical-align: baseline; } }
 .sg .sub { font-size: var(--schegent-text-secondary); color: var(--schegent-muted-fg); }
 .sg .countline { margin: var(--schegent-space-2) var(--schegent-space-0-5); color: var(--schegent-muted-fg); font-size: var(--schegent-text-secondary); }
 .sg .bar { display: flex; gap: var(--schegent-space-0-5); width: 140px; height: 6px; margin: var(--schegent-space-1) 0 3px; }

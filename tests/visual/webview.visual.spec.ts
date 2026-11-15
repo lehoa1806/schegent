@@ -865,6 +865,86 @@ async function rowNameFollowerOffsets(page: Page): Promise<{ name: string; offse
 /** How far a follower's box may rise above the row name's bottom edge and still count as below it. */
 const ROW_NAME_FOLLOWER_TOLERANCE_PX = 2;
 
+/** Where a table's row name sits against the rest of its row, in px. */
+interface RowNamePlacement {
+  readonly name: string;
+  /** How far the name's box sits below the top of its cell's content. */
+  readonly drop: number;
+  /**
+   * For each other cell with text, how far the name's first line sits below that cell's first
+   * line, with the text the cell starts with. Negative when the name sits higher.
+   */
+  readonly cells: readonly { readonly cell: string; readonly offset: number }[];
+}
+
+/**
+ * Where each row name in `table` sits against the rest of its row. Text that is not drawn, being
+ * hidden or clipped to a pixel for a screen reader, is skipped, and so is a cell with none.
+ */
+async function rowNamePlacements(table: Locator): Promise<RowNamePlacement[]> {
+  return table.locator('tr button.rowname').evaluateAll((rowNames) => {
+    const firstLine = (root: Node): { top: number; text: string } | undefined => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.textContent?.trim() ?? '';
+        const box = node.parentElement?.getBoundingClientRect();
+        if (!text || !box || box.width <= 1 || box.height <= 1) continue;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const line = range.getClientRects().item(0);
+        if (line && line.height > 0) return { top: line.top, text };
+      }
+      return undefined;
+    };
+    return rowNames.flatMap((rowName) => {
+      const nameCell = rowName.closest('td');
+      const row = nameCell?.parentElement;
+      const name = firstLine(rowName);
+      if (!nameCell || !row || !name) return [];
+      const cellStyle = getComputedStyle(nameCell);
+      const contentTop =
+        nameCell.getBoundingClientRect().top +
+        Number.parseFloat(cellStyle.borderTopWidth) +
+        Number.parseFloat(cellStyle.paddingTop);
+      const cells = [...row.children].flatMap((cell) => {
+        const first = cell === nameCell ? undefined : firstLine(cell);
+        return first ? [{ cell: first.text, offset: Math.round(name.top - first.top) }] : [];
+      });
+      return [{ name: name.text, drop: Math.round(rowName.getBoundingClientRect().top - contentTop), cells }];
+    });
+  });
+}
+
+/**
+ * How far a row name's first line may sit from the first line of another cell in its row. Text set
+ * smaller, such as a chip's caption, starts a few px lower on the same line.
+ */
+const ROW_NAME_FIRST_LINE_TOLERANCE_PX = 4;
+
+/** How far a row name's box may sit below the top of its cell, for rounding. */
+const ROW_NAME_DROP_TOLERANCE_PX = 1;
+
+/**
+ * Asserts that `table` has named rows, each with text beside its name, and that every name starts
+ * at the top of its cell, on the first line of its row.
+ */
+async function expectRowNamesOnFirstLine(table: Locator, what: string): Promise<void> {
+  const rows = await rowNamePlacements(table);
+  expect(rows.length, `the ${what} table has named rows`).toBeGreaterThan(0);
+  expect(
+    rows.filter(({ cells }) => cells.length === 0),
+    `a ${what} row has text beside its name`
+  ).toEqual([]);
+  expect(
+    rows.filter(
+      ({ drop, cells }) =>
+        drop > ROW_NAME_DROP_TOLERANCE_PX ||
+        cells.some(({ offset }) => Math.abs(offset) > ROW_NAME_FIRST_LINE_TOLERANCE_PX)
+    ),
+    `a ${what} name starts at the top of its cell, on the first line of its row`
+  ).toEqual([]);
+}
+
 test.describe('responsive accessibility hardening', () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
 
@@ -1024,6 +1104,39 @@ test.describe('responsive accessibility hardening', () => {
       ).toEqual([]);
 
       assertNoPageErrors(page, 'row-name followers under a coarse pointer');
+    });
+
+    /**
+     * Raised in the webview port review's hand-over. The coarse-pointer block makes a row name's
+     * button at least 44px tall and centres its label in that height, while every cell of a table
+     * row starts at its top, so a name on one line sat 9 to 12px below the rest of its row. The
+     * name also has to stay at the top of its cell: a cell of icon buttons, such as a run's menu or
+     * a Phase's order controls, must not push the row down to line up an icon. The three tables
+     * whose rows lead with a name are measured: Queues, the Phases list and History.
+     */
+    test('starts a row name on the first line of its row', async ({ page }) => {
+      await installDeterministicHost(page);
+      await page.goto('/dashboard.html');
+      await page.addStyleTag({ content: themeCss('dark') });
+      await publishSnapshot(page);
+      await expect(page.getByTestId('queues-tier')).toBeVisible();
+      await expect.poll(() => page.evaluate("matchMedia('(pointer: coarse)').matches")).toBe(true);
+
+      await expectRowNamesOnFirstLine(page.getByRole('table', { name: 'Queues' }), 'queue');
+
+      await page.getByTestId('dashboard-route-builder').click();
+      await assertRouteMounted(page, 'builder', ROUTE_MOUNT_TARGETS.builder);
+      await page.getByRole('tab', { name: 'Phases' }).click();
+      await expect(page.getByTestId(/^phases-list-item-/).first()).toBeVisible();
+      await expectRowNamesOnFirstLine(page.getByRole('table', { name: 'Phases' }), 'Phase');
+
+      await page.getByTestId('dashboard-route-history').click();
+      await assertRouteMounted(page, 'history', ROUTE_MOUNT_TARGETS.history);
+      const runsTable = page.getByRole('table', { name: 'Runs, newest first' });
+      await expect(runsTable).toBeVisible();
+      await expectRowNamesOnFirstLine(runsTable, 'run');
+
+      assertNoPageErrors(page, 'row-name first lines under a coarse pointer');
     });
   });
 });
