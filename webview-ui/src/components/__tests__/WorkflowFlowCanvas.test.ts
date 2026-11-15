@@ -85,8 +85,7 @@ const handlers = () => ({
   oninsertafter: vi.fn(),
   onsplice: vi.fn(),
   onnodemove: vi.fn(),
-  onnoderemove: vi.fn(),
-  onbranchadd: vi.fn()
+  onnoderemove: vi.fn()
 });
 
 const mount = (options: MountOptions = {}) => {

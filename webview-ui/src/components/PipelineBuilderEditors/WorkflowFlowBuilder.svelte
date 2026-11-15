@@ -208,7 +208,6 @@
     onsplice={splice}
     onnodemove={moveNode}
     onnoderemove={removeNode}
-    onbranchadd={addBranch}
     onopenworkflow={p.onopenworkflow}
   />
 

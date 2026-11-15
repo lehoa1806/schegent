@@ -53,7 +53,6 @@
     onsplice: (connectionIndex: number) => void;
     onnodemove: (index: number, delta: number) => void;
     onnoderemove: (index: number) => void;
-    onbranchadd: (nodeId: string) => void;
     onopenworkflow?: (workflowId: string, fromNodeId: string) => void;
   }
 
@@ -101,7 +100,6 @@
     onsplice: props.onsplice,
     onnodemove: props.onnodemove,
     onnoderemove: props.onnoderemove,
-    onbranchadd: props.onbranchadd,
     onopenworkflow: props.onopenworkflow
   });
 </script>

@@ -78,8 +78,6 @@ export interface WorkflowFlowView {
   readonly onsplice: (connectionIndex: number) => void;
   readonly onnodemove: (index: number, delta: number) => void;
   readonly onnoderemove: (index: number) => void;
-  /** Add another outgoing arm to `nodeId`, which is how a split is authored. */
-  readonly onbranchadd: (nodeId: string) => void;
   /** Drill down into a referenced child Workflow definition. */
   readonly onopenworkflow?: (workflowId: string, fromNodeId: string) => void;
 }
