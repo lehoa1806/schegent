@@ -147,7 +147,7 @@
 
   {#if control && descriptor}
     <div class="cb-topology-summary" data-testid="candidate-block-topology-summary">
-      <span class="wf-badge" data-testid="candidate-block-selection-mode">Exclusive single-active candidate selection (no parallel execution)</span>
+      <p class="cb-selection-mode muted small" data-testid="candidate-block-selection-mode">Exclusive single-active candidate selection (no parallel execution)</p>
       <span class="wf-badge" data-testid="candidate-block-return-path">{descriptor.validatedReturnPath}</span>
       <span class="wf-badge" data-testid="candidate-block-terminal-exits">Exits: {descriptor.terminalExits.join(' · ')}</span>
     </div>
@@ -414,6 +414,8 @@
   .cb-editor { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); }
   .cb-header, .cb-header-actions, .cb-topology-summary, .cb-candidates-header, .cb-candidate-row-head, .cb-candidate-row-actions, .cb-candidate-trial-row, .cb-phase-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .cb-header, .cb-candidates-header, .cb-candidate-row-head, .cb-candidate-trial-row { justify-content: space-between; }
+  /* A sentence, so a line of text across the summary rather than a pill, which it would wrap inside. */
+  .cb-selection-mode { flex: 1 0 100%; margin: 0; }
   .cb-expanded-body { display: flex; flex-direction: column; gap: 8px; }
   .cb-policy-grid, .cb-candidate-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 6px; }
   /* The grid's gap spaces these fields, so they drop the margin the inspector gives a field
