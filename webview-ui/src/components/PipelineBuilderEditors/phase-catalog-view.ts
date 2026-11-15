@@ -27,8 +27,9 @@ const VIEW_STATES: Readonly<Record<'active' | 'draft', readonly DefinitionState[
   draft: ['draft', 'active-with-draft']
 };
 
-/** What a Phase runs on when it sets no backend, model or effort of its own. */
-export const RUNS_ON_INHERITED = 'inherits workflow defaults';
+/** What a Phase runs on when it sets no backend, model or effort of its own. Only `phaseRunsOn`
+ *  reads it; the tests pin the words themselves. */
+const RUNS_ON_INHERITED = 'inherits workflow defaults';
 /** Between the parts of what a Phase runs on, and of every other Workflow card summary line. */
 export const RUNS_ON_SEPARATOR = ' · ';
 
