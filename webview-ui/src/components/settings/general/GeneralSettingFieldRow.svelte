@@ -410,6 +410,6 @@
   }
   .field-status.status-pending,
   .field-status.status-unknown { color: var(--schegent-muted-fg); }
-  .field-status.status-accepted { color: var(--vscode-charts-green); }
+  .field-status.status-accepted { color: var(--schegent-status-completed-text); }
   .field-status.status-rejected { color: var(--schegent-error-text); }
 </style>

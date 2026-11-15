@@ -236,7 +236,7 @@
     font-size: 0.85em;
   }
   .rc-status[data-state="valid"] {
-    color: var(--vscode-charts-green);
+    color: var(--schegent-status-completed-text);
   }
   .rc-status[data-state="invalid"] {
     color: var(--schegent-error-text);

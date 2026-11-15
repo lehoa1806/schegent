@@ -60,5 +60,5 @@
    status chip, coloured by sg-core's `s-*` tones, and these would outrank them. */
 .pb .catalog-error, .pb .field-errors, .pb .status-badge.status-invalid { color: var(--schegent-error-text); }
 .pb .status-badge { font-size: 0.72em; }
-.pb .status-badge.status-effective { color: var(--vscode-testing-iconPassed); }
+.pb .status-badge.status-effective { color: var(--schegent-status-completed-text); }
 .pb [aria-invalid='true'] { border-color: var(--vscode-errorForeground); }

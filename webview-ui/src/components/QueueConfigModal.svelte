@@ -418,7 +418,7 @@
   .refusal {
     margin: 0;
     font-size: 12px;
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-error-text);
   }
 
   .failure-policy-list {

@@ -171,6 +171,6 @@
 
   .profile-refusal {
     margin: 0;
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-error-text);
   }
 </style>
