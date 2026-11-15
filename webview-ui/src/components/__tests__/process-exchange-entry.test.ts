@@ -107,7 +107,7 @@ describe('Feature 084 — which rows can be exported (T066, FR-052, FR-015)', ()
 });
 
 describe('Feature 084 — when an import can be started (T066, FR-053, FR-057)', () => {
-  const OPEN = { trusted: true, savePending: false, mutationActive: false };
+  const OPEN = { catalog: 'phase', trusted: true, savePending: false, mutationActive: false } as const;
 
   it('is available when nothing is outstanding', () => {
     expect(importDisabledReason(OPEN)).toBeNull();
@@ -129,11 +129,39 @@ describe('Feature 084 — when an import can be started (T066, FR-053, FR-057)',
 
   it('reports untrustedness first — it is the condition the operator cannot clear here', () => {
     const reason = importDisabledReason({
+      catalog: 'phase',
       trusted: false,
       savePending: true,
       mutationActive: true
     });
     expect(reason).toContain('not trusted');
+  });
+
+  // Finding 62 of the webview port review: the Workflows tab feeds this gate its
+  // own save and its own edits, and the two sentences named the Phase catalog.
+  it('names the Phase catalog on the Phases tab', () => {
+    expect(importDisabledReason({ ...OPEN, savePending: true })).toBe(
+      'A Phase save is still in progress.'
+    );
+    expect(importDisabledReason({ ...OPEN, mutationActive: true })).toBe(
+      'Save or discard your pending Phase changes before importing.'
+    );
+  });
+
+  it('names the Workflow catalog on the Workflows tab', () => {
+    const workflows = { ...OPEN, catalog: 'workflow' } as const;
+    expect(importDisabledReason({ ...workflows, savePending: true })).toBe(
+      'A Workflow save is still in progress.'
+    );
+    expect(importDisabledReason({ ...workflows, mutationActive: true })).toBe(
+      'Save or discard your pending Workflow changes before importing.'
+    );
+  });
+
+  it('words trust the same on both tabs: the document is not read yet', () => {
+    const phases = importDisabledReason({ ...OPEN, trusted: false });
+    const workflows = importDisabledReason({ ...OPEN, catalog: 'workflow', trusted: false });
+    expect(workflows).toBe(phases);
   });
 });
 

@@ -98,7 +98,7 @@
     )
   );
   const importUnavailable = $derived(
-    importDisabledReason({ trusted, savePending, mutationActive })
+    importDisabledReason({ catalog: 'phase', trusted, savePending, mutationActive })
   );
 
   const lifecycleByKey = $derived(

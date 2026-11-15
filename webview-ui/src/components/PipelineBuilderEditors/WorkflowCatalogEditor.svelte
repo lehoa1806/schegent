@@ -229,7 +229,7 @@
   const duplicateDisabled = $derived(selected === null || mutatingDisabled);
   const removeDisabled = $derived(selected === null || !selected.persisted || mutatingDisabled);
   const importLayers = $derived(storedWritableLayers(snapshot.phaseCatalog?.records ?? [], snapshot.workflowCatalog?.records ?? []));
-  const importUnavailable = $derived(importDisabledReason({ trusted, savePending, mutationActive: isSelectedDirty || drafts.length > 0 }));
+  const importUnavailable = $derived(importDisabledReason({ catalog: 'workflow', trusted, savePending, mutationActive: isSelectedDirty || drafts.length > 0 }));
 
   function selectNewDraft(draft: MutableWorkflow): void {
     drafts = [...drafts, draft];

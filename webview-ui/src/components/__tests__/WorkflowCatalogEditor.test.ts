@@ -752,6 +752,26 @@ describe('WorkflowCatalogEditor duplicate (US5, T055)', () => {
   });
 });
 
+// ── Import while a Workflow edit is outstanding (finding 62) ───────────────
+
+describe('WorkflowCatalogEditor closes Import over its own unsaved work', () => {
+  it('says the pending changes are Workflow ones, not Phase ones', async () => {
+    const { container } = mount([record({ workflowId: 'shipped-flow' })]);
+    await fireEvent.click(rowFor(container, 'shipped-flow'));
+    await fireEvent.click(
+      container.querySelector('[data-testid="workflows-duplicate"]') as HTMLElement
+    );
+
+    const inspect = container.querySelector<HTMLButtonElement>(
+      '[data-testid="process-import-inspect"]'
+    );
+    expect(inspect?.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="process-import-unavailable"]')?.textContent).toBe(
+      'Save or discard your pending Workflow changes before importing.'
+    );
+  });
+});
+
 // ── Defect anchoring (FR-044) ──────────────────────────────────────────────
 
 describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
