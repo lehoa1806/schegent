@@ -318,7 +318,7 @@ describe('MetricsDashboard', () => {
     expect(readMetricsSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('toggling include-archived re-fetches with includeArchived: true and shows the coverage window', async () => {
+  it('toggling include-archived re-fetches with includeArchives: true and shows the coverage window', async () => {
     readMetricsSpy.mockResolvedValueOnce(successResult());
     readMetricsSpy.mockResolvedValueOnce(
       successResult({ meta: { includesArchives: true, totalScannedEntries: 0, parseWarnings: 0 }, oldestIncludedTimestamp: '2026-01-01T00:00:00.000Z' })
