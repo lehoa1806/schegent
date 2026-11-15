@@ -6,10 +6,14 @@
   // opens its own save dialog and reports only whether a document was written
   // (FR-019).
   //
+  // The control is an item of the Phase editor's "More phase actions" menu
+  // (`role="menu"`): no wrapper, the item reads "Export…", and the reason sits
+  // inside the item, so it shows and hides with the menu.
+  //
   // A row that carries no valid definition cannot produce a document (FR-015),
-  // so the control is disabled AND says why, rather than failing after the
-  // click (FR-057). As a menu item it is off through `aria-disabled`, not
-  // `disabled`, so the arrow keys still reach it and its reason can be read.
+  // so the item is off AND says why, rather than failing after the click
+  // (FR-057). It is off through `aria-disabled`, not `disabled`, so the arrow
+  // keys still reach it and its reason can be read.
   import { exportPhaseYaml } from '../../lib/process-yaml-ipc';
 
   interface Props {
@@ -26,20 +30,13 @@
      * `aria-describedby` pointing at whichever came first.
      */
     rowKey?: string;
-    /**
-     * Render as an item of a `role="menu"`, as the Phase editor's "More phase actions" offers it: no
-     * wrapper, the item reads "Export…", and the reason sits inside the item, so it shows and hides
-     * with the menu.
-     */
-    menuitem?: boolean;
   }
 
   const {
     phaseId,
     resolves = true,
     disabledReason = 'This Phase has errors, so there is nothing valid to export.',
-    rowKey,
-    menuitem = false
+    rowKey
   }: Props = $props();
 
   const disabled = $derived(!resolves);
@@ -52,37 +49,18 @@
   }
 </script>
 
-{#if menuitem}
-  <button
-    type="button"
-    class="export-item"
-    role="menuitem"
-    data-testid="process-export-button"
-    aria-disabled={disabled}
-    {title}
-    aria-label={`Export ${phaseId}`}
-    aria-describedby={disabled ? reasonId : undefined}
-    onclick={onClick}
-  ><span class="export-word">Export…</span>{#if disabled}<span class="export-why" id={reasonId}
-        data-testid="process-export-disabled-reason">{disabledReason}</span>{/if}</button>
-{:else}
-  <div class="export-control">
-    <button
-      type="button"
-      class="export-button"
-      data-testid="process-export-button"
-      {disabled}
-      {title}
-      aria-label={`Export ${phaseId}`}
-      aria-describedby={disabled ? reasonId : undefined}
-      onclick={onClick}
-    >Export</button>
-    {#if disabled}
-      <span class="export-reason" id={reasonId}
-        data-testid="process-export-disabled-reason">{disabledReason}</span>
-    {/if}
-  </div>
-{/if}
+<button
+  type="button"
+  class="export-item"
+  role="menuitem"
+  data-testid="process-export-button"
+  aria-disabled={disabled}
+  {title}
+  aria-label={`Export ${phaseId}`}
+  aria-describedby={disabled ? reasonId : undefined}
+  onclick={onClick}
+><span class="export-word">Export…</span>{#if disabled}<span class="export-why" id={reasonId}
+      data-testid="process-export-disabled-reason">{disabledReason}</span>{/if}</button>
 
 <style>
   /* The menu draws the item (sg-pages.css `.menu button`), off or on; the reason takes a line of its
@@ -101,35 +79,5 @@
     white-space: normal;
     font-size: var(--schegent-text-caption);
     color: var(--schegent-muted-fg);
-  }
-  .export-control {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--schegent-pad);
-  }
-  .export-button {
-    min-height: 24px;
-    background: var(--schegent-button-bg);
-    color: var(--schegent-button-fg);
-    border: 1px solid transparent;
-    border-radius: var(--schegent-radius);
-    padding: 0 var(--schegent-pad);
-    font: inherit;
-    cursor: pointer;
-  }
-  .export-button:hover:not(:disabled) {
-    background: var(--schegent-button-hover);
-  }
-  .export-button:focus-visible {
-    outline: 1px solid var(--schegent-focus-border);
-    outline-offset: 1px;
-  }
-  .export-button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .export-reason {
-    color: var(--schegent-muted-fg);
-    font-size: 0.9em;
   }
 </style>

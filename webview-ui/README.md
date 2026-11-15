@@ -1174,7 +1174,7 @@ the location it tried to write.
 | File | Owns |
 |---|---|
 | [`process-yaml-ipc.ts`](src/lib/process-yaml-ipc.ts) | The **single call site** for the whole exchange family: `exportPhaseYaml`, `exportWorkflowYaml`, `exportModelCatalogYaml`, `preflightProcessYaml` |
-| [`ProcessExportButton.svelte`](src/components/ProcessImport/ProcessExportButton.svelte) | The per-Phase Export control and its disabled reason |
+| [`ProcessExportButton.svelte`](src/components/ProcessImport/ProcessExportButton.svelte) | The per-Phase Export item of the Phase editor's "More phase actions" menu, and its disabled reason |
 | [`WorkflowToolbar.svelte`](src/components/PipelineBuilderEditors/WorkflowToolbar.svelte) | The Workflow Export control **and its two-mode inclusion list** (`references-only` / `include-closure`) |
 | [`ModelCatalogEditor.svelte`](src/components/PipelineBuilderEditors/ModelCatalogEditor.svelte) | The Model Catalog's own Export control — unconditional, since a Model Catalog document always resolves, even an empty one (FR-007) |
 | [`ProcessImportPreflight.svelte`](src/components/ProcessImport/ProcessImportPreflight.svelte) | The import flow shell and the one-request package commit, branching to `runModelCatalogImportCommit` for a Model Catalog plan |
