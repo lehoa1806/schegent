@@ -272,7 +272,9 @@
   }
 
   .history-entry.is-selected {
-    background: var(--vscode-list-inactiveSelectionBackground);
+    background: var(--schegent-selection-bg);
+    color: var(--schegent-selection-fg);
+    box-shadow: inset 0 0 0 1px var(--schegent-selection-outline);
   }
 
   .entry-line {
