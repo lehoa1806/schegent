@@ -815,7 +815,7 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
     expect(result.oldestIncludedTimestamp).toBe('2026-05-20T09:00:00.000Z');
   });
 
-  it('does not scan archived files when includeArchived is false (default)', async () => {
+  it('does not scan archived files when includeArchives is false (default)', async () => {
     await mkdir(auditDir, { recursive: true });
     await writeFile(auditLog, taskStarted({ id: 'e-1', timestamp: '2026-05-23T12:00:00.000Z', runId: 'run-1' }) + '\n', 'utf8');
     await writeFile(
@@ -830,7 +830,7 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
     expect(result.tasks.find((t) => t.runId === 'run-old')).toBeUndefined();
   });
 
-  it('scans timestamped audit archives when includeArchived is true', async () => {
+  it('scans timestamped audit archives when includeArchives is true', async () => {
     await mkdir(auditDir, { recursive: true });
     await writeFile(auditLog, taskStarted({ id: 'e-1', timestamp: '2026-05-23T12:00:00.000Z', runId: 'run-1' }) + '\n', 'utf8');
     await writeFile(
