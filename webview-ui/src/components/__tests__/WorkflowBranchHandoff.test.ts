@@ -127,6 +127,24 @@ describe('the branch actions', () => {
     expect(screen.getByRole('button', { name: 'Delete this branch' })).toBeTruthy();
   });
 
+  // Finding 186 — the workflow builder mockup ends a branch with "Delete this branch" on a line
+  // of its own, at the left. The moves are the product's: a branch's place among the branches
+  // from its step breaks a tie in priority, so they keep a row of their own above it.
+  it('ends the branch with Delete on a line of its own, after the moves', () => {
+    mount(PLAIN);
+    const earlier = screen.getByTestId('workflow-connection-up-0');
+    const later = screen.getByTestId('workflow-connection-down-0');
+    const remove = screen.getByTestId('workflow-connection-remove-0');
+    const line = remove.parentElement as HTMLElement;
+
+    expect(line.tagName).toBe('P');
+    expect([...line.children]).toEqual([remove]);
+    expect(line.nextElementSibling, 'Delete ends the body').toBeNull();
+    expect(later.parentElement).toBe(earlier.parentElement);
+    expect(line.contains(earlier)).toBe(false);
+    expect(earlier.compareDocumentPosition(remove) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
   it('labels the priority with the order it sets', () => {
     mount(PLAIN);
     expect(screen.getByLabelText('Priority (lower is checked first)').getAttribute('data-testid')).toBe(
