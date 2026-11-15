@@ -373,6 +373,21 @@ describe('Phase catalog lifecycle relocation (US1, T007)', () => {
     ).toBeNull();
   });
 
+  // The aside's Issues list shows every saved defect of the open Phase, so the panel above it
+  // lists none of them a second time; they stay on demand there (FR-015).
+  it('lists a saved defect once, in the Issues list', () => {
+    const invalid: MutablePhase = {
+      ...STORED_PHASE,
+      sourceStatus: 'invalid',
+      sourceErrors: [{ field: 'name', code: 'invalid-length', message: 'Name is invalid' }]
+    };
+    const { container } = mount({ snapshot: LIFECYCLE_SNAPSHOT, phases: [invalid], selectedIndex: 0 });
+
+    expect(container.querySelector('#phase-errors-custom')?.textContent).toContain('Name is invalid');
+    expect(container.querySelector('[data-testid="definition-row-active-version-custom"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="definition-row-defects-custom"]')).toBeNull();
+  });
+
   // The mockup's row also has a description, "Runs on", "Used by" and Modified
   // cells and a menu that ends in Deactivate…. FR-003 lets a row show only the
   // Phase's name, its id and its state and validity badges, so the row keeps what

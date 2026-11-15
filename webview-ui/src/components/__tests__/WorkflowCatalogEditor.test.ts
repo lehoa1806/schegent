@@ -1116,6 +1116,46 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
     expect(workflowDefects).toContain('delta');
   });
 
+  // The lifecycle panel keeps the saved defects on demand (FR-015), and the Issues list below
+  // it lists those with no row of their own. Each saved defect is listed once: the panel keeps
+  // those a step owns, which show on that step, and those past the Issues list's cap of five,
+  // which show nowhere else.
+  it('lists each saved defect once, in the panel or in the Issues list', async () => {
+    const unbound = (nodeIndex: number, portId: string) => ({
+      field: `nodes[${nodeIndex}].workflowId`,
+      code: 'missing-required-input',
+      message: `Required input port '${portId}' on node 'n${nodeIndex}' is missing.`
+    });
+    const { container } = mount([
+      record({
+        lifecycle: {
+          state: 'active',
+          createdAt: 0,
+          updatedAt: 0,
+          activeVersionId: 'v1',
+          expectedDraftVersion: 'no-draft',
+          versions: []
+        },
+        errors: [
+          unbound(1, 'alpha'),
+          unbound(9, 'gamma'),
+          unbound(9, 'delta'),
+          unbound(9, 'epsilon'),
+          unbound(9, 'zeta'),
+          unbound(9, 'omega')
+        ]
+      })
+    ]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    const ports = (testId: string): string[] =>
+      [...container.querySelectorAll(`[data-testid="${testId}"] li`)].map(
+        (item) => /'(\w+)'/.exec(item.textContent)?.at(1) ?? ''
+      );
+    expect(ports('workflow-field-errors')).toEqual(['gamma', 'delta', 'epsilon', 'zeta']);
+    expect(ports('definition-row-defects-design-then-build')).toEqual(['alpha', 'omega']);
+  });
+
   it('carries the association in text, not color alone (FR-044)', async () => {
     const { container } = mount([DEFECTIVE]);
     await fireEvent.click(rowFor(container, 'design-then-build'));

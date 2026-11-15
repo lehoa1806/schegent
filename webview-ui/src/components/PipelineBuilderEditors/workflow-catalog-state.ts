@@ -622,6 +622,23 @@ export function anchorWorkflowDefects(
   return { byNode, byConnection, rest };
 }
 
+/**
+ * The saved defects the Workflow's Issues list leaves out, for the lifecycle panel to keep
+ * on demand: those a step or branch owns, which show on that row, and those past the list's
+ * cap, which show nowhere else. The editor lists the saved defects ahead of its own checks,
+ * so a saved defect's place in that list is its place among them, and one with no row of its
+ * own inside the cap is in Issues already.
+ */
+export function savedDefectsOutsideIssues(
+  workflow: MutableWorkflow
+): readonly WorkflowCatalogFieldErrorProjection[] {
+  return workflow.sourceErrors.filter((error, index) => {
+    if (index >= MAX_VISIBLE_FIELD_ERRORS) return true;
+    const anchor = workflowErrorAnchor(error, workflow);
+    return anchor.kind === 'node' || anchor.kind === 'connection';
+  });
+}
+
 /** `null` when the move would leave the list, so the caller can no-op cleanly. */
 function movedWithin<T>(items: readonly T[], index: number, delta: number): T[] | null {
   const target = index + delta;
