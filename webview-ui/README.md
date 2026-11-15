@@ -1123,7 +1123,7 @@ Ownership, given the per-component LOC budget `PipelineBuilder.svelte` sits unde
 | [`workflow-node-data.ts`](src/components/PipelineBuilderEditors/workflow-node-data.ts) | Where each input of a step comes from, for the Data tab, read the way the host decides an input is bound |
 | [`workflow-field-words.ts`](src/components/PipelineBuilderEditors/workflow-field-words.ts) | The words the inspector shows for contract values; every select keeps the value it saves |
 | [`WorkflowRowDefects.svelte`](src/components/PipelineBuilderEditors/WorkflowRowDefects.svelte) | Field-associated defect regions (`aria-describedby` → `role="alert"`) |
-| [`workflow-catalog-state.ts`](src/components/PipelineBuilderEditors/workflow-catalog-state.ts) | Pure draft logic — every edit routes through `applyGraphEdit`, so no rule is expressible in markup |
+| [`workflow-catalog-state.ts`](src/components/PipelineBuilderEditors/workflow-catalog-state.ts) | Pure draft logic — the rules an edit applies, as pure functions of a draft row. [`WorkflowCatalogEditor.svelte`](src/components/PipelineBuilderEditors/WorkflowCatalogEditor.svelte) records every edit in one place, `applyRowEdit`, which field edits reach through `patchSelected` and graph edits through `applyGraphEdit` |
 | [`workflow-catalog-actions.ts`](src/components/PipelineBuilderEditors/workflow-catalog-actions.ts) | The destructive writes, each with its confirmation in the same scope as the mutation it authorises |
 
 Connections address a node by its stable `nodeId`, never by index — the inverse
