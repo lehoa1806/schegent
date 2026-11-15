@@ -8,6 +8,7 @@
 import {
   DEFAULT_FOR_EACH_MAX_ITEMS,
   DEFAULT_FOR_EACH_ON_ITEM_ERROR,
+  DEFAULT_REPEAT_ON_EXHAUSTED,
   type ForEachControl,
   type PortableWorkflowDefinition,
   type RepeatControl,
@@ -67,7 +68,7 @@ export function defaultRepeatControl(child: PortableWorkflowDefinition | null): 
       }
     },
     carry: [],
-    onExhausted: 'pause'
+    onExhausted: DEFAULT_REPEAT_ON_EXHAUSTED
   };
 }
 
