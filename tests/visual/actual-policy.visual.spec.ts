@@ -397,7 +397,7 @@ const STYLE_ROWS: readonly StyleRow[] = [
   { route: 'phases', source: 'PhaseEditorForm:147', selector: PHASE_FIELD('runner'), equals: FIELD_STACK },
   {
     route: 'workflows',
-    source: 'WorkflowToolbar:230',
+    source: 'WorkflowToolbar:231',
     selector: '.ed-head > .push:has([data-testid="workflows-save-all"])',
     marginLeftAboveZero: true,
     containerEdge: true
