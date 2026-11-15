@@ -883,13 +883,18 @@ interface RowNamePlacement {
  */
 async function rowNamePlacements(table: Locator): Promise<RowNamePlacement[]> {
   return table.locator('tr button.rowname').evaluateAll((rowNames) => {
-    const firstLine = (root: Node): { top: number; text: string } | undefined => {
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    // Through `ownerDocument`, as `collectUndersizedTargets` reaches the page: the tests'
+    // TypeScript program has no DOM globals, `NodeFilter` among them.
+    const SHOW_TEXT = 0x4;
+    const firstLine = (
+      root: (typeof rowNames)[number]
+    ): { top: number; text: string } | undefined => {
+      const walker = root.ownerDocument.createTreeWalker(root, SHOW_TEXT);
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
         const text = node.textContent?.trim() ?? '';
         const box = node.parentElement?.getBoundingClientRect();
         if (!text || !box || box.width <= 1 || box.height <= 1) continue;
-        const range = document.createRange();
+        const range = root.ownerDocument.createRange();
         range.selectNodeContents(node);
         const line = range.getClientRects().item(0);
         if (line && line.height > 0) return { top: line.top, text };
@@ -900,8 +905,8 @@ async function rowNamePlacements(table: Locator): Promise<RowNamePlacement[]> {
       const nameCell = rowName.closest('td');
       const row = nameCell?.parentElement;
       const name = firstLine(rowName);
-      if (!nameCell || !row || !name) return [];
-      const cellStyle = getComputedStyle(nameCell);
+      const cellStyle = nameCell?.ownerDocument.defaultView?.getComputedStyle(nameCell);
+      if (!nameCell || !row || !name || !cellStyle) return [];
       const contentTop =
         nameCell.getBoundingClientRect().top +
         Number.parseFloat(cellStyle.borderTopWidth) +
