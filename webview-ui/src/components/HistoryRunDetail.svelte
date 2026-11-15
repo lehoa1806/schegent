@@ -21,6 +21,7 @@
   // first and the run id sits in the Diagnostics fold, where it is still one
   // click from the clipboard.
 
+  import { untrack } from 'svelte';
   import {
     NO_CATALOG_NAMES,
     provenanceLabels,
@@ -122,7 +123,13 @@
           ? { state: 'read', summary: result.summary }
           : { state: 'unreadable' };
     };
-    void readRunSummary(wanted, { signal: lifetime.signal, onLateOutcome: show }).then(show);
+    // Asked untracked. The intent ledger marks the request pending in the
+    // snapshot store, which reads the store's pending set and replaces it; read
+    // tracked, that set makes this effect depend on its own write, and it reads
+    // the rollup a second time.
+    void untrack(() =>
+      readRunSummary(wanted, { signal: lifetime.signal, onLateOutcome: show })
+    ).then(show);
     return () => {
       live = false;
       lifetime.abort();
