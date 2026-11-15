@@ -1059,13 +1059,19 @@ stays outside the lifecycle (FR-041).
 
 Everything a definition's lifecycle looks like on screen now lives under
 [`src/components/Builder/`](src/components/Builder/): `DefinitionLifecycleRow`
-(state badge, created/modified, active version, defects), `DefinitionActions`
-(the four operations, one dispatch path), `DefinitionHistoryPanel` (the version
-list and one body at a time), `ChangedFieldSummary` (what publishing would
-change), and `CatalogEmptyState` (the empty-catalog front door, whose words come
-from the shared `empty-catalog-guidance` constant so this surface and the Runs
-surface cannot drift). Each editor mounts the row beside its own list item; the
-tab shell mounts nothing per-definition. The directory is a scan root of
+(the state badge and the validity badge), `DefinitionLifecyclePanel` (the open
+definition's created, modified and active-version cells, its defects, and the
+three parts named next), `DefinitionActions` (the four operations, one dispatch
+path), `DefinitionHistoryPanel` (the version list and one body at a time),
+`ChangedFieldSummary` (what publishing would change), and `CatalogEmptyState`
+(the empty-catalog front door, whose words come from the shared
+`empty-catalog-guidance` constant so this surface and the Runs surface cannot
+drift). Since feature 186 (D-1) the row holds only its two badges: the Phase
+catalog list and the Workflow Library list mount it beside each item, and the
+Phase editor beside its title. The panel mounts once, on the surface that
+shows the open definition: the Phase editor page and the Workflow settings
+inspector. The tab shell mounts nothing per-definition. The directory is a
+scan root of
 [`../tests/lint/no-html-interpolation-in-activity-feed.test.ts`](../tests/lint/no-html-interpolation-in-activity-feed.test.ts)
 with an empty allowlist, because every string on it is document-sourced.
 
