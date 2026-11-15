@@ -1102,12 +1102,17 @@ async function editorHeadOrderBreaks(page: Page): Promise<string[]> {
       const name = unit.getAttribute('data-testid') ?? unit.getAttribute('aria-label') ?? unit.tagName;
       stops.push({ unit, name, top, bottom, left });
     }
-    return stops.slice(1).flatMap((stop, index) => {
-      const before = stops[index];
-      const laterLine = stop.top >= before.bottom - 1;
-      const sameLineAfter = stop.top < before.bottom && stop.bottom > before.top && stop.left >= before.left;
-      return laterLine || sameLineAfter ? [] : [`${before.name} -> ${stop.name}`];
-    });
+    const breaks: string[] = [];
+    let before: HeadStop | undefined;
+    for (const stop of stops) {
+      if (before !== undefined) {
+        const laterLine = stop.top >= before.bottom - 1;
+        const sameLineAfter = stop.top < before.bottom && stop.bottom > before.top && stop.left >= before.left;
+        if (!laterLine && !sameLineAfter) breaks.push(`${before.name} -> ${stop.name}`);
+      }
+      before = stop;
+    }
+    return breaks;
   });
 }
 
