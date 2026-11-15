@@ -67,7 +67,7 @@
   }
 
   .empty-catalog-body {
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
     margin: 0;
   }
 </style>

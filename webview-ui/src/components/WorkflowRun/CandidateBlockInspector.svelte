@@ -437,18 +437,18 @@
 </section>
 
 <style>
-  .cb-inspector { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); }
+  .cb-inspector { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); }
   .cb-inspector-header, .cb-honesty-card, .cb-candidate-card, .cb-controls-panel { display: flex; flex-direction: column; gap: 4px; }
   .cb-inspector-title-row, .cb-inspector-counters, .cb-candidate-card-head, .cb-candidate-metrics, .cb-candidate-timestamps, .cb-evidence-refs, .cb-controls-selectors, .cb-subset-checkboxes, .cb-action-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .cb-inspector-title { margin: 0; font-size: 0.9em; }
-  .cb-state-badge { font-size: 0.78em; font-weight: 600; text-transform: uppercase; padding: 2px 6px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); }
+  .cb-state-badge { font-size: 0.78em; font-weight: 600; text-transform: uppercase; padding: 2px 6px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); }
   .cb-meta-badge, .cb-counter-chip, .cb-evidence-chip { font-size: 0.78em; opacity: 0.88; }
   .cb-honesty-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 6px; }
-  .cb-honesty-card, .cb-candidate-card { padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); font-size: 0.8em; }
+  .cb-honesty-card, .cb-candidate-card { padding: 6px 8px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); font-size: 0.8em; }
   .cb-card-label { font-size: 0.75em; opacity: 0.78; }
   .cb-spend-details, .cb-candidate-phase-identity, .cb-deadline-row { font-size: 0.8em; opacity: 0.9; }
   .cb-candidate-rows, .cb-notice-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-  .cb-notice-banner, .cb-feedback-banner { padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); font-size: 0.8em; display: flex; flex-wrap: wrap; gap: 6px; }
+  .cb-notice-banner, .cb-feedback-banner { padding: 6px 8px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); font-size: 0.8em; display: flex; flex-wrap: wrap; gap: 6px; }
   .cb-subset-check { display: inline-flex; align-items: center; gap: 4px; font-size: 0.8em; }
   /* sg-core's field and form control (`.field`, `.input`), as the mockup's filter row lays them out:
      side by side with no gap below, each select as wide as its longest option. Led by the row's
@@ -457,7 +457,7 @@
   .cb-controls-selectors .field { margin: 0; }
   .cb-controls-selectors .input { width: auto; }
   .cb-action-item { display: inline-flex; flex-direction: column; gap: 2px; }
-  .cb-action-btn { padding: 3px 8px; font-size: 0.78em; background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, inherit); border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); cursor: pointer; }
+  .cb-action-btn { padding: 3px 8px; font-size: 0.78em; background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); cursor: pointer; }
   .cb-action-btn:disabled { cursor: default; opacity: 0.55; }
   .cb-action-reason { font-size: 0.7em; opacity: 0.75; }
 </style>

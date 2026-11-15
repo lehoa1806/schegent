@@ -115,7 +115,7 @@
     border-radius: var(--schegent-radius);
     background: transparent;
     color: var(--schegent-error-text);
-    font-family: var(--vscode-editor-font-family, monospace);
+    font-family: var(--schegent-mono-font);
     font-size: 0.85em;
   }
 

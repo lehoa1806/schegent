@@ -75,6 +75,18 @@
     )
   );
   --schegent-error-fg: var(--schegent-error-text);
+  /* An invalid field's border and a destructive control's hover fill, drawn as VS Code draws
+   * its own input validation. The border is the saturated red, so it never colours text. */
+  --schegent-error-border: var(--vscode-inputValidation-errorBorder, var(--schegent-color-error));
+  --schegent-error-bg: var(
+    --vscode-inputValidation-errorBackground,
+    color-mix(in srgb, var(--schegent-color-error) 9%, transparent)
+  );
+  /* The ground of inline code and example blocks, as VS Code's Markdown preview draws it. */
+  --schegent-code-bg: var(
+    --vscode-textCodeBlock-background,
+    color-mix(in srgb, var(--schegent-fg) 10%, transparent)
+  );
 
   --sch-font-primary: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
   --schegent-mono-font: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Consolas, monospace);

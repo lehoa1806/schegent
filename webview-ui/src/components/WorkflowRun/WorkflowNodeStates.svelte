@@ -279,7 +279,7 @@
     flex-direction: column;
     gap: 4px;
     padding: 8px;
-    border: 1px solid var(--vscode-panel-border);
+    border: 1px solid var(--schegent-border);
     border-radius: var(--schegent-radius);
   }
   .node-head {
@@ -296,7 +296,7 @@
     padding: 0;
     background: transparent;
     border: 0;
-    color: var(--vscode-textLink-foreground, inherit);
+    color: var(--schegent-link-fg);
     font: inherit;
     font-weight: 600;
     text-align: left;
@@ -326,7 +326,7 @@
   .node-action {
     padding: 4px 10px;
     background: var(--sch-accent-gradient);
-    color: var(--vscode-button-foreground);
+    color: var(--schegent-button-fg);
     border: none;
     border-radius: var(--schegent-radius);
     cursor: pointer;
@@ -350,7 +350,7 @@
     flex-direction: column;
     gap: 4px;
     padding: 6px 8px;
-    border-left: 2px solid var(--vscode-focusBorder, currentColor);
+    border-left: 2px solid var(--schegent-focus-border);
     font-size: 0.85em;
   }
   .repeat-row {
@@ -371,7 +371,7 @@
   }
   .repeat-pass-chip {
     padding: 1px 6px;
-    border: 1px solid var(--vscode-panel-border);
+    border: 1px solid var(--schegent-border);
     border-radius: var(--schegent-radius);
     font-size: 0.9em;
   }

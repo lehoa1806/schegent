@@ -293,7 +293,7 @@
     flex-direction: column;
     gap: 12px;
     padding: 10px;
-    border: 1px solid var(--vscode-panel-border);
+    border: 1px solid var(--schegent-border);
     border-radius: var(--schegent-radius);
   }
   .continuation-header {
@@ -310,7 +310,7 @@
   .close-button {
     background: transparent;
     border: none;
-    color: var(--vscode-textLink-foreground);
+    color: var(--schegent-link-fg);
     cursor: pointer;
     text-decoration: underline;
   }
@@ -334,7 +334,7 @@
     align-self: flex-start;
     padding: 6px 12px;
     background: var(--sch-accent-gradient);
-    color: var(--vscode-button-foreground);
+    color: var(--schegent-button-fg);
     border: none;
     border-radius: var(--schegent-radius);
     cursor: pointer;
