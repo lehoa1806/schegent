@@ -9,6 +9,7 @@ import { tick } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { PortablePhaseDefinition } from '../../lib/snapshot-types';
 import CandidateBlockEditor from '../PipelineBuilderEditors/CandidateBlockEditor.svelte';
+import WorkflowFlowCanvas from '../PipelineBuilderEditors/WorkflowFlowCanvas.svelte';
 import type { MutableWorkflow } from '../PipelineBuilderEditors/types';
 import {
   addCandidateRow,
@@ -311,6 +312,59 @@ describe('CandidateBlockEditor — drawn the way the rest of the inspector is', 
     expect(rules).not.toContain('--vscode-');
     expect(rules).toMatch(
       /\.cb-candidate-row\.is-selected \{ border-color: var\(--schegent-focus-border\); box-shadow: var\(--schegent-ring-selected\); \}/
+    );
+  });
+});
+
+// Fields and pills are captioned in sentence case, as the rest of the builder and the mockups
+// caption them. Phase stays capitalised: it is the product's noun, as M2 writes "from Phase".
+describe('the Candidate Block reads in sentence case', () => {
+  it('captions every field of the editor in sentence case', () => {
+    const row = enableCandidateBlockControl(makeDraftWorkflow(), 'phase-claude-impl');
+    const { getByTestId } = render(CandidateBlockEditor, {
+      props: { row, phases: PHASES, readonly: false, onedit: () => undefined }
+    });
+    const controls = getByTestId('candidate-block-expanded-view').querySelectorAll(
+      'input:not([type="checkbox"]), select'
+    );
+    const captions = [...controls].map((control) =>
+      control.closest('label')?.firstElementChild?.textContent.trim()
+    );
+    expect([...new Set(captions)]).toEqual([
+      'Availability policy',
+      'Max dispatches (1–40)',
+      'Monitoring window (ms)',
+      'Spend ceiling (micro-USD, optional)',
+      'Bound Phase',
+      'Priority',
+      'Max attempts (1–20)',
+      'Initial retry delay (ms)'
+    ]);
+  });
+
+  it('names the block on the canvas the way the editor names it', () => {
+    const row = enableCandidateBlockControl(makeDraftWorkflow(), 'phase-claude-impl');
+    const { getByTestId } = render(WorkflowFlowCanvas, {
+      props: {
+        nodes: row.nodes,
+        connections: row.connections,
+        startNodeIds: row.startNodeIds,
+        control: row.control,
+        pipelines: [],
+        phases: PHASES,
+        nodeDefects: [],
+        connectionDefects: [],
+        readonly: false,
+        selection: null,
+        onselect: () => undefined,
+        oninsertafter: () => undefined,
+        onsplice: () => undefined,
+        onnodemove: () => undefined,
+        onnoderemove: () => undefined
+      }
+    });
+    expect(getByTestId('workflow-canvas-candidate-selection-mode').textContent.trim()).toBe(
+      'Candidate block · Exclusive single-active selection'
     );
   });
 });
