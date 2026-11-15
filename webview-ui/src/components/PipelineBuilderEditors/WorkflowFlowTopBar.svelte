@@ -103,10 +103,12 @@
    * Escape closes the list from anywhere inside it, including from a row. A
    * dropdown that only closes by clicking its trigger again is a keyboard trap.
    * Focus on a row would be left on an element about to unmount, so it goes back
-   * to the switcher.
+   * to the switcher. The key is marked handled, so the press that closes the list
+   * does not also clear the canvas's selection (WorkflowFlowBuilder).
    */
   function onKeydown(event: KeyboardEvent): void {
     if (event.key !== 'Escape' || !open) return;
+    event.preventDefault();
     const focusInList = list?.contains(document.activeElement) === true;
     overridden = false;
     if (focusInList) toggle?.focus();

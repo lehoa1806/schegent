@@ -19,6 +19,11 @@
   // put on the canvas, and what a delete took away. A move says where the step now
   // stands in the saved order, which its card most often does not show. The effect
   // below says nothing, because the operator did not make that change.
+  //
+  // Escape, a press on the canvas's ground (WorkflowFlowCanvas) and the inspector's
+  // back button show the Workflow again, the first two as in the mockup. Focus on
+  // the fields the inspector takes away goes back to the card or the arm that was
+  // selected.
   import { tick } from 'svelte';
   import { statusLine } from '../../lib/status-line.svelte';
   import type {
@@ -95,9 +100,53 @@
    */
   const UNDO_BUTTON_ID = 'wf-undo';
 
+  /**
+   * The selected card's or arm's button: the canvas reports the selection as the
+   * one button it holds pressed.
+   */
+  const SELECTED_ON_CANVAS = '.canvas-wrap button[aria-pressed="true"]';
+
+  /** WorkflowCatalogEditor's root, which holds the editor's head as well as these panes. */
+  const EDITOR_ROOT = '.editor';
+
+  let shell = $state<HTMLDivElement | undefined>(undefined);
+
   function select(next: WorkflowFlowSelection): void {
     selection = next;
     statusLine.announce(selectionAnnouncement(p.row.nodes, p.row.connections, next));
+  }
+
+  /**
+   * Back to the Workflow, from Escape or the inspector's back button. The
+   * inspector swaps the step's or the branch's fields for the Workflow's, so focus
+   * on one of them, or on the back button, would fall to the page: it goes back to
+   * the card or the arm that was selected, where the operator came from. Focus
+   * that survives, on the canvas or in the palette, stays where it is, and nothing
+   * is said when the Workflow already shows.
+   */
+  async function showWorkflow(): Promise<void> {
+    if (selection.kind === 'workflow') return;
+    const selected = shell?.querySelector<HTMLElement>(SELECTED_ON_CANVAS) ?? null;
+    const focusWasInside = shell?.contains(document.activeElement) === true;
+    select({ kind: 'workflow' });
+    await tick();
+    const focusStayed = shell?.contains(document.activeElement) === true;
+    if (focusWasInside && !focusStayed && selected?.isConnected === true) selected.focus();
+  }
+
+  /**
+   * Escape shows the Workflow again, as in the mockup, unless something nearer
+   * already answered it (an open menu, the export panel, the open Workflow list, a
+   * confirmation dialog) or it was pressed outside the Workflow editor. The key's
+   * own work is left alone, so the palette's search field still clears.
+   */
+  function showWorkflowOnEscape(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+    const target = event.target;
+    const editor = shell?.closest(EDITOR_ROOT) ?? shell;
+    const inEditor =
+      target === document.body || (target instanceof Node && editor?.contains(target) === true);
+    if (inEditor) void showWorkflow();
   }
 
   /**
@@ -190,7 +239,9 @@
   }
 </script>
 
-<div class="shell" data-testid="workflow-flow-builder">
+<svelte:document onkeydown={showWorkflowOnEscape} />
+
+<div class="shell" data-testid="workflow-flow-builder" bind:this={shell}>
   <WorkflowActionPalette
     pipelines={p.pipelines}
     phases={p.phases}
@@ -253,6 +304,6 @@
     onconnectionremove={removeConnection}
     onopenworkflow={p.onopenworkflow}
     onopenphase={p.onopenphase}
-    onselectworkflow={() => select({ kind: 'workflow' })}
+    onselectworkflow={() => void showWorkflow()}
   />
 </div>

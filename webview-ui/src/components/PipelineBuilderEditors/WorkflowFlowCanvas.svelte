@@ -17,6 +17,9 @@
   // cards at fixed coordinates with SVG edges between them; this canvas keeps the
   // layout module's lanes and draws each edge in CSS (workflow-flow.css), so a
   // card never needs a coordinate, and the CSP never sees a computed `style`.
+  //
+  // A press on the ground, anywhere but a card or a control, shows the Workflow
+  // again, as in the mockup.
   import type {
     CandidateBlockControl,
     PortablePhaseDefinition,
@@ -83,6 +86,20 @@
   );
   let blockCanvasExpanded = $state(true);
 
+  /** What a press on the canvas leaves alone: a card's box and every control. */
+  const NOT_GROUND = 'button, a, input, select, textarea, label, .node';
+
+  /**
+   * A press on the ground shows the Workflow again. It is a pointer shortcut:
+   * Escape and the inspector's back button are the keyboard's way to the same
+   * place (WorkflowFlowBuilder), so nothing on the canvas needs a pointer.
+   */
+  function onGroundPress(event: MouseEvent): void {
+    if (props.selection === null || props.selection.kind === 'workflow') return;
+    if (!(event.target instanceof Element) || event.target.closest(NOT_GROUND) !== null) return;
+    props.onselect({ kind: 'workflow' });
+  }
+
   const view = $derived<WorkflowFlowView>({
     nodes: props.nodes,
     connections: props.connections,
@@ -105,11 +122,15 @@
   });
 </script>
 
+<!-- A press on the ground is a pointer shortcut. Escape and the inspector's back button are the
+     keyboard's way to the same place, so the region takes no key of its own. -->
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
 <div
   class="canvas-wrap wf-canvas"
   data-testid="workflow-canvas"
   role="region"
   aria-label="Workflow graph canvas"
+  onclick={onGroundPress}
 >
   {#if candidateBlockPath}
     <div

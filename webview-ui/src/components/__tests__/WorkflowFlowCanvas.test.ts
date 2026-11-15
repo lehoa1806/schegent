@@ -559,6 +559,34 @@ describe('the canvas is operable by keyboard alone (FR-042, SC-008)', () => {
   });
 });
 
+// Finding 123 — the workflow builder mockup shows the Workflow again on a press on the
+// canvas's ground. It is a pointer shortcut: Escape and the inspector's back button are the
+// keyboard's way to the same place (WorkflowFlowBuilder), so nothing here needs a pointer.
+describe('a press on the canvas’s ground shows the Workflow', () => {
+  it('selects the Workflow from the ground, and nothing from a card’s box or a control', async () => {
+    const { getByTestId, spies } = mount({ selection: { kind: 'node', index: 0 } });
+
+    await fireEvent.click(getByTestId('workflow-node-0').closest('.node') as HTMLElement);
+    await fireEvent.click(getByTestId('workflow-node-down-0'));
+    await fireEvent.click(getByTestId('workflow-splice-0'));
+    expect(spies.onselect).not.toHaveBeenCalled();
+
+    await fireEvent.click(getByTestId('workflow-canvas'));
+    expect(spies.onselect).toHaveBeenCalledTimes(1);
+    expect(spies.onselect).toHaveBeenCalledWith({ kind: 'workflow' });
+  });
+
+  it('selects nothing while the Workflow already shows, or nothing is selected', async () => {
+    const { getByTestId, spies, rerender } = mount({ selection: { kind: 'workflow' } });
+    await fireEvent.click(getByTestId('workflow-canvas'));
+
+    await rerender({ selection: null });
+    await fireEvent.click(getByTestId('workflow-canvas'));
+
+    expect(spies.onselect).not.toHaveBeenCalled();
+  });
+});
+
 // Decision 6 — the builder mockup deletes the selected step on Delete or Backspace. Here the
 // keys act from the selected card alone: its own button, its toolbar, its preview line.
 describe('Delete and Backspace delete the selected card, from the card alone', () => {
