@@ -121,7 +121,13 @@
       // gate, now reading the store's manifest revision for the Phase kind.
       const revision = catalog.revision;
       if (phaseRebasePending && phaseMutation && revision !== adoptedPhaseRevision) {
-        phases = rebasePhaseMutation(catalog.records, phases, phaseMutation, phaseMutationSourceKey);
+        const rebased = rebasePhaseMutation(catalog.records, phases, phaseMutation, phaseMutationSourceKey);
+        phases = rebased;
+        // The rows are the newer revision's now, so Undo starts afresh as it does
+        // at an adoption: an older step holds rows that revision replaced, and the
+        // edit is still pending, so Save would write them back.
+        const fresh = phaseHistoryFrom(rebased);
+        phaseHistory = fresh.history; phaseHistoryIndex = fresh.index;
         adoptedPhaseRevision = revision; phaseRebasePending = false;
       }
       const acceptedRefresh = phaseSaveAccepted && revision !== adoptedPhaseRevision;
