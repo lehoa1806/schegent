@@ -316,3 +316,47 @@ describe('CandidateBlockInspector — legal operator controls & stale-generation
     );
   });
 });
+
+// Finding 231 of the webview port review. The inspector sits on the Run page, inside the
+// dashboard's `.sg` root and outside the Builder's `.pb` scope, so its selects take
+// sg-core's field and form control, the only ones styled there, and its words follow the
+// redesign's sentence case.
+describe('CandidateBlockInspector — on the Run page', () => {
+  function renderWithEvidence() {
+    return render(CandidateBlockInspector, {
+      props: {
+        projection: buildCandidateBlockStateFixture('waiting-availability', {
+          evidenceRefs: ['evidence-1']
+        })
+      }
+    });
+  }
+
+  it('names the block and labels its parts in sentence case', () => {
+    const inspector = renderWithEvidence().getByTestId('candidate-block-inspector');
+    expect(inspector.querySelector('h4')?.textContent).toBe('Candidate block');
+    expect(inspector.getAttribute('aria-label')).toBe('Candidate block run inspector');
+    const labels = [...inspector.querySelectorAll('.cb-card-label, .field > span')].map(
+      (label) => label.textContent.trim()
+    );
+    expect(labels).toEqual([
+      'Workspace recovery coverage',
+      'Effect certainty',
+      'Spend mode & quality',
+      'Evidence references:',
+      'Target candidate',
+      'Availability policy',
+      'Allowed candidates:'
+    ]);
+  });
+
+  it('draws its two selects as the shared form control inside a field', () => {
+    const { getByTestId } = renderWithEvidence();
+    for (const testId of ['candidate-control-target-select', 'candidate-control-policy-select']) {
+      const select = getByTestId(testId);
+      expect(select.classList.contains('input')).toBe(true);
+      expect(select.classList.contains('select-input')).toBe(false);
+      expect(select.closest('label')?.classList.contains('field')).toBe(true);
+    }
+  });
+});

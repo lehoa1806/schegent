@@ -238,11 +238,11 @@
   data-testid="candidate-block-inspector"
   data-frame-state={proj.state}
   data-generation={proj.generation}
-  aria-label="Candidate Block Run Inspector"
+  aria-label="Candidate block run inspector"
 >
   <header class="cb-inspector-header">
     <div class="cb-inspector-title-row">
-      <h4 class="cb-inspector-title">Candidate Block</h4>
+      <h4 class="cb-inspector-title">Candidate block</h4>
       <span class="cb-state-badge" data-testid="candidate-block-inspector-state">{proj.state}</span>
       <span class="cb-meta-badge" data-testid="candidate-block-inspector-generation">Gen #{proj.generation}</span>
       <span class="cb-meta-badge" data-testid="candidate-block-inspector-policy">Policy: {proj.availabilityPolicy ?? 'first-ready'}</span>
@@ -280,21 +280,21 @@
 
   <div class="cb-honesty-grid" data-testid="candidate-block-inspector-honesty">
     <div class="cb-honesty-card">
-      <span class="cb-card-label">Workspace Recovery Coverage</span>
+      <span class="cb-card-label">Workspace recovery coverage</span>
       <strong data-testid="candidate-block-inspector-recovery-coverage">
         {formatRecoveryCoverageLabel(proj.recoveryCoverage, proj.manifestTruncated, proj.preexistingDirtyCount)}
       </strong>
     </div>
 
     <div class="cb-honesty-card">
-      <span class="cb-card-label">Effect Certainty</span>
+      <span class="cb-card-label">Effect certainty</span>
       <strong data-testid="candidate-block-inspector-effect-certainty">
         {formatEffectCertaintyLabel(proj.effectCertainty)}
       </strong>
     </div>
 
     <div class="cb-honesty-card">
-      <span class="cb-card-label">Spend Mode &amp; Quality</span>
+      <span class="cb-card-label">Spend mode &amp; quality</span>
       <div>
         <strong data-testid="candidate-block-inspector-spend-mode">{spendMode}</strong>
         <span> · </span>
@@ -374,7 +374,7 @@
 
   {#if proj.evidenceRefs.length > 0}
     <div class="cb-evidence-refs" data-testid="candidate-block-inspector-evidence-refs">
-      <span class="cb-card-label">Evidence References:</span>
+      <span class="cb-card-label">Evidence references:</span>
       {#each proj.evidenceRefs as ref (ref)}
         <code class="cb-evidence-chip">{ref}</code>
       {/each}
@@ -384,18 +384,18 @@
   {#if isPrimary}
     <div class="cb-controls-panel" data-testid="candidate-block-inspector-controls">
       <div class="cb-controls-selectors">
-        <label class="cb-inline-field">
-          Target Candidate
-          <select class="select-input" data-testid="candidate-control-target-select" aria-label="Target candidate for control action" value={selectedCandidateId} disabled={commandPending} onchange={(e) => (selectedCandidateId = e.currentTarget.value)}>
+        <label class="field">
+          <span>Target candidate</span>
+          <select class="input" data-testid="candidate-control-target-select" aria-label="Target candidate for control action" value={selectedCandidateId} disabled={commandPending} onchange={(e) => (selectedCandidateId = e.currentTarget.value)}>
             {#each candidates as cand (cand.candidateId)}
               <option value={cand.candidateId}>{cand.candidateId} ({cand.backend})</option>
             {/each}
           </select>
         </label>
 
-        <label class="cb-inline-field">
-          Availability Policy
-          <select class="select-input" data-testid="candidate-control-policy-select" aria-label="Availability policy for control action" value={selectedPolicy} disabled={commandPending} onchange={(e) => (selectedPolicy = e.currentTarget.value as CandidateAvailabilityPolicy)}>
+        <label class="field">
+          <span>Availability policy</span>
+          <select class="input" data-testid="candidate-control-policy-select" aria-label="Availability policy for control action" value={selectedPolicy} disabled={commandPending} onchange={(e) => (selectedPolicy = e.currentTarget.value as CandidateAvailabilityPolicy)}>
             {#each CANDIDATE_AVAILABILITY_POLICIES as pol (pol)}
               <option value={pol}>{pol}</option>
             {/each}
@@ -404,7 +404,7 @@
       </div>
 
       <div class="cb-subset-checkboxes" data-testid="candidate-control-subset-group">
-        <span class="cb-card-label">Allowed Candidates:</span>
+        <span class="cb-card-label">Allowed candidates:</span>
         {#each candidates as cand (cand.candidateId)}
           <label class="cb-subset-check">
             <input type="checkbox" data-testid="candidate-control-allow-checkbox-{cand.candidateId}" checked={allowedSubset[cand.candidateId] !== false} disabled={commandPending} onchange={(e) => toggleSubsetCandidate(cand.candidateId, e.currentTarget.checked)} />
@@ -449,7 +449,13 @@
   .cb-spend-details, .cb-candidate-phase-identity, .cb-deadline-row { font-size: 0.8em; opacity: 0.9; }
   .cb-candidate-rows, .cb-notice-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .cb-notice-banner, .cb-feedback-banner { padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); font-size: 0.8em; display: flex; flex-wrap: wrap; gap: 6px; }
-  .cb-inline-field, .cb-subset-check { display: inline-flex; align-items: center; gap: 4px; font-size: 0.8em; }
+  .cb-subset-check { display: inline-flex; align-items: center; gap: 4px; font-size: 0.8em; }
+  /* sg-core's field and form control (`.field`, `.input`), as the mockup's filter row lays them out:
+     side by side with no gap below, each select as wide as its longest option. Led by the row's
+     class, because Svelte 5 scopes every part after the first in `:where()`, and `.sg .field` would
+     otherwise win the tie. */
+  .cb-controls-selectors .field { margin: 0; }
+  .cb-controls-selectors .input { width: auto; }
   .cb-action-item { display: inline-flex; flex-direction: column; gap: 2px; }
   .cb-action-btn { padding: 3px 8px; font-size: 0.78em; background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, inherit); border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); cursor: pointer; }
   .cb-action-btn:disabled { cursor: default; opacity: 0.55; }
