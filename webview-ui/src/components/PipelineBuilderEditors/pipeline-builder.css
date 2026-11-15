@@ -35,43 +35,19 @@
 .pb .empty-selection { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--schegent-muted-fg); font-style: italic; padding: 16px; }
 .pb .text-input, .pb .select-input { background: var(--schegent-input-bg); border: 1px solid var(--schegent-divider); color: var(--schegent-fg); padding: 8px; border-radius: 4px; font-family: inherit; font-size: 1em; }
 .pb .text-input:focus, .pb .select-input:focus { outline: none; border-color: var(--vscode-focusBorder); }
-.pb .btn-destructive { background: transparent; border: 1px solid var(--vscode-errorForeground); color: var(--schegent-error-text); }
-.pb .btn-destructive:hover { background: var(--vscode-inputValidation-errorBackground); }
 /* The Workflow editors' fields. The Phase editor's fields are sg-core's `.field`; they keep the
    `form-field` and `form-label` names the Builder's tests find a field by, so these rules skip
    them. `:where` keeps each rule at the weight it had before the skip. */
 .pb .form-field:where(:not(.field)) { display: flex; flex-direction: column; gap: 4px; }
 .pb .form-label:where(:not(.field > *)) { font-size: 0.85em; font-weight: 600; color: var(--schegent-muted-fg); }
 .pb .checkbox-field:where(:not(.field)) { flex-direction: row; align-items: center; gap: 8px; }
-/* Feature 184 (FR-R3-141, T034) — the Pipeline sequence editor's rules left with it.
-   `.phases-sequence-editor`, `.sequence-select`, `.sequence-actions` and the
-   `.custom-tooltip` hover card were the `<select>` row's own; the canvas states the
-   Phase in the card's `title`. `.sequence-label`, `.sequence-list`, `.sequence-item`
-   and `.sequence-number` STAY: `PipelinePortsEditor.svelte` still uses all four. */
-.pb .sequence-label { font-size: 0.9em; color: var(--schegent-muted-fg); }
-.pb .sequence-list { display: flex; flex-direction: column; gap: 2px; background: var(--schegent-list-bg); padding: 8px; border: 1px solid var(--schegent-divider); border-radius: var(--schegent-radius-sm); flex: 1; overflow-y: auto; }
-.pb .sequence-item { display: flex; align-items: center; gap: 8px; background: transparent; border: 1px solid transparent; padding: 8px; border-radius: var(--schegent-radius-sm); position: relative; }
-.pb .sequence-item:hover { background: var(--schegent-surface-hover); border-color: var(--schegent-divider); }
-.pb .sequence-number { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: var(--vscode-editor-background); border-radius: 50%; font-size: 0.8em; font-weight: bold; color: var(--schegent-muted-fg); }
 .pb .destructive-icon:hover { background: var(--vscode-inputValidation-errorBackground); color: var(--schegent-error-text); border-color: var(--vscode-errorForeground); }
-.pb .graph-editor { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; flex: 1; }
-.pb .graph-editor .sequence-item { flex-wrap: wrap; }
-/* Feature 083 (US5, T056) — the node and connection lists are <ol>: their order
-   is authored and meaningful (FR-049), so the semantics carry the position and
-   the count to assistive technology while the markers stay hidden. */
-.pb ol.sequence-list { margin: 0; list-style: none; }
-.pb .node-rows { display: flex; flex-direction: column; gap: 8px; }
-.pb .node-id { font-family: var(--vscode-editor-font-family); font-size: 0.9em; color: var(--schegent-muted-fg); }
-.pb .connection-arrow { color: var(--schegent-muted-fg); }
-/* A defective row is bordered AND says "Error": color alone reaches neither a
-   screen-reader user nor a monochrome display (FR-044). The marker is `data-`,
-   not `aria-invalid`, which ARIA does not support on a `listitem`; the AT
-   association is carried by `aria-describedby` and the visible cue. */
-.pb .sequence-item[data-invalid='true'] { border-color: var(--vscode-errorForeground); }
+/* Feature 083 (US5, T056, FR-044) — the defect block a node or connection row names in its
+   `aria-describedby` (`WorkflowRowDefects.svelte`). It says "Error" as well as turning red: colour
+   alone reaches neither a screen-reader user nor a monochrome display. */
 .pb .row-defects { display: flex; align-items: flex-start; gap: 6px; width: 100%; font-size: 0.85em; color: var(--schegent-error-text); }
 .pb .row-defect-cue { flex: 0 0 auto; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; font-weight: 600; text-transform: uppercase; font-size: 0.85em; }
 .pb .row-defect-list { margin: 0; padding-left: 16px; }
-.pb .add-phase-row { display: flex; gap: 8px; margin-top: 8px; }
 /* A catalog's own states on every tab: loading, a failed read, an empty catalog and nothing
    selected. The error colour below weighs as much, so it wins by coming later. */
 .pb .catalog-state { padding: var(--schegent-space-3) 0; color: var(--schegent-muted-fg); }
