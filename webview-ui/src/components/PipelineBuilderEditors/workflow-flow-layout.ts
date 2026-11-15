@@ -24,6 +24,13 @@
 // ascending `priority`, authored position for ties, default arm last. The canvas
 // therefore draws the order the run engine will actually offer, which is the
 // whole reason to draw it top-to-bottom rather than in authored array order.
+//
+// A return arm leaves the Workflow. The same selector returns from the run on
+// `to.kind: 'return'` whatever node the endpoint names, and the host's graph
+// check leaves a return out of reachability and cycles. So a return keeps its
+// place in the offer order with no target: the walk never descends into the
+// node it names or counts a cycle through it, and that node is placed only if
+// another arm reaches it.
 
 import {
   DEFAULT_CANDIDATE_ATTEMPTS,
@@ -73,7 +80,8 @@ export interface WorkflowBranchDescription {
 export interface FlowBranch extends WorkflowBranchDescription {
   /** Position in the authored `connections` array — what a defect addresses. */
   readonly connectionIndex: number;
-  readonly targetNodeId: string;
+  /** The node the arm enters, or null for a return, which leaves the Workflow. */
+  readonly targetNodeId: string | null;
   /**
    * The target is placed elsewhere in the flow, so this arm draws as a reference
    * rather than descending into a second copy of the subtree.
@@ -164,6 +172,14 @@ interface OutgoingConnection {
 }
 
 /**
+ * Whether the arm returns from the Workflow, read as the run engine reads it
+ * (`next-node-selector.ts`) and as the branch inspector's checkbox writes it.
+ */
+export function isReturnConnection(connection: WorkflowConnection): boolean {
+  return connection.to.kind === 'return';
+}
+
+/**
  * Ascending priority, then authored position — with the default arm held behind
  * every explicit one whatever its priority. `next-node-selector.ts` partitions it
  * out before it sorts, because a default is not a low-priority alternative: it is
@@ -187,6 +203,8 @@ function byOfferOrder(left: OutgoingConnection, right: OutgoingConnection): numb
  * rendered: it is authorable mid-edit, the host answers it with
  * `unresolved-endpoint`, and there is no node on the canvas for the arm to point
  * at. The defect still reaches the operator through the connection's own row.
+ * A return is kept whatever its endpoint names: the host checks no endpoint of a
+ * return, and the arm points at no node.
  */
 function groupOutgoing(
   input: WorkflowFlowInput,
@@ -194,7 +212,8 @@ function groupOutgoing(
 ): ReadonlyMap<string, readonly OutgoingConnection[]> {
   const outgoing = new Map<string, OutgoingConnection[]>();
   input.connections.forEach((connection, index) => {
-    if (!present.has(connection.from.nodeId) || !present.has(connection.to.nodeId)) return;
+    const endsAtPresent = isReturnConnection(connection) || present.has(connection.to.nodeId);
+    if (!present.has(connection.from.nodeId) || !endsAtPresent) return;
     const bucket = outgoing.get(connection.from.nodeId);
     if (bucket) {
       bucket.push({ index, connection });
@@ -243,6 +262,15 @@ function place(state: WalkState, into: FlowNodeSlot[], nodeId: string, depth: nu
   });
 
   for (const { index, connection } of outgoing) {
+    if (isReturnConnection(connection)) {
+      branches.push({
+        connectionIndex: index,
+        targetNodeId: null,
+        isJump: false,
+        ...describeWorkflowBranch(connection)
+      });
+      continue;
+    }
     const targetNodeId = connection.to.nodeId;
     if (state.onStack.has(targetNodeId)) {
       state.cycle.add(targetNodeId);

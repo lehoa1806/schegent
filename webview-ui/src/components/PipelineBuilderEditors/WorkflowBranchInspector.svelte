@@ -38,7 +38,7 @@
     type WorkflowDraftError,
   } from "./workflow-catalog-state";
   import { SELECTION_WORDS, stepOptionWords } from "./workflow-field-words";
-  import { nodeTitle } from "./workflow-flow-view";
+  import { connectionTargetTitle, nodeTitle } from "./workflow-flow-view";
   import WorkflowConditionFields from "./WorkflowConditionFields.svelte";
   import WorkflowRowDefects from "./WorkflowRowDefects.svelte";
 
@@ -96,7 +96,7 @@
     return details.join(" · ");
   });
   const fromTitle = $derived(titleOf(p.connection.from.nodeId));
-  const toTitle = $derived(titleOf(p.connection.to.nodeId));
+  const toTitle = $derived(connectionTargetTitle(p.nodes, p.connection));
 
   /** A step's title by identifier, or the identifier for a step the graph lacks. */
   function titleOf(nodeId: string): string {

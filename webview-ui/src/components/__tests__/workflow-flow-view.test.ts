@@ -73,6 +73,19 @@ describe('connectionName', () => {
       'Connection from Plan to gone'
     );
   });
+
+  it('names a return’s far end as the return, not as the node its endpoint names', () => {
+    // The run engine reads a return's endpoint without its node, so naming the node
+    // would say the arm enters a card the run never reaches through it.
+    const toReturn: WorkflowConnection = {
+      from: { nodeId: 'plan' },
+      to: { nodeId: 'review', kind: 'return' }
+    };
+    expect(connectionName(NODES, toReturn)).toBe('Connection from Plan to Return');
+    expect(selectionAnnouncement(NODES, [toReturn], { kind: 'connection', index: 0 })).toBe(
+      'Selected Connection from Plan to Return.'
+    );
+  });
 });
 
 describe('selectionAnnouncement', () => {

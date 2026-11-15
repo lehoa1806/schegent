@@ -30,6 +30,15 @@ function edge(
   return { from: { nodeId: from, portId: 'out' }, to: { nodeId: to, portId: 'in' }, ...extra };
 }
 
+/** A return: the run leaves the Workflow here, whatever node `named` is. */
+function returnEdge(
+  from: string,
+  named: string,
+  extra: Partial<Omit<WorkflowConnection, 'from' | 'to'>> = {}
+): WorkflowConnection {
+  return { from: { nodeId: from, portId: 'out' }, to: { nodeId: named, kind: 'return' }, ...extra };
+}
+
 const slotIds = (slots: readonly { readonly nodeId: string }[]): readonly string[] =>
   slots.map((slot) => slot.nodeId);
 
@@ -151,6 +160,45 @@ describe('buildWorkflowFlowLayout', () => {
     expect(slotIds(layout.slots)).toEqual(['a']);
     expect(layout.slots[0].branches).toHaveLength(0);
     expect(layout.detached).toHaveLength(0);
+  });
+
+  it('draws a return arm as leaving the Workflow, never as reaching the node it names', () => {
+    // The run engine reads `to.kind: 'return'` alone and returns from the Workflow
+    // there (`next-node-selector.ts`), and the host's graph check leaves a return
+    // out of reachability and cycles. So the node the endpoint names is reached
+    // only if another arm reaches it.
+    const layout = buildWorkflowFlowLayout({
+      nodes: [node('a'), node('b')],
+      connections: [returnEdge('a', 'b')],
+      startNodeIds: ['a']
+    });
+
+    expect(slotIds(layout.slots)).toEqual(['a']);
+    expect(layout.slots[0].branches).toEqual([
+      { connectionIndex: 0, targetNodeId: null, isJump: false, kind: 'unconditional', label: null }
+    ]);
+    expect(layout.slots[0].isTerminal).toBe(false);
+    expect(slotIds(layout.detached)).toEqual(['b']);
+    expect(layout.cycleNodeIds).toEqual([]);
+  });
+
+  it('keeps a return whose endpoint names no node, and one naming its own source', () => {
+    // The host gives a return written without a node the name `return` and checks
+    // no endpoint of a return, so neither is the unresolved endpoint dropped above.
+    // A return takes its place in offer order like any other arm.
+    const layout = buildWorkflowFlowLayout({
+      nodes: [node('a'), node('b')],
+      connections: [edge('a', 'b'), returnEdge('b', 'return'), returnEdge('a', 'a', { priority: 1 })],
+      startNodeIds: ['a']
+    });
+
+    expect(slotIds(layout.slots)).toEqual(['a', 'b']);
+    expect(layout.slots.map((slot) => slot.branches.map((branch) => branch.targetNodeId))).toEqual([
+      [null, 'b'],
+      [null]
+    ]);
+    expect(layout.slots.map((slot) => slot.isTerminal)).toEqual([false, false]);
+    expect(layout.cycleNodeIds).toEqual([]);
   });
 
   it('carries the authored node index so an edit addresses the right row', () => {

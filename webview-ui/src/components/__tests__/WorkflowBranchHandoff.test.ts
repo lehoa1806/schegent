@@ -1,7 +1,7 @@
 // The branch inspector's head and its handoff choice.
 //
-// The head names the branch by the two steps it joins and leads back to the
-// Workflow. Handoff is a choice of two, so it is a pair of radios: continue on its
+// The head names the branch by the two steps it joins, or by its step and the
+// return, and leads back to the Workflow. Handoff is a choice of two, so it is a pair of radios: continue on its
 // own, or pause until the operator continues the handoff. Either way the patch is
 // the one the select raised before, `{ handoff }`.
 
@@ -52,6 +52,15 @@ describe('the branch head', () => {
     mount(PLAIN);
     expect(screen.getByRole('heading', { level: 2 }).textContent.trim()).toBe('Branch 1');
     expect(screen.getByTestId('workflow-branch-inspector-0').textContent).toContain('Plan the work → ship');
+  });
+
+  it('names a return by its step and the return, not by the step its endpoint names', () => {
+    // The run engine reads a return's endpoint without its node, as the canvas
+    // draws the arm: into a Return pill, not into that step's card.
+    mount({ from: { nodeId: 'plan' }, to: { nodeId: 'ship', kind: 'return' } });
+    const text = screen.getByTestId('workflow-branch-inspector-0').textContent;
+    expect(text).toContain('Plan the work → Return');
+    expect(text).not.toContain('→ ship');
   });
 
   it('leads back to the Workflow when the inspector offers a way back', async () => {

@@ -161,6 +161,24 @@ describe('the canvas draws the graph', () => {
     expect(queryByTestId('workflow-end-draft')).toBeNull();
   });
 
+  it('ends a return arm at a Return pill, and leaves the card its endpoint names unreached', () => {
+    // The run returns from the Workflow on a return, whatever node the endpoint
+    // names, and the host's reachability skips the arm. So the arm is not drawn
+    // into `ship`, which no other arm reaches.
+    const { getByTestId, queryByTestId } = mount({
+      connections: [{ from: { nodeId: 'draft', portId: 'spec' }, to: { nodeId: 'ship', kind: 'return' } }]
+    });
+
+    expect(getByTestId('workflow-return-0').textContent.trim()).toBe('Return');
+    expect(accessibleName(getByTestId('workflow-branch-0'))).toBe('Connection from draft to Return');
+    expect(accessibleName(getByTestId('workflow-splice-0'))).toBe('Insert a step between draft and Return');
+    expect(queryByTestId('workflow-jump-0')).toBeNull();
+    // A return is a way out, so `draft` is no End terminal.
+    expect(queryByTestId('workflow-end-draft')).toBeNull();
+    expect(cardOrder(getByTestId('workflow-lane-flow'))).toEqual(['draft']);
+    expect(cardOrder(getByTestId('workflow-lane-detached'))).toEqual(['ship']);
+  });
+
   it('titles a card by its label when it has one, and by its identifier otherwise', () => {
     const { getByTestId } = mount({
       nodes: [{ nodeId: 'draft', pipelineId: 'authoring', label: 'Write the spec' }, node('ship', 'release')]
