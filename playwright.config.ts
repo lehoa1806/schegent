@@ -48,7 +48,8 @@ export default defineConfig({
       // compares the screenshots on Linux now; the ratio stays so that a Linux run
       // can still pass them. `threshold` is deliberately left alone: tightening
       // it makes benign sub-pixel shifts louder without making content changes
-      // fail. See docs/features/bugs/ visual-baseline-drift-passes-the-gate.
+      // fail. The bug record is the planning workspace's
+      // docs/features/bugs/DONE_visual-baseline-drift-passes-the-gate.md.
       maxDiffPixelRatio: 0.01
     }
   },
