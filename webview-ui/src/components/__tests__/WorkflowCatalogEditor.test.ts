@@ -483,6 +483,133 @@ describe('WorkflowCatalogEditor says on the status line what the canvas did', ()
     expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
   });
 
+  // Finding 123 — Escape and a press on the canvas's ground show the Workflow again, as
+  // in the workflow builder mockup. Focus the inspector takes away with a step's or a
+  // branch's fields goes back to the card or the arm that was selected.
+  it('shows the Workflow on Escape, and focus stays on the card it was pressed on', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const card = at(container, 'workflow-node-1');
+    await fireEvent.click(card);
+    card.focus();
+
+    await fireEvent.keyDown(card, { key: 'Escape' });
+
+    expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
+    expect(card.getAttribute('aria-pressed')).toBe('false');
+    expect(document.activeElement).toBe(card);
+  });
+
+  it('leaves focus in the palette’s search field when Escape is pressed there', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    const search = at(container, 'workflow-palette-search');
+    search.focus();
+
+    await fireEvent.keyDown(search, { key: 'Escape' });
+
+    expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
+    await tick();
+    expect(document.activeElement).toBe(search);
+  });
+
+  it('sends focus back to the card when Escape takes its fields away', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    const label = at(container, 'workflow-node-label-1');
+    label.focus();
+
+    await fireEvent.keyDown(label, { key: 'Escape' });
+
+    expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
+    await waitFor(() => expect(document.activeElement).toBe(at(container, 'workflow-node-1')));
+  });
+
+  it('sends focus back to the arm when Escape leaves a branch', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-branch-0'));
+    const remove = at(container, 'workflow-connection-remove-0');
+    remove.focus();
+
+    await fireEvent.keyDown(remove, { key: 'Escape' });
+
+    expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
+    expect(container.querySelector('[data-testid="workflow-connection-remove-0"]')).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(at(container, 'workflow-branch-0')));
+  });
+
+  it('sends focus back to the card from the inspector’s back button', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    const back = at(container, 'workflow-settings-btn');
+    back.focus();
+
+    await fireEvent.click(back);
+
+    expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
+    await waitFor(() => expect(document.activeElement).toBe(at(container, 'workflow-node-1')));
+  });
+
+  it('says nothing on Escape while the Workflow already shows', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const card = at(container, 'workflow-node-1');
+    card.focus();
+
+    await fireEvent.keyDown(card, { key: 'Escape' });
+
+    expect(statusLine.message).toBe(STATUS_LINE_READY);
+  });
+
+  it('keeps the selection on Escape the list or an IME takes, or from off the editor', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const card = at(container, 'workflow-node-1');
+    await fireEvent.click(card);
+
+    // The open Workflow list answers Escape first, as the mockup's open menu does.
+    await openPicker(container);
+    const row = rowFor(container, 'design-then-build');
+    row.focus();
+    await fireEvent.keyDown(row, { key: 'Escape' });
+    expect(container.querySelector('[data-testid="workflow-picker-list"]')).toBeNull();
+
+    card.focus();
+    await fireEvent.keyDown(card, { key: 'Escape', isComposing: true });
+
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    outside.focus();
+    await fireEvent.keyDown(outside, { key: 'Escape' });
+    outside.remove();
+
+    expect(statusLine.message).toBe('Selected design.');
+    expect(card.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('shows the Workflow on a press on the canvas’s ground, not on a card’s box', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const canvas = at(container, 'workflow-canvas');
+
+    // Nothing is selected yet, so there is nothing to say.
+    await fireEvent.click(canvas);
+    expect(statusLine.message).toBe(STATUS_LINE_READY);
+
+    const card = at(container, 'workflow-node-1');
+    await fireEvent.click(card);
+    await fireEvent.click(card.closest('.node') as HTMLElement);
+    expect(statusLine.message).toBe('Selected design.');
+
+    await fireEvent.click(canvas);
+    expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
+    expect(card.getAttribute('aria-pressed')).toBe('false');
+  });
+
   it('names a deleted step and hands focus to Undo, which brings it back', async () => {
     const { container } = mount([record()]);
     await fireEvent.click(rowFor(container, 'design-then-build'));
