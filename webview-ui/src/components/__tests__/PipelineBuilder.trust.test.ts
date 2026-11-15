@@ -10,8 +10,9 @@
 //     Pipelines tab is gated by Workspace Trust alone now.
 //   - Render with `resolvedTrust.retryConditions: false` → row-level
 //     retry-condition inputs are read-only (FR-010c).
-//   - Toggle `resolvedTrust.phases` false → true → Save button re-enables,
-//     banner hides (re-render without reload).
+//   - Toggle `resolvedTrust.phases` false → true → the open Phase's Save
+//     button re-enables with the edit still pending, banner hides (re-render
+//     without reload).
 //   - Workspace-trust ceiling (`workspaceTrust: false`) suppresses per-
 //     capability banners in favor of a single workspace-trust banner
 //     (FR-010e).
@@ -346,6 +347,35 @@ describe('PipelineBuilder trust gating (059, T022) — re-render on toggle', () 
     // list now leaves out what it would have drawn disabled.
     expect(container.querySelector('[data-testid="phases-save-all"]')).toBeNull();
     expect(container.querySelector('[data-testid="trust-banner-phases"]')).toBeNull();
+  });
+
+  it('re-enables the open Phase Save, its edit still pending, when resolvedTrust.phases flips back to true', async () => {
+    // Save on the open Phase's page is closed by three things: the denial, a save
+    // in flight, and nothing to save. An edit is made first so that only the
+    // denial is left to close it, and the flip is what has to open it again.
+    const { container, rerender } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot(), initialTab: 'phases' }
+    });
+    await openSpecifyPhase(container);
+    const name = container.querySelector(
+      '[data-testid="phases-name-field-speckit-specify"]'
+    ) as HTMLInputElement;
+    await fireEvent.input(name, { target: { value: 'Specify the feature' } });
+    const save = () =>
+      container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement | null;
+    expect(save()?.disabled).toBe(false);
+
+    await rerender({ snapshot: buildSnapshot({ phases: false }), initialTab: 'phases' });
+    expect(save()?.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="trust-banner-phases"]')).not.toBeNull();
+
+    await rerender({ snapshot: buildSnapshot({ phases: true }), initialTab: 'phases' });
+    expect(save()?.disabled).toBe(false);
+    expect(container.querySelector('[data-testid="trust-banner-phases"]')).toBeNull();
+    const nameAfter = container.querySelector(
+      '[data-testid="phases-name-field-speckit-specify"]'
+    ) as HTMLInputElement | null;
+    expect(nameAfter?.value).toBe('Specify the feature');
   });
 });
 
