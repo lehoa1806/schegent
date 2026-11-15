@@ -15,7 +15,9 @@
   //
   // Endpoints are selects over the nodes in this graph and the ports their
   // Pipelines declare, so an endpoint naming something that does not exist stays
-  // unauthorable rather than being rejected later (FR-042).
+  // unauthorable rather than being rejected later (FR-042). While the arm returns,
+  // its target reads Return and offers nothing to pick: the host's graph check and
+  // the run engine both ignore the node and port a return still names.
   //
   // `Fallback` and `Priority` set the offer order the flow is laid out in, and
   // `addWorkflowBranch` seeds a fallback arm — a seeded flag with no control to
@@ -41,7 +43,7 @@
     type WorkflowDraftError,
   } from "./workflow-catalog-state";
   import { SELECTION_WORDS, stepOptionWords } from "./workflow-field-words";
-  import { connectionTargetTitle, nodeTitle } from "./workflow-flow-view";
+  import { connectionTargetTitle, nodeTitle, RETURN_TITLE } from "./workflow-flow-view";
   import WorkflowConditionFields from "./WorkflowConditionFields.svelte";
   import WorkflowRowDefects from "./WorkflowRowDefects.svelte";
 
@@ -100,6 +102,9 @@
   });
   const fromTitle = $derived(titleOf(p.connection.from.nodeId));
   const toTitle = $derived(connectionTargetTitle(p.nodes, p.connection));
+  const returns = $derived(p.connection.to.kind === "return");
+  const targetPorts = $derived(returns ? [] : portsFor(p.connection.to.nodeId, "in"));
+  const targetPort = $derived(returns ? "" : (p.connection.to.portId ?? ""));
 
   /** A step's title by identifier, or the identifier for a step the graph lacks. */
   function titleOf(nodeId: string): string {
@@ -163,13 +168,17 @@
         class="input"
         data-testid="workflow-connection-to-node-{p.index}"
         value={p.connection.to.nodeId}
-        disabled={p.readonly}
+        disabled={p.readonly || returns}
         onchange={(event) =>
           p.onretarget(p.index, "to", { nodeId: event.currentTarget.value })}
       >
-        {#each p.nodes as node (node.nodeId)}
-          <option value={node.nodeId}>{stepOptionWords(node)}</option>
-        {/each}
+        {#if returns}
+          <option value={p.connection.to.nodeId}>{RETURN_TITLE}</option>
+        {:else}
+          {#each p.nodes as node (node.nodeId)}
+            <option value={node.nodeId}>{stepOptionWords(node)}</option>
+          {/each}
+        {/if}
       </select>
     </label>
     <label class="field">
@@ -177,15 +186,15 @@
       <select
         class="input"
         data-testid="workflow-connection-to-port-{p.index}"
-        value={p.connection.to.portId ?? ""}
-        disabled={p.readonly}
+        value={targetPort}
+        disabled={p.readonly || returns}
         onchange={(event) =>
           p.onretarget(p.index, "to", { portId: event.currentTarget.value })}
       >
-        {#if portsFor(p.connection.to.nodeId, "in").length === 0 || !p.connection.to.portId}
+        {#if targetPorts.length === 0 || !targetPort}
           <option value="">{EXECUTION_ONLY}</option>
         {/if}
-        {#each portsFor(p.connection.to.nodeId, "in") as portId (portId)}
+        {#each targetPorts as portId (portId)}
           <option value={portId}>{portId}</option>
         {/each}
       </select>

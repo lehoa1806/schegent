@@ -170,6 +170,19 @@ describe('branch endpoints', () => {
     expect(returning.spies.onretarget).toHaveBeenLastCalledWith(0, 'to', { kind: 'node' });
   });
 
+  it('names the return as the target while the arm returns, with no step or input to pick', () => {
+    // A return leaves the Workflow: the run engine and the host's graph check both
+    // ignore the node and port it still names, so neither may read as where it goes.
+    const { getByTestId } = mount(RETURNING);
+    const target = getByTestId('workflow-connection-to-node-0') as HTMLSelectElement;
+    const input = getByTestId('workflow-connection-to-port-0') as HTMLSelectElement;
+
+    expect(Array.from(target.options).map((option) => option.text)).toEqual(['Return']);
+    expect(target.disabled).toBe(true);
+    expect(Array.from(input.options).map((option) => option.text)).toEqual(['(execution only)']);
+    expect(input.disabled).toBe(true);
+  });
+
   it('offers no condition controls until the branch is marked conditional', () => {
     const { queryByTestId, getByTestId } = mount(PLAIN);
 
