@@ -6,8 +6,11 @@
 /* The panel stacks a catalog's notices above its page; each page lays out its own content. */
 .pb .builder-canvas { display: flex; flex-direction: column; gap: var(--schegent-space-3); min-width: 0; }
 /* The Workflow editor (sg-builder.css `.editor`) sits under the tabs, whose bottom margin already
-   spaces it, so it drops the redesign's top padding. */
+   spaces it, so it drops the redesign's top padding. That margin is then the workflow builder
+   mockup's 10px from the tabs to the editor's head; the other tabs keep the surfaces mockup's 14px
+   (sg-pages.css `.tabs`). */
 .pb .builder-canvas > .editor { padding-top: 0; }
+.pb .page:has(> .builder-canvas > .editor) > .tabs { margin-bottom: var(--schegent-space-2-5); }
 /* The redesign's editor fills the window, so the canvas and the inspector scroll inside the shell
    instead of the page scrolling past them. Only the Workflows tab does: `:has()` leaves the Phases
    and Models tabs on page scrolling. The minimum is the redesign's 640px app less its head; below
