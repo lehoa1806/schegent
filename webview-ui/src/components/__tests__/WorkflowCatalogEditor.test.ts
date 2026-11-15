@@ -225,6 +225,36 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
     expect(getByTestId('workflow-port-summary-outputs').textContent).toContain('Artifact');
   });
 
+  // Finding 170 — the workflow builder mockup's Status block gives the step count and how many
+  // of the steps no start reaches: the steps the canvas sets apart in its detached lane, here a
+  // chain of two that no connection joins to the rest.
+  it('says beside the step count how many of the steps no start reaches', async () => {
+    const looseEnds = {
+      ...record().definition,
+      workflowId: 'loose-ends',
+      nodes: [
+        ...NODES,
+        { nodeId: 'draft', pipelineId: 'design-review' },
+        { nodeId: 'polish', pipelineId: 'build-it' }
+      ],
+      connections: [
+        ...CONNECTIONS,
+        { from: { nodeId: 'draft', portId: 'notes' }, to: { nodeId: 'polish', portId: 'brief' } }
+      ]
+    } as unknown as WorkflowCatalogSourceProjection['definition'];
+    const { container, getByTestId } = mount([
+      record(),
+      record({ workflowId: 'loose-ends', definition: looseEnds })
+    ]);
+
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    expect(getByTestId('workflow-step-count').textContent.trim()).toBe('2');
+
+    await openPicker(container);
+    await fireEvent.click(rowFor(container, 'loose-ends'));
+    expect(getByTestId('workflow-step-count').textContent.trim()).toBe('4 (2 not reachable)');
+  });
+
   it('lists every declared port of an open Workflow with no derived ports, repeated ids included', async () => {
     // An unsaved draft derives nothing, so its summary falls back to the declared ports, and the
     // port-id field accepts any text, so two ports can share an id while it is being edited. Keying

@@ -3,7 +3,9 @@
   // that names it, its status, what is wrong with it, then its settings in sections
   // that open and close: General opens first, and Candidate block opens whenever the
   // Workflow carries one. The mockup gives the summary and the settings a page each;
-  // here they share one, so every field stays one scroll away.
+  // here they share one, so every field stays one scroll away. The status gives the
+  // step count with how many steps no start reaches, as the mockup does, but not its
+  // Defaults line: no run applies a Workflow's execution defaults to its steps.
   import {
     EFFORT_LEVELS,
     type BuilderLifecycle,
@@ -12,6 +14,7 @@
   import type { WorkflowDraftError } from './workflow-catalog-state';
   import type { WorkflowGraphActions } from './workflow-catalog-actions';
   import type { MutableWorkflow } from './types';
+  import { buildWorkflowFlowLayout } from './workflow-flow-layout';
   import DefinitionLifecyclePanel from '../Builder/DefinitionLifecyclePanel.svelte';
   import CandidateBlockEditor from './CandidateBlockEditor.svelte';
   import WorkflowPortsAndBindingsEditor from './WorkflowPortsAndBindingsEditor.svelte';
@@ -42,6 +45,21 @@
   const RUNNER_OPTIONS = ['claude', 'codex', 'agy'] as const;
 
   const title = $derived(p.row.name || UNTITLED_WORKFLOW);
+
+  /**
+   * The Steps value as the mockup's Status block gives it: the count, then how
+   * many of the steps no start reaches. Those are the steps the canvas sets apart
+   * in its detached lane, read from the same layout, so the two never disagree.
+   */
+  const stepCount = $derived.by(() => {
+    const { detached } = buildWorkflowFlowLayout({
+      nodes: p.row.nodes,
+      connections: p.row.connections,
+      startNodeIds: p.row.startNodeIds
+    });
+    const count = String(p.row.nodes.length);
+    return detached.length > 0 ? `${count} (${detached.length} not reachable)` : count;
+  });
 
   /** A port as the host's projection and a declared port both carry it. */
   interface NamedPort {
@@ -113,7 +131,7 @@
         <dt>State</dt>
         <dd><span class="status-badge status-{p.row.sourceStatus}">{p.row.sourceStatus}</span></dd>
         <dt>Steps</dt>
-        <dd>{p.row.nodes.length}</dd>
+        <dd data-testid="workflow-step-count">{stepCount}</dd>
         <dt>Used by</dt>
         {#if p.dependentParents.length > 0}
           <dd data-testid="workflow-dependent-parents">
