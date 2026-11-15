@@ -357,7 +357,7 @@ Phase editor:
 - **The time limit is in seconds, from 1 to 3600**, because the Phase stores `timeoutSeconds`. The mockup's reads "45 min".
 - **Retries keeps the product's condition editor and outcome labels.** The condition is the retry condition editor the queue settings also use. The outcome, "When retries run out", reads "Fail the task", "Continue with a warning" or "Continue, marked unverified": each label says what the run does, and the third records that the condition was never satisfied. The mockup's condition rows, its "Valid. Write as an expression" line and its "When attempts run out" with "Fail the run", "Continue with a warning" and "Continue" are not ported.
 - **There is no Attempts field.** A Phase stores no attempt count, so adding one is new behaviour, not a restyle.
-- **The summary shows Used by, then the lifecycle panel**: Created, Modified and Active version continue Used by's key and value list, on one key column; a Phase with source errors then shows a collapsed defect count, the same errors Issues lists; a draft's changed fields follow under "Publishing would change:"; then the actions as small buttons. The changed fields take the place of the mockup's "Publishing changes" list, and the mockup's "Published v2 · Nov 7" and "Draft · Edited 3 min ago" lines are not ported. Issues follows, as in the mockup.
+- **The summary shows Used by, then the lifecycle panel**: Created, Modified and Active version continue Used by's key and value list, on one key column; a draft's changed fields follow under "Publishing would change:"; then the actions as small buttons. The changed fields take the place of the mockup's "Publishing changes" list, and the mockup's "Published v2 · Nov 7" and "Draft · Edited 3 min ago" lines are not ported. Issues follows, as in the mockup, and lists every saved defect, which the panel does not repeat.
 
 Builder models:
 
@@ -1061,8 +1061,9 @@ stays outside the lifecycle (FR-041).
 Everything a definition's lifecycle looks like on screen now lives under
 [`src/components/Builder/`](src/components/Builder/): `DefinitionLifecycleRow`
 (the state badge and the validity badge), `DefinitionLifecyclePanel` (the open
-definition's created, modified and active-version cells, its defects, and the
-three parts named next), `DefinitionActions` (the four operations, one dispatch
+definition's created, modified and active-version cells, the saved defects the
+Issues list below it leaves out, and the three parts named next),
+`DefinitionActions` (the four operations, one dispatch
 path), `DefinitionHistoryPanel` (the version list and one body at a time),
 `ChangedFieldSummary` (what publishing would change), and `CatalogEmptyState`
 (the empty-catalog front door, whose words come from the shared
