@@ -4,7 +4,9 @@
 // so stubbing it is stubbing the whole boundary. What matters here: the request
 // names a resource and never a location (FR-019), a row that cannot produce a
 // document is refused before the click with a stated reason (FR-015, FR-057),
-// and the reason is addressable per row rather than per Phase id.
+// and the reason is addressable per row rather than per Phase id. The control
+// is an item of the Phase editor's "More phase actions" menu, so whether it is
+// off is read through `isMenuItemOff`, never `.disabled`.
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -40,7 +42,7 @@ describe('Feature 084 T026 — exporting a Phase', () => {
     const { container, getByTestId } = render(ProcessExportButton, {
       props: { phaseId: 'specify' }
     });
-    expect((getByTestId('process-export-button') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('process-export-button'))).toBe(false);
     expect(container.querySelector('[data-testid="process-export-disabled-reason"]')).toBeNull();
     expect(getByTestId('process-export-button').getAttribute('aria-describedby')).toBeNull();
   });
@@ -50,7 +52,7 @@ describe('Feature 084 T026 — exporting a Phase', () => {
       props: { phaseId: 'broken', resolves: false, disabledReason: 'This Phase has errors.' }
     });
 
-    expect((getByTestId('process-export-button') as HTMLButtonElement).disabled).toBe(true);
+    expect(isMenuItemOff(getByTestId('process-export-button'))).toBe(true);
     expect(getByTestId('process-export-disabled-reason').textContent).toContain('errors');
     // Refused before the click rather than failing after it.
     await fireEvent.click(getByTestId('process-export-button'));
@@ -103,7 +105,7 @@ describe('the control as an item of a menu', () => {
   // control renders as one of the menu's items rather than as a button of its own.
   it('is a menu item that asks the host for the Phase', async () => {
     const { getByTestId } = render(ProcessExportButton, {
-      props: { phaseId: 'specify', menuitem: true }
+      props: { phaseId: 'specify' }
     });
     const item = getByTestId('process-export-button');
     expect(item.getAttribute('role')).toBe('menuitem');
@@ -116,7 +118,7 @@ describe('the control as an item of a menu', () => {
 
   it('says why inside the item, so a closed menu leaves no reason behind', async () => {
     const { container, getByTestId } = render(ProcessExportButton, {
-      props: { phaseId: 'broken', resolves: false, rowKey: 'user:broken', menuitem: true }
+      props: { phaseId: 'broken', resolves: false, rowKey: 'user:broken' }
     });
     const item = getByTestId('process-export-button');
     const reason = getByTestId('process-export-disabled-reason');
@@ -127,18 +129,10 @@ describe('the control as an item of a menu', () => {
     expect(item.contains(reason)).toBe(true);
     expect(item.getAttribute('aria-describedby')).toBe(reason.id);
     // No wrapper either: a menu's children are its items and its separators.
-    expect(container.querySelector('.export-control')).toBeNull();
+    expect(container.firstElementChild).toBe(item);
 
     // The menu refuses the click first; the item refuses it on its own as well.
     await fireEvent.click(item);
     expect(exportSpy).not.toHaveBeenCalled();
-  });
-
-  it('is on, and says nothing more, when the row resolves', () => {
-    const { getByTestId, queryByTestId } = render(ProcessExportButton, {
-      props: { phaseId: 'specify', menuitem: true }
-    });
-    expect(isMenuItemOff(getByTestId('process-export-button'))).toBe(false);
-    expect(queryByTestId('process-export-disabled-reason')).toBeNull();
   });
 });

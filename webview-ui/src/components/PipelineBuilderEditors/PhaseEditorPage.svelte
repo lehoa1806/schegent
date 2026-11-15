@@ -149,7 +149,6 @@
              and changes no catalog state; shown here in the editor header
              rather than the sidebar to reduce visual clutter. -->
         <ProcessExportButton
-          menuitem
           phaseId={phase.id}
           rowKey={phase.sourceKey}
           resolves={exportable.resolves}
