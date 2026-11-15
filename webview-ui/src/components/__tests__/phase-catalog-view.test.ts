@@ -91,10 +91,10 @@ describe('phaseRunsOn', () => {
     expect(phaseRunsOn({ runner: 'codex' })).toBe('codex');
   });
 
-  it('says the phase inherits when it sets none of them', () => {
-    expect(phaseRunsOn({})).toBe('inherits workflow defaults');
+  it('names the Workflow defaults when the phase sets none of them', () => {
+    expect(phaseRunsOn({})).toBe('Workflow defaults');
     expect(phaseRunsOn({ runner: undefined, model: '', effort: undefined })).toBe(
-      'inherits workflow defaults'
+      'Workflow defaults'
     );
   });
 });
