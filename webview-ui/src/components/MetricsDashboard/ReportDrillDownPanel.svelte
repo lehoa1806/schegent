@@ -135,7 +135,7 @@
 
   {#if drillDown.omissions.length > 0}
     <div class="omissions small muted" data-testid="report-drilldown-omissions">
-      <strong>Stated omissions ({fmtPct('unavailable')} never shown as zero):</strong>
+      <strong>Stated omissions (each shown as &ldquo;{fmtPct('unavailable')}&rdquo;, never as zero):</strong>
       <ul>
         {#each drillDown.omissions as omission, idx (idx)}
           <li>{omission.what} — {omission.reason}</li>

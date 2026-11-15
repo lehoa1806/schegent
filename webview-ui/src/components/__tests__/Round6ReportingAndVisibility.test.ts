@@ -9,6 +9,7 @@ import { tick } from 'svelte';
 import ChangeReviewPanel from '../ChangeReviewPanel.svelte';
 import ExecutionVisibilityPanel from '../ExecutionVisibilityPanel.svelte';
 import HistoricalReportsPanel from '../MetricsDashboard/HistoricalReportsPanel.svelte';
+import ReportDrillDownPanel from '../MetricsDashboard/ReportDrillDownPanel.svelte';
 import TelemetryRuntimeHealthPanel from '../TelemetryRuntimeHealthPanel.svelte';
 import { isMenuItemOff } from '../sg/__tests__/menu-item-state';
 import type {
@@ -376,6 +377,38 @@ describe('HistoricalReportsPanel & ReportDrillDownPanel (FR-R6-F11)', () => {
     });
     expect(isMenuItemOff(json)).toBe(false);
     expect(getByTestId('report-status-notice').textContent).toContain('Export canceled');
+  });
+
+  // Finding 2 of the webview port review: the availability phrase became a
+  // sentence of its own, and the heading pasted it in mid-sentence, so it read
+  // "(Unavailable: cannot be shown never shown as zero)".
+  it('heads the stated omissions with one sentence, the phrase quoted in it', () => {
+    const { getByTestId } = render(ReportDrillDownPanel, {
+      drillDown: {
+        reportId: 'rep-live-1',
+        root: {
+          kind: 'root',
+          rootId: 'run-alpha',
+          workflowId: 'wf-deploy',
+          frozenDefinitionId: null,
+          outcome: 'succeeded',
+          createdUtc: '2026-11-11T00:30:00.000Z',
+          durationMs: null,
+          attempts: 0
+        },
+        attempts: [],
+        frozenDefinitionId: null,
+        outcomeLineage: [],
+        usage: null,
+        omissions: [{ what: 'accounting', reason: 'accounting-unavailable' }]
+      },
+      onClose: () => undefined
+    });
+    const omissions = getByTestId('report-drilldown-omissions');
+    expect(omissions.querySelector('strong')?.textContent).toBe(
+      'Stated omissions (each shown as \u201cUnavailable: cannot be shown\u201d, never as zero):'
+    );
+    expect(omissions.querySelector('li')?.textContent).toBe('accounting \u2014 accounting-unavailable');
   });
 });
 
