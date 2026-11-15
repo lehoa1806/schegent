@@ -71,9 +71,8 @@
     workflows,
     transportUsage,
     onSave,
-    onReset,
-    actionsAppend
-  }: Props & { actionsAppend?: import('svelte').Snippet } = $props();
+    onReset
+  }: Props = $props();
 
   function saveId(key: ScalarKey): GeneralSettingsControlId {
     return `${key}-save`;
@@ -347,7 +346,6 @@
             description: GENERAL_SETTINGS_DESCRIPTIONS[resetId(spec.key)]
           }}
         >Reset</button>
-        {@render actionsAppend?.()}
       </span>
     </div>
     {#if status}
