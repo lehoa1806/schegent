@@ -344,3 +344,28 @@ export function selectionAfterMove(
   }
   return selection;
 }
+
+/** Why a moved card most often stays where it was: what places it on the canvas. */
+const CANVAS_ORDER_NOTE =
+  'The canvas places the steps a run can reach by their connections, not by this order.';
+
+/**
+ * What the status line says once Move earlier or Move later has moved a step:
+ * its title and its place in the saved order, the authored list its definition
+ * saves. The canvas draws that order only among the steps no start reaches, so the
+ * moved card most often stays where it was, and the line says why. Null when the
+ * step stands where it stood (a move off either end, or one the editor refused)
+ * or is gone, so a move that changed nothing says nothing.
+ */
+export function moveAnnouncement(
+  nodes: readonly WorkflowNode[],
+  nodeId: string,
+  from: number
+): string | null {
+  const node = nodes.find((candidate) => candidate.nodeId === nodeId);
+  if (node === undefined) return null;
+  const place = nodes.indexOf(node);
+  if (place === from) return null;
+  const position = `position ${place + 1} of ${nodes.length} in the saved step order`;
+  return `Moved ${nodeTitle(node)} to ${position}. ${CANVAS_ORDER_NOTE}`;
+}

@@ -526,6 +526,29 @@ describe('WorkflowCatalogEditor says on the status line what the canvas did', ()
     expect(statusLine.message).toBe('Selected design.');
   });
 
+  // Finding 93 — a move changes the step's place in the saved order, which the
+  // canvas does not draw for the steps a run reaches, so its card stays put.
+  it('says where a moved step went in the saved order, while its card keeps its place', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    const cardTitles = (): string[] =>
+      [...container.querySelectorAll('[data-testid^="workflow-node-title-"]')].map((title) =>
+        title.textContent.trim()
+      );
+    const before = cardTitles();
+
+    await fireEvent.click(at(container, 'workflow-node-up-1'));
+
+    await waitFor(() =>
+      expect(statusLine.message).toBe(
+        'Moved design to position 1 of 2 in the saved step order. ' +
+          'The canvas places the steps a run can reach by their connections, not by this order.'
+      )
+    );
+    expect(cardTitles()).toEqual(before);
+  });
+
   it('names a deleted branch and hands focus to Undo', async () => {
     const { container } = mount([record()]);
     await fireEvent.click(rowFor(container, 'design-then-build'));
