@@ -540,9 +540,24 @@ export function retargetWorkflowConnection(
       : { nodeId: patch.nodeId, portId: '' };
     return updateWorkflowConnection(workflow, index, { [end]: nextEndpoint });
   }
+  if (end === 'to' && patch.kind === 'node' && !workflow.nodes.some((node) => node.nodeId === current.nodeId)) {
+    // A return may name no declared step: a YAML return with no step reads back as
+    // the node id `return`. Clearing its mark then targets what a new branch would.
+    const sourceNodeId = workflow.connections.at(index)?.from.nodeId;
+    const target =
+      workflow.nodes.find((node) => node.nodeId !== sourceNodeId) ??
+      workflow.nodes.find((node) => node.nodeId === sourceNodeId);
+    if (target) {
+      return updateWorkflowConnection(workflow, index, { to: buildDefaultEndpoint(target, pipelines, 'in', workflows) });
+    }
+  }
   if (patch.portId !== undefined || patch.kind !== undefined) {
     const nextPortId = patch.portId !== undefined ? patch.portId : current.portId;
-    const nextKind = end === 'to' ? (patch.kind ?? (current as { kind?: 'node' | 'return' }).kind) : undefined;
+    // A cleared return mark (`kind: 'node'`) leaves a plain node endpoint, written
+    // without a kind like the endpoints this module builds, so ticking the Return
+    // box and clearing it again is no edit at all.
+    const keptKind = (current as { kind?: 'node' | 'return' }).kind;
+    const nextKind = end !== 'to' || patch.kind === 'node' ? undefined : (patch.kind ?? keptKind);
     return updateWorkflowConnection(workflow, index, {
       [end]: {
         nodeId: current.nodeId,

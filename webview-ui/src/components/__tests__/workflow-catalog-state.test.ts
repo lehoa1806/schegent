@@ -49,6 +49,7 @@ import {
   removeWorkflowConditionValue,
   removeWorkflowConnection,
   removeWorkflowNode,
+  retargetWorkflowConnection,
   sourceRecordToMutableWorkflow,
   toSaveWorkflowRow,
   updateWorkflowExecutionDefaults,
@@ -251,6 +252,28 @@ describe('node and connection row editing', () => {
       base.connections
     );
     expect(removeWorkflowConnection(base, 9).connections).toEqual(base.connections);
+  });
+
+  it('marks an arm as a return and clears the mark back to the endpoint it named', () => {
+    // The branch inspector's Return box writes `kind: 'return'` when ticked and
+    // `kind: 'node'` when cleared. The run engine reads `to.kind` alone, so a cleared
+    // box must leave no return behind: the arm goes back to the node and port it named.
+    const returning = retargetWorkflowConnection(row(), 0, 'to', { kind: 'return' }, []);
+    expect(returning.connections.at(0)?.to).toEqual({ nodeId: 'ship', portId: 'brief', kind: 'return' });
+
+    const cleared = retargetWorkflowConnection(returning, 0, 'to', { kind: 'node' }, []);
+    expect(cleared.connections.at(0)?.to).toEqual({ nodeId: 'ship', portId: 'brief' });
+    expect(isWorkflowDirty(cleared, row())).toBe(false);
+  });
+
+  it('points a cleared return that named no step at the first step past its source', () => {
+    // A YAML return may name no step; the host's parser then records the node id
+    // `return`, which no step carries. Clearing the mark must still leave an arm that
+    // names a declared step, chosen as a new branch's target is.
+    const imported = updateWorkflowConnection(row(), 0, { to: { nodeId: 'return', kind: 'return' } });
+    const cleared = retargetWorkflowConnection(imported, 0, 'to', { kind: 'node' }, []);
+    expect(cleared.connections.at(0)?.to.nodeId).toBe('ship');
+    expect(cleared.connections.at(0)?.to).not.toHaveProperty('kind');
   });
 });
 

@@ -213,7 +213,7 @@
         disabled={p.readonly}
         onchange={(event) =>
           p.onretarget(p.index, "to", {
-            kind: event.currentTarget.checked ? "return" : undefined,
+            kind: event.currentTarget.checked ? "return" : "node",
           })}
       />
       <span>Return from Workflow</span>
