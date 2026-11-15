@@ -845,6 +845,26 @@ async function collectUndersizedTargets(page: Page): Promise<string[]> {
   );
 }
 
+/**
+ * How far below its row-name button each span after one starts, in px, named by the button's text.
+ * A negative offset means the span shares the button's line.
+ */
+async function rowNameFollowerOffsets(page: Page): Promise<{ name: string; offset: number }[]> {
+  return page.locator('.sg button.rowname + span').evaluateAll((followers) =>
+    followers.flatMap((follower) => {
+      const rowName = follower.previousElementSibling;
+      if (!rowName) return [];
+      const nameBox = rowName.getBoundingClientRect();
+      if (nameBox.height === 0) return [];
+      const offset = follower.getBoundingClientRect().top - nameBox.bottom;
+      return [{ name: rowName.textContent.trim(), offset }];
+    })
+  );
+}
+
+/** How far a follower's box may rise above the row name's bottom edge and still count as below it. */
+const ROW_NAME_FOLLOWER_TOLERANCE_PX = 2;
+
 test.describe('responsive accessibility hardening', () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
 
@@ -960,6 +980,51 @@ test.describe('responsive accessibility hardening', () => {
     expect(overflow, 'the seeded allowlist row must not widen the page').toBeLessThanOrEqual(1);
 
     assertNoPageErrors(page, 'settings coarse-pointer deep walk');
+  });
+
+  /**
+   * Finding 31 of the webview port review. The theme's coarse-pointer block makes every button at
+   * least 44px wide, so a row name narrower than that left a gap after it, before the tag or the
+   * id that follows it on its line. Under a coarse pointer that follower takes the line below the
+   * name instead. Both lists that put one there are measured: the Queues table, whose default
+   * queue carries a tag, and the Phases list, where every name has its id after it.
+   *
+   * Measured at a tablet's width, because at the walk's 390px the name cells are too narrow for
+   * a name and its follower to share a line, so the gap cannot appear there.
+   */
+  test.describe('at a tablet width', () => {
+    test.use({ viewport: { width: 1024, height: 768 } });
+
+    test('puts the tag or id after a row name on the line below it', async ({ page }) => {
+      await installDeterministicHost(page);
+      await page.goto('/dashboard.html');
+      await page.addStyleTag({ content: themeCss('dark') });
+      await publishSnapshot(page);
+      await expect(page.getByTestId('queues-tier')).toBeVisible();
+      await expect.poll(() => page.evaluate("matchMedia('(pointer: coarse)').matches")).toBe(true);
+      await expect(page.getByTestId('queue-default-tag')).toBeVisible();
+
+      const queueRows = await rowNameFollowerOffsets(page);
+      expect(queueRows.length, 'the default queue tags its name').toBeGreaterThan(0);
+      expect(
+        queueRows.filter(({ offset }) => offset < -ROW_NAME_FOLLOWER_TOLERANCE_PX),
+        'a queue name keeps its tag on the line below'
+      ).toEqual([]);
+
+      await page.getByTestId('dashboard-route-builder').click();
+      await assertRouteMounted(page, 'builder', ROUTE_MOUNT_TARGETS.builder);
+      await page.getByRole('tab', { name: 'Phases' }).click();
+      await expect(page.getByTestId(/^phases-list-item-/).first()).toBeVisible();
+
+      const phaseRows = await rowNameFollowerOffsets(page);
+      expect(phaseRows.length, 'every Phase name has its id after it').toBeGreaterThan(0);
+      expect(
+        phaseRows.filter(({ offset }) => offset < -ROW_NAME_FOLLOWER_TOLERANCE_PX),
+        'a Phase name keeps its id on the line below'
+      ).toEqual([]);
+
+      assertNoPageErrors(page, 'row-name followers under a coarse pointer');
+    });
   });
 });
 
