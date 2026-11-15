@@ -752,6 +752,37 @@ describe('WorkflowCatalogEditor duplicate (US5, T055)', () => {
   });
 });
 
+// ── An empty catalog (finding 229) ─────────────────────────────────────────
+
+describe('WorkflowCatalogEditor with no Workflows says so once', () => {
+  it('shows the front door of the empty catalog and nothing else that says the tab is empty', () => {
+    const { container } = mount([]);
+    expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflows-no-selection"]')).toBeNull();
+    // The picker opens by itself only when it holds something to choose.
+    expect(container.querySelector('[data-testid="workflow-picker-list"]')).toBeNull();
+  });
+
+  it('explains the blank in one line when the operator opens the empty picker', async () => {
+    const { container } = mount([]);
+    await fireEvent.click(
+      container.querySelector('[data-testid="workflow-picker-toggle"]') as HTMLElement
+    );
+    const list = container.querySelector('[data-testid="workflow-picker-list"]');
+    expect(list).not.toBeNull();
+    expect(list?.querySelector('[data-testid="workflow-picker-empty"]')?.textContent).toBe(
+      'No Workflow yet.'
+    );
+    expect(list?.querySelector('[data-testid="workflows-empty"]')).toBeNull();
+  });
+
+  it('still opens the picker by itself when Workflows exist and none is open', () => {
+    const { container } = mount([record({ workflowId: 'shipped-flow' })]);
+    expect(container.querySelector('[data-testid="workflow-picker-list"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflows-no-selection"]')).not.toBeNull();
+  });
+});
+
 // ── Import while a Workflow edit is outstanding (finding 62) ───────────────
 
 describe('WorkflowCatalogEditor closes Import over its own unsaved work', () => {

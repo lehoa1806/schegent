@@ -296,9 +296,31 @@ describe('BUG-002 (101) — the Workflows tab keeps the open Workflow across an 
       container.querySelector('[data-testid="workflows-list-item-open-workflow"]')!
     );
 
-    await rerender({ snapshot: workflowSnapshot([], 'rev-2'), trusted: true });
+    // A sibling stays, so the tab still has a Workflow to choose and asks for one.
+    // With nothing left, the empty catalog's front door speaks instead (finding
+    // 229 of the webview port review).
+    await rerender({
+      snapshot: workflowSnapshot([workflowRecord({ workflowId: 'sibling' })], 'rev-2'),
+      trusted: true
+    });
     await tick();
 
     expect(container.querySelector('[data-testid="workflows-no-selection"]')).not.toBeNull();
+  });
+
+  it('leaves only the front door of the empty catalog when the last Workflow goes', async () => {
+    const { container, rerender } = render(WorkflowCatalogEditor, {
+      snapshot: workflowSnapshot([workflowRecord()], 'rev-1'),
+      trusted: true
+    });
+    await fireEvent.click(
+      container.querySelector('[data-testid="workflows-list-item-open-workflow"]')!
+    );
+
+    await rerender({ snapshot: workflowSnapshot([], 'rev-2'), trusted: true });
+    await tick();
+
+    expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflows-no-selection"]')).toBeNull();
   });
 });

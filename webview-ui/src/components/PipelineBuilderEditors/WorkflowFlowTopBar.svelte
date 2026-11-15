@@ -59,15 +59,17 @@
    * Null until the operator opens or closes the picker themselves, and a boolean
    * after that.
    *
-   * The default it falls back to is "open while nothing is selected": the Library
-   * list moved in here, so the picker is now the only way to select a Workflow, and
-   * starting closed with no selection would leave the operator looking at an empty
-   * canvas with no visible way in. Held as an override rather than as an
-   * initialised flag so the default is *derived* — a `$state` seeded from
-   * `selected` would capture only its value at mount.
+   * The default it falls back to is "open while nothing is selected and there is
+   * something to select": the Library list moved in here, so the picker is now the
+   * only way to select a Workflow, and starting closed with no selection would
+   * leave the operator looking at an empty canvas with no visible way in. An empty
+   * catalog has no way in to show, and the empty state below the head already says
+   * so, so the picker stays shut until it is asked for. Held as an override rather
+   * than as an initialised flag so the default is *derived* — a `$state` seeded
+   * from `selected` would capture only its value at mount.
    */
   let overridden = $state<boolean | null>(null);
-  const open = $derived(overridden ?? selected === null);
+  const open = $derived(overridden ?? (selected === null && rows.length > 0));
 
   let toggle = $state<HTMLButtonElement | undefined>(undefined);
   let list = $state<HTMLDivElement | undefined>(undefined);
