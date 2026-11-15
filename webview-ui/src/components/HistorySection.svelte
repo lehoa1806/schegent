@@ -45,18 +45,19 @@
     variant?: 'compact' | 'ledger';
     /**
      * FR-021 — display names for the definition and Workflow ids a row carries.
-     * Defaulted rather than required: the compact variant is mounted from places
-     * that hold no catalog, and every label falls back to the id.
+     * Defaulted rather than required: a caller that holds no catalog leaves it
+     * out, and every label falls back to the id. The History dashboard, the one
+     * caller today, passes its catalog's names.
      */
     catalogNames?: CatalogNames;
     /**
      * Feature 103 (T052, FR-024) — where "Details" goes when the caller has a
      * detail view of its own.
      *
-     * Optional, and the host command stays the default. The compact variant is
-     * mounted from surfaces with nothing to drill into, and those must keep
-     * posting `CMD_OPEN_HISTORY_ITEM_DETAILS`; only the History dashboard, which
-     * renders the detail as a sub-view, overrides it.
+     * Optional, and the host command stays the default: a caller with nothing to
+     * drill into leaves it out and keeps posting `CMD_OPEN_HISTORY_ITEM_DETAILS`.
+     * The History dashboard, the one caller today, renders the detail as a
+     * sub-view and overrides it.
      */
     onOpenDetail?: (runId: string) => void;
     /**
