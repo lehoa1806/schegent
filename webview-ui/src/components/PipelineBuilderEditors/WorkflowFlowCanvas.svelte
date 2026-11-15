@@ -6,10 +6,11 @@
   // split is what lets the placement rules be tested without mounting anything.
   //
   // Two lanes, not one. Nodes reachable from a start are the flow; nodes no start
-  // reaches are `unreachable-node` defects, and they render BELOW under their own
-  // heading rather than being hidden. A canvas that draws only the reachable graph
-  // would hide the very node the operator has to connect or delete to make the
-  // save pass, with the host's defect pointing at something invisible.
+  // reaches are `unreachable-node` defects, and they render BELOW in a lane of
+  // their own, under a note that says why they block the save, rather than being
+  // hidden. A canvas that draws only the reachable graph would hide the very node
+  // the operator has to connect or delete to make the save pass, with the host's
+  // defect pointing at something invisible.
   //
   // The surface is the redesign's `.canvas-wrap` (sg-builder.css): the dotted
   // ground and the region a screen reader can jump to. The redesign places its
