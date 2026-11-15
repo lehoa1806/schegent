@@ -9,6 +9,8 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   forbidOnly: isCi,
+  // A reused server must be this checkout's fixture server (finding 27 of the webview port review).
+  globalSetup: './tests/visual/fixture-server-identity.mjs',
   outputDir: 'tests/visual/.artifacts',
   snapshotPathTemplate: '{testDir}/__screenshots__/{arg}{ext}',
   reporter: isCi
