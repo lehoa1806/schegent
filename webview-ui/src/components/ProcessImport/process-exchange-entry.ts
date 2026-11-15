@@ -63,12 +63,22 @@ export function phaseExportAvailability(row: ExportableRow): ExportAvailability 
   return { resolves: true, disabledReason: '' };
 }
 
+/** The tab the import is started from, which is the catalog the gate observes. */
+export type ImportEntryCatalog = 'phase' | 'workflow';
+
 export interface ImportEntryGate {
+  /** Whose save and whose edits `savePending` and `mutationActive` report. */
+  readonly catalog: ImportEntryCatalog;
   readonly trusted: boolean;
   readonly savePending: boolean;
-  /** True while an undeclared local Phase edit is outstanding. */
+  /** True while an undeclared local edit to that catalog is outstanding. */
   readonly mutationActive: boolean;
 }
+
+const IMPORT_CATALOG_NAMES: Readonly<Record<ImportEntryCatalog, string>> = Object.freeze({
+  phase: 'Phase',
+  workflow: 'Workflow'
+});
 
 /**
  * Why an import cannot be started, or `null` when it can (FR-053, FR-057).
@@ -81,20 +91,22 @@ export interface ImportEntryGate {
  * reason: one declared mutation at a time.
  *
  * Feature 085 T035 — this gates the SINGLE import entry point (FR-055a), which
- * now opens documents of either kind. Only the trust sentence changed: the
- * document is not classified before it is read, so naming the kind there would
- * be a claim about a file nobody has opened yet. The other two still name the
- * Phase catalog because that is literally what they observe — a Phase save, a
- * Phase draft — and generalizing their wording would describe a condition this
- * gate is not being told about.
+ * opens documents of either kind. The trust sentence names no kind: the
+ * document is not classified before it is read, so naming one there would be a
+ * claim about a file nobody has opened yet. The other two name the catalog the
+ * caller says it observes, because that is literally what they report — that
+ * tab's save, that tab's draft. The Phases and Workflows tabs both mount the
+ * entry point, and each feeds the gate its own state, so a fixed "Phase" told
+ * the Workflows tab about a catalog it had not touched.
  */
 export function importDisabledReason(gate: ImportEntryGate): string | null {
   if (!gate.trusted) {
     return 'This workspace is not trusted, so an imported resource could not be saved.';
   }
-  if (gate.savePending) return 'A Phase save is still in progress.';
+  const name = IMPORT_CATALOG_NAMES[gate.catalog];
+  if (gate.savePending) return `A ${name} save is still in progress.`;
   if (gate.mutationActive) {
-    return 'Save or discard your pending Phase changes before importing.';
+    return `Save or discard your pending ${name} changes before importing.`;
   }
   return null;
 }
