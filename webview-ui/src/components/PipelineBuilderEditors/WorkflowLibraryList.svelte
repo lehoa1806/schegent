@@ -118,9 +118,4 @@
       />
     </div>
   {/each}
-  {#if rows.length === 0}
-    <div class="catalog-state" data-testid="workflows-empty">
-      No Workflows yet. Add one to compose Phases and child Workflows into a graph.
-    </div>
-  {/if}
 </div>

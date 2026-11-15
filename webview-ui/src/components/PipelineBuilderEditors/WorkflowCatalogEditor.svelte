@@ -478,7 +478,8 @@
         onopenworkflow={openChildWorkflow}
         {onopenphase}
       />
-    {:else}
+    {:else if rows.length > 0}
+      <!-- With no Workflow to select, the empty state above is the one notice. -->
       <div class="catalog-state" data-testid="workflows-no-selection">
         Select a Workflow to view it.
       </div>
