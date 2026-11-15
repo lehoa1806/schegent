@@ -102,7 +102,14 @@ sidebar and `dashboard.html` for dashboard surfaces. On failure, preserve the
 trace, screenshot, console errors, page errors, and the request URL/status for
 every entry, chunk, CSS file, and dynamically loaded route.
 
+A local run reuses a server already listening on that port, so the harness also
+answers `/__fixture-server` with its name and the build it serves, and both
+Playwright configs' global setup stops the run unless the server is this
+checkout's fixture server. The message names the port and the `lsof` command
+that finds the process holding it.
+
 <!-- Source: tests/visual/serve-built-webviews.mjs -->
+<!-- Source: tests/visual/fixture-server-identity.mjs -->
 <!-- Source: playwright.config.ts -->
 <!-- Source: tests/visual/webview.visual.spec.ts -->
 
