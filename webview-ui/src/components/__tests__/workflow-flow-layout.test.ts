@@ -281,7 +281,7 @@ describe('describeWorkflowBranch', () => {
   it('labels the default arm as the fallback it is', () => {
     expect(describeWorkflowBranch(edge('a', 'b', { isDefault: true }))).toEqual({
       kind: 'default',
-      label: 'Otherwise'
+      label: 'else'
     });
   });
 
@@ -302,6 +302,6 @@ describe('describeWorkflowBranch', () => {
       })
     );
 
-    expect(branch).toEqual({ kind: 'default', label: 'Otherwise, if a status = failed' });
+    expect(branch).toEqual({ kind: 'default', label: 'else if a status = failed' });
   });
 });
