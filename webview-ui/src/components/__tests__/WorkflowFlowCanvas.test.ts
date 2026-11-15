@@ -331,7 +331,7 @@ describe('branch chips read the arm they label', () => {
   it('labels the fallback arm as the fallback it is', () => {
     const { getByTestId } = mount({ connections: [edge('draft', 'ship', { isDefault: true })] });
 
-    expect(getByTestId('workflow-branch-0').textContent.trim()).toBe('Otherwise');
+    expect(getByTestId('workflow-branch-0').textContent.trim()).toBe('else');
   });
 
   it('draws an unconditional arm as a bare line that can still be selected', () => {

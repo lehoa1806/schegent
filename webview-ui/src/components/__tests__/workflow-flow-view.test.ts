@@ -66,7 +66,7 @@ describe('connectionName', () => {
 
   it('carries the branch’s chip and a manual handoff', () => {
     expect(connectionName(NODES, { ...PLAIN, isDefault: true, handoff: 'manual' })).toBe(
-      'Branch from Plan to review: Otherwise, manual handoff'
+      'Branch from Plan to review: else, manual handoff'
     );
   });
 

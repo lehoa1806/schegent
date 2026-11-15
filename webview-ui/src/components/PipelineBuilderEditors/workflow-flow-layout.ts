@@ -119,9 +119,10 @@ export interface WorkflowFlowInput {
 /**
  * What one branch says on the canvas (the chip the image renders as `Yes` / `No`).
  *
- * A default arm reads as the fallback it is, and keeps its condition when it has
- * one: FR-027 evaluates a default's own condition once the arm is reached, so
- * describing it as an unconditional catch-all would state the opposite.
+ * A default arm reads "else", as the workflow builder mockup labels the fallback,
+ * and keeps its condition when it has one ("else if …"): FR-027 evaluates a
+ * default's own condition once the arm is reached, so describing it as an
+ * unconditional catch-all would state the opposite.
  */
 export function describeWorkflowBranch(
   connection: WorkflowConnection
@@ -130,7 +131,7 @@ export function describeWorkflowBranch(
   if (connection.isDefault === true) {
     return {
       kind: 'default',
-      label: comparison === null ? 'Otherwise' : `Otherwise, if ${comparison}`
+      label: comparison === null ? 'else' : `else if ${comparison}`
     };
   }
   return comparison === null

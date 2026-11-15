@@ -819,7 +819,7 @@ describe('WorkflowCatalogEditor says on the status line what the canvas did', ()
     await fireEvent.click(at(container, 'workflow-palette-split'));
 
     await waitFor(() =>
-      expect(statusLine.message).toBe('Added Branch from design to build: Otherwise.')
+      expect(statusLine.message).toBe('Added Branch from design to build: else.')
     );
   });
 
@@ -842,7 +842,7 @@ describe('WorkflowCatalogEditor says on the status line what the canvas did', ()
     await fireEvent.click(at(container, 'workflow-node-branch-add-1'));
 
     await waitFor(() =>
-      expect(statusLine.message).toBe('Added Branch from design to build: Otherwise.')
+      expect(statusLine.message).toBe('Added Branch from design to build: else.')
     );
   });
 
