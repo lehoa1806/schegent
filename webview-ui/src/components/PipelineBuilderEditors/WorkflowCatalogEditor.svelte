@@ -28,14 +28,13 @@
     type WorkflowHistoryTrack
   } from './workflow-catalog-actions';
   import {
-    anchorWorkflowDefects,
-    boundFieldErrors,
     formatWorkflowSaveRejection,
     makeDuplicateWorkflowDraft,
     makeNewWorkflowDraft,
     sourceRecordToMutableWorkflow,
     toSaveWorkflowRow,
     validateWorkflowDraft,
+    visibleWorkflowDefects,
     type WorkflowDraftError
   } from './workflow-catalog-state';
   import { reselectIndex, type DefinitionIdentity } from '../../lib/builder-selection';
@@ -221,7 +220,7 @@
       })
   );
   const defects = $derived(
-    selected ? anchorWorkflowDefects(boundFieldErrors([...selected.sourceErrors, ...draftErrors]).visible, selected) : { byNode: [], byConnection: [], rest: [] }
+    selected ? visibleWorkflowDefects(selected, draftErrors) : { byNode: [], byConnection: [], rest: [] }
   );
   const mutatingDisabled = $derived(!trusted || !ready || savePending);
   const editable = $derived(selected !== null && !mutatingDisabled);

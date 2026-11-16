@@ -50,6 +50,7 @@ import {
   removeWorkflowConnection,
   removeWorkflowNode,
   retargetWorkflowConnection,
+  savedDefectsOutsideIssues,
   sourceRecordToMutableWorkflow,
   toSaveWorkflowRow,
   updateWorkflowExecutionDefaults,
@@ -59,7 +60,10 @@ import {
   updateWorkflowConnection,
   updateWorkflowNode,
   validateWorkflowDraft,
+  visibleWorkflowDefects,
   workflowErrorAnchor,
+  FIELD_ERROR_MESSAGE_MAX_LEN,
+  MAX_VISIBLE_FIELD_ERRORS,
   WORKFLOW_CONDITION_OPERAND_SOURCES,
   WORKFLOW_LABEL_MAX_LEN,
   type WorkflowConditionRightArity,
@@ -357,6 +361,115 @@ describe('workflowErrorAnchor', () => {
       kind: 'workflow'
     });
     expect(workflowErrorAnchor(error('somethingElse'), workflow)).toEqual({ kind: 'workflow' });
+  });
+});
+
+// The Issues list and the lifecycle panel split a Workflow's saved defects between them. Issues
+// lists those the cap lets through that no step or branch owns, and the panel keeps the others
+// on demand. One function says which saved defects the cap lets through and both read it, so
+// no caller sets the order and the two cannot disagree about what lies past the cap.
+describe('visibleWorkflowDefects and savedDefectsOutsideIssues', () => {
+  const ON_A_STEP = 'nodes[0].pipelineId';
+  const ON_A_BRANCH = 'connections[0].to';
+  const ON_NO_ROW = 'somethingElse';
+
+  const defect = (message: string, field = ON_NO_ROW): WorkflowDraftError => ({
+    field,
+    code: 'invalid-pattern',
+    message
+  });
+  const numbered = (label: string, count: number, fields = [ON_NO_ROW]): WorkflowDraftError[] =>
+    Array.from({ length: count }, (_, index) =>
+      defect(`${label} ${index + 1}`, fields[index % fields.length])
+    );
+  const withSaved = (sourceErrors: readonly WorkflowDraftError[]): MutableWorkflow => ({
+    ...row(),
+    sourceErrors
+  });
+  const messages = (defects: readonly WorkflowDraftError[]): string[] =>
+    defects.map((entry) => entry.message);
+
+  it('lists the saved defects first, then the draft checks in the places the cap has left', () => {
+    const workflow = withSaved(numbered('saved', 3));
+
+    const { rest } = visibleWorkflowDefects(workflow, numbered('check', 4));
+
+    expect(messages(rest)).toEqual(['saved 1', 'saved 2', 'saved 3', 'check 1', 'check 2']);
+    expect(rest).toHaveLength(MAX_VISIBLE_FIELD_ERRORS);
+    expect(savedDefectsOutsideIssues(workflow)).toEqual([]);
+  });
+
+  it('keeps the saved defects in the list however many checks the draft fails', () => {
+    const saved = numbered('saved', MAX_VISIBLE_FIELD_ERRORS);
+
+    const { rest } = visibleWorkflowDefects(withSaved(saved), numbered('check', 6));
+
+    expect(messages(rest)).toEqual(messages(saved));
+  });
+
+  it('sorts a visible defect onto the step or branch that owns it', () => {
+    const workflow = withSaved([defect('saved step', ON_A_STEP), defect('saved 2')]);
+
+    const visible = visibleWorkflowDefects(workflow, [defect('check branch', ON_A_BRANCH)]);
+
+    expect(visible.byNode.map((defects) => messages(defects))).toEqual([['saved step'], []]);
+    expect(visible.byConnection.map((defects) => messages(defects))).toEqual([['check branch']]);
+    expect(messages(visible.rest)).toEqual(['saved 2']);
+  });
+
+  it('keeps on demand the saved defects a step or branch owns, and those past the cap', () => {
+    const workflow = withSaved([
+      defect('on a step', ON_A_STEP),
+      defect('saved 2'),
+      defect('on a branch', ON_A_BRANCH),
+      defect('saved 4'),
+      defect('saved 5'),
+      defect('past the cap'),
+      defect('past the cap, on a step', ON_A_STEP)
+    ]);
+
+    expect(messages(visibleWorkflowDefects(workflow, []).rest)).toEqual([
+      'saved 2',
+      'saved 4',
+      'saved 5'
+    ]);
+    expect(messages(savedDefectsOutsideIssues(workflow))).toEqual([
+      'on a step',
+      'on a branch',
+      'past the cap',
+      'past the cap, on a step'
+    ]);
+  });
+
+  it('lists each saved defect once, in Issues or in the panel, whatever the draft fails', () => {
+    // Every mix of up to eight saved defects and eight draft checks, with a saved defect on a
+    // step and one on a branch among each five. A saved defect in neither place is lost, and
+    // one in both is listed twice beside the panel.
+    const fields = [ON_NO_ROW, ON_A_STEP, ON_NO_ROW, ON_A_BRANCH, ON_NO_ROW];
+    for (let savedCount = 0; savedCount <= 8; savedCount += 1) {
+      for (let checkCount = 0; checkCount <= 8; checkCount += 1) {
+        const saved = numbered('saved', savedCount, fields);
+        const workflow = withSaved(saved);
+        const checks = numbered('check', checkCount);
+        const inIssues = messages(visibleWorkflowDefects(workflow, checks).rest);
+        const inPanel = messages(savedDefectsOutsideIssues(workflow));
+
+        for (const { message } of saved) {
+          const places = [inIssues, inPanel].filter((list) => list.includes(message)).length;
+          expect(places, `${message} of ${savedCount}, with ${checkCount} checks`).toBe(1);
+        }
+      }
+    }
+  });
+
+  it('cuts a visible message at the bound and keeps the saved one whole for the panel', () => {
+    const long = 'x'.repeat(FIELD_ERROR_MESSAGE_MAX_LEN + 40);
+    const workflow = withSaved([defect(long), defect(long, ON_A_STEP)]);
+
+    const visible = visibleWorkflowDefects(workflow, []);
+
+    expect(visible.rest[0].message).toHaveLength(FIELD_ERROR_MESSAGE_MAX_LEN);
+    expect(savedDefectsOutsideIssues(workflow)[0].message).toBe(long);
   });
 });
 
