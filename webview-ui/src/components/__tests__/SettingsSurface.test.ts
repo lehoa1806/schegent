@@ -109,10 +109,13 @@ describe('Feature 012 T040 — SettingsSurface sub-tab list', () => {
     const controls = container.querySelectorAll('[data-testid^="general-settings-input-"]');
     expect(controls.length).toBeGreaterThan(0);
     for (const control of Array.from(controls)) {
-      const labelledBy = control.getAttribute('aria-labelledby');
-      expect(labelledBy, control.outerHTML).toBeTruthy();
-      expect(container.querySelector(`#${labelledBy}`)?.textContent?.trim(), control.outerHTML)
-        .toBeTruthy();
+      // The field name, then a number's unit when it has one.
+      const ids = (control.getAttribute('aria-labelledby') ?? '').split(' ').filter(Boolean);
+      expect(ids.length, control.outerHTML).toBeGreaterThan(0);
+      for (const id of ids) {
+        expect(container.querySelector(`[id="${id}"]`)?.textContent.trim(), control.outerHTML)
+          .toBeTruthy();
+      }
     }
   });
 

@@ -83,6 +83,14 @@
   function fieldLabelId(key: ScalarKey): string {
     return `general-settings-label-${key}`;
   }
+  function unitLabelId(key: ScalarKey): string {
+    return `general-settings-unit-${key}`;
+  }
+
+  /** A number is read with its unit ("Audit retention days"), as the row draws it. */
+  const numberLabelledBy = $derived(
+    spec.unit === undefined ? fieldLabelId(spec.key) : `${fieldLabelId(spec.key)} ${unitLabelId(spec.key)}`
+  );
 
   function onStringInput(event: Event): void {
     draft[spec.key as StringKey] = (event.currentTarget as HTMLInputElement).value;
@@ -188,19 +196,24 @@
         <span>{draft[spec.key as BooleanKey] ? 'On' : 'Off'}</span>
       </label>
     {:else if spec.kind === 'number'}
-      <input
-        type="number"
-        aria-labelledby={fieldLabelId(spec.key)}
-        class="input num"
-        min={spec.min}
-        max={spec.max}
-        data-testid="general-settings-input-{spec.key}"
-        use:hoverTextAnchor={{
-          controlId: spec.key,
-          description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
-        }}
-        bind:value={draft[spec.key as NumberKey]}
-      />
+      <span class="unit">
+        <input
+          type="number"
+          aria-labelledby={numberLabelledBy}
+          class="input"
+          min={spec.min}
+          max={spec.max}
+          data-testid="general-settings-input-{spec.key}"
+          use:hoverTextAnchor={{
+            controlId: spec.key,
+            description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
+          }}
+          bind:value={draft[spec.key as NumberKey]}
+        />
+        {#if spec.unit !== undefined}
+          <span class="muted" id={unitLabelId(spec.key)}>{spec.unit}</span>
+        {/if}
+      </span>
     {:else if spec.kind === 'workflow-select'}
       <select
         class="input"
@@ -227,24 +240,30 @@
         {/each}
       </select>
     {:else if spec.kind === 'number-optional'}
-      <!-- No `num`: this field's unset state is its placeholder, a sentence ("Unset — no
-           bound") that the narrow number field would cut off, so it keeps the full width. -->
-      <input
-        type="number"
-        aria-labelledby={fieldLabelId(spec.key)}
-        class="input"
-        min={spec.min}
-        max={spec.max}
-        step={numberStep}
-        placeholder={spec.placeholder ?? ''}
-        data-testid="general-settings-input-{spec.key}"
-        value={draft[spec.key as ClearableNumberKey] ?? ''}
-        oninput={onClearableNumberInput}
-        use:hoverTextAnchor={{
-          controlId: spec.key,
-          description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
-        }}
-      />
+      <!-- `wide`: this field's unset state is its placeholder, a sentence ("Unset — no
+           bound") that the mockup's narrow value field would cut off, so the field takes
+           the row's width up to its unit. -->
+      <span class="unit wide">
+        <input
+          type="number"
+          aria-labelledby={numberLabelledBy}
+          class="input"
+          min={spec.min}
+          max={spec.max}
+          step={numberStep}
+          placeholder={spec.placeholder ?? ''}
+          data-testid="general-settings-input-{spec.key}"
+          value={draft[spec.key as ClearableNumberKey] ?? ''}
+          oninput={onClearableNumberInput}
+          use:hoverTextAnchor={{
+            controlId: spec.key,
+            description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
+          }}
+        />
+        {#if spec.unit !== undefined}
+          <span class="muted" id={unitLabelId(spec.key)}>{spec.unit}</span>
+        {/if}
+      </span>
     {:else if spec.kind === 'level-select'}
       <select
         class="input"
@@ -369,16 +388,18 @@
 </div>
 
 <style>
-  /* The `.sg .srow` rules draw the row. These place what the mockup's row has no slot for: the
-     notes under the label, a required number's narrow input (the mockup's width for a value),
-     and the per-row Save, Reset and status. */
+  /* The `.sg .srow` rules draw the row, and `.sg .unit` a number with its unit after it. These
+     place what the mockup's row has no slot for: the notes under the label, the width a clearable
+     number's placeholder needs, and the per-row Save, Reset and status. */
   .field-label .desc {
     margin: var(--schegent-space-1) 0 0;
     line-height: 1.4;
   }
 
-  .ctl .num {
-    width: 110px;
+  .ctl .unit.wide .input {
+    flex: 1;
+    width: auto;
+    min-width: 0;
   }
 
   .ctl .toggle {

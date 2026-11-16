@@ -2,11 +2,12 @@
  * The General tab captions its settings and headings in sentence case, as the
  * redesign's settings surface does ("Default workflow", "Backend check
  * timeout") and as the tab's own hover titles already were. A word keeps its
- * capital mid-caption only when it is a name, a unit or one of the product's
- * nouns, which a caption keeps capitalised ("Default Workflow", as the
- * Builder's "Bound Phase") though the hover titles and the redesign write
- * them in lower case. The evidence profile line, which names the settings a
- * custom posture changed, follows the same casing.
+ * capital mid-caption only when it is a name or one of the product's nouns,
+ * which a caption keeps capitalised ("Default Workflow", as the Builder's
+ * "Bound Phase") though the hover titles and the redesign write them in lower
+ * case. A number's unit is not in its caption: the row writes it after the
+ * field ("10 seconds"), as the redesign does. The evidence profile line, which
+ * names the settings a custom posture changed, follows the same casing.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
@@ -32,8 +33,8 @@ vi.mock('../../../lib/snapshot-store.svelte', () => ({
 
 afterEach(() => cleanup());
 
-/** Words a caption keeps capitalised mid-sentence: names, units and the product's nouns. */
-const KEEPS_CAPITAL = new Set(['Agy', 'CLI', 'Claude', 'Codex', 'MB', 'Phase', 'USD', 'Workflow']);
+/** Words a caption keeps capitalised mid-sentence: names and the product's nouns. */
+const KEEPS_CAPITAL = new Set(['Agy', 'CLI', 'Claude', 'Codex', 'Phase', 'Workflow']);
 const EDGE_PUNCTUATION = /^[^\p{L}]+|[^\p{L}]+$/gu;
 
 /** Each word, and each part of a hyphenated one, is checked on its own. */
@@ -110,12 +111,49 @@ describe('the General settings tab reads in sentence case', () => {
 
   it('tells a sentence-case caption from a Title Case one', () => {
     expect(isSentenceCase('Default Workflow')).toBe(true);
-    expect(isSentenceCase('Audit rotation size (MB)')).toBe(true);
-    expect(isSentenceCase('Claude auto-compaction threshold (%)')).toBe(true);
+    expect(isSentenceCase('Inherit host environment (legacy)')).toBe(true);
+    expect(isSentenceCase('Claude auto-compaction threshold')).toBe(true);
     expect(isSentenceCase('UI, trust, and Claude-specific behavior')).toBe(true);
     expect(isSentenceCase('Retry Max Attempts')).toBe(false);
     expect(isSentenceCase('Suppress Multi-Root Warning')).toBe(false);
     expect(isSentenceCase('Inherit Host Environment (legacy)')).toBe(false);
+  });
+});
+
+describe('the General tab writes a number setting with its unit after the value', () => {
+  // The redesign draws "10 seconds", never "Backend check timeout (seconds)": the
+  // unit follows the field, and the field is read with it.
+  it('puts a unit after every number field and none in its caption', () => {
+    const { container } = render(GeneralSettingsTab, { props: { snapshot: buildSnapshot() } });
+    const fields = [...container.querySelectorAll('input[type="number"]')];
+    expect(fields.length).toBeGreaterThanOrEqual(14);
+    const misdrawn = fields.flatMap((field) => {
+      const [captionId = '', unitId = ''] = (field.getAttribute('aria-labelledby') ?? '').split(' ');
+      const caption = container.querySelector(`[id="${captionId}"]`)?.textContent.trim() ?? '';
+      const unit = field.parentElement?.querySelector(`[id="${unitId}"]`)?.textContent.trim() ?? '';
+      const drawn = unit !== '' && caption !== '' && !caption.includes('(');
+      return drawn ? [] : [`${field.getAttribute('data-testid') ?? '?'}: "${caption}" then "${unit}"`];
+    });
+    expect(misdrawn).toEqual([]);
+  });
+
+  it('reads the unit with the caption, as the Phase editor\x27s time limit is read', () => {
+    const { getByRole } = render(GeneralSettingsTab, { props: { snapshot: buildSnapshot() } });
+    for (const name of [
+      'Session artifact retention days',
+      'Session artifact budget bytes',
+      'Audit rotation size MB',
+      'Runtime logs kept files',
+      'Loop max iterations times',
+      'Invocation idle timeout seconds',
+      'Watchdog poll interval minutes',
+      'Retry max attempts attempts',
+      'Backend probe timeout seconds',
+      'Claude auto-compaction threshold %',
+      'Per-run spend bound USD'
+    ]) {
+      expect(getByRole('spinbutton', { name })).toBeTruthy();
+    }
   });
 });
 

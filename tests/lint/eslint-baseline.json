@@ -23,7 +23,7 @@
   "rules": {
     "@typescript-eslint/no-unnecessary-condition": {
       "host": 401,
-      "webview": 218,
+      "webview": 217,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
@@ -250,7 +250,6 @@
         "src/components/__tests__/QueueTaskComposer.test.ts": 1,
         "src/components/__tests__/RunOutputs.test.ts": 1,
         "src/components/__tests__/ScheduledStartIndicator.test.ts": 4,
-        "src/components/__tests__/SettingsSurface.test.ts": 1,
         "src/components/__tests__/StatsStrip.test.ts": 9,
         "src/components/__tests__/StatusBar.test.ts": 1,
         "src/components/__tests__/SystemAuditLog.test.ts": 1,

@@ -113,6 +113,12 @@ export interface FieldSpec {
   readonly kind: FieldKind;
   readonly min?: number;
   readonly max?: number;
+  /**
+   * The unit a number is in ("seconds", "MB"), for `kind: 'number'` and
+   * `'number-optional'`. The row writes it after the field, as the redesign does,
+   * and the field is read with it, so the `label` names the setting alone.
+   */
+  readonly unit?: string;
   readonly placeholder?: string;
   /** Accepted values for `kind: 'enum'`. Rendered verbatim as both value and label. */
   readonly options?: readonly string[];

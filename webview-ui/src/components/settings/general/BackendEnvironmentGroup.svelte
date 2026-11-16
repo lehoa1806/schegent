@@ -59,8 +59,9 @@
   const AUTO_COMPACT_FIELD: FieldSpec = {
     key: 'claudeAutoCompactPctOverride',
     ipcKey: 'claude.autoCompactPctOverride',
-    label: 'Claude auto-compaction threshold (%)',
+    label: 'Claude auto-compaction threshold',
     kind: 'number-optional',
+    unit: '%',
     min: 1,
     max: 100,
     placeholder: 'Unset — use CLI default',
@@ -120,8 +121,9 @@
     usd: {
       key: 'spendMaxUsdPerRun',
       ipcKey: 'spend.maxUsdPerRun',
-      label: 'Per-run spend bound (USD)',
+      label: 'Per-run spend bound',
       kind: 'number-optional',
+      unit: 'USD',
       min: 0.01,
       placeholder: 'Unset — no bound',
       note: 'Crossing it pauses the run, resumable by you. It never fails or cancels a run.'
@@ -129,8 +131,9 @@
     tokens: {
       key: 'spendMaxTokensPerRun',
       ipcKey: 'spend.maxTokensPerRun',
-      label: 'Per-run spend bound (tokens)',
+      label: 'Per-run spend bound',
       kind: 'number-optional',
+      unit: 'tokens',
       min: 1,
       placeholder: 'Unset — no bound',
       note: 'Crossing it pauses the run, resumable by you. It never fails or cancels a run.'
@@ -178,8 +181,9 @@
     {
       key: 'backendProbeTimeoutSeconds',
       ipcKey: 'backend.probeTimeoutSeconds',
-      label: 'Backend probe timeout (seconds)',
+      label: 'Backend probe timeout',
       kind: 'number',
+      unit: 'seconds',
       min: 1,
       max: 30,
       note: 'Applies to every workspace on this machine. Read at the start of each probe — the next Ping uses it, no reload.'
