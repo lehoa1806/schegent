@@ -3,14 +3,18 @@
 // Covers:
 //   - Level selector renders 4 options (DEBUG / INFO / WARN / ERROR).
 //   - Path text input renders with placeholder "<workspace>/.schegent/syslog".
-//   - Saving the level dispatches { 'logging.runtimeLogLevel': '<level>' }.
-//   - Saving the path dispatches { 'logging.runtimeLogFilePath': '<path>' }.
+//   - The page Save dispatches { 'logging.runtimeLogLevel': '<level>' }.
+//   - The page Save dispatches { 'logging.runtimeLogFilePath': '<path>' }.
 //   - Validator-error response surfaces inline on the rejected field.
-//   - Reset reverts an unsaved edit back to the projection.
+//   - The page Revert puts an unsaved edit back to the projection.
+//
+// Since the Settings redesign no row has a Save or Reset of its own: the page header's Save
+// and Revert write and discard every field, so the cases that save render the whole surface.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import GeneralSettingsTab from '../GeneralSettingsTab.svelte';
+import SettingsSurface from '../../SettingsSurface.svelte';
 import { CMD_SAVE_GENERAL_SETTINGS } from '../../../lib/messages';
 import type { WorkflowSnapshot, GeneralSettings } from '../../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
@@ -102,6 +106,10 @@ function buildSnapshot(gs: GeneralSettings): WorkflowSnapshot {
   }) as unknown as unknown as WorkflowSnapshot;
 }
 
+function pageButton(container: HTMLElement, testId: 'settings-save' | 'settings-revert'): HTMLButtonElement {
+  return container.querySelector(`[data-testid="${testId}"]`) as HTMLButtonElement;
+}
+
 describe('Feature 019 — runtime log level selector', () => {
   it('renders a <select> with four levels DEBUG/INFO/WARN/ERROR', () => {
     const snap = buildSnapshot(buildGeneralSettings('INFO', ''));
@@ -126,16 +134,13 @@ describe('Feature 019 — runtime log level selector', () => {
 
   it('dispatches { "logging.runtimeLogLevel": "DEBUG" } on save', async () => {
     const snap = buildSnapshot(buildGeneralSettings('INFO', ''));
-    const { container } = render(GeneralSettingsTab, { props: { snapshot: snap } });
+    const { container } = render(SettingsSurface, { props: { snapshot: snap } });
     const select = container.querySelector(
       '[data-testid="general-settings-input-runtimeLogLevel"]'
     ) as HTMLSelectElement;
     await fireEvent.change(select, { target: { value: 'DEBUG' } });
-    const saveBtn = container.querySelector(
-      '[data-testid="general-settings-save-runtimeLogLevel"]'
-    ) as HTMLButtonElement;
-    await fireEvent.click(saveBtn);
-    expect(postCommandSpy).toHaveBeenCalledOnce();
+    await fireEvent.click(pageButton(container, 'settings-save'));
+    await waitFor(() => expect(postCommandSpy).toHaveBeenCalledOnce());
     const [cmd, payload] = postCommandSpy.mock.calls[0];
     expect(cmd).toBe(CMD_SAVE_GENERAL_SETTINGS);
     expect(payload).toEqual({ updates: { 'logging.runtimeLogLevel': 'DEBUG' } });
@@ -165,31 +170,26 @@ describe('Feature 019 — runtime log file path input', () => {
 
   it('dispatches { "logging.runtimeLogFilePath": "<new>" } on save', async () => {
     const snap = buildSnapshot(buildGeneralSettings('INFO', ''));
-    const { container } = render(GeneralSettingsTab, { props: { snapshot: snap } });
+    const { container } = render(SettingsSurface, { props: { snapshot: snap } });
     const input = container.querySelector(
       '[data-testid="general-settings-input-runtimeLogFilePath"]'
     ) as HTMLInputElement;
     await fireEvent.input(input, { target: { value: 'logs/custom.log' } });
-    const saveBtn = container.querySelector(
-      '[data-testid="general-settings-save-runtimeLogFilePath"]'
-    ) as HTMLButtonElement;
-    await fireEvent.click(saveBtn);
-    expect(postCommandSpy).toHaveBeenCalledOnce();
+    await fireEvent.click(pageButton(container, 'settings-save'));
+    await waitFor(() => expect(postCommandSpy).toHaveBeenCalledOnce());
     const [, payload] = postCommandSpy.mock.calls[0];
     expect(payload).toEqual({ updates: { 'logging.runtimeLogFilePath': 'logs/custom.log' } });
   });
 
   it('dispatches an empty string to restore the default path', async () => {
     const snap = buildSnapshot(buildGeneralSettings('INFO', '/tmp/existing.log'));
-    const { container } = render(GeneralSettingsTab, { props: { snapshot: snap } });
+    const { container } = render(SettingsSurface, { props: { snapshot: snap } });
     const input = container.querySelector(
       '[data-testid="general-settings-input-runtimeLogFilePath"]'
     ) as HTMLInputElement;
     await fireEvent.input(input, { target: { value: '' } });
-    const saveBtn = container.querySelector(
-      '[data-testid="general-settings-save-runtimeLogFilePath"]'
-    ) as HTMLButtonElement;
-    await fireEvent.click(saveBtn);
+    await fireEvent.click(pageButton(container, 'settings-save'));
+    await waitFor(() => expect(postCommandSpy).toHaveBeenCalledOnce());
     const [, payload] = postCommandSpy.mock.calls[0];
     expect(payload).toEqual({ updates: { 'logging.runtimeLogFilePath': '' } });
   });
@@ -198,18 +198,15 @@ describe('Feature 019 — runtime log file path input', () => {
 describe('Feature 019 — runtime log controls — rejection + reset flows', () => {
   it('surfaces a host validator rejection inline on the path field', async () => {
     const snap = buildSnapshot(buildGeneralSettings('INFO', ''));
-    const { container } = render(GeneralSettingsTab, { props: { snapshot: snap } });
+    const { container } = render(SettingsSurface, { props: { snapshot: snap } });
     const input = container.querySelector(
       '[data-testid="general-settings-input-runtimeLogFilePath"]'
     ) as HTMLInputElement;
     await fireEvent.input(input, { target: { value: '../escape' } });
-    const saveBtn = container.querySelector(
-      '[data-testid="general-settings-save-runtimeLogFilePath"]'
-    ) as HTMLButtonElement;
-    await fireEvent.click(saveBtn);
+    await fireEvent.click(pageButton(container, 'settings-save'));
     // Simulate a host rejection ack — the helper's onceAck handler will
     // surface it on the rejected field's status row.
-    expect(snapshotAck).not.toBeNull();
+    await waitFor(() => expect(snapshotAck).not.toBeNull());
     snapshotAck!({
       status: 'rejected',
       // FR-R4-F05 (O1; TA9) — the host's validator answers the bare code
@@ -236,16 +233,15 @@ describe('Feature 019 — runtime log controls — rejection + reset flows', () 
     vi.useFakeTimers();
     try {
       const snap = buildSnapshot(buildGeneralSettings('INFO', ''));
-      const { container } = render(GeneralSettingsTab, { props: { snapshot: snap } });
+      const { container } = render(SettingsSurface, { props: { snapshot: snap } });
       const input = container.querySelector(
         '[data-testid="general-settings-input-runtimeLogFilePath"]'
       ) as HTMLInputElement;
       await fireEvent.input(input, { target: { value: '/tmp/late.log' } });
-      await fireEvent.click(
-        container.querySelector(
-          '[data-testid="general-settings-save-runtimeLogFilePath"]'
-        ) as HTMLButtonElement
-      );
+      await fireEvent.click(pageButton(container, 'settings-save'));
+      // The page Save asks before it posts, so the post and its wait start a microtask later.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(postCommandSpy).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(5000);
       const status = (): string =>
         container.querySelector('[data-testid="general-settings-status-runtimeLogFilePath"]')
@@ -262,18 +258,15 @@ describe('Feature 019 — runtime log controls — rejection + reset flows', () 
     }
   });
 
-  it('resets the level field to the projected value on Reset', async () => {
+  it('puts the level field back to the projected value on Revert', async () => {
     const snap = buildSnapshot(buildGeneralSettings('INFO', ''));
-    const { container } = render(GeneralSettingsTab, { props: { snapshot: snap } });
+    const { container } = render(SettingsSurface, { props: { snapshot: snap } });
     const select = container.querySelector(
       '[data-testid="general-settings-input-runtimeLogLevel"]'
     ) as HTMLSelectElement;
     await fireEvent.change(select, { target: { value: 'ERROR' } });
     expect(select.value).toBe('ERROR');
-    const resetBtn = container.querySelector(
-      '[data-testid="general-settings-reset-runtimeLogLevel"]'
-    ) as HTMLButtonElement;
-    await fireEvent.click(resetBtn);
+    await fireEvent.click(pageButton(container, 'settings-revert'));
     expect(select.value).toBe('INFO');
     expect(postCommandSpy).not.toHaveBeenCalled();
   });
@@ -303,17 +296,14 @@ describe('session-artifact retention controls', () => {
 
   it('saves the age limit through the documented IPC key', async () => {
     const snap = buildSnapshot(buildGeneralSettings('INFO', ''));
-    const { container } = render(GeneralSettingsTab, { props: { snapshot: snap } });
+    const { container } = render(SettingsSurface, { props: { snapshot: snap } });
     const input = container.querySelector(
       '[data-testid="general-settings-input-sessionRetentionMaxAgeDays"]'
     ) as HTMLInputElement;
     await fireEvent.input(input, { target: { value: '45' } });
-    const save = container.querySelector(
-      '[data-testid="general-settings-save-sessionRetentionMaxAgeDays"]'
-    ) as HTMLButtonElement;
-    await fireEvent.click(save);
+    await fireEvent.click(pageButton(container, 'settings-save'));
 
-    expect(postCommandSpy).toHaveBeenCalledOnce();
+    await waitFor(() => expect(postCommandSpy).toHaveBeenCalledOnce());
     expect(postCommandSpy.mock.calls[0][1]).toEqual({
       updates: { 'logging.sessionRetentionMaxAgeDays': 45 }
     });

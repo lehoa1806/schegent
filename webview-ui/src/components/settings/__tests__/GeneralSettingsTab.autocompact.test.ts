@@ -5,10 +5,14 @@
 //   - Numeric input populated when snapshot has a value in [1, 100].
 //   - Saving empty input dispatches { 'claude.autoCompactPctOverride': null }.
 //   - Saving a valid integer dispatches { 'claude.autoCompactPctOverride': <int> }.
+//
+// The saves press the page header's Save, the only one the Settings redesign left, so those
+// cases render the whole surface.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import GeneralSettingsTab from '../GeneralSettingsTab.svelte';
+import SettingsSurface from '../../SettingsSurface.svelte';
 import { CMD_SAVE_GENERAL_SETTINGS } from '../../../lib/messages';
 import type { WorkflowSnapshot, GeneralSettings } from '../../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
@@ -32,6 +36,11 @@ beforeEach(() => {
   postCommandSpy.mockClear();
 });
 afterEach(() => cleanup());
+
+async function pressPageSave(container: HTMLElement): Promise<void> {
+  await fireEvent.click(container.querySelector('[data-testid="settings-save"]') as HTMLButtonElement);
+  await waitFor(() => expect(postCommandSpy).toHaveBeenCalledOnce());
+}
 
 function buildGeneralSettings(autoCompact: number | undefined): GeneralSettings {
   return Object.freeze({
@@ -108,16 +117,12 @@ describe('Feature 012 — GeneralSettingsTab autoCompactPctOverride field', () =
 
   it('dispatches { "claude.autoCompactPctOverride": <int> } on save', async () => {
     const snap = buildSnapshot(buildGeneralSettings(undefined));
-    const { container } = render(GeneralSettingsTab, { props: { snapshot: snap } });
+    const { container } = render(SettingsSurface, { props: { snapshot: snap } });
     const input = container.querySelector(
       '[data-testid="general-settings-input-claudeAutoCompactPctOverride"]'
     ) as HTMLInputElement;
     await fireEvent.input(input, { target: { value: '50' } });
-    const saveBtn = container.querySelector(
-      '[data-testid="general-settings-save-claudeAutoCompactPctOverride"]'
-    ) as HTMLButtonElement;
-    await fireEvent.click(saveBtn);
-    expect(postCommandSpy).toHaveBeenCalledOnce();
+    await pressPageSave(container);
     const [cmd, payload] = postCommandSpy.mock.calls[0];
     expect(cmd).toBe(CMD_SAVE_GENERAL_SETTINGS);
     expect(payload).toEqual({ updates: { 'claude.autoCompactPctOverride': 50 } });
@@ -125,16 +130,12 @@ describe('Feature 012 — GeneralSettingsTab autoCompactPctOverride field', () =
 
   it('dispatches { "claude.autoCompactPctOverride": null } when input is cleared', async () => {
     const snap = buildSnapshot(buildGeneralSettings(50));
-    const { container } = render(GeneralSettingsTab, { props: { snapshot: snap } });
+    const { container } = render(SettingsSurface, { props: { snapshot: snap } });
     const input = container.querySelector(
       '[data-testid="general-settings-input-claudeAutoCompactPctOverride"]'
     ) as HTMLInputElement;
     await fireEvent.input(input, { target: { value: '' } });
-    const saveBtn = container.querySelector(
-      '[data-testid="general-settings-save-claudeAutoCompactPctOverride"]'
-    ) as HTMLButtonElement;
-    await fireEvent.click(saveBtn);
-    expect(postCommandSpy).toHaveBeenCalledOnce();
+    await pressPageSave(container);
     const [, payload] = postCommandSpy.mock.calls[0];
     expect(payload).toEqual({ updates: { 'claude.autoCompactPctOverride': null } });
   });
@@ -178,15 +179,11 @@ describe('Feature 285 — GeneralSettingsTab default Workflow select', () => {
   });
 
   it('saves the choice under `defaultWorkflowId`', async () => {
-    const { container } = render(GeneralSettingsTab, { props: { snapshot: snapshotWith('') } });
+    const { container } = render(SettingsSurface, { props: { snapshot: snapshotWith('') } });
     const select = selectOf(container);
     select.value = 'wf-ship';
     await fireEvent.change(select);
-    const saveBtn = container.querySelector(
-      '[data-testid="general-settings-save-defaultWorkflowId"]'
-    ) as HTMLButtonElement;
-    await fireEvent.click(saveBtn);
-    expect(postCommandSpy).toHaveBeenCalledOnce();
+    await pressPageSave(container);
     const call = postCommandSpy.mock.calls.at(0);
     expect(call?.at(1)).toEqual({ updates: { defaultWorkflowId: 'wf-ship' } });
   });

@@ -28,7 +28,6 @@
   import type {
     BackendSection as BackendSectionSpec,
     Draft,
-    FieldSpec,
     ScalarKey,
     StatusByKey
   } from './general/field-types';
@@ -48,8 +47,6 @@
     fieldChanged: (key: ScalarKey) => boolean;
     fieldScopeLabel: (key: ScalarKey) => string;
     workflows: readonly PortableWorkflowDefinition[];
-    saveOne: (spec: FieldSpec) => void;
-    resetField: (key: ScalarKey) => void;
   }
   let {
     snapshot,
@@ -58,9 +55,7 @@
     statusByKey,
     fieldChanged,
     fieldScopeLabel,
-    workflows,
-    saveOne,
-    resetField
+    workflows
   }: Props = $props();
 
   const ping = $derived<BackendPingState>(snapshot.backendPingState ?? { status: 'idle' });
@@ -93,8 +88,6 @@
         {workflows}
         {fieldChanged}
         {fieldScopeLabel}
-        {saveOne}
-        {resetField}
       />
     {/each}
   </div>

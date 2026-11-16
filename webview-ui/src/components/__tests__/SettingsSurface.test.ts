@@ -13,6 +13,7 @@ import SettingsSurface from '../SettingsSurface.svelte';
 import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
 import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
+import { postCommand } from '../../lib/vscode-api';
 
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: vi.fn(() => ({ correlationId: 'corr-test' }))
@@ -24,7 +25,19 @@ vi.mock('../../lib/snapshot-store.svelte', () => ({
   }
 }));
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.mocked(postCommand).mockClear();
+});
+
+function isDisabled(element: HTMLElement): boolean {
+  return (element as HTMLButtonElement).disabled;
+}
+
+/** The payload of every command posted so far, in order. */
+function postedPayloads(): unknown[] {
+  return vi.mocked(postCommand).mock.calls.map((call) => call[1]);
+}
 
 function buildSnapshot(): WorkflowSnapshot {
   return Object.freeze({
@@ -159,5 +172,136 @@ describe('Feature 012 T040 — SettingsSurface sub-tab list', () => {
       props: { snapshot: buildSnapshot() }
     });
     expect(container.querySelector('[data-testid="settings-models-tab"]')).toBeNull();
+  });
+});
+
+// Settings redesign — "One save model per page" (M1, Rules): edits accumulate, the header counts
+// them and offers one Revert and one Save, and a changed row carries a dot. No row and no part of
+// the page has a Save or Reset of its own.
+describe('Settings redesign — one save model for the page', () => {
+  function renderSurface() {
+    return render(SettingsSurface, { props: { snapshot: buildSnapshot() } });
+  }
+
+  async function editLoopLimit(getByTestId: (id: string) => HTMLElement, value: string): Promise<void> {
+    await fireEvent.input(getByTestId('general-settings-input-loopMaxIterations'), { target: { value } });
+  }
+
+  async function addSignature(getByTestId: (id: string) => HTMLElement, value: string): Promise<void> {
+    await fireEvent.click(getByTestId('fatal-add'));
+    if (value !== '') {
+      await fireEvent.input(getByTestId('fatal-operator-input-0'), { target: { value } });
+    }
+  }
+
+  it('heads the page with its title, the mockup purpose, and one Revert and Save, off while nothing changed', () => {
+    const { getByTestId, container } = renderSurface();
+    expect(container.querySelector('h1')?.textContent.trim()).toBe('Settings');
+    expect(getByTestId('settings-purpose').textContent.trim())
+      .toBe('Changes apply when you save. Each setting shows where it applies.');
+    expect(getByTestId('settings-revert').textContent.trim()).toBe('Revert');
+    expect(getByTestId('settings-save').textContent.trim()).toBe('Save');
+    expect(isDisabled(getByTestId('settings-revert'))).toBe(true);
+    expect(isDisabled(getByTestId('settings-save'))).toBe(true);
+    expect(container.querySelector('[data-testid="settings-unsaved"]')).toBeNull();
+  });
+
+  it('gives no row and no part of the page a Save or Reset of its own', () => {
+    const { container } = renderSurface();
+    expect(container.querySelectorAll(
+      '[data-testid^="general-settings-save-"], [data-testid^="general-settings-reset-"]'
+    ).length).toBe(0);
+    expect(container.querySelector('[data-testid="fatal-save"], [data-testid="fatal-reset"]')).toBeNull();
+    const labels = Array.from(container.querySelectorAll('button')).map((b) => b.textContent.trim());
+    expect(labels.filter((label) => /^(Save|Reset|Revert)\b/.test(label))).toEqual(['Revert', 'Save']);
+  });
+
+  it('counts each edit in the header and marks the changed row with the mockup dot', async () => {
+    const { getByTestId } = renderSurface();
+    await editLoopLimit(getByTestId, '7');
+    expect(getByTestId('settings-unsaved').textContent.trim()).toBe('1 unsaved change');
+    const dot = getByTestId('general-settings-field-loopMaxIterations').querySelector('.lab .mod');
+    expect(dot?.getAttribute('role')).toBe('img');
+    expect(dot?.getAttribute('aria-label')).toBe('changed, not saved');
+    expect(isDisabled(getByTestId('settings-save'))).toBe(false);
+    expect(isDisabled(getByTestId('settings-revert'))).toBe(false);
+
+    await addSignature(getByTestId, 'quota exceeded for project');
+    expect(getByTestId('settings-unsaved').textContent.trim()).toBe('2 unsaved changes');
+  });
+
+  it('saves every part that has changes from the one Save: the fields as one batch, the signatures as theirs', async () => {
+    const { getByTestId } = renderSurface();
+    await editLoopLimit(getByTestId, '7');
+    await fireEvent.input(getByTestId('general-settings-input-watchdogPollIntervalMinutes'), {
+      target: { value: '15' }
+    });
+    await addSignature(getByTestId, ' quota exceeded for project ');
+
+    await fireEvent.click(getByTestId('settings-save'));
+
+    await vi.waitFor(() => expect(postCommand).toHaveBeenCalledTimes(2));
+    expect(postedPayloads()).toContainEqual({
+      updates: { 'loop.maxIterations': 7, 'watchdog.pollIntervalMinutes': 15 }
+    });
+    expect(postedPayloads()).toContainEqual({ updates: { fatalSignatures: ['quota exceeded for project'] } });
+  });
+
+  it('Revert drops every unsaved edit and writes nothing', async () => {
+    const { getByTestId, queryByTestId } = renderSurface();
+    await editLoopLimit(getByTestId, '7');
+    await addSignature(getByTestId, 'quota exceeded for project');
+
+    await fireEvent.click(getByTestId('settings-revert'));
+
+    expect((getByTestId('general-settings-input-loopMaxIterations') as HTMLInputElement).value).toBe('10');
+    expect(queryByTestId('fatal-operator-input-0')).toBeNull();
+    expect(queryByTestId('settings-unsaved')).toBeNull();
+    expect(isDisabled(getByTestId('settings-save'))).toBe(true);
+    expect(postCommand).not.toHaveBeenCalled();
+  });
+
+  it('saves what it can while a signature row is still empty, and leaves that row to be finished', async () => {
+    const { getByTestId } = renderSurface();
+    await editLoopLimit(getByTestId, '7');
+    await addSignature(getByTestId, '');
+    expect(getByTestId('settings-unsaved').textContent.trim()).toBe('2 unsaved changes');
+    expect(isDisabled(getByTestId('settings-save'))).toBe(false);
+
+    await fireEvent.click(getByTestId('settings-save'));
+
+    await vi.waitFor(() => expect(postCommand).toHaveBeenCalledTimes(1));
+    expect(postedPayloads()).toEqual([{ updates: { 'loop.maxIterations': 7 } }]);
+    expect(getByTestId('fatal-operator-warning-empty')).toBeTruthy();
+  });
+
+  it('keeps Save off while the only change is one that cannot be saved yet', async () => {
+    const { getByTestId } = renderSurface();
+    await addSignature(getByTestId, '');
+    expect(getByTestId('settings-unsaved').textContent.trim()).toBe('1 unsaved change');
+    expect(isDisabled(getByTestId('settings-save'))).toBe(true);
+    expect(isDisabled(getByTestId('settings-revert'))).toBe(false);
+  });
+
+  it('sets a privacy profile in the draft on a press, and writes its five settings with the page Save', async () => {
+    const { getByTestId } = renderSurface();
+    await fireEvent.click(getByTestId('privacy-profile-apply-forensic'));
+
+    expect(postCommand).not.toHaveBeenCalled();
+    expect(getByTestId('privacy-profile-apply-forensic').getAttribute('aria-pressed')).toBe('true');
+    expect(getByTestId('settings-unsaved').textContent.trim()).toBe('5 unsaved changes');
+
+    await fireEvent.click(getByTestId('settings-save'));
+
+    await vi.waitFor(() => expect(postCommand).toHaveBeenCalledTimes(1));
+    expect(postedPayloads()).toEqual([{
+      updates: {
+        'logging.verbose': true,
+        'logging.rawTranscriptMode': 'always',
+        'logging.sessionRetentionMaxAgeDays': 365,
+        'logging.sessionRetentionMaxBytes': 4 * 1024 * 1024 * 1024,
+        'logging.transportCaptureMode': 'on'
+      }
+    }]);
   });
 });

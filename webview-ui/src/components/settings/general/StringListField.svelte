@@ -9,9 +9,9 @@
   // moment it is added, against the pattern the host itself reads
   // (`SETTINGS_SCHEMA`, threaded through `FieldSpec.itemPattern`).
   //
-  // WHY `FatalSignaturesTab.svelte` IS NOT REUSED. It is a tab, not a control:
-  // it owns its own header, its own save/reset pair, its own dirty tracking, its
-  // own IPC call and its own status line, and it renders one specific setting.
+  // WHY `FatalSignaturesTab.svelte` IS NOT REUSED. It is a part of the page, not a
+  // control: it owns its own draft and dirty tracking, its own IPC call and its
+  // own status line, and it renders one specific setting.
   // Making it a field row means undoing all of that. The duplication that
   // remains between the two is filed, not fixed, at T045.
   //

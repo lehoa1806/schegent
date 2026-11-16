@@ -1,9 +1,6 @@
 <script lang="ts">
   import { hoverTextAnchor } from '../../hover-text/hover-text-anchor-action';
-  import {
-    GENERAL_SETTINGS_DESCRIPTIONS,
-    type GeneralSettingsControlId
-  } from '../GeneralSettingsTab.descriptions';
+  import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
   import type { PortableWorkflowDefinition } from '../../../lib/snapshot-types';
   // FR-R3-144 (T031) — a VALUE import, from `src/contracts/` as the import-direction
   // rule requires. See `onEnumChange` for why a predicate rather than a cast.
@@ -58,8 +55,6 @@
     workflows: readonly PortableWorkflowDefinition[];
     /** FR-R4-F04 (FR-003) — only the transport mode row is given one; absent means nothing is shown. */
     transportUsage?: TransportUsage;
-    onSave: () => void;
-    onReset: () => void;
   }
 
   let {
@@ -69,17 +64,9 @@
     changed,
     scopeLabel,
     workflows,
-    transportUsage,
-    onSave,
-    onReset
+    transportUsage
   }: Props = $props();
 
-  function saveId(key: ScalarKey): GeneralSettingsControlId {
-    return `${key}-save`;
-  }
-  function resetId(key: ScalarKey): GeneralSettingsControlId {
-    return `${key}-reset`;
-  }
   function fieldLabelId(key: ScalarKey): string {
     return `general-settings-label-${key}`;
   }
@@ -152,8 +139,8 @@
 
 <!--
   The redesign's setting row (`.srow`): the label and its notes on the left; on the right the
-  control, then the scope beside this row's own Save and Reset. A changed row carries the mockup's
-  dot beside its label.
+  control, then where the setting applies. A changed row carries the mockup's dot beside its
+  label; the page header saves and reverts every row at once, so the row has no Save or Reset.
 -->
 <div
   class="srow field-row"
@@ -165,7 +152,7 @@
     <div class="lab">
       <span class="field-name" id={fieldLabelId(spec.key)}>{spec.label}</span>
       {#if changed}
-        <span class="mod" role="img" aria-label="Changed, not saved"></span>
+        <span class="mod" role="img" aria-label="changed, not saved"></span>
       {/if}
     </div>
     {#if spec.note}
@@ -342,33 +329,7 @@
         }}
       />
     {/if}
-    <div class="field-meta">
-      <span class="hint" data-testid="general-settings-scope-{spec.key}">Scope: {scopeLabel}</span>
-      <span class="field-actions">
-        <button
-          type="button"
-          class="btn btn-primary btn-sm"
-          data-testid="general-settings-save-{spec.key}"
-          disabled={!changed || status?.status === 'pending'}
-          onclick={onSave}
-          use:hoverTextAnchor={{
-            controlId: saveId(spec.key),
-            description: GENERAL_SETTINGS_DESCRIPTIONS[saveId(spec.key)]
-          }}
-        >Save</button>
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm"
-          data-testid="general-settings-reset-{spec.key}"
-          disabled={!changed}
-          onclick={onReset}
-          use:hoverTextAnchor={{
-            controlId: resetId(spec.key),
-            description: GENERAL_SETTINGS_DESCRIPTIONS[resetId(spec.key)]
-          }}
-        >Reset</button>
-      </span>
-    </div>
+    <span class="hint" data-testid="general-settings-scope-{spec.key}">Scope: {scopeLabel}</span>
     {#if status}
       <div
         class="field-status status-{status.status}"
@@ -392,7 +353,7 @@
 <style>
   /* The `.sg .srow` rules draw the row, and `.sg .unit` a number with its unit after it. These
      place what the mockup's row has no slot for: the notes under the label, the width a clearable
-     number's placeholder or a size in bytes needs, and the per-row Save, Reset and status. */
+     number's placeholder or a size in bytes needs, and the row's save status. */
   .field-label .desc {
     margin: var(--schegent-space-1) 0 0;
     line-height: 1.4;
@@ -407,25 +368,6 @@
   .ctl .toggle {
     align-self: flex-start;
     cursor: pointer;
-  }
-
-  /* The scope line: the hint, then Save and Reset at its end. The actions box lays its buttons
-     straight into this row, so the help line the hover-text action writes after a button with a
-     short description (`.hover-text-inline-help`, a full-width flex item) drops under the whole
-     row instead of taking the buttons off the scope line with it. */
-  .ctl .field-meta {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--schegent-space-1) var(--schegent-space-2);
-  }
-
-  .field-meta .hint {
-    margin-right: auto;
-  }
-
-  .field-meta .field-actions {
-    display: contents;
   }
 
   .ctl .field-status {

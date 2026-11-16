@@ -1,11 +1,10 @@
 <script lang="ts">
-  // FR-R3-143 (T050) — the General tab's chrome: the retention readout, the
-  // privacy profile selector, and the two whole-tab buttons. It left
-  // `GeneralSettingsTab.svelte` because that file crossed the 500-line ceiling
-  // `tests/lint/svelte-component-loc-budget.test.ts` holds every component to,
-  // and this is the part with no stake in the field specs — it reads the
-  // projection and reports, where everything left behind describes, drafts and
-  // saves individual settings.
+  // FR-R3-143 (T050) — the General tab's chrome: the privacy profile selector and the retention
+  // readout. It left `GeneralSettingsTab.svelte` because that file crossed the 500-line ceiling
+  // `tests/lint/svelte-component-loc-budget.test.ts` holds every component to, and this is the
+  // part with no stake in the field specs — it reads the projection and reports, where everything
+  // left behind describes, drafts and saves individual settings. The whole-tab Save and Reset it
+  // held are the page header's Save and Revert now (`../SettingsPageHeader.svelte`).
   //
   // The field spec arrays deliberately did NOT move, even though they are the
   // larger block. Two gates parse them out of the tab by path —
@@ -15,22 +14,22 @@
   // module would have emptied the second gate of every key it measures, and the
   // fix would have looked like widening what counts as a rendered control.
   import type { GeneralSettings, SessionArtifactsProjection } from '../../../lib/snapshot-types';
-  import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
+  import type { Draft } from './field-types';
   import { formatBytes } from './settings-draft';
-  import { hoverTextAnchor } from '../../hover-text/hover-text-anchor-action';
   import PrivacyProfileSelector from './PrivacyProfileSelector.svelte';
 
   interface Props {
     /** The projection, already defaulted by the tab. */
     readonly settings: GeneralSettings;
+    /** The tab's draft: the profile shows what the page would save. */
+    readonly draft: Draft;
     readonly sessionArtifacts: SessionArtifactsProjection;
-    /** True when any field's draft diverges from the projection. */
-    readonly dirty: boolean;
-    readonly saveAll: () => Promise<void>;
-    readonly resetAll: () => void;
+    /** Sets a profile's settings in the draft. */
+    readonly chooseProfile: (updates: Partial<Draft>) => void;
   }
-  const { settings, sessionArtifacts, dirty, saveAll, resetAll }: Props = $props();
+  const { settings, draft, sessionArtifacts, chooseProfile }: Props = $props();
 
+  // The budget the sweep enforces is the saved one, so the readout measures against it.
   const sessionBudgetPercent = $derived(
     settings.sessionRetentionMaxBytes > 0
       ? Math.round((sessionArtifacts.totalBytes / settings.sessionRetentionMaxBytes) * 100)
@@ -42,49 +41,17 @@
 </script>
 
 <!--
-  The redesign's settings header: the title, then "Unsaved changes", Revert and Save on the right,
-  in the mockup's order. The two whole-tab buttons stay in this tab rather than the page header,
-  because only this tab drafts edits. The retention readout sits under the profile row, as the
-  mockup's "Stored locally" line does.
+  The privacy profile row, then the retention readout under it, as the mockup's "Stored locally"
+  line sits under its evidence profile.
 -->
-<header class="tab-header">
-  <div class="titlerow">
-    <h2>{GENERAL_SETTINGS_DESCRIPTIONS['tab-header'].title}</h2>
-    <div class="push">
-      {#if dirty}
-        <span class="chip s-warn">Unsaved changes</span>
-      {/if}
-      <button
-        type="button"
-        class="btn btn-secondary"
-        data-testid="general-settings-reset-all"
-        disabled={!dirty}
-        onclick={resetAll}
-        use:hoverTextAnchor={{
-          controlId: 'reset-all',
-          description: GENERAL_SETTINGS_DESCRIPTIONS['reset-all']
-        }}
-      >Reset All</button>
-      <button
-        type="button"
-        class="btn btn-primary"
-        data-testid="general-settings-save-all"
-        disabled={!dirty}
-        onclick={saveAll}
-        use:hoverTextAnchor={{
-          controlId: 'save-all',
-          description: GENERAL_SETTINGS_DESCRIPTIONS['save-all']
-        }}
-      >Save All Changes</button>
-    </div>
-  </div>
-  <p class="lead small muted">{GENERAL_SETTINGS_DESCRIPTIONS['tab-header'].body}</p>
+<div class="profile-block">
   <PrivacyProfileSelector
-    loggingVerbose={settings.loggingVerbose}
-    rawTranscriptMode={settings.rawTranscriptMode}
-    sessionRetentionMaxAgeDays={settings.sessionRetentionMaxAgeDays}
-    sessionRetentionMaxBytes={settings.sessionRetentionMaxBytes}
-    transportCaptureMode={settings.transportCaptureMode}
+    loggingVerbose={draft.loggingVerbose}
+    rawTranscriptMode={draft.rawTranscriptMode}
+    sessionRetentionMaxAgeDays={draft.sessionRetentionMaxAgeDays}
+    sessionRetentionMaxBytes={draft.sessionRetentionMaxBytes}
+    transportCaptureMode={draft.transportCaptureMode}
+    {chooseProfile}
   />
   <p class:usage-warning={sessionUsageWarning} class="session-usage small muted" data-testid="session-artifact-usage">
     <strong>Unredacted local session artifacts:</strong>
@@ -102,17 +69,9 @@
       Usage is {sessionBudgetPercent}% of the configured byte budget.
     {/if}
   </p>
-</header>
+</div>
 
 <style>
-  .tab-header h2 {
-    font-weight: 600;
-  }
-
-  .lead {
-    margin: var(--schegent-space-0-5) 0 0;
-  }
-
   .session-usage {
     margin: var(--schegent-space-2) 0 0;
     line-height: 1.45;

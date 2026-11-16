@@ -9,16 +9,25 @@
    * Phases / Pipelines moved to PipelineBuilder.svelte; Models moved to
    * PipelineBuilderEditors/ModelCatalogEditor.svelte, mounted under the
    * same PipelineBuilder.svelte. Sub-tabs: General, Fatal Signatures.
+   *
+   * The redesign's one save model: the page header holds the only Revert and Save, and every
+   * tab drafts its edits into the page (`settings/settings-page.svelte.ts`). Both tabs stay
+   * mounted, the inactive one hidden, so an edit made on one tab is still counted, saved and
+   * reverted while the other is shown.
    */
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
   import '../lib/sg/sg-settings.css';
   import GeneralSettingsTab from './settings/GeneralSettingsTab.svelte';
   import FatalSignaturesTab from './settings/FatalSignaturesTab.svelte';
+  import SettingsPageHeader from './settings/SettingsPageHeader.svelte';
+  import { SettingsPage } from './settings/settings-page.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
   }
   const { snapshot }: Props = $props();
+
+  const page = new SettingsPage();
 
   type SettingsSubTab = 'general' | 'fatal-signatures';
   const SETTINGS_TABS = Object.freeze([
@@ -54,20 +63,7 @@
 
 <main class="settings-surface" data-testid="settings-surface-root">
   <div class="page">
-    <div class="phead">
-      <div>
-        <h1>Settings</h1>
-        <!--
-          FR-R3-145 (T1569, FR-003) — the header names what the two tabs render and
-          nothing else. It said "runners, safety controls, and retention": retention
-          is here, "runners" is three CLI path fields with no runner selector, and no
-          safety control (spend bounds, trust, confirmations, uncontained backends)
-          is on this surface at all. Naming them is the claim, not the absence — the
-          controls themselves belong to FR-R3-143 and FR-R3-144.
-        -->
-        <p class="purpose">Configure CLI paths, logging, run limits, retention, and fatal signatures.</p>
-      </div>
-    </div>
+    <SettingsPageHeader {page} />
     <div class="set-layout">
       <div class="set-nav" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
         <!--
@@ -98,11 +94,12 @@
         aria-labelledby="settings-tab-{activeTab}"
         data-testid="settings-body"
       >
-        {#if activeTab === 'general'}
-          <GeneralSettingsTab {snapshot} />
-        {:else if activeTab === 'fatal-signatures'}
-          <FatalSignaturesTab {snapshot} />
-        {/if}
+        <div hidden={activeTab !== 'general'}>
+          <GeneralSettingsTab {snapshot} {page} />
+        </div>
+        <div hidden={activeTab !== 'fatal-signatures'}>
+          <FatalSignaturesTab {snapshot} {page} />
+        </div>
       </div>
     </div>
   </div>
@@ -113,10 +110,6 @@
     display: flex;
     flex: 1;
     min-height: 0;
-  }
-
-  .purpose {
-    margin-bottom: 0;
   }
 
   /* A grid item keeps its content's width as its minimum; a long path or note must wrap in the

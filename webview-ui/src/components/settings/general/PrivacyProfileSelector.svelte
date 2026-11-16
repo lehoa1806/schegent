@@ -14,30 +14,43 @@
    *
    * The table and the detection live in `src/contracts/privacy-profiles.ts`, the
    * only host module a webview may value-import from
-   * (`webview-host-import-direction.test.ts`). Applying goes through the same
-   * `saveGeneralSettings` helper every other field uses, so a profile is four
-   * updates in one post rather than a new command surface.
+   * (`webview-host-import-direction.test.ts`). A press sets the profile's five
+   * settings in the tab's draft, as editing each field would, and the page Save
+   * writes them with every other change through the same `saveGeneralSettings`
+   * post, so a profile is five updates in one post rather than a new command
+   * surface. The values shown are the draft's, so the pressed profile is the one
+   * the page would save.
    */
-  import { boundaryRefusalText, isOutcomeNotYetKnown } from '../../../lib/boundary-refusal-text';
-  import type { SaveResult } from '../../../lib/save-general-settings';
-  import { saveGeneralSettings } from '../../../lib/save-general-settings';
+  import type { Draft } from './field-types';
   import {
     detectPrivacyProfile,
     privacyProfiles,
     type PrivacyProfileName,
     type PrivacyProfileSettings
   } from '../../../../../src/contracts/privacy-profiles';
+  import {
+    DEFAULT_TRANSPORT_CAPTURE_SETTING,
+    TRANSPORT_CAPTURE_SETTINGS,
+    type TransportCaptureSetting
+  } from '../../../../../src/contracts/transport-capture-mode';
 
   interface Props {
     loggingVerbose: boolean;
     rawTranscriptMode: 'always' | 'errors-only' | 'off';
     sessionRetentionMaxAgeDays: number;
     sessionRetentionMaxBytes: number;
-    // FR-R4-F04 (X10) — the stored value; detection compares what it resolves to.
-    transportCaptureMode: 'inherit' | 'off' | 'errors-only' | 'on';
+    // FR-R4-F04 (X10) — the stored value; detection compares what it resolves to. The draft
+    // holds it as the string its select wrote, so it is checked rather than cast.
+    transportCaptureMode: string;
+    /** Sets the chosen profile's settings in the draft. */
+    chooseProfile: (updates: Partial<Draft>) => void;
   }
 
   const props: Props = $props();
+
+  function isCaptureSetting(value: string): value is TransportCaptureSetting {
+    return (TRANSPORT_CAPTURE_SETTINGS as readonly string[]).includes(value);
+  }
 
   const PROFILES = privacyProfiles();
   const detected = $derived(
@@ -46,7 +59,9 @@
       rawTranscriptMode: props.rawTranscriptMode,
       sessionRetentionMaxAgeDays: props.sessionRetentionMaxAgeDays,
       sessionRetentionMaxBytes: props.sessionRetentionMaxBytes,
-      transportCaptureMode: props.transportCaptureMode
+      transportCaptureMode: isCaptureSetting(props.transportCaptureMode)
+        ? props.transportCaptureMode
+        : DEFAULT_TRANSPORT_CAPTURE_SETTING
     })
   );
 
@@ -65,50 +80,20 @@
     transportCaptureMode: 'CLI transport capture'
   };
 
-  let applying = $state<PrivacyProfileName | null>(null);
-  let refusal = $state<string | null>(null);
-  // FR-R4-F05 (I5) — a timeout is not "not applied": the host may still apply the profile.
-  let notYetKnown = $state(false);
-
-  // FR-R4-F05 (I6, I8, FR-024) — a late answer replaces the not-yet-known text through the same
-  // path as an on-time one. Unmounting aborts the wait.
-  const lifetime = new AbortController();
-  $effect(() => () => lifetime.abort());
-  function showResult(result: SaveResult): void {
-    notYetKnown = result.status === 'rejected' && isOutcomeNotYetKnown(result.reason);
-    refusal = result.status === 'accepted' ? null : boundaryRefusalText(result.reason);
-  }
-
   const DESCRIPTION_ID = 'privacy-profile-description';
   const LABEL_ID = 'privacy-profile-label';
 
-  async function apply(name: PrivacyProfileName): Promise<void> {
+  function choose(name: PrivacyProfileName): void {
     const profile = PROFILES.find((entry) => entry.name === name);
     if (profile === undefined) return;
-    applying = name;
-    try {
-      const result = await saveGeneralSettings(
-        {
-          'logging.verbose': profile.settings.loggingVerbose,
-          'logging.rawTranscriptMode': profile.settings.rawTranscriptMode,
-          'logging.sessionRetentionMaxAgeDays': profile.settings.sessionRetentionMaxAgeDays,
-          'logging.sessionRetentionMaxBytes': profile.settings.sessionRetentionMaxBytes,
-          'logging.transportCaptureMode': profile.settings.transportCaptureMode
-        },
-        undefined,
-        { signal: lifetime.signal, onLateOutcome: showResult }
-      );
-      showResult(result);
-    } finally {
-      applying = null;
-    }
+    props.chooseProfile({ ...profile.settings });
   }
 </script>
 
 <!--
   The redesign's evidence profile row: the three profiles as one segmented control, the one the
-  current values match pressed. A press still applies that profile at once, as these buttons always
-  have; "custom" presses none, and the line under the control names the fields that differ.
+  values on the page match pressed. A press sets that profile's settings, and Save writes them;
+  "custom" presses none, and the line under the control names the fields that differ.
 -->
 <div class="srow privacy-profiles" data-testid="privacy-profiles">
   <div>
@@ -130,8 +115,7 @@
           aria-pressed={detected.kind === 'profile' && detected.name === profile.name}
           aria-describedby={DESCRIPTION_ID}
           title={profile.audience}
-          disabled={applying !== null}
-          onclick={() => void apply(profile.name)}
+          onclick={() => choose(profile.name)}
         >{profile.name}</button>
       {/each}
     </div>
@@ -143,11 +127,6 @@
         {detected.differs.map((field) => FIELD_LABELS[field]).join(', ')}
       {/if}
     </span>
-    {#if refusal !== null}
-      <p class="profile-refusal" role="alert" data-testid="privacy-profile-refusal">
-        {notYetKnown ? refusal : `The profile was not applied. ${refusal}`}
-      </p>
-    {/if}
   </div>
 </div>
 
@@ -162,15 +141,5 @@
    * text colour, and the theme's selection pair on the pressed profile. */
   .seg button {
     text-transform: capitalize;
-  }
-
-  .seg button:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .profile-refusal {
-    margin: 0;
-    color: var(--schegent-error-text);
   }
 </style>

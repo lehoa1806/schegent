@@ -10,9 +10,10 @@
    *      where each row carried its own "Built-in" badge before the
    *      redesign.
    *   2. Operator-defined (editable) — vertical list of text inputs
-   *      reflecting `snapshot.generalSettings.fatalSignatures`. Save
-   *      goes through the shared `saveGeneralSettings` helper with the
-   *      unprefixed key `fatalSignatures`.
+   *      reflecting `snapshot.generalSettings.fatalSignatures`. The
+   *      page Save (`settings-page.svelte.ts`) writes them through the
+   *      shared `saveGeneralSettings` helper with the unprefixed key
+   *      `fatalSignatures`.
    *
    * Defense-in-depth validation:
    *   - empty / whitespace-only inputs blocked from save (FR-029-like),
@@ -47,11 +48,14 @@
   import { saveGeneralSettings, type SaveResult } from '../../lib/save-general-settings';
   import { hoverTextAnchor } from '../hover-text/hover-text-anchor-action';
   import { FATAL_SIGNATURES_DESCRIPTIONS } from './FatalSignaturesTab.descriptions';
+  import { SettingsPage } from './settings-page.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
+    /** The page whose header saves and reverts this list; a tab on its own gets its own. */
+    page?: SettingsPage;
   }
-  const { snapshot }: Props = $props();
+  const { snapshot, page = new SettingsPage() }: Props = $props();
 
   const currentSettings = $derived<GeneralSettings>(
     snapshot.generalSettings ?? IDLE_GENERAL_SETTINGS
@@ -147,49 +151,28 @@
     draft = [...projectedAdditions];
     status = { status: 'idle' };
   }
+
+  // The list is one change to the page however many rows moved. An empty row counts as a
+  // change but keeps this list out of the page Save until it is filled or removed.
+  $effect(() =>
+    page.register({
+      changes: () => (dirty ? { signatures: 1 } : {}),
+      canSave: () => canSave,
+      save,
+      revert: resetAll
+    })
+  );
 </script>
 
 <!--
-  The redesign’s failure-signature section: the built-in list under a read-only tag, then the
-  operator’s additions as an editable table with Add under it. The tab keeps its own heading,
-  and its Save and Reset sit at the end of that heading’s row behind an unsaved-changes chip, as
-  the General tab’s do. The built-in list stays first, the order spec 011’s contract gives the two
+  The redesign’s failure-signature section: its lead, the built-in list under a read-only tag,
+  then the operator’s additions as an editable table with Add under it. The page header’s Save
+  and Revert write and discard the additions with every other change on the page. The built-in
+  list stays first, the order spec 011’s contract gives the two
   (`contracts/fatal-signatures.md`, “Built-ins always render first”).
 -->
 <section class="fatal-signatures-tab" data-testid="settings-fatal-signatures-tab">
-  <header class="tab-header">
-    <div class="titlerow">
-      <h2>{FATAL_SIGNATURES_DESCRIPTIONS['tab-header'].title}</h2>
-      <div class="push">
-        {#if dirty}
-          <span class="chip s-warn">Unsaved changes</span>
-        {/if}
-        <button
-          type="button"
-          class="btn btn-secondary"
-          data-testid="fatal-reset"
-          disabled={!dirty}
-          onclick={resetAll}
-          use:hoverTextAnchor={{
-            controlId: 'fatal-reset',
-            description: FATAL_SIGNATURES_DESCRIPTIONS['operator-reset']
-          }}
-        >Reset</button>
-        <button
-          type="button"
-          class="btn btn-primary"
-          data-testid="fatal-save"
-          disabled={!canSave}
-          onclick={save}
-          use:hoverTextAnchor={{
-            controlId: 'fatal-save',
-            description: FATAL_SIGNATURES_DESCRIPTIONS['operator-save']
-          }}
-        >Save</button>
-      </div>
-    </div>
-    <p class="lead small muted">{FATAL_SIGNATURES_DESCRIPTIONS['tab-header'].body}</p>
-  </header>
+  <p class="lead small muted">{FATAL_SIGNATURES_DESCRIPTIONS['tab-header'].body}</p>
 
   <section class="section" data-testid="fatal-built-in-section" aria-labelledby="fatal-built-in-heading">
     <h3 id="fatal-built-in-heading">
@@ -302,11 +285,8 @@
 </section>
 
 <style>
-  .tab-header h2 {
-    font-weight: 600;
-  }
   .lead {
-    margin: var(--schegent-space-0-5) 0 0;
+    margin: 0 0 var(--schegent-space-3);
   }
   /* Each part heads with an h3 set as the redesign’s section heading (`.section > h2`), as
      the General tab’s sub-sections do. */

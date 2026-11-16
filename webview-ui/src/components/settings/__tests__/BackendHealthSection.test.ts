@@ -49,9 +49,7 @@ const mockProps = {
   statusByKey: {},
   fieldChanged: () => false,
   fieldScopeLabel: () => 'default',
-  workflows: [],
-  saveOne: () => {},
-  resetField: () => {}
+  workflows: []
 };
 
 describe('BackendHealthSection', () => {

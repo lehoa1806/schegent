@@ -29,11 +29,14 @@
   import AuditLoggingGroup from './general/AuditLoggingGroup.svelte';
   import UiTrustGroup from './general/UiTrustGroup.svelte';
   import { TRANSPORT_CAPTURE_SETTINGS } from '../../../../src/contracts/transport-capture-mode';
+  import { SettingsPage, type SettingsSectionId } from './settings-page.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
+    /** The page whose header saves and reverts this tab's draft; a tab on its own gets its own. */
+    page?: SettingsPage;
   }
-  const { snapshot }: Props = $props();
+  const { snapshot, page = new SettingsPage() }: Props = $props();
 
   // FR-R3-143 (T002) — one definition, in `general/field-types.ts`.
 
@@ -165,9 +168,9 @@
     }
   ] as const;
 
-  // Every spec on the tab, in group order. Save All iterates this and `dirty` is
+  // Every spec on the tab, in group order. The page Save writes from this and `dirty` is
   // computed from it, so a spec that reached the screen but not this array would
-  // be a control whose edit Save All silently dropped — which is why the backend
+  // be a control whose edit the page Save silently dropped — which is why the backend
   // group exports its own flattened list rather than leaving the tab to restate
   // it. `FIELDS` is now the only thing the tab needs the specs FOR.
   const FIELDS: readonly FieldSpec[] = [
@@ -232,16 +235,6 @@
     return scopeLabelFor(key, currentSettings);
   }
 
-  async function saveOne(spec: { readonly key: ScalarKey; readonly ipcKey?: string }): Promise<void> {
-    const key = spec.key;
-    const updates = { [ipcKeyFor(spec)]: draft[key] };
-    // FR-R3-143 (T042) — declining reverts the toggle, so the control does not
-    // sit showing a state that was never written.
-    if (!(await confirmSettingsWrite(updates))) return resetField('uiConfirmationsEnable');
-    statusByKey = { ...statusByKey, [key]: { status: 'pending' } };
-    showSaveResult([spec], await saveGeneralSettings(updates, undefined, saveWait([spec])));
-  }
-
   async function saveAll(): Promise<void> {
     // Build an updates object containing only fields whose draft
     // diverges from the projected value. Transactional accept/reject
@@ -258,7 +251,9 @@
     if (changedSpecs.length === 0) return;
     // The whole batch is transactional on the host, so declining aborts all of
     // it rather than dropping one key out of a payload the host was told to
-    // apply atomically. The other drafts stay dirty and Save All still works.
+    // apply atomically. FR-R3-143 (T042) — declining also reverts the toggle, so
+    // the control does not sit showing a state that was never written; the other
+    // drafts stay changed and Save still works.
     if (!(await confirmSettingsWrite(updates))) return resetField('uiConfirmationsEnable');
     const pending: Partial<typeof statusByKey> = {};
     for (const spec of changedSpecs) {
@@ -306,6 +301,37 @@
     FIELDS.some((spec) => fieldChanged(spec.key))
   );
 
+  // The page header counts this tab's edits under the section that shows each group.
+  const SECTION_FIELDS: ReadonlyArray<readonly [SettingsSectionId, readonly FieldSpec[]]> = [
+    ['backends', BACKEND_GROUP_FIELDS],
+    ['execution', EXECUTION_RETRY_FIELDS],
+    ['logging', AUDIT_LOGGING_FIELDS],
+    ['trust', UI_TRUST_FIELDS]
+  ];
+  function changesBySection(): Partial<Record<SettingsSectionId, number>> {
+    const counts: Partial<Record<SettingsSectionId, number>> = {};
+    for (const [section, specs] of SECTION_FIELDS) {
+      const changed = specs.filter((spec) => fieldChanged(spec.key)).length;
+      if (changed > 0) counts[section] = changed;
+    }
+    return counts;
+  }
+
+  $effect(() =>
+    page.register({
+      changes: changesBySection,
+      canSave: () => dirty,
+      save: saveAll,
+      revert: resetAll
+    })
+  );
+
+  // A privacy profile sets its five settings in the draft; the page Save writes them with the
+  // rest. Detection reads the draft, so the selector names the profile the page would save.
+  function chooseProfile(updates: Partial<Draft>): void {
+    draft = { ...draft, ...updates };
+  }
+
   // Feature 285 (OD-2, FR-003) — the default select lists the effective Workflows only.
   const workflows = $derived(snapshot.workflowCatalog?.effective ?? []);
 </script>
@@ -313,10 +339,9 @@
 <section class="general-settings" data-testid="general-settings-tab">
   <GeneralSettingsHeader
     settings={currentSettings}
+    {draft}
     {sessionArtifacts}
-    {dirty}
-    {saveAll}
-    {resetAll}
+    {chooseProfile}
   />
 
   <BackendEnvironmentGroup
@@ -326,8 +351,6 @@
     {workflows}
     {fieldChanged}
     {fieldScopeLabel}
-    {saveOne}
-    {resetField}
   />
 
   <ExecutionRetryGroup
@@ -337,8 +360,6 @@
     {workflows}
     {fieldChanged}
     {fieldScopeLabel}
-    {saveOne}
-    {resetField}
   />
 
   <AuditLoggingGroup
@@ -349,8 +370,6 @@
     {workflows}
     {fieldChanged}
     {fieldScopeLabel}
-    {saveOne}
-    {resetField}
   />
 
   <UiTrustGroup
@@ -361,8 +380,6 @@
     {workflows}
     {fieldChanged}
     {fieldScopeLabel}
-    {saveOne}
-    {resetField}
   />
 </section>
 
