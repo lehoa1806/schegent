@@ -23,12 +23,26 @@
     system: '·'
   };
 
+  /** The Event column's words; a category the webview does not know shows as recorded. */
+  const LABELS: Record<AuditCategory, string> = {
+    'phase-transition': 'Step change',
+    'file-write': 'File write',
+    'cli-invocation': 'Backend call',
+    error: 'Error',
+    warning: 'Warning',
+    system: 'System'
+  };
+
   function isKnownCategory(category: AuditCategory | string): category is AuditCategory {
     return Object.prototype.hasOwnProperty.call(ICONS, category);
   }
 
   function iconFor(category: AuditCategory | string): string {
     return isKnownCategory(category) ? ICONS[category] : ICONS.system;
+  }
+
+  function labelFor(category: AuditCategory | string): string {
+    return isKnownCategory(category) ? LABELS[category] : category;
   }
 
   function categoryClass(category: AuditCategory | string): string {
@@ -44,164 +58,90 @@
   }
 </script>
 
-<section class="tail" aria-label="Audit events" data-testid="system-audit-log">
-  <header class="title">Audit events</header>
-  {#if empty}
-    <p class="empty" data-testid="system-empty">No system events yet.</p>
-  {:else}
-    <ol data-testid="system-audit-list">
-      {#each reversed as entry (entry.id)}
-        <li
-          class="entry {categoryClass(entry.category)} outcome-{outcomeKey(entry.outcome)}"
-          data-testid="system-entry-{entry.id}"
-          aria-label="{entry.category}, {outcomeAria(entry.outcome)}"
-        >
-          <div class="row meta">
-            <span class="time" data-testid="system-entry-time-{entry.id}">
-              {formatAbsoluteTime(entry.timestamp)}
-            </span>
-            <span class="category-badge" data-testid="system-entry-category-{entry.id}">
-              <span class="icon" aria-hidden="true">{iconFor(entry.category)}</span>
-              <span class="label">{entry.category}</span>
-            </span>
-            <span class="outcome-badge" data-testid="system-entry-outcome-{entry.id}">
-              {entry.outcome ?? '—'}
-            </span>
-          </div>
-          <div class="row ids">
-            <span class="task" data-testid="system-entry-task-{entry.id}">
-              <span class="key">task</span>
-              <span class="value">{entry.taskId ?? '—'}</span>
-            </span>
-            <span class="phase" data-testid="system-entry-phase-{entry.id}">
-              <span class="key">phase</span>
-              <span class="value">{entry.phaseId ?? '—'}</span>
-            </span>
-          </div>
-          <div class="row summary" data-testid="system-entry-summary-{entry.id}">
-            {entry.summary}
-          </div>
-          {#if entry.category === 'cli-invocation'}
-            <p class="cli-command-missing" data-testid="system-entry-command-missing-{entry.id}">
-              <em>Invocation details are intentionally omitted.</em>
-            </p>
-          {/if}
-        </li>
-      {/each}
-    </ol>
-  {/if}
+<section aria-label="Audit events" data-testid="system-audit-log">
+  <div class="table-wrap">
+    <div class="ltable" class:fit={empty}>
+      <div class="lhead" aria-hidden="true">
+        <span>Time</span><span>Event</span><span>Task</span><span>What happened</span>
+      </div>
+      {#if empty}
+        <p class="empty" data-testid="system-empty">No system events yet.</p>
+      {:else}
+        <ol data-testid="system-audit-list">
+          {#each reversed as entry (entry.id)}
+            <li
+              class="entry {categoryClass(entry.category)} outcome-{outcomeKey(entry.outcome)}"
+              data-testid="system-entry-{entry.id}"
+              aria-label="{entry.category}, {outcomeAria(entry.outcome)}"
+            >
+              <span class="cell time mono muted" data-testid="system-entry-time-{entry.id}">{formatAbsoluteTime(entry.timestamp)}</span>
+              <span class="cell">
+                <span class="event" data-testid="system-entry-category-{entry.id}"><span class="glyph" aria-hidden="true">{iconFor(entry.category)}</span>{labelFor(entry.category)}</span>
+                <span class="outcome" data-testid="system-entry-outcome-{entry.id}">{entry.outcome ?? '—'}</span>
+              </span>
+              <span class="cell">
+                <span class="task mono" data-testid="system-entry-task-{entry.id}">{entry.taskId ?? '—'}</span>
+                {#if entry.phaseId !== undefined}
+                  <span class="line sub" data-testid="system-entry-phase-{entry.id}">{entry.phaseId}</span>
+                {/if}
+              </span>
+              <span class="cell">
+                <span class="summary" data-testid="system-entry-summary-{entry.id}">{entry.summary}</span>
+                {#if entry.category === 'cli-invocation'}
+                  <span class="line sub" data-testid="system-entry-command-missing-{entry.id}">Invocation details are intentionally omitted.</span>
+                {/if}
+              </span>
+            </li>
+          {/each}
+        </ol>
+      {/if}
+    </div>
+  </div>
 </section>
 
 <style>
-  .tail {
-    padding: var(--schegent-pad);
-    display: flex;
-    flex: 1;
-    min-height: 0;
-    flex-direction: column;
-    gap: 6px;
-    overflow: hidden;
+  .ltable {
+    grid-template-columns: max-content max-content fit-content(16rem) minmax(0, 1fr);
   }
 
-  .title {
+  .event,
+  .line {
+    display: block;
+  }
+
+  .glyph {
+    display: inline-block;
+    min-width: 1.2em;
     color: var(--schegent-muted-fg);
-    font-size: 0.8em;
   }
 
-  .empty {
-    margin: 0;
-    color: var(--schegent-muted-fg);
-    font-style: italic;
+  .task {
+    overflow-wrap: anywhere;
   }
 
-  ol {
-    display: flex;
-    flex: 1;
-    min-height: 0;
-    flex-direction: column;
-    gap: 4px;
-    margin: 0;
-    padding: 0;
-    overflow-y: auto;
-    list-style: none;
-  }
-
-  .entry {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 4px 6px;
-    border-bottom: 1px solid var(--schegent-border);
-    color: var(--schegent-fg);
-    font-size: 0.85em;
-  }
-
-  .row {
-    display: flex;
-    align-items: baseline;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  .row.meta,
-  .row.ids {
-    color: var(--schegent-muted-fg);
-    font-size: 0.85em;
-  }
-
-  .row.ids .key {
-    margin-right: 3px;
-    opacity: 0.7;
-    font-size: 0.75em;
-    text-transform: uppercase;
-  }
-
-  .row.ids .value,
-  .row.summary {
-    color: var(--schegent-fg);
-  }
-
-  .row.summary {
+  .summary {
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
   }
 
-  .category-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-  }
-
-  .category-badge .icon {
+  /* The outcome sits under the event as the store records it, first letter capitalised, in the
+     outcome's status colour; an entry without one shows a muted dash. */
+  .outcome {
+    display: block;
     color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-secondary);
+    text-transform: capitalize;
   }
 
-  .category-error .category-badge,
-  .outcome-error .outcome-badge {
-    color: var(--schegent-error-text);
+  .outcome-success .outcome {
+    color: var(--schegent-status-completed-text);
   }
 
-  .category-warning .category-badge,
-  .outcome-pending .outcome-badge {
-    color: var(--schegent-color-warning);
+  .outcome-error .outcome {
+    color: var(--schegent-status-error-text);
   }
 
-  .category-cli-invocation .icon,
-  .category-file-write .icon {
-    color: var(--schegent-color-active);
-  }
-
-  .outcome-success .outcome-badge {
-    color: var(--schegent-color-completed);
-  }
-
-  .outcome-badge {
-    font-weight: 600;
-  }
-
-  .cli-command-missing {
-    margin: 2px 0 0;
-    color: var(--schegent-muted-fg);
-    font-style: italic;
+  .outcome-pending .outcome {
+    color: var(--schegent-status-warning-text);
   }
 </style>

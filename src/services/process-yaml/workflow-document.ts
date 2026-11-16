@@ -600,7 +600,6 @@ function readGraphShape(node: YamlMappingNode): {
     }
   }
 
-  const knownNodeIds = new Set(nodeIds);
   const connectionsEntry = spec.value.entries.find((entry) => entry.key === 'connections');
   const edges: WorkflowGraphEdge[] = [];
   if (connectionsEntry !== undefined && connectionsEntry.value.kind === 'sequence') {
@@ -613,9 +612,6 @@ function readGraphShape(node: YamlMappingNode): {
       }
       const declared = findScalar(endpoint.value, 'nodeId');
       if (declared === undefined || declared.value.length === 0) return null;
-      if (side === 'to' && declared.value === 'return' && !knownNodeIds.has('return')) {
-        return null;
-      }
       return declared.value;
     };
     for (const item of connectionsEntry.value.items) {

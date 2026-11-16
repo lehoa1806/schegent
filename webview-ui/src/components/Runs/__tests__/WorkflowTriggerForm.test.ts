@@ -245,6 +245,21 @@ describe('the port set follows the graph (FR-017)', () => {
     expect(getByTestId('workflow-trigger-unresolved')).toBeTruthy();
     expect(queryByTestId('workflow-trigger-submit')).toBeNull();
   });
+
+  it('sends the operator back to the queue page button by the name it carries', () => {
+    const { getByTestId } = render(WorkflowTriggerForm, {
+      props: {
+        entry: workflow(['node-a']),
+        graph: undefined,
+        pipelines: PIPELINES,
+        onClose: () => {}
+      }
+    });
+
+    // The queue page's header button reads "Add work" (QueueDetailTier); "Add task" is the
+    // submit button inside this form, which a reader cannot "reopen".
+    expect(getByTestId('workflow-trigger-unresolved').textContent).toContain('Reopen Add work once');
+  });
 });
 
 // ---------------------------------------------------------------------------

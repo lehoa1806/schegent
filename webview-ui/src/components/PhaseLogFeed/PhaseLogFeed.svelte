@@ -437,6 +437,12 @@
   data-testid="phase-log-feed"
   aria-label="Activity Feed"
 >
+  <PhaseLogIterationStepper
+    iterations={state.iterations}
+    currentN={state.selection.iterationN}
+    onChange={handleSelectIteration}
+  />
+
   <PhaseLogSelectors
     snapshot={{ queue: selectorsQueue, history: snapshot.history }}
     selection={state.selection}
@@ -449,12 +455,6 @@
     onSelectPhase={handleSelectPhase}
     onJumpToCurrent={handleJumpToCurrent}
     onCopyAll={handleCopyAll}
-  />
-
-  <PhaseLogIterationStepper
-    iterations={state.iterations}
-    currentN={state.selection.iterationN}
-    onChange={handleSelectIteration}
   />
 
   {#if showEmptyCard}
@@ -481,14 +481,18 @@
 </section>
 
 <style>
+  /* A wrapping row, so the stepper and the trail share the redesign's one toolbar line; the
+     pane, the empty states and the error each take a whole row. */
   .phase-log-feed {
     display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--schegent-space-2);
   }
   .error {
+    flex-basis: 100%;
     margin: 0;
     color: var(--schegent-error-text);
-    font-size: 0.85rem;
+    font-size: var(--schegent-text-secondary);
   }
 </style>

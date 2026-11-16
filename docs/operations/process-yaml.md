@@ -13,11 +13,11 @@ Choose the control for the resource you want to export:
 
 | Resource | Control and choices |
 | --- | --- |
-| Phase | Select a saved, valid Phase and choose **Export**. |
-| Workflow | Choose **Export Workflow** after selecting **References only** or **Include complete dependency closure (Workflows and Phases)**. The default is references only. |
-| Model Catalog | Choose **Export Model Catalog**. The catalog is exportable even when it is empty. |
+| Phase | Open a saved, valid Phase and choose **Export…** from **More phase actions**. |
+| Workflow | Open a saved Workflow and choose **Export YAML…** from **More workflow actions**. Under **Include**, select **References only** or **Include child Workflows and Phases**, then choose **Export**. The default is references only. |
+| Model Catalog | On the Models tab, choose **Export…**, which assistive technology names **Export Model Catalog**. The catalog is exportable even when it is empty. |
 
-<!-- Source: webview-ui/src/components/PipelineBuilderEditors/PhaseCatalogEditor.svelte -->
+<!-- Source: webview-ui/src/components/PipelineBuilderEditors/PhaseEditorPage.svelte -->
 <!-- Source: webview-ui/src/components/PipelineBuilderEditors/WorkflowToolbar.svelte -->
 <!-- Source: webview-ui/src/components/PipelineBuilderEditors/ModelCatalogEditor.svelte -->
 
@@ -300,7 +300,7 @@ revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the W
    them. An import cannot deliver a changed definition, and deleting a row to import it again is not
    the route: a deactivated row still claims its id.
 2. **Publish each changed definition by hand.** Open it in the catalog editor, replace its
-   fields with the revised document's, save a draft (**Save Phase**, for a Phase), then choose
+   fields with the revised document's, save a draft (**Save** on a Phase's page), then choose
    **Publish**. For version 3 these are `speckit-tasks`, `speckit-implement` and `finalize`,
    and the Workflow `speckit-new-feature` for its record. For version 4: `speckit-analyze`,
    `speckit-implement`, `speckit-code-review`, `speckit-security-review` and `finalize`, which
@@ -343,7 +343,8 @@ revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the W
 
 <!-- Source: src/services/process-yaml/import-planner.ts -->
 <!-- Source: src/ui/sidebar/commands/cmd-catalog-lifecycle.ts -->
-<!-- Source: webview-ui/src/components/PipelineBuilderEditors/PhaseCatalogEditor.svelte -->
+<!-- Source: webview-ui/src/components/PipelineBuilderEditors/PhaseEditorPage.svelte -->
+<!-- Source: webview-ui/src/components/PipelineBuilderEditors/PhaseEditorForm.svelte -->
 <!-- Source: webview-ui/src/components/Builder/DefinitionActions.svelte -->
 <!-- Source: src/catalog/version-record.ts -->
 <!-- Source: src/contracts/pipeline-definitions.ts -->

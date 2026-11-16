@@ -28,13 +28,16 @@
     type PhaseCatalogMutation
   } from './PipelineBuilderEditors/phase-catalog-state';
   import {
-    addPhaseRow, duplicatePhaseRow, movePhaseRow, phasesAtHistoryStep, resetPhaseRow,
-    retryConditionToggle, updatePhaseRow, withPhaseHistoryEntry, withRawJsonToggled,
+    addPhaseRow, duplicatePhaseRow, movePhaseRow, phaseHistoryFrom, phasesAtHistoryStep,
+    resetPhaseRow, retryConditionToggle, updatePhaseRow, withPhaseHistoryEntry, withRawJsonToggled,
     type PhaseMutationEdit, type PhaseRowsEdit
   } from './PipelineBuilderEditors/phase-catalog-actions';
   import { initialModels, withModelAdded, withModelRemoved, withModelReplaced, withModelsDetected } from './PipelineBuilderEditors/model-catalog-state';
+  import { phaseEditorOpen } from './PipelineBuilderEditors/phase-catalog-view';
   import BuilderTabs from './Builder/BuilderTabs.svelte';
   import TrustBanner from './TrustBanner.svelte';
+  // The route sheet first: the Builder's own sheet below overrides it at equal specificity.
+  import '../lib/sg/sg-builder.css';
   import './PipelineBuilderEditors/pipeline-builder.css';
   import './PipelineBuilderEditors/workflow-flow.css';
   interface Props {
@@ -118,7 +121,13 @@
       // gate, now reading the store's manifest revision for the Phase kind.
       const revision = catalog.revision;
       if (phaseRebasePending && phaseMutation && revision !== adoptedPhaseRevision) {
-        phases = rebasePhaseMutation(catalog.records, phases, phaseMutation, phaseMutationSourceKey);
+        const rebased = rebasePhaseMutation(catalog.records, phases, phaseMutation, phaseMutationSourceKey);
+        phases = rebased;
+        // The rows are the newer revision's now, so Undo starts afresh as it does
+        // at an adoption: an older step holds rows that revision replaced, and the
+        // edit is still pending, so Save would write them back.
+        const fresh = phaseHistoryFrom(rebased);
+        phaseHistory = fresh.history; phaseHistoryIndex = fresh.index;
         adoptedPhaseRevision = revision; phaseRebasePending = false;
       }
       const acceptedRefresh = phaseSaveAccepted && revision !== adoptedPhaseRevision;
@@ -131,7 +140,10 @@
         // the `DefinitionLifecyclePanel` that is the only way to publish the
         // draft that save had written.
         const openPhase = identityAt(phases, selectedPhaseIndex, phaseIdentity);
-        phases = catalog.records.map(sourceRecordToMutable);
+        const adopted = catalog.records.map(sourceRecordToMutable);
+        phases = adopted;
+        const fresh = phaseHistoryFrom(adopted);
+        phaseHistory = fresh.history; phaseHistoryIndex = fresh.index;
         adoptedPhaseRevision = revision;
         phaseSavePending = false;
         phaseMutation = null;
@@ -207,6 +219,17 @@
   let phaseHistoryIndex = $state(initialPhaseSlice?.historyIndex ?? -1);
   let isPhaseUndoRedoAction = false;
   let editStateById = $state<Record<string, PhaseEditState>>(initialPhaseSlice?.editStateById ?? {});
+  // The open Phase's editor is a page of its own: its breadcrumb replaces the Builder's title and
+  // tabs, as PhaseCatalogEditor draws it on the same condition.
+  const phaseEditorShown = $derived(
+    activeTab === 'phases' &&
+      !showWorkspaceTrustBanner &&
+      phaseEditorOpen({
+        catalogState: snapshot.phaseCatalog?.state,
+        selectedIndex: selectedPhaseIndex,
+        phaseCount: phases.length
+      })
+  );
   // Feature 101 (T002) — the row mutations live in `phase-catalog-actions.ts`.
   // Each returns the rows and pending-mutation state its edit leaves behind, or
   // `null` when it refuses; this is the one place that assignment happens.
@@ -289,114 +312,121 @@
   }
 </script>
 <main class="pb" data-testid="pipeline-builder-root">
-  <div class="header">
-    <h2>Builder</h2>
-    <p>Author and manage reusable phases, workflows, and models.</p>
-    <BuilderTabs {activeTab} onactivate={(tab) => activeTab = tab} />
-  </div>
-  <div
-    id="builder-panel-{activeTab}"
-    class="builder-canvas"
-    role="tabpanel"
-    aria-labelledby="builder-tab-{activeTab}"
-  >
-    {#if showWorkspaceTrustBanner}
-      <TrustBanner variant="workspace-trust" />
+  <div class="page">
+    {#if !phaseEditorShown}
+      <div class="phead">
+        <div>
+          <h1>Builder</h1>
+          <p class="purpose">Reusable phases, workflows and models.</p>
+        </div>
+      </div>
+      <BuilderTabs {activeTab} onactivate={(tab) => activeTab = tab} />
     {/if}
-    {#if showWorkspaceTrustBanner && activeTab !== 'models'}
-      <!--
-        Feature 099 (T493c, FR-052) — an untrusted workspace activates no
-        catalog, so the definition tabs have no rows to render. Showing
-        their editors anyway would present an empty catalog, which reads as
-        "nothing is defined here" when the truth is "this workspace is not
-        trusted". The banner above plus this line are the report. The Models
-        tab is not store-backed (FR-056) and keeps its editor.
-      -->
-      <p class="empty-selection" data-testid="builder-trust-gated">
-        Phase and Workflow definitions are not read until this
-        workspace is trusted.
-      </p>
-    {:else if activeTab === 'phases'}
-      <PhaseCatalogEditor
-        {snapshot}
-        {phases}
-        {editStateById}
-        selectedIndex={selectedPhaseIndex}
-        historyIndex={phaseHistoryIndex}
-        historyLength={phaseHistory.length}
-        trusted={phaseMutationsAllowed}
-        retryConditionsTrusted={trustRetryConditions}
-        showTrustBanner={showPhasesBanner}
-        showRetryTrustBanner={showRetryConditionsBanner}
-        {saveError}
-        savePending={phaseSavePending}
-        mutationActive={phaseMutation !== null}
-        editableSourceKey={phaseMutationSourceKey}
-        onselect={(index) => selectedPhaseIndex = index}
-        onadd={() => { if (!phaseMutation) applyPhaseEdit(addPhaseRow(phases)); }}
-        onremove={removePhase}
-        onreset={(index) => applyPhaseEdit(resetPhaseRow(phases, index, snapshot.phaseCatalog?.records))}
-        onphasechange={updatePhase}
-        onmoveup={(index) => movePhase(index, index - 1)}
-        onmovedown={(index) => movePhase(index, index + 1)}
-        onundo={() => { if (phaseHistoryIndex > 0) stepPhaseHistory(phaseHistoryIndex - 1); }}
-        onredo={() => { if (phaseHistoryIndex < phaseHistory.length - 1) stepPhaseHistory(phaseHistoryIndex + 1); }}
-        onsave={savePhaseDraft}
-        ondismisssaveerror={() => saveError = null}
-        ontoggleraw={(id) => editStateById = withRawJsonToggled(editStateById, id)}
-        onrawsave={(index, parsed) => updatePhase(index, parsed as Partial<MutablePhase>)}
-        ontoggleretry={(index) => updatePhase(index, retryConditionToggle(phases[index]))}
-        onretrychange={(index, e) => updatePhase(index, { retryCondition: e.source })}
-        onduplicate={(index) => { if (!phaseMutation) applyPhaseEdit(duplicatePhaseRow(phases, index)); }}
-        onopenworkflow={(workflowId) => {
-          pendingWorkflowId = workflowId;
-          activeTab = 'workflows';
-        }}
-      />
-    {:else if activeTab === 'workflows'}
-      <!--
-        Feature 083 — the Workflow Library's only mount site. The editor owns
-        its rows, its revision handshake, and its confirmations; this branch
-        supplies the trust verdict it is not allowed to compute for itself.
-        Feature 099 (T492, FR-046) — that verdict is now Workspace Trust alone,
-        and the untrusted case is reported by the branch above, so there is no
-        second banner to render here.
-      -->
-      <WorkflowCatalogEditor
-        {snapshot}
-        trusted={workflowMutationsAllowed}
-        initialWorkflowId={pendingWorkflowId}
-        onopenphase={(phaseId) => {
-          const idx = phases.findIndex((p) => p.id === phaseId);
-          if (idx >= 0) selectedPhaseIndex = idx;
-          activeTab = 'phases';
-        }}
-      />
-    {:else if activeTab === 'models'}
-      <!-- Feature 096 T025 — the import entry point for the Model Catalog, its
-           own region above the editor for the same reason PhaseCatalogEditor's
-           is: the preflight it opens renders in place. No `disabledReason`: a
-           Model Catalog write has no capability-trust gate to observe
-           (research.md Decision 9, cmd-save-models.ts), so unlike the Phase
-           mount there is no condition here to compute or state. -->
-      <ProcessImportPreflight />
-      <ModelCatalogEditor
-        availableModels={snapshot.availableModels}
-        {models}
-        {newModelInput}
-        onnewmodelinput={(backend, value) => {
-          const updated = { ...newModelInput };
-          updated[backend] = value;
-          newModelInput = updated;
-        }}
-        onmodelchange={(backend, index, value) => models = withModelReplaced(models, backend, index, value)}
-        onadd={addModel}
-        onremove={(backend, index) => models = withModelRemoved(models, backend, index)}
-        onsave={saveModels}
-        ondetect={(backend) => models = withModelsDetected(
-          models, backend, snapshot.availableModels?.[backend as keyof typeof snapshot.availableModels] ?? []
-        )}
-      />
-    {/if}
+    <!-- Without the tabs the panel is the page's content, so it names no tab. -->
+    <div
+      id="builder-panel-{activeTab}"
+      class="builder-canvas"
+      role={phaseEditorShown ? undefined : 'tabpanel'}
+      aria-labelledby={phaseEditorShown ? undefined : `builder-tab-${activeTab}`}
+    >
+      {#if showWorkspaceTrustBanner}
+        <TrustBanner variant="workspace-trust" />
+      {/if}
+      {#if showWorkspaceTrustBanner && activeTab !== 'models'}
+        <!--
+          Feature 099 (T493c, FR-052) — an untrusted workspace activates no
+          catalog, so the definition tabs have no rows to render. Showing
+          their editors anyway would present an empty catalog, which reads as
+          "nothing is defined here" when the truth is "this workspace is not
+          trusted". The banner above plus this line are the report. The Models
+          tab is not store-backed (FR-056) and keeps its editor.
+        -->
+        <p class="empty-selection" data-testid="builder-trust-gated">
+          Phase and Workflow definitions are not read until this
+          workspace is trusted.
+        </p>
+      {:else if activeTab === 'phases'}
+        <PhaseCatalogEditor
+          {snapshot}
+          {phases}
+          {editStateById}
+          selectedIndex={selectedPhaseIndex}
+          historyIndex={phaseHistoryIndex}
+          historyLength={phaseHistory.length}
+          trusted={phaseMutationsAllowed}
+          retryConditionsTrusted={trustRetryConditions}
+          showTrustBanner={showPhasesBanner}
+          showRetryTrustBanner={showRetryConditionsBanner}
+          {saveError}
+          savePending={phaseSavePending}
+          mutationActive={phaseMutation !== null}
+          editableSourceKey={phaseMutationSourceKey}
+          onselect={(index) => selectedPhaseIndex = index}
+          onadd={() => { if (!phaseMutation) applyPhaseEdit(addPhaseRow(phases)); }}
+          onremove={removePhase}
+          onreset={(index) => applyPhaseEdit(resetPhaseRow(phases, index, snapshot.phaseCatalog?.records))}
+          onphasechange={updatePhase}
+          onmoveup={(index) => movePhase(index, index - 1)}
+          onmovedown={(index) => movePhase(index, index + 1)}
+          onundo={() => { if (phaseHistoryIndex > 0) stepPhaseHistory(phaseHistoryIndex - 1); }}
+          onredo={() => { if (phaseHistoryIndex < phaseHistory.length - 1) stepPhaseHistory(phaseHistoryIndex + 1); }}
+          onsave={savePhaseDraft}
+          ondismisssaveerror={() => saveError = null}
+          ontoggleraw={(id) => editStateById = withRawJsonToggled(editStateById, id)}
+          onrawsave={(index, parsed) => updatePhase(index, parsed as Partial<MutablePhase>)}
+          ontoggleretry={(index) => updatePhase(index, retryConditionToggle(phases[index]))}
+          onretrychange={(index, e) => updatePhase(index, { retryCondition: e.source })}
+          onduplicate={(index) => { if (!phaseMutation) applyPhaseEdit(duplicatePhaseRow(phases, index)); }}
+          onopenworkflow={(workflowId) => {
+            pendingWorkflowId = workflowId;
+            activeTab = 'workflows';
+          }}
+        />
+      {:else if activeTab === 'workflows'}
+        <!--
+          Feature 083 — the Workflow Library's only mount site. The editor owns
+          its rows, its revision handshake, and its confirmations; this branch
+          supplies the trust verdict it is not allowed to compute for itself.
+          Feature 099 (T492, FR-046) — that verdict is now Workspace Trust alone,
+          and the untrusted case is reported by the branch above, so there is no
+          second banner to render here.
+        -->
+        <WorkflowCatalogEditor
+          {snapshot}
+          trusted={workflowMutationsAllowed}
+          initialWorkflowId={pendingWorkflowId}
+          onopenphase={(phaseId) => {
+            const idx = phases.findIndex((p) => p.id === phaseId);
+            if (idx >= 0) selectedPhaseIndex = idx;
+            activeTab = 'phases';
+          }}
+        />
+      {:else if activeTab === 'models'}
+        <ModelCatalogEditor
+          availableModels={snapshot.availableModels}
+          {models}
+          {newModelInput}
+          onnewmodelinput={(backend, value) => {
+            const updated = { ...newModelInput };
+            updated[backend] = value;
+            newModelInput = updated;
+          }}
+          onmodelchange={(backend, index, value) => models = withModelReplaced(models, backend, index, value)}
+          onadd={addModel}
+          onremove={(backend, index) => models = withModelRemoved(models, backend, index)}
+          onsave={saveModels}
+          ondetect={(backend) => models = withModelsDetected(
+            models, backend, snapshot.availableModels?.[backend as keyof typeof snapshot.availableModels] ?? []
+          )}
+        />
+        <!-- Feature 096 T025 — the import entry point for the Model Catalog, its
+             own region under the editor, as the Phases list's is under its table:
+             the preflight it opens renders in place. No `disabledReason`: a
+             Model Catalog write has no capability-trust gate to observe
+             (research.md Decision 9, cmd-save-models.ts), so unlike the Phase
+             mount there is no condition here to compute or state. -->
+        <ProcessImportPreflight />
+      {/if}
+    </div>
   </div>
 </main>

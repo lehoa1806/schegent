@@ -172,7 +172,7 @@ Success at this step means the host created the connected run and enqueued its e
 ## 4. Follow the run
 
 1. Return to **Queues**.
-2. Open the queue card containing the new task.
+2. Open the queue containing the new task.
 3. Select that task to open its run detail.
 4. Watch **Phase log** as execution advances. The same view also exposes **Run outputs** and **Context**.
 

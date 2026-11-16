@@ -4,8 +4,9 @@ import { createReadStream } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { extname, resolve, sep } from 'node:path';
+import { IDENTITY_PATH, SERVED_DIRECTORY, fixtureServerIdentity } from './fixture-server-identity.mjs';
 
-const root = resolve(process.cwd(), 'dist/webview');
+const root = resolve(process.cwd(), SERVED_DIRECTORY);
 const port = 4173;
 const host = '127.0.0.1';
 
@@ -33,6 +34,17 @@ const server = createServer(async (request, response) => {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     response.writeHead(405, { Allow: 'GET, HEAD' });
     response.end('Method not allowed');
+    return;
+  }
+
+  // What this server is and which build it serves, for the configs' global setup, which refuses a
+  // reused server that is not this checkout's (fixture-server-identity.mjs).
+  if (request.url === IDENTITY_PATH) {
+    response.writeHead(200, {
+      'Cache-Control': 'no-store',
+      'Content-Type': 'application/json; charset=utf-8'
+    });
+    response.end(request.method === 'HEAD' ? undefined : JSON.stringify(fixtureServerIdentity(root)));
     return;
   }
 

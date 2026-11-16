@@ -1,0 +1,23 @@
+/* Redesign design language: the metrics page.
+   Ported from the metrics surface of the mockup `schegent_redesign_surfaces.html`: stat tiles, the
+   bar chart and its tooltip.
+
+   A route sheet. It is imported by the root component of the route that uses it, not by an entry
+   point, so its bytes stay out of the startup stylesheets. Scoped under `.sg`; `sg-core.css` and
+   `sg-pages.css` supply the controls and the page frame.
+
+   The tooltip is placed from script, through the CSSOM. The page's Content Security Policy
+   refuses a static `style` attribute. */
+
+.sg .tile { border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); padding: var(--schegent-space-3) var(--schegent-space-3-5); }
+.sg .tile .lbl { font-size: var(--schegent-text-secondary); color: var(--schegent-muted-fg); }
+.sg .tile .val { font-size: var(--schegent-text-display); font-weight: 600; font-variant-numeric: tabular-nums; margin: var(--schegent-space-0-5) 0; }
+.sg .tile .ctx { font-size: var(--schegent-text-secondary); color: var(--schegent-muted-fg); }
+.sg .chart { position: relative; }
+.sg .chart > svg { display: block; width: 100%; height: 220px; overflow: visible; }
+.sg .chart .gl { stroke: var(--schegent-chart-grid); stroke-width: 1; }
+.sg .chart .ax { fill: var(--schegent-muted-fg); font-size: var(--schegent-text-caption); }
+.sg .chart .b { fill: var(--schegent-chart-series-1); }
+.sg .chart .b.hot { fill: var(--schegent-focus-border); }
+.sg .chart .hit { fill: transparent; cursor: crosshair; }
+.sg .tip { position: absolute; pointer-events: none; padding: var(--schegent-space-1-5) var(--schegent-space-2); border-radius: var(--schegent-radius-sm); background: var(--schegent-surface); color: var(--schegent-fg); border: 1px solid var(--schegent-border); box-shadow: var(--schegent-shadow-popover); font-size: var(--schegent-text-secondary); white-space: nowrap; transform: translate(-50%, -100%); }

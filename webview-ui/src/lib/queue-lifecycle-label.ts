@@ -72,3 +72,15 @@ export function queueRuntimeLabel(runtime: QueueRuntime): string {
   if (runtime.lifecycle === 'running' && !isWorkingARun(runtime)) return UNHELD_WAITING;
   return queueLifecycleLabel(runtime.lifecycle);
 }
+
+/**
+ * The colour of the badge `queueRuntimeLabel` words, shared by every tier that
+ * badges a queue. The colour says only whether the queue is working, held or
+ * neither; the label says which of those it is. "Working" is `isWorkingARun`,
+ * the one spelling of that question, so a held queue reads held even while its
+ * current Run finishes.
+ */
+export function queueRuntimeTone(runtime: QueueRuntime): 's-run' | 's-warn' | 's-idle' {
+  if (runtime.lifecycle === 'operator-paused') return 's-warn';
+  return isWorkingARun(runtime) ? 's-run' : 's-idle';
+}

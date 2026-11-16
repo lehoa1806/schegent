@@ -485,7 +485,7 @@
     font-weight: 600;
   }
   .preflight-refusal-code {
-    font-family: var(--vscode-editor-font-family, monospace);
+    font-family: var(--schegent-mono-font);
     color: var(--schegent-muted-fg);
   }
   .preflight-commit {

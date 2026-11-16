@@ -106,7 +106,7 @@
     <h4 class="history-title">Version history</h4>
     <button
       type="button"
-      class="history-close"
+      class="btn btn-ghost btn-sm"
       data-testid="definition-history-close-{definitionId}"
       onclick={close}>Close</button
     >
@@ -132,10 +132,11 @@
           <div class="entry-line">
             <span class="entry-version">{entry.versionId}</span>
             {#if entry.isActive}
+              <!-- The state chip the Phases list draws for an active definition. -->
               <span
-                class="entry-active"
+                class="chip s-ok"
                 data-testid="definition-history-active-{definitionId}-{entry.versionId}"
-                >Active</span
+                ><span class="dot" aria-hidden="true"></span>Active</span
               >
             {/if}
             <span class="entry-field">
@@ -158,7 +159,7 @@
             </span>
             <button
               type="button"
-              class="entry-view"
+              class="btn btn-secondary btn-sm"
               data-testid="definition-history-open-{definitionId}-{entry.versionId}"
               onclick={() => void show(entry.versionId)}>View</button
             >
@@ -222,124 +223,114 @@
 </section>
 
 <style>
+  /* sg-core's `.btn` draws Close, View and the restore action, and its `.chip`
+     the Active mark. The rule on the left ties the list to the toggle that
+     opened it. */
   .definition-history {
-    border-left: 2px solid var(--vscode-panel-border);
+    border-left: 2px solid var(--schegent-border);
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    font-size: 0.85em;
-    margin: 2px 0 4px 8px;
-    padding-left: 8px;
+    gap: var(--schegent-space-1);
+    font-size: var(--schegent-text-secondary);
+    margin: 0 0 0 var(--schegent-space-2);
+    padding-left: var(--schegent-space-2);
   }
 
   .history-header {
-    align-items: baseline;
+    align-items: center;
     display: flex;
-    gap: 8px;
+    gap: var(--schegent-space-2);
     justify-content: space-between;
   }
 
-  .history-title {
+  /* Two classes, so the panel's size beats sg-core's caption-sized `h4`. */
+  .definition-history .history-title {
     font-size: 1em;
     font-weight: 600;
-    margin: 0;
-  }
-
-  .history-close,
-  .entry-view {
-    background: transparent;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 2px;
-    color: var(--vscode-foreground);
-    cursor: pointer;
-    font-size: 1em;
-    padding: 1px 6px;
-  }
-
-  .history-close:hover,
-  .entry-view:hover {
-    background: var(--vscode-toolbar-hoverBackground);
   }
 
   .history-empty {
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
     margin: 0;
   }
 
   .history-entries {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--schegent-space-1);
     list-style: none;
     margin: 0;
     padding: 0;
   }
 
   .history-entry {
-    border-top: 1px solid var(--vscode-panel-border);
-    padding-top: 4px;
+    border-top: 1px solid var(--schegent-border);
+    display: flex;
+    flex-direction: column;
+    gap: var(--schegent-space-1);
+    padding-top: var(--schegent-space-1);
   }
 
   .history-entry.is-selected {
-    background: var(--vscode-list-inactiveSelectionBackground);
+    background: var(--schegent-selection-bg);
+    color: var(--schegent-selection-fg);
+    box-shadow: inset 0 0 0 1px var(--schegent-selection-outline);
   }
 
   .entry-line {
-    align-items: baseline;
+    align-items: center;
     display: flex;
     flex-wrap: wrap;
-    gap: 4px 10px;
+    gap: var(--schegent-space-1) 10px;
   }
 
   .entry-version {
     font-weight: 600;
   }
 
-  .entry-active {
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 2px;
-    padding: 0 4px;
-  }
-
   .entry-field {
     display: flex;
-    gap: 4px;
+    gap: var(--schegent-space-1);
   }
 
   .entry-label {
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
   }
 
   .entry-note {
-    margin: 2px 0;
+    margin: 0;
+  }
+
+  .entry-note:empty {
+    display: none;
   }
 
   .history-body {
-    border-top: 1px solid var(--vscode-panel-border);
-    padding-top: 4px;
+    border-top: 1px solid var(--schegent-border);
+    padding-top: var(--schegent-space-1);
   }
 
   .body-title {
     font-size: 1em;
     font-weight: 600;
-    margin: 0 0 2px;
+    margin: 0 0 var(--schegent-space-0-5);
   }
 
   .body-pending {
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
     margin: 0;
   }
 
   .body-error {
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-error-text);
     margin: 0;
   }
 
   /* Feature 186 (US3, T024, FR-004, D-4) — no `max-height`/`overflow` here.
      Every host that mounts this panel already supplies one scroll region of
-     its own (`.pane-right` on Phases, `.wf-inspector` on Pipelines and
-     Workflows, both already `overflow-y: auto`), so this flows inside
-     whichever single ancestor scroll region already exists rather than
+     its own (the Builder's `.page` on a Phase's page, the inspector's
+     `.ins-body` on Workflows, both already `overflow-y: auto`), so this flows
+     inside whichever single ancestor scroll region already exists rather than
      nesting a second one inside it. */
   .body-content {
     margin: 0;

@@ -92,7 +92,7 @@ describe('the list reads nothing per row (T051, SC-001)', () => {
   it('reads nothing while the operator narrows the list either', async () => {
     const { getByTestId } = render(HistoryDashboard, { props: { snapshot: snapshot() } });
 
-    await fireEvent.change(getByTestId('history-filter-status'), { target: { value: 'completed' } });
+    await fireEvent.click(getByTestId('history-filter-status-completed'));
     await fireEvent.change(getByTestId('history-filter-queue'), { target: { value: 'alpha' } });
 
     // Filtering is local (FR-019) and re-renders the whole list. A read

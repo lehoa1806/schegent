@@ -48,7 +48,11 @@
     if (!asked.shown) return;
     const mine = generation;
     panelState = { kind: 'loading' };
-    void readFailureRecord(asked.queueId, asked.taskId).then((response) => {
+    // Asked untracked. The helper marks the request pending in the snapshot
+    // store, which reads the store's pending set and replaces it; read tracked,
+    // that set makes this effect depend on its own write, and it asks again
+    // until Svelte stops it with `effect_update_depth_exceeded`.
+    void untrack(() => readFailureRecord(asked.queueId, asked.taskId)).then((response) => {
       if (mine === generation) panelState = panelStateFor(response);
     });
   });
@@ -111,7 +115,7 @@
     border-radius: var(--schegent-radius);
     background: transparent;
     color: var(--schegent-error-text);
-    font-family: var(--vscode-editor-font-family, monospace);
+    font-family: var(--schegent-mono-font);
     font-size: 0.85em;
   }
 

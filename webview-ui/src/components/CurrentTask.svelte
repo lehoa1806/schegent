@@ -115,51 +115,56 @@
   }
 </script>
 
-<div class="current-task" data-testid="sidebar-current-task">
+<!-- The last run event, with its freshness beside the heading. The monitor and process lines are
+     the mockup's "Process details": folded, and shown only while there is a process to describe. -->
+<section class="sb-sec" data-testid="sidebar-current-task">
   <div class="task-heading">
-    <span>Current activity</span>
+    <h2>Activity</h2>
     <div class="freshness-row freshness-{freshness}" data-testid="sidebar-freshness" aria-label={`Freshness: ${freshness}`}>
       <span class="dot" aria-hidden="true"></span>
       <span class="freshness-label">{freshnessLabel}</span>
     </div>
   </div>
   <div class="activity" title={summary ?? ''}>{summary ?? 'Waiting for the next run event.'}</div>
-  {#if monitor !== null && monitorLine !== null}
-    <div class="monitor-row" data-testid="sidebar-monitor-row">{monitorLine}</div>
-  {/if}
-  {#if telemetry !== null && telemetryLine !== null}
-    <div class="telemetry-row" data-testid="sidebar-telemetry-row">{telemetryLine}</div>
-  {/if}
-</div>
+</section>
+{#if monitorLine !== null || telemetryLine !== null}
+  <details class="sb-sec">
+    <summary class="small muted">Process details</summary>
+    <dl class="kv">
+      {#if monitor !== null && monitorLine !== null}
+        <dt>Monitor</dt>
+        <dd data-testid="sidebar-monitor-row" title={monitorLine}>{monitorLine}</dd>
+      {/if}
+      {#if telemetry !== null && telemetryLine !== null}
+        <dt>Process</dt>
+        <dd data-testid="sidebar-telemetry-row" title={telemetryLine}>{telemetryLine}</dd>
+      {/if}
+    </dl>
+  </details>
+{/if}
 
 <style>
-  .current-task {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    padding: 9px 10px 11px;
-    border-bottom: 1px solid var(--schegent-divider);
-    min-width: 0;
-  }
   .task-heading {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    color: var(--schegent-fg);
-    font-size: var(--schegent-text-caption);
-    font-weight: 650;
+    gap: var(--schegent-space-2);
+    margin-bottom: var(--schegent-space-2);
+  }
+  .task-heading h2 {
+    margin: 0;
   }
   .freshness-row {
     display: flex;
     align-items: center;
     gap: 5px;
     min-width: 0;
+    font-size: var(--schegent-text-caption);
   }
   .dot {
     flex: 0 0 auto;
-    width: 0.65em;
-    height: 0.65em;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     background: var(--schegent-color-system);
   }
@@ -168,25 +173,23 @@
     70% { transform: scale(1.3); opacity: 0.6; }
     100% { transform: scale(0.9); opacity: 1; }
   }
-  .freshness-live .dot { 
-    background: var(--schegent-color-active); 
+  .freshness-live .dot {
+    background: var(--schegent-color-active);
     animation: pulseLive 2s infinite;
   }
-  .freshness-slowing .dot { background: var(--schegent-color-warning); }
-  .freshness-stalled .dot { background: var(--schegent-color-error); }
+  .freshness-slowing .dot,
   .freshness-paused .dot { background: var(--schegent-color-warning); }
-  .freshness-idle .dot { background: var(--schegent-color-system); }
+  .freshness-stalled .dot { background: var(--schegent-color-error); }
   .freshness-holding .dot { background: var(--schegent-color-active); }
   .freshness-label {
     font-weight: 600;
-    font-size: var(--schegent-text-caption);
-    color: var(--schegent-fg);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .freshness-stalled .freshness-label { color: var(--schegent-error-text); }
-  .freshness-slowing .freshness-label { color: var(--schegent-color-warning); }
+  /* The status colours for text, not the accents: those draw only the dot. */
+  .freshness-stalled .freshness-label { color: var(--schegent-status-error-text); }
+  .freshness-slowing .freshness-label { color: var(--schegent-status-warning-text); }
   .activity {
     font-family: var(--schegent-mono-font);
     font-size: var(--schegent-text-caption);
@@ -196,17 +199,9 @@
     text-overflow: ellipsis;
     min-height: 1em;
   }
-  .monitor-row {
-    font-size: var(--schegent-text-caption);
-    color: var(--schegent-muted-fg);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-variant-numeric: tabular-nums;
-  }
-  .telemetry-row {
-    font-size: var(--schegent-text-caption);
-    color: var(--schegent-muted-fg);
+  /* One line each, cut short rather than wrapped, as every line of the sidebar is; the title
+     holds the whole line. */
+  dd {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

@@ -38,6 +38,7 @@
 {#if failedPhase !== null}
   <button
     type="button"
+    class="icon-btn"
     data-testid="queue-item-restart-phase-{item.id}"
     aria-label={`Restart failed phase ${failedPhase} of '${labelHint}'`}
     title={`Restart failed phase ${failedPhase} of '${labelHint}'`}
@@ -52,28 +53,24 @@
 {/if}
 
 <style>
-  button {
-    background: transparent;
+  /* Drawn as its neighbours in `QueueItemActions` are: the redesign's icon button. */
+  .icon-btn {
     color: var(--schegent-muted-fg);
-    border: 1px solid var(--schegent-border);
-    min-width: 22px;
-    min-height: 22px;
-    border-radius: var(--schegent-radius-sm);
-    padding: 0 4px;
     font: inherit;
-    cursor: pointer;
   }
-  button[aria-disabled='true'] {
-    opacity: 0.55;
+  .icon-btn[aria-disabled='true'] {
+    opacity: 0.4;
     cursor: not-allowed;
   }
-  button:hover:not([aria-disabled='true']) {
+  .icon-btn[aria-disabled='true']:hover {
+    background: transparent;
+  }
+  .icon-btn:hover:not([aria-disabled='true']) {
     color: var(--schegent-fg);
-    background: var(--schegent-surface-hover);
   }
   .restart-message {
     color: var(--schegent-error-text);
-    font-size: 0.85em;
-    margin-left: 4px;
+    font-size: var(--schegent-text-secondary);
+    margin-left: var(--schegent-space-1);
   }
 </style>

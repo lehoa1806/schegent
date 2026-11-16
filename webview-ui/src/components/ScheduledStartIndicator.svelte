@@ -151,15 +151,18 @@
   }
 </script>
 
-<div class="scheduled-start-indicator" title={resolvedFireTime}>
-  <span class="countdown" data-testid="scheduled-start-countdown">{countdownText}</span>
-  <span class="resolved-fire-time" data-testid="scheduled-start-fire-time">
-    {resolvedFireTime}
-  </span>
+<!-- Drawn as one of the redesign's cards: when the queue starts in bold, the exact time beside
+     it, then the actions, small, as its banners draw theirs. Start now is the primary one,
+     the start the schedule is waiting for. -->
+<div class="scheduled-start-indicator card" title={resolvedFireTime}>
+  <div class="when">
+    <span class="countdown" data-testid="scheduled-start-countdown">{countdownText}</span>
+    <span class="small muted" data-testid="scheduled-start-fire-time">{resolvedFireTime}</span>
+  </div>
   <div class="actions">
     <button
       type="button"
-      class="btn btn-cancel"
+      class="btn btn-secondary btn-sm"
       data-testid="scheduled-start-cancel"
       onclick={onCancel}
     >
@@ -167,7 +170,7 @@
     </button>
     <button
       type="button"
-      class="btn btn-change"
+      class="btn btn-secondary btn-sm"
       data-testid="scheduled-start-change"
       onclick={onChange}
     >
@@ -175,7 +178,7 @@
     </button>
     <button
       type="button"
-      class="btn btn-start-now"
+      class="btn btn-primary btn-sm"
       data-testid="scheduled-start-now"
       onclick={onStartNow}
     >
@@ -198,41 +201,46 @@
   .scheduled-start-indicator {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
-    padding: 0.5rem;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 4px;
-    background: var(--vscode-editor-background);
+    gap: var(--schegent-space-2);
+    min-width: 0;
   }
+
+  .when {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--schegent-space-2);
+  }
+
   .countdown {
     font-weight: 600;
+    /* The seconds tick every second; even figures keep the line from shuffling. */
+    font-variant-numeric: tabular-nums;
   }
+
+  /* The line opens a sentence, so it starts with a capital, as the redesign's "Starts 14:30"
+     does; the words themselves, which tests and the clock logic share, are unchanged. */
+  .countdown::first-letter {
+    text-transform: uppercase;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--schegent-space-1-5);
+  }
+
+  /* The chooser opened by Change sits inside this card, under a rule of its own. */
+  .chooser-host {
+    margin-top: var(--schegent-space-1);
+    padding-top: var(--schegent-space-3);
+    border-top: 1px solid var(--schegent-border);
+  }
+
   /* Colour matches `QueueDetailTier`'s `.refusal`. */
   .start-message {
     margin: 0;
-    font-size: 0.85em;
-    color: var(--vscode-errorForeground);
-  }
-  .resolved-fire-time {
-    font-size: 0.85em;
-    color: var(--vscode-descriptionForeground);
-  }
-  .actions {
-    display: flex;
-    gap: 0.5rem;
-  }
-  .btn {
-    padding: 0.25rem 0.75rem;
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
-    border: 0;
-    border-radius: 2px;
-    cursor: pointer;
-  }
-  .btn:hover {
-    background: var(--vscode-button-hoverBackground);
-  }
-  .chooser-host {
-    margin-top: 0.5rem;
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-error-text);
   }
 </style>

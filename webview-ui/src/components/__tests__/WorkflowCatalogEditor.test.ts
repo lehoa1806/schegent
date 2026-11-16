@@ -28,16 +28,20 @@
 // they post. Every assertion about "the rows carried alongside" is gone with it,
 // because a per-definition write carries no rows.
 
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LifecycleConfirmOptions, LifecycleResult } from '../../lib/catalog-lifecycle';
 import type { DeactivateRequest } from '../../../../src/contracts/catalog-lifecycle';
 import type {
   WorkflowCatalogSourceProjection,
   WorkflowSnapshot
 } from '../../lib/snapshot-types';
+import { statusLine, STATUS_LINE_READY } from '../../lib/status-line.svelte';
 import WorkflowCatalogEditor from '../PipelineBuilderEditors/WorkflowCatalogEditor.svelte';
+import { isMenuItemOff } from '../sg/__tests__/menu-item-state';
 
 // Feature 101 (T030) — `save-workflows.ts` folded into `catalog-lifecycle.ts`.
 // Only the two senders this editor reaches are stubbed; everything else keeps
@@ -170,7 +174,7 @@ const lifecycleRowFor = (container: HTMLElement, workflowId: string): HTMLElemen
   return row as HTMLElement;
 };
 
-// ── Row content (FR-036, FR-048, FR-049, US5 scenario 2) ────────────────────
+// ── Row content (feature 186 FR-003; feature 083 FR-048, US5 scenario 2) ────
 
 describe('WorkflowCatalogEditor row content (US5, T055)', () => {
   it('reports validation state on every row', () => {
@@ -188,42 +192,133 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
     expect(lifecycleRowFor(container, 'broken-one').textContent).toContain('invalid');
   });
 
-  it('shows the purpose, so the list is readable by someone who did not author it', () => {
+  // Feature 186 (FR-003): a row shows the name, the id and the two badges, and nothing else.
+  // Feature 083 (US5 scenario 2) had the row summarise the whole definition. That summary is on
+  // the open Workflow now: the purpose in General, the steps on the canvas, and the inputs and
+  // outputs in their own section, where the redesign keeps a Workflow's ports.
+  it('shows only the name and the id in a row, beside its two badges (feature 186, FR-003)', () => {
     const { container } = mount([record()]);
+    const row = rowFor(container, 'design-then-build');
 
-    expect(rowFor(container, 'design-then-build').textContent).toContain(
+    expect([...row.children].map((part) => part.textContent.trim())).toEqual([
+      'Design then Build',
+      'design-then-build'
+    ]);
+    expect(row.parentElement?.children).toHaveLength(2);
+    expect(row.parentElement?.lastElementChild).toBe(lifecycleRowFor(container, 'design-then-build'));
+  });
+
+  it('shows the purpose on the open Workflow, so it reads to someone who did not author it', async () => {
+    const { container, getByTestId } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    expect((getByTestId('workflow-field-description') as HTMLTextAreaElement).value).toBe(
       'Review the design, then build it.'
     );
   });
 
-  it('shows the Pipeline sequence in authored node order, not sorted (FR-049)', () => {
-    const { container } = mount([record()]);
-    const sequence = rowFor(container, 'design-then-build').querySelector(
-      '[data-testid="workflow-row-sequence"]'
+  it('shows the derived inputs and outputs on the open Workflow, which exist on no persisted row (FR-048)', async () => {
+    const { container, getByTestId } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    expect(getByTestId('workflow-port-summary-inputs').textContent).toContain('Goal');
+    expect(getByTestId('workflow-port-summary-outputs').textContent).toContain('Artifact');
+  });
+
+  // Finding 170 — the workflow builder mockup's Status block gives the step count and how many
+  // of the steps no start reaches: the steps the canvas sets apart in its detached lane, here a
+  // chain of two that no connection joins to the rest.
+  it('says beside the step count how many of the steps no start reaches', async () => {
+    const looseEnds = {
+      ...record().definition,
+      workflowId: 'loose-ends',
+      nodes: [
+        ...NODES,
+        { nodeId: 'draft', pipelineId: 'design-review' },
+        { nodeId: 'polish', pipelineId: 'build-it' }
+      ],
+      connections: [
+        ...CONNECTIONS,
+        { from: { nodeId: 'draft', portId: 'notes' }, to: { nodeId: 'polish', portId: 'brief' } }
+      ]
+    } as unknown as WorkflowCatalogSourceProjection['definition'];
+    const { container, getByTestId } = mount([
+      record(),
+      record({ workflowId: 'loose-ends', definition: looseEnds })
+    ]);
+
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    expect(getByTestId('workflow-step-count').textContent.trim()).toBe('2');
+
+    await openPicker(container);
+    await fireEvent.click(rowFor(container, 'loose-ends'));
+    expect(getByTestId('workflow-step-count').textContent.trim()).toBe('4 (2 not reachable)');
+  });
+
+  // Finding 147 — the port wrote the Workflow inspector's words after the workflow builder
+  // mockup: its section heads, the names of its Status facts and fields, and what a side with no
+  // port reads. Nothing held them, so a rename went unnoticed.
+  it('heads the open Workflow’s sections and names its Status facts and fields', async () => {
+    const { container, getByTestId, getByText } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const inspector = getByTestId('workflow-settings-inspector');
+    const texts = (selector: string): string[] =>
+      [...inspector.querySelectorAll(selector)].map((element) => element.textContent.trim());
+    const fieldWords = (testId: string): string | undefined =>
+      inspector.querySelector(`[data-testid="${testId}"]`)?.closest('label')?.querySelector('span')?.textContent.trim();
+    const firstOption = (testId: string): string | undefined =>
+      Array.from(inspector.querySelector<HTMLSelectElement>(`[data-testid="${testId}"]`)?.options ?? [])
+        .at(0)
+        ?.textContent.trim();
+
+    expect(texts('h3')).toEqual(['Status', 'General', 'Inputs and outputs', 'Execution defaults', 'Candidate block']);
+    expect(texts('dt')).toEqual(['State', 'Steps', 'Used by', 'Inputs', 'Outputs']);
+    expect(getByText('Used by', { selector: 'dt' }).nextElementSibling?.textContent.trim()).toBe('No other Workflow');
+    expect(getByText('What a parent Workflow passes in and gets back when it uses this one as a step.')).toBeTruthy();
+    const fields = [
+      'workflow-field-name',
+      'workflow-field-workflowId',
+      'workflow-field-description',
+      'workflow-default-runner',
+      'workflow-default-model',
+      'workflow-default-effort',
+      'workflow-recommended-next'
+    ];
+    expect(Object.fromEntries(fields.map((testId) => [testId, fieldWords(testId)]))).toEqual({
+      'workflow-field-name': 'Name',
+      'workflow-field-workflowId': 'Identifier',
+      'workflow-field-description': 'Description',
+      'workflow-default-runner': 'Runner',
+      'workflow-default-model': 'Model',
+      'workflow-default-effort': 'Effort',
+      'workflow-recommended-next': 'Recommended next (Workflow ids, comma-separated)'
+    });
+    expect(firstOption('workflow-default-runner')).toBe('Inherit');
+    expect(firstOption('workflow-default-effort')).toBe('Inherit');
+  });
+
+  it('says what a side with no port reads: none once saved, not yet known on a draft', async () => {
+    const { container, getByTestId } = mount([record({ derivedInputs: [], derivedOutputs: [] })]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const ports = (): string[] => [
+      getByTestId('workflow-port-summary-inputs').textContent.trim(),
+      getByTestId('workflow-port-summary-outputs').textContent.trim()
+    ];
+    expect(ports()).toEqual(['none', 'none']);
+
+    await fireEvent.click(getByTestId('workflows-add'));
+    expect(ports()).toEqual(['derived once saved', 'derived once saved']);
+    const headings = [...getByTestId('workflow-settings-inspector').querySelectorAll('h3')].map((heading) =>
+      heading.textContent.trim()
     );
-
-    expect(sequence, 'each row must carry a Pipeline sequence').not.toBeNull();
-    const text = sequence?.textContent ?? '';
-    // Authored order is build-then-design. Position, not membership: a sorted
-    // or dependency-ordered render would still contain both names.
-    expect(text.indexOf('build-it')).toBeGreaterThanOrEqual(0);
-    expect(text.indexOf('build-it')).toBeLessThan(text.indexOf('design-review'));
+    expect(headings).toContain('Issues (1)');
+    expect(getByTestId('workflow-field-errors').children).toHaveLength(1);
   });
 
-  it('shows the derived inputs and outputs, which exist on no persisted row (FR-048)', () => {
-    const { container } = mount([record()]);
-    const row = rowFor(container, 'design-then-build');
-    const inputs = row.querySelector('[data-testid="workflow-row-inputs"]');
-    const outputs = row.querySelector('[data-testid="workflow-row-outputs"]');
-
-    expect(inputs?.textContent).toContain('Goal');
-    expect(outputs?.textContent).toContain('Artifact');
-  });
-
-  it('lists every declared port of a row with no derived ports, repeated ids included', () => {
-    // An unsaved draft derives nothing, so its row falls back to the declared ports, and the
+  it('lists every declared port of an open Workflow with no derived ports, repeated ids included', async () => {
+    // An unsaved draft derives nothing, so its summary falls back to the declared ports, and the
     // port-id field accepts any text, so two ports can share an id while it is being edited. Keying
-    // the rows by that id makes Svelte throw `each_key_duplicate`, which replaces the whole route.
+    // a list by that id makes Svelte throw `each_key_duplicate`, which replaces the whole route.
     const declared = {
       ...record().definition,
       inputs: [
@@ -235,13 +330,13 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
         { portId: 'report', label: 'Second report', type: 'markdown' }
       ]
     } as unknown as WorkflowCatalogSourceProjection['definition'];
-    const { container } = mount([
+    const { container, getByTestId } = mount([
       record({ derivedInputs: [], derivedOutputs: [], definition: declared })
     ]);
-    const row = rowFor(container, 'design-then-build');
+    await fireEvent.click(rowFor(container, 'design-then-build'));
 
-    const inputs = row.querySelector('[data-testid="workflow-row-inputs"]')?.textContent ?? '';
-    const outputs = row.querySelector('[data-testid="workflow-row-outputs"]')?.textContent ?? '';
+    const inputs = getByTestId('workflow-port-summary-inputs').textContent;
+    const outputs = getByTestId('workflow-port-summary-outputs').textContent;
     expect(inputs).toContain('First topic');
     expect(inputs).toContain('Second topic');
     expect(outputs).toContain('First report');
@@ -276,8 +371,8 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
     }
   });
 
-  // Feature 186 (US3, T018, FR-003) — the row keeps its identity summary and its
-  // two badges; no lifecycle write control reaches it, even when a lifecycle is
+  // Feature 186 (US3, T018, FR-003) — the row keeps its name, its id and its two
+  // badges; no lifecycle write control reaches it, even when a lifecycle is
   // projected. Written to pin the post-relocation state regardless of whether
   // such a control was still reachable before it.
   it('carries no lifecycle write control on any row, even with a lifecycle projected', () => {
@@ -355,9 +450,9 @@ describe('WorkflowCatalogEditor stored rows (T496f)', () => {
     const duplicate = container.querySelector<HTMLButtonElement>(
       '[data-testid="workflows-duplicate"]'
     );
-    expect(duplicate?.disabled).toBe(false);
+    expect(isMenuItemOff(duplicate)).toBe(false);
     const remove = container.querySelector<HTMLButtonElement>('[data-testid="workflows-remove"]');
-    expect(remove?.disabled).toBe(false);
+    expect(isMenuItemOff(remove)).toBe(false);
   });
 });
 
@@ -406,6 +501,426 @@ describe('WorkflowCatalogEditor lifecycle relocation (US3, T019)', () => {
     expect(
       container.querySelector('[data-testid="definition-history-toggle-stored-flow"]')
     ).toBeNull();
+  });
+});
+
+// ── Reorder from the canvas toolbar ────────────────────────────────────────
+
+describe('WorkflowCatalogEditor reorder keeps the moved node selected', () => {
+  const at = (container: HTMLElement, testid: string): HTMLElement =>
+    container.querySelector(`[data-testid="${testid}"]`) as HTMLElement;
+
+  it('follows the node to its new position rather than staying on the index', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    expect(at(container, 'workflow-node-title-1').textContent.trim()).toBe('design');
+
+    await fireEvent.click(at(container, 'workflow-node-up-1'));
+
+    // Selection is by index. Left alone it would now point at `build`, and the
+    // toolbar the operator just pressed would belong to a node they never chose.
+    expect(at(container, 'workflow-node-title-0').textContent.trim()).toBe('design');
+    expect(at(container, 'workflow-node-0').getAttribute('aria-pressed')).toBe('true');
+    expect(at(container, 'workflow-node-1').getAttribute('aria-pressed')).toBe('false');
+    const actions = container.querySelector('[role="group"][aria-label^="Actions for "]');
+    expect(actions?.getAttribute('aria-label')).toBe('Actions for design');
+  });
+
+  it('hands focus to the other direction when a move reaches the end of the list', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+
+    const earlier = at(container, 'workflow-node-up-1');
+    earlier.focus();
+    await fireEvent.click(earlier);
+    await tick();
+
+    // `design` is first now, so "Move earlier" is disabled and cannot keep focus.
+    expect(at(container, 'workflow-node-up-0').hasAttribute('disabled')).toBe(true);
+    expect(document.activeElement).toBe(at(container, 'workflow-node-down-0'));
+  });
+});
+
+// ── The status line (the workflow builder mockup's announcements) ────────
+
+describe('WorkflowCatalogEditor says on the status line what the canvas did', () => {
+  const at = (container: HTMLElement, testid: string): HTMLElement =>
+    container.querySelector(`[data-testid="${testid}"]`) as HTMLElement;
+
+  // The line is one module for the whole dashboard, so each test starts it afresh.
+  beforeEach(() => statusLine.announce(STATUS_LINE_READY));
+
+  it('says nothing when a Workflow opens, because the operator has selected nothing yet', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    expect(statusLine.message).toBe(STATUS_LINE_READY);
+  });
+
+  it('names the card or the branch selected, and says when the Workflow shows again', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    expect(statusLine.message).toBe('Selected design.');
+
+    await fireEvent.click(at(container, 'workflow-branch-0'));
+    expect(statusLine.message).toBe('Selected Connection from design to build.');
+
+    await fireEvent.click(at(container, 'workflow-settings-btn'));
+    expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
+  });
+
+  // Finding 123 — Escape and a press on the canvas's ground show the Workflow again, as
+  // in the workflow builder mockup. Focus the inspector takes away with a step's or a
+  // branch's fields goes back to the card or the arm that was selected.
+  it('shows the Workflow on Escape, and focus stays on the card it was pressed on', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const card = at(container, 'workflow-node-1');
+    await fireEvent.click(card);
+    card.focus();
+
+    await fireEvent.keyDown(card, { key: 'Escape' });
+
+    expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
+    expect(card.getAttribute('aria-pressed')).toBe('false');
+    expect(document.activeElement).toBe(card);
+  });
+
+  it('leaves focus in the palette’s search field when Escape is pressed there', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    const search = at(container, 'workflow-palette-search');
+    search.focus();
+
+    await fireEvent.keyDown(search, { key: 'Escape' });
+
+    expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
+    await tick();
+    expect(document.activeElement).toBe(search);
+  });
+
+  it('sends focus back to the card when Escape takes its fields away', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    const label = at(container, 'workflow-node-label-1');
+    label.focus();
+
+    await fireEvent.keyDown(label, { key: 'Escape' });
+
+    expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
+    await waitFor(() => expect(document.activeElement).toBe(at(container, 'workflow-node-1')));
+  });
+
+  it('sends focus back to the arm when Escape leaves a branch', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-branch-0'));
+    const remove = at(container, 'workflow-connection-remove-0');
+    remove.focus();
+
+    await fireEvent.keyDown(remove, { key: 'Escape' });
+
+    expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
+    expect(container.querySelector('[data-testid="workflow-connection-remove-0"]')).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(at(container, 'workflow-branch-0')));
+  });
+
+  it('sends focus back to the card from the inspector’s back button', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    const back = at(container, 'workflow-settings-btn');
+    back.focus();
+
+    await fireEvent.click(back);
+
+    expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
+    await waitFor(() => expect(document.activeElement).toBe(at(container, 'workflow-node-1')));
+  });
+
+  it('says nothing on Escape while the Workflow already shows', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const card = at(container, 'workflow-node-1');
+    card.focus();
+
+    await fireEvent.keyDown(card, { key: 'Escape' });
+
+    expect(statusLine.message).toBe(STATUS_LINE_READY);
+  });
+
+  it('keeps the selection on Escape the list or an IME takes, or from off the editor', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const card = at(container, 'workflow-node-1');
+    await fireEvent.click(card);
+
+    // The open Workflow list answers Escape first, as the mockup's open menu does.
+    await openPicker(container);
+    const row = rowFor(container, 'design-then-build');
+    row.focus();
+    await fireEvent.keyDown(row, { key: 'Escape' });
+    expect(container.querySelector('[data-testid="workflow-picker-list"]')).toBeNull();
+
+    card.focus();
+    await fireEvent.keyDown(card, { key: 'Escape', isComposing: true });
+
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    outside.focus();
+    await fireEvent.keyDown(outside, { key: 'Escape' });
+    outside.remove();
+
+    expect(statusLine.message).toBe('Selected design.');
+    expect(card.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('shows the Workflow on a press on the canvas’s ground, not on a card’s box', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const canvas = at(container, 'workflow-canvas');
+
+    // Nothing is selected yet, so there is nothing to say.
+    await fireEvent.click(canvas);
+    expect(statusLine.message).toBe(STATUS_LINE_READY);
+
+    const card = at(container, 'workflow-node-1');
+    await fireEvent.click(card);
+    await fireEvent.click(card.closest('.node') as HTMLElement);
+    expect(statusLine.message).toBe('Selected design.');
+
+    await fireEvent.click(canvas);
+    expect(statusLine.message).toBe('Nothing selected. Showing the Workflow.');
+    expect(card.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('names a deleted step and hands focus to Undo, which brings it back', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+
+    // The pressed button leaves with its card, so focus would otherwise fall to the page.
+    await fireEvent.click(at(container, 'workflow-node-remove-1'));
+
+    expect(statusLine.message).toBe('Deleted design. Undo restores it.');
+    const undo = at(container, 'workflows-undo');
+    await waitFor(() => expect(document.activeElement).toBe(undo));
+
+    await fireEvent.click(undo);
+    expect(at(container, 'workflow-node-title-1').textContent.trim()).toBe('design');
+  });
+
+  // Decision 6 — the keys take the toolbar's path, so they say the same and focus the same.
+  it.each(['Delete', 'Backspace'])('deletes the selected step on %s, names it, and hands focus to Undo', async (key) => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const card = at(container, 'workflow-node-1');
+    await fireEvent.click(card);
+    card.focus();
+
+    await fireEvent.keyDown(card, { key });
+
+    expect(statusLine.message).toBe('Deleted design. Undo restores it.');
+    await waitFor(() => expect(document.activeElement).toBe(at(container, 'workflows-undo')));
+  });
+
+  it('deletes nothing when Backspace is typed in the selected step’s label field', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    const label = at(container, 'workflow-node-label-1');
+    label.focus();
+
+    await fireEvent.keyDown(label, { key: 'Backspace' });
+
+    expect(at(container, 'workflow-node-title-1').textContent.trim()).toBe('design');
+    expect(statusLine.message).toBe('Selected design.');
+  });
+
+  // Finding 93 — a move changes the step's place in the saved order, which the
+  // canvas does not draw for the steps a run reaches, so its card stays put.
+  it('says where a moved step went in the saved order, while its card keeps its place', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    const cardTitles = (): string[] =>
+      [...container.querySelectorAll('[data-testid^="workflow-node-title-"]')].map((title) =>
+        title.textContent.trim()
+      );
+    const before = cardTitles();
+
+    await fireEvent.click(at(container, 'workflow-node-up-1'));
+
+    await waitFor(() =>
+      expect(statusLine.message).toBe(
+        'Moved design to position 1 of 2 in the saved step order. ' +
+          'The canvas places the steps a run can reach by their connections, not by this order.'
+      )
+    );
+    expect(cardTitles()).toEqual(before);
+  });
+
+  it('names a deleted branch and hands focus to Undo', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-branch-0'));
+
+    await fireEvent.click(at(container, 'workflow-connection-remove-0'));
+
+    expect(statusLine.message).toBe('Deleted Connection from design to build. Undo restores it.');
+    await waitFor(() => expect(document.activeElement).toBe(at(container, 'workflows-undo')));
+  });
+
+  // The mockup's palette says what it adds, "for screen readers": focus stays on the
+  // palette, and nothing else tells a listener that a card appeared on the canvas.
+  it('names a step the palette adds as its new card is titled', async () => {
+    const withPhases = {
+      ...snapshot([record()]),
+      phaseCatalog: {
+        state: 'ready',
+        records: [],
+        effective: [{ phaseId: 'speckit-specify', name: 'Specify', version: 1, instruction: 'Specify' }],
+        revision: 'p-1',
+        warnings: []
+      }
+    } as unknown as WorkflowSnapshot;
+    const { container } = render(WorkflowCatalogEditor, { snapshot: withPhases, trusted: true });
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    await fireEvent.click(at(container, 'workflow-palette-phase-speckit-specify'));
+
+    const title = at(container, 'workflow-node-title-2').textContent.trim();
+    expect(title).not.toBe('');
+    await waitFor(() => expect(statusLine.message).toBe(`Added ${title}.`));
+  });
+
+  it('names a step the canvas + adds', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    await fireEvent.click(at(container, 'workflow-insert-after-build'));
+
+    const title = at(container, 'workflow-node-title-2').textContent.trim();
+    expect(title).not.toBe('');
+    await waitFor(() => expect(statusLine.message).toBe(`Added ${title}.`));
+  });
+
+  it('names the branch Split adds by the name its arm carries', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+
+    await fireEvent.click(at(container, 'workflow-palette-split'));
+
+    await waitFor(() =>
+      expect(statusLine.message).toBe('Added Branch from design to build: else.')
+    );
+  });
+
+  it('names a step the + on an arm puts between its two cards', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    await fireEvent.click(at(container, 'workflow-splice-0'));
+
+    const title = at(container, 'workflow-node-title-2').textContent.trim();
+    expect(title).not.toBe('');
+    await waitFor(() => expect(statusLine.message).toBe(`Added ${title}.`));
+  });
+
+  it('names the branch the inspector adds as it names the one Split adds', async () => {
+    const { container } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+
+    await fireEvent.click(at(container, 'workflow-node-branch-add-1'));
+
+    await waitFor(() =>
+      expect(statusLine.message).toBe('Added Branch from design to build: else.')
+    );
+  });
+
+  it('says nothing when a + has no Phase or Pipeline to add, because nothing was added', async () => {
+    const withoutBlocks = {
+      ...snapshot([record()]),
+      pipelineCatalog: { state: 'ready', records: [], effective: [], revision: 'w', warnings: [] }
+    } as unknown as WorkflowSnapshot;
+    const { container } = render(WorkflowCatalogEditor, { snapshot: withoutBlocks, trusted: true });
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    await fireEvent.click(at(container, 'workflow-insert-after-build'));
+    await tick();
+
+    expect(at(container, 'workflow-node-title-2')).toBeNull();
+    expect(statusLine.message).toBe(STATUS_LINE_READY);
+  });
+});
+
+// ── A + that adds nothing (finding 211 of the webview port review) ─────────
+
+describe('WorkflowCatalogEditor leaves a Workflow as it was when a + adds nothing', () => {
+  const at = (container: HTMLElement, testid: string): HTMLElement =>
+    container.querySelector(`[data-testid="${testid}"]`) as HTMLElement;
+
+  // With no Phase and no Pipeline in the catalogs, a + on the canvas has
+  // nothing to add, and the edit it applies hands the Workflow back unchanged.
+  const mountWithoutBlocks = () =>
+    render(WorkflowCatalogEditor, {
+      snapshot: {
+        ...snapshot([record()]),
+        pipelineCatalog: { state: 'ready', records: [], effective: [], revision: 'w', warnings: [] }
+      } as unknown as WorkflowSnapshot,
+      trusted: true
+    });
+
+  const isOff = (container: HTMLElement, testid: string): boolean =>
+    (at(container, testid) as HTMLButtonElement).disabled;
+
+  it('keeps a stored Workflow clean, with nothing to undo or revert', async () => {
+    const { container } = mountWithoutBlocks();
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    await fireEvent.click(at(container, 'workflow-insert-after-build'));
+    await tick();
+
+    expect(at(container, 'workflow-topbar-dirty')).toBeNull();
+    expect(isOff(container, 'workflows-undo')).toBe(true);
+    expect(isMenuItemOff(at(container, 'workflows-discard'))).toBe(true);
+  });
+
+  it('keeps the last real edit one Undo away', async () => {
+    const { container } = mountWithoutBlocks();
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    await fireEvent.click(at(container, 'workflow-node-remove-1'));
+    expect(at(container, 'workflow-node-title-1')).toBeNull();
+
+    await fireEvent.click(at(container, 'workflow-insert-after-build'));
+    await tick();
+    await fireEvent.click(at(container, 'workflows-undo'));
+
+    expect(at(container, 'workflow-node-title-1').textContent.trim()).toBe('design');
+  });
+
+  it('keeps a step that Undo took back ready to redo', async () => {
+    const { container } = mountWithoutBlocks();
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(at(container, 'workflow-node-1'));
+    await fireEvent.click(at(container, 'workflow-node-remove-1'));
+    await fireEvent.click(at(container, 'workflows-undo'));
+
+    await fireEvent.click(at(container, 'workflow-insert-after-build'));
+    await tick();
+
+    expect(isOff(container, 'workflows-redo')).toBe(false);
+    await fireEvent.click(at(container, 'workflows-redo'));
+    expect(at(container, 'workflow-node-title-1')).toBeNull();
   });
 });
 
@@ -465,7 +980,7 @@ describe('WorkflowCatalogEditor duplicate (US5, T055)', () => {
       '[data-testid="workflows-duplicate"]'
     );
     expect(withheld, 'duplicate must render even while untrusted').not.toBeNull();
-    expect(withheld?.disabled).toBe(true);
+    expect(isMenuItemOff(withheld)).toBe(true);
 
     cleanup();
 
@@ -474,7 +989,58 @@ describe('WorkflowCatalogEditor duplicate (US5, T055)', () => {
     const offered = trusted.container.querySelector<HTMLButtonElement>(
       '[data-testid="workflows-duplicate"]'
     );
-    expect(offered?.disabled, 'trust is what gates it, nothing else').toBe(false);
+    expect(isMenuItemOff(offered), 'trust is what gates it, nothing else').toBe(false);
+  });
+});
+
+// ── An empty catalog (finding 229) ─────────────────────────────────────────
+
+describe('WorkflowCatalogEditor with no Workflows says so once', () => {
+  it('shows the front door of the empty catalog and nothing else that says the tab is empty', () => {
+    const { container } = mount([]);
+    expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflows-no-selection"]')).toBeNull();
+    // The picker opens by itself only when it holds something to choose.
+    expect(container.querySelector('[data-testid="workflow-picker-list"]')).toBeNull();
+  });
+
+  it('explains the blank in one line when the operator opens the empty picker', async () => {
+    const { container } = mount([]);
+    await fireEvent.click(
+      container.querySelector('[data-testid="workflow-picker-toggle"]') as HTMLElement
+    );
+    const list = container.querySelector('[data-testid="workflow-picker-list"]');
+    expect(list).not.toBeNull();
+    expect(list?.querySelector('[data-testid="workflow-picker-empty"]')?.textContent).toBe(
+      'No Workflow yet.'
+    );
+    expect(list?.querySelector('[data-testid="workflows-empty"]')).toBeNull();
+  });
+
+  it('still opens the picker by itself when Workflows exist and none is open', () => {
+    const { container } = mount([record({ workflowId: 'shipped-flow' })]);
+    expect(container.querySelector('[data-testid="workflow-picker-list"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflows-no-selection"]')).not.toBeNull();
+  });
+});
+
+// ── Import while a Workflow edit is outstanding (finding 62) ───────────────
+
+describe('WorkflowCatalogEditor closes Import over its own unsaved work', () => {
+  it('says the pending changes are Workflow ones, not Phase ones', async () => {
+    const { container } = mount([record({ workflowId: 'shipped-flow' })]);
+    await fireEvent.click(rowFor(container, 'shipped-flow'));
+    await fireEvent.click(
+      container.querySelector('[data-testid="workflows-duplicate"]') as HTMLElement
+    );
+
+    const inspect = container.querySelector<HTMLButtonElement>(
+      '[data-testid="process-import-inspect"]'
+    );
+    expect(inspect?.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="process-import-unavailable"]')?.textContent).toBe(
+      'Save or discard your pending Workflow changes before importing.'
+    );
   });
 });
 
@@ -550,6 +1116,46 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
     expect(workflowDefects).toContain('delta');
   });
 
+  // The lifecycle panel keeps the saved defects on demand (FR-015), and the Issues list below
+  // it lists those with no row of their own. Each saved defect is listed once: the panel keeps
+  // those a step owns, which show on that step, and those past the Issues list's cap of five,
+  // which show nowhere else.
+  it('lists each saved defect once, in the panel or in the Issues list', async () => {
+    const unbound = (nodeIndex: number, portId: string) => ({
+      field: `nodes[${nodeIndex}].workflowId`,
+      code: 'missing-required-input',
+      message: `Required input port '${portId}' on node 'n${nodeIndex}' is missing.`
+    });
+    const { container } = mount([
+      record({
+        lifecycle: {
+          state: 'active',
+          createdAt: 0,
+          updatedAt: 0,
+          activeVersionId: 'v1',
+          expectedDraftVersion: 'no-draft',
+          versions: []
+        },
+        errors: [
+          unbound(1, 'alpha'),
+          unbound(9, 'gamma'),
+          unbound(9, 'delta'),
+          unbound(9, 'epsilon'),
+          unbound(9, 'zeta'),
+          unbound(9, 'omega')
+        ]
+      })
+    ]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    const ports = (testId: string): string[] =>
+      [...container.querySelectorAll(`[data-testid="${testId}"] li`)].map(
+        (item) => /'(\w+)'/.exec(item.textContent)?.at(1) ?? ''
+      );
+    expect(ports('workflow-field-errors')).toEqual(['gamma', 'delta', 'epsilon', 'zeta']);
+    expect(ports('definition-row-defects-design-then-build')).toEqual(['alpha', 'omega']);
+  });
+
   it('carries the association in text, not color alone (FR-044)', async () => {
     const { container } = mount([DEFECTIVE]);
     await fireEvent.click(rowFor(container, 'design-then-build'));
@@ -557,7 +1163,7 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
     const nodeRow = container.querySelector('[data-testid="workflow-node-1"]') as HTMLElement;
     // A sighted operator sees red; everyone else needs the row to say so. An
     // `aria-` association alone would not reach a magnifier user reading text.
-    expect(nodeRow.textContent).toMatch(/error|invalid|problem|defect/i);
+    expect(nodeRow.textContent).toMatch(/error|invalid|problem|defect|issue/i);
     // Not `aria-invalid`: that attribute is not supported on a `listitem`, and
     // the AT association is carried by `aria-describedby` plus the text cue.
     expect(nodeRow.getAttribute('data-invalid')).toBe('true');
@@ -589,7 +1195,7 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
     expect(nodeRow, 'the clean node row must render').not.toBeNull();
     expect(nodeRow?.getAttribute('data-invalid')).not.toBe('true');
     expect(nodeRow?.getAttribute('aria-describedby')).toBeNull();
-    expect(nodeRow?.textContent).not.toMatch(/error|invalid|problem|defect/i);
+    expect(nodeRow?.textContent).not.toMatch(/error|invalid|problem|defect|issue/i);
   });
 });
 
@@ -698,7 +1304,7 @@ describe('removal is a deactivation, gated where it is posted (FR-049)', () => {
     expect(container.querySelector('[data-testid="workflow-save-error-banner"]')).toBeNull();
     await openPicker(container);
     expect(rowFor(container, 'design-then-build')).not.toBeNull();
-    expect((getByTestId('workflows-remove') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('workflows-remove'))).toBe(false);
   });
 
   it('names only the removed row, so an unsaved draft cannot ride along', async () => {
@@ -740,13 +1346,66 @@ describe('removal is a deactivation, gated where it is posted (FR-049)', () => {
     // untrusted workspace — is what the pair now distinguishes it from.
     const { container, getByTestId } = mount([record({ workflowId: 'shipped' })]);
     await fireEvent.click(rowFor(container, 'shipped'));
-    expect((getByTestId('workflows-remove') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('workflows-remove'))).toBe(false);
   });
 
   it('offers no removal in an untrusted workspace (FR-029)', async () => {
     const { container, getByTestId } = mount([record()], false);
     await fireEvent.click(rowFor(container, 'design-then-build'));
-    expect((getByTestId('workflows-remove') as HTMLButtonElement).disabled).toBe(true);
+    expect(isMenuItemOff(getByTestId('workflows-remove'))).toBe(true);
+  });
+});
+
+// The Workflows tab's notices are the Phase tab's: the catalog's warnings and a refused write
+// are the redesign's attention banner (sg-core.css `.attn`), and the loading, error, empty and
+// no-selection lines take the Builder's one `.catalog-state` rule. A rule scoped to one
+// editor's component styles that editor's notices and leaves the other's as bare text.
+describe('WorkflowCatalogEditor notices', () => {
+  it('draws the catalog’s warnings as the redesign’s warning banner', () => {
+    const base = snapshot([record()]);
+    const warned = {
+      ...base,
+      workflowCatalog: {
+        ...base.workflowCatalog,
+        warnings: [{ code: 'workflow-skipped', message: 'One Workflow record could not be read.' }]
+      }
+    } as WorkflowSnapshot;
+    const { getByTestId } = render(WorkflowCatalogEditor, { snapshot: warned, trusted: true });
+
+    const banner = getByTestId('workflow-catalog-warnings');
+    expect([...banner.classList]).toEqual(expect.arrayContaining(['attn', 'warn']));
+    expect(banner.querySelector('svg.ic use')?.getAttribute('href')).toBe('#i-warn');
+    expect(banner.querySelector('.body')?.textContent.trim()).toBe('One Workflow record could not be read.');
+  });
+
+  it('draws a refused write as the redesign’s banner, dismissed by an icon button', async () => {
+    deactivateSpy.mockResolvedValueOnce({ status: 'rejected', reason: 'stale-catalog' });
+    const { container, getByTestId, queryByTestId } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(getByTestId('workflows-remove'));
+    await tick();
+
+    const banner = getByTestId('workflow-save-error-banner');
+    expect(banner.classList.contains('attn')).toBe(true);
+    expect(banner.classList.contains('warn')).toBe(false);
+    expect(banner.querySelector('svg.ic use')?.getAttribute('href')).toBe('#i-warn');
+    expect(banner.querySelector('.body')?.textContent).toMatch(/^Save rejected: This Workflow layer changed/);
+
+    const dismiss = banner.querySelector<HTMLButtonElement>('button.icon-btn');
+    expect(dismiss?.getAttribute('aria-label')).toBe('Dismiss Workflow save error');
+    expect(dismiss?.querySelector('use')?.getAttribute('href')).toBe('#i-x');
+    // The icon is the button's only content, so no text glyph is read out beside the label.
+    expect(dismiss?.textContent.trim()).toBe('');
+    if (dismiss) await fireEvent.click(dismiss);
+    expect(queryByTestId('workflow-save-error-banner')).toBeNull();
+  });
+
+  it('styles the catalog’s own states with the Builder’s shared rule, ahead of the error colour', () => {
+    const sheet = readFileSync(join(__dirname, '../PipelineBuilderEditors/pipeline-builder.css'), 'utf8');
+    const state = sheet.indexOf('.pb .catalog-state {');
+    expect(state, 'a .catalog-state rule in pipeline-builder.css').toBeGreaterThanOrEqual(0);
+    // Both rules weigh two classes, so the error colour wins only by coming later.
+    expect(state).toBeLessThan(sheet.indexOf('.pb .catalog-error'));
   });
 });
 

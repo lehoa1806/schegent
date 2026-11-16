@@ -359,24 +359,49 @@ interface StyleRow {
 const PHASE_FIELD = (kind: 'model' | 'effort' | 'runner'): string =>
   `label.form-field:has([data-testid="phases-${kind}-${POLICY_SMOKE_PHASE_ID}"])`;
 
+/**
+ * sg-core's `.field`: a label stacked over its control. The margin is the one fact here that the
+ * Builder's `.pb .form-field` fallback does not also set, so it names the rule that applied.
+ */
+const FIELD_STACK = { display: 'flex', 'flex-direction': 'column', 'margin-bottom': '12px' } as const;
+
+// Builder redesign: the Models tab and the Phase editor were redrawn after the design mockup, and
+// the elements whose inline styles these rows first followed left with the old layout. Each row
+// now follows the element that does the same job in the new one (a group pushed to its
+// container's edge, a section and its head, a field stacked over its control) and states facts
+// only its classes carry, so a stylesheet the shipped policy kept from applying still fails here.
 const STYLE_ROWS: readonly StyleRow[] = [
-  { route: 'models', source: 'ModelCatalogEditor:94', selector: '.models-container > .toolbar', equals: { 'margin-bottom': '24px' } },
-  { route: 'models', source: 'ModelCatalogEditor:95', selector: '.models-container > .toolbar > div', equals: { 'flex-grow': '1' } },
+  { route: 'models', source: 'ModelCatalogEditor:165', selector: '.model-catalog > .toolbar > .push', marginLeftAboveZero: true, containerEdge: true },
+  { route: 'models', source: 'ModelCatalogEditor:181', selector: '.model-catalog > .section', equals: { 'margin-top': '20px' } },
+  { route: 'models', source: 'ModelCatalogEditor:182', selector: '.model-catalog .mhead', equals: { display: 'flex', 'margin-bottom': '8px' } },
+  { route: 'models', source: 'ModelCatalogEditor:183', selector: '.model-catalog .mhead h2', equals: { 'font-weight': '600', 'text-transform': 'capitalize' } },
   {
     route: 'models',
-    source: 'ModelCatalogEditor:117',
-    selector: '.backend-section',
-    equals: { 'margin-bottom': '32px', 'padding-top': '16px', 'border-top-width': '1px', 'border-top-style': 'solid' }
+    source: 'ModelCatalogEditor:185',
+    selector: '.model-catalog .mhead-actions',
+    equals: { display: 'flex', 'column-gap': '6px' },
+    marginLeftAboveZero: true,
+    containerEdge: true
   },
-  { route: 'models', source: 'ModelCatalogEditor:118', selector: '.backend-section h3', equals: { 'margin-bottom': '16px', 'text-transform': 'capitalize' } },
-  { route: 'models', source: 'ModelCatalogEditor:120', selector: '.backend-section > .toolbar', equals: { 'margin-bottom': '16px' } },
-  { route: 'models', source: 'ModelCatalogEditor:134', selector: 'button[aria-label^="Detect "]', equals: { 'margin-left': '12px' } },
-  { route: 'models', source: 'ModelCatalogEditor:156', selector: 'button[aria-label^="Remove "]', equals: { 'margin-left': '12px' } },
-  { route: 'phases', source: 'PhaseCatalogEditor:232', selector: '[data-testid="phases-save-all"]', marginLeftAboveZero: true, containerEdge: true },
-  { route: 'phases', source: 'PhaseCatalogEditor:393', selector: PHASE_FIELD('model'), equals: { 'flex-grow': '1' } },
-  { route: 'phases', source: 'PhaseCatalogEditor:405', selector: PHASE_FIELD('effort'), equals: { 'flex-grow': '1' } },
-  { route: 'phases', source: 'PhaseCatalogEditor:414', selector: PHASE_FIELD('runner'), equals: { 'flex-grow': '1' } },
-  { route: 'workflows', source: 'WorkflowToolbar:196', selector: '[data-testid="workflows-save-all"]', marginLeftAboveZero: true, containerEdge: true }
+  { route: 'models', source: 'ModelCatalogEditor:241', selector: '.model-catalog .model-table', equals: { 'table-layout': 'fixed' } },
+  { route: 'models', source: 'ModelCatalogEditor:264', selector: '.model-catalog .cell-remove', equals: { 'text-align': 'right' } },
+  {
+    route: 'phases',
+    source: 'PhaseEditorPage:135',
+    selector: '.phead > .actions:has([data-testid="phases-save-all"])',
+    marginLeftAboveZero: true,
+    containerEdge: true
+  },
+  { route: 'phases', source: 'PhaseEditorForm:159', selector: PHASE_FIELD('model'), equals: FIELD_STACK },
+  { route: 'phases', source: 'PhaseEditorForm:171', selector: PHASE_FIELD('effort'), equals: FIELD_STACK },
+  { route: 'phases', source: 'PhaseEditorForm:147', selector: PHASE_FIELD('runner'), equals: FIELD_STACK },
+  {
+    route: 'workflows',
+    source: 'WorkflowToolbar:231',
+    selector: '.ed-head > .push:has([data-testid="workflows-save-all"])',
+    marginLeftAboveZero: true,
+    containerEdge: true
+  }
 ];
 
 interface StyleRowResult {
@@ -442,7 +467,8 @@ async function openBuilderRoute(page: Page, route: PolicySmokeRoute): Promise<vo
   const tabName = { phases: 'Phases', workflows: 'Workflows', models: 'Models' }[route];
   await page.getByRole('tab', { name: tabName }).click();
   if (route === 'phases') {
-    await builder.locator('.phase-list-item').first().click();
+    // Builder redesign: the Phases list is a table, and a Phase opens from its name.
+    await builder.getByTestId(`phases-list-item-${POLICY_SMOKE_PHASE_ID}`).click();
     await expect(page.getByTestId(`phases-model-${POLICY_SMOKE_PHASE_ID}`)).toBeVisible();
   }
   if (route === 'workflows') {
@@ -454,7 +480,7 @@ async function openBuilderRoute(page: Page, route: PolicySmokeRoute): Promise<vo
     await expect(page.getByTestId('workflow-canvas-candidate-block-banner')).toBeVisible();
   }
   if (route === 'models') {
-    await expect(page.locator('.models-container')).toBeVisible();
+    await expect(page.locator('.model-catalog')).toBeVisible();
   }
 }
 
@@ -476,6 +502,9 @@ async function walkBuilder(context: PolicyContext): Promise<BuilderWalk> {
     for (const row of STYLE_ROWS.filter((candidate) => candidate.route === route)) {
       rows.push(await judgeRow(page, row));
     }
+    // Builder redesign: a Phase opens on a page of its own, which takes the tabs' place, so its
+    // breadcrumb leads back to them before the next route's tab is chosen.
+    if (route === 'phases') await page.getByTestId('phases-editor-back').click();
     if (route === 'workflows') {
       armsProperty = await page
         .locator('.wf-branches')
@@ -586,7 +615,9 @@ test.describe('actual policy smoke', () => {
     await page.getByTestId('dashboard-route-operations').click();
     const walk = await walkBuilder(context);
     await page.getByRole('tab', { name: 'Models' }).click();
-    const modelForm = page.locator('form.model-form').first();
+    // Builder redesign: a section's add form opens from its "Add model" button.
+    await page.getByRole('button', { name: 'Add model', exact: true }).first().click();
+    const modelForm = page.locator('form.model-add').first();
     await expect(modelForm, 'the add-model form must be present before it is submitted').toBeVisible();
     await modelForm.locator('input').fill('policy-smoke-model');
     await modelForm.locator('button[type="submit"]').click();

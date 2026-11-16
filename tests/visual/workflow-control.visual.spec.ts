@@ -245,3 +245,98 @@ test.describe('FR-R5-F32 — workflow control visual & layout checks', () => {
   }
 });
 
+/**
+ * Findings 81 and 118 of the webview redesign review. The selected card's toolbar stands beside its
+ * top-right corner, as the redesign draws it. The redesign draws no fork side by side, though, and
+ * a fork's arms stand 16px apart, so beside a card with an arm to its right the toolbar covered
+ * that arm's card: its kind icon and the start of its title. There the toolbar stands over the
+ * card's top-right corner instead. On a touch screen its 44px buttons fill the arm above, so the
+ * arms stand wider apart and the toolbar stands beside the card in a column.
+ */
+test.describe('the toolbar of a card in a fork', () => {
+  interface Box {
+    readonly left: number;
+    readonly top: number;
+    readonly right: number;
+    readonly bottom: number;
+  }
+
+  interface ToolbarLayout {
+    readonly toolbar: Box;
+    readonly card: Box;
+    /** Every other card, button or chip on the canvas the toolbar overlaps. */
+    readonly covered: readonly string[];
+  }
+
+  /** The fork fixture's Workflow: `triage` forks into `fix` (left) and `ship` (right). */
+  const FORK_CARDS = { triage: 0, fix: 1, ship: 2 } as const;
+
+  async function openForkWorkflow(page: Page): Promise<void> {
+    await openControlDashboard(page, 'dark', 'waiting-availability');
+    await page.getByTestId('dashboard-route-builder').click();
+    await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
+    await page.getByRole('tab', { name: 'Workflows' }).click();
+    const picker = page.getByTestId('workflow-picker-toggle');
+    if ((await picker.getAttribute('aria-expanded')) !== 'true') {
+      await picker.click();
+    }
+    await page.getByTestId(`workflows-list-item-${POLICY_SMOKE_WORKFLOW_ID}`).click();
+    await expect(page.getByTestId(`workflow-node-${FORK_CARDS.ship}`)).toBeVisible();
+  }
+
+  async function selectCard(page: Page, index: number): Promise<ToolbarLayout> {
+    await page.getByTestId(`workflow-node-${index}`).click();
+    await expect(page.getByTestId(`workflow-node-remove-${index}`)).toBeVisible();
+    return (await page.evaluate(`(() => {
+      const box = (el) => {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+      };
+      const toolbar = document.querySelector('.canvas-wrap .wf-ntool');
+      const t = box(toolbar);
+      const covered = [...document.querySelectorAll('.canvas-wrap .wf-card, .canvas-wrap button, .canvas-wrap .elabel')]
+        .filter((el) => !toolbar.contains(el))
+        .filter((el) => {
+          const b = box(el);
+          return b.left < t.right && b.right > t.left && b.top < t.bottom && b.bottom > t.top;
+        })
+        .map((el) => el.getAttribute('aria-label') || el.textContent.trim().slice(0, 40));
+      return { toolbar: t, card: box(toolbar.closest('.wf-card')), covered };
+    })()`)) as ToolbarLayout;
+  }
+
+  test('stands where it covers no other card or control', async ({ page }) => {
+    await openForkWorkflow(page);
+    for (const [name, index] of Object.entries(FORK_CARDS)) {
+      const { covered } = await selectCard(page, index);
+      expect(covered, `the toolbar of ${name} covers nothing on the canvas`).toEqual([]);
+    }
+
+    // The redesign's place, beside the top-right corner, where no arm stands to the right...
+    const beside = await selectCard(page, FORK_CARDS.ship);
+    expect(beside.toolbar.left, 'beside the last arm').toBeGreaterThan(beside.card.right);
+    expect(Math.abs(beside.toolbar.top - beside.card.top)).toBeLessThanOrEqual(1);
+    // ...and over it where one does.
+    const over = await selectCard(page, FORK_CARDS.fix);
+    expect(over.toolbar.bottom, 'over an arm with an arm to its right').toBeLessThan(over.card.top);
+    expect(Math.abs(over.toolbar.right - over.card.right)).toBeLessThanOrEqual(1);
+  });
+
+  test.describe('on a touch screen', () => {
+    test.use({ hasTouch: true });
+
+    test('stands beside the card in a column, the arms standing wider apart', async ({ page }) => {
+      await openForkWorkflow(page);
+      await expect.poll(() => page.evaluate("matchMedia('(pointer: coarse)').matches")).toBe(true);
+      for (const [name, index] of Object.entries(FORK_CARDS)) {
+        const { covered } = await selectCard(page, index);
+        expect(covered, `the toolbar of ${name} covers nothing on the canvas`).toEqual([]);
+      }
+
+      const { toolbar, card } = await selectCard(page, FORK_CARDS.fix);
+      expect(toolbar.left, 'beside the card').toBeGreaterThan(card.right);
+      expect(toolbar.bottom - toolbar.top, 'a column').toBeGreaterThan(toolbar.right - toolbar.left);
+    });
+  });
+});
+

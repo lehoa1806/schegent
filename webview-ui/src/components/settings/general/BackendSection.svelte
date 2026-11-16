@@ -92,6 +92,8 @@
     const exit = ping.exitCode === undefined ? '' : ` · exit ${ping.exitCode}`;
     return `Unavailable · ${ping.cause}${exit}`;
   });
+  // The result chip's tone, read from the same state as its words: checking, healthy or not.
+  const pingHealthy = $derived(ping.status === 'success');
 
   // Rendered from the PROJECTED discriminant, never from a literal compared
   // against one. `grant` has three states, and the third state — the one meaning
@@ -133,251 +135,232 @@
   }
 </script>
 
-<section class="backend-section" data-testid={`backend-health-${kind}`}>
+<!--
+  The redesign's backend card: the pulse icon; the name with its tags, the last check's result as
+  a status chip and the containment line under them; the check on the right. The problems, the
+  path and the backend's own settings follow, lined up under the name.
+-->
+<section class="card backend backend-section" data-testid={`backend-health-${kind}`}>
+  <span class="kicon k-phase"><svg class="i" aria-hidden="true"><use href="#i-pulse"></use></svg></span>
   <div class="identity">
-    <strong>{section.label}</strong>
-    {#if inUse}
+    <div class="titlerow">
+      <strong>{section.label}</strong>
+      {#if inUse}
+        <!--
+          T032 — derived from the selected runner and from nothing else. There is no
+          second store of "which backend is active": the marker moves when the
+          selector above writes the draft, and it is the draft rather than the saved
+          projection so an operator sees what their unsaved edit will do.
+        -->
+        <span class="tag" data-testid={`backend-in-use-${kind}`}>In use</span>
+      {/if}
+      <span class="tag" data-testid={`backend-discovery-${kind}`}>
+        {discovered ? 'Discovered' : 'Not found'}
+      </span>
+      {#if pingText}
+        <!-- The words follow the mark with no space between, so the region reads as the result
+             alone; the chip's gap spaces them on screen. -->
+        <small
+          class="chip"
+          class:s-run={probing}
+          class:s-ok={pingHealthy}
+          class:s-err={!probing && !pingHealthy}
+          role="status"
+          aria-live="polite"
+        >
+          {#if probing}
+            <span class="dot"></span>
+          {:else if pingHealthy}
+            <svg class="i" aria-hidden="true"><use href="#i-check"></use></svg>
+          {:else}
+            <svg class="i" aria-hidden="true"><use href="#i-warn"></use></svg>
+          {/if}{pingText}
+        </small>
+      {/if}
+    </div>
+    {#if posture !== undefined}
       <!--
-        T032 — derived from the selected runner and from nothing else. There is no
-        second store of "which backend is active": the marker moves when the
-        selector above writes the draft, and it is the draft rather than the saved
-        projection so an operator sees what their unsaved edit will do.
+        T035 — the posture is on screen BEFORE a run, not in the failure that
+        follows one. Both values are projected discriminants rendered as they
+        arrived; the mechanism is shown beside the containment because "contained"
+        alone cannot tell an operator why one backend differs from another.
       -->
-      <span class="in-use" data-testid={`backend-in-use-${kind}`}>In use</span>
-    {/if}
-    <span class:available={discovered} data-testid={`backend-discovery-${kind}`}>
-      {discovered ? 'Discovered' : 'Not found'}
-    </span>
-    {#if pingText}
-      <small role="status" aria-live="polite">{pingText}</small>
+      <p class="sub posture" data-testid={`backend-posture-${kind}`}>
+        <span class="posture-label">Containment:</span>
+        <code>{posture.containment}</code>
+        <span class="posture-label">Mechanism:</span>
+        <code data-testid={`backend-mechanism-${kind}`}>{posture.mechanism}</code>
+      </p>
     {/if}
   </div>
+  <div class="checks">
+    <button
+      type="button"
+      class="btn btn-secondary btn-sm"
+      disabled={busy}
+      aria-label={`Ping ${section.label} backend`}
+      data-testid={`ping-backend-${kind}`}
+      onclick={() => pingBackend(kind)}
+      use:hoverTextAnchor={{
+        controlId: 'backend-ping',
+        description: GENERAL_SETTINGS_DESCRIPTIONS['backend-ping']
+      }}
+    >{probing ? 'Pinging…' : 'Ping'}</button>
+  </div>
 
-  {#if !discovered}
-    <!--
-      T045, FR-012 — "not found" and "refused" are two different problems with two
-      different remedies, and a surface that renders one badge for both sends an
-      operator to fix a path that is already right. This sentence names the path
-      field directly below it; the refusal further down names the grant. A backend
-      can be in both states at once, and then it says both things, in that order —
-      finding the binary is the prerequisite, so it is stated first.
-    -->
-    <p class="not-found" data-testid={`backend-not-found-${kind}`}>
-      No {section.label} binary was found at the path below. Correct the path or install
-      it — this is a discovery problem, and no permission granted here will change it.
-    </p>
-  {/if}
-
-  <GeneralSettingFieldRow
-    spec={section.path}
-    bind:draft
-    status={statusByKey[section.path.key]}
-    changed={fieldChanged(section.path.key)}
-    scopeLabel={fieldScopeLabel(section.path.key)}
-    {workflows}
-    onSave={() => saveOne(section.path)}
-    onReset={() => resetField(section.path.key)}
-  >
-    {#snippet actionsAppend()}
-      <button
-        type="button"
-        class="ping-btn"
-        disabled={busy}
-        aria-label={`Ping ${section.label} backend`}
-        data-testid={`ping-backend-${kind}`}
-        onclick={() => pingBackend(kind)}
-        use:hoverTextAnchor={{
-          controlId: 'backend-ping',
-          description: GENERAL_SETTINGS_DESCRIPTIONS['backend-ping']
-        }}
-      >{probing ? 'Pinging…' : 'Ping'}</button>
-    {/snippet}
-  </GeneralSettingFieldRow>
-
-  {#if posture !== undefined}
-    <!--
-      T035 — the posture is on screen BEFORE a run, not in the failure that
-      follows one. Both values are projected discriminants rendered as they
-      arrived; the mechanism is shown beside the containment because "contained"
-      alone cannot tell an operator why one backend differs from another.
-    -->
-    <p class="posture" data-testid={`backend-posture-${kind}`}>
-      <span class="posture-label">Containment:</span>
-      <code>{posture.containment}</code>
-      <span class="posture-label">Mechanism:</span>
-      <code data-testid={`backend-mechanism-${kind}`}>{posture.mechanism}</code>
-    </p>
-
-    {#if posture.problem !== undefined}
+  <div class="detail">
+    {#if !discovered}
       <!--
-        FR-004 — an entry that grants nothing, said where the list is shown. It
-        used to reach only the runtime log, which an operator who mistyped a
-        backend id has no reason to read.
+        T045, FR-012 — "not found" and "refused" are two different problems with two
+        different remedies, and a surface that renders one badge for both sends an
+        operator to fix a path that is already right. This sentence names the path
+        field directly below it; the refusal further down names the grant. A backend
+        can be in both states at once, and then it says both things, in that order —
+        finding the binary is the prerequisite, so it is stated first.
       -->
-      <p class="grant-problem" data-testid={`backend-grant-problem-${kind}`} role="status">
-        {posture.problem}
+      <p class="not-found" data-testid={`backend-not-found-${kind}`}>
+        No {section.label} binary was found at the path below. Correct the path or install
+        it — this is a discovery problem, and no permission granted here will change it.
       </p>
     {/if}
 
-    {#if grantable}
-      <div class="grant">
-        <button
-          type="button"
-          class="grant-btn"
-          class:granted
-          data-testid={`backend-grant-${kind}`}
-          onclick={onGrantToggle}
-          use:hoverTextAnchor={{
-            controlId: `backend-grant-${kind}`,
-            description: GENERAL_SETTINGS_DESCRIPTIONS['backend-grant']
-          }}
-        >{granted ? 'Revoke uncontained permission' : 'Allow uncontained'}</button>
-        {#if posture.refusal !== undefined}
-          <!--
-            T034, T035 — the enforcement's own sentence, carried by the projection
-            and rendered verbatim. It names both routes out (grant this backend,
-            or choose one that carries a sandbox), which is why it is shown whole
-            rather than summarised. After a revoke it reappears, because the
-            projection recomputes it — the section does not remember a refusal, it
-            shows the one that is currently true.
-          -->
-          <p class="refusal" data-testid={`backend-refusal-${kind}`}>{posture.refusal}</p>
-        {/if}
-      </div>
-    {/if}
-  {/if}
+    <GeneralSettingFieldRow
+      spec={section.path}
+      bind:draft
+      status={statusByKey[section.path.key]}
+      changed={fieldChanged(section.path.key)}
+      scopeLabel={fieldScopeLabel(section.path.key)}
+      {workflows}
+      onSave={() => saveOne(section.path)}
+      onReset={() => resetField(section.path.key)}
+    />
 
-  {#if section.specific.length > 0}
-    <div class="specific">
-      {#each section.specific as spec (spec.key)}
-        <GeneralSettingFieldRow
-          {spec}
-          bind:draft
-          status={statusByKey[spec.key]}
-          changed={fieldChanged(spec.key)}
-          scopeLabel={fieldScopeLabel(spec.key)}
-          {workflows}
-          onSave={() => saveOne(spec)}
-          onReset={() => resetField(spec.key)}
-        />
-      {/each}
-    </div>
-  {:else}
-    <!--
-      T030 — a sentence, not a blank region. An empty area under a heading reads
-      as a surface that failed to load, and an operator who concludes that goes
-      looking for the Codex equivalent of the Claude control they can see two
-      sections up. Saying there is none is the answer to that question.
-    -->
-    <p class="no-specific" data-testid={`backend-no-specific-settings-${kind}`}>
-      {section.label} has no backend-specific settings.
-    </p>
-  {/if}
+    {#if posture !== undefined}
+      {#if posture.problem !== undefined}
+        <!--
+          FR-004 — an entry that grants nothing, said where the list is shown. It
+          used to reach only the runtime log, which an operator who mistyped a
+          backend id has no reason to read.
+        -->
+        <p class="grant-problem" data-testid={`backend-grant-problem-${kind}`} role="status">
+          {posture.problem}
+        </p>
+      {/if}
+
+      {#if grantable}
+        <div class="grant">
+          <!--
+            Allowing an uncontained backend is the redesign's danger action; revoking narrows a
+            permission, so it is an ordinary secondary button.
+          -->
+          <button
+            type="button"
+            class="btn btn-sm grant-btn"
+            class:btn-danger={!granted}
+            class:btn-secondary={granted}
+            data-testid={`backend-grant-${kind}`}
+            onclick={onGrantToggle}
+            use:hoverTextAnchor={{
+              controlId: `backend-grant-${kind}`,
+              description: GENERAL_SETTINGS_DESCRIPTIONS['backend-grant']
+            }}
+          >{granted ? 'Revoke uncontained permission' : 'Allow uncontained'}</button>
+          {#if posture.refusal !== undefined}
+            <!--
+              T034, T035 — the enforcement's own sentence, carried by the projection
+              and rendered verbatim. It names both routes out (grant this backend,
+              or choose one that carries a sandbox), which is why it is shown whole
+              rather than summarised. After a revoke it reappears, because the
+              projection recomputes it — the section does not remember a refusal, it
+              shows the one that is currently true.
+            -->
+            <p class="refusal" data-testid={`backend-refusal-${kind}`}>{posture.refusal}</p>
+          {/if}
+        </div>
+      {/if}
+    {/if}
+
+    {#if section.specific.length > 0}
+      <div class="specific">
+        {#each section.specific as spec (spec.key)}
+          <GeneralSettingFieldRow
+            {spec}
+            bind:draft
+            status={statusByKey[spec.key]}
+            changed={fieldChanged(spec.key)}
+            scopeLabel={fieldScopeLabel(spec.key)}
+            {workflows}
+            onSave={() => saveOne(spec)}
+            onReset={() => resetField(spec.key)}
+          />
+        {/each}
+      </div>
+    {:else}
+      <!--
+        T030 — a sentence, not a blank region. An empty area under a heading reads
+        as a surface that failed to load, and an operator who concludes that goes
+        looking for the Codex equivalent of the Claude control they can see two
+        sections up. Saying there is none is the answer to that question.
+      -->
+      <p class="no-specific small muted" data-testid={`backend-no-specific-settings-${kind}`}>
+        {section.label} has no backend-specific settings.
+      </p>
+    {/if}
+  </div>
 </section>
 
 <style>
-  .backend-section {
+  /* The card is the redesign grid (`.sg .backend`): icon, identity, check. The lower part
+     spans the last two columns, so it lines up under the name. */
+  .identity,
+  .detail {
+    min-width: 0;
+  }
+  .detail {
+    grid-column: 2 / -1;
+  }
+  .checks {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding-bottom: 8px;
-  }
-  .identity {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 6px 10px;
-    padding-top: 10px;
-  }
-  .identity span {
-    color: var(--vscode-notificationsWarningIcon-foreground);
-    font-size: 0.8em;
-  }
-  .identity span.available {
-    color: var(--vscode-testing-iconPassed);
-  }
-  .identity span.in-use {
-    color: var(--schegent-button-fg);
-    background: var(--schegent-button-bg);
-    border-radius: var(--schegent-radius);
-    padding: 1px 6px;
-    font-size: 0.75em;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  small {
-    flex-basis: 100%;
-    color: var(--schegent-muted-fg);
+    gap: var(--schegent-space-1-5);
   }
   .posture {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: 4px 8px;
-    margin: 2px 0 0;
-    font-size: 0.8em;
-    color: var(--schegent-muted-fg);
+    gap: var(--schegent-space-1) var(--schegent-space-1-5);
+    margin: var(--schegent-space-0-5) 0 0;
   }
   .posture-label {
     font-weight: 600;
   }
   .posture code {
-    font-family: var(--vscode-editor-font-family, monospace);
+    font-family: var(--schegent-mono-font);
   }
   .grant {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    margin-top: 4px;
-  }
-  .grant-btn {
-    align-self: flex-start;
-    padding: 4px 12px;
-    border: 0;
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-button-bg);
-    color: var(--schegent-button-fg);
-    cursor: pointer;
-  }
-  .grant-btn:hover {
-    background: var(--schegent-button-hover);
-  }
-  .grant-btn.granted {
-    background: transparent;
-    border: 1px solid var(--schegent-divider);
-    color: var(--vscode-foreground);
+    align-items: flex-start;
+    gap: var(--schegent-space-1-5);
+    margin-top: var(--schegent-space-2);
   }
   .refusal,
   .grant-problem,
   .not-found {
-    margin: 0;
-    font-size: 0.8em;
-    line-height: 1.5;
-    color: var(--vscode-notificationsWarningIcon-foreground);
+    margin: var(--schegent-space-2) 0 0;
+    font-size: var(--schegent-text-secondary);
+    line-height: 1.45;
+    color: var(--schegent-status-warning-text);
   }
-  .specific {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
+  .refusal {
+    margin: 0;
   }
   .no-specific {
-    margin: 4px 0 0;
-    font-size: 0.8em;
-    color: var(--schegent-muted-fg);
+    margin: var(--schegent-space-2) 0 0;
   }
-  .ping-btn {
-    padding: 4px 12px;
-    border: 0;
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-button-bg);
-    color: var(--schegent-button-fg);
-    cursor: pointer;
-  }
-  .ping-btn:hover:not(:disabled) {
-    background: var(--schegent-button-hover);
-  }
-  .ping-btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
+  /* Narrow: the check drops under the name rather than squeezing it. */
+  @media (max-width: 560px) {
+    .checks {
+      grid-column: 2;
+    }
   }
 </style>

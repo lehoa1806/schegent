@@ -1,9 +1,11 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { postCommand } from '../lib/vscode-api';
   import { correlatedLifecycle, lifecycleMessage, lifecycleWait } from '../lib/lifecycle-control-ipc';
   import { CMD_START_QUEUE } from '../lib/messages';
   import type { QueueItem, QueueLifecycle } from '../lib/snapshot-types';
   import QueueItemActions from './QueueItemActions.svelte';
+  import SgMenu from './sg/SgMenu.svelte';
 
   interface Props {
     isPrimary: boolean;
@@ -46,6 +48,13 @@
     onPause: (event: MouseEvent) => void;
     onClearDone: (event: MouseEvent) => void;
     onClean: (event: MouseEvent) => void;
+    /**
+     * Where the header's other actions go. It is called with the two clear
+     * actions as menu items, so a page header that keeps a single "More queue
+     * actions" menu places them among its own items. Without it, these
+     * controls draw that menu themselves.
+     */
+    actions?: Snippet<[Snippet]>;
   }
 
   const {
@@ -61,7 +70,8 @@
     onResume,
     onPause,
     onClearDone,
-    onClean
+    onClean,
+    actions
   }: Props = $props();
 
   // BUG-003 / FR-012a — tri-state derivation for the contextual button.
@@ -128,37 +138,48 @@
   }
 </script>
 
+<!-- The redesign's names for Clear Done and Clean All. Each asks before acting,
+     which the trailing ellipsis says; Clean All is last and red because it is
+     the destructive one. -->
+{#snippet clearItems()}
+  <button
+    type="button"
+    role="menuitem"
+    data-testid="dashboard-queue-clear-done"
+    onclick={onClearDone}
+    aria-disabled={clearDoneDisabled || !isPrimary}
+    title="Clear completed tasks from Recent"
+  >Clear completed tasks…</button>
+  <button
+    type="button"
+    role="menuitem"
+    class="danger"
+    data-testid="dashboard-queue-clean"
+    data-action="clean-all"
+    onclick={onClean}
+    aria-disabled={cleanDisabled || !isPrimary}
+    title="Clear all tasks, in-flight work, pause state, active run, and watchdog backoff"
+  >Clear everything…</button>
+{/snippet}
+
 <div class="queue-controls">
+  <!-- A secondary button, as the redesign draws Pause: the page's one primary
+       action is adding a task. -->
   {#if action !== 'idle'}
     <button
       type="button"
-      class="btn"
-      class:btn-start={action === 'start'}
-      class:btn-primary={action === 'resume'}
-      class:btn-secondary={action === 'pause'}
+      class="btn btn-secondary"
       data-testid="dashboard-queue-action"
       onclick={onAction}
       disabled={actionDisabled}
       title={actionTitle}
-    >{actionLabel}</button>
+    ><svg class="i" aria-hidden="true"><use href={action === 'pause' ? '#i-pause' : '#i-play'}></use></svg>{actionLabel}</button>
   {/if}
-  <button
-    type="button"
-    class="btn btn-secondary"
-    data-testid="dashboard-queue-clear-done"
-    onclick={onClearDone}
-    disabled={clearDoneDisabled || !isPrimary}
-    title="Clear completed tasks from Recent"
-  >Clear Done</button>
-  <button
-    type="button"
-    class="btn btn-destructive"
-    data-testid="dashboard-queue-clean"
-    data-action="clean-all"
-    onclick={onClean}
-    disabled={cleanDisabled || !isPrimary}
-    title="Clear all tasks, in-flight work, pause state, active run, and watchdog backoff"
-  >Clean All</button>
+  {#if actions}
+    {@render actions(clearItems)}
+  {:else}
+    <SgMenu label="More queue actions">{@render clearItems()}</SgMenu>
+  {/if}
   {#if startMessage !== null}
     <p class="start-message" role="alert" data-testid="dashboard-queue-start-message">{startMessage}</p>
   {/if}
@@ -176,20 +197,24 @@
 </div>
 
 <style>
+  /* The right-hand side of the page header: the buttons keep to the right edge,
+     and a sentence about them wraps onto its own line beneath them. */
   .queue-controls {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    justify-content: flex-end;
+    align-items: center;
+    gap: var(--schegent-space-1-5);
   }
 
   /* Takes the whole row: the controls wrap, so an inline sentence would reflow
-     the button it is reporting on. Colour matches `QueueDetailTier`'s
-     `.refusal`. */
+     the button it is reporting on. In error text, as a refused action reads. */
   .start-message {
     flex-basis: 100%;
-    margin: 2px 0 0;
-    font-size: 12px;
-    color: var(--vscode-errorForeground);
+    margin: 0;
+    text-align: right;
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-error-text);
   }
 
   /* Takes the whole row for the same reason `.start-message` does — the
@@ -197,36 +222,12 @@
   .halted-actions {
     flex-basis: 100%;
     display: flex;
+    justify-content: flex-end;
     align-items: center;
-    gap: 6px;
-    margin: 2px 0 0;
+    gap: var(--schegent-space-1-5);
   }
   .halted-actions-label {
-    font-size: 12px;
-    color: var(--vscode-errorForeground);
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-error-text);
   }
-
-  .btn {
-    min-height: var(--schegent-control-height-compact);
-    padding: 3px 8px;
-    border-radius: var(--schegent-radius-sm);
-    font-size: var(--schegent-text-caption);
-    font-weight: 500;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition:
-      background-color var(--schegent-duration-fast) var(--schegent-ease-out),
-      border-color var(--schegent-duration-fast) var(--schegent-ease-out),
-      color var(--schegent-duration-fast) var(--schegent-ease-out),
-      opacity var(--schegent-duration-fast) var(--schegent-ease-out);
-  }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn:active:not(:disabled) { opacity: 0.8; }
-  .btn-start { background: var(--schegent-color-completed); color: var(--vscode-button-foreground); }
-  .btn-start:hover:not(:disabled) { background: color-mix(in srgb, var(--schegent-color-completed) 86%, black); }
-  .btn-primary { background: var(--schegent-color-active); color: var(--vscode-button-foreground); }
-  .btn-primary:hover:not(:disabled) { background: var(--schegent-button-hover); }
-  .btn-secondary { background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); }
-  .btn-destructive { background: transparent; color: var(--schegent-error-text); border-color: var(--schegent-color-error); }
-  .btn-destructive:hover:not(:disabled) { background: var(--schegent-color-error); color: var(--vscode-button-foreground); }
 </style>

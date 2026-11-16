@@ -1,0 +1,123 @@
+/* Redesign design language: the dashboard shell and what its pages share.
+   Ported from the mockup `schegent_redesign_surfaces.html`: top bar, page header, toolbar, tables,
+   menus, cards, tabs and the detail drawer.
+
+   Loaded by the dashboard entry point after `sg-core.css`, and scoped under `.sg` as that file
+   is. Rules that only one route needs live in that route's own sheet beside this one.
+
+   A selected row or menu item takes the theme's selection background and foreground as a pair.
+   Coloured text inside it inherits the selection foreground, because a status colour is not
+   guaranteed to be readable on the selection background. */
+
+/* Shell */
+.sg.dash, .sg .dash { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.sg .topbar { display: flex; align-items: center; gap: var(--schegent-space-4); padding: 0 var(--schegent-space-4); height: 44px; border-bottom: 1px solid var(--schegent-border); flex: 0 0 auto; }
+.sg .brand { display: flex; align-items: center; gap: var(--schegent-space-2); font-weight: 700; letter-spacing: 0.06em; font-size: var(--schegent-text-secondary); text-transform: uppercase; }
+.sg .brand svg { color: var(--schegent-color-active); }
+.sg .nav { display: flex; gap: var(--schegent-space-0-5); height: 100%; }
+.sg .nav button { display: inline-flex; align-items: center; gap: var(--schegent-space-1-5); height: 100%; padding: 0 var(--schegent-space-2-5); border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer; color: var(--schegent-muted-fg); }
+.sg .nav button[aria-current='page'] { color: var(--schegent-fg); border-bottom-color: var(--schegent-focus-border); }
+.sg .nav button:focus-visible { outline-offset: -2px; }
+.sg .nav .count { font-size: var(--schegent-text-micro); min-width: 16px; height: 16px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; background: var(--schegent-color-error); color: var(--schegent-bg); padding: 0 var(--schegent-space-1); }
+.sg .content { flex: 1; min-height: 0; display: flex; }
+.sg .content > main { flex: 1; min-width: 0; }
+.sg .page { flex: 1; min-width: 0; overflow-y: auto; padding: var(--schegent-space-4) var(--schegent-space-4-5) var(--schegent-space-5-5); }
+.sg .statusline { flex: 0 0 auto; display: flex; gap: var(--schegent-space-2); align-items: center; padding: 5px var(--schegent-space-4); border-top: 1px solid var(--schegent-border); font-size: var(--schegent-text-secondary); color: var(--schegent-muted-fg); min-height: 28px; }
+
+/* Page header */
+.sg .phead { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--schegent-space-2) var(--schegent-space-3); margin-bottom: var(--schegent-space-3-5); }
+.sg .phead h1 { font-weight: 600; }
+.sg .phead .purpose { margin-top: var(--schegent-space-0-5); color: var(--schegent-muted-fg); }
+/* The header's own action bar only: the child combinator keeps a component's `.actions` inside
+   it (a task's buttons in the halted strip) out of this rule. */
+.sg .phead > .actions { margin-left: auto; display: flex; align-items: center; gap: var(--schegent-space-1-5); position: relative; }
+.sg .crumbs { display: flex; align-items: center; gap: var(--schegent-space-1); font-size: var(--schegent-text-body); margin-bottom: var(--schegent-space-1); }
+.sg .crumbs a { color: var(--schegent-link-fg); cursor: pointer; }
+.sg .titlerow { display: flex; align-items: center; gap: var(--schegent-space-2); flex-wrap: wrap; }
+.sg .titlerow .push { display: flex; align-items: center; gap: var(--schegent-space-1-5); }
+.sg .meta { color: var(--schegent-muted-fg); font-size: var(--schegent-text-secondary); margin-top: 3px; }
+
+/* Toolbar */
+.sg .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--schegent-space-2); margin-bottom: var(--schegent-space-2-5); }
+.sg .toolbar .search { width: 260px; max-width: 100%; }
+.sg .toolbar .push { display: flex; gap: var(--schegent-space-1-5); }
+.sg .toolbar .field { margin-bottom: 0; }
+
+/* Tables. The wrapper is positioned so an absolutely positioned cell part, such as an `.sr-only`
+   header, scrolls and clips with the table instead of widening the page on a narrow window. */
+.sg .table-wrap { position: relative; overflow-x: auto; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); }
+.sg table.t { border-collapse: collapse; width: 100%; min-width: 640px; }
+.sg table.t.fit { min-width: 0; }
+.sg .t th { text-align: left; font-weight: 600; font-size: var(--schegent-text-secondary); color: var(--schegent-muted-fg); padding: 7px var(--schegent-space-3); border-bottom: 1px solid var(--schegent-border); background: var(--schegent-shell-bg); white-space: nowrap; }
+.sg .t th button { background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600; color: inherit; display: inline-flex; align-items: center; gap: var(--schegent-space-0-5); }
+.sg .t td { padding: var(--schegent-space-2) var(--schegent-space-3); border-bottom: 1px solid var(--schegent-border); vertical-align: top; }
+.sg .t tr:last-child td { border-bottom: 0; }
+.sg .t tbody tr:not(.sel):hover { background: var(--schegent-list-hover); }
+/* The selection ring is transparent until a high contrast theme sets it (theme.css). A row takes it as
+   an outline, which a table row paints and an inset shadow does not reliably. */
+.sg .t tr.sel { background: var(--schegent-selection-bg); color: var(--schegent-selection-fg); outline: 1px solid var(--schegent-selection-outline); outline-offset: -1px; }
+.sg .t tr.sel :is(.rowname, .linkbtn, .sub, .muted) { color: inherit; }
+.sg .t tr.sel :is(.s-run, .s-ok, .s-err, .s-warn, .s-idle, .s-draft, .st-published, .st-draft, .st-invalid, .st-inactive, .st-modified, .run-ok, .run-fail) { color: inherit; --sg-status-color: currentColor; }
+.sg .t td.num, .sg .t th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.sg .rowname { background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600; color: var(--schegent-link-fg); text-align: left; }
+/* A coarse pointer makes every button at least 44px wide (theme.css), so a row name narrower than
+   that ends before its box does. What follows the name on its line, a tag or an id, takes the line
+   below rather than sitting after that gap. */
+@media (pointer: coarse) { .sg button.rowname:has(+ span) { display: block; } }
+/* The same block makes the name's button at least 44px tall and centres its label in that height,
+   while a table cell starts at its top, so a name on one line sat about 12px below the rest of its
+   row. Under a coarse pointer such a row lines its cells up on their first line of text instead.
+   A cell of icon buttons stays at the top: it has no text to line up, and an icon's baseline is its
+   foot, lower in the 44px than a name's, so lining it up would push the whole row down. */
+@media (pointer: coarse) { .sg .t tr:has(button.rowname) > td:not(:has(.icon-btn)) { vertical-align: baseline; } }
+.sg .sub { font-size: var(--schegent-text-secondary); color: var(--schegent-muted-fg); }
+.sg .countline { margin: var(--schegent-space-2) var(--schegent-space-0-5); color: var(--schegent-muted-fg); font-size: var(--schegent-text-secondary); }
+.sg .bar { display: flex; gap: var(--schegent-space-0-5); width: 140px; height: 6px; margin: var(--schegent-space-1) 0 3px; }
+.sg .bar span { flex: 1; border-radius: 2px; background: var(--schegent-border); }
+.sg .bar .d { background: var(--schegent-color-completed); }
+.sg .bar .r { background: var(--schegent-color-active); }
+.sg .bar .f { background: var(--schegent-color-error); }
+.sg .drag { cursor: grab; opacity: 0.55; }
+
+/* Menus */
+.sg .menu-wrap { position: relative; display: inline-block; }
+.sg .menu { position: absolute; z-index: var(--schegent-z-popover); right: 0; top: calc(var(--schegent-control-height) + var(--schegent-space-0-5)); min-width: 200px; padding: var(--schegent-space-1); border-radius: var(--schegent-radius-sm); background: var(--schegent-surface); color: var(--schegent-fg); border: 1px solid var(--schegent-border); box-shadow: var(--schegent-shadow-popover); }
+.sg .menu button { display: flex; width: 100%; align-items: center; gap: var(--schegent-space-2); padding: 5px var(--schegent-space-2); border: 0; background: none; border-radius: 4px; cursor: pointer; text-align: left; white-space: nowrap; }
+.sg .menu button:hover, .sg .menu button:focus-visible { background: var(--schegent-selection-bg); color: var(--schegent-selection-fg); }
+.sg .menu button:is(:hover, :focus-visible) .hint { color: inherit; }
+/* An item that is off keeps its place and its focus ring, so the arrow keys still reach it, but takes no highlight: the disabled colour, as VS Code's own menus draw it, and a quieter background under focus. */
+.sg .menu button:is(:disabled, [aria-disabled='true']) { color: var(--schegent-disabled-fg); cursor: default; }
+.sg .menu button:is(:disabled, [aria-disabled='true']):hover { background: none; }
+.sg .menu button[aria-disabled='true']:focus-visible { background: var(--schegent-list-hover); }
+.sg .menu hr { border: 0; border-top: 1px solid var(--schegent-border); margin: var(--schegent-space-1) 0; }
+.sg .menu .danger { color: var(--schegent-error-text); }
+.sg .menu .hint { margin-left: auto; font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); }
+
+/* Cards and sections */
+.sg .card { border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); padding: var(--schegent-space-3-5) var(--schegent-space-4); background: var(--schegent-bg); }
+.sg .grid { display: grid; gap: var(--schegent-space-3); }
+.sg .g2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.sg .g4 { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.sg .section { margin-top: var(--schegent-space-4-5); }
+.sg .section > h2 { font-weight: 600; margin-bottom: var(--schegent-space-2); display: flex; align-items: center; gap: var(--schegent-space-2); }
+.sg details.diag { margin-top: var(--schegent-space-3); border-top: 1px solid var(--schegent-border); padding-top: var(--schegent-space-2); }
+.sg details.diag > summary { color: var(--schegent-muted-fg); font-size: var(--schegent-text-secondary); }
+.sg .empty { text-align: center; padding: var(--schegent-space-5-5) var(--schegent-space-4); color: var(--schegent-muted-fg); }
+.sg .empty strong { display: block; color: var(--schegent-fg); font-size: var(--schegent-text-subheading); margin-bottom: var(--schegent-space-1); }
+.sg .empty .btn { margin-top: var(--schegent-space-2-5); }
+
+/* Tabs */
+.sg .tabs { display: flex; gap: var(--schegent-space-0-5); border-bottom: 1px solid var(--schegent-border); margin-bottom: var(--schegent-space-3-5); }
+.sg .tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: var(--schegent-space-1-5) var(--schegent-space-3); cursor: pointer; color: var(--schegent-muted-fg); display: inline-flex; gap: var(--schegent-space-1-5); align-items: center; }
+.sg .tab[aria-selected='true'] { color: var(--schegent-fg); border-bottom-color: var(--schegent-focus-border); }
+
+/* Detail drawer */
+.sg .drawer { width: 380px; flex: 0 0 auto; border-left: 1px solid var(--schegent-border); background: var(--schegent-shell-bg); display: flex; flex-direction: column; min-height: 0; }
+.sg .drawer .dh { display: flex; gap: var(--schegent-space-2); align-items: flex-start; padding: var(--schegent-space-3-5) var(--schegent-space-4) var(--schegent-space-2-5); border-bottom: 1px solid var(--schegent-border); }
+.sg .drawer .dh h2 { font-size: var(--schegent-text-title); }
+.sg .drawer .db { padding: var(--schegent-space-3-5) var(--schegent-space-4); overflow-y: auto; flex: 1; }
+.sg .drawer .db h3 { font-weight: 600; margin: var(--schegent-space-4) 0 var(--schegent-space-1-5); }
+.sg .drawer .db h3:first-child { margin-top: 0; }
+.sg .drawer .df { display: flex; gap: var(--schegent-space-2); justify-content: flex-end; padding: var(--schegent-space-2-5) var(--schegent-space-4); border-top: 1px solid var(--schegent-border); }
+
+@media (max-width: 1180px) { .sg .drawer { width: 320px; } }

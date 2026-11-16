@@ -2,6 +2,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 import metricsJson from './fixtures/metrics-response.json';
 import phaseLogJson from './fixtures/phase-log-response.json';
 import { workflowSnapshot } from './fixtures/workflow-snapshot';
+import { themeCss, type ThemeName } from './theme-palette';
 // The webview's route union, imported across the CJS/ESM line that was thought
 // to block it. `tests/` is type-checked as Node16/CJS and `webview-ui` is
 // `"type": "module"`, which raises TS1541 for a bare type-only import — but
@@ -10,7 +11,6 @@ import { workflowSnapshot } from './fixtures/workflow-snapshot';
 // Type-only, so nothing survives to runtime and Playwright's transform erases it.
 import type { DashboardRoute } from '../../webview-ui/src/dashboard/routes.js' with { 'resolution-mode': 'import' };
 
-type ThemeName = 'light' | 'dark' | 'high-contrast';
 type SurfaceName =
   | 'sidebar'
   | 'queues'
@@ -68,20 +68,15 @@ const SURFACE_CONTRACTS: Readonly<Record<SurfaceName, SurfaceContract>> = {
     present: ['queues-tier', `queue-card-${FIXTURE_QUEUE_ID}`, 'queue-create'],
     absent: ['queues-empty']
   },
-  // Feature 098 (T067, FR-043) — `pipelines-discard` is here because the
-  // fixture's two Pipelines used to claim `scope: 'built-in'`, a state no
-  // installation can now reach: the built-in layer holds no rows, so every
-  // Pipeline an operator has is one they imported into `user` or `workspace`.
-  // The fixture now says `workspace`, and this landmark is what holds it there
-  // — the control renders only for a scope that is not `built-in`. The scope
-  // also appears twice in the photograph itself (a badge in the list, and the
-  // testid of each list row), so a regression would show up as a pixel diff;
-  // this fails with the landmark's name instead.
+  // The Workflow editor head shows Save as its one button and keeps Revert,
+  // Duplicate, Export and Deactivate in the "More workflow actions" menu. A
+  // closed menu's items are hidden, and `toBeVisible` fails on a hidden
+  // element, so the menu's trigger is the landmark for that group.
   builder: {
     present: [
       'pipeline-builder-root',
       'workflows-save-all',
-      'workflows-discard'
+      'workflows-menu'
     ],
     absent: [
       'workflow-catalog-error',
@@ -277,152 +272,8 @@ async function assertRouteMounted(page: Page, route: string, target: string): Pr
   }
 }
 
-interface ThemePalette {
-  readonly foreground: string;
-  readonly background: string;
-  readonly muted: string;
-  readonly border: string;
-  readonly input: string;
-  readonly hover: string;
-  readonly active: string;
-  readonly focus: string;
-  readonly blue: string;
-  readonly green: string;
-  readonly yellow: string;
-  readonly red: string;
-  readonly purple: string;
-}
-
 const metricsResponse: unknown = metricsJson;
 const phaseLogResponse: unknown = phaseLogJson;
-
-const THEMES: Readonly<Record<ThemeName, ThemePalette>> = {
-  light: {
-    foreground: '#1f2328',
-    background: '#ffffff',
-    muted: '#59636e',
-    border: '#d0d7de',
-    input: '#f6f8fa',
-    hover: '#eaeef2',
-    active: '#dbeafe',
-    focus: '#0969da',
-    blue: '#0969da',
-    green: '#1a7f37',
-    yellow: '#9a6700',
-    red: '#cf222e',
-    purple: '#8250df'
-  },
-  dark: {
-    foreground: '#e6edf3',
-    background: '#0d1117',
-    muted: '#8b949e',
-    border: '#30363d',
-    input: '#161b22',
-    hover: '#21262d',
-    active: '#1f3a5f',
-    focus: '#58a6ff',
-    blue: '#58a6ff',
-    green: '#3fb950',
-    yellow: '#d29922',
-    red: '#f85149',
-    purple: '#bc8cff'
-  },
-  'high-contrast': {
-    foreground: '#ffffff',
-    background: '#000000',
-    muted: '#ffffff',
-    border: '#ffffff',
-    input: '#000000',
-    hover: '#1a1a1a',
-    active: '#000000',
-    focus: '#ffff00',
-    blue: '#00ffff',
-    green: '#00ff00',
-    yellow: '#ffff00',
-    red: '#ff5555',
-    purple: '#ff7fff'
-  }
-};
-
-/**
- * Feature 184 (T046, FR-R3-141) — `--vscode-sideBarSectionHeader-background` is
- * new to this palette. `--schegent-surface-raised` reads it (`theme.css:10`) and
- * falls back to a hard `#2d2d2d` when it is missing. Every real VS Code theme
- * defines it, but this palette never did, because until the Pipelines tab moved
- * onto `workflow-flow.css` nothing photographed a raised surface — the only
- * other consumer is `App.svelte`'s `.skip-link`, which is translated off-screen
- * until focused. Left undefined, `builder-light.png` would have recorded
- * near-black Phase cards that no operator will ever see. `input` is this
- * palette's raised-surface role, the same one `--vscode-editorWidget-background`
- * takes.
- */
-function themeCss(theme: ThemeName): string {
-  const palette = THEMES[theme];
-  return `
-    :root {
-      color-scheme: ${theme === 'light' ? 'light' : 'dark'};
-      --vscode-font-family: Arial, sans-serif;
-      --vscode-editor-font-family: monospace;
-      --vscode-font-size: 14px;
-      --vscode-foreground: ${palette.foreground};
-      --vscode-descriptionForeground: ${palette.muted};
-      --vscode-disabledForeground: ${palette.muted};
-      --vscode-editor-background: ${palette.background};
-      --vscode-sideBar-background: ${palette.background};
-      --vscode-editorWidget-background: ${palette.input};
-      --vscode-editorWidget-border: ${palette.border};
-      --vscode-panel-border: ${palette.border};
-      --vscode-sideBarSectionHeader-background: ${palette.input};
-      --vscode-sideBarSectionHeader-border: ${palette.border};
-      --vscode-widget-border: ${palette.border};
-      --vscode-widget-shadow: rgba(0, 0, 0, 0.35);
-      --vscode-input-background: ${palette.input};
-      --vscode-input-foreground: ${palette.foreground};
-      --vscode-input-border: ${palette.border};
-      --vscode-button-background: ${palette.blue};
-      --vscode-button-foreground: ${theme === 'light' ? '#ffffff' : '#000000'};
-      --vscode-button-hoverBackground: ${palette.focus};
-      --vscode-button-secondaryBackground: ${palette.input};
-      --vscode-button-secondaryForeground: ${palette.foreground};
-      --vscode-button-secondaryHoverBackground: ${palette.hover};
-      --vscode-button-border: ${palette.border};
-      --vscode-list-hoverBackground: ${palette.hover};
-      --vscode-list-activeSelectionBackground: ${palette.active};
-      --vscode-list-activeSelectionForeground: ${palette.foreground};
-      --vscode-toolbar-hoverBackground: ${palette.hover};
-      --vscode-focusBorder: ${palette.focus};
-      --vscode-badge-background: ${palette.blue};
-      --vscode-badge-foreground: ${theme === 'light' ? '#ffffff' : '#000000'};
-      --vscode-charts-blue: ${palette.blue};
-      --vscode-charts-green: ${palette.green};
-      --vscode-charts-yellow: ${palette.yellow};
-      --vscode-charts-orange: ${palette.yellow};
-      --vscode-charts-red: ${palette.red};
-      --vscode-charts-purple: ${palette.purple};
-      --vscode-errorForeground: ${palette.red};
-      --vscode-editorWarning-foreground: ${palette.yellow};
-      --vscode-notificationsInfoIcon-foreground: ${palette.blue};
-      --vscode-notificationsWarningIcon-foreground: ${palette.yellow};
-      --vscode-testing-iconPassed: ${palette.green};
-      --vscode-testing-iconFailed: ${palette.red};
-      --vscode-testing-iconQueued: ${palette.yellow};
-      --vscode-textBlockQuote-background: ${palette.input};
-      --vscode-textCodeBlock-background: ${palette.input};
-      --vscode-textLink-foreground: ${palette.blue};
-      --vscode-editorHoverWidget-background: ${palette.input};
-      --vscode-editorHoverWidget-foreground: ${palette.foreground};
-      --vscode-editorHoverWidget-border: ${palette.border};
-      --vscode-inputValidation-errorBackground: ${palette.input};
-      --vscode-inputValidation-errorBorder: ${palette.red};
-      --vscode-inputValidation-infoBackground: ${palette.input};
-      --vscode-inputValidation-warningBackground: ${palette.input};
-      --vscode-inputValidation-warningBorder: ${palette.yellow};
-      --vscode-inputValidation-warningForeground: ${palette.yellow};
-    }
-    html, body { background: ${palette.background} !important; }
-    *, *::before, *::after { animation: none !important; transition: none !important; }
-  `;
-}
 
 async function installDeterministicHost(page: Page): Promise<void> {
   // Installed here rather than per test so no test can forget it: every test in
@@ -747,6 +598,65 @@ for (const theme of ['light', 'dark', 'high-contrast'] as const) {
 }
 
 /**
+ * Room a number field keeps for its spin button. Chromium lays the button out on
+ * every enabled number field and only fades it in on hover, so the text never
+ * gets that width back.
+ */
+const NUMBER_SPIN_BUTTON_ALLOWANCE_PX = 20;
+
+/**
+ * A placeholder that names a field's unset state ("Unset — no bound") is the
+ * only place the operator reads that state, and a field too narrow for it says
+ * something else ("Unset — no"). The pixel gate cannot hold this: a cut-off
+ * placeholder is a stable picture, and the next baseline refresh adopts it.
+ *
+ * The text is measured in the field's own font rather than read back from the
+ * layout, because nothing a script can reach reports a placeholder's overflow.
+ */
+test('every settings placeholder fits inside its field', async ({ page }) => {
+  const settings = await openSurface(page, 'settings', 'light');
+  const { measured, cutOff } = await settings
+    .locator('input[placeholder]:not([placeholder=""]), textarea[placeholder]:not([placeholder=""])')
+    .evaluateAll((fields, spinButtonAllowance) => {
+      // Through `ownerDocument`, as `collectUndersizedTargets` reaches the page:
+      // the tests' TypeScript program has no DOM globals.
+      const named: string[] = [];
+      const tooNarrow: string[] = [];
+      for (const field of fields) {
+        const style = field.ownerDocument.defaultView?.getComputedStyle(field);
+        const context = field.ownerDocument.createElement('canvas').getContext('2d');
+        if (!style || !context || field.getClientRects().length === 0) continue;
+        const placeholder = field.getAttribute('placeholder') ?? '';
+        context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        const needed = context.measureText(placeholder).width;
+        const spinButton = field.getAttribute('type') === 'number' ? spinButtonAllowance : 0;
+        const room =
+          field.clientWidth -
+          Number.parseFloat(style.paddingLeft) -
+          Number.parseFloat(style.paddingRight) -
+          spinButton;
+        const name = field.getAttribute('data-testid') ?? field.outerHTML.slice(0, 140);
+        named.push(name);
+        if (needed > room) {
+          tooNarrow.push(
+            `${name}: "${placeholder}" needs ${Math.ceil(needed)}px and has ${Math.floor(room)}px`
+          );
+        }
+      }
+      return { measured: named, cutOff: tooNarrow };
+    }, NUMBER_SPIN_BUTTON_ALLOWANCE_PX);
+  // Named, because the empty list below passes just as well when nothing was measured.
+  expect(measured, 'the fields this was written for were measured').toEqual(
+    expect.arrayContaining([
+      'general-settings-input-spendMaxUsdPerRun',
+      'general-settings-input-claudeAutoCompactPctOverride'
+    ])
+  );
+  expect(cutOff, 'a settings field cuts off its own placeholder').toEqual([]);
+  assertNoPageErrors(page, 'settings placeholders');
+});
+
+/**
  * T587d — the half of SC-009b the unit suite cannot hold.
  *
  * `App.route-loading.test.ts` covers the *mechanism* of recovery: a mount
@@ -935,6 +845,111 @@ async function collectUndersizedTargets(page: Page): Promise<string[]> {
   );
 }
 
+/**
+ * How far below its row-name button each span after one starts, in px, named by the button's text.
+ * A negative offset means the span shares the button's line.
+ */
+async function rowNameFollowerOffsets(page: Page): Promise<{ name: string; offset: number }[]> {
+  return page.locator('.sg button.rowname + span').evaluateAll((followers) =>
+    followers.flatMap((follower) => {
+      const rowName = follower.previousElementSibling;
+      if (!rowName) return [];
+      const nameBox = rowName.getBoundingClientRect();
+      if (nameBox.height === 0) return [];
+      const offset = follower.getBoundingClientRect().top - nameBox.bottom;
+      return [{ name: rowName.textContent.trim(), offset }];
+    })
+  );
+}
+
+/** How far a follower's box may rise above the row name's bottom edge and still count as below it. */
+const ROW_NAME_FOLLOWER_TOLERANCE_PX = 2;
+
+/** Where a table's row name sits against the rest of its row, in px. */
+interface RowNamePlacement {
+  readonly name: string;
+  /** How far the name's box sits below the top of its cell's content. */
+  readonly drop: number;
+  /**
+   * For each other cell with text, how far the name's first line sits below that cell's first
+   * line, with the text the cell starts with. Negative when the name sits higher.
+   */
+  readonly cells: readonly { readonly cell: string; readonly offset: number }[];
+}
+
+/**
+ * Where each row name in `table` sits against the rest of its row. Text that is not drawn, being
+ * hidden or clipped to a pixel for a screen reader, is skipped, and so is a cell with none.
+ */
+async function rowNamePlacements(table: Locator): Promise<RowNamePlacement[]> {
+  return table.locator('tr button.rowname').evaluateAll((rowNames) => {
+    // Through `ownerDocument`, as `collectUndersizedTargets` reaches the page: the tests'
+    // TypeScript program has no DOM globals, `NodeFilter` among them.
+    const SHOW_TEXT = 0x4;
+    const firstLine = (
+      root: (typeof rowNames)[number]
+    ): { top: number; text: string } | undefined => {
+      const walker = root.ownerDocument.createTreeWalker(root, SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.textContent?.trim() ?? '';
+        const box = node.parentElement?.getBoundingClientRect();
+        if (!text || !box || box.width <= 1 || box.height <= 1) continue;
+        const range = root.ownerDocument.createRange();
+        range.selectNodeContents(node);
+        const line = range.getClientRects().item(0);
+        if (line && line.height > 0) return { top: line.top, text };
+      }
+      return undefined;
+    };
+    return rowNames.flatMap((rowName) => {
+      const nameCell = rowName.closest('td');
+      const row = nameCell?.parentElement;
+      const name = firstLine(rowName);
+      const cellStyle = nameCell?.ownerDocument.defaultView?.getComputedStyle(nameCell);
+      if (!nameCell || !row || !name || !cellStyle) return [];
+      const contentTop =
+        nameCell.getBoundingClientRect().top +
+        Number.parseFloat(cellStyle.borderTopWidth) +
+        Number.parseFloat(cellStyle.paddingTop);
+      const cells = [...row.children].flatMap((cell) => {
+        const first = cell === nameCell ? undefined : firstLine(cell);
+        return first ? [{ cell: first.text, offset: Math.round(name.top - first.top) }] : [];
+      });
+      return [{ name: name.text, drop: Math.round(rowName.getBoundingClientRect().top - contentTop), cells }];
+    });
+  });
+}
+
+/**
+ * How far a row name's first line may sit from the first line of another cell in its row. Text set
+ * smaller, such as a chip's caption, starts a few px lower on the same line.
+ */
+const ROW_NAME_FIRST_LINE_TOLERANCE_PX = 4;
+
+/** How far a row name's box may sit below the top of its cell, for rounding. */
+const ROW_NAME_DROP_TOLERANCE_PX = 1;
+
+/**
+ * Asserts that `table` has named rows, each with text beside its name, and that every name starts
+ * at the top of its cell, on the first line of its row.
+ */
+async function expectRowNamesOnFirstLine(table: Locator, what: string): Promise<void> {
+  const rows = await rowNamePlacements(table);
+  expect(rows.length, `the ${what} table has named rows`).toBeGreaterThan(0);
+  expect(
+    rows.filter(({ cells }) => cells.length === 0),
+    `a ${what} row has text beside its name`
+  ).toEqual([]);
+  expect(
+    rows.filter(
+      ({ drop, cells }) =>
+        drop > ROW_NAME_DROP_TOLERANCE_PX ||
+        cells.some(({ offset }) => Math.abs(offset) > ROW_NAME_FIRST_LINE_TOLERANCE_PX)
+    ),
+    `a ${what} name starts at the top of its cell, on the first line of its row`
+  ).toEqual([]);
+}
+
 test.describe('responsive accessibility hardening', () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
 
@@ -1051,4 +1066,236 @@ test.describe('responsive accessibility hardening', () => {
 
     assertNoPageErrors(page, 'settings coarse-pointer deep walk');
   });
+
+  /**
+   * Finding 31 of the webview port review. The theme's coarse-pointer block makes every button at
+   * least 44px wide, so a row name narrower than that left a gap after it, before the tag or the
+   * id that follows it on its line. Under a coarse pointer that follower takes the line below the
+   * name instead. Both lists that put one there are measured: the Queues table, whose default
+   * queue carries a tag, and the Phases list, where every name has its id after it.
+   *
+   * Measured at a tablet's width, because at the walk's 390px the name cells are too narrow for
+   * a name and its follower to share a line, so the gap cannot appear there.
+   */
+  test.describe('at a tablet width', () => {
+    test.use({ viewport: { width: 1024, height: 768 } });
+
+    test('puts the tag or id after a row name on the line below it', async ({ page }) => {
+      await installDeterministicHost(page);
+      await page.goto('/dashboard.html');
+      await page.addStyleTag({ content: themeCss('dark') });
+      await publishSnapshot(page);
+      await expect(page.getByTestId('queues-tier')).toBeVisible();
+      await expect.poll(() => page.evaluate("matchMedia('(pointer: coarse)').matches")).toBe(true);
+      await expect(page.getByTestId('queue-default-tag')).toBeVisible();
+
+      const queueRows = await rowNameFollowerOffsets(page);
+      expect(queueRows.length, 'the default queue tags its name').toBeGreaterThan(0);
+      expect(
+        queueRows.filter(({ offset }) => offset < -ROW_NAME_FOLLOWER_TOLERANCE_PX),
+        'a queue name keeps its tag on the line below'
+      ).toEqual([]);
+
+      await page.getByTestId('dashboard-route-builder').click();
+      await assertRouteMounted(page, 'builder', ROUTE_MOUNT_TARGETS.builder);
+      await page.getByRole('tab', { name: 'Phases' }).click();
+      await expect(page.getByTestId(/^phases-list-item-/).first()).toBeVisible();
+
+      const phaseRows = await rowNameFollowerOffsets(page);
+      expect(phaseRows.length, 'every Phase name has its id after it').toBeGreaterThan(0);
+      expect(
+        phaseRows.filter(({ offset }) => offset < -ROW_NAME_FOLLOWER_TOLERANCE_PX),
+        'a Phase name keeps its id on the line below'
+      ).toEqual([]);
+
+      assertNoPageErrors(page, 'row-name followers under a coarse pointer');
+    });
+
+    /**
+     * Raised in the webview port review's hand-over. The coarse-pointer block makes a row name's
+     * button at least 44px tall and centres its label in that height, while every cell of a table
+     * row starts at its top, so a name on one line sat 9 to 12px below the rest of its row. The
+     * name also has to stay at the top of its cell: a cell of icon buttons, such as a run's menu or
+     * a Phase's order controls, must not push the row down to line up an icon. The three tables
+     * whose rows lead with a name are measured: Queues, the Phases list and History.
+     */
+    test('starts a row name on the first line of its row', async ({ page }) => {
+      await installDeterministicHost(page);
+      await page.goto('/dashboard.html');
+      await page.addStyleTag({ content: themeCss('dark') });
+      await publishSnapshot(page);
+      await expect(page.getByTestId('queues-tier')).toBeVisible();
+      await expect.poll(() => page.evaluate("matchMedia('(pointer: coarse)').matches")).toBe(true);
+
+      await expectRowNamesOnFirstLine(page.getByRole('table', { name: 'Queues' }), 'queue');
+
+      await page.getByTestId('dashboard-route-builder').click();
+      await assertRouteMounted(page, 'builder', ROUTE_MOUNT_TARGETS.builder);
+      await page.getByRole('tab', { name: 'Phases' }).click();
+      await expect(page.getByTestId(/^phases-list-item-/).first()).toBeVisible();
+      await expectRowNamesOnFirstLine(page.getByRole('table', { name: 'Phases' }), 'Phase');
+
+      await page.getByTestId('dashboard-route-history').click();
+      await assertRouteMounted(page, 'history', ROUTE_MOUNT_TARGETS.history);
+      const runsTable = page.getByRole('table', { name: 'Runs, newest first' });
+      await expect(runsTable).toBeVisible();
+      await expectRowNamesOnFirstLine(runsTable, 'run');
+
+      assertNoPageErrors(page, 'row-name first lines under a coarse pointer');
+    });
+  });
+});
+
+/**
+ * Finding 68 of the webview redesign review. Below 761px the Workflows tab stacks its panes, so the
+ * Add steps palette folds up over the canvas instead of in towards it, and its toggle's chevron
+ * turns a quarter with it: up to collapse, down to expand. The builder photographs keep the
+ * side-by-side width, where it points left and right as the redesign draws it.
+ */
+test.describe('the stacked Workflows tab', () => {
+  test.use({ viewport: { width: 760, height: 900 } });
+
+  test('the Add steps toggle points the way the stacked palette folds', async ({ page }) => {
+    await installDeterministicHost(page);
+    await page.goto('/dashboard.html');
+    await page.addStyleTag({ content: themeCss('dark') });
+    await publishSnapshot(page);
+    await page.getByTestId('dashboard-route-builder').click();
+    await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
+    await page.getByRole('tab', { name: 'Workflows' }).click();
+    const picker = page.getByTestId('workflow-picker-toggle');
+    if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
+    await page.getByTestId('workflows-list-item-dev-new-feature').click();
+
+    const toggle = page.getByTestId('workflow-palette-toggle');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    // Degrees the chevron is turned clockwise, read from the computed transform.
+    const chevronTurn = (): Promise<unknown> =>
+      page.evaluate(`(() => {
+        const icon = document.querySelector('[data-testid="workflow-palette-toggle"] svg');
+        const matrix = new DOMMatrix(getComputedStyle(icon).transform);
+        return Math.round((Math.atan2(matrix.b, matrix.a) * 180) / Math.PI);
+      })()`);
+    await expect(toggle.locator('use')).toHaveAttribute('href', '#i-collapse');
+    await expect.poll(chevronTurn, 'the collapse chevron points up').toBe(90);
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(toggle.locator('use')).toHaveAttribute('href', '#i-expand');
+    await expect.poll(chevronTurn, 'the expand chevron points down').toBe(90);
+    // Collapsed, the stacked palette is a bar across the page rather than a 40px rail.
+    await expect(
+      page.getByTestId('workflow-action-palette').getByText('Add steps', { exact: true }),
+      'the collapsed bar keeps its title'
+    ).toBeVisible();
+
+    assertNoPageErrors(page, 'stacked Workflows tab');
+  });
+});
+
+/** One control of the Workflow editor's head, as the keyboard meets it, and where it is drawn. */
+interface HeadStop {
+  readonly unit: unknown;
+  readonly name: string;
+  readonly top: number;
+  readonly bottom: number;
+  readonly left: number;
+}
+
+/**
+ * Where the Workflow editor's head breaks reading order, as "from -> to" pairs of the controls
+ * the keyboard meets in turn. Read left to right and top to bottom, each control must sit on the
+ * same line as the one before it and to its right, or on a later line. The open Workflow list
+ * counts as one control, its own box, so rows scrolled out of its height stay out of the measure.
+ */
+async function editorHeadOrderBreaks(page: Page): Promise<string[]> {
+  return page.locator('[data-testid="workflow-catalog-editor"] .ed-head').evaluate((head) => {
+    const list = head.querySelector('[data-testid="workflow-picker-list"]');
+    const stops: HeadStop[] = [];
+    for (const element of head.querySelectorAll('button, a[href], input, select, textarea, [tabindex]')) {
+      if (element.tabIndex < 0 || element.matches(':disabled') || !element.checkVisibility()) continue;
+      const unit = list?.contains(element) === true ? list : element;
+      if (stops.at(-1)?.unit === unit) continue;
+      const { top, bottom, left } = unit.getBoundingClientRect();
+      const name = unit.getAttribute('data-testid') ?? unit.getAttribute('aria-label') ?? unit.tagName;
+      stops.push({ unit, name, top, bottom, left });
+    }
+    const breaks: string[] = [];
+    let before: HeadStop | undefined;
+    for (const stop of stops) {
+      if (before !== undefined) {
+        const laterLine = stop.top >= before.bottom - 1;
+        const sameLineAfter = stop.top < before.bottom && stop.bottom > before.top && stop.left >= before.left;
+        if (!laterLine && !sameLineAfter) breaks.push(`${before.name} -> ${stop.name}`);
+      }
+      before = stop;
+    }
+    return breaks;
+  });
+}
+
+/**
+ * The open Workflow list is the switcher's: it comes straight after the switcher in the DOM and
+ * the tab order, so it must come straight after the switcher's line on screen too, with the
+ * head's actions after it. Drawn below the actions, a list the keyboard reaches before them sends
+ * focus down and then back up the page (WCAG 2.4.3). Finding 54 of the webview port review.
+ */
+test('the open Workflow list comes after the switcher on screen as in the tab order', async ({
+  page
+}) => {
+  await installDeterministicHost(page);
+  await page.goto('/dashboard.html');
+  await page.addStyleTag({ content: themeCss('dark') });
+  await publishSnapshot(page);
+  await page.getByTestId('dashboard-route-builder').click();
+  await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
+  await page.getByRole('tab', { name: 'Workflows' }).click();
+  const picker = page.getByTestId('workflow-picker-toggle');
+  if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
+  await expect(page.getByTestId('workflow-picker-list')).toBeVisible();
+  expect(await editorHeadOrderBreaks(page), 'with no Workflow open').toEqual([]);
+
+  await page.getByTestId('workflows-list-item-dev-new-feature').click();
+  await expect(page.getByTestId('workflow-field-name')).toBeVisible();
+  await picker.click();
+  await expect(page.getByTestId('workflow-picker-list')).toBeVisible();
+  expect(await editorHeadOrderBreaks(page), 'with a Workflow open').toEqual([]);
+
+  assertNoPageErrors(page, 'Workflow picker order');
+});
+
+/**
+ * The space under the Builder's tabs. The workflow builder mockup draws its editor 10px under its
+ * tabs, and the surfaces mockup, which leaves the Workflows tab to it, spaces its other pages 14px
+ * under theirs. Finding 66 of the webview port review.
+ */
+test('the Workflow editor stands as far under the tabs as the builder mockup draws it', async ({
+  page
+}) => {
+  await installDeterministicHost(page);
+  await page.goto('/dashboard.html');
+  await page.addStyleTag({ content: themeCss('dark') });
+  await publishSnapshot(page);
+  await page.getByTestId('dashboard-route-builder').click();
+  await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
+  // Pixels from the tabs' bottom edge down to the top of the box the selector names.
+  const gapUnderTabs = (selector: string): Promise<unknown> =>
+    page.evaluate(`(() => {
+      const tabs = document.querySelector('.builder-tabs').getBoundingClientRect();
+      const below = document.querySelector('${selector}').getBoundingClientRect();
+      return Math.round((below.top - tabs.bottom) * 10) / 10;
+    })()`);
+  await expect.poll(() => gapUnderTabs('.builder-canvas'), 'under the Phases tab').toBe(14);
+
+  await page.getByRole('tab', { name: 'Workflows' }).click();
+  const head = '[data-testid="workflow-catalog-editor"] .ed-head';
+  await expect(page.locator(head)).toBeVisible();
+  await expect.poll(() => gapUnderTabs(head), 'with no Workflow open').toBe(10);
+  const picker = page.getByTestId('workflow-picker-toggle');
+  if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
+  await page.getByTestId('workflows-list-item-dev-new-feature').click();
+  await expect(page.getByTestId('workflow-field-name')).toBeVisible();
+  await expect.poll(() => gapUnderTabs(head), 'with a Workflow open').toBe(10);
+
+  assertNoPageErrors(page, 'Builder tabs spacing');
 });

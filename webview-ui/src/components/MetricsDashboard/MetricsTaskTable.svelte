@@ -2,6 +2,7 @@
   import type { PhaseRecord, TaskRecord } from '../../lib/messages';
   import { formatDuration } from '../../lib/format-duration';
   import { formatAbsoluteTime, formatPhaseLabel } from '../../lib/format';
+  import { runStatusChip } from '../../lib/run-status-chip';
 
   export type MetricsSortKey =
     | 'description'
@@ -34,6 +35,33 @@
     onPageChange
   }: Props = $props();
 
+  interface SortColumn {
+    readonly key: MetricsSortKey;
+    readonly label: string;
+    readonly numeric: boolean;
+  }
+
+  // The order is the table's: the visual suite masks the start and end columns by position.
+  const SORT_COLUMNS: readonly SortColumn[] = [
+    { key: 'description', label: 'Run', numeric: false },
+    { key: 'startTime', label: 'Started', numeric: false },
+    { key: 'endTime', label: 'Finished', numeric: false },
+    { key: 'durationMs', label: 'Duration', numeric: true },
+    { key: 'phasesTotal', label: 'Steps', numeric: true },
+    { key: 'totalCostUsd', label: 'Cost', numeric: true },
+    { key: 'status', label: 'Status', numeric: false }
+  ];
+  const COLUMN_COUNT = SORT_COLUMNS.length + 1;
+
+  // A step's outcome takes the tone its run would: done, failed, passed over, or stopped short.
+  const PHASE_OUTCOME_TONES: Readonly<Record<NonNullable<PhaseRecord['outcome']>, string>> = {
+    completed: 's-ok',
+    failed: 's-err',
+    skipped: 's-idle',
+    jumped: 's-warn',
+    'paused-at-breakpoint': 's-warn'
+  };
+
   function formatCost(value: number | undefined): string {
     return value === undefined ? 'Not recorded' : `$${value.toFixed(2)}`;
   }
@@ -49,211 +77,194 @@
     }
   }
 
+  function phaseTone(outcome: PhaseRecord['outcome']): string {
+    return outcome === undefined ? 's-run' : PHASE_OUTCOME_TONES[outcome];
+  }
+
+  // History's chip for the same state, so a run reads alike on both pages. A run
+  // that is neither running nor finished has no status to show.
+  function taskChip(task: TaskRecord): ReturnType<typeof runStatusChip> | null {
+    if (task.isRunning) return runStatusChip('running');
+    return task.status === undefined ? null : runStatusChip(task.status);
+  }
 </script>
 
-<div class="table-scroll">
-  <table class="task-table" data-testid="metrics-task-table">
-    <thead>
-      <tr>
-        <th class="expand-col"><span class="visually-hidden">Expand</span></th>
-        <th aria-sort={ariaSort('description')}>
-          <button type="button" class="sort-button" data-testid="metrics-sort-description" onclick={() => onSort('description')}>Description</button>
-        </th>
-        <th aria-sort={ariaSort('startTime')}>
-          <button type="button" class="sort-button" data-testid="metrics-sort-startTime" onclick={() => onSort('startTime')}>Start Time</button>
-        </th>
-        <th aria-sort={ariaSort('endTime')}>
-          <button type="button" class="sort-button" data-testid="metrics-sort-endTime" onclick={() => onSort('endTime')}>End Time</button>
-        </th>
-        <th aria-sort={ariaSort('durationMs')}>
-          <button type="button" class="sort-button" data-testid="metrics-sort-durationMs" onclick={() => onSort('durationMs')}>Duration</button>
-        </th>
-        <th aria-sort={ariaSort('phasesTotal')}>
-          <button type="button" class="sort-button" data-testid="metrics-sort-phasesTotal" onclick={() => onSort('phasesTotal')}>Phases</button>
-        </th>
-        <th aria-sort={ariaSort('totalCostUsd')}>
-          <button type="button" class="sort-button" data-testid="metrics-sort-totalCostUsd" onclick={() => onSort('totalCostUsd')}>Cost</button>
-        </th>
-        <th aria-sort={ariaSort('status')}>
-          <button type="button" class="sort-button" data-testid="metrics-sort-status" onclick={() => onSort('status')}>Status</button>
-        </th>
-      </tr>
-    </thead>
-    <tbody>
-      {#each tasks as task (task.runId)}
-        {@const expanded = expandedRunIds.has(task.runId)}
-        <tr
-          class="task-row"
-          class:expanded
-          data-testid="metrics-task-row-{task.runId}"
-        >
-          <td class="expand-cell">
-            <button
-              type="button"
-              class="expand-toggle"
-              aria-expanded={expanded}
-              aria-label={`${expanded ? 'Collapse' : 'Expand'} phase detail for ${task.description}`}
-              data-testid="metrics-task-expand-{task.runId}"
-              onclick={(event) => onExpandToggleClick(event, task.runId)}
-            >{expanded ? '▾' : '▸'}</button>
-          </td>
-          <td class="description-cell">
-            {task.description}
-            {#if task.source === 'phase-reconstruction'}
-              <span
-                class="badge reconstructed-badge"
-                title="Reconstructed from phase activity — no direct task record"
-              >Reconstructed</span>
-            {/if}
-          </td>
-          <td>{formatAbsoluteTime(task.startTime)}</td>
-          <td>{task.endTime ? formatAbsoluteTime(task.endTime) : '—'}</td>
-          <td>{formatDuration(task.durationMs)}</td>
-          <td>{task.phasesCompleted}/{task.phasesTotal}</td>
-          <td class:cost-not-recorded={task.totalCostUsd === undefined}>{formatCost(task.totalCostUsd)}</td>
-          <td>
-            {#if task.isRunning}
-              <span class="badge status-running">Running</span>
-            {:else}
-              <span class="badge status-{task.status}">{task.status}</span>
-            {/if}
-          </td>
+<section class="section runs" aria-labelledby="metrics-runs-heading">
+  <h2 id="metrics-runs-heading">Runs</h2>
+  <div class="table-wrap">
+    <table class="t" data-testid="metrics-task-table">
+      <thead>
+        <tr>
+          <th scope="col" class="expand-col"><span class="sr-only">Expand</span></th>
+          {#each SORT_COLUMNS as column (column.key)}
+            {@const sort = ariaSort(column.key)}
+            <th scope="col" class:num={column.numeric} aria-sort={sort}>
+              <button type="button" data-testid="metrics-sort-{column.key}" onclick={() => onSort(column.key)}
+                >{column.label}{#if sort !== 'none'}<svg class="i" aria-hidden="true"><use href="#i-chev"></use></svg>{/if}</button>
+            </th>
+          {/each}
         </tr>
-        {#if expanded}
-          <tr class="phase-detail-row">
-            <td colspan="8">
-              <table class="phase-table" data-testid="metrics-phase-table-{task.runId}">
-                <thead>
-                  <tr>
-                    <th>Phase</th>
-                    <th>Start Time</th>
-                    <th>End Time</th>
-                    <th>Duration</th>
-                    <th>Backend Calls</th>
-                    <th>Cost</th>
-                    <th>Outcome</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <!-- Array-position identity avoids collisions after host display truncation. -->
-                  {#each task.phases as phase, phaseIndex (phaseIndex)}
-                    <tr data-testid="metrics-phase-row-{task.runId}-{phaseIndex}">
-                      <td>{formatPhaseLabel(phase.phaseType)} <span class="iteration-tag">#{phase.iteration}</span></td>
-                      <td>{formatAbsoluteTime(phase.startTime)}</td>
-                      <td>{phase.endTime ? formatAbsoluteTime(phase.endTime) : '—'}</td>
-                      <td>{phase.durationMs !== undefined ? formatDuration(phase.durationMs) : '—'}</td>
-                      <td>{phase.backendInvocations}</td>
-                      <td class:cost-not-recorded={phase.costUsd === undefined}>{formatCost(phase.costUsd)}</td>
-                      <td><span class="badge outcome-{phase.outcome ?? 'running'}">{formatPhaseOutcome(phase.outcome)}</span></td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
+      </thead>
+      <tbody>
+        {#each tasks as task (task.runId)}
+          {@const expanded = expandedRunIds.has(task.runId)}
+          {@const chip = taskChip(task)}
+          <tr
+            class="task-row"
+            class:expanded
+            data-testid="metrics-task-row-{task.runId}"
+          >
+            <td class="expand-cell">
+              <button
+                type="button"
+                class="icon-btn expand-toggle"
+                aria-expanded={expanded}
+                aria-label={`${expanded ? 'Collapse' : 'Expand'} phase detail for ${task.description}`}
+                data-testid="metrics-task-expand-{task.runId}"
+                onclick={(event) => onExpandToggleClick(event, task.runId)}
+              ><svg class="i" aria-hidden="true"><use href="#i-chev"></use></svg></button>
+            </td>
+            <td class="description-cell">
+              {task.description}
+              {#if task.source === 'phase-reconstruction'}
+                <span class="tag" title="Reconstructed from phase activity — no direct task record"
+                  >Reconstructed</span>
+              {/if}
+            </td>
+            <td class="nowrap">{formatAbsoluteTime(task.startTime)}</td>
+            <td class="nowrap">{task.endTime ? formatAbsoluteTime(task.endTime) : '—'}</td>
+            <td class="num">{formatDuration(task.durationMs)}</td>
+            <td class="num">{task.phasesCompleted}/{task.phasesTotal}</td>
+            <td class="num" class:cost-not-recorded={task.totalCostUsd === undefined}>{formatCost(task.totalCostUsd)}</td>
+            <td>
+              {#if chip}
+                <span class="chip {chip.tone}"
+                  >{#if chip.icon}<svg class="i" aria-hidden="true"><use href={chip.icon}></use></svg>{:else}<span
+                      class="dot"
+                      aria-hidden="true"
+                    ></span>{/if}{chip.label}</span>
+              {/if}
             </td>
           </tr>
-        {/if}
-      {/each}
-    </tbody>
-  </table>
-</div>
-
-{#if pageCount > 1}
-  <div class="pagination" data-testid="metrics-pagination">
-    <button
-      type="button"
-      data-testid="metrics-page-prev"
-      disabled={currentPage === 0}
-      aria-label="Previous page"
-      onclick={() => onPageChange(currentPage - 1)}
-    >Prev</button>
-    <span class="page-indicator">Page {currentPage + 1} of {pageCount}</span>
-    <button
-      type="button"
-      data-testid="metrics-page-next"
-      disabled={currentPage >= pageCount - 1}
-      aria-label="Next page"
-      onclick={() => onPageChange(currentPage + 1)}
-    >Next</button>
+          {#if expanded}
+            <tr class="phase-detail-row">
+              <td colspan={COLUMN_COUNT}>
+                <div class="table-wrap">
+                <table class="t fit" data-testid="metrics-phase-table-{task.runId}">
+                  <thead>
+                    <tr>
+                      <th scope="col">Step</th>
+                      <th scope="col">Started</th>
+                      <th scope="col">Finished</th>
+                      <th scope="col" class="num">Duration</th>
+                      <th scope="col" class="num">Backend calls</th>
+                      <th scope="col" class="num">Cost</th>
+                      <th scope="col">Outcome</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <!-- Array-position identity avoids collisions after host display truncation. -->
+                    {#each task.phases as phase, phaseIndex (phaseIndex)}
+                      <tr data-testid="metrics-phase-row-{task.runId}-{phaseIndex}">
+                        <td>{formatPhaseLabel(phase.phaseType)} <span class="muted">#{phase.iteration}</span></td>
+                        <td class="nowrap">{formatAbsoluteTime(phase.startTime)}</td>
+                        <td class="nowrap">{phase.endTime ? formatAbsoluteTime(phase.endTime) : '—'}</td>
+                        <td class="num">{phase.durationMs !== undefined ? formatDuration(phase.durationMs) : '—'}</td>
+                        <td class="num">{phase.backendInvocations}</td>
+                        <td class="num" class:cost-not-recorded={phase.costUsd === undefined}>{formatCost(phase.costUsd)}</td>
+                        <td><span class="chip {phaseTone(phase.outcome)}"
+                          ><span class="dot" aria-hidden="true"></span>{formatPhaseOutcome(phase.outcome)}</span></td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+                </div>
+              </td>
+            </tr>
+          {/if}
+        {/each}
+      </tbody>
+    </table>
   </div>
-{/if}
+
+  {#if pageCount > 1}
+    <div class="pager" data-testid="metrics-pagination">
+      <span class="small muted">Page {currentPage + 1} of {pageCount}</span>
+      <button
+        type="button"
+        class="btn btn-secondary btn-sm"
+        data-testid="metrics-page-prev"
+        disabled={currentPage === 0}
+        aria-label="Previous page"
+        onclick={() => onPageChange(currentPage - 1)}
+      >Previous</button>
+      <button
+        type="button"
+        class="btn btn-secondary btn-sm"
+        data-testid="metrics-page-next"
+        disabled={currentPage >= pageCount - 1}
+        aria-label="Next page"
+        onclick={() => onPageChange(currentPage + 1)}
+      >Next</button>
+    </div>
+  {/if}
+</section>
 
 <style>
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-  .table-scroll { overflow-x: auto; }
   .expand-col,
-  .expand-cell { width: 1.5em; }
-  .sort-button,
+  .expand-cell {
+    width: 1px;
+    padding-right: 0;
+  }
+  /* Centred on the first line of the row's text, which the cells align to. */
   .expand-toggle {
-    background: transparent;
-    border: none;
-    color: inherit;
-    font: inherit;
-    cursor: pointer;
+    width: 22px;
+    height: 22px;
+    margin-block: -2px;
+    color: var(--schegent-muted-fg);
   }
-  .sort-button {
-    font-weight: 600;
-    padding: 0;
+  /* The chevron points right while the row is closed and down once it is open. */
+  .expand-toggle .i {
+    transform: rotate(-90deg);
   }
-  .expand-toggle { padding: 0 4px; }
-  .task-row { cursor: default; }
-  .task-row:hover { background: var(--schegent-list-hover); }
-  .task-row.expanded { background: var(--schegent-list-active); }
+  .task-row.expanded .expand-toggle .i {
+    transform: none;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .expand-toggle .i {
+      transition: transform 150ms ease-out;
+    }
+  }
+  /* A sorted column's chevron points down for descending and up for ascending. */
+  th[aria-sort='ascending'] .i {
+    transform: rotate(180deg);
+  }
+  .task-row.expanded {
+    background: var(--schegent-list-active);
+  }
   .description-cell {
-    white-space: normal;
-    word-break: break-word;
+    min-width: 200px;
+    overflow-wrap: anywhere;
   }
-  .badge {
-    display: inline-block;
-    border: 1px solid var(--schegent-border);
-    border-radius: 999px;
-    padding: 0 6px;
-    font-size: 0.85em;
+  .description-cell .tag {
+    margin-left: var(--schegent-space-1-5);
   }
-  .reconstructed-badge {
-    margin-left: 6px;
-    color: var(--schegent-color-disabled);
-    border-color: currentColor;
+  .nowrap,
+  td.num {
+    white-space: nowrap;
   }
-  .status-completed,
-  .outcome-completed { color: var(--schegent-color-completed); border-color: currentColor; }
-  .status-failed,
-  .outcome-failed { color: var(--schegent-error-text); border-color: currentColor; }
-  .status-canceled,
-  .outcome-skipped { color: var(--schegent-muted-fg); border-color: currentColor; }
-  .status-running,
-  .outcome-running { color: var(--schegent-color-active); border-color: currentColor; }
-  .outcome-jumped,
-  .outcome-paused-at-breakpoint { color: var(--schegent-color-warning); border-color: currentColor; }
-  .phase-detail-row td {
-    padding: 0 8px 8px calc(1.5em + 8px);
-    border-bottom: 1px solid var(--schegent-divider);
+  .phase-detail-row > td {
+    padding: 0 var(--schegent-space-3) var(--schegent-space-3) 34px;
+    background: var(--schegent-surface-subtle);
   }
-  .phase-table { font-size: 0.95em; }
-  .iteration-tag,
-  .page-indicator { color: var(--schegent-muted-fg); }
-  .pagination {
+  .pager {
     display: flex;
     align-items: center;
-    gap: var(--schegent-gap);
+    justify-content: flex-end;
+    gap: var(--schegent-space-2);
+    margin-top: var(--schegent-space-2);
   }
-  .pagination button {
-    background: var(--schegent-button-secondary-bg);
-    color: var(--schegent-button-secondary-fg);
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    padding: 2px 8px;
-    cursor: pointer;
+  .pager .muted {
+    margin-right: auto;
   }
-  .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .page-indicator { font-size: 0.9em; }
 </style>

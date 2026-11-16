@@ -7,6 +7,12 @@
   // location (FR-020) stays the single place a filter can change. That also
   // keeps the version-clearing rule below in one place rather than at every
   // call site that sets a definition.
+  //
+  // Drawn as the redesign's toolbar: the outcome as a segmented control, and
+  // every other filter as a pill. A pill is a native select laid invisibly over
+  // the pill's face, so the keyboard, a screen reader and the platform's own
+  // picker all meet the control the platform provides; the face only says what
+  // the select holds.
 
   import { RUN_STATUS_FILTERS } from '../lib/format';
   import {
@@ -33,9 +39,15 @@
   const anyActive = $derived(isFiltered(filters));
   const absolute = $derived(filters.range.kind === 'absolute' ? filters.range : null);
   // The mode a single control carries: 'all', one relative window, or 'custom'.
-  const rangeMode = $derived(
-    filters.range.kind === 'relative' ? filters.range.window : filters.range.kind
-  );
+  // 'custom' and not the range's own kind, 'absolute': the select offers no
+  // option by that name, and a value it cannot find leaves it showing nothing.
+  const rangeMode = $derived.by(() => {
+    if (filters.range.kind === 'relative') return filters.range.window;
+    return filters.range.kind === 'absolute' ? 'custom' : 'all';
+  });
+
+  const ANY_TIME_LABEL = 'Any time';
+  const CUSTOM_RANGE_LABEL = 'Custom range';
 
   /**
    * FR-021 — a value the rows no longer carry stays in the list and says so.
@@ -45,6 +57,21 @@
   function optionLabel(option: HistoryFilterOption): string {
     return option.missing ? `${option.label} (no longer present)` : option.label;
   }
+
+  /** What a pill shows for its chosen value: the option's words, or the raw value if it has none. */
+  function chosenLabel(choices: readonly HistoryFilterOption[], value: string): string {
+    const chosen = choices.find((option) => option.value === value);
+    return chosen === undefined ? value : optionLabel(chosen);
+  }
+
+  const originLabel = $derived(
+    HISTORY_ORIGIN_FILTERS.find((option) => option.value === filters.origin)?.label ?? filters.origin
+  );
+  const rangeLabel = $derived.by(() => {
+    if (rangeMode === 'all') return ANY_TIME_LABEL;
+    if (rangeMode === 'custom') return CUSTOM_RANGE_LABEL;
+    return HISTORY_RELATIVE_WINDOWS.find((choice) => choice.value === rangeMode)?.label ?? rangeMode;
+  });
 
   /** `''` is the "no value" option every select carries; the set stores `null`. */
   function orNull(value: string): string | null {
@@ -73,23 +100,85 @@
   }
 </script>
 
+<!-- Shaped for the sidebar's byte budget (SC-010). A fragment whose only element is an <svg>, with
+     no literal text beside it, compiles to an SVG fragment, and that one call ships Svelte's
+     fragment code in the chunk the sidebar loads first. So the block holds the icon alone, and the
+     literal ": " keeps the face itself an HTML fragment. -->
+{#snippet pillFace(name: string, value: string | null)}
+  {#if value === null}<svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>{/if}{name}{#if value !== null}: {value}{/if}
+{/snippet}
+
 <div class="filter-bar" data-testid="history-filter-bar" role="group" aria-label="History filters">
-  <label class="filter-field">
-    <span>Kind</span>
+  <!-- FR-054 — one flat set. The terminal outcomes and the non-terminal states
+       come from the same vocabulary module, so "the paused one" and "the failed
+       one" are the same question asked of the same control. -->
+  <div class="seg" role="group" aria-label="Outcome" data-testid="history-filter-status">
+    <button
+      type="button"
+      data-testid="history-filter-status-all"
+      aria-pressed={filters.status === 'all'}
+      onclick={() => set({ status: 'all' })}
+    >All</button>
+    {#each RUN_STATUS_FILTERS as option (option.value)}
+      <button
+        type="button"
+        data-testid="history-filter-status-{option.value}"
+        aria-pressed={filters.status === option.value}
+        onclick={() => set({ status: option.value })}
+      >{option.label}</button>
+    {/each}
+  </div>
+
+  <!-- FR-060 — both shapes on one control: the windows an operator reaches for
+       daily, and the explicit range they need to bracket a publish. -->
+  <label class="filter-btn filter-pick" class:on={rangeMode !== 'all'}>
+    <svg class="i" aria-hidden="true"><use href="#i-history"></use></svg>
+    {rangeLabel}
+    <svg class="i" aria-hidden="true"><use href="#i-chev"></use></svg>
     <select
-      data-testid="history-filter-origin"
-      value={filters.origin}
-      onchange={(event) => set({ origin: event.currentTarget.value as HistoryOriginFilter })}
+      aria-label="Time"
+      data-testid="history-filter-range"
+      value={rangeMode}
+      onchange={(event) => setRangeMode(event.currentTarget.value)}
     >
-      {#each HISTORY_ORIGIN_FILTERS as option (option.value)}
-        <option value={option.value}>{option.label}</option>
+      <option value="all">{ANY_TIME_LABEL}</option>
+      {#each HISTORY_RELATIVE_WINDOWS as window (window.value)}
+        <option value={window.value}>{window.label}</option>
       {/each}
+      <option value="custom">{CUSTOM_RANGE_LABEL}</option>
     </select>
   </label>
 
-  <label class="filter-field">
-    <span>Definition</span>
+  {#if absolute !== null}
+    <label class="bound">
+      <span>From</span>
+      <input
+        class="input"
+        data-testid="history-filter-from"
+        type="date"
+        value={absolute.from ?? ''}
+        onchange={(event) => setBound('from', event.currentTarget.value)}
+      />
+    </label>
+    <label class="bound">
+      <span>To</span>
+      <input
+        class="input"
+        data-testid="history-filter-to"
+        type="date"
+        value={absolute.to ?? ''}
+        onchange={(event) => setBound('to', event.currentTarget.value)}
+      />
+    </label>
+  {/if}
+
+  <label class="filter-btn filter-pick" class:on={filters.definitionId !== null}>
+    {@render pillFace(
+      'Definition',
+      filters.definitionId === null ? null : chosenLabel(options.definitions, filters.definitionId)
+    )}
     <select
+      aria-label="Definition"
       data-testid="history-filter-definition"
       value={filters.definitionId ?? ''}
       onchange={(event) => setDefinition(event.currentTarget.value)}
@@ -104,9 +193,13 @@
   <!-- FR-018 — no definition selected, no version control. Offering one across
        definitions would list the same label twice and mean two things by it. -->
   {#if filters.definitionId !== null}
-    <label class="filter-field">
-      <span>Version</span>
+    <label class="filter-btn filter-pick" class:on={filters.versionId !== null}>
+      {@render pillFace(
+        'Version',
+        filters.versionId === null ? null : chosenLabel(options.versions, filters.versionId)
+      )}
       <select
+        aria-label="Version"
         data-testid="history-filter-version"
         value={filters.versionId ?? ''}
         onchange={(event) => set({ versionId: orNull(event.currentTarget.value) })}
@@ -119,26 +212,13 @@
     </label>
   {/if}
 
-  <label class="filter-field">
-    <span>Outcome</span>
+  <label class="filter-btn filter-pick" class:on={filters.queueId !== null}>
+    {@render pillFace(
+      'Queue',
+      filters.queueId === null ? null : chosenLabel(options.queues, filters.queueId)
+    )}
     <select
-      data-testid="history-filter-status"
-      value={filters.status}
-      onchange={(event) => set({ status: event.currentTarget.value as HistoryFilterSet['status'] })}
-    >
-      <!-- FR-054 — one flat set. The terminal outcomes and the non-terminal
-           states come from the same vocabulary module, so "the paused one" and
-           "the failed one" are the same question asked of the same control. -->
-      <option value="all">All outcomes</option>
-      {#each RUN_STATUS_FILTERS as option (option.value)}
-        <option value={option.value}>{option.label}</option>
-      {/each}
-    </select>
-  </label>
-
-  <label class="filter-field">
-    <span>Queue</span>
-    <select
+      aria-label="Queue"
       data-testid="history-filter-queue"
       value={filters.queueId ?? ''}
       onchange={(event) => set({ queueId: orNull(event.currentTarget.value) })}
@@ -152,108 +232,117 @@
     </select>
   </label>
 
-  <label class="filter-field">
-    <span>Time</span>
+  <label class="filter-btn filter-pick" class:on={filters.origin !== 'all'}>
+    {@render pillFace('Kind', filters.origin === 'all' ? null : originLabel)}
     <select
-      data-testid="history-filter-range"
-      value={rangeMode}
-      onchange={(event) => setRangeMode(event.currentTarget.value)}
+      aria-label="Kind"
+      data-testid="history-filter-origin"
+      value={filters.origin}
+      onchange={(event) => set({ origin: event.currentTarget.value as HistoryOriginFilter })}
     >
-      <!-- FR-060 — both shapes on one control: the windows an operator reaches
-           for daily, and the explicit range they need to bracket a publish. -->
-      <option value="all">Any time</option>
-      {#each HISTORY_RELATIVE_WINDOWS as window (window.value)}
-        <option value={window.value}>{window.label}</option>
+      {#each HISTORY_ORIGIN_FILTERS as option (option.value)}
+        <option value={option.value}>{option.label}</option>
       {/each}
-      <option value="custom">Custom range</option>
     </select>
   </label>
-
-  {#if absolute !== null}
-    <label class="filter-field">
-      <span>From</span>
-      <input
-        data-testid="history-filter-from"
-        type="date"
-        value={absolute.from ?? ''}
-        onchange={(event) => setBound('from', event.currentTarget.value)}
-      />
-    </label>
-    <label class="filter-field">
-      <span>To</span>
-      <input
-        data-testid="history-filter-to"
-        type="date"
-        value={absolute.to ?? ''}
-        onchange={(event) => setBound('to', event.currentTarget.value)}
-      />
-    </label>
-  {/if}
 
   {#if anyActive}
     <!-- FR-022 — the way out, offered wherever filters are set rather than only
          from the empty state, so narrowing to nothing is not the only route
          back to the whole list. -->
     <button
-      class="clear-filters"
+      class="linkbtn clear-filters"
       type="button"
       data-testid="history-filter-clear"
       onclick={() => onChange(EMPTY_HISTORY_FILTERS)}
-    >
-      Clear filters
-    </button>
+    >Clear filters</button>
   {/if}
 </div>
 
 <style>
+  /* The bar draws no box. Its controls are laid out by the page's toolbar, beside the
+     search, and each one wraps on its own, as in the redesign. The element stays for its
+     group role and name. */
   .filter-bar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: end;
-    gap: 10px;
-  }
-  .filter-field {
-    display: flex;
-    flex: 0 0 auto;
-    flex-direction: column;
-    gap: 4px;
-    color: var(--schegent-muted-fg);
-    font-size: 0.76rem;
-  }
-  .filter-field select,
-  .filter-field input {
-    min-width: 132px;
-    min-height: var(--schegent-control-height);
-    padding: 5px 9px;
-    border: 1px solid var(--schegent-input-border);
-    border-radius: var(--schegent-radius-sm);
-    background: var(--schegent-input-bg);
-    color: var(--schegent-fg);
-  }
-  .filter-field select {
-    padding-right: 28px;
-  }
-  .clear-filters {
-    min-height: var(--schegent-control-height);
-    padding: 5px 12px;
-    border: 1px solid var(--schegent-input-border);
-    border-radius: var(--schegent-radius-sm);
-    background: transparent;
-    color: var(--schegent-fg);
-    cursor: pointer;
-    font-size: 0.76rem;
-  }
-  .clear-filters:hover {
-    background: var(--schegent-hover-bg);
+    display: contents;
   }
 
-  @media (max-width: 720px) {
-    .filter-field {
+  /* Too narrow for the outcome group in one row, which takes about 29em: the group becomes a
+     grid of equal cells. It runs three across while a cell still holds the longest label
+     ("Completed", about 7em with its padding), then two, then one. A label that still does
+     not fit wraps inside its cell instead of spilling into the next one. Each cell's 1px
+     ring paints the 1px gap beside it, and the group's own border and clip hide the rings
+     at its edge. The query container is the toolbar in HistoryDashboard.svelte.
+     `.filter-bar` leads each selector so it outranks the sheet's `.sg .seg button + button`:
+     Svelte scopes every part after the first with `:where()`, which adds nothing. */
+  @container history-toolbar (max-width: 30em) {
+    .filter-bar .seg {
+      display: grid;
       flex: 1 1 100%;
+      grid-template-columns: repeat(auto-fit, minmax(max(7em, 30%), 1fr));
+      gap: 1px;
     }
-    .filter-field select,
-    .filter-field input {
-      width: 100%;
+    .filter-bar .seg button {
+      border-left: 0;
+      white-space: normal;
+      box-shadow: 0 0 0 1px var(--schegent-border);
+    }
+    .filter-bar .seg button[aria-pressed='true'] {
+      box-shadow:
+        0 0 0 1px var(--schegent-border),
+        inset 0 0 0 1px var(--schegent-selection-outline);
+    }
+  }
+  /* The select covers the whole pill and is transparent, so a press anywhere on
+     the pill opens the platform's own picker, anchored where the pill is. */
+  .filter-pick {
+    position: relative;
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .filter-pick select {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+  /* The select is the focused element, and it cannot be seen, so the pill
+     carries its ring. */
+  .filter-pick:has(> select:focus-visible) {
+    outline: 2px solid var(--schegent-focus-border);
+    outline-offset: 2px;
+  }
+  .bound {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--schegent-space-1-5);
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-secondary);
+  }
+  .bound .input {
+    width: auto;
+    height: var(--schegent-control-height-compact);
+  }
+  .clear-filters {
+    font-size: var(--schegent-text-secondary);
+  }
+
+  /* A touch or pen target of 44px, as every other control gets from the theme.
+     The theme raises the select itself; the pill grows with it, so the select
+     never hangs below the face it is laid over. */
+  @media (pointer: coarse) {
+    /* Two classes, to outrank the sheet's fixed pill height. */
+    .filter-bar .filter-pick {
+      height: auto;
+      min-height: 44px;
+    }
+    .bound .input {
+      height: auto;
     }
   }
 </style>

@@ -364,13 +364,9 @@
 </section>
 
 <style>
-  .general-settings {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    padding: 8px 0;
-    height: 100%;
-  }
+  /* The tab reads as the mockup's section body: the header, then each group as a `.sg .section`,
+     whose top margin spaces the groups, so the tab sets no gap of its own. The page scrolls; the
+     tab does not. */
   /* The header's own rules moved with its markup into
    * `general/GeneralSettingsHeader.svelte` — Svelte scopes styles per
    * component, so leaving them here would have styled nothing. */

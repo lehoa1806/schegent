@@ -5,7 +5,9 @@
 // `testDir`. What it must NOT have is its own way of serving the app: the
 // `webServer` below starts `tests/visual/serve-built-webviews.mjs` — the same
 // script, on the same port — which is exactly what FR-R3-091 §3 asks for.
-// `reuseExistingServer` means running both suites back to back starts one.
+// `reuseExistingServer` means running both suites back to back starts one, and
+// the global setup, shared with `playwright.config.ts`, refuses a reused server
+// that is not this checkout's.
 import { defineConfig } from '@playwright/test';
 
 const isCi = process.env['CI'] === 'true';
@@ -17,6 +19,8 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   forbidOnly: isCi,
+  // A reused server must be this checkout's fixture server (finding 27 of the webview port review).
+  globalSetup: './tests/visual/fixture-server-identity.mjs',
   outputDir: 'tests/a11y/.artifacts',
   reporter: 'list',
   use: {

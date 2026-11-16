@@ -12,10 +12,12 @@
 // worth keeping separate because the lint would still pass if a future render
 // site reached for `innerHTML` directly, and a passing lint reads as safety.
 //
-// The name and the purpose render on the list item that owns the lifecycle
-// row, so the Workflow library list is what gets mounted here rather than the
-// row alone — mounting the row by itself would prove escaping for text the row
-// does not actually show.
+// The name renders on the list item that owns the lifecycle row, so the
+// Workflow library list is what gets mounted here rather than the row alone —
+// mounting the row by itself would prove escaping for text the row does not
+// actually show. The purpose and the port labels render on the open Workflow's
+// inspector, which is mounted for them: a list row shows only the name, the id
+// and the two badges (feature 186, FR-003).
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
@@ -57,6 +59,11 @@ const WorkflowLibraryList = (await import('../../PipelineBuilderEditors/Workflow
 // and onto the panel that mounts on the surface showing the open definition;
 // mounted directly for the cases below that address them.
 const DefinitionLifecyclePanel = (await import('../DefinitionLifecyclePanel.svelte')).default;
+// Feature 186 (FR-003) — the purpose and the port summary moved off the row and
+// onto the open Workflow's inspector.
+const WorkflowSettingsInspector = (
+  await import('../../PipelineBuilderEditors/WorkflowSettingsInspector.svelte')
+).default;
 
 // One payload per field, each carrying a different tag, so a failure names the
 // field that leaked rather than "something rendered an image somewhere".
@@ -66,6 +73,7 @@ const MARKUP_NOTE = '<svg onload="alert(3)"></svg> published by hand';
 const MARKUP_DEFECT_FIELD = '<video onerror="alert(4)"></video>nodes[0]';
 const MARKUP_DEFECT_MESSAGE = '<audio onerror="alert(5)"></audio> references an unknown Pipeline';
 const MARKUP_BODY_VALUE = '<object data="x"></object> instruction text';
+const MARKUP_PORT_LABEL = '<script>alert(6)</script> Goal';
 
 /** Tags that must never exist as nodes. One per payload above. */
 const INJECTED = 'img, iframe, svg, video, audio, object, script';
@@ -122,7 +130,7 @@ function workflowRow(opts: ListOpts): MutableWorkflow {
     sourceStatus: opts.defects?.length ? 'invalid' : 'effective',
     sourceErrors: opts.defects ?? [],
     persisted: true,
-    derivedInputs: [],
+    derivedInputs: [{ nodeId: 'design', portId: 'goal', label: MARKUP_PORT_LABEL, type: 'text' }],
     derivedOutputs: []
   } as MutableWorkflow;
 }
@@ -161,9 +169,51 @@ function renderPanel(opts: ListOpts = {}) {
   });
 }
 
+/** The open Workflow's inspector, showing the same markup-laden row. */
+function renderInspector(opts: ListOpts = {}) {
+  return render(WorkflowSettingsInspector, {
+    props: {
+      row: workflowRow(opts),
+      phases: [],
+      dependentParents: [],
+      defects: [],
+      readonly: false,
+      lifecycle: opts.lifecycle ?? lifecycle(),
+      onworkflowpatch: () => {}
+    }
+  });
+}
+
+/** The id prefix every symbol in the webview's icon sprite carries. */
+const SPRITE_HREF_PREFIX = '#i-';
+
+/**
+ * The surface's own icons, written in its templates: a reference into the
+ * dashboard's one sprite, `<svg class="i" aria-hidden="true"><use href="#i-…">`.
+ * The row's validity chip draws its check or warning mark this way. Set aside
+ * by that exact shape and nothing looser, so an `svg` carrying any other
+ * attribute or child (MARKUP_NOTE's `onload` among them) still counts. The
+ * same test as `history-text-is-inert.test.ts` uses.
+ */
+function isSpriteIcon(el: Element): boolean {
+  const use = el.firstElementChild;
+  return (
+    el.tagName.toLowerCase() === 'svg' &&
+    el.getAttributeNames().every((name) => name === 'class' || name === 'aria-hidden') &&
+    el.classList.contains('i') &&
+    el.getAttribute('aria-hidden') === 'true' &&
+    el.childElementCount === 1 &&
+    use?.tagName.toLowerCase() === 'use' &&
+    use.getAttributeNames().join() === 'href' &&
+    (use.getAttribute('href') ?? '').startsWith(SPRITE_HREF_PREFIX)
+  );
+}
+
 /** Every element name from INJECTED that actually made it into the DOM. */
 function injectedTags(container: HTMLElement): string[] {
-  return [...container.querySelectorAll(INJECTED)].map((node) => node.tagName.toLowerCase());
+  return [...container.querySelectorAll(INJECTED)]
+    .filter((node) => !isSpriteIcon(node))
+    .map((node) => node.tagName.toLowerCase());
 }
 
 async function openHistory(container: HTMLElement): Promise<void> {
@@ -183,19 +233,12 @@ describe('imported text on the row (US7, T067, FR-038)', () => {
     expect(injectedTags(container)).toEqual([]);
   });
 
-  it('renders a purpose that is markup as characters', () => {
-    const { container } = renderList();
-    expect(container.textContent).toContain(MARKUP_DESCRIPTION);
-    expect(injectedTags(container)).toEqual([]);
-  });
-
   it('escapes rather than strips, so the operator sees what the document says', () => {
     // A row that silently dropped the tag would also pass the assertion above
     // for the trailing words. The document says `<img …>`; the operator has to
     // be able to read that, because it is how they find it and fix it.
     const { container } = renderList();
     expect(container.innerHTML).toContain('&lt;img');
-    expect(container.innerHTML).toContain('&lt;iframe');
   });
 
   it('renders a defect field and message that are markup as characters', () => {
@@ -211,6 +254,24 @@ describe('imported text on the row (US7, T067, FR-038)', () => {
     expect(injectedTags(container)).toEqual([]);
   });
 
+});
+
+describe('imported text on the open Workflow (US7, T067, FR-038)', () => {
+  it('holds a purpose that is markup as the characters of that markup, nothing stripped', () => {
+    const { container } = renderInspector();
+    const purpose = container.querySelector<HTMLTextAreaElement>(
+      '[data-testid="workflow-field-description"]'
+    );
+    expect(purpose?.value).toBe(MARKUP_DESCRIPTION);
+    expect(injectedTags(container)).toEqual([]);
+  });
+
+  it('renders a port label that is markup as characters', () => {
+    const { container } = renderInspector();
+    expect(text(container, 'workflow-port-summary-inputs')).toBe(MARKUP_PORT_LABEL);
+    expect(container.innerHTML).toContain('&lt;script');
+    expect(injectedTags(container)).toEqual([]);
+  });
 });
 
 describe('imported text in the history panel (US7, T067, FR-038)', () => {

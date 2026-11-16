@@ -1,31 +1,8 @@
-.metrics .section-title {
-  margin: 0 0 8px;
-  font-size: 1em;
-  font-weight: 600;
-}
-
-.metrics .empty {
-  margin: 0;
-  color: var(--schegent-muted-fg);
-  font-style: italic;
-}
-
+/* The one rule the Metrics components share: a cost no run reported reads as an
+   absence, not a figure. Tables, headings and empty states come from the `.sg`
+   sheets the dashboard imports. */
 .metrics .cost-not-recorded {
   color: var(--schegent-muted-fg);
   font-style: italic;
   font-weight: normal;
-}
-
-.metrics table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9em;
-}
-
-.metrics th,
-.metrics td {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--schegent-divider);
-  text-align: left;
-  white-space: nowrap;
 }

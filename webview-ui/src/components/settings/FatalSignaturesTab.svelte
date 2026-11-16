@@ -5,7 +5,10 @@
    * Renders two visual sections per contracts/fatal-signatures.md:
    *   1. Built-in (read-only) — mirrors `FATAL_SIGNATURES` from
    *      `webview-ui/src/lib/fatal-signature-registry.ts`. No edit
-   *      controls; static "Built-in" badge per FR-038 / SC-010.
+   *      controls; the section's "Built-in registry" heading and its
+   *      "read-only" tag mark the whole list once (FR-038 / SC-010),
+   *      where each row carried its own "Built-in" badge before the
+   *      redesign.
    *   2. Operator-defined (editable) — vertical list of text inputs
    *      reflecting `snapshot.generalSettings.fatalSignatures`. Save
    *      goes through the shared `saveGeneralSettings` helper with the
@@ -146,42 +149,32 @@
   }
 </script>
 
+<!--
+  The redesign’s failure-signature section: the built-in list under a read-only tag, then the
+  operator’s additions as an editable table with Add under it. The tab keeps its own heading,
+  and its Save and Reset sit at the end of that heading’s row behind an unsaved-changes chip, as
+  the General tab’s do. The built-in list stays first, the order spec 011’s contract gives the two
+  (`contracts/fatal-signatures.md`, “Built-ins always render first”).
+-->
 <section class="fatal-signatures-tab" data-testid="settings-fatal-signatures-tab">
   <header class="tab-header">
-    <h2>{FATAL_SIGNATURES_DESCRIPTIONS['tab-header'].title}</h2>
-    <p class="hint">{FATAL_SIGNATURES_DESCRIPTIONS['tab-header'].body}</p>
-  </header>
-
-  <div class="section" data-testid="fatal-built-in-section">
-    <header class="section-header">
-      <h3>{FATAL_SIGNATURES_DESCRIPTIONS['built-in-section-header'].title}</h3>
-      <span class="badge badge-builtin">Read-only</span>
-    </header>
-    <p class="hint">{FATAL_SIGNATURES_DESCRIPTIONS['built-in-section-header'].body}</p>
-    <ul class="signature-list" data-testid="fatal-built-in-list">
-      {#each FATAL_SIGNATURES as sig}
-        <li class="signature-item">
-          <code class="sig-text">{sig}</code>
-          <span class="badge badge-builtin">Built-in</span>
-        </li>
-      {/each}
-    </ul>
-  </div>
-
-  <div class="section" data-testid="fatal-operator-section">
-    <header class="section-header">
-      <h3>{FATAL_SIGNATURES_DESCRIPTIONS['operator-section-header'].title}</h3>
-      <div class="actions">
+    <div class="titlerow">
+      <h2>{FATAL_SIGNATURES_DESCRIPTIONS['tab-header'].title}</h2>
+      <div class="push">
+        {#if dirty}
+          <span class="chip s-warn">Unsaved changes</span>
+        {/if}
         <button
           type="button"
-          class="btn btn-primary"
-          data-testid="fatal-add"
-          onclick={addEntry}
+          class="btn btn-secondary"
+          data-testid="fatal-reset"
+          disabled={!dirty}
+          onclick={resetAll}
           use:hoverTextAnchor={{
-            controlId: 'fatal-add',
-            description: FATAL_SIGNATURES_DESCRIPTIONS['operator-add']
+            controlId: 'fatal-reset',
+            description: FATAL_SIGNATURES_DESCRIPTIONS['operator-reset']
           }}
-        >+ Add</button>
+        >Reset</button>
         <button
           type="button"
           class="btn btn-primary"
@@ -193,230 +186,160 @@
             description: FATAL_SIGNATURES_DESCRIPTIONS['operator-save']
           }}
         >Save</button>
-        <button
-          type="button"
-          class="btn btn-ghost"
-          data-testid="fatal-reset"
-          disabled={!dirty}
-          onclick={resetAll}
-          use:hoverTextAnchor={{
-            controlId: 'fatal-reset',
-            description: FATAL_SIGNATURES_DESCRIPTIONS['operator-reset']
-          }}
-        >Reset</button>
       </div>
-    </header>
-    <p class="hint">{FATAL_SIGNATURES_DESCRIPTIONS['operator-section-header'].body}</p>
+    </div>
+    <p class="lead small muted">{FATAL_SIGNATURES_DESCRIPTIONS['tab-header'].body}</p>
+  </header>
+
+  <section class="section" data-testid="fatal-built-in-section" aria-labelledby="fatal-built-in-heading">
+    <h3 id="fatal-built-in-heading">
+      {FATAL_SIGNATURES_DESCRIPTIONS['built-in-section-header'].title} <span class="tag">read-only</span>
+    </h3>
+    <p class="section-lead small muted">{FATAL_SIGNATURES_DESCRIPTIONS['built-in-section-header'].body}</p>
+    <ul class="builtin-list mono small" data-testid="fatal-built-in-list">
+      {#each FATAL_SIGNATURES as sig}
+        <li>{sig}</li>
+      {/each}
+    </ul>
+  </section>
+
+  <section class="section" data-testid="fatal-operator-section" aria-labelledby="fatal-operator-heading">
+    <h3 id="fatal-operator-heading">{FATAL_SIGNATURES_DESCRIPTIONS['operator-section-header'].title}</h3>
+    <p class="section-lead small muted">{FATAL_SIGNATURES_DESCRIPTIONS['operator-section-header'].body}</p>
 
     {#if draft.length === 0}
-      <p class="empty-msg" data-testid="fatal-operator-empty">
+      <p class="empty-msg small muted" data-testid="fatal-operator-empty">
         No operator-defined fatal signatures. Click + Add to create one.
       </p>
     {:else}
-      <ul class="signature-list editable" data-testid="fatal-operator-list">
-        {#each draft as entry, i (i)}
-          <li class="signature-item editable-row">
-            <input
-              type="text"
-              class="text-input"
-              data-testid="fatal-operator-input-{i}"
-              aria-label="Fatal signature {i + 1}"
-              value={entry}
-              oninput={(e) => updateEntry(i, (e.target as HTMLInputElement).value)}
-              placeholder="verbatim substring"
-              spellcheck="false"
-              use:hoverTextAnchor={{
-                controlId: `fatal-operator-input-${i}`,
-                description: FATAL_SIGNATURES_DESCRIPTIONS['operator-input']
-              }}
-            />
-            <button
-              type="button"
-              class="btn btn-destructive btn-tight"
-              data-testid="fatal-operator-remove-{i}"
-              aria-label="Remove fatal signature {i + 1}"
-              onclick={() => removeEntry(i)}
-              use:hoverTextAnchor={{
-                controlId: `fatal-operator-remove-${i}`,
-                description: FATAL_SIGNATURES_DESCRIPTIONS['operator-remove']
-              }}
-            >Remove</button>
-          </li>
-        {/each}
-      </ul>
+      <div class="table-wrap">
+        <table class="t fit" data-testid="fatal-operator-list">
+          <thead>
+            <tr>
+              <th scope="col">Text to match</th>
+              <th scope="col"><span class="sr-only">Remove</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each draft as entry, i (i)}
+              <tr>
+                <td>
+                  <input
+                    type="text"
+                    class="input mono"
+                    data-testid="fatal-operator-input-{i}"
+                    aria-label="Fatal signature {i + 1}"
+                    value={entry}
+                    oninput={(e) => updateEntry(i, (e.target as HTMLInputElement).value)}
+                    placeholder="verbatim substring"
+                    spellcheck="false"
+                    use:hoverTextAnchor={{
+                      controlId: `fatal-operator-input-${i}`,
+                      description: FATAL_SIGNATURES_DESCRIPTIONS['operator-input']
+                    }}
+                  />
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    class="icon-btn"
+                    data-testid="fatal-operator-remove-{i}"
+                    aria-label="Remove fatal signature {i + 1}"
+                    onclick={() => removeEntry(i)}
+                    use:hoverTextAnchor={{
+                      controlId: `fatal-operator-remove-${i}`,
+                      description: FATAL_SIGNATURES_DESCRIPTIONS['operator-remove']
+                    }}
+                  ><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {/if}
+    <button
+      type="button"
+      class="btn btn-ghost btn-sm add"
+      data-testid="fatal-add"
+      onclick={addEntry}
+      use:hoverTextAnchor={{
+        controlId: 'fatal-add',
+        description: FATAL_SIGNATURES_DESCRIPTIONS['operator-add']
+      }}
+    ><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>Add</button>
 
     {#if hasEmpty}
-      <div class="warning" data-testid="fatal-operator-warning-empty" role="status">
+      <div class="warning small" data-testid="fatal-operator-warning-empty" role="status">
         At least one entry is empty. Fill or remove it before saving.
       </div>
     {/if}
     {#if intraOperatorDupes.length > 0}
-      <div class="warning" data-testid="fatal-operator-warning-dupes" role="status">
+      <div class="warning small" data-testid="fatal-operator-warning-dupes" role="status">
         Duplicate entries: {intraOperatorDupes.join(', ')} — the host
         will dedupe them on save.
       </div>
     {/if}
     {#if builtInOverlaps.length > 0}
-      <div class="warning" data-testid="fatal-operator-warning-builtin-overlap" role="status">
+      <div class="warning small" data-testid="fatal-operator-warning-builtin-overlap" role="status">
         Already in the built-in registry: {builtInOverlaps.join(', ')}
         — these entries are redundant and will keep the
         <code>built-in</code> attribution.
       </div>
     {/if}
     {#if status.status === 'pending'}
-      <div class="status pending" data-testid="fatal-status" role="status">Saving...</div>
+      <div class="save-status small muted" data-testid="fatal-status" role="status">Saving...</div>
     {:else if status.status === 'accepted'}
-      <div class="status accepted" data-testid="fatal-status" role="status">Saved.</div>
+      <div class="save-status small s-ok" data-testid="fatal-status" role="status">Saved.</div>
     {:else if status.status === 'unknown'}
-      <div class="status pending" data-testid="fatal-status" role="status">{OUTCOME_NOT_YET_KNOWN_TEXT}</div>
+      <div class="save-status small muted" data-testid="fatal-status" role="status">{OUTCOME_NOT_YET_KNOWN_TEXT}</div>
     {:else if status.status === 'rejected'}
-      <div class="status rejected" data-testid="fatal-status" role="alert">
+      <div class="save-status small s-err" data-testid="fatal-status" role="alert">
         Save rejected. {boundaryRefusalText(status.reason ?? '')}
       </div>
     {/if}
-  </div>
+  </section>
 </section>
 
 <style>
-  .fatal-signatures-tab {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    padding: 8px 0;
-  }
   .tab-header h2 {
-    margin: 0 0 4px 0;
-    font-size: 1.1em;
     font-weight: 600;
   }
-  .hint {
-    margin: 0 0 8px 0;
-    color: var(--schegent-muted-fg);
-    font-size: 0.85em;
+  .lead {
+    margin: var(--schegent-space-0-5) 0 0;
   }
-  .section {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    border: 0;
-    border-top: 1px solid var(--schegent-divider);
-    border-radius: 0;
-    background: transparent;
-    padding: var(--schegent-space-4) 0;
-  }
-  .section-header {
+  /* Each part heads with an h3 set as the redesign’s section heading (`.section > h2`), as
+     the General tab’s sub-sections do. */
+  .section > h3 {
     display: flex;
     align-items: center;
-    gap: 8px;
-  }
-  .section-header h3 {
-    margin: 0;
-    font-size: 0.95em;
+    gap: var(--schegent-space-2);
+    margin-bottom: var(--schegent-space-2);
+    font-size: var(--schegent-text-subheading);
     font-weight: 600;
-    flex: 1;
   }
-  .actions {
-    display: flex;
-    gap: 6px;
+  .section-lead {
+    margin: 0 0 var(--schegent-space-2);
   }
-  .signature-list {
-    list-style: none;
-    padding: 0;
+  .builtin-list {
     margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .signature-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 8px;
-    border: 1px solid var(--schegent-divider);
-    border-radius: var(--schegent-radius-sm);
-    background: var(--vscode-input-background);
-  }
-  .signature-item.editable-row {
-    background: transparent;
-  }
-  .sig-text {
-    flex: 1;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.85em;
-    color: var(--schegent-fg);
-    background: transparent;
-    padding: 0;
-  }
-  .text-input {
-    flex: 1;
-    background: var(--vscode-input-background);
-    color: var(--schegent-fg);
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius-sm);
-    padding: 4px 8px;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.85em;
-  }
-  .text-input:focus {
-    outline: none;
-    border-color: var(--schegent-focus-border);
-  }
-  .badge {
-    font-size: 0.7em;
-    font-weight: 600;
-    padding: 1px 6px;
-    border-radius: var(--schegent-radius-sm);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  .badge-builtin {
-    background: var(--vscode-list-hoverBackground);
-    color: var(--schegent-muted-fg);
-    border: 1px solid var(--schegent-divider);
+    padding-left: 18px;
   }
   .empty-msg {
-    color: var(--schegent-muted-fg);
-    font-style: italic;
-    margin: 4px 0;
-    font-size: 0.85em;
+    margin: 0;
+  }
+  .add {
+    margin-top: var(--schegent-space-1-5);
+  }
+  .warning,
+  .save-status {
+    margin-top: var(--schegent-space-2);
+    line-height: 1.45;
   }
   .warning {
-    color: var(--schegent-color-warning);
-    background: color-mix(in srgb, var(--schegent-color-warning) 8%, transparent);
-    border: 1px solid color-mix(in srgb, var(--schegent-color-warning) 30%, transparent);
-    border-radius: var(--schegent-radius);
-    padding: 6px 8px;
-    font-size: 0.85em;
+    color: var(--schegent-status-warning-text);
   }
-  .status {
-    font-size: 0.85em;
-    padding: 4px 8px;
-    border-radius: var(--schegent-radius);
-  }
-  .status.pending { color: var(--schegent-muted-fg); }
-  .status.accepted { color: var(--vscode-charts-green); }
-  .status.rejected { color: var(--schegent-error-text); }
-  .btn {
-    padding: 4px 12px;
-    border-radius: var(--schegent-radius-sm);
-    font-size: 0.9em;
-    font-weight: 500;
-    cursor: pointer;
-    border: 1px solid transparent;
-  }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-tight { padding: 2px 8px; font-size: 0.8em; }
-  .btn-primary { background: var(--schegent-button-bg); color: var(--schegent-button-fg); }
-  .btn-primary:hover:not(:disabled) { background: var(--schegent-button-hover); }
-  .btn-ghost { background: transparent; color: var(--schegent-muted-fg); }
-  .btn-ghost:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
-  .btn-destructive { background: transparent; color: var(--schegent-error-text); border-color: var(--schegent-color-error); }
-  code {
-    background: var(--vscode-textCodeBlock-background);
-    padding: 1px 4px;
-    border-radius: 3px;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.85em;
+  .warning code {
+    font-family: var(--schegent-mono-font);
   }
 </style>

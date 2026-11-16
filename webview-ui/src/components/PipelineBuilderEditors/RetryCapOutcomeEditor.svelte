@@ -3,11 +3,12 @@
    * FR-R3-157 (T047, FR-014/FR-015/FR-016) — what this phase does when its retry
    * condition is still unsatisfied at the cap.
    *
-   * A sibling component rather than more markup inside `PhaseCatalogEditor.svelte`
-   * for the ordinary reason: that file is at 472 of its 500-line budget and this
-   * control is not four lines. But the split earns its keep beyond the budget —
-   * the outcome is the one field on that card whose DISPLAYED value is not the
-   * field's own value. Every other control shows what the phase says; this one
+   * A sibling component rather than more markup in the Phase editor's form
+   * (`PhaseEditorForm.svelte`, which mounts it). It left `PhaseCatalogEditor.svelte`
+   * for the ordinary reason, when that file stood at 472 of its 500-line budget
+   * and this control was not four lines. But the split earns its keep beyond the
+   * budget — the outcome is the one field on the form whose DISPLAYED value is not
+   * the field's own value. Every other control shows what the phase says; this one
    * shows what the phase will DO, which is a different question whenever the
    * phase says nothing, or says it in the deprecated spelling.
    *
@@ -64,38 +65,44 @@
   const helper = $derived(OUTCOMES.find((outcome) => outcome.value === effective)?.helper ?? '');
 </script>
 
-<label class="form-field full-width retry-cap-row">
-  <span class="form-label">When retries run out</span>
-  <select
-    class="select-input"
-    data-testid="phases-retry-cap-{phase.id}"
-    value={effective}
-    disabled={readonly}
-    onchange={(event) => onchange(event.currentTarget.value as RetryCapOutcome)}
-  >
-    {#each OUTCOMES as outcome (outcome.value)}
-      <option value={outcome.value}>{outcome.label}</option>
-    {/each}
-  </select>
-  <span class="field-hint">{helper}</span>
+<!-- The two hints sit beside the label, not inside it: inside, they became part
+     of the select's accessible name, read out before every option. -->
+<div class="retry-cap">
+  <label class="field form-field">
+    <span class="form-label">When retries run out</span>
+    <select
+      class="input"
+      data-testid="phases-retry-cap-{phase.id}"
+      value={effective}
+      disabled={readonly}
+      onchange={(event) => onchange(event.currentTarget.value as RetryCapOutcome)}
+    >
+      {#each OUTCOMES as outcome (outcome.value)}
+        <option value={outcome.value}>{outcome.label}</option>
+      {/each}
+    </select>
+  </label>
+  <p class="hint">{helper}</p>
   <!-- FR-016. Which outcome is in effect does not say whose it is: `fail` is both
        the commonest choice and what an unconfigured workspace falls back to, so
        without this line an operator cannot tell whether changing the workspace
        setting would move this phase. -->
-  <span class="field-hint" data-testid="phases-retry-cap-origin-{phase.id}">
+  <p class="hint" data-testid="phases-retry-cap-origin-{phase.id}">
     {stated ? 'Set on this phase.' : 'Inherited from the workspace default.'}
-  </span>
-</label>
+  </p>
+</div>
 
 <style>
-  .retry-cap-row {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+  .retry-cap {
+    max-width: 360px;
+    margin-top: var(--schegent-space-3);
   }
 
-  .field-hint {
-    color: var(--vscode-descriptionForeground);
-    font-size: 11px;
+  .retry-cap .field {
+    margin-bottom: var(--schegent-space-1);
+  }
+
+  .retry-cap p {
+    margin: 0 0 var(--schegent-space-0-5);
   }
 </style>
