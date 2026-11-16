@@ -55,17 +55,18 @@
   // FR-R3-144 (T029, T037) — Claude's own setting, sited in Claude's section
   // rather than in a general "UI and trust" list where its name was the only clue
   // that it applies to one backend out of three. Being IN the Claude section is
-  // the label FR-009 asks for; the sentence under it is the doc's own.
+  // the label FR-009 asks for. The note is the redesign's sentence for the row,
+  // then the disclosure that the other two backends ignore it.
   const AUTO_COMPACT_FIELD: FieldSpec = {
     key: 'claudeAutoCompactPctOverride',
     ipcKey: 'claude.autoCompactPctOverride',
-    label: 'Claude auto-compaction threshold',
+    label: 'Claude compaction threshold',
     kind: 'number-optional',
     unit: '%',
     min: 1,
     max: 100,
     placeholder: 'Unset — use CLI default',
-    note: 'Honoured by Claude only. Codex and Agy have no equivalent and ignore it.'
+    note: 'Claude compacts its context above this share. Codex and Agy have no equivalent and ignore it.'
   };
 
   // FR-R3-144 (T025, D-5, FR-001) — every backend's section, keyed BY BACKEND.
@@ -106,7 +107,7 @@
   export const RUNNER_FIELD: FieldSpec = {
     key: 'backendRunner',
     ipcKey: 'backend.runner',
-    label: 'Backend',
+    label: 'Backend for new runs',
     kind: 'enum',
     options: SUPPORTED_BACKENDS,
     note: 'Applies to every workspace on this machine. Takes effect on the next invocation.'
@@ -121,21 +122,21 @@
     usd: {
       key: 'spendMaxUsdPerRun',
       ipcKey: 'spend.maxUsdPerRun',
-      label: 'Per-run spend bound',
+      label: 'Spend limit per run',
       kind: 'number-optional',
       unit: 'USD',
       min: 0.01,
-      placeholder: 'Unset — no bound',
+      placeholder: 'Unset — no limit',
       note: 'Crossing it pauses the run, resumable by you. It never fails or cancels a run.'
     },
     tokens: {
       key: 'spendMaxTokensPerRun',
       ipcKey: 'spend.maxTokensPerRun',
-      label: 'Per-run spend bound',
+      label: 'Spend limit per run',
       kind: 'number-optional',
       unit: 'tokens',
       min: 1,
-      placeholder: 'Unset — no bound',
+      placeholder: 'Unset — no limit',
       note: 'Crossing it pauses the run, resumable by you. It never fails or cancels a run.'
     }
   };
@@ -156,7 +157,7 @@
     {
       key: 'cliEnvironmentMode',
       ipcKey: 'cli.environmentMode',
-      label: 'Environment mode',
+      label: 'Environment passed to backends',
       kind: 'enum',
       options: PROCESS_ENVIRONMENT_MODES,
       note: 'Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
@@ -164,7 +165,7 @@
     {
       key: 'cliEnvironmentAllowlist',
       ipcKey: 'cli.environmentAllowlist',
-      label: 'Environment allowlist',
+      label: 'Allowed variables',
       kind: 'string-list',
       itemPattern: PROCESS_ENV_NAME_PATTERN_SOURCE,
       invalidMessage:
@@ -176,17 +177,17 @@
       ipcKey: 'cli.inheritEnvironment',
       label: 'Inherit host environment (legacy)',
       kind: 'boolean',
-      note: 'Superseded by Environment Mode; Off forces minimal. Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
+      note: 'Superseded by Environment passed to backends; Off forces minimal. Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
     },
     {
       key: 'backendProbeTimeoutSeconds',
       ipcKey: 'backend.probeTimeoutSeconds',
-      label: 'Backend probe timeout',
+      label: 'Backend check timeout',
       kind: 'number',
       unit: 'seconds',
       min: 1,
       max: 30,
-      note: 'Applies to every workspace on this machine. Read at the start of each probe — the next Ping uses it, no reload.'
+      note: 'How long to wait when testing a backend. Applies to every workspace on this machine. Read at the start of each probe — the next Ping uses it, no reload.'
     }
   ] as const;
 
@@ -260,8 +261,8 @@
   const denominationText = $derived(
     `${BACKENDS[draft.backendRunner].label} reports ` +
       (denomination === 'usd'
-        ? 'a cost, so its per-run spend bound is set in US dollars.'
-        : 'tokens and no cost, so its per-run spend bound is set in tokens.')
+        ? 'a cost, so its spend limit per run is set in US dollars.'
+        : 'tokens and no cost, so its spend limit per run is set in tokens.')
   );
 
   // FR-R3-143 (T035) — reads the DRAFT, not the projection.

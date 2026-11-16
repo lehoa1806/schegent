@@ -114,38 +114,42 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
       'structured `.schegent/audit.log` remains sanitized either way.'
   },
   rawTranscriptMode: {
-    title: 'Raw transcript retention',
-    body: 'Choose whether new runs retain unredacted transcripts always, only when interrupted or unsuccessful, or never. The choice is frozen for each run.'
+    title: 'Keep raw transcripts',
+    body:
+      'Whether new runs keep their unredacted transcripts: "Always"; "Unless the run completes", ' +
+      'which keeps a run\'s transcript when it fails, is canceled or pauses; or "Never". The ' +
+      'choice is frozen for each run.'
   },
   transportCaptureMode: {
-    title: 'CLI transport capture',
+    title: 'Record backend traffic',
     body:
-      'Whether Schegent keeps CLI transport, the stream lines exchanged with the CLI, with secret ' +
-      'patterns redacted and otherwise as sent. Kept per Run, bounded by size and by the session ' +
-      'retention age. `inherit` follows the raw transcript mode; `off` keeps nothing; `errors-only` ' +
-      'keeps a Run\'s transport only if it fails or is canceled; `on` keeps all of it. Claude Code ' +
-      'itself sends the conversation to the model vendor whatever this setting.'
+      'Whether Schegent records backend traffic, the stream lines exchanged with the CLI, with ' +
+      'secret patterns redacted and otherwise as sent. Kept per Run, bounded by size and by how ' +
+      'long run artifacts are kept. "Same as raw transcripts" follows Keep raw transcripts; ' +
+      '"Never" keeps nothing; "For failed or canceled runs" keeps a Run\'s traffic only if it ' +
+      'fails or is canceled; "Always" keeps all of it. Claude Code itself sends the conversation ' +
+      'to the model vendor whatever this setting.'
   },
 
   loopMaxIterations: {
-    title: 'Loop max iterations',
+    title: 'Loop limit',
     body:
-      'Maximum recursive iterations per loopable phase (1–50). The runner ' +
-      'aborts the phase as a fatal error if this limit is reached without ' +
-      'a clean exit.'
+      'Most times a Phase with a retry condition repeats in one run (1–50). If ' +
+      'the condition still holds at the limit, the run fails, unless the Phase ' +
+      'or "When the loop limit is reached" says to continue.'
   },
 
   invocationIdleTimeoutSeconds: {
-    title: 'Invocation idle timeout (seconds)',
+    title: 'Stop a step that is silent for (seconds)',
     body:
       'Idle window for a single CLI invocation (60–7200): the runner ' +
       'terminates the phase after this long with no output. Output resets ' +
-      'the window, so a streaming phase runs on — the max duration below is ' +
-      'what bounds it.'
+      'the window, so a streaming phase runs on — the time limit per step, ' +
+      'below, is what bounds it.'
   },
 
   invocationMaxDurationSeconds: {
-    title: 'Invocation max duration (seconds)',
+    title: 'Time limit per step (seconds)',
     body:
       'Absolute wall-clock bound for a single CLI invocation (60–86400), ' +
       'armed at spawn and never reset — a chatty child that keeps emitting ' +
@@ -154,7 +158,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
 
   watchdogPollIntervalMinutes: {
-    title: 'Watchdog poll interval (minutes)',
+    title: 'Check paused runs every (minutes)',
     body:
       'How often the watchdog re-checks a paused run (1–240). Shorter ' +
       'intervals resume sooner after a manual unpause; longer intervals ' +
@@ -162,7 +166,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
 
   auditRotationSizeMB: {
-    title: 'Audit rotation size (MB)',
+    title: 'Start a new audit file at (MB)',
     body:
       'Rotate the structured audit log when it exceeds this size (1–100 MB). ' +
       'Rotation moves the old file to `.schegent/audit.<N>.log` and starts a ' +
@@ -170,7 +174,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
 
   auditRotationMaxAgeDays: {
-    title: 'Audit retention (days)',
+    title: 'Keep audit events for (days)',
     body:
       'Delete rotated audit log files older than this many days (1–365). ' +
       'Only files matching `.schegent/audit.*.log` are affected.'
@@ -187,7 +191,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
 
   claudeAutoCompactPctOverride: {
-    title: 'Claude auto-compaction threshold (%)',
+    title: 'Claude compaction threshold (%)',
     body:
       'When set (1–100), exported as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` to the ' +
       'Claude CLI subprocess so it compacts earlier. Leave the field empty ' +
@@ -195,16 +199,16 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
 
   runtimeLogLevel: {
-    title: 'Runtime log level',
+    title: 'Log level',
     body:
-      'Default: INFO. Selects which records are written to the runtime log ' +
-      'file. DEBUG includes all records; ERROR includes only error records. ' +
-      'Independent of the Verbose logging toggle above. Takes effect on the ' +
-      'next log emission — no reload required.'
+      'Default: Info. Selects which records are written to the runtime log ' +
+      'file. Debug includes all records; Error includes only error records. ' +
+      'Independent of the Verbose logging toggle. Takes effect on the next ' +
+      'log emission — no reload required.'
   },
 
   runtimeLogFilePath: {
-    title: 'Runtime log file path',
+    title: 'Log file path',
     body:
       'Default: <workspace>/.schegent/syslog. Where the runtime log file is ' +
       'written. Leave blank to use the default. Accepts an absolute path or ' +
@@ -214,14 +218,14 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
 
   sessionRetentionMaxAgeDays: {
-    title: 'Unredacted session retention age',
+    title: 'Keep run artifacts for (days)',
     body:
       'Complete inactive raw transcripts and verbose diagnostics older than ' +
       'this many days are removed. Active runs and audit.log are never pruned.'
   },
 
   sessionRetentionMaxBytes: {
-    title: 'Unredacted session byte budget',
+    title: 'Run artifact space (bytes)',
     body:
       'Total byte budget for raw transcripts and verbose diagnostics. The ' +
       'oldest complete inactive runs are removed first; active runs and ' +
@@ -237,7 +241,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
 
   // FR-R3-144 (T031) — the setting the whole item turns on.
   backendRunner: {
-    title: 'Backend',
+    title: 'Backend for new runs',
     body:
       'Which CLI Schegent invokes for every task. Applies to every workspace on ' +
       'this machine, and takes effect on the next invocation — a run already in ' +
@@ -249,19 +253,19 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   // matches the selected backend, because a bound in a denomination the backend
   // never reports is a bound that silently does nothing.
   spendMaxUsdPerRun: {
-    title: 'Per-run spend bound (USD)',
+    title: 'Spend limit per run (USD)',
     body:
       'Pause a run once its reported cost crosses this many US dollars. It pauses ' +
       'and never fails or cancels: you can resume, and the accounting continues ' +
-      'from where it stopped. Leave it empty for no bound. Applies to backends ' +
+      'from where it stopped. Leave it empty for no limit. Applies to backends ' +
       'that report a cost.'
   },
   spendMaxTokensPerRun: {
-    title: 'Per-run spend bound (tokens)',
+    title: 'Spend limit per run (tokens)',
     body:
       'Pause a run once its reported token usage crosses this count. It pauses ' +
       'and never fails or cancels: you can resume, and the accounting continues ' +
-      'from where it stopped. Leave it empty for no bound. Applies to backends ' +
+      'from where it stopped. Leave it empty for no limit. Applies to backends ' +
       'that report tokens and no cost.'
   },
 
@@ -294,30 +298,31 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
   // FR-R3-143 (T012) — retry.
   retryMaxAttempts: {
-    title: 'Retry max attempts',
+    title: 'Retry attempts per step',
     body:
       'How many delayed-retry attempts a phase gets before the Run and its ' +
       'Queue pause (1–5). Retries cannot be switched off here: the lowest ' +
       'accepted value is 1, and the first attempt is not counted as a retry.'
   },
   retryForceContinueOnCap: {
-    title: 'Continue past retry cap',
+    title: 'When the loop limit is reached',
     body:
-      'When a phase reaches its last allowed iteration with its retry condition ' +
-      'still truthy, advance instead of halting, and record a forced-continue ' +
-      'runtime event. This is the workspace default only — a Phase definition ' +
+      'What a Phase does when it reaches the loop limit with its retry condition ' +
+      'still truthy: "Fail the run" fails it, and "Continue with a warning" ' +
+      'advances and records a forced-continue runtime event. This is the ' +
+      'workspace default only — a Phase definition ' +
       'overrides it — and it does not carry a failure forward: failed and ' +
       'timed-out outcomes stay terminal.'
   },
   // FR-R3-143 (T013) — runtime log rotation.
   runtimeLogMaxBytes: {
-    title: 'Runtime log rotation size (bytes)',
+    title: 'Log file size (bytes)',
     body:
       'Rotate the runtime debug log once it reaches this size (1 MiB–1 GiB). ' +
       'Rotation is by size only; there is no time-based trigger.'
   },
   runtimeLogMaxGenerations: {
-    title: 'Runtime logs kept',
+    title: 'Log files kept',
     body:
       'How many numbered runtime-log generations to keep (0–20). The oldest is ' +
       'deleted once the count is exceeded. Zero opts out of rotation entirely: ' +
@@ -337,7 +342,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   cliInheritEnvironment: {
     title: 'Inherit the extension host environment (legacy)',
     body:
-      'Superseded by Environment mode below, and kept because existing settings ' +
+      'Superseded by Environment passed to backends, and kept because existing settings ' +
       'still carry it: setting it Off forces `minimal` regardless of the mode. ' +
       'Leave it On unless you are deliberately reproducing the old behaviour. ' +
       'Applies to every workspace on this machine, and takes effect after ' +
@@ -345,7 +350,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
 
   cliEnvironmentMode: {
-    title: 'Environment mode',
+    title: 'Environment passed to backends',
     body:
       'What the backend CLI subprocess inherits. `allowlist` (the default) ' +
       'forwards the required PATH/home/temp/locale bootstrap variables plus the ' +
@@ -357,7 +362,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
 
   cliEnvironmentAllowlist: {
-    title: 'Environment allowlist',
+    title: 'Allowed variables',
     body:
       'Variable NAMES to forward when the mode is `allowlist` — values are read ' +
       'from the extension host at spawn time and are never stored in this ' +
@@ -381,7 +386,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
 
   backendProbeTimeoutSeconds: {
-    title: 'Backend probe timeout (seconds)',
+    title: 'Backend check timeout (seconds)',
     body:
       'How long a backend availability probe may run before it is treated as ' +
       'unavailable (1–30). Raise it on a slow filesystem or a cold network ' +
@@ -391,7 +396,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
 
   // FR-R3-143 (T032) — two `window`-scoped settings, saved to this workspace.
   uiConfirmationsEnable: {
-    title: 'Confirmation prompts',
+    title: 'Ask before destructive actions',
     body:
       'Ask before destructive actions such as clearing the queue or deleting a ' +
       'definition. Turning this Off removes those prompts, so the action happens ' +
@@ -400,11 +405,12 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
 
   multiRootSuppressWarning: {
-    title: 'Suppress the multi-root warning',
+    title: 'Warn about multi-root workspaces',
     body:
-      'Stop the one-per-activation notice that a multi-root workspace is open ' +
-      'and only the canonical folder is used. The warning is emitted once during ' +
-      'activation, so this takes effect the next time the window is opened or ' +
-      'the Extension Host reloads. Saved for this workspace.'
+      'Show the one-per-activation notice that a multi-root workspace is open ' +
+      'and only the canonical folder is used; Off stops it. The setting stores ' +
+      'the opposite, `multiRoot.suppressWarning`. The warning is emitted once ' +
+      'during activation, so a change takes effect the next time the window is ' +
+      'opened or the Extension Host reloads. Saved for this workspace.'
   },
 } as const satisfies { readonly [K in GeneralSettingsControlId]: ControlDescription };

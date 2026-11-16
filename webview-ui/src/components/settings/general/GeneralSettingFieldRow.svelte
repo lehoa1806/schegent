@@ -74,10 +74,28 @@
     return `general-settings-unit-${key}`;
   }
 
-  /** A number is read with its unit ("Audit retention days"), as the row draws it. */
+  /** A number is read with its unit ("Keep audit events for days"), as the row draws it. */
   const numberLabelledBy = $derived(
     spec.unit === undefined ? fieldLabelId(spec.key) : `${fieldLabelId(spec.key)} ${unitLabelId(spec.key)}`
   );
+
+  /**
+   * A toggle shows the setting, or its opposite for an `inverted` spec: the multi-root row asks
+   * whether to warn, and the setting stores whether to suppress the warning.
+   */
+  const toggleOn = $derived(
+    spec.inverted === true ? !draft[spec.key as BooleanKey] : draft[spec.key as BooleanKey]
+  );
+
+  function onToggle(event: Event): void {
+    const checked = (event.currentTarget as HTMLInputElement).checked;
+    draft[spec.key as BooleanKey] = spec.inverted === true ? !checked : checked;
+  }
+
+  /** A boolean drawn as a select of its two outcomes, whose option values are `false` and `true`. */
+  function onChoiceChange(event: Event): void {
+    draft[spec.key as BooleanKey] = (event.currentTarget as HTMLSelectElement).value === 'true';
+  }
 
   function onStringInput(event: Event): void {
     draft[spec.key as StringKey] = (event.currentTarget as HTMLInputElement).value;
@@ -168,19 +186,36 @@
     {/if}
   </div>
   <div class="ctl">
-    {#if spec.kind === 'boolean'}
+    {#if spec.kind === 'boolean' && spec.choices !== undefined}
+      <!-- A boolean whose two values are outcomes rather than on and off: the select names them. -->
+      <select
+        class="input"
+        aria-labelledby={fieldLabelId(spec.key)}
+        data-testid="general-settings-input-{spec.key}"
+        value={draft[spec.key as BooleanKey] ? 'true' : 'false'}
+        onchange={onChoiceChange}
+        use:hoverTextAnchor={{
+          controlId: spec.key,
+          description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
+        }}
+      >
+        <option value="false">{spec.choices.false}</option>
+        <option value="true">{spec.choices.true}</option>
+      </select>
+    {:else if spec.kind === 'boolean'}
       <label class="toggle">
         <input
           type="checkbox"
           aria-labelledby={fieldLabelId(spec.key)}
-          bind:checked={draft[spec.key as BooleanKey]}
+          checked={toggleOn}
+          onchange={onToggle}
           data-testid="general-settings-input-{spec.key}"
           use:hoverTextAnchor={{
             controlId: spec.key,
             description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
           }}
         />
-        <span>{draft[spec.key as BooleanKey] ? 'On' : 'Off'}</span>
+        <span>{toggleOn ? 'On' : 'Off'}</span>
       </label>
     {:else if spec.kind === 'number'}
       <!-- `wide`: a size in bytes, whose largest value the mockup's narrow value field
@@ -230,7 +265,7 @@
       </select>
     {:else if spec.kind === 'number-optional'}
       <!-- `wide`: this field's unset state is its placeholder, a sentence ("Unset — no
-           bound") that the mockup's narrow value field would cut off, so the field takes
+           limit") that the mockup's narrow value field would cut off, so the field takes
            the row's width up to its unit. -->
       <span class="unit wide">
         <input
@@ -264,10 +299,10 @@
           description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
         }}
       >
-        <option value="DEBUG">DEBUG</option>
-        <option value="INFO">INFO</option>
-        <option value="WARN">WARN</option>
-        <option value="ERROR">ERROR</option>
+        <option value="DEBUG">Debug</option>
+        <option value="INFO">Info</option>
+        <option value="WARN">Warning</option>
+        <option value="ERROR">Error</option>
       </select>
     {:else if spec.kind === 'raw-transcript-select'}
       <select
@@ -280,14 +315,13 @@
           description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
         }}
       >
-        <option value="always">Always retain</option>
-        <option value="errors-only">Errors only</option>
-        <option value="off">Off</option>
+        <option value="errors-only">Unless the run completes</option>
+        <option value="always">Always</option>
+        <option value="off">Never</option>
       </select>
     {:else if spec.kind === 'enum'}
-      <!-- FR-R3-143 (T029) — the generic enum. Values are rendered as their own
-           labels, which is what makes it generic; a kind whose labels differ
-           from its values stays bespoke (see `FieldKind` in field-types.ts). -->
+      <!-- FR-R3-143 (T029) — the generic enum. A value shows as the words its spec's
+           `optionLabels` gives it, or as itself (see `FieldKind` in field-types.ts). -->
       <select
         class="input"
         aria-labelledby={fieldLabelId(spec.key)}
@@ -300,7 +334,7 @@
         }}
       >
         {#each spec.options ?? [] as option (option)}
-          <option value={option}>{option}</option>
+          <option value={option}>{spec.optionLabels?.[option] ?? option}</option>
         {/each}
       </select>
     {:else if spec.kind === 'string-list'}
@@ -329,7 +363,7 @@
         }}
       />
     {/if}
-    <span class="hint" data-testid="general-settings-scope-{spec.key}">Scope: {scopeLabel}</span>
+    <span class="hint" data-testid="general-settings-scope-{spec.key}">Applies to: {scopeLabel}</span>
     {#if status}
       <div
         class="field-status status-{status.status}"

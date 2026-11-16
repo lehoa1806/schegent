@@ -128,14 +128,23 @@ export function isFieldChanged(
   return drafted !== projected;
 }
 
+/** The redesign's words for the settings layers, as a row's "Applies to:" line reads them. */
+const SCOPE_WORDS: Readonly<Partial<Record<string, string>>> = {
+  workspace: 'this workspace',
+  user: 'you, all workspaces',
+  default: 'default'
+};
+
 /**
- * The settings layer `key` was resolved from, capitalised for display.
+ * The settings layer `key` was resolved from, in the redesign's words: "this
+ * workspace" for a workspace value, "you, all workspaces" for a user value, and
+ * "default" when neither layer sets it.
  *
- * `scopes` is read as a `Partial`, and the `Unknown` fallback is kept, because
+ * `scopes` is read as a `Partial`, and the "unknown" fallback is kept, because
  * this object arrives over IPC from a host bundle that may be older than this
  * webview: `GeneralSettings` declares every scope required, and a host that
- * predates a key simply does not send it. Without the guard `scope.charAt(0)`
- * throws and takes the whole Settings tab down over a missing label.
+ * predates a key simply does not send it. A layer this webview has no words for
+ * reads the same way, rather than as an empty line.
  *
  * The `Partial` cast is what makes that guard type-honest — the previous
  * `current.scopes?.[key]` said the same thing in a form the compiler read as
@@ -145,8 +154,8 @@ export function isFieldChanged(
 export function scopeLabelFor(key: ScalarKey, current: GeneralSettings): string {
   const scopes: Partial<GeneralSettings['scopes']> = current.scopes;
   const scope = scopes[key];
-  if (scope === undefined) return 'Unknown';
-  return scope.charAt(0).toUpperCase() + scope.slice(1);
+  if (scope === undefined) return 'unknown';
+  return SCOPE_WORDS[scope] ?? 'unknown';
 }
 
 /**

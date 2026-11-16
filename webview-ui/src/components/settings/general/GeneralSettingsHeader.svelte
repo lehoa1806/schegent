@@ -41,8 +41,9 @@
 </script>
 
 <!--
-  The privacy profile row, then the retention readout under it, as the mockup's "Stored locally"
-  line sits under its evidence profile.
+  The evidence profile row, then the mockup's "Stored locally" line under it: what run artifact
+  retention holds now and when it last cleaned up. The date stays absolute, because "today" would
+  change the visual baseline from one day to the next.
 -->
 <div class="profile-block">
   <PrivacyProfileSelector
@@ -54,19 +55,19 @@
     {chooseProfile}
   />
   <p class:usage-warning={sessionUsageWarning} class="session-usage small muted" data-testid="session-artifact-usage">
-    <strong>Unredacted local session artifacts:</strong>
+    <strong>Stored locally:</strong>
     {sessionArtifacts.artifactCount} run{sessionArtifacts.artifactCount === 1 ? '' : 's'},
-    {formatBytes(sessionArtifacts.totalBytes)} retained.
+    {formatBytes(sessionArtifacts.totalBytes)}.
     {#if sessionArtifacts.lastSweepAt}
-      Last swept {new Date(sessionArtifacts.lastSweepAt).toLocaleString()}.
+      Last cleaned {new Date(sessionArtifacts.lastSweepAt).toLocaleString()}.
     {:else}
-      Waiting for the activation sweep.
+      Waiting for the first cleanup.
     {/if}
     {#if sessionArtifacts.lastSweepFailures > 0}
-      {sessionArtifacts.lastSweepFailures} retention operation{sessionArtifacts.lastSweepFailures === 1 ? '' : 's'} failed; inspect the sanitized runtime log.
+      {sessionArtifacts.lastSweepFailures} cleanup operation{sessionArtifacts.lastSweepFailures === 1 ? '' : 's'} failed; check the Schegent log.
     {/if}
     {#if sessionBudgetPercent >= 80}
-      Usage is {sessionBudgetPercent}% of the configured byte budget.
+      That is {sessionBudgetPercent}% of Run artifact space.
     {/if}
   </p>
 </div>

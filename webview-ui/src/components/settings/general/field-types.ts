@@ -71,11 +71,11 @@ export type FieldKind =
   | 'level-select'
   | 'raw-transcript-select'
   // FR-R3-143 (T029) — the generic enum, driven by `FieldSpec.options`, so the
-  // next enum setting does not become a fourth bespoke `*-select` kind.
-  // `level-select` and `raw-transcript-select` are deliberately NOT folded into
-  // it: their option LABELS differ from their values ("Errors only" for
-  // `errors-only`), and rewriting them is a change to shipped surfaces this
-  // feature was not asked to make.
+  // next enum setting does not become a fourth bespoke `*-select` kind. It
+  // names a value in words through `FieldSpec.optionLabels`. `level-select` and
+  // `raw-transcript-select` keep their own arms, whose option elements the row
+  // writes out ("Unless the run completes" for `errors-only`); the raw
+  // transcript's are pinned whole by `tests/lint/localization-posture.test.ts`.
   | 'enum'
   // FR-R3-143 (T030) — an editable list of strings.
   //
@@ -126,8 +126,25 @@ export interface FieldSpec {
    */
   readonly wide?: boolean;
   readonly placeholder?: string;
-  /** Accepted values for `kind: 'enum'`. Rendered verbatim as both value and label. */
+  /** Accepted values for `kind: 'enum'`, in the order the select lists them. */
   readonly options?: readonly string[];
+  /**
+   * The words a `kind: 'enum'` select shows for its values, as the redesign
+   * names a choice ("Never" for `off`). A value with no entry shows as itself.
+   */
+  readonly optionLabels?: Readonly<Record<string, string>>;
+  /**
+   * A `kind: 'boolean'` drawn as a select of its two outcomes in place of an
+   * On/Off toggle, as the redesign offers the choice at the loop limit ("Fail
+   * the run" or "Continue with a warning").
+   */
+  readonly choices?: { readonly false: string; readonly true: string };
+  /**
+   * A `kind: 'boolean'` whose toggle reads the opposite of the stored value,
+   * as the redesign asks "Warn about multi-root workspaces" of the setting
+   * stored as `multiRoot.suppressWarning`: the toggle is on when it is false.
+   */
+  readonly inverted?: boolean;
   /**
    * FR-R3-143 (T030) — element pattern for `kind: 'string-list'`. Supplied by
    * the tab from `SETTINGS_SCHEMA`, the same record the host's write path reads
