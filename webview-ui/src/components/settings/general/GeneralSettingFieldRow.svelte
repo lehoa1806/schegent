@@ -196,7 +196,9 @@
         <span>{draft[spec.key as BooleanKey] ? 'On' : 'Off'}</span>
       </label>
     {:else if spec.kind === 'number'}
-      <span class="unit">
+      <!-- `wide`: a size in bytes, whose largest value the mockup's narrow value field
+           would cut off. -->
+      <span class="unit" class:wide={spec.wide === true}>
         <input
           type="number"
           aria-labelledby={numberLabelledBy}
@@ -390,7 +392,7 @@
 <style>
   /* The `.sg .srow` rules draw the row, and `.sg .unit` a number with its unit after it. These
      place what the mockup's row has no slot for: the notes under the label, the width a clearable
-     number's placeholder needs, and the per-row Save, Reset and status. */
+     number's placeholder or a size in bytes needs, and the per-row Save, Reset and status. */
   .field-label .desc {
     margin: var(--schegent-space-1) 0 0;
     line-height: 1.4;

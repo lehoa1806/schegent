@@ -604,47 +604,63 @@ for (const theme of ['light', 'dark', 'high-contrast'] as const) {
  */
 const NUMBER_SPIN_BUTTON_ALLOWANCE_PX = 20;
 
+interface FieldTextFit {
+  /** Every field measured, by test id. */
+  readonly measured: readonly string[];
+  /** Each field whose text is wider than its room, with both widths. */
+  readonly cutOff: readonly string[];
+}
+
 /**
- * A placeholder that names a field's unset state ("Unset — no bound") is the
- * only place the operator reads that state, and a field too narrow for it says
- * something else ("Unset — no"). The pixel gate cannot hold this: a cut-off
- * placeholder is a stable picture, and the next baseline refresh adopts it.
- *
- * The text is measured in the field's own font rather than read back from the
- * layout, because nothing a script can reach reports a placeholder's overflow.
+ * Measures the text a field's `attribute` holds (its placeholder, or the largest
+ * value it takes) in the field's own font, against the room the field's box
+ * leaves. The text is measured rather than read back from the layout, because
+ * nothing a script can reach reports a field's overflow.
  */
-test('every settings placeholder fits inside its field', async ({ page }) => {
-  const settings = await openSurface(page, 'settings', 'light');
-  const { measured, cutOff } = await settings
-    .locator('input[placeholder]:not([placeholder=""]), textarea[placeholder]:not([placeholder=""])')
-    .evaluateAll((fields, spinButtonAllowance) => {
+async function fieldTextFit(fields: Locator, attribute: 'placeholder' | 'max'): Promise<FieldTextFit> {
+  return fields.evaluateAll(
+    (nodes, { name, spinButtonAllowance }) => {
       // Through `ownerDocument`, as `collectUndersizedTargets` reaches the page:
       // the tests' TypeScript program has no DOM globals.
-      const named: string[] = [];
-      const tooNarrow: string[] = [];
-      for (const field of fields) {
+      const measured: string[] = [];
+      const cutOff: string[] = [];
+      for (const field of nodes) {
         const style = field.ownerDocument.defaultView?.getComputedStyle(field);
         const context = field.ownerDocument.createElement('canvas').getContext('2d');
         if (!style || !context || field.getClientRects().length === 0) continue;
-        const placeholder = field.getAttribute('placeholder') ?? '';
+        const text = field.getAttribute(name) ?? '';
         context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-        const needed = context.measureText(placeholder).width;
+        const needed = context.measureText(text).width;
         const spinButton = field.getAttribute('type') === 'number' ? spinButtonAllowance : 0;
         const room =
           field.clientWidth -
           Number.parseFloat(style.paddingLeft) -
           Number.parseFloat(style.paddingRight) -
           spinButton;
-        const name = field.getAttribute('data-testid') ?? field.outerHTML.slice(0, 140);
-        named.push(name);
+        const fieldName = field.getAttribute('data-testid') ?? field.outerHTML.slice(0, 140);
+        measured.push(fieldName);
         if (needed > room) {
-          tooNarrow.push(
-            `${name}: "${placeholder}" needs ${Math.ceil(needed)}px and has ${Math.floor(room)}px`
-          );
+          cutOff.push(`${fieldName}: "${text}" needs ${Math.ceil(needed)}px and has ${Math.floor(room)}px`);
         }
       }
-      return { measured: named, cutOff: tooNarrow };
-    }, NUMBER_SPIN_BUTTON_ALLOWANCE_PX);
+      return { measured, cutOff };
+    },
+    { name: attribute, spinButtonAllowance: NUMBER_SPIN_BUTTON_ALLOWANCE_PX }
+  );
+}
+
+/**
+ * A placeholder that names a field's unset state ("Unset — no bound") is the
+ * only place the operator reads that state, and a field too narrow for it says
+ * something else ("Unset — no"). The pixel gate cannot hold this: a cut-off
+ * placeholder is a stable picture, and the next baseline refresh adopts it.
+ */
+test('every settings placeholder fits inside its field', async ({ page }) => {
+  const settings = await openSurface(page, 'settings', 'light');
+  const { measured, cutOff } = await fieldTextFit(
+    settings.locator('input[placeholder]:not([placeholder=""]), textarea[placeholder]:not([placeholder=""])'),
+    'placeholder'
+  );
   // Named, because the empty list below passes just as well when nothing was measured.
   expect(measured, 'the fields this was written for were measured').toEqual(
     expect.arrayContaining([
@@ -654,6 +670,27 @@ test('every settings placeholder fits inside its field', async ({ page }) => {
   );
   expect(cutOff, 'a settings field cuts off its own placeholder').toEqual([]);
   assertNoPageErrors(page, 'settings placeholders');
+});
+
+/**
+ * A number field shows the largest value its setting takes. The redesign's
+ * 110px field holds every count and duration here, but not a size the host
+ * stores in bytes ("10737418240") where the redesign draws MB, and a field too
+ * narrow for its value cuts off its last digits. The pixel gate cannot hold
+ * this either: it photographs the fixture's values, not the largest.
+ */
+test('every settings number field shows its largest value', async ({ page }) => {
+  const settings = await openSurface(page, 'settings', 'light');
+  const { measured, cutOff } = await fieldTextFit(settings.locator('input[type="number"][max]'), 'max');
+  // Named, because the empty list below passes just as well when nothing was measured.
+  expect(measured, 'the fields this was written for were measured').toEqual(
+    expect.arrayContaining([
+      'general-settings-input-sessionRetentionMaxBytes',
+      'general-settings-input-runtimeLogMaxBytes'
+    ])
+  );
+  expect(cutOff, 'a settings number field cuts off its largest value').toEqual([]);
+  assertNoPageErrors(page, 'settings number values');
 });
 
 /**
