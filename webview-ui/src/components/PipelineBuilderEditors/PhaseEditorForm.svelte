@@ -150,7 +150,10 @@
            layer won", and one layer answers it by existing. -->
       <span class="form-label">Backend</span>
       <select class="input" data-testid="phases-runner-{phase.id}" value={phase.runner ?? ''} disabled={readOnly} onchange={(event) => { const value = event.currentTarget.value; onphasechange(index, { runner: value ? (value as PhaseDefinition['runner']) : undefined }); }}>
-        <option value="">Workflow default</option>
+        <!-- Not the mockup's "Workflow default": no run applies a Workflow's execution defaults.
+             The host runs a Phase that sets no backend on the default backend, the one the Backend
+             setting selects, or on Claude when the Phase writes Git metadata. -->
+        <option value="">Default backend</option>
         {#each RUNNER_KINDS as runner}
           <option value={runner}>{runner}{!snapshot.availableBackends.includes(runner) ? ' (Unavailable)' : ''}</option>
         {/each}
