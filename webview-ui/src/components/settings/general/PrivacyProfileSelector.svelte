@@ -58,11 +58,11 @@
    * the raw key at the operator.
    */
   const FIELD_LABELS: Readonly<Record<keyof PrivacyProfileSettings, string>> = {
-    loggingVerbose: 'Verbose Logging',
-    rawTranscriptMode: 'Raw Transcript Mode',
-    sessionRetentionMaxAgeDays: 'Session Retention (days)',
-    sessionRetentionMaxBytes: 'Session Retention (bytes)',
-    transportCaptureMode: 'CLI Transport Capture'
+    loggingVerbose: 'Verbose logging',
+    rawTranscriptMode: 'Raw transcript mode',
+    sessionRetentionMaxAgeDays: 'Session retention (days)',
+    sessionRetentionMaxBytes: 'Session retention (bytes)',
+    transportCaptureMode: 'CLI transport capture'
   };
 
   let applying = $state<PrivacyProfileName | null>(null);

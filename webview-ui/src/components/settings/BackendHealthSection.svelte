@@ -76,7 +76,7 @@
   keeps its words and its id, which the "open backend settings" command scrolls to.
 -->
 <section class="section backend-health" aria-labelledby="backend-health-heading">
-  <h3 id="backend-health-heading">Backend Health</h3>
+  <h3 id="backend-health-heading">Backend health</h3>
   <p class="lead small muted" id="backend-health-description">Run a bounded, output-free availability check for a configured CLI.</p>
   <div class="grid backend-list">
     {#each SUPPORTED_BACKENDS as kind (kind)}

@@ -82,17 +82,17 @@
   export const BACKENDS: Readonly<Record<BackendRunnerKind, BackendSection>> = {
     claude: {
       label: 'Claude',
-      path: { key: 'cliPath', ipcKey: 'cli.path', label: 'Claude CLI Path', kind: 'string' },
+      path: { key: 'cliPath', ipcKey: 'cli.path', label: 'Claude CLI path', kind: 'string' },
       specific: [AUTO_COMPACT_FIELD]
     },
     codex: {
       label: 'Codex',
-      path: { key: 'codexPath', ipcKey: 'codex.path', label: 'Codex CLI Path', kind: 'string' },
+      path: { key: 'codexPath', ipcKey: 'codex.path', label: 'Codex CLI path', kind: 'string' },
       specific: []
     },
     agy: {
       label: 'Agy',
-      path: { key: 'agyPath', ipcKey: 'agy.path', label: 'Agy CLI Path', kind: 'string' },
+      path: { key: 'agyPath', ipcKey: 'agy.path', label: 'Agy CLI path', kind: 'string' },
       specific: []
     }
   };
@@ -153,7 +153,7 @@
     {
       key: 'cliEnvironmentMode',
       ipcKey: 'cli.environmentMode',
-      label: 'Environment Mode',
+      label: 'Environment mode',
       kind: 'enum',
       options: PROCESS_ENVIRONMENT_MODES,
       note: 'Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
@@ -161,7 +161,7 @@
     {
       key: 'cliEnvironmentAllowlist',
       ipcKey: 'cli.environmentAllowlist',
-      label: 'Environment Allowlist',
+      label: 'Environment allowlist',
       kind: 'string-list',
       itemPattern: PROCESS_ENV_NAME_PATTERN_SOURCE,
       invalidMessage:
@@ -171,14 +171,14 @@
     {
       key: 'cliInheritEnvironment',
       ipcKey: 'cli.inheritEnvironment',
-      label: 'Inherit Host Environment (legacy)',
+      label: 'Inherit host environment (legacy)',
       kind: 'boolean',
       note: 'Superseded by Environment Mode; Off forces minimal. Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
     },
     {
       key: 'backendProbeTimeoutSeconds',
       ipcKey: 'backend.probeTimeoutSeconds',
-      label: 'Backend Probe Timeout (seconds)',
+      label: 'Backend probe timeout (seconds)',
       kind: 'number',
       min: 1,
       max: 30,
@@ -290,7 +290,7 @@
   const effectivePolicyText = $derived.by(() => {
     if (forcedByLegacyBoolean) {
       return (
-        'minimal — forced by "Inherit Host Environment (legacy)" being off, which overrides ' +
+        'minimal — forced by "Inherit host environment (legacy)" being off, which overrides ' +
         'the mode and allowlist above. Backend CLIs receive only the variables Schegent sets. ' +
         'Turn it on to make those two take effect.'
       );

@@ -319,12 +319,12 @@ Settings:
 
 Settings backends:
 
-- **The backend list keeps the heading "Backend Health"** and the product's line under it. The mockup's heading reads "Installed backends".
+- **The backend list keeps the heading "Backend health"** and the product's line under it. The mockup's heading reads "Installed backends".
 - **A backend card keeps the product's tags**: "In use", then "Discovered" or "Not found", where the mockup's second tag reads "Found". The last check is the mockup's status chip, such as "Healthy · 120 ms", with a dot while the check runs and the warning mark when the backend is unavailable.
 - **The check is "Ping", a secondary button at the card's right**, where the mockup's is "Test". There is no "…" menu, Details link or "Set path…" button. The path is not a line under the name: it stays the editable path row in the card, after the "not found" sentence when there is one, and the backend's own settings follow it.
 - **The line under the name is the containment posture**: "Containment:" and "Mechanism:", each value in the code font. The mockup's reads "Sandboxed · Details".
 - **"Allow uncontained" is a danger button and "Revoke uncontained permission" a secondary one**, with the refusal the host sends under them.
-- **"Process environment" is a heading inside the group, as in the mockup**, over the product's rows: Environment Mode, Environment Allowlist, Inherit Host Environment (legacy) and Backend Probe Timeout, then the effective policy line. The allowlist is a list of names, each with a cross button that removes it, above an entry field and an Add button. The mockup's is a text area with one name per line. The list refuses a name that does not match the setting's pattern when it is added, so it never holds an invalid entry, which a text area could not promise.
+- **"Process environment" is a heading inside the group, as in the mockup**, over the product's rows: Environment mode, Environment allowlist, Inherit host environment (legacy) and Backend probe timeout, then the effective policy line. The allowlist is a list of names, each with a cross button that removes it, above an entry field and an Add button. The mockup's is a text area with one name per line. The list refuses a name that does not match the setting's pattern when it is added, so it never holds an invalid entry, which a text area could not promise.
 
 Fatal Signatures:
 

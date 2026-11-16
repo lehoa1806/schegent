@@ -24,17 +24,17 @@ function snapshot(ping: WorkflowSnapshot['backendPingState'] = { status: 'idle' 
 const BACKENDS: Readonly<Record<BackendRunnerKind, BackendSection>> = {
   claude: {
     label: 'Claude',
-    path: { key: 'cliPath', ipcKey: 'cli.path', label: 'Claude CLI Path', kind: 'string' },
+    path: { key: 'cliPath', ipcKey: 'cli.path', label: 'Claude CLI path', kind: 'string' },
     specific: []
   },
   codex: {
     label: 'Codex',
-    path: { key: 'codexPath', ipcKey: 'codex.path', label: 'Codex CLI Path', kind: 'string' },
+    path: { key: 'codexPath', ipcKey: 'codex.path', label: 'Codex CLI path', kind: 'string' },
     specific: []
   },
   agy: {
     label: 'Agy',
-    path: { key: 'agyPath', ipcKey: 'agy.path', label: 'Agy CLI Path', kind: 'string' },
+    path: { key: 'agyPath', ipcKey: 'agy.path', label: 'Agy CLI path', kind: 'string' },
     specific: []
   }
 };

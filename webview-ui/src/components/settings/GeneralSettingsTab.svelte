@@ -63,40 +63,40 @@
     {
       key: 'loggingVerbose',
       ipcKey: 'logging.verbose',
-      label: 'Verbose Logging',
+      label: 'Verbose logging',
       kind: 'boolean',
       note: 'For Claude, additionally writes unredacted debug, stream, and verbose artifacts. Codex and Agy currently ignore this setting. Changes apply to the next invocation.'
     },
     {
       key: 'runtimeLogLevel',
       ipcKey: 'logging.runtimeLogLevel',
-      label: 'Runtime Log Level',
+      label: 'Runtime log level',
       kind: 'level-select'
     },
     {
       key: 'runtimeLogFilePath',
       ipcKey: 'logging.runtimeLogFilePath',
-      label: 'Runtime Log File Path',
+      label: 'Runtime log file path',
       kind: 'string',
       placeholder: '<workspace>/.schegent/syslog'
     },
     {
       key: 'rawTranscriptMode',
       ipcKey: 'logging.rawTranscriptMode',
-      label: 'Raw Transcript Retention',
+      label: 'Raw transcript retention',
       kind: 'raw-transcript-select'
     },
     {
       key: 'transportCaptureMode',
       ipcKey: 'logging.transportCaptureMode',
-      label: 'CLI Transport Capture',
+      label: 'CLI transport capture',
       kind: 'enum',
       options: TRANSPORT_CAPTURE_SETTINGS
     },
     {
       key: 'sessionRetentionMaxAgeDays',
       ipcKey: 'logging.sessionRetentionMaxAgeDays',
-      label: 'Session Artifact Retention (days)',
+      label: 'Session artifact retention (days)',
       kind: 'number',
       min: 1,
       max: 3650
@@ -104,18 +104,18 @@
     {
       key: 'sessionRetentionMaxBytes',
       ipcKey: 'logging.sessionRetentionMaxBytes',
-      label: 'Session Artifact Budget (bytes)',
+      label: 'Session artifact budget (bytes)',
       kind: 'number',
       min: 1048576,
       max: 10737418240
     },
-    { key: 'auditRotationSizeMB', ipcKey: 'audit.rotation.sizeMB', label: 'Audit Rotation Size (MB)', kind: 'number', min: 1, max: 100 },
-    { key: 'auditRotationMaxAgeDays', ipcKey: 'audit.rotation.maxAgeDays', label: 'Audit Retention (days)', kind: 'number', min: 1, max: 365 },
-    { key: 'runtimeLogMaxBytes', ipcKey: 'logging.runtimeLogMaxBytes', label: 'Runtime Log Rotation Size (bytes)', kind: 'number', min: 1048576, max: 1073741824 },
+    { key: 'auditRotationSizeMB', ipcKey: 'audit.rotation.sizeMB', label: 'Audit rotation size (MB)', kind: 'number', min: 1, max: 100 },
+    { key: 'auditRotationMaxAgeDays', ipcKey: 'audit.rotation.maxAgeDays', label: 'Audit retention (days)', kind: 'number', min: 1, max: 365 },
+    { key: 'runtimeLogMaxBytes', ipcKey: 'logging.runtimeLogMaxBytes', label: 'Runtime log rotation size (bytes)', kind: 'number', min: 1048576, max: 1073741824 },
     // FR-R3-143 (T047) — `0, 20`, from the manifest. T013 wrote `1, 50`, which
     // offered 21..50 to an operator the host would refuse and hid `0` (keep no
     // rotated generations), the one value with a distinct meaning.
-    { key: 'runtimeLogMaxGenerations', ipcKey: 'logging.runtimeLogMaxGenerations', label: 'Runtime Logs Kept', kind: 'number', min: 0, max: 20 }
+    { key: 'runtimeLogMaxGenerations', ipcKey: 'logging.runtimeLogMaxGenerations', label: 'Runtime logs kept', kind: 'number', min: 0, max: 20 }
   ] as const;
 
   const EXECUTION_RETRY_FIELDS: readonly FieldSpec[] = [
@@ -125,16 +125,16 @@
     // `tests/lint/settings-field-bounds-parity.test.ts`, added by the same task,
     // fails on it, and an allowance list on a new gate's first day is a worse
     // artifact than the one-token fix it would be excusing.
-    { key: 'loopMaxIterations', ipcKey: 'loop.maxIterations', label: 'Loop Max Iterations', kind: 'number', min: 1, max: 50 },
-    { key: 'invocationIdleTimeoutSeconds', ipcKey: 'invocation.idleTimeoutSeconds', label: 'Invocation Idle Timeout (seconds)', kind: 'number', min: 60, max: 7200 },
-    { key: 'invocationMaxDurationSeconds', ipcKey: 'invocation.maxDurationSeconds', label: 'Invocation Max Duration (seconds)', kind: 'number', min: 60, max: 86400 },
-    { key: 'watchdogPollIntervalMinutes', ipcKey: 'watchdog.pollIntervalMinutes', label: 'Watchdog Poll Interval (minutes)', kind: 'number', min: 1, max: 240 },
+    { key: 'loopMaxIterations', ipcKey: 'loop.maxIterations', label: 'Loop max iterations', kind: 'number', min: 1, max: 50 },
+    { key: 'invocationIdleTimeoutSeconds', ipcKey: 'invocation.idleTimeoutSeconds', label: 'Invocation idle timeout (seconds)', kind: 'number', min: 60, max: 7200 },
+    { key: 'invocationMaxDurationSeconds', ipcKey: 'invocation.maxDurationSeconds', label: 'Invocation max duration (seconds)', kind: 'number', min: 60, max: 86400 },
+    { key: 'watchdogPollIntervalMinutes', ipcKey: 'watchdog.pollIntervalMinutes', label: 'Watchdog poll interval (minutes)', kind: 'number', min: 1, max: 240 },
     { key: 'defaultWorkflowId', ipcKey: 'defaultWorkflowId', label: 'Default Workflow', kind: 'workflow-select' },
     // FR-R3-143 (T047) — `1, 5`, from the manifest. T012 wrote `0, 20` and the
     // hover text explained that zero disables retries; the host's minimum is 1,
     // so that was an instruction to enter a value it would reject.
-    { key: 'retryMaxAttempts', ipcKey: 'retry.maxAttempts', label: 'Retry Max Attempts', kind: 'number', min: 1, max: 5 },
-    { key: 'retryForceContinueOnCap', ipcKey: 'retry.forceContinueOnCap', label: 'Continue Past Retry Cap', kind: 'boolean' }
+    { key: 'retryMaxAttempts', ipcKey: 'retry.maxAttempts', label: 'Retry max attempts', kind: 'number', min: 1, max: 5 },
+    { key: 'retryForceContinueOnCap', ipcKey: 'retry.forceContinueOnCap', label: 'Continue past retry cap', kind: 'boolean' }
   ] as const;
 
   // FR-R3-144 (T029) — `claudeAutoCompactPctOverride` is no longer in this list.
@@ -149,14 +149,14 @@
     {
       key: 'uiConfirmationsEnable',
       ipcKey: 'ui.confirmations.enable',
-      label: 'Confirmation Prompts',
+      label: 'Confirmation prompts',
       kind: 'boolean',
       note: 'Off means destructive actions happen on the first click, with no prompt.'
     },
     {
       key: 'multiRootSuppressWarning',
       ipcKey: 'multiRoot.suppressWarning',
-      label: 'Suppress Multi-Root Warning',
+      label: 'Suppress multi-root warning',
       kind: 'boolean',
       note: 'The warning is emitted once during activation, so this takes effect the next time the window opens or the Extension Host reloads.'
     }
