@@ -1,13 +1,13 @@
 /**
- * The General tab captions its settings and headings in sentence case, as the
- * redesign's settings surface does ("Default workflow", "Backend check
- * timeout") and as the tab's own hover titles already were. A word keeps its
- * capital mid-caption only when it is a name or one of the product's nouns,
- * which a caption keeps capitalised ("Default Workflow", as the Builder's
- * "Bound Phase") though the hover titles and the redesign write them in lower
- * case. A number's unit is not in its caption: the row writes it after the
- * field ("10 seconds"), as the redesign does. The evidence profile line, which
- * names the settings a custom posture changed, follows the same casing.
+ * The settings page captions its settings and headings in sentence case, and a
+ * row the redesign's settings page draws in the redesign's words ("Default
+ * workflow", "Backend check timeout"); a row it does not draw keeps the
+ * product's words. A word keeps its capital mid-caption only when it is a name
+ * or one of the product's nouns (the Builder's "Bound Phase"), which the
+ * product's sentences capitalise too. A number's unit is not in its caption:
+ * the row writes it after the field ("10 seconds"), as the redesign does. The
+ * evidence profile line, which names the settings a custom posture changed,
+ * names them by their captions.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
@@ -89,7 +89,7 @@ function textsOf(container: HTMLElement, selector: string): string[] {
   );
 }
 
-describe('the General settings tab reads in sentence case', () => {
+describe('the settings page reads in sentence case', () => {
   it('captions every setting in sentence case', () => {
     const { container } = render(GeneralSettingsTab, { props: { snapshot: buildSnapshot() } });
     const captions = textsOf(container, '.field-name');
@@ -107,14 +107,14 @@ describe('the General settings tab reads in sentence case', () => {
   it('names the retry settings the way their hover text titles them', () => {
     const { container } = render(GeneralSettingsTab, { props: { snapshot: buildSnapshot() } });
     const captions = textsOf(container, '.field-name');
-    expect(captions).toContain('Retry max attempts');
-    expect(captions).toContain('Continue past retry cap');
+    expect(captions).toContain('Retry attempts per step');
+    expect(captions).toContain('When the loop limit is reached');
   });
 
   it('tells a sentence-case caption from a Title Case one', () => {
-    expect(isSentenceCase('Default Workflow')).toBe(true);
+    expect(isSentenceCase('Bound Phase')).toBe(true);
     expect(isSentenceCase('Inherit host environment (legacy)')).toBe(true);
-    expect(isSentenceCase('Claude auto-compaction threshold')).toBe(true);
+    expect(isSentenceCase('Claude compaction threshold')).toBe(true);
     expect(isSentenceCase('UI, trust, and Claude-specific behavior')).toBe(true);
     expect(isSentenceCase('Retry Max Attempts')).toBe(false);
     expect(isSentenceCase('Suppress Multi-Root Warning')).toBe(false);
@@ -122,7 +122,7 @@ describe('the General settings tab reads in sentence case', () => {
   });
 });
 
-describe('the General tab writes a number setting with its unit after the value', () => {
+describe('the settings page writes a number setting with its unit after the value', () => {
   // The redesign draws "10 seconds", never "Backend check timeout (seconds)": the
   // unit follows the field, and the field is read with it.
   it('puts a unit after every number field and none in its caption', () => {
@@ -146,21 +146,24 @@ describe('the General tab writes a number setting with its unit after the value'
     const { getByRole } = render(GeneralSettingsTab, { props: { snapshot: buildSnapshot(), page } });
     const namesBySection: ReadonlyArray<readonly [SettingsSectionId, readonly string[]]> = [
       ['backends', [
-        'Backend probe timeout seconds',
-        'Claude auto-compaction threshold %',
-        'Per-run spend bound USD'
+        'Backend check timeout seconds',
+        'Claude compaction threshold %',
+        'Spend limit per run USD'
       ]],
       ['execution', [
-        'Loop max iterations times',
-        'Invocation idle timeout seconds',
-        'Watchdog poll interval minutes',
-        'Retry max attempts attempts'
+        'Retry attempts per step attempts',
+        'Stop a step that is silent for seconds',
+        'Time limit per step seconds',
+        'Loop limit times',
+        'Check paused runs every minutes'
       ]],
       ['logging', [
-        'Session artifact retention days',
-        'Session artifact budget bytes',
-        'Audit rotation size MB',
-        'Runtime logs kept files'
+        'Keep audit events for days',
+        'Start a new audit file at MB',
+        'Keep run artifacts for days',
+        'Run artifact space bytes',
+        'Log file size bytes',
+        'Log files kept files'
       ]]
     ];
     for (const [section, names] of namesBySection) {
@@ -173,7 +176,7 @@ describe('the General tab writes a number setting with its unit after the value'
   });
 });
 
-describe('the evidence privacy profile line reads in sentence case', () => {
+describe('the evidence privacy profile line names the settings by their captions', () => {
   const DIAGNOSTIC = privacyProfile('diagnostic').settings;
 
   function profileLine(changes: Partial<PrivacyProfileSettings>): string {
@@ -183,18 +186,18 @@ describe('the evidence privacy profile line reads in sentence case', () => {
     return getByTestId('privacy-profile-detected').textContent.replace(/\s+/g, ' ').trim();
   }
 
-  it('names the logging and capture settings that differ in sentence case', () => {
+  it('names the logging and capture settings that differ', () => {
     // The host contract's own tie: three fields off diagnostic, and three off forensic.
     expect(
       profileLine({ loggingVerbose: true, rawTranscriptMode: 'always', transportCaptureMode: 'off' })
     ).toBe(
-      'Current profile: custom — differs from diagnostic in Verbose logging, Raw transcript mode, CLI transport capture'
+      'Current profile: custom — differs from diagnostic in Verbose logging, Keep raw transcripts, Record backend traffic'
     );
   });
 
-  it('names the retention settings that differ in sentence case', () => {
+  it('names the retention settings that differ', () => {
     expect(profileLine({ sessionRetentionMaxAgeDays: 3, sessionRetentionMaxBytes: 12_345 })).toBe(
-      'Current profile: custom — differs from diagnostic in Session retention (days), Session retention (bytes)'
+      'Current profile: custom — differs from diagnostic in Keep run artifacts for, Run artifact space'
     );
   });
 });

@@ -74,10 +74,10 @@
    */
   const FIELD_LABELS: Readonly<Record<keyof PrivacyProfileSettings, string>> = {
     loggingVerbose: 'Verbose logging',
-    rawTranscriptMode: 'Raw transcript mode',
-    sessionRetentionMaxAgeDays: 'Session retention (days)',
-    sessionRetentionMaxBytes: 'Session retention (bytes)',
-    transportCaptureMode: 'CLI transport capture'
+    rawTranscriptMode: 'Keep raw transcripts',
+    sessionRetentionMaxAgeDays: 'Keep run artifacts for',
+    sessionRetentionMaxBytes: 'Run artifact space',
+    transportCaptureMode: 'Record backend traffic'
   };
 
   const DESCRIPTION_ID = 'privacy-profile-description';
@@ -92,18 +92,19 @@
 
 <!--
   The redesign's evidence profile row: the three profiles as one segmented control, the one the
-  values on the page match pressed. A press sets that profile's settings, and Save writes them;
+  values on the page match pressed. The note leads with the mockup's sentence and keeps the
+  residuals after it, because a profile states what it does not change (spec 163, FR-002a). A press sets that profile's settings, and Save writes them;
   "custom" presses none, and the line under the control names the fields that differ.
 -->
 <div class="srow privacy-profiles" data-testid="privacy-profiles">
   <div>
-    <div class="lab" id={LABEL_ID}>Evidence privacy profile</div>
+    <div class="lab" id={LABEL_ID}>Evidence profile</div>
     <p class="desc" id={DESCRIPTION_ID}>
-      A profile sets five settings and states what it does not change &mdash; the checkpoint store's
-      fixed 14-day bound, the retained redacted audit log, backend CLI session stores under your home
-      directory (which Schegent's retention, export, and delete controls do not manage), and that
-      <code>.gitignore</code> does not stop backup or sync tooling. See the settings reference for
-      each profile's audience and residual.
+      Sets transcript, artifact and capture options together. Ephemeral keeps the least. A profile
+      does not change the checkpoint store's fixed 14-day bound, the retained redacted audit log, or
+      backend CLI session stores under your home directory (which Schegent's retention, export, and
+      delete controls do not manage), and <code>.gitignore</code> does not stop backup or sync
+      tooling. See the settings reference for each profile's audience and residual.
     </p>
   </div>
   <div class="ctl">

@@ -750,7 +750,7 @@ async function settingsFieldTextFit(
 }
 
 /**
- * A placeholder that names a field's unset state ("Unset — no bound") is the
+ * A placeholder that names a field's unset state ("Unset — no limit") is the
  * only place the operator reads that state, and a field too narrow for it says
  * something else ("Unset — no"). The pixel gate cannot hold this: a cut-off
  * placeholder is a stable picture, and the next baseline refresh adopts it.
