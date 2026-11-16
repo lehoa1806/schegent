@@ -407,7 +407,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
     body:
       'Default: INFO. Selects which records are written to the runtime log ' +
       'file. DEBUG includes all records; ERROR includes only error records. ' +
-      'Independent of the Verbose Logging toggle above. Takes effect on the ' +
+      'Independent of the Verbose logging toggle above. Takes effect on the ' +
       'next log emission — no reload required.'
   },
   'runtimeLogLevel-save': {
@@ -664,7 +664,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   cliInheritEnvironment: {
     title: 'Inherit the extension host environment (legacy)',
     body:
-      'Superseded by Environment Mode below, and kept because existing settings ' +
+      'Superseded by Environment mode below, and kept because existing settings ' +
       'still carry it: setting it Off forces `minimal` regardless of the mode. ' +
       'Leave it On unless you are deliberately reproducing the old behaviour. ' +
       'Applies to every workspace on this machine, and takes effect after ' +

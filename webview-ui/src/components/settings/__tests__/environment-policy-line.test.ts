@@ -97,7 +97,7 @@ function collapse(text: string | null): string {
 }
 
 /** The label the legacy boolean carries in the UI, which the line must quote. */
-const LEGACY_BOOLEAN_LABEL = 'Inherit Host Environment (legacy)';
+const LEGACY_BOOLEAN_LABEL = 'Inherit host environment (legacy)';
 
 describe('FR-R3-143 — the effective environment policy line', () => {
   it('names the legacy boolean as the cause when it overrides mode and allowlist', () => {

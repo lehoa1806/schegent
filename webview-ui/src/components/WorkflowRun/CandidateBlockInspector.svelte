@@ -72,15 +72,15 @@
   });
 
   const ACTION_LABELS: Record<ControlActionKind, string> = {
-    'check-now': 'Check Readiness Now',
-    'try-now': 'Counted Try Now',
-    'select-candidate': 'Select Candidate (Next Admission)',
-    'set-policy': 'Apply Policy',
-    'set-allowed-candidates': 'Apply Candidate Subset',
-    'renew-monitoring': 'Renew Monitoring Window',
-    pause: 'Pause Block',
-    resume: 'Resume Block',
-    cancel: 'Cancel Block'
+    'check-now': 'Check readiness now',
+    'try-now': 'Counted try now',
+    'select-candidate': 'Select candidate (next admission)',
+    'set-policy': 'Apply policy',
+    'set-allowed-candidates': 'Apply candidate subset',
+    'renew-monitoring': 'Renew monitoring window',
+    pause: 'Pause block',
+    resume: 'Resume block',
+    cancel: 'Cancel block'
   };
 
   function actionDescriptor(action: ControlActionKind): ControlLegalActionEntry {
