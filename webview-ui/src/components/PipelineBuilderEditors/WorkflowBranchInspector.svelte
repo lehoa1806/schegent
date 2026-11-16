@@ -24,7 +24,9 @@
   // clear it would be a trap. `Selection` is the rule the host demands for a
   // collection output feeding a single input (`selection-rule-required`). Note that
   // the run side does not yet read `selection`: it gates the save, and that is what
-  // the control is for.
+  // the control is for. A return feeds no input, so the host asks no rule of a
+  // returning arm, and the control is held while the arm returns. The stored rule
+  // stays in the draft and still shows.
   //
   // No rule lives in this markup. Arity, literal parsing, and priority parsing all
   // come from `workflow-catalog-state.ts`.
@@ -205,7 +207,7 @@
         class="input"
         data-testid="workflow-connection-selection-{p.index}"
         value={p.connection.selection ?? ""}
-        disabled={p.readonly}
+        disabled={p.readonly || returns}
         onchange={(event) => setSelection(event.currentTarget.value)}
       >
         <option value="">Not set</option>

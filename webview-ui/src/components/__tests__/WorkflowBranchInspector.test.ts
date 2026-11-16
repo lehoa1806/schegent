@@ -183,6 +183,23 @@ describe('branch endpoints', () => {
     expect(input.disabled).toBe(true);
   });
 
+  it('holds the selection rule while the arm returns, and still shows the stored one', () => {
+    // The host asks for a selection rule only of an output feeding an input. A return
+    // feeds none, so the rule is neither required nor read while the arm returns; it
+    // stays in the draft for the arm to take up again once the mark is cleared.
+    const { getByTestId } = mount({ ...RETURNING, selection: 'last' });
+    const selection = getByTestId('workflow-connection-selection-0') as HTMLSelectElement;
+
+    expect(selection.disabled).toBe(true);
+    expect(selection.value).toBe('last');
+
+    cleanup();
+    const entering = mount({ ...PLAIN, selection: 'last' });
+    const editable = entering.getByTestId('workflow-connection-selection-0') as HTMLSelectElement;
+    expect(editable.disabled).toBe(false);
+    expect(editable.value).toBe('last');
+  });
+
   it('offers no condition controls until the branch is marked conditional', () => {
     const { queryByTestId, getByTestId } = mount(PLAIN);
 
