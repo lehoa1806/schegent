@@ -2,7 +2,8 @@
 //
 // Covers:
 //   - The section navigation: the mockup's sections in its order and words, Backends first and
-//     current, one section shown at a time, and the mockup's dot on a section with unsaved edits.
+//     current unless the page is opened on another, one section shown at a time, and the
+//     mockup's dot on a section with unsaved edits.
 //   - Every part of the page stays mounted while its section is hidden, so an edit in a hidden
 //     section is still counted, saved and reverted (the one save model below edits the loop limit
 //     and the failure signatures, both in sections hidden on arrival).
@@ -86,6 +87,7 @@ describe('Settings redesign — the section navigation', () => {
   const SECTIONS = [
     ['backends', 'Backends'],
     ['execution', 'Runs and retries'],
+    ['queues', 'Queues'],
     ['logging', 'Logs and retention'],
     ['privacy', 'Privacy and evidence'],
     ['trust', 'Trust and prompts'],
@@ -121,7 +123,7 @@ describe('Settings redesign — the section navigation', () => {
     expect(buttons.map((button) => [button.getAttribute('data-testid'), button.textContent.trim()]))
       .toEqual(SECTIONS.map(([id, label]) => [`settings-nav-${id}`, label]));
     expect(buttons.map((button) => button.getAttribute('aria-current')))
-      .toEqual(['true', null, null, null, null, null]);
+      .toEqual(['true', null, null, null, null, null, null]);
     expect(container.querySelector('[role="tablist"], [role="tab"], [role="tabpanel"]')).toBeNull();
   });
 
@@ -153,6 +155,7 @@ describe('Settings redesign — the section navigation', () => {
     const parts: ReadonlyArray<readonly [string, string]> = [
       ['backends', 'settings-group-backend-environment'],
       ['execution', 'settings-group-execution-retry'],
+      ['queues', 'queue-defaults'],
       ['logging', 'settings-group-audit-logging'],
       ['privacy', 'privacy-profiles'],
       ['privacy', 'session-artifact-usage'],
@@ -173,6 +176,17 @@ describe('Settings redesign — the section navigation', () => {
     expect(heading?.closest('[data-testid^="settings-section-"]')?.getAttribute('data-testid'))
       .toBe('settings-section-backends');
     expect(shownSections(container)).toEqual(['settings-section-backends']);
+  });
+
+  // The Queues list's "Queue defaults" opens this page on its Queues section
+  // (`dashboard/App.svelte`), as the mockup's button carries `data-sec="queues"`.
+  it('opens on the section it is given, marked current', () => {
+    const { container } = render(SettingsSurface, {
+      props: { snapshot: buildSnapshot(), section: 'queues' }
+    });
+    expect(shownSections(container)).toEqual(['settings-section-queues']);
+    expect(navButton(container, 'queues').getAttribute('aria-current')).toBe('true');
+    expect(navButton(container, 'backends').hasAttribute('aria-current')).toBe(false);
   });
 
   it('marks a section that holds an unsaved edit with the mockup dot, until Revert', async () => {

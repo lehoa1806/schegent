@@ -603,6 +603,10 @@ for (const theme of ['light', 'dark', 'high-contrast'] as const) {
  */
 const SETTINGS_SECTION_LANDMARKS: Readonly<Record<string, readonly string[]>> = {
   execution: ['settings-group-execution-retry'],
+  // `queue-config-cap-disclosure` is the sentence the cap may not be shown without
+  // (FR-R3-124): that concurrent Runs share one working tree. It renders with the cap row,
+  // whatever the cap is.
+  queues: ['queue-defaults-cap-row', 'queue-config-cap-disclosure'],
   logging: ['settings-group-audit-logging'],
   privacy: ['privacy-profiles', 'session-artifact-usage'],
   // `trust-disclosure` reports a host decision rather than a draft value: what

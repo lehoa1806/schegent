@@ -5,28 +5,41 @@
    * A button shows its section and marks itself current; focus stays on it. A section that holds
    * an unsaved edit carries the redesign's dot.
    *
-   * The general settings fill five sections and the failure signatures the sixth. Every section
-   * stays mounted, the ones not shown hidden, so an edit made in one is still counted, saved and
-   * reverted while another is shown: the page header holds the only Revert and Save.
+   * Five of the sections hold the general settings, one the queue settings and one the failure
+   * signatures. Every section stays mounted, the ones not shown hidden, so an edit made in one is
+   * still counted, saved and reverted while another is shown: the page header holds the only
+   * Revert and Save.
    *
    * Feature 012 T047 moved Phases and Pipelines to PipelineBuilder.svelte and Models to
-   * PipelineBuilderEditors/ModelCatalogEditor.svelte. Feature 030 (US3) removed the Queue sub-tab;
-   * the cap and the default queue are set from QueueConfigModal.svelte (FR-R3-145, T1569).
+   * PipelineBuilderEditors/ModelCatalogEditor.svelte. Feature 030 (US3) removed the Queue sub-tab,
+   * and FR-R3-145 (T1569) set the cap and the default queue from a dialog on the Queues list. The
+   * redesign brings them back here as the Queues section (`settings/QueueDefaultsSection.svelte`),
+   * which the list's "Queue defaults" opens.
    */
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
   import '../lib/sg/sg-settings.css';
   import GeneralSettingsTab from './settings/GeneralSettingsTab.svelte';
   import FatalSignaturesTab from './settings/FatalSignaturesTab.svelte';
+  import QueueDefaultsSection from './settings/QueueDefaultsSection.svelte';
   import SettingsPageHeader from './settings/SettingsPageHeader.svelte';
   import SettingsSection from './settings/SettingsSection.svelte';
-  import { SETTINGS_SECTIONS, SettingsPage } from './settings/settings-page.svelte';
+  import {
+    SETTINGS_SECTIONS,
+    SettingsPage,
+    type SettingsSectionId
+  } from './settings/settings-page.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
+    /** The section the page opens on, Backends unless the opener names another. Read once. */
+    section?: SettingsSectionId;
   }
-  const { snapshot }: Props = $props();
+  const { snapshot, section = 'backends' }: Props = $props();
 
-  const page = new SettingsPage();
+  // Read through a function: the page takes the opening section once, at mount, and keeps the
+  // section the operator chooses after that as its own state.
+  const openingSection = (): SettingsSectionId => section;
+  const page = new SettingsPage(openingSection());
 </script>
 
 <main class="settings-surface" data-testid="settings-surface-root">
@@ -50,7 +63,13 @@
       </nav>
 
       <div class="set-body" data-testid="settings-body">
-        <GeneralSettingsTab {snapshot} {page} />
+        <GeneralSettingsTab {snapshot} {page}>
+          {#snippet queues()}
+            <SettingsSection {page} id="queues">
+              <QueueDefaultsSection {snapshot} {page} />
+            </SettingsSection>
+          {/snippet}
+        </GeneralSettingsTab>
         <SettingsSection {page} id="signatures">
           <FatalSignaturesTab {snapshot} {page} />
         </SettingsSection>

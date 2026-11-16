@@ -18,15 +18,21 @@
   // Feature 095 (T027, US3) — the workspace queue settings open from this tier,
   // because both values are workspace-scoped. They are deliberately not folded
   // into `QueueDetailTier`'s per-queue Settings affordance, which renames the one
-  // queue in front of the operator.
+  // queue in front of the operator. The redesign moved them from a dialog into the
+  // Settings page's Queues section, so "Queue defaults" asks the dashboard shell to
+  // open that page there (`dashboard/navigation-context.ts`), as the mockup's does.
+  // Opening a page changes nothing, so a secondary window offers it too; the page
+  // itself says the window is read-only.
 
+  import { getContext } from 'svelte';
+
+  import { DASHBOARD_NAVIGATION, type DashboardNavigation } from '../../dashboard/navigation-context';
   import { postCommand } from '../../lib/vscode-api';
   import { CMD_CREATE_QUEUE } from '../../lib/messages';
   import { sendCreateQueueIntent, type CreateQueueOutcome } from '../../lib/queue-create-ipc';
   import { queueRuntimeLabel, queueRuntimeTone } from '../../lib/queue-lifecycle-label';
   import { haltedStartFailure } from '../../lib/queue-runtime-view';
   import { snapshotStore } from '../../lib/snapshot-store.svelte';
-  import QueueConfigModal from '../QueueConfigModal.svelte';
   import type { QueueItem, QueueRuntime } from '../../lib/snapshot-types';
 
   interface Props {
@@ -55,31 +61,21 @@
   // operator arranged. Sorting here rather than trusting array order means a
   // caller that filters or concatenates cannot reshuffle the tier.
   const ordered = $derived([...queues].sort((a, b) => a.position - b.position));
-  // Workspace-scoped, and what Queue Settings changes.
+  // Workspace-scoped, and set in Settings, Queues.
   const defaultQueueId = $derived(snapshotStore.queueSettings.defaultQueueId);
   // FR-R3-124 — the count only. A line naming the concurrency cap would make this list a surface
-  // that owes the shared-tree disclosure; Queue Settings, where the cap is chosen, states both.
+  // that owes the shared-tree disclosure; Settings, Queues, where the cap is chosen, states both.
   const countLine = $derived(`${ordered.length} ${ordered.length === 1 ? 'queue' : 'queues'}`);
+
+  // Absent outside the dashboard, and then "Queue defaults" is not rendered.
+  const navigation = getContext<DashboardNavigation | undefined>(DASHBOARD_NAVIGATION);
 
   let creating = $state(false);
   let draftName = $state('');
   let createPending = $state(false);
   let createError = $state<string | null>(null);
-  let configuring = $state(false);
-  let configOpener: HTMLElement | null = $state(null);
-  // FR-R4-F08 (K8) — the tier's own root, offered to the dialog as its focus fallback.
-  let tierRoot: HTMLElement | null = $state(null);
   const lifetime = new AbortController();
   $effect(() => () => lifetime.abort());
-
-  function openConfig(event: MouseEvent): void {
-    configOpener = event.currentTarget as HTMLElement;
-    configuring = true;
-  }
-
-  function closeConfig(): void {
-    configuring = false;
-  }
 
   function openCreate(): void {
     creating = true;
@@ -143,44 +139,32 @@
   }
 </script>
 
-<main data-testid="queues-tier" aria-label="Queues" tabindex="-1" bind:this={tierRoot}>
+<main data-testid="queues-tier" aria-label="Queues">
   <div class="phead">
     <div>
       <h1>Queues</h1>
       <div class="purpose">Monitor and manage parallel execution queues and lifecycles.</div>
     </div>
-    {#if isPrimary}
+    {#if navigation !== undefined || isPrimary}
       <div class="actions">
-        <button
-          type="button"
-          class="btn btn-secondary"
-          data-testid="queue-settings-open"
-          onclick={openConfig}
-        >
-          Queue Settings
-        </button>
-        {#if !creating}
+        {#if navigation !== undefined}
+          <button
+            type="button"
+            class="btn btn-secondary"
+            data-testid="queue-settings-open"
+            onclick={() => navigation.openQueueSettings()}
+          >
+            Queue defaults
+          </button>
+        {/if}
+        {#if isPrimary && !creating}
           <button type="button" class="btn btn-primary" data-testid="queue-create" onclick={openCreate}>
-            <svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>New Queue
+            <svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>New queue
           </button>
         {/if}
       </div>
     {/if}
   </div>
-
-  {#if configuring}
-    <!-- FR-R3-130 (T1495) — the machine's memory, so the dialog can say what the
-         cap will cost at the moment it is typed. -->
-    <QueueConfigModal
-      queueSettings={snapshotStore.queueSettings}
-      {queues}
-      queueSummaries={snapshotStore.snapshot?.queue.queues ?? []}
-      machineMemoryBytes={snapshotStore.snapshot?.streamPressure?.machineMemoryBytes ?? 0}
-      onClose={closeConfig}
-      originatingElement={configOpener}
-      fallbackFocusElement={tierRoot}
-    />
-  {/if}
 
   {#if creating}
     <div class="toolbar">

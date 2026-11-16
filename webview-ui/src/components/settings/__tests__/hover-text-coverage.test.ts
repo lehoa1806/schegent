@@ -1,4 +1,8 @@
-import { foldLegacyRun, type LegacyRunFields } from '../../../lib/__tests__/queue-runtime-fixture';
+import {
+  buildQueueRuntime,
+  foldLegacyRun,
+  type LegacyRunFields
+} from '../../../lib/__tests__/queue-runtime-fixture';
 /**
  * Feature 018 — Settings UI Hover Text coverage (structural test).
  *
@@ -24,9 +28,9 @@ import { foldLegacyRun, type LegacyRunFields } from '../../../lib/__tests__/queu
  *       (popover) markers, mapped back to description keys via a per-tab
  *       `controlIdToKey` translator.
  *
- * The describe block iterates the table below, the two tabs and the page
- * header, so adding a new part of the page is one entry, not a copy-pasted
- * block.
+ * The describe block iterates the table below, the two tabs, the Queues
+ * section and the page header, so adding a new part of the page is one
+ * entry, not a copy-pasted block.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -35,17 +39,18 @@ import type { ComponentType } from 'svelte';
 
 import GeneralSettingsTab from '../GeneralSettingsTab.svelte';
 import FatalSignaturesTab from '../FatalSignaturesTab.svelte';
+import QueueDefaultsSection from '../QueueDefaultsSection.svelte';
 import SettingsPageHeader from '../SettingsPageHeader.svelte';
 import { SettingsPage } from '../settings-page.svelte';
 // Feature 030 (US3) — QueueSettingsTab.svelte + descriptions were
 // deleted alongside the multi-queue surfaces. FR-R3-145 (T1569): those
-// settings became configurable again with Feature 092, but from
-// QueueConfigModal.svelte rather than from a Settings sub-tab, so the
-// deleted tab is still absent and the table below still iterates the
-// tabs that exist.
+// settings became configurable again with Feature 092, from a dialog on
+// the Queues list. The Settings redesign brought them back to this page
+// as the Queues section, which the table below now iterates too.
 
 import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
 import { FATAL_SIGNATURES_DESCRIPTIONS } from '../FatalSignaturesTab.descriptions';
+import { QUEUE_DEFAULTS_DESCRIPTIONS } from '../QueueDefaultsSection.descriptions';
 import { SETTINGS_PAGE_HEADER_DESCRIPTIONS } from '../SettingsPageHeader.descriptions';
 
 import type {
@@ -134,9 +139,20 @@ function snapshotWithGeneralSettings(): WorkflowSnapshot {
   return buildBaseSnapshot({ generalSettings });
 }
 
-// Feature 030 (US3) — `snapshotWithQueues` removed alongside the deleted
-// QueueSettingsTab.svelte. The queue-related hover-text fixtures are no
-// longer needed.
+/**
+ * The Queues section draws one behaviour select per queue, so the fixture holds three queues and
+ * the per-queue id translation below is exercised by more than one row. The workspace values and
+ * the memory reading fall back to their idle projections, which is all a mount needs.
+ */
+function snapshotWithQueues(): WorkflowSnapshot {
+  return buildBaseSnapshot({
+    queues: Object.freeze([
+      buildQueueRuntime({ queueId: 'default', name: 'Default', position: 0 }),
+      buildQueueRuntime({ queueId: 'q-beta', name: 'nightly', position: 1 }),
+      buildQueueRuntime({ queueId: 'q-gamma', name: 'Review Lane', position: 2 })
+    ])
+  });
+}
 
 /**
  * FR-R3-143 (T030) — the shipped default for `cli.environmentAllowlist` is the
@@ -307,6 +323,22 @@ const TAB_SPECS: readonly TabSpec[] = [
     }
   },
   {
+    name: 'QueueDefaultsSection',
+    component: QueueDefaultsSection as unknown as ComponentType,
+    buildProps: () => ({ snapshot: snapshotWithQueues(), page: new SettingsPage('queues') }),
+    headerOnlyKeys: [],
+    // Runs at the same time, Default queue, and one behaviour select for each of the fixture's
+    // three queues.
+    minFocusableControls: 5,
+    descriptionKeys: Object.keys(QUEUE_DEFAULTS_DESCRIPTIONS),
+    controlIdToKey: (id) => {
+      // One select per queue, so the id carries the queue, for the reason the grant buttons
+      // above carry their backend: a shared id would be a duplicate the moment a body goes inline.
+      if (id.startsWith('queue-failure-policy-')) return 'queue-failure-policy';
+      return id in QUEUE_DEFAULTS_DESCRIPTIONS ? id : null;
+    }
+  },
+  {
     name: 'SettingsPageHeader',
     component: SettingsPageHeader as unknown as ComponentType,
     buildProps: () => ({ page: pageWithAChange() }),
@@ -320,7 +352,8 @@ const TAB_SPECS: readonly TabSpec[] = [
   // deleted component. The WakeUpTab entry was removed with the Wake-up
   // capability. The 4-tab parameterized table became a 2-tab table
   // (General, FatalSignatures), and the page header joined it when the
-  // Settings redesign moved every Save and Reset into it.
+  // Settings redesign moved every Save and Reset into it. The Queues
+  // section joined it when the redesign moved the queue settings back.
 ] as const;
 
 // ── Helpers ────────────────────────────────────────────────────────────

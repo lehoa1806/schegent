@@ -202,8 +202,9 @@ Each item needs an environment this feature could not run unattended. None is ma
 - **Scroll anchoring in paused mode.** Prerequisite: a browser run of the phase log with more than 499 live
   entries. Expected: the viewport stays on the same rows while the oldest are trimmed.
 - **A real long-lived workspace's persisted size.** Prerequisite: a workspace with months of Runs.
-- **A screen reader on the Run Detail tabs and Queue Settings.** Prerequisite: an operator with VoiceOver
-  or NVDA, including opening Queue Settings with a real key press.
+- **A screen reader on the Run Detail tabs and the Settings page's Queues section.** Prerequisite: an
+  operator with VoiceOver or NVDA, including opening that section from Queue defaults with a real key
+  press.
 - **Any figure here on another machine.** Prerequisite: the same three measuring files run on that machine.
   Every figure above is darwin/arm64, Chromium 151.0.7922.34, Node v24.19.0.
 

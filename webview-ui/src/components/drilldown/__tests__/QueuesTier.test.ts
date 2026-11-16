@@ -11,6 +11,10 @@ import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QueuesTier from '../QueuesTier.svelte';
+import {
+  DASHBOARD_NAVIGATION,
+  type DashboardNavigation
+} from '../../../dashboard/navigation-context';
 import { CMD_ACK, CMD_CREATE_QUEUE } from '../../../lib/messages';
 import { snapshotStore } from '../../../lib/snapshot-store.svelte';
 import { buildInFlightRun, buildQueueRuntime } from '../../../lib/__tests__/queue-runtime-fixture';
@@ -140,12 +144,13 @@ describe('QueuesTier — every queue at a glance (FR-055)', () => {
     expect(tag.closest('tr')?.querySelector('[data-testid="queue-card-default"]')).not.toBeNull();
   });
 
-  it('says how many queues there are, and leaves the concurrency cap to Queue Settings', () => {
+  it('says how many queues there are, and leaves the concurrency cap to Settings, Queues', () => {
     const { getByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
 
     // FR-R3-124 — a surface that names the cap must also carry the shared-tree disclosure
     // (`tests/lint/concurrency-isolation-disclosure.test.ts`), so the cap is stated in the
-    // settings dialog, the point of decision that carries both, and not on the list.
+    // Settings page's Queues section, the point of decision that carries both, and not on the
+    // list.
     const line = getByTestId('queues-countline').textContent.trim();
     expect(line).toBe('3 queues');
   });
@@ -354,20 +359,75 @@ describe('QueuesTier — creating a queue (FR-056)', () => {
   );
 });
 
-// Feature 095 (T027, US3) — the workspace queue settings open from tier 1,
-// because both values are workspace-scoped. The modal's own behaviour is covered
-// by `components/__tests__/QueueConfigModal.test.ts`; these two assert only that
-// the tier is the entry point and that a non-primary window has none.
+function navigationContext() {
+  const openBackendSettings = vi.fn();
+  const openQueueSettings = vi.fn();
+  const navigation: DashboardNavigation = { openBackendSettings, openQueueSettings };
+  return {
+    openBackendSettings,
+    openQueueSettings,
+    context: new Map([[DASHBOARD_NAVIGATION, navigation]])
+  };
+}
+
+// Feature 095 (T027, US3) — the workspace queue settings open from tier 1, because both values
+// are workspace-scoped. The redesign moved them from a dialog into the Settings page's Queues
+// section (`settings/__tests__/QueueDefaultsSection.test.ts` covers it), so the tier's entry
+// point asks the dashboard shell to open that page there. The shell's own test
+// (`dashboard/__tests__/App.nav.test.ts`) pins where the page opens and where focus lands.
 describe('QueuesTier — workspace queue settings (feature 095, US3)', () => {
-  it('opens the settings modal from the tier header', async () => {
-    const { container, getByTestId } = render(QueuesTier, {
-      props: { queues: QUEUES, isPrimary: true }
+  it('asks the dashboard to open Settings on its Queues section, and posts nothing', async () => {
+    const { openBackendSettings, openQueueSettings, context } = navigationContext();
+    const { getByTestId } = render(QueuesTier, {
+      props: { queues: QUEUES, isPrimary: true },
+      context
     });
 
-    expect(container.querySelector('[data-testid="queue-config-modal"]')).toBeNull();
     await fireEvent.click(getByTestId('queue-settings-open'));
 
-    expect(container.querySelector('[data-testid="queue-config-modal"]')).not.toBeNull();
+    expect(openQueueSettings).toHaveBeenCalledTimes(1);
+    expect(openBackendSettings).not.toHaveBeenCalled();
+    expect(postCommandSpy).not.toHaveBeenCalled();
+  });
+
+  it('names the two actions as the redesign draws them', () => {
+    const { context } = navigationContext();
+    const { getByTestId } = render(QueuesTier, {
+      props: { queues: QUEUES, isPrimary: true },
+      context
+    });
+
+    expect(getByTestId('queue-settings-open').textContent.trim()).toBe('Queue defaults');
+    expect(getByTestId('queue-create').textContent.trim()).toBe('New queue');
+  });
+
+  it('offers no entry point outside the dashboard, where no page can be opened', () => {
+    const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
+
+    expect(container.querySelector('[data-testid="queue-settings-open"]')).toBeNull();
+    expect(container.querySelector('[data-testid="queue-create"]')).not.toBeNull();
+  });
+
+  // Spec 255 SC-004 asked this of the dialog's opener; the entry point keeps it.
+  it('is a native button in the Tab order, so the keyboard opens the page natively', () => {
+    const { context } = navigationContext();
+    const { getByTestId } = render(QueuesTier, {
+      props: { queues: QUEUES, isPrimary: true },
+      context
+    });
+
+    const opener = getByTestId('queue-settings-open') as HTMLButtonElement;
+    expect(opener.tagName).toBe('BUTTON');
+    expect(opener.getAttribute('type')).toBe('button');
+    expect(opener.disabled).toBe(false);
+    const tabindex = opener.getAttribute('tabindex');
+    expect(tabindex === null || Number(tabindex) >= 0, 'no negative tabindex').toBe(true);
+  });
+
+  it('leaves the tier root out of focus handling, now that no dialog returns focus to it', () => {
+    const { getByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
+
+    expect(getByTestId('queues-tier').hasAttribute('tabindex')).toBe(false);
   });
 });
 
@@ -378,10 +438,17 @@ describe('QueuesTier — read-only in a non-primary window (FR-065)', () => {
     expect(container.querySelector('[data-testid="queue-create"]')).toBeNull();
   });
 
-  it('withholds the queue settings entry point', () => {
-    const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: false } });
+  it('still offers Queue defaults, which only opens a page that says it is read-only', async () => {
+    const { openQueueSettings, context } = navigationContext();
+    const { container, getByTestId } = render(QueuesTier, {
+      props: { queues: QUEUES, isPrimary: false },
+      context
+    });
 
-    expect(container.querySelector('[data-testid="queue-settings-open"]')).toBeNull();
+    expect(container.querySelector('[data-testid="queue-create"]')).toBeNull();
+    await fireEvent.click(getByTestId('queue-settings-open'));
+    expect(openQueueSettings).toHaveBeenCalledTimes(1);
+    expect(postCommandSpy).not.toHaveBeenCalled();
   });
 
   it('still lets the operator read and drill into every queue', async () => {
@@ -513,68 +580,5 @@ describe('QueuesTier — a halted queue (feature 195, T027, T030, FR-007, FR-008
     await fireEvent.click(getByTestId('queues-halted-review-q-beta'));
 
     expect(selected).toEqual(['q-beta']);
-  });
-});
-
-// FR-R4-F08 (K-T6; FR-023, SC-004) — the tier is the focus fallback for its own dialog.
-//
-// Queue Settings returns focus to the button that opened it. That button lives in the header,
-// which is withheld when the window stops being primary, so a close could land focus on nothing.
-// The tier's root takes `tabindex="-1"` so it can be focused by script without joining the Tab
-// order, and is handed to the dialog as its fallback.
-describe('FR-R4-F08 K-T6 — the Queues tier root is the dialog\'s fallback focus target', () => {
-  it('the root is focusable by script and not in the Tab order', () => {
-    const { getByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
-    expect(getByTestId('queues-tier').getAttribute('tabindex')).toBe('-1');
-  });
-
-  it('closing with the opener detached lands focus on the tier root', async () => {
-    const { getByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
-    const opener = getByTestId('queue-settings-open');
-    await fireEvent.click(opener);
-    await tick();
-    expect(getByTestId('queue-config-modal'), 'the control: the dialog is open').toBeTruthy();
-
-    opener.remove();
-    expect(opener.isConnected, 'the control: the opener is gone').toBe(false);
-    await fireEvent.click(getByTestId('queue-config-cancel'));
-    await tick();
-
-    expect(document.activeElement).toBe(getByTestId('queues-tier'));
-  });
-
-  it('with the opener still connected, focus returns to the opener, not the root', async () => {
-    const { getByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
-    const opener = getByTestId('queue-settings-open');
-    await fireEvent.click(opener);
-    await tick();
-    await fireEvent.click(getByTestId('queue-config-cancel'));
-    await tick();
-    expect(document.activeElement).toBe(opener);
-  });
-
-  it('Escape closes the dialog through the tier, and focus returns to the opener', async () => {
-    const { getByTestId, queryByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
-    const opener = getByTestId('queue-settings-open');
-    // The dialog is opened by a click: the real Enter or Space press on the opener is not made here.
-    await fireEvent.click(opener);
-    await tick();
-    expect(queryByTestId('queue-config-modal'), 'the control: the dialog is open').not.toBeNull();
-
-    await fireEvent.keyDown(window, { key: 'Escape' });
-    await tick();
-
-    expect(queryByTestId('queue-config-modal')).toBeNull();
-    expect(document.activeElement).toBe(opener);
-  });
-
-  it('the opener is a native button in the Tab order, so the keyboard opens it natively (SC-004)', () => {
-    const { getByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
-    const opener = getByTestId('queue-settings-open') as HTMLButtonElement;
-    expect(opener.tagName).toBe('BUTTON');
-    expect(opener.getAttribute('type')).toBe('button');
-    expect(opener.disabled).toBe(false);
-    const tabindex = opener.getAttribute('tabindex');
-    expect(tabindex === null || Number(tabindex) >= 0, 'no negative tabindex').toBe(true);
   });
 });

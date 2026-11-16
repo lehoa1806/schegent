@@ -2,16 +2,18 @@
  * The Settings page: its sections and its one save model, as the redesign's settings page has
  * them.
  *
- * The page lists its sections in a navigation and shows one at a time, Backends first. The others
- * stay mounted, only hidden, so an edit made in one section is still counted, saved and reverted
- * while another is shown. A section is marked while it holds an unsaved edit.
+ * The page lists its sections in a navigation and shows one at a time: Backends, unless the page is
+ * opened on another (the Queues list's "Queue defaults" opens it on Queues). The others stay
+ * mounted, only hidden, so an edit made in one section is still counted, saved and reverted while
+ * another is shown. A section is marked while it holds an unsaved edit.
  *
  * One save model per page: edits accumulate in the drafts of the page's parts, the page header
  * counts them and offers one Revert and one Save, and no row or part saves or resets on its own.
  *
  * A part is whatever holds a draft: the general fields, which the host writes as one
- * transactional batch, and the failure signatures, which it writes as their own list. Each part
- * keeps its draft, its validation and its write. The page only asks each one what changed and
+ * transactional batch; the queue settings and each queue's failure behaviour, which it writes
+ * through the queue commands; and the failure signatures, which it writes as their own list. Each
+ * part keeps its draft, its validation and its write. The page only asks each one what changed and
  * whether it can save, and tells it to save or to revert. Save runs every part that can save side
  * by side: they post different updates and none waits on another.
  *
@@ -25,6 +27,7 @@ import { untrack } from 'svelte';
 export const SETTINGS_SECTIONS = [
   { id: 'backends', label: 'Backends' },
   { id: 'execution', label: 'Runs and retries' },
+  { id: 'queues', label: 'Queues' },
   { id: 'logging', label: 'Logs and retention' },
   { id: 'privacy', label: 'Privacy and evidence' },
   { id: 'trust', label: 'Trust and prompts' },
@@ -54,6 +57,11 @@ export class SettingsPage {
   #parts = $state.raw<readonly SettingsPart[]>([]);
   #saving = $state(false);
   #section = $state<SettingsSectionId>('backends');
+
+  /** A page showing the given section, Backends unless another is named. */
+  constructor(opening: SettingsSectionId = 'backends') {
+    this.#section = opening;
+  }
 
   /** The section the page shows. */
   get section(): SettingsSectionId {

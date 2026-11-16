@@ -54,10 +54,10 @@ vi.mock('../../lib/vscode-api', () => ({
  * store's real message entry point.
  *
  * `snapshotStore.apply({type: CMD_ACK, …})` rather than a mocked IPC module,
- * following `QueueConfigModal.test.ts`: it runs the store's own `applyAck`, the
- * real `correlatedLifecycle`, and the real refusal table, so the rendered
- * sentence is the one an operator would see. Mocking the IPC module would make
- * these cases assert the mock.
+ * following `settings/__tests__/QueueDefaultsSection.test.ts`: it runs the
+ * store's own `applyAck`, the real `correlatedLifecycle`, and the real refusal
+ * table, so the rendered sentence is the one an operator would see. Mocking the
+ * IPC module would make these cases assert the mock.
  */
 function ack(
   callIndex: number,
