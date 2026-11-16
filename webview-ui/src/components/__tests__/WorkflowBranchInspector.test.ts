@@ -200,6 +200,25 @@ describe('branch endpoints', () => {
     expect(editable.value).toBe('last');
   });
 
+  it.each<[string, WorkflowConnection]>([
+    ['an execution-only output', { from: { nodeId: 'draft' }, to: PLAIN.to }],
+    ['an execution-only input', { from: PLAIN.from, to: { nodeId: 'ship' } }],
+    ['an output its step does not declare', { from: { nodeId: 'draft', portId: 'gone' }, to: PLAIN.to }],
+    ['an input its step does not declare', { from: PLAIN.from, to: { nodeId: 'ship', portId: 'gone' } }],
+    ['an arm from a Phase', { from: { nodeId: 'review' }, to: PLAIN.to }],
+    ['an arm into a Phase that still names a port', { from: PLAIN.from, to: { nodeId: 'review', portId: 'brief' } }]
+  ])('holds the selection rule on %s, and still shows the stored one', (_name, connection) => {
+    // The host checks a selection rule only between a declared output and a declared
+    // input. An execution-only end, a port the step no longer declares, or a Phase,
+    // which declares no ports, leaves the rule nothing to select from.
+    const nodes: readonly WorkflowNode[] = [...NODES, { nodeId: 'review', kind: 'phase', phaseId: 'review' }];
+    const { getByTestId } = mount({ ...connection, selection: 'last' }, false, nodes);
+    const selection = getByTestId('workflow-connection-selection-0') as HTMLSelectElement;
+
+    expect(selection.disabled).toBe(true);
+    expect(selection.value).toBe('last');
+  });
+
   it('offers no condition controls until the branch is marked conditional', () => {
     const { queryByTestId, getByTestId } = mount(PLAIN);
 
