@@ -254,25 +254,11 @@ export function makeDuplicatePhaseDraft(
   return duplicate;
 }
 
-export function phaseTooltip(phases: readonly MutablePhase[], phaseId: string): string {
-  const phase = phases.find((candidate) => candidate.id === phaseId);
-  if (!phase) return `Unknown phase: ${phaseId}`;
-  const directive = phase.instruction ?? (phase.skill ? `Skill: ${phase.skill}` : 'No directive');
-  const summary = `${directive.slice(0, 100)}${directive.length > 100 ? '...' : ''}`;
-  return `ID: ${phase.id}\nName: ${phase.name}\nModel: ${phase.model || 'Default Backend Model'}\nDirective: ${summary}`;
-}
-
 export function formatPhaseSaveRejection(reason: string, result: unknown): string {
   const details = result as {
-    dependentWorkflowIds?: readonly string[];
-    dependentPipelineIds?: readonly string[];
     errors?: readonly { phaseId?: string; field?: string; code?: string; message?: string }[];
     total?: number;
   } | undefined;
-  const dependents = details?.dependentWorkflowIds ?? details?.dependentPipelineIds;
-  if (dependents?.length) {
-    return `${reason} — used by Workflows: ${dependents.join(', ')}`;
-  }
   if (reason === 'phase-validation' && details?.errors?.length) {
     const visible = details.errors.slice(0, 3).map((error) => {
       const location = [error.phaseId, error.field].filter(Boolean).join('.');
