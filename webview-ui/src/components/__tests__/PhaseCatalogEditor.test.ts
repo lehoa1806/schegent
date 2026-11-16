@@ -170,6 +170,43 @@ describe('Phase catalog source editor states', () => {
       .toContain('retired-model (Unavailable)');
   });
 
+  // The host runs a Phase that sets no backend on the default backend the setting
+  // selects, except a Phase that writes Git metadata, which keeps Claude whatever the
+  // setting says (`effectiveRunnerKindForPhase`). The model list and the effort limits
+  // follow the backend the Phase will run on.
+  it('offers the models of the backend a Git-writing Phase runs on, not the default', () => {
+    const snapshot = {
+      ...SNAPSHOT,
+      defaultRunnerKind: 'agy',
+      availableModels: { claude: [], codex: [], agy: [] },
+      configuredModels: { claude: ['claude-opus-5-5'], codex: [], agy: ['gemini-3.7-pro'] }
+    } as unknown as WorkflowSnapshot;
+    const modelsOf = (phase: MutablePhase): string[] => {
+      const { container } = mount({ phases: [phase], selectedIndex: 0, snapshot });
+      const values = Array.from(
+        container.querySelectorAll('[data-testid="phases-model-custom"] option')
+      ).map((option) => (option as HTMLOptionElement).value);
+      cleanup();
+      return values;
+    };
+
+    expect(modelsOf({ ...STORED_PHASE, sideEffects: 'git' })).toEqual(['', 'claude-opus-5-5']);
+    expect(modelsOf({ ...STORED_PHASE, sideEffects: 'workspace' })).toEqual(['', 'gemini-3.7-pro']);
+    expect(modelsOf({ ...STORED_PHASE, sideEffects: 'git', runner: 'agy' })).toEqual(['', 'gemini-3.7-pro']);
+  });
+
+  it('applies the effort limits of the backend a Git-writing Phase runs on', () => {
+    const snapshot = { ...SNAPSHOT, defaultRunnerKind: 'agy' } as unknown as WorkflowSnapshot;
+    const xhighOf = (phase: MutablePhase): HTMLOptionElement | null =>
+      mount({ phases: [phase], selectedIndex: 0, snapshot }).container.querySelector(
+        '[data-testid="phases-effort-custom"] option[value="xhigh"]'
+      );
+
+    expect(xhighOf({ ...STORED_PHASE, sideEffects: 'git' })?.disabled).toBe(false);
+    cleanup();
+    expect(xhighOf(STORED_PHASE)?.disabled).toBe(true);
+  });
+
   it('keeps a stored row editable and offers removal (T496f)', () => {
     // Feature 099 (T496f, FR-041, FR-043) — the `built-in` tier was the one thing
     // that made an author field read-only on a row the operator could see, and it

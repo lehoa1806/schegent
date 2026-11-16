@@ -5,6 +5,7 @@
   // Every field writes through `onphasechange` exactly as the single-card editor it replaces did;
   // only the grouping and the controls' look changed. The error list the fields point at with
   // `aria-describedby` is drawn in the page's Summary, under "Issues".
+  import { DEFAULT_BACKEND } from '../../../../src/contracts/backend-kinds';
   import type { PhaseDefinition, WorkflowSnapshot } from '../../lib/snapshot-types';
   import RetryConditionEditor from '../settings/RetryConditionEditor.svelte';
   import { mergeDetectedModels } from './model-catalog-state';
@@ -49,8 +50,14 @@
 
   const directive = $derived<DirectiveKind>(typeof phase.skill === 'string' ? 'skill' : 'instruction');
   const retryEnabled = $derived(typeof phase.retryCondition === 'string');
-  /** The backend the Phase runs on once nothing more specific is set. */
-  const effectiveRunner = $derived(phase.runner || snapshot.defaultRunnerKind || 'claude');
+  /**
+   * The backend the Phase runs on, by the host's rule (`effectiveRunnerKindForPhase`): its own
+   * backend; else, for a Phase that writes Git metadata, the built-in default (Claude) whatever
+   * the setting says; else the default backend the setting selects.
+   */
+  const effectiveRunner = $derived(
+    phase.runner || (phase.sideEffects === 'git' ? DEFAULT_BACKEND : snapshot.defaultRunnerKind) || DEFAULT_BACKEND
+  );
   const models = $derived(
     mergeDetectedModels(
       snapshot.configuredModels?.[effectiveRunner] ?? [],
