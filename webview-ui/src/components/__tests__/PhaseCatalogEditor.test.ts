@@ -195,6 +195,18 @@ describe('Phase catalog source editor states', () => {
     expect(modelsOf({ ...STORED_PHASE, sideEffects: 'git', runner: 'agy' })).toEqual(['', 'gemini-3.7-pro']);
   });
 
+  it('names an unset effort as the backend default, the word the model select uses', () => {
+    // The host passes the backend no effort when the Phase sets none, exactly as for an
+    // unset model (`LaunchPhaseSettings` calls both `backend-default`). Nothing is
+    // inherited: a Workflow's execution defaults are advisory and no run applies them.
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
+    const firstOptionText = (testId: string): string | undefined =>
+      container.querySelector(`[data-testid="${testId}"] option`)?.textContent.trim();
+
+    expect(firstOptionText('phases-effort-custom')).toBe('Backend default');
+    expect(firstOptionText('phases-model-custom')).toBe('Backend default');
+  });
+
   it('applies the effort limits of the backend a Git-writing Phase runs on', () => {
     const snapshot = { ...SNAPSHOT, defaultRunnerKind: 'agy' } as unknown as WorkflowSnapshot;
     const xhighOf = (phase: MutablePhase): HTMLOptionElement | null =>

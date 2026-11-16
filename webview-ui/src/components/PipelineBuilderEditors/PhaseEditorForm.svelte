@@ -181,7 +181,9 @@
     <label class="field form-field">
       <span class="form-label">Effort</span>
       <select class="input" data-testid="phases-effort-{phase.id}" value={phase.effort ?? ''} disabled={readOnly} onchange={(event) => { const value = event.currentTarget.value; onphasechange(index, { effort: value ? (value as PhaseDefinition['effort']) : undefined }); }}>
-        <option value="">Inherit</option>
+        <!-- Not the mockup's "Inherit": a Phase that sets no effort passes the backend none, as
+             with an unset model, so the backend's own default applies and nothing is inherited. -->
+        <option value="">Backend default</option>
         {#each EFFORT_LEVELS as effort}
           <option value={effort} disabled={effortOptionDisabled(effort)}>{effort}</option>
         {/each}
