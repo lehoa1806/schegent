@@ -591,7 +591,7 @@ export function workflowPortIds(
 }
 
 /** Defects bucketed by the row that has to show them; indexes align with the lists. */
-export interface AnchoredWorkflowDefects {
+interface AnchoredWorkflowDefects {
   readonly byNode: readonly (readonly WorkflowDraftError[])[];
   readonly byConnection: readonly (readonly WorkflowDraftError[])[];
   /** Everything anchored to a scalar field, a whole list, the starts, or nowhere. */
@@ -885,7 +885,7 @@ export function workflowErrorAnchor(
 }
 
 /** Cap the visible defect list and each message, reporting what was hidden. */
-export interface BoundedFieldErrors {
+interface BoundedFieldErrors {
   readonly visible: readonly WorkflowDraftError[];
   readonly hiddenCount: number;
 }

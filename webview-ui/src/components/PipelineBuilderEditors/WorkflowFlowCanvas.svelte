@@ -47,7 +47,7 @@
     phases?: readonly PortablePhaseDefinition[];
     workflows?: readonly PortableWorkflowDefinition[];
     allWorkflows?: readonly MutableWorkflow[];
-    /** Both indexed alongside their authored list; see `anchorWorkflowDefects`. */
+    /** Both indexed alongside their authored list; see `visibleWorkflowDefects`. */
     nodeDefects: readonly (readonly WorkflowDraftError[])[];
     connectionDefects: readonly (readonly WorkflowDraftError[])[];
     readonly: boolean;
