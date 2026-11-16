@@ -66,7 +66,7 @@ export interface WorkflowFlowView {
   readonly phases?: readonly PortablePhaseDefinition[];
   readonly workflows?: readonly PortableWorkflowDefinition[];
   readonly control?: CandidateBlockControl;
-  /** Both indexed alongside their authored list; see `anchorWorkflowDefects`. */
+  /** Both indexed alongside their authored list; see `visibleWorkflowDefects`. */
   readonly nodeDefects: readonly (readonly WorkflowDraftError[])[];
   readonly connectionDefects: readonly (readonly WorkflowDraftError[])[];
   /** Members of a `graph-cycle`, badged on the card so the defect has a place. */
