@@ -21,8 +21,10 @@ export const SETTINGS_PAGE_HEADER_DESCRIPTIONS = {
     title: 'Save',
     body:
       'Write every unsaved change on this page. The settings fields are written together: if ' +
-      'one value is refused, none of them is written. The failure signatures are written as ' +
-      'their own list. Disabled when nothing has changed, while a save is in progress, and ' +
-      'when the only changes cannot be saved yet, such as an empty failure signature.'
+      'one value is refused, none of them is written. The queue cap and default queue are ' +
+      'written together on their own, each queue failure policy on its own, and the failure ' +
+      'signatures as their own list. Disabled when nothing has changed, while a save is in ' +
+      'progress, and when the only changes cannot be saved yet, such as an empty failure ' +
+      'signature.'
   }
 } as const satisfies { readonly [K in SettingsPageHeaderControlId]: ControlDescription };

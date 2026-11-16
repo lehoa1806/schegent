@@ -177,7 +177,8 @@ Queues:
 - **The header's add button says "Add work".** It is the name the `schegent.schedule` command's message, the `schegent.defaultWorkflowId` setting and the docs send the operator to. The mockup's says "Add task". The drawer the button opens is headed "Add task to" and the queue's name, and its submit button says "Add task".
 - **A queue page row is a button on a grid the rows share, not a table row.** The button opens the run. The controls that act on the task (the drag handle, the move select and the row menu) sit beside it, never inside it (BUG-003).
 - **Start queue is a secondary button in the header**, like Pause and Resume, because adding a task is the page's one primary action. In the notice that says a queue is waiting to be started, Start queue is primary, because it is what resolves the notice.
-- **The queue's "More queue actions" menu holds Rename…, Clear completed tasks…, Clear everything… and Delete queue…** The mockup's Start later… and Queue settings… live elsewhere in the product: a scheduled start is chosen in the notice that offers the start, and queue settings are workspace-wide, opened from the queues list.
+- **The queue's "More queue actions" menu holds Rename…, Clear completed tasks…, Clear everything… and Delete queue…** The mockup's Start later… and Queue settings… live elsewhere in the product: a scheduled start is chosen in the notice that offers the start, and queue settings are workspace-wide, in the Settings page's Queues section, which Queue defaults on the queues list opens.
+- **The count line under the queues names the queues only**, as "4 queues". The mockup's adds the concurrency cap and a "change" link to the Settings page's Queues section ("up to 2 runs at a time across all queues"). A line that names the cap must also say that concurrent Runs share one working tree (FR-R3-124), and the Queues section, where the cap is chosen, says both. Queue defaults, in the header, opens that section.
 - **Clear completed tasks… ends in an ellipsis** because it asks before acting, which is what the mockups' own rule says a trailing ellipsis means.
 - **The incompatible-state notice has no icon.** Both views mount it, and the sidebar does not load the icon sprite.
 - **Below 860px the add-task drawer takes the page's whole width**, where the mockup hides it (see "Frame and structure").
@@ -307,11 +308,11 @@ System:
 
 Settings:
 
-- **The section navigation is the mockup's, less Queues.** A `nav` named "Settings sections" lists the mockup's sections in its words and order: Backends, Runs and retries, Logs and retention, Privacy and evidence, Trust and prompts and Failure signatures. A press shows that section alone, marks its button with `aria-current` and leaves focus on the button, and a section that holds an unsaved edit carries the mockup's dot, named "has unsaved changes". The mockup's Queues section is not there: the concurrency cap and the default queue are set from the queues list (see "Queues").
+- **The section navigation is the mockup's.** A `nav` named "Settings sections" lists the mockup's sections in its words and order: Backends, Runs and retries, Queues, Logs and retention, Privacy and evidence, Trust and prompts and Failure signatures. A press shows that section alone, marks its button with `aria-current` and leaves focus on the button, and a section that holds an unsaved edit carries the mockup's dot, named "has unsaved changes". The page opens on Backends from the top navigation and on Queues from Queue defaults on the queues list. The mockup's top navigation shows the section last shown, but the page keeps no section between visits.
 - **Each settings group keeps its disclosure inside its section.** Spec 182 gives the general settings four collapsible groups under fixed headings (FR-006), so Backends, Runs and retries, Logs and retention and Trust and prompts each open with an open disclosure, such as "Backend and process environment", whose summary is set as a heading with the native marker. The mockup shows no heading that names a section. Every section is named by a visually hidden h2, so the page's outline runs h1, h2, h3; the mockup names only Backends that way.
 - **The section list stops sticking below 860px**, where it stacks above the rows. The mockup's stays sticky there, and since it has no background of its own, the rows scroll under its buttons.
 - **Below 560px a row's control drops under its label**, and a backend card's check drops under the backend's name. The mockup's two row columns need 420px side by side and would widen the page.
-- **There is no search.** The page header has the mockup's one save model: an "N unsaved changes" chip, Revert and Save, which discard and write every edit on the page, in every section: a section that is not shown stays mounted, hidden, so its edits still count. Save writes the fields as one batch and the failure signatures as their own list, and no row or section has a Save or Reset of its own. A failure signature row left empty counts as a change, but the list is not written until the row is filled or removed.
+- **There is no search.** The page header has the mockup's one save model: an "N unsaved changes" chip, Revert and Save, which discard and write every edit on the page, in every section: a section that is not shown stays mounted, hidden, so its edits still count. Save writes the fields as one batch, the queue settings in commands of their own (see "Settings queues") and the failure signatures as their own list, and no row or section has a Save or Reset of its own. A failure signature row left empty counts as a change, but the list is not written until the row is filled or removed.
 - **A row's scope line is the mockup's "Applies to:" line, in its words**: "this workspace", "you, all workspaces" or "default". A host older than the webview may send no scope for a setting, and the line then reads "Applies to: unknown". A row with an unsaved edit has the mockup's dot beside its label.
 - **A number that can be left unset is wider than the mockup's 110px field**, out to its unit, because its unset state is a placeholder sentence, "Unset — no limit" or "Unset — use CLI default", that the narrow field would cut off. The mockup's spend limit and compaction threshold always show a value. **So is a size in bytes** (Run artifact space and Log file size), because its largest value, 10737418240 or 1073741824, is longer than the narrow field shows: the mockup draws these sizes in MB ("512 MB"), and the host stores them in bytes. Every other number keeps the mockup's width, and every number has its unit after it.
 - **A short control description shows as a line under its row's scope line, and a longer one as a popover** (see "Settings hover-text primitive (spec 018)"). The mockup has no control descriptions.
@@ -330,6 +331,14 @@ Settings backends:
 - **The line under the name is the containment posture**: "Containment:" and "Mechanism:", each value in the code font. The mockup's reads "Sandboxed · Details".
 - **"Allow uncontained" is a danger button and "Revoke uncontained permission" a secondary one**, with the refusal the host sends under them.
 - **"Process environment" is a heading inside the group, as in the mockup**, over its rows in the mockup's words: Environment passed to backends, Allowed variables and Backend check timeout, with the product's Inherit host environment (legacy) before the timeout, then the effective policy line. The environment select offers the setting's three modes by name, `allowlist`, `minimal` and `inherit`, the words the effective policy line under it uses, as `environment-policy-line.test.ts` pins; the mockup's offers "Allowlist only" and "Allowlist plus host environment". Its note says where the setting applies and when a change takes effect, where the mockup's says only the listed variables reach the backend, which is true of `allowlist` alone. The allowlist is a list of names, each with a cross button that removes it, above an entry field and an Add button. The mockup's is a text area with one name per line. The list refuses a name that does not match the setting's pattern when it is added, so it never holds an invalid entry, which a text area could not promise.
+
+Settings queues:
+
+- **Queue defaults opens this section, and there is no Queue Settings dialog.** The cap, the default queue and the failure policies that the dialog on the queues list held are this section's rows and table, as the mockup draws them, and the button opens the page the way the mockup's does: the status line says "Showing Settings." and focus moves to the page's heading. This departs from spec 255, not from the mockup. Its FR-022 kept Tab inside the dialog, its FR-023 sent focus to the Queues view when the control that opened the dialog was gone, and its SC-004 checks both from the keyboard. With no dialog the two rules have nothing to govern: the button is a native one in the Tab order, and the page it opens takes focus as every page does.
+- **The cap's note says that concurrent Runs share one working tree**: "Across all queues. Above one, concurrent Runs share one working tree. They may edit the same files, so semantic conflicts between Runs are possible and a recovery checkpoint may be declined as unattributable." The mockup's says "More than 1 needs isolated workspaces.", but the product does not isolate Runs (`docs/architecture/run-isolation-decision.md`), and the place where the cap is chosen must say so (FR-R3-124, `tests/lint/concurrency-isolation-disclosure.test.ts`). The product's advice on stream memory follows the field when the host reports the machine's memory.
+- **"When a task fails" is an h3**, where the mockup's is an h2, because a visually hidden h2 names each section (see "Settings"). Its second column reads "Behavior", where the mockup's reads "Behaviour": the mockup spells its other words the American way ("Canceled"), as the product does.
+- **The section says how its own writes went.** It writes on the page's Save, like every section, but its values travel in commands of their own: the cap and the default queue in one, and each changed queue's policy in another. A line under the rows reads "Saving…", then "Saved", or says that the host has not answered yet, and a refusal is an alert under it. A queue whose policy write is refused, or was already set that way, says so under its select. The mockup has no save status.
+- **In a window that is not the primary one, the section says that it cannot change these settings**, and its controls are disabled (FR-065). The mockup has one window.
 
 Settings failure signatures:
 
@@ -524,10 +533,10 @@ nothing in any tier that posted them — and feature 095 added the controls:
 
 | Command | Control | Component |
 |---|---|---|
-| `CMD_CREATE_QUEUE` | New Queue | `drilldown/QueuesTier.svelte` |
-| `CMD_RENAME_QUEUE` | Settings | `drilldown/QueueDetailTier.svelte` |
-| `CMD_DELETE_QUEUE` | Delete | `drilldown/QueueDetailTier.svelte` |
-| `CMD_SAVE_QUEUE_SETTINGS` | Queue Settings | `QueueConfigModal.svelte` |
+| `CMD_CREATE_QUEUE` | New queue | `drilldown/QueuesTier.svelte` |
+| `CMD_RENAME_QUEUE` | Rename… | `drilldown/QueueDetailTier.svelte` |
+| `CMD_DELETE_QUEUE` | Delete queue… | `drilldown/QueueDetailTier.svelte` |
+| `CMD_SAVE_QUEUE_SETTINGS` | Save, in Settings, Queues | `settings/QueueDefaultsSection.svelte` |
 | `CMD_MOVE_TASK` | Move to… | `drilldown/QueueDetailTier.svelte` |
 
 The commands feature 095 wired post from **one** module,
@@ -643,7 +652,7 @@ after `Operations`). The route ids and their nav labels are declared in
 | `metrics` | Metrics | `components/MetricsDashboard/MetricsDashboard.svelte` | On-demand audit-log rollup (spec 073). |
 | `system` | System Log | `components/SystemTab.svelte` | **System-scoped audit entries** (lifecycle, queue/task control, scheduling, audit pipeline housekeeping). See "Audit surfaces" below. |
 | `builder` | Builder | `components/PipelineBuilder.svelte` | Phases, Workflows, and Models editor with `RetryConditionEditor` / `RawJsonPhaseEditor` wiring. |
-| `settings` | Settings | `components/SettingsSurface.svelte` | One section at a time, from a section navigation: Backends, Runs and retries, Logs and retention, Privacy and evidence, Trust and prompts, Failure signatures. |
+| `settings` | Settings | `components/SettingsSurface.svelte` | One section at a time, from a section navigation: Backends, Runs and retries, Queues, Logs and retention, Privacy and evidence, Trust and prompts, Failure signatures. |
 
 `DEFAULT_DASHBOARD_ROUTE` stays `operations` through every such addition —
 a new surface earns its place in the nav, not on someone's landing page.
@@ -802,6 +811,7 @@ surfaces in every sense but the file listing.
 | Sections | Component | Purpose |
 |---|---|---|
 | Backends, Runs and retries, Logs and retention, Privacy and evidence, Trust and prompts | `components/settings/GeneralSettingsTab.svelte` | Renders every scalar `schegent.*` key from `snapshot.generalSettings` with adaptive form controls (boolean → checkbox, string → text, number → number, enum → dropdown, optional integer → number-with-clear) and a scope indicator (workspace / user / default). Save goes through the shared `lib/save-general-settings.ts` helper. |
+| Queues | `components/settings/QueueDefaultsSection.svelte` | The workspace-wide concurrency cap and the default queue, which travel together over `CMD_SAVE_QUEUE_SETTINGS`, and the table of each queue's failure policy (`QueueFailurePolicyTable.svelte`), one `CMD_SET_QUEUE_FAILURE_POLICY` for each changed queue. Both are written on the page's Save. Not general settings: see below. |
 | Failure signatures | `components/settings/FatalSignaturesTab.svelte` | Two sections: the read-only **Built-in registry** (rendered from the parity mirror at `lib/fatal-signature-registry.ts`) and the editable **Operator additions** list (text inputs with + Add / Remove controls). Save goes through the shared helper with the unprefixed key `fatalSignatures`. |
 
 Feature 030 (US3) removed the **Queue** sub-tab and its
@@ -810,9 +820,11 @@ grounds that `MAX_QUEUES = 1` made a per-queue cap and a default-queue
 selector meaningless. Feature 092 raised `MAX_QUEUES` back to 20 but did
 **not** restore the sub-tab: per-queue configuration is reachable from the
 Queue Detail tier (FR-064), and the workspace-wide concurrency cap — ranged
-`1..20`, default `1` — is authored in `QueueConfigModal.svelte`, which submits
-it together with the default-queue selection over `CMD_SAVE_QUEUE_SETTINGS`.
-It is **not** a general setting, and is not a `schegent.*` configuration key at
+`1..20`, default `1` — was authored in a dialog on the queues list. The
+Settings redesign brought it back to this page as the Queues section,
+`QueueDefaultsSection.svelte`, which submits it together with the
+default-queue selection over `CMD_SAVE_QUEUE_SETTINGS` on the page's Save.
+It is still **not** a general setting, and is not a `schegent.*` configuration key at
 all: its value is workspace state, so it reaches the webview in its own
 snapshot projection rather than in `snapshot.generalSettings`.
 
@@ -1751,7 +1763,8 @@ same as every other mutating queue command, and its handler
 than an unconditional `accepted`. The webview posts it from
 `webview-ui/src/lib/queue-control-ipc.ts`'s `setQueueFailurePolicy()`, on the
 same correlated-request terms as the five queue commands above; the control
-lives in `QueueConfigModal.svelte`, offering the three choices
+lives in the Settings page's Queues section
+(`settings/QueueFailurePolicyTable.svelte`), offering the three choices
 `halt-on-failure`, `continue`, and follow-the-default, reading the two
 non-default values from the generated mirror `lib/generated/queue-failure-policy.ts`
 rather than restating them.

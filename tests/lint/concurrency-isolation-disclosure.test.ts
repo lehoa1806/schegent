@@ -30,21 +30,22 @@
 // FR-R3-145 (T1570) — and all three of those advertising sites are now gone,
 // `package.json` included. `schegent.queue.globalConcurrencyCap` was a
 // configuration key that no scheduling path read: the cap the drain gates on is
-// the workspace memento of the same name, written from the dialog through
+// the workspace memento of the same name, written from the Settings page through
 // `CMD_SAVE_QUEUE_SETTINGS`. Removing the key removed the VS Code settings UI as a
 // surface — there is no longer a row there to render, so there is no longer a
 // reader to disclose to. That is a surface *disappearing with the thing it
 // disclosed*, not a disclosure being deleted, and it is the one shape this gate
 // must not treat as drift. The four surfaces below are where the sentence is now
-// read: the in-product dialog, the operator guide, the authority record, and the
-// architecture document.
+// read: the in-product settings row, the operator guide, the authority record, and
+// the architecture document.
 //
-// THE POINT-OF-DECISION SURFACES CARRY MORE. `QueueConfigModal.svelte` and
-// `docs/operations/multi-queue-concurrency.md` are where a value is chosen, so
+// THE POINT-OF-DECISION SURFACES CARRY MORE. `settings/QueueDefaultsSection.svelte`
+// and `docs/operations/multi-queue-concurrency.md` are where a value is chosen, so
 // they must state the CONSEQUENCE (conflicting edits) and not only the fact (one
-// tree). With the manifest gone the dialog is the only surface an operator passes
-// through on the way to setting the value, so the mutation proof below is driven
-// against its text.
+// tree). With the manifest gone the Settings page's Queues section is the only
+// surface an operator passes through on the way to setting the value, so the
+// mutation proof below is driven against its text. (It took the place of the Queue
+// Settings dialog when the redesign moved the queue settings into Settings.)
 //
 // LIMITS, STATED. The claim scan below is heuristic, in the manner of
 // `gate-integrity/vacuity-detector.ts`: it reads text, it cannot parse intent, and
@@ -89,9 +90,9 @@ interface Surface {
  */
 const DISCLOSURE_SURFACES: readonly Surface[] = [
   {
-    file: 'webview-ui/src/components/QueueConfigModal.svelte',
+    file: 'webview-ui/src/components/settings/QueueDefaultsSection.svelte',
     pointOfDecision: true,
-    why: 'the dialog where the number is actually typed'
+    why: 'the Settings row where the number is actually typed'
   },
   {
     file: 'docs/operations/multi-queue-concurrency.md',
@@ -253,19 +254,20 @@ describe('the shared-tree disclosure has content (FR-R3-124)', () => {
     // FR-004a. Every assertion above is "this string is present", and the way that
     // fails silently is a matcher that matches anything. Both matchers are driven
     // against real text from this tree with the disclosure removed.
-    const realModalIntent = 'Concurrent Runs share one working tree; semantic conflicts are possible.';
-    const strippedModal = 'Concurrent runs. Range 1 to 20.';
-    expect(SHARED_TREE.test(realModalIntent)).toBe(true);
-    expect(CONFLICT.test(realModalIntent)).toBe(true);
-    expect(SHARED_TREE.test(strippedModal)).toBe(false);
-    expect(CONFLICT.test(strippedModal)).toBe(false);
+    const realIntent = 'Concurrent Runs share one working tree; semantic conflicts are possible.';
+    const stripped = 'Concurrent runs. Range 1 to 20.';
+    expect(SHARED_TREE.test(realIntent)).toBe(true);
+    expect(CONFLICT.test(realIntent)).toBe(true);
+    expect(SHARED_TREE.test(stripped)).toBe(false);
+    expect(CONFLICT.test(stripped)).toBe(false);
 
     // And against real text from this tree with the disclosure removed. FR-R3-145
     // (T1570) re-pointed this from the manifest's `markdownDescription`, which no
     // longer exists — `schegent.queue.globalConcurrencyCap` was a configuration key
     // nothing read and was removed. The dialog took its place as the surface an
-    // operator passes through to set the value, so it is the right corpus: this is
-    // the mutation the gate must catch, applied to the file it now matters most in.
+    // operator passes through to set the value, and the Settings page's Queues
+    // section took the dialog's, so it is the right corpus: this is the mutation the
+    // gate must catch, applied to the file it now matters most in.
     //
     // The whole file, not a sliced sentence. The previous version parsed JSON to
     // avoid matching the cap block by its indentation; a Svelte component has no
@@ -273,13 +275,13 @@ describe('the shared-tree disclosure has content (FR-R3-124)', () => {
     // exactly the brittleness that parsing was chosen to avoid. Replacing every
     // spelling of the tree noun cannot leave a false positive behind, because
     // `SHARED_TREE` requires one of those nouns to match at all.
-    const dialog = read('webview-ui/src/components/QueueConfigModal.svelte');
+    const section = read('webview-ui/src/components/settings/QueueDefaultsSection.svelte');
     expect(
-      SHARED_TREE.test(dialog),
-      'the dialog no longer states the shared tree; the surface assertion above ' +
+      SHARED_TREE.test(section),
+      'the Queues section no longer states the shared tree; the surface assertion above ' +
         'should have caught this first, so the two are out of step'
     ).toBe(true);
-    expect(SHARED_TREE.test(dialog.replace(/working tree|worktree/g, 'queue'))).toBe(false);
+    expect(SHARED_TREE.test(section.replace(/working tree|worktree/g, 'queue'))).toBe(false);
   });
 });
 

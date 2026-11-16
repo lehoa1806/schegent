@@ -1,7 +1,8 @@
 /**
  * The Settings page's sections, as the mockup's section navigation has them (`SET_SECS` and
  * `st.setSec` in `schegent_redesign_surfaces.html`): the sections in the mockup's order and words,
- * one shown at a time, Backends first, and a section marked while it holds an unsaved edit.
+ * one shown at a time, Backends first unless the page is opened on another, and a section marked
+ * while it holds an unsaved edit.
  */
 import { describe, expect, it } from 'vitest';
 import { SETTINGS_SECTIONS, SettingsPage, type SettingsPart } from '../settings-page.svelte';
@@ -21,6 +22,7 @@ describe('SettingsPage sections', () => {
     expect(SETTINGS_SECTIONS.map((section) => [section.id, section.label])).toEqual([
       ['backends', 'Backends'],
       ['execution', 'Runs and retries'],
+      ['queues', 'Queues'],
       ['logging', 'Logs and retention'],
       ['privacy', 'Privacy and evidence'],
       ['trust', 'Trust and prompts'],
@@ -33,6 +35,15 @@ describe('SettingsPage sections', () => {
     expect(page.section).toBe('backends');
     expect(SETTINGS_SECTIONS.filter((section) => page.shows(section.id)).map((section) => section.id))
       .toEqual(['backends']);
+  });
+
+  // The Queues list's "Queue defaults" opens the page on its Queues section, as the mockup's
+  // button carries `data-sec="queues"`.
+  it('opens on the section it is given, and on that section only', () => {
+    const page = new SettingsPage('queues');
+    expect(page.section).toBe('queues');
+    expect(SETTINGS_SECTIONS.filter((section) => page.shows(section.id)).map((section) => section.id))
+      .toEqual(['queues']);
   });
 
   it('shows the section it is given in place of the one it showed', () => {

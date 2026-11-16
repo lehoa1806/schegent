@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import type { GeneralSettings, WorkflowSnapshot } from '../../lib/snapshot-types';
   import { IDLE_GENERAL_SETTINGS, IDLE_SESSION_ARTIFACTS } from '../../lib/snapshot-types';
   import { saveGeneralSettings } from '../../lib/save-general-settings';
@@ -36,8 +37,14 @@
     snapshot: WorkflowSnapshot;
     /** The page whose header saves and reverts this tab's draft; a tab on its own gets its own. */
     page?: SettingsPage;
+    /**
+     * The Queues section, drawn between Runs and retries and Logs and retention so the sections
+     * read in the navigation's order. It is a part of its own with its own commands: the queue
+     * settings are not general fields (spec 095 FR-010), so this tab gains no row for them.
+     */
+    queues?: Snippet;
   }
-  const { snapshot, page = new SettingsPage() }: Props = $props();
+  const { snapshot, page = new SettingsPage(), queues }: Props = $props();
 
   // FR-R3-143 (T002) — one definition, in `general/field-types.ts`.
 
@@ -416,6 +423,8 @@
     />
   </SettingsSection>
 
+  {@render queues?.()}
+
   <SettingsSection {page} id="logging">
     <AuditLoggingGroup
       fields={AUDIT_LOGGING_FIELDS}
@@ -451,9 +460,9 @@
 </div>
 
 <style>
-  /* The tab holds five of the page's sections, one shown at a time, each group a `.sg .section`
-     whose top margin spaces it, so the tab sets no gap of its own. The page scrolls; the tab does
-     not. */
+  /* The tab holds five of the page's sections and the slot for a sixth (Queues), one shown at a
+     time, each group a `.sg .section` whose top margin spaces it, so the tab sets no gap of its
+     own. The page scrolls; the tab does not. */
   /* The header's own rules moved with its markup into
    * `general/GeneralSettingsHeader.svelte` — Svelte scopes styles per
    * component, so leaving them here would have styled nothing. */

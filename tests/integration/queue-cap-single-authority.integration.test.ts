@@ -3,12 +3,13 @@
 //
 // Covers:
 //   SC-004 / FR-009 — set the cap through the path `CMD_SAVE_QUEUE_SETTINGS`
-//                     takes, re-project, and read the value `QueueConfigModal`
+//                     takes, re-project, and read the value the Settings
+//                     page's Queues section (`QueueDefaultsSection.svelte`)
 //                     seeds its input from. It is the value that was set.
 //   FR-010         — that value is the one `hasExecutionCapacity` gates on,
 //                     asserted against `store.getGlobalConcurrencyCap()`.
 //   FR-011         — every surface resolving a default queue resolves it from
-//                     the same store, so the id the modal shows is the id an
+//                     the same store, so the id the section shows is the id an
 //                     unrouted Task lands on.
 //
 // WHY BOTH ASSERTIONS, WHEN THE FIRST LOOKS SUFFICIENT
@@ -89,9 +90,10 @@ beforeEach(async () => {
 });
 
 /**
- * The wire snapshot the webview receives. `queueSettings` is what
- * `QueueConfigModal` seeds `initialCap()` and `initialDefaultQueue()` from, so
- * reading it here is reading what the operator would see on reopening the modal.
+ * The wire snapshot the webview receives. `queueSettings` is what the Settings
+ * page's Queues section reads its saved cap and default queue from, so reading it
+ * here is reading what the operator would see on opening that section again.
+ * (Before the redesign a dialog on the Queues list read them, the same way.)
  */
 function project(): WorkflowSnapshot {
   const projector = new StateProjector({
@@ -106,7 +108,7 @@ function project(): WorkflowSnapshot {
 }
 
 /**
- * The save the modal performs. `CMD_SAVE_QUEUE_SETTINGS` dispatches to
+ * The save the Queues section performs. `CMD_SAVE_QUEUE_SETTINGS` dispatches to
  * `cmd-save-queue-settings.ts`, which forwards to `ops.saveQueueSettings` —
  * this method. Called directly rather than through the router because the router
  * hop adds an ack envelope and nothing else: the validation, the range refusal
@@ -137,12 +139,12 @@ describe('queue settings read back out of the store that decides (SC-004, FR-009
     expect(QUEUE_B).not.toBe(DEFAULT_QUEUE_ID);
   });
 
-  it('seeds the reopened modal with the cap that was saved', async () => {
+  it('seeds the Queues section, opened again, with the cap that was saved', async () => {
     await saveThroughTheCommandPath(CHOSEN_CAP, QUEUE_B);
     expect(project().queueSettings.globalConcurrencyCap).toBe(CHOSEN_CAP);
   });
 
-  it('seeds the reopened modal with the default queue that was saved', async () => {
+  it('seeds the Queues section, opened again, with the default queue that was saved', async () => {
     await saveThroughTheCommandPath(CHOSEN_CAP, QUEUE_B);
     expect(project().queueSettings.defaultQueueId).toBe(QUEUE_B);
   });

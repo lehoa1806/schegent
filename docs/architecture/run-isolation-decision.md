@@ -271,7 +271,7 @@ because the switch is reachable and its name promises isolation.
   exists.
 
 **The standing consequence while this is open.** A cap above one is *chosen*, not safe. It is stated
-at the five surfaces a human reads — the manifest description, the Queue settings dialog,
+at the five surfaces a human reads — the manifest description, the Settings page's Queues section,
 `docs/operations/multi-queue-concurrency.md`, the ratification record, and `ARCHITECTURE.md` — and
 `tests/lint/concurrency-isolation-disclosure.test.ts` fails if any of those statements is removed or
 if a live document starts presenting a cap above one as isolation.

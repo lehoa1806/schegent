@@ -422,7 +422,8 @@ const EXEMPTIONS: ReadonlyMap<string, Exemption> = new Map<string, Exemption>([
         'setting. It carries a `KEY_SPECS` entry so `CMD_SAVE_GENERAL_SETTINGS` can accept a ' +
         'batch that includes it, not because `GeneralSettingsTab.svelte` renders a field for ' +
         'it. The *per-queue* answer this default falls back to is the operator surface FR-014 ' +
-        'requires, reachable from `QueueConfigModal.svelte` through `CMD_SET_QUEUE_FAILURE_POLICY` ' +
+        'requires, reachable from the Settings page\'s Queues section ' +
+        '(`settings/QueueDefaultsSection.svelte`) through `CMD_SET_QUEUE_FAILURE_POLICY` ' +
         '— a separate control for a separate question, so this key stays off the field-list ' +
         'scan on purpose rather than by omission.',
       reviewBy: PERMANENT

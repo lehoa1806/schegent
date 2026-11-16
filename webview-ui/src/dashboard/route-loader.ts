@@ -16,6 +16,7 @@
 
 import type { Component } from 'svelte';
 
+import type { SettingsSectionId } from '../components/settings/settings-page.svelte';
 import type { WorkflowSnapshot } from '../lib/snapshot-types';
 
 import { DASHBOARD_ROUTE_LABELS, type DashboardRoute } from './routes';
@@ -29,6 +30,8 @@ export type LazyRoute = Exclude<DashboardRoute, 'operations'>;
 export type LazyRouteProps = {
   active?: boolean;
   snapshot?: WorkflowSnapshot;
+  /** The section the Settings route opens on; only that route reads it. */
+  section?: SettingsSectionId;
 };
 
 export type LazyRouteComponent = Component<LazyRouteProps>;
