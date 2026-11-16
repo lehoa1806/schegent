@@ -2,8 +2,8 @@ import { foldLegacyRun, type LegacyRunFields } from '../../../lib/__tests__/queu
 /**
  * Feature 018 — Settings UI Hover Text coverage (structural test).
  *
- * Purpose: enforce at build time that every focusable control in the
- * four Settings tabs has a description surface, and that every entry in
+ * Purpose: enforce at build time that every focusable control on the
+ * Settings page has a description surface, and that every entry in
  * the per-tab `*_DESCRIPTIONS` map is consumed by at least one mounted
  * hoverTextAnchor. Removing a `use:hoverTextAnchor={...}` from a control,
  * or adding a description-map entry without wiring it, must fail this
@@ -24,8 +24,9 @@ import { foldLegacyRun, type LegacyRunFields } from '../../../lib/__tests__/queu
  *       (popover) markers, mapped back to description keys via a per-tab
  *       `controlIdToKey` translator.
  *
- * The describe block iterates the 4-tab table so adding a new
- * settings tab is one entry, not a copy-pasted block.
+ * The describe block iterates the table below, the two tabs and the page
+ * header, so adding a new part of the page is one entry, not a copy-pasted
+ * block.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -34,6 +35,8 @@ import type { ComponentType } from 'svelte';
 
 import GeneralSettingsTab from '../GeneralSettingsTab.svelte';
 import FatalSignaturesTab from '../FatalSignaturesTab.svelte';
+import SettingsPageHeader from '../SettingsPageHeader.svelte';
+import { SettingsPage } from '../settings-page.svelte';
 // Feature 030 (US3) — QueueSettingsTab.svelte + descriptions were
 // deleted alongside the multi-queue surfaces. FR-R3-145 (T1569): those
 // settings became configurable again with Feature 092, but from
@@ -43,6 +46,7 @@ import FatalSignaturesTab from '../FatalSignaturesTab.svelte';
 
 import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
 import { FATAL_SIGNATURES_DESCRIPTIONS } from '../FatalSignaturesTab.descriptions';
+import { SETTINGS_PAGE_HEADER_DESCRIPTIONS } from '../SettingsPageHeader.descriptions';
 
 import type {
   GeneralSettings,
@@ -156,8 +160,7 @@ function snapshotWithPopulatedAllowlist(): WorkflowSnapshot {
  * The tab offers ONE per-run bound: the one denominated as the selected backend
  * reports. The shipped default is `claude`, which reports a cost, so the mount
  * above draws the USD control and never the token one — `spendMaxTokensPerRun`
- * and its save/reset keys would be orphans on that mount alone, and not because
- * they are unwired.
+ * would be an orphan on that mount alone, and not because it is unwired.
  *
  * That the two are mutually exclusive is the behaviour FR-009 asks for, not a
  * fixture gap: a dollar bound shown for a backend that reports no cost is a bound
@@ -171,6 +174,20 @@ function snapshotWithTokenDenominatedBackend(): WorkflowSnapshot {
   return buildBaseSnapshot({ generalSettings });
 }
 
+/**
+ * The page header's Revert and Save are disabled until something on the page has changed, so
+ * the header mounts on a page with one part that reports a change it can save.
+ */
+function pageWithAChange(): SettingsPage {
+  const page = new SettingsPage();
+  page.register({
+    changes: () => ({ execution: 1 }),
+    canSave: () => true,
+    save: () => Promise.resolve(),
+    revert: () => undefined
+  });
+  return page;
+}
 
 // ── Per-tab table (T036 parameterization) ──────────────────────────────
 
@@ -233,7 +250,7 @@ const TAB_SPECS: readonly TabSpec[] = [
       () => ({ snapshot: snapshotWithPopulatedAllowlist() }),
       () => ({ snapshot: snapshotWithTokenDenominatedBackend() })
     ],
-    headerOnlyKeys: ['tab-header'],
+    headerOnlyKeys: [],
     // Measured at FR-R3-144 (T031, T034, T036) on `snapshotWithGeneralSettings()`, which
     // leaves the allowlist empty — so this counts no per-row Remove button.
     //
@@ -242,7 +259,12 @@ const TAB_SPECS: readonly TabSpec[] = [
     // and one grant button each for the two backends the platform does not
     // contain. The Claude auto-compaction field moved into Claude's section and
     // is counted in both numbers.
-    minFocusableControls: 100,
+    //
+    // Lowered from 100 to 41 by the Settings redesign's one save model. The mount
+    // had 103 controls; 62 left: the Save and Reset of each of the 30 field rows
+    // it draws, and the tab's Save all and Reset all. The page header's Save and
+    // Revert replace them all and are counted by the `SettingsPageHeader` entry.
+    minFocusableControls: 41,
     descriptionKeys: Object.keys(GENERAL_SETTINGS_DESCRIPTIONS),
     controlIdToKey: (id) => {
       // FR-R3-143 (T030) — the allowlist editor's Remove buttons are per-row,
@@ -270,23 +292,35 @@ const TAB_SPECS: readonly TabSpec[] = [
     buildProps: () => ({ snapshot: snapshotWithGeneralSettings() }),
     headerOnlyKeys: ['tab-header', 'built-in-section-header', 'operator-section-header'],
     // Measured at FR-R3-143 (T053) on the one-operator-row fixture above.
-    minFocusableControls: 5,
+    //
+    // Lowered from 5 to 3 by the Settings redesign's one save model: the list's
+    // own Save and Reset left for the page header's Save and Revert.
+    minFocusableControls: 3,
     descriptionKeys: Object.keys(FATAL_SIGNATURES_DESCRIPTIONS),
     controlIdToKey: (id) => {
       // Static buttons map fatal-add → operator-add, etc.
       if (id === 'fatal-add') return 'operator-add';
-      if (id === 'fatal-save') return 'operator-save';
-      if (id === 'fatal-reset') return 'operator-reset';
       // Dynamic per-row: fatal-operator-input-<N>, fatal-operator-remove-<N>.
       if (/^fatal-operator-input-\d+$/.test(id)) return 'operator-input';
       if (/^fatal-operator-remove-\d+$/.test(id)) return 'operator-remove';
       return null;
     }
+  },
+  {
+    name: 'SettingsPageHeader',
+    component: SettingsPageHeader as unknown as ComponentType,
+    buildProps: () => ({ page: pageWithAChange() }),
+    headerOnlyKeys: [],
+    // Revert and Save: since the Settings redesign, the page's only save controls.
+    minFocusableControls: 2,
+    descriptionKeys: Object.keys(SETTINGS_PAGE_HEADER_DESCRIPTIONS),
+    controlIdToKey: (id) => (id in SETTINGS_PAGE_HEADER_DESCRIPTIONS ? id : null)
   }
   // Feature 030 (US3) — QueueSettingsTab entry removed alongside the
   // deleted component. The WakeUpTab entry was removed with the Wake-up
-  // capability. The 4-tab parameterized table is now a 2-tab table
-  // (General, FatalSignatures).
+  // capability. The 4-tab parameterized table became a 2-tab table
+  // (General, FatalSignatures), and the page header joined it when the
+  // Settings redesign moved every Save and Reset into it.
 ] as const;
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -427,10 +461,9 @@ describe.each(TAB_SPECS)('Feature 018 — hover-text coverage on $name', (spec) 
  * gained six controls and silently lost six others passes a delta check and
  * fails this one. Six field rows entered `KEY_SPECS` with this item, and two
  * components — `StringListField` and `TrustDisclosure` — render controls that
- * do NOT go through `GeneralSettingFieldRow` and so derive no `-save`/`-reset`
- * id automatically; those are exactly the ones that would land in `orphanKeys`
- * if their anchors were dropped, and exactly the ones nothing else asserts by
- * name.
+ * do NOT go through `GeneralSettingFieldRow` and so take no anchor id from a
+ * row; those are exactly the ones that would land in `orphanKeys` if their
+ * anchors were dropped, and exactly the ones nothing else asserts by name.
  */
 describe('FR-R3-143 — the controls this item added are collected', () => {
   /** Anchored control ids across the empty-allowlist and populated mounts. */
@@ -471,11 +504,9 @@ describe('FR-R3-143 — the controls this item added are collected', () => {
     'multiRootSuppressWarning'
   ] as const;
 
-  it('anchors every new field row, with its save and reset', () => {
+  it('anchors every new field row', () => {
     const seen = collectAcrossFixtures();
-    const missing = NEW_FIELD_KEYS.flatMap((key) =>
-      [key, `${key}-save`, `${key}-reset`].filter((id) => !seen.has(id))
-    );
+    const missing = NEW_FIELD_KEYS.filter((key) => !seen.has(key));
     expect(
       missing,
       'these controls entered the tab with FR-R3-143 and the collector does not see them, so ' +
@@ -531,18 +562,16 @@ describe('Feature 019 — runtime-log hover-text content & anchor coverage', () 
     return ids;
   }
 
-  it('mounts hover-text anchors for runtimeLogLevel input + save + reset', () => {
+  // The rows have no Save or Reset of their own since the Settings redesign: the page header's
+  // Save and Revert, covered by the table above, write and discard them.
+  it('mounts the hover-text anchor for the runtimeLogLevel input', () => {
     const seen = collectAnchoredControlIds();
     expect(seen.has('runtimeLogLevel')).toBe(true);
-    expect(seen.has('runtimeLogLevel-save')).toBe(true);
-    expect(seen.has('runtimeLogLevel-reset')).toBe(true);
   });
 
-  it('mounts hover-text anchors for runtimeLogFilePath input + save + reset', () => {
+  it('mounts the hover-text anchor for the runtimeLogFilePath input', () => {
     const seen = collectAnchoredControlIds();
     expect(seen.has('runtimeLogFilePath')).toBe(true);
-    expect(seen.has('runtimeLogFilePath-save')).toBe(true);
-    expect(seen.has('runtimeLogFilePath-reset')).toBe(true);
   });
 
   it('runtimeLogLevel description covers default + per-emit read semantics', () => {

@@ -32,7 +32,6 @@
   import type {
     BackendSection as BackendSectionSpec,
     Draft,
-    FieldSpec,
     ScalarKey,
     StatusByKey
   } from './field-types';
@@ -61,8 +60,6 @@
     workflows: readonly PortableWorkflowDefinition[];
     fieldChanged: (key: ScalarKey) => boolean;
     fieldScopeLabel: (key: ScalarKey) => string;
-    saveOne: (spec: FieldSpec) => void;
-    resetField: (key: ScalarKey) => void;
   }
 
   let {
@@ -77,9 +74,7 @@
     statusByKey,
     workflows,
     fieldChanged,
-    fieldScopeLabel,
-    saveOne,
-    resetField
+    fieldScopeLabel
   }: Props = $props();
 
   const probing = $derived(ping.status === 'running' && ping.runner === kind);
@@ -231,8 +226,6 @@
       changed={fieldChanged(section.path.key)}
       scopeLabel={fieldScopeLabel(section.path.key)}
       {workflows}
-      onSave={() => saveOne(section.path)}
-      onReset={() => resetField(section.path.key)}
     />
 
     {#if posture !== undefined}
@@ -290,8 +283,6 @@
             changed={fieldChanged(spec.key)}
             scopeLabel={fieldScopeLabel(spec.key)}
             {workflows}
-            onSave={() => saveOne(spec)}
-            onReset={() => resetField(spec.key)}
           />
         {/each}
       </div>

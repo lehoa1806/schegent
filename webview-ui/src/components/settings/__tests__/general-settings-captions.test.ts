@@ -162,7 +162,7 @@ describe('the evidence privacy profile line reads in sentence case', () => {
 
   function profileLine(changes: Partial<PrivacyProfileSettings>): string {
     const { getByTestId } = render(PrivacyProfileSelector, {
-      props: { ...DIAGNOSTIC, ...changes }
+      props: { ...DIAGNOSTIC, ...changes, chooseProfile: () => {} }
     });
     return getByTestId('privacy-profile-detected').textContent.replace(/\s+/g, ' ').trim();
   }

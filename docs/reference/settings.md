@@ -188,8 +188,9 @@ Internal session compaction sets the same variable to `1` on its own invocation 
 `schegent.logging.rawTranscriptMode`, `schegent.logging.sessionRetentionMaxAgeDays` and
 `schegent.logging.sessionRetentionMaxBytes`. Deriving a safe combination from them one at a time is
 the problem the repository audit of 2026-08-27 named, so they are also published as **three named
-profiles** in `src/contracts/privacy-profiles.ts`. The Settings tab shows which profile the current
-values are, or `custom` with the fields that differ, and applies one in a single action.
+profiles** in `src/contracts/privacy-profiles.ts`. The Settings page shows which profile the values
+on the page are, or `custom` with the fields that differ; one press sets a profile's settings, and
+Save writes them together.
 
 | Profile | verbose | rawTranscriptMode | retention age | retention bytes | Who it is for |
 |---|---|---|---|---|---|

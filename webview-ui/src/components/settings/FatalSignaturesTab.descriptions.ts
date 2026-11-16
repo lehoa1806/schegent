@@ -17,9 +17,10 @@
  * static template keys.
  *
  * FR-013 coverage:
- *   - Save and Reset disable when there are no unsaved changes (Reset)
- *     or when an unsaved row is empty (Save) — both reasons are in the
- *     body text below.
+ *   - The list has no Save or Reset of its own. The page header's Save
+ *     and Revert write and discard it with every other change, and their
+ *     descriptions (`SettingsPageHeader.descriptions.ts`) state when each
+ *     is disabled, an empty row included.
  */
 
 import type { ControlDescription } from '../hover-text/hover-text-types';
@@ -29,8 +30,6 @@ export type FatalSignaturesControlId =
   | 'built-in-section-header'
   | 'operator-section-header'
   | 'operator-add'
-  | 'operator-save'
-  | 'operator-reset'
   | 'operator-input'
   | 'operator-remove';
 
@@ -65,21 +64,6 @@ export const FATAL_SIGNATURES_DESCRIPTIONS = {
     body:
       'Append a new empty operator row to the list. Type a verbatim ' +
       'substring then click Save to persist.'
-  },
-
-  'operator-save': {
-    title: 'Save operator signatures',
-    body:
-      'Persist the operator additions to `schegent.fatalSignatures`. ' +
-      'Disabled when there are no unsaved changes OR when at least one row ' +
-      'is empty — fill or remove blank rows first.'
-  },
-
-  'operator-reset': {
-    title: 'Reset operator signatures',
-    body:
-      'Discard every unsaved edit and restore the projected operator list. ' +
-      'Disabled when there are no unsaved changes.'
   },
 
   'operator-input': {

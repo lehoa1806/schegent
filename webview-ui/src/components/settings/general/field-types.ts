@@ -258,8 +258,6 @@ export interface SettingsGroupProps {
   workflows: readonly PortableWorkflowDefinition[];
   fieldChanged: (key: ScalarKey) => boolean;
   fieldScopeLabel: (key: ScalarKey) => string;
-  saveOne: (spec: FieldSpec) => void;
-  resetField: (key: ScalarKey) => void;
   // FR-R3-144 (T036) — `onAutoCompactInput` is GONE from this contract. It was a
   // handler named after one Claude-only setting, declared on the tab, and passed
   // through every group — including groups with no clearable number in them — to

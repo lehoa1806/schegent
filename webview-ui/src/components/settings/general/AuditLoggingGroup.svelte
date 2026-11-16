@@ -9,9 +9,7 @@
     statusByKey,
     workflows,
     fieldChanged,
-    fieldScopeLabel,
-    saveOne,
-    resetField
+    fieldScopeLabel
   }: SettingsGroupProps = $props();
 </script>
 
@@ -33,8 +31,6 @@
         scopeLabel={fieldScopeLabel(spec.key)}
         {workflows}
         transportUsage={spec.key === 'transportCaptureMode' ? transportUsage : undefined}
-        onSave={() => saveOne(spec)}
-        onReset={() => resetField(spec.key)}
       />
     {/each}
   </div>

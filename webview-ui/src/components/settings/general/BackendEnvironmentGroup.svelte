@@ -1,7 +1,7 @@
 <!--
   FR-R3-144 (T038) — this group's field specs are DECLARED here, in the component
   that renders them, and exported for the one thing the tab still needs them for:
-  folding them into the `FIELDS` array Save All iterates.
+  folding them into the `FIELDS` array the page Save writes from.
 
   They lived in `GeneralSettingsTab.svelte` until this task, threaded back down as
   four props (`backends`, `runnerField`, `spendFields`, `environmentFields`) whose
@@ -194,9 +194,9 @@
    * Every spec this group renders, flattened — the tab's `FIELDS` folds it in.
    *
    * FR-R3-144 (T025) — the per-backend specs are flattened OUT OF `BACKENDS`
-   * rather than listed a second time. `FIELDS` is what Save All iterates and what
+   * rather than listed a second time. `FIELDS` is what the page Save writes from and what
    * `dirty` is computed from, so a spec that reached the screen but not that array
-   * would be a control whose edit Save All silently dropped. Deriving this from
+   * would be a control whose edit the page Save silently dropped. Deriving this from
    * the same record the sections render means a backend added to
    * `SUPPORTED_BACKENDS` becomes savable at the same moment it becomes visible.
    */
@@ -243,9 +243,7 @@
     statusByKey,
     workflows,
     fieldChanged,
-    fieldScopeLabel,
-    saveOne,
-    resetField
+    fieldScopeLabel
   }: Props = $props();
 
   // FR-R3-144 (T036, FR-009) — which bound the operator is being offered follows
@@ -334,7 +332,7 @@
     backend, above the per-backend sections because they govern which of those
     sections is the one that will run. The selector writes `backend.runner`
     through the ordinary draft path — no bespoke handler, no second write route —
-    so Save All, the dirty marker and the scope label work on it exactly as they
+    so the page Save, the dirty marker and the scope label work on it exactly as they
     do on every other field.
   -->
   <div class="selection" data-testid="backend-selection">
@@ -345,8 +343,6 @@
       changed={fieldChanged(RUNNER_FIELD.key)}
       scopeLabel={fieldScopeLabel(RUNNER_FIELD.key)}
       {workflows}
-      onSave={() => saveOne(RUNNER_FIELD)}
-      onReset={() => resetField(RUNNER_FIELD.key)}
     />
     <GeneralSettingFieldRow
       spec={spendField}
@@ -355,8 +351,6 @@
       changed={fieldChanged(spendField.key)}
       scopeLabel={fieldScopeLabel(spendField.key)}
       {workflows}
-      onSave={() => saveOne(spendField)}
-      onReset={() => resetField(spendField.key)}
     />
     <!--
       Static text, like the effective-policy line below and for the same reasons:
@@ -376,8 +370,6 @@
     {fieldChanged}
     {fieldScopeLabel}
     {workflows}
-    {saveOne}
-    {resetField}
   />
   <!--
     The redesign's "Process environment" section: the environment rows under their own heading,
@@ -394,8 +386,6 @@
           changed={fieldChanged(spec.key)}
           scopeLabel={fieldScopeLabel(spec.key)}
           {workflows}
-          onSave={() => saveOne(spec)}
-          onReset={() => resetField(spec.key)}
         />
       {/each}
       <!--

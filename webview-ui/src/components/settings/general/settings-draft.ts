@@ -94,7 +94,7 @@ export function snapshotToDraft(s: GeneralSettings): Draft {
  * key and not of the comparison: the projection sends `undefined` for an unset
  * optional and the draft holds `null`, so `!==` reports a change on every mount
  * unless both sides are normalised. Getting that wrong marks a field dirty from
- * the moment the tab opens, which is how Save All comes to post a value nobody
+ * the moment the tab opens, which is how Save comes to post a value nobody
  * typed.
  */
 export const CLEARABLE_KEYS: ReadonlySet<ScalarKey> = new Set<ScalarKey>([
@@ -118,7 +118,7 @@ export function isFieldChanged(
   }
   // FR-R3-143 (T030) — the draft holds a copy of the projected array, so `!==`
   // is true the moment the tab mounts: every row would show as changed, Save
-  // All would post an unedited allowlist, and Reset All would never disable.
+  // would post an unedited allowlist, and Revert would never disable.
   // Element-wise for the one array-valued field.
   if (Array.isArray(drafted) || Array.isArray(projected)) {
     const a = Array.isArray(drafted) ? drafted : [];
