@@ -97,6 +97,15 @@ function definedFieldNames(
 }
 
 /**
+ * How a return is named: by its mark, never by a step.
+ *
+ * Not an identifier, on purpose. `return` is a valid step id, and an arm that enters
+ * that step is not a return. No step or port id can hold a parenthesis, so the two
+ * never share a key.
+ */
+const RETURN_KEY = '(return)';
+
+/**
  * One end of a connection, or `null` when the entry does not spell one.
  *
  * `null` rather than a best effort: `String(undefined)` names a malformed endpoint
@@ -104,11 +113,18 @@ function definedFieldNames(
  * key. The multiset tagging treats a shared key as a repeat, so an addition and a
  * removal of two unrelated broken entries would cancel and the collection would
  * report nothing changed.
+ *
+ * A target marked `kind: 'return'` is a return whatever else it carries. The host
+ * reads a return from the mark alone and ignores the node and port the endpoint may
+ * still name, so keying on them would report a change to a leftover name as one arm
+ * removed and another added. Only a target can return: the host refuses the mark on
+ * a source and looks for a return at a target alone, so a source that carries it is
+ * keyed by its node like any other.
  */
-function endpointKey(value: unknown): string | null {
+function endpointKey(value: unknown, side: 'from' | 'to'): string | null {
   if (!isRecord(value)) return null;
   const { nodeId, portId, kind } = value;
-  if (kind === 'return') return typeof nodeId === 'string' ? `${nodeId}:return` : 'return';
+  if (side === 'to' && kind === 'return') return RETURN_KEY;
   if (typeof nodeId !== 'string') return null;
   return typeof portId === 'string' ? `${nodeId}.${portId}` : nodeId;
 }
@@ -144,8 +160,8 @@ function entryKey(field: string, entry: unknown): string {
   if (field === 'bindings') return bindingKey(entry);
   if (field === 'nodes' && typeof entry.nodeId === 'string') return entry.nodeId;
   if (field === 'connections') {
-    const from = endpointKey(entry.from);
-    const to = endpointKey(entry.to);
+    const from = endpointKey(entry.from, 'from');
+    const to = endpointKey(entry.to, 'to');
     if (from !== null && to !== null) return `${from}->${to}`;
   }
   return canonicalText(entry) ?? UNREPRESENTABLE;
