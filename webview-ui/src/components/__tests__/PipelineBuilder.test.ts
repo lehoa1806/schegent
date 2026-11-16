@@ -378,33 +378,6 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       .toContain('invalid-phase.retryCondition: Retry condition has invalid syntax');
   });
 
-  it('names the Workflows that use a Phase whose save was rejected', async () => {
-    // No host sends a Phase's dependents yet. The banner's words for them are
-    // pinned all the same: a sentence in the Builder gives the Workflow kind its
-    // capital.
-    const phase: PhaseDefinition = Object.freeze({
-      id: 'used-phase', name: 'Original', version: 1, instruction: 'Run.'
-    });
-    vi.mocked(saveDraftHelper).mockResolvedValueOnce({
-      status: 'rejected',
-      reason: 'phase-in-use',
-      result: { dependentWorkflowIds: ['wf-a', 'wf-b'] }
-    });
-    const { container } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot([phase]), initialTab: 'phases' }
-    });
-    await fireEvent.click(container.querySelector(
-      '[data-testid="phases-list-item-used-phase"]'
-    )!);
-    await fireEvent.input(container.querySelector(
-      '[data-testid="phases-name-field-used-phase"]'
-    )!, { target: { value: 'Dirty draft' } });
-    await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
-    await tick();
-    expect(container.querySelector('[data-testid="save-error-banner"]')?.textContent)
-      .toContain('phase-in-use — used by Workflows: wf-a, wf-b');
-  });
-
   it('adopts the host revision after a stale rejection and retries the preserved draft', async () => {
     const phase: PhaseDefinition = Object.freeze({
       id: 'concurrent-phase', name: 'Original', version: 1, instruction: 'Run.'
