@@ -444,11 +444,11 @@
     font-weight: 550;
   }
   .status-in-flight .pill {
-    color: var(--schegent-color-active);
+    color: var(--schegent-status-active-text);
     background: transparent;
   }
   .status-completed .pill {
-    color: var(--schegent-color-completed);
+    color: var(--schegent-status-completed-text);
   }
   .status-failed .pill {
     color: var(--schegent-error-text);
@@ -458,7 +458,7 @@
   }
   .status-pending .pill,
   .status-paused .pill {
-    color: var(--schegent-color-warning);
+    color: var(--schegent-status-warning-text);
   }
   .time-updated { opacity: 0.85; }
   /* Feature 065 BUG-005 (FR-025) — the drag handle is a recognizable

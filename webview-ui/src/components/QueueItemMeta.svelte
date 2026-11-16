@@ -89,8 +89,8 @@
 
   .phase-chip,
   .restore-chip {
-    border-color: currentColor;
-    color: var(--schegent-color-active);
+    border-color: var(--schegent-color-active);
+    color: var(--schegent-status-active-text);
   }
 
   .paused-chip {
