@@ -169,7 +169,31 @@ async function scanRoute(page: Page, route: string, theme: ThemeName): Promise<S
   // about a page that had already gone.
   await page.getByTestId(`dashboard-route-${route}`).click();
   await page.getByTestId(target).first().waitFor({ state: 'visible', timeout: 15_000 });
+  if (route === 'settings') return scanSettingsSections(page, theme);
   return scanRendered(page, route, theme);
+}
+
+/**
+ * The Settings route shows one section at a time and hides the rest, and axe skips hidden
+ * content, so the route is scanned once per section, each shown by its navigation button. Its
+ * findings keep the route's key, `settings`, so the baseline's shape does not change, and a
+ * finding every section shares (the page header, the navigation) is counted once.
+ */
+async function scanSettingsSections(page: Page, theme: ThemeName): Promise<ScanResult> {
+  const buttons = page.getByRole('navigation', { name: 'Settings sections' }).getByRole('button');
+  const count = await buttons.count();
+  expect(count, 'the Settings navigation lists its sections').toBeGreaterThan(1);
+  const findings = new Map<string, Finding>();
+  let examined = 0;
+  for (let index = 0; index < count; index += 1) {
+    const button = buttons.nth(index);
+    await button.click();
+    await expect(button).toHaveAttribute('aria-current', 'true');
+    const result = await scanRendered(page, 'settings', theme);
+    for (const finding of result.findings) findings.set(key(finding), finding);
+    examined += result.examined;
+  }
+  return { findings: [...findings.values()], examined };
 }
 
 /**

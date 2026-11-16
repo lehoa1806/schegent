@@ -18,6 +18,9 @@ list open, so the scan covers one interaction state, not only mounted routes.
 
 - Routes come from `webview-ui/src/dashboard/routes.ts`, so a new route is a compile-time error here
   rather than a silently unscanned surface.
+- Settings shows one section at a time and hides the rest, and axe skips hidden content, so the scan
+  presses each button in the Settings navigation and scans the section it shows. The findings keep
+  the `settings` route key, so the combination count and the baseline's shape do not change.
 - Themes come from the visual suite's `ThemeName`: `light`, `dark`, `high-contrast`. Contrast
   findings are theme-specific and the product renders in the host's theme, so one theme is not a
   sample of three.

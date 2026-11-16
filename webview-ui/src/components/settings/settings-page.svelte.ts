@@ -1,7 +1,13 @@
 /**
- * The Settings page's one save model (the redesign's rule "One save model per page"): edits
- * accumulate in the drafts of the page's parts, the page header counts them and offers one Revert
- * and one Save, and no row or part saves or resets on its own.
+ * The Settings page: its sections and its one save model, as the redesign's settings page has
+ * them.
+ *
+ * The page lists its sections in a navigation and shows one at a time, Backends first. The others
+ * stay mounted, only hidden, so an edit made in one section is still counted, saved and reverted
+ * while another is shown. A section is marked while it holds an unsaved edit.
+ *
+ * One save model per page: edits accumulate in the drafts of the page's parts, the page header
+ * counts them and offers one Revert and one Save, and no row or part saves or resets on its own.
  *
  * A part is whatever holds a draft: the general fields, which the host writes as one
  * transactional batch, and the failure signatures, which it writes as their own list. Each part
@@ -15,15 +21,23 @@
  */
 import { untrack } from 'svelte';
 
-/** The page's sections, in the order its navigation lists them. */
-export type SettingsSectionId =
-  | 'backends'
-  | 'execution'
-  | 'queues'
-  | 'logging'
-  | 'privacy'
-  | 'trust'
-  | 'signatures';
+/** The page's sections, in the order and the words of the redesign's section navigation. */
+export const SETTINGS_SECTIONS = [
+  { id: 'backends', label: 'Backends' },
+  { id: 'execution', label: 'Runs and retries' },
+  { id: 'logging', label: 'Logs and retention' },
+  { id: 'privacy', label: 'Privacy and evidence' },
+  { id: 'trust', label: 'Trust and prompts' },
+  { id: 'signatures', label: 'Failure signatures' }
+] as const;
+
+export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
+
+/** The words the navigation shows for a section. */
+export function settingsSectionLabel(id: SettingsSectionId): string {
+  const section = SETTINGS_SECTIONS.find((entry) => entry.id === id);
+  return section === undefined ? id : section.label;
+}
 
 export interface SettingsPart {
   /** The part's unsaved edits, counted under the section that shows each one. */
@@ -39,6 +53,27 @@ export interface SettingsPart {
 export class SettingsPage {
   #parts = $state.raw<readonly SettingsPart[]>([]);
   #saving = $state(false);
+  #section = $state<SettingsSectionId>('backends');
+
+  /** The section the page shows. */
+  get section(): SettingsSectionId {
+    return this.#section;
+  }
+
+  /** Shows the given section in place of the one shown. */
+  select(id: SettingsSectionId): void {
+    this.#section = id;
+  }
+
+  /** True when the given section is on screen. */
+  shows(id: SettingsSectionId): boolean {
+    return this.#section === id;
+  }
+
+  /** True while any part holds an unsaved edit in the given section. */
+  sectionChanged(id: SettingsSectionId): boolean {
+    return this.#parts.some((part) => (part.changes()[id] ?? 0) > 0);
+  }
 
   /**
    * Adds a part and returns the function that removes it. Call it from an `$effect`, so the part

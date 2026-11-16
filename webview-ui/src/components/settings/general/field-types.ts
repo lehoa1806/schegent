@@ -92,7 +92,7 @@ export type FieldKind =
   //     refused on the same ground: the host de-dupes, so a second copy can
   //     only mislead.
   //   - FREE TEXT with no pattern — a prose fragment matched as a substring —
-  //     gets an editable row, as the fatal-signatures tab has. There is no
+  //     gets an editable row, as the failure signatures list has. There is no
   //     "invalid" to refuse at add, and retyping a 24-character signature to
   //     fix one character is the wrong ask. Duplicates are warned, never
   //     refused: two rows are legitimately equal while one is still being

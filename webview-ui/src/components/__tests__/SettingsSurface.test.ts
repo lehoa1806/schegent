@@ -1,11 +1,13 @@
-// Feature 012 T040 — Settings sub-tab list reduced to {General, Fatal Signatures}.
-// Feature 017 — Queue sub-tab appended to the surface.
+// The Settings surface: the settings page of the redesign mockup (`schegent_redesign_surfaces.html`).
 //
 // Covers:
-//   - Four sub-tab buttons render with stable data-testids.
-//   - Order: General → Fatal Signatures.
-//   - The legacy Phases / Pipelines / Models sub-tab buttons are gone.
-//   - No PhasesTab / PipelinesTab / ModelsTab mount inside SettingsSurface.
+//   - The section navigation: the mockup's sections in its order and words, Backends first and
+//     current, one section shown at a time, and the mockup's dot on a section with unsaved edits.
+//   - Every part of the page stays mounted while its section is hidden, so an edit in a hidden
+//     section is still counted, saved and reverted (the one save model below edits the loop limit
+//     and the failure signatures, both in sections hidden on arrival).
+//   - The legacy Phases / Pipelines / Models sub-tabs stay gone (Feature 012 T040).
+//   - The page's one save model: the header's count, Revert and Save.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
@@ -77,48 +79,119 @@ function buildSnapshot(): WorkflowSnapshot {
   }) as unknown as unknown as WorkflowSnapshot;
 }
 
-describe('Feature 012 T040 — SettingsSurface sub-tab list', () => {
-  it('renders two sub-tab buttons in order: general, fatal-signatures', () => {
-    // Feature 030 (US3, T045) — the Queue sub-tab (`settings-tab-queue`)
-    // was removed alongside QueueSettingsTab.svelte. The single unified
-    // queue has no per-queue settings to render; concurrency and queue
-    // defaults moved to General. The Wake up sub-tab was removed with
-    // the Wake-up capability. Order is now general → fatal-signatures.
-    const { container } = render(SettingsSurface, {
-      props: { snapshot: buildSnapshot() }
-    });
-    const buttons = container.querySelectorAll('[data-testid^="settings-tab-"]');
-    expect(buttons.length).toBe(2);
-    expect(buttons[0].getAttribute('data-testid')).toBe('settings-tab-general');
-    expect(buttons[1].getAttribute('data-testid')).toBe('settings-tab-fatal-signatures');
+// Settings redesign — the section navigation (M1: `SET_SECS`, `st.setSec` and the `.set-nav`
+// markup). A `nav` of buttons, the current one marked with `aria-current`; a click shows that
+// section and leaves focus on the button.
+describe('Settings redesign — the section navigation', () => {
+  const SECTIONS = [
+    ['backends', 'Backends'],
+    ['execution', 'Runs and retries'],
+    ['logging', 'Logs and retention'],
+    ['privacy', 'Privacy and evidence'],
+    ['trust', 'Trust and prompts'],
+    ['signatures', 'Failure signatures']
+  ] as const;
+
+  function renderSurface() {
+    return render(SettingsSurface, { props: { snapshot: buildSnapshot() } });
+  }
+
+  function navButton(container: HTMLElement, id: string): HTMLButtonElement {
+    const button = container.querySelector<HTMLButtonElement>(`nav [data-testid="settings-nav-${id}"]`);
+    if (button === null) throw new Error(`no section button for ${id}`);
+    return button;
+  }
+
+  function shownSections(container: HTMLElement): string[] {
+    return Array.from(container.querySelectorAll<HTMLElement>('[data-testid^="settings-section-"]'))
+      .filter((section) => !section.hidden)
+      .map((section) => section.getAttribute('data-testid') ?? '');
+  }
+
+  function markedSections(container: HTMLElement): string[] {
+    return SECTIONS.filter(([id]) => navButton(container, id).querySelector('.mod') !== null)
+      .map(([id]) => id);
+  }
+
+  it('lists the mockup sections in a navigation landmark, Backends first and current', () => {
+    const { container } = renderSurface();
+    const nav = container.querySelector('nav.set-nav');
+    expect(nav?.getAttribute('aria-label')).toBe('Settings sections');
+    const buttons = Array.from(nav?.querySelectorAll('button') ?? []);
+    expect(buttons.map((button) => [button.getAttribute('data-testid'), button.textContent.trim()]))
+      .toEqual(SECTIONS.map(([id, label]) => [`settings-nav-${id}`, label]));
+    expect(buttons.map((button) => button.getAttribute('aria-current')))
+      .toEqual(['true', null, null, null, null, null]);
+    expect(container.querySelector('[role="tablist"], [role="tab"], [role="tabpanel"]')).toBeNull();
   });
 
-  it('implements named tabs with roving focus and arrow-key navigation', async () => {
-    const { getByTestId, container } = render(SettingsSurface, {
-      props: { snapshot: buildSnapshot() }
-    });
-    const tablist = container.querySelector('[role="tablist"]');
-    const general = getByTestId('settings-tab-general');
-    const fatal = getByTestId('settings-tab-fatal-signatures');
-    expect(tablist?.getAttribute('aria-label')).toBe('Settings sections');
-    expect(general.getAttribute('role')).toBe('tab');
-    expect(general.getAttribute('aria-selected')).toBe('true');
-    expect(general.getAttribute('tabindex')).toBe('0');
-    expect(fatal.getAttribute('tabindex')).toBe('-1');
+  it('shows one section at a time, each named by its heading', () => {
+    const { container } = renderSurface();
+    expect(shownSections(container)).toEqual(['settings-section-backends']);
+    for (const [id, label] of SECTIONS) {
+      const section = container.querySelector(`section[data-testid="settings-section-${id}"]`);
+      const heading = container.querySelector(`[id="${section?.getAttribute('aria-labelledby') ?? ''}"]`);
+      expect(heading?.tagName, id).toBe('H2');
+      expect(heading?.textContent.trim(), id).toBe(label);
+    }
+  });
 
-    await fireEvent.keyDown(general, { key: 'ArrowDown' });
-    await Promise.resolve();
-    expect(fatal.getAttribute('aria-selected')).toBe('true');
-    expect(fatal.getAttribute('tabindex')).toBe('0');
-    expect(document.activeElement).toBe(fatal);
-    expect(container.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby'))
-      .toBe('settings-tab-fatal-signatures');
+  it('shows the section a button names, marks it current, and keeps focus on the button', async () => {
+    const { container } = renderSurface();
+    const runs = navButton(container, 'execution');
+    runs.focus();
+    await fireEvent.click(runs);
+
+    expect(shownSections(container)).toEqual(['settings-section-execution']);
+    expect(runs.getAttribute('aria-current')).toBe('true');
+    expect(navButton(container, 'backends').hasAttribute('aria-current')).toBe(false);
+    expect(document.activeElement).toBe(runs);
+  });
+
+  it('puts each part of the page in the section the mockup gives it', () => {
+    const { getByTestId } = renderSurface();
+    const parts: ReadonlyArray<readonly [string, string]> = [
+      ['backends', 'settings-group-backend-environment'],
+      ['execution', 'settings-group-execution-retry'],
+      ['logging', 'settings-group-audit-logging'],
+      ['privacy', 'privacy-profiles'],
+      ['privacy', 'session-artifact-usage'],
+      ['trust', 'settings-group-ui-trust'],
+      ['signatures', 'settings-fatal-signatures-tab']
+    ];
+    for (const [section, part] of parts) {
+      expect(getByTestId(`settings-section-${section}`).contains(getByTestId(part)), part).toBe(true);
+    }
+  });
+
+  // "Review in Settings" on a launch notice opens this page fresh and scrolls to the Backend
+  // health heading (`dashboard/App.svelte`). The scroll only lands while that heading is in the
+  // section the page opens on, since a hidden section has no box to scroll to.
+  it('opens on the section that holds the Backend health heading a launch notice scrolls to', () => {
+    const { container } = renderSurface();
+    const heading = container.querySelector('#backend-health-heading');
+    expect(heading?.closest('[data-testid^="settings-section-"]')?.getAttribute('data-testid'))
+      .toBe('settings-section-backends');
+    expect(shownSections(container)).toEqual(['settings-section-backends']);
+  });
+
+  it('marks a section that holds an unsaved edit with the mockup dot, until Revert', async () => {
+    const { container, getByTestId } = renderSurface();
+    expect(markedSections(container)).toEqual([]);
+
+    await fireEvent.input(getByTestId('general-settings-input-loopMaxIterations'), { target: { value: '7' } });
+    await fireEvent.click(getByTestId('fatal-add'));
+    expect(markedSections(container)).toEqual(['execution', 'signatures']);
+    const dot = navButton(container, 'execution').querySelector('.mod');
+    expect(dot?.getAttribute('role')).toBe('img');
+    expect(dot?.getAttribute('aria-label')).toBe('has unsaved changes');
+
+    await fireEvent.click(getByTestId('settings-revert'));
+    expect(markedSections(container)).toEqual([]);
   });
 
   it('associates every general setting control with its visible field name', () => {
-    const { container } = render(SettingsSurface, {
-      props: { snapshot: buildSnapshot() }
-    });
+    const { container } = renderSurface();
     const controls = container.querySelectorAll('[data-testid^="general-settings-input-"]');
     expect(controls.length).toBeGreaterThan(0);
     for (const control of Array.from(controls)) {
@@ -132,46 +205,15 @@ describe('Feature 012 T040 — SettingsSurface sub-tab list', () => {
     }
   });
 
-  it('does NOT render the Phases sub-tab button', () => {
-    const { container } = render(SettingsSurface, {
-      props: { snapshot: buildSnapshot() }
-    });
-    expect(container.querySelector('[data-testid="settings-tab-phases"]')).toBeNull();
-  });
-
-  it('does NOT render the Pipelines sub-tab button', () => {
-    const { container } = render(SettingsSurface, {
-      props: { snapshot: buildSnapshot() }
-    });
-    expect(container.querySelector('[data-testid="settings-tab-pipelines"]')).toBeNull();
-  });
-
-  it('does NOT render the Models sub-tab button', () => {
-    const { container } = render(SettingsSurface, {
-      props: { snapshot: buildSnapshot() }
-    });
-    expect(container.querySelector('[data-testid="settings-tab-models"]')).toBeNull();
-  });
-
-  it('does NOT mount PhasesTab markup (no settings-phases-tab testid)', () => {
-    const { container } = render(SettingsSurface, {
-      props: { snapshot: buildSnapshot() }
-    });
-    expect(container.querySelector('[data-testid="settings-phases-tab"]')).toBeNull();
-  });
-
-  it('does NOT mount PipelinesTab markup (no settings-pipelines-tab testid)', () => {
-    const { container } = render(SettingsSurface, {
-      props: { snapshot: buildSnapshot() }
-    });
-    expect(container.querySelector('[data-testid="settings-pipelines-tab"]')).toBeNull();
-  });
-
-  it('does NOT mount ModelsTab markup (no settings-models-tab testid)', () => {
-    const { container } = render(SettingsSurface, {
-      props: { snapshot: buildSnapshot() }
-    });
-    expect(container.querySelector('[data-testid="settings-models-tab"]')).toBeNull();
+  // Feature 012 T040 — Phases, Pipelines and Models left Settings for the Workflow builder, and
+  // neither their sub-tab buttons nor their tab markup may come back as sections.
+  it.each(['phases', 'pipelines', 'models'])('has no %s section, sub-tab or tab markup', (name) => {
+    const { container } = renderSurface();
+    expect(container.querySelector(
+      `[data-testid="settings-nav-${name}"], [data-testid="settings-tab-${name}"], [data-testid="settings-${name}-tab"]`
+    )).toBeNull();
+    const labels = Array.from(container.querySelectorAll('nav button')).map((button) => button.textContent.trim());
+    expect(labels.map((label) => label.toLowerCase())).not.toContain(name);
   });
 });
 

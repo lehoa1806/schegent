@@ -307,15 +307,15 @@ System:
 
 Settings:
 
-- **The sections are two tabs, General and Fatal Signatures**, drawn as the mockup's section list but kept as a vertical tab list (`role="tablist"` with `aria-selected`), where the mockup's is a `nav` marked with `aria-current`. The mockup's seven sections fold into General's four groups (backend and process environment; execution, queues and retry; audit, transcripts and runtime logging; UI and trust) and the Fatal Signatures tab. There is no Queues section, because queue settings open from the queues list (see "Queues").
-- **Each group is an open disclosure** whose summary is set as a section heading with the native marker, and General shows all four in one scroll. The mockup shows one section at a time.
+- **The section navigation is the mockup's, less Queues.** A `nav` named "Settings sections" lists the mockup's sections in its words and order: Backends, Runs and retries, Logs and retention, Privacy and evidence, Trust and prompts and Failure signatures. A press shows that section alone, marks its button with `aria-current` and leaves focus on the button, and a section that holds an unsaved edit carries the mockup's dot, named "has unsaved changes". The mockup's Queues section is not there: the concurrency cap and the default queue are set from the queues list (see "Queues").
+- **Each settings group keeps its disclosure inside its section.** Spec 182 gives the general settings four collapsible groups under fixed headings (FR-006), so Backends, Runs and retries, Logs and retention and Trust and prompts each open with an open disclosure, such as "Backend and process environment", whose summary is set as a heading with the native marker. The mockup shows no heading that names a section. Every section is named by a visually hidden h2, so the page's outline runs h1, h2, h3; the mockup names only Backends that way.
 - **The section list stops sticking below 860px**, where it stacks above the rows. The mockup's stays sticky there, and since it has no background of its own, the rows scroll under its buttons.
 - **Below 560px a row's control drops under its label**, and a backend card's check drops under the backend's name. The mockup's two row columns need 420px side by side and would widen the page.
-- **There is no search.** The page header has the mockup's one save model: an "N unsaved changes" chip, Revert and Save, which discard and write every edit on the page, on either tab. Save writes the fields as one batch and the failure signatures as their own list, and no row or tab has a Save or Reset of its own. A failure signature row left empty counts as a change, but the list is not written until the row is filled or removed.
-- **A row's scope line reads "Scope:" and the scope's name**, such as "Scope: Default". The mockup's reads "Applies to:" and who the setting applies to. A row with an unsaved edit has the mockup's dot beside its label. The section list has no dot.
+- **There is no search.** The page header has the mockup's one save model: an "N unsaved changes" chip, Revert and Save, which discard and write every edit on the page, in every section: a section that is not shown stays mounted, hidden, so its edits still count. Save writes the fields as one batch and the failure signatures as their own list, and no row or section has a Save or Reset of its own. A failure signature row left empty counts as a change, but the list is not written until the row is filled or removed.
+- **A row's scope line reads "Scope:" and the scope's name**, such as "Scope: Default". The mockup's reads "Applies to:" and who the setting applies to. A row with an unsaved edit has the mockup's dot beside its label.
 - **A number that can be left unset is wider than the mockup's 110px field**, out to its unit, because its unset state is a placeholder sentence, "Unset — no bound" or "Unset — use CLI default", that the narrow field would cut off. The mockup's spend limit and compaction threshold always show a value. **So is a size in bytes** (the session artifact budget and the runtime log rotation size), because its largest value, 10737418240 or 1073741824, is longer than the narrow field shows: the mockup draws these sizes in MB ("512 MB"), and the host stores them in bytes. Every other number keeps the mockup's width, and every number has its unit after it.
 - **A short control description shows as a line under its row's scope line, and a longer one as a popover** (see "Settings hover-text primitive (spec 018)"). The mockup has no control descriptions.
-- **The evidence privacy profile is a row in the General header**, with the mockup's segmented control, where the mockup gives it a section of its own. Its buttons carry `aria-pressed`, and a "Current profile" line under them names the profile the values on the page match, or the nearest one and how they differ. A press sets the profile's five settings as unsaved changes, and Save writes them with the rest. The session line under it keeps the product's words, "Unredacted local session artifacts:", where the mockup's reads "Stored locally:".
+- **The evidence privacy profile has Privacy and evidence to itself**, with the mockup's segmented control, but the five settings a profile sets stay with the audit and logging group in Logs and retention, the group spec 182 gives them, so a press puts the dot on Logs and retention. CLI transport capture, one of the five, stays there too, where the mockup's privacy section holds it as "Record backend traffic". The profile's buttons carry `aria-pressed`, and a "Current profile" line under them names the profile the values on the page match, or the nearest one and how they differ. A press sets the profile's five settings as unsaved changes, and Save writes them with the rest. The session line under it keeps the product's words, "Unredacted local session artifacts:", where the mockup's reads "Stored locally:".
 - **The two trust rows come after the UI toggles**, where the mockup puts its trust row first, under the product's line on why they cannot be switched here. Each shows its effective value as the mockup's status chip where a control would be: "Allowed" with a check or "Denied" with a cross. The setting's key and a "Change in Settings" button sit under the chip, in place of the mockup's "Applies to: VS Code workspace trust".
 
 Settings backends:
@@ -327,7 +327,7 @@ Settings backends:
 - **"Allow uncontained" is a danger button and "Revoke uncontained permission" a secondary one**, with the refusal the host sends under them.
 - **"Process environment" is a heading inside the group, as in the mockup**, over the product's rows: Environment mode, Environment allowlist, Inherit host environment (legacy) and Backend probe timeout, then the effective policy line. The allowlist is a list of names, each with a cross button that removes it, above an entry field and an Add button. The mockup's is a text area with one name per line. The list refuses a name that does not match the setting's pattern when it is added, so it never holds an invalid entry, which a text area could not promise.
 
-Fatal Signatures:
+Settings failure signatures:
 
 - **The built-in list comes first**, as spec 011's contract requires ("Built-ins always render first", `specs/011-webui-config-editor/contracts/fatal-signatures.md`). The mockup puts the operator's additions first.
 - **The headings and the lines under them are the product's**: "Built-in registry" and "Operator additions", under the product's line on what a signature does. The mockup's are "Built in" and "Your additions", under a line of its own. The built-in heading carries the mockup's "read-only" tag, which marks the list once, so a row no longer carries its own "Built-in" badge.
@@ -639,7 +639,7 @@ after `Operations`). The route ids and their nav labels are declared in
 | `metrics` | Metrics | `components/MetricsDashboard/MetricsDashboard.svelte` | On-demand audit-log rollup (spec 073). |
 | `system` | System Log | `components/SystemTab.svelte` | **System-scoped audit entries** (lifecycle, queue/task control, scheduling, audit pipeline housekeeping). See "Audit surfaces" below. |
 | `builder` | Builder | `components/PipelineBuilder.svelte` | Phases, Workflows, and Models editor with `RetryConditionEditor` / `RawJsonPhaseEditor` wiring. |
-| `settings` | Settings | `components/SettingsSurface.svelte` | Two sub-tabs: **General** and **Fatal Signatures**. |
+| `settings` | Settings | `components/SettingsSurface.svelte` | One section at a time, from a section navigation: Backends, Runs and retries, Logs and retention, Privacy and evidence, Trust and prompts, Failure signatures. |
 
 `DEFAULT_DASHBOARD_ROUTE` stays `operations` through every such addition —
 a new surface earns its place in the nav, not on someone's landing page.
@@ -793,12 +793,12 @@ The restructure moved both older components rather than retiring them.
 restructure that quieted the gate by allowlisting them would have deleted the
 surfaces in every sense but the file listing.
 
-### Settings sub-tabs (spec 012 reduction)
+### Settings sections (spec 012 reduction)
 
-| Sub-tab | Component | Purpose |
+| Sections | Component | Purpose |
 |---|---|---|
-| General | `components/settings/GeneralSettingsTab.svelte` | Renders every scalar `schegent.*` key from `snapshot.generalSettings` with adaptive form controls (boolean → checkbox, string → text, number → number, enum → dropdown, optional integer → number-with-clear) and a scope indicator (workspace / user / default). Save goes through the shared `lib/save-general-settings.ts` helper. |
-| Fatal Signatures | `components/settings/FatalSignaturesTab.svelte` | Two sections: the read-only **Built-in registry** (rendered from the parity mirror at `lib/fatal-signature-registry.ts`) and the editable **Operator additions** list (text inputs with + Add / Remove controls). Save goes through the shared helper with the unprefixed key `fatalSignatures`. |
+| Backends, Runs and retries, Logs and retention, Privacy and evidence, Trust and prompts | `components/settings/GeneralSettingsTab.svelte` | Renders every scalar `schegent.*` key from `snapshot.generalSettings` with adaptive form controls (boolean → checkbox, string → text, number → number, enum → dropdown, optional integer → number-with-clear) and a scope indicator (workspace / user / default). Save goes through the shared `lib/save-general-settings.ts` helper. |
+| Failure signatures | `components/settings/FatalSignaturesTab.svelte` | Two sections: the read-only **Built-in registry** (rendered from the parity mirror at `lib/fatal-signature-registry.ts`) and the editable **Operator additions** list (text inputs with + Add / Remove controls). Save goes through the shared helper with the unprefixed key `fatalSignatures`. |
 
 Feature 030 (US3) removed the **Queue** sub-tab and its
 `QueueSettingsTab.svelte` / `save-queue-settings.ts` plumbing, on the
@@ -808,7 +808,7 @@ selector meaningless. Feature 092 raised `MAX_QUEUES` back to 20 but did
 Queue Detail tier (FR-064), and the workspace-wide concurrency cap — ranged
 `1..20`, default `1` — is authored in `QueueConfigModal.svelte`, which submits
 it together with the default-queue selection over `CMD_SAVE_QUEUE_SETTINGS`.
-It is **not** on **General** and is not a `schegent.*` configuration key at
+It is **not** a general setting, and is not a `schegent.*` configuration key at
 all: its value is workspace state, so it reaches the webview in its own
 snapshot projection rather than in `snapshot.generalSettings`.
 
@@ -819,7 +819,8 @@ This co-locates configuration with the workflows that consume it.
 
 ### Settings hover-text primitive (spec 018)
 
-Every focusable control in the Settings sub-tabs is annotated by
+Every focusable control in a Settings section (not the section navigation, whose buttons name
+their section) is annotated by
 the shared [`use:hoverTextAnchor`](src/components/hover-text/hover-text-anchor-action.ts)
 Svelte 5 action (the primary call shape). The action picks the surface
 deterministically from `description.body.length`:

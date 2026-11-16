@@ -30,6 +30,7 @@
   import UiTrustGroup from './general/UiTrustGroup.svelte';
   import { TRANSPORT_CAPTURE_SETTINGS } from '../../../../src/contracts/transport-capture-mode';
   import { SettingsPage, type SettingsSectionId } from './settings-page.svelte';
+  import SettingsSection from './SettingsSection.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -336,57 +337,67 @@
   const workflows = $derived(snapshot.workflowCatalog?.effective ?? []);
 </script>
 
-<section class="general-settings" data-testid="general-settings-tab">
-  <GeneralSettingsHeader
-    settings={currentSettings}
-    {draft}
-    {sessionArtifacts}
-    {chooseProfile}
-  />
+<div class="general-settings" data-testid="general-settings-tab">
+  <SettingsSection {page} id="backends">
+    <BackendEnvironmentGroup
+      {snapshot}
+      bind:draft
+      {statusByKey}
+      {workflows}
+      {fieldChanged}
+      {fieldScopeLabel}
+    />
+  </SettingsSection>
 
-  <BackendEnvironmentGroup
-    {snapshot}
-    bind:draft
-    {statusByKey}
-    {workflows}
-    {fieldChanged}
-    {fieldScopeLabel}
-  />
+  <SettingsSection {page} id="execution">
+    <ExecutionRetryGroup
+      fields={EXECUTION_RETRY_FIELDS}
+      bind:draft
+      {statusByKey}
+      {workflows}
+      {fieldChanged}
+      {fieldScopeLabel}
+    />
+  </SettingsSection>
 
-  <ExecutionRetryGroup
-    fields={EXECUTION_RETRY_FIELDS}
-    bind:draft
-    {statusByKey}
-    {workflows}
-    {fieldChanged}
-    {fieldScopeLabel}
-  />
+  <SettingsSection {page} id="logging">
+    <AuditLoggingGroup
+      fields={AUDIT_LOGGING_FIELDS}
+      transportUsage={snapshot.generalSettings?.transportUsage}
+      bind:draft
+      {statusByKey}
+      {workflows}
+      {fieldChanged}
+      {fieldScopeLabel}
+    />
+  </SettingsSection>
 
-  <AuditLoggingGroup
-    fields={AUDIT_LOGGING_FIELDS}
-    transportUsage={snapshot.generalSettings?.transportUsage}
-    bind:draft
-    {statusByKey}
-    {workflows}
-    {fieldChanged}
-    {fieldScopeLabel}
-  />
+  <SettingsSection {page} id="privacy">
+    <GeneralSettingsHeader
+      settings={currentSettings}
+      {draft}
+      {sessionArtifacts}
+      {chooseProfile}
+    />
+  </SettingsSection>
 
-  <UiTrustGroup
-    {snapshot}
-    fields={UI_TRUST_FIELDS}
-    bind:draft
-    {statusByKey}
-    {workflows}
-    {fieldChanged}
-    {fieldScopeLabel}
-  />
-</section>
+  <SettingsSection {page} id="trust">
+    <UiTrustGroup
+      {snapshot}
+      fields={UI_TRUST_FIELDS}
+      bind:draft
+      {statusByKey}
+      {workflows}
+      {fieldChanged}
+      {fieldScopeLabel}
+    />
+  </SettingsSection>
+</div>
 
 <style>
-  /* The tab reads as the mockup's section body: the header, then each group as a `.sg .section`,
-     whose top margin spaces the groups, so the tab sets no gap of its own. The page scrolls; the
-     tab does not. */
+  /* The tab holds five of the page's sections, one shown at a time, each group a `.sg .section`
+     whose top margin spaces it, so the tab sets no gap of its own. The page scrolls; the tab does
+     not. */
   /* The header's own rules moved with its markup into
    * `general/GeneralSettingsHeader.svelte` — Svelte scopes styles per
    * component, so leaving them here would have styled nothing. */

@@ -11,7 +11,9 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import GeneralSettingsTab from '../GeneralSettingsTab.svelte';
+import { SettingsPage, type SettingsSectionId } from '../settings-page.svelte';
 import PrivacyProfileSelector from '../general/PrivacyProfileSelector.svelte';
 import {
   privacyProfile,
@@ -137,22 +139,36 @@ describe('the General tab writes a number setting with its unit after the value'
     expect(misdrawn).toEqual([]);
   });
 
-  it('reads the unit with the caption, as the Phase editor\x27s time limit is read', () => {
-    const { getByRole } = render(GeneralSettingsTab, { props: { snapshot: buildSnapshot() } });
-    for (const name of [
-      'Session artifact retention days',
-      'Session artifact budget bytes',
-      'Audit rotation size MB',
-      'Runtime logs kept files',
-      'Loop max iterations times',
-      'Invocation idle timeout seconds',
-      'Watchdog poll interval minutes',
-      'Retry max attempts attempts',
-      'Backend probe timeout seconds',
-      'Claude auto-compaction threshold %',
-      'Per-run spend bound USD'
-    ]) {
-      expect(getByRole('spinbutton', { name })).toBeTruthy();
+  it('reads the unit with the caption, as the Phase editor\x27s time limit is read', async () => {
+    // The page shows one section at a time and hides the rest from the accessibility tree, so
+    // each field is read by role with its own section shown.
+    const page = new SettingsPage();
+    const { getByRole } = render(GeneralSettingsTab, { props: { snapshot: buildSnapshot(), page } });
+    const namesBySection: ReadonlyArray<readonly [SettingsSectionId, readonly string[]]> = [
+      ['backends', [
+        'Backend probe timeout seconds',
+        'Claude auto-compaction threshold %',
+        'Per-run spend bound USD'
+      ]],
+      ['execution', [
+        'Loop max iterations times',
+        'Invocation idle timeout seconds',
+        'Watchdog poll interval minutes',
+        'Retry max attempts attempts'
+      ]],
+      ['logging', [
+        'Session artifact retention days',
+        'Session artifact budget bytes',
+        'Audit rotation size MB',
+        'Runtime logs kept files'
+      ]]
+    ];
+    for (const [section, names] of namesBySection) {
+      page.select(section);
+      await tick();
+      for (const name of names) {
+        expect(getByRole('spinbutton', { name }), name).toBeTruthy();
+      }
     }
   });
 });

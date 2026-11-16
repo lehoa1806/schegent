@@ -1,26 +1,25 @@
 <script lang="ts">
   /**
-   * Feature 012 T047 — Settings surface reduced to two sub-tabs.
-   * Feature 030 (US3) — Removed the Queue sub-tab. FR-R3-145 (T1569): the
-   * settings that sub-tab carried are configurable again as of Feature 092,
-   * but from QueueConfigModal.svelte, not from here — the sub-tab did not
-   * come back, which is why this surface is still two tabs.
+   * The Settings page, as the redesign draws it: the page header, then a navigation of the page's
+   * sections beside the one section on screen (`settings/settings-page.svelte.ts` lists them).
+   * A button shows its section and marks itself current; focus stays on it. A section that holds
+   * an unsaved edit carries the redesign's dot.
    *
-   * Phases / Pipelines moved to PipelineBuilder.svelte; Models moved to
-   * PipelineBuilderEditors/ModelCatalogEditor.svelte, mounted under the
-   * same PipelineBuilder.svelte. Sub-tabs: General, Fatal Signatures.
+   * The general settings fill five sections and the failure signatures the sixth. Every section
+   * stays mounted, the ones not shown hidden, so an edit made in one is still counted, saved and
+   * reverted while another is shown: the page header holds the only Revert and Save.
    *
-   * The redesign's one save model: the page header holds the only Revert and Save, and every
-   * tab drafts its edits into the page (`settings/settings-page.svelte.ts`). Both tabs stay
-   * mounted, the inactive one hidden, so an edit made on one tab is still counted, saved and
-   * reverted while the other is shown.
+   * Feature 012 T047 moved Phases and Pipelines to PipelineBuilder.svelte and Models to
+   * PipelineBuilderEditors/ModelCatalogEditor.svelte. Feature 030 (US3) removed the Queue sub-tab;
+   * the cap and the default queue are set from QueueConfigModal.svelte (FR-R3-145, T1569).
    */
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
   import '../lib/sg/sg-settings.css';
   import GeneralSettingsTab from './settings/GeneralSettingsTab.svelte';
   import FatalSignaturesTab from './settings/FatalSignaturesTab.svelte';
   import SettingsPageHeader from './settings/SettingsPageHeader.svelte';
-  import { SettingsPage } from './settings/settings-page.svelte';
+  import SettingsSection from './settings/SettingsSection.svelte';
+  import { SETTINGS_SECTIONS, SettingsPage } from './settings/settings-page.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -28,78 +27,33 @@
   const { snapshot }: Props = $props();
 
   const page = new SettingsPage();
-
-  type SettingsSubTab = 'general' | 'fatal-signatures';
-  const SETTINGS_TABS = Object.freeze([
-    { id: 'general', label: 'General' },
-    { id: 'fatal-signatures', label: 'Fatal Signatures' }
-  ] satisfies ReadonlyArray<{ id: SettingsSubTab; label: string }>);
-  let activeTab = $state<SettingsSubTab>('general');
-
-  function activate(tab: SettingsSubTab, focus = false): void {
-    activeTab = tab;
-    if (!focus) return;
-    queueMicrotask(() => document.getElementById(`settings-tab-${tab}`)?.focus());
-  }
-
-  function onTabKeydown(event: KeyboardEvent): void {
-    const current = SETTINGS_TABS.findIndex((tab) => tab.id === activeTab);
-    let next = current;
-    if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-      next = (current - 1 + SETTINGS_TABS.length) % SETTINGS_TABS.length;
-    } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
-      next = (current + 1) % SETTINGS_TABS.length;
-    } else if (event.key === 'Home') {
-      next = 0;
-    } else if (event.key === 'End') {
-      next = SETTINGS_TABS.length - 1;
-    } else {
-      return;
-    }
-    event.preventDefault();
-    activate(SETTINGS_TABS[next].id, true);
-  }
 </script>
 
 <main class="settings-surface" data-testid="settings-surface-root">
   <div class="page">
     <SettingsPageHeader {page} />
     <div class="set-layout">
-      <div class="set-nav" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
-        <!--
-          Feature 030 (US3) — Queue sub-tab removed, and not restored by
-          Feature 092: the cap and the default queue are configured from
-          QueueConfigModal.svelte instead, so this tablist stays at two
-          (FR-R3-145, T1569).
-        -->
-        {#each SETTINGS_TABS as tab (tab.id)}
+      <nav class="set-nav" aria-label="Settings sections">
+        {#each SETTINGS_SECTIONS as section (section.id)}
           <button
-            id="settings-tab-{tab.id}"
             type="button"
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            aria-controls="settings-panel-{tab.id}"
-            tabindex={activeTab === tab.id ? 0 : -1}
-            data-testid="settings-tab-{tab.id}"
-            onclick={() => activate(tab.id)}
-            onkeydown={onTabKeydown}
-          >{tab.label}</button>
+            data-testid="settings-nav-{section.id}"
+            aria-current={page.section === section.id ? 'true' : undefined}
+            onclick={() => page.select(section.id)}
+          >
+            {section.label}
+            {#if page.sectionChanged(section.id)}
+              <span class="mod" role="img" aria-label="has unsaved changes"></span>
+            {/if}
+          </button>
         {/each}
-      </div>
+      </nav>
 
-      <div
-        id="settings-panel-{activeTab}"
-        class="set-body"
-        role="tabpanel"
-        aria-labelledby="settings-tab-{activeTab}"
-        data-testid="settings-body"
-      >
-        <div hidden={activeTab !== 'general'}>
-          <GeneralSettingsTab {snapshot} {page} />
-        </div>
-        <div hidden={activeTab !== 'fatal-signatures'}>
+      <div class="set-body" data-testid="settings-body">
+        <GeneralSettingsTab {snapshot} {page} />
+        <SettingsSection {page} id="signatures">
           <FatalSignaturesTab {snapshot} {page} />
-        </div>
+        </SettingsSection>
       </div>
     </div>
   </div>
