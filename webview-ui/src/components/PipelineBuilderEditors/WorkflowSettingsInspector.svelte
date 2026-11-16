@@ -32,6 +32,8 @@
     readonly actions?: WorkflowGraphActions;
     /** The defects no step or branch owns. */
     readonly defects: readonly WorkflowDraftError[];
+    /** How many checks the draft fails past their cap; none of them shows anywhere. */
+    readonly hiddenChecks?: number;
     readonly readonly: boolean;
     readonly lifecycle?: BuilderLifecycle;
     readonly onworkflowpatch: (patch: Partial<MutableWorkflow>) => void;
@@ -45,6 +47,8 @@
   const RUNNER_OPTIONS = ['claude', 'codex', 'agy'] as const;
 
   const title = $derived(p.row.name || UNTITLED_WORKFLOW);
+  /** Counted in the Issues list, since Save stays disabled for each one. */
+  const hiddenChecks = $derived(p.hiddenChecks ?? 0);
 
   /**
    * The Steps value as the mockup's Status block gives it: the count, then how
@@ -164,14 +168,19 @@
       />
     </div>
 
-    {#if p.defects.length > 0}
-      <h3>Issues ({p.defects.length})</h3>
+    {#if p.defects.length > 0 || hiddenChecks > 0}
+      <h3>Issues ({p.defects.length + hiddenChecks})</h3>
       <ul class="field-errors" data-testid="workflow-field-errors" role="alert">
         <!-- Keyed by position: the host reports one `missing-required-input` per unbound port
              of a child Workflow node, all under the same field, so `field + code` repeats. -->
         {#each p.defects as defect, index (index)}
           <li>{defect.field}: {defect.message}</li>
         {/each}
+        {#if hiddenChecks > 0}
+          <li data-testid="workflow-hidden-checks">
+            {hiddenChecks} more {hiddenChecks === 1 ? 'issue' : 'issues'}, shown as the others are fixed.
+          </li>
+        {/if}
       </ul>
     {/if}
 

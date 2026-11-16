@@ -623,10 +623,10 @@ function anchorWorkflowDefects(
 }
 
 /**
- * The saved defects the cap lets through. The cap counts them ahead of the draft's own
- * checks, so nothing typed since the save pushes a saved defect out of sight. This is the
- * one place that says so: what the Builder shows and what the lifecycle panel keeps both
- * read it, so neither can take a different view of what lies past the cap.
+ * The saved defects the cap lets through. The draft's own checks have a cap of their own,
+ * so nothing typed since the save pushes a saved defect out of sight. This is the one place
+ * that says which saved defects pass: what the Builder shows and what the lifecycle panel
+ * keeps both read it, so neither can take a different view of what lies past the cap.
  */
 function savedDefectsWithinCap(
   workflow: MutableWorkflow
@@ -634,17 +634,25 @@ function savedDefectsWithinCap(
   return workflow.sourceErrors.slice(0, MAX_VISIBLE_FIELD_ERRORS);
 }
 
+/** The defects the Builder shows for a Workflow, and how many of the draft's checks it leaves out. */
+export interface VisibleWorkflowDefects extends AnchoredWorkflowDefects {
+  /** The checks the draft fails past their cap, which the Issues list counts. */
+  readonly hiddenChecks: number;
+}
+
 /**
- * The defects the Builder shows for a Workflow, capped and sorted into the rows that own
- * them: the saved defects the cap lets through, then the draft's own checks in the places
- * it has left. `rest` is the Workflow's Issues list.
+ * The defects the Builder shows for a Workflow, sorted into the rows that own them: the
+ * saved defects the cap lets through, then the draft's own checks under a cap of their own.
+ * Save stays disabled while the draft fails a check, so no saved defect takes a check's
+ * place, and the checks past their cap are counted. `rest` is the Workflow's Issues list.
  */
 export function visibleWorkflowDefects(
   workflow: MutableWorkflow,
   draftErrors: readonly WorkflowDraftError[]
-): AnchoredWorkflowDefects {
-  const listed = [...savedDefectsWithinCap(workflow), ...draftErrors];
-  return anchorWorkflowDefects(boundFieldErrors(listed).visible, workflow);
+): VisibleWorkflowDefects {
+  const checks = boundFieldErrors(draftErrors);
+  const listed = [...boundFieldErrors(savedDefectsWithinCap(workflow)).visible, ...checks.visible];
+  return { ...anchorWorkflowDefects(listed, workflow), hiddenChecks: checks.hiddenCount };
 }
 
 /**

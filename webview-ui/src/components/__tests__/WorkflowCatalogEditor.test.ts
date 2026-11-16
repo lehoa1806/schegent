@@ -1156,9 +1156,9 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
     expect(ports('definition-row-defects-design-then-build')).toEqual(['alpha', 'omega']);
   });
 
-  // The saved defects and the draft's own checks share one cap on what the Builder shows. The
-  // saved ones are counted first, so a check the draft fails takes a place the cap has left and
-  // moves no saved defect between the Issues list and the panel.
+  // The saved defects and the draft's own checks each have a cap of their own on what the
+  // Builder shows, so a check the draft fails always shows, and moves no saved defect between
+  // the Issues list and the panel.
   describe('when the draft fails a check of its own as well', () => {
     const saved = (label: string, field = 'nodes[9].workflowId') => ({
       field,
@@ -1207,16 +1207,49 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
       expect(savedIn(PANEL)).toEqual(['on a step']);
     });
 
-    it('moves no saved defect when the saved ones fill the cap', async () => {
-      const { savedIn, failNameCheck } = await mountSaved(['two', 'three', 'four', 'five', 'six']);
+    it('shows the check, and moves no saved defect, when the saved ones fill the cap', async () => {
+      const { getByTestId, savedIn, failNameCheck } = await mountSaved([
+        'two',
+        'three',
+        'four',
+        'five',
+        'six'
+      ]);
       expect(savedIn(ISSUES)).toEqual(['two', 'three', 'four', 'five']);
       expect(savedIn(PANEL)).toEqual(['on a step', 'six']);
 
       await failNameCheck();
 
+      // Save is disabled for the check, so the check must say why.
+      expect(getByTestId(ISSUES).textContent).toContain('Name is required.');
       expect(savedIn(ISSUES)).toEqual(['two', 'three', 'four', 'five']);
       expect(savedIn(PANEL)).toEqual(['on a step', 'six']);
     });
+  });
+
+  it('counts under the Issues list the checks past the cap', async () => {
+    const blankInputs = Array.from({ length: 7 }, (_, index) => ({
+      portId: `in_${index}`,
+      label: '',
+      type: 'text'
+    }));
+    const definition = {
+      ...record().definition,
+      inputs: blankInputs
+    } as unknown as WorkflowCatalogSourceProjection['definition'];
+    const { container, getByTestId } = mount([record({ definition })]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    const issues = getByTestId('workflow-field-errors');
+    const lines = [...issues.querySelectorAll('li')].map((item) => item.textContent.trim());
+    expect(lines.filter((line) => line.endsWith('Port label is required.'))).toHaveLength(5);
+    expect(getByTestId('workflow-hidden-checks').textContent.trim()).toBe(
+      '2 more issues, shown as the others are fixed.'
+    );
+    const headings = [...getByTestId('workflow-settings-inspector').querySelectorAll('h3')].map(
+      (heading) => heading.textContent.trim()
+    );
+    expect(headings).toContain('Issues (7)');
   });
 
   it('carries the association in text, not color alone (FR-044)', async () => {
