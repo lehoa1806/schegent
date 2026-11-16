@@ -88,7 +88,7 @@
           {defects.length === 1 ? "defect" : "defects"}</summary
         >
         <ul>
-          {#each defects as defect (defect.field + defect.code + defect.message)}
+          {#each defects as defect, index (defect.field + index)}
             <li>
               <span class="defect-field">{defect.field}</span>: {defect.message}
             </li>
