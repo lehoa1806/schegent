@@ -3,9 +3,10 @@
  * redesign's settings surface does ("Default workflow", "Backend check
  * timeout") and as the tab's own hover titles already were. A word keeps its
  * capital mid-caption only when it is a name, a unit or one of the product's
- * nouns, which the product capitalises everywhere ("Default Workflow"). The
- * evidence profile line, which names the settings a custom posture changed,
- * follows the same casing.
+ * nouns, which a caption keeps capitalised ("Default Workflow", as the
+ * Builder's "Bound Phase") though the hover titles and the redesign write
+ * them in lower case. The evidence profile line, which names the settings a
+ * custom posture changed, follows the same casing.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
