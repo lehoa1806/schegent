@@ -9,10 +9,6 @@ body {
   padding: 0;
   height: 100%;
   width: 100%;
-  font-family: var(--sch-font-primary);
-  font-size: var(--vscode-font-size, 13px);
-  background: var(--schegent-bg, var(--vscode-editor-background));
-  color: var(--schegent-fg, var(--vscode-foreground));
 }
 
 #app,
