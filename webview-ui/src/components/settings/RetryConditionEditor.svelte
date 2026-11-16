@@ -249,7 +249,7 @@
   .rc-pip-ok { background: var(--schegent-color-completed); }
   .rc-pip-err { background: var(--schegent-color-error); }
   .rc-warning {
-    color: var(--schegent-color-warning);
+    color: var(--schegent-status-warning-text);
     background: color-mix(in srgb, var(--schegent-color-warning) 8%, transparent);
     border: 1px solid color-mix(in srgb, var(--schegent-color-warning) 30%, transparent);
     border-radius: var(--schegent-radius);
