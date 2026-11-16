@@ -389,22 +389,39 @@ describe('visibleWorkflowDefects and savedDefectsOutsideIssues', () => {
   const messages = (defects: readonly WorkflowDraftError[]): string[] =>
     defects.map((entry) => entry.message);
 
-  it('lists the saved defects first, then the draft checks in the places the cap has left', () => {
+  it('lists the saved defects first, then the checks the draft fails, each under a cap of its own', () => {
     const workflow = withSaved(numbered('saved', 3));
 
-    const { rest } = visibleWorkflowDefects(workflow, numbered('check', 4));
+    const visible = visibleWorkflowDefects(workflow, numbered('check', 4));
 
-    expect(messages(rest)).toEqual(['saved 1', 'saved 2', 'saved 3', 'check 1', 'check 2']);
-    expect(rest).toHaveLength(MAX_VISIBLE_FIELD_ERRORS);
+    expect(messages(visible.rest)).toEqual([
+      'saved 1',
+      'saved 2',
+      'saved 3',
+      'check 1',
+      'check 2',
+      'check 3',
+      'check 4'
+    ]);
+    expect(visible.hiddenChecks).toBe(0);
     expect(savedDefectsOutsideIssues(workflow)).toEqual([]);
   });
 
-  it('keeps the saved defects in the list however many checks the draft fails', () => {
+  it('shows the checks the draft fails however many saved defects fill the cap, and counts those past it', () => {
+    // Save stays disabled while the draft fails a check, so a check the saved defects pushed out
+    // of sight would leave the operator no reason for it.
     const saved = numbered('saved', MAX_VISIBLE_FIELD_ERRORS);
 
-    const { rest } = visibleWorkflowDefects(withSaved(saved), numbered('check', 6));
+    const visible = visibleWorkflowDefects(
+      withSaved(saved),
+      numbered('check', MAX_VISIBLE_FIELD_ERRORS + 2)
+    );
 
-    expect(messages(rest)).toEqual(messages(saved));
+    expect(messages(visible.rest)).toEqual([
+      ...messages(saved),
+      ...messages(numbered('check', MAX_VISIBLE_FIELD_ERRORS))
+    ]);
+    expect(visible.hiddenChecks).toBe(2);
   });
 
   it('sorts a visible defect onto the step or branch that owns it', () => {

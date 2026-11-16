@@ -18,14 +18,14 @@ import {
   type WorkflowNode
 } from '../../lib/snapshot-types';
 import type { MutableWorkflow } from '../PipelineBuilderEditors/types';
-import type { AnchoredWorkflowDefects } from '../PipelineBuilderEditors/workflow-catalog-state';
+import type { VisibleWorkflowDefects } from '../PipelineBuilderEditors/workflow-catalog-state';
 import { defaultForEachControl, defaultRepeatControl } from '../PipelineBuilderEditors/workflow-node-control';
 
 afterEach(() => {
   cleanup();
 });
 
-const EMPTY_DEFECTS: AnchoredWorkflowDefects = { byNode: [], byConnection: [], rest: [] };
+const EMPTY_DEFECTS: VisibleWorkflowDefects = { byNode: [], byConnection: [], rest: [], hiddenChecks: 0 };
 
 const CHILD: PortableWorkflowDefinition = {
   workflowId: 'wf-child-review',

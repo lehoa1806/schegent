@@ -220,7 +220,7 @@
       })
   );
   const defects = $derived(
-    selected ? visibleWorkflowDefects(selected, draftErrors) : { byNode: [], byConnection: [], rest: [] }
+    selected ? visibleWorkflowDefects(selected, draftErrors) : { byNode: [], byConnection: [], rest: [], hiddenChecks: 0 }
   );
   const mutatingDisabled = $derived(!trusted || !ready || savePending);
   const editable = $derived(selected !== null && !mutatingDisabled);
