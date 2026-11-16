@@ -96,26 +96,28 @@
     {
       key: 'sessionRetentionMaxAgeDays',
       ipcKey: 'logging.sessionRetentionMaxAgeDays',
-      label: 'Session artifact retention (days)',
+      label: 'Session artifact retention',
       kind: 'number',
+      unit: 'days',
       min: 1,
       max: 3650
     },
     {
       key: 'sessionRetentionMaxBytes',
       ipcKey: 'logging.sessionRetentionMaxBytes',
-      label: 'Session artifact budget (bytes)',
+      label: 'Session artifact budget',
       kind: 'number',
+      unit: 'bytes',
       min: 1048576,
       max: 10737418240
     },
-    { key: 'auditRotationSizeMB', ipcKey: 'audit.rotation.sizeMB', label: 'Audit rotation size (MB)', kind: 'number', min: 1, max: 100 },
-    { key: 'auditRotationMaxAgeDays', ipcKey: 'audit.rotation.maxAgeDays', label: 'Audit retention (days)', kind: 'number', min: 1, max: 365 },
-    { key: 'runtimeLogMaxBytes', ipcKey: 'logging.runtimeLogMaxBytes', label: 'Runtime log rotation size (bytes)', kind: 'number', min: 1048576, max: 1073741824 },
+    { key: 'auditRotationSizeMB', ipcKey: 'audit.rotation.sizeMB', label: 'Audit rotation size', kind: 'number', unit: 'MB', min: 1, max: 100 },
+    { key: 'auditRotationMaxAgeDays', ipcKey: 'audit.rotation.maxAgeDays', label: 'Audit retention', kind: 'number', unit: 'days', min: 1, max: 365 },
+    { key: 'runtimeLogMaxBytes', ipcKey: 'logging.runtimeLogMaxBytes', label: 'Runtime log rotation size', kind: 'number', unit: 'bytes', min: 1048576, max: 1073741824 },
     // FR-R3-143 (T047) — `0, 20`, from the manifest. T013 wrote `1, 50`, which
     // offered 21..50 to an operator the host would refuse and hid `0` (keep no
     // rotated generations), the one value with a distinct meaning.
-    { key: 'runtimeLogMaxGenerations', ipcKey: 'logging.runtimeLogMaxGenerations', label: 'Runtime logs kept', kind: 'number', min: 0, max: 20 }
+    { key: 'runtimeLogMaxGenerations', ipcKey: 'logging.runtimeLogMaxGenerations', label: 'Runtime logs kept', kind: 'number', unit: 'files', min: 0, max: 20 }
   ] as const;
 
   const EXECUTION_RETRY_FIELDS: readonly FieldSpec[] = [
@@ -125,15 +127,15 @@
     // `tests/lint/settings-field-bounds-parity.test.ts`, added by the same task,
     // fails on it, and an allowance list on a new gate's first day is a worse
     // artifact than the one-token fix it would be excusing.
-    { key: 'loopMaxIterations', ipcKey: 'loop.maxIterations', label: 'Loop max iterations', kind: 'number', min: 1, max: 50 },
-    { key: 'invocationIdleTimeoutSeconds', ipcKey: 'invocation.idleTimeoutSeconds', label: 'Invocation idle timeout (seconds)', kind: 'number', min: 60, max: 7200 },
-    { key: 'invocationMaxDurationSeconds', ipcKey: 'invocation.maxDurationSeconds', label: 'Invocation max duration (seconds)', kind: 'number', min: 60, max: 86400 },
-    { key: 'watchdogPollIntervalMinutes', ipcKey: 'watchdog.pollIntervalMinutes', label: 'Watchdog poll interval (minutes)', kind: 'number', min: 1, max: 240 },
+    { key: 'loopMaxIterations', ipcKey: 'loop.maxIterations', label: 'Loop max iterations', kind: 'number', unit: 'times', min: 1, max: 50 },
+    { key: 'invocationIdleTimeoutSeconds', ipcKey: 'invocation.idleTimeoutSeconds', label: 'Invocation idle timeout', kind: 'number', unit: 'seconds', min: 60, max: 7200 },
+    { key: 'invocationMaxDurationSeconds', ipcKey: 'invocation.maxDurationSeconds', label: 'Invocation max duration', kind: 'number', unit: 'seconds', min: 60, max: 86400 },
+    { key: 'watchdogPollIntervalMinutes', ipcKey: 'watchdog.pollIntervalMinutes', label: 'Watchdog poll interval', kind: 'number', unit: 'minutes', min: 1, max: 240 },
     { key: 'defaultWorkflowId', ipcKey: 'defaultWorkflowId', label: 'Default Workflow', kind: 'workflow-select' },
     // FR-R3-143 (T047) — `1, 5`, from the manifest. T012 wrote `0, 20` and the
     // hover text explained that zero disables retries; the host's minimum is 1,
     // so that was an instruction to enter a value it would reject.
-    { key: 'retryMaxAttempts', ipcKey: 'retry.maxAttempts', label: 'Retry max attempts', kind: 'number', min: 1, max: 5 },
+    { key: 'retryMaxAttempts', ipcKey: 'retry.maxAttempts', label: 'Retry max attempts', kind: 'number', unit: 'attempts', min: 1, max: 5 },
     { key: 'retryForceContinueOnCap', ipcKey: 'retry.forceContinueOnCap', label: 'Continue past retry cap', kind: 'boolean' }
   ] as const;
 
