@@ -467,9 +467,9 @@
   .invocation-head, .invocation-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .run-badge, .invocation-version, .invocation-status, .invocation-path { font-size: 0.78em; opacity: 0.85; }
   .invocation-id { font-size: 0.75em; opacity: 0.7; }
-  .recovery-banner { padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); font-size: 0.82em; display: flex; gap: 6px; flex-wrap: wrap; }
+  .recovery-banner { padding: 6px 8px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); font-size: 0.82em; display: flex; gap: 6px; flex-wrap: wrap; }
   .invocation-tree, .invocation-attempts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-  .invocation-item { border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+  .invocation-item { border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
   .invocation-depth-1 { margin-left: 14px; }
   .invocation-depth-2 { margin-left: 28px; }
   .invocation-depth-3 { margin-left: 42px; }
@@ -477,7 +477,7 @@
   .invocation-depth-5 { margin-left: 70px; }
   .invocation-toggle { background: transparent; border: none; color: inherit; cursor: pointer; font-weight: 600; padding: 0; text-align: left; }
   .invocation-diagnostic, .invocation-outputs, .invocation-attempt-row { margin: 0; font-size: 0.8em; display: flex; gap: 6px; flex-wrap: wrap; }
-  .attempt-open { font: inherit; padding: 0; border: 0; background: transparent; color: var(--vscode-textLink-foreground); cursor: pointer; text-align: left; }
-  .attempt-open:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
-  .invocation-action-btn { padding: 3px 8px; font-size: 0.8em; background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, inherit); border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); cursor: pointer; }
+  .attempt-open { font: inherit; padding: 0; border: 0; background: transparent; color: var(--schegent-link-fg); cursor: pointer; text-align: left; }
+  .attempt-open:focus-visible { outline: 1px solid var(--schegent-focus-border); outline-offset: 2px; }
+  .invocation-action-btn { padding: 3px 8px; font-size: 0.8em; background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); cursor: pointer; }
 </style>

@@ -41,10 +41,52 @@
   );
 </script>
 
+<!--
+  The redesign's settings header: the title, then "Unsaved changes", Revert and Save on the right,
+  in the mockup's order. The two whole-tab buttons stay in this tab rather than the page header,
+  because only this tab drafts edits. The retention readout sits under the profile row, as the
+  mockup's "Stored locally" line does.
+-->
 <header class="tab-header">
-  <h2>{GENERAL_SETTINGS_DESCRIPTIONS['tab-header'].title}</h2>
-  <p class="hint">{GENERAL_SETTINGS_DESCRIPTIONS['tab-header'].body}</p>
-  <div class:usage-warning={sessionUsageWarning} class="session-usage" data-testid="session-artifact-usage">
+  <div class="titlerow">
+    <h2>{GENERAL_SETTINGS_DESCRIPTIONS['tab-header'].title}</h2>
+    <div class="push">
+      {#if dirty}
+        <span class="chip s-warn">Unsaved changes</span>
+      {/if}
+      <button
+        type="button"
+        class="btn btn-secondary"
+        data-testid="general-settings-reset-all"
+        disabled={!dirty}
+        onclick={resetAll}
+        use:hoverTextAnchor={{
+          controlId: 'reset-all',
+          description: GENERAL_SETTINGS_DESCRIPTIONS['reset-all']
+        }}
+      >Reset All</button>
+      <button
+        type="button"
+        class="btn btn-primary"
+        data-testid="general-settings-save-all"
+        disabled={!dirty}
+        onclick={saveAll}
+        use:hoverTextAnchor={{
+          controlId: 'save-all',
+          description: GENERAL_SETTINGS_DESCRIPTIONS['save-all']
+        }}
+      >Save All Changes</button>
+    </div>
+  </div>
+  <p class="lead small muted">{GENERAL_SETTINGS_DESCRIPTIONS['tab-header'].body}</p>
+  <PrivacyProfileSelector
+    loggingVerbose={settings.loggingVerbose}
+    rawTranscriptMode={settings.rawTranscriptMode}
+    sessionRetentionMaxAgeDays={settings.sessionRetentionMaxAgeDays}
+    sessionRetentionMaxBytes={settings.sessionRetentionMaxBytes}
+    transportCaptureMode={settings.transportCaptureMode}
+  />
+  <p class:usage-warning={sessionUsageWarning} class="session-usage small muted" data-testid="session-artifact-usage">
     <strong>Unredacted local session artifacts:</strong>
     {sessionArtifacts.artifactCount} run{sessionArtifacts.artifactCount === 1 ? '' : 's'},
     {formatBytes(sessionArtifacts.totalBytes)} retained.
@@ -59,82 +101,28 @@
     {#if sessionBudgetPercent >= 80}
       Usage is {sessionBudgetPercent}% of the configured byte budget.
     {/if}
-  </div>
-  <PrivacyProfileSelector
-    loggingVerbose={settings.loggingVerbose}
-    rawTranscriptMode={settings.rawTranscriptMode}
-    sessionRetentionMaxAgeDays={settings.sessionRetentionMaxAgeDays}
-    sessionRetentionMaxBytes={settings.sessionRetentionMaxBytes}
-    transportCaptureMode={settings.transportCaptureMode}
-  />
-  <div class="toolbar">
-    <button
-      type="button"
-      class="btn btn-primary"
-      data-testid="general-settings-save-all"
-      disabled={!dirty}
-      onclick={saveAll}
-      use:hoverTextAnchor={{
-        controlId: 'save-all',
-        description: GENERAL_SETTINGS_DESCRIPTIONS['save-all']
-      }}
-    >Save All Changes</button>
-    <button
-      type="button"
-      class="btn btn-ghost"
-      data-testid="general-settings-reset-all"
-      disabled={!dirty}
-      onclick={resetAll}
-      use:hoverTextAnchor={{
-        controlId: 'reset-all',
-        description: GENERAL_SETTINGS_DESCRIPTIONS['reset-all']
-      }}
-    >Reset All</button>
-  </div>
+  </p>
 </header>
 
 <style>
   .tab-header h2 {
-    margin: 0 0 4px 0;
-    font-size: 1.1em;
     font-weight: 600;
   }
-  .hint {
-    margin: 0 0 12px 0;
-    color: var(--schegent-muted-fg);
-    font-size: 0.9em;
+
+  .lead {
+    margin: var(--schegent-space-0-5) 0 0;
   }
+
   .session-usage {
-    margin: 0 0 12px 0;
-    padding: 8px 10px;
-    border: 1px solid var(--vscode-notificationsInfoIcon-foreground);
-    border-radius: var(--schegent-radius);
-    background: var(--vscode-textBlockQuote-background);
-    color: var(--schegent-muted-fg);
-    font-size: 0.85em;
+    margin: var(--schegent-space-2) 0 0;
     line-height: 1.45;
   }
-  .usage-warning {
-    border-color: var(--vscode-notificationsWarningIcon-foreground);
-    color: var(--vscode-foreground);
+
+  /* A failed sweep or a nearly full budget reads in the body colour behind a warning rule; the
+     words carry the warning, the rule only draws the eye to them. */
+  .session-usage.usage-warning {
+    padding-left: var(--schegent-space-2);
+    border-left: 2px solid var(--schegent-color-warning);
+    color: var(--schegent-fg);
   }
-  .toolbar {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
-  .btn {
-    min-height: var(--schegent-control-height-compact);
-    padding: 3px 10px;
-    border-radius: var(--schegent-radius-sm);
-    font-size: 0.9em;
-    font-weight: 500;
-    cursor: pointer;
-    border: 1px solid transparent;
-  }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-primary { background: var(--schegent-button-bg); color: var(--schegent-button-fg); }
-  .btn-primary:hover:not(:disabled) { background: var(--schegent-button-hover); }
-  .btn-ghost { background: transparent; color: var(--schegent-muted-fg); }
-  .btn-ghost:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
 </style>

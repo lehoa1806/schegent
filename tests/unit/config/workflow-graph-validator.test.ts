@@ -1451,6 +1451,34 @@ describe('unified Phase and child-Workflow graph validation (FR-R5-F01-T03, T04)
     });
   });
 
+  it('reads a return from the mark alone, never from a step named return', () => {
+    // The run engine returns on `to.kind: 'return'` and sends every other arm to the
+    // step it names. An unmarked arm naming an undeclared `return` step therefore names
+    // a missing step, and a marked arm returns whatever step it still names.
+    const withEnd = (to: WorkflowConnection['to']): WorkflowDefinition => ({
+      workflowId: 'return-mark',
+      name: 'Return Mark',
+      version: 1,
+      nodes: [
+        { nodeId: 'gate', kind: 'phase', phaseId: 'specify' },
+        { nodeId: 'finish', kind: 'phase', phaseId: 'plan' }
+      ],
+      connections: [
+        { from: { nodeId: 'gate' }, to },
+        { from: { nodeId: 'gate' }, to: { nodeId: 'finish' } }
+      ],
+      startNodeIds: ['gate']
+    });
+
+    const unmarked = validateWorkflowGraph(withEnd({ nodeId: 'return' }), [], new Map(), { effectivePhases });
+    expect(unmarked.map((e) => [e.field, e.code])).toEqual([['connections[0].to', 'unresolved-endpoint']]);
+
+    const marked = validateWorkflowGraph(withEnd({ nodeId: 'finish', kind: 'return' }), [], new Map(), {
+      effectivePhases
+    });
+    expect(marked).toEqual([]);
+  });
+
   describe('FR-R5-F24 (D2) — TypedCondition node-result and dominance validation', () => {
     const phaseWithResult: PhaseDefinition = {
       phaseId: 'verify-phase',

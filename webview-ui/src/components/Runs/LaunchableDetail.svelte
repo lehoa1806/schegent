@@ -41,7 +41,7 @@
       {entry.name}
     </h4>
     <span class="detail-version" data-testid="launchable-detail-version">
-      Active version {entry.activeVersionId}
+      Active version <span class="mono">{entry.activeVersionId}</span>
     </span>
   </header>
 
@@ -59,8 +59,9 @@
     capabilityNotices={entry.capabilityNotices ?? []}
   />
 
-  <details class="detail-disclosure" data-testid="launchable-detail-disclosure">
-    <summary class="disclosure-summary">Inputs, outputs &amp; run policy</summary>
+  <!-- The redesign's disclosure for what a start brings with it: a rule above, a muted summary. -->
+  <details class="diag" data-testid="launchable-detail-disclosure">
+    <summary>Inputs, outputs &amp; run policy</summary>
     <div class="disclosure-body">
       <h5 class="ports-heading">Inputs</h5>
       {#if entry.inputs.length > 0}
@@ -73,7 +74,7 @@
               <span class="port-type">{port.type}</span>
               {#if port.required}
                 <span class="port-required" data-testid="launchable-detail-required-{port.portId}">
-                  required
+                  (required)
                 </span>
               {/if}
               {#if port.description}
@@ -136,7 +137,7 @@
   </details>
 
   {#if !canLaunch}
-    <p class="detail-note" data-testid="launchable-detail-read-only">
+    <p class="hint" data-testid="launchable-detail-read-only">
       This window cannot start runs. The window connected to the workspace can.
     </p>
   {/if}
@@ -144,72 +145,73 @@
 
 <style>
   .launchable-detail {
-    border: 1px solid var(--vscode-panel-border, transparent);
-    border-radius: 4px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--schegent-space-1-5);
     min-width: 0;
-    padding: 8px;
   }
 
   .detail-head {
     align-items: baseline;
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: var(--schegent-space-2);
   }
 
   .detail-name {
-    font-size: 1em;
-    margin: 0;
+    font-size: var(--schegent-text-body);
+    word-break: break-word;
   }
 
+  /* "(required)" is muted the way the redesign mutes its "(optional)": the word carries the marker. */
   .detail-version,
-  .port-type {
-    color: var(--vscode-descriptionForeground);
-    font-size: 0.8em;
+  .port-type,
+  .port-required,
+  .port-description {
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-caption);
+  }
+
+  .detail-version .mono {
+    font-size: inherit;
+  }
+
+  .detail-description,
+  .detail-note,
+  .hint {
+    margin: 0;
   }
 
   .detail-description,
   .detail-note {
-    font-size: 0.85em;
-    margin: 0;
+    font-size: var(--schegent-text-secondary);
   }
 
   .detail-note {
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
   }
 
-  .detail-disclosure {
-    margin: 0;
-  }
-
-  .disclosure-summary {
-    color: var(--vscode-descriptionForeground);
-    cursor: pointer;
-    font-size: 0.82em;
+  .diag > summary {
     user-select: none;
   }
 
   .disclosure-body {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    margin-top: 6px;
+    gap: var(--schegent-space-1-5);
+    margin-top: var(--schegent-space-2);
   }
 
   .ports-heading {
-    font-size: 0.8em;
-    letter-spacing: 0.05em;
+    font-size: var(--schegent-text-secondary);
+    font-weight: 600;
     margin: 0;
-    text-transform: uppercase;
   }
 
   .port-list {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--schegent-space-0-5);
     list-style: none;
     margin: 0;
     padding: 0;
@@ -219,19 +221,7 @@
     align-items: baseline;
     display: flex;
     flex-wrap: wrap;
-    font-size: 0.85em;
-    gap: 6px;
-  }
-
-  /* The word carries the marker; the weight only makes it easier to find. */
-  .port-required {
-    font-size: 0.8em;
-    font-weight: 600;
-    text-transform: uppercase;
-  }
-
-  .port-description {
-    color: var(--vscode-descriptionForeground);
-    font-size: 0.8em;
+    font-size: var(--schegent-text-secondary);
+    gap: var(--schegent-space-1-5);
   }
 </style>

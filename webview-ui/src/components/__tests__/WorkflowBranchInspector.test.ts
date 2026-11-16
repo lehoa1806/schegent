@@ -53,6 +53,9 @@ const PLAIN: WorkflowConnection = {
   to: { nodeId: 'ship', portId: 'brief' }
 };
 
+/** The same arm marked as a return; it still names the node and port it had. */
+const RETURNING: WorkflowConnection = { ...PLAIN, to: { ...PLAIN.to, kind: 'return' } };
+
 const conditional = (condition: WorkflowCondition): WorkflowConnection => ({ ...PLAIN, condition });
 
 const STATUS_CONDITION: WorkflowCondition = {
@@ -153,6 +156,31 @@ describe('branch endpoints', () => {
       target: { value: 'draft' }
     });
     expect(spies.onretarget).toHaveBeenCalledWith(0, 'to', { nodeId: 'draft' });
+  });
+
+  it('raises a retarget that sets the return mark, and one that clears it', async () => {
+    const { getByTestId, spies } = mount(PLAIN);
+    await fireEvent.click(getByTestId('workflow-connection-return-0'));
+    expect(spies.onretarget).toHaveBeenLastCalledWith(0, 'to', { kind: 'return' });
+
+    cleanup();
+    const returning = mount(RETURNING);
+    expect((returning.getByTestId('workflow-connection-return-0') as HTMLInputElement).checked).toBe(true);
+    await fireEvent.click(returning.getByTestId('workflow-connection-return-0'));
+    expect(returning.spies.onretarget).toHaveBeenLastCalledWith(0, 'to', { kind: 'node' });
+  });
+
+  it('names the return as the target while the arm returns, with no step or input to pick', () => {
+    // A return leaves the Workflow: the run engine and the host's graph check both
+    // ignore the node and port it still names, so neither may read as where it goes.
+    const { getByTestId } = mount(RETURNING);
+    const target = getByTestId('workflow-connection-to-node-0') as HTMLSelectElement;
+    const input = getByTestId('workflow-connection-to-port-0') as HTMLSelectElement;
+
+    expect(Array.from(target.options).map((option) => option.text)).toEqual(['Return']);
+    expect(target.disabled).toBe(true);
+    expect(Array.from(input.options).map((option) => option.text)).toEqual(['(execution only)']);
+    expect(input.disabled).toBe(true);
   });
 
   it('offers no condition controls until the branch is marked conditional', () => {
@@ -410,6 +438,95 @@ describe('branch metadata the canvas renders', () => {
     expect(getByTestId('workflow-branch-rule-summary-0').textContent.trim()).toBe(
       'draft status = completed · priority 2 · manual handoff'
     );
+  });
+});
+
+// Finding 147 — the port wrote the branch inspector's words after the workflow builder mockup:
+// its section heads, the names of its controls, and what it says of a branch with no condition
+// and of the fallback. Nothing held them, so a rename went unnoticed.
+describe('the branch inspector’s words', () => {
+  const expectLabels = (
+    getByLabelText: (text: string) => HTMLElement,
+    expected: Readonly<Record<string, string>>
+  ) => {
+    const found = Object.fromEntries(
+      Object.keys(expected).map((label) => [label, getByLabelText(label).getAttribute('data-testid')])
+    );
+    expect(found).toEqual(expected);
+  };
+
+  it('heads its sections and names every control', () => {
+    const { getAllByRole, getByLabelText, getByRole } = mount(PLAIN);
+    expect(getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent.trim())).toEqual([
+      'Goes to',
+      'Comes from',
+      'Condition',
+      'Handoff'
+    ]);
+    expectLabels(getByLabelText, {
+      'Target step': 'workflow-connection-to-node-0',
+      Input: 'workflow-connection-to-port-0',
+      'Collection selection': 'workflow-connection-selection-0',
+      'Return from Workflow': 'workflow-connection-return-0',
+      'Source step': 'workflow-connection-from-node-0',
+      Output: 'workflow-connection-from-port-0',
+      'Only when a condition holds': 'workflow-condition-enabled-0',
+      Fallback: 'workflow-connection-default-0',
+      'Priority (lower is checked first)': 'workflow-connection-priority-0'
+    });
+    expect(getByLabelText('Priority (lower is checked first)').getAttribute('placeholder')).toBe('Not set (checked last)');
+    expect(getByRole('group', { name: 'Handoff' }).getAttribute('data-testid')).toBe('workflow-connection-handoff-0');
+  });
+
+  it('says a branch with no condition is always taken, and says nothing of one with a condition', () => {
+    const plain = mount(PLAIN);
+    expect(plain.getByText('Always taken.')).toBeTruthy();
+    expect(plain.queryByTestId('workflow-branch-fallback-note-0')).toBeNull();
+    cleanup();
+
+    const guarded = mount(conditional(OUTPUT_CONDITION));
+    expect(guarded.queryByText('Always taken.')).toBeNull();
+  });
+
+  it('says the fallback is taken when no other branch from its step matches, and is checked last', () => {
+    const titled: readonly WorkflowNode[] = [
+      { nodeId: 'draft', pipelineId: 'authoring', label: 'Draft the spec' },
+      { nodeId: 'ship', pipelineId: 'release' }
+    ];
+    const { getByTestId, queryByText } = mount({ ...PLAIN, isDefault: true }, false, titled);
+    expect(getByTestId('workflow-branch-fallback-note-0').textContent.replace(/\s+/g, ' ').trim()).toBe(
+      'This is the fallback: it is taken when no other branch from Draft the spec matches. It is always checked last.'
+    );
+    expect(queryByText('Always taken.')).toBeNull();
+  });
+
+  it('names the condition’s controls and what each operand source reads', () => {
+    const { getByLabelText } = mount(conditional(OUTPUT_CONDITION));
+    expectLabels(getByLabelText, {
+      Reads: 'workflow-condition-source-0',
+      Step: 'workflow-condition-node-0',
+      Field: 'workflow-condition-field-0',
+      Comparison: 'workflow-condition-operator-0',
+      Value: 'workflow-condition-value-0-0'
+    });
+    const reads = getByLabelText('Reads') as HTMLSelectElement;
+    expect(Object.fromEntries(Array.from(reads.options, (option) => [option.value, option.textContent.trim()]))).toEqual({
+      'node-output': 'Output field',
+      'node-status': 'Run status'
+    });
+    expect(getByLabelText('Field').getAttribute('placeholder')).toBe('field');
+    expect(getByLabelText('Value').getAttribute('placeholder')).toBe('value');
+  });
+
+  it('numbers the values of a list, and names its remove and add controls', () => {
+    const { getByLabelText, getByRole } = mount(
+      conditional({ left: { source: 'node-output', nodeId: 'draft', field: 'risk' }, operator: 'in', right: ['low', 'high'] })
+    );
+    expectLabels(getByLabelText, { 'Value 1': 'workflow-condition-value-0-0', 'Value 2': 'workflow-condition-value-0-1' });
+    expect(getByRole('button', { name: 'Remove value 1' }).getAttribute('data-testid')).toBe(
+      'workflow-condition-remove-value-0-0'
+    );
+    expect(getByRole('button', { name: 'Add a value' }).getAttribute('data-testid')).toBe('workflow-condition-add-value-0');
   });
 });
 

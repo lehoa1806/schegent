@@ -11,7 +11,7 @@ These procedures use only commands and handlers present in the current host. Mut
 Use this when you have a published Workflow and want to submit work.
 
 1. Open the dashboard with **Schegent: Open Dashboard** (`schegent.openDashboard`) and open **Queues**.
-2. Select a Queue, then **Add work**. The composer opens under the heading **Add task**.
+2. Select a Queue, then **Add work**. The composer opens in a drawer headed **Add task to** and the Queue's name.
 3. Under **Workflows**, select a published Workflow, then **Trigger**.
 4. Enter the requested inputs and **Instructions**, review the effective execution policy and declared side effects, and select **Add task**. The webview posts `CMD_LAUNCH_WORKFLOW`, and the host validates the request before it inserts the Task.
 5. Select **Start Queue** when ready. Adding a task to an idle Queue leaves it waiting for this action.

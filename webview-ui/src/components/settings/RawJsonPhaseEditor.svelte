@@ -316,12 +316,12 @@
     font-size: 0.75em;
   }
   .rj-input {
-    background: var(--vscode-input-background);
+    background: var(--schegent-input-bg);
     color: var(--schegent-fg);
     border: 1px solid var(--sch-glass-border);
     border-radius: var(--schegent-radius);
     padding: 8px;
-    font-family: var(--vscode-editor-font-family, monospace);
+    font-family: var(--schegent-mono-font);
     font-size: 0.85em;
     resize: vertical;
     min-height: 240px;
@@ -353,5 +353,5 @@
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-secondary { background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); }
   .btn-ghost { background: transparent; color: var(--schegent-muted-fg); }
-  .btn-ghost:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
+  .btn-ghost:hover:not(:disabled) { background: var(--schegent-list-hover); }
 </style>

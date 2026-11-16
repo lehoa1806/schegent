@@ -79,32 +79,27 @@
   const testId = $derived(`trust-banner-${variant}`);
 </script>
 
-<div class="trust-banner" data-testid={testId} role="status">
-  <div class="trust-banner-title">{tpl.title}</div>
-  {#if cause}
-    <div class="trust-banner-cause" data-testid="{testId}-decided-by">{cause}</div>
-  {/if}
-  <div class="trust-banner-body">{tpl.body}</div>
+<!-- Drawn as the redesign's warning banner (`.attn.warn` in `sg-core.css`): the warning icon from the
+     dashboard's sprite, then the title in bold, the deciding step and the body, each on a line of
+     its own as before. -->
+<div class="attn warn trust-banner" data-testid={testId} role="status">
+  <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+  <div class="body small">
+    <b class="title">{tpl.title}</b>
+    {#if cause}
+      <div data-testid="{testId}-decided-by">{cause}</div>
+    {/if}
+    <div>{tpl.body}</div>
+  </div>
 </div>
 
 <style>
-  .trust-banner {
-    border: 1px solid var(--vscode-inputValidation-warningBorder);
-    background: var(--vscode-inputValidation-warningBackground);
-    color: var(--vscode-inputValidation-warningForeground, var(--schegent-fg));
-    padding: 8px 12px;
-    margin-bottom: 8px;
-    border-radius: 4px;
-    font-size: 0.92em;
+  .title {
+    display: block;
   }
-  .trust-banner-title {
-    font-weight: 600;
-    margin-bottom: 2px;
-  }
-  .trust-banner-cause {
-    margin-bottom: 2px;
-  }
-  .trust-banner-body {
-    opacity: 0.9;
+  /* Where nothing follows the banner (the add-task drawer of an untrusted workspace), the
+     container's own spacing applies instead of the banner's. */
+  .attn.trust-banner:last-child {
+    margin-bottom: 0;
   }
 </style>

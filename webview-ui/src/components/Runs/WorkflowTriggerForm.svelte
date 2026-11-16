@@ -327,6 +327,8 @@
   }
 </script>
 
+<!-- Drawn in the redesign's add-task drawer: the step headings are bold and small, the
+     fields are its inputs, and the hint about splitting sits under the box it is about. -->
 <section class="workflow-trigger" data-testid="workflow-trigger">
   <header class="trigger-header">
     <h4 class="trigger-title" data-testid="workflow-trigger-title">
@@ -335,7 +337,7 @@
     {#if onClose}
       <button
         type="button"
-        class="close-button"
+        class="linkbtn"
         data-testid="workflow-trigger-close"
         onclick={() => onClose()}
       >
@@ -345,28 +347,29 @@
   </header>
 
   {#if startNodes.length === 0}
-    <p class="trigger-note" data-testid="workflow-trigger-unresolved">
+    <p class="hint" data-testid="workflow-trigger-unresolved">
       This Workflow's graph has not resolved in this window, so its starting
       nodes cannot be named yet. Reopen Add work once the catalog has loaded.
     </p>
   {:else}
     {#if startNodes.length > 1}
       <fieldset class="start-question" data-testid="workflow-trigger-start-question">
-        <legend class="start-legend">Which node should this run begin at?</legend>
+        <legend class="step">Which node should this run begin at?</legend>
         <ul class="start-list">
           {#each startNodes as node (node.nodeId)}
             <li>
               <button
                 type="button"
-                class="start-choice"
-                class:chosen={node.nodeId === startNodeId}
+                class="pick start-choice"
                 data-testid="workflow-trigger-start-{node.nodeId}"
                 aria-pressed={node.nodeId === startNodeId}
                 disabled={pending}
                 onclick={() => chooseStart(node.nodeId)}
               >
-                <span class="choice-name">{startNodeName(node)}</span>
-                <span class="choice-pipeline">{pipelineNameOf(node)}</span>
+                <span class="choice-text">
+                  <span class="t">{startNodeName(node)}</span>
+                  <span class="d">{pipelineNameOf(node)}</span>
+                </span>
               </button>
             </li>
           {/each}
@@ -376,17 +379,13 @@
 
     {#if startNode}
       <div class="instruction-row">
-        <label class="instruction-label" for="run-supplemental-instruction">Instructions</label>
-        <span class="instruction-hint" data-testid="run-supplemental-instruction-hint">
-          Free-form direction for this run. Place <code>---schegent-task---</code>
-          on its own line to split into sequential tasks (declared inputs,
-          attachments, and output targets are shared across tasks).
-        </span>
+        <label class="step" for="run-supplemental-instruction">Instructions</label>
         <textarea
           id="run-supplemental-instruction"
           data-testid="run-supplemental-instruction"
-          class="instruction-input"
+          class="input"
           rows="5"
+          placeholder="Describe the work. Be specific about the outcome."
           disabled={pending}
           value={supplementalValues["instruction"] ?? ""}
           oninput={(event) => (supplementalValues = { ...supplementalValues, instruction: event.currentTarget.value })}
@@ -396,6 +395,11 @@
             {supplementalErrors.get("instruction")}
           </p>
         {/if}
+        <span class="hint" data-testid="run-supplemental-instruction-hint">
+          Free-form direction for this run. Place <code class="mono">---schegent-task---</code>
+          on its own line to split into sequential tasks (declared inputs,
+          attachments, and output targets are shared across tasks).
+        </span>
       </div>
 
       {#if contractPorts.length > 0}
@@ -434,7 +438,7 @@
       <footer class="trigger-footer">
         <button
           type="button"
-          class="submit-button"
+          class="btn btn-primary"
           data-testid="workflow-trigger-submit"
           disabled={pending}
           onclick={() => submitRequest()}
@@ -452,26 +456,18 @@
 </section>
 
 <style>
-  .workflow-trigger { display: flex; flex-direction: column; gap: 12px; padding: 10px; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); }
-  .trigger-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-  .trigger-title { margin: 0; font-size: 0.95em; word-break: break-word; }
-  .close-button { background: transparent; border: none; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline; }
-  .trigger-note { margin: 0; font-size: 0.9em; opacity: 0.85; }
-  .start-question { border: none; margin: 0; padding: 0; min-width: 0; }
-  .start-legend { padding: 0; font-size: 0.9em; font-weight: 600; }
-  .start-list { display: flex; flex-direction: column; gap: 4px; list-style: none; margin: 6px 0 0; padding: 0; }
-  .start-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: 6px 8px; background: transparent; border: 1px solid var(--vscode-panel-border); border-radius: var(--schegent-radius); color: inherit; cursor: pointer; text-align: left; }
-  .start-choice.chosen { border-color: var(--vscode-focusBorder); background: var(--vscode-list-activeSelectionBackground); }
-  .start-choice:disabled { cursor: default; opacity: 0.6; }
-  .choice-name { font-size: 0.9em; word-break: break-word; }
-  .choice-pipeline { font-size: 0.8em; opacity: 0.8; word-break: break-word; }
-  .instruction-row { display: flex; flex-direction: column; gap: 4px; }
-  .instruction-label { font-weight: 600; font-size: 0.9em; }
-  .instruction-hint { font-size: 0.8em; opacity: 0.8; }
-  .instruction-input { padding: 4px 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); border-radius: var(--schegent-radius); font-family: inherit; }
-  .field-error { margin: 0; font-size: 0.85em; color: var(--schegent-error-text); }
-  .trigger-footer { display: flex; flex-direction: column; gap: 6px; }
-  .submit-button { align-self: flex-start; padding: 6px 12px; background: var(--sch-accent-gradient); color: var(--vscode-button-foreground); border: none; border-radius: var(--schegent-radius); cursor: pointer; }
-  .submit-button:disabled { cursor: default; opacity: 0.6; }
-  .status-line { margin: 0; font-size: 0.85em; }
+  .workflow-trigger { display: flex; flex-direction: column; gap: var(--schegent-space-3); min-width: 0; }
+  .trigger-header { display: flex; align-items: baseline; justify-content: space-between; gap: var(--schegent-space-2); }
+  .trigger-title { margin: 0; font-size: var(--schegent-text-body); word-break: break-word; }
+  .hint, .field-error, .status-line { margin: 0; }
+  .start-list { list-style: none; margin: 0; padding: 0; }
+  .start-choice:disabled { cursor: default; opacity: 0.4; }
+  .choice-text { min-width: 0; word-break: break-word; }
+  .instruction-row { display: flex; flex-direction: column; gap: var(--schegent-space-1-5); }
+  .step { font-size: var(--schegent-text-secondary); font-weight: 600; }
+  .input { resize: vertical; }
+  .field-error { font-size: var(--schegent-text-caption); color: var(--schegent-error-text); }
+  /* The redesign's drawer footer: the action at the right, what became of it underneath. */
+  .trigger-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--schegent-space-2); }
+  .status-line { flex-basis: 100%; font-size: var(--schegent-text-secondary); }
 </style>

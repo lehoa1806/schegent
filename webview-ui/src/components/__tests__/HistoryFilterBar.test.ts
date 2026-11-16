@@ -113,11 +113,74 @@ describe('the filter bar offers the six filters (T039, FR-016)', () => {
     });
 
     await fireEvent.change(getByTestId('history-filter-queue'), { target: { value: 'beta' } });
-    await fireEvent.change(getByTestId('history-filter-status'), { target: { value: 'failed' } });
+    await fireEvent.click(getByTestId('history-filter-status-failed'));
 
     expect(getByTestId('history-entry-run-b')).toBeTruthy();
     expect(queryByTestId('history-entry-run-a')).toBeNull();
     expect(queryByTestId('history-entry-run-c')).toBeNull();
+  });
+
+  it('offers the outcomes as one segmented control, each in words, one pressed at a time', async () => {
+    const { getByRole, getByTestId } = render(HistoryDashboard, {
+      props: { snapshot: snapshotWith(HISTORY) }
+    });
+
+    const outcome = getByRole('group', { name: 'Outcome' });
+    expect(outcome).toBe(getByTestId('history-filter-status'));
+    const buttons = [...outcome.querySelectorAll('button')];
+    expect(buttons.map((button) => button.textContent.trim())).toEqual([
+      'All',
+      'Running',
+      'Paused',
+      'Completed',
+      'Failed',
+      'Canceled'
+    ]);
+    expect(buttons.map((button) => button.getAttribute('aria-pressed'))).toEqual([
+      'true',
+      'false',
+      'false',
+      'false',
+      'false',
+      'false'
+    ]);
+
+    await fireEvent.click(getByTestId('history-filter-status-canceled'));
+    expect(getByTestId('history-filter-status-canceled').getAttribute('aria-pressed')).toBe('true');
+    expect(getByTestId('history-filter-status-all').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('keeps every other filter a native select, named for what it filters', () => {
+    const { getByLabelText, getByTestId } = render(HistoryDashboard, {
+      props: { snapshot: snapshotWith(HISTORY) }
+    });
+
+    // Drawn as filter pills, but each is still a labelled select, so the
+    // keyboard and a screen reader meet the control the platform provides.
+    const named: readonly (readonly [string, string])[] = [
+      ['Kind', 'history-filter-origin'],
+      ['Definition', 'history-filter-definition'],
+      ['Queue', 'history-filter-queue'],
+      ['Time', 'history-filter-range']
+    ];
+    for (const [name, testid] of named) {
+      expect(getByLabelText(name)).toBe(getByTestId(testid));
+      expect(getByTestId(testid).tagName).toBe('SELECT');
+    }
+  });
+
+  it('holds a custom range as the chosen time, with its two bounds beside it (FR-060)', async () => {
+    const { getByTestId } = render(HistoryDashboard, {
+      props: { snapshot: snapshotWith(HISTORY) }
+    });
+
+    await fireEvent.change(getByTestId('history-filter-range'), { target: { value: 'custom' } });
+
+    // The select lies unseen under its pill, so the value it holds is the one the
+    // platform's picker opens on; a blank one would open on no choice at all.
+    expect((getByTestId('history-filter-range') as HTMLSelectElement).value).toBe('custom');
+    expect(getByTestId('history-filter-from')).toBeTruthy();
+    expect(getByTestId('history-filter-to')).toBeTruthy();
   });
 });
 
@@ -131,7 +194,7 @@ describe('History opens unfiltered (T039, FR-057)', () => {
       expect(getByTestId(`history-entry-${runId}`)).toBeTruthy();
     }
     expect((getByTestId('history-filter-origin') as HTMLSelectElement).value).toBe('all');
-    expect((getByTestId('history-filter-status') as HTMLSelectElement).value).toBe('all');
+    expect(getByTestId('history-filter-status-all').getAttribute('aria-pressed')).toBe('true');
     expect((getByTestId('history-filter-queue') as HTMLSelectElement).value).toBe('');
     expect((getByTestId('history-filter-range') as HTMLSelectElement).value).toBe('all');
     // Nothing is set, so there is nothing to offer a way out of.
@@ -163,7 +226,7 @@ describe('when the filters exclude everything (T039, FR-022)', () => {
     });
 
     await fireEvent.change(getByTestId('history-filter-queue'), { target: { value: 'alpha' } });
-    await fireEvent.change(getByTestId('history-filter-status'), { target: { value: 'failed' } });
+    await fireEvent.click(getByTestId('history-filter-status-failed'));
 
     // Runs exist; none of them match. That is a different sentence from the one
     // an untouched workspace gets, and the two must never be swapped.
@@ -186,7 +249,7 @@ describe('when the filters exclude everything (T039, FR-022)', () => {
     });
 
     await fireEvent.change(getByTestId('history-filter-queue'), { target: { value: 'alpha' } });
-    await fireEvent.change(getByTestId('history-filter-status'), { target: { value: 'failed' } });
+    await fireEvent.click(getByTestId('history-filter-status-failed'));
     await fireEvent.click(getByTestId('history-filtered-empty-clear'));
 
     expect(queryByTestId('history-filtered-empty')).toBeNull();

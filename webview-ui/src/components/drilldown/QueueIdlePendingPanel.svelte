@@ -110,18 +110,18 @@
       <ScheduledStartIndicator {queueId} {scheduledStartAt} />
     </div>
   {:else if !showRestartChooser}
+    <!-- The action that resolves the queue's state, drawn as the redesign draws one: primary. -->
     <div class="idle-pending-host" data-testid="idle-pending-start-queue-host">
       <button
         type="button"
-        class="start-queue-button"
+        class="btn btn-primary"
         data-testid="idle-pending-start-queue-button"
         onclick={onStartQueueClick}
-      >
-        Start queue
-      </button>
+      ><svg class="i" aria-hidden="true"><use href="#i-play"></use></svg>Start queue</button>
     </div>
   {:else}
-    <div class="idle-pending-host" data-testid="idle-pending-chooser-host">
+    <!-- The chooser draws no frame of its own; here it stands alone, so it gets a card. -->
+    <div class="idle-pending-host card" data-testid="idle-pending-chooser-host">
       <StartModeChooser onCommit={onRestartChooserCommit} />
     </div>
   {/if}
@@ -129,16 +129,19 @@
     <p class="start-message" role="alert" data-testid="idle-pending-start-message">{startMessage}</p>
   {/if}
 {/if}
+<!-- Both notices are drawn as the redesign's warning banner (`.attn.warn` in `sg-core.css`):
+     each asks the operator to do something, and each is theirs to put away. -->
 {#if remoteLifecycleChangeStore.active}
   <div
-    class="queue-state-changed-notice"
+    class="attn warn"
     role="status"
     data-testid="queue-state-changed-elsewhere-notice"
   >
-    <span class="notice-text">Queue state changed elsewhere — refresh to continue.</span>
+    <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+    <span class="body">Queue state changed elsewhere — refresh to continue.</span>
     <button
       type="button"
-      class="notice-dismiss"
+      class="btn btn-secondary btn-sm"
       data-testid="queue-state-changed-elsewhere-dismiss"
       aria-label="Dismiss notice"
       onclick={() => remoteLifecycleChangeStore.dismiss()}
@@ -148,14 +151,15 @@
   </div>
 {/if}
 {#if migrationNoticeState === 'pending'}
-  <div class="migration-notice" role="status" data-testid="migration-notice">
-    <span class="notice-text">
+  <div class="attn warn" role="status" data-testid="migration-notice">
+    <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+    <span class="body">
       Queue migrated from a previous version. Pending tasks were preserved;
       click "Start queue" when you're ready to resume.
     </span>
     <button
       type="button"
-      class="notice-dismiss"
+      class="btn btn-secondary btn-sm"
       data-testid="migration-notice-dismiss"
       aria-label="Dismiss migration notice"
       onclick={onMigrationNoticeDismiss}
@@ -167,62 +171,14 @@
 
 <style>
   .idle-pending-host {
-    padding: 0 20px;
+    margin-bottom: var(--schegent-space-3);
   }
 
-  .start-queue-button {
-    padding: 8px 14px;
-    background: var(--sch-accent-gradient, var(--vscode-button-background));
-    color: var(--vscode-button-foreground);
-    border: 0;
-    border-radius: var(--schegent-radius);
-    cursor: pointer;
-    font-size: 0.9em;
-    font-weight: 600;
-  }
-
-  .start-queue-button:hover {
-    background: var(--vscode-button-hoverBackground);
-  }
-
-  .queue-state-changed-notice,
-  .migration-notice {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 8px 12px;
-    margin: 0 20px;
-    background: color-mix(
-      in srgb,
-      var(--vscode-notificationsInfoIcon-foreground, var(--vscode-charts-blue)) 12%,
-      transparent
-    );
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
-    color: var(--schegent-fg);
-    font-size: 0.85em;
-  }
-
-  .notice-text {
-    flex: 1 1 auto;
-  }
-
-  /* Colour matches `QueueDetailTier`'s `.refusal`; the horizontal padding
-     matches the notices above so the sentence lines up with the panel. */
+  /* In error text, as the queue header's own start message reads: the same answer to the
+     same command. */
   .start-message {
-    margin: 4px 20px 0;
-    font-size: 0.85em;
-    color: var(--vscode-errorForeground);
-  }
-
-  .notice-dismiss {
-    background: transparent;
-    color: var(--vscode-textLink-foreground);
-    border: 0;
-    cursor: pointer;
-    padding: 2px 6px;
-    font-size: 0.85em;
-    text-decoration: underline;
+    margin: 0 0 var(--schegent-space-3);
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-error-text);
   }
 </style>

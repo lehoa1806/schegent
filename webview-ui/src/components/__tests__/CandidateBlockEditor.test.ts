@@ -1,11 +1,15 @@
 // FR-R5-F32 (F32-T02, F32-T03, F32-T07) — Component tests for CandidateBlockEditor
 // and candidate-block canvas path layout helpers.
 
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { cleanup, fireEvent, render, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { PortablePhaseDefinition } from '../../lib/snapshot-types';
 import CandidateBlockEditor from '../PipelineBuilderEditors/CandidateBlockEditor.svelte';
+import WorkflowFlowCanvas from '../PipelineBuilderEditors/WorkflowFlowCanvas.svelte';
 import type { MutableWorkflow } from '../PipelineBuilderEditors/types';
 import {
   addCandidateRow,
@@ -222,6 +226,145 @@ describe('CandidateBlockEditor — collapsed/expanded canvas path & focus preser
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(getByTestId('candidate-row-select-candidate-2').getAttribute('aria-pressed')).toBe(
       'true'
+    );
+  });
+});
+
+// Decisions 9 and 10 of the redesign review. The editor sits under the inspector's own
+// "Candidate block" summary, so it is named the same and carries no heading of its own. Its
+// controls are drawn the way the rest of the inspector draws them: sprite icons on its icon
+// buttons, and each value in the shared field, a caption over its input.
+describe('CandidateBlockEditor — drawn the way the rest of the inspector is', () => {
+  function renderEnabled() {
+    const row = enableCandidateBlockControl(makeDraftWorkflow(), 'phase-claude-impl');
+    return render(CandidateBlockEditor, {
+      props: { row, phases: PHASES, readonly: false, onedit: () => undefined }
+    });
+  }
+
+  it('is the region named like the summary above it, with no heading of its own', () => {
+    const { getByRole, getByTestId } = renderEnabled();
+    const editor = getByRole('region', { name: 'Candidate block' });
+    expect(editor).toBe(getByTestId('candidate-block-editor'));
+    expect(within(editor).queryAllByRole('heading')).toEqual([]);
+  });
+
+  it.each([
+    ['candidate-row-up-1', '#i-up', 'Move candidate candidate-2 earlier'],
+    ['candidate-row-down-0', '#i-down', 'Move candidate candidate-1 later'],
+    ['candidate-row-remove-0', '#i-x', 'Remove candidate candidate-1']
+  ])('draws %s as the sprite icon %s and keeps its name', (testId, href, name) => {
+    const { getByTestId } = renderEnabled();
+    const button = getByTestId(testId);
+    expect(button.textContent.trim()).toBe('');
+    expect(button.querySelector('use')?.getAttribute('href')).toBe(href);
+    expect(button.getAttribute('aria-label')).toBe(name);
+  });
+
+  it('draws Add candidate with the plus icon and no glyph in its words', () => {
+    const { getByTestId } = renderEnabled();
+    const add = getByTestId('candidate-block-add-row');
+    expect(add.textContent.trim()).toBe('Add candidate');
+    expect(add.querySelector('use')?.getAttribute('href')).toBe('#i-plus');
+  });
+
+  it('puts every value in the shared field, a caption over its input', () => {
+    const { getByTestId } = renderEnabled();
+    const controls = getByTestId('candidate-block-expanded-view').querySelectorAll(
+      'input:not([type="checkbox"]), select'
+    );
+    // Four block policies, then four per candidate.
+    expect(controls).toHaveLength(12);
+    for (const control of controls) {
+      const field = control.closest('label');
+      expect(field?.classList.contains('field')).toBe(true);
+      expect(field?.firstElementChild?.tagName).toBe('SPAN');
+      expect(field?.firstElementChild?.textContent.trim()).not.toBe('');
+      expect(control.classList.contains('input')).toBe(true);
+    }
+  });
+
+  // A pill holds a short value, and this one held a sentence, which wrapped inside the inspector
+  // at every width: two lines in a fully rounded badge.
+  it('states its selection mode as a line of text and keeps the pills for short values', () => {
+    const { getByTestId } = renderEnabled();
+    const mode = getByTestId('candidate-block-selection-mode');
+    expect(mode.tagName).toBe('P');
+    expect(mode.classList.contains('wf-badge')).toBe(false);
+    expect(mode.textContent.trim()).toBe(
+      'Exclusive single-active candidate selection (no parallel execution)'
+    );
+    for (const testId of ['candidate-block-return-path', 'candidate-block-terminal-exits']) {
+      expect(getByTestId(testId).classList.contains('wf-badge')).toBe(true);
+    }
+  });
+
+  // jsdom applies no component CSS, so the rules are read from the component's source.
+  it('borders its parts with the redesign tokens and rings the selected candidate', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const source = readFileSync(
+      join(here, '..', 'PipelineBuilderEditors', 'CandidateBlockEditor.svelte'),
+      'utf8'
+    );
+    const style = /<style>([\s\S]*?)<\/style>/.exec(source);
+    expect(style).not.toBeNull();
+    const rules = style ? style[1] : '';
+    expect(rules).not.toContain('--vscode-');
+    expect(rules).toMatch(
+      /\.cb-candidate-row\.is-selected \{ border-color: var\(--schegent-focus-border\); box-shadow: var\(--schegent-ring-selected\); \}/
+    );
+  });
+});
+
+// Fields and pills are captioned in sentence case, as the rest of the builder and the mockups
+// caption them. Phase stays capitalised: it is the product's noun, as M2 writes "from Phase".
+describe('the Candidate Block reads in sentence case', () => {
+  it('captions every field of the editor in sentence case', () => {
+    const row = enableCandidateBlockControl(makeDraftWorkflow(), 'phase-claude-impl');
+    const { getByTestId } = render(CandidateBlockEditor, {
+      props: { row, phases: PHASES, readonly: false, onedit: () => undefined }
+    });
+    const controls = getByTestId('candidate-block-expanded-view').querySelectorAll(
+      'input:not([type="checkbox"]), select'
+    );
+    const captions = [...controls].map((control) =>
+      control.closest('label')?.firstElementChild?.textContent.trim()
+    );
+    expect([...new Set(captions)]).toEqual([
+      'Availability policy',
+      'Max dispatches (1–40)',
+      'Monitoring window (ms)',
+      'Spend ceiling (micro-USD, optional)',
+      'Bound Phase',
+      'Priority',
+      'Max attempts (1–20)',
+      'Initial retry delay (ms)'
+    ]);
+  });
+
+  it('names the block on the canvas the way the editor names it', () => {
+    const row = enableCandidateBlockControl(makeDraftWorkflow(), 'phase-claude-impl');
+    const { getByTestId } = render(WorkflowFlowCanvas, {
+      props: {
+        nodes: row.nodes,
+        connections: row.connections,
+        startNodeIds: row.startNodeIds,
+        control: row.control,
+        pipelines: [],
+        phases: PHASES,
+        nodeDefects: [],
+        connectionDefects: [],
+        readonly: false,
+        selection: null,
+        onselect: () => undefined,
+        oninsertafter: () => undefined,
+        onsplice: () => undefined,
+        onnodemove: () => undefined,
+        onnoderemove: () => undefined
+      }
+    });
+    expect(getByTestId('workflow-canvas-candidate-selection-mode').textContent.trim()).toBe(
+      'Candidate block · Exclusive single-active selection'
     );
   });
 });

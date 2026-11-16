@@ -11,15 +11,12 @@
     type ReportView
   } from '../../../../src/contracts/reporting/report-query';
   import type { ReportFailure } from '../../../../src/contracts/reporting/report-outcomes';
-  import type {
-    Distribution,
-    ReportPage,
-    ReportRow,
-    RootDrillDown
-  } from '../../../../src/contracts/reporting/report-rows';
-  import { formatDuration } from '../../lib/format-duration';
+  import type { ReportPage, ReportRow, RootDrillDown } from '../../../../src/contracts/reporting/report-rows';
   import { requestMutateReport, requestReadReport } from '../../lib/reporting-ipc';
+  import SgMenu from '../sg/SgMenu.svelte';
   import ReportDrillDownPanel from './ReportDrillDownPanel.svelte';
+  import ReportRowsTable from './ReportRowsTable.svelte';
+  import SavedReportsSection from './SavedReportsSection.svelte';
 
   function failureCode(f: ReportFailure): string {
     if (f.outcome === 'refused' || f.outcome === 'failed') return f.reason;
@@ -27,13 +24,23 @@
     return f.outcome;
   }
 
+  // The mockup's names for the views.
   const VIEW_LABELS: Readonly<Record<ReportView, string>> = {
-    'execution-summary': 'Execution summary',
-    'attempt-detail': 'Attempt detail',
+    'execution-summary': 'Run summary',
+    'attempt-detail': 'Attempts',
     'failure-cause': 'Failure causes',
-    'workflow-revision': 'Workflow revisions',
-    'time-series': 'Daily time series',
-    usage: 'Usage accounting'
+    'workflow-revision': 'Workflow versions',
+    'time-series': 'Daily totals',
+    usage: 'Usage and cost'
+  };
+
+  const SORT_LABELS: Readonly<Record<ReportSort, string>> = {
+    'root-created-desc': 'Newest first',
+    'root-created-asc': 'Oldest first',
+    'duration-desc': 'Longest first',
+    'outcome-asc': 'By outcome',
+    'key-asc': 'By group, A to Z',
+    'roots-desc': 'Most runs first'
   };
 
   let view = $state<ReportView>('execution-summary');
@@ -58,6 +65,15 @@
     const shape = VIEW_SHAPES[view];
     return shape.rowSorts.length > 0 ? shape.rowSorts : shape.groupSorts;
   });
+
+  // The saved list as its table shows it: the view's name and a short cutoff.
+  const savedRows = $derived(
+    savedReports.map((item) => ({
+      reportId: item.reportId,
+      report: VIEW_LABELS[item.view],
+      cutoff: cutoffLabel(item.manifest.sourceCutoffUtc)
+    }))
+  );
 
   $effect(() => {
     const first = availableSorts.at(0);
@@ -249,242 +265,229 @@
     }
   }
 
-  function fmtDist(d: Distribution): string {
-    const p50 = d.p50 === 'unavailable' ? 'n/a' : `${d.p50}ms`;
-    const p90 = d.p90 === 'unavailable' ? 'n/a' : `${d.p90}ms`;
-    return `p50 ${p50}, p90 ${p90} (${d.known}/${d.samples} known)`;
+  // "2026-11-11T01:00:00.000Z" reads "2026-11-11 01:00 UTC". The disclosure keeps the exact value.
+  function cutoffLabel(iso: string): string {
+    return iso.replace(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?Z$/, '$1 $2 UTC');
   }
 </script>
 
-<section class="reports-shell" aria-label="Historical reports" data-testid="historical-reports-panel">
+<section class="reports" aria-label="Historical reports" data-testid="historical-reports-panel">
   <form
-    class="query-bar"
+    class="card query"
+    aria-labelledby="report-query-heading"
     onsubmit={(e) => {
       e.preventDefault();
       void executeQuery();
     }}
   >
-    <label>
-      <span>View</span>
-      <select bind:value={view} data-testid="report-view-select">
-        {#each REPORT_VIEWS as v (v)}
-          <option value={v}>{VIEW_LABELS[v]}</option>
-        {/each}
-      </select>
-    </label>
-    <label>
-      <span>Window</span>
-      <select bind:value={rangeDays} data-testid="report-range-select">
-        <option value={7}>Last 7 days</option>
-        <option value={30}>Last 30 days</option>
-        <option value={90}>Last 90 days</option>
-      </select>
-    </label>
-    {#if view === 'usage'}
-      <label>
-        <span>Backend</span>
-        <input type="text" bind:value={backendFilter} placeholder="claude / codex / agy" data-testid="report-filter-backend" />
+    <h2 id="report-query-heading">New report</h2>
+    <div class="toolbar">
+      <label class="field w-report">
+        <span>Report</span>
+        <select class="input" bind:value={view} data-testid="report-view-select">
+          {#each REPORT_VIEWS as v (v)}
+            <option value={v}>{VIEW_LABELS[v]}</option>
+          {/each}
+        </select>
       </label>
-    {:else}
-      <label>
-        <span>Workflow ID</span>
-        <input type="text" bind:value={workflowFilter} placeholder="All workflows" data-testid="report-filter-workflow" />
+      <label class="field w-window">
+        <span>Window</span>
+        <select class="input" bind:value={rangeDays} data-testid="report-range-select">
+          <option value={7}>Last 7 days</option>
+          <option value={30}>Last 30 days</option>
+          <option value={90}>Last 90 days</option>
+        </select>
       </label>
-      <label>
-        <span>Outcome</span>
-        <input type="text" bind:value={outcomeFilter} placeholder="All outcomes" data-testid="report-filter-outcome" />
-      </label>
-    {/if}
-    <label>
-      <span>Sort</span>
-      <select bind:value={sort} data-testid="report-sort-select">
-        {#each availableSorts as s (s)}
-          <option value={s}>{s}</option>
-        {/each}
-      </select>
-    </label>
-    <div class="query-actions">
-      <button type="submit" class="btn" disabled={loading} data-testid="report-run-button">
-        {loading ? 'Running…' : 'Run report'}
-      </button>
-      {#if loading}
-        <button type="button" class="btn" onclick={() => void cancelActive()} data-testid="report-cancel-button">
-          Cancel
-        </button>
+      {#if view === 'usage'}
+        <label class="field w-text">
+          <span>Backend</span>
+          <input class="input" type="text" bind:value={backendFilter} placeholder="claude / codex / agy" data-testid="report-filter-backend" />
+        </label>
+      {:else}
+        <label class="field w-text">
+          <span>Workflow ID</span>
+          <input class="input" type="text" bind:value={workflowFilter} placeholder="All workflows" data-testid="report-filter-workflow" />
+        </label>
+        <label class="field w-outcome">
+          <span>Outcome</span>
+          <input class="input" type="text" bind:value={outcomeFilter} placeholder="All outcomes" data-testid="report-filter-outcome" />
+        </label>
       {/if}
+      <label class="field w-sort">
+        <span>Sort by</span>
+        <select class="input" bind:value={sort} data-testid="report-sort-select">
+          {#each availableSorts as s (s)}
+            <option value={s}>{SORT_LABELS[s]}</option>
+          {/each}
+        </select>
+      </label>
+      <div class="query-actions">
+        <button type="submit" class="btn btn-primary" disabled={loading} data-testid="report-run-button">
+          {loading ? 'Running…' : 'Run report'}
+        </button>
+        {#if loading}
+          <button type="button" class="btn btn-secondary" onclick={() => void cancelActive()} data-testid="report-cancel-button">
+            Cancel
+          </button>
+        {/if}
+      </div>
     </div>
+    <p class="notice" role="status" aria-live="polite" data-testid="report-status-notice">{statusNotice}</p>
   </form>
 
-  <p class="status-banner" role="status" aria-live="polite" data-testid="report-status-notice">
-    {statusNotice}
-  </p>
-
   {#if page !== null}
-    <div class="coverage-strip" data-testid="report-coverage-strip">
-      <span>Cutoff: <strong>{page.sourceCutoffUtc}</strong> ({page.timeBasis})</span>
-      <span>Roots: <strong>{page.coverage.roots}</strong> &middot; Attempts: <strong>{page.coverage.attempts}</strong></span>
-      <span>Unknown durations: <strong>{page.coverage.unknownDurations}</strong></span>
-      <span>
-        Accounting rev:
-        <strong>{page.accountingRevision ?? availabilityPhrase('unavailable')}</strong>
-      </span>
-      {#if page.legacy !== undefined}
-        <span data-testid="report-legacy-summary">
-          Legacy pre-cutover summary (separate): {page.legacy.runCount} runs, {page.legacy.costMicros} micros
+    <section class="section results" aria-labelledby="report-results-heading">
+      <div class="titlerow">
+        <h2 id="report-results-heading">{VIEW_LABELS[page.view]}</h2>
+        <span class="small muted">{page.rowCount} row(s) · as of {cutoffLabel(page.sourceCutoffUtc)}</span>
+        <span class="push">
+          <button type="button" class="btn btn-secondary btn-sm" disabled={mutating} onclick={() => void saveActive()} data-testid="report-save-button">
+            Save report
+          </button>
+          <!-- The items, not the button, wait out an export: a button disabled under focus drops it.
+               They wait with `aria-disabled`, which keeps them in reach, and the menu refuses a click. -->
+          <SgMenu label="Export report">
+            <button type="button" role="menuitem" aria-disabled={mutating} onclick={() => void exportActive('csv')} data-testid="report-export-csv">
+              Export as CSV
+            </button>
+            <button type="button" role="menuitem" aria-disabled={mutating} onclick={() => void exportActive('json')} data-testid="report-export-json">
+              Export as JSON
+            </button>
+          </SgMenu>
         </span>
+      </div>
+
+      {#if rows.length === 0}
+        <p class="empty" data-testid="report-empty-rows">No rows matched this pinned query window.</p>
+      {:else}
+        <ReportRowsTable {rows} {sort} onOpenRoot={(rootId, triggerDomId) => void openDrillDown(rootId, triggerDomId)} />
+        {#if nextCursor !== null}
+          <div class="more">
+            <button type="button" class="btn btn-secondary btn-sm" disabled={loading} onclick={() => void loadMore()} data-testid="report-next-page">
+              Load next page
+            </button>
+          </div>
+        {/if}
       {/if}
-    </div>
 
-    {#if page.omissions.length > 0}
-      <ul class="omission-strip" data-testid="report-omissions-list">
-        {#each page.omissions as om, idx (idx)}
-          <li>Omission: {om.what} ({om.reason})</li>
-        {/each}
-      </ul>
-    {/if}
-
-    <div class="export-bar">
-      <button type="button" class="btn" disabled={mutating} onclick={() => void exportActive('json')} data-testid="report-export-json">
-        Export JSON
-      </button>
-      <button type="button" class="btn" disabled={mutating} onclick={() => void exportActive('csv')} data-testid="report-export-csv">
-        Export CSV
-      </button>
-      <button type="button" class="btn" disabled={mutating} onclick={() => void saveActive()} data-testid="report-save-button">
-        Save report
-      </button>
-      <span class="csv-note" data-testid="report-csv-disclosure">{CSV_STATEMENT}</span>
-    </div>
-
-    {#if rows.length === 0}
-      <p class="empty-note" data-testid="report-empty-rows">No rows matched this pinned query window.</p>
-    {:else}
-      <table class="report-table" data-testid="report-rows-table">
-        <thead>
-          <tr>
-            <th scope="col" aria-sort={sort.includes('asc') ? 'ascending' : 'descending'}>Subject / Key</th>
-            <th scope="col">Counts / Status</th>
-            <th scope="col">Duration / Measures</th>
-            <th scope="col">Inspect</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each rows as row, idx (idx)}
-            <tr>
-              {#if row.kind === 'root'}
-                <td>{row.rootId} ({row.workflowId})</td>
-                <td><span class="badge">{row.outcome}</span> &middot; {row.attempts} attempt(s)</td>
-                <td>{row.durationMs === null ? availabilityPhrase('unknown') : formatDuration(row.durationMs)}</td>
-                <td>
-                  <button
-                    id={`drill-trigger-${idx}`}
-                    type="button"
-                    class="btn"
-                    data-testid={`report-drilldown-open-${row.rootId}`}
-                    onclick={() => void openDrillDown(row.rootId, `drill-trigger-${idx}`)}
-                  >
-                    Drill down
-                  </button>
-                </td>
-              {:else if row.kind === 'attempt'}
-                <td>{row.attemptId} (step {row.stepIndex}: {row.phaseId ?? 'Not recorded'})</td>
-                <td><span class="badge">{row.status}</span> &middot; #{row.attemptNumber}</td>
-                <td>{row.durationMs === null ? availabilityPhrase('unknown') : formatDuration(row.durationMs)}</td>
-                <td>
-                  <button
-                    id={`drill-trigger-${idx}`}
-                    type="button"
-                    class="btn"
-                    onclick={() => void openDrillDown(row.rootId, `drill-trigger-${idx}`)}
-                  >
-                    Root {row.rootId}
-                  </button>
-                </td>
-              {:else if row.kind === 'group'}
-                <td>{row.key === null ? 'All roots' : Object.entries(row.key).map(([k, v]) => `${k}=${v ?? 'none'}`).join(', ')}</td>
-                <td>{row.roots} root(s), {row.attempts} attempt(s)</td>
-                <td>{fmtDist(row.rootDuration)}</td>
-                <td>Group row</td>
-              {:else}
-                <td>{Object.entries(row.key).map(([k, v]) => `${k}=${v ?? 'unattributed'}`).join(', ') || 'All usage'}</td>
-                <td>{row.roots} root(s), {row.attempts} attempt(s), invocations: {row.invocations}</td>
-                <td>
-                  {row.measures
-                    .map((m) => `${m.measure}: ${m.total} ${m.unit} (${m.completeness})`)
-                    .join(' · ')}
-                </td>
-                <td>Usage row</td>
-              {/if}
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-      {#if nextCursor !== null}
-        <button type="button" class="btn" disabled={loading} onclick={() => void loadMore()} data-testid="report-next-page">
-          Load next page
-        </button>
-      {/if}
-    {/if}
+      <details class="diag">
+        <summary>What this report covers</summary>
+        <dl class="coverage" data-testid="report-coverage-strip">
+          <div><dt>Cutoff ({page.timeBasis})</dt><dd>{page.sourceCutoffUtc}</dd></div>
+          <div><dt>Runs</dt><dd>{page.coverage.roots}</dd></div>
+          <div><dt>Attempts</dt><dd>{page.coverage.attempts}</dd></div>
+          <div><dt>Unknown durations</dt><dd>{page.coverage.unknownDurations}</dd></div>
+          <div><dt>Accounting revision</dt><dd>{page.accountingRevision ?? availabilityPhrase('unavailable')}</dd></div>
+          {#if page.legacy !== undefined}
+            <div data-testid="report-legacy-summary">
+              <dt>Legacy pre-cutover summary (separate)</dt>
+              <dd>{page.legacy.runCount} runs, {page.legacy.costMicros} micros</dd>
+            </div>
+          {/if}
+        </dl>
+        {#if page.omissions.length > 0}
+          <ul class="omissions" data-testid="report-omissions-list">
+            {#each page.omissions as om, idx (idx)}
+              <li>Omission: {om.what} ({om.reason})</li>
+            {/each}
+          </ul>
+        {/if}
+        <p class="small muted csv-note" data-testid="report-csv-disclosure">{CSV_STATEMENT}</p>
+      </details>
+    </section>
   {/if}
 
   {#if drillDown !== null}
     <ReportDrillDownPanel {drillDown} onClose={closeDrillDown} />
   {/if}
 
-  <section class="saved-section" aria-label="Saved reports" data-testid="saved-reports-section">
-    <h2>Saved reports ({savedReports.length})</h2>
-    {#if savedReports.length === 0}
-      <p class="empty-note">No saved report definitions stored yet.</p>
-    {:else}
-      <ul class="saved-list">
-        {#each savedReports as item (item.reportId)}
-          <li class="saved-row">
-            <span>
-              <strong>{item.reportId}</strong> &middot; {VIEW_LABELS[item.view]} &middot; cutoff {item.manifest.sourceCutoffUtc}
-            </span>
-            <div class="saved-actions">
-              <button type="button" class="btn" onclick={() => void rerunSaved(item.reportId)} data-testid={`saved-rerun-${item.reportId}`}>
-                Re-run now
-              </button>
-              <button type="button" class="btn" onclick={() => void reproduceSaved(item.reportId)} data-testid={`saved-reproduce-${item.reportId}`}>
-                Verify reproducibility
-              </button>
-              {#if confirmDeleteId === item.reportId}
-                <button type="button" class="btn" onclick={() => void confirmDeleteSaved(item.reportId)} data-testid={`saved-confirm-delete-${item.reportId}`}>
-                  Confirm delete
-                </button>
-                <button type="button" class="btn" onclick={() => { confirmDeleteId = null; }}>
-                  Keep
-                </button>
-              {:else}
-                <button type="button" class="btn" onclick={() => { confirmDeleteId = item.reportId; }} data-testid={`saved-delete-${item.reportId}`}>
-                  Delete
-                </button>
-              {/if}
-            </div>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-  </section>
+  <SavedReportsSection
+    reports={savedRows}
+    {confirmDeleteId}
+    onRerun={(reportId) => void rerunSaved(reportId)}
+    onReproduce={(reportId) => void reproduceSaved(reportId)}
+    onAskDelete={(reportId) => {
+      confirmDeleteId = reportId;
+    }}
+    onConfirmDelete={(reportId) => void confirmDeleteSaved(reportId)}
+    onKeep={() => {
+      confirmDeleteId = null;
+    }}
+  />
 </section>
 
 <style>
-  .reports-shell { display: flex; flex-direction: column; gap: 12px; }
-  .query-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 12px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); background: var(--schegent-surface); }
-  .query-bar label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85em; color: var(--schegent-muted-fg); }
-  .query-bar select, .query-bar input { min-height: var(--schegent-control-height, 28px); padding: 3px 8px; border: 1px solid var(--schegent-input-border, var(--schegent-border)); border-radius: var(--schegent-radius-sm); background: var(--vscode-input-background, transparent); color: var(--schegent-fg); font: inherit; }
-  .query-actions, .export-bar, .saved-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  .btn { padding: 4px 10px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); cursor: pointer; font: inherit; font-size: 0.85em; }
-  .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-  .status-banner, .csv-note, .empty-note { margin: 0; font-size: 0.85em; color: var(--schegent-muted-fg); }
-  .coverage-strip { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 12px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); background: var(--schegent-surface); font-size: 0.85em; }
-  .omission-strip { margin: 0; padding-left: 18px; font-size: 0.85em; color: var(--schegent-muted-fg); }
-  .report-table { width: 100%; border-collapse: collapse; font-size: 0.85em; background: var(--schegent-surface); border: 1px solid var(--schegent-border); }
-  .report-table th, .report-table td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--schegent-divider); }
-  .badge { display: inline-block; padding: 1px 6px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius-sm); }
-  .saved-section { padding: 12px; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); background: var(--schegent-surface); }
-  .saved-section h2 { margin: 0 0 8px; font-size: 0.95rem; }
-  .saved-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-  .saved-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; font-size: 0.85em; }
+  .query h2 {
+    margin-bottom: var(--schegent-space-2-5);
+    font-size: var(--schegent-text-body);
+  }
+  .query .toolbar {
+    align-items: flex-end;
+    margin-bottom: 0;
+  }
+  /* The mockup's field widths. A narrow panel wraps the fields, and one wider than the line
+     takes the line. */
+  .query .field {
+    max-width: 100%;
+  }
+  .w-report {
+    width: 200px;
+  }
+  .w-window {
+    width: 140px;
+  }
+  .w-text {
+    width: 180px;
+  }
+  .w-outcome {
+    width: 150px;
+  }
+  .w-sort {
+    width: 160px;
+  }
+  .query-actions {
+    display: flex;
+    gap: var(--schegent-space-2);
+  }
+  /* Always in the document, so a screen reader hears every change; spaced only when it speaks. */
+  .notice {
+    margin: 0;
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-secondary);
+  }
+  .notice:not(:empty) {
+    margin-top: var(--schegent-space-2-5);
+  }
+  .results .titlerow {
+    margin-bottom: var(--schegent-space-2);
+  }
+  .results .titlerow h2 {
+    font-size: var(--schegent-text-subheading);
+  }
+  .more {
+    margin-top: var(--schegent-space-2);
+  }
+  .coverage {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: var(--schegent-space-2) var(--schegent-space-4);
+    margin: var(--schegent-space-2) 0 0;
+    font-size: var(--schegent-text-secondary);
+  }
+  .coverage dt {
+    color: var(--schegent-muted-fg);
+  }
+  .coverage dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .omissions {
+    margin: var(--schegent-space-2) 0 0;
+    padding-left: var(--schegent-space-4-5);
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-secondary);
+  }
+  .csv-note {
+    margin: var(--schegent-space-2) 0 0;
+  }
 </style>

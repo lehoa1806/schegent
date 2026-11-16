@@ -169,7 +169,7 @@
 {#snippet routeError(message: string, recover: () => void)}
   <main class="route-status" data-testid="dashboard-route-error" role="alert">
     <strong>{message}</strong>
-    <button type="button" onclick={recover}>Retry</button>
+    <button type="button" class="btn btn-secondary" onclick={recover}>Retry</button>
   </main>
 {/snippet}
 
@@ -229,14 +229,5 @@
     padding: 24px;
     color: var(--schegent-muted-fg);
     text-align: center;
-  }
-  .route-status button {
-    min-height: 32px;
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-button-bg);
-    color: var(--schegent-button-fg);
-    padding: 0 12px;
-    cursor: pointer;
   }
 </style>

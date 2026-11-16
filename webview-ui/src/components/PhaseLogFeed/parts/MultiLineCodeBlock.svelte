@@ -68,8 +68,10 @@
   }
 </script>
 
+<!-- Drawn in the redesign's terms: a framed monospace block on the editor ground, its two actions
+     small and quiet above it. -->
 <div class="multiline-code-block" data-testid="multiline-code-block">
-  <div class="toolbar">
+  <div class="code-actions">
     {#if canExpand}
       <button
         type="button"
@@ -103,39 +105,39 @@
   .multiline-code-block {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
-    margin: 0.25rem 0;
+    gap: var(--schegent-space-1);
+    margin: var(--schegent-space-1) 0;
   }
-  .toolbar {
+  .code-actions {
     display: flex;
-    gap: 0.25rem;
+    gap: var(--schegent-space-1);
     justify-content: flex-end;
   }
   .action {
-    font-size: 0.7rem;
-    padding: 0.125rem 0.5rem;
-    background: var(--vscode-button-secondaryBackground, transparent);
-    color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
-    border: 1px solid var(--schegent-border, var(--vscode-panel-border, transparent));
-    border-radius: 3px;
+    padding: 1px var(--schegent-space-2);
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius-sm);
+    background: transparent;
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-caption);
     cursor: pointer;
-    font-family: inherit;
   }
   .action:hover {
-    background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
+    background: var(--schegent-list-hover);
+    color: var(--schegent-fg);
   }
   pre.block {
     margin: 0;
-    padding: 0.5rem;
-    background: var(--vscode-editor-background, var(--vscode-textCodeBlock-background, transparent));
-    border: 1px solid var(--schegent-border, var(--vscode-panel-border, transparent));
-    border-radius: 3px;
+    padding: var(--schegent-space-2) var(--schegent-space-2-5);
+    background: var(--schegent-bg);
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius-sm);
     overflow-x: auto;
     overflow-y: auto;
     max-height: 24rem;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.8rem;
-    line-height: 1.4;
+    font-family: var(--schegent-mono-font);
+    font-size: inherit;
+    line-height: 1.45;
   }
   pre.block.collapsed {
     max-height: 12rem;
@@ -146,9 +148,8 @@
     display: block;
   }
   .overflow-hint {
-    font-size: 0.7rem;
-    opacity: 0.6;
-    font-style: italic;
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-caption);
     text-align: right;
   }
 </style>

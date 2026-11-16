@@ -105,9 +105,10 @@
   }
 </script>
 
+<!-- The body of the add-task drawer, whose heading already names the action, so the composer
+     adds no title of its own and leaves the scrolling to the drawer. -->
 <section class="queue-task-composer" data-testid="queue-task-composer" aria-label="Add task">
   <section class="launch-zone" data-testid="queue-task-composer-launch-zone">
-    <header class="zone-title">Add task</header>
     {#if untrusted}
       <TrustBanner variant="workspace-trust" />
     {:else}
@@ -136,36 +137,20 @@
     {/if}
   </section>
 
-  <p class="network-notice" data-testid="dashboard-network-dependence-note">
+  <p class="hint" data-testid="dashboard-network-dependence-note">
     Local-first, not offline: running this queue may contact configured backend providers.
   </p>
 </section>
 
 <style>
-  .queue-task-composer {
-    display: flex;
-    flex-direction: column;
-    gap: var(--schegent-gap, 12px);
-    padding: 12px;
-    min-height: 0;
-    overflow-y: auto;
-  }
+  .queue-task-composer,
   .launch-zone {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--schegent-space-3);
     min-width: 0;
   }
-  .network-notice {
+  .hint {
     margin: 0;
-    color: var(--schegent-muted-fg);
-    font-size: var(--schegent-text-caption);
-    line-height: 1.35;
-  }
-  .zone-title {
-    font-size: 0.9em;
-    font-weight: 600;
-    color: var(--schegent-muted-fg);
-    letter-spacing: 0.05em;
   }
 </style>

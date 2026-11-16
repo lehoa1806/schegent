@@ -92,10 +92,62 @@ describe('QueuesTier — every queue at a glance (FR-055)', () => {
   it('shows each queue name, lifecycle and pending count', () => {
     const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
 
-    const card = container.querySelector('[data-testid="queue-card-q-gamma"]');
-    expect(card?.textContent).toContain('Review Lane');
-    expect(card?.textContent).toContain('Paused');
-    expect(card?.textContent).toContain('5');
+    // A table row per queue: the name is the row's button, and the lifecycle and the pending
+    // count sit in cells of their own beside it.
+    const row = container.querySelector('[data-testid="queue-card-q-gamma"]')?.closest('tr');
+    expect(row?.textContent).toContain('Review Lane');
+    expect(row?.textContent).toContain('Paused');
+    expect(row?.textContent).toContain('5');
+  });
+
+  it('heads the pending count with the word the queue page uses for those tasks', () => {
+    const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
+
+    // The queue page's status chips, its filter and its add-task drawer all say "Pending"; a
+    // column headed "Waiting" here would name the same tasks two ways one click apart.
+    const headings = [...container.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+    expect(headings).toContain('Pending');
+    expect(headings).not.toContain('Waiting');
+  });
+
+  it('counts the completed and failed tasks each queue still holds', () => {
+    const counted = Object.freeze([
+      buildQueueRuntime({
+        queueId: 'default',
+        name: 'Default',
+        position: 0,
+        lifecycle: 'idle-pending',
+        pendingCount: 1,
+        tasks: [
+          task('a', { status: 'completed' }),
+          task('b', { status: 'failed' }),
+          task('c', { status: 'completed' }),
+          task('d')
+        ]
+      })
+    ]);
+    const { getByTestId } = render(QueuesTier, { props: { queues: counted, isPrimary: true } });
+
+    expect(getByTestId('queue-completed-default').textContent.trim()).toBe('2');
+    expect(getByTestId('queue-failed-default').textContent.trim()).toBe('1');
+  });
+
+  it('marks which queue receives otherwise unaddressed work', () => {
+    const { getByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
+
+    const tag = getByTestId('queue-default-tag');
+    expect(tag.textContent.trim()).toBe('Default');
+    expect(tag.closest('tr')?.querySelector('[data-testid="queue-card-default"]')).not.toBeNull();
+  });
+
+  it('says how many queues there are, and leaves the concurrency cap to Queue Settings', () => {
+    const { getByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
+
+    // FR-R3-124 — a surface that names the cap must also carry the shared-tree disclosure
+    // (`tests/lint/concurrency-isolation-disclosure.test.ts`), so the cap is stated in the
+    // settings dialog, the point of decision that carries both, and not on the list.
+    const line = getByTestId('queues-countline').textContent.trim();
+    expect(line).toBe('3 queues');
   });
 
   it('spells every lifecycle it can be handed, so no queue reads as blank', () => {
@@ -441,6 +493,26 @@ describe('QueuesTier — a halted queue (feature 195, T027, T030, FR-007, FR-008
     const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
 
     expect(container.querySelectorAll('[data-testid^="queue-halted-"]')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-testid^="queues-halted-notice-"]')).toHaveLength(0);
+  });
+
+  it('says above the list which queue stopped and on which task', () => {
+    const { getByTestId } = render(QueuesTier, { props: { queues: WITH_HALT, isPrimary: true } });
+
+    const notice = getByTestId('queues-halted-notice-q-beta');
+    expect(notice.textContent).toContain('nightly is halted.');
+    expect(notice.textContent).toContain('ingest data');
+  });
+
+  it('opens the halted queue from the notice, on a secondary window too', async () => {
+    const selected: string[] = [];
+    const { getByTestId } = render(QueuesTier, {
+      props: { queues: WITH_HALT, isPrimary: false, onSelectQueue: (id: string) => selected.push(id) }
+    });
+
+    await fireEvent.click(getByTestId('queues-halted-review-q-beta'));
+
+    expect(selected).toEqual(['q-beta']);
   });
 });
 

@@ -4,6 +4,7 @@ import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 import PhaseCatalogEditor from '../PipelineBuilderEditors/PhaseCatalogEditor.svelte';
 import { sourceRecordToMutable } from '../PipelineBuilderEditors/phase-catalog-state';
 import type { MutablePhase } from '../PipelineBuilderEditors/types';
+import { isMenuItemOff } from '../sg/__tests__/menu-item-state';
 
 afterEach(cleanup);
 
@@ -222,12 +223,14 @@ describe('Phase catalog source editor states', () => {
   });
 
   it('switches from instruction to skill as a mutually exclusive directive', async () => {
+    // The redesign sets the directive as a segmented pair of buttons rather than a
+    // select; the patch the switch sends is the one the select sent.
     const onphasechange = vi.fn();
     const mounted = mount({ phases: [STORED_PHASE], selectedIndex: 0, onphasechange });
-    const select = [...mounted.container.querySelectorAll('select')].find((element) =>
-      element.textContent?.includes('Instruction') && element.textContent?.includes('Skill reference')
-    ) as HTMLSelectElement;
-    await fireEvent.change(select, { target: { value: 'skill' } });
+    const skill = mounted.container.querySelector(
+      '[data-testid="phases-directive-skill"]'
+    ) as HTMLButtonElement;
+    await fireEvent.click(skill);
     expect(onphasechange).toHaveBeenCalledWith(0, { instruction: undefined, skill: '' });
   });
 
@@ -249,14 +252,22 @@ describe('Phase catalog source editor states', () => {
 
   it('makes non-target rows read-only during an atomic mutation', () => {
     const other = { ...STORED_PHASE, id: 'other', name: 'Other', sourceKey: 'workspace::other::0' };
-    const { container } = mount({
+    const editor = mount({
       phases: [STORED_PHASE, other], selectedIndex: 1, mutationActive: true,
       editableSourceKey: STORED_PHASE.sourceKey
     });
 
-    expect(container.querySelector('[data-testid="phases-name-field-other"]')
+    expect(editor.container.querySelector('[data-testid="phases-name-field-other"]')
       ?.hasAttribute('readonly')).toBe(true);
-    expect((container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement).disabled)
+
+    // The redesign gives the open Phase a page of its own in place of the list, and
+    // "New phase" stayed on the list, so the add control is read from the list with
+    // nothing open.
+    const list = mount({
+      phases: [STORED_PHASE, other], selectedIndex: null, mutationActive: true,
+      editableSourceKey: STORED_PHASE.sourceKey
+    });
+    expect((list.container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement).disabled)
       .toBe(true);
   });
 });
@@ -268,26 +279,32 @@ describe('Phase catalog exchange entry points', () => {
   // Export moved from the sidebar row to the editor header, so it is offered for
   // the selected Phase rather than once per row; Import stays with the catalog.
   it('offers Export for the selected Phase and Import once for the catalog', () => {
-    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
-    expect(container.querySelectorAll('[data-testid="process-export-button"]')).toHaveLength(1);
-    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
+    // The redesign splits the tab into the list and the open Phase's editor page:
+    // Export is an item of the editor's "More phase actions" menu, and the import
+    // region sits under the list, so each page offers one of them and not the other.
+    const editor = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
+    expect(editor.container.querySelectorAll('[data-testid="process-export-button"]')).toHaveLength(1);
+    expect(editor.container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(0);
+
+    const list = mount({ phases: [STORED_PHASE] });
+    expect(list.container.querySelectorAll('[data-testid="process-export-button"]')).toHaveLength(0);
+    expect(list.container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
   });
 
   it('keeps Export enabled where every other row control is closed', () => {
     // Export writes a file the operator names and changes no catalog state, so a
-    // pending mutation is not a reason to withhold it.
+    // pending mutation is not a reason to withhold it. "New phase" stayed on the
+    // list when the redesign gave the open Phase its own page, so Duplicate, beside
+    // Export in that page's menu, stands for the controls a mutation closes.
     const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0, mutationActive: true });
-    expect((container.querySelector('[data-testid="process-export-button"]') as HTMLButtonElement)
-      .disabled).toBe(false);
-    expect((container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement).disabled)
-      .toBe(true);
+    expect(isMenuItemOff(container.querySelector('[data-testid="process-export-button"]'))).toBe(false);
+    expect(isMenuItemOff(container.querySelector('[data-testid="phases-duplicate"]'))).toBe(true);
   });
 
   it('refuses to export an unsaved draft, and says why (FR-015, FR-057)', () => {
     const draft = { ...STORED_PHASE, persisted: false, sourceKey: 'draft::workspace::custom' };
     const { container } = mount({ phases: [draft], selectedIndex: 0 });
-    expect((container.querySelector('[data-testid="process-export-button"]') as HTMLButtonElement)
-      .disabled).toBe(true);
+    expect(isMenuItemOff(container.querySelector('[data-testid="process-export-button"]'))).toBe(true);
     expect(container.querySelector('[data-testid="process-export-disabled-reason"]')?.textContent)
       .toContain('Save this Phase');
   });
@@ -318,13 +335,13 @@ describe('Phase catalog exchange entry points', () => {
 // the editor card for the open Phase (FR-001, FR-002, FR-003).
 describe('Phase catalog lifecycle relocation (US1, T007)', () => {
   it('shows the panel on the editor card for the selected phase, and not on its list row', () => {
-    const { container } = mount({
+    const editor = mount({
       snapshot: LIFECYCLE_SNAPSHOT,
       phases: [STORED_PHASE],
       selectedIndex: 0
     });
 
-    const editorCard = container.querySelector('[data-testid="phases-editor-custom"]') as HTMLElement;
+    const editorCard = editor.container.querySelector('[data-testid="phases-editor-custom"]') as HTMLElement;
     expect(editorCard).not.toBeNull();
     for (const suffix of ['created', 'modified', 'active-version']) {
       expect(
@@ -336,9 +353,14 @@ describe('Phase catalog lifecycle relocation (US1, T007)', () => {
       editorCard.querySelector('[data-testid="definition-history-toggle-custom"]')
     ).not.toBeNull();
 
-    const listRow = container.querySelector(
+    // The redesign draws the list and the open Phase's editor as separate pages, so
+    // the row is read from the list with nothing open, and it is a table row now.
+    // The panel stays off it: its Created, Modified and Active version cells, its
+    // defects and its History. The next test holds the rest of FR-003's row.
+    const list = mount({ snapshot: LIFECYCLE_SNAPSHOT, phases: [STORED_PHASE] });
+    const listRow = list.container.querySelector(
       '[data-testid="phases-list-item-custom"]'
-    )?.closest('.phase-list-row') as HTMLElement;
+    )?.closest('tr') as HTMLElement;
     expect(listRow).not.toBeNull();
     for (const suffix of ['created', 'modified', 'active-version', 'defects']) {
       expect(
@@ -349,5 +371,53 @@ describe('Phase catalog lifecycle relocation (US1, T007)', () => {
     expect(
       listRow.querySelector('[data-testid="definition-history-toggle-custom"]')
     ).toBeNull();
+  });
+
+  // The aside's Issues list shows every saved defect of the open Phase, so the panel above it
+  // lists none of them a second time; they stay on demand there (FR-015).
+  it('lists a saved defect once, in the Issues list', () => {
+    const invalid: MutablePhase = {
+      ...STORED_PHASE,
+      sourceStatus: 'invalid',
+      sourceErrors: [{ field: 'name', code: 'invalid-length', message: 'Name is invalid' }]
+    };
+    const { container } = mount({ snapshot: LIFECYCLE_SNAPSHOT, phases: [invalid], selectedIndex: 0 });
+
+    expect(container.querySelector('#phase-errors-custom')?.textContent).toContain('Name is invalid');
+    expect(container.querySelector('[data-testid="definition-row-active-version-custom"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="definition-row-defects-custom"]')).toBeNull();
+  });
+
+  // The mockup's row also has a description, "Runs on", "Used by" and Modified
+  // cells and a menu that ends in Deactivate…. FR-003 lets a row show only the
+  // Phase's name, its id and its state and validity badges, so the row keeps what
+  // it showed before the redesign, the order buttons included, drawn in the
+  // mockup's table (decision 2 of the port review, 2026-11-14).
+  it('draws a list row with only the name, the id, the badges and the order buttons (FR-003)', () => {
+    const phase: MutablePhase = { ...STORED_PHASE, description: 'Checks the custom rules.', model: 'model-a' };
+    const { container } = mount({ snapshot: LIFECYCLE_SNAPSHOT, phases: [phase] });
+
+    const headers = [...container.querySelectorAll('thead th')].map((cell) => cell.textContent.trim());
+    expect(headers).toEqual(['Phase', 'Status', 'Order']);
+
+    const row = container.querySelector('[data-testid="phases-list-item-custom"]')?.closest('tr') as HTMLElement;
+    expect(row.querySelectorAll('td')).toHaveLength(3);
+    expect(row.textContent).not.toContain('Checks the custom rules.');
+    expect(row.textContent).not.toContain('model-a');
+    expect(row.textContent).not.toContain('Deactivate');
+    expect(row.querySelector('[aria-haspopup]')).toBeNull();
+    expect([...row.querySelectorAll('button')].map((button) => button.dataset.testid)).toEqual([
+      'phases-list-item-custom',
+      'phases-move-up-custom',
+      'phases-move-down-custom'
+    ]);
+  });
+
+  it('marks a row whose model is unavailable beside its badges, without the model', () => {
+    const phase = { ...STORED_PHASE, model: 'missing-model', modelAvailable: false };
+    const { container } = mount({ phases: [phase] });
+    const row = container.querySelector('[data-testid="phases-list-item-custom"]')?.closest('tr') as HTMLElement;
+    expect(row.textContent).toContain('model unavailable');
+    expect(row.textContent).not.toContain('missing-model');
   });
 });

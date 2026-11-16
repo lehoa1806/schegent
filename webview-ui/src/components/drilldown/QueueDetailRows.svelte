@@ -11,8 +11,14 @@
   //
   // Feature 097 redesign: the visual rendering of each standalone task row was
   // extracted into `QueueTaskRow.svelte` to keep both files under the 500-line
-  // budget. This file retains the container layout, the table header, the
-  // connected-run rows, and all drag-and-drop / reorder / move orchestration.
+  // budget, and a connected run's row is drawn by `QueueRunRow.svelte` on the
+  // same terms. This file retains the container layout, the search and status
+  // filter above the rows, the column header, each row's menu, the grid every
+  // row shares, and all drag-and-drop / reorder / move orchestration.
+  //
+  // A row is one button on that grid rather than a table row (BUG-003): the
+  // button opens the row's run, and the controls that act on a Task — the drag
+  // handle, the move select and the row menu — sit beside it, never inside it.
   //
   // Refusals travel back up rather than rendering here: the tier shows one
   // refusal line for every control it owns, and a second line inside the row
@@ -23,9 +29,12 @@
   import { postMoveItemDown, postMoveItemUp, postReorderTask } from '../../lib/reorder-task';
   import { findQueueRuntime } from '../../lib/queue-runtime-view';
   import { buildQueueRunRows, type ConnectedRunRow } from '../../lib/queue-run-rows';
+  import { QUEUE_ROW_VIEWS, queueRowVisible, type QueueRowFacts, type QueueRowView } from '../../lib/queue-row-filter';
   import { findTaskPipeline, resolveTaskPipelineName } from '../../lib/resolve-pipeline-name';
   import { deriveTaskTiming } from '../../lib/task-row-view';
   import { nowFine } from '../../lib/tick-store';
+  import SgMenu from '../sg/SgMenu.svelte';
+  import QueueRunRow from './QueueRunRow.svelte';
   import QueueTaskRow from './QueueTaskRow.svelte';
   import type { QueueItem, WorkflowSnapshot } from '../../lib/snapshot-types';
 
@@ -79,11 +88,34 @@
     (snapshot.queue.queues ?? []).filter((summary) => summary.id !== queueId)
   );
 
-  // ---------- Status display (connected-run rows only) ----------
-  function statusDisplayLabel(status: string): string {
-    if (status === 'completed') return 'DONE';
-    if (status === 'in-flight') return 'RUNNING';
-    return status.toUpperCase();
+  // ---------- Search and status filter ----------
+  // The filter narrows what is drawn and nothing else: each row keeps its
+  // number in the whole queue's order, and a drop still posts the target's own
+  // position, so a hidden row changes no reorder.
+  let view = $state<QueueRowView>('all');
+  let query = $state('');
+
+  function rowFacts(row: Row): QueueRowFacts {
+    return row.kind === 'run'
+      ? { status: row.run.status, label: row.run.label, id: row.run.connectedRunId }
+      : { status: row.task.status, label: row.task.label, id: row.task.id };
+  }
+
+  const numberedRows = $derived(rows.map((row, index) => ({ row, index })));
+  const visibleRows = $derived(
+    numberedRows.filter(({ row }) => queueRowVisible(rowFacts(row), view, query))
+  );
+
+  // The move select's column is widened only while a row on screen draws one.
+  const anyMove = $derived(
+    isPrimary &&
+      moveTargets.length > 0 &&
+      visibleRows.some(({ row }) => row.kind === 'task' && row.task.status === 'pending')
+  );
+
+  function showEverything(): void {
+    view = 'all';
+    query = '';
   }
 
   // ---------- IPC handlers ----------
@@ -163,237 +195,304 @@
   {#if rows.length === 0}
     <p class="empty" data-testid="queue-detail-empty">This queue has no work yet.</p>
   {:else}
-    <!-- Table header -->
-    <div class="table-header" role="row" aria-hidden="true">
-      <span class="th th-position">#</span>
-      <span class="th th-prompt">PROMPT</span>
-      <span class="th th-process">PROCESS</span>
-      <span class="th th-progress">PROGRESS</span>
-      <span class="th th-time">TIME</span>
-      <span class="th th-status">STATUS</span>
-      <span class="th th-chevron"></span>
+    <div class="toolbar">
+      <div class="search">
+        <svg class="i" aria-hidden="true"><use href="#i-search"></use></svg>
+        <input
+          class="input"
+          type="search"
+          placeholder="Search tasks"
+          aria-label="Search tasks"
+          data-testid="queue-detail-search"
+          bind:value={query}
+        />
+      </div>
+      <div class="seg" role="group" aria-label="Show">
+        {#each QUEUE_ROW_VIEWS as option (option.id)}
+          <button
+            type="button"
+            aria-pressed={view === option.id}
+            data-testid="queue-detail-show-{option.id}"
+            onclick={() => (view = option.id)}
+          >{option.label}</button>
+        {/each}
+      </div>
     </div>
 
-    {#each rows as row, rowIndex (row.key)}
-      {#if row.kind === 'run'}
-        <!-- Connected-run row -->
-        <button
-          type="button"
-          class="table-row status-{row.run.status}"
-          data-row-key={row.key}
-          data-testid="queue-run-row-{row.run.connectedRunId}"
-          data-selected={row.run.connectedRunId === selectedRunId ? 'true' : 'false'}
-          aria-label="Open connected run {row.run.label}"
-          onclick={() => selectRow(row)}
-          onkeydown={(event) => onRowKeyDown(event, row)}
-        >
-          <span class="cell cell-position">{rowIndex + 1}</span>
-          <span class="cell cell-prompt">
-            <span class="prompt-label">{row.run.label}</span>
-            <span class="prompt-id">{row.run.connectedRunId}</span>
-            <span class="workflow-badge">WORKFLOW · {row.run.memberTaskIds.length} TASKS COLLAPSED</span>
-          </span>
-          <span class="cell cell-process">
-            <span class="process-name">Workflow</span>
-            <span class="process-id">workflow · {row.run.workflowId}</span>
-          </span>
-          <span class="cell cell-progress">
-            <span class="progress-bar">
-              {#each Array(row.run.nodeCount) as _, i}
-                <span
-                  class="phase-seg"
-                  class:seg-completed={i < row.run.completedNodeCount}
-                  class:seg-future={i >= row.run.completedNodeCount}
-                ></span>
-              {/each}
-            </span>
-            <span class="progress-text">
-              {row.run.completedNodeCount} of {row.run.nodeCount} nodes
-            </span>
-          </span>
-          <span class="cell cell-time"><span class="time-primary">&mdash;</span></span>
-          <span class="cell cell-status">
-            <span class="status-badge badge-{row.run.status}">{statusDisplayLabel(row.run.status)}</span>
-          </span>
-          <span class="cell cell-chevron" aria-hidden="true">›</span>
-        </button>
-      {:else}
-        <!-- Standalone task row with drag-and-drop wrapper -->
-        {@const pipeline = findTaskPipeline(row.task, snapshot.availablePipelines)}
-        {@const pipelineName = resolveTaskPipelineName(row.task, snapshot.availablePipelines)}
-        <!--
-          FR-R3-158 (T023) — the host's figure, passed through. The row derives
-          nothing: `phaseProgress` arrives already paired with the total it was
-          counted against, and `null` means the host could not resolve one, which
-          the row renders as no figure rather than as a zero.
-
-          T024 — `pipeline` above stays. It is not the progress lookup any more;
-          `QueueTaskRow` still needs the definition for the phase-segment bar and
-          the process-id line, neither of which counts anything.
-        -->
-        {@const progress = row.task.phaseProgress}
-        {@const timing = deriveTaskTiming(row.task, $nowFine)}
-        {@const canReorder = isPrimary && row.task.status === 'pending'}
-        <div
-          class="row-wrap"
-          role="group"
-          aria-label="{row.task.label} row"
-          draggable={canReorder && dragArmedTaskId === row.task.id}
-          ondragstart={(event) => onDragStart(event, row.task.id)}
-          ondragover={canReorder ? onDragOver : undefined}
-          ondrop={canReorder ? (event) => onDrop(event, row.task.id, row.task.position) : undefined}
-          ondragend={onDragEnd}
-        >
-          {#if canReorder}
-            <button
-              type="button"
-              class="drag-handle"
-              data-testid="queue-task-drag-handle-{row.task.id}"
-              aria-label="Drag to reorder"
-              title="Drag to reorder"
-              onmousedown={() => onHandleMouseDown(row.task.id)}
-              onmouseup={onHandleMouseUp}
-            >
-              <svg class="drag-handle-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                <circle cx="6" cy="3" r="1.2" /><circle cx="6" cy="7" r="1.2" />
-                <circle cx="6" cy="11" r="1.2" /><circle cx="6" cy="15" r="1.2" />
-                <circle cx="10" cy="3" r="1.2" /><circle cx="10" cy="7" r="1.2" />
-                <circle cx="10" cy="11" r="1.2" /><circle cx="10" cy="15" r="1.2" />
-              </svg>
-            </button>
-          {/if}
-          <QueueTaskRow
-            task={row.task}
-            {rowIndex}
-            {pipeline}
-            {pipelineName}
-            {progress}
-            {timing}
-            isSelected={row.task.id === selectedRunId}
-            onSelect={() => selectRow(row)}
-            onKeyDown={(event) => onRowKeyDown(event, row)}
-          />
-          {#if canReorder}
-            <button type="button" class="reorder-btn" data-testid="queue-task-reorder-up-{row.task.id}"
-              title="Move up" aria-label="Move {row.task.label} up"
-              onclick={() => onMoveUp(row.task.id)}>&#9650;</button>
-            <button type="button" class="reorder-btn" data-testid="queue-task-reorder-down-{row.task.id}"
-              title="Move down" aria-label="Move {row.task.label} down"
-              onclick={() => onMoveDown(row.task.id)}>&#9660;</button>
-          {/if}
-          {#if canReorder && moveTargets.length > 0}
-            <select class="move" data-testid="queue-task-move-{row.task.id}"
-              aria-label="Move {row.task.label} to another queue"
-              onchange={(event) => moveTaskTo(row.task.id, event)}>
-              <option value="">Move to&hellip;</option>
-              {#each moveTargets as target (target.id)}<option value={target.id}>{target.name}</option>{/each}
-            </select>
-          {/if}
+    <div class="table-wrap">
+      <div class="qgrid" class:has-move={anyMove}>
+        <div class="qhead" aria-hidden="true">
+          <span>#</span><span>Task</span><span>Progress</span><span>Status</span><span>Time</span><span></span>
         </div>
-      {/if}
-    {/each}
 
-    <p class="ordering-note">
-      Ordered by <strong>position</strong>, ascending — the order the queue will work,
-      which starts as added order. Statuses interleave on purpose: there is no grouping.
-    </p>
+        {#each visibleRows as { row, index } (row.key)}
+          {#if row.kind === 'run'}
+            <div
+              class="row-wrap"
+              class:sel={row.run.connectedRunId === selectedRunId}
+              role="group"
+              aria-label="{row.run.label} row"
+            >
+              <QueueRunRow
+                run={row.run}
+                rowIndex={index}
+                isSelected={row.run.connectedRunId === selectedRunId}
+                onSelect={() => selectRow(row)}
+                onKeyDown={(event) => onRowKeyDown(event, row)}
+              />
+              <div class="c-acts">
+                <SgMenu label="Actions for {row.run.label}" testid="queue-run-menu-{row.run.connectedRunId}">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="queue-run-open-{row.run.connectedRunId}"
+                    onclick={() => selectRow(row)}
+                  ><svg class="i" aria-hidden="true"><use href="#i-open"></use></svg>Open</button>
+                </SgMenu>
+              </div>
+            </div>
+          {:else}
+            {@const pipeline = findTaskPipeline(row.task, snapshot.availablePipelines)}
+            {@const pipelineName = resolveTaskPipelineName(row.task, snapshot.availablePipelines)}
+            <!--
+              FR-R3-158 (T023) — the host's figure, passed through. The row derives
+              nothing: `phaseProgress` arrives already paired with the total it was
+              counted against, and `null` means the host could not resolve one, which
+              the row renders as no figure rather than as a zero.
+
+              T024 — `pipeline` above stays. It is not the progress lookup any more;
+              `QueueTaskRow` still needs the definition for the phase-segment bar and
+              the process-id line, neither of which counts anything.
+            -->
+            {@const progress = row.task.phaseProgress}
+            {@const timing = deriveTaskTiming(row.task, $nowFine)}
+            {@const canReorder = isPrimary && row.task.status === 'pending'}
+            <div
+              class="row-wrap"
+              class:sel={row.task.id === selectedRunId}
+              class:has-grip={canReorder}
+              role="group"
+              aria-label="{row.task.label} row"
+              draggable={canReorder && dragArmedTaskId === row.task.id}
+              ondragstart={(event) => onDragStart(event, row.task.id)}
+              ondragover={canReorder ? onDragOver : undefined}
+              ondrop={canReorder ? (event) => onDrop(event, row.task.id, row.task.position) : undefined}
+              ondragend={onDragEnd}
+            >
+              {#if canReorder}
+                <button
+                  type="button"
+                  class="drag-handle"
+                  data-testid="queue-task-drag-handle-{row.task.id}"
+                  aria-label="Drag to reorder"
+                  title="Drag to reorder, or use the row menu"
+                  onmousedown={() => onHandleMouseDown(row.task.id)}
+                  onmouseup={onHandleMouseUp}
+                ><svg class="i" aria-hidden="true"><use href="#i-grip"></use></svg></button>
+              {/if}
+              <QueueTaskRow
+                task={row.task}
+                rowIndex={index}
+                {pipeline}
+                {pipelineName}
+                {progress}
+                {timing}
+                isSelected={row.task.id === selectedRunId}
+                onSelect={() => selectRow(row)}
+                onKeyDown={(event) => onRowKeyDown(event, row)}
+              />
+              <div class="c-acts">
+                {#if canReorder && moveTargets.length > 0}
+                  <select class="input move" data-testid="queue-task-move-{row.task.id}"
+                    aria-label="Move {row.task.label} to another queue"
+                    onchange={(event) => moveTaskTo(row.task.id, event)}>
+                    <option value="">Move to&hellip;</option>
+                    {#each moveTargets as target (target.id)}<option value={target.id}>{target.name}</option>{/each}
+                  </select>
+                {/if}
+                <SgMenu label="Actions for {row.task.label}" testid="queue-task-menu-{row.task.id}">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="queue-task-open-{row.task.id}"
+                    onclick={() => selectRow(row)}
+                  ><svg class="i" aria-hidden="true"><use href="#i-open"></use></svg>Open</button>
+                  {#if canReorder}
+                    <hr />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-testid="queue-task-reorder-up-{row.task.id}"
+                      onclick={() => onMoveUp(row.task.id)}
+                    >Move up</button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-testid="queue-task-reorder-down-{row.task.id}"
+                      onclick={() => onMoveDown(row.task.id)}
+                    >Move down</button>
+                  {/if}
+                </SgMenu>
+              </div>
+            </div>
+          {/if}
+        {/each}
+
+        {#if visibleRows.length === 0}
+          <p class="empty" data-testid="queue-detail-no-match">
+            No tasks match. <button
+              type="button"
+              class="linkbtn"
+              data-testid="queue-detail-show-everything"
+              onclick={showEverything}
+            >Show all tasks</button>
+          </p>
+        {/if}
+      </div>
+    </div>
+
+    <p class="countline" data-testid="queue-detail-countline">{isPrimary
+        ? 'Tasks run top to bottom. Drag a pending task, or use its menu, to change the order.'
+        : 'Tasks run top to bottom.'}</p>
   {/if}
 </div>
 
 <style>
-  .rows { display: flex; flex-direction: column; gap: 0; padding: 0 20px; }
-  .empty { margin: 0; font-size: 12px; color: var(--vscode-descriptionForeground); }
+  /* The columns every row shares: the run-order number, the task, its progress,
+     its status and its time, then the row's own controls. A row's button spans
+     the first five and lays its cells out on the same widths; its controls take
+     the sixth, outside the button (BUG-003). */
+  .rows {
+    --q-num: 56px;
+    --q-prog: 176px;
+    --q-status: 120px;
+    --q-time: 124px;
+    --q-acts: 48px;
+    --q-cells: var(--q-num) minmax(200px, 1fr) var(--q-prog) var(--q-status) var(--q-time);
+  }
 
-  /* 7-column grid shared by header and connected-run rows */
-  .table-header,
-  .table-row {
+  .qgrid {
+    min-width: calc(var(--q-num) + 200px + var(--q-prog) + var(--q-status) + var(--q-time) + var(--q-acts));
+  }
+
+  .qgrid.has-move { --q-acts: 168px; }
+
+  .qhead,
+  .row-wrap {
     display: grid;
-    grid-template-columns: 36px 2fr 1fr 1.5fr auto auto 28px;
-    gap: 12px;
+    grid-template-columns: var(--q-cells) var(--q-acts);
+  }
+
+  .qhead {
+    background: var(--schegent-shell-bg);
+    border-bottom: 1px solid var(--schegent-border);
+  }
+
+  .qhead span {
+    padding: 7px var(--schegent-space-3);
+    font-size: var(--schegent-text-secondary);
+    font-weight: 600;
+    color: var(--schegent-muted-fg);
+    white-space: nowrap;
+  }
+
+  .row-wrap {
+    position: relative;
+    border-bottom: 1px solid var(--schegent-border);
+  }
+
+  .row-wrap:last-child { border-bottom: 0; }
+  .row-wrap:not(.sel):hover { background: var(--schegent-list-hover); }
+
+  /* The ring is transparent until a high contrast theme sets it, where the fill alone does not
+     show (theme.css). */
+  .row-wrap.sel {
+    background: var(--schegent-selection-bg);
+    color: var(--schegent-selection-fg);
+    box-shadow: inset 0 0 0 1px var(--schegent-selection-outline);
+  }
+
+  .row-wrap.sel :global(:is(.rowname, .sub, .muted, .small)) { color: inherit; }
+  .row-wrap.sel :global(.chip) { color: inherit; --sg-status-color: currentColor; }
+
+  /* Every row's button: a task's (QueueTaskRow) and a connected run's (QueueRunRow). */
+  .rows :global(.qrow) {
+    grid-column: 1 / 6;
+    grid-row: 1;
+    display: grid;
+    grid-template-columns: var(--q-cells);
     align-items: start;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
     text-align: left;
-    padding: 8px 12px;
+    cursor: pointer;
   }
 
-  .table-header {
-    border-bottom: 1px solid var(--vscode-widget-border, transparent);
-    padding-top: 4px;
-    padding-bottom: 6px;
+  /* The row does not shift on press: it is the whole width of the table, and
+     the hover fill already answers the pointer. */
+  .rows :global(.qrow:active) { transform: none; }
+  .rows :global(.qrow:focus-visible) { outline-offset: -2px; }
+
+  .rows :global(.qrow > .cell) {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    min-width: 0;
+    padding: var(--schegent-space-2) var(--schegent-space-3);
   }
 
-  .th {
-    font-size: 10px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.06em; color: var(--vscode-descriptionForeground); user-select: none;
+  .row-wrap.has-grip :global(.c-num) { padding-left: 32px; }
+
+  .drag-handle {
+    position: absolute;
+    top: var(--schegent-space-2);
+    left: var(--schegent-space-3);
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    opacity: 0.55;
+    cursor: grab;
   }
 
-  /* Connected-run row */
-  .table-row {
-    font: inherit; color: var(--vscode-foreground); cursor: pointer;
-    border: none;
-    border-bottom: 1px solid color-mix(in srgb, var(--vscode-widget-border, transparent) 40%, transparent);
-    border-radius: 0; background: transparent; transition: background-color 120ms ease-out;
-  }
-  .table-row:hover { background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 5%, transparent)); }
-  .table-row[data-selected='true'] { background: var(--vscode-list-activeSelectionBackground, var(--vscode-editorWidget-background)); }
-  .table-row:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
-
-  .cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .cell-position { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; color: var(--vscode-descriptionForeground); justify-content: center; align-items: center; padding-top: 2px; }
-  .cell-prompt { gap: 3px; }
-  .prompt-label { font-weight: 500; color: var(--vscode-editor-foreground); white-space: pre-wrap; word-break: break-word; line-height: 1.35; }
-  .prompt-id { font-family: var(--vscode-editor-font-family, monospace); font-size: 10px; color: var(--vscode-descriptionForeground); opacity: 0.75; }
-
-  .workflow-badge {
-    display: inline-flex; align-self: flex-start; padding: 2px 8px; margin-top: 2px;
-    background: color-mix(in srgb, var(--schegent-color-active) 15%, transparent);
-    border: 1px solid color-mix(in srgb, var(--schegent-color-active) 30%, transparent);
-    border-radius: 4px; font-size: 10px; font-weight: 600; letter-spacing: 0.03em;
-    color: var(--schegent-color-active); text-transform: uppercase;
-  }
-
-  .cell-process { gap: 2px; }
-  .process-name { font-size: 12px; font-weight: 500; color: var(--vscode-foreground); }
-  .process-id { font-size: 10px; color: var(--vscode-descriptionForeground); opacity: 0.7; }
-  .cell-progress { gap: 4px; }
-  .progress-bar { display: flex; gap: 2px; align-items: center; height: 8px; }
-  .phase-seg { flex: 1; height: 100%; border-radius: 2px; min-width: 6px; }
-  .seg-completed { background: var(--schegent-color-active); }
-  .seg-future { background: var(--schegent-muted-fg); opacity: 0.2; }
-  .progress-text { font-size: 11px; color: var(--vscode-descriptionForeground); }
-  .cell-time { gap: 2px; white-space: nowrap; align-items: flex-end; }
-  .time-primary { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; font-weight: 500; color: var(--vscode-foreground); }
-  .cell-status { align-items: center; justify-content: center; padding-top: 2px; }
-
-  .status-badge {
-    display: inline-flex; align-items: center; justify-content: center;
-    padding: 2px 10px; border-radius: 4px; font-size: 10px; font-weight: 700;
-    letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap;
-  }
-  .badge-in-flight { background: color-mix(in srgb, var(--schegent-color-active) 18%, transparent); color: var(--schegent-color-active); border: 1px solid color-mix(in srgb, var(--schegent-color-active) 35%, transparent); }
-  .badge-completed { background: color-mix(in srgb, var(--schegent-color-completed) 18%, transparent); color: var(--schegent-color-completed); border: 1px solid color-mix(in srgb, var(--schegent-color-completed) 35%, transparent); }
-  .badge-failed { background: color-mix(in srgb, var(--schegent-color-error) 18%, transparent); color: var(--schegent-color-error); border: 1px solid color-mix(in srgb, var(--schegent-color-error) 35%, transparent); }
-  .badge-pending { background: transparent; color: var(--vscode-descriptionForeground); border: 1px solid var(--vscode-widget-border, transparent); }
-  .badge-paused { background: color-mix(in srgb, var(--schegent-color-warning) 18%, transparent); color: var(--schegent-color-warning); border: 1px solid color-mix(in srgb, var(--schegent-color-warning) 35%, transparent); }
-  .badge-canceled { background: transparent; color: var(--vscode-descriptionForeground); border: 1px solid var(--vscode-widget-border, transparent); opacity: 0.7; }
-
-  .cell-chevron { font-size: 16px; color: var(--vscode-descriptionForeground); opacity: 0.4; align-items: center; justify-content: center; padding-top: 2px; transition: opacity 120ms ease-out; }
-  .table-row:hover .cell-chevron { opacity: 1; }
-
-  /* Row wrapper for drag-and-drop + reorder controls */
-  .row-wrap { display: flex; gap: 4px; align-items: start; }
-  .row-wrap :global(.table-row) { flex: 1; min-width: 0; }
-
-  .move { font: inherit; font-size: 11px; padding: 4px 6px; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, transparent); border-radius: 4px; margin-top: 8px; }
-
-  .drag-handle { display: inline-flex; align-items: center; justify-content: center; background: transparent; border: none; width: 16px; min-width: 16px; min-height: 20px; padding: 0; margin-top: 10px; color: var(--vscode-descriptionForeground); cursor: grab; user-select: none; flex-shrink: 0; }
-  .drag-handle:hover { color: var(--vscode-foreground); }
-  .drag-handle:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
-  .drag-handle-icon { width: 12px; height: 16px; fill: currentColor; }
+  .drag-handle:hover { opacity: 1; }
   .row-wrap[draggable='true']:active .drag-handle { cursor: grabbing; }
 
-  .reorder-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; flex-shrink: 0; padding: 0 4px; font: inherit; line-height: 1; color: var(--vscode-descriptionForeground); background: transparent; border: 1px solid var(--vscode-widget-border, transparent); border-radius: 4px; cursor: pointer; margin-top: 8px; }
-  .reorder-btn:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
-  .reorder-btn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+  .c-acts {
+    grid-column: 6;
+    grid-row: 1;
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-end;
+    gap: var(--schegent-space-1-5);
+    padding: var(--schegent-space-1) var(--schegent-space-2);
+  }
 
-  .ordering-note { margin: 12px 0 0; padding: 8px 0; font-size: 11px; color: var(--vscode-descriptionForeground); opacity: 0.6; border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border, transparent) 30%, transparent); }
+  .move {
+    width: auto;
+    font-size: var(--schegent-text-secondary);
+  }
+
+  /* A coarse pointer makes the handle and every button 44px square (theme.css),
+     so the number moves right of the larger handle and the controls' column
+     grows to hold the larger menu button. */
+  @media (pointer: coarse) {
+    .rows { --q-num: 84px; --q-acts: 64px; }
+    .qgrid.has-move { --q-acts: 184px; }
+    .row-wrap.has-grip :global(.c-num) { padding-left: 52px; }
+    .drag-handle { top: 0; left: var(--schegent-space-1); }
+  }
 </style>

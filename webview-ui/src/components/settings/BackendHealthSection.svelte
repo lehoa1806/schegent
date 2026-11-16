@@ -71,12 +71,14 @@
   const postures = $derived<readonly BackendPosture[]>(snapshot.backendPostures ?? []);
 </script>
 
-<section class="backend-health" aria-labelledby="backend-health-heading">
-  <div>
-    <h3 id="backend-health-heading">Backend Health</h3>
-    <p id="backend-health-description">Run a bounded, output-free availability check for a configured CLI.</p>
-  </div>
-  <div class="backend-list">
+<!--
+  The redesign's "Installed backends" section: a heading, then one card per backend. The heading
+  keeps its words and its id, which the "open backend settings" command scrolls to.
+-->
+<section class="section backend-health" aria-labelledby="backend-health-heading">
+  <h3 id="backend-health-heading">Backend Health</h3>
+  <p class="lead small muted" id="backend-health-description">Run a bounded, output-free availability check for a configured CLI.</p>
+  <div class="grid backend-list">
     {#each SUPPORTED_BACKENDS as kind (kind)}
       <BackendSection
         {kind}
@@ -99,14 +101,7 @@
 </section>
 
 <style>
-  .backend-health {
-    display: grid;
-    gap: 10px;
-    padding: 14px 0 0;
-    border-top: 1px solid var(--schegent-divider);
-    background: transparent;
+  .lead {
+    margin: 0 0 var(--schegent-space-3);
   }
-  h3 { margin: 0; font-size: 1em; }
-  p { margin: 3px 0 0; color: var(--schegent-muted-fg); font-size: 0.85em; }
-  .backend-list { display: grid; gap: 0; margin-top: 4px; }
 </style>

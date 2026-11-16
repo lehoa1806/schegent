@@ -229,7 +229,7 @@
   const duplicateDisabled = $derived(selected === null || mutatingDisabled);
   const removeDisabled = $derived(selected === null || !selected.persisted || mutatingDisabled);
   const importLayers = $derived(storedWritableLayers(snapshot.phaseCatalog?.records ?? [], snapshot.workflowCatalog?.records ?? []));
-  const importUnavailable = $derived(importDisabledReason({ trusted, savePending, mutationActive: isSelectedDirty || drafts.length > 0 }));
+  const importUnavailable = $derived(importDisabledReason({ catalog: 'workflow', trusted, savePending, mutationActive: isSelectedDirty || drafts.length > 0 }));
 
   function selectNewDraft(draft: MutableWorkflow): void {
     drafts = [...drafts, draft];
@@ -252,6 +252,10 @@
     if (!selected || !editable) return;
     const current = selected;
     const next = edit(current);
+    // An edit that changes nothing is no step. A + with no Phase or Pipeline to
+    // add hands the row back as it was; recorded, it would mark a stored row
+    // edited and push a copy that takes the place of the step Redo holds.
+    if (next === current || JSON.stringify(next) === JSON.stringify(current)) return;
     historyByKey = pushWorkflowHistory(historyByKey, current.sourceKey, current, next);
     if (current.persisted) {
       editedByKey = { ...editedByKey, [current.sourceKey]: next };
@@ -393,53 +397,63 @@
       'The Workflow catalog could not be loaded. Reload the view to retry.'}
   </div>
 {:else}
+  <!-- `.editor` (sg-builder.css) stacks the head above the shell, which takes the
+       rest of the height pipeline-builder.css gives this tab. -->
   <div
+    class="editor"
     data-testid="workflow-catalog-editor"
     data-selected-workflow-id={selected?.workflowId ?? undefined}
   >
-    <WorkflowFlowTopBar
-      {rows}
-      {selected}
-      {selectedKey}
-      {lifecycleByKey}
-      dirty={isSelectedDirty}
-      {breadcrumbs}
-      onselect={(key) => select(key)}
-      onbreadcrumbselect={selectBreadcrumb}
-    />
-
-    <WorkflowToolbar
-      {savePending}
-      {mutatingDisabled}
-      noPipelines={noBuildingBlocks && buildingBlocksResolved}
-      {duplicateDisabled}
-      {removeDisabled}
-      {saveDisabled}
-      {canUndo}
-      {canRedo}
-      {canReset}
-      {selected}
-      onadd={addWorkflow}
-      onduplicate={duplicateWorkflow}
-      onremove={removeSelected}
-      onsave={save}
-      onundo={undoSelected}
-      onredo={redoSelected}
-      onreset={resetSelected}
-    />
+    <!-- The redesign's editor head: one row, the breadcrumb and chips on the left
+         and the document actions at its right end (sg-builder.css `.ed-head`). -->
+    <div class="ed-head">
+      <WorkflowFlowTopBar
+        {rows}
+        {selected}
+        {selectedKey}
+        {lifecycleByKey}
+        dirty={isSelectedDirty}
+        {breadcrumbs}
+        onselect={(key) => select(key)}
+        onbreadcrumbselect={selectBreadcrumb}
+      />
+      <WorkflowToolbar
+        {savePending}
+        {mutatingDisabled}
+        noPipelines={noBuildingBlocks && buildingBlocksResolved}
+        {duplicateDisabled}
+        {removeDisabled}
+        {saveDisabled}
+        {canUndo}
+        {canRedo}
+        {canReset}
+        {selected}
+        onadd={addWorkflow}
+        onduplicate={duplicateWorkflow}
+        onremove={removeSelected}
+        onsave={save}
+        onundo={undoSelected}
+        onredo={redoSelected}
+        onreset={resetSelected}
+      />
+    </div>
 
     {#if catalog.warnings.length > 0}
-      <div class="catalog-warning" role="status" aria-live="polite" data-testid="workflow-catalog-warnings">
-        {#each catalog.warnings as warning (warning.code + warning.message)}
-          <div>{warning.message}</div>
-        {/each}
+      <div class="attn warn" role="status" aria-live="polite" data-testid="workflow-catalog-warnings">
+        <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+        <div class="body">
+          {#each catalog.warnings as warning (warning.code + warning.message)}
+            <div>{warning.message}</div>
+          {/each}
+        </div>
       </div>
     {/if}
 
     {#if saveError}
-      <div class="save-error-banner" data-testid="workflow-save-error-banner" role="alert">
-        <span class="save-error-text">Save rejected: {saveError}</span>
-        <button class="save-error-dismiss" aria-label="Dismiss Workflow save error" onclick={() => (saveError = null)}>✕</button>
+      <div class="attn" data-testid="workflow-save-error-banner" role="alert">
+        <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+        <div class="body">Save rejected: {saveError}</div>
+        <button type="button" class="icon-btn" aria-label="Dismiss Workflow save error" onclick={() => (saveError = null)}><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button>
       </div>
     {/if}
 
@@ -464,7 +478,8 @@
         onopenworkflow={openChildWorkflow}
         {onopenphase}
       />
-    {:else}
+    {:else if rows.length > 0}
+      <!-- With no Workflow to select, the empty state above is the one notice. -->
       <div class="catalog-state" data-testid="workflows-no-selection">
         Select a Workflow to view it.
       </div>

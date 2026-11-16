@@ -78,7 +78,7 @@
         Publishing would change this definition. No field-level account is available for it.
       </p>
     {:else}
-      <p class="summary-headline">Publishing would change:</p>
+      <p class="summary-headline list-title">Publishing would change:</p>
       <ul class="summary-fields">
         {#each fields as view, index (view.field + index)}
           <li
@@ -113,30 +113,33 @@
 </div>
 
 <style>
+  /* The redesign's "Publishing changes" block: a small heading over a plain
+     bulleted list. A sentence with no list after it stays muted body text. */
   .changed-field-summary {
-    color: var(--vscode-descriptionForeground);
-    font-size: 0.85em;
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-secondary);
   }
 
   .summary-headline {
     margin: 0;
   }
 
+  .list-title {
+    color: var(--schegent-fg);
+    font-weight: 600;
+  }
+
   .summary-fields {
-    margin: 2px 0 0;
+    margin: var(--schegent-space-1-5) 0 0;
     padding-left: 18px;
   }
 
   .summary-field {
-    color: var(--vscode-foreground);
-  }
-
-  .field-name {
-    font-weight: 600;
+    color: var(--schegent-fg);
   }
 
   .field-note {
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
   }
 
   .field-buckets {
@@ -145,6 +148,6 @@
   }
 
   .bucket-label {
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
   }
 </style>

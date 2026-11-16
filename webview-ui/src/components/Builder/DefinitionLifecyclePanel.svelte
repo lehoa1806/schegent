@@ -4,7 +4,7 @@
   // (`:77-145` before this split).
   //
   // Mounted on the surface that shows the *open* definition — the Phase editor
-  // card, and the Pipeline and Workflow inspectors — never on a list row. The row
+  // page and the Workflow settings inspector — never on a list row. The row
   // keeps only its two badges (`DefinitionLifecycleRow.svelte`); everything else
   // that used to render beside them lives here now: Created, Modified, Active
   // version, the collapsed defect list, `ChangedFieldSummary`, the four lifecycle
@@ -56,42 +56,31 @@
     class="definition-lifecycle-panel"
     data-testid="definition-lifecycle-panel-{definitionId}"
   >
-    <dl class="row-cells">
-      <div class="row-cell">
-        <dt class="cell-label">Created</dt>
-        <dd
-          class="cell-value"
-          data-testid="definition-row-created-{definitionId}"
-        >
-          {view.createdDisplay}
-        </dd>
-      </div>
-      <div class="row-cell">
-        <dt class="cell-label">Modified</dt>
-        <dd
-          class="cell-value"
-          data-testid="definition-row-modified-{definitionId}"
-        >
-          {view.modifiedDisplay}
-        </dd>
-      </div>
-      <div class="row-cell">
-        <dt class="cell-label">Active version</dt>
-        <dd
-          class="cell-value"
-          data-testid="definition-row-active-version-{definitionId}"
-        >
-          {view.activeVersionCell}
-        </dd>
-      </div>
+    <!-- sg-core's key and value list, the one the redesign's Summary card draws
+         its facts with. The pairs are the list's own children, so its grid sets
+         every key in one column. -->
+    <dl class="kv">
+      <dt>Created</dt>
+      <dd data-testid="definition-row-created-{definitionId}">
+        {view.createdDisplay}
+      </dd>
+      <dt>Modified</dt>
+      <dd data-testid="definition-row-modified-{definitionId}">
+        {view.modifiedDisplay}
+      </dd>
+      <dt>Active version</dt>
+      <dd data-testid="definition-row-active-version-{definitionId}">
+        {view.activeVersionCell}
+      </dd>
     </dl>
     {#if defects.length > 0}
       <!-- "Available on demand", unchanged from today (FR-015): collapsed by
            default so an invalid row costs one line, and every defect at once when
            opened rather than the head one — the same reason FR-023 reports a
-           refused publish all at once. -->
+           refused publish all at once. Not `row-defects`: the Workflows list's
+           sheet styles that name for its own rows. -->
       <details
-        class="row-defects"
+        class="panel-defects"
         data-testid="definition-row-defects-{definitionId}"
       >
         <summary
@@ -119,7 +108,7 @@
       <DefinitionActions {kind} {definitionId} {definitionName} {lifecycle} />
       <button
         type="button"
-        class="history-toggle"
+        class="btn btn-secondary btn-sm"
         bind:this={historyToggle}
         data-testid="definition-history-toggle-{definitionId}"
         aria-expanded={historyOpen}
@@ -142,70 +131,33 @@
 {/if}
 
 <style>
+  /* No frame of its own: the panel sits in a card (the Phase page's Summary, a
+     Workflow's inspector), and its facts continue that card's list. sg-core's
+     `.kv` sets the facts and `.btn` the buttons. A row gap only, so a host that
+     sets the panel on its own grid keeps that grid's column gap. */
   .definition-lifecycle-panel {
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 4px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding: 8px;
-  }
-
-  .row-cells {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 2px 10px;
-    margin: 0;
-  }
-
-  .row-cell {
-    display: flex;
-    gap: 4px;
-    align-items: baseline;
-  }
-
-  .cell-label {
-    color: var(--vscode-descriptionForeground);
-    font-size: 0.85em;
-  }
-
-  .cell-value {
-    margin: 0;
-    font-size: 0.85em;
+    row-gap: var(--schegent-space-3);
   }
 
   .row-actions {
     align-items: flex-start;
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    gap: var(--schegent-space-1-5);
   }
 
-  .history-toggle {
-    background: transparent;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 2px;
-    color: var(--vscode-foreground);
-    cursor: pointer;
-    font-size: 0.85em;
-    padding: 1px 6px;
+  .panel-defects {
+    font-size: var(--schegent-text-secondary);
   }
 
-  .history-toggle:hover {
-    background: var(--vscode-toolbar-hoverBackground);
+  .panel-defects summary {
+    color: var(--schegent-error-text);
   }
 
-  .row-defects {
-    font-size: 0.85em;
-  }
-
-  .row-defects summary {
-    cursor: pointer;
-    color: var(--vscode-errorForeground);
-  }
-
-  .row-defects ul {
-    margin: 2px 0 0;
+  .panel-defects ul {
+    margin: var(--schegent-space-1) 0 0;
     padding-left: 18px;
   }
 

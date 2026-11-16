@@ -9,7 +9,9 @@ import { tick } from 'svelte';
 import ChangeReviewPanel from '../ChangeReviewPanel.svelte';
 import ExecutionVisibilityPanel from '../ExecutionVisibilityPanel.svelte';
 import HistoricalReportsPanel from '../MetricsDashboard/HistoricalReportsPanel.svelte';
+import ReportDrillDownPanel from '../MetricsDashboard/ReportDrillDownPanel.svelte';
 import TelemetryRuntimeHealthPanel from '../TelemetryRuntimeHealthPanel.svelte';
+import { isMenuItemOff } from '../sg/__tests__/menu-item-state';
 import type {
   DecidePhaseHandoffRequest,
   DecidePhaseHandoffResponse,
@@ -68,6 +70,56 @@ beforeEach(() => {
   mockChangeReview.mockReset();
   mockDecideHandoff.mockReset();
 });
+
+/** The reads the reports panel makes as it mounts: no saved reports, and a page of one row. */
+function answerMountReads(req: ReadReportRequest): ReportCallEnvelope<ReadReportResponse> {
+  if (req.op === 'listSaved') {
+    return {
+      boundaryRefusal: null,
+      response: { op: 'listSaved', result: { ok: true, value: { items: [], cursor: null } } }
+    };
+  }
+  if (req.op === 'run') {
+    return {
+      boundaryRefusal: null,
+      response: {
+        op: 'run',
+        result: {
+          ok: true,
+          value: {
+            reportId: 'rep-live-1',
+            outcome: 'complete',
+            view: 'execution-summary',
+            sourceCutoffUtc: '2026-11-11T01:00:00.000Z',
+            timeBasis: 'root-created',
+            accountingRevision: null,
+            calculationVersion: 1,
+            rowCount: 1,
+            coverage: { roots: 1, attempts: 1, unknownDurations: 0 },
+            omissions: [],
+            rows: [
+              {
+                kind: 'root',
+                rootId: 'run-alpha',
+                workflowId: 'wf-deploy',
+                frozenDefinitionId: 'fc-1',
+                outcome: 'succeeded',
+                createdUtc: '2026-11-11T00:30:00.000Z',
+                durationMs: 1_200,
+                attempts: 1
+              }
+            ],
+            cursor: null
+          }
+        }
+      }
+    };
+  }
+  return {
+    boundaryRefusal: null,
+    response: { op: 'close', result: { ok: true, value: { released: true } } }
+  };
+}
 
 describe('HistoricalReportsPanel & ReportDrillDownPanel (FR-R6-F11)', () => {
   it('renders cutoff-pinned rows with aria-sort, non-numeric unknown duration phrasing, drill-down metadata, and saved report confirmation', async () => {
@@ -287,6 +339,76 @@ describe('HistoricalReportsPanel & ReportDrillDownPanel (FR-R6-F11)', () => {
       confirmed: true
     });
     expect(container.querySelectorAll('img').length).toBe(0);
+  });
+
+  // The export items, not the menu's button, wait out an export, and they wait in
+  // `aria-disabled`: a keyboard user who opens the menu meanwhile can still reach
+  // them, and the menu refuses a second export (decision 5 of the port review,
+  // 2026-11-14).
+  it('holds both export items off, and in reach, while an export is out', async () => {
+    mockReadReport.mockImplementation((req) => Promise.resolve(answerMountReads(req)));
+    let finishExport: (envelope: ReportCallEnvelope<MutateReportResponse>) => void = () => {};
+    mockMutateReport.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishExport = resolve;
+        })
+    );
+
+    const { findByTestId, getByTestId } = render(HistoricalReportsPanel);
+    await findByTestId('report-rows-table');
+    const csv = getByTestId('report-export-csv');
+    const json = getByTestId('report-export-json');
+    expect([isMenuItemOff(csv), isMenuItemOff(json)]).toEqual([false, false]);
+
+    await fireEvent.click(csv);
+    expect(mockMutateReport).toHaveBeenCalledTimes(1);
+    expect([isMenuItemOff(csv), isMenuItemOff(json)]).toEqual([true, true]);
+
+    await fireEvent.click(json);
+    expect(mockMutateReport).toHaveBeenCalledTimes(1);
+
+    finishExport({
+      boundaryRefusal: null,
+      response: { op: 'export', exportOutcome: { outcome: 'dialog-canceled' } }
+    });
+    await vi.waitFor(() => {
+      expect(isMenuItemOff(csv)).toBe(false);
+    });
+    expect(isMenuItemOff(json)).toBe(false);
+    expect(getByTestId('report-status-notice').textContent).toContain('Export canceled');
+  });
+
+  // Finding 2 of the webview port review: the availability phrase became a
+  // sentence of its own, and the heading pasted it in mid-sentence, so it read
+  // "(Unavailable: cannot be shown never shown as zero)".
+  it('heads the stated omissions with one sentence, the phrase quoted in it', () => {
+    const { getByTestId } = render(ReportDrillDownPanel, {
+      drillDown: {
+        reportId: 'rep-live-1',
+        root: {
+          kind: 'root',
+          rootId: 'run-alpha',
+          workflowId: 'wf-deploy',
+          frozenDefinitionId: null,
+          outcome: 'succeeded',
+          createdUtc: '2026-11-11T00:30:00.000Z',
+          durationMs: null,
+          attempts: 0
+        },
+        attempts: [],
+        frozenDefinitionId: null,
+        outcomeLineage: [],
+        usage: null,
+        omissions: [{ what: 'accounting', reason: 'accounting-unavailable' }]
+      },
+      onClose: () => undefined
+    });
+    const omissions = getByTestId('report-drilldown-omissions');
+    expect(omissions.querySelector('strong')?.textContent).toBe(
+      'Stated omissions (each shown as \u201cUnavailable: cannot be shown\u201d, never as zero):'
+    );
+    expect(omissions.querySelector('li')?.textContent).toBe('accounting \u2014 accounting-unavailable');
   });
 });
 

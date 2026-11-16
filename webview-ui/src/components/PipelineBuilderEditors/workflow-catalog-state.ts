@@ -411,7 +411,7 @@ export function makeWorkflowNodeDraft(
 }
 
 /**
- * Append a node that runs `target` — what the Actions palette does.
+ * Append a node that runs `target` — what the "Add steps" palette does.
  *
  * The FIRST node of an empty Workflow is also marked a start. `startNodeIds` must
  * be non-empty (FR-015) and a lone node that starts nothing is reachable from
@@ -540,9 +540,24 @@ export function retargetWorkflowConnection(
       : { nodeId: patch.nodeId, portId: '' };
     return updateWorkflowConnection(workflow, index, { [end]: nextEndpoint });
   }
+  if (end === 'to' && patch.kind === 'node' && !workflow.nodes.some((node) => node.nodeId === current.nodeId)) {
+    // A return may name no declared step: a YAML return with no step reads back as
+    // the node id `return`. Clearing its mark then targets what a new branch would.
+    const sourceNodeId = workflow.connections.at(index)?.from.nodeId;
+    const target =
+      workflow.nodes.find((node) => node.nodeId !== sourceNodeId) ??
+      workflow.nodes.find((node) => node.nodeId === sourceNodeId);
+    if (target) {
+      return updateWorkflowConnection(workflow, index, { to: buildDefaultEndpoint(target, pipelines, 'in', workflows) });
+    }
+  }
   if (patch.portId !== undefined || patch.kind !== undefined) {
     const nextPortId = patch.portId !== undefined ? patch.portId : current.portId;
-    const nextKind = end === 'to' ? (patch.kind ?? (current as { kind?: 'node' | 'return' }).kind) : undefined;
+    // A cleared return mark (`kind: 'node'`) leaves a plain node endpoint, written
+    // without a kind like the endpoints this module builds, so ticking the Return
+    // box and clearing it again is no edit at all.
+    const keptKind = (current as { kind?: 'node' | 'return' }).kind;
+    const nextKind = end !== 'to' || patch.kind === 'node' ? undefined : (patch.kind ?? keptKind);
     return updateWorkflowConnection(workflow, index, {
       [end]: {
         nodeId: current.nodeId,
@@ -605,6 +620,23 @@ export function anchorWorkflowDefects(
   }
 
   return { byNode, byConnection, rest };
+}
+
+/**
+ * The saved defects the Workflow's Issues list leaves out, for the lifecycle panel to keep
+ * on demand: those a step or branch owns, which show on that row, and those past the list's
+ * cap, which show nowhere else. The editor lists the saved defects ahead of its own checks,
+ * so a saved defect's place in that list is its place among them, and one with no row of its
+ * own inside the cap is in Issues already.
+ */
+export function savedDefectsOutsideIssues(
+  workflow: MutableWorkflow
+): readonly WorkflowCatalogFieldErrorProjection[] {
+  return workflow.sourceErrors.filter((error, index) => {
+    if (index >= MAX_VISIBLE_FIELD_ERRORS) return true;
+    const anchor = workflowErrorAnchor(error, workflow);
+    return anchor.kind === 'node' || anchor.kind === 'connection';
+  });
 }
 
 /** `null` when the move would leave the list, so the caller can no-op cleanly. */

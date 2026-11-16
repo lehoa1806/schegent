@@ -122,12 +122,12 @@
   aria-label="Phase progression"
 >
   <header class="phase-header">
-    <div>
+    <div class="phase-title">
       <div class="zone-title" aria-hidden="true">Phases</div>
       <span class="visually-hidden" data-testid="dashboard-phase-progression-header">{headerText}</span>
       {#if manualPauseAt}
-        <div class="manual-pause-badge" data-testid="phase-manual-pause-badge">
-          {pauseBadgeText}
+        <div class="chip s-warn" data-testid="phase-manual-pause-badge">
+          <span class="dot" aria-hidden="true"></span>{pauseBadgeText}
         </div>
       {/if}
     </div>
@@ -150,6 +150,8 @@
     />
   </header>
   
+  <!-- Drawn as the redesign's step list (run detail in `docs/mockup/schegent_redesign_surfaces.html`):
+       a framed list, a ring in each step's status colour, the name, then its count and time. -->
   <div class="stepper-container" class:phase-progression-large={isLargePipeline} data-large-pipeline={isLargePipeline ? 'true' : 'false'} data-testid="phase-progression-list">
     {#each phases as phase, i (phase.name)}
       {@const bpState = indicatorState(phase.name, phase.state)}
@@ -171,14 +173,11 @@
           {:else if bpState === 'breakpoint-scheduled'}
             <svg class="icon-breakpoint-scheduled" data-testid="phase-indicator-breakpoint-scheduled-{phase.name}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-label="Breakpoint armed"><circle cx="12" cy="12" r="6"/></svg>
           {:else if phase.state === 'completed'}
-            <svg class="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            <svg class="i" aria-hidden="true"><use href="#i-check"></use></svg>
           {:else if phase.state === 'active'}
-            <div class="pulse-ring"></div>
-            <div class="pulse-core"></div>
+            <svg class="i" aria-hidden="true"><use href="#i-dot"></use></svg>
           {:else if phase.state === 'disabled'}
             <svg class="icon-disabled" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line></svg>
-          {:else}
-            <div class="pending-dot"></div>
           {/if}
         </div>
 
@@ -218,276 +217,46 @@
 </section>
 
 <style>
-  .phase-progression-zone { display: flex; flex-direction: column; height: 100%; }
-  .zone-title {
-    font-size: var(--schegent-text-caption);
-    font-weight: 650;
-    color: var(--schegent-fg);
-    margin: 0;
-    letter-spacing: 0.045em;
-    text-transform: uppercase;
-  }
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-  .phase-header {
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-    align-items: flex-start;
-    margin-bottom: var(--schegent-space-2);
-  }
-  .phase-header .zone-title { margin-bottom: 4px; }
-  .manual-pause-badge {
-    display: inline-flex;
-    align-items: center;
-    min-height: 20px;
-    padding: 0 6px;
-    border: 1px solid var(--schegent-color-active);
-    border-radius: 4px;
-    color: var(--schegent-color-active);
-    font-size: 0.72em;
-    font-weight: 600;
-  }
-  .phase-message-meta {
-    display: block;
-    margin-top: 2px;
-    color: var(--schegent-muted-fg);
-    font-size: 0.72em;
-  }
-  
-  .stepper-container {
-    display: flex;
-    min-height: 0;
-    flex: 1;
-    flex-direction: column;
-    align-items: stretch;
-    padding: 0;
-    gap: 0;
-    overflow-y: auto;
-  }
-  .phase-progression-large { overflow-y: auto; }
-  
-  .step {
-    background: transparent;
-    border: 1px solid transparent;
-    color: inherit;
-    font: inherit;
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: var(--schegent-space-2);
-    width: 100%;
-    min-width: 0;
-    min-height: 36px;
-    position: relative;
-    z-index: 1;
-    cursor: pointer;
-    border-radius: var(--schegent-radius);
-    padding: 5px 7px;
-    transition:
-      background-color var(--schegent-duration-base) var(--schegent-ease-out),
-      border-color var(--schegent-duration-base) var(--schegent-ease-out);
-  }
-  .step:hover {
-    border-color: var(--schegent-border);
-    background: var(--schegent-surface-hover);
-  }
-  .step:focus-visible {
-    border-color: var(--schegent-focus-border);
-    outline: 1px solid var(--schegent-focus-border);
-    outline-offset: -1px;
-    background: var(--schegent-surface-hover);
-  }
-  .step.selected {
-    border-color: var(--schegent-color-active);
-    background: var(--schegent-surface-active);
-  }
-  .step.selected:hover,
-  .step.selected:focus-visible {
-    background: color-mix(in srgb, var(--schegent-color-active) 18%, transparent);
-  }
-  .step.selected .phase-name {
-    color: var(--schegent-color-active);
-    font-weight: 600;
-  }
-  
-  .step-indicator {
-    width: 20px;
-    height: 20px;
-    flex: 0 0 20px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--schegent-bg);
-    border: 1px solid var(--schegent-border);
-    position: relative;
-    transition:
-      background-color 180ms ease-out,
-      border-color 180ms ease-out,
-      color 180ms ease-out;
-  }
-  
-  .state-completed .step-indicator {
-    background: transparent;
-    border-color: var(--schegent-color-completed);
-    color: var(--schegent-color-completed);
-  }
-  .icon-check { width: 11px; height: 11px; }
-  
-  .state-active .step-indicator {
-    border-color: var(--schegent-color-active);
-    background: color-mix(in srgb, var(--schegent-color-active) 12%, var(--schegent-bg));
-  }
-  .pulse-ring {
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    border-radius: 50%;
-    border: 2px solid var(--schegent-color-active);
-    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  }
-  .pulse-core { width: 7px; height: 7px; border-radius: 50%; background: var(--schegent-color-active); }
-  
-  .state-not-started .step-indicator,
-  .state-skipped .step-indicator {
-    border-color: var(--vscode-list-hoverBackground);
-  }
-  .pending-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--vscode-list-activeSelectionBackground);
-    transition: background 0.3s ease;
-  }
-  .state-skipped { opacity: 0.4; }
-  .state-disabled .step-indicator {
-    border-color: var(--schegent-color-disabled);
-    background: color-mix(in srgb, var(--schegent-color-disabled) 8%, transparent);
-  }
-  .icon-disabled { width: 14px; height: 14px; color: var(--schegent-color-disabled); }
-  .state-disabled .phase-name {
-    color: var(--schegent-color-disabled);
-    text-decoration: line-through;
-    opacity: 0.7;
-  }
-  .state-disabled { opacity: 0.65; }
-  
-  .step-content {
-    display: flex;
-    min-width: 0;
-    flex: 1;
-    flex-wrap: wrap;
-    flex-direction: row;
-    align-items: center;
-    gap: 2px 7px;
-    text-align: left;
-  }
-  .phase-name {
-    min-width: 0;
-    flex: 1 1 auto;
-    overflow: hidden;
-    font-size: var(--schegent-text-secondary);
-    font-weight: 500;
-    color: var(--schegent-muted-fg);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    transition: color 0.3s;
-  }
-  .state-active .phase-name {
-    color: var(--schegent-fg);
-    font-weight: 600;
-  }
-  .state-completed .phase-name {
-    color: var(--schegent-fg);
-  }
-  .phase-elapsed {
-    flex: 0 0 auto;
-    color: var(--schegent-muted-fg);
-    font-family: var(--schegent-mono-font);
-    font-size: var(--schegent-text-caption);
-    font-variant-numeric: tabular-nums;
-  }
-  
-  .step.bp-paused-active .step-indicator {
-    border-color: var(--schegent-color-active);
-    background: color-mix(in srgb, var(--schegent-color-active) 18%, transparent);
-    color: var(--schegent-color-active);
-  }
-  .icon-pause { width: 14px; height: 14px; }
-  .step.bp-breakpoint-scheduled .step-indicator {
-    border-color: var(--schegent-color-warning);
-    background: color-mix(in srgb, var(--schegent-color-warning) 10%, transparent);
-    color: var(--schegent-color-warning);
-  }
-  .icon-breakpoint-scheduled { width: 16px; height: 16px; }
-  .step.bp-breakpoint-fired .step-indicator {
-    border-color: var(--schegent-color-active);
-    background: color-mix(in srgb, var(--schegent-color-active) 25%, transparent);
-    color: var(--schegent-color-active);
-  }
-  .icon-breakpoint-fired { width: 14px; height: 14px; }
-  .breakpoint-fired-badge {
-    font-size: 0.7em;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--vscode-editor-background);
-    background: var(--schegent-color-active);
-    padding: 2px 6px;
-    border-radius: 4px;
-    margin-top: 4px;
-  }
+  .phase-progression-zone { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+  /* The title, then the controls under it: the column is too narrow to set them side by side. */
+  .phase-header { display: flex; flex-direction: column; gap: var(--schegent-space-1-5); margin-bottom: var(--schegent-space-2); }
+  .phase-title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--schegent-space-2); }
+  .zone-title { font-size: var(--schegent-text-secondary); font-weight: 600; color: var(--schegent-muted-fg); }
 
-  .step.is-waiting-retry .step-indicator {
-    border-color: var(--schegent-color-warning);
-  }
-  .step.is-waiting-retry .pulse-ring {
-    border-color: var(--schegent-color-warning);
-  }
-  .step.is-waiting-retry .pulse-core {
-    background: var(--schegent-color-warning);
-  }
-  .step.is-waiting-retry .phase-name {
-    color: var(--schegent-color-warning);
-  }
-  .retry-badge {
-    flex-basis: 100%;
-    font-size: 0.7em;
-    font-weight: 600;
-    color: var(--vscode-editor-background);
-    background: var(--schegent-color-warning);
-    padding: 2px 6px;
-    border-radius: 4px;
-    margin-top: 4px;
-  }
-  
-  .sub-progress {
-    font-size: 0.7em;
-    color: var(--schegent-color-active);
-    background: var(--vscode-list-hoverBackground);
-    padding: 2px 6px;
-    border-radius: 4px;
-    margin-left: auto;
-  }
-  
-  .step-connector {
-    width: 1px;
-    height: 8px;
-    flex: 0 0 8px;
-    background: var(--schegent-divider);
-    margin-left: 17px;
-  }
-  
-  @keyframes pulse {
-    0% { transform: scale(1); opacity: 0.8; }
-    100% { transform: scale(2); opacity: 0; }
-  }
+  /* The frame hugs its rows, so a short Workflow is not drawn in a tall empty box, and scrolls
+     once the rows fill the column. */
+  .stepper-container { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; overflow-y: auto; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); }
+  .phase-progression-large { overflow-y: auto; }
+  .step-connector { flex: 0 0 1px; background: var(--schegent-border); }
+
+  .step { display: flex; align-items: center; gap: var(--schegent-space-2); flex: 0 0 auto; width: 100%; min-width: 0; min-height: 36px; padding: var(--schegent-space-2) var(--schegent-space-2-5); border: 0; border-radius: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background-color var(--schegent-duration-base) var(--schegent-ease-out); }
+  .step:hover:not(.selected) { background: var(--schegent-list-hover); }
+  .step:focus-visible { outline-offset: -2px; }
+  .step.selected { background: var(--schegent-selection-bg); color: var(--schegent-selection-fg); box-shadow: inset 0 0 0 1px var(--schegent-selection-outline); }
+
+  /* The ring and its glyph take the step's status colour; on the selected row, the row's text
+     colour. A paused or waiting step reads as the Paused chip does. */
+  .step-indicator { --sg-status-color: var(--schegent-muted-fg); display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 18px; height: 18px; border: 1.5px solid var(--sg-status-color); border-radius: 50%; color: var(--sg-status-color); }
+  .state-completed .step-indicator { --sg-status-color: var(--schegent-color-completed); }
+  .state-active .step-indicator, .bp-breakpoint-fired .step-indicator { --sg-status-color: var(--schegent-color-active); }
+  .state-disabled .step-indicator { --sg-status-color: var(--schegent-color-disabled); }
+  .bp-paused-active .step-indicator, .bp-breakpoint-scheduled .step-indicator, .is-waiting-retry .step-indicator { --sg-status-color: var(--schegent-color-warning); }
+  .step.selected .step-indicator { --sg-status-color: currentColor; }
+  .step-indicator svg { width: 12px; height: 12px; }
+  .step-indicator svg.i { width: 11px; height: 11px; stroke-width: 2.2; }
+  .icon-disabled circle { display: none; }
+
+  .step-content { display: flex; flex: 1; flex-wrap: wrap; align-items: baseline; gap: 0 var(--schegent-space-2); min-width: 0; }
+  .phase-name { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .state-skipped .phase-name, .state-disabled .phase-name { color: var(--schegent-muted-fg); }
+  .state-disabled .phase-name { text-decoration: line-through; }
+  /* The count, then the time, at the row's end; each note takes its own line under the name. */
+  .sub-progress, .phase-elapsed { order: 1; font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); font-variant-numeric: tabular-nums; }
+  .phase-elapsed { order: 2; }
+  .breakpoint-fired-badge, .retry-badge, .phase-message-meta { order: 3; flex-basis: 100%; font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); }
+  .breakpoint-fired-badge { color: var(--schegent-status-active-text); }
+  .retry-badge { color: var(--schegent-status-warning-text); }
+  .step.selected .phase-name, .step.selected .sub-progress, .step.selected .phase-elapsed,
+  .step.selected .breakpoint-fired-badge, .step.selected .retry-badge, .step.selected .phase-message-meta { color: inherit; }
 </style>

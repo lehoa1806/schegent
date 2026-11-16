@@ -358,7 +358,7 @@
     text-align: left;
     cursor: pointer;
     font: inherit;
-    font-family: var(--vscode-editor-font-family, monospace);
+    font-family: var(--schegent-mono-font);
     font-size: var(--schegent-text-caption);
     color: var(--schegent-muted-fg);
   }
@@ -408,7 +408,7 @@
     flex-shrink: 0;
   }
   .id {
-    font-family: var(--vscode-editor-font-family, monospace);
+    font-family: var(--schegent-mono-font);
     font-size: var(--schegent-text-caption);
     color: var(--schegent-muted-fg);
     white-space: nowrap;

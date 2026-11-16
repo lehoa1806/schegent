@@ -368,9 +368,9 @@
   .pressure-advice {
     margin: 0;
     padding: 6px 8px;
-    border-left: 3px solid var(--vscode-editorWarning-foreground);
-    background: var(--vscode-editorWidget-background);
-    color: var(--vscode-foreground);
+    border-left: 3px solid var(--schegent-warning-fg);
+    background: var(--schegent-surface);
+    color: var(--schegent-fg);
     font-size: 0.9em;
   }
 
@@ -380,7 +380,7 @@
     /* Theme tokens only: FR-R3-131 baselined 30 contrast violations and no new
        hard-coded colour is added here. `descriptionForeground` is the token VS
        Code uses for exactly this role. */
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
   }
 
   .queue-config-modal {
@@ -388,8 +388,8 @@
     flex-direction: column;
     gap: 8px;
     padding: 16px;
-    background: var(--vscode-editorWidget-background);
-    border: 1px solid var(--vscode-widget-border, transparent);
+    background: var(--schegent-surface);
+    border: 1px solid var(--schegent-border);
     border-radius: 6px;
   }
 
@@ -397,28 +397,28 @@
     margin: 0 0 4px;
     font-size: 14px;
     font-weight: 600;
-    color: var(--vscode-editor-foreground);
+    color: var(--schegent-fg);
   }
 
   label {
     font-size: 12px;
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
   }
 
   input,
   select {
     font: inherit;
     padding: 6px 8px;
-    color: var(--vscode-input-foreground);
-    background: var(--vscode-input-background);
-    border: 1px solid var(--vscode-input-border, transparent);
+    color: var(--schegent-input-fg);
+    background: var(--schegent-input-bg);
+    border: 1px solid var(--schegent-input-border);
     border-radius: 4px;
   }
 
   .refusal {
     margin: 0;
     font-size: 12px;
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-error-text);
   }
 
   .failure-policy-list {
@@ -427,13 +427,13 @@
     gap: 6px;
     margin: 0;
     padding: 8px;
-    border: 1px solid var(--vscode-widget-border, transparent);
+    border: 1px solid var(--schegent-border);
     border-radius: 4px;
   }
 
   .failure-policy-list legend {
     font-size: 12px;
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
     padding: 0 4px;
   }
 
@@ -456,7 +456,7 @@
     flex-basis: 100%;
     margin: 0;
     font-size: 0.85em;
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
   }
 
   .actions {
@@ -468,18 +468,18 @@
 
   button {
     font: inherit;
-    color: var(--vscode-foreground);
-    background: var(--vscode-button-secondaryBackground, transparent);
-    border: 1px solid var(--vscode-widget-border, transparent);
+    color: var(--schegent-fg);
+    background: var(--schegent-button-secondary-bg);
+    border: 1px solid var(--schegent-border);
     border-radius: 4px;
     padding: 6px 12px;
     cursor: pointer;
   }
 
   button.primary {
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
-    border-color: var(--vscode-button-border, transparent);
+    background: var(--schegent-button-bg);
+    color: var(--schegent-button-fg);
+    border-color: var(--schegent-button-border);
   }
 
   button:disabled {
@@ -488,7 +488,7 @@
   }
 
   button:focus-visible {
-    outline: 1px solid var(--vscode-focusBorder);
+    outline: 1px solid var(--schegent-focus-border);
     outline-offset: 2px;
   }
 </style>

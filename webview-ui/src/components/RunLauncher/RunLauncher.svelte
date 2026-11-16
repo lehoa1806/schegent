@@ -342,7 +342,7 @@
   .close-button {
     background: transparent;
     border: none;
-    color: var(--vscode-textLink-foreground);
+    color: var(--schegent-link-fg);
     cursor: pointer;
     text-decoration: underline;
   }
@@ -379,7 +379,7 @@
     padding: 8px;
     max-height: 220px;
     overflow: auto;
-    background: var(--vscode-textCodeBlock-background);
+    background: var(--schegent-code-bg);
     border-radius: var(--schegent-radius);
     font-size: 0.8em;
     white-space: pre-wrap;
@@ -394,7 +394,7 @@
     align-self: flex-start;
     padding: 6px 12px;
     background: var(--sch-accent-gradient);
-    color: var(--vscode-button-foreground);
+    color: var(--schegent-button-fg);
     border: none;
     border-radius: var(--schegent-radius);
     cursor: pointer;

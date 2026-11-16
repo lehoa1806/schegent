@@ -372,8 +372,8 @@ describe('DefinitionHistoryPanel — the body is read-only (US4, T048, FR-030)',
 
   // Feature 186 (US3, T023, FR-004, D-4) — `.body-content` carries no inline
   // max-height or overflow: every host that mounts this panel already supplies
-  // one scroll region of its own (`.pane-right` on Phases, `.wf-inspector` on
-  // Pipelines and Workflows), and a version body capped at its own height
+  // one scroll region of its own (the Builder's `.page` on a Phase's page, the
+  // inspector's `.ins-body` on Workflows), and a version body capped at its own height
   // inside any of those is a scroll region nested inside another one, which is
   // exactly what FR-004 forbids.
   it('lets the version body flow inside its host’s scroll region rather than carrying its own', async () => {
@@ -508,6 +508,46 @@ describe('DefinitionHistoryPanel — Restore lands in Draft (US4, T047, FR-024)'
         .querySelector('[data-testid="definition-row-active-version-speckit-specify"]')
         ?.textContent?.trim()
     ).toBe('v3');
+  });
+
+  it("offers no Restore on a Draft saved once: its one entry is the draft (finding 39)", () => {
+    // Restoring the draft onto itself changes nothing, so the entry keeps View
+    // and drops the action that would report a restore that did not happen.
+    const { container } = renderPanel({
+      lifecycle: lifecycle({
+        state: 'draft',
+        activeVersionId: undefined,
+        expectedDraftVersion: 'v1',
+        versions: [version({ versionId: 'v1', publishedAt: null })]
+      })
+    });
+    expect(entryIds(container)).toEqual(['v1']);
+    expect(
+      container.querySelector('[data-testid="definition-history-open-speckit-specify-v1"]')
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="definition-action-restore-speckit-specify-v1"]')
+    ).toBeNull();
+  });
+
+  it('offers Restore on each entry of a Draft saved twice, both never published', () => {
+    const { container } = renderPanel({
+      lifecycle: lifecycle({
+        state: 'draft',
+        activeVersionId: undefined,
+        expectedDraftVersion: 'v2',
+        versions: [
+          version({ versionId: 'v2', publishedAt: null }),
+          version({ versionId: 'v1', publishedAt: null })
+        ]
+      })
+    });
+    for (const versionId of ['v2', 'v1']) {
+      expect(
+        container.querySelector(`[data-testid="definition-action-restore-speckit-specify-${versionId}"]`),
+        `expected Restore on ${versionId}`
+      ).not.toBeNull();
+    }
   });
 
   it('routes Restore through the shared lifecycle helper, never inline (FR-025)', () => {

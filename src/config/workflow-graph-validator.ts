@@ -93,11 +93,12 @@ interface GraphContext {
   readonly errors: WorkflowFieldError[];
 }
 
-function isReturnEndpoint(
-  endpoint: WorkflowConnection['to'],
-  nodes: ReadonlyMap<string, ResolvedNode>
-): boolean {
-  return endpoint.kind === 'return' || (endpoint.nodeId === 'return' && !nodes.has('return'));
+/**
+ * A `to` endpoint returns only when it is marked `kind: 'return'`, the one form the
+ * run engine reads. A `nodeId` of `return` on its own names a step like any other.
+ */
+function isReturnEndpoint(endpoint: WorkflowConnection['to']): boolean {
+  return endpoint.kind === 'return';
 }
 
 export function validateWorkflowGraph(
@@ -109,7 +110,7 @@ export function validateWorkflowGraph(
   const errors: WorkflowFieldError[] = [];
   const nodes = resolveNodes(definition, effectivePipelines, invalidPipelines, options, errors);
   const edges = definition.connections
-    .filter((c) => nodes.has(c.from.nodeId) && !isReturnEndpoint(c.to, nodes) && nodes.has(c.to.nodeId))
+    .filter((c) => nodes.has(c.from.nodeId) && !isReturnEndpoint(c.to) && nodes.has(c.to.nodeId))
     .map((c) => ({ from: c.from.nodeId, to: c.to.nodeId }));
   const context: GraphContext = { definition, nodes, edges, errors };
 
@@ -221,7 +222,7 @@ function readEndpoint(
 ): { readonly type: PipelineOutputPortType | PipelineInputPortType | null } | null {
   const endpoint = side === 'from' ? connection.from : connection.to;
   const field = `connections[${index}].${side}`;
-  if (side === 'to' && isReturnEndpoint(connection.to, context.nodes)) {
+  if (side === 'to' && isReturnEndpoint(connection.to)) {
     return { type: null };
   }
   const resolved = context.nodes.get(endpoint.nodeId);
@@ -304,7 +305,7 @@ function countDefault(
 function validateDuplicateInputBindings(context: GraphContext): void {
   const groups = new Map<string, number[]>();
   context.definition.connections.forEach((connection, index) => {
-    if (connection.to.portId === undefined || isReturnEndpoint(connection.to, context.nodes)) return;
+    if (connection.to.portId === undefined || isReturnEndpoint(connection.to)) return;
     const key = `${connection.to.nodeId}.${connection.to.portId}`;
     const existing = groups.get(key);
     if (existing) {
@@ -386,7 +387,7 @@ function validateReachability(context: GraphContext, acyclic: boolean): void {
   }
 
   if (!acyclic) return;
-  const explicitReturns = context.definition.connections.filter((c) => isReturnEndpoint(c.to, context.nodes));
+  const explicitReturns = context.definition.connections.filter((c) => isReturnEndpoint(c.to));
   if (explicitReturns.length > 0) {
     const anyReachableReturn = explicitReturns.some((c) => reached.has(c.from.nodeId));
     if (!anyReachableReturn) {
@@ -684,7 +685,7 @@ function validateBindingsAndOutputs(context: GraphContext, acyclic: boolean): vo
 
   const boundChildInputs = new Set<string>();
   for (const conn of definition.connections) {
-    if (conn.to.portId !== undefined && !isReturnEndpoint(conn.to, nodes)) {
+    if (conn.to.portId !== undefined && !isReturnEndpoint(conn.to)) {
       boundChildInputs.add(`${conn.to.nodeId}.${conn.to.portId}`);
     }
   }
@@ -878,7 +879,7 @@ function validateRequiredOutputsOnBranches(context: GraphContext): void {
   }
   for (const conn of definition.connections) {
     if (!nodes.has(conn.from.nodeId)) continue;
-    if (isReturnEndpoint(conn.to, nodes)) {
+    if (isReturnEndpoint(conn.to)) {
       returnSources.add(conn.from.nodeId);
     } else if (nodes.has(conn.to.nodeId)) {
       outgoingByNode.get(conn.from.nodeId)?.push(conn.to.nodeId);

@@ -290,6 +290,46 @@ describe('output section — one target per declared port (T054, FR-013, FR-023)
   });
 });
 
+// The redesign draws a box's name above it and what the definition says about it in a caption
+// under it, the way the add-task drawer's hint sits under its box. A caption that follows the box
+// reaches a screen reader after the box, so each box names its caption as its description.
+describe('each box is described by the caption under it', () => {
+  const DESCRIBED: PipelineDefinition = {
+    ...PIPELINE,
+    inputs: [{ portId: 'topic', label: 'Topic', type: 'text', required: true, description: 'What the run studies.' }],
+    outputs: [{ portId: 'report', label: 'Report', type: 'markdown', description: 'The written findings.' }]
+  };
+
+  /** The text of every element the control names in `aria-describedby`, in order. */
+  function description(control: HTMLElement): string {
+    const ids = (control.getAttribute('aria-describedby') ?? '').split(' ').filter((id) => id !== '');
+    return ids
+      .map((id) => document.getElementById(id)?.textContent ?? '')
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  it('describes a contract input by its declared type and its description', () => {
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: DESCRIBED } });
+
+    expect(description(getByTestId('run-input-topic'))).toBe('text What the run studies.');
+  });
+
+  it('describes a supplemental box by its hint', () => {
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: DESCRIBED } });
+
+    expect(description(getByTestId('run-supplemental-local-file'))).toBe('Workspace-relative path to a file.');
+    expect(description(getByTestId('run-supplemental-instruction'))).toBe('Free-form direction for this run.');
+  });
+
+  it('describes an output target by its declared type and its description', () => {
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: DESCRIBED } });
+
+    expect(description(getByTestId('run-output-report'))).toBe('markdown The written findings.');
+  });
+});
+
 /**
  * What the host projects for `PIPELINE`'s two Phases: structured values and closed kinds, never
  * sentences. The launcher words them; it derives none of them (FR-022).

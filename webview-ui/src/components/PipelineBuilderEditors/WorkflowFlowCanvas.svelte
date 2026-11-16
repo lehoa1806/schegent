@@ -6,10 +6,20 @@
   // split is what lets the placement rules be tested without mounting anything.
   //
   // Two lanes, not one. Nodes reachable from a start are the flow; nodes no start
-  // reaches are `unreachable-node` defects, and they render BELOW under their own
-  // heading rather than being hidden. A canvas that draws only the reachable graph
-  // would hide the very node the operator has to connect or delete to make the
-  // save pass, with the host's defect pointing at something invisible.
+  // reaches are `unreachable-node` defects, and they render BELOW in a lane of
+  // their own, under a note that says why they block the save, rather than being
+  // hidden. A canvas that draws only the reachable graph would hide the very node
+  // the operator has to connect or delete to make the save pass, with the host's
+  // defect pointing at something invisible.
+  //
+  // The surface is the redesign's `.canvas-wrap` (sg-builder.css): the dotted
+  // ground and the region a screen reader can jump to. The redesign places its
+  // cards at fixed coordinates with SVG edges between them; this canvas keeps the
+  // layout module's lanes and draws each edge in CSS (workflow-flow.css), so a
+  // card never needs a coordinate, and the CSP never sees a computed `style`.
+  //
+  // A press on the ground, anywhere but a card or a control, shows the Workflow
+  // again, as in the mockup.
   import type {
     CandidateBlockControl,
     PortablePhaseDefinition,
@@ -47,7 +57,6 @@
     onsplice: (connectionIndex: number) => void;
     onnodemove: (index: number, delta: number) => void;
     onnoderemove: (index: number) => void;
-    onbranchadd: (nodeId: string) => void;
     onopenworkflow?: (workflowId: string, fromNodeId: string) => void;
   }
 
@@ -77,8 +86,23 @@
   );
   let blockCanvasExpanded = $state(true);
 
+  /** What a press on the canvas leaves alone: a card's box and every control. */
+  const NOT_GROUND = 'button, a, input, select, textarea, label, .node';
+
+  /**
+   * A press on the ground shows the Workflow again. It is a pointer shortcut:
+   * Escape and the inspector's back button are the keyboard's way to the same
+   * place (WorkflowFlowBuilder), so nothing on the canvas needs a pointer.
+   */
+  function onGroundPress(event: MouseEvent): void {
+    if (props.selection === null || props.selection.kind === 'workflow') return;
+    if (!(event.target instanceof Element) || event.target.closest(NOT_GROUND) !== null) return;
+    props.onselect({ kind: 'workflow' });
+  }
+
   const view = $derived<WorkflowFlowView>({
     nodes: props.nodes,
+    connections: props.connections,
     slotsById,
     pipelines: props.pipelines,
     phases: props.phases,
@@ -94,12 +118,20 @@
     onsplice: props.onsplice,
     onnodemove: props.onnodemove,
     onnoderemove: props.onnoderemove,
-    onbranchadd: props.onbranchadd,
     onopenworkflow: props.onopenworkflow
   });
 </script>
 
-<div class="wf-canvas" data-testid="workflow-canvas">
+<!-- A press on the ground is a pointer shortcut. Escape and the inspector's back button are the
+     keyboard's way to the same place, so the region takes no key of its own. -->
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+<div
+  class="canvas-wrap wf-canvas"
+  data-testid="workflow-canvas"
+  role="region"
+  aria-label="Workflow graph canvas"
+  onclick={onGroundPress}
+>
   {#if candidateBlockPath}
     <div
       class="wf-candidate-block-banner"
@@ -107,7 +139,7 @@
     >
       <div class="wf-candidate-block-head">
         <span class="wf-badge" data-testid="workflow-canvas-candidate-selection-mode">
-          Candidate Block · Exclusive single-active selection
+          Candidate block · Exclusive single-active selection
         </span>
         <span class="wf-badge" data-testid="workflow-canvas-candidate-policy">
           {candidateBlockPath.availabilityPolicy}
@@ -138,7 +170,7 @@
   {/if}
   {#if props.nodes.length === 0}
     <div class="empty-selection" data-testid="workflow-canvas-empty">
-      No nodes yet. Add one from Actions.
+      No steps yet. Add one from the Add steps panel.
     </div>
   {:else}
     <div class="wf-lanes">
@@ -154,11 +186,12 @@
         <div class="wf-lane" data-testid="workflow-lane-detached">
           <!-- Says what is wrong AND why it matters: an unreachable node blocks
                the save, and "not connected" alone does not convey that. -->
-          <span class="wf-lane-note is-defect" data-testid="workflow-lane-detached-note">
+          <div class="lane-note wf-lane-note" data-testid="workflow-lane-detached-note">
+            <svg class="i" aria-hidden="true"><use href="#i-warn"></use></svg>
             {roots.length === 0
               ? 'No start node is set, so nothing below can run. Select a node and mark it a start.'
-              : 'Reachable from no start. Connect these or remove them before saving.'}
-          </span>
+              : 'Not reachable from a start. Connect these or remove them before saving.'}
+          </div>
           {#each detachedRoots as slot (slot.nodeId)}
             <WorkflowFlowSubtree {view} {slot} />
           {/each}

@@ -65,9 +65,11 @@
     denomination === 'usd' ? `$${value.toFixed(2)}` : `${value.toLocaleString('en-US')} tokens`;
 </script>
 
-<section class="run-limits" data-testid="run-limits-{queueId}" aria-label="Limits this run runs under">
+<!-- Drawn as one of the redesign's cards with its key-value list (`.card`, `.kv`), the way its run
+     page draws a step's limits: the value, then where it came from, muted. -->
+<section class="run-limits card" data-testid="run-limits-{queueId}" aria-label="Limits this run runs under">
   <h2 class="title">Limits in force</h2>
-  <dl>
+  <dl class="kv limits">
     <dt>Iteration cap</dt>
     <dd data-testid="run-limits-iteration-{queueId}">
       {effectiveLimits.iterationCap.value}
@@ -131,31 +133,33 @@
 
 <style>
   .run-limits {
-    padding: 0.5rem 0.75rem;
-    border: 1px solid var(--vscode-panel-border, currentColor);
-    border-radius: 4px;
+    flex-shrink: 0;
+    margin-bottom: var(--schegent-space-3-5);
   }
   .title {
-    margin: 0 0 0.25rem;
-    font-size: 1em;
-  }
-  dl {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 0.15rem 0.75rem;
-    margin: 0;
-  }
-  dt {
+    margin-bottom: var(--schegent-space-2);
+    font-size: var(--schegent-text-body);
     font-weight: 600;
   }
-  dd {
-    margin: 0;
+  /* Two pairs to a row while the page is wide, so the card stays short above the run's columns;
+     one pair to a row where the redesign stacks its columns. */
+  dl.limits {
+    grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
   }
+  /* The origins are fixed words the tests read exactly, so the separator is drawn, and its
+     alternative text is empty: a screen reader hears the value, then the origin. */
   .origin {
-    opacity: 0.75;
-    margin-left: 0.5rem;
+    color: var(--schegent-muted-fg);
+  }
+  .origin:not(:empty)::before {
+    content: '· ' / '';
   }
   .note {
-    margin: 0.15rem 0 0;
+    margin: var(--schegent-space-0-5) 0 0;
+  }
+  @media (max-width: 860px) {
+    dl.limits {
+      grid-template-columns: max-content minmax(0, 1fr);
+    }
   }
 </style>

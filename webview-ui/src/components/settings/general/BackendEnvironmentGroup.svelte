@@ -316,7 +316,7 @@
   unfiltered) and would hide its controls from the 44px touch-target check,
   which skips 0x0 rects.
 -->
-<details class="settings-group" data-testid="settings-group-backend-environment" open>
+<details class="section settings-group" data-testid="settings-group-backend-environment" open>
   <!--
     FR-R3-143 (T047) — singular `Backend`, verbatim from
     `docs/reference/settings.md:9`, which is the §4 grouping FR-006 requires this
@@ -360,7 +360,7 @@
       than a third one. `aria-live` because changing the selector rewrites this
       sentence AND swaps the control above it without moving focus.
     -->
-    <p class="denomination" data-testid="spend-denomination" aria-live="polite">
+    <p class="denomination small muted" data-testid="spend-denomination" aria-live="polite">
       {denominationText}
     </p>
   </div>
@@ -375,79 +375,52 @@
     {saveOne}
     {resetField}
   />
-  <div class="field-list">
-    {#each ENVIRONMENT_FIELDS as spec (spec.key)}
-      <GeneralSettingFieldRow
-        {spec}
-        bind:draft
-        status={statusByKey[spec.key]}
-        changed={fieldChanged(spec.key)}
-        scopeLabel={fieldScopeLabel(spec.key)}
-        {workflows}
-        onSave={() => saveOne(spec)}
-        onReset={() => resetField(spec.key)}
-      />
-    {/each}
-    <!--
-      FR-R3-143 (T035) — static text, deliberately. It carries no `controlId` and
-      is not focusable, so it adds no hover-text surface to account for and no
-      touch target to size; it is the summary of the four controls above, not a
-      fifth control.
+  <!--
+    The redesign's "Process environment" section: the environment rows under their own heading,
+    after the backend cards, so they do not read as part of the last card's section.
+  -->
+  <section class="section" aria-labelledby="process-environment-heading">
+    <h3 id="process-environment-heading">Process environment</h3>
+    <div class="field-list">
+      {#each ENVIRONMENT_FIELDS as spec (spec.key)}
+        <GeneralSettingFieldRow
+          {spec}
+          bind:draft
+          status={statusByKey[spec.key]}
+          changed={fieldChanged(spec.key)}
+          scopeLabel={fieldScopeLabel(spec.key)}
+          {workflows}
+          onSave={() => saveOne(spec)}
+          onReset={() => resetField(spec.key)}
+        />
+      {/each}
+      <!--
+        FR-R3-143 (T035) — static text, deliberately. It carries no `controlId` and
+        is not focusable, so it adds no hover-text surface to account for and no
+        touch target to size; it is the summary of the four controls above, not a
+        fifth control.
 
-      `aria-live="polite"` because the three inputs are elsewhere in the group:
-      toggling the legacy boolean changes this sentence without moving focus, and
-      a screen-reader user would otherwise never learn that their mode selection
-      just stopped applying.
-    -->
-    <p class="effective-policy" data-testid="effective-environment-policy" aria-live="polite">
-      <strong>Effective policy:</strong>
-      {effectivePolicyText}
-    </p>
-  </div>
+        `aria-live="polite"` because the three inputs are elsewhere in the group:
+        toggling the legacy boolean changes this sentence without moving focus, and
+        a screen-reader user would otherwise never learn that their mode selection
+        just stopped applying.
+      -->
+      <p class="effective-policy small muted" data-testid="effective-environment-policy" aria-live="polite">
+        <strong>Effective policy:</strong>
+        {effectivePolicyText}
+      </p>
+    </div>
+  </section>
 </details>
 <style>
-  .field-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    border-top: 1px solid var(--schegent-divider);
-    margin-top: 12px;
-  }
+  /* The two lines that sum up the controls above them, set as the redesign's "Stored locally"
+     line: small and muted, under the rows rather than boxed in with them. */
+  .denomination,
   .effective-policy {
-    margin: 0;
-    padding: 8px 10px;
-    font-size: 0.85em;
-    line-height: 1.5;
-    border-top: 1px solid var(--schegent-divider);
-    color: var(--schegent-muted-fg);
+    margin: var(--schegent-space-2) 0 0;
+    line-height: 1.45;
   }
   .effective-policy strong {
-    color: var(--vscode-foreground);
-  }
-  .selection {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-  }
-  .denomination {
-    margin: 0;
-    padding: 4px 10px 8px;
-    font-size: 0.85em;
-    line-height: 1.5;
-    color: var(--schegent-muted-fg);
-  }
-  .settings-group {
-    border: 1px solid var(--schegent-divider);
-    border-radius: var(--schegent-radius);
-  }
-  .settings-group > summary {
-    padding: 8px 10px;
-    font-weight: 600;
-    font-size: 0.95em;
-    cursor: pointer;
-    list-style: revert;
-  }
-  .settings-group > summary:hover {
-    background: var(--vscode-list-hoverBackground);
+    color: var(--schegent-fg);
   }
 </style>

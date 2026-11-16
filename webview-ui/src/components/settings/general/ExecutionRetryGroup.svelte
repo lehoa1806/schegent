@@ -20,7 +20,7 @@
   unfiltered) and would hide its controls from the 44px touch-target check,
   which skips 0x0 rects.
 -->
-<details class="settings-group" data-testid="settings-group-execution-retry" open>
+<details class="section settings-group" data-testid="settings-group-execution-retry" open>
   <summary>Execution, queues, and retry</summary>
   <div class="field-list">
     {#each fields as spec (spec.key)}
@@ -37,25 +37,3 @@
     {/each}
   </div>
 </details>
-<style>
-  .settings-group {
-    border: 1px solid var(--schegent-divider);
-    border-radius: var(--schegent-radius);
-  }
-  .settings-group > summary {
-    padding: 8px 10px;
-    font-weight: 600;
-    font-size: 0.95em;
-    cursor: pointer;
-    list-style: revert;
-  }
-  .settings-group > summary:hover {
-    background: var(--vscode-list-hoverBackground);
-  }
-  .field-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    border-top: 1px solid var(--schegent-divider);
-  }
-</style>

@@ -1,0 +1,160 @@
+/* Redesign design language: the workflow builder.
+   Ported from the mockup `workflow_builder_redesign.html`: the workflow list, the editor header,
+   the palette, the canvas with its nodes and edge labels, the outline view, the inspector and the
+   step picker. The phase editor form from `schegent_redesign_surfaces.html` closes the file.
+
+   A route sheet. It is imported by the root component of the route that uses it, not by an entry
+   point, so its bytes stay out of the startup stylesheets. Scoped under `.sg`; `sg-core.css` and
+   `sg-pages.css` supply the controls, the tables, the menus and the tabs.
+
+   Positions and the zoom transform are set from script, through the CSSOM. The page's Content
+   Security Policy refuses a static `style` attribute. The edge label and the insert button centre
+   themselves with `translate`, which leaves `transform` free for the press feedback in
+   `theme.css`. */
+
+/* Frame and workflow list */
+.sg.app, .sg .app { display: flex; flex-direction: column; padding: var(--schegent-space-3) var(--schegent-space-4) 0; }
+.sg .builder-head h1 { font-size: var(--schegent-text-title); font-weight: 600; }
+.sg .builder-head .tabs { margin-top: var(--schegent-space-2); margin-bottom: 0; }
+.sg .list-view { padding-top: var(--schegent-space-3); overflow: auto; flex: 1; }
+.sg .list-tools { display: flex; flex-wrap: wrap; gap: var(--schegent-space-2); align-items: center; margin-bottom: var(--schegent-space-2-5); }
+.sg .list-tools .search { width: 280px; max-width: 100%; }
+.sg .list-tools .push { display: flex; gap: var(--schegent-space-2); }
+.sg .list-view table.t { min-width: 760px; }
+.sg .wf-name { background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600; color: var(--schegent-link-fg); text-align: left; }
+.sg .wf-desc { font-size: var(--schegent-text-secondary); color: var(--schegent-muted-fg); }
+.sg .row-menu { position: relative; }
+
+/* Editor header */
+.sg .editor { display: flex; flex-direction: column; flex: 1; min-height: 0; padding-top: var(--schegent-space-2-5); }
+.sg .ed-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--schegent-space-2); padding-bottom: var(--schegent-space-2-5); }
+.sg .ed-head .crumbs { font-size: var(--schegent-text-subheading); margin-bottom: 0; }
+.sg .ed-head .crumbs a { text-decoration: none; }
+.sg .crumbs .cur { display: inline-flex; align-items: center; gap: var(--schegent-space-0-5); font-weight: 600; background: none; border: 0; cursor: pointer; padding: var(--schegent-space-0-5) var(--schegent-space-1); border-radius: 4px; }
+.sg .crumbs .cur:hover { background: var(--schegent-list-hover); }
+.sg .ed-head .push { display: flex; align-items: center; gap: var(--schegent-space-1-5); position: relative; }
+.sg .kbd { font-family: var(--schegent-mono-font); font-size: var(--schegent-text-micro); }
+
+/* Shell and palette */
+.sg .shell { position: relative; flex: 1; min-height: 0; display: flex; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); overflow: hidden; }
+.sg .palette { width: 236px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--schegent-shell-bg); border-right: 1px solid var(--schegent-border); }
+.sg .palette.collapsed { width: 40px; }
+.sg .palette.collapsed .pal-body, .sg .palette.collapsed .pal-title { display: none; }
+.sg .pal-head { display: flex; align-items: center; justify-content: space-between; padding: var(--schegent-space-2) var(--schegent-space-2) var(--schegent-space-1) var(--schegent-space-3); }
+.sg .pal-title { font-weight: 600; }
+.sg .pal-body { padding: var(--schegent-space-1) var(--schegent-space-2) var(--schegent-space-3); overflow-y: auto; flex: 1; }
+.sg .pal-group h3 { margin: var(--schegent-space-3) var(--schegent-space-1) var(--schegent-space-1); font-size: var(--schegent-text-caption); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--schegent-muted-fg); }
+.sg .pal-item { display: flex; align-items: flex-start; gap: var(--schegent-space-2); width: 100%; padding: var(--schegent-space-1-5); border: 0; border-radius: var(--schegent-radius-sm); background: none; cursor: pointer; text-align: left; }
+.sg .pal-item:hover { background: var(--schegent-list-hover); }
+.sg .pal-item .t { display: block; font-weight: 500; }
+.sg .pal-item .d { display: block; font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); }
+
+/* Canvas */
+.sg .cv-layer { position: relative; flex: 1; min-width: 0; display: flex; }
+.sg .canvas-wrap { position: relative; flex: 1; min-width: 0; overflow: auto; background-color: var(--schegent-bg); background-image: radial-gradient(var(--schegent-canvas-dot) 1px, transparent 1px); background-size: 16px 16px; }
+.sg .world { position: relative; transform-origin: 0 0; }
+.sg .world svg.edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.sg .edge { fill: none; stroke: var(--schegent-muted-fg); stroke-width: 1.4; }
+.sg .edge.loop { stroke-dasharray: 5 4; }
+.sg .edge.sel { stroke: var(--schegent-focus-border); stroke-width: 2.2; }
+.sg .node { position: absolute; width: 236px; text-align: left; padding: var(--schegent-space-2) var(--schegent-space-2-5); border-radius: var(--schegent-radius); border: 1px solid var(--schegent-border); background: var(--schegent-surface); cursor: pointer; display: flex; flex-direction: column; gap: 3px; }
+.sg .node:hover { border-color: var(--schegent-muted-fg); }
+.sg .node.sel { border-color: var(--schegent-focus-border); box-shadow: var(--schegent-ring-selected); }
+.sg .node.defect { border-color: var(--schegent-color-error); }
+.sg .node .row1 { display: flex; align-items: center; gap: var(--schegent-space-2); }
+.sg .node .name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sg .node .id { font-family: var(--schegent-mono-font); font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); padding-left: var(--schegent-space-6); }
+.sg .node .sum { font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); padding-left: var(--schegent-space-6); }
+.sg .node .badges { display: flex; flex-wrap: wrap; gap: var(--schegent-space-1); padding-left: var(--schegent-space-6); margin-top: var(--schegent-space-0-5); }
+/* The badge, the note and the status line sit under the part that holds them in the mockup (the
+   node, the inspector, the editor). Other pages use those three class names for their own things,
+   and a route sheet stays in the document once its route has loaded. */
+.sg .node .badge { display: inline-flex; align-items: center; gap: 3px; height: 18px; padding: 0 var(--schegent-space-1-5); border-radius: 9px; font-size: var(--schegent-text-caption); background: var(--schegent-surface-subtle); }
+.sg .node .badge.start { color: var(--schegent-status-completed-text); --sg-status-color: var(--schegent-color-completed); }
+.sg .node .badge.err { color: var(--schegent-status-error-text); --sg-status-color: var(--schegent-color-error); background: color-mix(in srgb, var(--schegent-color-error) 14%, transparent); }
+.sg .node .badge.loop { color: var(--schegent-workflow-text); --sg-status-color: var(--schegent-color-workflow); }
+.sg .node .badge svg.i { width: 12px; height: 12px; }
+.sg .preview { margin: var(--schegent-space-1) 0 0 var(--schegent-space-6); padding: var(--schegent-space-1-5) var(--schegent-space-2); border-left: 2px solid var(--schegent-color-workflow); font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); }
+.sg .elabel { position: absolute; translate: -50% -50%; display: inline-flex; align-items: center; gap: var(--schegent-space-1); height: 22px; padding: 0 var(--schegent-space-2); border-radius: 11px; border: 1px solid var(--schegent-border); background: var(--schegent-bg); font-size: var(--schegent-text-caption); cursor: pointer; white-space: nowrap; }
+.sg .elabel.sel { border-color: var(--schegent-focus-border); box-shadow: var(--schegent-ring-selected); }
+.sg .elabel .appr { color: var(--schegent-status-warning-text); --sg-status-color: var(--schegent-color-warning); display: inline-flex; align-items: center; gap: 3px; }
+.sg .elabel svg.i { width: 12px; height: 12px; }
+.sg .plus { position: absolute; translate: -50% -50%; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--schegent-border); background: var(--schegent-bg); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; opacity: 0.55; }
+.sg .plus:hover, .sg .plus:focus-visible { opacity: 1; border-color: var(--schegent-focus-border); }
+.sg .plus svg.i { width: 12px; height: 12px; }
+.sg .ntool { position: absolute; display: flex; gap: var(--schegent-space-0-5); padding: var(--schegent-space-0-5); border-radius: var(--schegent-radius-sm); background: var(--schegent-surface); border: 1px solid var(--schegent-border); box-shadow: var(--schegent-shadow-popover); }
+.sg .ntool .icon-btn { width: 26px; height: 26px; }
+.sg .lane-note { position: absolute; font-size: var(--schegent-text-secondary); color: var(--schegent-status-error-text); --sg-status-color: var(--schegent-color-error); display: flex; gap: var(--schegent-space-1-5); align-items: center; }
+.sg .cv-controls { position: absolute; left: var(--schegent-space-3); bottom: var(--schegent-space-3); display: flex; gap: var(--schegent-space-0-5); padding: var(--schegent-space-0-5); border-radius: var(--schegent-radius-sm); background: var(--schegent-surface); border: 1px solid var(--schegent-border); z-index: var(--schegent-z-sticky); }
+.sg .cv-right { position: absolute; right: var(--schegent-space-3); bottom: var(--schegent-space-3); z-index: var(--schegent-z-sticky); }
+
+/* Outline view */
+.sg .outline { flex: 1; overflow: auto; padding: var(--schegent-space-4) var(--schegent-space-4-5); }
+.sg .outline h2 { margin: 0 0 var(--schegent-space-1); }
+.sg .outline ol, .sg .outline ul { margin: var(--schegent-space-1) 0; padding-left: 22px; }
+.sg .outline li { margin: var(--schegent-space-1) 0; }
+.sg .outline .ol-node { background: none; border: 0; padding: var(--schegent-space-0-5) var(--schegent-space-1); cursor: pointer; border-radius: 4px; font-weight: 600; color: var(--schegent-link-fg); }
+.sg .outline .ol-node:hover { background: var(--schegent-list-hover); }
+
+/* Inspector */
+.sg .inspector { width: 320px; flex: 0 0 auto; display: flex; flex-direction: column; border-left: 1px solid var(--schegent-border); background: var(--schegent-shell-bg); }
+.sg .ins-head { padding: var(--schegent-space-3) var(--schegent-space-3-5) var(--schegent-space-2); border-bottom: 1px solid var(--schegent-border); }
+.sg .ins-head h2 { display: flex; align-items: center; gap: var(--schegent-space-2); }
+.sg .ins-head .sub { padding-left: var(--schegent-space-6); font-size: var(--schegent-text-caption); }
+.sg .ins-tabs { display: flex; gap: var(--schegent-space-0-5); padding: 0 var(--schegent-space-2-5); border-bottom: 1px solid var(--schegent-border); }
+.sg .ins-tabs .tab { padding: var(--schegent-space-1-5) var(--schegent-space-2); }
+.sg .ins-body { padding: var(--schegent-space-3) var(--schegent-space-3-5) var(--schegent-space-4-5); overflow-y: auto; flex: 1; }
+.sg .ins-body h3 { margin: var(--schegent-space-4) 0 var(--schegent-space-1-5); font-weight: 600; }
+.sg .ins-body h3:first-child { margin-top: 0; }
+.sg .ins-body .field { margin-bottom: var(--schegent-space-2-5); }
+.sg .combo { display: flex; align-items: center; gap: var(--schegent-space-2); width: 100%; min-height: 40px; padding: var(--schegent-space-1) var(--schegent-space-2); border: 1px solid var(--schegent-input-border); border-radius: var(--schegent-radius-sm); background: var(--schegent-input-bg); color: var(--schegent-input-fg); cursor: pointer; text-align: left; }
+.sg .combo .t { font-weight: 600; display: block; }
+.sg .combo .d { font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); display: block; }
+.sg .combo .caret { margin-left: auto; }
+.sg .ins-body .kv { grid-template-columns: auto 1fr; gap: var(--schegent-space-1) var(--schegent-space-3); }
+.sg .inh { font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); }
+.sg .radio { display: flex; gap: var(--schegent-space-2); align-items: flex-start; padding: var(--schegent-space-1-5) var(--schegent-space-2); border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius-sm); margin-bottom: var(--schegent-space-1-5); cursor: pointer; }
+.sg .radio:has(input:checked) { border-color: var(--schegent-focus-border); }
+.sg .radio input { margin-top: var(--schegent-space-0-5); }
+.sg .radio .d { display: block; font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); }
+.sg .radio[aria-disabled='true'] { opacity: 0.5; cursor: default; }
+.sg .inspector .note { font-size: var(--schegent-text-secondary); padding: var(--schegent-space-2) var(--schegent-space-2-5); border-radius: var(--schegent-radius-sm); background: var(--schegent-surface-subtle); }
+.sg .inspector .note.err { color: var(--schegent-status-error-text); --sg-status-color: var(--schegent-color-error); background: color-mix(in srgb, var(--schegent-color-error) 10%, transparent); }
+.sg .bind { width: 100%; border-collapse: collapse; min-width: 0; font-size: var(--schegent-text-secondary); }
+.sg .bind td, .sg .bind th { padding: var(--schegent-space-1); border-bottom: 1px solid var(--schegent-border); background: none; }
+.sg .bind th { text-align: left; font-weight: 600; color: var(--schegent-muted-fg); }
+.sg .bind td { vertical-align: top; }
+.sg .bind tr:last-child td { border-bottom: 0; }
+.sg details.sect { border-top: 1px solid var(--schegent-border); padding: var(--schegent-space-2) 0; }
+.sg details.sect summary { font-weight: 600; }
+.sg details.sect summary h3 { display: inline; margin: 0; }
+
+/* Step picker */
+.sg .picker { position: absolute; z-index: var(--schegent-z-popover); width: 320px; max-height: 420px; display: flex; flex-direction: column; border-radius: var(--schegent-radius); background: var(--schegent-surface); color: var(--schegent-fg); border: 1px solid var(--schegent-border); box-shadow: var(--schegent-shadow-popover); }
+.sg .picker .ph { padding: var(--schegent-space-2); border-bottom: 1px solid var(--schegent-border); }
+.sg .picker .ph .ctx { font-size: var(--schegent-text-caption); margin-bottom: var(--schegent-space-1-5); }
+.sg .picker .pl { overflow-y: auto; padding: var(--schegent-space-1); }
+.sg .picker .pl h4 { margin: var(--schegent-space-2) var(--schegent-space-1-5) var(--schegent-space-0-5); text-transform: uppercase; letter-spacing: 0.04em; color: var(--schegent-muted-fg); }
+.sg .picker .opt { display: flex; gap: var(--schegent-space-2); align-items: flex-start; width: 100%; padding: var(--schegent-space-1-5); border: 0; border-radius: 4px; background: none; cursor: pointer; text-align: left; }
+.sg .picker .opt[aria-selected='true'], .sg .picker .opt:hover { background: var(--schegent-selection-bg); color: var(--schegent-selection-fg); }
+.sg .picker .opt:focus-visible { outline-offset: -2px; }
+.sg .picker .opt .t { display: block; font-weight: 500; }
+.sg .picker .opt .d { display: block; font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); }
+.sg .picker .opt .bad { color: var(--schegent-error-text); }
+.sg .picker .opt:is([aria-selected='true'], :hover) :is(.d, .bad) { color: inherit; }
+.sg .picker .opt:is([aria-selected='true'], :hover) .kicon { background: transparent; color: inherit; }
+/* The redesign's status line under the editor is the dashboard's own (`App.svelte`): the Builder
+   announces through `status-line.svelte`, and one live region says each thing once. */
+
+/* Phase editor form */
+.sg .ed-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--schegent-space-4-5); align-items: start; }
+.sg .form-sec { border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); padding: var(--schegent-space-3-5) var(--schegent-space-4); margin-bottom: var(--schegent-space-3); }
+.sg .form-sec > h2 { font-size: var(--schegent-text-body); font-weight: 600; margin-bottom: var(--schegent-space-2-5); }
+.sg .cond { display: flex; flex-wrap: wrap; gap: var(--schegent-space-1-5); align-items: center; }
+.sg .cond .input { width: auto; }
+.sg .ins-body .cond { display: grid; grid-template-columns: 1fr 1fr; align-items: stretch; }
+.sg .ins-body .cond .full { grid-column: 1 / -1; }
+.sg .ins-body .cond .input { width: 100%; }
+
+@media (max-width: 1100px) { .sg .inspector { width: 280px; } .sg .palette { width: 200px; } }
+@media (max-width: 860px) { .sg .ed-grid { grid-template-columns: 1fr; } }
