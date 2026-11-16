@@ -1156,6 +1156,69 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
     expect(ports('definition-row-defects-design-then-build')).toEqual(['alpha', 'omega']);
   });
 
+  // The saved defects and the draft's own checks share one cap on what the Builder shows. The
+  // saved ones are counted first, so a check the draft fails takes a place the cap has left and
+  // moves no saved defect between the Issues list and the panel.
+  describe('when the draft fails a check of its own as well', () => {
+    const saved = (label: string, field = 'nodes[9].workflowId') => ({
+      field,
+      code: 'missing-required-input',
+      message: `Saved defect ${label}.`
+    });
+    const ISSUES = 'workflow-field-errors';
+    const PANEL = 'definition-row-defects-design-then-build';
+
+    const mountSaved = async (labels: readonly string[]) => {
+      const rendered = mount([
+        record({
+          lifecycle: {
+            state: 'active',
+            createdAt: 0,
+            updatedAt: 0,
+            activeVersionId: 'v1',
+            expectedDraftVersion: 'no-draft',
+            versions: []
+          },
+          errors: [
+            saved('on a step', 'nodes[1].workflowId'),
+            ...labels.map((label) => saved(label))
+          ]
+        })
+      ]);
+      await fireEvent.click(rowFor(rendered.container, 'design-then-build'));
+      const savedIn = (testId: string): string[] =>
+        [...rendered.container.querySelectorAll(`[data-testid="${testId}"] li`)]
+          .map((item) => /Saved defect ([\w ]+)\./.exec(item.textContent)?.at(1) ?? '')
+          .filter((label) => label !== '');
+      const failNameCheck = () =>
+        fireEvent.input(rendered.getByTestId('workflow-field-name'), { target: { value: '' } });
+      return { ...rendered, savedIn, failNameCheck };
+    };
+
+    it('gives the check a place the cap has left, and moves no saved defect', async () => {
+      const { getByTestId, savedIn, failNameCheck } = await mountSaved(['two', 'three', 'four']);
+      expect(savedIn(ISSUES)).toEqual(['two', 'three', 'four']);
+      expect(savedIn(PANEL)).toEqual(['on a step']);
+
+      await failNameCheck();
+
+      expect(getByTestId(ISSUES).textContent).toContain('Name is required.');
+      expect(savedIn(ISSUES)).toEqual(['two', 'three', 'four']);
+      expect(savedIn(PANEL)).toEqual(['on a step']);
+    });
+
+    it('moves no saved defect when the saved ones fill the cap', async () => {
+      const { savedIn, failNameCheck } = await mountSaved(['two', 'three', 'four', 'five', 'six']);
+      expect(savedIn(ISSUES)).toEqual(['two', 'three', 'four', 'five']);
+      expect(savedIn(PANEL)).toEqual(['on a step', 'six']);
+
+      await failNameCheck();
+
+      expect(savedIn(ISSUES)).toEqual(['two', 'three', 'four', 'five']);
+      expect(savedIn(PANEL)).toEqual(['on a step', 'six']);
+    });
+  });
+
   it('carries the association in text, not color alone (FR-044)', async () => {
     const { container } = mount([DEFECTIVE]);
     await fireEvent.click(rowFor(container, 'design-then-build'));
