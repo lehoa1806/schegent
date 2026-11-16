@@ -86,15 +86,18 @@ describe('phaseRunsOn', () => {
     );
   });
 
-  it('leaves out the parts the phase leaves to the workflow', () => {
+  it('leaves out the parts the Phase does not set', () => {
     expect(phaseRunsOn({ model: 'opus', effort: 'high' })).toBe('opus · high');
     expect(phaseRunsOn({ runner: 'codex' })).toBe('codex');
   });
 
-  it('names the Workflow defaults when the phase sets none of them', () => {
-    expect(phaseRunsOn({})).toBe('Workflow defaults');
+  // No run applies a Workflow's execution defaults. The host runs a Phase that sets no backend on
+  // the default backend, the one the Backend setting selects, with that backend's own model and
+  // effort, so the words must not name the Workflow.
+  it('names the default backend when the Phase sets none of them', () => {
+    expect(phaseRunsOn({})).toBe('Default backend');
     expect(phaseRunsOn({ runner: undefined, model: '', effort: undefined })).toBe(
-      'Workflow defaults'
+      'Default backend'
     );
   });
 });

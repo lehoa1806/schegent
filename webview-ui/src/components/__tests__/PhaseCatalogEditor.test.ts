@@ -468,3 +468,20 @@ describe('Phase catalog sentences name the Phase with its capital', () => {
     expect(textOf(container.querySelector('[data-testid="phases-add"]'))).toBe('New phase');
   });
 });
+
+// The host runs a Phase that sets no backend on the default backend, the one the Backend setting
+// selects, or on Claude when the Phase writes Git metadata. A Workflow's execution defaults are
+// advisory and no run applies them, so the unset option must not name the Workflow.
+describe('Phase editor names what an unset backend runs on', () => {
+  it('offers the default backend first, then each backend', () => {
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
+    const select = container.querySelector('[data-testid="phases-runner-custom"]') as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.textContent.trim())).toEqual([
+      'Default backend',
+      'claude',
+      'codex',
+      'agy'
+    ]);
+    expect(select.value).toBe('');
+  });
+});

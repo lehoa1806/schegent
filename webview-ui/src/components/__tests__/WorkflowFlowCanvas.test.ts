@@ -248,13 +248,13 @@ describe('a card says what its target runs', () => {
     expect(getByTestId('workflow-node-summary-0').textContent.trim()).toBe('claude · opus · high');
   });
 
-  it('names the Workflow defaults for a Phase that sets none of them', () => {
+  it('names the default backend for a Phase that sets none of them', () => {
     const { getByTestId } = renderWith({
       nodes: [{ nodeId: 'plan', kind: 'phase', phaseId: 'plan-change' }],
       phases: [{ phaseId: 'plan-change', name: 'Plan', version: 1 }]
     });
 
-    expect(getByTestId('workflow-node-summary-0').textContent.trim()).toBe('Workflow defaults');
+    expect(getByTestId('workflow-node-summary-0').textContent.trim()).toBe('Default backend');
   });
 
   it('counts the steps of a child Workflow and the Phases of a Pipeline', () => {
