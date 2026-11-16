@@ -271,7 +271,7 @@ export function formatPhaseSaveRejection(reason: string, result: unknown): strin
   } | undefined;
   const dependents = details?.dependentWorkflowIds ?? details?.dependentPipelineIds;
   if (dependents?.length) {
-    return `${reason} — used by workflows: ${dependents.join(', ')}`;
+    return `${reason} — used by Workflows: ${dependents.join(', ')}`;
   }
   if (reason === 'phase-validation' && details?.errors?.length) {
     const visible = details.errors.slice(0, 3).map((error) => {

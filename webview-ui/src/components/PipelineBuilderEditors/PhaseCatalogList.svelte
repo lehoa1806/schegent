@@ -192,7 +192,7 @@
         </table>
       </div>
     {:else}
-      <p class="no-match" data-testid="phases-no-match">No phases match the search or the status filter.</p>
+      <p class="no-match" data-testid="phases-no-match">No Phases match the search or the status filter.</p>
     {/if}
     <p class="countline" data-testid="phases-countline">{phaseCountLine(rows.length, phases.length)}</p>
   {/if}

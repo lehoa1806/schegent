@@ -421,3 +421,50 @@ describe('Phase catalog lifecycle relocation (US1, T007)', () => {
     expect(row.textContent).not.toContain('missing-model');
   });
 });
+
+// A sentence in the Builder gives the Phase kind its capital, as the Builder's
+// other hints, both mockups' descriptions and the glossary do. Its commands keep
+// the lower case both mockups give them ("New phase", "Search phases").
+describe('Phase catalog sentences name the Phase with its capital', () => {
+  function textOf(node: Element | null | undefined): string {
+    return (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  it('says a saved Phase is duplicated to get a new ID', () => {
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
+    expect(textOf(container.querySelector('.id-hint'))).toBe(
+      'ID custom is fixed once saved. Duplicate the Phase to get a new ID.'
+    );
+  });
+
+  it('captions the retry toggle with the Phase it retries', () => {
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
+    const toggle = container.querySelector('[data-testid="phases-retry-toggle"]');
+    expect(textOf(toggle?.closest('label'))).toBe('Retry this Phase while a condition holds');
+  });
+
+  it('says a retry cap outcome the Phase states is set on this Phase', () => {
+    const phase: MutablePhase = { ...STORED_PHASE, retryCondition: 'tests-passed', onRetryCap: 'fail' };
+    const { container } = mount({ phases: [phase], selectedIndex: 0 });
+    expect(textOf(container.querySelector('[data-testid="phases-retry-cap-origin-custom"]'))).toBe(
+      'Set on this Phase.'
+    );
+  });
+
+  it('says no Phases match when the search hides every row', async () => {
+    const { container } = mount({ phases: [STORED_PHASE] });
+    await fireEvent.input(container.querySelector('[data-testid="phases-search"]') as HTMLInputElement, {
+      target: { value: 'zzz' }
+    });
+    expect(textOf(container.querySelector('[data-testid="phases-no-match"]'))).toBe(
+      'No Phases match the search or the status filter.'
+    );
+  });
+
+  it('keeps the list commands in lower case', () => {
+    const { container } = mount({ phases: [STORED_PHASE] });
+    const search = container.querySelector('[data-testid="phases-search"]') as HTMLInputElement;
+    expect(search.getAttribute('aria-label')).toBe('Search phases');
+    expect(textOf(container.querySelector('[data-testid="phases-add"]'))).toBe('New phase');
+  });
+});

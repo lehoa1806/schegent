@@ -101,7 +101,7 @@
     </label>
   </div>
   {#if phase.persisted}
-    <p class="hint id-hint">ID <span class="mono">{phase.id}</span> is fixed once saved. Duplicate the phase to get a new ID.</p>
+    <p class="hint id-hint">ID <span class="mono">{phase.id}</span> is fixed once saved. Duplicate the Phase to get a new ID.</p>
   {/if}
   <div class="checks">
     <label class="form-field checkbox-field">
@@ -191,7 +191,7 @@
   <h2 id="phase-retries-h">Retries</h2>
   <label class="form-field checkbox-field retry-toggle">
     <input type="checkbox" data-testid="phases-retry-toggle" checked={retryEnabled} onchange={() => ontoggleretry(index)} disabled={!retryConditionsTrusted || readOnly} />
-    <span>Retry this phase while a condition holds</span>
+    <span>Retry this Phase while a condition holds</span>
   </label>
   {#if retryEnabled}
     <RetryConditionEditor

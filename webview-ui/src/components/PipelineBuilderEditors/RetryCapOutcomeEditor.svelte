@@ -88,7 +88,7 @@
        without this line an operator cannot tell whether changing the workspace
        setting would move this phase. -->
   <p class="hint" data-testid="phases-retry-cap-origin-{phase.id}">
-    {stated ? 'Set on this phase.' : 'Inherited from the workspace default.'}
+    {stated ? 'Set on this Phase.' : 'Inherited from the workspace default.'}
   </p>
 </div>
 

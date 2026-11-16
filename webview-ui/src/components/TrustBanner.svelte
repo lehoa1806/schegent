@@ -59,7 +59,7 @@
     'retry-conditions': {
       title: 'Custom retry-condition expressions are disabled',
       body:
-        'Default retry-conditions for each phase remain editable. See docs/operations/trust-scopes.md.'
+        'Default retry-conditions for each Phase remain editable. See docs/operations/trust-scopes.md.'
     }
   };
 
