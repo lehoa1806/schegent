@@ -138,6 +138,16 @@ describe('DefinitionLifecyclePanel — the defect list (US1, T034a, FR-015)', ()
       container.querySelector('[data-testid="definition-row-defects-speckit-specify"]')
     ).toBeNull();
   });
+
+  it('lists two identical defects as two, without colliding', () => {
+    // Nothing makes the host's defects distinct: a definition can carry the same
+    // field, code and message twice, and the list must show both rather than throw.
+    const repeated = { field: 'instruction', code: 'required', message: 'Instruction must not be empty.' };
+    const { container } = renderPanel({ defects: [repeated, { ...repeated }] });
+    const defects = container.querySelector('[data-testid="definition-row-defects-speckit-specify"]');
+    expect(defects?.querySelectorAll('li')).toHaveLength(2);
+    expect(defects?.querySelector('summary')?.textContent.replace(/\s+/g, ' ').trim()).toBe('2 defects');
+  });
 });
 
 describe('DefinitionLifecyclePanel — operator-authored text is text (US1, T033, FR-038)', () => {
