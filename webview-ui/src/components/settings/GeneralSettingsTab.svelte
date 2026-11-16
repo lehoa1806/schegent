@@ -108,12 +108,13 @@
       label: 'Session artifact budget',
       kind: 'number',
       unit: 'bytes',
+      wide: true,
       min: 1048576,
       max: 10737418240
     },
     { key: 'auditRotationSizeMB', ipcKey: 'audit.rotation.sizeMB', label: 'Audit rotation size', kind: 'number', unit: 'MB', min: 1, max: 100 },
     { key: 'auditRotationMaxAgeDays', ipcKey: 'audit.rotation.maxAgeDays', label: 'Audit retention', kind: 'number', unit: 'days', min: 1, max: 365 },
-    { key: 'runtimeLogMaxBytes', ipcKey: 'logging.runtimeLogMaxBytes', label: 'Runtime log rotation size', kind: 'number', unit: 'bytes', min: 1048576, max: 1073741824 },
+    { key: 'runtimeLogMaxBytes', ipcKey: 'logging.runtimeLogMaxBytes', label: 'Runtime log rotation size', kind: 'number', unit: 'bytes', wide: true, min: 1048576, max: 1073741824 },
     // FR-R3-143 (T047) — `0, 20`, from the manifest. T013 wrote `1, 50`, which
     // offered 21..50 to an operator the host would refuse and hid `0` (keep no
     // rotated generations), the one value with a distinct meaning.

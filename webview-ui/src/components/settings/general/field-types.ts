@@ -119,6 +119,12 @@ export interface FieldSpec {
    * and the field is read with it, so the `label` names the setting alone.
    */
   readonly unit?: string;
+  /**
+   * The largest value of a `kind: 'number'` is longer than the redesign's 110px
+   * field shows (a size in bytes), so the field takes the row's width up to its
+   * unit, as a `'number-optional'` field always does.
+   */
+  readonly wide?: boolean;
   readonly placeholder?: string;
   /** Accepted values for `kind: 'enum'`. Rendered verbatim as both value and label. */
   readonly options?: readonly string[];
