@@ -341,7 +341,7 @@ const EXEMPTIONS: ReadonlyMap<string, Exemption> = new Map<string, Exemption>([
     {
       owner: 'Settings — FatalSignaturesTab.svelte',
       reason:
-        'An array of strings with its own sub-tab. `FatalSignaturesTab` is a sibling of ' +
+        'An array of strings with its own section. `FatalSignaturesTab` is a sibling of ' +
         '`GeneralSettingsTab`, not a child of it, so the setting is reachable to an ' +
         'operator while being absent from the field lists this gate scans.',
       reviewBy: PERMANENT

@@ -1,6 +1,6 @@
 <script lang="ts">
-  // FR-R3-143 (T050) — the General tab's chrome: the privacy profile selector and the retention
-  // readout. It left `GeneralSettingsTab.svelte` because that file crossed the 500-line ceiling
+  // FR-R3-143 (T050) — the privacy profile selector and the retention readout, which fill the
+  // Settings page's Privacy and evidence section. It left `GeneralSettingsTab.svelte` because that file crossed the 500-line ceiling
   // `tests/lint/svelte-component-loc-budget.test.ts` holds every component to, and this is the
   // part with no stake in the field specs — it reads the projection and reports, where everything
   // left behind describes, drafts and saves individual settings. The whole-tab Save and Reset it

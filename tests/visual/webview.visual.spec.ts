@@ -100,14 +100,15 @@ const SURFACE_CONTRACTS: Readonly<Record<SurfaceName, SurfaceContract>> = {
     present: ['phase-log-selectors', 'phase-log-reading-pane', 'phase-log-entry-list'],
     absent: ['phase-log-loading', 'run-detail-missing']
   },
-  // FR-R3-143 (T046) — the four `settings-group-*` landmarks are the grouping
-  // this feature imposed on what was one flat field list, so a row that fell out
-  // of its group fails by name rather than as a diff ratio. The last two are the
-  // lines that report a HOST decision rather than a draft value:
-  // `effective-environment-policy` is what the three environment controls
-  // actually resolve to, and `trust-disclosure` is what Workspace Trust allows.
-  // Both render unconditionally, so their absence means the group above them
-  // stopped rendering — which is the fallback a screenshot cannot distinguish.
+  // FR-R3-143 (T046) — the `settings-group-*` landmarks are the grouping this
+  // feature imposed on what was one flat field list, so a row that fell out of
+  // its group fails by name rather than as a diff ratio. The page lands on its
+  // Backends section and hides the others, so this row holds the Backends
+  // landmarks, and `SETTINGS_SECTION_LANDMARKS` below holds each other section's.
+  // `effective-environment-policy` reports a HOST decision rather than a draft
+  // value: what the three environment controls actually resolve to. It renders
+  // unconditionally, so its absence means the group above it stopped rendering
+  // — which is the fallback a screenshot cannot distinguish.
   //
   // `absent` names the route-level branches rather than a settings-specific
   // empty state, because there is no settings-specific one: `GeneralSettingsTab`
@@ -119,12 +120,9 @@ const SURFACE_CONTRACTS: Readonly<Record<SurfaceName, SurfaceContract>> = {
   settings: {
     present: [
       'general-settings-tab',
+      'settings-section-backends',
       'settings-group-backend-environment',
-      'settings-group-execution-retry',
-      'settings-group-audit-logging',
-      'settings-group-ui-trust',
-      'effective-environment-policy',
-      'trust-disclosure'
+      'effective-environment-policy'
     ],
     absent: ['dashboard-route-error', 'dashboard-route-loading']
   }
@@ -454,13 +452,13 @@ async function openSurface(page: Page, surface: SurfaceName, theme: ThemeName): 
     await page.getByTestId('dashboard-route-settings').click();
     const settings = page.getByTestId('settings-surface-root');
     await expect(settings).toBeVisible();
-    // The General tab is `SETTINGS_TABS[0]` and `SettingsSurface.svelte` lands on
-    // it, so no click is needed — and that is asserted rather than assumed. The
-    // Builder arm above had to ask for its tab after Feature 180 moved the
-    // landing tab out from under it; the same move here would otherwise
-    // photograph Fatal Signatures and be adopted by the next baseline refresh.
-    await expect(page.getByTestId('settings-tab-general')).toHaveAttribute(
-      'aria-selected',
+    // The page lands on its Backends section (`SETTINGS_SECTIONS[0]`), so no
+    // click is needed — and that is asserted rather than assumed. The Builder
+    // arm above had to ask for its tab after Feature 180 moved the landing tab
+    // out from under it; the same move here would otherwise photograph another
+    // section and be adopted by the next baseline refresh.
+    await expect(page.getByTestId('settings-nav-backends')).toHaveAttribute(
+      'aria-current',
       'true'
     );
     return settings;
@@ -598,6 +596,88 @@ for (const theme of ['light', 'dark', 'high-contrast'] as const) {
 }
 
 /**
+ * The Settings page shows one section at a time, Backends on arrival, so the `settings` shots
+ * above photograph Backends only. Each other section is photographed in the light theme, after
+ * the landmarks that prove it is the section on screen. Keyed by the section's id, as its
+ * navigation button and its section carry it.
+ */
+const SETTINGS_SECTION_LANDMARKS: Readonly<Record<string, readonly string[]>> = {
+  execution: ['settings-group-execution-retry'],
+  logging: ['settings-group-audit-logging'],
+  privacy: ['privacy-profiles', 'session-artifact-usage'],
+  // `trust-disclosure` reports a host decision rather than a draft value: what
+  // Workspace Trust allows. It renders unconditionally, as
+  // `effective-environment-policy` does in `SURFACE_CONTRACTS.settings`.
+  trust: ['settings-group-ui-trust', 'trust-disclosure'],
+  signatures: ['settings-fatal-signatures-tab']
+};
+
+/** Shows a Settings section by its navigation button and proves it is the one on screen. */
+async function showSettingsSection(page: Page, section: string): Promise<void> {
+  const button = page.getByTestId(`settings-nav-${section}`);
+  await button.click();
+  await expect(button).toHaveAttribute('aria-current', 'true');
+  await expect(page.locator('[data-testid^="settings-section-"]:visible')).toHaveCount(1);
+  await expect(page.getByTestId(`settings-section-${section}`)).toBeVisible();
+}
+
+/**
+ * Every section the Settings navigation lists, by id, in its order. Read from the page, so a
+ * section added to the page is walked, and must be photographed, without this file naming it.
+ */
+async function settingsSections(page: Page): Promise<string[]> {
+  return page
+    .getByRole('navigation', { name: 'Settings sections' })
+    .getByRole('button')
+    .evaluateAll((buttons) =>
+      buttons.map((button) => (button.getAttribute('data-testid') ?? '').replace(/^settings-nav-/, ''))
+    );
+}
+
+/**
+ * Shows each Settings section in turn and runs `visit` on it. A control in a hidden section has
+ * no box, so a measurement of the page is a measurement of each section.
+ */
+async function eachSettingsSection(
+  page: Page,
+  visit: (section: string) => Promise<void>
+): Promise<void> {
+  const sections = await settingsSections(page);
+  expect(sections.length, 'the Settings navigation lists its sections').toBeGreaterThan(1);
+  for (const section of sections) {
+    await showSettingsSection(page, section);
+    await visit(section);
+  }
+}
+
+test('every settings section is photographed', async ({ page }) => {
+  await openSurface(page, 'settings', 'light');
+  expect(
+    (await settingsSections(page)).sort(),
+    'a Settings section has no screenshot, so nothing compares its pixels'
+  ).toEqual(['backends', ...Object.keys(SETTINGS_SECTION_LANDMARKS)].sort());
+  assertNoPageErrors(page, 'settings sections');
+});
+
+for (const [section, landmarks] of Object.entries(SETTINGS_SECTION_LANDMARKS)) {
+  test(`settings ${section} section remains visually stable in light`, async ({ page }) => {
+    const settings = await openSurface(page, 'settings', 'light');
+    await showSettingsSection(page, section);
+    for (const testId of landmarks) {
+      await expect(
+        page.getByTestId(testId),
+        `settings ${section}: landmark '${testId}' did not render, so the screenshot is not of this section`
+      ).toBeVisible();
+    }
+    assertNoPageErrors(page, `settings ${section}`);
+    await expect(settings).toHaveScreenshot(`settings-${section}-light.png`, {
+      mask: [...volatileMasks(page)],
+      maskColor: '#e5e7eb'
+    });
+  });
+}
+
+/**
  * Room a number field keeps for its spin button. Chromium lays the button out on
  * every enabled number field and only fades it in on hover, so the text never
  * gets that width back.
@@ -650,6 +730,26 @@ async function fieldTextFit(fields: Locator, attribute: 'placeholder' | 'max'): 
 }
 
 /**
+ * `fieldTextFit` over each Settings section in turn: the page hides the sections it does not
+ * show, and `fieldTextFit` skips a field with no box.
+ */
+async function settingsFieldTextFit(
+  page: Page,
+  settings: Locator,
+  selector: string,
+  attribute: 'placeholder' | 'max'
+): Promise<FieldTextFit> {
+  const measured: string[] = [];
+  const cutOff: string[] = [];
+  await eachSettingsSection(page, async () => {
+    const fit = await fieldTextFit(settings.locator(selector), attribute);
+    measured.push(...fit.measured);
+    cutOff.push(...fit.cutOff);
+  });
+  return { measured, cutOff };
+}
+
+/**
  * A placeholder that names a field's unset state ("Unset — no bound") is the
  * only place the operator reads that state, and a field too narrow for it says
  * something else ("Unset — no"). The pixel gate cannot hold this: a cut-off
@@ -657,8 +757,10 @@ async function fieldTextFit(fields: Locator, attribute: 'placeholder' | 'max'): 
  */
 test('every settings placeholder fits inside its field', async ({ page }) => {
   const settings = await openSurface(page, 'settings', 'light');
-  const { measured, cutOff } = await fieldTextFit(
-    settings.locator('input[placeholder]:not([placeholder=""]), textarea[placeholder]:not([placeholder=""])'),
+  const { measured, cutOff } = await settingsFieldTextFit(
+    page,
+    settings,
+    'input[placeholder]:not([placeholder=""]), textarea[placeholder]:not([placeholder=""])',
     'placeholder'
   );
   // Named, because the empty list below passes just as well when nothing was measured.
@@ -681,7 +783,7 @@ test('every settings placeholder fits inside its field', async ({ page }) => {
  */
 test('every settings number field shows its largest value', async ({ page }) => {
   const settings = await openSurface(page, 'settings', 'light');
-  const { measured, cutOff } = await fieldTextFit(settings.locator('input[type="number"][max]'), 'max');
+  const { measured, cutOff } = await settingsFieldTextFit(page, settings, 'input[type="number"][max]', 'max');
   // Named, because the empty list below passes just as well when nothing was measured.
   expect(measured, 'the fields this was written for were measured').toEqual(
     expect.arrayContaining([
@@ -1010,30 +1112,40 @@ test.describe('responsive accessibility hardening', () => {
         await page.getByRole('tab', { name: 'Models' }).click();
       }
 
-      const overflow = await page.evaluate(
-        'Math.max(0, document.documentElement.scrollWidth - window.innerWidth)'
-      );
-      expect(overflow, `${route} introduced page-level horizontal overflow`).toBeLessThanOrEqual(1);
+      const measureView = async (view: string): Promise<void> => {
+        const overflow = await page.evaluate(
+          'Math.max(0, document.documentElement.scrollWidth - window.innerWidth)'
+        );
+        expect(overflow, `${view} introduced page-level horizontal overflow`).toBeLessThanOrEqual(1);
 
-      const undersized = await collectUndersizedTargets(page);
-      expect(undersized, `${route} has undersized coarse-pointer controls`).toEqual([]);
+        const undersized = await collectUndersizedTargets(page);
+        expect(undersized, `${view} has undersized coarse-pointer controls`).toEqual([]);
 
-      const unnamedForms = await page.locator('input, select, textarea').evaluateAll((controls) =>
-        controls.flatMap((control) => {
-          const element = control as typeof control & { labels?: { length: number } };
-          const labelledBy = element.getAttribute('aria-labelledby');
-          const hasLabelledBy = labelledBy
-            ?.split(/\s+/)
-            .some((id: string) => element.ownerDocument.getElementById(id)?.textContent?.trim());
-          const hasName = Boolean(
-            element.getAttribute('aria-label')?.trim() ||
-            hasLabelledBy ||
-            element.labels?.length
-          );
-          return hasName ? [] : [element.outerHTML.slice(0, 180)];
-        })
-      );
-      expect(unnamedForms, `${route} has unnamed form controls`).toEqual([]);
+        const unnamedForms = await page.locator('input, select, textarea').evaluateAll((controls) =>
+          controls.flatMap((control) => {
+            const element = control as typeof control & { labels?: { length: number } };
+            const labelledBy = element.getAttribute('aria-labelledby');
+            const hasLabelledBy = labelledBy
+              ?.split(/\s+/)
+              .some((id: string) => element.ownerDocument.getElementById(id)?.textContent?.trim());
+            const hasName = Boolean(
+              element.getAttribute('aria-label')?.trim() ||
+              hasLabelledBy ||
+              element.labels?.length
+            );
+            return hasName ? [] : [element.outerHTML.slice(0, 180)];
+          })
+        );
+        expect(unnamedForms, `${view} has unnamed form controls`).toEqual([]);
+      };
+
+      // Settings shows one section at a time and hides the rest, and a hidden control has no
+      // box, so the route is measured once per section.
+      if (route === 'settings') {
+        await eachSettingsSection(page, (section) => measureView(`settings (${section})`));
+      } else {
+        await measureView(route);
+      }
 
       // Per route, not once at the end: the walk visits seven surfaces, and a
       // single end-of-test drain would let the last route's silence stand in for
@@ -1049,9 +1161,9 @@ test.describe('responsive accessibility hardening', () => {
    *
    * - **`StringListField`'s per-entry Remove button.** The fixture's
    *   `cliEnvironmentAllowlist` is `[]`, so the `{#each}` renders nothing and the
-   *   only buttons the walk sees are Add and the field's save/reset pair. A
-   *   Remove that came out at 20px would be invisible to the walk forever,
-   *   because the surface the walk measures never has one.
+   *   only list button the walk sees is Add. A Remove that came out at 20px would
+   *   be invisible to the walk forever, because the surface the walk measures
+   *   never has one.
    * - **A control that only exists after an interaction.** The entry field's
    *   error line (`role="alert"`) is likewise unreachable from a published
    *   snapshot alone.
@@ -1059,7 +1171,8 @@ test.describe('responsive accessibility hardening', () => {
    * So this seeds a row through the UI rather than through the fixture: typing
    * and clicking Add is the path an operator takes, it exercises `add()`'s
    * validation against the host's own `itemPattern`, and it leaves the shared
-   * snapshot — and therefore the three settings baselines — untouched.
+   * snapshot — and therefore the settings baselines — untouched. The allowlist
+   * is in the Backends section, the one the page lands on.
    */
   test('the settings surface holds the 44px floor once its list controls exist', async ({ page }) => {
     await installDeterministicHost(page);
@@ -1072,9 +1185,10 @@ test.describe('responsive accessibility hardening', () => {
     await page.getByTestId('dashboard-route-settings').click();
     await assertRouteMounted(page, 'settings', ROUTE_MOUNT_TARGETS.settings);
 
-    // The four group headers are `<summary>`, and each one is a tap target.
+    // The four group headers are `<summary>`, and each one is a tap target. Three are in
+    // sections the page hides on arrival, still mounted, so all four are counted.
     const summaries = page.locator('[data-testid^="settings-group-"] > summary');
-    await expect(summaries, 'the General tab renders its four collapsible groups').toHaveCount(4);
+    await expect(summaries, 'the page renders its four collapsible groups').toHaveCount(4);
 
     const allowlist = 'cliEnvironmentAllowlist';
     await expect(

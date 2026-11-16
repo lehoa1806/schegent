@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Feature 011 T069 — Fatal Signatures sub-tab.
+   * Feature 011 T069 — the failure signatures, the Settings page's Failure signatures section.
    *
    * Renders two visual sections per contracts/fatal-signatures.md:
    *   1. Built-in (read-only) — mirrors `FATAL_SIGNATURES` from
@@ -289,7 +289,7 @@
     margin: 0 0 var(--schegent-space-3);
   }
   /* Each part heads with an h3 set as the redesign’s section heading (`.section > h2`), as
-     the General tab’s sub-sections do. */
+     the parts inside a general settings group do. */
   .section > h3 {
     display: flex;
     align-items: center;

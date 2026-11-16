@@ -152,7 +152,9 @@ shipped at **35px** against a 44px floor. The axe scan could not have caught thi
 WCAG **2.2** SC 2.5.8, and this scan's tag set is `wcag2a, wcag2aa, wcag21a, wcag21aa`. Both halves are
 fixed — `summary` is in the walk's selector and in the theme's coarse-pointer rule — and the walk now
 seeds a list entry through the UI first, because `StringListField`'s per-row Remove button does not
-exist on a surface published with an empty allowlist and so had never been measured either.
+exist on a surface published with an empty allowlist and so had never been measured either. On
+2026-11-16 Settings went to one section at a time, which hid three of the four groups from the walk,
+since it skips an element with no box; the walk now shows each section in turn and measures it.
 <!-- Source: webview-ui/src/lib/theme.css -->
 <!-- Source: tests/visual/webview.visual.spec.ts -->
 
