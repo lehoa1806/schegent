@@ -27,7 +27,7 @@ export const DASHBOARD_NAVIGATION = Symbol('schegent.dashboard.navigation');
 /** What a surface may ask the dashboard shell to do. */
 export interface DashboardNavigation {
   /**
-   * Open the Settings route on its Backends section, with the Backend health heading in view.
+   * Open the Settings route on its Backends section, with the Installed backends heading in view.
    * Changes no host state and posts nothing.
    */
   readonly openBackendSettings: () => void;

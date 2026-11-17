@@ -291,11 +291,15 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
     // `renderActionBody`, so a placeholder here would reach the operator as the
     // literal `{label}`. The backend is named twice in the body instead — once by
     // the policy's own sentence, once by the scope line under it.
+    //
+    // The button and the last sentence use the words of the control that opens this dialog, the
+    // "Allow running unsandboxed…" item in the backend card's actions menu, and say where the
+    // way back is: the same menu.
     title: 'Allow this backend to run without a sandbox?',
     bodyTemplate:
       '{refusal}\n\nGranting this applies to **{label}** only, and you can revoke it ' +
-      'from this section at any time.',
-    confirmLabel: 'Allow Uncontained',
+      'from the actions menu on its card at any time.',
+    confirmLabel: 'Allow Unsandboxed',
     severity: 'destructive'
   },
   // Feature 195 (T064, FR-025) — the body carries the whole requirement, in

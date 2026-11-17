@@ -97,7 +97,7 @@ function buildBaseSnapshot(overrides: Partial<WorkflowSnapshot> & LegacyRunField
     availablePipelines: Object.freeze([]),
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze([]),
-    // FR-R3-144 (T034, T035) — the posture projection, on every mount. The grant button
+    // FR-R3-144 (T034, T035) — the posture projection, on every mount. The grant item
     // renders only for a backend whose containment the platform does not enforce,
     // so a fixture without postures would report `backend-grant` as an orphan key
     // and would hold the control count down by two. These are the shipped
@@ -280,7 +280,15 @@ const TAB_SPECS: readonly TabSpec[] = [
     // had 103 controls; 62 left: the Save and Reset of each of the 30 field rows
     // it draws, and the tab's Save all and Reset all. The page header's Save and
     // Revert replace them all and are counted by the `SettingsPageHeader` entry.
-    minFocusableControls: 41,
+    //
+    // Raised from 41 to 53 by the redesigned backend cards. Five controls left
+    // the mount: the three Ping buttons and the two grant buttons. Seventeen
+    // arrived: on each of the three cards a Details link, a "Set path…" button
+    // (no backend is found on this fixture), the actions menu's button and its
+    // "Test" and "Change path…" items, and the grant item on the two cards whose
+    // backend the platform does not contain. A menu's items are counted while
+    // the menu is closed, since they stay in the document.
+    minFocusableControls: 53,
     descriptionKeys: Object.keys(GENERAL_SETTINGS_DESCRIPTIONS),
     controlIdToKey: (id) => {
       // FR-R3-143 (T030) — the allowlist editor's Remove buttons are per-row,
@@ -290,15 +298,17 @@ const TAB_SPECS: readonly TabSpec[] = [
       if (/^cliEnvironmentAllowlist-remove-\d+$/.test(id)) {
         return 'cliEnvironmentAllowlist-remove';
       }
-      // FR-R3-144 (T034) — one grant button per uncontained backend, so the id
-      // carries the backend and they share one description. Per-instance for the
+      // Every control of a backend card carries its backend in its id, and the
+      // cards share one description per kind of control: the test (FR-R3-144's
+      // `backend-ping`), the Details link, "Set path…", the actions menu's
+      // button, "Change path…" and the grant item (T034). Per-instance for the
       // same reason as the Remove buttons above: the action's inline branch
-      // (body ≤ 80 chars) injects `id="desc-<controlId>"`, so a shared id across
-      // sections would be a duplicate DOM id the moment the body is shortened.
-      // `backend-ping` reuses one id across all three sections and survives only
-      // because its body is long enough to take the popover branch — noted in this
-      // feature's review; not changed here, as it is untouched shipped behaviour.
-      if (/^backend-grant-[a-z]+$/.test(id)) return 'backend-grant';
+      // (body ≤ 80 chars) injects `id="desc-<controlId>"`, so an id shared across
+      // cards would be a duplicate DOM id the moment a body is shortened.
+      // `backend-ping` was one id on all three cards until the redesign gave it
+      // its backend as well.
+      const card = /^backend-(ping|details|set-path|actions|change-path|grant)-[a-z]+$/.exec(id);
+      if (card !== null) return `backend-${card[1]}`;
       return id in GENERAL_SETTINGS_DESCRIPTIONS ? id : null;
     }
   },

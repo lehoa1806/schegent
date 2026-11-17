@@ -74,6 +74,13 @@ export type GeneralSettingsControlId =
   | 'trust-phases-open-settings'
   | 'trust-retryConditions-open-settings'
   | 'backend-ping'
+  // The Settings redesign's backend card: its Details link, the "Set path…"
+  // button of a backend that was not found, and the actions menu with its
+  // "Change path…" item. The test keeps the key it had as the Ping button.
+  | 'backend-details'
+  | 'backend-set-path'
+  | 'backend-actions'
+  | 'backend-change-path'
   // FR-R3-144 (T031, T036, T034) — the backend selector, both per-run spend
   // bounds, and the uncontained grant. The grant is not a draft field the page
   // Save writes: it writes through its own IPC command the moment it is
@@ -233,10 +240,42 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
 
   'backend-ping': {
-    title: 'Ping backend',
+    title: 'Test backend',
     body:
       'Run a bounded host-side CLI availability probe. The command carries ' +
       'only the backend identity; configured paths and process output never reach the webview.'
+  },
+
+  // The backend card's other controls. Each body is longer than the inline
+  // limit on purpose: a short one is injected as a paragraph beside its control,
+  // which would break a title row, a button group or a menu.
+  'backend-details': {
+    title: 'Backend details',
+    body:
+      'Show or hide the path this backend is started from, the sandbox it runs ' +
+      'under, the reason it cannot run when there is one, and the settings that ' +
+      'apply to it alone.'
+  },
+  'backend-set-path': {
+    title: 'Set path',
+    body:
+      'Open the path field for this backend. Enter the command name or the full ' +
+      'path of its CLI, then save; Schegent looks for the backend again after the ' +
+      'path is saved.'
+  },
+  'backend-actions': {
+    title: 'Backend actions',
+    body:
+      'Open the other actions for this backend: change the path it is started ' +
+      'from, test it when it was not found, and allow or revoke permission to run ' +
+      'unsandboxed where that applies.'
+  },
+  'backend-change-path': {
+    title: 'Change path',
+    body:
+      'Open the path field for this backend so you can point it at another CLI. ' +
+      'The new path is used after you save, and Schegent then looks for the ' +
+      'backend again.'
   },
 
   // FR-R3-144 (T031) — the setting the whole item turns on.
@@ -274,13 +313,13 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   // carried by the posture projection; this is the standing explanation of the
   // control itself.
   'backend-grant': {
-    title: 'Uncontained permission',
+    title: 'Permission to run unsandboxed',
     body:
       'Allow this backend to run even though the platform enforces no sandbox for ' +
       'it. The permission is per backend, is stored in your settings, and can be ' +
-      'revoked here at any time — revoking takes effect on the next invocation. ' +
-      'Without it the run is refused before the process starts, which is what the ' +
-      'sentence beside this button says.'
+      'revoked from this menu at any time — revoking takes effect on the next ' +
+      'invocation. Without it the run is refused before the process starts, and ' +
+      'Details on this card gives the reason.'
   },
 
   'trust-phases-open-settings': {
@@ -391,7 +430,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
       'How long a backend availability probe may run before it is treated as ' +
       'unavailable (1–30). Raise it on a slow filesystem or a cold network ' +
       'mount. Applies to every workspace on this machine, and is read at the ' +
-      'start of each probe — the next Ping uses the new value, with no reload.'
+      'start of each probe — the next test uses the new value, with no reload.'
   },
 
   // FR-R3-143 (T032) — two `window`-scoped settings, saved to this workspace.

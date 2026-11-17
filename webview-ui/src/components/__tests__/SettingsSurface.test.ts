@@ -167,10 +167,10 @@ describe('Settings redesign — the section navigation', () => {
     }
   });
 
-  // "Review in Settings" on a launch notice opens this page fresh and scrolls to the Backend
-  // health heading (`dashboard/App.svelte`). The scroll only lands while that heading is in the
+  // "Review in Settings" on a launch notice opens this page fresh and scrolls to the Installed
+  // backends heading (`dashboard/App.svelte`). The scroll only lands while that heading is in the
   // section the page opens on, since a hidden section has no box to scroll to.
-  it('opens on the section that holds the Backend health heading a launch notice scrolls to', () => {
+  it('opens on the section that holds the Installed backends heading a launch notice scrolls to', () => {
     const { container } = renderSurface();
     const heading = container.querySelector('#backend-health-heading');
     expect(heading?.closest('[data-testid^="settings-section-"]')?.getAttribute('data-testid'))

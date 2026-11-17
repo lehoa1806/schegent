@@ -243,7 +243,7 @@ export type StatusByKey = Partial<Record<ScalarKey, FieldStatus>>;
  * It replaces `BACKEND_FIELDS[i]` paired against `RUNNERS[i]` by position. That
  * pairing was correct only because the two arrays happened to be written in the
  * same order, and nothing checked: a path spec inserted at the front would have
- * drawn Claude's path under Codex's Ping button, with every test still green.
+ * drawn Claude's path under Codex's check button, with every test still green.
  *
  * The type lives here; the record itself must stay in `.svelte`, because its
  * `key:`/`ipcKey:` literals are the evidence base of the settings coverage gate
