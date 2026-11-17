@@ -1102,6 +1102,51 @@ test('every settings number field shows its largest value', async ({ page }) => 
   assertNoPageErrors(page, 'settings number values');
 });
 
+/** The panel width a page must fit without scrolling sideways (WCAG 1.4.10, Reflow). */
+const REFLOW_PANEL_WIDTH_PX = 320;
+
+/**
+ * A panel 320px wide shows every Settings section without scrolling sideways.
+ * The coarse-pointer walks cannot hold this: they measure the document, and
+ * Settings scrolls in a box of its own inside the document, so a line too long
+ * for that box makes the box scroll sideways and leaves the document as it was.
+ * The fixture's refused backend found it: the host's sentence quotes two
+ * setting keys, each wider than the line at this width and with no place to
+ * break.
+ */
+test('every settings section fits a 320px panel without scrolling sideways', async ({ page }) => {
+  const settings = await openSurface(page, 'settings', 'light');
+  // Set here, after `openSurface`, which sets the size the baselines are photographed at.
+  await page.setViewportSize({ width: REFLOW_PANEL_WIDTH_PX, height: 960 });
+  // Named, because the empty list below passes just as well with the sentence off the page.
+  await expect(
+    settings.getByTestId('backend-refusal-claude'),
+    'the refused backend shows the host sentence this was written for'
+  ).toBeVisible();
+
+  const scroller = settings.locator('.page');
+  const tooWide: string[] = [];
+  await eachSettingsSection(page, async (section) => {
+    const { content, box } = await scroller.evaluate(
+      (node: { scrollWidth: number; clientWidth: number }) => ({
+        content: node.scrollWidth,
+        box: node.clientWidth
+      })
+    );
+    // The box is measured too: content that fits a box wider than the panel proves nothing.
+    expect(box, `the ${section} section's page is wider than the panel`).toBeLessThanOrEqual(
+      REFLOW_PANEL_WIDTH_PX
+    );
+    expect(
+      await page.evaluate('Math.max(0, document.documentElement.scrollWidth - window.innerWidth)'),
+      `the ${section} section widened the document`
+    ).toBeLessThanOrEqual(1);
+    if (content - box > 1) tooWide.push(`${section}: ${content}px in a ${box}px page`);
+  });
+  expect(tooWide, 'a Settings section scrolls sideways on a 320px panel').toEqual([]);
+  assertNoPageErrors(page, 'settings reflow');
+});
+
 /**
  * T587d — the half of SC-009b the unit suite cannot hold.
  *
