@@ -173,6 +173,7 @@ Sidebar:
 
 Queues:
 
+- **The queues list's purpose line is the mockup's, and a read-only window reads a different second sentence.** "Each queue runs its tasks in order. Open a queue to add or manage tasks." is true of the host, which starts a queue's pending tasks first in, first out. A secondary window opens a queue and reads its tasks but adds and manages none (FR-065), so there the line ends "Open a queue to see its tasks." The mockup draws no read-only window.
 - **A task that has not started is "Pending"**: in the queues table, the queue page's status chips and filter, the add-task drawer and the order hint. The mockup says "Waiting". "Pending" is the product's status label, so a row and the run it opens name the status the same way.
 - **The header's add button says "Add work".** It is the name the `schegent.schedule` command's message, the `schegent.defaultWorkflowId` setting and the docs send the operator to. The mockup's says "Add task". The drawer the button opens is headed "Add task to" and the queue's name, and its submit button says "Add task".
 - **A queue page row is a button on a grid the rows share, not a table row.** The button opens the run. The controls that act on the task (the drag handle, the move select and the row menu) sit beside it, never inside it (BUG-003).

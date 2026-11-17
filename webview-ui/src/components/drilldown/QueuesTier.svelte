@@ -66,6 +66,11 @@
   // FR-R3-124 — the count only. A line naming the concurrency cap would make this list a surface
   // that owes the shared-tree disclosure; Settings, Queues, where the cap is chosen, states both.
   const countLine = $derived(`${ordered.length} ${ordered.length === 1 ? 'queue' : 'queues'}`);
+  // The purpose line's second sentence: what opening a queue is for. A secondary window opens a
+  // queue and reads its tasks but adds and manages none (FR-065), so its line offers the reading.
+  const purposeNextStep = $derived(
+    isPrimary ? 'Open a queue to add or manage tasks.' : 'Open a queue to see its tasks.'
+  );
 
   // Absent outside the dashboard, and then "Queue defaults" is not rendered.
   const navigation = getContext<DashboardNavigation | undefined>(DASHBOARD_NAVIGATION);
@@ -143,7 +148,7 @@
   <div class="phead">
     <div>
       <h1>Queues</h1>
-      <div class="purpose">Monitor and manage parallel execution queues and lifecycles.</div>
+      <div class="purpose">Each queue runs its tasks in order. {purposeNextStep}</div>
     </div>
     {#if navigation !== undefined || isPrimary}
       <div class="actions">
