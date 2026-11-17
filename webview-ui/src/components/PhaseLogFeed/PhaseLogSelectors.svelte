@@ -64,7 +64,7 @@
   // treatment, but the click handler still fires so the store can set
   // intent ON for the next non-null inFlight push (FR-008).
   const jumpDisabled = $derived(snapshot.queue.inFlight === null);
-  const jumpTooltip = $derived(jumpDisabled ? 'No in-flight phase (click to enable Live Mode)' : 'Jump to the currently executing phase');
+  const jumpTooltip = $derived(jumpDisabled ? 'No in-flight Phase (click to enable Live Mode)' : 'Jump to the currently executing Phase');
 
   // Breadcrumb derivations — show the user what's currently selected
   // without requiring dropdowns.

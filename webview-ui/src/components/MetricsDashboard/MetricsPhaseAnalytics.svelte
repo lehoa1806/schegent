@@ -20,7 +20,7 @@
 <section class="section steps" aria-labelledby="metrics-steps-heading" data-testid="metrics-phase-analytics">
   <h2 id="metrics-steps-heading">Steps</h2>
   {#if aggregates.length === 0}
-    <p class="empty" data-testid="metrics-phase-analytics-empty">No phase executions recorded yet.</p>
+    <p class="empty" data-testid="metrics-phase-analytics-empty">No Phase executions recorded yet.</p>
   {:else}
     <div class="table-wrap">
       <table class="t" data-testid="metrics-phase-analytics-table">

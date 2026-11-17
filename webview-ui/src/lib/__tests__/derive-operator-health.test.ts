@@ -211,7 +211,7 @@ describe('deriveOperatorHealth', () => {
     }));
     expect(health).toMatchObject({ level: 'attention', label: 'evidence degraded' });
     expect(health.title).toBe(
-      'raw transcript, runtime log and metrics rollup evidence is incomplete; workflow execution remains available'
+      'raw transcript, runtime log and metrics rollup evidence is incomplete; Workflow execution remains available'
     );
   });
 });

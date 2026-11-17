@@ -145,7 +145,7 @@ describe('a refusal is shown on the control that was invoked', () => {
     answerLast('rejected', 'run-terminal', 'refused');
     await done;
 
-    expect(h.shown).toEqual(['This Run has already finished, so its phases can no longer be changed.']);
+    expect(h.shown).toEqual(['This Run has already finished, so its Phases can no longer be changed.']);
   });
 
   it('shows a rejection the host answered for Enable the same way', async () => {

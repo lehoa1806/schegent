@@ -58,10 +58,10 @@ sentence for the outcome:
 | Outcome | Sentence the control shows |
 |---|---|
 | Accepted | Nothing; any earlier sentence on the control is cleared. |
-| `run-terminal` | This Run has already finished, so its phases can no longer be changed. |
-| `phase-already-started` (Disable) | That phase has already started, so it can no longer be disabled. |
-| `no-disabled-override` (Enable) | That phase is not disabled, so there is nothing to enable. |
-| `phase-not-future` (Enable) | That phase has already started, so it can no longer be enabled. |
+| `run-terminal` | This Run has already finished, so its Phases can no longer be changed. |
+| `phase-already-started` (Disable) | That Phase has already started, so it can no longer be disabled. |
+| `no-disabled-override` (Enable) | That Phase is not disabled, so there is nothing to enable. |
+| `phase-not-future` (Enable) | That Phase has already started, so it can no longer be enabled. |
 | `workspace-not-trusted`, `untrusted-workspace` | The workspace is not trusted, so this control is unavailable. |
 | `secondary-window-readonly` | This window is not the primary one, so it cannot change the Run. |
 | No answer within the wait | The host has not answered yet. The change may still happen; this view will update when it does. |

@@ -1589,7 +1589,7 @@ describe('BUG-002 — an unknown-tuple refusal reads as operator text (FR-028a)'
 
     const text = getByTestId('phase-log-error').textContent;
     expect(text).not.toContain('unknown-tuple');
-    expect(text).toContain('does not match a Task, pipeline or phase the host knows');
+    expect(text).toContain('does not match a Task, Pipeline or Phase the host knows');
     expect(text).toContain('Choose again');
   });
 });

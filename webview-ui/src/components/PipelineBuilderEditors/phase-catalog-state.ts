@@ -219,7 +219,7 @@ export function makeNewPhaseDraft(phases: readonly MutablePhase[]): MutablePhase
     id,
     name: 'New Phase',
     version: 1,
-    instruction: 'Describe the phase objective here.',
+    instruction: 'Describe the Phase objective here.',
     sourceKey: `draft::${id}`,
     // Feature 099 (T494a, FR-043) — a draft is `effective`, not `shadowed`. The
     // `shadowed` arm is gone with the layer tier, and it never described a draft

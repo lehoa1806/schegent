@@ -141,11 +141,11 @@
       case 'queue-paused':
         return 'The queue is paused — resume the queue to continue.';
       case 'phase-paused':
-        return 'Operator paused the active phase.';
+        return 'Operator paused the active Phase.';
       case 'manually-paused-task':
         return 'The task is paused — resume the task to continue.';
       case 'breakpoint':
-        return 'Paused at a phase breakpoint.';
+        return 'Paused at a Phase breakpoint.';
       default:
         return item.pausedReason ?? '';
     }

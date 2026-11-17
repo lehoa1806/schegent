@@ -203,7 +203,7 @@ const IDLE_FRAGMENT = Object.freeze({
  * audit row keeps the code (FR-029).
  */
 const UNKNOWN_TUPLE_TEXT =
-  'This selection does not match a Task, pipeline or phase the host knows. Choose again.';
+  'This selection does not match a Task, Pipeline or Phase the host knows. Choose again.';
 
 // Feature 067 — module-level snapshot of the last observed in-flight
 // identity tuple. Used by `applyInFlightIdentityChange` to short-circuit
