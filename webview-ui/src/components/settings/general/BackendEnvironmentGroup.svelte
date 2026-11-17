@@ -215,6 +215,7 @@
   import BackendHealthSection from '../BackendHealthSection.svelte';
   import GeneralSettingFieldRow from './GeneralSettingFieldRow.svelte';
   import type { SettingsGroupProps } from './field-types';
+  import { settingsSearch } from '../settings-search.svelte';
   // FR-R3-143 (T035) — the SAME function the spawn calls. See T034's header in
   // that module for why it is reachable from here at all.
   import { resolveProcessEnvironmentPolicy } from '../../../../../src/contracts/process-environment-policy';
@@ -246,6 +247,11 @@
     fieldChanged,
     fieldScopeLabel
   }: Props = $props();
+
+  // The page's search hides a block of this group while it holds no setting the search found.
+  const { group: searchGroup } = settingsSearch();
+  /** The environment block's heading. The page's search also finds its settings by it. */
+  const ENVIRONMENT_HEADING = 'Process environment';
 
   // FR-R3-144 (T036, FR-009) — which bound the operator is being offered follows
   // the SELECTED backend, and only one is offered at a time.
@@ -336,7 +342,7 @@
     so the page Save, the dirty marker and the scope label work on it exactly as they
     do on every other field.
   -->
-  <div class="selection" data-testid="backend-selection">
+  <div class="selection" data-testid="backend-selection" use:searchGroup>
     <GeneralSettingFieldRow
       spec={RUNNER_FIELD}
       bind:draft
@@ -376,8 +382,12 @@
     The redesign's "Process environment" section: the environment rows under their own heading,
     after the backend cards, so they do not read as part of the last card's section.
   -->
-  <section class="section" aria-labelledby="process-environment-heading">
-    <h3 id="process-environment-heading">Process environment</h3>
+  <section
+    class="section"
+    aria-labelledby="process-environment-heading"
+    use:searchGroup={() => [ENVIRONMENT_HEADING]}
+  >
+    <h3 id="process-environment-heading">{ENVIRONMENT_HEADING}</h3>
     <div class="field-list">
       {#each ENVIRONMENT_FIELDS as spec (spec.key)}
         <GeneralSettingFieldRow

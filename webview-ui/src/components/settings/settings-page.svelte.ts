@@ -7,6 +7,12 @@
  * mounted, only hidden, so an edit made in one section is still counted, saved and reverted while
  * another is shown. A section is marked while it holds an unsaved edit.
  *
+ * While the header's search field holds a word, the page shows every section that holds a matching
+ * setting in place of the one section, and no section is the current one. Choosing a section ends
+ * the search; emptying the field returns to the section that was shown. `settings-search.svelte.ts`
+ * holds what a query finds. A search changes only what is on screen, never what is counted, saved
+ * or reverted.
+ *
  * One save model per page: edits accumulate in the drafts of the page's parts, the page header
  * counts them and offers one Revert and one Save, and no row or part saves or resets on its own.
  *
@@ -22,6 +28,7 @@
  * part can save; Revert is on while anything has changed.
  */
 import { untrack } from 'svelte';
+import { SettingsSearch } from './settings-search.svelte';
 
 /** The page's sections, in the order and the words of the redesign's section navigation. */
 export const SETTINGS_SECTIONS = [
@@ -54,6 +61,8 @@ export interface SettingsPart {
 }
 
 export class SettingsPage {
+  /** The header's search. While it holds a word, it decides which sections are on screen. */
+  readonly search = new SettingsSearch();
   #parts = $state.raw<readonly SettingsPart[]>([]);
   #saving = $state(false);
   #section = $state<SettingsSectionId>('backends');
@@ -63,19 +72,25 @@ export class SettingsPage {
     this.#section = opening;
   }
 
-  /** The section the page shows. */
+  /** The section chosen in the navigation: the one shown whenever no search is on. */
   get section(): SettingsSectionId {
     return this.#section;
   }
 
-  /** Shows the given section in place of the one shown. */
+  /** The section the navigation marks as current; none while a search is on. */
+  get current(): SettingsSectionId | undefined {
+    return this.search.active ? undefined : this.#section;
+  }
+
+  /** Shows the given section in place of whatever is shown, and ends a search. */
   select(id: SettingsSectionId): void {
+    this.search.clear();
     this.#section = id;
   }
 
   /** True when the given section is on screen. */
   shows(id: SettingsSectionId): boolean {
-    return this.#section === id;
+    return this.search.active ? this.search.found(id) : this.#section === id;
   }
 
   /** True while any part holds an unsaved edit in the given section. */

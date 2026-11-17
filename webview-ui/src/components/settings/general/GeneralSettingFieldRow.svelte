@@ -8,7 +8,8 @@
   import type { Draft, FieldSpec, FieldStatus, ScalarKey } from './field-types';
   import { OUTCOME_NOT_YET_KNOWN_TEXT } from '../../../lib/boundary-refusal-text';
   import { isTransportUsage, type TransportUsage } from '../../../../../src/contracts/sidebar-ipc/transport-usage';
-  import { transportUsageLine } from './settings-draft';
+  import { ipcKeyFor, transportUsageLine } from './settings-draft';
+  import { descriptionWords, settingsSearch, type SearchWords } from '../settings-search.svelte';
   import StringListField from './StringListField.svelte';
 
   // FR-R3-143 (T003) — `ScalarKey`, `FieldKind` and `FieldSpec` now come from
@@ -66,6 +67,15 @@
     workflows,
     transportUsage
   }: Props = $props();
+
+  const { row: searchRow } = settingsSearch();
+  /** The words the page's search finds this setting by: fixed words only, never its value. */
+  const searchText = (): SearchWords => [
+    spec.label,
+    spec.note,
+    `schegent.${ipcKeyFor(spec)}`,
+    ...descriptionWords(GENERAL_SETTINGS_DESCRIPTIONS[spec.key])
+  ];
 
   function fieldLabelId(key: ScalarKey): string {
     return `general-settings-label-${key}`;
@@ -165,6 +175,7 @@
   data-testid="general-settings-field-{spec.key}"
   data-changed={changed}
   data-status={status?.status ?? 'idle'}
+  use:searchRow={searchText}
 >
   <div class="field-label">
     <div class="lab">

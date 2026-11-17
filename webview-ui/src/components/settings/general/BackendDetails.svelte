@@ -13,6 +13,7 @@
     BackendRunnerKind,
     PortableWorkflowDefinition
   } from '../../../lib/snapshot-types';
+  import { settingsSearch } from '../settings-search.svelte';
   import GeneralSettingFieldRow from './GeneralSettingFieldRow.svelte';
   import type {
     BackendSection as BackendSectionSpec,
@@ -54,6 +55,10 @@
     fieldChanged,
     fieldScopeLabel
   }: Props = $props();
+
+  // Each block of rows below draws a line of its own. While the page's search is on, a block
+  // with no setting that matches is hidden with its rows, so no line stands alone.
+  const { group: searchGroup } = settingsSearch();
 </script>
 
 {#if !discovered}
@@ -71,7 +76,7 @@
   </p>
 {/if}
 
-<div class="path-row" bind:this={pathRow}>
+<div class="path-row" bind:this={pathRow} use:searchGroup>
   <GeneralSettingFieldRow
     spec={section.path}
     bind:draft
@@ -129,7 +134,7 @@
 {/if}
 
 {#if section.specific.length > 0}
-  <div class="specific">
+  <div class="specific" use:searchGroup>
     {#each section.specific as spec (spec.key)}
       <GeneralSettingFieldRow
         {spec}

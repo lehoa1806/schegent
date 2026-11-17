@@ -59,6 +59,7 @@
   import { hoverTextAnchor } from '../hover-text/hover-text-anchor-action';
   import { FATAL_SIGNATURES_DESCRIPTIONS } from './FatalSignaturesTab.descriptions';
   import { SettingsPage } from './settings-page.svelte';
+  import { descriptionWords, settingsSearch, type SearchWords } from './settings-search.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -66,6 +67,25 @@
     page?: SettingsPage;
   }
   const { snapshot, page = new SettingsPage() }: Props = $props();
+
+  const LEAD = FATAL_SIGNATURES_DESCRIPTIONS['tab-header'].body;
+  /** The additions table's column heading. */
+  const COLUMN = 'Text to match';
+
+  // The page's search finds each list by its fixed words. The text of an addition is the user's
+  // own, so it is never searched; a built-in entry is fixed, so it is.
+  const { row: searchRow } = settingsSearch();
+  const additionsWords = (): SearchWords => [
+    ...descriptionWords(FATAL_SIGNATURES_DESCRIPTIONS['operator-section-header']),
+    COLUMN,
+    'schegent.fatalSignatures',
+    LEAD
+  ];
+  const builtInWords = (): SearchWords => [
+    ...descriptionWords(FATAL_SIGNATURES_DESCRIPTIONS['built-in-section-header']),
+    LEAD,
+    ...FATAL_SIGNATURES
+  ];
 
   const currentSettings = $derived<GeneralSettings>(
     snapshot.generalSettings ?? IDLE_GENERAL_SETTINGS
@@ -188,13 +208,14 @@
   accessible description.
 -->
 <section class="fatal-signatures-tab" data-testid="settings-fatal-signatures-tab">
-  <p class="lead small muted">{FATAL_SIGNATURES_DESCRIPTIONS['tab-header'].body}</p>
+  <p class="lead small muted">{LEAD}</p>
 
   <section
     class="section"
     data-testid="fatal-operator-section"
     aria-labelledby="fatal-operator-heading"
     aria-describedby="fatal-operator-description"
+    use:searchRow={additionsWords}
   >
     <h3 id="fatal-operator-heading">{FATAL_SIGNATURES_DESCRIPTIONS['operator-section-header'].title}</h3>
     <p id="fatal-operator-description" class="sr-only">
@@ -210,7 +231,7 @@
         <table class="t fit" data-testid="fatal-operator-list">
           <thead>
             <tr>
-              <th scope="col">Text to match</th>
+              <th scope="col">{COLUMN}</th>
               <th scope="col"><span class="sr-only">Remove</span></th>
             </tr>
           </thead>
@@ -299,6 +320,7 @@
     data-testid="fatal-built-in-section"
     aria-labelledby="fatal-built-in-heading"
     aria-describedby="fatal-built-in-description"
+    use:searchRow={builtInWords}
   >
     <h3 id="fatal-built-in-heading">
       {FATAL_SIGNATURES_DESCRIPTIONS['built-in-section-header'].title} <span class="tag">read-only</span>
