@@ -77,6 +77,11 @@ const QUEUES: readonly QueueRuntime[] = Object.freeze([
   })
 ]);
 
+/** The line under the page's heading, with its white space collapsed as a browser shows it. */
+function purposeLine(container: HTMLElement): string {
+  return (container.querySelector('.purpose')?.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
+
 beforeEach(() => {
   postCommandSpy.mockClear();
 });
@@ -91,6 +96,16 @@ describe('QueuesTier — every queue at a glance (FR-055)', () => {
 
     expect(container.querySelectorAll('[data-testid^="queue-card-"]')).toHaveLength(3);
     expect(container.querySelector('[data-testid="queue-card-q-beta"]')).not.toBeNull();
+  });
+
+  it('says under the heading how a queue runs and what opening one is for', () => {
+    const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
+
+    // One fact (a queue takes its tasks first in, first out) and one next step, in the words an
+    // operator uses. Like the count line below, it names no concurrency cap.
+    expect(purposeLine(container)).toBe(
+      'Each queue runs its tasks in order. Open a queue to add or manage tasks.'
+    );
   });
 
   it('shows each queue name, lifecycle and pending count', () => {
@@ -436,6 +451,16 @@ describe('QueuesTier — read-only in a non-primary window (FR-065)', () => {
     const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: false } });
 
     expect(container.querySelector('[data-testid="queue-create"]')).toBeNull();
+  });
+
+  it('promises only what a read-only window can do with a queue', () => {
+    const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: false } });
+
+    // This window opens a queue and reads its tasks. It adds and manages none, so the line
+    // that says what opening a queue is for must not offer either.
+    expect(purposeLine(container)).toBe(
+      'Each queue runs its tasks in order. Open a queue to see its tasks.'
+    );
   });
 
   it('still offers Queue defaults, which only opens a page that says it is read-only', async () => {
