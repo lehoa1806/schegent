@@ -31,6 +31,10 @@
     ScalarKey,
     StatusByKey
   } from './general/field-types';
+  import { settingsSearch } from './settings-search.svelte';
+
+  /** The list's heading. The page's search also finds every backend's settings by it. */
+  const HEADING = 'Installed backends';
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -64,6 +68,8 @@
   // Absent when the host predates the projection; each section renders no posture
   // block in that case rather than inventing one. See `BackendSection`'s prop doc.
   const postures = $derived<readonly BackendPosture[]>(snapshot.backendPostures ?? []);
+
+  const { group: searchGroup } = settingsSearch();
 </script>
 
 <!--
@@ -71,8 +77,12 @@
   takes the mockup's words and keeps its id, which a launch notice's "Review in Settings" scrolls
   to. The mockup draws no line under the heading, so there is none.
 -->
-<section class="section backend-health" aria-labelledby="backend-health-heading">
-  <h3 id="backend-health-heading">Installed backends</h3>
+<section
+  class="section backend-health"
+  aria-labelledby="backend-health-heading"
+  use:searchGroup={() => [HEADING]}
+>
+  <h3 id="backend-health-heading">{HEADING}</h3>
   <div class="grid backend-list">
     {#each SUPPORTED_BACKENDS as kind (kind)}
       <BackendSection

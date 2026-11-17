@@ -8,9 +8,17 @@
 
 import type { ControlDescription } from '../hover-text/hover-text-types';
 
-export type SettingsPageHeaderControlId = 'revert' | 'save';
+export type SettingsPageHeaderControlId = 'search' | 'revert' | 'save';
 
 export const SETTINGS_PAGE_HEADER_DESCRIPTIONS = {
+  // Longer than the inline limit on purpose: a short body would be drawn as a line under the
+  // field, inside the header's row of actions.
+  search: {
+    title: 'Search settings',
+    body:
+      'Shows only the settings whose name, description or key holds every word you type, from ' +
+      'every section. Clear the field or choose a section to see one section again.'
+  },
   revert: {
     title: 'Revert',
     body:

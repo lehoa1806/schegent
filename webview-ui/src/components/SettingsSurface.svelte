@@ -10,6 +10,9 @@
    * still counted, saved and reverted while another is shown: the page header holds the only
    * Revert and Save.
    *
+   * While the header's search field holds a word, the body shows every section that holds a
+   * matching setting and the navigation marks none as current; a line says so when none matches.
+   *
    * Feature 012 T047 moved Phases and Pipelines to PipelineBuilder.svelte and Models to
    * PipelineBuilderEditors/ModelCatalogEditor.svelte. Feature 030 (US3) removed the Queue sub-tab,
    * and FR-R3-145 (T1569) set the cap and the default queue from a dialog on the Queues list. The
@@ -51,7 +54,7 @@
           <button
             type="button"
             data-testid="settings-nav-{section.id}"
-            aria-current={page.section === section.id ? 'true' : undefined}
+            aria-current={page.current === section.id ? 'true' : undefined}
             onclick={() => page.select(section.id)}
           >
             {section.label}
@@ -63,6 +66,12 @@
       </nav>
 
       <div class="set-body" data-testid="settings-body">
+        {#if page.search.active && page.search.count === 0}
+          <!-- Plain text: the header's status line is the page's one live region for a search. -->
+          <p class="empty" data-testid="settings-search-empty">
+            No setting matches "{page.search.query.trim()}".
+          </p>
+        {/if}
         <GeneralSettingsTab {snapshot} {page}>
           {#snippet queues()}
             <SettingsSection {page} id="queues">

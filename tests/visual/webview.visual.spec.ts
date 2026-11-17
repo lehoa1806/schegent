@@ -3,6 +3,7 @@ import metricsJson from './fixtures/metrics-response.json';
 import phaseLogJson from './fixtures/phase-log-response.json';
 import { workflowSnapshot } from './fixtures/workflow-snapshot';
 import { themeCss, type ThemeName } from './theme-palette';
+import type { WorkflowSnapshot } from '../../src/ui/sidebar/snapshot';
 // The webview's route union, imported across the CJS/ESM line that was thought
 // to block it. `tests/` is type-checked as Node16/CJS and `webview-ui` is
 // `"type": "module"`, which raises TS1541 for a bare type-only import — but
@@ -680,6 +681,308 @@ for (const [section, landmarks] of Object.entries(SETTINGS_SECTION_LANDMARKS)) {
     });
   });
 }
+
+/**
+ * A search in progress is a page none of the shots above takes: every section that holds a match
+ * is on screen at once, each under its name, and what does not match is hidden. This query finds
+ * three sections that begin differently (a setting, a note, a lead over two headed lists), and
+ * what it finds fits the viewport, so the shot holds all of it.
+ */
+const SETTINGS_SEARCH = {
+  query: 'retry',
+  sections: ['execution', 'trust', 'signatures']
+} as const;
+
+/**
+ * Types `query` into the Settings search field and leaves the field. The field's description is
+ * on screen for as long as the field has focus, so a page measured or photographed with the
+ * focus still there has the description over it.
+ */
+async function searchSettings(page: Page, query: string): Promise<void> {
+  const field = page.getByTestId('settings-search');
+  await field.fill(query);
+  await field.blur();
+  await expect(page.locator('.hover-text-portal-host')).toHaveCount(0);
+}
+
+/** The Settings sections on screen, by id, in the page's order. */
+async function shownSettingsSections(page: Page): Promise<string[]> {
+  return page
+    .locator('[data-testid^="settings-section-"]:visible')
+    .evaluateAll((sections) =>
+      sections.map((section) =>
+        (section.getAttribute('data-testid') ?? '').replace(/^settings-section-/, '')
+      )
+    );
+}
+
+test('a settings search in progress remains visually stable in light', async ({ page }) => {
+  const settings = await openSurface(page, 'settings', 'light');
+  await searchSettings(page, SETTINGS_SEARCH.query);
+  await expect
+    .poll(() => shownSettingsSections(page), 'the search shows the sections this shot is of')
+    .toEqual([...SETTINGS_SEARCH.sections]);
+  assertNoPageErrors(page, 'settings search');
+  await expect(settings).toHaveScreenshot('settings-search-light.png', {
+    mask: [...volatileMasks(page)],
+    maskColor: '#e5e7eb'
+  });
+});
+
+/**
+ * The widths the Settings header is measured at. They are close together round the widths where
+ * the row of actions stops fitting beside the title: a row that grows by one item moves to a
+ * line of its own somewhere there. Where exactly follows the text size, so no one width is
+ * named.
+ */
+const SETTINGS_HEADER_WIDTHS = [
+  1440, 1200, 1000, 980, 960, 940, 920, 900, 880, 860, 840, 820, 800, 760, 700, 640, 600, 561, 560,
+  520, 480, 440, 400, 360, 320
+] as const;
+
+/**
+ * Where the header's two buttons and the section navigation stand, each from the corner of the
+ * page title. The page is put at its top first: the navigation sticks to the top of a scrolled
+ * page, so its place would follow the scroll and not the header.
+ */
+async function settingsHeaderPlaces(settings: Locator): Promise<string> {
+  return settings.evaluate((surface) => {
+    const scroller = surface.querySelector('.page');
+    if (scroller) scroller.scrollTop = 0;
+    const title = surface.querySelector('h1')?.getBoundingClientRect();
+    const place = (name: string, selector: string): string => {
+      const box = surface.querySelector(selector)?.getBoundingClientRect();
+      if (!title || !box) return `${name} not found`;
+      return `${name} ${(box.left - title.left).toFixed(1)}, ${(box.top - title.top).toFixed(1)}`;
+    };
+    return [
+      place('Revert', '[data-testid="settings-revert"]'),
+      place('Save', '[data-testid="settings-save"]'),
+      place('navigation', 'nav')
+    ].join('; ');
+  });
+}
+
+/** The count of unsaved changes the Settings header shows, and none where it shows no count. */
+async function unsavedSettingsCount(page: Page): Promise<number> {
+  const count = page.getByTestId('settings-unsaved');
+  return (await count.count()) === 0 ? 0 : Number.parseInt(await count.innerText(), 10);
+}
+
+/**
+ * Edits number fields, a section at a time, until the page counts `target` unsaved changes. A
+ * field takes the value one above its own, or one below where its own is already the largest.
+ */
+async function editSettingsUntil(page: Page, target: number): Promise<void> {
+  for (const section of await settingsSections(page)) {
+    await showSettingsSection(page, section);
+    const fields = page
+      .getByTestId(`settings-section-${section}`)
+      .locator('input[type="number"]:enabled:visible');
+    const count = await fields.count();
+    for (let index = 0; index < count; index += 1) {
+      if ((await unsavedSettingsCount(page)) >= target) return;
+      const field = fields.nth(index);
+      const value = Number(await field.inputValue());
+      const largest = await field.getAttribute('max');
+      const atLargest = largest !== null && value >= Number(largest);
+      await field.fill(String(atLargest ? value - 1 : value + 1));
+      await field.blur();
+    }
+  }
+}
+
+/**
+ * The count of unsaved changes joins the header's row of actions on the first edit. A row that
+ * grows by one item stops fitting beside the title at some widths, and there it would take a
+ * line of its own and push the whole page down, under the pointer of whoever made the edit. So
+ * the header is measured with nothing to save, with one change and with a count of two digits,
+ * at each width: the two buttons and what starts under the header stand where they stood.
+ */
+test('the settings header stays put when the unsaved count appears', async ({ page }) => {
+  const settings = await openSurface(page, 'settings', 'light');
+  const placesAtEachWidth = async (): Promise<string[]> => {
+    const places: string[] = [];
+    for (const width of SETTINGS_HEADER_WIDTHS) {
+      await page.setViewportSize({ width, height: 960 });
+      await expect.poll(() => page.evaluate('window.innerWidth')).toBe(width);
+      places.push(`${width}px: ${await settingsHeaderPlaces(settings)}`);
+    }
+    // Back to the width the fields are edited at.
+    await page.setViewportSize({ width: 1440, height: 960 });
+    return places;
+  };
+  const unsaved = page.getByTestId('settings-unsaved');
+
+  await expect(unsaved, 'the page arrives with nothing to save').toHaveCount(0);
+  const none = await placesAtEachWidth();
+  expect(none.join('\n'), 'the header and the navigation were found').not.toContain('not found');
+
+  await editSettingsUntil(page, 1);
+  await expect(unsaved).toHaveText('1 unsaved change');
+  const one = await placesAtEachWidth();
+
+  await editSettingsUntil(page, 10);
+  await expect(unsaved, 'the count has two digits').toHaveText(/^\d\d unsaved changes$/);
+  const many = await placesAtEachWidth();
+
+  expect(one, 'the first unsaved change moved the header or the page under it').toEqual(none);
+  expect(many, 'a count of two digits moved the header or the page under it').toEqual(none);
+  assertNoPageErrors(page, 'settings header');
+});
+
+/** What `orphanedRules` looked at, and what it found. */
+interface RuleAudit {
+  /** How many rules were looked at. */
+  readonly examined: number;
+  /** Each rule with nothing shown beyond it, by the element that draws it. */
+  readonly orphans: readonly string[];
+}
+
+/**
+ * Finds the rules under `root` that part nothing. A rule here is a border drawn on one side
+ * only, above or below: the line under a settings row or a table row, the line that opens a
+ * block under a list. It parts its element from the next thing shown in the same parent (from
+ * the one before it, for a line above), and a table row from the next row or row group. Hiding
+ * that neighbour, as a search does, must take the line away; where it does not, the line is
+ * drawn against nothing. A box with a border above and below is a frame, not a rule.
+ */
+async function orphanedRules(root: Locator): Promise<RuleAudit> {
+  return root.locator('*').evaluateAll((elements) => {
+    // Through `ownerDocument`, as `collectUndersizedTargets` reaches the page: the tests'
+    // TypeScript program has no DOM globals.
+    type Drawn = (typeof elements)[number];
+    const orphans: string[] = [];
+    let examined = 0;
+    const draws = (width: string, style: string, colour: string): boolean =>
+      Number.parseFloat(width) > 0 &&
+      style !== 'none' &&
+      style !== 'hidden' &&
+      !/^rgba\(.*,\s*0\)$|\/\s*0\)$/.test(colour);
+    const shownBeside = (element: Drawn, after: boolean): boolean => {
+      const step = (from: Drawn): Drawn =>
+        after ? from.nextElementSibling : from.previousElementSibling;
+      for (let sibling = step(element); sibling; sibling = step(sibling)) {
+        if (sibling.getBoundingClientRect().height > 0) return true;
+      }
+      return false;
+    };
+    for (const element of elements) {
+      const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+      if (!style || element.getClientRects().length === 0) continue;
+      const above = draws(style.borderTopWidth, style.borderTopStyle, style.borderTopColor);
+      const below = draws(
+        style.borderBottomWidth,
+        style.borderBottomStyle,
+        style.borderBottomColor
+      );
+      if (above === below) continue;
+      examined += 1;
+      const cell = element.tagName === 'TD' || element.tagName === 'TH';
+      const row = cell ? element.parentElement : null;
+      const rowGroup = row ? row.parentElement : null;
+      const parted = row
+        ? shownBeside(row, below) || (rowGroup ? shownBeside(rowGroup, below) : false)
+        : shownBeside(element, below);
+      if (!parted) orphans.push(`${below ? 'under' : 'over'} ${element.outerHTML.slice(0, 140)}`);
+    }
+    return { examined, orphans };
+  });
+}
+
+/** The name of the queue `publishSnapshotWithSecondQueue` adds. */
+const SECOND_QUEUE_NAME = 'Nightly builds';
+
+/**
+ * Publishes the fixture with a second, empty queue after its own. The fixture has one queue, so
+ * a table of the queues has one row, and a state that needs a row above a hidden one cannot be
+ * reached from it.
+ */
+async function publishSnapshotWithSecondQueue(page: Page): Promise<void> {
+  const [queue] = workflowSnapshot.queues;
+  const [summary] = workflowSnapshot.queue.queues;
+  const second = { name: SECOND_QUEUE_NAME, position: 1 } as const;
+  const withSecondQueue: WorkflowSnapshot = {
+    ...workflowSnapshot,
+    queues: [
+      queue,
+      {
+        ...queue,
+        ...second,
+        queueId: 'second',
+        lifecycle: 'active-empty',
+        inFlightRun: null,
+        pendingCount: 0,
+        tasks: []
+      }
+    ],
+    queue: {
+      ...workflowSnapshot.queue,
+      queues: [summary, { ...summary, ...second, id: 'second', taskCount: 0 }]
+    }
+  };
+  await page.evaluate(
+    "window.dispatchEvent(new MessageEvent('message', { data: " +
+      `{ type: 'STATE_SNAPSHOT', payload: ${inlineJson(withSecondQueue)} } }))`
+  );
+}
+
+/**
+ * Queries for the rule check below. Between them they hide the end of a list of rows, every row
+ * above a block that opens with a rule of its own, and whole groups between two that stay.
+ */
+const SETTINGS_RULE_QUERIES = [
+  'retry',
+  'queue',
+  'path',
+  'trust',
+  'evidence',
+  'log',
+  'fail'
+] as const;
+
+/**
+ * A settings row draws a line under it and the last row of a list draws none, a table does the
+ * same, and the trust note opens with a line that parts it from the rows above. A search hides
+ * rows, so the row left at the end of what is shown is no longer the last of its list, and a
+ * block can lose everything above it: each would keep a line with nothing beyond it. The
+ * unsearched sections are checked first, which shows the check is quiet on a page that is right.
+ */
+test('a settings search leaves no rule with nothing beyond it', async ({ page }) => {
+  const settings = await openSurface(page, 'settings', 'light');
+  const unsearched: string[] = [];
+  let examined = 0;
+  await eachSettingsSection(page, async (section) => {
+    const audit = await orphanedRules(settings);
+    examined += audit.examined;
+    unsearched.push(...audit.orphans.map((orphan) => `${section}: ${orphan}`));
+  });
+  // Named, because the empty lists below pass just as well when no rule was looked at.
+  expect(examined, 'the page draws rules, and they were looked at').toBeGreaterThan(0);
+  expect(unsearched, 'an unsearched section draws a rule with nothing beyond it').toEqual([]);
+
+  for (const query of SETTINGS_RULE_QUERIES) {
+    await searchSettings(page, query);
+    const shown = await shownSettingsSections(page);
+    expect(shown.length, `the search for '${query}' finds settings`).toBeGreaterThan(0);
+    const audit = await orphanedRules(settings);
+    expect(audit.examined, `rules were looked at under '${query}'`).toBeGreaterThan(0);
+    expect(audit.orphans, `the search for '${query}' left a rule with nothing beyond it`).toEqual(
+      []
+    );
+  }
+
+  // The fixture's one queue gives the failure table one row. With a second queue, the name of
+  // the first finds the first row alone, which is then the last row shown and not the last row.
+  await publishSnapshotWithSecondQueue(page);
+  const [fixtureQueue] = workflowSnapshot.queues;
+  await searchSettings(page, fixtureQueue.name);
+  await expect(page.locator('[data-testid^="queue-failure-policy-row-"]')).toHaveCount(2);
+  await expect(page.locator('[data-testid^="queue-failure-policy-row-"]:visible')).toHaveCount(1);
+  const audit = await orphanedRules(settings);
+  expect(audit.orphans, 'a table row with only hidden rows after it kept its line').toEqual([]);
+  assertNoPageErrors(page, 'settings search rules');
+});
 
 /**
  * Room a number field keeps for its spin button. Chromium lays the button out on

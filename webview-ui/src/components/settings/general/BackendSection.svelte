@@ -40,6 +40,7 @@
   import { hoverTextAnchor } from '../../hover-text/hover-text-anchor-action';
   import SgMenu from '../../sg/SgMenu.svelte';
   import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
+  import { settingsSearch } from '../settings-search.svelte';
   import BackendDetails from './BackendDetails.svelte';
   import type {
     BackendSection as BackendSectionSpec,
@@ -151,14 +152,19 @@
 
   // WHEN DETAILS ARE OPEN. Until the user chooses, the region is open exactly while something
   // in it needs them: the backend in use cannot run (FR-008 wants the reason on screen), the
-  // host reports a problem with a grant entry, a save of one of its fields failed, or one of its
-  // fields holds an unsaved edit.
+  // host reports a problem with a grant entry, a save of one of its fields failed, one of its
+  // fields holds an unsaved edit, or the page's search has found a setting inside it.
   const fieldKeys = $derived([section.path.key, ...section.specific.map((spec) => spec.key)]);
   const blocked = $derived(inUse && (refused || !discovered));
   const flagged = $derived(posture?.problem !== undefined);
   const saveFailed = $derived(fieldKeys.some((key) => failed(statusByKey[key])));
   const unsaved = $derived(fieldKeys.some((key) => fieldChanged(key)));
-  const needsAttention = $derived(blocked || flagged || saveFailed || unsaved);
+
+  /** The card. The page's search finds every setting inside it by the backend's name. */
+  let card = $state<HTMLElement>();
+  const { group: searchGroup, holdsMatch, reveal } = settingsSearch();
+  const searchHit = $derived(holdsMatch(card));
+  const needsAttention = $derived(blocked || flagged || saveFailed || unsaved || searchHit);
 
   /** The user's choice, made with the link or a path action; `undefined` until they make one. */
   let asked = $state<boolean | undefined>(undefined);
@@ -166,9 +172,10 @@
 
   // A choice to close lasts only until something new needs the user. C7-3: after a revoke of
   // the backend in use, the refusal is what the eye lands on, also where the user had closed
-  // the region before. A choice to open is kept, so the region never closes under the user. An
-  // unsaved edit is the user's own doing and reopens nothing.
-  const alerts = $derived([blocked, flagged, saveFailed]);
+  // the region before. A search that finds a setting in here lifts the choice the same way: the
+  // user asked to see that setting. A choice to open is kept, so the region never closes under
+  // the user. An unsaved edit is the user's own doing and reopens nothing.
+  const alerts = $derived([blocked, flagged, saveFailed, searchHit]);
   let seenAlerts: readonly boolean[] | undefined;
   $effect(() => {
     const before = seenAlerts;
@@ -186,8 +193,12 @@
   /** The element round the path field. The Details component binds it. */
   let pathRow = $state<HTMLDivElement | undefined>(undefined);
 
-  /** Opens Details and puts the caret in the path field, once the region is on screen. */
+  /**
+   * Opens Details and puts the caret in the path field, once the region is on screen. A search
+   * that has the field out of sight ends first: the user asked for the field.
+   */
   async function editPath(): Promise<void> {
+    reveal(pathRow);
     asked = true;
     await tick();
     pathRow?.querySelector('input')?.focus();
@@ -236,7 +247,12 @@
   }
 </script>
 
-<section class="card backend backend-section" data-testid={`backend-health-${kind}`}>
+<section
+  class="card backend backend-section"
+  data-testid={`backend-health-${kind}`}
+  bind:this={card}
+  use:searchGroup={() => [section.label]}
+>
   <span class="kicon k-phase"><svg class="i" aria-hidden="true"><use href="#i-pulse"></use></svg></span>
   <div class="identity">
     <div class="titlerow">

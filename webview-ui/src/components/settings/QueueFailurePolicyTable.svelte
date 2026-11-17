@@ -18,6 +18,10 @@
     type FailurePolicyChoice,
     type FailurePolicyRow
   } from './queue-failure-policy-choice';
+  import { descriptionWords, settingsSearch } from './settings-search.svelte';
+
+  /** The table's heading. The page's search also finds every queue's row by it. */
+  const HEADING = 'When a task fails';
 
   interface Props {
     /** One row per queue, in registry position order. */
@@ -28,10 +32,18 @@
     onEdit: (queueId: string, choice: FailurePolicyChoice) => void;
   }
   const { rows, readOnly, onEdit }: Props = $props();
+
+  const { row: searchRow, group: searchGroup } = settingsSearch();
+  /** A queue is found by its name and by what the select does; the name is not edited here. */
+  const POLICY_WORDS = descriptionWords(QUEUE_DEFAULTS_DESCRIPTIONS['queue-failure-policy']);
 </script>
 
-<section class="section policy" aria-labelledby="queue-failure-policy-heading">
-  <h3 id="queue-failure-policy-heading">When a task fails</h3>
+<section
+  class="section policy"
+  aria-labelledby="queue-failure-policy-heading"
+  use:searchGroup={() => [HEADING]}
+>
+  <h3 id="queue-failure-policy-heading">{HEADING}</h3>
   <div class="table-wrap">
     <table class="t fit">
       <thead>
@@ -42,7 +54,11 @@
       </thead>
       <tbody>
         {#each rows as row (row.queueId)}
-          <tr data-testid="queue-failure-policy-row-{row.queueId}" data-changed={row.changed}>
+          <tr
+            data-testid="queue-failure-policy-row-{row.queueId}"
+            data-changed={row.changed}
+            use:searchRow={() => [row.name, ...POLICY_WORDS]}
+          >
             <td>
               <span class="queue-name">{row.name}</span>
               {#if row.changed}

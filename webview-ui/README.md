@@ -128,7 +128,7 @@ A status class such as `.s-ok` or `.run-fail` sets two things. `color` is a text
 
 ### Where the port departs from the mockups
 
-Each difference below is deliberate. Before restoring a mockup value, check the reason given with it.
+The mockups are a reference the port learns from, not a specification it copies. The port keeps what serves the product. Where a mockup detail is incidental, has no behaviour behind it, or falls short of the product's own rules, VS Code's conventions or WCAG 2.1 AA, the product's design stands in its place. Each difference below is deliberate and has its reason beside it. Before restoring a mockup value, check that reason.
 
 Contrast and state:
 
@@ -309,10 +309,10 @@ System:
 Settings:
 
 - **The section navigation is the mockup's.** A `nav` named "Settings sections" lists the mockup's sections in its words and order: Backends, Runs and retries, Queues, Logs and retention, Privacy and evidence, Trust and prompts and Failure signatures. A press shows that section alone, marks its button with `aria-current` and leaves focus on the button, and a section that holds an unsaved edit carries the mockup's dot, named "has unsaved changes". The page opens on Backends from the top navigation and on Queues from Queue defaults on the queues list. The mockup's top navigation shows the section last shown, but the page keeps no section between visits.
-- **Each settings group keeps its disclosure inside its section.** Spec 182 gives the general settings four collapsible groups under fixed headings (FR-006), so Backends, Runs and retries, Logs and retention and Trust and prompts each open with an open disclosure, such as "Backend and process environment", whose summary is set as a heading with the native marker. The mockup shows no heading that names a section. Every section is named by a visually hidden h2, so the page's outline runs h1, h2, h3; the mockup names only Backends that way.
+- **Each settings group keeps its disclosure inside its section.** Spec 182 gives the general settings four collapsible groups under fixed headings (FR-006), so Backends, Runs and retries, Logs and retention and Trust and prompts each open with an open disclosure, such as "Backend and process environment", whose summary is set as a heading with the native marker. The mockup shows no heading that names a section. Every section is named by a visually hidden h2, so the page's outline runs h1, h2, h3; the mockup names only Backends that way. While a search is on, the section's name shows and the group's summary does not (see "Settings search").
 - **The section list stops sticking below 860px**, where it stacks above the rows. The mockup's stays sticky there, and since it has no background of its own, the rows scroll under its buttons.
 - **Below 560px a row's control drops under its label**, and a backend card's actions drop under the backend's name. The mockup's two row columns need 420px side by side and would widen the page.
-- **There is no search.** The page header has the mockup's one save model: an "N unsaved changes" chip, Revert and Save, which discard and write every edit on the page, in every section: a section that is not shown stays mounted, hidden, so its edits still count. Save writes the fields as one batch, the queue settings in commands of their own (see "Settings queues") and the failure signatures as their own list, and no row or section has a Save or Reset of its own. A failure signature row left empty counts as a change, but the list is not written until the row is filled or removed.
+- **The page header has the mockup's one save model**: an "N unsaved changes" chip, Revert and Save, which discard and write every edit on the page, in every section: a section that is not shown stays mounted, hidden, so its edits still count. Save writes the fields as one batch, the queue settings in commands of their own (see "Settings queues") and the failure signatures as their own list, and no row or section has a Save or Reset of its own. A failure signature row left empty counts as a change, but the list is not written until the row is filled or removed. The header's search field has a list of its own below ("Settings search").
 - **A row's scope line is the mockup's "Applies to:" line, in its words**: "this workspace", "you, all workspaces" or "default". A host older than the webview may send no scope for a setting, and the line then reads "Applies to: unknown". A row with an unsaved edit has the mockup's dot beside its label.
 - **A number that can be left unset is wider than the mockup's 110px field**, out to its unit, because its unset state is a placeholder sentence, "Unset — no limit" or "Unset — use CLI default", that the narrow field would cut off. The mockup's spend limit and compaction threshold always show a value. **So is a size in bytes** (Run artifact space and Log file size), because its largest value, 10737418240 or 1073741824, is longer than the narrow field shows: the mockup draws these sizes in MB ("512 MB"), and the host stores them in bytes. Every other number keeps the mockup's width, and every number has its unit after it.
 - **A short control description shows as a line under its row's scope line, and a longer one as a popover** (see "Settings hover-text primitive (spec 018)"). The mockup has no control descriptions.
@@ -322,6 +322,19 @@ Settings:
 - **Runs and retries keeps the product's meaning where the mockup's words would change it.** "Retry attempts per step" counts retries, not the first attempt, where the mockup's reads "Attempts per step". The mockup's next row, "When attempts run out", offers "Fail the run", "Continue with a warning" and "Continue", but when retry attempts run out the run and its queue pause, and no setting changes that. The setting that chooses between failing and continuing with a warning acts at the loop limit, when a Phase's retry condition still holds there, so its row reads "When the loop limit is reached", follows Loop limit and offers those two; a plain "Continue" is not a value it holds. Loop limit's note names a Phase with a retry condition, where the mockup's names a loop-back edge, and "Check paused runs every" re-checks paused runs, where the mockup's reads "Check for stuck runs every". Times stay in the seconds and minutes the settings store, where the mockup's read in minutes and hours.
 - **Backend for new runs and Spend limit per run keep the product's notes.** The backend applies to every task, where the mockup's note says a Phase or Workflow can choose its own, and crossing the spend limit pauses the run, where the mockup's note says the run stops.
 - **The two trust rows come after the UI toggles**, where the mockup puts its trust row first, under the product's line on why they cannot be switched here. Each shows its effective value as the mockup's status chip where a control would be: "Allowed" with a check or "Denied" with a cross. The setting's key and a "Change in Settings" button sit under the chip, in place of the mockup's "Applies to: VS Code workspace trust".
+
+Settings search:
+
+- **The header's "Search settings" field filters the page.** The mockup draws the field and gives it no behaviour, so what it does is the product's design. Like the product's other search fields, and like the search of VS Code's own Settings editor, it shows only what matches as the user types, and here that is the matching settings of every section.
+- **A setting is found by its fixed words**: its label, its note, its setting key, its control description, the heading or the lead line of a block it sits in (a backend's name, "Installed backends", "Process environment", "When a task fails", the line above the trust rows) and its section's name. Every word typed must be found, in any order and any case, and a word is found as part of a longer one, so `retry` also finds "retrying". A setting is never found by a value the page lets the user edit, so a setting cannot leave the page while it is being changed: the text of an added failure signature is not searched, and a built-in one's is. The words typed are compared as plain text and shown as text, never made into a pattern or markup.
+- **While the field holds a word, every section that holds a match is on screen**, in the navigation's order, and the navigation marks none as current. Choosing a section ends the search and shows that section, and emptying the field shows the section that was on screen before. A search changes only what is on screen: a setting it hides is still counted, saved and reverted, and a section's dot in the navigation still marks an unsaved edit the search hides, as it marks one in a section that is not shown.
+- **Each found section stands under its name**, set as a group label: small, uppercase and muted, the look the sidebar gives a section's label and close to the one the Builder's palette gives a group's. It is the section's h2, which is visually hidden when no search is on. A section's spec 182 group heading is not drawn meanwhile, because two headings in a row would read as two levels, and a group heading is not search text. A found section has 32px under it and its name 4px, so each name stands nearer to its own settings than to the section above it.
+- **What does not match is hidden, a block at a time.** A row with no match is hidden, and so is a block in which nothing matches: a backend card, a part of a card's Details, the environment rows, the failure-policy table. A row that the search leaves last in its list draws no line under it, as a list's last row does. Where one block is one setting (each of the two failure-signature lists, the evidence profile), it is shown whole or not at all.
+- **A match opens what holds it.** A backend card opens its Details while a setting inside matches; the Details link still closes it, and it closes by itself when the search ends. A settings group the user had closed opens, because its summary is not drawn during a search and the user could not open it, and it stays open afterwards.
+- **A card's "Change path…" and "Set path…" end the search when it hides the path field**, and show the card's section, so the action lands on the field it names. When the field is in sight, the search stays.
+- **"No setting matches "…"." takes the sections' place when nothing matches**, with the words typed between the quotes. A visually hidden status line in the header gives assistive technology the count ("2 settings match.", "1 setting matches.", "No setting matches."). It waits until typing has paused for half a second, so a word typed quickly is announced once.
+- **The field's description is a popover** (see "Settings hover-text primitive (spec 018)"), so the header gains no line. It opens to the field's left, away from the settings under it, or under the field where the page is too narrow. Like every control description it opens on focus and stays while the user types. On a panel of middling width (measured at 900px to 1,100px) the open popover covers part of the page's title and purpose line, which a search does not need; at 1,440px it clears them. Escape closes it, and a second Escape clears the field, which is the browser's own behaviour for a search input.
+- **The header keeps its place when the unsaved count appears.** The row of actions claims a fixed share of the header, enough for the field at its narrowest, a two-digit count and both buttons, and the share follows the text size. The field is the part that gives: 260px where there is room, the default width of the product's toolbar search fields, down to 160px. So the first edit never moves Revert and Save to a line of their own or pushes the page down. The cost is that a panel roughly 800px to 900px wide shows the header on two lines even with nothing to save, where it could show one until the first edit. At 560px and below the field takes a line of its own, above the count and the buttons. The field does not show a long setting key whole (the longest on the page runs to about 350px); the key scrolls inside it, as text does in any input. The mockup's field is 184px wide, the natural width of an input with no width set, and its header has no rule for a narrow page.
 
 Settings backends:
 
@@ -661,7 +674,7 @@ after `Operations`). The route ids and their nav labels are declared in
 | `metrics` | Metrics | `components/MetricsDashboard/MetricsDashboard.svelte` | On-demand audit-log rollup (spec 073). |
 | `system` | System Log | `components/SystemTab.svelte` | **System-scoped audit entries** (lifecycle, queue/task control, scheduling, audit pipeline housekeeping). See "Audit surfaces" below. |
 | `builder` | Builder | `components/PipelineBuilder.svelte` | Phases, Workflows, and Models editor with `RetryConditionEditor` / `RawJsonPhaseEditor` wiring. |
-| `settings` | Settings | `components/SettingsSurface.svelte` | One section at a time, from a section navigation: Backends, Runs and retries, Queues, Logs and retention, Privacy and evidence, Trust and prompts, Failure signatures. |
+| `settings` | Settings | `components/SettingsSurface.svelte` | One section at a time, from a section navigation: Backends, Runs and retries, Queues, Logs and retention, Privacy and evidence, Trust and prompts, Failure signatures. A search in the page header shows the matching settings of every section. |
 
 `DEFAULT_DASHBOARD_ROUTE` stays `operations` through every such addition —
 a new surface earns its place in the nav, not on someone's landing page.
@@ -874,16 +887,19 @@ and
 [`HoverTextPortal.svelte`](src/components/hover-text/HoverTextPortal.svelte),
 which the action mounts to render the popover.
 
-Descriptions live in per-tab sibling modules —
-`GeneralSettingsTab.descriptions.ts` and
-`FatalSignaturesTab.descriptions.ts` — each frozen with
+Descriptions live in sibling modules, one beside each component whose
+controls it describes — `GeneralSettingsTab.descriptions.ts`,
+`FatalSignaturesTab.descriptions.ts`,
+`QueueDefaultsSection.descriptions.ts` and
+`SettingsPageHeader.descriptions.ts` — each frozen with
 `as const satisfies { readonly [K in ControlId]: ControlDescription }`
 so missing or stale keys fail the webview typecheck. Descriptions are
 static webview state: the IPC contract is unchanged, no new host
 roundtrip, no snapshot fields added. Coverage is enforced by the
 parameterized structural test at
 [`components/settings/__tests__/hover-text-coverage.test.ts`](src/components/settings/__tests__/hover-text-coverage.test.ts),
-which mounts each tab, walks every focusable element, and asserts both
+which mounts each of those components, walks every focusable element,
+and asserts both
 sides of the mapping (every control has either an inline
 `aria-describedby` or a `data-hover-text-anchored="true"` marker, and
 no description is orphaned).

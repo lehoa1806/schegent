@@ -38,6 +38,7 @@
     type FailurePolicyRow
   } from './queue-failure-policy-choice';
   import { SettingsPage } from './settings-page.svelte';
+  import { descriptionWords, settingsSearch, type SearchWords } from './settings-search.svelte';
 
   interface Props {
     /**
@@ -53,6 +54,20 @@
     page?: SettingsPage;
   }
   const { snapshot, page = new SettingsPage() }: Props = $props();
+
+  // The page's search finds each of the two rows by its label and note, read as they are drawn,
+  // and by its description. Neither holds a value the user can edit.
+  const { row: searchRow } = settingsSearch();
+  let capLabel = $state<HTMLElement>();
+  let defaultLabel = $state<HTMLElement>();
+  const capWords = (): SearchWords => [
+    capLabel?.textContent,
+    ...descriptionWords(QUEUE_DEFAULTS_DESCRIPTIONS['queue-cap'])
+  ];
+  const defaultWords = (): SearchWords => [
+    defaultLabel?.textContent,
+    ...descriptionWords(QUEUE_DEFAULTS_DESCRIPTIONS['queue-default'])
+  ];
 
   const READ_ONLY_TEXT = 'This window is not the primary one, so it cannot change these settings.';
   const NO_OP_TEXT = 'Already set that way.';
@@ -287,8 +302,13 @@
     <p class="hint read-only" data-testid="queue-defaults-read-only">{READ_ONLY_TEXT}</p>
   {/if}
 
-  <div class="srow" data-testid="queue-defaults-cap-row" data-changed={capChanged}>
-    <div class="row-label">
+  <div
+    class="srow"
+    data-testid="queue-defaults-cap-row"
+    data-changed={capChanged}
+    use:searchRow={capWords}
+  >
+    <div class="row-label" bind:this={capLabel}>
       <div class="lab">
         <span id="queue-config-cap-label">Runs at the same time</span>
         {#if capChanged}
@@ -351,8 +371,13 @@
     {/if}
   </div>
 
-  <div class="srow" data-testid="queue-defaults-default-queue-row" data-changed={defaultChanged}>
-    <div class="row-label">
+  <div
+    class="srow"
+    data-testid="queue-defaults-default-queue-row"
+    data-changed={defaultChanged}
+    use:searchRow={defaultWords}
+  >
+    <div class="row-label" bind:this={defaultLabel}>
       <div class="lab">
         <span id="queue-config-default-queue-label">Default queue</span>
         {#if defaultChanged}

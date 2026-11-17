@@ -353,8 +353,9 @@ const TAB_SPECS: readonly TabSpec[] = [
     component: SettingsPageHeader as unknown as ComponentType,
     buildProps: () => ({ page: pageWithAChange() }),
     headerOnlyKeys: [],
-    // Revert and Save: since the Settings redesign, the page's only save controls.
-    minFocusableControls: 2,
+    // The search field, then Revert and Save: since the Settings redesign, the page's only save
+    // controls.
+    minFocusableControls: 3,
     descriptionKeys: Object.keys(SETTINGS_PAGE_HEADER_DESCRIPTIONS),
     controlIdToKey: (id) => (id in SETTINGS_PAGE_HEADER_DESCRIPTIONS ? id : null)
   }

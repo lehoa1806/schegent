@@ -33,6 +33,7 @@
     TRANSPORT_CAPTURE_SETTINGS,
     type TransportCaptureSetting
   } from '../../../../../src/contracts/transport-capture-mode';
+  import { settingsSearch } from '../settings-search.svelte';
 
   interface Props {
     loggingVerbose: boolean;
@@ -82,6 +83,17 @@
 
   const DESCRIPTION_ID = 'privacy-profile-description';
   const LABEL_ID = 'privacy-profile-label';
+  const LABEL = 'Evidence profile';
+
+  const { row: searchRow } = settingsSearch();
+  // The page's search finds the row by its label, its note and the profile names. The note is
+  // read as drawn, because it holds markup; none of its words is a value the user can edit.
+  let note = $state<HTMLElement>();
+  const searchText = (): readonly (string | undefined)[] => [
+    LABEL,
+    note?.textContent,
+    ...PROFILES.map((profile) => profile.name)
+  ];
 
   function choose(name: PrivacyProfileName): void {
     const profile = PROFILES.find((entry) => entry.name === name);
@@ -96,10 +108,10 @@
   residuals after it, because a profile states what it does not change (spec 163, FR-002a). A press sets that profile's settings, and Save writes them;
   "custom" presses none, and the line under the control names the fields that differ.
 -->
-<div class="srow privacy-profiles" data-testid="privacy-profiles">
+<div class="srow privacy-profiles" data-testid="privacy-profiles" use:searchRow={searchText}>
   <div>
-    <div class="lab" id={LABEL_ID}>Evidence profile</div>
-    <p class="desc" id={DESCRIPTION_ID}>
+    <div class="lab" id={LABEL_ID}>{LABEL}</div>
+    <p class="desc" id={DESCRIPTION_ID} bind:this={note}>
       Sets transcript, artifact and capture options together. Ephemeral keeps the least. A profile
       does not change the checkpoint store's fixed 14-day bound, the retained redacted audit log, or
       backend CLI session stores under your home directory (which Schegent's retention, export, and

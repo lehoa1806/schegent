@@ -175,9 +175,10 @@ async function scanRoute(page: Page, route: string, theme: ThemeName): Promise<S
 
 /**
  * The Settings route shows one section at a time and hides the rest, and axe skips hidden
- * content, so the route is scanned once per section, each shown by its navigation button. Its
- * findings keep the route's key, `settings`, so the baseline's shape does not change, and a
- * finding every section shares (the page header, the navigation) is counted once.
+ * content, so the route is scanned once per section, each shown by its navigation button, and
+ * then once in each state a search gives the page (`eachSettingsSearchState`). Its findings keep
+ * the route's key, `settings`, so the baseline's shape does not change, and a finding the scans
+ * share (the page header, the navigation) is counted once.
  */
 async function scanSettingsSections(page: Page, theme: ThemeName): Promise<ScanResult> {
   const buttons = page.getByRole('navigation', { name: 'Settings sections' }).getByRole('button');
@@ -185,15 +186,62 @@ async function scanSettingsSections(page: Page, theme: ThemeName): Promise<ScanR
   expect(count, 'the Settings navigation lists its sections').toBeGreaterThan(1);
   const findings = new Map<string, Finding>();
   let examined = 0;
+  const scan = async (): Promise<void> => {
+    const result = await scanRendered(page, 'settings', theme);
+    for (const finding of result.findings) findings.set(key(finding), finding);
+    examined += result.examined;
+  };
   for (let index = 0; index < count; index += 1) {
     const button = buttons.nth(index);
     await button.click();
     await expect(button).toHaveAttribute('aria-current', 'true');
-    const result = await scanRendered(page, 'settings', theme);
-    for (const finding of result.findings) findings.set(key(finding), finding);
-    examined += result.examined;
+    await scan();
   }
+  await eachSettingsSearchState(page, scan);
   return { findings: [...findings.values()], examined };
+}
+
+/** A query that several Settings sections hold a match for, and one that no setting holds. */
+const SETTINGS_QUERY = { found: 'retry', notFound: 'zzzz' } as const;
+
+/**
+ * A search gives the Settings page three states that no section shows, and `scan` runs in each:
+ *
+ * 1. Typing. Every section that holds a match is on screen under its name, what does not match
+ *    is hidden, and the field has the focus, so its description is open over the page.
+ * 2. Reading what was found, with the field left. Nothing stands over the sections now, so axe
+ *    can judge what the description covered.
+ * 3. A query no setting holds, which shows one line that says so.
+ *
+ * Each state is asserted before its scan. A search that changed nothing would report what the
+ * section scans reported, and would claim coverage it does not have.
+ */
+async function eachSettingsSearchState(page: Page, scan: () => Promise<void>): Promise<void> {
+  const field = page.getByTestId('settings-search');
+  const description = page.locator('.hover-text-portal-host [role="tooltip"]');
+  const shown = page.locator('[data-testid^="settings-section-"]:visible');
+
+  await field.fill(SETTINGS_QUERY.found);
+  await expect(description, 'the focused field shows its description').toBeVisible();
+  await expect
+    .poll(() => shown.count(), 'the search shows more than one section at once')
+    .toBeGreaterThan(1);
+  await scan();
+
+  await field.blur();
+  await expect(description, 'the description closes when the field is left').toHaveCount(0);
+  await scan();
+
+  await field.fill(SETTINGS_QUERY.notFound);
+  await field.blur();
+  await expect(description).toHaveCount(0);
+  await expect(page.getByTestId('settings-search-empty')).toBeVisible();
+  await scan();
+
+  // The search ends here, so the page is left showing one section, as it was found.
+  await field.fill('');
+  await field.blur();
+  await expect(shown).toHaveCount(1);
 }
 
 /**
