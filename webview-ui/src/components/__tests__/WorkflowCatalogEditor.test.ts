@@ -297,6 +297,25 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
     expect(firstOption('workflow-default-effort')).toBe('Inherit');
   });
 
+  // The section saves a Runner, a Model, an Effort and Recommended next with the Workflow, and no
+  // run applies them: the grammar calls them advisory, as the Run form does when it lists them.
+  // Without a line that says so, a value set here reads as one every step runs with.
+  it('opens Execution defaults on a line that says no run applies them', async () => {
+    const { container, getByTestId } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const body = getByTestId('workflow-execution-defaults');
+    const section = body.closest('details') as HTMLDetailsElement;
+    expect(section.open).toBe(false);
+
+    await fireEvent.click(section.querySelector('summary') as HTMLElement);
+    expect(section.open).toBe(true);
+    const advisory = getByTestId('workflow-execution-defaults-advisory');
+    expect(body.firstElementChild).toBe(advisory);
+    expect(advisory.textContent.trim()).toBe(
+      'Advisory: saved with the Workflow, not applied when it runs.'
+    );
+  });
+
   it('says what a side with no port reads: none once saved, not yet known on a draft', async () => {
     const { container, getByTestId } = mount([record({ derivedInputs: [], derivedOutputs: [] })]);
     await fireEvent.click(rowFor(container, 'design-then-build'));
