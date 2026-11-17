@@ -5,7 +5,8 @@
   // Workflow carries one. The mockup gives the summary and the settings a page each;
   // here they share one, so every field stays one scroll away. The status gives the
   // step count with how many steps no start reaches, as the mockup does, but not its
-  // Defaults line: no run applies a Workflow's execution defaults to its steps.
+  // Defaults line: no run applies a Workflow's execution defaults to its steps, and
+  // the Execution defaults section says so on its first line.
   import {
     EFFORT_LEVELS,
     type BuilderLifecycle,
@@ -240,6 +241,9 @@
       <details class="sect">
         <summary><h3>Execution defaults</h3></summary>
         <div class="wf-sect-body" data-testid="workflow-execution-defaults">
+          <p class="inh" data-testid="workflow-execution-defaults-advisory">
+            Advisory: saved with the Workflow, not applied when it runs.
+          </p>
           <label class="field">
             <span>Runner</span>
             <select
