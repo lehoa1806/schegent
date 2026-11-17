@@ -273,15 +273,16 @@ explicit acceptance of that authority **for that backend only** — allowing `ag
 
 There are two ways to name one, and they are the same grant reached from different moments:
 
-- **Before the refusal** — the Settings tab shows each backend's posture and, for a backend that has
-  no OS-enforced bound and no grant, an **Allow uncontained** control. The confirmation quotes the
-  refusal the enforcement itself would produce (FR-R3-144).
+- **Before the refusal** — the Settings tab shows each backend's posture on its card and, for a
+  backend that has no OS-enforced bound and no grant, an **Allow running unsandboxed…** item in the
+  card's actions menu. The confirmation quotes the refusal the enforcement itself would produce
+  (FR-R3-144).
 - **At the refusal** — the run stops and a modal asks about the backend it just refused, granting
   that backend on acceptance (FR-R3-146).
 
 Both write this setting through the same writer, so a grant made in one place is the grant the other
-one reads. Revoking is available from the Settings control at any time; it takes effect for the next
-invocation, not for a run already in flight.
+one reads. Revoking is available from the same menu at any time (**Revoke permission to run
+unsandboxed**); it takes effect for the next invocation, not for a run already in flight.
 
 Entries are validated rather than filtered, and neither case throws: an id that is not a backend
 names the ids that are. Anything that is not a list of strings grants nothing.

@@ -14,6 +14,9 @@
   Home and End move between items; Escape closes; choosing an item closes. In each case focus
   returns to the button. One menu is open at a time.
 
+  A caller that needs an action on the button, such as a hover description, passes it as
+  `triggerAction`; the menu itself knows nothing about what the action does.
+
   Where this departs from the mockups: the open menu is placed against the viewport, not against
   its wrapper. A menu in a table that scrolls sideways would otherwise be cut off at the table's
   edge. For that to hold, no ancestor of a menu may set `transform`, `filter`, `contain` or
@@ -26,6 +29,7 @@
 
 <script lang="ts">
   import { tick, type Snippet } from 'svelte';
+  import type { Action } from 'svelte/action';
 
   interface Props {
     /** The button's accessible name, for example "Actions for Default". */
@@ -35,9 +39,17 @@
     /** Test id of the button. */
     testid?: string;
     disabled?: boolean;
+    /** An action for the button. It is applied once, when the button mounts. */
+    triggerAction?: Action<HTMLButtonElement>;
   }
 
-  const { label, children, testid, disabled = false }: Props = $props();
+  const {
+    label,
+    children,
+    testid,
+    disabled = false,
+    triggerAction = () => {}
+  }: Props = $props();
 
   const ITEM_SELECTOR = '[role^="menuitem"]';
   /** The items focus can land on: every one but those with `disabled`. */
@@ -187,6 +199,7 @@
     {disabled}
     bind:this={trigger}
     onclick={toggle}
+    use:triggerAction
   >
     <svg class="i" aria-hidden="true"><use href="#i-more"></use></svg>
   </button>

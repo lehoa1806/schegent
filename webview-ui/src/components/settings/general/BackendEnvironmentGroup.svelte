@@ -75,7 +75,7 @@
   // paired with its own `RUNNERS` array by index. That worked only because two
   // files happened to list three backends in the same order, and nothing checked:
   // inserting a spec at the front would have drawn Claude's path field under
-  // Codex's Ping button with every test still passing.
+  // Codex's check button with every test still passing.
   //
   // A `Record` and not a `Map` — the shape host code uses for the same association
   // — because a fourth member of `BackendRunnerKind` must be a COMPILE error here.
@@ -187,7 +187,7 @@
       unit: 'seconds',
       min: 1,
       max: 30,
-      note: 'How long to wait when testing a backend. Applies to every workspace on this machine. Read at the start of each probe — the next Ping uses it, no reload.'
+      note: 'How long to wait when testing a backend. Applies to every workspace on this machine. Read at the start of each probe — the next test uses it, no reload.'
     }
   ] as const;
 

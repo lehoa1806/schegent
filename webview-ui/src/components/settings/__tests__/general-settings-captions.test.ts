@@ -100,7 +100,7 @@ describe('the settings page reads in sentence case', () => {
   it('heads its groups and sections in sentence case', () => {
     const { container } = render(GeneralSettingsTab, { props: { snapshot: buildSnapshot() } });
     const headings = textsOf(container, 'summary, h3');
-    expect(headings).toContain('Backend health');
+    expect(headings).toContain('Installed backends');
     expect(headings.filter((heading) => !isSentenceCase(heading))).toEqual([]);
   });
 

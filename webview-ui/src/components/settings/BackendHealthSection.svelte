@@ -5,7 +5,7 @@
   // `RUNNERS` array, paired against the tab's `BACKEND_FIELDS` by INDEX
   // (`{@const spec = BACKEND_FIELDS[i]}`). The pairing was correct only because
   // the two arrays were written in the same order and nothing compared them: a
-  // spec inserted at the front would have drawn Claude's path under Codex's Ping
+  // spec inserted at the front would have drawn Claude's path under Codex's check
   // button with every test still green. It also carried five `any`-typed props,
   // so nothing about the shapes flowing through it was checked at all.
   //
@@ -68,11 +68,11 @@
 
 <!--
   The redesign's "Installed backends" section: a heading, then one card per backend. The heading
-  keeps its words and its id, which the "open backend settings" command scrolls to.
+  takes the mockup's words and keeps its id, which a launch notice's "Review in Settings" scrolls
+  to. The mockup draws no line under the heading, so there is none.
 -->
 <section class="section backend-health" aria-labelledby="backend-health-heading">
-  <h3 id="backend-health-heading">Backend health</h3>
-  <p class="lead small muted" id="backend-health-description">Run a bounded, output-free availability check for a configured CLI.</p>
+  <h3 id="backend-health-heading">Installed backends</h3>
   <div class="grid backend-list">
     {#each SUPPORTED_BACKENDS as kind (kind)}
       <BackendSection
@@ -92,9 +92,3 @@
     {/each}
   </div>
 </section>
-
-<style>
-  .lead {
-    margin: 0 0 var(--schegent-space-3);
-  }
-</style>

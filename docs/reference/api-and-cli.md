@@ -178,7 +178,7 @@ The webview words the two reasons as "The workspace is not trusted, so this acti
 
 | Command | Webview | Host |
 |---|---|---|
-| Ping | Nothing changes. The Ping button's state comes from the host snapshot, which does not change, so the state stays idle and no result line appears. | The warning toast. |
+| Ping | Nothing changes. The Test button's state comes from the host snapshot, which does not change, so the state stays idle and no result appears on the backend's card. | The warning toast. |
 | Export process YAML | No dialog opens. The export button does not wait for the acknowledgement, so no text appears beside it. | The warning toast. |
 | Preflight process YAML | The import panel reports the refusal in the sentence for the reason. | The warning toast. |
 | Dismiss migration notice | The notice stays, because only a snapshot that records the dismissal hides it. | The warning toast. |

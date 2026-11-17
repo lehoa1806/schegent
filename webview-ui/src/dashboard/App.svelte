@@ -49,10 +49,10 @@
 
   // FR-R4-F06 (FR-008; D5) -- "Review in Settings" from a launch surface. Webview-local: it
   // posts no command, names no setting key and persists nothing. The Settings route mounts
-  // fresh on its Backends section, which holds Backend health (`SettingsSurface.test.ts` holds
-  // the heading to it), and its surface loads lazily, so the heading may not exist after one
-  // tick; the scroll waits for it for a bounded number of frames and then gives up quietly
-  // rather than throwing.
+  // fresh on its Backends section, which holds the "Installed backends" heading
+  // (`SettingsSurface.test.ts` holds the heading to it), and its surface loads lazily, so the
+  // heading may not exist after one tick; the scroll waits for it for a bounded number of frames
+  // and then gives up quietly rather than throwing.
   const BACKEND_HEALTH_HEADING_ID = 'backend-health-heading';
   const SCROLL_WAIT_FRAMES = 120;
 
