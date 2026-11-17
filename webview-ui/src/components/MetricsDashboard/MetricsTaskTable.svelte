@@ -127,7 +127,7 @@
             <td class="description-cell">
               {task.description}
               {#if task.source === 'phase-reconstruction'}
-                <span class="tag" title="Reconstructed from phase activity — no direct task record"
+                <span class="tag" title="Reconstructed from Phase activity — no direct task record"
                   >Reconstructed</span>
               {/if}
             </td>

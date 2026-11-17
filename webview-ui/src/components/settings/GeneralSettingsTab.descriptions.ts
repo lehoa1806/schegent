@@ -150,8 +150,8 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
     title: 'Stop a step that is silent for (seconds)',
     body:
       'Idle window for a single CLI invocation (60–7200): the runner ' +
-      'terminates the phase after this long with no output. Output resets ' +
-      'the window, so a streaming phase runs on — the time limit per step, ' +
+      'terminates the Phase after this long with no output. Output resets ' +
+      'the window, so a streaming Phase runs on — the time limit per step, ' +
       'below, is what bounds it.'
   },
 
@@ -339,7 +339,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   retryMaxAttempts: {
     title: 'Retry attempts per step',
     body:
-      'How many delayed-retry attempts a phase gets before the Run and its ' +
+      'How many delayed-retry attempts a Phase gets before the Run and its ' +
       'Queue pause (1–5). Retries cannot be switched off here: the lowest ' +
       'accepted value is 1, and the first attempt is not counted as a retry.'
   },

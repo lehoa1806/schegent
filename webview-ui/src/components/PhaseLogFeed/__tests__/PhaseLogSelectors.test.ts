@@ -150,7 +150,7 @@ describe('Feature 020 T054 — Jump-to-current-phase button (US3)', () => {
     const button = getByTestId('phase-log-jump-current') as HTMLButtonElement;
     expect(button.disabled).toBe(false);
     expect(button.getAttribute('aria-disabled')).toBe('true');
-    expect(button.title).toBe('No in-flight phase (click to enable Live Mode)');
+    expect(button.title).toBe('No in-flight Phase (click to enable Live Mode)');
   });
 
   it('is enabled when a task is in-flight', () => {
@@ -182,7 +182,7 @@ describe('Feature 020 T054 — Jump-to-current-phase button (US3)', () => {
     });
     const button = getByTestId('phase-log-jump-current') as HTMLButtonElement;
     expect(button.disabled).toBe(false);
-    expect(button.title).toBe('Jump to the currently executing phase');
+    expect(button.title).toBe('Jump to the currently executing Phase');
   });
 
   it('invokes onJumpToCurrent when clicked while enabled', async () => {

@@ -219,7 +219,7 @@ describe('PhaseControlMenu', () => {
       ack(0, 'rejected', 'run-terminal', 'refused');
       await waitFor(() => {
         expect(getByTestId('phase-control-message').textContent).toBe(
-          'This Run has already finished, so its phases can no longer be changed.'
+          'This Run has already finished, so its Phases can no longer be changed.'
         );
       });
     });
@@ -796,7 +796,7 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
 
       await waitFor(() =>
         expect(getByTestId('phase-control-message').textContent).toContain(
-          'That phase has already started, so it can no longer be disabled.'
+          'That Phase has already started, so it can no longer be disabled.'
         )
       );
     });

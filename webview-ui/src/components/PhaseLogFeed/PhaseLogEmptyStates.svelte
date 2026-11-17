@@ -67,10 +67,10 @@
        tuple's banner in state for a frame, and "no log for this phase yet" is
        false once there is no this-phase. -->
   <div class="empty" data-testid="phase-log-empty-no-phase">
-    <p class="title">No phase selected</p>
+    <p class="title">No Phase selected</p>
     <p class="hint">
-      Pick a phase from the strip to read its log. A run that has
-      finished has no current phase, so there is nothing to follow
+      Pick a Phase from the strip to read its log. A run that has
+      finished has no current Phase, so there is nothing to follow
       until you choose one.
     </p>
   </div>
@@ -80,7 +80,7 @@
     data-testid="phase-log-empty-phase-running-no-output"
     data-empty-kind="phase-running-no-output"
   >
-    <p class="title">This phase is running</p>
+    <p class="title">This Phase is running</p>
     <p class="hint">
       It has not written anything yet. Output appears here as it arrives.
     </p>
@@ -91,9 +91,9 @@
     data-testid="phase-log-empty-phase-not-recorded"
     data-empty-kind="phase-not-recorded"
   >
-    <p class="title">This phase has not run</p>
+    <p class="title">This Phase has not run</p>
     <p class="hint">
-      Nothing has been recorded for it. Pick a phase that has run, or start
+      Nothing has been recorded for it. Pick a Phase that has run, or start
       this one.
     </p>
   </div>
@@ -105,7 +105,7 @@
   >
     <p class="title">Verbose diagnostics is off</p>
     <p class="hint">
-      Nothing is being recorded for any phase until
+      Nothing is being recorded for any Phase until
       <code>{banner.settingKey}</code> is enabled.
     </p>
     <button
@@ -123,7 +123,7 @@
     data-testid="phase-log-empty-no-iteration-recorded"
     data-empty-kind="no-iteration-recorded"
   >
-    <p class="title">This phase began and recorded nothing</p>
+    <p class="title">This Phase began and recorded nothing</p>
     <p class="hint">
       Its log directory is here and holds no iteration with a log.
     </p>
@@ -136,7 +136,7 @@
   >
     <p class="title">The log path is not a readable file</p>
     <p class="hint">
-      Something that is not a log is sitting where this phase's stream belongs.
+      Something that is not a log is sitting where this Phase's stream belongs.
       This one is worth reporting.
     </p>
   </div>

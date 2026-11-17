@@ -185,7 +185,7 @@
     <div class="rc-warning" data-testid="retry-condition-warning" role="alert">
       <strong>Cross-artifact warning:</strong>
       The following identifier{missingIdentifiers.length === 1 ? '' : 's'} do not appear in
-      this phase's instruction —
+      this Phase's instruction —
       <span class="rc-missing">
         {#each missingIdentifiers as id, idx (id)}
           <code>{id}</code>{idx < missingIdentifiers.length - 1 ? ', ' : ''}

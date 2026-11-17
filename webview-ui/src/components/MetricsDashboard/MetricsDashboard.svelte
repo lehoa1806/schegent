@@ -265,7 +265,7 @@
               audit log. Cumulative totals remain available; the runs themselves have
               been pruned by retention.
             {:else}
-              No workflow runs recorded yet. Start a task from Queues to populate this view.
+              No Workflow runs recorded yet. Start a task from Queues to populate this view.
             {/if}
           </p>
         {:else}

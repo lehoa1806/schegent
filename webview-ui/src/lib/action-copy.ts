@@ -190,7 +190,7 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
   },
   'run.retry-phase-now': {
     title: 'Retry phase now?',
-    bodyTemplate: 'Re-runs the **{phaseName}** phase immediately.',
+    bodyTemplate: 'Re-runs the **{phaseName}** Phase immediately.',
     confirmLabel: 'Retry Now',
     severity: 'caution'
   },
@@ -219,7 +219,7 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
   'workspace.reset': {
     title: 'Reset Workspace — wipe all state?',
     bodyTemplate:
-      'Cancels any running phase, then wipes all Schegent state for this workspace — ' +
+      'Cancels any running Phase, then wipes all Schegent state for this workspace — ' +
       'queues, runs, history, leases, schedules, prompt suppressions, and project-level ' +
       'UI preferences. The audit log and per-run transcripts are preserved. ' +
       'This cannot be undone.',
@@ -422,7 +422,7 @@ export function renderActionBody<K extends ActionKey>(
           ctx.inflightTitle !== null ? `, abort the running task ("${ctx.inflightTitle}")` : '',
         pauseSummary: ctx.pauseSource !== null ? `, and clear the ${ctx.pauseSource} pause` : '',
         scheduleSummary: ctx.hasSchedule ? ', and cancel the scheduled start' : '',
-        runSummary: ctx.hasActiveRun ? ', and clear the active workflow run' : ''
+        runSummary: ctx.hasActiveRun ? ', and clear the active Workflow run' : ''
       });
     }
     case 'queue.clear-done': {

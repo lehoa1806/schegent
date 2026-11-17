@@ -194,7 +194,7 @@ function noPhaseCardText(): string {
  * `or it …` construction that joins two candidate causes.
  *
  * Deliberately NOT the bare word "or". `phase-not-recorded` offers two ACTIONS
- * over one explanation ("pick a phase that has run, or start this one"), and
+ * over one explanation ("pick a Phase that has run, or start this one"), and
  * `FR-013` is about explanations. A detector keyed on "or" would report a card as
  * hedged for telling the operator what to do next, which is the opposite of what
  * this story asks for — `data-model.md` §1.1 gives each member an action.
@@ -233,7 +233,7 @@ describe('Feature 203 T053 — no card offers more than one explanation', () => 
     // The control for the narrowing above. Without it the detector could be the
     // bare word "or" and still pass every assertion in this block, while banning
     // the one thing `data-model.md` §1.1 asks each card to do.
-    expect(HEDGE.test('Pick a phase that has run, or start this one.')).toBe(false);
+    expect(HEDGE.test('Pick a Phase that has run, or start this one.')).toBe(false);
     expect(cardText('phase-not-recorded')).toMatch(/\bor\b/);
   });
 });

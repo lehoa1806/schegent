@@ -1128,7 +1128,7 @@ describe('PipelineBuilder — BUG-002 cross-tab phase visibility', () => {
     // The authoritative catalog refresh makes the saved Phase available.
     const savedPhase: PhaseDefinition = Object.freeze({
       id: 'new-phase', name: 'New Phase', version: 1,
-      instruction: 'Describe the phase objective here.'
+      instruction: 'Describe the Phase objective here.'
     });
     await rerender({
       snapshot: buildSnapshot([existingPhase, savedPhase], [pipeline]),

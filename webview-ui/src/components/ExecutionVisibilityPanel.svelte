@@ -227,7 +227,7 @@
       <section class="ev-subblock" aria-label="Phase context handoffs" data-testid="ev-handoffs-section">
         <h3>Phase handoffs ({detail.handoffs.length}) &amp; review loops ({detail.reviewLoops.length})</h3>
         {#if detail.handoffs.length === 0 && detail.reviewLoops.length === 0}
-          <p class="ev-note">No phase handoffs or review-loop ledgers recorded for this run.</p>
+          <p class="ev-note">No Phase handoffs or review-loop ledgers recorded for this run.</p>
         {:else}
           {#if detail.handoffs.length > 0}
             <ul class="ev-list">
