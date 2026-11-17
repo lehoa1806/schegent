@@ -176,6 +176,10 @@
   .posture code {
     font-family: var(--schegent-mono-font);
   }
+  /* The first two are the host's own sentences, shown as they arrive. The refusal quotes two
+     setting keys, and each is a word with no place to break that is wider than the line on a
+     narrow panel. Such a word breaks where the line ends, so the page never scrolls sideways
+     (WCAG 1.4.10). */
   .refusal,
   .grant-problem,
   .not-found {
@@ -183,6 +187,7 @@
     font-size: var(--schegent-text-secondary);
     line-height: 1.45;
     color: var(--schegent-status-warning-text);
+    overflow-wrap: anywhere;
   }
   .pointer {
     margin: var(--schegent-space-1) 0 0;
