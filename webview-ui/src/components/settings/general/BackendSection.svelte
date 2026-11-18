@@ -63,6 +63,11 @@
      * exact defect this section exists to remove.
      */
     posture: BackendPosture | undefined;
+    /**
+     * The backend's path as saved: the one the host's scan found or did not find, and the one
+     * the last test started. The summary shows it; an edit shows in the path field until a save.
+     */
+    savedPath: string;
     discovered: boolean;
     /** Whether `backend.runner` currently names this backend (T032). */
     inUse: boolean;
@@ -80,6 +85,7 @@
     kind,
     section,
     posture,
+    savedPath,
     discovered,
     inUse,
     ping,
@@ -111,11 +117,13 @@
   // The result chip's tone, read from the same state as its words: checking, healthy or not.
   const pingHealthy = $derived(ping.status === 'success');
 
-  // The path line follows the draft, as "In use" does, so it shows what a save will write. The
-  // host projects no resolved location, so the line is the configured command or path.
+  // The path line is the saved path, the one "Found" or "Not found" and the last test speak of,
+  // so the summary never pairs a path with what was found at another. An edit shows in the path
+  // field and in the page's unsaved count until a save, after which the host scans the new path.
+  // "In use" follows the draft instead (T032), as it names the backend a save will run. The host
+  // projects no resolved location, so the line is the configured command or path.
   const pathText = $derived.by(() => {
-    const value = draft[section.path.key];
-    const path = typeof value === 'string' ? value.trim() : '';
+    const path = savedPath.trim();
     return discovered && path !== '' ? path : NO_PATH;
   });
 

@@ -17,12 +17,14 @@
   // The per-backend rendering lives in `general/BackendSection.svelte`; this file
   // owns the heading, the shared probe state and nothing else.
   import { SUPPORTED_BACKENDS } from '../../../../src/contracts/backend-kinds';
-  import type {
-    BackendPingState,
-    BackendPosture,
-    BackendRunnerKind,
-    PortableWorkflowDefinition,
-    WorkflowSnapshot
+  import {
+    IDLE_GENERAL_SETTINGS,
+    type BackendPingState,
+    type BackendPosture,
+    type BackendRunnerKind,
+    type GeneralSettings,
+    type PortableWorkflowDefinition,
+    type WorkflowSnapshot
   } from '../../lib/snapshot-types';
   import BackendSection from './general/BackendSection.svelte';
   import type {
@@ -68,6 +70,15 @@
   // Absent when the host predates the projection; each section renders no posture
   // block in that case rather than inventing one. See `BackendSection`'s prop doc.
   const postures = $derived<readonly BackendPosture[]>(snapshot.backendPostures ?? []);
+  // The settings as saved, which the host's scan and a backend's last test read. The draft holds
+  // what a save will write; each card shows the saved path beside what was found at it.
+  const saved = $derived<GeneralSettings>(snapshot.generalSettings ?? IDLE_GENERAL_SETTINGS);
+
+  /** The saved value of a backend's path setting, or `''` when none is saved. */
+  function savedPath(key: ScalarKey): string {
+    const value: unknown = saved[key];
+    return typeof value === 'string' ? value : '';
+  }
 
   const { group: searchGroup } = settingsSearch();
 </script>
@@ -89,6 +100,7 @@
         {kind}
         section={backends[kind]}
         posture={postures.find((row) => row.kind === kind)}
+        savedPath={savedPath(backends[kind].path.key)}
         discovered={availableBackends.includes(kind)}
         inUse={draft.backendRunner === kind}
         {ping}
