@@ -74,7 +74,7 @@
 
   // The page's search finds each list by its fixed words. The text of an addition is the user's
   // own, so it is never searched; a built-in entry is fixed, so it is.
-  const { row: searchRow } = settingsSearch();
+  const { row: searchRow, refusal } = settingsSearch();
   const additionsWords = (): SearchWords => [
     ...descriptionWords(FATAL_SIGNATURES_DESCRIPTIONS['operator-section-header']),
     COLUMN,
@@ -309,7 +309,7 @@
     {:else if status.status === 'unknown'}
       <div class="save-status small muted" data-testid="fatal-status" role="status">{OUTCOME_NOT_YET_KNOWN_TEXT}</div>
     {:else if status.status === 'rejected'}
-      <div class="save-status small s-err" data-testid="fatal-status" role="alert">
+      <div class="save-status small s-err" data-testid="fatal-status" role="alert" use:refusal>
         Save rejected. {boundaryRefusalText(status.reason ?? '')}
       </div>
     {/if}

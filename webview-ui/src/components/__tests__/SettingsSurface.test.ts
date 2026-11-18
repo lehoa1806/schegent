@@ -11,8 +11,9 @@
 //   - The page's one save model: the header's count, Revert and Save.
 //   - The header's "Search settings" field: what the page shows while it holds a word, and that
 //     a search changes nothing about what is counted and saved.
+//   - A save the host refuses comes into sight, wherever on the page the refused setting is.
 
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import SettingsSurface from '../SettingsSurface.svelte';
 import type { WorkflowSnapshot } from '../../lib/snapshot-types';
@@ -20,6 +21,7 @@ import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
 import { FATAL_SIGNATURES } from '../../lib/fatal-signature-registry';
 import { buildQueueRuntime, foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
 import { postCommand } from '../../lib/vscode-api';
+import { snapshotStore, type AckListener } from '../../lib/snapshot-store.svelte';
 
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: vi.fn(() => ({ correlationId: 'corr-test' }))
@@ -94,6 +96,19 @@ function shownSections(container: HTMLElement): string[] {
   return Array.from(container.querySelectorAll<HTMLElement>('[data-testid^="settings-section-"]'))
     .filter((section) => !section.hidden)
     .map((section) => section.getAttribute('data-testid') ?? '');
+}
+
+async function fill(
+  getByTestId: (id: string) => HTMLElement,
+  id: string,
+  text: string
+): Promise<void> {
+  await fireEvent.input(getByTestId(id), { target: { value: text } });
+}
+
+/** True when neither the element nor anything around it is hidden. */
+function isShown(element: Element): boolean {
+  return element.closest('[hidden]') === null;
 }
 
 // Settings redesign — the section navigation (M1: `SET_SECS`, `st.setSec` and the `.set-nav`
@@ -381,21 +396,8 @@ describe('Settings redesign — the search field', () => {
     return render(SettingsSurface, { props: { snapshot } });
   }
 
-  async function fill(
-    getByTestId: (id: string) => HTMLElement,
-    id: string,
-    text: string
-  ): Promise<void> {
-    await fireEvent.input(getByTestId(id), { target: { value: text } });
-  }
-
   async function search(getByTestId: (id: string) => HTMLElement, text: string): Promise<void> {
     await fill(getByTestId, 'settings-search', text);
-  }
-
-  /** True when neither the element nor anything around it is hidden. */
-  function isShown(element: Element): boolean {
-    return element.closest('[hidden]') === null;
   }
 
   /** The field rows on screen, by test id, in page order. */
@@ -729,5 +731,154 @@ describe('Settings redesign — the search field', () => {
     await search(getByTestId, 'evidence profile');
     expect(shownSections(container)).toContain('settings-section-privacy');
     expect(isShown(getByTestId('privacy-profiles'))).toBe(true);
+  });
+});
+
+// Settings redesign — a refused save comes into sight. The page's one Save writes every section at
+// once, so the host can refuse a setting the user cannot see: in a section not shown, under a
+// search that hides it, or in a group the user closed. The refusal is said beside the setting, and
+// the page brings it into sight, unless a refusal is in sight already.
+describe('Settings redesign — a refused save comes into sight', () => {
+  /** The host's answer to each command posted, waiting to be given, in the order posted. */
+  let unanswered: AckListener[] = [];
+
+  beforeEach(() => {
+    unanswered = [];
+    vi.mocked(snapshotStore.onceAck).mockImplementation((_correlationId, listener) => {
+      unanswered.push(listener);
+      return () => undefined;
+    });
+  });
+
+  afterEach(() => {
+    vi.mocked(snapshotStore.onceAck).mockReset();
+  });
+
+  function renderSurface() {
+    return render(SettingsSurface, { props: { snapshot: buildSnapshot() } });
+  }
+
+  /** Saves the page, and the host refuses each of the `posts` commands the save sends. */
+  async function saveRefused(getByTestId: (id: string) => HTMLElement, posts: number): Promise<void> {
+    await fireEvent.click(getByTestId('settings-save'));
+    await vi.waitFor(() => expect(unanswered).toHaveLength(posts));
+    for (const answer of unanswered.splice(0)) answer({ status: 'rejected', reason: 'out-of-range' });
+  }
+
+  /** Waits until the page has done all it does after a refusal is drawn. */
+  function settled(): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  }
+
+  it('shows a refused setting the search hides, ending the search', async () => {
+    const { container, getByTestId } = renderSurface();
+    await fill(getByTestId, 'general-settings-input-loopMaxIterations', '23');
+    await fill(getByTestId, 'settings-search', 'schegent.codex.path');
+    expect(isShown(getByTestId('general-settings-field-loopMaxIterations'))).toBe(false);
+
+    await saveRefused(getByTestId, 1);
+
+    await vi.waitFor(() => {
+      expect(isShown(getByTestId('general-settings-status-loopMaxIterations'))).toBe(true);
+    });
+    expect((getByTestId('settings-search') as HTMLInputElement).value).toBe('');
+    expect(shownSections(container)).toEqual(['settings-section-execution']);
+  });
+
+  it('shows the section of a refused setting in place of the section on screen', async () => {
+    const { container, getByTestId } = renderSurface();
+    await fill(getByTestId, 'general-settings-input-loopMaxIterations', '9');
+    expect(shownSections(container)).toEqual(['settings-section-backends']);
+
+    await saveRefused(getByTestId, 1);
+
+    await vi.waitFor(() => {
+      expect(shownSections(container)).toEqual(['settings-section-execution']);
+    });
+    expect(navButton(container, 'execution').getAttribute('aria-current')).toBe('true');
+    expect(isShown(getByTestId('general-settings-status-loopMaxIterations'))).toBe(true);
+  });
+
+  it('keeps the section on screen when a refusal is in sight there', async () => {
+    const { container, getByTestId } = renderSurface();
+    await fill(getByTestId, 'general-settings-input-loopMaxIterations', '11');
+    await fireEvent.click(navButton(container, 'logging'));
+    await fill(getByTestId, 'general-settings-input-runtimeLogFilePath', '/var/log/schegent-kept.log');
+
+    await saveRefused(getByTestId, 1);
+    await vi.waitFor(() => {
+      expect(getByTestId('general-settings-status-loopMaxIterations').textContent).toContain('Rejected');
+    });
+    await settled();
+
+    expect(shownSections(container)).toEqual(['settings-section-logging']);
+    expect(isShown(getByTestId('general-settings-status-runtimeLogFilePath'))).toBe(true);
+  });
+
+  it('brings the first refusal in page order into sight when none is in sight', async () => {
+    const { container, getByTestId } = renderSurface();
+    await fill(getByTestId, 'general-settings-input-runtimeLogFilePath', '/var/log/schegent-later.log');
+    await fill(getByTestId, 'general-settings-input-loopMaxIterations', '13');
+
+    await saveRefused(getByTestId, 1);
+    await vi.waitFor(() => {
+      expect(shownSections(container)).toEqual(['settings-section-execution']);
+    });
+    await settled();
+
+    expect(shownSections(container)).toEqual(['settings-section-execution']);
+  });
+
+  it('opens a settings group the user closed when a setting inside it is refused', async () => {
+    const { container, getByTestId } = renderSurface();
+    await fireEvent.click(navButton(container, 'execution'));
+    const group = getByTestId('settings-group-execution-retry') as HTMLDetailsElement;
+    group.open = false;
+    await fill(getByTestId, 'general-settings-input-loopMaxIterations', '17');
+
+    await saveRefused(getByTestId, 1);
+
+    await vi.waitFor(() => expect(group.open).toBe(true));
+  });
+
+  it('shows the failure signatures when the host refuses them', async () => {
+    const { container, getByTestId } = renderSurface();
+    await fireEvent.click(getByTestId('fatal-add'));
+    await fill(getByTestId, 'fatal-operator-input-0', 'refused signature for a test');
+
+    await saveRefused(getByTestId, 1);
+
+    await vi.waitFor(() => {
+      expect(shownSections(container)).toEqual(['settings-section-signatures']);
+    });
+    expect(isShown(getByTestId('fatal-status'))).toBe(true);
+  });
+
+  it('shows the queue settings when the host refuses them', async () => {
+    const { container, getByTestId } = renderSurface();
+    await fill(getByTestId, 'queue-config-cap', '6');
+
+    await saveRefused(getByTestId, 1);
+
+    await vi.waitFor(() => {
+      expect(shownSections(container)).toEqual(['settings-section-queues']);
+    });
+    expect(isShown(getByTestId('queue-config-refusal'))).toBe(true);
+  });
+
+  it("shows a queue's failure policy when the host refuses it", async () => {
+    const { container, getByTestId } = renderSurface();
+    await fireEvent.change(getByTestId('queue-failure-policy-select-default'), {
+      target: { value: 'continue' }
+    });
+
+    await saveRefused(getByTestId, 1);
+
+    await vi.waitFor(() => {
+      expect(shownSections(container)).toEqual(['settings-section-queues']);
+    });
+    expect(isShown(getByTestId('queue-failure-policy-message-default'))).toBe(true);
   });
 });

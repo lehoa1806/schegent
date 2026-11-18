@@ -32,7 +32,8 @@
     search: page.search,
     section: id,
     name: settingsSectionLabel(id),
-    show: () => page.select(id)
+    show: () => page.select(id),
+    refusals: page.refusals
   }));
 
   const searching = $derived(page.search.active);

@@ -26,8 +26,12 @@
  * A part with changes it cannot save yet (a failure signature row left empty) is counted but
  * skipped by Save, and keeps its warning until the row is filled or removed. Save is on while any
  * part can save; Revert is on while anything has changed.
+ *
+ * Because Save writes every section, the host can refuse a setting the user cannot see. The page
+ * brings each refusal into sight (`settings-refusals.ts`).
  */
 import { untrack } from 'svelte';
+import { Refusals } from './settings-refusals';
 import { SettingsSearch } from './settings-search.svelte';
 
 /** The page's sections, in the order and the words of the redesign's section navigation. */
@@ -63,6 +67,8 @@ export interface SettingsPart {
 export class SettingsPage {
   /** The header's search. While it holds a word, it decides which sections are on screen. */
   readonly search = new SettingsSearch();
+  /** The host's refusals of a save, drawn on the page, which the page brings into sight. */
+  readonly refusals = new Refusals();
   #parts = $state.raw<readonly SettingsPart[]>([]);
   #saving = $state(false);
   #section = $state<SettingsSectionId>('backends');
