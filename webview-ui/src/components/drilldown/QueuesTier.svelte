@@ -31,7 +31,7 @@
   import { CMD_CREATE_QUEUE } from '../../lib/messages';
   import { sendCreateQueueIntent, type CreateQueueOutcome } from '../../lib/queue-create-ipc';
   import { queueRuntimeLabel, queueRuntimeTone } from '../../lib/queue-lifecycle-label';
-  import { haltedStartFailure } from '../../lib/queue-runtime-view';
+  import { haltedStartFailure, isWorkingARun } from '../../lib/queue-runtime-view';
   import { snapshotStore } from '../../lib/snapshot-store.svelte';
   import type { QueueItem, QueueRuntime } from '../../lib/snapshot-types';
 
@@ -134,7 +134,12 @@
     onSelectQueue(queueId);
   }
 
+  // The "Current run" cell names the Run the queue is working, paused or not. A queue keeps the
+  // record of its last Run after the Run ends, and the status chip then reads the queue as no
+  // longer working, so an ended Run gets the dash here. The queue's page lists the finished
+  // tasks the queue still holds.
   function runLabel(runtime: QueueRuntime): string | null {
+    if (!isWorkingARun(runtime)) return null;
     return runtime.inFlightRun?.feature?.label ?? null;
   }
 

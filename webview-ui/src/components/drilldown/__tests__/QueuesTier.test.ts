@@ -82,6 +82,15 @@ function purposeLine(container: HTMLElement): string {
   return (container.querySelector('.purpose')?.textContent ?? '').replace(/\s+/g, ' ').trim();
 }
 
+/** A queue's "Current run" cell text, found by the column's heading rather than its place. */
+function currentRunCell(container: HTMLElement, queueId: string): string | undefined {
+  const headings = Array.from(container.querySelectorAll('thead th'), (th) => th.textContent.trim());
+  const column = headings.indexOf('Current run');
+  if (column < 0) return undefined;
+  const row = container.querySelector(`[data-testid="queue-card-${queueId}"]`)?.closest('tr');
+  return Array.from(row?.querySelectorAll('td') ?? []).at(column)?.textContent.trim();
+}
+
 beforeEach(() => {
   postCommandSpy.mockClear();
 });
@@ -207,6 +216,47 @@ describe('QueuesTier — every queue at a glance (FR-055)', () => {
     expect(
       container.querySelector('[data-testid="queue-lifecycle-default"]')?.textContent.trim()
     ).toBe('Running');
+  });
+
+  it('names a Run under Current run only while the queue is working it', () => {
+    // `inFlightRun` is ownership, not liveness: a queue keeps the record of its last Run
+    // after the Run ends, and the status chip beside the cell already reads that queue as
+    // no longer working. Naming the ended Run under "Current run" would say it still is.
+    // A paused Run has not ended, so it is still the queue's current one.
+    const feature = Object.freeze({
+      id: 'task-cache',
+      label: 'Harden the cache',
+      startedAt: '2026-08-12T00:00:00.000Z'
+    });
+    const statuses = ['running', 'paused', 'completed', 'failed', 'canceled'] as const;
+    const queues = Object.freeze(
+      statuses.map((status, position) =>
+        buildQueueRuntime({
+          queueId: `q-${status}`,
+          name: `${status} queue`,
+          position,
+          lifecycle: 'running',
+          inFlightRun: buildInFlightRun({ status, feature })
+        })
+      )
+    );
+    const { container } = render(QueuesTier, { props: { queues, isPrimary: true } });
+
+    const shown = statuses.map((status) => ({
+      status,
+      named:
+        container
+          .querySelector(`[data-testid="queue-active-run-q-${status}"]`)
+          ?.textContent.trim() ?? null,
+      cell: currentRunCell(container, `q-${status}`)
+    }));
+    expect(shown).toEqual([
+      { status: 'running', named: 'Harden the cache', cell: 'Harden the cache' },
+      { status: 'paused', named: 'Harden the cache', cell: 'Harden the cache' },
+      { status: 'completed', named: null, cell: '—' },
+      { status: 'failed', named: null, cell: '—' },
+      { status: 'canceled', named: null, cell: '—' }
+    ]);
   });
 
   it('orders cards by queue position, not by arrival order in the array', () => {
