@@ -163,6 +163,7 @@ Frame and structure:
 - **Where the two mockups define one class differently** (`.chip`, `.seg`, `.menu`, `.tab`), the surfaces mockup is the definition and the builder's variant is a contextual rule.
 - **The page header's action rule matches only its own `.actions` child** (`.phead > .actions`). The mockup's descendant rule also restyles an `.actions` group a component puts inside it, such as `QueueItemActions` in the run page's header.
 - **The table wrapper is positioned** (`position: relative`), so an absolutely positioned part of a cell, such as a visually hidden column header, scrolls and clips with the table. The mockup's wrapper is not positioned, and on a narrow window such a part widens the page.
+- **A `.g2` grid's columns shrink with the grid.** The surfaces mockup holds each column at 300px at least, so on a 320px panel the Phase editor's Basics card ran 34px past the panel and the page scrolled sideways, which WCAG 1.4.10 (Reflow) does not allow. A column's least width is 300px or the grid's whole width, whichever is smaller: a grid narrower than 300px shows one column as wide as itself, and a wider grid is laid out as in the mockup.
 
 Wording:
 
