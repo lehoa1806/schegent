@@ -410,6 +410,11 @@
       </p>
     {/if}
 
+    <!-- FR-065: a secondary window gets no queue actions, so the page says why, in the queue refusal's words. -->
+    {#if !isPrimary}
+      <p class="hint" data-testid="queue-detail-read-only">{refusalText('secondary-window-readonly')}</p>
+    {/if}
+
     <!-- Design rule 6: a refused action is a problem, so it shows in an attention banner. -->
     {#if refusal !== null}
       <div class="attn" role="alert" data-testid="queue-control-refusal">
