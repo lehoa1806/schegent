@@ -1516,6 +1516,138 @@ test('a card menu’s description on a 320px panel covers none of its items', as
 });
 
 /**
+ * The widths every Settings description is opened at: the narrowest panel the page must fit, and
+ * the width the baselines are photographed at.
+ */
+const DESCRIPTION_SCAN_WIDTHS_PX = [REFLOW_PANEL_WIDTH_PX, 1440] as const;
+
+/** How far an open description may cross an edge of the panel, for rounding. */
+const DESCRIPTION_EDGE_TOLERANCE_PX = 0.5;
+
+/**
+ * Focuses `control`, waits for its description to open, and returns what is wrong with where it
+ * opened: each edge of the panel it crosses, and whether it covers `keepClear`, named `what`. The
+ * description is left open.
+ */
+async function openedDescriptionProblems(
+  page: Page,
+  control: Locator,
+  keepClear: Locator,
+  what: string
+): Promise<string[]> {
+  const controlId = (await control.getAttribute('data-hover-text-controlid')) ?? '';
+  const description = page.locator(`[id="hover-text-${controlId}"]`);
+  await control.focus();
+  await expect(description, `${controlId}'s description opens with the focus`).toBeVisible();
+  // The portal places the box after it first draws it, so it is measured once that has drawn.
+  await page.evaluate(AFTER_TWO_FRAMES);
+  const box = await description.boundingBox();
+  const kept = await keepClear.boundingBox();
+  const panel = page.viewportSize();
+  if (box === null || kept === null || panel === null) return [`${controlId}: has no box`];
+  const crossed = {
+    left: -box.x,
+    top: -box.y,
+    right: box.x + box.width - panel.width,
+    bottom: box.y + box.height - panel.height
+  };
+  const problems = Object.entries(crossed)
+    .filter(([, by]) => by > DESCRIPTION_EDGE_TOLERANCE_PX)
+    .map(([edge, by]) => `${controlId}: ${by.toFixed(1)}px past the panel's ${edge} edge`);
+  if (boxesOverlap(box, kept)) problems.push(`${controlId}: covers ${what}`);
+  return problems;
+}
+
+/**
+ * Every control description on the Settings page opens inside the panel and clear of its
+ * control, and an item's description in a card's menu clear of the whole menu, as the test before
+ * this one holds for one item. Each is opened by focusing its control, at both widths: the header's
+ * controls, each section's (with every backend's Details open, where its path field is), and each
+ * menu's items. Before this, only the search field's description had been open in any scan, the
+ * accessibility scan's. The box is measured where it first draws and then placed, and a panel too
+ * narrow for its 320px narrowed it as it landed: a description placed above its field could take
+ * one more line and cover the top of the field.
+ */
+test('every settings description opens inside the panel and clear of its control', async ({
+  page
+}) => {
+  const settings = await openSurface(page, 'settings', 'light');
+  const openDescriptions = page.locator('.hover-text-portal-host');
+  const problems: string[] = [];
+  let controlsOpened = 0;
+  let itemsOpened = 0;
+
+  // Each control in `scope` that shows a description, opened and then left.
+  const scanControls = async (view: string, scope: Locator): Promise<void> => {
+    for (const control of await scope.locator('[data-hover-text-anchored="true"]').all()) {
+      // An item of a closed menu, opened by `scanMenus`.
+      if (!(await control.isVisible())) continue;
+      await control.scrollIntoViewIfNeeded();
+      await page.evaluate(AFTER_TWO_FRAMES);
+      const found = await openedDescriptionProblems(page, control, control, 'its control');
+      problems.push(...found.map((problem) => `${view}: ${problem}`));
+      controlsOpened += 1;
+      await control.blur();
+      await expect(openDescriptions, 'the description closes with the focus').toHaveCount(0);
+    }
+  };
+
+  // Each menu in `scope`, opened from its button, and each of its items that shows a description.
+  const scanMenus = async (view: string, scope: Locator): Promise<void> => {
+    for (const button of await scope.locator('[aria-haspopup="menu"]').all()) {
+      // The menu closes on a scroll that moves its button, as in the test before this one.
+      await button.scrollIntoViewIfNeeded();
+      await page.evaluate(AFTER_TWO_FRAMES);
+      await button.click();
+      const menu = scope.getByRole('menu');
+      await expect(menu, 'the menu opens from its button').toBeVisible();
+      for (const item of await menu.locator('[data-hover-text-anchored="true"]').all()) {
+        const found = await openedDescriptionProblems(page, item, menu, 'its menu');
+        problems.push(...found.map((problem) => `${view}: ${problem}`));
+        itemsOpened += 1;
+      }
+      // Escape gives the focus back to the button, which opens the button's own description.
+      await page.keyboard.press('Escape');
+      await expect(menu).toBeHidden();
+      await expect(button).toBeFocused();
+      await button.blur();
+      await expect(openDescriptions, 'the description closes with the focus').toHaveCount(0);
+    }
+  };
+
+  for (const width of DESCRIPTION_SCAN_WIDTHS_PX) {
+    await page.setViewportSize({ width, height: 960 });
+    await scanControls(`${width}px, the header`, settings.locator('.phead'));
+    await eachSettingsSection(page, async (section) => {
+      const shown = page.getByTestId(`settings-section-${section}`);
+      // Opened one at a time, each held by its test id: the locator lists only those still closed.
+      const closedDetails = shown.locator(
+        '[data-testid^="backend-details-toggle-"][aria-expanded="false"]'
+      );
+      while ((await closedDetails.count()) > 0) {
+        const toggle = shown.getByTestId(
+          (await closedDetails.first().getAttribute('data-testid')) ?? ''
+        );
+        await toggle.scrollIntoViewIfNeeded();
+        await toggle.click();
+        await expect(toggle, 'Details opens').toHaveAttribute('aria-expanded', 'true');
+        await toggle.blur();
+      }
+      await expect(openDescriptions).toHaveCount(0);
+      await scanControls(`${width}px, ${section}`, shown);
+      await scanMenus(`${width}px, ${section}`, shown);
+    });
+  }
+  expect(controlsOpened, 'the scan opened no control’s description').toBeGreaterThan(0);
+  expect(itemsOpened, 'the scan opened no menu item’s description').toBeGreaterThan(0);
+  expect(
+    problems,
+    'a Settings description crosses an edge of the panel or covers what it describes'
+  ).toEqual([]);
+  assertNoPageErrors(page, 'settings descriptions');
+});
+
+/**
  * The boxes meant to scroll sideways on a narrow panel, each inside a box of its own that leaves
  * the page as wide as the panel: a table too wide for it, the Workflow canvas, and the route
  * navigation, the part of the bar that gives way.
