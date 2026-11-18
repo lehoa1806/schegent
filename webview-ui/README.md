@@ -158,6 +158,7 @@ Frame and structure:
 - **The step list clips its corners**, so that a selected step's background does not paint over the rounded border.
 - **Table rules apply to `table.t` only.** The builder mockup styles bare `table`, `th` and `td`, which under `.sg` would restyle every table in an adopted surface. The binding table therefore has no row hover.
 - **The menu's offset follows the control height.** The mockup uses a fixed distance.
+- **A search field's magnifier centres in the field's height.** The mockups place it 6px from the top, the centre of the 28px field a fine pointer gets. Under a coarse pointer every text field grows to at least 44px, and the magnifier would sit 8px above the field's centre.
 - **A `.btn` centres its label.** The mockups' buttons are only as wide as their label, so their rule leaves the label at the start. A product container that stretches a button, such as the builder inspector's column of port buttons, would otherwise draw the label against the left edge.
 - **Where the two mockups define one class differently** (`.chip`, `.seg`, `.menu`, `.tab`), the surfaces mockup is the definition and the builder's variant is a contextual rule.
 - **The page header's action rule matches only its own `.actions` child** (`.phead > .actions`). The mockup's descendant rule also restyles an `.actions` group a component puts inside it, such as `QueueItemActions` in the run page's header.
