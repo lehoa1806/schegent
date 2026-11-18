@@ -1262,6 +1262,22 @@ describe('QueueDetailTier — read-only in a non-primary window (FR-065)', () =>
     expect(queryByTestId('queue-rename-open')).toBeNull();
   });
 
+  // The header holds no queue actions here, so the page says why, in the words the queue's
+  // refusal uses when this window asks for a change.
+  it('says why it offers no queue actions', () => {
+    const { getByTestId } = mount(buildSnapshot([]), { isPrimary: false });
+
+    expect(getByTestId('queue-detail-read-only').textContent.trim()).toBe(
+      'This window is not the primary one, so it cannot change the queue.'
+    );
+  });
+
+  it('shows no read-only line in the primary window', () => {
+    const { queryByTestId } = mount(buildSnapshot([]));
+
+    expect(queryByTestId('queue-detail-read-only')).toBeNull();
+  });
+
   // Feature 095 — the delete and move controls are mutations, so they
   // observe the same rule the pre-existing configuration affordance does.
   // The registry-schedule control this test used to also cover is gone
