@@ -905,6 +905,17 @@ beside, above or below the whole menu, clear of the items the pointer
 is about to reach. Only a viewport with no room on any side of the
 menu puts the popover over them.
 
+The popover is at most 320px wide, and never wider than the panel
+less the placement's 4px edge pad on each side
+([`theme.css`](src/lib/theme.css)). The portal measures the box where
+it first draws, at the panel's left edge, and places it from that
+size, so the box must keep that size wherever it lands: a box as wide
+as the panel would narrow as it moved in from the edge, take one more
+line, and grow over a field it was placed above. A browser test opens
+every Settings description by focus, at 320px and at 1,440px, with
+each backend's Details open and the items of each menu, and holds
+each inside the panel and clear of its control, or of its menu.
+
 The cutoff is enforced at action-attach time so a single description
 payload can shift surface as the copy is tuned. The action is the only
 form. `<HoverText>` was the advanced/secondary component this paragraph
