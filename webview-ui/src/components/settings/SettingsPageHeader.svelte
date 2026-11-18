@@ -23,6 +23,8 @@
 
   const changed = $derived(page.changedCount);
   const changedText = $derived(changed === 1 ? '1 unsaved change' : `${changed} unsaved changes`);
+  const revertOff = $derived(changed === 0);
+  const saveOff = $derived(!page.canSave);
 
   let announced = $state('');
   // Every key runs this again, also a key that leaves the count as it was, so the wait starts
@@ -72,20 +74,29 @@
     {#if changed > 0}
       <span class="chip s-warn" data-testid="settings-unsaved">{changedText}</span>
     {/if}
+    <!-- Revert and Save turn themselves off on a press: Save while the host answers, Revert once
+         nothing is left to revert. A button that turns `disabled` drops the focus to the page, so
+         these are off by `aria-disabled`: the focus stays where the user pressed, the button is
+         announced as unavailable, its description still opens on focus, and a press while it is
+         off does nothing. -->
     <button
       type="button"
       class="btn btn-secondary"
       data-testid="settings-revert"
-      disabled={changed === 0}
-      onclick={() => page.revert()}
+      aria-disabled={revertOff ? 'true' : 'false'}
+      onclick={() => {
+        if (!revertOff) page.revert();
+      }}
       use:hoverTextAnchor={{ controlId: 'revert', description: SETTINGS_PAGE_HEADER_DESCRIPTIONS.revert }}
     >Revert</button>
     <button
       type="button"
       class="btn btn-primary"
       data-testid="settings-save"
-      disabled={!page.canSave}
-      onclick={() => void page.save()}
+      aria-disabled={saveOff ? 'true' : 'false'}
+      onclick={() => {
+        if (!saveOff) void page.save();
+      }}
       use:hoverTextAnchor={{ controlId: 'save', description: SETTINGS_PAGE_HEADER_DESCRIPTIONS.save }}
     >Save</button>
   </div>
@@ -94,6 +105,17 @@
 <style>
   .purpose {
     margin-bottom: 0;
+  }
+
+  /* Revert and Save while they are off, dimmed as `sg-core.css` dims a disabled button. */
+  .btn[aria-disabled='true'] {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  /* `sg-core.css` darkens Save on hover unless it is `disabled`; an off Save keeps its colour. */
+  .phead .btn-primary[aria-disabled='true']:hover {
+    background: var(--schegent-button-bg);
   }
 
   /* The row of actions claims a fixed share of the header: the field at its narrowest, a count

@@ -893,6 +893,49 @@ test('the settings header stays put when the unsaved count appears', async ({ pa
   assertNoPageErrors(page, 'settings header');
 });
 
+/**
+ * Save and Revert turn themselves off on a press: Save while the host answers, Revert once
+ * nothing is left to revert. A button that becomes `disabled` loses the focus to the page, so a
+ * keyboard user who pressed it would lose their place. Each is pressed from the keyboard here and
+ * still holds the focus once the page has done what the press asked. An off Revert also stays in
+ * the tab order and opens its description, which says why it is off (spec 018, FR-013).
+ */
+test('the settings Save and Revert keep the focus when a press turns them off', async ({
+  page
+}) => {
+  await openSurface(page, 'settings', 'light');
+  await showSettingsSection(page, 'execution');
+  const field = page.getByTestId('general-settings-input-loopMaxIterations');
+  const save = page.getByTestId('settings-save');
+  const revert = page.getByTestId('settings-revert');
+  const savedValue = await field.inputValue();
+
+  await field.fill(String(Number(savedValue) + 1));
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('general-settings-status-loopMaxIterations')).toContainText(
+    'Saved'
+  );
+  await expect(save, 'Save keeps the focus after the save it started').toBeFocused();
+
+  await field.fill(String(Number(savedValue) + 2));
+  await revert.focus();
+  await page.keyboard.press('Enter');
+  await expect(field, 'Revert puts the saved value back').toHaveValue(savedValue);
+  await expect(revert, 'Revert is off once nothing has changed').toBeDisabled();
+  await expect(revert, 'Revert keeps the focus once it is off').toBeFocused();
+
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.getByTestId('settings-search')).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(revert, 'an off Revert stays in the tab order').toBeFocused();
+  const description = page.locator('#hover-text-revert');
+  await expect(description, 'its description says why it is off').toContainText(
+    'Disabled when nothing has changed.'
+  );
+  assertNoPageErrors(page, 'settings save and revert focus');
+});
+
 /** What `orphanedRules` looked at, and what it found. */
 interface RuleAudit {
   /** How many rules were looked at. */

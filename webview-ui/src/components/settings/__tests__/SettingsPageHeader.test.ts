@@ -5,7 +5,9 @@
 // The mockup gives the field no behaviour. Here it hands what is typed to the page's search
 // (`settings-search.test.ts` holds what a query finds, `SettingsSurface.test.ts` what the page
 // then shows) and tells assistive technology how many settings match once typing pauses.
-// `SettingsSurface.test.ts` holds the header's count, Revert and Save.
+// `SettingsSurface.test.ts` holds the header's count and what Revert and Save do; the last
+// describe here holds how they are off: dimmed by `aria-disabled`, so a press that turns one
+// off leaves the focus on it, and a press while off does nothing.
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { INLINE_BODY_MAX_CHARS } from '../../hover-text/hover-text-types';
 import { SETTINGS_PAGE_HEADER_DESCRIPTIONS } from '../SettingsPageHeader.descriptions';
 import SettingsPageHeader from '../SettingsPageHeader.svelte';
-import { SettingsPage } from '../settings-page.svelte';
+import { SettingsPage, type SettingsPart } from '../settings-page.svelte';
 
 afterEach(() => {
   cleanup();
@@ -142,5 +144,49 @@ describe('SettingsPageHeader, the search status line', () => {
     await fireEvent.input(field, { target: { value: '' } });
     await vi.advanceTimersByTimeAsync(PAUSE_MS);
     expect(status.textContent).toBe('');
+  });
+});
+
+describe('SettingsPageHeader, Revert and Save while they are off', () => {
+  /** A part of the page with one unsaved edit or none; its save and revert are spies. */
+  function partWith(changed: boolean): SettingsPart {
+    return {
+      changes: () => (changed ? { execution: 1 } : {}),
+      canSave: () => changed,
+      save: vi.fn(() => Promise.resolve()),
+      revert: vi.fn()
+    };
+  }
+
+  it('marks both off with aria-disabled, not disabled, so a press keeps the focus', () => {
+    const { getByTestId } = mount(new SettingsPage());
+
+    for (const id of ['settings-revert', 'settings-save']) {
+      const button = getByTestId(id);
+      expect(button.getAttribute('aria-disabled'), id).toBe('true');
+      expect(button.hasAttribute('disabled'), id).toBe(false);
+    }
+  });
+
+  it('does nothing on a press while they are off', async () => {
+    const page = new SettingsPage();
+    const part = partWith(false);
+    page.register(part);
+    const { getByTestId } = mount(page);
+
+    await fireEvent.click(getByTestId('settings-revert'));
+    await fireEvent.click(getByTestId('settings-save'));
+
+    expect(part.revert).not.toHaveBeenCalled();
+    expect(part.save).not.toHaveBeenCalled();
+  });
+
+  it('turns both on once a part of the page has an edit to save', () => {
+    const page = new SettingsPage();
+    page.register(partWith(true));
+    const { getByTestId } = mount(page);
+
+    expect(getByTestId('settings-revert').getAttribute('aria-disabled')).toBe('false');
+    expect(getByTestId('settings-save').getAttribute('aria-disabled')).toBe('false');
   });
 });

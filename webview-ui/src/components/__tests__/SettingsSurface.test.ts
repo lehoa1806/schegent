@@ -38,8 +38,12 @@ afterEach(() => {
   vi.mocked(postCommand).mockClear();
 });
 
+/**
+ * True when Revert or Save is off. Each is dimmed and announced as unavailable by
+ * `aria-disabled`, not `disabled`, so a press that turns it off leaves the focus on it.
+ */
 function isDisabled(element: HTMLElement): boolean {
-  return (element as HTMLButtonElement).disabled;
+  return element.getAttribute('aria-disabled') === 'true' && !element.hasAttribute('disabled');
 }
 
 /** The payload of every command posted so far, in order. */
