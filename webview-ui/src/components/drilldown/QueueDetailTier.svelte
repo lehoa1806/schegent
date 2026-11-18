@@ -120,7 +120,7 @@
   // operator can actually change, never from the `'default'` literal.
   const isDefaultQueue = $derived(queueId === defaultQueueId(snapshot));
 
-  let configuring = $state(false);
+  let renaming = $state(false);
   let draftName = $state('');
   let refusal = $state<string | null>(null);
   let busy = $state(false);
@@ -212,17 +212,17 @@
   let renameInput = $state<HTMLInputElement | null>(null);
   let actionBar = $state<HTMLElement | null>(null);
 
-  async function openConfig(): Promise<void> {
-    configuring = true;
+  async function openRename(): Promise<void> {
+    renaming = true;
     draftName = queueName;
     refusal = null;
     await tick();
     renameInput?.focus();
   }
 
-  function closeConfig(): void {
+  function closeRename(): void {
     const focusLeftBehind = renameRow?.contains(document.activeElement) === true;
-    configuring = false;
+    renaming = false;
     draftName = '';
     refusal = null;
     if (focusLeftBehind) {
@@ -236,7 +236,7 @@
     const name = draftName.trim();
     if (name.length === 0) return;
     postCommand(CMD_RENAME_QUEUE, { queueId, name });
-    closeConfig();
+    closeRename();
   }
 
   async function deleteThisQueue(event: MouseEvent): Promise<void> {
@@ -327,8 +327,8 @@
     ><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>Add work</button>
   {/if}
   <SgMenu label="More queue actions">
-    {#if !configuring}
-      <button type="button" role="menuitem" data-testid="queue-config-open" onclick={openConfig}>Rename…</button>
+    {#if !renaming}
+      <button type="button" role="menuitem" data-testid="queue-rename-open" onclick={openRename}>Rename…</button>
       <hr />
     {/if}
     {@render clearItems()}
@@ -417,8 +417,8 @@
       </div>
     {/if}
 
-    {#if configuring}
-      <div class="config-row" bind:this={renameRow}>
+    {#if renaming}
+      <div class="rename-row" bind:this={renameRow}>
         <input
           type="text"
           class="input"
@@ -428,7 +428,7 @@
           bind:this={renameInput}
         />
         <button type="button" class="btn btn-primary" data-testid="queue-rename-submit" onclick={submitRename}>Rename</button>
-        <button type="button" class="btn btn-secondary" data-testid="queue-rename-cancel" onclick={closeConfig}>Cancel</button>
+        <button type="button" class="btn btn-secondary" data-testid="queue-rename-cancel" onclick={closeRename}>Cancel</button>
       </div>
     {/if}
 
@@ -471,11 +471,11 @@
   .queue-detail-tier { min-height: 0; }
   .page-split { display: flex; flex: 1; }
   .hint { margin: 0 0 var(--schegent-space-3); }
-  .config-row {
+  .rename-row {
     display: flex; gap: var(--schegent-space-1-5); align-items: center;
     margin-bottom: var(--schegent-space-3);
   }
-  .config-row .input { flex: 1; min-width: 0; }
+  .rename-row .input { flex: 1; min-width: 0; }
   @media (max-width: 860px) {
     .page-split > .tier-page { display: none; }
     .page-split > .drawer { flex: 1; width: auto; border-left: 0; }

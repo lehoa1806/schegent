@@ -718,7 +718,7 @@ describe('QueueDetailTier — configuration is reachable (FR-064)', () => {
   it('renames the queue by id, with a trimmed name', async () => {
     const { getByTestId } = mount(buildSnapshot([]));
 
-    await fireEvent.click(getByTestId('queue-config-open'));
+    await fireEvent.click(getByTestId('queue-rename-open'));
     await fireEvent.input(getByTestId('queue-rename-name'), {
       target: { value: '  release train  ' }
     });
@@ -733,7 +733,7 @@ describe('QueueDetailTier — configuration is reachable (FR-064)', () => {
   it('refuses a blank rename', async () => {
     const { getByTestId } = mount(buildSnapshot([]));
 
-    await fireEvent.click(getByTestId('queue-config-open'));
+    await fireEvent.click(getByTestId('queue-rename-open'));
     await fireEvent.input(getByTestId('queue-rename-name'), { target: { value: '   ' } });
     await fireEvent.click(getByTestId('queue-rename-submit'));
 
@@ -746,7 +746,7 @@ describe('QueueDetailTier — configuration is reachable (FR-064)', () => {
   it('seeds the rename field with the queue’s current name', async () => {
     const { getByTestId } = mount(buildSnapshot([]));
 
-    await fireEvent.click(getByTestId('queue-config-open'));
+    await fireEvent.click(getByTestId('queue-rename-open'));
 
     expect((getByTestId('queue-rename-name') as HTMLInputElement).value).toBe('nightly');
   });
@@ -1259,7 +1259,7 @@ describe('QueueDetailTier — read-only in a non-primary window (FR-065)', () =>
   it('withholds the configuration affordance', () => {
     const { queryByTestId } = mount(buildSnapshot([]), { isPrimary: false });
 
-    expect(queryByTestId('queue-config-open')).toBeNull();
+    expect(queryByTestId('queue-rename-open')).toBeNull();
   });
 
   // Feature 095 — the delete and move controls are mutations, so they
@@ -1704,7 +1704,7 @@ describe('QueueDetailTier — the redesign’s page header and add-task drawer',
     const view = mount(buildSnapshot([]));
     await fireEvent.click(view.getByTestId('queue-composer-open'));
     await fireEvent.click(view.getByRole('button', { name: 'More queue actions' }));
-    const rename = view.getByTestId('queue-config-open');
+    const rename = view.getByTestId('queue-rename-open');
     await fireEvent.keyDown(rename, { key: 'Escape' });
 
     expect(rename.closest('[role="menu"]')?.hasAttribute('hidden')).toBe(true);
@@ -1726,7 +1726,7 @@ describe('QueueDetailTier — the redesign’s page header and add-task drawer',
 
   it('puts the cursor in the name field when Rename… is chosen', async () => {
     const view = mount(buildSnapshot([]));
-    await fireEvent.click(view.getByTestId('queue-config-open'));
+    await fireEvent.click(view.getByTestId('queue-rename-open'));
 
     await vi.waitFor(() => expect(document.activeElement).toBe(view.getByTestId('queue-rename-name')));
   });
