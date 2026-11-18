@@ -57,7 +57,7 @@
 
   // The page's search finds each of the two rows by its label and note, read as they are drawn,
   // and by its description. Neither holds a value the user can edit.
-  const { row: searchRow } = settingsSearch();
+  const { row: searchRow, refusal } = settingsSearch();
   let capLabel = $state<HTMLElement>();
   let defaultLabel = $state<HTMLElement>();
   const capWords = (): SearchWords => [
@@ -423,7 +423,7 @@
     {/if}
   </div>
   {#if settingsOutcome?.status === 'rejected'}
-    <p class="small s-err refusal" role="alert" data-testid="queue-config-refusal">
+    <p class="small s-err refusal" role="alert" data-testid="queue-config-refusal" use:refusal>
       {settingsOutcome.text}
     </p>
   {/if}

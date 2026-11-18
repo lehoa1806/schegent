@@ -33,7 +33,7 @@
   }
   const { rows, readOnly, onEdit }: Props = $props();
 
-  const { row: searchRow, group: searchGroup } = settingsSearch();
+  const { row: searchRow, group: searchGroup, refusal } = settingsSearch();
   /** A queue is found by its name and by what the select does; the name is not edited here. */
   const POLICY_WORDS = descriptionWords(QUEUE_DEFAULTS_DESCRIPTIONS['queue-failure-policy']);
 </script>
@@ -92,6 +92,7 @@
                   <p
                     class="small s-err policy-message"
                     data-testid="queue-failure-policy-message-{row.queueId}"
+                    use:refusal
                   >{row.message.text}</p>
                 {:else if row.message !== null}
                   <p

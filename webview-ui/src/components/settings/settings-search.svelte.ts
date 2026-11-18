@@ -15,15 +15,17 @@
 // closes again, as it was, unless it holds the focus or the page has since kept it open for a
 // setting the user asked for.
 //
-// A component marks its settings with the two actions of `settingsSearch()`. `row` marks one
+// A component marks its settings with the actions of `settingsSearch()`. `row` marks one
 // setting, `group` a block of settings whose words find every setting inside it. Each action
-// hides its element while a search is on and no setting inside it matches. The section a
-// component belongs to comes from `provideSettingsSearch`, which `SettingsSection` calls. A
-// component mounted outside a section, as a unit test mounts one, gets actions that do nothing,
-// so it shows every setting.
+// hides its element while a search is on and no setting inside it matches. `refusal` marks where
+// the host's refusal of a save is drawn, so the page can bring it into sight
+// (`settings-refusals.ts`). The section a component belongs to comes from
+// `provideSettingsSearch`, which `SettingsSection` calls. A component mounted outside a section,
+// as a unit test mounts one, gets actions that do nothing, so it shows every setting.
 import { getContext, setContext, untrack } from 'svelte';
 import type { Action } from 'svelte/action';
 import type { ControlDescription } from '../hover-text/hover-text-types';
+import type { Refusals } from './settings-refusals';
 
 /** The fixed words of a setting or a block. A part that is absent is left out. */
 export type SearchWords = readonly (string | undefined)[];
@@ -163,6 +165,8 @@ export interface SearchScope {
   readonly name: string;
   /** Ends the search and shows the section. */
   readonly show: () => void;
+  /** The page's refusals, which it brings into sight. */
+  readonly refusals: Refusals;
 }
 
 /** What a component uses to take part in the search. */
@@ -178,18 +182,26 @@ export interface SearchParts {
    * the element, the search ends and the element's section shows; otherwise nothing changes.
    */
   readonly reveal: (node: HTMLElement | undefined) => void;
+  /**
+   * Marks an element that draws the host's refusal of a save, while the function given returns
+   * true, or for as long as the element exists when none is given. The page brings it into sight.
+   */
+  readonly refusal: Action<HTMLElement, (() => boolean) | undefined>;
 }
 
 const SCOPE = Symbol('settings-search');
 
 const NO_WORDS: SearchText = () => [];
 
+const ALWAYS = (): boolean => true;
+
 /** For a component outside any section: nothing is registered and nothing is hidden. */
 const NO_SEARCH: SearchParts = {
   row: () => undefined,
   group: () => undefined,
   holdsMatch: () => false,
-  reveal: () => undefined
+  reveal: () => undefined,
+  refusal: () => undefined
 };
 
 /** The groups around a node, the nearest first. */
@@ -253,5 +265,17 @@ export function settingsSearch(): SearchParts {
     for (const around of groupsAround(node)) search.keepOpen(around);
   };
 
-  return { row, group, holdsMatch: (node) => scope().search.holdsMatch(node), reveal };
+  // The scope is read untracked: the refusal is added again only when it is drawn again.
+  const refusal: Action<HTMLElement, (() => boolean) | undefined> = (node, refused = ALWAYS) => {
+    $effect(() => {
+      if (!refused()) return;
+      const { search, show, refusals } = untrack(scope);
+      return refusals.add(node, () => {
+        if (node.closest('[hidden]') !== null) show();
+        for (const around of groupsAround(node)) search.keepOpen(around);
+      });
+    });
+  };
+
+  return { row, group, holdsMatch: (node) => scope().search.holdsMatch(node), reveal, refusal };
 }

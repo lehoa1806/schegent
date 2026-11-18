@@ -68,7 +68,7 @@
     transportUsage
   }: Props = $props();
 
-  const { row: searchRow } = settingsSearch();
+  const { row: searchRow, refusal } = settingsSearch();
   /** The words the page's search finds this setting by: fixed words only, never its value. */
   const searchText = (): SearchWords => [
     spec.label,
@@ -96,6 +96,9 @@
   const toggleOn = $derived(
     spec.inverted === true ? !draft[spec.key as BooleanKey] : draft[spec.key as BooleanKey]
   );
+
+  /** True while the host's answer to this setting's last save is a refusal. */
+  const refused = $derived(status?.status === 'rejected');
 
   function onToggle(event: Event): void {
     const checked = (event.currentTarget as HTMLInputElement).checked;
@@ -380,6 +383,7 @@
         class="field-status status-{status.status}"
         data-testid="general-settings-status-{spec.key}"
         role={status.status === 'rejected' ? 'alert' : 'status'}
+        use:refusal={() => refused}
       >
         {#if status.status === 'pending'}
           <span class="status-text">Saving…</span>
