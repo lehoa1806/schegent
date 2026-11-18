@@ -16,6 +16,7 @@
   // `QueueDetailTier.svelte`'s own header — so this route no longer touches
   // `Dashboard` at any depth.
   import OperationsSurface from '../components/OperationsSurface.svelte';
+  import type { SettingsSectionId } from '../components/settings/settings-page.svelte';
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
 
   import {
@@ -30,11 +31,14 @@
   const {
     route,
     snapshot,
-    loader
+    loader,
+    settingsSection = 'backends'
   }: {
     route: DashboardRoute;
     snapshot: WorkflowSnapshot;
     loader: RouteLoader;
+    /** The section the Settings route opens on, read once when that route mounts. */
+    settingsSection?: SettingsSectionId;
   } = $props();
 
   /**
@@ -191,7 +195,9 @@
     {@const RouteComponent = mounted.component}
     {#if mounted.route === 'metrics'}
       <RouteComponent active={true} />
-    {:else if mounted.route === 'builder' || mounted.route === 'settings' || mounted.route === 'history'}
+    {:else if mounted.route === 'settings'}
+      <RouteComponent {snapshot} section={settingsSection} />
+    {:else if mounted.route === 'builder' || mounted.route === 'history'}
       <!-- Feature 103 (T017) — History moved from `history` + `isPrimary`
            to the whole snapshot. It composes its list from `history` and
            `queues` together, and a route that hand-picks fields has to be

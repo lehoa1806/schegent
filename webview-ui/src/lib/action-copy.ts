@@ -190,7 +190,7 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
   },
   'run.retry-phase-now': {
     title: 'Retry phase now?',
-    bodyTemplate: 'Re-runs the **{phaseName}** phase immediately.',
+    bodyTemplate: 'Re-runs the **{phaseName}** Phase immediately.',
     confirmLabel: 'Retry Now',
     severity: 'caution'
   },
@@ -219,7 +219,7 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
   'workspace.reset': {
     title: 'Reset Workspace — wipe all state?',
     bodyTemplate:
-      'Cancels any running phase, then wipes all Schegent state for this workspace — ' +
+      'Cancels any running Phase, then wipes all Schegent state for this workspace — ' +
       'queues, runs, history, leases, schedules, prompt suppressions, and project-level ' +
       'UI preferences. The audit log and per-run transcripts are preserved. ' +
       'This cannot be undone.',
@@ -291,11 +291,15 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
     // `renderActionBody`, so a placeholder here would reach the operator as the
     // literal `{label}`. The backend is named twice in the body instead — once by
     // the policy's own sentence, once by the scope line under it.
+    //
+    // The button and the last sentence use the words of the control that opens this dialog, the
+    // "Allow running unsandboxed…" item in the backend card's actions menu, and say where the
+    // way back is: the same menu.
     title: 'Allow this backend to run without a sandbox?',
     bodyTemplate:
       '{refusal}\n\nGranting this applies to **{label}** only, and you can revoke it ' +
-      'from this section at any time.',
-    confirmLabel: 'Allow Uncontained',
+      'from the actions menu on its card at any time.',
+    confirmLabel: 'Allow Unsandboxed',
     severity: 'destructive'
   },
   // Feature 195 (T064, FR-025) — the body carries the whole requirement, in
@@ -418,7 +422,7 @@ export function renderActionBody<K extends ActionKey>(
           ctx.inflightTitle !== null ? `, abort the running task ("${ctx.inflightTitle}")` : '',
         pauseSummary: ctx.pauseSource !== null ? `, and clear the ${ctx.pauseSource} pause` : '',
         scheduleSummary: ctx.hasSchedule ? ', and cancel the scheduled start' : '',
-        runSummary: ctx.hasActiveRun ? ', and clear the active workflow run' : ''
+        runSummary: ctx.hasActiveRun ? ', and clear the active Workflow run' : ''
       });
     }
     case 'queue.clear-done': {

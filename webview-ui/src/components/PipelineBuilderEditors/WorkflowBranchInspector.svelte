@@ -24,7 +24,11 @@
   // clear it would be a trap. `Selection` is the rule the host demands for a
   // collection output feeding a single input (`selection-rule-required`). Note that
   // the run side does not yet read `selection`: it gates the save, and that is what
-  // the control is for.
+  // the control is for. The host checks a rule only between a declared output and a
+  // declared input, so the control is held on any other arm: one that returns, one
+  // with an execution-only end, one naming a port its step does not declare, and one
+  // that starts or ends at a Phase, which declares no ports. The stored rule stays in
+  // the draft and still shows.
   //
   // No rule lives in this markup. Arity, literal parsing, and priority parsing all
   // come from `workflow-catalog-state.ts`.
@@ -103,8 +107,14 @@
   const fromTitle = $derived(titleOf(p.connection.from.nodeId));
   const toTitle = $derived(connectionTargetTitle(p.nodes, p.connection));
   const returns = $derived(p.connection.to.kind === "return");
+  const sourcePorts = $derived(portsFor(p.connection.from.nodeId, "out"));
+  const sourcePort = $derived(p.connection.from.portId ?? "");
   const targetPorts = $derived(returns ? [] : portsFor(p.connection.to.nodeId, "in"));
   const targetPort = $derived(returns ? "" : (p.connection.to.portId ?? ""));
+  /** The host checks a selection rule only between a declared output and a declared input. */
+  const selectionChecked = $derived(
+    sourcePorts.includes(sourcePort) && targetPorts.includes(targetPort),
+  );
 
   /** A step's title by identifier, or the identifier for a step the graph lacks. */
   function titleOf(nodeId: string): string {
@@ -205,7 +215,7 @@
         class="input"
         data-testid="workflow-connection-selection-{p.index}"
         value={p.connection.selection ?? ""}
-        disabled={p.readonly}
+        disabled={p.readonly || !selectionChecked}
         onchange={(event) => setSelection(event.currentTarget.value)}
       >
         <option value="">Not set</option>
@@ -254,10 +264,10 @@
         onchange={(event) =>
           p.onretarget(p.index, "from", { portId: event.currentTarget.value })}
       >
-        {#if portsFor(p.connection.from.nodeId, "out").length === 0 || !p.connection.from.portId}
+        {#if sourcePorts.length === 0 || !sourcePort}
           <option value="">{EXECUTION_ONLY}</option>
         {/if}
-        {#each portsFor(p.connection.from.nodeId, "out") as portId (portId)}
+        {#each sourcePorts as portId (portId)}
           <option value={portId}>{portId}</option>
         {/each}
       </select>

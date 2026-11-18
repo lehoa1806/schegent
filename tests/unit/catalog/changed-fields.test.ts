@@ -222,6 +222,80 @@ describe('compareForPublish: bindings, nodes, and connections', () => {
     expect(field.removed).toEqual(['b.out->c.in']);
   });
 
+  it('names a return by its mark, whatever step the arm still names', () => {
+    // The host reads a return from `kind: 'return'` alone: its graph check and the run
+    // engine both ignore the node and port the endpoint may still carry. A returning arm
+    // whose leftover step changed is the same arm edited in place, which the summary
+    // reports as the field named with all three lists empty.
+    const returning = (leftover: string) => ({
+      from: { nodeId: 'a', portId: 'out' },
+      to: { nodeId: leftover, portId: 'in', kind: 'return' }
+    });
+    const active = { workflowId: 'w', connections: [returning('b')] };
+    const draft = { workflowId: 'w', connections: [returning('c')] };
+    const field = collection(compareForPublish(draft, active), 'connections');
+    expect(field.added).toEqual([]);
+    expect(field.removed).toEqual([]);
+    expect(field.reordered).toEqual([]);
+  });
+
+  it('reads a return spelled with a node id and one spelled without as the same arm', () => {
+    // The definition validator fills in `nodeId: 'return'` for a return that names no
+    // node, so both spellings reach the store and both are the one return from `a`.
+    const active = { workflowId: 'w', connections: [{ from: { nodeId: 'a' }, to: { kind: 'return' } }] };
+    const draft = {
+      workflowId: 'w',
+      connections: [{ from: { nodeId: 'a' }, to: { nodeId: 'return', kind: 'return' } }]
+    };
+    const field = collection(compareForPublish(draft, active), 'connections');
+    expect(field.added).toEqual([]);
+    expect(field.removed).toEqual([]);
+    expect(field.reordered).toEqual([]);
+  });
+
+  it('names the arm that left and the return that took its place when an arm is marked as a return', () => {
+    const from = { nodeId: 'a', portId: 'out' };
+    const active = { workflowId: 'w', connections: [{ from, to: { nodeId: 'b', portId: 'in' } }] };
+    const draft = { workflowId: 'w', connections: [{ from, to: { nodeId: 'b', portId: 'in', kind: 'return' } }] };
+    const field = collection(compareForPublish(draft, active), 'connections');
+    expect(field.added).toEqual(['a.out->(return)']);
+    expect(field.removed).toEqual(['a.out->b.in']);
+  });
+
+  it('keeps a return apart from an arm into a step that is itself named return', () => {
+    // `return` is a valid step id, and an arm that enters that step is not a return.
+    // No step or port id can hold a parenthesis, so the two never share a name.
+    const active = { workflowId: 'w', connections: [{ from: { nodeId: 'a' }, to: { nodeId: 'return' } }] };
+    const draft = {
+      workflowId: 'w',
+      connections: [{ from: { nodeId: 'a' }, to: { nodeId: 'return', kind: 'return' } }]
+    };
+    const field = collection(compareForPublish(draft, active), 'connections');
+    expect(field.added).toEqual(['a->(return)']);
+    expect(field.removed).toEqual(['a->return']);
+  });
+
+  it('keeps the returns of two steps apart, and names the one that was removed', () => {
+    const returnFrom = (nodeId: string) => ({ from: { nodeId }, to: { nodeId: 'return', kind: 'return' } });
+    const active = { workflowId: 'w', connections: [returnFrom('a'), returnFrom('b')] };
+    const draft = { workflowId: 'w', connections: [returnFrom('a')] };
+    const field = collection(compareForPublish(draft, active), 'connections');
+    expect(field.added).toEqual([]);
+    expect(field.removed).toEqual(['b->(return)']);
+  });
+
+  it('names a source by its step even when it carries the return mark, which only a target can', () => {
+    // A source endpoint cannot declare `kind`, and the host reads a return from the
+    // target alone. Naming a marked source as a return would give the arms of two
+    // different steps one name, and the one added would cancel the one removed.
+    const marked = (nodeId: string) => ({ from: { nodeId, kind: 'return' }, to: { nodeId: 'b' } });
+    const active = { workflowId: 'w', connections: [marked('a')] };
+    const draft = { workflowId: 'w', connections: [marked('c')] };
+    const field = collection(compareForPublish(draft, active), 'connections');
+    expect(field.added).toEqual(['c->b']);
+    expect(field.removed).toEqual(['a->b']);
+  });
+
   it('keeps two differently-malformed bindings apart rather than keying both "undefined"', () => {
     // Found in review. `bindingKey` read `String(entry.inputKey)` unguarded, so
     // every input binding missing its key was named `input:undefined.undefined`.

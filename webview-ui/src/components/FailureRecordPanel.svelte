@@ -68,11 +68,11 @@
         {/each}
       </ul>
     {:else if record.issueState === 'none-reported'}
-      <p class="line">The phase reported no open issues.</p>
+      <p class="line">The Phase reported no open issues.</p>
     {:else if record.issueState === 'unparsed'}
-      <p class="line">No issue list could be read from the phase's output.</p>
+      <p class="line">No issue list could be read from the Phase's output.</p>
     {:else}
-      <p class="line">The Run failed before a phase produced output.</p>
+      <p class="line">The Run failed before a Phase produced output.</p>
     {/if}
     {#if record.omittedIssueCount > 0}
       <p class="line" data-testid="failure-record-omitted-issues-{itemId}">

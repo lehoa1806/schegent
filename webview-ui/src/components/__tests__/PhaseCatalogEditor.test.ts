@@ -170,6 +170,55 @@ describe('Phase catalog source editor states', () => {
       .toContain('retired-model (Unavailable)');
   });
 
+  // The host runs a Phase that sets no backend on the default backend the setting
+  // selects, except a Phase that writes Git metadata, which keeps Claude whatever the
+  // setting says (`effectiveRunnerKindForPhase`). The model list and the effort limits
+  // follow the backend the Phase will run on.
+  it('offers the models of the backend a Git-writing Phase runs on, not the default', () => {
+    const snapshot = {
+      ...SNAPSHOT,
+      defaultRunnerKind: 'agy',
+      availableModels: { claude: [], codex: [], agy: [] },
+      configuredModels: { claude: ['claude-opus-5-5'], codex: [], agy: ['gemini-3.7-pro'] }
+    } as unknown as WorkflowSnapshot;
+    const modelsOf = (phase: MutablePhase): string[] => {
+      const { container } = mount({ phases: [phase], selectedIndex: 0, snapshot });
+      const values = Array.from(
+        container.querySelectorAll('[data-testid="phases-model-custom"] option')
+      ).map((option) => (option as HTMLOptionElement).value);
+      cleanup();
+      return values;
+    };
+
+    expect(modelsOf({ ...STORED_PHASE, sideEffects: 'git' })).toEqual(['', 'claude-opus-5-5']);
+    expect(modelsOf({ ...STORED_PHASE, sideEffects: 'workspace' })).toEqual(['', 'gemini-3.7-pro']);
+    expect(modelsOf({ ...STORED_PHASE, sideEffects: 'git', runner: 'agy' })).toEqual(['', 'gemini-3.7-pro']);
+  });
+
+  it('names an unset effort as the backend default, the word the model select uses', () => {
+    // The host passes the backend no effort when the Phase sets none, exactly as for an
+    // unset model (`LaunchPhaseSettings` calls both `backend-default`). Nothing is
+    // inherited: a Workflow's execution defaults are advisory and no run applies them.
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
+    const firstOptionText = (testId: string): string | undefined =>
+      container.querySelector(`[data-testid="${testId}"] option`)?.textContent.trim();
+
+    expect(firstOptionText('phases-effort-custom')).toBe('Backend default');
+    expect(firstOptionText('phases-model-custom')).toBe('Backend default');
+  });
+
+  it('applies the effort limits of the backend a Git-writing Phase runs on', () => {
+    const snapshot = { ...SNAPSHOT, defaultRunnerKind: 'agy' } as unknown as WorkflowSnapshot;
+    const xhighOf = (phase: MutablePhase): HTMLOptionElement | null =>
+      mount({ phases: [phase], selectedIndex: 0, snapshot }).container.querySelector(
+        '[data-testid="phases-effort-custom"] option[value="xhigh"]'
+      );
+
+    expect(xhighOf({ ...STORED_PHASE, sideEffects: 'git' })?.disabled).toBe(false);
+    cleanup();
+    expect(xhighOf(STORED_PHASE)?.disabled).toBe(true);
+  });
+
   it('keeps a stored row editable and offers removal (T496f)', () => {
     // Feature 099 (T496f, FR-041, FR-043) — the `built-in` tier was the one thing
     // that made an author field read-only on a row the operator could see, and it
@@ -419,5 +468,69 @@ describe('Phase catalog lifecycle relocation (US1, T007)', () => {
     const row = container.querySelector('[data-testid="phases-list-item-custom"]')?.closest('tr') as HTMLElement;
     expect(row.textContent).toContain('model unavailable');
     expect(row.textContent).not.toContain('missing-model');
+  });
+});
+
+// A sentence in the Builder gives the Phase kind its capital, as the Builder's
+// other hints, both mockups' descriptions and the glossary do. Its commands keep
+// the lower case both mockups give them ("New phase", "Search phases").
+describe('Phase catalog sentences name the Phase with its capital', () => {
+  function textOf(node: Element | null | undefined): string {
+    return (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  it('says a saved Phase is duplicated to get a new ID', () => {
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
+    expect(textOf(container.querySelector('.id-hint'))).toBe(
+      'ID custom is fixed once saved. Duplicate the Phase to get a new ID.'
+    );
+  });
+
+  it('captions the retry toggle with the Phase it retries', () => {
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
+    const toggle = container.querySelector('[data-testid="phases-retry-toggle"]');
+    expect(textOf(toggle?.closest('label'))).toBe('Retry this Phase while a condition holds');
+  });
+
+  it('says a retry cap outcome the Phase states is set on this Phase', () => {
+    const phase: MutablePhase = { ...STORED_PHASE, retryCondition: 'tests-passed', onRetryCap: 'fail' };
+    const { container } = mount({ phases: [phase], selectedIndex: 0 });
+    expect(textOf(container.querySelector('[data-testid="phases-retry-cap-origin-custom"]'))).toBe(
+      'Set on this Phase.'
+    );
+  });
+
+  it('says no Phases match when the search hides every row', async () => {
+    const { container } = mount({ phases: [STORED_PHASE] });
+    await fireEvent.input(container.querySelector('[data-testid="phases-search"]') as HTMLInputElement, {
+      target: { value: 'zzz' }
+    });
+    expect(textOf(container.querySelector('[data-testid="phases-no-match"]'))).toBe(
+      'No Phases match the search or the status filter.'
+    );
+  });
+
+  it('keeps the list commands in lower case', () => {
+    const { container } = mount({ phases: [STORED_PHASE] });
+    const search = container.querySelector('[data-testid="phases-search"]') as HTMLInputElement;
+    expect(search.getAttribute('aria-label')).toBe('Search phases');
+    expect(textOf(container.querySelector('[data-testid="phases-add"]'))).toBe('New phase');
+  });
+});
+
+// The host runs a Phase that sets no backend on the default backend, the one the Backend setting
+// selects, or on Claude when the Phase writes Git metadata. A Workflow's execution defaults are
+// advisory and no run applies them, so the unset option must not name the Workflow.
+describe('Phase editor names what an unset backend runs on', () => {
+  it('offers the default backend first, then each backend', () => {
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
+    const select = container.querySelector('[data-testid="phases-runner-custom"]') as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.textContent.trim())).toEqual([
+      'Default backend',
+      'claude',
+      'codex',
+      'agy'
+    ]);
+    expect(select.value).toBe('');
   });
 });

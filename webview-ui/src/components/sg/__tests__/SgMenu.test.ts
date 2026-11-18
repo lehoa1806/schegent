@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import type { Action } from 'svelte/action';
 
 import SgMenuHarness from './SgMenuHarness.svelte';
 
@@ -186,5 +187,36 @@ describe('SgMenu', () => {
     await openMenu(mounted);
     await fireEvent.scroll(mounted.outside);
     expect(mounted.menu.hidden).toBe(false);
+  });
+
+  it('runs a caller’s action on the button once, and its cleanup when the menu goes', () => {
+    // The Settings page describes every control on hover and focus, the menu's button included,
+    // and the menu knows nothing about descriptions: the caller hands it the action.
+    const destroy = vi.fn();
+    const triggerAction = vi.fn<Action<HTMLButtonElement>>(() => ({ destroy }));
+    const { getByTestId, unmount } = render(SgMenuHarness, { triggerAction });
+
+    expect(triggerAction).toHaveBeenCalledTimes(1);
+    expect(triggerAction).toHaveBeenCalledWith(getByTestId('menu-default'));
+    expect(destroy).not.toHaveBeenCalled();
+
+    unmount();
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens and chooses as before on a button that carries an action', async () => {
+    const onPick = vi.fn();
+    const { getByTestId } = render(SgMenuHarness, { onPick, triggerAction: () => {} });
+    const trigger = getByTestId('menu-default');
+    const menu = menuOf(trigger);
+
+    await fireEvent.click(trigger);
+    await vi.waitFor(() => {
+      expect(menu.hidden).toBe(false);
+    });
+    await fireEvent.click(menu.querySelector('[role="menuitem"]') as HTMLElement);
+    expect(onPick).toHaveBeenCalledWith('open');
+    expect(menu.hidden).toBe(true);
+    expect(document.activeElement).toBe(trigger);
   });
 });

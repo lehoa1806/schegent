@@ -49,8 +49,9 @@ export interface GeneralSettingsPayload {
   // FR-R3-127 — both keys were already saveable: `GeneralSettingsTab.svelte`
   // posts them through this helper with a COMPUTED key, which TypeScript does not
   // check, and the host's `KEY_SPECS` has always accepted them. They were missing
-  // from this interface only, so the one caller that names a key literally — the
-  // privacy-profile apply — was the first to notice.
+  // from this interface only, so the one caller that then named a key literally —
+  // the privacy-profile apply, since folded into the page's draft — was the first
+  // to notice.
   readonly 'logging.sessionRetentionMaxAgeDays'?: number;
   readonly 'logging.sessionRetentionMaxBytes'?: number;
   // FR-R3-143 (T022) — six more the host has always accepted and this

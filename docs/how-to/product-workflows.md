@@ -36,24 +36,28 @@ After scheduling, the queue shows its resolved local fire time. Use **Cancel** t
 
 ## 2. Create and configure parallel queues
 
-1. On **Queues**, select **New Queue**, enter a name, and select **Create**.
-2. Use **Queue Settings** to set:
+1. On **Queues**, select **New queue**, enter a name, and select **Create**.
+2. Select **Queue defaults**. **Settings** opens on its **Queues** section, where you set:
 
-   - **Concurrent runs**: an integer from `1` through `20`.
+   - **Runs at the same time**: an integer from `1` through `20`, across all queues.
    - **Default queue**: the queue that receives an otherwise unaddressed task.
+   - **When a task fails**: for each queue, **Stop the queue**, **Continue with the next task**, or the workspace default.
+
+   Nothing is written until you select **Save** at the top of the page. **Revert** discards the changes.
 
 3. To rename a queue, open it, open **More queue actions**, and select **Rename…**.
 4. For a pending task, use **Move to…** to transfer it to another queue. To change its order within the queue, drag its handle, or open the task's actions menu and select **Move up** or **Move down**.
 
 There may be at most 20 queues. A queue name is 1–64 characters after trimming and must be unique case-insensitively. Queue positions are contiguous, and pending work is processed in ascending position order.
 <!-- Source: webview-ui/src/components/drilldown/QueuesTier.svelte -->
-<!-- Source: webview-ui/src/components/QueueConfigModal.svelte -->
+<!-- Source: webview-ui/src/components/settings/QueueDefaultsSection.svelte -->
+<!-- Source: webview-ui/src/components/settings/QueueFailurePolicyTable.svelte -->
 <!-- Source: webview-ui/src/components/drilldown/QueueDetailTier.svelte -->
 <!-- Source: webview-ui/src/components/drilldown/QueueDetailRows.svelte -->
 <!-- Source: src/queue/queue-registry.ts -->
 <!-- Source: src/queue/queue-manager.ts -->
 
-To delete a queue, open it, open **More queue actions**, and select **Delete queue…**. The host first calculates the impact and the confirmation names its pending-task and connected-run counts. The default queue cannot be deleted, and no queue with an in-flight task can be deleted. To delete the current default, first make a different queue the default in **Queue Settings**.
+To delete a queue, open it, open **More queue actions**, and select **Delete queue…**. The host first calculates the impact and the confirmation names its pending-task and connected-run counts. The default queue cannot be deleted, and no queue with an in-flight task can be deleted. To delete the current default, first make a different queue the default in the **Queues** section of **Settings**.
 <!-- Source: webview-ui/src/components/drilldown/QueueDetailTier.svelte -->
 <!-- Source: webview-ui/src/lib/queue-control-ipc.ts -->
 <!-- Source: src/ui/sidebar/commands/cmd-delete-queue.ts -->

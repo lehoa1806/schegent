@@ -8,16 +8,17 @@ import type {
   WorkflowNode
 } from '../../lib/snapshot-types';
 import type { MutableWorkflow } from '../PipelineBuilderEditors/types';
-import type { AnchoredWorkflowDefects } from '../PipelineBuilderEditors/workflow-catalog-state';
+import type { VisibleWorkflowDefects } from '../PipelineBuilderEditors/workflow-catalog-state';
 
 afterEach(() => {
   cleanup();
 });
 
-const EMPTY_DEFECTS: AnchoredWorkflowDefects = {
+const EMPTY_DEFECTS: VisibleWorkflowDefects = {
   byNode: [],
   byConnection: [],
-  rest: []
+  rest: [],
+  hiddenChecks: 0
 };
 
 const CHILD_WORKFLOW: PortableWorkflowDefinition = {

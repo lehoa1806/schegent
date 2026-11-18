@@ -170,7 +170,7 @@ describe('renderActionBody — placeholder resolution', () => {
     expect(body).toContain('abort the running task ("speckit-plan")');
     expect(body).toContain('clear the operator pause');
     expect(body).toContain('cancel the scheduled start');
-    expect(body).toContain('clear the active workflow run');
+    expect(body).toContain('clear the active Workflow run');
   });
 
   it('queue.clean-all: pendingCount=0 still renders sensibly', () => {

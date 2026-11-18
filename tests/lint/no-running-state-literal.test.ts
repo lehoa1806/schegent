@@ -200,7 +200,7 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // Selects the card with `banner.kind === 'phase-running-no-output'` and repeats
   // the member in the testid and in the `data-empty-kind` key the member-to-card
   // bijection is asserted through, so the substring arrives three times by
-  // construction. Its card title, "This phase is running", is a sentence an
+  // construction. Its card title, "This Phase is running", is a sentence an
   // operator reads — the same class as `webview-ui/src/lib/action-copy.ts` and
   // `src/commands/reset.ts` above.
   'webview-ui/src/components/PhaseLogFeed/PhaseLogEmptyStates.svelte',

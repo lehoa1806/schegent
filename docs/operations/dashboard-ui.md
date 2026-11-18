@@ -88,8 +88,8 @@ The Activity Feed's live tail keeps at most 500 rows: the newest 499 entries and
 
 ## Keyboard
 
-The Run detail tabs (Phase log, Run outputs, Context) are one stop in the Tab order. Left and Right arrows move between them and wrap, Home and End go to the first and the last, and each tab names the panel it controls. Queue Settings keeps Tab inside its dialog: Tab on its last control goes to its first, Shift+Tab on its first goes to its last, and focus that is outside the dialog is pulled in. Escape and Cancel close it, and focus returns to the control that opened it or, when that control is no longer shown, to the Queues view.
+The Run detail tabs (Phase log, Run outputs, Context) are one stop in the Tab order. Left and Right arrows move between them and wrap, Home and End go to the first and the last, and each tab names the panel it controls. Queue defaults, on the Queues view, opens Settings on its Queues section the way the top navigation opens a page: the status line says "Showing Settings." and focus moves to the page heading.
 
 <!-- Source: webview-ui/src/components/drilldown/RunDetailTier.svelte -->
-<!-- Source: webview-ui/src/components/QueueConfigModal.svelte -->
 <!-- Source: webview-ui/src/components/drilldown/QueuesTier.svelte -->
+<!-- Source: webview-ui/src/dashboard/App.svelte -->

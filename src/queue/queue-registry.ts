@@ -71,9 +71,9 @@ export type QueueRegistryState = 'active' | 'manually-paused';
 /**
  * Feature 028 — origin of a `manually-paused` transition.
  *
- *   - `'operator'`: the operator paused the queue directly (Queue Settings,
- *     queue-row Pause control, or saved-state restore of an already-paused
- *     queue).
+ *   - `'operator'`: the operator paused the queue directly (the Pause action
+ *     on the queue's page, the `schegent.pauseQueue` command, or saved-state
+ *     restore of an already-paused queue).
  *   - `'cascade'`: the host queue auto-paused because a task in this queue
  *     hit an active-phase pause. Cascade-pause is matched by an
  *     auto-resume on task resume; an operator pause that happens while a

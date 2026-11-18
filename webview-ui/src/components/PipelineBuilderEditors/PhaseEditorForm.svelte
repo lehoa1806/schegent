@@ -5,6 +5,7 @@
   // Every field writes through `onphasechange` exactly as the single-card editor it replaces did;
   // only the grouping and the controls' look changed. The error list the fields point at with
   // `aria-describedby` is drawn in the page's Summary, under "Issues".
+  import { DEFAULT_BACKEND } from '../../../../src/contracts/backend-kinds';
   import type { PhaseDefinition, WorkflowSnapshot } from '../../lib/snapshot-types';
   import RetryConditionEditor from '../settings/RetryConditionEditor.svelte';
   import { mergeDetectedModels } from './model-catalog-state';
@@ -49,8 +50,14 @@
 
   const directive = $derived<DirectiveKind>(typeof phase.skill === 'string' ? 'skill' : 'instruction');
   const retryEnabled = $derived(typeof phase.retryCondition === 'string');
-  /** The backend the Phase runs on once nothing more specific is set. */
-  const effectiveRunner = $derived(phase.runner || snapshot.defaultRunnerKind || 'claude');
+  /**
+   * The backend the Phase runs on, by the host's rule (`effectiveRunnerKindForPhase`): its own
+   * backend; else, for a Phase that writes Git metadata, the built-in default (Claude) whatever
+   * the setting says; else the default backend the setting selects.
+   */
+  const effectiveRunner = $derived(
+    phase.runner || (phase.sideEffects === 'git' ? DEFAULT_BACKEND : snapshot.defaultRunnerKind) || DEFAULT_BACKEND
+  );
   const models = $derived(
     mergeDetectedModels(
       snapshot.configuredModels?.[effectiveRunner] ?? [],
@@ -101,7 +108,7 @@
     </label>
   </div>
   {#if phase.persisted}
-    <p class="hint id-hint">ID <span class="mono">{phase.id}</span> is fixed once saved. Duplicate the phase to get a new ID.</p>
+    <p class="hint id-hint">ID <span class="mono">{phase.id}</span> is fixed once saved. Duplicate the Phase to get a new ID.</p>
   {/if}
   <div class="checks">
     <label class="form-field checkbox-field">
@@ -150,7 +157,10 @@
            layer won", and one layer answers it by existing. -->
       <span class="form-label">Backend</span>
       <select class="input" data-testid="phases-runner-{phase.id}" value={phase.runner ?? ''} disabled={readOnly} onchange={(event) => { const value = event.currentTarget.value; onphasechange(index, { runner: value ? (value as PhaseDefinition['runner']) : undefined }); }}>
-        <option value="">Workflow default</option>
+        <!-- Not the mockup's "Workflow default": no run applies a Workflow's execution defaults.
+             The host runs a Phase that sets no backend on the default backend, the one the Backend
+             setting selects, or on Claude when the Phase writes Git metadata. -->
+        <option value="">Default backend</option>
         {#each RUNNER_KINDS as runner}
           <option value={runner}>{runner}{!snapshot.availableBackends.includes(runner) ? ' (Unavailable)' : ''}</option>
         {/each}
@@ -171,7 +181,9 @@
     <label class="field form-field">
       <span class="form-label">Effort</span>
       <select class="input" data-testid="phases-effort-{phase.id}" value={phase.effort ?? ''} disabled={readOnly} onchange={(event) => { const value = event.currentTarget.value; onphasechange(index, { effort: value ? (value as PhaseDefinition['effort']) : undefined }); }}>
-        <option value="">Inherit</option>
+        <!-- Not the mockup's "Inherit": a Phase that sets no effort passes the backend none, as
+             with an unset model, so the backend's own default applies and nothing is inherited. -->
+        <option value="">Backend default</option>
         {#each EFFORT_LEVELS as effort}
           <option value={effort} disabled={effortOptionDisabled(effort)}>{effort}</option>
         {/each}
@@ -191,7 +203,7 @@
   <h2 id="phase-retries-h">Retries</h2>
   <label class="form-field checkbox-field retry-toggle">
     <input type="checkbox" data-testid="phases-retry-toggle" checked={retryEnabled} onchange={() => ontoggleretry(index)} disabled={!retryConditionsTrusted || readOnly} />
-    <span>Retry this phase while a condition holds</span>
+    <span>Retry this Phase while a condition holds</span>
   </label>
   {#if retryEnabled}
     <RetryConditionEditor

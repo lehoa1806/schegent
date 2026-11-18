@@ -17,6 +17,17 @@
   // promise a run the runner will refuse.
   // `tests/lint/webview-posture-derivation.test.ts` (T024) enforces exactly that:
   // producing a containment mechanism or a grant state as a literal here fails.
+  //
+  // HOW THE REDESIGN DRAWS IT. The card is the mockup's summary: the backend's id,
+  // its tags, the last check, the path it starts from and one phrase about its
+  // sandbox, with "Test" (or "Set path…" for a backend that was not found) and an
+  // actions menu at the right. The mockup draws a "Details" link and leaves what
+  // it opens undrawn. Here it opens a region under the summary that holds what
+  // the summary has no room for: the path field, the projected values, the host's
+  // sentences and the backend's own settings. `BackendDetails.svelte` draws what
+  // the region holds; this file decides when it shows.
+  import { tick, untrack } from 'svelte';
+  import type { Action } from 'svelte/action';
   import { pingBackend } from '../../../lib/backend-ping-ipc';
   import { setUncontainedBackendGrant } from '../../../lib/uncontained-grant-ipc';
   import { useConfirm } from '../../../lib/use-confirm';
@@ -27,12 +38,14 @@
     PortableWorkflowDefinition
   } from '../../../lib/snapshot-types';
   import { hoverTextAnchor } from '../../hover-text/hover-text-anchor-action';
+  import SgMenu from '../../sg/SgMenu.svelte';
   import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
-  import GeneralSettingFieldRow from './GeneralSettingFieldRow.svelte';
+  import { settingsSearch } from '../settings-search.svelte';
+  import BackendDetails from './BackendDetails.svelte';
   import type {
     BackendSection as BackendSectionSpec,
     Draft,
-    FieldSpec,
+    FieldStatus,
     ScalarKey,
     StatusByKey
   } from './field-types';
@@ -45,30 +58,34 @@
      *
      * Optional because the projection is optional on the snapshot: a webview
      * bundle newer than the host it is loaded into receives no postures at all.
-     * The posture block is omitted in that case rather than filled with guesses —
-     * a surface that invented a containment answer for an unknown host would be
-     * the exact defect this section exists to remove.
+     * The posture is omitted in that case rather than filled with guesses — a
+     * surface that invented a containment answer for an unknown host would be the
+     * exact defect this section exists to remove.
      */
     posture: BackendPosture | undefined;
+    /**
+     * The backend's path as saved: the one the host's scan found or did not find, and the one
+     * the last test started. The summary shows it; an edit shows in the path field until a save.
+     */
+    savedPath: string;
     discovered: boolean;
     /** Whether `backend.runner` currently names this backend (T032). */
     inUse: boolean;
     ping: BackendPingState;
-    /** A probe is in flight somewhere on the tab; every Ping button is disabled. */
+    /** A probe is in flight somewhere on the tab; no card starts another. */
     busy: boolean;
     draft: Draft;
     statusByKey: StatusByKey;
     workflows: readonly PortableWorkflowDefinition[];
     fieldChanged: (key: ScalarKey) => boolean;
     fieldScopeLabel: (key: ScalarKey) => string;
-    saveOne: (spec: FieldSpec) => void;
-    resetField: (key: ScalarKey) => void;
   }
 
   let {
     kind,
     section,
     posture,
+    savedPath,
     discovered,
     inUse,
     ping,
@@ -77,10 +94,15 @@
     statusByKey,
     workflows,
     fieldChanged,
-    fieldScopeLabel,
-    saveOne,
-    resetField
+    fieldScopeLabel
   }: Props = $props();
+
+  // The grant's two names in the actions menu. They are written in this file, and nowhere
+  // else, because `tests/lint/no-running-state-literal.test.ts` lists it.
+  const GRANT_LABEL = 'Allow running unsandboxed…';
+  const REVOKE_LABEL = 'Revoke permission to run unsandboxed';
+  /** The mockup's line for a backend that has no path to show. */
+  const NO_PATH = 'Set a path to use this backend';
 
   const probing = $derived(ping.status === 'running' && ping.runner === kind);
 
@@ -95,21 +117,118 @@
   // The result chip's tone, read from the same state as its words: checking, healthy or not.
   const pingHealthy = $derived(ping.status === 'success');
 
+  // The path line is the saved path, the one "Found" or "Not found" and the last test speak of,
+  // so the summary never pairs a path with what was found at another. An edit shows in the path
+  // field and in the page's unsaved count until a save, after which the host scans the new path.
+  // "In use" follows the draft instead (T032), as it names the backend a save will run. The host
+  // projects no resolved location, so the line is the configured command or path.
+  const pathText = $derived.by(() => {
+    const path = savedPath.trim();
+    return discovered && path !== '' ? path : NO_PATH;
+  });
+
   // Rendered from the PROJECTED discriminant, never from a literal compared
   // against one. `grant` has three states, and the third state — the one meaning
   // no grant is required — is why this exists: there is nothing to grant, so the
-  // control is absent rather than disabled. A disabled checkbox invites an
-  // operator to go looking for the permission that would enable it, and there is
-  // none.
+  // control is absent rather than disabled. A disabled item invites an operator to
+  // go looking for the permission that would enable it, and there is none.
   //
   // The state is described rather than quoted here on purpose.
   // `tests/lint/webview-posture-derivation.test.ts` (T024) forbids a grant state
   // in producing position — after `=`, `return`, `?` or `:` — and it reads the
   // file as text, so a colon before a quoted state in a COMMENT trips it exactly
-  // as an object literal would. The comparison below is the allowed form; the
-  // prose does not need to repeat it.
+  // as an object literal would. The comparisons below are the allowed form; the
+  // prose does not need to repeat them.
   const grantable = $derived(posture !== undefined && posture.grant !== 'not-required');
   const granted = $derived(posture?.grant === 'granted');
+  const refused = $derived(posture?.grant === 'not-granted');
+
+  // The summary's phrase about the sandbox, in plain words. It is chosen by comparing the
+  // projected grant and by whether the host sent a notice, never by reading a containment
+  // value: the projection sends a notice exactly for a backend that runs with no bound and
+  // whose grant is in force. A backend whose grant is listed but which keeps its own sandbox
+  // gets no notice, so it still reads "Sandboxed". The projected values are in Details.
+  const sandboxText = $derived.by(() => {
+    if (posture === undefined) return '';
+    if (refused) return 'Not allowed to run unsandboxed';
+    return posture.notice === undefined ? 'Sandboxed' : 'Allowed to run unsandboxed';
+  });
+
+  function failed(status: FieldStatus | undefined): boolean {
+    return status?.status === 'rejected' || status?.status === 'unknown';
+  }
+
+  // WHEN DETAILS ARE OPEN. Until the user chooses, the region is open exactly while something
+  // in it needs them: the backend in use cannot run (FR-008 wants the reason on screen), the
+  // host reports a problem with a grant entry, a save of one of its fields failed, one of its
+  // fields holds an unsaved edit, or the page's search has found a setting inside it.
+  const fieldKeys = $derived([section.path.key, ...section.specific.map((spec) => spec.key)]);
+  const blocked = $derived(inUse && (refused || !discovered));
+  const flagged = $derived(posture?.problem !== undefined);
+  const saveFailed = $derived(fieldKeys.some((key) => failed(statusByKey[key])));
+  const unsaved = $derived(fieldKeys.some((key) => fieldChanged(key)));
+
+  /** The card. The page's search finds every setting inside it by the backend's name. */
+  let card = $state<HTMLElement>();
+  const { group: searchGroup, holdsMatch, reveal } = settingsSearch();
+  const searchHit = $derived(holdsMatch(card));
+  const needsAttention = $derived(blocked || flagged || saveFailed || unsaved || searchHit);
+
+  /** The user's choice, made with the link or a path action; `undefined` until they make one. */
+  let asked = $state<boolean | undefined>(undefined);
+  const detailsOpen = $derived(asked ?? needsAttention);
+
+  // A choice to close lasts only until something new needs the user. C7-3: after a revoke of
+  // the backend in use, the refusal is what the eye lands on, also where the user had closed
+  // the region before. A search that finds a setting in here lifts the choice the same way: the
+  // user asked to see that setting. A choice to open is kept, so the region never closes under
+  // the user. An unsaved edit is the user's own doing and reopens nothing.
+  const alerts = $derived([blocked, flagged, saveFailed, searchHit]);
+  let seenAlerts: readonly boolean[] | undefined;
+  $effect(() => {
+    const before = seenAlerts;
+    seenAlerts = alerts;
+    const raised = before !== undefined && alerts.some((on, index) => on && !before[index]);
+    if (raised && untrack(() => asked) === false) asked = undefined;
+  });
+
+  function onTest(): void {
+    // A menu item cannot take `disabled`, so the flight is checked here too.
+    if (busy) return;
+    pingBackend(kind);
+  }
+
+  /** The element round the path field. The Details component binds it. */
+  let pathRow = $state<HTMLDivElement | undefined>(undefined);
+
+  /**
+   * Opens Details and puts the caret in the path field, once the region is on screen. A search
+   * that has the field out of sight ends first: the user asked for the field.
+   */
+  async function editPath(): Promise<void> {
+    reveal(pathRow);
+    asked = true;
+    await tick();
+    pathRow?.querySelector('input')?.focus();
+  }
+
+  // A description opens the moment its control takes focus (spec 018), and a menu focuses its
+  // first item when it opens. Focus therefore follows a moving pointer through this menu, so
+  // the description on screen is the one for the item under the pointer.
+  function focusItem(ev: PointerEvent): void {
+    const item = ev.currentTarget as HTMLElement;
+    if (document.activeElement !== item) item.focus();
+  }
+
+  /** The menu button's description. The menu applies it to the button it draws. */
+  const describeActions: Action<HTMLButtonElement> = (node) => {
+    const anchored = hoverTextAnchor(node, {
+      controlId: `backend-actions-${kind}`,
+      description: GENERAL_SETTINGS_DESCRIPTIONS['backend-actions'],
+      preferredPlacement: 'top'
+    });
+    return { destroy: () => anchored.destroy() };
+  };
 
   async function onGrantToggle(ev: MouseEvent): Promise<void> {
     if (posture === undefined) return;
@@ -120,6 +239,7 @@
       return;
     }
     const confirmed = await useConfirm('backend.grant-uncontained', {
+      // The menu item. The dialog returns focus to the menu's button when it closes.
       originatingElement: ev.currentTarget as HTMLElement,
       context: {
         label: section.label,
@@ -135,28 +255,30 @@
   }
 </script>
 
-<!--
-  The redesign's backend card: the pulse icon; the name with its tags, the last check's result as
-  a status chip and the containment line under them; the check on the right. The problems, the
-  path and the backend's own settings follow, lined up under the name.
--->
-<section class="card backend backend-section" data-testid={`backend-health-${kind}`}>
+<section
+  class="card backend backend-section"
+  data-testid={`backend-health-${kind}`}
+  bind:this={card}
+  use:searchGroup={() => [section.label]}
+>
   <span class="kicon k-phase"><svg class="i" aria-hidden="true"><use href="#i-pulse"></use></svg></span>
   <div class="identity">
     <div class="titlerow">
-      <strong>{section.label}</strong>
+      <b>{kind}</b>
       {#if inUse}
         <!--
-          T032 — derived from the selected runner and from nothing else. There is no
-          second store of "which backend is active": the marker moves when the
-          selector above writes the draft, and it is the draft rather than the saved
-          projection so an operator sees what their unsaved edit will do.
+          T032 — derived from the selected runner and from nothing else. It follows the draft,
+          not the saved projection, so an operator sees what their unsaved edit will do.
         -->
         <span class="tag" data-testid={`backend-in-use-${kind}`}>In use</span>
       {/if}
-      <span class="tag" data-testid={`backend-discovery-${kind}`}>
-        {discovered ? 'Discovered' : 'Not found'}
-      </span>
+      {#if !inUse || !discovered}
+        <!-- One tag, as the mockup draws, except for the backend in use that was not found:
+             FR-012 has a backend in two states say both. -->
+        <span class="tag" data-testid={`backend-discovery-${kind}`}
+          >{discovered ? 'Found' : 'Not found'}</span
+        >
+      {/if}
       {#if pingText}
         <!-- The words follow the mark with no space between, so the region reads as the result
              alone; the chip's gap spaces them on screen. -->
@@ -176,190 +298,168 @@
             <svg class="i" aria-hidden="true"><use href="#i-warn"></use></svg>
           {/if}{pingText}
         </small>
+      {:else if !discovered}
+        <!-- A standing fact, not a result, so it is not a live region. A test's result takes
+             its place, and a card never shows two verdicts. -->
+        <small class="chip s-err" data-testid={`backend-not-installed-${kind}`}
+          ><svg class="i" aria-hidden="true"><use href="#i-warn"></use></svg>Not installed</small
+        >
       {/if}
     </div>
-    {#if posture !== undefined}
-      <!--
-        T035 — the posture is on screen BEFORE a run, not in the failure that
-        follows one. Both values are projected discriminants rendered as they
-        arrived; the mechanism is shown beside the containment because "contained"
-        alone cannot tell an operator why one backend differs from another.
-      -->
-      <p class="sub posture" data-testid={`backend-posture-${kind}`}>
-        <span class="posture-label">Containment:</span>
-        <code>{posture.containment}</code>
-        <span class="posture-label">Mechanism:</span>
-        <code data-testid={`backend-mechanism-${kind}`}>{posture.mechanism}</code>
-      </p>
-    {/if}
-  </div>
-  <div class="checks">
-    <button
-      type="button"
-      class="btn btn-secondary btn-sm"
-      disabled={busy}
-      aria-label={`Ping ${section.label} backend`}
-      data-testid={`ping-backend-${kind}`}
-      onclick={() => pingBackend(kind)}
-      use:hoverTextAnchor={{
-        controlId: 'backend-ping',
-        description: GENERAL_SETTINGS_DESCRIPTIONS['backend-ping']
-      }}
-    >{probing ? 'Pinging…' : 'Ping'}</button>
-  </div>
-
-  <div class="detail">
-    {#if !discovered}
-      <!--
-        T045, FR-012 — "not found" and "refused" are two different problems with two
-        different remedies, and a surface that renders one badge for both sends an
-        operator to fix a path that is already right. This sentence names the path
-        field directly below it; the refusal further down names the grant. A backend
-        can be in both states at once, and then it says both things, in that order —
-        finding the binary is the prerequisite, so it is stated first.
-      -->
-      <p class="not-found" data-testid={`backend-not-found-${kind}`}>
-        No {section.label} binary was found at the path below. Correct the path or install
-        it — this is a discovery problem, and no permission granted here will change it.
-      </p>
-    {/if}
-
-    <GeneralSettingFieldRow
-      spec={section.path}
-      bind:draft
-      status={statusByKey[section.path.key]}
-      changed={fieldChanged(section.path.key)}
-      scopeLabel={fieldScopeLabel(section.path.key)}
-      {workflows}
-      onSave={() => saveOne(section.path)}
-      onReset={() => resetField(section.path.key)}
-    />
-
-    {#if posture !== undefined}
-      {#if posture.problem !== undefined}
-        <!--
-          FR-004 — an entry that grants nothing, said where the list is shown. It
-          used to reach only the runtime log, which an operator who mistyped a
-          backend id has no reason to read.
-        -->
-        <p class="grant-problem" data-testid={`backend-grant-problem-${kind}`} role="status">
-          {posture.problem}
-        </p>
+    <div class="sub mono" data-testid={`backend-path-${kind}`}>{pathText}</div>
+    <div class="sub">
+      {#if posture !== undefined}
+        <!-- The space after the dot is the one between this block and the link. -->
+        <span class:refused data-testid={`backend-sandbox-${kind}`}>{sandboxText}</span> ·
       {/if}
-
-      {#if grantable}
-        <div class="grant">
-          <!--
-            Allowing an uncontained backend is the redesign's danger action; revoking narrows a
-            permission, so it is an ordinary secondary button.
-          -->
-          <button
-            type="button"
-            class="btn btn-sm grant-btn"
-            class:btn-danger={!granted}
-            class:btn-secondary={granted}
-            data-testid={`backend-grant-${kind}`}
-            onclick={onGrantToggle}
-            use:hoverTextAnchor={{
-              controlId: `backend-grant-${kind}`,
-              description: GENERAL_SETTINGS_DESCRIPTIONS['backend-grant']
-            }}
-          >{granted ? 'Revoke uncontained permission' : 'Allow uncontained'}</button>
-          {#if posture.refusal !== undefined}
-            <!--
-              T034, T035 — the enforcement's own sentence, carried by the projection
-              and rendered verbatim. It names both routes out (grant this backend,
-              or choose one that carries a sandbox), which is why it is shown whole
-              rather than summarised. After a revoke it reappears, because the
-              projection recomputes it — the section does not remember a refusal, it
-              shows the one that is currently true.
-            -->
-            <p class="refusal" data-testid={`backend-refusal-${kind}`}>{posture.refusal}</p>
-          {/if}
-        </div>
-      {/if}
-    {/if}
-
-    {#if section.specific.length > 0}
-      <div class="specific">
-        {#each section.specific as spec (spec.key)}
-          <GeneralSettingFieldRow
-            {spec}
-            bind:draft
-            status={statusByKey[spec.key]}
-            changed={fieldChanged(spec.key)}
-            scopeLabel={fieldScopeLabel(spec.key)}
-            {workflows}
-            onSave={() => saveOne(spec)}
-            onReset={() => resetField(spec.key)}
-          />
-        {/each}
-      </div>
+      <button
+        type="button"
+        class="linkbtn"
+        aria-expanded={detailsOpen}
+        aria-controls={`backend-details-${kind}`}
+        aria-label={`Details for ${kind}`}
+        data-testid={`backend-details-toggle-${kind}`}
+        onclick={() => (asked = !detailsOpen)}
+        use:hoverTextAnchor={{
+          controlId: `backend-details-${kind}`,
+          description: GENERAL_SETTINGS_DESCRIPTIONS['backend-details'],
+          preferredPlacement: 'top'
+        }}
+      >Details</button>
+    </div>
+  </div>
+  <div class="card-actions">
+    {#if discovered}
+      <button
+        type="button"
+        class="btn btn-secondary btn-sm"
+        disabled={busy}
+        aria-label={probing ? `Testing ${kind}…` : `Test ${kind}`}
+        data-testid={`ping-backend-${kind}`}
+        onclick={onTest}
+        use:hoverTextAnchor={{
+          controlId: `backend-ping-${kind}`,
+          description: GENERAL_SETTINGS_DESCRIPTIONS['backend-ping']
+        }}
+      >{probing ? 'Testing…' : 'Test'}</button>
     {:else}
-      <!--
-        T030 — a sentence, not a blank region. An empty area under a heading reads
-        as a surface that failed to load, and an operator who concludes that goes
-        looking for the Codex equivalent of the Claude control they can see two
-        sections up. Saying there is none is the answer to that question.
-      -->
-      <p class="no-specific small muted" data-testid={`backend-no-specific-settings-${kind}`}>
-        {section.label} has no backend-specific settings.
-      </p>
+      <button
+        type="button"
+        class="btn btn-secondary btn-sm"
+        aria-label={`Set path for ${kind}…`}
+        data-testid={`backend-set-path-${kind}`}
+        onclick={editPath}
+        use:hoverTextAnchor={{
+          controlId: `backend-set-path-${kind}`,
+          description: GENERAL_SETTINGS_DESCRIPTIONS['backend-set-path']
+        }}
+      >Set path…</button>
     {/if}
+    <!-- Each item's description opens to the left of the menu, or above or below the whole menu
+         where a narrow panel leaves no room beside it, clear of the other items. -->
+    <SgMenu
+      label={`Actions for ${kind}`}
+      testid={`backend-actions-${kind}`}
+      triggerAction={describeActions}
+    >
+      {#if !discovered}
+        <!-- The check stays within reach for a backend that was not found: it tests the path
+             as configured, which is how a user learns why the backend is missing. -->
+        <button
+          type="button"
+          role="menuitem"
+          aria-disabled={busy}
+          data-testid={`ping-backend-${kind}`}
+          onclick={onTest}
+          onpointermove={focusItem}
+          use:hoverTextAnchor={{
+            controlId: `backend-ping-${kind}`,
+            description: GENERAL_SETTINGS_DESCRIPTIONS['backend-ping'],
+            anchor: 'left',
+            preferredPlacement: 'left'
+          }}
+        >{probing ? 'Testing…' : 'Test'}</button>
+      {/if}
+      <button
+        type="button"
+        role="menuitem"
+        data-testid={`backend-change-path-${kind}`}
+        onclick={editPath}
+        onpointermove={focusItem}
+        use:hoverTextAnchor={{
+          controlId: `backend-change-path-${kind}`,
+          description: GENERAL_SETTINGS_DESCRIPTIONS['backend-change-path'],
+          anchor: 'left',
+          preferredPlacement: 'left'
+        }}
+      >Change path…</button>
+      {#if grantable}
+        <!-- Allowing is the redesign's danger item; revoking narrows a permission, so it is an
+             ordinary one. -->
+        <button
+          type="button"
+          role="menuitem"
+          class:danger={!granted}
+          data-testid={`backend-grant-${kind}`}
+          onclick={onGrantToggle}
+          onpointermove={focusItem}
+          use:hoverTextAnchor={{
+            controlId: `backend-grant-${kind}`,
+            description: GENERAL_SETTINGS_DESCRIPTIONS['backend-grant'],
+            anchor: 'left',
+            preferredPlacement: 'left'
+          }}
+        >{granted ? REVOKE_LABEL : GRANT_LABEL}</button>
+      {/if}
+    </SgMenu>
+  </div>
+
+  <!-- Kept in the document while closed, so a field in it keeps its draft and its description. -->
+  <div
+    class="detail"
+    id={`backend-details-${kind}`}
+    data-testid={`backend-details-${kind}`}
+    hidden={!detailsOpen}
+  >
+    <BackendDetails
+      {kind}
+      {section}
+      {posture}
+      {discovered}
+      grantAction={grantable && !granted ? GRANT_LABEL : undefined}
+      bind:pathRow
+      bind:draft
+      {statusByKey}
+      {workflows}
+      {fieldChanged}
+      {fieldScopeLabel}
+    />
   </div>
 </section>
 
 <style>
-  /* The card is the redesign grid (`.sg .backend`): icon, identity, check. The lower part
-     spans the last two columns, so it lines up under the name. */
+  /* The card is the redesign grid (`.sg .backend`): icon, summary, actions. The Details region
+     takes a row of its own and spans the last two columns, so it lines up under the name. */
   .identity,
   .detail {
     min-width: 0;
   }
-  .detail {
-    grid-column: 2 / -1;
-  }
-  .checks {
+  .card-actions {
     display: flex;
+    align-items: center;
     gap: var(--schegent-space-1-5);
   }
-  .posture {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: var(--schegent-space-1) var(--schegent-space-1-5);
-    margin: var(--schegent-space-0-5) 0 0;
-  }
-  .posture-label {
-    font-weight: 600;
-  }
-  .posture code {
-    font-family: var(--schegent-mono-font);
-  }
-  .grant {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--schegent-space-1-5);
-    margin-top: var(--schegent-space-2);
-  }
-  .refusal,
-  .grant-problem,
-  .not-found {
-    margin: var(--schegent-space-2) 0 0;
-    font-size: var(--schegent-text-secondary);
-    line-height: 1.45;
+  .refused {
     color: var(--schegent-status-warning-text);
   }
-  .refusal {
-    margin: 0;
+  .detail {
+    grid-column: 2 / -1;
+    margin-top: var(--schegent-space-2);
+    border-top: 1px solid var(--schegent-border);
   }
-  .no-specific {
-    margin: var(--schegent-space-2) 0 0;
-  }
-  /* Narrow: the check drops under the name rather than squeezing it. */
+  /* Narrow: the actions drop under the name rather than squeezing it. */
   @media (max-width: 560px) {
-    .checks {
+    .card-actions {
       grid-column: 2;
     }
   }

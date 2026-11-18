@@ -101,9 +101,9 @@ operator may start or resume through the normal guarded path.
 
 Backend capability discovery runs a bounded `--help` probe for each registered
 runner. It reports executable availability and, where supported, model discovery
-results. The operator Ping action reuses that probe. Neither path sends a sample
-workspace request to a provider, and neither promises future network or account
-availability.
+results. The Test action on the Settings page reuses that probe. Neither path
+sends a sample workspace request to a provider, and neither promises future
+network or account availability.
 
 Probe failures are deliberately structural and paths-free: not found, not
 executable, nonzero exit, timeout, or unknown. Success means that the local CLI

@@ -79,6 +79,10 @@ const PALETTES: Readonly<Record<ThemeName, ThemePalette>> = {
  * The sheet that paints `theme`: its `--vscode-*` variables, its page background, and no
  * animation or transition, so neither a screenshot nor a scan catches a colour mid-change.
  *
+ * Each font names a face before its generic family. The editor font was once the bare
+ * `monospace`, which Chromium on macOS draws in Courier but in an occasional load drew in
+ * Menlo, failing the screenshot of an unchanged page; Courier is the face the baselines hold.
+ *
  * Feature 184 (T046, FR-R3-141) — `--vscode-sideBarSectionHeader-background` is
  * new to this palette. `--schegent-surface-raised` reads it (`theme.css:10`) and
  * falls back to a hard `#2d2d2d` when it is missing. Every real VS Code theme
@@ -96,7 +100,7 @@ export function themeCss(theme: ThemeName): string {
     :root {
       color-scheme: ${theme === 'light' ? 'light' : 'dark'};
       --vscode-font-family: Arial, sans-serif;
-      --vscode-editor-font-family: monospace;
+      --vscode-editor-font-family: Courier, monospace;
       --vscode-font-size: 14px;
       --vscode-foreground: ${palette.foreground};
       --vscode-descriptionForeground: ${palette.muted};

@@ -1,12 +1,11 @@
 // FR-R3-143 (T042) — the one settings write that asks before it lands.
 //
 // WHY IT GATES THE PAYLOAD, NOT THE CONTROL. The task named `UiTrustGroup` as
-// the site, and a handler on that group's toggle is the obvious placement. It is
-// also bypassable: `GeneralSettingsTab.saveAll()` writes every dirty field in
-// one transactional payload without going through any group's `onSave`, so a
-// guard on the toggle would be defeated by pressing the other button on the same
-// tab. What must be confirmed is the WRITE, so this reads the IPC payload both
-// paths build and both call it.
+// the site, and a handler on that group's toggle is the obvious placement. But
+// the toggle only edits a draft: the write is the page Save
+// (`GeneralSettingsTab.saveAll()`), which sends every changed field in one
+// transactional payload. What must be confirmed is the WRITE, so this reads the
+// IPC payload that save builds.
 //
 // WHY THERE IS NO `if (nextValue === false)` ANYWHERE. `useConfirm` already
 // short-circuits on `snapshotStore.snapshot?.confirmationsEnabled` (the

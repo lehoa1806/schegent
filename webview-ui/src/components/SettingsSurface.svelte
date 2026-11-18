@@ -1,108 +1,87 @@
 <script lang="ts">
   /**
-   * Feature 012 T047 — Settings surface reduced to two sub-tabs.
-   * Feature 030 (US3) — Removed the Queue sub-tab. FR-R3-145 (T1569): the
-   * settings that sub-tab carried are configurable again as of Feature 092,
-   * but from QueueConfigModal.svelte, not from here — the sub-tab did not
-   * come back, which is why this surface is still two tabs.
+   * The Settings page, as the redesign draws it: the page header, then a navigation of the page's
+   * sections beside the one section on screen (`settings/settings-page.svelte.ts` lists them).
+   * A button shows its section and marks itself current; focus stays on it. A section that holds
+   * an unsaved edit carries the redesign's dot.
    *
-   * Phases / Pipelines moved to PipelineBuilder.svelte; Models moved to
-   * PipelineBuilderEditors/ModelCatalogEditor.svelte, mounted under the
-   * same PipelineBuilder.svelte. Sub-tabs: General, Fatal Signatures.
+   * Five of the sections hold the general settings, one the queue settings and one the failure
+   * signatures. Every section stays mounted, the ones not shown hidden, so an edit made in one is
+   * still counted, saved and reverted while another is shown: the page header holds the only
+   * Revert and Save.
+   *
+   * While the header's search field holds a word, the body shows every section that holds a
+   * matching setting and the navigation marks none as current; a line says so when none matches.
+   *
+   * Feature 012 T047 moved Phases and Pipelines to PipelineBuilder.svelte and Models to
+   * PipelineBuilderEditors/ModelCatalogEditor.svelte. Feature 030 (US3) removed the Queue sub-tab,
+   * and FR-R3-145 (T1569) set the cap and the default queue from a dialog on the Queues list. The
+   * redesign brings them back here as the Queues section (`settings/QueueDefaultsSection.svelte`),
+   * which the list's "Queue defaults" opens.
    */
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
   import '../lib/sg/sg-settings.css';
   import GeneralSettingsTab from './settings/GeneralSettingsTab.svelte';
   import FatalSignaturesTab from './settings/FatalSignaturesTab.svelte';
+  import QueueDefaultsSection from './settings/QueueDefaultsSection.svelte';
+  import SettingsPageHeader from './settings/SettingsPageHeader.svelte';
+  import SettingsSection from './settings/SettingsSection.svelte';
+  import {
+    SETTINGS_SECTIONS,
+    SettingsPage,
+    type SettingsSectionId
+  } from './settings/settings-page.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
+    /** The section the page opens on, Backends unless the opener names another. Read once. */
+    section?: SettingsSectionId;
   }
-  const { snapshot }: Props = $props();
+  const { snapshot, section = 'backends' }: Props = $props();
 
-  type SettingsSubTab = 'general' | 'fatal-signatures';
-  const SETTINGS_TABS = Object.freeze([
-    { id: 'general', label: 'General' },
-    { id: 'fatal-signatures', label: 'Fatal Signatures' }
-  ] satisfies ReadonlyArray<{ id: SettingsSubTab; label: string }>);
-  let activeTab = $state<SettingsSubTab>('general');
-
-  function activate(tab: SettingsSubTab, focus = false): void {
-    activeTab = tab;
-    if (!focus) return;
-    queueMicrotask(() => document.getElementById(`settings-tab-${tab}`)?.focus());
-  }
-
-  function onTabKeydown(event: KeyboardEvent): void {
-    const current = SETTINGS_TABS.findIndex((tab) => tab.id === activeTab);
-    let next = current;
-    if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-      next = (current - 1 + SETTINGS_TABS.length) % SETTINGS_TABS.length;
-    } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
-      next = (current + 1) % SETTINGS_TABS.length;
-    } else if (event.key === 'Home') {
-      next = 0;
-    } else if (event.key === 'End') {
-      next = SETTINGS_TABS.length - 1;
-    } else {
-      return;
-    }
-    event.preventDefault();
-    activate(SETTINGS_TABS[next].id, true);
-  }
+  // Read through a function: the page takes the opening section once, at mount, and keeps the
+  // section the operator chooses after that as its own state.
+  const openingSection = (): SettingsSectionId => section;
+  const page = new SettingsPage(openingSection());
 </script>
 
 <main class="settings-surface" data-testid="settings-surface-root">
   <div class="page">
-    <div class="phead">
-      <div>
-        <h1>Settings</h1>
-        <!--
-          FR-R3-145 (T1569, FR-003) — the header names what the two tabs render and
-          nothing else. It said "runners, safety controls, and retention": retention
-          is here, "runners" is three CLI path fields with no runner selector, and no
-          safety control (spend bounds, trust, confirmations, uncontained backends)
-          is on this surface at all. Naming them is the claim, not the absence — the
-          controls themselves belong to FR-R3-143 and FR-R3-144.
-        -->
-        <p class="purpose">Configure CLI paths, logging, run limits, retention, and fatal signatures.</p>
-      </div>
-    </div>
+    <SettingsPageHeader {page} />
     <div class="set-layout">
-      <div class="set-nav" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
-        <!--
-          Feature 030 (US3) — Queue sub-tab removed, and not restored by
-          Feature 092: the cap and the default queue are configured from
-          QueueConfigModal.svelte instead, so this tablist stays at two
-          (FR-R3-145, T1569).
-        -->
-        {#each SETTINGS_TABS as tab (tab.id)}
+      <nav class="set-nav" aria-label="Settings sections">
+        {#each SETTINGS_SECTIONS as section (section.id)}
           <button
-            id="settings-tab-{tab.id}"
             type="button"
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            aria-controls="settings-panel-{tab.id}"
-            tabindex={activeTab === tab.id ? 0 : -1}
-            data-testid="settings-tab-{tab.id}"
-            onclick={() => activate(tab.id)}
-            onkeydown={onTabKeydown}
-          >{tab.label}</button>
+            data-testid="settings-nav-{section.id}"
+            aria-current={page.current === section.id ? 'true' : undefined}
+            onclick={() => page.select(section.id)}
+          >
+            {section.label}
+            {#if page.sectionChanged(section.id)}
+              <span class="mod" role="img" aria-label="has unsaved changes"></span>
+            {/if}
+          </button>
         {/each}
-      </div>
+      </nav>
 
-      <div
-        id="settings-panel-{activeTab}"
-        class="set-body"
-        role="tabpanel"
-        aria-labelledby="settings-tab-{activeTab}"
-        data-testid="settings-body"
-      >
-        {#if activeTab === 'general'}
-          <GeneralSettingsTab {snapshot} />
-        {:else if activeTab === 'fatal-signatures'}
-          <FatalSignaturesTab {snapshot} />
+      <div class="set-body" data-testid="settings-body">
+        {#if page.search.active && page.search.count === 0}
+          <!-- Plain text: the header's status line is the page's one live region for a search. -->
+          <p class="empty" data-testid="settings-search-empty">
+            No setting matches "{page.search.query.trim()}".
+          </p>
         {/if}
+        <GeneralSettingsTab {snapshot} {page}>
+          {#snippet queues()}
+            <SettingsSection {page} id="queues">
+              <QueueDefaultsSection {snapshot} {page} />
+            </SettingsSection>
+          {/snippet}
+        </GeneralSettingsTab>
+        <SettingsSection {page} id="signatures">
+          <FatalSignaturesTab {snapshot} {page} />
+        </SettingsSection>
       </div>
     </div>
   </div>
@@ -113,10 +92,6 @@
     display: flex;
     flex: 1;
     min-height: 0;
-  }
-
-  .purpose {
-    margin-bottom: 0;
   }
 
   /* A grid item keeps its content's width as its minimum; a long path or note must wrap in the

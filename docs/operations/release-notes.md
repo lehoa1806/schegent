@@ -9,6 +9,55 @@ This file is maintained by hand: neither the version field nor any script can de
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### The webview takes the redesign's look, and Settings becomes one page with one Save (webview redesign port, 2026-11-18)
+
+The sidebar and the dashboard are redrawn after the two redesign mockups, one of the product's surfaces and
+one of the Workflow builder. Colours still follow the VS Code theme. The main changes in behaviour are below.
+The [webview README](../../webview-ui/README.md#where-the-port-departs-from-the-mockups) lists each place the
+port departs from the mockups, with its reason.
+
+- **Settings has one Save.** The page header counts the unsaved edits ("N unsaved changes") beside Revert and
+  Save, which discard or write every edit on the page, in every section. No row, group or list has a Save or
+  Reset of its own any more. A privacy profile now sets its five settings as unsaved edits, where its press
+  used to write them at once. Allowing a backend to run unsandboxed still takes effect at once, after its own
+  confirmation.
+- **Settings shows one section at a time.** A "Settings sections" navigation lists Backends, Runs and retries,
+  Queues, Logs and retention, Privacy and evidence, Trust and prompts and Failure signatures, in place of the
+  General and Fatal Signatures tabs, and a section with an unsaved edit carries a dot. The rows are labelled
+  in plain words, such as "Retry attempts per step" for Retry max attempts, a choice reads in words while the
+  setting keeps its stored value, and a row's scope line reads "Applies to: this workspace", "you, all
+  workspaces" or "default".
+- **Settings can be searched.** "Search settings" in the page header shows, from every section, the settings
+  whose label, note, key or description holds every word typed. A search changes only what is on screen: an
+  edit it hides is still counted, saved and reverted.
+- **The Queue Settings dialog is gone.** The concurrency cap ("Runs at the same time"), the default queue and
+  each queue's failure policy ("When a task fails") are rows of the Settings page's Queues section, and save
+  with the page. "Queue defaults", beside "New queue" on the queues list, opens that section with focus on the
+  page's heading.
+- **Each backend is a card.** A card shows the backend's tag ("In use", "Found" or "Not found"), its saved
+  path and whether it may run unsandboxed, and the backend last tested shows the result. Details opens the
+  path and the backend's settings. A Test whose result contradicts the tag makes the extension scan the
+  backends again, so a CLI installed or removed since the last scan takes its tag without a window reload.
+- **Failure signatures list your additions first.** "Your additions" is a table with "Add text" under it, and
+  "Built in" follows as a read-only list. Where an addition and a built-in entry both match, the match is
+  still recorded as built in.
+- **Opening a run's details no longer crashes the History page.** The evidence and re-run panels asked the
+  host again after each of their own requests until the framework stopped them. A failed row's last error
+  could loop the same way. Each now asks once.
+- **A connection returns only when its `to` endpoint has `kind: return`.** The Workflow checks used to take a
+  connection to a node named `return` as a return when the Workflow declared no such node, and a run then sent
+  the arm to that undeclared node. Such a connection is now reported as `unresolved-endpoint`, like any
+  connection to an undeclared node. The summary of what publishing would change names a return "(return)",
+  whatever node its endpoint still names.
+- **The Builder says what a run does not apply, and offers what it does.** A Workflow's "Execution defaults"
+  open on "Advisory: saved with the Workflow, not applied when it runs." A Phase that writes Git metadata and
+  sets no backend is offered the models of Claude, the backend it runs on, whatever the default backend
+  setting says. Unticking "Return from Workflow" now ends the return. A Workflow row in the list shows its
+  name, its id and its two badges; its purpose and its ports are in the inspector.
+- **The webview's sentences capitalise Phase and Workflow.** A hint, note, empty state, confirmation or error
+  writes them as product terms, and a control's caption keeps its words. A sentence the host sends, such as a
+  failed Run's cause, keeps the host's words.
+
 ### Review gap closure: limits, git calls, evidence and recovery (2026-11-12)
 
 From the 2026-11-12 full repository review. Each item names its review gap (`GC-*`).
@@ -301,8 +350,10 @@ works from the keyboard, and renders correctly under the content-security policy
   commands are unaffected.
 - **The Run detail tabs work from the keyboard.** The three tabs are one Tab stop. The arrow keys move between
   them and wrap, Home and End go to the first and the last, and each tab names the panel it controls.
-- **Queue Settings keeps focus inside.** Tab and Shift+Tab cycle within the dialog. When it closes, focus
-  returns to the control that opened it, or to the Queues view when that control is no longer shown.
+- **"Queue defaults" opens the Settings page from the keyboard.** It is a native button in the Tab order, and
+  the page opens on its Queues section with focus on its heading. The Queue Settings dialog this item first
+  described, which kept Tab inside it and returned focus when it closed, was removed on 2026-11-18 with the
+  webview redesign port (see its entry above).
 - **The webview was checked under its real content-security policy.** The sidebar and the dashboard raised no
   violation, and the Builder's thirteen static inline styles, which the policy reported, now come from
   stylesheet classes with the same appearance. The policy also now sets `base-uri` and `form-action` to

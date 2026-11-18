@@ -1,7 +1,7 @@
 <!--
   FR-R3-144 (T038) — this group's field specs are DECLARED here, in the component
   that renders them, and exported for the one thing the tab still needs them for:
-  folding them into the `FIELDS` array Save All iterates.
+  folding them into the `FIELDS` array the page Save writes from.
 
   They lived in `GeneralSettingsTab.svelte` until this task, threaded back down as
   four props (`backends`, `runnerField`, `spendFields`, `environmentFields`) whose
@@ -55,16 +55,18 @@
   // FR-R3-144 (T029, T037) — Claude's own setting, sited in Claude's section
   // rather than in a general "UI and trust" list where its name was the only clue
   // that it applies to one backend out of three. Being IN the Claude section is
-  // the label FR-009 asks for; the sentence under it is the doc's own.
+  // the label FR-009 asks for. The note is the redesign's sentence for the row,
+  // then the disclosure that the other two backends ignore it.
   const AUTO_COMPACT_FIELD: FieldSpec = {
     key: 'claudeAutoCompactPctOverride',
     ipcKey: 'claude.autoCompactPctOverride',
-    label: 'Claude auto-compaction threshold (%)',
+    label: 'Claude compaction threshold',
     kind: 'number-optional',
+    unit: '%',
     min: 1,
     max: 100,
     placeholder: 'Unset — use CLI default',
-    note: 'Honoured by Claude only. Codex and Agy have no equivalent and ignore it.'
+    note: 'Claude compacts its context above this share. Codex and Agy have no equivalent and ignore it.'
   };
 
   // FR-R3-144 (T025, D-5, FR-001) — every backend's section, keyed BY BACKEND.
@@ -73,7 +75,7 @@
   // paired with its own `RUNNERS` array by index. That worked only because two
   // files happened to list three backends in the same order, and nothing checked:
   // inserting a spec at the front would have drawn Claude's path field under
-  // Codex's Ping button with every test still passing.
+  // Codex's check button with every test still passing.
   //
   // A `Record` and not a `Map` — the shape host code uses for the same association
   // — because a fourth member of `BackendRunnerKind` must be a COMPILE error here.
@@ -82,17 +84,17 @@
   export const BACKENDS: Readonly<Record<BackendRunnerKind, BackendSection>> = {
     claude: {
       label: 'Claude',
-      path: { key: 'cliPath', ipcKey: 'cli.path', label: 'Claude CLI Path', kind: 'string' },
+      path: { key: 'cliPath', ipcKey: 'cli.path', label: 'Claude CLI path', kind: 'string' },
       specific: [AUTO_COMPACT_FIELD]
     },
     codex: {
       label: 'Codex',
-      path: { key: 'codexPath', ipcKey: 'codex.path', label: 'Codex CLI Path', kind: 'string' },
+      path: { key: 'codexPath', ipcKey: 'codex.path', label: 'Codex CLI path', kind: 'string' },
       specific: []
     },
     agy: {
       label: 'Agy',
-      path: { key: 'agyPath', ipcKey: 'agy.path', label: 'Agy CLI Path', kind: 'string' },
+      path: { key: 'agyPath', ipcKey: 'agy.path', label: 'Agy CLI path', kind: 'string' },
       specific: []
     }
   };
@@ -105,7 +107,7 @@
   export const RUNNER_FIELD: FieldSpec = {
     key: 'backendRunner',
     ipcKey: 'backend.runner',
-    label: 'Backend',
+    label: 'Backend for new runs',
     kind: 'enum',
     options: SUPPORTED_BACKENDS,
     note: 'Applies to every workspace on this machine. Takes effect on the next invocation.'
@@ -120,19 +122,21 @@
     usd: {
       key: 'spendMaxUsdPerRun',
       ipcKey: 'spend.maxUsdPerRun',
-      label: 'Per-run spend bound (USD)',
+      label: 'Spend limit per run',
       kind: 'number-optional',
+      unit: 'USD',
       min: 0.01,
-      placeholder: 'Unset — no bound',
+      placeholder: 'Unset — no limit',
       note: 'Crossing it pauses the run, resumable by you. It never fails or cancels a run.'
     },
     tokens: {
       key: 'spendMaxTokensPerRun',
       ipcKey: 'spend.maxTokensPerRun',
-      label: 'Per-run spend bound (tokens)',
+      label: 'Spend limit per run',
       kind: 'number-optional',
+      unit: 'tokens',
       min: 1,
-      placeholder: 'Unset — no bound',
+      placeholder: 'Unset — no limit',
       note: 'Crossing it pauses the run, resumable by you. It never fails or cancels a run.'
     }
   };
@@ -153,7 +157,7 @@
     {
       key: 'cliEnvironmentMode',
       ipcKey: 'cli.environmentMode',
-      label: 'Environment Mode',
+      label: 'Environment passed to backends',
       kind: 'enum',
       options: PROCESS_ENVIRONMENT_MODES,
       note: 'Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
@@ -161,7 +165,7 @@
     {
       key: 'cliEnvironmentAllowlist',
       ipcKey: 'cli.environmentAllowlist',
-      label: 'Environment Allowlist',
+      label: 'Allowed variables',
       kind: 'string-list',
       itemPattern: PROCESS_ENV_NAME_PATTERN_SOURCE,
       invalidMessage:
@@ -171,18 +175,19 @@
     {
       key: 'cliInheritEnvironment',
       ipcKey: 'cli.inheritEnvironment',
-      label: 'Inherit Host Environment (legacy)',
+      label: 'Inherit host environment (legacy)',
       kind: 'boolean',
-      note: 'Superseded by Environment Mode; Off forces minimal. Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
+      note: 'Superseded by Environment passed to backends; Off forces minimal. Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
     },
     {
       key: 'backendProbeTimeoutSeconds',
       ipcKey: 'backend.probeTimeoutSeconds',
-      label: 'Backend Probe Timeout (seconds)',
+      label: 'Backend check timeout',
       kind: 'number',
+      unit: 'seconds',
       min: 1,
       max: 30,
-      note: 'Applies to every workspace on this machine. Read at the start of each probe — the next Ping uses it, no reload.'
+      note: 'How long to wait when testing a backend. Applies to every workspace on this machine. Read at the start of each probe — the next test uses it, no reload.'
     }
   ] as const;
 
@@ -190,9 +195,9 @@
    * Every spec this group renders, flattened — the tab's `FIELDS` folds it in.
    *
    * FR-R3-144 (T025) — the per-backend specs are flattened OUT OF `BACKENDS`
-   * rather than listed a second time. `FIELDS` is what Save All iterates and what
+   * rather than listed a second time. `FIELDS` is what the page Save writes from and what
    * `dirty` is computed from, so a spec that reached the screen but not that array
-   * would be a control whose edit Save All silently dropped. Deriving this from
+   * would be a control whose edit the page Save silently dropped. Deriving this from
    * the same record the sections render means a backend added to
    * `SUPPORTED_BACKENDS` becomes savable at the same moment it becomes visible.
    */
@@ -210,6 +215,7 @@
   import BackendHealthSection from '../BackendHealthSection.svelte';
   import GeneralSettingFieldRow from './GeneralSettingFieldRow.svelte';
   import type { SettingsGroupProps } from './field-types';
+  import { settingsSearch } from '../settings-search.svelte';
   // FR-R3-143 (T035) — the SAME function the spawn calls. See T034's header in
   // that module for why it is reachable from here at all.
   import { resolveProcessEnvironmentPolicy } from '../../../../../src/contracts/process-environment-policy';
@@ -239,10 +245,13 @@
     statusByKey,
     workflows,
     fieldChanged,
-    fieldScopeLabel,
-    saveOne,
-    resetField
+    fieldScopeLabel
   }: Props = $props();
+
+  // The page's search hides a block of this group while it holds no setting the search found.
+  const { group: searchGroup } = settingsSearch();
+  /** The environment block's heading. The page's search also finds its settings by it. */
+  const ENVIRONMENT_HEADING = 'Process environment';
 
   // FR-R3-144 (T036, FR-009) — which bound the operator is being offered follows
   // the SELECTED backend, and only one is offered at a time.
@@ -258,8 +267,8 @@
   const denominationText = $derived(
     `${BACKENDS[draft.backendRunner].label} reports ` +
       (denomination === 'usd'
-        ? 'a cost, so its per-run spend bound is set in US dollars.'
-        : 'tokens and no cost, so its per-run spend bound is set in tokens.')
+        ? 'a cost, so its spend limit per run is set in US dollars.'
+        : 'tokens and no cost, so its spend limit per run is set in tokens.')
   );
 
   // FR-R3-143 (T035) — reads the DRAFT, not the projection.
@@ -290,7 +299,7 @@
   const effectivePolicyText = $derived.by(() => {
     if (forcedByLegacyBoolean) {
       return (
-        'minimal — forced by "Inherit Host Environment (legacy)" being off, which overrides ' +
+        'minimal — forced by "Inherit host environment (legacy)" being off, which overrides ' +
         'the mode and allowlist above. Backend CLIs receive only the variables Schegent sets. ' +
         'Turn it on to make those two take effect.'
       );
@@ -330,10 +339,10 @@
     backend, above the per-backend sections because they govern which of those
     sections is the one that will run. The selector writes `backend.runner`
     through the ordinary draft path — no bespoke handler, no second write route —
-    so Save All, the dirty marker and the scope label work on it exactly as they
+    so the page Save, the dirty marker and the scope label work on it exactly as they
     do on every other field.
   -->
-  <div class="selection" data-testid="backend-selection">
+  <div class="selection" data-testid="backend-selection" use:searchGroup>
     <GeneralSettingFieldRow
       spec={RUNNER_FIELD}
       bind:draft
@@ -341,8 +350,6 @@
       changed={fieldChanged(RUNNER_FIELD.key)}
       scopeLabel={fieldScopeLabel(RUNNER_FIELD.key)}
       {workflows}
-      onSave={() => saveOne(RUNNER_FIELD)}
-      onReset={() => resetField(RUNNER_FIELD.key)}
     />
     <GeneralSettingFieldRow
       spec={spendField}
@@ -351,8 +358,6 @@
       changed={fieldChanged(spendField.key)}
       scopeLabel={fieldScopeLabel(spendField.key)}
       {workflows}
-      onSave={() => saveOne(spendField)}
-      onReset={() => resetField(spendField.key)}
     />
     <!--
       Static text, like the effective-policy line below and for the same reasons:
@@ -372,15 +377,17 @@
     {fieldChanged}
     {fieldScopeLabel}
     {workflows}
-    {saveOne}
-    {resetField}
   />
   <!--
     The redesign's "Process environment" section: the environment rows under their own heading,
     after the backend cards, so they do not read as part of the last card's section.
   -->
-  <section class="section" aria-labelledby="process-environment-heading">
-    <h3 id="process-environment-heading">Process environment</h3>
+  <section
+    class="section"
+    aria-labelledby="process-environment-heading"
+    use:searchGroup={() => [ENVIRONMENT_HEADING]}
+  >
+    <h3 id="process-environment-heading">{ENVIRONMENT_HEADING}</h3>
     <div class="field-list">
       {#each ENVIRONMENT_FIELDS as spec (spec.key)}
         <GeneralSettingFieldRow
@@ -390,8 +397,6 @@
           changed={fieldChanged(spec.key)}
           scopeLabel={fieldScopeLabel(spec.key)}
           {workflows}
-          onSave={() => saveOne(spec)}
-          onReset={() => resetField(spec.key)}
         />
       {/each}
       <!--

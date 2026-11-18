@@ -32,7 +32,7 @@
     PortablePipelineDefinition,
     PortableWorkflowDefinition
   } from '../../lib/snapshot-types';
-  import type { AnchoredWorkflowDefects, WorkflowNodeTarget } from './workflow-catalog-state';
+  import type { VisibleWorkflowDefects, WorkflowNodeTarget } from './workflow-catalog-state';
   import type { WorkflowGraphActions } from './workflow-catalog-actions';
   import {
     connectionName,
@@ -53,7 +53,7 @@
     phases?: readonly PortablePhaseDefinition[];
     workflows?: readonly PortableWorkflowDefinition[];
     allWorkflows?: readonly MutableWorkflow[];
-    defects: AnchoredWorkflowDefects;
+    defects: VisibleWorkflowDefects;
     /** False when trust, readiness, or an in-flight save blocks mutation. */
     editable: boolean;
     graph: WorkflowGraphActions;

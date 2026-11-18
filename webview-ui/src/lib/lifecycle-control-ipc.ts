@@ -116,24 +116,24 @@ const LIFECYCLE_REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
   'no-run-in-flight': 'There is no Run in flight on this queue.',
   'run-already-paused': 'This Run is already paused.',
   'run-not-paused': 'This Run is not paused, so there is nothing to resume.',
-  'run-terminal': 'This Run has already finished, so its phases can no longer be changed.',
-  'phase-not-active': "That phase is not the Run's current one.",
+  'run-terminal': 'This Run has already finished, so its Phases can no longer be changed.',
+  'phase-not-active': "That Phase is not the Run's current one.",
   // FR-R4-F20 — the two Skip adds. `run-failed` is also the disabled Skip control's tooltip on a
   // failed task (`phase-control-titles.ts` reads this entry), so the explanation and the refusal
   // are one sentence and cannot drift apart.
   'run-failed': 'A failed task cannot be skipped: retry it, mark it completed, or remove it.',
-  'phase-id-not-in-pipeline-snapshot': "That phase is not part of this Run's workflow.",
+  'phase-id-not-in-pipeline-snapshot': "That Phase is not part of this Run's Workflow.",
   // FR-R5-F19 (US3) — Disable and Enable read their ACK now, so the three refusals only their
   // `decidePhaseControl` arms answer are operator-facing. Each says what the phase is, not what the
   // operator did wrong: all three are the Run having moved on while the control was on screen.
-  'phase-already-started': 'That phase has already started, so it can no longer be disabled.',
-  'no-disabled-override': 'That phase is not disabled, so there is nothing to enable.',
-  'phase-not-future': 'That phase has already started, so it can no longer be enabled.',
+  'phase-already-started': 'That Phase has already started, so it can no longer be disabled.',
+  'no-disabled-override': 'That Phase is not disabled, so there is nothing to enable.',
+  'phase-not-future': 'That Phase has already started, so it can no longer be enabled.',
   // Retry now — `applyManualRetryOverride` and the command's own guard.
   'no-active-run': 'There is no active Run to retry.',
-  'not-pending-retry': 'This phase is not waiting for a retry, so there is nothing to bring forward.',
+  'not-pending-retry': 'This Phase is not waiting for a retry, so there is nothing to bring forward.',
   'already-retrying': 'A retry is already under way.',
-  'not-primary-window': 'This window is not the primary one, so it cannot retry the phase.',
+  'not-primary-window': 'This window is not the primary one, so it cannot retry the Phase.',
   // Start queue — `applyStartQueueIntent`.
   'rejected-horizon': 'That start time is outside the range this queue accepts.',
   'rejected-untrusted': 'The workspace is not trusted, so the queue cannot be started.',
@@ -161,10 +161,10 @@ const LIFECYCLE_REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
   'operation-rejected': 'The host refused the operation.',
   'secondary-window-readonly': 'This window is not the primary one, so it cannot change the Run.',
   // Per-command failure codes — the five `catch` blocks in `commands/`.
-  'pause-phase-failed': 'Pausing the phase failed. Check the log and try again.',
-  'resume-phase-failed': 'Resuming the phase failed. Check the log and try again.',
-  'restart-phase-failed': 'Restarting the phase failed. Check the log and try again.',
-  'retry-phase-now-failed': 'Retrying the phase failed. Check the log and try again.',
+  'pause-phase-failed': 'Pausing the Phase failed. Check the log and try again.',
+  'resume-phase-failed': 'Resuming the Phase failed. Check the log and try again.',
+  'restart-phase-failed': 'Restarting the Phase failed. Check the log and try again.',
+  'retry-phase-now-failed': 'Retrying the Phase failed. Check the log and try again.',
   'start-queue-failed': 'Starting the queue failed. Check the log and try again.',
   // Skip route — `commands/cmd-skip-phase.ts`, a window whose router has no `phaseOps` wired.
   'phase-ops-unavailable':

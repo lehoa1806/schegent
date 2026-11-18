@@ -27,11 +27,19 @@
   import { openTrustSettings } from '../../../lib/trust-settings-ipc';
   import { hoverTextAnchor } from '../../hover-text/hover-text-anchor-action';
   import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
+  import { descriptionWords, settingsSearch } from '../settings-search.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
   }
   const { snapshot }: Props = $props();
+
+  const { row: searchRow, group: searchGroup } = settingsSearch();
+
+  /** The note above the two rows. The page's search also finds both rows by it. */
+  const PREAMBLE =
+    'These two are resolved against VS Code Workspace Trust, so Schegent shows what is in force ' +
+    'rather than a switch it cannot honour.';
 
   type Capability = 'phases' | 'retryConditions';
 
@@ -99,13 +107,18 @@
   description and the resolved value as a status chip where a control would be. The setting key
   and the way to the settings editor sit under the chip, as a row’s scope line does.
 -->
-<div class="trust-disclosure" data-testid="trust-disclosure">
-  <p class="preamble small muted">
-    These two are resolved against VS Code Workspace Trust, so Schegent shows what is in force
-    rather than a switch it cannot honour.
-  </p>
+<div class="trust-disclosure" data-testid="trust-disclosure" use:searchGroup={() => [PREAMBLE]}>
+  <p class="preamble small muted">{PREAMBLE}</p>
   {#each rows as row (row.key)}
-    <div class="srow trust-row" data-testid="trust-row-{row.capability}">
+    <div
+      class="srow trust-row"
+      data-testid="trust-row-{row.capability}"
+      use:searchRow={() => [
+        row.label,
+        `schegent.${row.key}`,
+        ...descriptionWords(GENERAL_SETTINGS_DESCRIPTIONS[`trust-${row.capability}-open-settings`])
+      ]}
+    >
       <div>
         <div class="lab">{row.label}</div>
         {#if row.decidedBy}
@@ -151,6 +164,10 @@
      would. */
   .trust-disclosure {
     border-top: 1px solid var(--schegent-border);
+  }
+  /* With no row shown above, as when a search hides them all, there is nothing to part from. */
+  :global(.field-list:not(:has(> :not([hidden])))) + .trust-disclosure {
+    border-top: 0;
   }
   .preamble {
     margin: var(--schegent-space-2) 0 0;

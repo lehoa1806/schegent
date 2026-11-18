@@ -591,7 +591,7 @@ export function workflowPortIds(
 }
 
 /** Defects bucketed by the row that has to show them; indexes align with the lists. */
-export interface AnchoredWorkflowDefects {
+interface AnchoredWorkflowDefects {
   readonly byNode: readonly (readonly WorkflowDraftError[])[];
   readonly byConnection: readonly (readonly WorkflowDraftError[])[];
   /** Everything anchored to a scalar field, a whole list, the starts, or nowhere. */
@@ -603,7 +603,7 @@ export interface AnchoredWorkflowDefects {
  * defect whose anchor is not a row lands in `rest`, so a code this build does
  * not recognize still reaches the operator rather than vanishing.
  */
-export function anchorWorkflowDefects(
+function anchorWorkflowDefects(
   errors: readonly (WorkflowDraftError | WorkflowCatalogFieldErrorProjection)[],
   workflow: MutableWorkflow
 ): AnchoredWorkflowDefects {
@@ -623,20 +623,52 @@ export function anchorWorkflowDefects(
 }
 
 /**
+ * The saved defects the cap lets through. The draft's own checks have a cap of their own,
+ * so nothing typed since the save pushes a saved defect out of sight. This is the one place
+ * that says which saved defects pass: what the Builder shows and what the lifecycle panel
+ * keeps both read it, so neither can take a different view of what lies past the cap.
+ */
+function savedDefectsWithinCap(
+  workflow: MutableWorkflow
+): readonly WorkflowCatalogFieldErrorProjection[] {
+  return workflow.sourceErrors.slice(0, MAX_VISIBLE_FIELD_ERRORS);
+}
+
+/** The defects the Builder shows for a Workflow, and how many of the draft's checks it leaves out. */
+export interface VisibleWorkflowDefects extends AnchoredWorkflowDefects {
+  /** The checks the draft fails past their cap, which the Issues list counts. */
+  readonly hiddenChecks: number;
+}
+
+/**
+ * The defects the Builder shows for a Workflow, sorted into the rows that own them: the
+ * saved defects the cap lets through, then the draft's own checks under a cap of their own.
+ * Save stays disabled while the draft fails a check, so no saved defect takes a check's
+ * place, and the checks past their cap are counted. `rest` is the Workflow's Issues list.
+ */
+export function visibleWorkflowDefects(
+  workflow: MutableWorkflow,
+  draftErrors: readonly WorkflowDraftError[]
+): VisibleWorkflowDefects {
+  const checks = boundFieldErrors(draftErrors);
+  const listed = [...boundFieldErrors(savedDefectsWithinCap(workflow)).visible, ...checks.visible];
+  return { ...anchorWorkflowDefects(listed, workflow), hiddenChecks: checks.hiddenCount };
+}
+
+/**
  * The saved defects the Workflow's Issues list leaves out, for the lifecycle panel to keep
- * on demand: those a step or branch owns, which show on that row, and those past the list's
- * cap, which show nowhere else. The editor lists the saved defects ahead of its own checks,
- * so a saved defect's place in that list is its place among them, and one with no row of its
- * own inside the cap is in Issues already.
+ * on demand: those a step or branch owns, which show on that row, and those past the cap,
+ * which show nowhere else. Each saved defect is then listed once beside the panel.
  */
 export function savedDefectsOutsideIssues(
   workflow: MutableWorkflow
 ): readonly WorkflowCatalogFieldErrorProjection[] {
-  return workflow.sourceErrors.filter((error, index) => {
-    if (index >= MAX_VISIBLE_FIELD_ERRORS) return true;
+  const withinCap = savedDefectsWithinCap(workflow);
+  const ownedByRow = withinCap.filter((error) => {
     const anchor = workflowErrorAnchor(error, workflow);
     return anchor.kind === 'node' || anchor.kind === 'connection';
   });
+  return [...ownedByRow, ...workflow.sourceErrors.slice(withinCap.length)];
 }
 
 /** `null` when the move would leave the list, so the caller can no-op cleanly. */
@@ -853,12 +885,12 @@ export function workflowErrorAnchor(
 }
 
 /** Cap the visible defect list and each message, reporting what was hidden. */
-export interface BoundedFieldErrors {
+interface BoundedFieldErrors {
   readonly visible: readonly WorkflowDraftError[];
   readonly hiddenCount: number;
 }
 
-export function boundFieldErrors(
+function boundFieldErrors(
   errors: readonly (WorkflowDraftError | WorkflowCatalogFieldErrorProjection)[]
 ): BoundedFieldErrors {
   const visible = errors.slice(0, MAX_VISIBLE_FIELD_ERRORS).map((error) => ({

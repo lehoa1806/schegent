@@ -6,6 +6,7 @@
   import { snapshotStore } from '../lib/snapshot-store.svelte';
   import { statusLine } from '../lib/status-line.svelte';
 
+  import type { SettingsSectionId } from '../components/settings/settings-page.svelte';
   import { DASHBOARD_NAVIGATION, type DashboardNavigation } from './navigation-context';
   import { createRouteLoader } from './route-loader';
   import RouteOutlet from './RouteOutlet.svelte';
@@ -34,15 +35,24 @@
     loader.preload(next);
   }
 
+  // The section the Settings route opens on. The Settings page mounts afresh each time its route
+  // is opened and reads this once, at mount: the top navigation opens it on Backends, the Queues
+  // list's "Queue defaults" on Queues. Which section is shown after that is the page's own state.
+  // `showRoute` below sets it before `navigate`, which stays the one assignment Feature 105 holds
+  // it to (`App.route-loading.test.ts`).
+  const OPENING_SETTINGS_SECTION: SettingsSectionId = 'backends';
+  let settingsSection = $state<SettingsSectionId>(OPENING_SETTINGS_SECTION);
+
   function navigate(next: DashboardRoute): void {
     route = next;
   }
 
   // FR-R4-F06 (FR-008; D5) -- "Review in Settings" from a launch surface. Webview-local: it
   // posts no command, names no setting key and persists nothing. The Settings route mounts
-  // fresh with its General tab selected (the tab is local state that starts there), and its
-  // surface loads lazily, so the heading may not exist after one tick; the scroll waits for it
-  // for a bounded number of frames and then gives up quietly rather than throwing.
+  // fresh on its Backends section, which holds the "Installed backends" heading
+  // (`SettingsSurface.test.ts` holds the heading to it), and its surface loads lazily, so the
+  // heading may not exist after one tick; the scroll waits for it for a bounded number of frames
+  // and then gives up quietly rather than throwing.
   const BACKEND_HEALTH_HEADING_ID = 'backend-health-heading';
   const SCROLL_WAIT_FRAMES = 120;
 
@@ -103,17 +113,33 @@
     }
   }
 
-  function openRoute(next: DashboardRoute): void {
+  /**
+   * Shows a page and names it in the status line. Every opener goes through here and must say
+   * which section the Settings page opens on, so none inherits the section the last one asked for.
+   */
+  function showRoute(next: DashboardRoute, section: SettingsSectionId): void {
+    settingsSection = section;
     navigate(next);
     announceRoute(next);
+  }
+
+  function openRoute(
+    next: DashboardRoute,
+    section: SettingsSectionId = OPENING_SETTINGS_SECTION
+  ): void {
+    showRoute(next, section);
     void focusPageHeading();
   }
 
   const navigation: DashboardNavigation = {
     openBackendSettings: () => {
-      navigate('settings');
-      announceRoute('settings');
+      showRoute('settings', OPENING_SETTINGS_SECTION);
       void scrollToBackendHealth();
+    },
+    // The Queues list's "Queue defaults": the page opens on Queues and lands focus on its heading,
+    // as a page opened from the top navigation does. Webview-local, like the link above.
+    openQueueSettings: () => {
+      openRoute('settings', 'queues');
     }
   };
   setContext(DASHBOARD_NAVIGATION, navigation);
@@ -162,7 +188,7 @@
       </span>
     </header>
     <div id="dashboard-content" class="content" data-testid="dashboard-route">
-      <RouteOutlet {route} {snapshot} {loader} />
+      <RouteOutlet {route} {snapshot} {loader} {settingsSection} />
     </div>
     <div class="statusline" role="status" aria-live="polite" data-testid="dashboard-status-line">
       {statusLine.message}

@@ -568,6 +568,13 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     expect(tabs).toEqual(['Phases', 'Workflows', 'Models']);
   });
 
+  it('states its purpose with the Phase and Workflow kinds capitalised', () => {
+    const { container } = render(PipelineBuilder, { props: { snapshot: buildSnapshot() } });
+    expect(container.querySelector('.purpose')?.textContent.trim()).toBe(
+      'Reusable Phases, Workflows and models.'
+    );
+  });
+
   it('implements the catalog switcher as keyboard-operable tabs', async () => {
     const { container } = render(PipelineBuilder, { props: { snapshot: buildSnapshot() } });
     const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>('.builder-tabs .tab-btn'));
@@ -1121,7 +1128,7 @@ describe('PipelineBuilder — BUG-002 cross-tab phase visibility', () => {
     // The authoritative catalog refresh makes the saved Phase available.
     const savedPhase: PhaseDefinition = Object.freeze({
       id: 'new-phase', name: 'New Phase', version: 1,
-      instruction: 'Describe the phase objective here.'
+      instruction: 'Describe the Phase objective here.'
     });
     await rerender({
       snapshot: buildSnapshot([existingPhase, savedPhase], [pipeline]),

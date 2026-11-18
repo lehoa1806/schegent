@@ -297,6 +297,25 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
     expect(firstOption('workflow-default-effort')).toBe('Inherit');
   });
 
+  // The section saves a Runner, a Model, an Effort and Recommended next with the Workflow, and no
+  // run applies them: the grammar calls them advisory, as the Run form does when it lists them.
+  // Without a line that says so, a value set here reads as one every step runs with.
+  it('opens Execution defaults on a line that says no run applies them', async () => {
+    const { container, getByTestId } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    const body = getByTestId('workflow-execution-defaults');
+    const section = body.closest('details') as HTMLDetailsElement;
+    expect(section.open).toBe(false);
+
+    await fireEvent.click(section.querySelector('summary') as HTMLElement);
+    expect(section.open).toBe(true);
+    const advisory = getByTestId('workflow-execution-defaults-advisory');
+    expect(body.firstElementChild).toBe(advisory);
+    expect(advisory.textContent.trim()).toBe(
+      'Advisory: saved with the Workflow, not applied when it runs.'
+    );
+  });
+
   it('says what a side with no port reads: none once saved, not yet known on a draft', async () => {
     const { container, getByTestId } = mount([record({ derivedInputs: [], derivedOutputs: [] })]);
     await fireEvent.click(rowFor(container, 'design-then-build'));
@@ -1154,6 +1173,102 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
       );
     expect(ports('workflow-field-errors')).toEqual(['gamma', 'delta', 'epsilon', 'zeta']);
     expect(ports('definition-row-defects-design-then-build')).toEqual(['alpha', 'omega']);
+  });
+
+  // The saved defects and the draft's own checks each have a cap of their own on what the
+  // Builder shows, so a check the draft fails always shows, and moves no saved defect between
+  // the Issues list and the panel.
+  describe('when the draft fails a check of its own as well', () => {
+    const saved = (label: string, field = 'nodes[9].workflowId') => ({
+      field,
+      code: 'missing-required-input',
+      message: `Saved defect ${label}.`
+    });
+    const ISSUES = 'workflow-field-errors';
+    const PANEL = 'definition-row-defects-design-then-build';
+
+    const mountSaved = async (labels: readonly string[]) => {
+      const rendered = mount([
+        record({
+          lifecycle: {
+            state: 'active',
+            createdAt: 0,
+            updatedAt: 0,
+            activeVersionId: 'v1',
+            expectedDraftVersion: 'no-draft',
+            versions: []
+          },
+          errors: [
+            saved('on a step', 'nodes[1].workflowId'),
+            ...labels.map((label) => saved(label))
+          ]
+        })
+      ]);
+      await fireEvent.click(rowFor(rendered.container, 'design-then-build'));
+      const savedIn = (testId: string): string[] =>
+        [...rendered.container.querySelectorAll(`[data-testid="${testId}"] li`)]
+          .map((item) => /Saved defect ([\w ]+)\./.exec(item.textContent)?.at(1) ?? '')
+          .filter((label) => label !== '');
+      const failNameCheck = () =>
+        fireEvent.input(rendered.getByTestId('workflow-field-name'), { target: { value: '' } });
+      return { ...rendered, savedIn, failNameCheck };
+    };
+
+    it('gives the check a place the cap has left, and moves no saved defect', async () => {
+      const { getByTestId, savedIn, failNameCheck } = await mountSaved(['two', 'three', 'four']);
+      expect(savedIn(ISSUES)).toEqual(['two', 'three', 'four']);
+      expect(savedIn(PANEL)).toEqual(['on a step']);
+
+      await failNameCheck();
+
+      expect(getByTestId(ISSUES).textContent).toContain('Name is required.');
+      expect(savedIn(ISSUES)).toEqual(['two', 'three', 'four']);
+      expect(savedIn(PANEL)).toEqual(['on a step']);
+    });
+
+    it('shows the check, and moves no saved defect, when the saved ones fill the cap', async () => {
+      const { getByTestId, savedIn, failNameCheck } = await mountSaved([
+        'two',
+        'three',
+        'four',
+        'five',
+        'six'
+      ]);
+      expect(savedIn(ISSUES)).toEqual(['two', 'three', 'four', 'five']);
+      expect(savedIn(PANEL)).toEqual(['on a step', 'six']);
+
+      await failNameCheck();
+
+      // Save is disabled for the check, so the check must say why.
+      expect(getByTestId(ISSUES).textContent).toContain('Name is required.');
+      expect(savedIn(ISSUES)).toEqual(['two', 'three', 'four', 'five']);
+      expect(savedIn(PANEL)).toEqual(['on a step', 'six']);
+    });
+  });
+
+  it('counts under the Issues list the checks past the cap', async () => {
+    const blankInputs = Array.from({ length: 7 }, (_, index) => ({
+      portId: `in_${index}`,
+      label: '',
+      type: 'text'
+    }));
+    const definition = {
+      ...record().definition,
+      inputs: blankInputs
+    } as unknown as WorkflowCatalogSourceProjection['definition'];
+    const { container, getByTestId } = mount([record({ definition })]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+
+    const issues = getByTestId('workflow-field-errors');
+    const lines = [...issues.querySelectorAll('li')].map((item) => item.textContent.trim());
+    expect(lines.filter((line) => line.endsWith('Port label is required.'))).toHaveLength(5);
+    expect(getByTestId('workflow-hidden-checks').textContent.trim()).toBe(
+      '2 more issues, shown as the others are fixed.'
+    );
+    const headings = [...getByTestId('workflow-settings-inspector').querySelectorAll('h3')].map(
+      (heading) => heading.textContent.trim()
+    );
+    expect(headings).toContain('Issues (7)');
   });
 
   it('carries the association in text, not color alone (FR-044)', async () => {

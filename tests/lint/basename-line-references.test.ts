@@ -364,6 +364,10 @@ const KNOWN_ABSENT: ReadonlyMap<string, string> = new Map([
   [
     'PipelineCatalogEditor.reconciliation.test.ts',
     'retired by FR-R5-F05 (264-unified-workflow-authoring) with PipelineCatalogEditor.svelte; WorkflowCatalogEditor.reconciliation.test.ts covers reconciliation'
+  ],
+  [
+    'QueueConfigModal.svelte',
+    'retired by the Settings redesign of 2026-11-17 (webview-redesign-port), which moved the cap, the default queue and the failure policies out of that dialog on the Queues list; settings/QueueDefaultsSection.svelte and settings/QueueFailurePolicyTable.svelte are the survivors'
   ]
 ]);
 

@@ -54,10 +54,10 @@ vi.mock('../../lib/vscode-api', () => ({
  * store's real message entry point.
  *
  * `snapshotStore.apply({type: CMD_ACK, …})` rather than a mocked IPC module,
- * following `QueueConfigModal.test.ts`: it runs the store's own `applyAck`, the
- * real `correlatedLifecycle`, and the real refusal table, so the rendered
- * sentence is the one an operator would see. Mocking the IPC module would make
- * these cases assert the mock.
+ * following `settings/__tests__/QueueDefaultsSection.test.ts`: it runs the
+ * store's own `applyAck`, the real `correlatedLifecycle`, and the real refusal
+ * table, so the rendered sentence is the one an operator would see. Mocking the
+ * IPC module would make these cases assert the mock.
  */
 function ack(
   callIndex: number,
@@ -219,7 +219,7 @@ describe('PhaseControlMenu', () => {
       ack(0, 'rejected', 'run-terminal', 'refused');
       await waitFor(() => {
         expect(getByTestId('phase-control-message').textContent).toBe(
-          'This Run has already finished, so its phases can no longer be changed.'
+          'This Run has already finished, so its Phases can no longer be changed.'
         );
       });
     });
@@ -476,6 +476,29 @@ describe('PhaseControlMenu', () => {
     await fireEvent.click(getByTestId('phase-control-delete'));
     expect(capturedTitle).toBe('Delete phase');
     expect(capturedTitle).not.toBe('Delete active phase');
+  });
+
+  // Delete's tooltip repeats its accessible name, as the other Phase controls' tooltips do. It read
+  // "Remove the selected Phase from this task's Workflow (requires confirmation)": a verb the button
+  // does not show, and a second description a screen reader reads after the name. The confirmation
+  // dialog says what the removal does, as Skip's and Retry now's do.
+  it('gives Delete a tooltip that repeats its accessible name', () => {
+    const { getByTestId } = render(PhaseControlMenu, {
+      props: {
+        targetsSubjectRun: true,
+        queueId: TEST_QUEUE_ID,
+        currentPhase: 'speckit-plan',
+        selectedPhase: 'speckit-implement',
+        selectedPhaseState: 'not-started',
+        activeTaskId: 'task-7',
+        isPrimary: true,
+        manualPauseAt: null
+      }
+    });
+
+    const control = getByTestId('phase-control-delete');
+    expect(control.getAttribute('aria-label')).toMatch(/^Delete\b/);
+    expect(control.getAttribute('title')).toBe(control.getAttribute('aria-label'));
   });
 });
 
@@ -796,7 +819,7 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
 
       await waitFor(() =>
         expect(getByTestId('phase-control-message').textContent).toContain(
-          'That phase has already started, so it can no longer be disabled.'
+          'That Phase has already started, so it can no longer be disabled.'
         )
       );
     });

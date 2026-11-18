@@ -51,7 +51,8 @@
 .sg .input { height: var(--schegent-control-height); padding: 0 var(--schegent-space-2); border-radius: var(--schegent-radius-sm); border: 1px solid var(--schegent-input-border); background: var(--schegent-input-bg); color: var(--schegent-input-fg); width: 100%; }
 .sg textarea.input { height: auto; padding: var(--schegent-space-1-5) var(--schegent-space-2); }
 .sg .search { position: relative; }
-.sg .search svg { position: absolute; left: var(--schegent-space-2); top: var(--schegent-space-1-5); opacity: 0.7; }
+/* The magnifier centres in its field's height: 28px, or 44px under a coarse pointer. */
+.sg .search svg { position: absolute; left: var(--schegent-space-2); top: 0; bottom: 0; margin-block: auto; opacity: 0.7; }
 .sg .search .input { padding-left: var(--schegent-space-5-5); }
 .sg .seg { display: inline-flex; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius-sm); overflow: hidden; }
 .sg .seg button { border: 0; background: transparent; padding: 3px var(--schegent-space-2-5); cursor: pointer; white-space: nowrap; }

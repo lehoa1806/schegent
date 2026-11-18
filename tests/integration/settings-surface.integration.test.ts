@@ -341,7 +341,7 @@ const EXEMPTIONS: ReadonlyMap<string, Exemption> = new Map<string, Exemption>([
     {
       owner: 'Settings — FatalSignaturesTab.svelte',
       reason:
-        'An array of strings with its own sub-tab. `FatalSignaturesTab` is a sibling of ' +
+        'An array of strings with its own section. `FatalSignaturesTab` is a sibling of ' +
         '`GeneralSettingsTab`, not a child of it, so the setting is reachable to an ' +
         'operator while being absent from the field lists this gate scans.',
       reviewBy: PERMANENT
@@ -422,7 +422,8 @@ const EXEMPTIONS: ReadonlyMap<string, Exemption> = new Map<string, Exemption>([
         'setting. It carries a `KEY_SPECS` entry so `CMD_SAVE_GENERAL_SETTINGS` can accept a ' +
         'batch that includes it, not because `GeneralSettingsTab.svelte` renders a field for ' +
         'it. The *per-queue* answer this default falls back to is the operator surface FR-014 ' +
-        'requires, reachable from `QueueConfigModal.svelte` through `CMD_SET_QUEUE_FAILURE_POLICY` ' +
+        'requires, reachable from the Settings page\'s Queues section ' +
+        '(`settings/QueueDefaultsSection.svelte`) through `CMD_SET_QUEUE_FAILURE_POLICY` ' +
         '— a separate control for a separate question, so this key stays off the field-list ' +
         'scan on purpose rather than by omission.',
       reviewBy: PERMANENT

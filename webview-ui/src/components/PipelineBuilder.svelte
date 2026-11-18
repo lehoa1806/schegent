@@ -317,7 +317,7 @@
       <div class="phead">
         <div>
           <h1>Builder</h1>
-          <p class="purpose">Reusable phases, workflows and models.</p>
+          <p class="purpose">Reusable Phases, Workflows and models.</p>
         </div>
       </div>
       <BuilderTabs {activeTab} onactivate={(tab) => activeTab = tab} />

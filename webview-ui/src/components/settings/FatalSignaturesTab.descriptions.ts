@@ -1,100 +1,89 @@
 /**
  * Feature 018 — Per-tab description map for FatalSignaturesTab.
  *
- * Two-section design (per spec acceptance scenario 3 of US1):
- *   1. Built-in section — read-only, mirrors the code-resident floor
- *      from `src/lib/fatal-signature-registry.ts`. Entries can only be
+ * Two-section design (per spec acceptance scenario 3 of US1), in the
+ * redesign's words and order:
+ *   1. Your additions — entries persisted in `schegent.fatalSignatures`
+ *      (workspace). They extend the built-in list; they NEVER remove,
+ *      modify, or re-order a built-in entry.
+ *   2. Built in — read-only, mirrors the code-resident floor from
+ *      `src/lib/fatal-signature-registry.ts`. Entries can only be
  *      changed via PR review.
- *   2. Operator section — additive entries persisted in
- *      `schegent.fatalSignatures` (workspace). Operator entries extend
- *      the built-in registry; they NEVER remove, modify, or re-order
- *      built-ins.
+ *
+ * WHERE EACH BODY IS READ. `tab-header` is the section's one visible line
+ * (FR-016). The redesign draws no line under a heading, so the two
+ * section-header bodies are their sections' accessible descriptions, out
+ * of sight, and `operator-input` carries the three facts scenario 3 asks
+ * the list to state: additions add to the built-in list, a built-in entry
+ * cannot be removed, and the audit log tells the two apart.
  *
  * The HoverText primitive uses each control's `controlId` only for DOM
  * id generation. Dynamic per-row hover text (operator-input-<i>,
  * operator-remove-<i>) re-uses the template descriptions below with
  * different controlIds — that is why this map only enumerates the
- * static template keys.
+ * static template keys. A body of 80 characters or fewer is drawn as a
+ * line beside its control, so each of the three stays longer than that.
  *
  * FR-013 coverage:
- *   - Save and Reset disable when there are no unsaved changes (Reset)
- *     or when an unsaved row is empty (Save) — both reasons are in the
- *     body text below.
+ *   - The list has no Save or Reset of its own. The page header's Save
+ *     and Revert write and discard it with every other change, and their
+ *     descriptions (`SettingsPageHeader.descriptions.ts`) state when each
+ *     is disabled, an empty row included.
  */
 
 import type { ControlDescription } from '../hover-text/hover-text-types';
 
 export type FatalSignaturesControlId =
   | 'tab-header'
-  | 'built-in-section-header'
   | 'operator-section-header'
+  | 'built-in-section-header'
   | 'operator-add'
-  | 'operator-save'
-  | 'operator-reset'
   | 'operator-input'
   | 'operator-remove';
 
 export const FATAL_SIGNATURES_DESCRIPTIONS = {
   'tab-header': {
-    title: 'Fatal Signatures',
-    body:
-      'Verbatim substrings that, when matched in CLI stdout or stderr, ' +
-      'terminate the active phase immediately (skipping the delayed-retry ' +
-      'loop). The built-in floor is code-resident; operator entries are ' +
-      'additive workspace overrides.'
-  },
-
-  'built-in-section-header': {
-    title: 'Built-in registry',
-    body:
-      'Read-only entries baked into the extension binary at ' +
-      '`src/lib/fatal-signature-registry.ts`. To add or remove a built-in, ' +
-      'open a PR — they cannot be edited from this UI.'
+    title: 'Failure signatures',
+    body: 'Text that marks a failure as fatal, so Schegent stops retrying.'
   },
 
   'operator-section-header': {
-    title: 'Operator additions',
+    title: 'Your additions',
     body:
-      'Workspace-scoped entries that extend the built-in registry on every ' +
-      'CLI invocation. Operator entries are additive only — they cannot ' +
-      'remove, modify, or re-order built-ins.'
+      'Text this workspace adds to the built-in list. An addition is checked ' +
+      'after the built-in entries and cannot remove, change or reorder them.'
+  },
+
+  'built-in-section-header': {
+    title: 'Built in',
+    body:
+      'Entries that ship with Schegent. They are read-only: this page cannot ' +
+      'change or remove them.'
   },
 
   'operator-add': {
-    title: 'Add signature',
+    title: 'Add text',
     body:
-      'Append a new empty operator row to the list. Type a verbatim ' +
-      'substring then click Save to persist.'
-  },
-
-  'operator-save': {
-    title: 'Save operator signatures',
-    body:
-      'Persist the operator additions to `schegent.fatalSignatures`. ' +
-      'Disabled when there are no unsaved changes OR when at least one row ' +
-      'is empty — fill or remove blank rows first.'
-  },
-
-  'operator-reset': {
-    title: 'Reset operator signatures',
-    body:
-      'Discard every unsaved edit and restore the projected operator list. ' +
-      'Disabled when there are no unsaved changes.'
+      'Adds an empty row to your additions. Type the text to match, then ' +
+      'choose Save at the top of the page to keep it.'
   },
 
   'operator-input': {
-    title: 'Operator signature',
+    title: 'Text to match',
     body:
-      'Type a verbatim substring (case-sensitive). Whitespace-only rows are ' +
-      'rejected. Duplicates with built-in entries are flagged inline; the ' +
-      'host de-dupes them and keeps the built-in attribution.'
+      'Matched exactly, case included, anywhere in a line of the backend ' +
+      'output. Your additions add to the built-in list, and a built-in entry ' +
+      'cannot be removed or changed here. A row that repeats a built-in entry ' +
+      'is flagged and counts as built in. The audit log records which list a ' +
+      'match came from. An empty row cannot be saved.'
   },
 
   'operator-remove': {
-    title: 'Remove signature',
+    title: 'Remove text',
     body:
-      'Remove this operator row from the local draft. The removal is not ' +
-      'persisted until you click Save. Warning: removing a row deletes the ' +
-      'workspace addition; built-ins remain unaffected.'
+      'Removes this row from your additions. Nothing is written until you ' +
+      'choose Save at the top of the page. Warning: once saved, this ' +
+      'workspace no longer treats the text as fatal. Built-in entries are ' +
+      'not affected.'
   }
 } as const satisfies { readonly [K in FatalSignaturesControlId]: ControlDescription };

@@ -192,9 +192,9 @@ describe('the record view, line by line (P5.2)', () => {
   });
 
   it.each([
-    ['none-reported', 'The phase reported no open issues.'],
-    ['unparsed', "No issue list could be read from the phase's output."],
-    ['not-applicable', 'The Run failed before a phase produced output.']
+    ['none-reported', 'The Phase reported no open issues.'],
+    ['unparsed', "No issue list could be read from the Phase's output."],
+    ['not-applicable', 'The Run failed before a Phase produced output.']
   ] as const)('says "%s" with its own sentence and no list', (issueState, sentence) => {
     const rec = record({ issueState, entries: [], phase: undefined, iteration: undefined, iterationCap: undefined });
     const { panel } = mountPanel(available(rec));

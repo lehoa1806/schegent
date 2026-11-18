@@ -140,7 +140,7 @@ describe('restartPhase', () => {
     answer('rejected', 'run-terminal', 'refused');
     await expect(promise).resolves.toEqual({
       outcome: 'refused',
-      message: 'This Run has already finished, so its phases can no longer be changed.'
+      message: 'This Run has already finished, so its Phases can no longer be changed.'
     });
   });
 });

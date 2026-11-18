@@ -200,10 +200,12 @@ const IDLE_FRAGMENT = Object.freeze({
  * `unknown-tuple`. Neither of `readPhaseLog`'s ack paths gives that reason
  * refusal text, since it is the phase-log module's own reason and not a gate
  * refusal, so without this sentence the read fallback showed the bare code. The
- * audit row keeps the code (FR-029).
+ * audit row keeps the code (FR-029). It names only what the pane lets an operator
+ * choose, a Task and a Phase: the selection's pipeline id comes from the Task, and
+ * the Pipeline kind is retired.
  */
 const UNKNOWN_TUPLE_TEXT =
-  'This selection does not match a Task, pipeline or phase the host knows. Choose again.';
+  'This selection does not match a Task or Phase the host knows. Choose again.';
 
 // Feature 067 — module-level snapshot of the last observed in-flight
 // identity tuple. Used by `applyInFlightIdentityChange` to short-circuit

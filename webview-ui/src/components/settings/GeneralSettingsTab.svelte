@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import type { GeneralSettings, WorkflowSnapshot } from '../../lib/snapshot-types';
   import { IDLE_GENERAL_SETTINGS, IDLE_SESSION_ARTIFACTS } from '../../lib/snapshot-types';
   import { saveGeneralSettings } from '../../lib/save-general-settings';
@@ -29,11 +30,21 @@
   import AuditLoggingGroup from './general/AuditLoggingGroup.svelte';
   import UiTrustGroup from './general/UiTrustGroup.svelte';
   import { TRANSPORT_CAPTURE_SETTINGS } from '../../../../src/contracts/transport-capture-mode';
+  import { SettingsPage, type SettingsSectionId } from './settings-page.svelte';
+  import SettingsSection from './SettingsSection.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
+    /** The page whose header saves and reverts this tab's draft; a tab on its own gets its own. */
+    page?: SettingsPage;
+    /**
+     * The Queues section, drawn between Runs and retries and Logs and retention so the sections
+     * read in the navigation's order. It is a part of its own with its own commands: the queue
+     * settings are not general fields (spec 095 FR-010), so this tab gains no row for them.
+     */
+    queues?: Snippet;
   }
-  const { snapshot }: Props = $props();
+  const { snapshot, page = new SettingsPage(), queues }: Props = $props();
 
   // FR-R3-143 (T002) — one definition, in `general/field-types.ts`.
 
@@ -45,11 +56,18 @@
   // FR-R3-143 (T009) — `GENERAL_FIELDS` was one flat array in no particular
   // order. It is split into the three groups §4 names; the backend group is the
   // fourth, and since FR-R3-144 (T025) its fields are keyed by backend rather
-  // than listed. Rendered field *order* changes as a result, which is the point
-  // of grouping rather than a side effect: the old array interleaved
-  // audit/logging (indices 1-6, 11-12) with execution (7-10, 13). No test
-  // asserts field order.
+  // than listed. Within a group the rows come in the order the redesign's
+  // settings page draws them, and a setting the mockup does not draw sits beside
+  // its kin (the log file path beside the log size, verbose logging beside the
+  // log level). `settings/__tests__/general-settings-rows.test.ts` asserts that
+  // order and the labels, which are the mockup's words.
   const AUDIT_LOGGING_FIELDS: readonly FieldSpec[] = [
+    {
+      key: 'runtimeLogLevel',
+      ipcKey: 'logging.runtimeLogLevel',
+      label: 'Log level',
+      kind: 'level-select'
+    },
     // FR-R3-144 (T037, FR-008) — the note is not new prose. It is the sentence
     // `docs/reference/settings.md` already carries for this key, and this is the
     // only setting in that document whose behaviour is conditional on the backend.
@@ -63,78 +81,127 @@
     {
       key: 'loggingVerbose',
       ipcKey: 'logging.verbose',
-      label: 'Verbose Logging',
+      label: 'Verbose logging',
       kind: 'boolean',
       note: 'For Claude, additionally writes unredacted debug, stream, and verbose artifacts. Codex and Agy currently ignore this setting. Changes apply to the next invocation.'
     },
     {
-      key: 'runtimeLogLevel',
-      ipcKey: 'logging.runtimeLogLevel',
-      label: 'Runtime Log Level',
-      kind: 'level-select'
-    },
-    {
-      key: 'runtimeLogFilePath',
-      ipcKey: 'logging.runtimeLogFilePath',
-      label: 'Runtime Log File Path',
-      kind: 'string',
-      placeholder: '<workspace>/.schegent/syslog'
-    },
-    {
       key: 'rawTranscriptMode',
       ipcKey: 'logging.rawTranscriptMode',
-      label: 'Raw Transcript Retention',
-      kind: 'raw-transcript-select'
+      label: 'Keep raw transcripts',
+      kind: 'raw-transcript-select',
+      note: 'Full backend conversations, stored locally.'
     },
     {
       key: 'transportCaptureMode',
       ipcKey: 'logging.transportCaptureMode',
-      label: 'CLI Transport Capture',
+      label: 'Record backend traffic',
       kind: 'enum',
-      options: TRANSPORT_CAPTURE_SETTINGS
+      options: TRANSPORT_CAPTURE_SETTINGS,
+      // The host keeps backend traffic only for a run that fails or is canceled under
+      // `errors-only`, which is why its words differ from the raw transcript's.
+      optionLabels: {
+        inherit: 'Same as raw transcripts',
+        off: 'Never',
+        'errors-only': 'For failed or canceled runs',
+        on: 'Always'
+      },
+      note: 'For debugging transport problems only.'
     },
+    { key: 'auditRotationMaxAgeDays', ipcKey: 'audit.rotation.maxAgeDays', label: 'Keep audit events for', kind: 'number', unit: 'days', min: 1, max: 365 },
+    { key: 'auditRotationSizeMB', ipcKey: 'audit.rotation.sizeMB', label: 'Start a new audit file at', kind: 'number', unit: 'MB', min: 1, max: 100 },
     {
       key: 'sessionRetentionMaxAgeDays',
       ipcKey: 'logging.sessionRetentionMaxAgeDays',
-      label: 'Session Artifact Retention (days)',
+      label: 'Keep run artifacts for',
       kind: 'number',
+      unit: 'days',
       min: 1,
       max: 3650
     },
     {
       key: 'sessionRetentionMaxBytes',
       ipcKey: 'logging.sessionRetentionMaxBytes',
-      label: 'Session Artifact Budget (bytes)',
+      label: 'Run artifact space',
       kind: 'number',
+      unit: 'bytes',
+      wide: true,
       min: 1048576,
       max: 10737418240
     },
-    { key: 'auditRotationSizeMB', ipcKey: 'audit.rotation.sizeMB', label: 'Audit Rotation Size (MB)', kind: 'number', min: 1, max: 100 },
-    { key: 'auditRotationMaxAgeDays', ipcKey: 'audit.rotation.maxAgeDays', label: 'Audit Retention (days)', kind: 'number', min: 1, max: 365 },
-    { key: 'runtimeLogMaxBytes', ipcKey: 'logging.runtimeLogMaxBytes', label: 'Runtime Log Rotation Size (bytes)', kind: 'number', min: 1048576, max: 1073741824 },
+    {
+      key: 'runtimeLogFilePath',
+      ipcKey: 'logging.runtimeLogFilePath',
+      label: 'Log file path',
+      kind: 'string',
+      placeholder: '<workspace>/.schegent/syslog'
+    },
+    { key: 'runtimeLogMaxBytes', ipcKey: 'logging.runtimeLogMaxBytes', label: 'Log file size', kind: 'number', unit: 'bytes', wide: true, min: 1048576, max: 1073741824 },
     // FR-R3-143 (T047) — `0, 20`, from the manifest. T013 wrote `1, 50`, which
     // offered 21..50 to an operator the host would refuse and hid `0` (keep no
     // rotated generations), the one value with a distinct meaning.
-    { key: 'runtimeLogMaxGenerations', ipcKey: 'logging.runtimeLogMaxGenerations', label: 'Runtime Logs Kept', kind: 'number', min: 0, max: 20 }
+    { key: 'runtimeLogMaxGenerations', ipcKey: 'logging.runtimeLogMaxGenerations', label: 'Log files kept', kind: 'number', unit: 'files', min: 0, max: 20 }
   ] as const;
 
   const EXECUTION_RETRY_FIELDS: readonly FieldSpec[] = [
+    {
+      key: 'defaultWorkflowId',
+      ipcKey: 'defaultWorkflowId',
+      label: 'Default workflow',
+      kind: 'workflow-select',
+      note: 'Used when you add a task without choosing one.'
+    },
+    // FR-R3-143 (T047) — `1, 5`, from the manifest. T012 wrote `0, 20` and the
+    // hover text explained that zero disables retries; the host's minimum is 1,
+    // so that was an instruction to enter a value it would reject.
+    {
+      key: 'retryMaxAttempts',
+      ipcKey: 'retry.maxAttempts',
+      label: 'Retry attempts per step',
+      kind: 'number',
+      unit: 'attempts',
+      min: 1,
+      max: 5,
+      note: 'The first attempt is not counted. When they run out, the run and its queue pause.'
+    },
+    {
+      key: 'invocationIdleTimeoutSeconds',
+      ipcKey: 'invocation.idleTimeoutSeconds',
+      label: 'Stop a step that is silent for',
+      kind: 'number',
+      unit: 'seconds',
+      min: 60,
+      max: 7200,
+      note: 'No output for this long counts as stuck.'
+    },
+    { key: 'invocationMaxDurationSeconds', ipcKey: 'invocation.maxDurationSeconds', label: 'Time limit per step', kind: 'number', unit: 'seconds', min: 60, max: 86400 },
     // FR-R3-143 (T047) — `max: 50`, from the manifest. This one is not this
     // feature's doing: Feature 018 wrote `100` and the host has accepted at most
     // 50 the whole time. It is corrected here rather than filed because
     // `tests/lint/settings-field-bounds-parity.test.ts`, added by the same task,
     // fails on it, and an allowance list on a new gate's first day is a worse
     // artifact than the one-token fix it would be excusing.
-    { key: 'loopMaxIterations', ipcKey: 'loop.maxIterations', label: 'Loop Max Iterations', kind: 'number', min: 1, max: 50 },
-    { key: 'invocationIdleTimeoutSeconds', ipcKey: 'invocation.idleTimeoutSeconds', label: 'Invocation Idle Timeout (seconds)', kind: 'number', min: 60, max: 7200 },
-    { key: 'invocationMaxDurationSeconds', ipcKey: 'invocation.maxDurationSeconds', label: 'Invocation Max Duration (seconds)', kind: 'number', min: 60, max: 86400 },
-    { key: 'watchdogPollIntervalMinutes', ipcKey: 'watchdog.pollIntervalMinutes', label: 'Watchdog Poll Interval (minutes)', kind: 'number', min: 1, max: 240 },
-    { key: 'defaultWorkflowId', ipcKey: 'defaultWorkflowId', label: 'Default Workflow', kind: 'workflow-select' },
-    // FR-R3-143 (T047) — `1, 5`, from the manifest. T012 wrote `0, 20` and the
-    // hover text explained that zero disables retries; the host's minimum is 1,
-    // so that was an instruction to enter a value it would reject.
-    { key: 'retryMaxAttempts', ipcKey: 'retry.maxAttempts', label: 'Retry Max Attempts', kind: 'number', min: 1, max: 5 },
-    { key: 'retryForceContinueOnCap', ipcKey: 'retry.forceContinueOnCap', label: 'Continue Past Retry Cap', kind: 'boolean' }
+    {
+      key: 'loopMaxIterations',
+      ipcKey: 'loop.maxIterations',
+      label: 'Loop limit',
+      kind: 'number',
+      unit: 'times',
+      min: 1,
+      max: 50,
+      note: 'Most times a Phase with a retry condition repeats in one run.'
+    },
+    // What a Phase does when its retry condition still holds at the loop limit: the
+    // boolean's two values are the two outcomes, so the row offers them by name.
+    {
+      key: 'retryForceContinueOnCap',
+      ipcKey: 'retry.forceContinueOnCap',
+      label: 'When the loop limit is reached',
+      kind: 'boolean',
+      choices: { false: 'Fail the run', true: 'Continue with a warning' },
+      note: 'Phases can override this.'
+    },
+    { key: 'watchdogPollIntervalMinutes', ipcKey: 'watchdog.pollIntervalMinutes', label: 'Check paused runs every', kind: 'number', unit: 'minutes', min: 1, max: 240 }
   ] as const;
 
   // FR-R3-144 (T029) — `claudeAutoCompactPctOverride` is no longer in this list.
@@ -149,22 +216,25 @@
     {
       key: 'uiConfirmationsEnable',
       ipcKey: 'ui.confirmations.enable',
-      label: 'Confirmation Prompts',
+      label: 'Ask before destructive actions',
       kind: 'boolean',
       note: 'Off means destructive actions happen on the first click, with no prompt.'
     },
+    // The redesign asks whether to warn; the setting stores whether to suppress the
+    // warning, so the toggle reads the opposite of the stored value.
     {
       key: 'multiRootSuppressWarning',
       ipcKey: 'multiRoot.suppressWarning',
-      label: 'Suppress Multi-Root Warning',
+      label: 'Warn about multi-root workspaces',
       kind: 'boolean',
+      inverted: true,
       note: 'The warning is emitted once during activation, so this takes effect the next time the window opens or the Extension Host reloads.'
     }
   ] as const;
 
-  // Every spec on the tab, in group order. Save All iterates this and `dirty` is
+  // Every spec on the tab, in group order. The page Save writes from this and `dirty` is
   // computed from it, so a spec that reached the screen but not this array would
-  // be a control whose edit Save All silently dropped — which is why the backend
+  // be a control whose edit the page Save silently dropped — which is why the backend
   // group exports its own flattened list rather than leaving the tab to restate
   // it. `FIELDS` is now the only thing the tab needs the specs FOR.
   const FIELDS: readonly FieldSpec[] = [
@@ -229,16 +299,6 @@
     return scopeLabelFor(key, currentSettings);
   }
 
-  async function saveOne(spec: { readonly key: ScalarKey; readonly ipcKey?: string }): Promise<void> {
-    const key = spec.key;
-    const updates = { [ipcKeyFor(spec)]: draft[key] };
-    // FR-R3-143 (T042) — declining reverts the toggle, so the control does not
-    // sit showing a state that was never written.
-    if (!(await confirmSettingsWrite(updates))) return resetField('uiConfirmationsEnable');
-    statusByKey = { ...statusByKey, [key]: { status: 'pending' } };
-    showSaveResult([spec], await saveGeneralSettings(updates, undefined, saveWait([spec])));
-  }
-
   async function saveAll(): Promise<void> {
     // Build an updates object containing only fields whose draft
     // diverges from the projected value. Transactional accept/reject
@@ -255,7 +315,9 @@
     if (changedSpecs.length === 0) return;
     // The whole batch is transactional on the host, so declining aborts all of
     // it rather than dropping one key out of a payload the host was told to
-    // apply atomically. The other drafts stay dirty and Save All still works.
+    // apply atomically. FR-R3-143 (T042) — declining also reverts the toggle, so
+    // the control does not sit showing a state that was never written; the other
+    // drafts stay changed and Save still works.
     if (!(await confirmSettingsWrite(updates))) return resetField('uiConfirmationsEnable');
     const pending: Partial<typeof statusByKey> = {};
     for (const spec of changedSpecs) {
@@ -303,70 +365,104 @@
     FIELDS.some((spec) => fieldChanged(spec.key))
   );
 
+  // The page header counts this tab's edits under the section that shows each group.
+  const SECTION_FIELDS: ReadonlyArray<readonly [SettingsSectionId, readonly FieldSpec[]]> = [
+    ['backends', BACKEND_GROUP_FIELDS],
+    ['execution', EXECUTION_RETRY_FIELDS],
+    ['logging', AUDIT_LOGGING_FIELDS],
+    ['trust', UI_TRUST_FIELDS]
+  ];
+  function changesBySection(): Partial<Record<SettingsSectionId, number>> {
+    const counts: Partial<Record<SettingsSectionId, number>> = {};
+    for (const [section, specs] of SECTION_FIELDS) {
+      const changed = specs.filter((spec) => fieldChanged(spec.key)).length;
+      if (changed > 0) counts[section] = changed;
+    }
+    return counts;
+  }
+
+  $effect(() =>
+    page.register({
+      changes: changesBySection,
+      canSave: () => dirty,
+      save: saveAll,
+      revert: resetAll
+    })
+  );
+
+  // A privacy profile sets its five settings in the draft; the page Save writes them with the
+  // rest. Detection reads the draft, so the selector names the profile the page would save.
+  function chooseProfile(updates: Partial<Draft>): void {
+    draft = { ...draft, ...updates };
+  }
+
   // Feature 285 (OD-2, FR-003) — the default select lists the effective Workflows only.
   const workflows = $derived(snapshot.workflowCatalog?.effective ?? []);
 </script>
 
-<section class="general-settings" data-testid="general-settings-tab">
-  <GeneralSettingsHeader
-    settings={currentSettings}
-    {sessionArtifacts}
-    {dirty}
-    {saveAll}
-    {resetAll}
-  />
+<div class="general-settings" data-testid="general-settings-tab">
+  <SettingsSection {page} id="backends">
+    <BackendEnvironmentGroup
+      {snapshot}
+      bind:draft
+      {statusByKey}
+      {workflows}
+      {fieldChanged}
+      {fieldScopeLabel}
+    />
+  </SettingsSection>
 
-  <BackendEnvironmentGroup
-    {snapshot}
-    bind:draft
-    {statusByKey}
-    {workflows}
-    {fieldChanged}
-    {fieldScopeLabel}
-    {saveOne}
-    {resetField}
-  />
+  <SettingsSection {page} id="execution">
+    <ExecutionRetryGroup
+      fields={EXECUTION_RETRY_FIELDS}
+      bind:draft
+      {statusByKey}
+      {workflows}
+      {fieldChanged}
+      {fieldScopeLabel}
+    />
+  </SettingsSection>
 
-  <ExecutionRetryGroup
-    fields={EXECUTION_RETRY_FIELDS}
-    bind:draft
-    {statusByKey}
-    {workflows}
-    {fieldChanged}
-    {fieldScopeLabel}
-    {saveOne}
-    {resetField}
-  />
+  {@render queues?.()}
 
-  <AuditLoggingGroup
-    fields={AUDIT_LOGGING_FIELDS}
-    transportUsage={snapshot.generalSettings?.transportUsage}
-    bind:draft
-    {statusByKey}
-    {workflows}
-    {fieldChanged}
-    {fieldScopeLabel}
-    {saveOne}
-    {resetField}
-  />
+  <SettingsSection {page} id="logging">
+    <AuditLoggingGroup
+      fields={AUDIT_LOGGING_FIELDS}
+      transportUsage={snapshot.generalSettings?.transportUsage}
+      bind:draft
+      {statusByKey}
+      {workflows}
+      {fieldChanged}
+      {fieldScopeLabel}
+    />
+  </SettingsSection>
 
-  <UiTrustGroup
-    {snapshot}
-    fields={UI_TRUST_FIELDS}
-    bind:draft
-    {statusByKey}
-    {workflows}
-    {fieldChanged}
-    {fieldScopeLabel}
-    {saveOne}
-    {resetField}
-  />
-</section>
+  <SettingsSection {page} id="privacy">
+    <GeneralSettingsHeader
+      settings={currentSettings}
+      {draft}
+      {sessionArtifacts}
+      {chooseProfile}
+    />
+  </SettingsSection>
+
+  <SettingsSection {page} id="trust">
+    <UiTrustGroup
+      {snapshot}
+      fields={UI_TRUST_FIELDS}
+      bind:draft
+      {statusByKey}
+      {workflows}
+      {fieldChanged}
+      {fieldScopeLabel}
+    />
+  </SettingsSection>
+</div>
 
 <style>
-  /* The tab reads as the mockup's section body: the header, then each group as a `.sg .section`,
-     whose top margin spaces the groups, so the tab sets no gap of its own. The page scrolls; the
-     tab does not. */
+  /* The tab holds five of the page's sections and the slot for a sixth (Queues), one shown at a
+     time, each group a `.sg .section` whose top margin spaces it, so the tab sets no gap of its
+     own. The page scrolls; the tab does not. */
   /* The header's own rules moved with its markup into
    * `general/GeneralSettingsHeader.svelte` — Svelte scopes styles per
    * component, so leaving them here would have styled nothing. */

@@ -72,7 +72,8 @@ const SENTINEL_REFUSAL =
 function posture(
   kind: BackendRunnerKind,
   grant: BackendPosture['grant'],
-  refusal?: string
+  refusal?: string,
+  notice?: string
 ): BackendPosture {
   const contained = kind === 'codex';
   return Object.freeze({
@@ -80,7 +81,8 @@ function posture(
     containment: contained ? 'os-enforced' : 'none',
     mechanism: contained ? 'codex-sandbox-workspace-write' : 'none',
     grant,
-    ...(refusal === undefined ? {} : { refusal })
+    ...(refusal === undefined ? {} : { refusal }),
+    ...(notice === undefined ? {} : { notice })
   }) as unknown as BackendPosture;
 }
 
@@ -96,12 +98,17 @@ interface Overrides {
   readonly postures?: readonly BackendPosture[];
   /** Which backends the host discovered on this machine (T045). */
   readonly available?: readonly BackendRunnerKind[];
+  /** Claude's saved path, when it is not the default one. */
+  readonly cliPath?: string;
+  /** The host's sentences about grant entries that name no backend; absent, none are sent. */
+  readonly grantProblems?: readonly string[];
 }
 
 function buildSnapshot(overrides: Overrides = {}): WorkflowSnapshot {
   const generalSettings = Object.freeze({
     ...IDLE_GENERAL_SETTINGS,
-    backendRunner: overrides.runner ?? 'claude'
+    backendRunner: overrides.runner ?? 'claude',
+    ...(overrides.cliPath === undefined ? {} : { cliPath: overrides.cliPath })
   }) as unknown as GeneralSettings;
   return Object.freeze({
     schemaVersion: 4,
@@ -135,6 +142,9 @@ function buildSnapshot(overrides: Overrides = {}): WorkflowSnapshot {
     availableModels: Object.freeze([]),
     availableBackends: overrides.available ?? Object.freeze(['claude', 'codex', 'agy']),
     backendPostures: overrides.postures ?? UNGRANTED_POSTURES,
+    ...(overrides.grantProblems === undefined
+      ? {}
+      : { backendGrantProblems: overrides.grantProblems }),
     generalSettings
   }) as unknown as WorkflowSnapshot;
 }
@@ -376,7 +386,7 @@ describe('FR-R3-144 T045 — "not found" and "refused" are told apart', () => {
   // right, and the badge that used to read `Unavailable` for a missing binary read
   // `Unavailable · <cause>` for a failed probe two words later.
 
-  /** Discovered, no OS-enforced bound, no grant — refused, and nothing to fix in a path. */
+  /** Found, no OS-enforced bound, no grant — refused, and nothing to fix in a path. */
   const REFUSED: readonly BackendRunnerKind[] = Object.freeze(['claude', 'codex', 'agy']);
 
   it('says a missing binary is a discovery problem, at the field that fixes it', () => {
@@ -395,8 +405,12 @@ describe('FR-R3-144 T045 — "not found" and "refused" are told apart', () => {
     expect(collapse(getByTestId('backend-discovery-agy').textContent)).toBe('Not found');
     for (const found of ['claude', 'codex'] as const) {
       expect(queryByTestId(`backend-not-found-${found}`)).toBeNull();
-      expect(collapse(getByTestId(`backend-discovery-${found}`).textContent)).toBe('Discovered');
     }
+    // One tag where one says it all, as the redesign draws the card: Claude is the backend in
+    // use and was found, so "In use" stands alone; Codex was found and is not in use.
+    expect(collapse(getByTestId('backend-in-use-claude').textContent)).toBe('In use');
+    expect(queryByTestId('backend-discovery-claude')).toBeNull();
+    expect(collapse(getByTestId('backend-discovery-codex').textContent)).toBe('Found');
   });
 
   it('says a refusal is a permission problem, in the enforcement’s own words', () => {
@@ -404,13 +418,14 @@ describe('FR-R3-144 T045 — "not found" and "refused" are told apart', () => {
 
     // Found, and refused anyway. Nothing about the path is wrong.
     expect(queryByTestId('backend-not-found-claude')).toBeNull();
-    expect(collapse(getByTestId('backend-discovery-claude').textContent)).toBe('Discovered');
+    expect(queryByTestId('backend-discovery-claude'), 'no "Not found" tag').toBeNull();
+    expect(collapse(getByTestId('backend-discovery-agy').textContent)).toBe('Found');
 
     expect(getByTestId('backend-refusal-claude').textContent).toContain('SENTINEL-REFUSAL');
     expect(
       getByTestId('backend-grant-claude').textContent,
-      'and the remedy is the grant, offered right there'
-    ).toContain('Allow uncontained');
+      'and the remedy is the grant, offered in that card’s menu'
+    ).toContain('Allow running unsandboxed…');
   });
 
   it('renders both, separately, for a backend that is neither found nor granted', () => {
@@ -487,5 +502,493 @@ describe('FR-R3-144 T046 — projected posture strings are text, never markup', 
       container.querySelectorAll('img'),
       'and nowhere else on the tab either — the string is passed to the confirmation too'
     ).toHaveLength(0);
+  });
+});
+
+describe('FR-R3-144 FR-004 — a grant entry that names no backend is said with the list', () => {
+  // The host's sentence for the typo FR-004 keeps tolerable, as `resolveUncontainedGrant` words
+  // it. Such an entry belongs to no backend, so no card can show it; the host sends it apart from
+  // the postures, and the list's section is where an operator who mistyped an id looks.
+  const TYPO =
+    "'claud' is not a backend id. Supported ids are claude, codex, agy. This entry grants nothing.";
+  const SECOND = 'SENTINEL-PROBLEM: a second entry that names no backend.';
+  const LEAD = 'The list of backends you allow to run unsandboxed, in your user settings, has';
+
+  /** The block's lead line and its items, whitespace collapsed. */
+  function read(block: HTMLElement): { lead: string; items: string[] } {
+    return {
+      lead: collapse(block.querySelector('p')?.textContent ?? null),
+      items: Array.from(block.querySelectorAll('li'), (item) => collapse(item.textContent))
+    };
+  }
+
+  it('shows each one above the backend cards, in the host’s words', () => {
+    const { getByTestId } = mount({ grantProblems: [TYPO, SECOND] });
+
+    const problems = getByTestId('backend-grant-problems');
+    expect(read(problems)).toEqual({
+      lead: `${LEAD} entries that name no backend:`,
+      items: [TYPO, SECOND]
+    });
+    expect(problems.getAttribute('role')).toBe('status');
+    expect(
+      problems.compareDocumentPosition(getByTestId('backend-health-claude')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      'the eye reaches the problem before any card'
+    ).toBeTruthy();
+  });
+
+  it('says a single entry in the singular', () => {
+    const { getByTestId } = mount({ grantProblems: [TYPO] });
+
+    expect(read(getByTestId('backend-grant-problems'))).toEqual({
+      lead: `${LEAD} an entry that names no backend:`,
+      items: [TYPO]
+    });
+  });
+
+  it('shows the same sentence twice when two entries hold the same typo', () => {
+    const { getByTestId } = mount({ grantProblems: [TYPO, TYPO] });
+
+    expect(read(getByTestId('backend-grant-problems')).items).toEqual([TYPO, TYPO]);
+  });
+
+  it('shows nothing when every entry names a backend, or when the host sends no list', () => {
+    const clean = mount({ grantProblems: [] });
+    expect(clean.queryByTestId('backend-grant-problems')).toBeNull();
+    clean.unmount();
+
+    expect(mount().queryByTestId('backend-grant-problems')).toBeNull();
+  });
+
+  it('renders an entry containing markup as the literal characters (T046)', () => {
+    const MARKUP = '<img src=x onerror="alert(1)">';
+    const { getByTestId } = mount({ grantProblems: [`'${MARKUP}' is not a backend id.`] });
+
+    const problems = getByTestId('backend-grant-problems');
+    expect(problems.textContent).toContain(MARKUP);
+    expect(problems.querySelector('img')).toBeNull();
+    expect(problems.innerHTML).toContain('&lt;img');
+  });
+});
+
+describe('a key or a path in a host sentence breaks at its joins on a narrow line', () => {
+  // A setting key or a file path is one word, and on a narrow panel it can be wider than the
+  // line. The host's sentence is drawn as the runs between its joins, with a break opportunity
+  // before each, so such a word breaks before a dot or a slash rather than at whatever letter
+  // the line ends on. The text, and what a copy takes, stays the host's. The key is not the real
+  // one: the webview's sources never name it (rule 3 of T024's lint).
+  const SENTENCE =
+    "Add 'claude' to 'sample.section.longSettingKey' to accept that. See docs/operations/a-file.md.";
+  const RUNS = [
+    "Add 'claude' to 'sample",
+    '.section',
+    ".longSettingKey' to accept that. See docs",
+    '/operations',
+    '/a-file',
+    '.md.'
+  ];
+
+  /** The text between an element's marked breaks, in order. */
+  function runsOf(element: Element): string[] {
+    const runs = [''];
+    const walker = document.createTreeWalker(
+      element,
+      NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
+    );
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      if (node.nodeName === 'WBR') runs.push('');
+      else if (node.nodeType === Node.TEXT_NODE) runs[runs.length - 1] += node.textContent ?? '';
+    }
+    return runs;
+  }
+
+  it('marks a break before each join in the refusal, the card’s problem line and the list', () => {
+    const postures = Object.freeze(
+      UNGRANTED_POSTURES.map((row) =>
+        row.kind === 'claude'
+          ? (Object.freeze({
+              ...row,
+              problem: SENTENCE,
+              refusal: SENTENCE
+            }) as unknown as BackendPosture)
+          : row
+      )
+    );
+    const { getByTestId } = mount({ postures, grantProblems: [SENTENCE] });
+
+    const sentences = {
+      refusal: getByTestId('backend-refusal-claude'),
+      problem: getByTestId('backend-grant-problem-claude'),
+      listed: getByTestId('backend-grant-problems').querySelector('li')
+    };
+    for (const [name, element] of Object.entries(sentences)) {
+      expect(element, name).not.toBeNull();
+      if (element === null) continue;
+      expect(element.textContent, `the ${name} sentence keeps the host’s text`).toBe(SENTENCE);
+      expect(runsOf(element), `the ${name} sentence’s runs`).toEqual(RUNS);
+    }
+  });
+});
+
+// The Settings redesign draws a backend as a short card: its id, one tag, a result chip, the path
+// it starts from, one line on its sandbox with a Details link, and at the right a "Test" (or "Set
+// path…") button and an actions menu. Everything FR-R3-144 puts on the tab is still there, with
+// the same test ids; the long parts moved into a Details region the card opens by itself when the
+// backend that will run cannot.
+describe('Settings redesign — the backend card', () => {
+  /** What the projection sends with a grant that is in force on a backend with no bound. */
+  const NOTICE = 'SENTINEL-NOTICE: this grant is in force.';
+
+  /** Claude granted; the other two as a fresh installation has them. */
+  const GRANTED_CLAUDE: readonly BackendPosture[] = Object.freeze([
+    posture('claude', 'granted', undefined, NOTICE),
+    posture('codex', 'not-required'),
+    posture('agy', 'not-granted', 'SENTINEL-REFUSAL: agy.')
+  ]);
+
+  function menuItems(trigger: HTMLElement): HTMLElement[] {
+    const menu = trigger.parentElement?.querySelector('[role="menu"]');
+    if (menu === null || menu === undefined) throw new Error('the button has no menu beside it');
+    return [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  }
+
+  function itemTexts(trigger: HTMLElement): string[] {
+    return menuItems(trigger).map((item) => collapse(item.textContent));
+  }
+
+  describe('what a card says at a glance', () => {
+    it('names each backend by its id', () => {
+      const { getByTestId } = mount();
+      for (const kind of SUPPORTED_BACKENDS) {
+        const name = getByTestId(`backend-health-${kind}`).querySelector('.titlerow b');
+        expect(name?.textContent.trim()).toBe(kind);
+      }
+    });
+
+    it('says both when the backend in use was not found', () => {
+      const { getByTestId } = mount({ available: ['codex'] });
+      expect(collapse(getByTestId('backend-in-use-claude').textContent)).toBe('In use');
+      expect(collapse(getByTestId('backend-discovery-claude').textContent)).toBe('Not found');
+    });
+
+    it('marks a backend that was not found as not installed', () => {
+      const { getByTestId, queryByTestId } = mount({ available: ['claude', 'codex'] });
+      const chip = getByTestId('backend-not-installed-agy');
+      expect(collapse(chip.textContent)).toBe('Not installed');
+      // Drawn with the card, so not a live region: a status region would announce it on load,
+      // and the one status region on the tab is the last test's result.
+      expect(chip.getAttribute('role')).toBeNull();
+      expect(chip.getAttribute('aria-live')).toBeNull();
+      expect(queryByTestId('backend-not-installed-claude')).toBeNull();
+      expect(queryByTestId('backend-not-installed-codex')).toBeNull();
+    });
+
+    it('shows the saved path a found backend starts from, and how to give one that was not found', async () => {
+      const view = mount({ available: ['claude', 'codex'] });
+      const path = view.getByTestId('backend-path-claude');
+      expect(collapse(path.textContent)).toBe(IDLE_GENERAL_SETTINGS.cliPath);
+      expect(collapse(view.getByTestId('backend-path-agy').textContent)).toBe(
+        'Set a path to use this backend'
+      );
+
+      // The saved path, the one the card's "Found" and its last test speak of. An edit shows in
+      // the path field and in the page's unsaved count, and the card says nothing of it until the
+      // host has it.
+      const input = view.container.querySelector(inputFor('cliPath')) as HTMLInputElement;
+      await fireEvent.input(input, { target: { value: '/opt/tools/claude' } });
+      expect(collapse(path.textContent)).toBe(IDLE_GENERAL_SETTINGS.cliPath);
+      await fireEvent.input(input, { target: { value: '' } });
+      expect(collapse(path.textContent)).toBe(IDLE_GENERAL_SETTINGS.cliPath);
+
+      // Saved: the host's next snapshot carries the path, and the line follows it.
+      await view.rerender({
+        snapshot: buildSnapshot({ available: ['claude', 'codex'], cliPath: '/opt/tools/claude' })
+      });
+      expect(collapse(view.getByTestId('backend-path-claude').textContent)).toBe(
+        '/opt/tools/claude'
+      );
+    });
+
+    it('says in plain words what each backend runs under', () => {
+      const { getByTestId } = mount();
+      expect(collapse(getByTestId('backend-sandbox-claude').textContent)).toBe(
+        'Not allowed to run unsandboxed'
+      );
+      expect(collapse(getByTestId('backend-sandbox-codex').textContent)).toBe('Sandboxed');
+      expect(collapse(getByTestId('backend-sandbox-agy').textContent)).toBe(
+        'Not allowed to run unsandboxed'
+      );
+      // The whole line as the mockup writes it: the phrase, a dot with a space each side, the link.
+      const line = getByTestId('backend-sandbox-codex').parentElement;
+      expect(collapse(line?.textContent ?? null)).toBe('Sandboxed · Details');
+    });
+
+    it('calls a backend unsandboxed only when the host says its grant is in force', () => {
+      // A listed Codex is granted and still runs in its sandbox (FR-R6-F09). The projection sends
+      // a notice only with a grant in force on a backend that has no bound, and the card reads
+      // that; the grant state alone would call a sandboxed Codex unsandboxed.
+      const { getByTestId } = mount({
+        postures: [
+          posture('claude', 'granted', undefined, NOTICE),
+          posture('codex', 'granted'),
+          posture('agy', 'not-granted', 'SENTINEL-REFUSAL: agy.')
+        ]
+      });
+      expect(collapse(getByTestId('backend-sandbox-claude').textContent)).toBe(
+        'Allowed to run unsandboxed'
+      );
+      expect(collapse(getByTestId('backend-sandbox-codex').textContent)).toBe('Sandboxed');
+    });
+
+    it('claims nothing about the sandbox when the host projects no posture', () => {
+      const { getByTestId, queryByTestId } = mount({ postures: [] });
+      for (const kind of SUPPORTED_BACKENDS) {
+        expect(queryByTestId(`backend-sandbox-${kind}`)).toBeNull();
+        expect(collapse(getByTestId(`backend-details-toggle-${kind}`).textContent)).toBe('Details');
+      }
+    });
+  });
+
+  describe('Details', () => {
+    it('opens by itself for the backend in use when it cannot run, and for no other', () => {
+      const { getByTestId } = mount();
+      const toggle = getByTestId('backend-details-toggle-claude');
+      const details = getByTestId('backend-details-claude');
+      expect(details.hidden, 'the refusal of the backend that will run is on screen').toBe(false);
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      expect(details.id).not.toBe('');
+      expect(toggle.getAttribute('aria-controls')).toBe(details.id);
+      expect(toggle.getAttribute('aria-label')).toBe('Details for claude');
+
+      for (const other of ['codex', 'agy'] as const) {
+        expect(getByTestId(`backend-details-${other}`).hidden).toBe(true);
+        expect(getByTestId(`backend-details-toggle-${other}`).getAttribute('aria-expanded')).toBe(
+          'false'
+        );
+      }
+    });
+
+    it('opens by itself for the backend in use when it was not found', () => {
+      const { getByTestId } = mount({ runner: 'codex', available: ['claude'] });
+      expect(getByTestId('backend-details-codex').hidden).toBe(false);
+      expect(getByTestId('backend-details-claude').hidden).toBe(true);
+    });
+
+    it('opens and closes on its link', async () => {
+      const { getByTestId } = mount();
+      const toggle = getByTestId('backend-details-toggle-codex');
+      const details = getByTestId('backend-details-codex');
+
+      await fireEvent.click(toggle);
+      expect(details.hidden).toBe(false);
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+      await fireEvent.click(toggle);
+      expect(details.hidden).toBe(true);
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('lets the user close details that opened by themselves', async () => {
+      const { getByTestId } = mount();
+      await fireEvent.click(getByTestId('backend-details-toggle-claude'));
+      expect(getByTestId('backend-details-claude').hidden).toBe(true);
+    });
+
+    it('follows the selection, before any save', async () => {
+      const { container, getByTestId } = mount({ available: ['claude', 'codex'] });
+      const select = container.querySelector(RUNNER_INPUT) as HTMLSelectElement;
+
+      // Codex is found and sandboxed, and Claude is no longer the one that will run.
+      await fireEvent.change(select, { target: { value: 'codex' } });
+      expect(getByTestId('backend-details-claude').hidden).toBe(true);
+      expect(getByTestId('backend-details-codex').hidden).toBe(true);
+
+      // Agy is neither found nor allowed.
+      await fireEvent.change(select, { target: { value: 'agy' } });
+      expect(getByTestId('backend-details-agy').hidden).toBe(false);
+    });
+
+    it('puts the refusal back in view after a revoke, even where the user had closed them', async () => {
+      // C7-3 — when the revoked backend is the selected one, the refusal must be what the eye
+      // lands on. The revoke arrives as a new projection.
+      const view = mount({ postures: GRANTED_CLAUDE });
+      const toggle = view.getByTestId('backend-details-toggle-claude');
+      const details = view.getByTestId('backend-details-claude');
+      expect(details.hidden, 'granted: nothing to read').toBe(true);
+      await fireEvent.click(toggle);
+      await fireEvent.click(toggle);
+      expect(details.hidden, 'opened and closed by hand').toBe(true);
+
+      await view.rerender({ snapshot: buildSnapshot() });
+      expect(details.hidden).toBe(false);
+      expect(view.getByTestId('backend-refusal-claude').textContent).toBe(SENTINEL_REFUSAL);
+    });
+
+    it('keeps details the user opened when the reason to show them goes', async () => {
+      const view = mount();
+      const toggle = view.getByTestId('backend-details-toggle-claude');
+      const details = view.getByTestId('backend-details-claude');
+      await fireEvent.click(toggle);
+      await fireEvent.click(toggle);
+      expect(details.hidden, 'closed and opened by hand').toBe(false);
+
+      await view.rerender({ snapshot: buildSnapshot({ postures: GRANTED_CLAUDE }) });
+      expect(details.hidden).toBe(false);
+    });
+
+    it('closes details that opened by themselves once the backend can run', async () => {
+      const view = mount();
+      const details = view.getByTestId('backend-details-claude');
+      expect(details.hidden).toBe(false);
+      await view.rerender({ snapshot: buildSnapshot({ postures: GRANTED_CLAUDE }) });
+      expect(details.hidden).toBe(true);
+    });
+
+    it('never hides an unsaved edit', async () => {
+      const { container, getByTestId } = mount();
+      const input = container.querySelector(inputFor('cliPath')) as HTMLInputElement;
+      await fireEvent.input(input, { target: { value: '/opt/tools/claude' } });
+
+      // Claude stops being the backend in use, which alone would close its details.
+      const select = container.querySelector(RUNNER_INPUT) as HTMLSelectElement;
+      await fireEvent.change(select, { target: { value: 'codex' } });
+      expect(getByTestId('backend-details-claude').hidden).toBe(false);
+    });
+
+    it('holds everything the card used to show in the open', () => {
+      const { getByTestId, container } = mount({ available: ['claude', 'codex'] });
+      const parts: readonly (readonly [BackendRunnerKind, string])[] = [
+        ['claude', 'backend-posture-claude'],
+        ['claude', 'backend-refusal-claude'],
+        ['claude', 'backend-grant-pointer-claude'],
+        ['codex', 'backend-no-specific-settings-codex'],
+        ['agy', 'backend-not-found-agy']
+      ];
+      for (const [kind, part] of parts) {
+        expect(getByTestId(`backend-details-${kind}`).contains(getByTestId(part)), part).toBe(true);
+      }
+      for (const [kind, key] of [
+        ['claude', 'cliPath'],
+        ['claude', 'claudeAutoCompactPctOverride'],
+        ['codex', 'codexPath'],
+        ['agy', 'agyPath']
+      ] as const) {
+        const input = container.querySelector(inputFor(key));
+        expect(getByTestId(`backend-details-${kind}`).contains(input), key).toBe(true);
+      }
+    });
+
+    it('points from the refusal to the control that lifts it', () => {
+      const { getByTestId, queryByTestId } = mount();
+      const refusal = getByTestId('backend-refusal-claude');
+      const pointer = getByTestId('backend-grant-pointer-claude');
+      expect(collapse(pointer.textContent)).toContain('“Allow running unsandboxed…”');
+      expect(
+        refusal.compareDocumentPosition(pointer) & Node.DOCUMENT_POSITION_FOLLOWING,
+        'the reason first, then the way out'
+      ).toBeTruthy();
+      // Codex needs no permission, so nothing points at one.
+      expect(queryByTestId('backend-grant-pointer-codex')).toBeNull();
+    });
+
+    it('drops the pointer once the permission is given', () => {
+      const { queryByTestId } = mount({ postures: GRANTED_CLAUDE });
+      expect(queryByTestId('backend-grant-pointer-claude')).toBeNull();
+    });
+  });
+
+  describe('the actions at the right of a card', () => {
+    it('tests a found backend from its card and a missing one from its menu', () => {
+      const { getByTestId, queryByTestId } = mount({ available: ['claude', 'codex'] });
+
+      const found = getByTestId('ping-backend-claude');
+      expect(found.tagName).toBe('BUTTON');
+      expect(found.getAttribute('role')).toBeNull();
+      expect(collapse(found.textContent)).toBe('Test');
+      expect(found.getAttribute('aria-label')).toBe('Test claude');
+      expect(queryByTestId('backend-set-path-claude')).toBeNull();
+
+      // Not found: the card's own button gives the path, as the mockup has it, and the test moves
+      // into the menu, since a test can find a backend the last scan missed.
+      const missing = getByTestId('ping-backend-agy');
+      expect(missing.getAttribute('role')).toBe('menuitem');
+      expect(collapse(missing.textContent)).toBe('Test');
+      const setPath = getByTestId('backend-set-path-agy');
+      expect(collapse(setPath.textContent)).toBe('Set path…');
+      expect(setPath.getAttribute('aria-label')).toBe('Set path for agy…');
+    });
+
+    it('names the menu after the backend and lists what applies to it', () => {
+      const { getByTestId } = mount({ available: ['claude', 'codex'] });
+      const trigger = getByTestId('backend-actions-agy');
+      expect(trigger.getAttribute('aria-label')).toBe('Actions for agy');
+      expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
+
+      expect(itemTexts(trigger)).toEqual(['Test', 'Change path…', 'Allow running unsandboxed…']);
+      expect(itemTexts(getByTestId('backend-actions-claude'))).toEqual([
+        'Change path…',
+        'Allow running unsandboxed…'
+      ]);
+      // FR-008 — a backend that needs no grant offers no grant control.
+      expect(itemTexts(getByTestId('backend-actions-codex'))).toEqual(['Change path…']);
+    });
+
+    it('marks the grant as the dangerous choice and the revoke as an ordinary one', () => {
+      const ungranted = mount();
+      expect(ungranted.getByTestId('backend-grant-claude').classList.contains('danger')).toBe(true);
+      ungranted.unmount();
+
+      const granted = mount({ postures: GRANTED_CLAUDE });
+      const revoke = granted.getByTestId('backend-grant-claude');
+      expect(collapse(revoke.textContent)).toBe('Revoke permission to run unsandboxed');
+      expect(revoke.classList.contains('danger')).toBe(false);
+    });
+
+    it('takes the user to the path field from "Set path…"', async () => {
+      const { container, getByTestId } = mount({ available: ['claude', 'codex'] });
+      const details = getByTestId('backend-details-agy');
+      expect(details.hidden).toBe(true);
+
+      await fireEvent.click(getByTestId('backend-set-path-agy'));
+      await vi.waitFor(() => {
+        expect(document.activeElement).toBe(container.querySelector(inputFor('agyPath')));
+      });
+      expect(details.hidden).toBe(false);
+    });
+
+    it('takes the user to the path field from the menu’s "Change path…"', async () => {
+      const { container, getByTestId } = mount();
+      const details = getByTestId('backend-details-codex');
+      const change = getByTestId('backend-change-path-codex');
+      expect(details.hidden).toBe(true);
+
+      await fireEvent.click(getByTestId('backend-actions-codex'));
+      await vi.waitFor(() => {
+        expect(document.activeElement).toBe(change);
+      });
+      await fireEvent.click(change);
+      // The menu hands focus back to its button as it closes; the path field takes it from there.
+      await vi.waitFor(() => {
+        expect(document.activeElement).toBe(container.querySelector(inputFor('codexPath')));
+      });
+      expect(details.hidden).toBe(false);
+    });
+
+    it('moves focus to the menu item under a moving pointer', async () => {
+      // Every item carries a description that opens the moment the item takes focus (spec 018),
+      // and the menu focuses its first item as it opens. Focus following the pointer keeps one
+      // description on screen, the one for the item the pointer is on.
+      const { getByTestId } = mount();
+      const change = getByTestId('backend-change-path-claude');
+      const grant = getByTestId('backend-grant-claude');
+
+      await fireEvent.click(getByTestId('backend-actions-claude'));
+      await vi.waitFor(() => {
+        expect(document.activeElement).toBe(change);
+      });
+      await fireEvent.pointerMove(grant);
+      expect(document.activeElement).toBe(grant);
+    });
   });
 });

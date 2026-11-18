@@ -57,7 +57,7 @@ export function deriveOperatorHealth(snapshot: WorkflowSnapshot | null): Operato
     return {
       level: 'attention',
       label: 'evidence degraded',
-      title: `${joinNames(degraded)} evidence is incomplete; workflow execution remains available`
+      title: `${joinNames(degraded)} evidence is incomplete; Workflow execution remains available`
     };
   }
 

@@ -71,11 +71,11 @@ export type FieldKind =
   | 'level-select'
   | 'raw-transcript-select'
   // FR-R3-143 (T029) — the generic enum, driven by `FieldSpec.options`, so the
-  // next enum setting does not become a fourth bespoke `*-select` kind.
-  // `level-select` and `raw-transcript-select` are deliberately NOT folded into
-  // it: their option LABELS differ from their values ("Errors only" for
-  // `errors-only`), and rewriting them is a change to shipped surfaces this
-  // feature was not asked to make.
+  // next enum setting does not become a fourth bespoke `*-select` kind. It
+  // names a value in words through `FieldSpec.optionLabels`. `level-select` and
+  // `raw-transcript-select` keep their own arms, whose option elements the row
+  // writes out ("Unless the run completes" for `errors-only`); the raw
+  // transcript's are pinned whole by `tests/lint/localization-posture.test.ts`.
   | 'enum'
   // FR-R3-143 (T030) — an editable list of strings.
   //
@@ -92,7 +92,7 @@ export type FieldKind =
   //     refused on the same ground: the host de-dupes, so a second copy can
   //     only mislead.
   //   - FREE TEXT with no pattern — a prose fragment matched as a substring —
-  //     gets an editable row, as the fatal-signatures tab has. There is no
+  //     gets an editable row, as the failure signatures list has. There is no
   //     "invalid" to refuse at add, and retyping a 24-character signature to
   //     fix one character is the wrong ask. Duplicates are warned, never
   //     refused: two rows are legitimately equal while one is still being
@@ -113,9 +113,38 @@ export interface FieldSpec {
   readonly kind: FieldKind;
   readonly min?: number;
   readonly max?: number;
+  /**
+   * The unit a number is in ("seconds", "MB"), for `kind: 'number'` and
+   * `'number-optional'`. The row writes it after the field, as the redesign does,
+   * and the field is read with it, so the `label` names the setting alone.
+   */
+  readonly unit?: string;
+  /**
+   * The largest value of a `kind: 'number'` is longer than the redesign's 110px
+   * field shows (a size in bytes), so the field takes the row's width up to its
+   * unit, as a `'number-optional'` field always does.
+   */
+  readonly wide?: boolean;
   readonly placeholder?: string;
-  /** Accepted values for `kind: 'enum'`. Rendered verbatim as both value and label. */
+  /** Accepted values for `kind: 'enum'`, in the order the select lists them. */
   readonly options?: readonly string[];
+  /**
+   * The words a `kind: 'enum'` select shows for its values, as the redesign
+   * names a choice ("Never" for `off`). A value with no entry shows as itself.
+   */
+  readonly optionLabels?: Readonly<Record<string, string>>;
+  /**
+   * A `kind: 'boolean'` drawn as a select of its two outcomes in place of an
+   * On/Off toggle, as the redesign offers the choice at the loop limit ("Fail
+   * the run" or "Continue with a warning").
+   */
+  readonly choices?: { readonly false: string; readonly true: string };
+  /**
+   * A `kind: 'boolean'` whose toggle reads the opposite of the stored value,
+   * as the redesign asks "Warn about multi-root workspaces" of the setting
+   * stored as `multiRoot.suppressWarning`: the toggle is on when it is false.
+   */
+  readonly inverted?: boolean;
   /**
    * FR-R3-143 (T030) — element pattern for `kind: 'string-list'`. Supplied by
    * the tab from `SETTINGS_SCHEMA`, the same record the host's write path reads
@@ -214,7 +243,7 @@ export type StatusByKey = Partial<Record<ScalarKey, FieldStatus>>;
  * It replaces `BACKEND_FIELDS[i]` paired against `RUNNERS[i]` by position. That
  * pairing was correct only because the two arrays happened to be written in the
  * same order, and nothing checked: a path spec inserted at the front would have
- * drawn Claude's path under Codex's Ping button, with every test still green.
+ * drawn Claude's path under Codex's check button, with every test still green.
  *
  * The type lives here; the record itself must stay in `.svelte`, because its
  * `key:`/`ipcKey:` literals are the evidence base of the settings coverage gate
@@ -246,8 +275,6 @@ export interface SettingsGroupProps {
   workflows: readonly PortableWorkflowDefinition[];
   fieldChanged: (key: ScalarKey) => boolean;
   fieldScopeLabel: (key: ScalarKey) => string;
-  saveOne: (spec: FieldSpec) => void;
-  resetField: (key: ScalarKey) => void;
   // FR-R3-144 (T036) — `onAutoCompactInput` is GONE from this contract. It was a
   // handler named after one Claude-only setting, declared on the tab, and passed
   // through every group — including groups with no clearable number in them — to

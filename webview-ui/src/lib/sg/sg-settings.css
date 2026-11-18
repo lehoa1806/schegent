@@ -9,11 +9,10 @@
 .sg .set-layout { display: grid; grid-template-columns: 200px 1fr; gap: var(--schegent-space-4-5); align-items: start; }
 .sg .set-nav { position: sticky; top: 0; display: flex; flex-direction: column; gap: 1px; }
 .sg .set-nav button { text-align: left; border: 0; background: none; padding: var(--schegent-space-1-5) var(--schegent-space-2-5); border-radius: var(--schegent-radius-sm); cursor: pointer; display: flex; align-items: center; gap: var(--schegent-space-1-5); }
-/* The selected section. The product draws its sections as tabs, so `aria-selected` marks it as
-   `aria-current` does in the mockup; the ring only shows where the theme draws a selection
-   outline, as a high contrast theme does. */
-.sg .set-nav button[aria-current='true'], .sg .set-nav button[aria-selected='true'] { background: var(--schegent-selection-bg); color: var(--schegent-selection-fg); box-shadow: inset 0 0 0 1px var(--schegent-selection-outline); }
-.sg .set-nav button:hover:not([aria-current='true'], [aria-selected='true']) { background: var(--schegent-list-hover); }
+/* The current section. The ring only shows where the theme draws a selection outline, as a high
+   contrast theme does. */
+.sg .set-nav button[aria-current='true'] { background: var(--schegent-selection-bg); color: var(--schegent-selection-fg); box-shadow: inset 0 0 0 1px var(--schegent-selection-outline); }
+.sg .set-nav button:hover:not([aria-current='true']) { background: var(--schegent-list-hover); }
 .sg .set-nav .mod { margin-left: auto; width: 6px; height: 6px; border-radius: 50%; background: var(--schegent-color-warning); }
 .sg .set-nav button[aria-current='true'] .mod { background: currentColor; }
 .sg .srow { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(220px, 300px); gap: var(--schegent-space-1-5) var(--schegent-space-4-5); padding: var(--schegent-space-3) 0; border-bottom: 1px solid var(--schegent-border); }

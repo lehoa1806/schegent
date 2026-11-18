@@ -348,7 +348,7 @@ describe('OperationsSurface — a non-primary window (FR-065)', () => {
 
     await fireEvent.click(view.getByTestId('queue-card-q-beta'));
     await awaitTier(view, 'queue-detail-tier');
-    expect(view.queryByTestId('queue-config-open')).toBeNull();
+    expect(view.queryByTestId('queue-rename-open')).toBeNull();
 
     await fireEvent.click(view.getByTestId('queue-task-row-r-1'));
     await awaitTier(view, 'run-detail-tier');

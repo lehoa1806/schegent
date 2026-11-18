@@ -351,7 +351,7 @@
     data-testid="phase-control-delete"
     aria-label="Delete selected phase from workflow"
     aria-disabled={aria(gate.deleteDisabled)}
-    title="Remove the selected phase from this task's workflow (requires confirmation)"
+    title="Delete selected phase from workflow"
     onclick={onDelete}
   >Delete</button>
   {#if controlMessage !== null}

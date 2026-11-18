@@ -105,10 +105,16 @@ export default defineConfig({
       // Functions raised 79 → 81 on FR-R6-F05 (artifact lifecycle), whose
       // storage-details IPC tests measured 91.91% statements / 79.43% branches /
       // 86.07% functions / 91.91% lines; only functions was flagged.
+      //
+      // Functions raised 81 → 83 on the webview redesign port, whose tests
+      // measured 91.85% statements / 81.08% branches / 88.12% functions /
+      // 91.85% lines at its tip; only functions was flagged. The functions
+      // covered in MetricsDashboard.svelte vary from run to run, which can
+      // move that total by 0.09 points.
       thresholds: {
         statements: 86,
         branches: 75,
-        functions: 81,
+        functions: 83,
         lines: 86
       }
     }

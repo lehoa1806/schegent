@@ -23,6 +23,7 @@ import { describe, expect, it } from 'vitest';
 import { AUTHORED_PHASE_FIELDS } from '../../../../src/contracts/process-definitions.js';
 import {
   authoredPhaseDocument,
+  makeNewPhaseDraft,
   sourceRecordToMutable,
   toSavePhaseRow
 } from '../PipelineBuilderEditors/phase-catalog-state';
@@ -281,5 +282,11 @@ describe('the raw JSON document the editor hands to the operator', () => {
     const document = authoredPhaseDocument(ROW);
     const body = toSavePhaseRow(ROW) as unknown as Record<string, unknown>;
     expect(Object.keys(document).sort()).toEqual(Object.keys(body).sort());
+  });
+});
+
+describe('the starter text of a new Phase', () => {
+  it('is a statement, so it capitalises Phase', () => {
+    expect(makeNewPhaseDraft([]).instruction).toBe('Describe the Phase objective here.');
   });
 });

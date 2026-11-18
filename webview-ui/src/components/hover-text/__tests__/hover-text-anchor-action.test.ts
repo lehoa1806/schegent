@@ -334,12 +334,15 @@ describe('aria-describedby composition', () => {
 });
 
 describe('FR-015 regression — theme.css contract', () => {
-  it('theme.css still constrains .hover-text-popover-body to max-width 320px / min-width 180px', () => {
+  it('theme.css still constrains .hover-text-popover-body to max-width 320px, less on a narrower panel, / min-width 180px', () => {
     const themeCssPath = join(__dirname, '../../../lib/theme.css');
     const css = readFileSync(themeCssPath, 'utf8');
     const bodyRule = css.match(/\.hover-text-popover-body\s*\{[^}]*\}/);
     expect(bodyRule).not.toBeNull();
-    expect(bodyRule?.[0]).toMatch(/max-width:\s*320px/);
+    // On a panel narrower than 320px and the placement's 4px edge pad on each side, the panel's
+    // width less the two pads: a box as wide as the panel narrows as it is placed, and can take
+    // one more line and grow over its control. The visual spec opens every Settings description.
+    expect(bodyRule?.[0]).toMatch(/max-width:\s*min\(320px,\s*calc\(100vw - 8px\)\);/);
     expect(bodyRule?.[0]).toMatch(/min-width:\s*180px/);
   });
 });
