@@ -25,15 +25,6 @@ import type { ChangedScalarField, ChangedCollectionField, ChangedField, ChangedF
 
 export type { ChangedScalarField, ChangedCollectionField, ChangedField, ChangedFieldSummary };
 
-
-
-
-
-
-
-
-
-
 /**
  * The four collections whose entries are accounted for individually.
  *
