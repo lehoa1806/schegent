@@ -145,7 +145,7 @@ export function validateDeleteQueue(
  * an operator. `package.json`, `config/settings-schema.ts` and
  * `config/general-settings.ts` described a configuration key that no scheduling
  * path read, and were removed with it. This validator sits on the path the value
- * actually travels: the Queue configuration surface posts
+ * actually travels: the Settings page's Queues section posts
  * `CMD_SAVE_QUEUE_SETTINGS`, this refuses an out-of-range cap, and the workspace
  * memento is what the drain predicates then read.
  */
