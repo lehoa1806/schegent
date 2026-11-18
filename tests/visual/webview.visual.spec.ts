@@ -1809,6 +1809,24 @@ async function expectRowNamesOnFirstLine(table: Locator, what: string): Promise<
   ).toEqual([]);
 }
 
+/** The least height the coarse-pointer floor gives a text field. */
+const COARSE_FIELD_HEIGHT_PX = 44;
+
+/** How far a search field's magnifier may sit from the field's vertical centre, for rounding. */
+const MAGNIFIER_CENTRE_TOLERANCE_PX = 0.5;
+
+/**
+ * How far the magnifier in `field`'s search box sits from the field's vertical centre, in pixels;
+ * below the centre is positive.
+ */
+async function magnifierOffset(field: Locator): Promise<number> {
+  const fieldBox = await field.boundingBox();
+  const icon = field.page().locator('.search', { has: field }).locator('svg');
+  const iconBox = await icon.boundingBox();
+  if (!fieldBox || !iconBox) throw new Error('a search field or its magnifier is not laid out');
+  return iconBox.y + iconBox.height / 2 - (fieldBox.y + fieldBox.height / 2);
+}
+
 test.describe('responsive accessibility hardening', () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
 
@@ -1936,6 +1954,60 @@ test.describe('responsive accessibility hardening', () => {
     expect(overflow, 'the seeded allowlist row must not widen the page').toBeLessThanOrEqual(1);
 
     assertNoPageErrors(page, 'settings coarse-pointer deep walk');
+  });
+
+  /**
+   * The coarse-pointer floor makes every text field at least 44px tall, and a search field's
+   * magnifier sat 6px from its top, where the mockups place it, which is the centre only of the
+   * 28px field a fine pointer gets. All five search fields are measured: the queue page's,
+   * History's, the Phases list's, the Add steps palette's and the Settings page's.
+   */
+  test('every search field centres its magnifier under a coarse pointer', async ({ page }) => {
+    await installDeterministicHost(page);
+    await page.goto('/dashboard.html');
+    await page.addStyleTag({ content: themeCss('dark') });
+    await publishSnapshot(page);
+    await expect(page.getByTestId('queues-tier')).toBeVisible();
+    await expect.poll(() => page.evaluate("matchMedia('(pointer: coarse)').matches")).toBe(true);
+
+    const offCentre: string[] = [];
+    const measure = async (name: string, field: Locator): Promise<void> => {
+      await expect(field, `the ${name} search field is shown`).toBeVisible();
+      const height = (await field.boundingBox())?.height ?? 0;
+      expect(height, `the ${name} search field is a 44px target`).toBeGreaterThanOrEqual(
+        COARSE_FIELD_HEIGHT_PX
+      );
+      const offset = await magnifierOffset(field);
+      if (Math.abs(offset) > MAGNIFIER_CENTRE_TOLERANCE_PX) {
+        offCentre.push(`${name}: ${offset.toFixed(1)}px`);
+      }
+    };
+
+    await page.getByTestId(`queue-card-${FIXTURE_QUEUE_ID}`).click();
+    await expect(page.getByTestId('queue-detail-tier')).toBeVisible();
+    await measure('queue page', page.getByTestId('queue-detail-search'));
+
+    await page.getByTestId('dashboard-route-history').click();
+    await assertRouteMounted(page, 'history', ROUTE_MOUNT_TARGETS.history);
+    await measure('History', page.getByRole('searchbox', { name: 'Search run history' }));
+
+    await page.getByTestId('dashboard-route-builder').click();
+    await assertRouteMounted(page, 'builder', ROUTE_MOUNT_TARGETS.builder);
+    await page.getByRole('tab', { name: 'Phases' }).click();
+    await measure('Phases', page.getByTestId('phases-search'));
+
+    await page.getByRole('tab', { name: 'Workflows' }).click();
+    const picker = page.getByTestId('workflow-picker-toggle');
+    if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
+    await page.getByTestId('workflows-list-item-dev-new-feature').click();
+    await measure('Add steps', page.getByTestId('workflow-palette-search'));
+
+    await page.getByTestId('dashboard-route-settings').click();
+    await assertRouteMounted(page, 'settings', ROUTE_MOUNT_TARGETS.settings);
+    await measure('Settings', page.getByTestId('settings-search'));
+
+    expect(offCentre, 'a magnifier sits off the centre of its search field').toEqual([]);
+    assertNoPageErrors(page, 'search magnifiers under a coarse pointer');
   });
 
   /**
