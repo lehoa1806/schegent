@@ -100,6 +100,8 @@ interface Overrides {
   readonly available?: readonly BackendRunnerKind[];
   /** Claude's saved path, when it is not the default one. */
   readonly cliPath?: string;
+  /** The host's sentences about grant entries that name no backend; absent, none are sent. */
+  readonly grantProblems?: readonly string[];
 }
 
 function buildSnapshot(overrides: Overrides = {}): WorkflowSnapshot {
@@ -140,6 +142,9 @@ function buildSnapshot(overrides: Overrides = {}): WorkflowSnapshot {
     availableModels: Object.freeze([]),
     availableBackends: overrides.available ?? Object.freeze(['claude', 'codex', 'agy']),
     backendPostures: overrides.postures ?? UNGRANTED_POSTURES,
+    ...(overrides.grantProblems === undefined
+      ? {}
+      : { backendGrantProblems: overrides.grantProblems }),
     generalSettings
   }) as unknown as WorkflowSnapshot;
 }
@@ -497,6 +502,73 @@ describe('FR-R3-144 T046 — projected posture strings are text, never markup', 
       container.querySelectorAll('img'),
       'and nowhere else on the tab either — the string is passed to the confirmation too'
     ).toHaveLength(0);
+  });
+});
+
+describe('FR-R3-144 FR-004 — a grant entry that names no backend is said with the list', () => {
+  // The host's sentence for the typo FR-004 keeps tolerable, as `resolveUncontainedGrant` words
+  // it. Such an entry belongs to no backend, so no card can show it; the host sends it apart from
+  // the postures, and the list's section is where an operator who mistyped an id looks.
+  const TYPO =
+    "'claud' is not a backend id. Supported ids are claude, codex, agy. This entry grants nothing.";
+  const SECOND = 'SENTINEL-PROBLEM: a second entry that names no backend.';
+  const LEAD = 'The list of backends you allow to run unsandboxed, in your user settings, has';
+
+  /** The block's lead line and its items, whitespace collapsed. */
+  function read(block: HTMLElement): { lead: string; items: string[] } {
+    return {
+      lead: collapse(block.querySelector('p')?.textContent ?? null),
+      items: Array.from(block.querySelectorAll('li'), (item) => collapse(item.textContent))
+    };
+  }
+
+  it('shows each one above the backend cards, in the host’s words', () => {
+    const { getByTestId } = mount({ grantProblems: [TYPO, SECOND] });
+
+    const problems = getByTestId('backend-grant-problems');
+    expect(read(problems)).toEqual({
+      lead: `${LEAD} entries that name no backend:`,
+      items: [TYPO, SECOND]
+    });
+    expect(problems.getAttribute('role')).toBe('status');
+    expect(
+      problems.compareDocumentPosition(getByTestId('backend-health-claude')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      'the eye reaches the problem before any card'
+    ).toBeTruthy();
+  });
+
+  it('says a single entry in the singular', () => {
+    const { getByTestId } = mount({ grantProblems: [TYPO] });
+
+    expect(read(getByTestId('backend-grant-problems'))).toEqual({
+      lead: `${LEAD} an entry that names no backend:`,
+      items: [TYPO]
+    });
+  });
+
+  it('shows the same sentence twice when two entries hold the same typo', () => {
+    const { getByTestId } = mount({ grantProblems: [TYPO, TYPO] });
+
+    expect(read(getByTestId('backend-grant-problems')).items).toEqual([TYPO, TYPO]);
+  });
+
+  it('shows nothing when every entry names a backend, or when the host sends no list', () => {
+    const clean = mount({ grantProblems: [] });
+    expect(clean.queryByTestId('backend-grant-problems')).toBeNull();
+    clean.unmount();
+
+    expect(mount().queryByTestId('backend-grant-problems')).toBeNull();
+  });
+
+  it('renders an entry containing markup as the literal characters (T046)', () => {
+    const MARKUP = '<img src=x onerror="alert(1)">';
+    const { getByTestId } = mount({ grantProblems: [`'${MARKUP}' is not a backend id.`] });
+
+    const problems = getByTestId('backend-grant-problems');
+    expect(problems.textContent).toContain(MARKUP);
+    expect(problems.querySelector('img')).toBeNull();
+    expect(problems.innerHTML).toContain('&lt;img');
   });
 });
 
