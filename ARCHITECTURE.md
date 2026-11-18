@@ -308,7 +308,7 @@ The queue registry contains at least one queue and at most `MAX_QUEUES = 20`.
 Each queue is sequential: it can have at most one in-flight Task. Workspace-wide
 capacity is independent and is held in workspace state under
 `schegent.queue.globalConcurrencyCap`, default `1`, range `[1, 20]`. It is not a
-`settings.json` key: the value is chosen in the Queue configuration surface,
+`settings.json` key: the value is chosen in the Settings page's Queues section,
 saved through `CMD_SAVE_QUEUE_SETTINGS`, and read back from that same memento by
 the predicates the drain gates on. The default keeps parallel work opt-in;
 raising the value allows different queues to run at the same time against the

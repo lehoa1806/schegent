@@ -21,7 +21,7 @@ the answer is no.
 ## 1. The question, and why it is being answered now
 
 The workspace-wide concurrency cap — workspace state held under
-`schegent.queue.globalConcurrencyCap` and set in the Queue configuration surface — defaults to `1`
+`schegent.queue.globalConcurrencyCap` and set in the Settings page's Queues section — defaults to `1`
 and admits up to `20`. Above one, independent Runs execute in the same checkout. The repository audit of 2026-08-27 made this its second top
 finding and half of recommendation P0-2, and its judgment is architectural rather than incidental:
 mutation ledgers and checkpoint refusal *"improve attribution, but they cannot provide workspace
