@@ -984,6 +984,132 @@ test('a settings search leaves no rule with nothing beyond it', async ({ page })
   assertNoPageErrors(page, 'settings search rules');
 });
 
+/** Two rules nearer than this have no line of text between them, so they read as one line. */
+const DOUBLED_RULE_GAP_PX = 12;
+
+/** What `doubledRules` looked at, and what it found. */
+interface DoubledRuleAudit {
+  /** How many rules were looked at. */
+  readonly examined: number;
+  /** Each pair of rules drawn as one doubled line, by the elements that draw them. */
+  readonly doubled: readonly string[];
+}
+
+/**
+ * Finds the rules under `root` that another rule doubles: two lines across the same stretch with
+ * less than a line of text between them, such as the line under one block and the line over the
+ * next. A rule is what `orphanedRules` takes it to be, a border on one side only, above or below.
+ * Lines are compared at their centres, so two borders drawn on the same pixels, as a row and its
+ * last cell may draw them, are one line and not two.
+ */
+async function doubledRules(root: Locator): Promise<DoubledRuleAudit> {
+  return root.locator('*').evaluateAll((elements, gap) => {
+    const draws = (width: string, style: string, colour: string): boolean =>
+      Number.parseFloat(width) > 0 &&
+      style !== 'none' &&
+      style !== 'hidden' &&
+      !/^rgba\(.*,\s*0\)$|\/\s*0\)$/.test(colour);
+    const rules: { y: number; left: number; right: number; name: string }[] = [];
+    for (const element of elements) {
+      const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+      if (!style || element.getClientRects().length === 0) continue;
+      const above = draws(style.borderTopWidth, style.borderTopStyle, style.borderTopColor);
+      const below = draws(
+        style.borderBottomWidth,
+        style.borderBottomStyle,
+        style.borderBottomColor
+      );
+      if (above === below) continue;
+      const box = element.getBoundingClientRect();
+      if (box.width === 0) continue;
+      const width = Number.parseFloat(above ? style.borderTopWidth : style.borderBottomWidth);
+      rules.push({
+        y: above ? box.top + width / 2 : box.bottom - width / 2,
+        left: box.left,
+        right: box.right,
+        name: `${above ? 'over' : 'under'} ${element.outerHTML.slice(0, 100)}`
+      });
+    }
+    const doubled: string[] = [];
+    rules.forEach((first, index) => {
+      for (const second of rules.slice(index + 1)) {
+        const overlap = Math.min(first.right, second.right) - Math.max(first.left, second.left);
+        const apart = Math.abs(first.y - second.y);
+        if (overlap > 1 && apart > 0.5 && apart < gap) {
+          doubled.push(`${first.name} and, ${apart.toFixed(1)}px away, ${second.name}`);
+        }
+      }
+    });
+    return { examined: rules.length, doubled };
+  }, DOUBLED_RULE_GAP_PX);
+}
+
+/**
+ * Publishes the fixture without its backend postures, as a host that predates the projection
+ * sends it. Each backend card then draws no posture block (see `BackendSection`'s prop doc).
+ */
+async function publishSnapshotWithoutPostures(page: Page): Promise<void> {
+  const { backendPostures: _backendPostures, ...withoutPostures } = workflowSnapshot;
+  await page.evaluate(
+    "window.dispatchEvent(new MessageEvent('message', { data: " +
+      `{ type: 'STATE_SNAPSHOT', payload: ${inlineJson(withoutPostures)} } }))`
+  );
+}
+
+/**
+ * A backend card's Details region parts its blocks with one line each: the path row, the host's
+ * posture block and the backend's own settings. A host that sends no posture puts the path row
+ * next to the backend's settings, and each drew a line of its own, 8px apart; a search that then
+ * hid the path row left the settings' line 8px under the region's own. The sections are checked
+ * first as the fixture draws them, which shows the check is quiet on a page that is right.
+ */
+test("no settings rule is doubled, with or without the host's backend posture", async ({
+  page
+}) => {
+  const settings = await openSurface(page, 'settings', 'light');
+  const drawn: string[] = [];
+  let examined = 0;
+  await eachSettingsSection(page, async (section) => {
+    const audit = await doubledRules(settings);
+    examined += audit.examined;
+    drawn.push(...audit.doubled.map((pair) => `${section}: ${pair}`));
+  });
+  // Named, because the empty lists below pass just as well when no rule was looked at.
+  expect(examined, 'the page draws rules, and they were looked at').toBeGreaterThan(0);
+  expect(drawn, 'a settings section draws two rules as one doubled line').toEqual([]);
+
+  await showSettingsSection(page, 'backends');
+  await publishSnapshotWithoutPostures(page);
+  await expect(settings.locator('[data-testid^="backend-posture-"]')).toHaveCount(0);
+  const toggles = await settings.locator('[data-testid^="backend-details-toggle-"]').all();
+  expect(toggles.length, 'the section draws its backend cards').toBeGreaterThan(0);
+  for (const toggle of toggles) {
+    if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  }
+  const audit = await doubledRules(settings);
+  expect(audit.examined, 'the open cards draw rules, and they were looked at').toBeGreaterThan(0);
+  // Soft, so a page that fails here also shows whether the search below fails.
+  expect
+    .soft(audit.doubled, 'a card with no posture draws two rules as one doubled line')
+    .toEqual([]);
+
+  // A search that finds Claude's own setting hides the path row above it, and the region's line
+  // is then the only one over that setting.
+  await searchSettings(page, 'compaction');
+  await expect(page.getByTestId('general-settings-field-cliPath')).toBeHidden();
+  await expect(
+    page.getByTestId('general-settings-field-claudeAutoCompactPctOverride')
+  ).toBeVisible();
+  const searched = await doubledRules(settings);
+  expect(searched.examined, "rules were looked at under 'compaction'").toBeGreaterThan(0);
+  expect(
+    searched.doubled,
+    "the search for 'compaction' draws two rules as one doubled line"
+  ).toEqual([]);
+  assertNoPageErrors(page, 'settings doubled rules');
+});
+
 /**
  * Room a number field keeps for its spin button. Chromium lays the button out on
  * every enabled number field and only fades it in on hover, so the text never
