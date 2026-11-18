@@ -196,6 +196,13 @@
     margin-top: var(--schegent-space-2);
     border-top: 1px solid var(--schegent-border);
   }
+  /* With no posture between them, the path row's line already parts the two blocks, so the
+     backend's own settings draw none above them. A second line 8px under the first read as a
+     doubled rule. */
+  .path-row + .specific {
+    margin-top: 0;
+    border-top: 0;
+  }
   .no-specific {
     margin: var(--schegent-space-2) 0 0;
   }
