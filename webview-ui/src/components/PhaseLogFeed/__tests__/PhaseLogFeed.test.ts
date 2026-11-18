@@ -1577,7 +1577,9 @@ describe('BUG-002 — Live and the tail read in-flight Runs on every queue (FR-0
 // resolve with `unknown-tuple`. Neither of `readPhaseLog`'s ack paths gives that
 // reason refusal text, by design: it is the module's own reason, not a gate's.
 // So the store fell back to the bare code and the pane printed "Could not load
-// logs: unknown-tuple", which names nothing an operator can act on.
+// logs: unknown-tuple", which names nothing an operator can act on. The sentence
+// names only what the pane lets an operator choose, a Task and a Phase: the
+// selection's pipeline id comes from the Task, and the Pipeline kind is retired.
 describe('BUG-002 — an unknown-tuple refusal reads as operator text (FR-028a)', () => {
   it('says the selection matches nothing the host knows, never the reason code', async () => {
     readSpy.mockResolvedValue({ outcome: 'failure', reason: 'unknown-tuple' });
@@ -1589,7 +1591,8 @@ describe('BUG-002 — an unknown-tuple refusal reads as operator text (FR-028a)'
 
     const text = getByTestId('phase-log-error').textContent;
     expect(text).not.toContain('unknown-tuple');
-    expect(text).toContain('does not match a Task, Pipeline or Phase the host knows');
+    expect(text).toContain('does not match a Task or Phase the host knows');
+    expect(text).not.toMatch(/pipeline/i);
     expect(text).toContain('Choose again');
   });
 });
