@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   computePlacement,
+  type Placement,
   type Rect,
   type Size,
   type Viewport
@@ -133,5 +134,53 @@ describe('computePlacement', () => {
     const popover: Size = { width: 100, height: 60 };
     const { side } = computePlacement(trigger, popover, VIEWPORT_WIDE, 'bottom', 'top');
     expect(side).toBe('top');
+  });
+});
+
+/**
+ * An item of a menu is placed clear of the whole menu, not only of itself. The menu focuses its
+ * first item as it opens and the item's description opens with the focus, so a description laid
+ * over the items under it hid the ones the user was about to point at. On a 320px panel there is
+ * no room beside the menu, and the description opened below its item, over the next one.
+ */
+describe('computePlacement with a menu to keep clear of', () => {
+  const PANEL: Viewport = { width: 320, height: 960 };
+  const DESCRIPTION: Size = { width: 312, height: 170 };
+
+  function covers(placement: Placement, size: Size, box: Rect): boolean {
+    return (
+      placement.offsetX < box.right &&
+      placement.offsetX + size.width > box.left &&
+      placement.offsetY < box.bottom &&
+      placement.offsetY + size.height > box.top
+    );
+  }
+
+  it('opens below the whole menu when a narrow panel leaves no room beside it', () => {
+    const menu = rect(10, 505, 208, 64);
+    const firstItem = rect(14, 509, 200, 28);
+    const placement = computePlacement(firstItem, DESCRIPTION, PANEL, 'left', 'left', menu);
+    expect(placement.side).toBe('bottom');
+    expect(placement.offsetY).toBeGreaterThanOrEqual(menu.bottom);
+    expect(covers(placement, DESCRIPTION, menu)).toBe(false);
+  });
+
+  it('opens above the whole menu when there is no room below it either', () => {
+    const menu = rect(10, 850, 208, 64);
+    const lastItem = rect(14, 882, 200, 28);
+    const placement = computePlacement(lastItem, DESCRIPTION, PANEL, 'left', 'left', menu);
+    expect(placement.side).toBe('top');
+    expect(placement.offsetY + DESCRIPTION.height).toBeLessThanOrEqual(menu.top);
+    expect(covers(placement, DESCRIPTION, menu)).toBe(false);
+  });
+
+  it('opens beside the menu, level with its item, where there is room', () => {
+    const wide: Viewport = { width: 1440, height: 960 };
+    const menu = rect(1190, 460, 214, 72);
+    const item = rect(1194, 494, 206, 30);
+    const placement = computePlacement(item, DESCRIPTION, wide, 'left', 'left', menu);
+    expect(placement.side).toBe('left');
+    expect(placement.offsetX + DESCRIPTION.width).toBeLessThanOrEqual(menu.left);
+    expect(placement.offsetY + DESCRIPTION.height / 2).toBe(item.top + item.height / 2);
   });
 });

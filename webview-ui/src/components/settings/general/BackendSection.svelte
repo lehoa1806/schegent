@@ -355,7 +355,8 @@
         }}
       >Set path…</button>
     {/if}
-    <!-- Each item's description opens to the left, clear of the menu and of the items under it. -->
+    <!-- Each item's description opens to the left of the menu, or above or below the whole menu
+         where a narrow panel leaves no room beside it, clear of the other items. -->
     <SgMenu
       label={`Actions for ${kind}`}
       testid={`backend-actions-${kind}`}

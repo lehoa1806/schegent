@@ -1359,6 +1359,57 @@ test('the refusal on a 320px panel breaks a long key at a dot, never inside a wo
   assertNoPageErrors(page, 'refusal line breaks');
 });
 
+/** A box as Playwright measures one. */
+interface MeasuredBox {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** Whether two boxes share any area. Boxes that only touch do not. */
+function boxesOverlap(a: MeasuredBox, b: MeasuredBox): boolean {
+  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
+/**
+ * Settles after the page has drawn two frames. A scroll's event reaches the page with the next
+ * frame, so a test that scrolls and then acts waits for this between the two.
+ */
+const AFTER_TWO_FRAMES =
+  'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))';
+
+/**
+ * A card's actions menu focuses its first item as it opens, and the item's description opens with
+ * the focus. On a 320px panel there is no room beside the menu, so the description opens below or
+ * above it, clear of the whole menu: laid over the items, it hid the ones the user was about to
+ * point at.
+ */
+test('a card menu’s description on a 320px panel covers none of its items', async ({ page }) => {
+  const settings = await openSurface(page, 'settings', 'light');
+  await page.setViewportSize({ width: REFLOW_PANEL_WIDTH_PX, height: 960 });
+  // At this width the card is below the fold. The menu closes on a scroll that moves its button,
+  // so the scroll that brings the button into view is let reach the page before the click.
+  const actions = settings.getByTestId('backend-actions-claude');
+  await actions.scrollIntoViewIfNeeded();
+  await page.evaluate(AFTER_TWO_FRAMES);
+  await actions.click();
+  const items = page.getByRole('menu').getByRole('menuitem');
+  await expect(items.first(), 'the menu focuses its first item as it opens').toBeFocused();
+  const description = page.getByRole('tooltip');
+  await expect(description, 'the first item’s description opens with the focus').toBeVisible();
+  const descriptionBox = await description.boundingBox();
+  expect(descriptionBox, 'the open description has a box').not.toBeNull();
+  const covered: string[] = [];
+  for (const item of await items.all()) {
+    const box = await item.boundingBox();
+    if (box === null || descriptionBox === null) continue;
+    if (boxesOverlap(box, descriptionBox)) covered.push((await item.innerText()).trim());
+  }
+  expect(covered, 'the description covers items of its own menu').toEqual([]);
+  assertNoPageErrors(page, 'card menu description');
+});
+
 /**
  * T587d — the half of SC-009b the unit suite cannot hold.
  *
