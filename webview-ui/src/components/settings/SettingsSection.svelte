@@ -42,6 +42,7 @@
   id="settings-section-{id}"
   class="set-section"
   class:found={searching}
+  class:last={searching && page.lastShown === id}
   data-testid="settings-section-{id}"
   aria-labelledby="settings-section-{id}-heading"
   hidden={!page.shows(id)}
@@ -54,9 +55,14 @@
   /* Sections found by a search stand one under another. They have different parents, so each
      carries its own space below; a sibling rule could not reach from one to the next. The space
      is wider than the one between the parts of a section, so each name stands nearer to its own
-     settings than to the section above it. */
+     settings than to the section above it. The last one on screen has nothing under it, so the
+     page ends it with the space it ends every section with. */
   .found {
     margin-bottom: var(--schegent-space-6);
+  }
+
+  .found.last {
+    margin-bottom: 0;
   }
 
   /* The name is the label of a group of results, in the look the product gives a group's label

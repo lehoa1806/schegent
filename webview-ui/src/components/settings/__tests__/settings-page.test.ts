@@ -145,4 +145,18 @@ describe('SettingsPage search', () => {
     expect(page.current).toBe('trust');
     expect(shownSections(page)).toEqual(['trust']);
   });
+
+  it('names the last section on screen, in page order, and none while none is', () => {
+    const page = pageWithSettings('trust');
+    expect(page.lastShown).toBe('trust');
+
+    page.search.query = 'lo';
+    expect(page.lastShown).toBe('logging');
+
+    page.search.query = 'loop';
+    expect(page.lastShown).toBe('execution');
+
+    page.search.query = 'no-such-setting';
+    expect(page.lastShown).toBeUndefined();
+  });
 });

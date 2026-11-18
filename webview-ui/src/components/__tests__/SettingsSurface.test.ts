@@ -705,6 +705,18 @@ describe('Settings redesign — the search field', () => {
     expect(group.open).toBe(true);
   });
 
+  it('closes a settings group it opened once the search ends', async () => {
+    const { getByTestId } = renderSurface();
+    const group = getByTestId('settings-group-execution-retry') as HTMLDetailsElement;
+    group.open = false;
+
+    await search(getByTestId, 'schegent.retry.maxAttempts');
+    expect(group.open).toBe(true);
+
+    await search(getByTestId, '');
+    expect(group.open).toBe(false);
+  });
+
   it('finds settings that are not fields: a trust capability, the evidence profile', async () => {
     const { container, getByTestId } = renderSurface();
 

@@ -93,6 +93,11 @@ export class SettingsPage {
     return this.search.active ? this.search.found(id) : this.#section === id;
   }
 
+  /** The last section on screen, in page order; none while no section is. */
+  get lastShown(): SettingsSectionId | undefined {
+    return SETTINGS_SECTIONS.filter((section) => this.shows(section.id)).at(-1)?.id;
+  }
+
   /** True while any part holds an unsaved edit in the given section. */
   sectionChanged(id: SettingsSectionId): boolean {
     return this.#parts.some((part) => (part.changes()[id] ?? 0) > 0);
