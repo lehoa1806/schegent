@@ -70,6 +70,9 @@
   // Absent when the host predates the projection; each section renders no posture
   // block in that case rather than inventing one. See `BackendSection`'s prop doc.
   const postures = $derived<readonly BackendPosture[]>(snapshot.backendPostures ?? []);
+  // FR-004 — the host's sentences about entries in the list of backends allowed to run
+  // unsandboxed that name no backend. Absent when the host predates the field.
+  const grantProblems = $derived<readonly string[]>(snapshot.backendGrantProblems ?? []);
   // The settings as saved, which the host's scan and a backend's last test read. The draft holds
   // what a save will write; each card shows the saved path beside what was found at it.
   const saved = $derived<GeneralSettings>(snapshot.generalSettings ?? IDLE_GENERAL_SETTINGS);
@@ -94,6 +97,27 @@
   use:searchGroup={() => [HEADING]}
 >
   <h3 id="backend-health-heading">{HEADING}</h3>
+  {#if grantProblems.length > 0}
+    <!--
+      FR-004, T023 — spec 183 makes this tab the first surface to show an entry that grants
+      nothing. An entry that names a backend is said on that backend's card; one that names none
+      belongs to no card, so it is said here, before all of them. The lead line describes the list
+      in words, because the webview never names the setting's key (rule 3 of T024's lint). The
+      host's sentences follow as text, never as markup (T046), keyed by place, since two entries
+      holding the same typo bring the same sentence twice.
+    -->
+    <div class="grant-problems" data-testid="backend-grant-problems" role="status">
+      <p>
+        The list of backends you allow to run unsandboxed, in your user settings, has
+        {grantProblems.length === 1 ? 'an entry that names' : 'entries that name'} no backend:
+      </p>
+      <ul>
+        {#each grantProblems as problem, index (index)}
+          <li>{problem}</li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
   <div class="grid backend-list">
     {#each SUPPORTED_BACKENDS as kind (kind)}
       <BackendSection
@@ -114,3 +138,23 @@
     {/each}
   </div>
 </section>
+
+<style>
+  /* In the warning colour of a card's own grant line, with the cards' gap below it. The host's
+     sentences can quote a long key, a word wider than a narrow panel's line, so such a word
+     breaks where the line ends and the page never scrolls sideways (WCAG 1.4.10). */
+  .grant-problems {
+    margin: 0 0 var(--schegent-space-3);
+    font-size: var(--schegent-text-secondary);
+    line-height: 1.45;
+    color: var(--schegent-status-warning-text);
+    overflow-wrap: anywhere;
+  }
+  .grant-problems p {
+    margin: 0;
+  }
+  .grant-problems ul {
+    margin: var(--schegent-space-1) 0 0;
+    padding-left: var(--schegent-space-4);
+  }
+</style>
