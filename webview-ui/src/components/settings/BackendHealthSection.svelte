@@ -26,6 +26,7 @@
     type PortableWorkflowDefinition,
     type WorkflowSnapshot
   } from '../../lib/snapshot-types';
+  import BreakAtJoins from '../BreakAtJoins.svelte';
   import BackendSection from './general/BackendSection.svelte';
   import type {
     BackendSection as BackendSectionSpec,
@@ -113,7 +114,7 @@
       </p>
       <ul>
         {#each grantProblems as problem, index (index)}
-          <li>{problem}</li>
+          <li><BreakAtJoins text={problem} /></li>
         {/each}
       </ul>
     </div>
@@ -141,8 +142,10 @@
 
 <style>
   /* In the warning colour of a card's own grant line, with the cards' gap below it. The host's
-     sentences can quote a long key, a word wider than a narrow panel's line, so such a word
-     breaks where the line ends and the page never scrolls sideways (WCAG 1.4.10). */
+     sentences can quote a long key, a word wider than a narrow panel's line, which
+     `BreakAtJoins` lets break before one of its dots. An entry the host quotes back with no dot
+     or slash in it breaks where the line ends, so the page never scrolls sideways
+     (WCAG 1.4.10). */
   .grant-problems {
     margin: 0 0 var(--schegent-space-3);
     font-size: var(--schegent-text-secondary);

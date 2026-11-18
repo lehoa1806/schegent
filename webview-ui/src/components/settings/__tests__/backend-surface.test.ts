@@ -572,6 +572,65 @@ describe('FR-R3-144 FR-004 — a grant entry that names no backend is said with 
   });
 });
 
+describe('a key or a path in a host sentence breaks at its joins on a narrow line', () => {
+  // A setting key or a file path is one word, and on a narrow panel it can be wider than the
+  // line. The host's sentence is drawn as the runs between its joins, with a break opportunity
+  // before each, so such a word breaks before a dot or a slash rather than at whatever letter
+  // the line ends on. The text, and what a copy takes, stays the host's. The key is not the real
+  // one: the webview's sources never name it (rule 3 of T024's lint).
+  const SENTENCE =
+    "Add 'claude' to 'sample.section.longSettingKey' to accept that. See docs/operations/a-file.md.";
+  const RUNS = [
+    "Add 'claude' to 'sample",
+    '.section',
+    ".longSettingKey' to accept that. See docs",
+    '/operations',
+    '/a-file',
+    '.md.'
+  ];
+
+  /** The text between an element's marked breaks, in order. */
+  function runsOf(element: Element): string[] {
+    const runs = [''];
+    const walker = document.createTreeWalker(
+      element,
+      NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
+    );
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      if (node.nodeName === 'WBR') runs.push('');
+      else if (node.nodeType === Node.TEXT_NODE) runs[runs.length - 1] += node.textContent ?? '';
+    }
+    return runs;
+  }
+
+  it('marks a break before each join in the refusal, the card’s problem line and the list', () => {
+    const postures = Object.freeze(
+      UNGRANTED_POSTURES.map((row) =>
+        row.kind === 'claude'
+          ? (Object.freeze({
+              ...row,
+              problem: SENTENCE,
+              refusal: SENTENCE
+            }) as unknown as BackendPosture)
+          : row
+      )
+    );
+    const { getByTestId } = mount({ postures, grantProblems: [SENTENCE] });
+
+    const sentences = {
+      refusal: getByTestId('backend-refusal-claude'),
+      problem: getByTestId('backend-grant-problem-claude'),
+      listed: getByTestId('backend-grant-problems').querySelector('li')
+    };
+    for (const [name, element] of Object.entries(sentences)) {
+      expect(element, name).not.toBeNull();
+      if (element === null) continue;
+      expect(element.textContent, `the ${name} sentence keeps the host’s text`).toBe(SENTENCE);
+      expect(runsOf(element), `the ${name} sentence’s runs`).toEqual(RUNS);
+    }
+  });
+});
+
 // The Settings redesign draws a backend as a short card: its id, one tag, a result chip, the path
 // it starts from, one line on its sandbox with a Details link, and at the right a "Test" (or "Set
 // path…") button and an actions menu. Everything FR-R3-144 puts on the tab is still there, with
