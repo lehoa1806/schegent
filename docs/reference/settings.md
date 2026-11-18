@@ -107,15 +107,15 @@ and the Phase field reference in [Custom Phases](../features/custom-phases.md#ph
 **The workspace-wide concurrency cap is not on this page, because it is not a
 `settings.json` key.** The maximum number of Runs that may execute at once — still
 defaulting to `1`, still accepted only in `[1, 20]`, still refused rather than clamped
-when out of range — is workspace state, set in the **Queue configuration** surface and
+when out of range — is workspace state, set in the Settings page's **Queues** section and
 saved through `CMD_SAVE_QUEUE_SETTINGS`. The key schegent.queue.globalConcurrencyCap is
 written here without backticks deliberately, on the same rule as the removed
 `allowUncontainedBackends` boolean below: a backticked setting key on a reference page is
 a control an operator can reach in their settings, and this one is genuinely gone from the
 manifest. It was declared there and read by nothing on any scheduling path, so a value
 left behind in `settings.json` changes nothing and never did — it is not migrated, and a
-workspace that never opened the Queue configuration keeps the cap of `1` it already ran
-at. See [Multi-queue concurrency](../operations/multi-queue-concurrency.md) for the
+workspace that never saved a cap from the Queues section keeps the cap of `1` it already
+ran at. See [Multi-queue concurrency](../operations/multi-queue-concurrency.md) for the
 operator guidance and
 [the parallelism ratification](../architecture/local-queue-parallelism-ratification.md)
 for why the memento is the one authority.

@@ -9,7 +9,7 @@ Schegent can keep 1–20 local Queues. The reserved `default` Queue must always 
 
 The per-Queue capacity is fixed at one. The workspace-wide cap limits how many Queues can be active simultaneously; its default is `1` and its accepted range is `[1, 20]`. An out-of-range value is refused instead of clamped.
 
-Set it in the **Queue configuration** surface, not in `settings.json`. The cap is workspace state, held under `schegent.queue.globalConcurrencyCap` in the workspace memento and written by the `CMD_SAVE_QUEUE_SETTINGS` save; that memento is the store both drain predicates read, so the number the surface shows is the number admission gates on. It is per workspace, so raising it in one workspace does not raise it in another.
+Set it in the Settings page's **Queues** section, which **Queue defaults** on the Queues page opens, not in `settings.json`. The cap is workspace state, held under `schegent.queue.globalConcurrencyCap` in the workspace memento and written by the `CMD_SAVE_QUEUE_SETTINGS` save; that memento is the store both drain predicates read, so the number the section shows is the number admission gates on. It is per workspace, so raising it in one workspace does not raise it in another.
 
 <!-- Source: src/queue/queue-manager.ts -->
 <!-- Source: src/state/workspace-state.ts -->
