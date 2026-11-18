@@ -96,7 +96,7 @@
 /* Cards and sections */
 .sg .card { border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); padding: var(--schegent-space-3-5) var(--schegent-space-4); background: var(--schegent-bg); }
 .sg .grid { display: grid; gap: var(--schegent-space-3); }
-.sg .g2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.sg .g2 { grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
 .sg .g4 { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
 .sg .section { margin-top: var(--schegent-space-4-5); }
 .sg .section > h2 { font-weight: 600; margin-bottom: var(--schegent-space-2); display: flex; align-items: center; gap: var(--schegent-space-2); }

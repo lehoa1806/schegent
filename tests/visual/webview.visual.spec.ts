@@ -1516,6 +1516,124 @@ test('a card menu’s description on a 320px panel covers none of its items', as
 });
 
 /**
+ * The boxes meant to scroll sideways on a narrow panel, each inside a box of its own that leaves
+ * the page as wide as the panel: a table too wide for it, the Workflow canvas, and the route
+ * navigation, the part of the bar that gives way.
+ */
+const SIDEWAYS_SCROLLERS = ['.table-wrap', '.canvas-wrap', '.dash .nav'] as const;
+
+/**
+ * Each box on the page that scrolls sideways, other than those meant to, and the document when
+ * it is wider than the panel: its tag and classes, Svelte's scoping classes left out, then its
+ * content's width in its own.
+ */
+const UNMEANT_SIDEWAYS_SCROLL = `(() => {
+  const meant = ${JSON.stringify(SIDEWAYS_SCROLLERS.join(', '))};
+  const named = (box) => {
+    const classes = [...box.classList].filter((name) => !name.startsWith('svelte-'));
+    const label = [box.tagName.toLowerCase(), ...classes].join('.');
+    return label + ' ' + box.scrollWidth + 'px in ' + box.clientWidth + 'px';
+  };
+  const found = [];
+  for (const box of document.body.querySelectorAll('*')) {
+    const overflow = getComputedStyle(box).overflowX;
+    if (overflow !== 'auto' && overflow !== 'scroll') continue;
+    if (box.clientWidth === 0 || box.scrollWidth - box.clientWidth <= 1) continue;
+    if (!box.matches(meant)) found.push(named(box));
+  }
+  const root = document.documentElement;
+  if (root.scrollWidth - root.clientWidth > 1) found.push(named(root));
+  return found;
+})()`;
+
+/**
+ * A panel 320px wide shows the dashboard's other pages, each editor the Builder opens and the
+ * sidebar without scrolling sideways, as the test of every settings section holds for Settings.
+ * These pages do not all scroll in one kind of box, so every box that scrolls sideways is
+ * measured, and only those meant to may. The Phase editor was the one that did not fit: the
+ * surfaces mockup holds each column of its field grid at 300px at least, and its Basics card
+ * ran 34px past the panel.
+ */
+test('the dashboard pages and the sidebar fit a 320px panel without scrolling sideways', async ({
+  page
+}) => {
+  await openSurface(page, 'queues', 'light');
+  // Set here, after `openSurface`, which sets the size the baselines are photographed at.
+  await page.setViewportSize({ width: REFLOW_PANEL_WIDTH_PX, height: 960 });
+  const tooWide: string[] = [];
+  const measure = async (view: string): Promise<void> => {
+    await page.evaluate(AFTER_TWO_FRAMES);
+    const found = (await page.evaluate(UNMEANT_SIDEWAYS_SCROLL)) as string[];
+    tooWide.push(...found.map((box) => `${view}: ${box}`));
+  };
+  // Each tab of the named list, measured once it shows its panel.
+  const eachTab = async (tablist: string, view: string): Promise<void> => {
+    const tabs = page.getByRole('tablist', { name: tablist }).getByRole('tab');
+    const count = await tabs.count();
+    expect(count, `${view} shows its tabs`).toBeGreaterThan(1);
+    for (let index = 0; index < count; index += 1) {
+      const tab = tabs.nth(index);
+      await tab.click();
+      await expect(tab).toHaveAttribute('aria-selected', 'true');
+      await measure(`${view}, ${(await tab.innerText()).trim()}`);
+    }
+  };
+
+  await measure('Queues');
+  await page.getByTestId(`queue-card-${FIXTURE_QUEUE_ID}`).click();
+  await expect(page.getByTestId('queue-detail-tier')).toBeVisible();
+  await measure('the queue page');
+  await page.getByTestId('queue-composer-open').click();
+  await expect(page.getByTestId('queue-composer')).toBeVisible();
+  await measure('the add-task drawer');
+  await page.getByTestId('queue-composer-cancel').click();
+  await page.getByTestId('queue-task-row-visual-task-active').click();
+  await expect(page.getByTestId('run-detail-tier')).toBeVisible();
+  await eachTab('Run detail views', 'the run page');
+
+  await page.getByTestId('dashboard-route-history').click();
+  await expect(page.getByTestId('history-dashboard')).toBeVisible();
+  await measure('History');
+  await page.locator('[data-testid^="history-item-open-details-"]').first().click();
+  await expect(page.getByTestId('history-drawer')).toBeVisible();
+  await measure('the History drawer');
+  await page.getByTestId('dashboard-route-metrics').click();
+  await expect(page.getByTestId('metrics-section')).toBeVisible();
+  await eachTab('Metrics views', 'Metrics');
+  await page.getByTestId('dashboard-route-system').click();
+  await expect(page.getByTestId('system-tab')).toBeVisible();
+  await measure('System Log');
+
+  await page.getByTestId('dashboard-route-builder').click();
+  await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
+  await eachTab('Builder sections', 'the Builder');
+  await page.getByRole('tab', { name: 'Phases' }).click();
+  await page.locator('[data-testid^="phases-list-item-"]').first().click();
+  await expect(page.getByTestId('phases-editor-back')).toBeVisible();
+  await measure('the Phase editor');
+  await page.getByTestId('phases-editor-back').click();
+  await page.getByRole('tab', { name: 'Workflows' }).click();
+  const picker = page.getByTestId('workflow-picker-toggle');
+  if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
+  await expect(picker).toHaveAttribute('aria-expanded', 'true');
+  await measure('the Workflow list');
+  await page.getByTestId('workflows-list-item-dev-new-feature').click();
+  await expect(page.getByTestId('workflow-field-name')).toBeVisible();
+  await measure('the Workflow editor');
+  await page.getByTestId('workflow-node-0').click();
+  await eachTab('Step settings', 'the Workflow step');
+
+  await page.goto('/index.html');
+  await page.addStyleTag({ content: themeCss('light') });
+  await publishSnapshot(page);
+  await expect(page.getByTestId('app-root')).toBeVisible();
+  await measure('the sidebar');
+
+  expect(tooWide, 'a page scrolls sideways on a 320px panel').toEqual([]);
+  assertNoPageErrors(page, 'page reflow');
+});
+
+/**
  * T587d — the half of SC-009b the unit suite cannot hold.
  *
  * `App.route-loading.test.ts` covers the *mechanism* of recovery: a mount
