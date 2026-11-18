@@ -34,16 +34,16 @@ npm run test:webview:coverage
 
 The webview command first checks generated queue-projection mocks, then runs Vitest with V8 coverage, and finally runs the coverage-headroom ratchet. It measures shipping `webview-ui/src/**/*.ts` and `webview-ui/src/**/*.svelte`, excluding test files and `__tests__` fixtures. Reports are written to `webview-ui/coverage/`.
 
-| Metric | Enforced floor | Recorded 2026-09-03 measurement |
+| Metric | Enforced floor | Recorded 2026-11-18 measurement |
 |---|---:|---:|
-| Statements | 84% | 89.13% (`14,809 / 16,615`) |
-| Branches | 75% | 80.67% (`5,429 / 6,730`) |
-| Functions | 77% | 82.87% (`953 / 1,150`) |
-| Lines | 84% | 89.13% |
+| Statements | 86% | 91.85% (`22,355 / 24,339`) |
+| Branches | 75% | 81.08% (`8,802 / 10,856`) |
+| Functions | 83% | 88.12% (`1,491 / 1,692`) |
+| Lines | 86% | 91.85% |
 
-The recorded webview run instrumented 215 source files: 122 Svelte files and 93 non-test TypeScript files. Unimported shipping components remain in the measured set and therefore count as zero rather than disappearing from the denominator.
+The recorded webview run, on darwin at the tip of the webview redesign port, instrumented 281 source files: 149 Svelte files and 132 non-test TypeScript files. Unimported shipping components remain in the measured set and therefore count as zero rather than disappearing from the denominator. The functions covered in `MetricsDashboard.svelte` vary from run to run, which can move the functions total by 0.09 points.
 
-This row replaces the 2026-08-29 measurement rather than sitting beside it: this page states current enforced values, and the history is in git. All four floors are re-derived from the single post-`FR-R3-154` run, and the denominators are what make that necessary rather than tidy — 15,232 statements became 16,615 as features 189-193 added source, so a floor carried over from the earlier run would be pinned to a tree that no longer exists. The headroom ratchet had flagged statements and lines only; branches and functions are raised here from their own measured values, so no floor is inferred from another. See [`../architecture/webview-dead-surface-removal.md`](../architecture/webview-dead-surface-removal.md) for the 2026-08-29 deletion that set the previous row.
+This row replaces the 2026-09-03 measurement rather than sitting beside it: this page states current enforced values, and the history is in git. The 2026-09-03 run set the floors at 84%, 75%, 77% and 84%, all four re-derived from that one run. Each later raise took only what the headroom ratchet flagged: feature 252 took statements and lines to 86% and functions to 79%, `FR-R6-F05` took functions to 81%, and the webview redesign port took functions to 83%, from the run above. Branches have stayed at 75%. See [`../architecture/webview-dead-surface-removal.md`](../architecture/webview-dead-surface-removal.md) for the 2026-08-29 deletion that set the row before the 2026-09-03 one.
 
 <!-- Source: package.json -->
 <!-- Source: webview-ui/package.json -->
