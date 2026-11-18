@@ -730,6 +730,68 @@ test('a settings search in progress remains visually stable in light', async ({ 
 });
 
 /**
+ * The window height the end of the Settings page is measured at. It is short, so the page scrolls
+ * both when a search shows three sections and when the navigation shows one.
+ */
+const SETTINGS_END_HEIGHT_PX = 360;
+
+/** What `spaceUnderSection` measured. */
+interface PageEnd {
+  /** Pixels from the lower edge of the section to the lower edge of the page's window. */
+  readonly space: number;
+  /** True when the page is taller than its window, so it scrolls. */
+  readonly scrolls: boolean;
+}
+
+/**
+ * The space under a Settings section, the last on screen, with the page scrolled to its end. On
+ * a page that does not scroll the space is whatever the window leaves, so the result says whether
+ * it scrolls.
+ */
+async function spaceUnderSection(settings: Locator, section: string): Promise<PageEnd> {
+  return settings.evaluate((surface, id) => {
+    const scroller = surface.querySelector('.page');
+    const shown = surface.querySelector(`[data-testid="settings-section-${id}"]`);
+    if (!scroller || !shown) throw new Error(`no page or no section '${id}' to measure`);
+    scroller.scrollTop = scroller.scrollHeight;
+    return {
+      space: scroller.getBoundingClientRect().bottom - shown.getBoundingClientRect().bottom,
+      scrolls: scroller.scrollHeight > scroller.clientHeight
+    };
+  }, section);
+}
+
+/**
+ * Each section a search shows carries a space below it, to part it from the next. The last one
+ * shown has no next, so it ends as a section shown on its own ends, with the page's own space
+ * under it and nothing more. The page is measured at its end under the search, and again with
+ * the same section shown alone; both times it scrolls, so the space is the page's.
+ */
+test('the last section a settings search shows ends as a section shown alone ends', async ({
+  page
+}) => {
+  const settings = await openSurface(page, 'settings', 'light');
+  await page.setViewportSize({ width: 1440, height: SETTINGS_END_HEIGHT_PX });
+  await searchSettings(page, SETTINGS_SEARCH.query);
+  await expect
+    .poll(() => shownSettingsSections(page), 'the search shows the sections it is known to find')
+    .toEqual([...SETTINGS_SEARCH.sections]);
+  // The last of the three sections the search finds.
+  const [, , lastFound] = SETTINGS_SEARCH.sections;
+  const searched = await spaceUnderSection(settings, lastFound);
+  expect(searched.scrolls, 'the page scrolls under the search').toBe(true);
+
+  await showSettingsSection(page, lastFound);
+  const alone = await spaceUnderSection(settings, lastFound);
+  expect(alone.scrolls, 'the page scrolls with the section shown alone').toBe(true);
+  expect(searched.space, 'the space under the last section a search shows').toBeCloseTo(
+    alone.space,
+    0
+  );
+  assertNoPageErrors(page, 'settings search end');
+});
+
+/**
  * The widths the Settings header is measured at. They are close together round the widths where
  * the row of actions stops fitting beside the title: a row that grows by one item moves to a
  * line of its own somewhere there. Where exactly follows the text size, so no one width is

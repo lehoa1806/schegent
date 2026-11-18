@@ -10,6 +10,11 @@
 // word typed must be found; the order and the case of the words do not matter. The words are
 // compared as plain text and are never made into a pattern.
 //
+// A closed group that holds a found setting opens while the search is on, because the page hides
+// a group's summary meanwhile and the user could not open it. When the search ends, the group
+// closes again, as it was, unless it holds the focus or the page has since kept it open for a
+// setting the user asked for.
+//
 // A component marks its settings with the two actions of `settingsSearch()`. `row` marks one
 // setting, `group` a block of settings whose words find every setting inside it. Each action
 // hides its element while a search is on and no setting inside it matches. The section a
@@ -50,6 +55,8 @@ export class SettingsSearch {
   query = $state('');
   #rows = $state.raw<readonly SearchRow[]>([]);
   #groups = $state.raw<readonly SearchGroup[]>([]);
+  /** The closed groups a search opened, to close again when it ends. */
+  readonly #opened = new WeakSet<HTMLDetailsElement>();
 
   /** The words typed, in lower case. Every change of the query gives a new list. */
   #words = $derived.by((): readonly string[] => {
@@ -93,6 +100,28 @@ export class SettingsSearch {
   /** Ends the search. */
   clear(): void {
     this.query = '';
+  }
+
+  /** Opens a group that holds a found setting. A group the search opens, it closes again. */
+  openForSearch(group: HTMLDetailsElement): void {
+    if (group.open) return;
+    group.open = true;
+    this.#opened.add(group);
+  }
+
+  /**
+   * Closes a group the search opened, now that the search has ended. A group that holds the focus
+   * stays open, so the setting the user is in does not vanish under the caret.
+   */
+  closeAfterSearch(group: HTMLDetailsElement): void {
+    if (!this.#opened.delete(group)) return;
+    if (!group.contains(group.ownerDocument.activeElement)) group.open = false;
+  }
+
+  /** Opens a group for good: the search will not close it when it ends. */
+  keepOpen(group: HTMLDetailsElement): void {
+    this.#opened.delete(group);
+    group.open = true;
   }
 
   /**
@@ -163,6 +192,16 @@ const NO_SEARCH: SearchParts = {
   reveal: () => undefined
 };
 
+/** The groups around a node, the nearest first. */
+function groupsAround(node: HTMLElement): HTMLDetailsElement[] {
+  const groups: HTMLDetailsElement[] = [];
+  for (let group = node.closest('details'); group !== null; ) {
+    groups.push(group);
+    group = group.parentElement?.closest('details') ?? null;
+  }
+  return groups;
+}
+
 /**
  * Makes the caller the search scope of every component inside it. The scope is a function, so
  * the caller's props are read where they are used and not when the component is created.
@@ -190,10 +229,12 @@ export function settingsSearch(): SearchParts {
       const { search } = scope();
       const shown = !search.active || search.holdsMatch(node);
       node.hidden = !shown;
-      // A setting the search finds must be seen, so a closed disclosure around it opens. While a
-      // search is on the disclosure's summary is not drawn, so the user could not open it.
-      const disclosure = node.closest('details');
-      if (search.active && shown && disclosure !== null) disclosure.open = true;
+      // A setting the search finds must be seen, so a closed group around it opens. While a search
+      // is on the group's summary is not drawn, so the user could not open it.
+      const group = node.closest('details');
+      if (group === null) return;
+      if (!search.active) search.closeAfterSearch(group);
+      else if (shown) search.openForSearch(group);
     });
   };
 
@@ -206,8 +247,10 @@ export function settingsSearch(): SearchParts {
   };
 
   const reveal = (node: HTMLElement | undefined): void => {
+    if (node === undefined) return;
     const { search, show } = scope();
-    if (node !== undefined && search.active && !search.holdsMatch(node)) show();
+    if (search.active && !search.holdsMatch(node)) show();
+    for (const around of groupsAround(node)) search.keepOpen(around);
   };
 
   return { row, group, holdsMatch: (node) => scope().search.holdsMatch(node), reveal };

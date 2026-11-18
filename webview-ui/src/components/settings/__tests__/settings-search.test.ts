@@ -4,8 +4,9 @@
 // rules are the port's own. A setting is found by its fixed words (its name, its note, its setting
 // key, its description, the headings it sits under and its section's name) and never by a value
 // the user can edit, so a setting cannot leave the page while it is being edited. Every word typed
-// must be found; the order and the case of the words do not matter.
-import { describe, expect, it } from 'vitest';
+// must be found; the order and the case of the words do not matter. The last block covers the
+// closed groups a search opens to show what it finds, and closes again when it ends.
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { SettingsSearch } from '../settings-search.svelte';
 
@@ -168,5 +169,65 @@ describe('SettingsSearch', () => {
     search.clear();
     expect(search.query).toBe('');
     expect(search.active).toBe(false);
+  });
+});
+
+describe('SettingsSearch and the groups it opens', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  /** A closed group on the page, its summary and one field inside it. */
+  function closedGroup() {
+    const group = document.createElement('details');
+    const field = document.createElement('input');
+    group.append(document.createElement('summary'), field);
+    document.body.append(group);
+    return { group, field };
+  }
+
+  it('closes a group it opened once the search ends', () => {
+    const search = new SettingsSearch();
+    const { group } = closedGroup();
+
+    search.openForSearch(group);
+    expect(group.open).toBe(true);
+
+    search.closeAfterSearch(group);
+    expect(group.open).toBe(false);
+  });
+
+  it('leaves open a group that was open before the search', () => {
+    const search = new SettingsSearch();
+    const { group } = closedGroup();
+    group.open = true;
+
+    search.openForSearch(group);
+    search.closeAfterSearch(group);
+    expect(group.open).toBe(true);
+  });
+
+  it('leaves open a group that holds the focus', () => {
+    const search = new SettingsSearch();
+    const { group, field } = closedGroup();
+
+    search.openForSearch(group);
+    field.focus();
+    search.closeAfterSearch(group);
+    expect(group.open).toBe(true);
+  });
+
+  it('leaves open a group the page keeps open, and opens it if it is closed', () => {
+    const search = new SettingsSearch();
+    const opened = closedGroup().group;
+    const closed = closedGroup().group;
+
+    search.openForSearch(opened);
+    search.keepOpen(opened);
+    search.closeAfterSearch(opened);
+    expect(opened.open).toBe(true);
+
+    search.keepOpen(closed);
+    expect(closed.open).toBe(true);
   });
 });
