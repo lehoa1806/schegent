@@ -332,8 +332,9 @@
         announces it as the field's description; a paragraph merely sitting next to a
         number input is not announced with it.
 
-        `tests/lint/concurrency-isolation-disclosure.test.ts` asserts both this text
-        and the association, and fails if either is removed.
+        `tests/lint/concurrency-isolation-disclosure.test.ts` asserts this text, and this
+        component's test, `__tests__/QueueDefaultsSection.test.ts`, asserts the text and
+        the association; each fails if what it asserts is removed.
       -->
       <p class="desc" id="queue-config-cap-shared-tree" data-testid="queue-config-cap-disclosure">
         Across all queues. Above one, concurrent Runs share one working tree. They may edit the
