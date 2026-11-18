@@ -98,12 +98,15 @@ interface Overrides {
   readonly postures?: readonly BackendPosture[];
   /** Which backends the host discovered on this machine (T045). */
   readonly available?: readonly BackendRunnerKind[];
+  /** Claude's saved path, when it is not the default one. */
+  readonly cliPath?: string;
 }
 
 function buildSnapshot(overrides: Overrides = {}): WorkflowSnapshot {
   const generalSettings = Object.freeze({
     ...IDLE_GENERAL_SETTINGS,
-    backendRunner: overrides.runner ?? 'claude'
+    backendRunner: overrides.runner ?? 'claude',
+    ...(overrides.cliPath === undefined ? {} : { cliPath: overrides.cliPath })
   }) as unknown as GeneralSettings;
   return Object.freeze({
     schemaVersion: 4,
@@ -550,20 +553,30 @@ describe('Settings redesign — the backend card', () => {
       expect(queryByTestId('backend-not-installed-codex')).toBeNull();
     });
 
-    it('shows the path a found backend starts from, and how to give one that was not found', async () => {
-      const { container, getByTestId } = mount({ available: ['claude', 'codex'] });
-      const path = getByTestId('backend-path-claude');
+    it('shows the saved path a found backend starts from, and how to give one that was not found', async () => {
+      const view = mount({ available: ['claude', 'codex'] });
+      const path = view.getByTestId('backend-path-claude');
       expect(collapse(path.textContent)).toBe(IDLE_GENERAL_SETTINGS.cliPath);
-      expect(collapse(getByTestId('backend-path-agy').textContent)).toBe(
+      expect(collapse(view.getByTestId('backend-path-agy').textContent)).toBe(
         'Set a path to use this backend'
       );
 
-      // The draft's path, as "In use" is the draft's backend: the card shows what Save will write.
-      const input = container.querySelector(inputFor('cliPath')) as HTMLInputElement;
+      // The saved path, the one the card's "Found" and its last test speak of. An edit shows in
+      // the path field and in the page's unsaved count, and the card says nothing of it until the
+      // host has it.
+      const input = view.container.querySelector(inputFor('cliPath')) as HTMLInputElement;
       await fireEvent.input(input, { target: { value: '/opt/tools/claude' } });
-      expect(collapse(path.textContent)).toBe('/opt/tools/claude');
+      expect(collapse(path.textContent)).toBe(IDLE_GENERAL_SETTINGS.cliPath);
       await fireEvent.input(input, { target: { value: '' } });
-      expect(collapse(path.textContent)).toBe('Set a path to use this backend');
+      expect(collapse(path.textContent)).toBe(IDLE_GENERAL_SETTINGS.cliPath);
+
+      // Saved: the host's next snapshot carries the path, and the line follows it.
+      await view.rerender({
+        snapshot: buildSnapshot({ available: ['claude', 'codex'], cliPath: '/opt/tools/claude' })
+      });
+      expect(collapse(view.getByTestId('backend-path-claude').textContent)).toBe(
+        '/opt/tools/claude'
+      );
     });
 
     it('says in plain words what each backend runs under', () => {
