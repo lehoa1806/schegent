@@ -52,7 +52,7 @@ const POSTURES: readonly BackendPosture[] = [
 
 function navigationContext() {
   const openBackendSettings = vi.fn();
-  const navigation: DashboardNavigation = { openBackendSettings };
+  const navigation: DashboardNavigation = { openBackendSettings, openQueueSettings: vi.fn() };
   return { openBackendSettings, context: new Map([[DASHBOARD_NAVIGATION, navigation]]) };
 }
 

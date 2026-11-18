@@ -233,12 +233,12 @@
 
   .btn-info {
     border-color: var(--schegent-color-active);
-    color: var(--schegent-color-active);
+    color: var(--schegent-status-active-text);
   }
 
   .btn-caution {
     border-color: var(--schegent-color-warning, var(--schegent-color-active));
-    color: var(--schegent-color-warning, var(--schegent-fg));
+    color: var(--schegent-status-warning-text);
   }
 
   .btn-destructive {

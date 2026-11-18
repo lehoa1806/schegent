@@ -26,20 +26,20 @@ export function phaseDeleteConfirmation(
   if (status === 'active') {
     return {
       title: 'Delete active phase',
-      message: `This will stop the active phase "${label}" and move to the next eligible phase. Continue?`,
+      message: `This will stop the active Phase "${label}" and move to the next eligible Phase. Continue?`,
       confirmLabel: 'Delete phase'
     };
   }
   if (status === 'future') {
     return {
       title: 'Delete future phase',
-      message: `This will remove "${label}" from this task's remaining workflow. Continue?`,
+      message: `This will remove "${label}" from this task's remaining Workflow. Continue?`,
       confirmLabel: 'Delete phase'
     };
   }
   return {
     title: 'Delete phase',
-    message: `This will remove "${label}" from this task's phase progression. Continue?`,
+    message: `This will remove "${label}" from this task's Phase progression. Continue?`,
     confirmLabel: 'Delete phase'
   };
 }

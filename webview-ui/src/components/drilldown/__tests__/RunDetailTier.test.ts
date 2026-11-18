@@ -837,11 +837,11 @@ describe('RunDetailTier — Live targets this Run, not the default queue', () =>
 
     const live = getByTestId('phase-log-jump-current');
     expect(live.getAttribute('aria-disabled')).toBe('false');
-    expect(live.getAttribute('title')).toBe('Jump to the currently executing phase');
+    expect(live.getAttribute('title')).toBe('Jump to the currently executing Phase');
   });
 
   it('withholds Live when this Run is not the one executing', () => {
-    // A finished or pending Run has no "currently executing phase" of its own
+    // A finished or pending Run has no "currently executing Phase" of its own
     // to jump to. Borrowing the default queue's would be the same bleed.
     const { getByTestId } = mount(
       withDefaultQueueInFlight(buildSnapshot({ tasks: [task('r-1', { status: 'completed' })] }))

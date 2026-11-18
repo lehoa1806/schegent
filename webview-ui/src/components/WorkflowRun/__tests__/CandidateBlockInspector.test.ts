@@ -350,6 +350,23 @@ describe('CandidateBlockInspector — on the Run page', () => {
     ]);
   });
 
+  it('names its actions in sentence case', () => {
+    const buttons = renderWithEvidence()
+      .getByTestId('candidate-control-action-buttons')
+      .querySelectorAll('button');
+    expect([...buttons].map((button) => button.textContent.trim())).toEqual([
+      'Check readiness now',
+      'Counted try now',
+      'Select candidate (next admission)',
+      'Apply policy',
+      'Apply candidate subset',
+      'Renew monitoring window',
+      'Pause block',
+      'Resume block',
+      'Cancel block'
+    ]);
+  });
+
   it('draws its two selects as the shared form control inside a field', () => {
     const { getByTestId } = renderWithEvidence();
     for (const testId of ['candidate-control-target-select', 'candidate-control-policy-select']) {

@@ -351,8 +351,9 @@ describe('FR-R3-144 T039 — the grant list is not a general setting (C7-1, FR-0
       // `KEY_SPECS` is the allowlist for `writeGeneralSettings` — a generic,
       // BATCHED key/value writer. An entry here would put a security grant into
       // the same transaction as `logging.verbose`: one rejected unrelated field
-      // takes the grant down with it, and Save All would write the grant with no
-      // confirmation at all, because that path has none. The grant has its own
+      // takes the grant down with it, and the page Save would write the grant with
+      // no confirmation at all, because that path confirms nothing but turning
+      // prompts off. The grant has its own
       // writer, `setUncontainedGrant`, for the reasons in its header — a per-id
       // read-modify-write that re-reads at write time, so a settings tab left open
       // for an hour cannot post a stale list that silently revokes another

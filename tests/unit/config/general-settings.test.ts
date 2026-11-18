@@ -401,7 +401,8 @@ describe('FR-R3-145 (T1570) — the queue settings are not configuration', () =>
   // `writeGeneralSettings` and asserted the bound `[1, 20]` on the way in. Every
   // one of them passed against a configuration key that no scheduling path read:
   // `hasExecutionCapacity` and `hasWorkspaceCapacity` gate on the workspace
-  // memento, which `QueueConfigModal` writes through `CMD_SAVE_QUEUE_SETTINGS`.
+  // memento, which the Settings page's Queues section writes through
+  // `CMD_SAVE_QUEUE_SETTINGS`.
   // The configuration key is gone, so the only honest assertion left about it is
   // that it is refused. The bound those five cases were built to protect is
   // enforced at the IPC boundary by `validateSaveQueueSettings` in

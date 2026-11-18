@@ -137,6 +137,26 @@ describe('dashboard shell', () => {
     await waitForFocusOnHeading(container, 'History');
   });
 
+  // The Queues list's "Queue defaults" opens Settings on its Queues section. It is a page opened
+  // like any other: the status line names it and focus lands on its heading, as the redesign's
+  // own link does. This replaced a dialog whose focus rules (spec 255 FR-022, FR-023) it retired.
+  it('opens Settings from "Queue defaults" the way the navigation opens a page', async () => {
+    const { container, getByTestId } = mountShell();
+    const line = getByTestId('dashboard-status-line');
+    // The first visit pays for the import (see the test above); this one is not judged.
+    await openPage(getByTestId('dashboard-route-settings'));
+    await waitForHeading(container, 'Settings');
+    await openPage(getByTestId('dashboard-route-operations'));
+    await waitForFocusOnHeading(container, 'Queues');
+
+    await openPage(getByTestId('queue-settings-open'));
+
+    await waitForFocusOnHeading(container, 'Settings');
+    expect(line.textContent.trim()).toBe('Showing Settings.');
+    const queuesTab = container.querySelector('[data-testid="settings-nav-queues"]');
+    expect(queuesTab?.getAttribute('aria-current')).toBe('true');
+  });
+
   it('leaves focus alone when the operator has moved on before the page appears', async () => {
     const { container, getByTestId } = mountShell();
     const system = getByTestId('dashboard-route-system');

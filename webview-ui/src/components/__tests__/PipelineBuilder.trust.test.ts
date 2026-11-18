@@ -252,6 +252,19 @@ describe('PipelineBuilder trust gating (059, T022) — phases disabled', () => {
     expect(cause?.textContent ?? '').toMatch(/your user settings/i);
   });
 
+  it('says the default retry conditions of each Phase stay editable', () => {
+    // A sentence in the Builder gives the Phase kind its capital. The other
+    // banner's title keeps its lower case, since it quotes the setting it names
+    // ("Custom phase prompts").
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot({ retryConditions: false }), initialTab: 'phases' }
+    });
+    const banner = container.querySelector('[data-testid="trust-banner-retry-conditions"]');
+    expect((banner?.textContent ?? '').replace(/\s+/g, ' ')).toContain(
+      'Default retry-conditions for each Phase remain editable.'
+    );
+  });
+
   it('names no layer at all when the host does not project one', () => {
     // Legacy tolerance: an older host bundle omits `resolvedScope`. The banner
     // still says the capability is disabled — that much it knows — and stops

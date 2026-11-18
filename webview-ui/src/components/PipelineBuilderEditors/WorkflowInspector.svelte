@@ -13,7 +13,7 @@
   } from "../../lib/snapshot-types";
   import {
     dependentWorkflowsForWorkflow,
-    type AnchoredWorkflowDefects,
+    type VisibleWorkflowDefects,
     type WorkflowConditionPatch,
   } from "./workflow-catalog-state";
   import type { WorkflowGraphActions } from "./workflow-catalog-actions";
@@ -35,7 +35,7 @@
       readonly nodes: readonly WorkflowNode[];
     }[];
     actions?: WorkflowGraphActions;
-    defects: AnchoredWorkflowDefects;
+    defects: VisibleWorkflowDefects;
     editable: boolean;
     lifecycle?: BuilderLifecycle;
     onworkflowpatch: (patch: Partial<MutableWorkflow>) => void;
@@ -150,6 +150,7 @@
       {dependentParents}
       actions={p.actions}
       defects={p.defects.rest}
+      hiddenChecks={p.defects.hiddenChecks}
       {readonly}
       lifecycle={p.lifecycle}
       onworkflowpatch={p.onworkflowpatch}

@@ -1,9 +1,6 @@
 <script lang="ts">
   import { hoverTextAnchor } from '../../hover-text/hover-text-anchor-action';
-  import {
-    GENERAL_SETTINGS_DESCRIPTIONS,
-    type GeneralSettingsControlId
-  } from '../GeneralSettingsTab.descriptions';
+  import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
   import type { PortableWorkflowDefinition } from '../../../lib/snapshot-types';
   // FR-R3-144 (T031) — a VALUE import, from `src/contracts/` as the import-direction
   // rule requires. See `onEnumChange` for why a predicate rather than a cast.
@@ -11,7 +8,8 @@
   import type { Draft, FieldSpec, FieldStatus, ScalarKey } from './field-types';
   import { OUTCOME_NOT_YET_KNOWN_TEXT } from '../../../lib/boundary-refusal-text';
   import { isTransportUsage, type TransportUsage } from '../../../../../src/contracts/sidebar-ipc/transport-usage';
-  import { transportUsageLine } from './settings-draft';
+  import { ipcKeyFor, transportUsageLine } from './settings-draft';
+  import { descriptionWords, settingsSearch, type SearchWords } from '../settings-search.svelte';
   import StringListField from './StringListField.svelte';
 
   // FR-R3-143 (T003) — `ScalarKey`, `FieldKind` and `FieldSpec` now come from
@@ -58,8 +56,6 @@
     workflows: readonly PortableWorkflowDefinition[];
     /** FR-R4-F04 (FR-003) — only the transport mode row is given one; absent means nothing is shown. */
     transportUsage?: TransportUsage;
-    onSave: () => void;
-    onReset: () => void;
   }
 
   let {
@@ -69,19 +65,49 @@
     changed,
     scopeLabel,
     workflows,
-    transportUsage,
-    onSave,
-    onReset
+    transportUsage
   }: Props = $props();
 
-  function saveId(key: ScalarKey): GeneralSettingsControlId {
-    return `${key}-save`;
-  }
-  function resetId(key: ScalarKey): GeneralSettingsControlId {
-    return `${key}-reset`;
-  }
+  const { row: searchRow, refusal } = settingsSearch();
+  /** The words the page's search finds this setting by: fixed words only, never its value. */
+  const searchText = (): SearchWords => [
+    spec.label,
+    spec.note,
+    `schegent.${ipcKeyFor(spec)}`,
+    ...descriptionWords(GENERAL_SETTINGS_DESCRIPTIONS[spec.key])
+  ];
+
   function fieldLabelId(key: ScalarKey): string {
     return `general-settings-label-${key}`;
+  }
+  function unitLabelId(key: ScalarKey): string {
+    return `general-settings-unit-${key}`;
+  }
+
+  /** A number is read with its unit ("Keep audit events for days"), as the row draws it. */
+  const numberLabelledBy = $derived(
+    spec.unit === undefined ? fieldLabelId(spec.key) : `${fieldLabelId(spec.key)} ${unitLabelId(spec.key)}`
+  );
+
+  /**
+   * A toggle shows the setting, or its opposite for an `inverted` spec: the multi-root row asks
+   * whether to warn, and the setting stores whether to suppress the warning.
+   */
+  const toggleOn = $derived(
+    spec.inverted === true ? !draft[spec.key as BooleanKey] : draft[spec.key as BooleanKey]
+  );
+
+  /** True while the host's answer to this setting's last save is a refusal. */
+  const refused = $derived(status?.status === 'rejected');
+
+  function onToggle(event: Event): void {
+    const checked = (event.currentTarget as HTMLInputElement).checked;
+    draft[spec.key as BooleanKey] = spec.inverted === true ? !checked : checked;
+  }
+
+  /** A boolean drawn as a select of its two outcomes, whose option values are `false` and `true`. */
+  function onChoiceChange(event: Event): void {
+    draft[spec.key as BooleanKey] = (event.currentTarget as HTMLSelectElement).value === 'true';
   }
 
   function onStringInput(event: Event): void {
@@ -144,20 +170,21 @@
 
 <!--
   The redesign's setting row (`.srow`): the label and its notes on the left; on the right the
-  control, then the scope beside this row's own Save and Reset. A changed row carries the mockup's
-  dot beside its label.
+  control, then where the setting applies. A changed row carries the mockup's dot beside its
+  label; the page header saves and reverts every row at once, so the row has no Save or Reset.
 -->
 <div
   class="srow field-row"
   data-testid="general-settings-field-{spec.key}"
   data-changed={changed}
   data-status={status?.status ?? 'idle'}
+  use:searchRow={searchText}
 >
   <div class="field-label">
     <div class="lab">
       <span class="field-name" id={fieldLabelId(spec.key)}>{spec.label}</span>
       {#if changed}
-        <span class="mod" role="img" aria-label="Changed, not saved"></span>
+        <span class="mod" role="img" aria-label="changed, not saved"></span>
       {/if}
     </div>
     {#if spec.note}
@@ -173,34 +200,58 @@
     {/if}
   </div>
   <div class="ctl">
-    {#if spec.kind === 'boolean'}
+    {#if spec.kind === 'boolean' && spec.choices !== undefined}
+      <!-- A boolean whose two values are outcomes rather than on and off: the select names them. -->
+      <select
+        class="input"
+        aria-labelledby={fieldLabelId(spec.key)}
+        data-testid="general-settings-input-{spec.key}"
+        value={draft[spec.key as BooleanKey] ? 'true' : 'false'}
+        onchange={onChoiceChange}
+        use:hoverTextAnchor={{
+          controlId: spec.key,
+          description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
+        }}
+      >
+        <option value="false">{spec.choices.false}</option>
+        <option value="true">{spec.choices.true}</option>
+      </select>
+    {:else if spec.kind === 'boolean'}
       <label class="toggle">
         <input
           type="checkbox"
           aria-labelledby={fieldLabelId(spec.key)}
-          bind:checked={draft[spec.key as BooleanKey]}
+          checked={toggleOn}
+          onchange={onToggle}
           data-testid="general-settings-input-{spec.key}"
           use:hoverTextAnchor={{
             controlId: spec.key,
             description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
           }}
         />
-        <span>{draft[spec.key as BooleanKey] ? 'On' : 'Off'}</span>
+        <span>{toggleOn ? 'On' : 'Off'}</span>
       </label>
     {:else if spec.kind === 'number'}
-      <input
-        type="number"
-        aria-labelledby={fieldLabelId(spec.key)}
-        class="input num"
-        min={spec.min}
-        max={spec.max}
-        data-testid="general-settings-input-{spec.key}"
-        use:hoverTextAnchor={{
-          controlId: spec.key,
-          description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
-        }}
-        bind:value={draft[spec.key as NumberKey]}
-      />
+      <!-- `wide`: a size in bytes, whose largest value the mockup's narrow value field
+           would cut off. -->
+      <span class="unit" class:wide={spec.wide === true}>
+        <input
+          type="number"
+          aria-labelledby={numberLabelledBy}
+          class="input"
+          min={spec.min}
+          max={spec.max}
+          data-testid="general-settings-input-{spec.key}"
+          use:hoverTextAnchor={{
+            controlId: spec.key,
+            description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
+          }}
+          bind:value={draft[spec.key as NumberKey]}
+        />
+        {#if spec.unit !== undefined}
+          <span class="muted" id={unitLabelId(spec.key)}>{spec.unit}</span>
+        {/if}
+      </span>
     {:else if spec.kind === 'workflow-select'}
       <select
         class="input"
@@ -227,24 +278,30 @@
         {/each}
       </select>
     {:else if spec.kind === 'number-optional'}
-      <!-- No `num`: this field's unset state is its placeholder, a sentence ("Unset — no
-           bound") that the narrow number field would cut off, so it keeps the full width. -->
-      <input
-        type="number"
-        aria-labelledby={fieldLabelId(spec.key)}
-        class="input"
-        min={spec.min}
-        max={spec.max}
-        step={numberStep}
-        placeholder={spec.placeholder ?? ''}
-        data-testid="general-settings-input-{spec.key}"
-        value={draft[spec.key as ClearableNumberKey] ?? ''}
-        oninput={onClearableNumberInput}
-        use:hoverTextAnchor={{
-          controlId: spec.key,
-          description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
-        }}
-      />
+      <!-- `wide`: this field's unset state is its placeholder, a sentence ("Unset — no
+           limit") that the mockup's narrow value field would cut off, so the field takes
+           the row's width up to its unit. -->
+      <span class="unit wide">
+        <input
+          type="number"
+          aria-labelledby={numberLabelledBy}
+          class="input"
+          min={spec.min}
+          max={spec.max}
+          step={numberStep}
+          placeholder={spec.placeholder ?? ''}
+          data-testid="general-settings-input-{spec.key}"
+          value={draft[spec.key as ClearableNumberKey] ?? ''}
+          oninput={onClearableNumberInput}
+          use:hoverTextAnchor={{
+            controlId: spec.key,
+            description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
+          }}
+        />
+        {#if spec.unit !== undefined}
+          <span class="muted" id={unitLabelId(spec.key)}>{spec.unit}</span>
+        {/if}
+      </span>
     {:else if spec.kind === 'level-select'}
       <select
         class="input"
@@ -256,10 +313,10 @@
           description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
         }}
       >
-        <option value="DEBUG">DEBUG</option>
-        <option value="INFO">INFO</option>
-        <option value="WARN">WARN</option>
-        <option value="ERROR">ERROR</option>
+        <option value="DEBUG">Debug</option>
+        <option value="INFO">Info</option>
+        <option value="WARN">Warning</option>
+        <option value="ERROR">Error</option>
       </select>
     {:else if spec.kind === 'raw-transcript-select'}
       <select
@@ -272,14 +329,13 @@
           description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
         }}
       >
-        <option value="always">Always retain</option>
-        <option value="errors-only">Errors only</option>
-        <option value="off">Off</option>
+        <option value="errors-only">Unless the run completes</option>
+        <option value="always">Always</option>
+        <option value="off">Never</option>
       </select>
     {:else if spec.kind === 'enum'}
-      <!-- FR-R3-143 (T029) — the generic enum. Values are rendered as their own
-           labels, which is what makes it generic; a kind whose labels differ
-           from its values stays bespoke (see `FieldKind` in field-types.ts). -->
+      <!-- FR-R3-143 (T029) — the generic enum. A value shows as the words its spec's
+           `optionLabels` gives it, or as itself (see `FieldKind` in field-types.ts). -->
       <select
         class="input"
         aria-labelledby={fieldLabelId(spec.key)}
@@ -292,7 +348,7 @@
         }}
       >
         {#each spec.options ?? [] as option (option)}
-          <option value={option}>{option}</option>
+          <option value={option}>{spec.optionLabels?.[option] ?? option}</option>
         {/each}
       </select>
     {:else if spec.kind === 'string-list'}
@@ -321,38 +377,13 @@
         }}
       />
     {/if}
-    <div class="field-meta">
-      <span class="hint" data-testid="general-settings-scope-{spec.key}">Scope: {scopeLabel}</span>
-      <span class="field-actions">
-        <button
-          type="button"
-          class="btn btn-primary btn-sm"
-          data-testid="general-settings-save-{spec.key}"
-          disabled={!changed || status?.status === 'pending'}
-          onclick={onSave}
-          use:hoverTextAnchor={{
-            controlId: saveId(spec.key),
-            description: GENERAL_SETTINGS_DESCRIPTIONS[saveId(spec.key)]
-          }}
-        >Save</button>
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm"
-          data-testid="general-settings-reset-{spec.key}"
-          disabled={!changed}
-          onclick={onReset}
-          use:hoverTextAnchor={{
-            controlId: resetId(spec.key),
-            description: GENERAL_SETTINGS_DESCRIPTIONS[resetId(spec.key)]
-          }}
-        >Reset</button>
-      </span>
-    </div>
+    <span class="hint" data-testid="general-settings-scope-{spec.key}">Applies to: {scopeLabel}</span>
     {#if status}
       <div
         class="field-status status-{status.status}"
         data-testid="general-settings-status-{spec.key}"
         role={status.status === 'rejected' ? 'alert' : 'status'}
+        use:refusal={() => refused}
       >
         {#if status.status === 'pending'}
           <span class="status-text">Saving…</span>
@@ -369,40 +400,23 @@
 </div>
 
 <style>
-  /* The `.sg .srow` rules draw the row. These place what the mockup's row has no slot for: the
-     notes under the label, a required number's narrow input (the mockup's width for a value),
-     and the per-row Save, Reset and status. */
+  /* The `.sg .srow` rules draw the row, and `.sg .unit` a number with its unit after it. These
+     place what the mockup's row has no slot for: the notes under the label, the width a clearable
+     number's placeholder or a size in bytes needs, and the row's save status. */
   .field-label .desc {
     margin: var(--schegent-space-1) 0 0;
     line-height: 1.4;
   }
 
-  .ctl .num {
-    width: 110px;
+  .ctl .unit.wide .input {
+    flex: 1;
+    width: auto;
+    min-width: 0;
   }
 
   .ctl .toggle {
     align-self: flex-start;
     cursor: pointer;
-  }
-
-  /* The scope line: the hint, then Save and Reset at its end. The actions box lays its buttons
-     straight into this row, so the help line the hover-text action writes after a button with a
-     short description (`.hover-text-inline-help`, a full-width flex item) drops under the whole
-     row instead of taking the buttons off the scope line with it. */
-  .ctl .field-meta {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--schegent-space-1) var(--schegent-space-2);
-  }
-
-  .field-meta .hint {
-    margin-right: auto;
-  }
-
-  .field-meta .field-actions {
-    display: contents;
   }
 
   .ctl .field-status {

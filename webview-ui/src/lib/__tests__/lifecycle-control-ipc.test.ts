@@ -133,7 +133,7 @@ describe('correlatedLifecycle — the ACK reaches the caller', () => {
     fireAck(posted[0]!.correlationId, 'rejected', 'pause-phase-failed', 'failed');
     const result = await promise;
     expect(result.outcome).toBe('failed');
-    expect(lifecycleMessage(result)).toBe('Pausing the phase failed. Check the log and try again.');
+    expect(lifecycleMessage(result)).toBe('Pausing the Phase failed. Check the log and try again.');
   });
 
   it('reads an ACK with no outcome field as a plain refusal', async () => {

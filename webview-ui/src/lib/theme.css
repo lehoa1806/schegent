@@ -158,7 +158,11 @@
 .hover-text-popover-body {
   position: fixed;
   z-index: var(--hover-text-z, 2000);
-  max-width: 320px;
+  /* No wider than the panel less the placement's 4px edge pad on each side (EDGE_PAD in
+     hover-text-positioning.ts). The portal measures the box where it first draws, at the panel's
+     left edge, and places it from that size. A box as wide as the panel narrowed as it moved in
+     from the edge, took one more line, and grew over the field it was placed above. */
+  max-width: min(320px, calc(100vw - 8px));
   min-width: 180px;
   padding: 8px 10px;
   background: var(--hover-text-bg);

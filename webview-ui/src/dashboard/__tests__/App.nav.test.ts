@@ -319,4 +319,32 @@ describe('queue-based navigation', () => {
     expect(queryByTestId('queue-task-composer')).toBeNull();
     expect(DEFAULT_DASHBOARD_ROUTE).toBe('operations');
   });
+
+  // The redesign moved the workspace queue settings from a dialog into Settings, Queues. The
+  // Queues list's "Queue defaults" opens the page there; the top navigation opens it on Backends.
+  it('opens Settings on its Queues section from "Queue defaults", and on Backends from the top navigation', async () => {
+    snapshotStore.apply({ type: 'STATE_SNAPSHOT', payload: buildSnapshot() } as unknown as Parameters<typeof snapshotStore.apply>[0]);
+    const { container, getByTestId } = render(App);
+    const currentSection = (): string | null =>
+      container.querySelector('[aria-label="Settings sections"] [aria-current="true"]')?.getAttribute('data-testid') ?? null;
+
+    await fireEvent.click(getByTestId('queue-settings-open'));
+    await vi.waitFor(
+      () => {
+        expect(currentSection()).toBe('settings-nav-queues');
+      },
+      { timeout: LAZY_ROUTE_WAIT_MS }
+    );
+    expect(container.querySelector('[data-testid="dashboard-route-settings"].active')).not.toBeNull();
+    expect((getByTestId('settings-section-queues') as HTMLElement).hidden).toBe(false);
+
+    await fireEvent.click(getByTestId('dashboard-route-operations'));
+    await fireEvent.click(getByTestId('dashboard-route-settings'));
+    await vi.waitFor(
+      () => {
+        expect(currentSection()).toBe('settings-nav-backends');
+      },
+      { timeout: LAZY_ROUTE_WAIT_MS }
+    );
+  });
 });

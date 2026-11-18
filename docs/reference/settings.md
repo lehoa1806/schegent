@@ -54,7 +54,7 @@ The backend choice is a privilege choice, not a cosmetic preference. A Phase's `
 | `schegent.invocation.maxDurationSeconds` | number, minimum `60` | `21600` | resource | Absolute wall-clock bound on one Phase invocation, armed at spawn and never reset — bounds a chatty child the idle window cannot. Default is 4x the idle default and ~1.7x the longest legitimately long phase observed (3.6 h). At **80%** of whatever this is set to, the monitor appends one `monitor-deadline-approaching` audit record — elapsed, the bound, the invocation — so the termination is not the first evidence the bound exists. The record is informational: it changes no status and stops nothing. |
 | `schegent.spend.maxUsdPerRun` | number (minimum `0.01`) or `null` | `null` | resource | Per-run spend bound in US dollars. `null` means **no bound**: the mechanism ships unset so no existing run changes behaviour on upgrade. Crossing it **pauses** the run through the ordinary operator-resumable pause (cause `spend-bound-reached`) — never a failure, never a cancellation. Applies to backends that report a cost (`claude`, in USD). The bound is a pause at a phase boundary and never a ceiling inside an invocation: the phase that crosses it always runs to completion, and one more phase can run when the pause lands after the Run reads its state, so a paused Run's total ends above the bound; a backend that reports no cost under this bound is reported once as not measurable and is never read as within budget, and no price is inferred or back-filled. After a restart the total is rebuilt from the audit log and its archives within an 8 MiB read, and a total that could not be rebuilt in full is shown as a lower bound, not as within budget. See `docs/operations/autonomy-bounds-disclosure.md`. A Phase may override it with `spendBoundUsd`. |
 | `schegent.spend.maxTokensPerRun` | number (minimum `1`) or `null` | `null` | resource | Per-run spend bound in tokens, for backends that report tokens and no cost (`codex`, `agy`). `null` means **no bound**. Behaves identically to the dollar bound, including the pause, and is reported once as not measurable when the phase's backend reports no tokens. A Phase may override it with `spendBoundTokens`. |
-| `schegent.defaultWorkflowId` | empty string or `^[a-z][a-z0-9-]{0,63}$` | empty string | resource | The default Workflow. Only a Workflow id counts: a value that names no effective Workflow gives no default. The **Add work** composer preselects it when it is among the launchable Workflows and nothing is selected; preselecting opens and submits nothing. The Settings tab's **Default Workflow** select lists Workflows only and saves here. Empty means no default; Schegent ships no definitions. |
+| `schegent.defaultWorkflowId` | empty string or `^[a-z][a-z0-9-]{0,63}$` | empty string | resource | The default Workflow. Only a Workflow id counts: a value that names no effective Workflow gives no default. The **Add work** composer preselects it when it is among the launchable Workflows and nothing is selected; preselecting opens and submits nothing. The Settings tab's **Default workflow** select lists Workflows only and saves here. Empty means no default; Schegent ships no definitions. |
 | `schegent.defaultPipelineId` | empty string or `^[a-z][a-z0-9-]{0,63}$` | empty string | resource | Deprecated: renamed to `schegent.defaultWorkflowId`. Read only while the new key is unset at every scope, and only when its value names an effective Workflow; a stored Pipeline id is ignored. Schegent never writes it. See [Current limitations](../explanation/core-concepts.md#current-limitations). |
 | `schegent.retry.maxAttempts` | integer, `1`–`5` | `5` | resource | Maximum delayed-retry attempts before the Run and Queue pause. |
 | `schegent.retry.forceContinueOnCap` | boolean | `false` | resource | Workspace-wide **default** for what a Phase does when its `retryCondition` remains truthy at its final allowed iteration: `true` means advance and record a forced-continue runtime event, `false` means fail. A Phase's own `onRetryCap` overrides it — see below, including the third outcome this boolean cannot select. Failed and timed-out outcomes remain terminal. |
@@ -107,15 +107,15 @@ and the Phase field reference in [Custom Phases](../features/custom-phases.md#ph
 **The workspace-wide concurrency cap is not on this page, because it is not a
 `settings.json` key.** The maximum number of Runs that may execute at once — still
 defaulting to `1`, still accepted only in `[1, 20]`, still refused rather than clamped
-when out of range — is workspace state, set in the **Queue configuration** surface and
+when out of range — is workspace state, set in the Settings page's **Queues** section and
 saved through `CMD_SAVE_QUEUE_SETTINGS`. The key schegent.queue.globalConcurrencyCap is
 written here without backticks deliberately, on the same rule as the removed
 `allowUncontainedBackends` boolean below: a backticked setting key on a reference page is
 a control an operator can reach in their settings, and this one is genuinely gone from the
 manifest. It was declared there and read by nothing on any scheduling path, so a value
 left behind in `settings.json` changes nothing and never did — it is not migrated, and a
-workspace that never opened the Queue configuration keeps the cap of `1` it already ran
-at. See [Multi-queue concurrency](../operations/multi-queue-concurrency.md) for the
+workspace that never saved a cap from the Queues section keeps the cap of `1` it already
+ran at. See [Multi-queue concurrency](../operations/multi-queue-concurrency.md) for the
 operator guidance and
 [the parallelism ratification](../architecture/local-queue-parallelism-ratification.md)
 for why the memento is the one authority.
@@ -188,8 +188,9 @@ Internal session compaction sets the same variable to `1` on its own invocation 
 `schegent.logging.rawTranscriptMode`, `schegent.logging.sessionRetentionMaxAgeDays` and
 `schegent.logging.sessionRetentionMaxBytes`. Deriving a safe combination from them one at a time is
 the problem the repository audit of 2026-08-27 named, so they are also published as **three named
-profiles** in `src/contracts/privacy-profiles.ts`. The Settings tab shows which profile the current
-values are, or `custom` with the fields that differ, and applies one in a single action.
+profiles** in `src/contracts/privacy-profiles.ts`. The Settings page shows which profile the values
+on the page are, or `custom` with the fields that differ; one press sets a profile's settings, and
+Save writes them together.
 
 | Profile | verbose | rawTranscriptMode | retention age | retention bytes | Who it is for |
 |---|---|---|---|---|---|
@@ -272,15 +273,16 @@ explicit acceptance of that authority **for that backend only** — allowing `ag
 
 There are two ways to name one, and they are the same grant reached from different moments:
 
-- **Before the refusal** — the Settings tab shows each backend's posture and, for a backend that has
-  no OS-enforced bound and no grant, an **Allow uncontained** control. The confirmation quotes the
-  refusal the enforcement itself would produce (FR-R3-144).
+- **Before the refusal** — the Settings tab shows each backend's posture on its card and, for a
+  backend that has no OS-enforced bound and no grant, an **Allow running unsandboxed…** item in the
+  card's actions menu. The confirmation quotes the refusal the enforcement itself would produce
+  (FR-R3-144).
 - **At the refusal** — the run stops and a modal asks about the backend it just refused, granting
   that backend on acceptance (FR-R3-146).
 
 Both write this setting through the same writer, so a grant made in one place is the grant the other
-one reads. Revoking is available from the Settings control at any time; it takes effect for the next
-invocation, not for a run already in flight.
+one reads. Revoking is available from the same menu at any time (**Revoke permission to run
+unsandboxed**); it takes effect for the next invocation, not for a run already in flight.
 
 Entries are validated rather than filtered, and neither case throws: an id that is not a backend
 names the ids that are. Anything that is not a list of strings grants nothing.

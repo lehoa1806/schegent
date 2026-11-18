@@ -8,9 +8,7 @@
     statusByKey,
     workflows,
     fieldChanged,
-    fieldScopeLabel,
-    saveOne,
-    resetField
+    fieldScopeLabel
   }: SettingsGroupProps = $props();
 </script>
 
@@ -31,8 +29,6 @@
         changed={fieldChanged(spec.key)}
         scopeLabel={fieldScopeLabel(spec.key)}
         {workflows}
-        onSave={() => saveOne(spec)}
-        onReset={() => resetField(spec.key)}
       />
     {/each}
   </div>

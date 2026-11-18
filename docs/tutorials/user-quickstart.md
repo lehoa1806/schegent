@@ -31,9 +31,10 @@ per-workspace state, which VS Code discards with the folder.
 
 The backend grant is a different matter. It is a User setting, so deleting the folder does not
 remove it. To undo only what this walkthrough added: if the modal added a backend, remove that one
-id from `schegent.backend.uncontainedBackends`. Either select **Revoke uncontained permission** for
-that backend in Schegent's Settings, under General, Backend, or edit the list back to the value you
-recorded in [Record your backend grant list](#record-your-backend-grant-list). A backend you had
+id from `schegent.backend.uncontainedBackends`. Either choose **Revoke permission to run
+unsandboxed** from that backend's actions menu in Schegent's Settings, under Backends, or edit the
+list back to the value you recorded in
+[Record your backend grant list](#record-your-backend-grant-list). A backend you had
 granted before the walkthrough stays granted. Whichever surface wrote the grant, the result is the
 same: the id the walkthrough added is absent from the list.
 
