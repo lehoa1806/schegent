@@ -336,7 +336,12 @@ For Claude, `--resume <id>` is used when continuation or session reuse is reques
 
 Availability probes invoke the configured executable with `--help`; Agy model discovery additionally invokes `models`. A probe uses the canonical workspace root, `shell: false`, hidden Windows process mode, a normalized 1–30-second timeout defaulting to 5, and the configured environment policy with `SCHEGENT_PHASE=runner-probe` and `SCHEGENT_ITERATION=0`. CLI paths are re-read dynamically from settings.
 
+The host probes every backend in one scan when the window is trusted, at activation or when trust is granted, and again when `schegent.cli.path`, `schegent.codex.path`, `schegent.agy.path` or `schegent.backend.probeTimeoutSeconds` changes. The installed backends the webview shows, the Found and Not found tags of the Settings cards among them, are the last scan's. A `CMD_PING_BACKEND` probes one backend; when its result contradicts the last scan, a backend found that the scan did not list or a listed one not found, it starts one more scan once its audit row is appended, so a CLI installed or removed since takes its tag without a reload. A ping that agrees, or that completes before the first scan has published, starts none. The list changes only through a scan, which probes every backend again.
+
 <!-- Source: src/services/backend-capability-service.ts -->
+<!-- Source: src/services/backend-ping-service.ts -->
+<!-- Source: src/activation/stage2-producers.ts -->
+<!-- Source: src/activation/live-picture-wiring.ts -->
 <!-- Source: src/config/cli-path-accessor.ts -->
 <!-- Source: src/activation/backend-wiring.ts -->
 
