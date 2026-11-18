@@ -271,10 +271,12 @@ because the switch is reachable and its name promises isolation.
   exists.
 
 **The standing consequence while this is open.** A cap above one is *chosen*, not safe. It is stated
-at the five surfaces a human reads — the manifest description, the Settings page's Queues section,
+at the four surfaces a human reads — the Settings page's Queues section,
 `docs/operations/multi-queue-concurrency.md`, the ratification record, and `ARCHITECTURE.md` — and
 `tests/lint/concurrency-isolation-disclosure.test.ts` fails if any of those statements is removed or
-if a live document starts presenting a cap above one as isolation.
+if a live document starts presenting a cap above one as isolation. The manifest description, a
+fifth surface when this record was written, left with the configuration key it described,
+`schegent.queue.globalConcurrencyCap`, which no scheduling path read (`FR-R3-145`).
 
 ## 10. Reopening conditions for the shape itself
 
