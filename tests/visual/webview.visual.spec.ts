@@ -1237,8 +1237,8 @@ const REFLOW_PANEL_WIDTH_PX = 320;
  * Settings scrolls in a box of its own inside the document, so a line too long
  * for that box makes the box scroll sideways and leaves the document as it was.
  * The fixture's refused backend found it: the host's sentence quotes two
- * setting keys, each wider than the line at this width and with no place to
- * break.
+ * setting keys, each wider than the line at this width, and then had no place
+ * to break. The test after this one holds where such a sentence breaks.
  */
 test('every settings section fits a 320px panel without scrolling sideways', async ({ page }) => {
   const settings = await openSurface(page, 'settings', 'light');
@@ -1271,6 +1271,92 @@ test('every settings section fits a 320px panel without scrolling sideways', asy
   });
   expect(tooWide, 'a Settings section scrolls sideways on a 320px panel').toEqual([]);
   assertNoPageErrors(page, 'settings reflow');
+});
+
+/** Where a sentence's lines break, as `sentenceBreaks` reads them. */
+interface SentenceBreaks {
+  /** Each break inside a word, as the text either side of it: `…ab|cd…`. */
+  readonly inWord: readonly string[];
+  /** How many lines start at a break the page marked with `<wbr>`, before a dot or a slash. */
+  readonly atJoins: number;
+}
+
+/**
+ * Where the lines of `sentence` break. A line may end at a space or after a hyphen or a slash,
+ * where the line-breaking rules allow it, or at a `<wbr>`, where the page allows it. Any other
+ * break was forced inside a word, at whatever letter the line ended on.
+ */
+async function sentenceBreaks(sentence: Locator): Promise<SentenceBreaks> {
+  return sentence.evaluate((root) => {
+    // Through `ownerDocument`, as `rowNamePlacements` reaches the page: the tests' TypeScript
+    // program has no DOM globals.
+    const SHOW_TEXT = 0x4;
+    const COMMENT_NODE = 8;
+    const CONTEXT_CHARS = 12;
+    const doc = root.ownerDocument;
+    const walker = doc.createTreeWalker(root, SHOW_TEXT);
+    const range = doc.createRange();
+    let seen = '';
+    const inWordAt: number[] = [];
+    let atJoins = 0;
+    let last: { char: string; top: number; height: number } | undefined;
+    let spaceBetween = false;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      // Svelte leaves comment anchors between the nodes it draws, so the mark is the nearest
+      // sibling before this text that is not one.
+      let before = node.previousSibling;
+      while (before && before.nodeType === COMMENT_NODE) before = before.previousSibling;
+      const startsAtMark = before?.nodeName === 'WBR';
+      const text: string = node.textContent ?? '';
+      for (let index = 0; index < text.length; index += 1) {
+        const char = text.charAt(index);
+        seen += char;
+        if (/\s/u.test(char)) {
+          spaceBetween = true;
+          continue;
+        }
+        range.setStart(node, index);
+        range.setEnd(node, index + 1);
+        const box = range.getClientRects().item(0);
+        if (!box || box.height <= 0) continue;
+        const newLine = last !== undefined && box.top - last.top > last.height / 2;
+        if (newLine && index === 0 && startsAtMark) atJoins += 1;
+        else if (newLine && !spaceBetween && !/[-/]/u.test(last?.char ?? '')) {
+          inWordAt.push(seen.length - 1);
+        }
+        last = { char, top: box.top, height: box.height };
+        spaceBetween = false;
+      }
+    }
+    return {
+      inWord: inWordAt.map(
+        (at) =>
+          `${seen.slice(Math.max(0, at - CONTEXT_CHARS), at)}|${seen.slice(at, at + CONTEXT_CHARS)}`
+      ),
+      atJoins
+    };
+  });
+}
+
+/**
+ * On a 320px panel the host's refusal quotes two setting keys, each wider than its line. Each
+ * breaks before one of its dots, where a key carried over to a new line is expected to break, and
+ * no word in the sentence breaks at whatever letter its line ended on. A card's problem line and
+ * the list above the cards draw their sentences with the same component, which
+ * `backend-surface.test.ts` holds; the fixture carries neither, and the list's line is wide
+ * enough at this width for the keys the host writes there.
+ */
+test('the refusal on a 320px panel breaks a long key at a dot, never inside a word', async ({
+  page
+}) => {
+  const settings = await openSurface(page, 'settings', 'light');
+  await page.setViewportSize({ width: REFLOW_PANEL_WIDTH_PX, height: 960 });
+  const refusal = settings.getByTestId('backend-refusal-claude');
+  await expect(refusal, 'the refused backend shows the host sentence').toBeVisible();
+  const breaks = await sentenceBreaks(refusal);
+  expect(breaks.inWord, 'the refusal breaks inside a word').toEqual([]);
+  expect(breaks.atJoins, 'the refusal carries a key over at a dot').toBeGreaterThan(0);
+  assertNoPageErrors(page, 'refusal line breaks');
 });
 
 /**

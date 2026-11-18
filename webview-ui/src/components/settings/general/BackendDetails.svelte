@@ -13,6 +13,7 @@
     BackendRunnerKind,
     PortableWorkflowDefinition
   } from '../../../lib/snapshot-types';
+  import BreakAtJoins from '../../BreakAtJoins.svelte';
   import { settingsSearch } from '../settings-search.svelte';
   import GeneralSettingFieldRow from './GeneralSettingFieldRow.svelte';
   import type {
@@ -109,7 +110,7 @@
       backend id has no reason to read.
     -->
     <p class="grant-problem" data-testid={`backend-grant-problem-${kind}`} role="status">
-      {posture.problem}
+      <BreakAtJoins text={posture.problem} />
     </p>
   {/if}
 
@@ -122,7 +123,9 @@
       it — the section does not remember a refusal, it shows the one that is
       currently true.
     -->
-    <p class="refusal" data-testid={`backend-refusal-${kind}`}>{posture.refusal}</p>
+    <p class="refusal" data-testid={`backend-refusal-${kind}`}>
+      <BreakAtJoins text={posture.refusal} />
+    </p>
     {#if grantAction !== undefined}
       <!-- The host's sentence names the setting. This line names the control on the card that
            writes it, in the words the menu uses. -->
@@ -177,8 +180,9 @@
     font-family: var(--schegent-mono-font);
   }
   /* The first two are the host's own sentences, shown as they arrive. The refusal quotes two
-     setting keys, and each is a word with no place to break that is wider than the line on a
-     narrow panel. Such a word breaks where the line ends, so the page never scrolls sideways
+     setting keys, each a word wider than the line on a narrow panel, and `BreakAtJoins` lets
+     such a word break before one of its dots. A word with no dot or slash that is still too
+     long for its line breaks where the line ends, so the page never scrolls sideways
      (WCAG 1.4.10). */
   .refusal,
   .grant-problem,
