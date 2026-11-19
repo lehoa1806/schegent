@@ -10,6 +10,7 @@ carries the date and the environment that produced it; an observation that needs
 is listed as pending qualification and is never marked passed.
 
 <!-- Source: tests/perf/webview-snapshot-cost.test.ts -->
+<!-- Source: tests/perf/snapshot-slice-equality-cost.test.ts -->
 <!-- Source: tests/visual/snapshot-render-cost.visual.spec.ts -->
 <!-- Source: tests/perf/persisted-state-growth.test.ts -->
 <!-- Source: tests/visual/actual-policy.visual.spec.ts -->
@@ -224,3 +225,74 @@ Each item needs an environment this feature could not run unattended. None is ma
    - F10 Builder undo/redo bounds (200 edits): retained `31` entries (`<= 50`) and `261,206` B (`<= 262,144` B), push p50 `0.2302` ms / p95 `1.6453` ms.
    - Cold host activation CPU (`45.30` ms) is recorded separately from the browser two-animation-frame floor (`33.33` ms at 60 Hz); 500 sustained ticks on `large-history` showed zero unbounded heap growth (`heapUsed` `54.4` MiB → `46.1` MiB, `rss` `270.3` MiB).
    - Platforms `linux` and `win32` and live desktop VS Code / AT screen-reader sessions remain listed under section 7's pending qualification.
+
+## 9. Per-slice equality stage measurement & revision decision (`FR-R7-09`, 2026-11-19)
+
+**Measured**: 2026-11-19, on `repo/` branch `323-snapshot-slice-revisions` (`tests/perf/snapshot-slice-equality-cost.test.ts`). **Environment**: macOS 27.0, Apple M4 Max (`darwin/arm64`, 16 cores), Node `v24.22.2`, load averages `4.28 / 4.35 / 4.49`. Every distribution is **200 measured samples after 20 warm-up samples**, with strict per-sample behavioral parity verified against `areSnapshotSlicesEqual` (`src/ui/sidebar/snapshot-transport.ts`) and dual `SnapshotTransport` consumers (`SidebarViewProvider` + `DashboardPanel`).
+
+In addition to the four baseline workloads (`idle`, `active`, `large-history`, `large-history-2x`), a fifth workload (`large-history-with-catalogs`: `large-history` plus 10 effective Phases, 5 effective Pipelines, and 3 effective Workflows resolved through `resolvePhaseCatalog`, `resolvePipelineCatalog`, and `resolveWorkflowCatalog`) answers `FR-R7-09`'s open question about steady-state catalog projection rebuilds.
+
+### Per-slice stage exit counts and fallback timing (200 measured samples per workload)
+
+| Workload | Slice | Deciding stage (`count / 200`) | Fallback hits (`count / 200`) | Fallback p95 (ms) | Total compare p95 (ms) |
+|---|---|---|---:|---:|---:|
+| `idle` | `history` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
+| `idle` | `phaseCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
+| `idle` | `pipelineCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
+| `idle` | `workflowCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
+| `idle` | `availablePhases` | `empty-array` (200) | 0 | 0.0000 | 0.0002 |
+| `idle` | `availablePipelines` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
+| `idle` | `auditTail` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
+| `idle` | `debugLogTail` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
+| `active` | `history` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
+| `active` | `phaseCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
+| `active` | `pipelineCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
+| `active` | `workflowCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
+| `active` | `availablePhases` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
+| `active` | `availablePipelines` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
+| `active` | `auditTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0009 |
+| `active` | `debugLogTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0025 |
+| `large-history` | `history` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
+| `large-history` | `phaseCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
+| `large-history` | `pipelineCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0000 |
+| `large-history` | `workflowCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0000 |
+| `large-history` | `availablePhases` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
+| `large-history` | `availablePipelines` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
+| `large-history` | `auditTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0006 |
+| `large-history` | `debugLogTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0019 |
+| `large-history-2x` | `history` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
+| `large-history-2x` | `phaseCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0000 |
+| `large-history-2x` | `pipelineCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0000 |
+| `large-history-2x` | `workflowCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0000 |
+| `large-history-2x` | `availablePhases` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
+| `large-history-2x` | `availablePipelines` | `empty-array` (200) | 0 | 0.0000 | 0.0000 |
+| `large-history-2x` | `auditTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0006 |
+| `large-history-2x` | `debugLogTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0018 |
+| `large-history-with-catalogs` | `history` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
+| `large-history-with-catalogs` | `phaseCatalog` | `json-stringify-fallback` (200) | 200 | 0.0233 | 0.0234 |
+| `large-history-with-catalogs` | `pipelineCatalog` | `json-stringify-fallback` (200) | 200 | 0.0188 | 0.0189 |
+| `large-history-with-catalogs` | `workflowCatalog` | `json-stringify-fallback` (200) | 200 | 0.0151 | 0.0151 |
+| `large-history-with-catalogs` | `availablePhases` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0004 |
+| `large-history-with-catalogs` | `availablePipelines` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0001 |
+| `large-history-with-catalogs` | `auditTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0005 |
+| `large-history-with-catalogs` | `debugLogTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0018 |
+
+### Per-workload host routine flush summary vs. 8 ms p95 threshold
+
+| Workload | Total fallback p95 (ms) | Total compare p95 (ms) | 1-consumer flush p95 (ms) | 2-consumer flush p95 (ms) | Threshold (ms) | Met |
+|---|---:|---:|---:|---:|---:|---|
+| `idle` | 0.0000 | 0.0013 | 0.0511 | 0.0701 | 8.0 | no |
+| `active` | 0.0000 | 0.0038 | 0.0555 | 0.0765 | 8.0 | no |
+| `large-history` | 0.0000 | 0.0032 | 0.3568 | 0.3962 | 8.0 | no |
+| `large-history-2x` | 0.0000 | 0.0028 | 0.3527 | 0.3752 | 8.0 | no |
+| `large-history-with-catalogs` | 0.0568 | 0.0601 | 0.4727 | 0.5494 | 8.0 | no |
+
+### Decision (`FR-R7-09`): **Deferred**
+
+1. **Empirical findings**:
+   - Across the four baseline workloads (`idle`, `active`, `large-history`, `large-history-2x`), **`json-stringify-fallback` runs 0 times out of 200 flushes on all eight slices**. `history` short-circuits at `ref-equal` via `HistoryStore` + `projectHistory` memoization, and `auditTail` / `debugLogTail` short-circuit at `element-ref-equal`.
+   - With populated catalogs (`large-history-with-catalogs`: 10 phases, 5 pipelines, 3 workflows), `phaseCatalog`, `pipelineCatalog`, and `workflowCatalog` rebuild fresh frozen objects per compose and therefore reach `json-stringify-fallback` on `200 / 200` flushes (`availablePhases` and `availablePipelines` remain `element-ref-equal` with `0` fallbacks).
+   - Even with all three structured catalogs hitting `JSON.stringify` on every flush, the combined fallback p95 is **`0.0568` ms** (0.71% of the 8 ms threshold), the 1-consumer routine flush p95 (`project()` + `preparePost()` + wire `JSON.stringify`) is **`0.4727` ms**, and the 2-consumer routine flush p95 (sidebar + dashboard visible simultaneously) is **`0.5494` ms** — more than **14x below** the 8 ms p95 threshold declared in section 1.
+2. **Disposition**: Host-internal per-slice revision tracking is **deferred**; no production code changes ship in `src/`, preserving content-equality soundness (zero stale-slice risk from missed revision bumps) and leaving `SnapshotSyncMeta`, `SNAPSHOT_RESYNC_REQUEST`, `SUPPRESSIBLE_SNAPSHOT_SLICES`, and `webview-ui/src/lib/snapshot-merge.ts` untouched.
+3. **Full-resync payload size exclusion**: Host-internal per-slice change detection does not reduce full-resync serialized payload size (~780 KiB on `large-history`, already bounded below the 1 MiB ceiling by `FR-R5-F09` / `FR-R5-F12`). Shrinking full resyncs (e.g., via paged history) remains a separate concern outside `FR-R7-09`.
+4. **Platform qualification**: Measured on `darwin/arm64` (Node `v24.22.2`); `linux` and `win32` remain listed under section 7's pending qualification. Re-evaluate only if catalog sizes grow substantially or host routine flush p95 reaches the 8 ms threshold on a supported platform.
