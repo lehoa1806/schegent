@@ -5,6 +5,8 @@
   "x-generatedBy": "scripts/generate-contract-schemas.mjs",
   "x-generatedSchemaVersion": 1,
   "x-generatedFrom": [
+    "src/contracts/backend-kinds.ts",
+    "src/contracts/backend-descriptors.ts",
     "src/contracts/backend-runner.ts",
     "src/runner/invocation-result.ts",
     "src/contracts/backend-availability.ts"
@@ -12,6 +14,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "supportedBackends",
     "invocationRequestFields",
     "rawInvocationOutputFields",
     "quotaIdentityKinds",
@@ -20,6 +23,18 @@
     "quotaObservationSources"
   ],
   "properties": {
+    "supportedBackends": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "claude",
+          "codex",
+          "agy"
+        ]
+      },
+      "uniqueItems": true
+    },
     "invocationRequestFields": {
       "type": "array",
       "items": {

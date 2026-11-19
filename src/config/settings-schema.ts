@@ -45,6 +45,12 @@ import {
   PROCESS_ENVIRONMENT_MODES,
   PROCESS_ENV_NAME_PATTERN_SOURCE
 } from '../contracts/process-environment-policy';
+import { DEFAULT_BACKEND, SUPPORTED_BACKENDS } from '../contracts/backend-kinds';
+import {
+  BACKEND_DESCRIPTORS,
+  BACKEND_DESCRIPTOR_LIST,
+  emptyBackendModels
+} from '../contracts/backend-descriptors';
 import { MAX_UNCHANGED_COMPARISONS } from '../contracts/unchanged-comparison-bound';
 
 /** Setting value-shape category, mirroring JSON Schema vocabulary. */
@@ -100,9 +106,9 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   'schegent.cli.path': {
     key: 'schegent.cli.path',
     type: 'string',
-    default: 'claude',
+    default: BACKEND_DESCRIPTORS.claude.defaultCliBinary,
     scope: 'application',
-    docLabel: 'Claude CLI binary path'
+    docLabel: BACKEND_DESCRIPTORS.claude.cliPathDocLabel
   },
   'schegent.cli.inheritEnvironment': {
     key: 'schegent.cli.inheritEnvironment',
@@ -132,9 +138,9 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   'schegent.backend.runner': {
     key: 'schegent.backend.runner',
     type: 'enum',
-    default: 'claude',
+    default: DEFAULT_BACKEND,
     scope: 'application',
-    enum: ['claude', 'codex', 'agy'],
+    enum: SUPPORTED_BACKENDS,
     docLabel: 'Backend runner selection'
   },
   // FR-R3-056 (H-01) — `application`-scoped deliberately: this is a machine-level
@@ -166,23 +172,26 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   'schegent.codex.path': {
     key: 'schegent.codex.path',
     type: 'string',
-    default: 'codex',
+    default: BACKEND_DESCRIPTORS.codex.defaultCliBinary,
     scope: 'application',
-    docLabel: 'Codex CLI binary path'
+    docLabel: BACKEND_DESCRIPTORS.codex.cliPathDocLabel
   },
   'schegent.agy.path': {
     key: 'schegent.agy.path',
     type: 'string',
-    default: 'agy',
+    default: BACKEND_DESCRIPTORS.agy.defaultCliBinary,
     scope: 'application',
-    docLabel: 'Agy CLI binary path'
+    docLabel: BACKEND_DESCRIPTORS.agy.cliPathDocLabel
   },
   'schegent.acp.profile': {
     key: 'schegent.acp.profile',
     type: 'enum',
     default: 'auto',
     scope: 'application',
-    enum: ['auto', 'agy-acp-native', 'claude-acp-bridge', 'codex-acp-bridge'],
+    enum: Object.freeze([
+      'auto',
+      ...BACKEND_DESCRIPTOR_LIST.map((descriptor) => descriptor.acpProfile.profileId).sort()
+    ]),
     docLabel: 'ACP agent profile selection'
   },
   'schegent.telemetry.export.enabled': {
@@ -361,7 +370,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   'schegent.models': {
     key: 'schegent.models',
     type: 'object',
-    default: { claude: [], codex: [], agy: [] },
+    default: emptyBackendModels(),
     scope: 'resource',
     docLabel: 'Custom model identifiers'
   },

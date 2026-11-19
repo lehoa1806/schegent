@@ -33,10 +33,9 @@ export interface BackendRecipeSite {
 
 export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
   // ---- Kind list and manifest
-  { path: 'src/contracts/backend-kinds.ts', role: 'Kind list and manifest', how: 'literal' },
-  { path: 'package.json', role: 'Kind list and manifest', how: 'literal', note: 'the schegent.backend.runner enum' },
-  { path: 'src/config/settings-schema.ts', role: 'Kind list and manifest', how: 'literal' },
-  { path: 'src/config/general-settings-keys.ts', role: 'Kind list and manifest', how: 'literal' },
+  { path: 'src/contracts/backend-kinds.ts', role: 'Kind list and manifest', how: 'literal', note: 'canonical BackendRunnerKind union, SUPPORTED_BACKENDS order, and DEFAULT_BACKEND' },
+  { path: 'src/contracts/backend-descriptors.ts', role: 'Kind list and manifest', how: 'record', note: 'canonical exhaustive Record<BackendRunnerKind, BackendDescriptor> pure-data table' },
+  { path: 'package.json', role: 'Kind list and manifest', how: 'literal', note: 'VS Code manifest backend enums, validated against BACKEND_DESCRIPTORS by contracts:check' },
 
   // ---- Construction
   {
