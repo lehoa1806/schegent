@@ -25,10 +25,30 @@ import type { SanitizedLogger } from '../lib/logger';
 import {
   NodeSqliteConnection,
   SqliteApplicationStore,
+  deepFreezeValue,
+  deleteOperationalQueueScopeInTx,
+  deleteOperationalRunScopeInTx,
+  freezeSnapshotWithStructuralSharing,
+  hasOwnDefinedEntries,
+  isDeepEqualJsonValue,
+  isDeepFrozenSnapshot,
+  isOperationalQueueMap,
+  isOperationalRunMap,
+  parseStrictSchemaMetaVersion,
+  readOperationalQueueMapFromDb,
+  readOperationalRunMapFromDb,
+  setOwnProp,
+  toSafeIntOrDefault,
+  toStringOrNull,
+  writeOperationalQueueMapDiffInTx,
+  writeOperationalRunMapDiffInTx,
   type LegacyRunRecordInput,
   type MigrationPipelineOutcome
 } from '../services/sqlite-store';
-import type { RunStatus } from '../contracts/sqlite-store/schema-types';
+import {
+  SQLITE_SCHEMA_CURRENT_VERSION,
+  type RunStatus
+} from '../contracts/sqlite-store/schema-types';
 import type { ConnectedWorkflowRun } from './connected-workflow-run';
 import { isTerminalRunStatus, type WorkflowRun } from './workflow-run';
 import type { MementoBatchEntry } from './memento-write-gate';
@@ -99,9 +119,22 @@ function mapWorkflowStatusToSqlite(status: string | undefined): RunStatus {
   }
 }
 
+const FROZEN_CONNECTED_RUN_BYTES = new WeakMap<object, number>();
+
+function serializedConnectedRunBytes(run: ConnectedWorkflowRun): number {
+  if (isDeepFrozenSnapshot(run)) {
+    const cached = FROZEN_CONNECTED_RUN_BYTES.get(run);
+    if (cached !== undefined) return cached;
+    const bytes = Buffer.byteLength(JSON.stringify(run), 'utf8');
+    FROZEN_CONNECTED_RUN_BYTES.set(run, bytes);
+    return bytes;
+  }
+  return Buffer.byteLength(JSON.stringify(run), 'utf8');
+}
+
 function isConnectedRunTerminal(
   run: ConnectedWorkflowRun,
-  liveRunMap: Readonly<Record<string, WorkflowRun | undefined>>
+  activeFeatureIds: ReadonlySet<string>
 ): boolean {
   if (run.pendingHandoff !== undefined && run.pendingHandoff !== null) {
     return false;
@@ -117,12 +150,6 @@ function isConnectedRunTerminal(
       );
     }
   }
-  const activeFeatureIds = new Set<string>();
-  for (const live of Object.values(liveRunMap)) {
-    if (live !== undefined && !isTerminalRunStatus(live.status)) {
-      activeFeatureIds.add(live.featureId);
-    }
-  }
   for (const node of Object.values(run.nodes)) {
     for (const attempt of node.attempts) {
       if (activeFeatureIds.has(attempt.queueItemId)) {
@@ -133,21 +160,39 @@ function isConnectedRunTerminal(
   return Object.keys(run.nodes).length > 0;
 }
 
+function collectActiveFeatureIds(
+  liveRunMap: Readonly<Record<string, WorkflowRun | undefined>> | unknown
+): ReadonlySet<string> {
+  const activeFeatureIds = new Set<string>();
+  if (liveRunMap === null || typeof liveRunMap !== 'object' || Array.isArray(liveRunMap)) return activeFeatureIds;
+  const rec = liveRunMap as Record<string, unknown>;
+  if (Object.hasOwn(rec, 'id') && typeof rec.id === 'string' && typeof rec.status === 'string' && typeof rec.featureId === 'string') {
+    if (!isTerminalRunStatus(rec.status as WorkflowRun['status'])) activeFeatureIds.add(rec.featureId);
+    return activeFeatureIds;
+  }
+  for (const live of Object.values(rec)) {
+    if (live === null || typeof live !== 'object' || Array.isArray(live)) continue;
+    const entry = live as Record<string, unknown>;
+    if (typeof entry.featureId === 'string' && typeof entry.status === 'string' && !isTerminalRunStatus(entry.status as WorkflowRun['status'])) {
+      activeFeatureIds.add(entry.featureId);
+    }
+  }
+  return activeFeatureIds;
+}
+
 function connectedRunLastUpdatedMs(run: ConnectedWorkflowRun): number {
-  let latest = typeof run.startedAt === 'number' && Number.isFinite(run.startedAt) ? run.startedAt : 0;
+  let latest = toSafeIntOrDefault(run.startedAt, 0);
   if (run.invocations !== undefined) {
     for (const frame of Object.values(run.invocations)) {
-      if (typeof frame.completedAt === 'number' && frame.completedAt > latest) {
-        latest = frame.completedAt;
-      } else if (typeof frame.startedAt === 'number' && frame.startedAt > latest) {
-        latest = frame.startedAt;
-      }
+      const completed = toSafeIntOrDefault(frame.completedAt, -1);
+      const started = toSafeIntOrDefault(frame.startedAt, -1);
+      if (completed > latest) latest = completed;
+      else if (started > latest) latest = started;
     }
   }
   for (const decision of run.decisions) {
-    if (typeof decision.decidedAt === 'number' && decision.decidedAt > latest) {
-      latest = decision.decidedAt;
-    }
+    const decided = toSafeIntOrDefault(decision.decidedAt, -1);
+    if (decided > latest) latest = decided;
   }
   return latest;
 }
@@ -163,6 +208,7 @@ export function pruneConnectedRunsMap(
   const entries = Object.entries(rawValue as Record<string, unknown>);
   if (entries.length === 0) return rawValue;
 
+  const activeFeatureIds = collectActiveFeatureIds(liveRunMap);
   const nonTerminal: Array<readonly [string, ConnectedWorkflowRun, number]> = [];
   const terminal: Array<{
     readonly id: string;
@@ -174,9 +220,8 @@ export function pruneConnectedRunsMap(
   for (const [id, rawRun] of entries) {
     if (rawRun === null || typeof rawRun !== 'object') continue;
     const run = rawRun as ConnectedWorkflowRun;
-    const serialized = JSON.stringify(run);
-    const bytes = Buffer.byteLength(serialized, 'utf8');
-    if (!isConnectedRunTerminal(run, liveRunMap)) {
+    const bytes = serializedConnectedRunBytes(run);
+    if (!isConnectedRunTerminal(run, activeFeatureIds)) {
       nonTerminal.push([id, run, bytes]);
       continue;
     }
@@ -194,14 +239,14 @@ export function pruneConnectedRunsMap(
   let totalBytes = nonTerminal.reduce((acc, item) => acc + item[2], 0);
   const kept: Record<string, ConnectedWorkflowRun> = {};
   for (const [id, run] of nonTerminal) {
-    kept[id] = run;
+    setOwnProp(kept, id, run);
   }
 
   let keptTerminal = 0;
   for (const candidate of terminal) {
     if (keptTerminal >= maxTerminalCount) break;
     if (totalBytes + candidate.bytes > CONNECTED_RUNS_MAX_TOTAL_BYTES) continue;
-    kept[candidate.id] = candidate.run;
+    setOwnProp(kept, candidate.id, candidate.run);
     totalBytes += candidate.bytes;
     keptTerminal += 1;
   }
@@ -211,6 +256,7 @@ export function pruneConnectedRunsMap(
 
 export class SqliteOperationalBacking {
   private readonly cache = new Map<string, unknown>();
+  private readonly kvDocKeysPresent = new Set<string>();
   public readonly migrationOutcome: MigrationPipelineOutcome | null;
 
   public constructor(
@@ -224,19 +270,17 @@ export class SqliteOperationalBacking {
     this.reloadCacheFromSqlite();
   }
 
+  /**
+   * FR-R7-02 (FR-007) — returns a deeply frozen snapshot view directly from cache without
+   * whole-document `structuredClone`, while preventing callers from mutating internal cache state.
+   */
   public get<T>(key: string): T | undefined {
     if (!this.cache.has(key)) return undefined;
-    const val = this.cache.get(key);
-    if (val === undefined) return undefined;
-    return structuredClone(val) as T;
+    return this.cache.get(key) as T | undefined;
   }
 
   public exportSnapshot(): Map<string, unknown> {
-    const out = new Map<string, unknown>();
-    for (const [k, v] of this.cache.entries()) {
-      out.set(k, structuredClone(v));
-    }
-    return out;
+    return new Map<string, unknown>(this.cache);
   }
 
   public update(key: string, value: unknown): void {
@@ -244,59 +288,94 @@ export class SqliteOperationalBacking {
   }
 
   /**
-   * FR-R7-01 — commit multiple operational keys atomically in one `BEGIN IMMEDIATE ... COMMIT`
-   * SQLite transaction (Hard Rule 58). Updates `this.cache` only after `COMMIT` succeeds; any
-   * failure rolls back all keys and leaves `this.cache` unchanged.
+   * FR-R7-01 & FR-R7-02 — commit operational keys atomically in one `BEGIN IMMEDIATE ... COMMIT`
+   * SQLite transaction (Hard Rule 58). Queue/Task (`KEYS.queue`) and Run (`KEYS.run`) maps write
+   * only changed per-entity rows (`operational_queue_meta`, `operational_tasks`, `operational_runs`)
+   * plus changed relational projections. Updates `this.cache` with frozen structurally-shared views
+   * only after `COMMIT` succeeds; any failure rolls back all SQL writes and leaves `this.cache` unchanged.
    */
   public updateBatch(entries: readonly MementoBatchEntry[]): void {
     if (entries.length === 0) return;
     const conn = this.store.writerConnection;
     const now = this.nowMs();
-    const runEntry = entries.find((entry) => entry.key === KEYS.run);
+    let runEntry: MementoBatchEntry | undefined;
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      if (entries[i]!.key === KEYS.run) {
+        runEntry = entries[i];
+        break;
+      }
+    }
     const liveRuns =
       ((runEntry !== undefined ? runEntry.value : this.cache.get(KEYS.run)) as
         | Readonly<Record<string, WorkflowRun | undefined>>
         | undefined) ?? {};
 
-    const prepared: Array<{ readonly key: string; readonly value: unknown }> = entries.map(
-      ({ key, value }) => ({
+    // Pre-freeze snapshots before BEGIN IMMEDIATE so depth/cycle/clone validation fails
+    // cleanly before SQLite commits and post-commit cache publication is infallible.
+    const prepared = entries.map(({ key, value }) => {
+      const effectiveValue =
+        key === KEYS.connectedRuns && value !== undefined
+          ? pruneConnectedRunsMap(value, liveRuns, now)
+          : value;
+      return {
         key,
         value:
-          key === KEYS.connectedRuns && value !== undefined
-            ? pruneConnectedRunsMap(value, liveRuns, now)
-            : value
-      })
-    );
+          effectiveValue === undefined
+            ? undefined
+            : freezeSnapshotWithStructuralSharing(effectiveValue)
+      };
+    });
+
+    const txCache = new Map<string, unknown>(this.cache);
+    const txKvKeys = new Set<string>(this.kvDocKeysPresent);
 
     conn.exec('BEGIN IMMEDIATE');
     try {
       for (const { key, value: effectiveValue } of prepared) {
+        const prevValue = txCache.get(key);
         if (effectiveValue === undefined) {
-          conn.run(
-            `DELETE FROM operational_kv_documents WHERE doc_namespace = ? AND doc_key = ?`,
-            this.scopeId,
-            key
-          );
+          if (key === KEYS.queue) deleteOperationalQueueScopeInTx(conn, this.scopeId);
+          else if (key === KEYS.run) deleteOperationalRunScopeInTx(conn, this.scopeId);
+          this.deleteKvDocInTx(conn, key);
+          txKvKeys.delete(key);
+          txCache.delete(key);
+        } else if (
+          key === KEYS.queue &&
+          isOperationalQueueMap(effectiveValue) &&
+          hasOwnDefinedEntries(effectiveValue)
+        ) {
+          const fromKv = txKvKeys.has(key);
+          const prevValid = !fromKv && isOperationalQueueMap(prevValue);
+          if (!prevValid) deleteOperationalQueueScopeInTx(conn, this.scopeId);
+          writeOperationalQueueMapDiffInTx(conn, this.scopeId, prevValid ? prevValue : {}, effectiveValue, now);
+          if (fromKv) {
+            this.deleteKvDocInTx(conn, key);
+            txKvKeys.delete(key);
+          }
+          txCache.set(key, effectiveValue);
+        } else if (
+          key === KEYS.run &&
+          isOperationalRunMap(effectiveValue) &&
+          hasOwnDefinedEntries(effectiveValue)
+        ) {
+          const fromKv = txKvKeys.has(key);
+          const prevValid = !fromKv && isOperationalRunMap(prevValue);
+          if (!prevValid) deleteOperationalRunScopeInTx(conn, this.scopeId);
+          const diff = writeOperationalRunMapDiffInTx(conn, this.scopeId, prevValid ? prevValue : {}, effectiveValue, now);
+          if (fromKv) {
+            this.deleteKvDocInTx(conn, key);
+            txKvKeys.delete(key);
+          }
+          this.projectRunEntriesInTx(conn, diff.changedRuns, now);
+          txCache.set(key, effectiveValue);
         } else {
-          const json = JSON.stringify(effectiveValue);
-          const bytes = Buffer.byteLength(json, 'utf8');
-          conn.run(
-            `INSERT INTO operational_kv_documents (
-              doc_namespace, doc_key, revision, schema_version, payload_json, payload_bytes, is_terminal, updated_at_ms
-            ) VALUES (?, ?, 1, 1, ?, ?, 0, ?)
-            ON CONFLICT(doc_namespace, doc_key) DO UPDATE SET
-              revision = operational_kv_documents.revision + 1,
-              payload_json = excluded.payload_json,
-              payload_bytes = excluded.payload_bytes,
-              updated_at_ms = excluded.updated_at_ms`,
-            this.scopeId,
-            key,
-            json,
-            bytes,
-            now
-          );
+          if (key === KEYS.queue) deleteOperationalQueueScopeInTx(conn, this.scopeId);
+          else if (key === KEYS.run) deleteOperationalRunScopeInTx(conn, this.scopeId);
+          this.upsertKvDocInTx(conn, key, effectiveValue, now);
+          txKvKeys.add(key);
+          this.projectRelationalStateInTx(conn, key, effectiveValue, prevValue, now);
+          txCache.set(key, effectiveValue);
         }
-        this.projectRelationalStateInTx(conn, key, effectiveValue, now);
       }
       conn.exec('COMMIT');
     } catch (error) {
@@ -308,12 +387,11 @@ export class SqliteOperationalBacking {
       throw error;
     }
 
-    for (const { key, value: effectiveValue } of prepared) {
-      if (effectiveValue === undefined) {
-        this.cache.delete(key);
-      } else {
-        this.cache.set(key, structuredClone(effectiveValue));
-      }
+    this.kvDocKeysPresent.clear();
+    for (const k of txKvKeys) this.kvDocKeysPresent.add(k);
+    for (const { key, value: frozenValue } of prepared) {
+      if (frozenValue === undefined) this.cache.delete(key);
+      else this.cache.set(key, frozenValue);
     }
   }
 
@@ -375,8 +453,9 @@ export class SqliteOperationalBacking {
   }
 
   /**
-   * Copies every non-run legacy key into `operational_kv_documents` inside the migration's
-   * `import` stage transaction. Legacy is still authoritative here, so a retried import replaces
+   * Copies every non-run legacy key into SQLite inside the migration's `import` stage transaction.
+   * Queue/Task and Run maps write directly to schema-9 per-entity tables; remaining keys write to
+   * `operational_kv_documents`. Legacy is still authoritative here, so a retried import replaces
    * an earlier committed copy and removes keys the legacy source no longer holds.
    */
   private copyLegacyDocumentsInTx(
@@ -389,51 +468,137 @@ export class SqliteOperationalBacking {
     for (const key of keys) {
       const rawVal = legacyMemento.get<unknown>(key);
       if (rawVal === undefined) {
-        conn.run(
-          `DELETE FROM operational_kv_documents WHERE doc_namespace = ? AND doc_key = ?`,
-          this.scopeId,
-          key
-        );
+        if (key === KEYS.queue) deleteOperationalQueueScopeInTx(conn, this.scopeId);
+        else if (key === KEYS.run) deleteOperationalRunScopeInTx(conn, this.scopeId);
+        this.deleteKvDocInTx(conn, key);
         continue;
       }
       const effectiveVal =
         key === KEYS.connectedRuns ? pruneConnectedRunsMap(rawVal, liveRuns, now) : rawVal;
-      const json = JSON.stringify(effectiveVal);
-      const bytes = Buffer.byteLength(json, 'utf8');
-      conn.run(
-        `INSERT INTO operational_kv_documents (
-          doc_namespace, doc_key, revision, schema_version, payload_json, payload_bytes, is_terminal, updated_at_ms
-        ) VALUES (?, ?, 1, 1, ?, ?, 0, ?)
-        ON CONFLICT(doc_namespace, doc_key) DO UPDATE SET
-          revision = operational_kv_documents.revision + 1,
-          payload_json = excluded.payload_json,
-          payload_bytes = excluded.payload_bytes,
-          updated_at_ms = excluded.updated_at_ms`,
-        this.scopeId,
-        key,
-        json,
-        bytes,
-        now
-      );
-      this.projectRelationalStateInTx(conn, key, effectiveVal, now);
+      if (key === KEYS.queue && isOperationalQueueMap(effectiveVal) && hasOwnDefinedEntries(effectiveVal)) {
+        deleteOperationalQueueScopeInTx(conn, this.scopeId);
+        writeOperationalQueueMapDiffInTx(conn, this.scopeId, {}, effectiveVal, now);
+        this.deleteKvDocInTx(conn, key);
+        continue;
+      }
+      if (key === KEYS.run && isOperationalRunMap(effectiveVal) && hasOwnDefinedEntries(effectiveVal)) {
+        deleteOperationalRunScopeInTx(conn, this.scopeId);
+        const diff = writeOperationalRunMapDiffInTx(conn, this.scopeId, {}, effectiveVal, now);
+        this.deleteKvDocInTx(conn, key);
+        this.projectRunEntriesInTx(conn, diff.changedRuns, now);
+        continue;
+      }
+      if (key === KEYS.queue) deleteOperationalQueueScopeInTx(conn, this.scopeId);
+      else if (key === KEYS.run) deleteOperationalRunScopeInTx(conn, this.scopeId);
+      this.upsertKvDocInTx(conn, key, effectiveVal, now);
+      this.projectRelationalStateInTx(conn, key, effectiveVal, undefined, now);
     }
   }
 
-  private reloadCacheFromSqlite(): void {
-    this.cache.clear();
-    const rows = this.store.writerConnection.all<{
-      doc_key: string;
-      payload_json: string;
-    }>(
-      `SELECT doc_key, payload_json FROM operational_kv_documents WHERE doc_namespace = ?`,
-      this.scopeId
+  private deleteKvDocInTx(conn: NodeSqliteConnection, key: string): void {
+    conn.run(`DELETE FROM operational_kv_documents WHERE doc_namespace = ? AND doc_key = ?`, this.scopeId, key);
+  }
+
+  private upsertKvDocInTx(conn: NodeSqliteConnection, key: string, value: unknown, now: number): void {
+    const json = JSON.stringify(value);
+    conn.run(
+      `INSERT INTO operational_kv_documents (
+        doc_namespace, doc_key, revision, schema_version, payload_json, payload_bytes, is_terminal, updated_at_ms
+      ) VALUES (?, ?, 1, 1, ?, ?, 0, ?)
+      ON CONFLICT(doc_namespace, doc_key) DO UPDATE SET
+        revision = operational_kv_documents.revision + 1,
+        payload_json = excluded.payload_json,
+        payload_bytes = excluded.payload_bytes,
+        updated_at_ms = excluded.updated_at_ms`,
+      this.scopeId,
+      key,
+      json,
+      Buffer.byteLength(json, 'utf8'),
+      now
     );
-    for (const row of rows) {
-      try {
-        this.cache.set(row.doc_key, JSON.parse(row.payload_json));
-      } catch {
-        this.logger?.warn('corrupt operational_kv_documents payload skipped', { key: row.doc_key });
+  }
+
+  public reloadCacheFromSqlite(): void {
+    const conn = this.store.writerConnection;
+    const nextCache = new Map<string, unknown>();
+    const nextKvKeys = new Set<string>();
+    const onCorruptRow = ({ table, queueId }: { readonly table: string; readonly queueId: string }): void => {
+      this.logger?.warn('corrupt operational entity row skipped', { table, queueId });
+    };
+    conn.exec('BEGIN');
+    try {
+      const rows = conn.all<{ doc_key: string; payload_json: string }>(
+        `SELECT doc_key, payload_json FROM operational_kv_documents WHERE doc_namespace = ?`,
+        this.scopeId
+      );
+      for (const row of rows) {
+        nextKvKeys.add(row.doc_key);
+        try {
+          nextCache.set(row.doc_key, deepFreezeValue(JSON.parse(row.payload_json)));
+        } catch {
+          this.logger?.warn('corrupt operational_kv_documents payload skipped', { key: row.doc_key });
+        }
       }
+      const queueRes = readOperationalQueueMapFromDb(conn, this.scopeId, { onCorruptRow });
+      if (queueRes.present) nextCache.set(KEYS.queue, deepFreezeValue(queueRes.map));
+      const runRes = readOperationalRunMapFromDb(conn, this.scopeId, { onCorruptRow });
+      if (runRes.present) nextCache.set(KEYS.run, deepFreezeValue(runRes.map));
+    } finally {
+      try {
+        conn.exec('COMMIT');
+      } catch {
+        // Ignore read-transaction close error.
+      }
+    }
+    this.cache.clear();
+    for (const [k, v] of nextCache) this.cache.set(k, v);
+    this.kvDocKeysPresent.clear();
+    for (const k of nextKvKeys) this.kvDocKeysPresent.add(k);
+  }
+
+  private projectRunEntriesInTx(
+    conn: NodeSqliteConnection,
+    entries: readonly (readonly [string, Record<string, unknown>])[],
+    now: number
+  ): void {
+    for (const [queueId, rawCandidate] of entries) {
+      const candidate = rawCandidate as unknown as WorkflowRun | undefined;
+      if (!candidate || typeof candidate.id !== 'string') continue;
+      const sqlStatus = mapWorkflowStatusToSqlite(candidate.status);
+      const workflowId = toStringOrNull(candidate.pipeline?.id) ?? 'default-pipeline';
+      const createdAt = toSafeIntOrDefault(candidate.startedAt, now);
+      const updatedAt = toSafeIntOrDefault(candidate.lastTransitionAt, now);
+      const completedAt = isTerminalRunStatus(candidate.status) ? updatedAt : null;
+      const invocationCount = Array.isArray(candidate.phasesCompleted) ? candidate.phasesCompleted.length : 0;
+
+      conn.run(
+        `INSERT INTO runs (
+          run_id, workspace_id, workflow_id, frozen_closure_id, status, revision,
+          current_step_id, started_at_ms, completed_at_ms, terminal_reason, created_at_ms, updated_at_ms,
+          queue_id, invocation_count
+        ) VALUES (?, ?, ?, NULL, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id) DO UPDATE SET
+          status = excluded.status,
+          revision = runs.revision + 1,
+          current_step_id = excluded.current_step_id,
+          completed_at_ms = excluded.completed_at_ms,
+          terminal_reason = excluded.terminal_reason,
+          updated_at_ms = excluded.updated_at_ms,
+          queue_id = excluded.queue_id,
+          invocation_count = excluded.invocation_count`,
+        candidate.id,
+        this.scopeId,
+        workflowId,
+        sqlStatus,
+        toStringOrNull(candidate.currentPhase),
+        createdAt,
+        completedAt,
+        toStringOrNull(candidate.failureCause),
+        createdAt,
+        updatedAt,
+        queueId,
+        invocationCount
+      );
     }
   }
 
@@ -441,46 +606,25 @@ export class SqliteOperationalBacking {
     conn: NodeSqliteConnection,
     key: string,
     value: unknown,
+    previousValue: unknown,
     now: number
   ): void {
     if (key === KEYS.run && value !== null && typeof value === 'object' && !Array.isArray(value)) {
-      for (const [queueId, candidate] of Object.entries(value as Record<string, WorkflowRun | undefined>)) {
-        if (!candidate || typeof candidate.id !== 'string') continue;
-        const sqlStatus = mapWorkflowStatusToSqlite(candidate.status);
-        const workflowId = candidate.pipeline?.id ?? 'default-pipeline';
-        const createdAt = typeof candidate.startedAt === 'number' ? candidate.startedAt : now;
-        const updatedAt = typeof candidate.lastTransitionAt === 'number' ? candidate.lastTransitionAt : now;
-        const completedAt = isTerminalRunStatus(candidate.status) ? updatedAt : null;
-        const invocationCount = Array.isArray(candidate.phasesCompleted) ? candidate.phasesCompleted.length : 0;
-
-        conn.run(
-          `INSERT INTO runs (
-            run_id, workspace_id, workflow_id, frozen_closure_id, status, revision,
-            current_step_id, started_at_ms, completed_at_ms, terminal_reason, created_at_ms, updated_at_ms,
-            queue_id, invocation_count
-          ) VALUES (?, ?, ?, NULL, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(run_id) DO UPDATE SET
-            status = excluded.status,
-            revision = runs.revision + 1,
-            current_step_id = excluded.current_step_id,
-            completed_at_ms = excluded.completed_at_ms,
-            terminal_reason = excluded.terminal_reason,
-            updated_at_ms = excluded.updated_at_ms,
-            queue_id = excluded.queue_id,
-            invocation_count = excluded.invocation_count`,
-          candidate.id,
-          this.scopeId,
-          workflowId,
-          sqlStatus,
-          candidate.currentPhase,
-          createdAt,
-          completedAt,
-          candidate.failureCause ?? null,
-          createdAt,
-          updatedAt,
-          queueId,
-          invocationCount
+      const rec = value as Record<string, unknown>;
+      if (
+        Object.hasOwn(rec, 'id') &&
+        Object.hasOwn(rec, 'status') &&
+        Object.hasOwn(rec, 'currentPhase') &&
+        typeof rec.id === 'string' &&
+        typeof rec.status === 'string' &&
+        typeof rec.currentPhase === 'string'
+      ) {
+        this.projectRunEntriesInTx(conn, [['default', rec]], now);
+      } else if (isOperationalRunMap(value)) {
+        const entries = Object.entries(value).filter(
+          (pair): pair is [string, Record<string, unknown>] => (pair[1] as unknown) !== undefined
         );
+        this.projectRunEntriesInTx(conn, entries, now);
       }
     } else if (
       key === KEYS.connectedRuns &&
@@ -488,11 +632,23 @@ export class SqliteOperationalBacking {
       typeof value === 'object' &&
       !Array.isArray(value)
     ) {
-      for (const rawWfRun of Object.values(value as Record<string, unknown>)) {
+      const prevMap =
+        previousValue !== null && typeof previousValue === 'object' && !Array.isArray(previousValue)
+          ? (previousValue as Record<string, unknown>)
+          : undefined;
+      const emptyActive = new Set<string>();
+      for (const [id, rawWfRun] of Object.entries(value as Record<string, unknown>)) {
         if (rawWfRun === null || typeof rawWfRun !== 'object') continue;
+        const prevEntry = prevMap && Object.hasOwn(prevMap, id) ? prevMap[id] : undefined;
+        if (
+          prevEntry !== undefined &&
+          (prevEntry === rawWfRun || isDeepEqualJsonValue(prevEntry, rawWfRun))
+        ) {
+          continue;
+        }
         const wfRun = rawWfRun as ConnectedWorkflowRun;
         if (typeof wfRun.connectedRunId !== 'string') continue;
-        const isTerm = isConnectedRunTerminal(wfRun, {});
+        const isTerm = isConnectedRunTerminal(wfRun, emptyActive);
         let wfStatus: RunStatus = isTerm ? 'succeeded' : 'running';
         if (wfRun.invocations !== undefined) {
           const rootFrame = Object.values(wfRun.invocations).find((f) => f.parentInvocationId === null);
@@ -503,7 +659,7 @@ export class SqliteOperationalBacking {
             else if (rootFrame.status === 'completed') wfStatus = 'succeeded';
           }
         }
-        const createdAt = typeof wfRun.startedAt === 'number' ? wfRun.startedAt : now;
+        const createdAt = toSafeIntOrDefault(wfRun.startedAt, now);
         const updatedAt = Math.max(createdAt, connectedRunLastUpdatedMs(wfRun));
         conn.run(
           `INSERT INTO runs (
@@ -519,14 +675,14 @@ export class SqliteOperationalBacking {
             queue_id = COALESCE(excluded.queue_id, runs.queue_id)`,
           wfRun.connectedRunId,
           this.scopeId,
-          wfRun.workflowId,
+          toStringOrNull(wfRun.workflowId) ?? 'default-workflow',
           wfStatus,
-          Math.max(1, wfRun.revision),
+          Math.max(1, toSafeIntOrDefault(wfRun.revision, 1)),
           createdAt,
           isTerm ? updatedAt : null,
           createdAt,
           updatedAt,
-          wfRun.queueId ?? null
+          toStringOrNull(wfRun.queueId)
         );
       }
     } else if (
@@ -584,6 +740,7 @@ export interface SwitchableOperationalMemento extends Memento, AcceptanceMemento
   configureDetachedTrustedSqliteWriter(
     config: { readonly databasePath: string; readonly scopeId: string; readonly canWrite: () => boolean } | null
   ): void;
+  reloadSqliteCache(): void;
   detachSqlite(): void;
   isSqliteAttached(): boolean;
   isPostCutoverAuthorityActive(): boolean;
@@ -593,7 +750,7 @@ function isSameSerializedState(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
   try {
-    return JSON.stringify(a) === JSON.stringify(b);
+    return isDeepEqualJsonValue(a, b);
   } catch {
     return false;
   }
@@ -621,8 +778,7 @@ export function createSwitchableOperationalMemento(
         return activeSqlite.get<T>(key);
       }
       if (readOnlyCache !== null) {
-        const val = readOnlyCache.get(key);
-        return val === undefined ? undefined : (structuredClone(val) as T);
+        return readOnlyCache.get(key) as T | undefined;
       }
       return legacyMemento.get<T>(key);
     },
@@ -755,28 +911,55 @@ export function createSwitchableOperationalMemento(
       let roConn: NodeSqliteConnection | null = null;
       try {
         roConn = new NodeSqliteConnection({ databasePath, readOnly: true });
-        const sentinel = roConn.get<{ authority: string }>(
-          `SELECT authority FROM cutover_sentinel WHERE scope_id = ?`,
-          scopeId
-        );
-        if (!sentinel || (sentinel.authority !== 'sqlite' && sentinel.authority !== 'retired_legacy')) {
-          return false;
-        }
-        const rows = roConn.all<{ doc_key: string; payload_json: string }>(
-          `SELECT doc_key, payload_json FROM operational_kv_documents WHERE doc_namespace = ?`,
-          scopeId
-        );
-        const snapshot = new Map<string, unknown>();
-        for (const row of rows) {
+        roConn.exec('BEGIN');
+        try {
+          const minReaderRow = roConn.get<{ meta_value: string }>(
+            `SELECT meta_value FROM schema_meta WHERE meta_key = 'min_reader_version'`
+          );
+          if (minReaderRow !== undefined) {
+            const floor = parseStrictSchemaMetaVersion(minReaderRow.meta_value);
+            if (floor === null || floor > SQLITE_SCHEMA_CURRENT_VERSION) return false;
+          }
+          const sentinel = roConn.get<{ authority: string }>(
+            `SELECT authority FROM cutover_sentinel WHERE scope_id = ?`,
+            scopeId
+          );
+          if (!sentinel || (sentinel.authority !== 'sqlite' && sentinel.authority !== 'retired_legacy')) {
+            return false;
+          }
+          const rows = roConn.all<{ doc_key: string; payload_json: string }>(
+            `SELECT doc_key, payload_json FROM operational_kv_documents WHERE doc_namespace = ?`,
+            scopeId
+          );
+          const snapshot = new Map<string, unknown>();
+          for (const row of rows) {
+            try {
+              snapshot.set(row.doc_key, deepFreezeValue(JSON.parse(row.payload_json)));
+            } catch {
+              // Skip malformed row in read-only view.
+            }
+          }
+          const hasEntityTables =
+            roConn.get<{ name: string }>(
+              `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'operational_queue_meta'`
+            ) !== undefined;
+          if (hasEntityTables) {
+            const ignoreCorrupt = { onCorruptRow: () => undefined };
+            const queueRes = readOperationalQueueMapFromDb(roConn, scopeId, ignoreCorrupt);
+            if (queueRes.present) snapshot.set(KEYS.queue, deepFreezeValue(queueRes.map));
+            const runRes = readOperationalRunMapFromDb(roConn, scopeId, ignoreCorrupt);
+            if (runRes.present) snapshot.set(KEYS.run, deepFreezeValue(runRes.map));
+          }
+          readOnlyCache = snapshot;
+          postCutoverScopeId = scopeId;
+          return true;
+        } finally {
           try {
-            snapshot.set(row.doc_key, JSON.parse(row.payload_json));
+            roConn.exec('COMMIT');
           } catch {
-            // Skip malformed row in read-only view.
+            // Ignore read-transaction close error.
           }
         }
-        readOnlyCache = snapshot;
-        postCutoverScopeId = scopeId;
-        return true;
       } catch {
         return false;
       } finally {
@@ -786,6 +969,10 @@ export function createSwitchableOperationalMemento(
 
     configureDetachedTrustedSqliteWriter(config): void {
       detachedWriter = config;
+    },
+
+    reloadSqliteCache(): void {
+      activeSqlite?.reloadCacheFromSqlite();
     },
 
     detachSqlite(): void {
