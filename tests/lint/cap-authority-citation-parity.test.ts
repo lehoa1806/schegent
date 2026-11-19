@@ -87,7 +87,7 @@ const CAP_DEFINITION_SITES: ReadonlyArray<{
   { file: 'src/contracts/queue-bounds.ts', role: 'defines' },
   { file: 'src/state/workspace-state.ts', role: 'enforces' },
   { file: 'src/queue/queue-manager.ts', role: 'enforces' },
-  { file: 'src/contracts/validators/queue-management.ts', role: 'enforces' },
+  { file: 'src/contracts/generated/validators/queue-management.ts', role: 'enforces' },
 ];
 
 /**
@@ -105,6 +105,7 @@ const NON_DEFINITION_MENTIONS: ReadonlySet<string> = new Set([
   // Contract surfaces — carry the field, state no bound.
   'src/contracts/sidebar-ipc.ts',
   'src/contracts/sidebar-ipc/queue.ts',
+  'src/contracts/generated/schemas/sidebar-ipc.schema.json',
   'src/ui/sidebar/commands/router-types.ts',
   // Command handlers — pass an already-validated value through.
   'src/commands/cancel.ts',

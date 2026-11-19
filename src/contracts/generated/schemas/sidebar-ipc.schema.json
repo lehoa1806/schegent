@@ -5,7 +5,9 @@
   "x-generatedBy": "scripts/generate-contract-schemas.mjs",
   "x-generatedSchemaVersion": 1,
   "x-generatedFrom": [
-    "src/contracts/sidebar-ipc.ts"
+    "src/contracts/sidebar-ipc.ts",
+    "scripts/contracts/ipc-descriptors/index.mjs",
+    "scripts/contracts/snapshot-descriptors.mjs"
   ],
   "type": "object",
   "additionalProperties": false,
@@ -19,6 +21,10 @@
     "schemaVersion": {
       "type": "integer",
       "const": 3
+    },
+    "snapshotSchemaVersion": {
+      "type": "integer",
+      "const": 4
     },
     "commandTypes": {
       "type": "array",
@@ -309,6 +315,7482 @@
           "name": "confirmationsEnabled",
           "optional": true,
           "type": "boolean"
+        }
+      ]
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "CMD_START": {
+          "$ref": "#/$defs/Command_CMD_START"
+        },
+        "CMD_CANCEL": {
+          "$ref": "#/$defs/Command_CMD_CANCEL"
+        },
+        "CMD_REMOVE_QUEUE_ITEM": {
+          "$ref": "#/$defs/Command_CMD_REMOVE_QUEUE_ITEM"
+        },
+        "CMD_RETRY_QUEUE_ITEM": {
+          "$ref": "#/$defs/Command_CMD_RETRY_QUEUE_ITEM"
+        },
+        "CMD_MOVE_QUEUE_ITEM_UP": {
+          "$ref": "#/$defs/Command_CMD_MOVE_QUEUE_ITEM_UP"
+        },
+        "CMD_MOVE_QUEUE_ITEM_DOWN": {
+          "$ref": "#/$defs/Command_CMD_MOVE_QUEUE_ITEM_DOWN"
+        },
+        "CMD_PAUSE_QUEUE": {
+          "$ref": "#/$defs/Command_CMD_PAUSE_QUEUE"
+        },
+        "CMD_RESUME_QUEUE": {
+          "$ref": "#/$defs/Command_CMD_RESUME_QUEUE"
+        },
+        "CMD_START_QUEUE": {
+          "$ref": "#/$defs/Command_CMD_START_QUEUE"
+        },
+        "CMD_CLEAR_COMPLETED": {
+          "$ref": "#/$defs/Command_CMD_CLEAR_COMPLETED"
+        },
+        "CMD_CLEAR_QUEUE": {
+          "$ref": "#/$defs/Command_CMD_CLEAR_QUEUE"
+        },
+        "CMD_MODIFY_TASK": {
+          "$ref": "#/$defs/Command_CMD_MODIFY_TASK"
+        },
+        "CMD_REORDER_TASK": {
+          "$ref": "#/$defs/Command_CMD_REORDER_TASK"
+        },
+        "CMD_RESTART_CANCELED_TASK": {
+          "$ref": "#/$defs/Command_CMD_RESTART_CANCELED_TASK"
+        },
+        "CMD_REMOVE_TASK_PHASE": {
+          "$ref": "#/$defs/Command_CMD_REMOVE_TASK_PHASE"
+        },
+        "CMD_CREATE_QUEUE": {
+          "$ref": "#/$defs/Command_CMD_CREATE_QUEUE"
+        },
+        "CMD_RENAME_QUEUE": {
+          "$ref": "#/$defs/Command_CMD_RENAME_QUEUE"
+        },
+        "CMD_DELETE_QUEUE": {
+          "$ref": "#/$defs/Command_CMD_DELETE_QUEUE"
+        },
+        "CMD_SAVE_QUEUE_SETTINGS": {
+          "$ref": "#/$defs/Command_CMD_SAVE_QUEUE_SETTINGS"
+        },
+        "CMD_SET_QUEUE_FAILURE_POLICY": {
+          "$ref": "#/$defs/Command_CMD_SET_QUEUE_FAILURE_POLICY"
+        },
+        "CMD_ATTEST_TASK_COMPLETED": {
+          "$ref": "#/$defs/Command_CMD_ATTEST_TASK_COMPLETED"
+        },
+        "CMD_MOVE_TASK": {
+          "$ref": "#/$defs/Command_CMD_MOVE_TASK"
+        },
+        "CMD_RETRY_PHASE_NOW": {
+          "$ref": "#/$defs/Command_CMD_RETRY_PHASE_NOW"
+        },
+        "CMD_PAUSE_PHASE": {
+          "$ref": "#/$defs/Command_CMD_PAUSE_PHASE"
+        },
+        "CMD_RESUME_PHASE": {
+          "$ref": "#/$defs/Command_CMD_RESUME_PHASE"
+        },
+        "CMD_RESTART_PHASE": {
+          "$ref": "#/$defs/Command_CMD_RESTART_PHASE"
+        },
+        "CMD_SKIP_PHASE": {
+          "$ref": "#/$defs/Command_CMD_SKIP_PHASE"
+        },
+        "CMD_DISABLE_PHASE": {
+          "$ref": "#/$defs/Command_CMD_DISABLE_PHASE"
+        },
+        "CMD_ENABLE_PHASE": {
+          "$ref": "#/$defs/Command_CMD_ENABLE_PHASE"
+        },
+        "CMD_SET_PHASE_BREAKPOINT": {
+          "$ref": "#/$defs/Command_CMD_SET_PHASE_BREAKPOINT"
+        },
+        "CMD_CLEAR_PHASE_BREAKPOINT": {
+          "$ref": "#/$defs/Command_CMD_CLEAR_PHASE_BREAKPOINT"
+        },
+        "CMD_OPEN_AUDIT_LOG": {
+          "$ref": "#/$defs/Command_CMD_OPEN_AUDIT_LOG"
+        },
+        "CMD_OPEN_DASHBOARD": {
+          "$ref": "#/$defs/Command_CMD_OPEN_DASHBOARD"
+        },
+        "CMD_OPEN_VERBOSE_SETTING": {
+          "$ref": "#/$defs/Command_CMD_OPEN_VERBOSE_SETTING"
+        },
+        "CMD_OPEN_TRUST_SETTINGS": {
+          "$ref": "#/$defs/Command_CMD_OPEN_TRUST_SETTINGS"
+        },
+        "CMD_DISMISS_MIGRATION_NOTICE": {
+          "$ref": "#/$defs/Command_CMD_DISMISS_MIGRATION_NOTICE"
+        },
+        "CMD_SET_CONFIRM_SUPPRESSION": {
+          "$ref": "#/$defs/Command_CMD_SET_CONFIRM_SUPPRESSION"
+        },
+        "CMD_SAVE_MODELS": {
+          "$ref": "#/$defs/Command_CMD_SAVE_MODELS"
+        },
+        "CMD_SAVE_GENERAL_SETTINGS": {
+          "$ref": "#/$defs/Command_CMD_SAVE_GENERAL_SETTINGS"
+        },
+        "CMD_PING_BACKEND": {
+          "$ref": "#/$defs/Command_CMD_PING_BACKEND"
+        },
+        "CMD_SET_UNCONTAINED_BACKEND_GRANT": {
+          "$ref": "#/$defs/Command_CMD_SET_UNCONTAINED_BACKEND_GRANT"
+        },
+        "CMD_RERUN_FROM_HISTORY": {
+          "$ref": "#/$defs/Command_CMD_RERUN_FROM_HISTORY"
+        },
+        "CMD_OPEN_HISTORY_ITEM_DETAILS": {
+          "$ref": "#/$defs/Command_CMD_OPEN_HISTORY_ITEM_DETAILS"
+        },
+        "CMD_RESOLVE_AUDIT_POINTER": {
+          "$ref": "#/$defs/Command_CMD_RESOLVE_AUDIT_POINTER"
+        },
+        "CMD_RESOLVE_HISTORY_DESCRIPTION": {
+          "$ref": "#/$defs/Command_CMD_RESOLVE_HISTORY_DESCRIPTION"
+        },
+        "CMD_READ_FAILURE_RECORD": {
+          "$ref": "#/$defs/Command_CMD_READ_FAILURE_RECORD"
+        },
+        "CMD_OPEN_DECISION_RECORD": {
+          "$ref": "#/$defs/Command_CMD_OPEN_DECISION_RECORD"
+        },
+        "CMD_SAVE_DEFINITION_DRAFT": {
+          "$ref": "#/$defs/Command_CMD_SAVE_DEFINITION_DRAFT"
+        },
+        "CMD_PUBLISH_DEFINITION": {
+          "$ref": "#/$defs/Command_CMD_PUBLISH_DEFINITION"
+        },
+        "CMD_DEACTIVATE_DEFINITION": {
+          "$ref": "#/$defs/Command_CMD_DEACTIVATE_DEFINITION"
+        },
+        "CMD_RESTORE_DEFINITION_VERSION": {
+          "$ref": "#/$defs/Command_CMD_RESTORE_DEFINITION_VERSION"
+        },
+        "CMD_DISCARD_DEFINITION_DRAFT": {
+          "$ref": "#/$defs/Command_CMD_DISCARD_DEFINITION_DRAFT"
+        },
+        "CMD_PUBLISH_PACKAGE": {
+          "$ref": "#/$defs/Command_CMD_PUBLISH_PACKAGE"
+        },
+        "CMD_READ_DEFINITION_VERSION": {
+          "$ref": "#/$defs/Command_CMD_READ_DEFINITION_VERSION"
+        },
+        "CMD_EXPORT_PROCESS_YAML": {
+          "$ref": "#/$defs/Command_CMD_EXPORT_PROCESS_YAML"
+        },
+        "CMD_PREFLIGHT_PROCESS_YAML": {
+          "$ref": "#/$defs/Command_CMD_PREFLIGHT_PROCESS_YAML"
+        },
+        "CMD_READ_PHASE_LOG": {
+          "$ref": "#/$defs/Command_CMD_READ_PHASE_LOG"
+        },
+        "CMD_START_PHASE_LOG_TAIL": {
+          "$ref": "#/$defs/Command_CMD_START_PHASE_LOG_TAIL"
+        },
+        "CMD_STOP_PHASE_LOG_TAIL": {
+          "$ref": "#/$defs/Command_CMD_STOP_PHASE_LOG_TAIL"
+        },
+        "CMD_ACK_PHASE_LOG_TAIL": {
+          "$ref": "#/$defs/Command_CMD_ACK_PHASE_LOG_TAIL"
+        },
+        "CMD_READ_METRICS": {
+          "$ref": "#/$defs/Command_CMD_READ_METRICS"
+        },
+        "CMD_READ_STORAGE_DETAILS": {
+          "$ref": "#/$defs/Command_CMD_READ_STORAGE_DETAILS"
+        },
+        "CMD_READ_USAGE_ACCOUNTING": {
+          "$ref": "#/$defs/Command_CMD_READ_USAGE_ACCOUNTING"
+        },
+        "CMD_READ_REPORT": {
+          "$ref": "#/$defs/Command_CMD_READ_REPORT"
+        },
+        "CMD_MUTATE_REPORT": {
+          "$ref": "#/$defs/Command_CMD_MUTATE_REPORT"
+        },
+        "CMD_LAUNCH_PIPELINE": {
+          "$ref": "#/$defs/Command_CMD_LAUNCH_PIPELINE"
+        },
+        "CMD_LAUNCH_WORKFLOW": {
+          "$ref": "#/$defs/Command_CMD_LAUNCH_WORKFLOW"
+        },
+        "CMD_CONTINUE_WORKFLOW": {
+          "$ref": "#/$defs/Command_CMD_CONTINUE_WORKFLOW"
+        },
+        "CMD_READ_EXECUTION_VISIBILITY": {
+          "$ref": "#/$defs/Command_CMD_READ_EXECUTION_VISIBILITY"
+        },
+        "CMD_OPEN_CHANGE_REVIEW": {
+          "$ref": "#/$defs/Command_CMD_OPEN_CHANGE_REVIEW"
+        },
+        "CMD_DECIDE_PHASE_HANDOFF": {
+          "$ref": "#/$defs/Command_CMD_DECIDE_PHASE_HANDOFF"
+        }
+      }
+    },
+    "hostMessages": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "STATE_SNAPSHOT": {
+          "$ref": "#/$defs/HostMessage_STATE_SNAPSHOT"
+        },
+        "CMD_ACK": {
+          "$ref": "#/$defs/HostMessage_CMD_ACK"
+        },
+        "MSG_PHASE_LOG_BATCH": {
+          "$ref": "#/$defs/HostMessage_MSG_PHASE_LOG_BATCH"
+        }
+      }
+    },
+    "workflowSnapshot": {
+      "$ref": "#/$defs/WorkflowSnapshot"
+    }
+  },
+  "$defs": {
+    "ActiveFeatureSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "startedAt"
+      ]
+    },
+    "ActivePipelineSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "AuditTailEntry": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "timestamp",
+        "category",
+        "summary"
+      ]
+    },
+    "BackendGrantEntryProblems": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "BackendPingFailureCause": {
+      "type": "string",
+      "enum": [
+        "not-found",
+        "not-executable",
+        "non-zero-exit",
+        "timed-out",
+        "already-in-progress",
+        "unknown"
+      ]
+    },
+    "BackendPingState": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "idle"
+            }
+          },
+          "required": [
+            "status"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "running"
+            },
+            "runner": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "codex",
+                "agy"
+              ]
+            },
+            "startedAt": {
+              "type": "number"
+            },
+            "timeoutSeconds": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "status",
+            "runner",
+            "startedAt",
+            "timeoutSeconds"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "success"
+            },
+            "runner": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "codex",
+                "agy"
+              ]
+            },
+            "startedAt": {
+              "type": "number"
+            },
+            "completedAt": {
+              "type": "number"
+            },
+            "latencyMs": {
+              "type": "number"
+            },
+            "timeoutSeconds": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "status",
+            "runner",
+            "startedAt",
+            "completedAt",
+            "latencyMs",
+            "timeoutSeconds"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "failure"
+            },
+            "runner": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "codex",
+                "agy"
+              ]
+            },
+            "startedAt": {
+              "type": "number"
+            },
+            "completedAt": {
+              "type": "number"
+            },
+            "latencyMs": {
+              "type": "number"
+            },
+            "timeoutSeconds": {
+              "type": "number"
+            },
+            "cause": {
+              "$ref": "#/$defs/BackendPingFailureCause"
+            },
+            "exitCode": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "status",
+            "runner",
+            "startedAt",
+            "completedAt",
+            "latencyMs",
+            "timeoutSeconds",
+            "cause"
+          ]
+        }
+      ]
+    },
+    "BackendPosture": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex",
+            "agy"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "BackendRunnerKind": {
+      "type": "string",
+      "enum": [
+        "claude",
+        "codex",
+        "agy"
+      ]
+    },
+    "BuilderLifecycle": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {}
+    },
+    "CatalogVersionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "phase",
+            "workflow",
+            "pipeline"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "versionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "versionId"
+      ]
+    },
+    "CliMonitorState": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "ConnectedRunProjection": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {}
+    },
+    "ControlCommandEnvelope": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "commandId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "commandId",
+        "action"
+      ]
+    },
+    "CreditPollingProjection": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {}
+    },
+    "DebugLogEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "number"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "DEBUG",
+            "INFO",
+            "WARN",
+            "ERROR"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "timestamp",
+        "level",
+        "message"
+      ]
+    },
+    "DegradedPhaseEntry": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "phaseId": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "phaseId",
+        "outcome"
+      ]
+    },
+    "DelayedRetryState": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pendingRetryAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pendingRetryCause": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "delayedRetryCount": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "pendingRetryAt",
+        "pendingRetryCause",
+        "delayedRetryCount"
+      ]
+    },
+    "EffectiveLimitsProjection": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {}
+    },
+    "EnqueueStartIntent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "startMode": {
+              "const": "now"
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "operator-chooser",
+                "operator-restart",
+                "programmatic-now",
+                "programmatic-scheduled",
+                "migration-default"
+              ]
+            }
+          },
+          "required": [
+            "startMode",
+            "source"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "startMode": {
+              "const": "scheduled"
+            },
+            "scheduledStartAt": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "operator-chooser",
+                "operator-restart",
+                "programmatic-now",
+                "programmatic-scheduled",
+                "migration-default"
+              ]
+            }
+          },
+          "required": [
+            "startMode",
+            "scheduledStartAt",
+            "source"
+          ]
+        }
+      ]
+    },
+    "EvidenceHealthSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "overall": {
+          "$ref": "#/$defs/EvidenceOverallStatus"
+        },
+        "audit": {
+          "$ref": "#/$defs/EvidenceSinkHealth"
+        },
+        "rawTranscript": {
+          "$ref": "#/$defs/EvidenceSinkHealth"
+        },
+        "runtimeLog": {
+          "$ref": "#/$defs/EvidenceSinkHealth"
+        },
+        "metricsRollup": {
+          "$ref": "#/$defs/EvidenceSinkHealth"
+        },
+        "historyPointer": {
+          "$ref": "#/$defs/EvidenceSinkHealth"
+        },
+        "auditCheckpoint": {
+          "$ref": "#/$defs/EvidenceSinkHealth"
+        },
+        "transport": {
+          "$ref": "#/$defs/EvidenceSinkHealth"
+        },
+        "verboseDiagnostics": {
+          "$ref": "#/$defs/EvidenceSinkHealth"
+        },
+        "transportDrops": {
+          "$ref": "#/$defs/TransportDropCounts"
+        }
+      },
+      "required": [
+        "overall",
+        "audit",
+        "rawTranscript",
+        "runtimeLog",
+        "metricsRollup",
+        "historyPointer",
+        "auditCheckpoint",
+        "transport",
+        "verboseDiagnostics",
+        "transportDrops"
+      ]
+    },
+    "EvidenceOverallStatus": {
+      "type": "string",
+      "enum": [
+        "healthy",
+        "degraded",
+        "unavailable"
+      ]
+    },
+    "EvidenceSinkHealth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "healthy",
+            "degraded",
+            "failed"
+          ]
+        },
+        "continuationPolicy": {
+          "type": "string",
+          "enum": [
+            "fail-closed",
+            "continue-degraded"
+          ]
+        },
+        "failureCount": {
+          "type": "number",
+          "minimum": 0
+        },
+        "lastFailureAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cause": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "continuationPolicy",
+        "failureCount",
+        "lastFailureAt",
+        "cause"
+      ]
+    },
+    "GeneralSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cliPath": {
+          "type": "string"
+        },
+        "loggingVerbose": {
+          "type": "boolean"
+        },
+        "loopMaxIterations": {
+          "type": "number"
+        },
+        "invocationIdleTimeoutSeconds": {
+          "type": "number"
+        },
+        "invocationMaxDurationSeconds": {
+          "type": "number"
+        },
+        "watchdogPollIntervalMinutes": {
+          "type": "number"
+        },
+        "auditRotationSizeMB": {
+          "type": "number"
+        },
+        "auditRotationMaxAgeDays": {
+          "type": "number"
+        },
+        "defaultWorkflowId": {
+          "type": "string"
+        },
+        "fatalSignatures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "claudeAutoCompactPctOverride": {
+          "type": "number"
+        },
+        "runtimeLogLevel": {
+          "$ref": "#/$defs/RuntimeLogLevel"
+        },
+        "runtimeLogFilePath": {
+          "type": "string"
+        },
+        "retryMaxAttempts": {
+          "type": "number"
+        },
+        "codexPath": {
+          "type": "string"
+        },
+        "agyPath": {
+          "type": "string"
+        },
+        "runtimeLogMaxBytes": {
+          "type": "number"
+        },
+        "runtimeLogMaxGenerations": {
+          "type": "number"
+        },
+        "sessionRetentionMaxAgeDays": {
+          "type": "number"
+        },
+        "sessionRetentionMaxBytes": {
+          "type": "number"
+        },
+        "rawTranscriptMode": {
+          "type": "string",
+          "enum": [
+            "always",
+            "errors-only",
+            "off"
+          ]
+        },
+        "transportCaptureMode": {
+          "type": "string",
+          "enum": [
+            "inherit",
+            "off",
+            "errors-only",
+            "on"
+          ]
+        },
+        "retryForceContinueOnCap": {
+          "type": "boolean"
+        },
+        "cliInheritEnvironment": {
+          "type": "boolean"
+        },
+        "cliEnvironmentMode": {
+          "type": "string"
+        },
+        "cliEnvironmentAllowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "backendProbeTimeoutSeconds": {
+          "type": "number"
+        },
+        "uiConfirmationsEnable": {
+          "type": "boolean"
+        },
+        "multiRootSuppressWarning": {
+          "type": "boolean"
+        },
+        "backendRunner": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex",
+            "agy"
+          ]
+        },
+        "spendMaxUsdPerRun": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spendMaxTokensPerRun": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "queueHaltOnTaskFailure": {
+          "type": "string",
+          "enum": [
+            "halt-on-failure",
+            "continue"
+          ]
+        },
+        "scopes": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cliPath": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "loggingVerbose": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "loopMaxIterations": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "invocationIdleTimeoutSeconds": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "invocationMaxDurationSeconds": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "watchdogPollIntervalMinutes": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "auditRotationSizeMB": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "auditRotationMaxAgeDays": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "defaultWorkflowId": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "fatalSignatures": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "claudeAutoCompactPctOverride": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "runtimeLogLevel": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "runtimeLogFilePath": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "retryMaxAttempts": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "codexPath": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "agyPath": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "runtimeLogMaxBytes": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "runtimeLogMaxGenerations": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "sessionRetentionMaxAgeDays": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "sessionRetentionMaxBytes": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "rawTranscriptMode": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "transportCaptureMode": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "retryForceContinueOnCap": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "cliInheritEnvironment": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "cliEnvironmentMode": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "cliEnvironmentAllowlist": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "backendProbeTimeoutSeconds": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "uiConfirmationsEnable": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "multiRootSuppressWarning": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "backendRunner": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "spendMaxUsdPerRun": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "spendMaxTokensPerRun": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "queueHaltOnTaskFailure": {
+              "$ref": "#/$defs/SettingScope"
+            }
+          },
+          "required": [
+            "cliPath",
+            "loggingVerbose",
+            "loopMaxIterations",
+            "invocationIdleTimeoutSeconds",
+            "invocationMaxDurationSeconds",
+            "watchdogPollIntervalMinutes",
+            "auditRotationSizeMB",
+            "auditRotationMaxAgeDays",
+            "defaultWorkflowId",
+            "fatalSignatures",
+            "claudeAutoCompactPctOverride",
+            "runtimeLogLevel",
+            "runtimeLogFilePath",
+            "retryMaxAttempts",
+            "codexPath",
+            "agyPath",
+            "runtimeLogMaxBytes",
+            "runtimeLogMaxGenerations",
+            "sessionRetentionMaxAgeDays",
+            "sessionRetentionMaxBytes",
+            "rawTranscriptMode",
+            "transportCaptureMode",
+            "retryForceContinueOnCap",
+            "cliInheritEnvironment",
+            "cliEnvironmentMode",
+            "cliEnvironmentAllowlist",
+            "backendProbeTimeoutSeconds",
+            "uiConfirmationsEnable",
+            "multiRootSuppressWarning",
+            "backendRunner",
+            "spendMaxUsdPerRun",
+            "spendMaxTokensPerRun",
+            "queueHaltOnTaskFailure"
+          ]
+        }
+      },
+      "required": [
+        "cliPath",
+        "loggingVerbose",
+        "loopMaxIterations",
+        "invocationIdleTimeoutSeconds",
+        "invocationMaxDurationSeconds",
+        "watchdogPollIntervalMinutes",
+        "auditRotationSizeMB",
+        "auditRotationMaxAgeDays",
+        "defaultWorkflowId",
+        "fatalSignatures",
+        "runtimeLogLevel",
+        "runtimeLogFilePath",
+        "retryMaxAttempts",
+        "codexPath",
+        "agyPath",
+        "runtimeLogMaxBytes",
+        "runtimeLogMaxGenerations",
+        "sessionRetentionMaxAgeDays",
+        "sessionRetentionMaxBytes",
+        "rawTranscriptMode",
+        "transportCaptureMode",
+        "retryForceContinueOnCap",
+        "cliInheritEnvironment",
+        "cliEnvironmentMode",
+        "cliEnvironmentAllowlist",
+        "backendProbeTimeoutSeconds",
+        "uiConfirmationsEnable",
+        "multiRootSuppressWarning",
+        "backendRunner",
+        "spendMaxUsdPerRun",
+        "spendMaxTokensPerRun",
+        "queueHaltOnTaskFailure",
+        "scopes"
+      ]
+    },
+    "LaunchProjection": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {}
+    },
+    "LiveActivity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastEventAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "freshness": {
+          "type": "string",
+          "enum": [
+            "live",
+            "stale",
+            "idle"
+          ]
+        },
+        "staleSeconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "summary",
+        "category",
+        "lastEventAt",
+        "freshness",
+        "staleSeconds"
+      ]
+    },
+    "ManualPauseCause": {
+      "type": "string",
+      "enum": [
+        "operator-paused",
+        "queue-paused-mid-run",
+        "breakpoint-paused",
+        "verify-paused",
+        "spend-bound-reached"
+      ]
+    },
+    "PhaseDef": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "PhaseDefinition": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "phaseId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "phaseId"
+      ]
+    },
+    "PhaseLogBatchPayload": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "batchSeq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "live",
+            "catchup",
+            "resync"
+          ]
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "pos": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "entry": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {}
+              }
+            },
+            "required": [
+              "pos",
+              "entry"
+            ]
+          }
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sessionId",
+        "batchSeq",
+        "mode",
+        "entries"
+      ]
+    },
+    "PhaseName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "PhaseSourceStatus": {
+      "type": "string"
+    },
+    "PhaseTile": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "order": {
+          "type": "number"
+        },
+        "state": {
+          "type": "string"
+        },
+        "iteration": {
+          "type": "number"
+        },
+        "lastResult": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "elapsedMs": {
+          "type": "number"
+        },
+        "subProgress": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "current": {
+                  "type": "number"
+                },
+                "total": {
+                  "type": "number"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "current",
+                "total",
+                "label"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "displayName",
+        "order",
+        "state",
+        "iteration",
+        "lastResult",
+        "elapsedMs",
+        "subProgress"
+      ]
+    },
+    "PipelineDef": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "PipelineDefinition": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "pipelineId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pipelineId"
+      ]
+    },
+    "PipelineSourceStatus": {
+      "type": "string"
+    },
+    "QueueItemStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "in-flight",
+        "paused",
+        "completed",
+        "failed",
+        "canceled"
+      ]
+    },
+    "QueueLifecycle": {
+      "type": "string",
+      "enum": [
+        "running",
+        "operator-paused",
+        "idle-pending",
+        "active-empty"
+      ]
+    },
+    "QueueSettingsProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "globalConcurrencyCap": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "defaultQueueId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "globalConcurrencyCap",
+        "defaultQueueId"
+      ]
+    },
+    "QueueSummary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "position": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "position"
+      ]
+    },
+    "ResolvedScope": {
+      "type": "string",
+      "enum": [
+        "user",
+        "workspace",
+        "workspace-trust"
+      ]
+    },
+    "RunLivenessProjection": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "lastActivityAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stdoutLines": {
+          "type": "number",
+          "minimum": 0
+        },
+        "stderrLines": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "lastActivityAt",
+        "stdoutLines",
+        "stderrLines"
+      ]
+    },
+    "RunOriginRef": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "standalone"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "workflow-member"
+            },
+            "workflowId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "workflowId"
+          ]
+        }
+      ]
+    },
+    "RunOutputRecord": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "portId": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "portId",
+        "status"
+      ]
+    },
+    "RunProgressProjection": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "phasesCompleted": {
+          "type": "number",
+          "minimum": 0
+        },
+        "phaseCount": {
+          "type": "number",
+          "minimum": 0
+        },
+        "iterationCap": {
+          "type": "number",
+          "minimum": 0
+        },
+        "maxPhaseInvocations": {
+          "type": "number",
+          "minimum": 0
+        },
+        "percent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        }
+      },
+      "required": [
+        "phasesCompleted",
+        "phaseCount",
+        "iterationCap",
+        "maxPhaseInvocations",
+        "percent"
+      ]
+    },
+    "RunRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pipelineId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "workflowId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "entryNodeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RunRequestInput"
+          },
+          "maxItems": 64
+        },
+        "supplemental": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RunRequestSupplemental"
+          },
+          "maxItems": 256
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RunRequestOutput"
+          },
+          "maxItems": 64
+        },
+        "instructions": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "inputs",
+        "supplemental",
+        "outputs"
+      ]
+    },
+    "RunRequestInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "portId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "text",
+            "source",
+            "source-list",
+            "local-file",
+            "local-folder",
+            "web-url",
+            "pipeline-output",
+            "repository-context"
+          ]
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "portId",
+        "type",
+        "value"
+      ]
+    },
+    "RunRequestOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "portId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "target": {
+          "type": "string"
+        },
+        "overwriteConfirmed": {
+          "type": "boolean"
+        },
+        "externalSideEffectConfirmed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "portId",
+        "target"
+      ]
+    },
+    "RunRequestSupplemental": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "local-file"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "local-folder"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "url"
+            },
+            "url": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "text"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "instruction"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "prior-output"
+            },
+            "reference": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sourceRunId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "outputName": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "sourceRunId",
+                "outputName"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "reference"
+          ]
+        }
+      ]
+    },
+    "RuntimeLogLevel": {
+      "type": "string",
+      "enum": [
+        "DEBUG",
+        "INFO",
+        "WARN",
+        "ERROR"
+      ]
+    },
+    "ScheduledStartSource": {
+      "type": "string",
+      "enum": [
+        "operator-chooser",
+        "operator-restart",
+        "programmatic-now",
+        "programmatic-scheduled",
+        "migration-default",
+        "system-rate-limit-recovery"
+      ]
+    },
+    "SessionArtifactsProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifactCount": {
+          "type": "number",
+          "minimum": 0
+        },
+        "totalBytes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "lastSweepAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastSweepFailures": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "artifactCount",
+        "totalBytes",
+        "lastSweepAt",
+        "lastSweepFailures"
+      ]
+    },
+    "SettingScope": {
+      "type": "string",
+      "enum": [
+        "workspace",
+        "user",
+        "default"
+      ]
+    },
+    "SnapshotSyncMeta": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "snapshotSeq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omittedSlices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fullSync": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "snapshotSeq"
+      ]
+    },
+    "StartQueueIntent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "startMode": {
+              "const": "now"
+            },
+            "source": {
+              "const": "operator-restart"
+            }
+          },
+          "required": [
+            "startMode",
+            "source"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "startMode": {
+              "const": "scheduled"
+            },
+            "scheduledStartAt": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "source": {
+              "const": "operator-restart"
+            }
+          },
+          "required": [
+            "startMode",
+            "scheduledStartAt",
+            "source"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "startMode": {
+              "const": "cancel-schedule"
+            },
+            "source": {
+              "const": "operator-restart"
+            }
+          },
+          "required": [
+            "startMode",
+            "source"
+          ]
+        }
+      ]
+    },
+    "StreamPressureProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "liveBuffers": {
+          "type": "number",
+          "minimum": 0
+        },
+        "retainedBytes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "ceilingBytes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "machineMemoryBytes": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "liveBuffers",
+        "retainedBytes",
+        "ceilingBytes",
+        "machineMemoryBytes"
+      ]
+    },
+    "TaskPhaseProgressProjection": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "completed": {
+          "type": "number",
+          "minimum": 0
+        },
+        "total": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "completed",
+        "total"
+      ]
+    },
+    "TelemetrySnapshot": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "TransportDropCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lines": {
+          "type": "number",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "lines",
+        "bytes"
+      ]
+    },
+    "TransportUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "retainedBytes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "runCount": {
+          "type": "number",
+          "minimum": 0
+        },
+        "legacyBytes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "agesOutBy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "measuredAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "retainedBytes",
+        "runCount",
+        "legacyBytes",
+        "agesOutBy",
+        "measuredAt"
+      ]
+    },
+    "WorkflowCatalogFieldErrorProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "code",
+        "message"
+      ]
+    },
+    "WorkflowDefinition": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "workflowId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflowId"
+      ]
+    },
+    "WorkflowDerivedPort": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "nodeId": {
+          "type": "string"
+        },
+        "portId": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "nodeId",
+        "portId",
+        "label",
+        "type"
+      ]
+    },
+    "WorkflowSourceStatus": {
+      "type": "string"
+    },
+    "WorkflowStatus": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "running",
+        "paused",
+        "awaiting-credit",
+        "completed",
+        "failed",
+        "canceled"
+      ]
+    },
+    "PhaseCatalogFieldErrorProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "code",
+        "message"
+      ]
+    },
+    "PhaseCatalogSourceProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "description": "`${phaseId}::${index}` or `draft::${phaseId}::${index}`.",
+          "type": "string"
+        },
+        "phaseId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/PhaseSourceStatus"
+        },
+        "definition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PhaseDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "display": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PhaseCatalogFieldErrorProjection"
+          }
+        },
+        "modelAvailable": {
+          "type": "boolean"
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/BuilderLifecycle"
+        }
+      },
+      "required": [
+        "key",
+        "phaseId",
+        "status",
+        "definition",
+        "display",
+        "errors"
+      ]
+    },
+    "PhaseCatalogProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "error"
+          ]
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PhaseCatalogSourceProjection"
+          }
+        },
+        "effective": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PhaseDefinition"
+          }
+        },
+        "revision": {
+          "description": "Store revision echoed back on save.",
+          "type": "string"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "records",
+        "effective",
+        "revision",
+        "warnings"
+      ]
+    },
+    "PipelineCatalogFieldErrorProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "code",
+        "message"
+      ]
+    },
+    "PipelineCatalogSourceProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "pipelineId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/PipelineSourceStatus"
+        },
+        "definition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PipelineDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "display": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PipelineCatalogFieldErrorProjection"
+          }
+        },
+        "modelAvailable": {
+          "type": "boolean"
+        },
+        "consumingWorkflowIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/BuilderLifecycle"
+        }
+      },
+      "required": [
+        "key",
+        "pipelineId",
+        "status",
+        "definition",
+        "display",
+        "errors"
+      ]
+    },
+    "PipelineCatalogProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "error"
+          ]
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PipelineCatalogSourceProjection"
+          }
+        },
+        "effective": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PipelineDefinition"
+          }
+        },
+        "revision": {
+          "description": "Store revision echoed back on save.",
+          "type": "string"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "records",
+        "effective",
+        "revision",
+        "warnings"
+      ]
+    },
+    "WorkflowCatalogSourceProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "workflowId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/WorkflowSourceStatus"
+        },
+        "definition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "display": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowCatalogFieldErrorProjection"
+          }
+        },
+        "derivedInputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowDerivedPort"
+          }
+        },
+        "derivedOutputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowDerivedPort"
+          }
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/BuilderLifecycle"
+        }
+      },
+      "required": [
+        "key",
+        "workflowId",
+        "status",
+        "definition",
+        "display",
+        "errors",
+        "derivedInputs",
+        "derivedOutputs"
+      ]
+    },
+    "WorkflowCatalogProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "error"
+          ]
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowCatalogSourceProjection"
+          }
+        },
+        "effective": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowDefinition"
+          }
+        },
+        "revision": {
+          "description": "Store revision echoed back on save.",
+          "type": "string"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "records",
+        "effective",
+        "revision",
+        "warnings"
+      ]
+    },
+    "QueueItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "enqueuedAt": {
+          "type": "string"
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "completedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/QueueItemStatus"
+        },
+        "retryCount": {
+          "type": "number"
+        },
+        "lastErrorSummary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pausedReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "currentPhase": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PhaseName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "queueId": {
+          "type": "string"
+        },
+        "position": {
+          "type": "number"
+        },
+        "pauseCause": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "queue-paused",
+                "phase-paused",
+                "manually-paused-task",
+                "breakpoint"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "currentPipelineId": {
+          "description": "Pipeline id under which this task is executing or last executed.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hasOnDiskLogs": {
+          "description": "Heuristic flag indicating the task reached phase execution.",
+          "type": "boolean"
+        },
+        "paused": {
+          "description": "Paused-row enrichment present only while status === paused.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pauseSource": {
+              "type": "string",
+              "enum": [
+                "operator-paused",
+                "system-paused"
+              ]
+            },
+            "pauseCauseCategory": {
+              "type": "string",
+              "enum": [
+                "rate-limit",
+                "fatal-signature",
+                "operator-canceled"
+              ]
+            },
+            "resetsAtMs": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "pauseSource"
+          ]
+        },
+        "phaseProgress": {
+          "description": "Settled-phase progress pair; null means unknown, never 0 of 0.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskPhaseProgressProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "degradedPhases": {
+          "description": "Phases carried past their retry cap; absent when not degraded.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DegradedPhaseEntry"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "enqueuedAt",
+        "startedAt",
+        "updatedAt",
+        "completedAt",
+        "status",
+        "retryCount",
+        "lastErrorSummary",
+        "pausedReason",
+        "currentPhase",
+        "queueId",
+        "position",
+        "pauseCause",
+        "currentPipelineId",
+        "hasOnDiskLogs",
+        "phaseProgress"
+      ]
+    },
+    "QueueProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inFlight": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QueueItem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pending": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QueueItem"
+          }
+        },
+        "recent": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QueueItem"
+          }
+        },
+        "orderedItems": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QueueItem"
+          }
+        },
+        "queues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QueueSummary"
+          }
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "pausedReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/QueueLifecycle"
+        },
+        "scheduledStartAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scheduledStartSource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScheduledStartSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "migrationNotice": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "dismissed"
+          ]
+        }
+      },
+      "required": [
+        "inFlight",
+        "pending",
+        "recent",
+        "orderedItems",
+        "queues",
+        "paused",
+        "pausedReason",
+        "lifecycle",
+        "scheduledStartAt",
+        "scheduledStartSource"
+      ]
+    },
+    "HistoryEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "featureId": {
+          "type": "string"
+        },
+        "descriptionPreview": {
+          "type": "string"
+        },
+        "terminalStatus": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "failed",
+            "canceled"
+          ]
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "completedAt": {
+          "type": "string"
+        },
+        "durationMs": {
+          "type": "number"
+        },
+        "lastErrorSummary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "auditLogPointer": {
+          "type": "string"
+        },
+        "queueId": {
+          "type": "string"
+        },
+        "catalogVersion": {
+          "$ref": "#/$defs/CatalogVersionRef"
+        },
+        "origin": {
+          "$ref": "#/$defs/RunOriginRef"
+        },
+        "descriptionLength": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "runId",
+        "featureId",
+        "descriptionPreview",
+        "terminalStatus",
+        "startedAt",
+        "completedAt",
+        "durationMs",
+        "lastErrorSummary",
+        "auditLogPointer",
+        "queueId"
+      ]
+    },
+    "GeneralSettingsProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cliPath": {
+          "type": "string"
+        },
+        "loggingVerbose": {
+          "type": "boolean"
+        },
+        "loopMaxIterations": {
+          "type": "number"
+        },
+        "invocationIdleTimeoutSeconds": {
+          "type": "number"
+        },
+        "invocationMaxDurationSeconds": {
+          "type": "number"
+        },
+        "watchdogPollIntervalMinutes": {
+          "type": "number"
+        },
+        "auditRotationSizeMB": {
+          "type": "number"
+        },
+        "auditRotationMaxAgeDays": {
+          "type": "number"
+        },
+        "defaultWorkflowId": {
+          "type": "string"
+        },
+        "fatalSignatures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "claudeAutoCompactPctOverride": {
+          "type": "number"
+        },
+        "runtimeLogLevel": {
+          "$ref": "#/$defs/RuntimeLogLevel"
+        },
+        "runtimeLogFilePath": {
+          "type": "string"
+        },
+        "retryMaxAttempts": {
+          "type": "number"
+        },
+        "codexPath": {
+          "type": "string"
+        },
+        "agyPath": {
+          "type": "string"
+        },
+        "runtimeLogMaxBytes": {
+          "type": "number"
+        },
+        "runtimeLogMaxGenerations": {
+          "type": "number"
+        },
+        "sessionRetentionMaxAgeDays": {
+          "type": "number"
+        },
+        "sessionRetentionMaxBytes": {
+          "type": "number"
+        },
+        "rawTranscriptMode": {
+          "type": "string",
+          "enum": [
+            "always",
+            "errors-only",
+            "off"
+          ]
+        },
+        "transportCaptureMode": {
+          "type": "string",
+          "enum": [
+            "inherit",
+            "off",
+            "errors-only",
+            "on"
+          ]
+        },
+        "retryForceContinueOnCap": {
+          "type": "boolean"
+        },
+        "cliInheritEnvironment": {
+          "type": "boolean"
+        },
+        "cliEnvironmentMode": {
+          "type": "string"
+        },
+        "cliEnvironmentAllowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "backendProbeTimeoutSeconds": {
+          "type": "number"
+        },
+        "uiConfirmationsEnable": {
+          "type": "boolean"
+        },
+        "multiRootSuppressWarning": {
+          "type": "boolean"
+        },
+        "backendRunner": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex",
+            "agy"
+          ]
+        },
+        "spendMaxUsdPerRun": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spendMaxTokensPerRun": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "queueHaltOnTaskFailure": {
+          "type": "string",
+          "enum": [
+            "halt-on-failure",
+            "continue"
+          ]
+        },
+        "scopes": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cliPath": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "loggingVerbose": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "loopMaxIterations": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "invocationIdleTimeoutSeconds": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "invocationMaxDurationSeconds": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "watchdogPollIntervalMinutes": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "auditRotationSizeMB": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "auditRotationMaxAgeDays": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "defaultWorkflowId": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "fatalSignatures": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "claudeAutoCompactPctOverride": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "runtimeLogLevel": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "runtimeLogFilePath": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "retryMaxAttempts": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "codexPath": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "agyPath": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "runtimeLogMaxBytes": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "runtimeLogMaxGenerations": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "sessionRetentionMaxAgeDays": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "sessionRetentionMaxBytes": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "rawTranscriptMode": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "transportCaptureMode": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "retryForceContinueOnCap": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "cliInheritEnvironment": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "cliEnvironmentMode": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "cliEnvironmentAllowlist": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "backendProbeTimeoutSeconds": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "uiConfirmationsEnable": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "multiRootSuppressWarning": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "backendRunner": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "spendMaxUsdPerRun": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "spendMaxTokensPerRun": {
+              "$ref": "#/$defs/SettingScope"
+            },
+            "queueHaltOnTaskFailure": {
+              "$ref": "#/$defs/SettingScope"
+            }
+          },
+          "required": [
+            "cliPath",
+            "loggingVerbose",
+            "loopMaxIterations",
+            "invocationIdleTimeoutSeconds",
+            "invocationMaxDurationSeconds",
+            "watchdogPollIntervalMinutes",
+            "auditRotationSizeMB",
+            "auditRotationMaxAgeDays",
+            "defaultWorkflowId",
+            "fatalSignatures",
+            "claudeAutoCompactPctOverride",
+            "runtimeLogLevel",
+            "runtimeLogFilePath",
+            "retryMaxAttempts",
+            "codexPath",
+            "agyPath",
+            "runtimeLogMaxBytes",
+            "runtimeLogMaxGenerations",
+            "sessionRetentionMaxAgeDays",
+            "sessionRetentionMaxBytes",
+            "rawTranscriptMode",
+            "transportCaptureMode",
+            "retryForceContinueOnCap",
+            "cliInheritEnvironment",
+            "cliEnvironmentMode",
+            "cliEnvironmentAllowlist",
+            "backendProbeTimeoutSeconds",
+            "uiConfirmationsEnable",
+            "multiRootSuppressWarning",
+            "backendRunner",
+            "spendMaxUsdPerRun",
+            "spendMaxTokensPerRun",
+            "queueHaltOnTaskFailure"
+          ]
+        },
+        "transportUsage": {
+          "$ref": "#/$defs/TransportUsage"
+        }
+      },
+      "required": [
+        "cliPath",
+        "loggingVerbose",
+        "loopMaxIterations",
+        "invocationIdleTimeoutSeconds",
+        "invocationMaxDurationSeconds",
+        "watchdogPollIntervalMinutes",
+        "auditRotationSizeMB",
+        "auditRotationMaxAgeDays",
+        "defaultWorkflowId",
+        "fatalSignatures",
+        "runtimeLogLevel",
+        "runtimeLogFilePath",
+        "retryMaxAttempts",
+        "codexPath",
+        "agyPath",
+        "runtimeLogMaxBytes",
+        "runtimeLogMaxGenerations",
+        "sessionRetentionMaxAgeDays",
+        "sessionRetentionMaxBytes",
+        "rawTranscriptMode",
+        "transportCaptureMode",
+        "retryForceContinueOnCap",
+        "cliInheritEnvironment",
+        "cliEnvironmentMode",
+        "cliEnvironmentAllowlist",
+        "backendProbeTimeoutSeconds",
+        "uiConfirmationsEnable",
+        "multiRootSuppressWarning",
+        "backendRunner",
+        "spendMaxUsdPerRun",
+        "spendMaxTokensPerRun",
+        "queueHaltOnTaskFailure",
+        "scopes"
+      ]
+    },
+    "InFlightRunProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/WorkflowStatus"
+        },
+        "feature": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActiveFeatureSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pipeline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivePipelineSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "elapsedMs": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "liveActivity": {
+          "$ref": "#/$defs/LiveActivity"
+        },
+        "liveness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunLivenessProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunProgressProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "delayedRetry": {
+          "$ref": "#/$defs/DelayedRetryState"
+        },
+        "resumeTargetPhaseId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RunOutputRecord"
+          }
+        },
+        "catalogVersion": {
+          "$ref": "#/$defs/CatalogVersionRef"
+        },
+        "origin": {
+          "$ref": "#/$defs/RunOriginRef"
+        },
+        "creditPolling": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CreditPollingProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effectiveLimits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffectiveLimitsProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "runId",
+        "status",
+        "feature",
+        "pipeline",
+        "elapsedMs",
+        "liveActivity",
+        "liveness",
+        "progress",
+        "delayedRetry",
+        "resumeTargetPhaseId",
+        "outputs"
+      ]
+    },
+    "QueueRuntime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "queueId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "position": {
+          "type": "number"
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/QueueLifecycle"
+        },
+        "inFlightRun": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InFlightRunProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "phases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PhaseTile"
+          }
+        },
+        "phaseOverrides": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "phaseId": {
+                "type": "string"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "skipped",
+                  "disabled",
+                  "removed"
+                ]
+              }
+            },
+            "required": [
+              "phaseId",
+              "action"
+            ]
+          }
+        },
+        "manualPause": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "at": {
+                  "type": "string"
+                },
+                "cause": {
+                  "type": "string",
+                  "enum": [
+                    "operator-paused",
+                    "queue-paused-mid-run",
+                    "breakpoint-paused",
+                    "verify-paused",
+                    "spend-bound-reached"
+                  ]
+                }
+              },
+              "required": [
+                "at",
+                "cause"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "phaseBreakpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "phaseId": {
+                "type": "string"
+              },
+              "setAt": {
+                "type": "string"
+              },
+              "actor": {
+                "type": "string",
+                "enum": [
+                  "operator",
+                  "system"
+                ]
+              }
+            },
+            "required": [
+              "phaseId",
+              "setAt",
+              "actor"
+            ]
+          }
+        },
+        "startFailure": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "admission"
+                    },
+                    "admission": {
+                      "type": "string",
+                      "enum": [
+                        "admitNew",
+                        "admitResume"
+                      ]
+                    },
+                    "at": {
+                      "type": "string"
+                    },
+                    "summary": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "admission",
+                    "at",
+                    "summary"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "halted"
+                    },
+                    "taskId": {
+                      "type": "string"
+                    },
+                    "taskName": {
+                      "type": "string"
+                    },
+                    "at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "taskId",
+                    "taskName",
+                    "at"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "stranded-run"
+                    },
+                    "runId": {
+                      "type": "string"
+                    },
+                    "phase": {
+                      "type": "string"
+                    },
+                    "at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "runId",
+                    "phase",
+                    "at"
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pendingCount": {
+          "type": "number"
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QueueItem"
+          }
+        },
+        "scheduledStartAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scheduledStartSource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScheduledStartSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "queueId",
+        "name",
+        "position",
+        "lifecycle",
+        "inFlightRun",
+        "phases",
+        "phaseOverrides",
+        "manualPause",
+        "phaseBreakpoints",
+        "startFailure",
+        "pendingCount",
+        "tasks",
+        "scheduledStartAt",
+        "scheduledStartSource"
+      ]
+    },
+    "TrustProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceTrust": {
+          "type": "boolean"
+        },
+        "resolvedTrust": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "phases": {
+              "type": "boolean"
+            },
+            "retryConditions": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "phases",
+            "retryConditions"
+          ]
+        },
+        "resolvedScope": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "phases": {
+              "$ref": "#/$defs/ResolvedScope"
+            },
+            "retryConditions": {
+              "$ref": "#/$defs/ResolvedScope"
+            }
+          },
+          "required": [
+            "phases",
+            "retryConditions"
+          ]
+        }
+      },
+      "required": [
+        "workspaceTrust",
+        "resolvedTrust",
+        "resolvedScope"
+      ]
+    },
+    "WorkflowSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 4
+        },
+        "isPrimary": {
+          "type": "boolean"
+        },
+        "queues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QueueRuntime"
+          }
+        },
+        "queue": {
+          "$ref": "#/$defs/QueueProjection"
+        },
+        "defaultRunnerKind": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex",
+            "agy"
+          ]
+        },
+        "auditTail": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AuditTailEntry"
+          }
+        },
+        "debugLogTail": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DebugLogEntry"
+          }
+        },
+        "monitor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliMonitorState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HistoryEntry"
+          }
+        },
+        "producedAt": {
+          "type": "string"
+        },
+        "availablePipelines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PipelineDef"
+          }
+        },
+        "availablePhases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PhaseDef"
+          }
+        },
+        "availableModels": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "claude",
+            "codex",
+            "agy"
+          ],
+          "properties": {
+            "claude": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "codex": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "agy": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "configuredModels": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "claude",
+            "codex",
+            "agy"
+          ],
+          "properties": {
+            "claude": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "codex": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "agy": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "availableBackends": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex",
+              "agy"
+            ]
+          }
+        },
+        "backendPostures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BackendPosture"
+          }
+        },
+        "backendGrantProblems": {
+          "$ref": "#/$defs/BackendGrantEntryProblems"
+        },
+        "backendPingState": {
+          "$ref": "#/$defs/BackendPingState"
+        },
+        "generalSettings": {
+          "$ref": "#/$defs/GeneralSettingsProjection"
+        },
+        "queueSettings": {
+          "$ref": "#/$defs/QueueSettingsProjection"
+        },
+        "sessionArtifacts": {
+          "$ref": "#/$defs/SessionArtifactsProjection"
+        },
+        "streamPressure": {
+          "$ref": "#/$defs/StreamPressureProjection"
+        },
+        "evidenceHealth": {
+          "$ref": "#/$defs/EvidenceHealthSnapshot"
+        },
+        "phaseCatalog": {
+          "$ref": "#/$defs/PhaseCatalogProjection"
+        },
+        "pipelineCatalog": {
+          "$ref": "#/$defs/PipelineCatalogProjection"
+        },
+        "workflowCatalog": {
+          "$ref": "#/$defs/WorkflowCatalogProjection"
+        },
+        "launchables": {
+          "$ref": "#/$defs/LaunchProjection"
+        },
+        "defaultWorkflowId": {
+          "type": "string"
+        },
+        "connectedRuns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConnectedRunProjection"
+          }
+        },
+        "telemetry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TelemetrySnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workspaceTrust": {
+          "type": "boolean"
+        },
+        "resolvedTrust": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "phases": {
+              "type": "boolean"
+            },
+            "retryConditions": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "phases",
+            "retryConditions"
+          ]
+        },
+        "resolvedScope": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "phases": {
+              "type": "string",
+              "enum": [
+                "user",
+                "workspace",
+                "workspace-trust"
+              ]
+            },
+            "retryConditions": {
+              "type": "string",
+              "enum": [
+                "user",
+                "workspace",
+                "workspace-trust"
+              ]
+            }
+          },
+          "required": [
+            "phases",
+            "retryConditions"
+          ]
+        },
+        "confirmSuppression": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "version": {
+              "const": 1
+            },
+            "suppressedActionKeys": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "version",
+            "suppressedActionKeys"
+          ]
+        },
+        "confirmationsEnabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "isPrimary",
+        "queues",
+        "queue",
+        "defaultRunnerKind",
+        "auditTail",
+        "debugLogTail",
+        "monitor",
+        "history",
+        "producedAt",
+        "availablePipelines",
+        "availablePhases",
+        "availableModels",
+        "configuredModels",
+        "availableBackends",
+        "backendPostures",
+        "backendGrantProblems",
+        "backendPingState",
+        "generalSettings",
+        "queueSettings",
+        "sessionArtifacts",
+        "streamPressure",
+        "evidenceHealth",
+        "telemetry",
+        "workspaceTrust",
+        "resolvedTrust",
+        "resolvedScope"
+      ]
+    },
+    "Command_CMD_START": {
+      "description": "Enqueue a new feature request onto a queue with optional pipeline, position, and start-intent overrides.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_START"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "description": "Operator-authored task description (trimmed, 1..4096 chars).",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "pipelineId": {
+              "description": "Optional catalog pipeline override.",
+              "type": "string"
+            },
+            "queueId": {
+              "description": "Optional target queue identifier.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "position": {
+              "description": "Optional zero-based insertion index.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "startIntent": {
+              "$ref": "#/$defs/EnqueueStartIntent"
+            }
+          },
+          "required": [
+            "description"
+          ]
+        }
+      }
+    },
+    "Command_CMD_CANCEL": {
+      "description": "Cancel a target task/run resolved explicitly by FeatureRequest.id.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_CANCEL"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "taskId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "taskId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_REMOVE_QUEUE_ITEM": {
+      "description": "Remove an item from a queue after explicit operator confirmation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_REMOVE_QUEUE_ITEM"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "confirmed": {
+              "const": true
+            }
+          },
+          "required": [
+            "id",
+            "confirmed"
+          ]
+        }
+      }
+    },
+    "Command_CMD_RETRY_QUEUE_ITEM": {
+      "description": "Retry a failed or canceled queue item by id.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_RETRY_QUEUE_ITEM"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "id"
+          ]
+        }
+      }
+    },
+    "Command_CMD_MOVE_QUEUE_ITEM_UP": {
+      "description": "Move a pending queue item one position earlier.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_MOVE_QUEUE_ITEM_UP"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "id"
+          ]
+        }
+      }
+    },
+    "Command_CMD_MOVE_QUEUE_ITEM_DOWN": {
+      "description": "Move a pending queue item one position later.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_MOVE_QUEUE_ITEM_DOWN"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "id"
+          ]
+        }
+      }
+    },
+    "Command_CMD_PAUSE_QUEUE": {
+      "description": "Pause a queue with an optional operator-supplied reason.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_PAUSE_QUEUE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 500
+            }
+          }
+        }
+      }
+    },
+    "Command_CMD_RESUME_QUEUE": {
+      "description": "Resume a paused queue (canonized to live validator allowlist: queueId only).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_RESUME_QUEUE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        }
+      }
+    },
+    "Command_CMD_START_QUEUE": {
+      "description": "Offer a queue a drain pass or apply an explicit start/schedule intent.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_START_QUEUE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "startIntent": {
+              "$ref": "#/$defs/StartQueueIntent"
+            }
+          }
+        }
+      }
+    },
+    "Command_CMD_CLEAR_COMPLETED": {
+      "description": "Clear completed items from the explicitly addressed queue.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_CLEAR_COMPLETED"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "queueId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_CLEAR_QUEUE": {
+      "description": "Queue-scoped Clean All addressing one explicit queueId.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_CLEAR_QUEUE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "queueId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_MODIFY_TASK": {
+      "description": "Edit the description of a queued task.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_MODIFY_TASK"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "taskId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "description": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "taskId",
+            "description"
+          ]
+        }
+      }
+    },
+    "Command_CMD_REORDER_TASK": {
+      "description": "Reorder a pending task within its queue to a new zero-based position.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_REORDER_TASK"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "taskId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "newPosition": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "taskId",
+            "newPosition"
+          ]
+        }
+      }
+    },
+    "Command_CMD_RESTART_CANCELED_TASK": {
+      "description": "Transition a canceled task back to pending by taskId.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_RESTART_CANCELED_TASK"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "taskId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "taskId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_REMOVE_TASK_PHASE": {
+      "description": "Remove a phase from a task after explicit operator confirmation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_REMOVE_TASK_PHASE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "taskId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "phaseId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "confirmed": {
+              "const": true
+            }
+          },
+          "required": [
+            "taskId",
+            "phaseId",
+            "confirmed"
+          ]
+        }
+      }
+    },
+    "Command_CMD_CREATE_QUEUE": {
+      "description": "Create a new named queue.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_CREATE_QUEUE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      }
+    },
+    "Command_CMD_RENAME_QUEUE": {
+      "description": "Rename an existing queue.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_RENAME_QUEUE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "queueId",
+            "name"
+          ]
+        }
+      }
+    },
+    "Command_CMD_DELETE_QUEUE": {
+      "description": "Two-phase queue deletion (preview without confirmed, execute with confirmed: true).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_DELETE_QUEUE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "confirmed": {
+              "const": true
+            }
+          },
+          "required": [
+            "queueId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_SAVE_QUEUE_SETTINGS": {
+      "description": "Persist workspace queue concurrency cap and default queue id.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_SAVE_QUEUE_SETTINGS"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "globalConcurrencyCap": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "defaultQueueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "globalConcurrencyCap",
+            "defaultQueueId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_SET_QUEUE_FAILURE_POLICY": {
+      "description": "Set a queue-level halt-on-failure override or null to inherit workspace default.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_SET_QUEUE_FAILURE_POLICY"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "halt-on-failure",
+                    "continue"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "queueId",
+            "policy"
+          ]
+        }
+      }
+    },
+    "Command_CMD_ATTEST_TASK_COMPLETED": {
+      "description": "Operator attests that a failed task completed externally.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_ATTEST_TASK_COMPLETED"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "taskId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "confirmed": {
+              "const": true
+            }
+          },
+          "required": [
+            "taskId",
+            "confirmed"
+          ]
+        }
+      }
+    },
+    "Command_CMD_MOVE_TASK": {
+      "description": "Move a task across queues with an optional insertion position.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_MOVE_TASK"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "taskId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "targetQueueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "position": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "taskId",
+            "targetQueueId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_RETRY_PHASE_NOW": {
+      "description": "Trigger an immediate retry for a delayed-retry phase on the addressed queue.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_RETRY_PHASE_NOW"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "queueId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_PAUSE_PHASE": {
+      "description": "Pause the active phase on the addressed queue.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_PAUSE_PHASE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "queueId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_RESUME_PHASE": {
+      "description": "Resume a paused phase on the addressed queue with an optional operator prompt.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_RESUME_PHASE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "prompt": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "queueId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_RESTART_PHASE": {
+      "description": "Restart a specific phase on the addressed queue.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_RESTART_PHASE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "phaseId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "queueId",
+            "phaseId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_SKIP_PHASE": {
+      "description": "Skip a phase on a specific run and queue.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_SKIP_PHASE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "phaseId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "queueId",
+            "runId",
+            "phaseId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_DISABLE_PHASE": {
+      "description": "Disable a phase on the addressed queue.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_DISABLE_PHASE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "phaseId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "queueId",
+            "phaseId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_ENABLE_PHASE": {
+      "description": "Re-enable a disabled phase on the addressed queue.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_ENABLE_PHASE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "phaseId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "queueId",
+            "phaseId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_SET_PHASE_BREAKPOINT": {
+      "description": "Set a future-phase breakpoint on a specific run and queue.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_SET_PHASE_BREAKPOINT"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "phaseId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "queueId",
+            "runId",
+            "phaseId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_CLEAR_PHASE_BREAKPOINT": {
+      "description": "Clear a future-phase breakpoint on a specific run and queue.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_CLEAR_PHASE_BREAKPOINT"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "phaseId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "queueId",
+            "runId",
+            "phaseId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_OPEN_AUDIT_LOG": {
+      "description": "Open the workspace audit log in VS Code.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_OPEN_AUDIT_LOG"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "Command_CMD_OPEN_DASHBOARD": {
+      "description": "Open the full Schegent dashboard webview panel.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_OPEN_DASHBOARD"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "Command_CMD_OPEN_VERBOSE_SETTING": {
+      "description": "Open VS Code Settings scoped to schegent.logging.verbose.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_OPEN_VERBOSE_SETTING"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "Command_CMD_OPEN_TRUST_SETTINGS": {
+      "description": "Open VS Code Settings scoped to the read-only schegent.trust.* keys.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_OPEN_TRUST_SETTINGS"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "Command_CMD_DISMISS_MIGRATION_NOTICE": {
+      "description": "Dismiss the one-time post-migration notice.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_DISMISS_MIGRATION_NOTICE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "Command_CMD_SET_CONFIRM_SUPPRESSION": {
+      "description": "Persist per-action confirmation suppression state in workspace memento.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_SET_CONFIRM_SUPPRESSION"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "actionKey": {
+              "type": "string"
+            },
+            "suppressed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "actionKey",
+            "suppressed"
+          ]
+        }
+      }
+    },
+    "Command_CMD_SAVE_MODELS": {
+      "description": "Persist the Model Catalog with optional import revision and mutation tag.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_SAVE_MODELS"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "models": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "expectedRevision": {
+              "type": "string"
+            },
+            "mutation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "manual-edit",
+                    "import-package"
+                  ]
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          },
+          "required": [
+            "models"
+          ]
+        }
+      }
+    },
+    "Command_CMD_SAVE_GENERAL_SETTINGS": {
+      "description": "Save a batch of unprefixed scalar schegent.* settings validated against KEY_SPECS downstream.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_SAVE_GENERAL_SETTINGS"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "updates": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "updates"
+          ]
+        }
+      }
+    },
+    "Command_CMD_PING_BACKEND": {
+      "description": "Probe connectivity and availability for a single supported backend.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_PING_BACKEND"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runner": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "codex",
+                "agy"
+              ]
+            }
+          },
+          "required": [
+            "runner"
+          ]
+        }
+      }
+    },
+    "Command_CMD_SET_UNCONTAINED_BACKEND_GRANT": {
+      "description": "Grant or revoke uncontained execution posture for a single supported backend.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_SET_UNCONTAINED_BACKEND_GRANT"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "codex",
+                "agy"
+              ]
+            },
+            "granted": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "granted"
+          ]
+        }
+      }
+    },
+    "Command_CMD_RERUN_FROM_HISTORY": {
+      "description": "Rerun a historical run by runId with optional force flag for legacy preview entries.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_RERUN_FROM_HISTORY"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "force": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_OPEN_HISTORY_ITEM_DETAILS": {
+      "description": "Open detail view for a recorded history item by id.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_OPEN_HISTORY_ITEM_DETAILS"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "id"
+          ]
+        }
+      }
+    },
+    "Command_CMD_RESOLVE_AUDIT_POINTER": {
+      "description": "Resolve a completed run auditLogPointer to its audit records.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_RESOLVE_AUDIT_POINTER"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "runId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_RESOLVE_HISTORY_DESCRIPTION": {
+      "description": "Resolve a completed run stored description for replay.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_RESOLVE_HISTORY_DESCRIPTION"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "runId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_READ_FAILURE_RECORD": {
+      "description": "Read the newest failure record for a (queueId, taskId) row.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_READ_FAILURE_RECORD"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]{1,128}$"
+            },
+            "taskId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]{1,128}$"
+            }
+          },
+          "required": [
+            "queueId",
+            "taskId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_OPEN_DECISION_RECORD": {
+      "description": "Open the decisions.md record for a blocked row.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_OPEN_DECISION_RECORD"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "rowId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]{1,128}$"
+            }
+          },
+          "required": [
+            "rowId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_SAVE_DEFINITION_DRAFT": {
+      "description": "Save an authored draft body for one catalog definition.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_SAVE_DEFINITION_DRAFT"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "phase",
+                "workflow",
+                "pipeline"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "expectedDraftVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "body": {},
+            "note": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "expectedDraftVersion",
+            "body"
+          ]
+        }
+      }
+    },
+    "Command_CMD_PUBLISH_DEFINITION": {
+      "description": "Publish the current draft of one catalog definition.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_PUBLISH_DEFINITION"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "phase",
+                "workflow",
+                "pipeline"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "expectedDraftVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "expectedDraftVersion"
+          ]
+        }
+      }
+    },
+    "Command_CMD_DEACTIVATE_DEFINITION": {
+      "description": "Deactivate one published catalog definition.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_DEACTIVATE_DEFINITION"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "phase",
+                "workflow",
+                "pipeline"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "expectedDraftVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "expectedDraftVersion"
+          ]
+        }
+      }
+    },
+    "Command_CMD_RESTORE_DEFINITION_VERSION": {
+      "description": "Copy a historical published version back into a draft.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_RESTORE_DEFINITION_VERSION"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "phase",
+                "workflow",
+                "pipeline"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "expectedDraftVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "fromVersionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "expectedDraftVersion",
+            "fromVersionId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_DISCARD_DEFINITION_DRAFT": {
+      "description": "Discard an unpublished draft for one catalog definition.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_DISCARD_DEFINITION_DRAFT"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "phase",
+                "workflow",
+                "pipeline"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "expectedDraftVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "expectedDraftVersion"
+          ]
+        }
+      }
+    },
+    "Command_CMD_PUBLISH_PACKAGE": {
+      "description": "Commit a multi-layer imported catalog package.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_PUBLISH_PACKAGE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "layers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "phase",
+                      "workflow",
+                      "pipeline"
+                    ]
+                  },
+                  "expectedRevision": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "definitions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "body": {}
+                      },
+                      "required": [
+                        "id",
+                        "body"
+                      ]
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  }
+                },
+                "required": [
+                  "kind",
+                  "expectedRevision",
+                  "definitions"
+                ]
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "layers"
+          ]
+        }
+      }
+    },
+    "Command_CMD_READ_DEFINITION_VERSION": {
+      "description": "Read a historical definition version body by (kind, id, versionId).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_READ_DEFINITION_VERSION"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "phase",
+                "workflow"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "versionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "versionId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_EXPORT_PROCESS_YAML": {
+      "description": "Export a Phase, Workflow, or Model Catalog to a host-dialog YAML file (never carries a path).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_EXPORT_PROCESS_YAML"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "resourceKind": {
+                  "const": "modelCatalog"
+                }
+              },
+              "required": [
+                "resourceKind"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "resourceKind": {
+                  "const": "phase"
+                },
+                "resourceId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                }
+              },
+              "required": [
+                "resourceKind",
+                "resourceId"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "resourceKind": {
+                  "const": "workflow"
+                },
+                "resourceId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "inclusion": {
+                  "type": "string",
+                  "enum": [
+                    "references-only",
+                    "include-closure"
+                  ]
+                }
+              },
+              "required": [
+                "resourceKind",
+                "resourceId",
+                "inclusion"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "Command_CMD_PREFLIGHT_PROCESS_YAML": {
+      "description": "Open host dialog to preflight an imported process YAML document (empty payload only).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_PREFLIGHT_PROCESS_YAML"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {}
+        }
+      }
+    },
+    "Command_CMD_READ_PHASE_LOG": {
+      "description": "Read persisted phase log entries for a safe-path-segment tuple.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_READ_PHASE_LOG"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "selection": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "queueId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                },
+                "taskId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                },
+                "pipelineId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                },
+                "phaseId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                },
+                "iterationN": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "queueId",
+                "taskId",
+                "pipelineId",
+                "phaseId",
+                "iterationN"
+              ]
+            }
+          },
+          "required": [
+            "selection"
+          ]
+        }
+      }
+    },
+    "Command_CMD_START_PHASE_LOG_TAIL": {
+      "description": "Start a live phase log tail session for a concrete iteration.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_START_PHASE_LOG_TAIL"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "selection": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "queueId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                },
+                "taskId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                },
+                "pipelineId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                },
+                "phaseId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                },
+                "iterationN": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "queueId",
+                "taskId",
+                "pipelineId",
+                "phaseId",
+                "iterationN"
+              ]
+            },
+            "consumer": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "fromCursor": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160,
+              "pattern": "^[\\x21-\\x7e]+$"
+            }
+          },
+          "required": [
+            "selection"
+          ]
+        }
+      }
+    },
+    "Command_CMD_STOP_PHASE_LOG_TAIL": {
+      "description": "Stop an active live phase log tail session.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_STOP_PHASE_LOG_TAIL"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "sessionId"
+          ]
+        }
+      }
+    },
+    "Command_CMD_ACK_PHASE_LOG_TAIL": {
+      "description": "Acknowledge a live phase log batch with credit, resync, or duplicate flags.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_ACK_PHASE_LOG_TAIL"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "batchSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "resync": {
+              "type": "boolean"
+            },
+            "duplicate": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "sessionId",
+            "batchSeq"
+          ]
+        }
+      }
+    },
+    "Command_CMD_READ_METRICS": {
+      "description": "Scan workspace audit/rollup metrics with optional archive inclusion and bounded runIds filter.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_READ_METRICS"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "includeArchives": {
+              "type": "boolean"
+            },
+            "runIds": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            }
+          }
+        }
+      }
+    },
+    "Command_CMD_READ_STORAGE_DETAILS": {
+      "description": "Read storage pressure summary and one paginated artifact inventory page.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_READ_STORAGE_DETAILS"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cursor": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[A-Za-z0-9_-]{1,512}$"
+            }
+          }
+        }
+      }
+    },
+    "Command_CMD_READ_USAGE_ACCOUNTING": {
+      "description": "Read one usage accounting page; query validation is delegated to the shared host validator.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_READ_USAGE_ACCOUNTING"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "query": {}
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    },
+    "Command_CMD_READ_REPORT": {
+      "description": "Run, page, drill down, cancel, list, or reproduce historical reports.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_READ_REPORT"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "run"
+                },
+                "query": {}
+              },
+              "required": [
+                "op",
+                "query"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "page"
+                },
+                "cursor": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                }
+              },
+              "required": [
+                "op",
+                "cursor"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "drillDown"
+                },
+                "reportId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                },
+                "rootId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                }
+              },
+              "required": [
+                "op",
+                "reportId",
+                "rootId"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "close"
+                },
+                "reportId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                }
+              },
+              "required": [
+                "op",
+                "reportId"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "rerunSaved"
+                },
+                "reportId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                }
+              },
+              "required": [
+                "op",
+                "reportId"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "reproduceSaved"
+                },
+                "reportId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                }
+              },
+              "required": [
+                "op",
+                "reportId"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "listSaved"
+                },
+                "request": {}
+              },
+              "required": [
+                "op"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "cancelActive"
+                }
+              },
+              "required": [
+                "op"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "Command_CMD_MUTATE_REPORT": {
+      "description": "Export (via host dialog), save, or delete a saved report record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_MUTATE_REPORT"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "export"
+                },
+                "reportId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                },
+                "format": {
+                  "type": "string",
+                  "enum": [
+                    "json",
+                    "csv"
+                  ]
+                }
+              },
+              "required": [
+                "op",
+                "reportId",
+                "format"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "save"
+                },
+                "reportId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                }
+              },
+              "required": [
+                "op",
+                "reportId"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "deleteSaved"
+                },
+                "reportId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._-]+$"
+                },
+                "confirmed": {
+                  "const": true
+                }
+              },
+              "required": [
+                "op",
+                "reportId",
+                "confirmed"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "Command_CMD_LAUNCH_PIPELINE": {
+      "description": "Compose, validate, freeze, and enqueue a Pipeline RunRequest.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_LAUNCH_PIPELINE"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/RunRequest"
+            },
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "request"
+          ]
+        }
+      }
+    },
+    "Command_CMD_LAUNCH_WORKFLOW": {
+      "description": "Launch a connected Workflow run from a declared startNodeId.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_LAUNCH_WORKFLOW"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "workflowId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "startNodeId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "request": {
+              "$ref": "#/$defs/RunRequest"
+            },
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "workflowId",
+            "startNodeId",
+            "request"
+          ]
+        }
+      }
+    },
+    "Command_CMD_CONTINUE_WORKFLOW": {
+      "description": "Continue or apply a control operation to a connected Workflow run.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_CONTINUE_WORKFLOW"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "connectedRunId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "nodeId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "request": {
+              "$ref": "#/$defs/RunRequest"
+            },
+            "invocationId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            },
+            "operation": {
+              "type": "string",
+              "enum": [
+                "pause",
+                "resume",
+                "cancel",
+                "retry-phase",
+                "retry-invocation",
+                "continue-handoff"
+              ]
+            },
+            "commandId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            },
+            "controlCommand": {
+              "$ref": "#/$defs/ControlCommandEnvelope"
+            }
+          },
+          "required": [
+            "connectedRunId",
+            "expectedRevision",
+            "nodeId",
+            "request"
+          ]
+        }
+      }
+    },
+    "Command_CMD_READ_EXECUTION_VISIBILITY": {
+      "description": "Read attempt visibility details or runtime lane/telemetry posture.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_READ_EXECUTION_VISIBILITY"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "attemptDetail"
+                },
+                "rootExecutionId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._:-]+$"
+                },
+                "invocationId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._:-]+$"
+                },
+                "attemptId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._:-]+$"
+                }
+              },
+              "required": [
+                "op",
+                "rootExecutionId"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "runtimePosture"
+                }
+              },
+              "required": [
+                "op"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "Command_CMD_OPEN_CHANGE_REVIEW": {
+      "description": "Open, refresh, classify, page, close, or cancel an immutable candidate change review.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_OPEN_CHANGE_REVIEW"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "open"
+                },
+                "requestId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._:-]+$"
+                },
+                "expectedRevision": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._:-]+$"
+                },
+                "openInEditor": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "op",
+                "requestId"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "refresh"
+                },
+                "reviewId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._:-]+$"
+                },
+                "openInEditor": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "op",
+                "reviewId"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "classify"
+                },
+                "reviewId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._:-]+$"
+                }
+              },
+              "required": [
+                "op",
+                "reviewId"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "close"
+                },
+                "reviewId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._:-]+$"
+                }
+              },
+              "required": [
+                "op",
+                "reviewId"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "page"
+                },
+                "cursor": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[A-Za-z0-9_-]+$"
+                }
+              },
+              "required": [
+                "op",
+                "cursor"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "cancelOpen"
+                }
+              },
+              "required": [
+                "op"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "Command_CMD_DECIDE_PHASE_HANDOFF": {
+      "description": "Approve or edit a manual phase-to-phase context handoff revision.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "correlationId",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "CMD_DECIDE_PHASE_HANDOFF"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "approve"
+                },
+                "handoffId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._:-]+$"
+                },
+                "expectedRevision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "decisionId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._:-]+$"
+                }
+              },
+              "required": [
+                "op",
+                "handoffId",
+                "expectedRevision",
+                "decisionId"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "edit"
+                },
+                "handoffId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._:-]+$"
+                },
+                "baseRevision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "replacementSources": {
+                  "type": "array",
+                  "items": {}
+                }
+              },
+              "required": [
+                "op",
+                "handoffId",
+                "baseRevision",
+                "replacementSources"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "HostMessage_STATE_SNAPSHOT": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "STATE_SNAPSHOT"
+        },
+        "payload": {
+          "$ref": "#/$defs/WorkflowSnapshot"
+        },
+        "sync": {
+          "$ref": "#/$defs/SnapshotSyncMeta"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    "HostMessage_CMD_ACK": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "CMD_ACK"
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "rejected"
+          ]
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "no-op",
+            "refused",
+            "failed"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "result": {}
+      },
+      "required": [
+        "type",
+        "correlationId",
+        "status"
+      ]
+    },
+    "HostMessage_MSG_PHASE_LOG_BATCH": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "MSG_PHASE_LOG_BATCH"
+        },
+        "payload": {
+          "$ref": "#/$defs/PhaseLogBatchPayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    "InboundCommand": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Command_CMD_START"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_CANCEL"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_REMOVE_QUEUE_ITEM"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_RETRY_QUEUE_ITEM"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_MOVE_QUEUE_ITEM_UP"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_MOVE_QUEUE_ITEM_DOWN"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_PAUSE_QUEUE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_RESUME_QUEUE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_START_QUEUE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_CLEAR_COMPLETED"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_CLEAR_QUEUE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_MODIFY_TASK"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_REORDER_TASK"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_RESTART_CANCELED_TASK"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_REMOVE_TASK_PHASE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_CREATE_QUEUE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_RENAME_QUEUE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_DELETE_QUEUE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_SAVE_QUEUE_SETTINGS"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_SET_QUEUE_FAILURE_POLICY"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_ATTEST_TASK_COMPLETED"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_MOVE_TASK"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_RETRY_PHASE_NOW"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_PAUSE_PHASE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_RESUME_PHASE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_RESTART_PHASE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_SKIP_PHASE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_DISABLE_PHASE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_ENABLE_PHASE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_SET_PHASE_BREAKPOINT"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_CLEAR_PHASE_BREAKPOINT"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_OPEN_AUDIT_LOG"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_OPEN_DASHBOARD"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_OPEN_VERBOSE_SETTING"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_OPEN_TRUST_SETTINGS"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_DISMISS_MIGRATION_NOTICE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_SET_CONFIRM_SUPPRESSION"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_SAVE_MODELS"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_SAVE_GENERAL_SETTINGS"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_PING_BACKEND"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_SET_UNCONTAINED_BACKEND_GRANT"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_RERUN_FROM_HISTORY"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_OPEN_HISTORY_ITEM_DETAILS"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_RESOLVE_AUDIT_POINTER"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_RESOLVE_HISTORY_DESCRIPTION"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_READ_FAILURE_RECORD"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_OPEN_DECISION_RECORD"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_SAVE_DEFINITION_DRAFT"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_PUBLISH_DEFINITION"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_DEACTIVATE_DEFINITION"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_RESTORE_DEFINITION_VERSION"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_DISCARD_DEFINITION_DRAFT"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_PUBLISH_PACKAGE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_READ_DEFINITION_VERSION"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_EXPORT_PROCESS_YAML"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_PREFLIGHT_PROCESS_YAML"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_READ_PHASE_LOG"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_START_PHASE_LOG_TAIL"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_STOP_PHASE_LOG_TAIL"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_ACK_PHASE_LOG_TAIL"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_READ_METRICS"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_READ_STORAGE_DETAILS"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_READ_USAGE_ACCOUNTING"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_READ_REPORT"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_MUTATE_REPORT"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_LAUNCH_PIPELINE"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_LAUNCH_WORKFLOW"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_CONTINUE_WORKFLOW"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_READ_EXECUTION_VISIBILITY"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_OPEN_CHANGE_REVIEW"
+        },
+        {
+          "$ref": "#/$defs/Command_CMD_DECIDE_PHASE_HANDOFF"
+        }
+      ]
+    },
+    "HostMessage": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/HostMessage_STATE_SNAPSHOT"
+        },
+        {
+          "$ref": "#/$defs/HostMessage_CMD_ACK"
+        },
+        {
+          "$ref": "#/$defs/HostMessage_MSG_PHASE_LOG_BATCH"
         }
       ]
     }

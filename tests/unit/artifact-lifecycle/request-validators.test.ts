@@ -7,9 +7,9 @@ import { CMD_READ_STORAGE_DETAILS } from '../../../src/contracts/sidebar-ipc';
 import {
   validateDeletionExecuteRequest,
   validateDeletionPreviewRequest,
-  validateInventoryRequest,
-  validateReadStorageDetails
+  validateInventoryRequest
 } from '../../../src/contracts/validators/artifact-lifecycle';
+import { validateReadStorageDetails } from '../../../src/contracts/generated/validators/analytics-reporting';
 
 const AUTHORITY = { trusted: true, primary: true, auditHealthy: true };
 

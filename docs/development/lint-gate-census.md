@@ -19,8 +19,8 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **234** | 2026-11-19 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 209 | 2026-11-19 | hand verdict |
+| Gate files | **235** | 2026-11-19 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 210 | 2026-11-19 | hand verdict |
 | Marked `partially redundant` | 25 | 2026-11-19 | hand verdict |
 | Marked `redundant` | 0 | 2026-11-19 | hand verdict |
 
@@ -35,6 +35,13 @@ have held.
 Placement note (2026-09-05): the paragraph above sat between the figure table and the marker
 until feature 203 regenerated the census, which deleted it — everything above the marker is
 rebuilt from the template on every run. Hand-written prose belongs here, below the marker.
+
+Parity test retirement note (2026-11-19, FR-R7-05): `tests/parity/snapshot-mirror-structural-parity.test.ts`
+was retired because host (`src/contracts/generated/snapshot-types.ts`) and webview
+(`webview-ui/src/lib/generated/snapshot-mirror.ts`) snapshot contracts are now generated from
+`scripts/contracts/snapshot-descriptors.mjs` and guarded by `npm run contracts:check`,
+`tests/contract/sidebar-ipc-schema-validation.test.ts`, and `tests/lint/snapshot-mirror-census.test.ts`
+(see `docs/development/contract-descriptors.md`).
 
 
 
@@ -466,6 +473,7 @@ is decided about this one entry.
 | `no-new-error-cast.test.ts` | FR-R3-110 — the error-cast baseline is shrink-only | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-running-state-literal.test.ts` | Feature 017 — no stray running state literal | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-scope-in-catalog-payloads.test.ts` | catalog payloads carry no scope, no shadowed status, and no layer id (SC-007) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `no-sidebar-command-casts.test.ts` | no-sidebar-command-casts ratchet (FR-R7-05 / SC-002) | — | unique | TypeScript permits `as SidebarCommand` and `as unknown as SidebarCommand` casts in validator return statements; this shrink-only ratchet pins the ceiling at 0 across `src/` so generated validators cannot regress to cast-based construction |
 | `no-static-inline-style.test.ts` | no static inline style in webview Svelte files (FR-028) | — | unique | the browser smoke `tests/visual/actual-policy.visual.spec.ts` observes the violation, but only on the routes it visits and it is not a lint gate; no sibling gate, type, generated contract or compiler flag refuses the attribute; see Method |
 | `no-transport-in-audit.test.ts` | FR-R3-007 — CLI transport stays out of the structured audit log | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-tryAutoDrain-doc-references.test.ts` | Feature 056 Track 5 — operator docs are free of removed symbols | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

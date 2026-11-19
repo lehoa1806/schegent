@@ -17,9 +17,9 @@
 // configuration, and retains nothing.
 
 import { validRunRequest } from '../contracts/validators/run-request-shape';
-import { validateExportProcessYaml } from '../contracts/validators/process-yaml';
+import { validateExportProcessYaml } from '../contracts/generated/validators/catalog';
 import { QUEUE_ID_MAX } from '../contracts/validators/shared';
-import { validateContinueWorkflow } from '../contracts/validators/workflow-run';
+import { validateContinueWorkflow } from '../contracts/generated/validators/execution-workflow';
 
 /**
  * Why an argument was refused.

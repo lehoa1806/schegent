@@ -18,8 +18,8 @@ import type {
   PolicyAdoptionRequest
 } from '../artifact-lifecycle/retention-policy-types';
 import type { RetentionClassId } from '../shared-memory-storage/consumer-and-retention-inventories';
-import { CMD_READ_STORAGE_DETAILS, type ReadStorageDetailsResponse, type SidebarCommand } from '../sidebar-ipc';
-import { fail, hasUnexpectedKeys, ok as ipcOk, type IpcValidationResult } from './shared';
+import type { ReadStorageDetailsResponse } from '../sidebar-ipc';
+import { hasUnexpectedKeys } from './shared';
 
 // FR-R6-F05 (FR-021, contract surfaces-and-wiring.md §4, §5) — the request validators the headless
 // lifecycle API and the sidebar storage-details handler share, so the two surfaces accept exactly the
@@ -39,7 +39,6 @@ const MUTATION_KEYS = ['previewId', 'confirmation', 'authority'] as const;
 const POLICY_ADOPTION_KEYS = [...MUTATION_KEYS, 'policy'] as const;
 const ARCHIVAL_KEYS = [...MUTATION_KEYS, 'queues'] as const;
 const ARCHIVAL_PREVIEW_KEYS = ['queues'] as const;
-const STORAGE_DETAILS_KEYS = ['cursor'] as const;
 
 function invalid<T>(field: string): LifecycleResult<T> {
   return { ok: false, refusal: { code: 'invalid-input', message: `${field} is malformed` } };
@@ -187,17 +186,6 @@ export function validateArchivalRequest(input: unknown): LifecycleResult<Archiva
   const queues = readQueues(input['queues']);
   if (!queues.ok) return queues;
   return accept({ ...base.value, queues: queues.value });
-}
-
-/** The sidebar's storage-details read: an optional inventory cursor, nothing else. */
-export function validateReadStorageDetails(obj: Plain, correlationId: string): IpcValidationResult {
-  const context = { type: CMD_READ_STORAGE_DETAILS, correlationId };
-  const payload = obj['payload'];
-  if (!isPlain(payload)) return fail('missing-payload', context);
-  if (hasUnexpectedKeys(payload, STORAGE_DETAILS_KEYS)) return fail('unexpected-payload-fields', context);
-  const { cursor } = payload;
-  if (cursor !== undefined && !isInventoryCursor(cursor)) return fail('invalid-cursor', context);
-  return ipcOk({ ...context, payload: cursor === undefined ? {} : { cursor } } as SidebarCommand);
 }
 
 function isByteCount(value: unknown): boolean {

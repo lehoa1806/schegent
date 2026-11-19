@@ -1,15 +1,12 @@
 /**
- * Feature 193 (T035, negative control for T038) — asserts that
- * `npm run contracts:check` actually fails, and names the stale file, when
- * `src/contracts/action-keys.ts` loses an entry without its webview mirror
- * (`webview-ui/src/lib/generated/action-keys.ts`) being regenerated.
+ * Feature 193 (T035, negative control for T038) & FR-R7-05 (T025, SC-006) —
+ * asserts that `npm run contracts:check` fails, and names both the stale
+ * generated file and its source descriptor, when a source contract or
+ * generated file is mutated without regenerating.
  *
  * Exercises the real `scripts/generate-contract-schemas.mjs --check` binary
  * against a minimal, file-exact sandbox copy of every input and output it
- * reads — not a reimplementation of its comparison logic. The sandbox lists
- * every relative path the script touches explicitly, so a mismatch here
- * would show up as a spurious failure on the unmutated control below, not as
- * a silent pass on the mutated one.
+ * reads — not a reimplementation of its comparison logic.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -23,11 +20,36 @@ const GENERATOR_SCRIPT = 'scripts/generate-contract-schemas.mjs';
 const STALE_ACTION_KEYS_MESSAGE = 'stale generated file: webview-ui/src/lib/generated/action-keys.ts';
 
 // Every relative path the generator reads from or compares against in
-// `--check` mode (see `scripts/generate-contract-schemas.mjs`'s
-// `SourceExtractor` instantiations and its `generated` map).
+// `--check` mode (see `scripts/generate-contract-schemas.mjs`).
 const REQUIRED_FILES: readonly string[] = [
   GENERATOR_SCRIPT,
   'package.json',
+  // FR-R7-05 declarative descriptor modules & emitters
+  'scripts/contracts/canonical-enums.mjs',
+  'scripts/contracts/descriptor-dsl.mjs',
+  'scripts/contracts/emit-json-schema.mjs',
+  'scripts/contracts/emit-types.mjs',
+  'scripts/contracts/emit-validators.mjs',
+  'scripts/contracts/emit-webview-mirror.mjs',
+  'scripts/contracts/snapshot-descriptors.mjs',
+  'scripts/contracts/ipc-descriptors/analytics-reporting.mjs',
+  'scripts/contracts/ipc-descriptors/catalog.mjs',
+  'scripts/contracts/ipc-descriptors/execution-workflow.mjs',
+  'scripts/contracts/ipc-descriptors/history-evidence.mjs',
+  'scripts/contracts/ipc-descriptors/host-messages.mjs',
+  'scripts/contracts/ipc-descriptors/index.mjs',
+  'scripts/contracts/ipc-descriptors/navigation-settings.mjs',
+  'scripts/contracts/ipc-descriptors/phase-control.mjs',
+  'scripts/contracts/ipc-descriptors/phase-log.mjs',
+  'scripts/contracts/ipc-descriptors/queue-core.mjs',
+  'scripts/contracts/ipc-descriptors/queue-management.mjs',
+  // Canonical enum sources read by canonical-enums.mjs
+  'src/contracts/backend-kinds.ts',
+  'src/contracts/catalog-store.ts',
+  'src/contracts/pipeline-definitions.ts',
+  'src/contracts/command-outcome.ts',
+  'src/contracts/sidebar-ipc/workflow-run.ts',
+  // Existing AST extraction inputs
   'src/contracts/sidebar-ipc.ts',
   'src/contracts/audit-events.ts',
   'src/state/workflow-run.ts',
@@ -43,14 +65,23 @@ const REQUIRED_FILES: readonly string[] = [
   'src/lib/retry-condition.ts',
   'src/lib/fatal-signature-registry.ts',
   'src/contracts/action-keys.ts',
-  // Feature 195 (T006) — the second whole-file mirror
-  // `generate-contract-schemas.mjs` registers alongside `action-keys.ts`. The
-  // generator touches it on every `--check` run regardless of which mirror a
-  // test is exercising, so it belongs in the sandbox on the same terms as
-  // `action-keys.ts` above.
   'src/contracts/queue-failure-policy.ts',
+  // Generated outputs
   'webview-ui/src/lib/generated/queue-failure-policy.ts',
+  'webview-ui/src/lib/generated/action-keys.ts',
+  'webview-ui/src/lib/generated/snapshot-mirror.ts',
   'src/contracts/generated/boundary-contracts.ts',
+  'src/contracts/generated/sidebar-ipc-types.ts',
+  'src/contracts/generated/snapshot-types.ts',
+  'src/contracts/generated/validators/analytics-reporting.ts',
+  'src/contracts/generated/validators/catalog.ts',
+  'src/contracts/generated/validators/execution-workflow.ts',
+  'src/contracts/generated/validators/history-evidence.ts',
+  'src/contracts/generated/validators/navigation-settings.ts',
+  'src/contracts/generated/validators/phase-control.ts',
+  'src/contracts/generated/validators/phase-log.ts',
+  'src/contracts/generated/validators/queue-core.ts',
+  'src/contracts/generated/validators/queue-management.ts',
   'src/contracts/generated/schemas/contract-families.json',
   'src/contracts/generated/schemas/sidebar-ipc.schema.json',
   'src/contracts/generated/schemas/audit-events.schema.json',
@@ -59,8 +90,7 @@ const REQUIRED_FILES: readonly string[] = [
   'src/contracts/generated/schemas/state.schema.json',
   'src/contracts/generated/schemas/backend-runner.schema.json',
   'webview-ui/src/lib/retry-condition.ts',
-  'webview-ui/src/lib/fatal-signature-registry.ts',
-  'webview-ui/src/lib/generated/action-keys.ts'
+  'webview-ui/src/lib/fatal-signature-registry.ts'
 ];
 
 function buildSandbox(): string {
@@ -90,7 +120,7 @@ function runCheck(sandbox: string): { status: number; output: string } {
   }
 }
 
-describe('action-keys generation mechanism — negative control for T038 (T035)', () => {
+describe('contract generation freshness — negative controls (T035 & FR-R7-05 / SC-006)', () => {
   let sandbox: string;
 
   beforeEach(() => {
@@ -103,7 +133,7 @@ describe('action-keys generation mechanism — negative control for T038 (T035)'
 
   it('sanity check: an unmutated sandbox passes --check', () => {
     const result = runCheck(sandbox);
-    expect(result.output, result.output).not.toContain('action-keys.ts');
+    expect(result.output, result.output).not.toContain('stale generated file:');
     expect(result.status).toBe(0);
   });
 
@@ -117,5 +147,29 @@ describe('action-keys generation mechanism — negative control for T038 (T035)'
     const result = runCheck(sandbox);
     expect(result.status).not.toBe(0);
     expect(result.output).toContain(STALE_ACTION_KEYS_MESSAGE);
+  });
+
+  it('fails and names both the stale mirror and its descriptor when snapshot-mirror.ts is hand-edited', () => {
+    const mirrorPath = path.join(sandbox, 'webview-ui/src/lib/generated/snapshot-mirror.ts');
+    const original = fs.readFileSync(mirrorPath, 'utf8');
+    fs.writeFileSync(mirrorPath, `${original}\n// hand-edit drift\n`, 'utf8');
+
+    const result = runCheck(sandbox);
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('stale generated file: webview-ui/src/lib/generated/snapshot-mirror.ts');
+    expect(result.output).toContain('scripts/contracts/snapshot-descriptors.mjs');
+  });
+
+  it('fails and names both the stale validator and its descriptor when an IPC descriptor changes without regenerating', () => {
+    const descriptorPath = path.join(sandbox, 'scripts/contracts/ipc-descriptors/queue-core.mjs');
+    const original = fs.readFileSync(descriptorPath, 'utf8');
+    const mutated = original.replace('const DESCRIPTION_MAX = 4096;', 'const DESCRIPTION_MAX = 2048;');
+    expect(mutated, 'fixture did not match DESCRIPTION_MAX in queue-core.mjs').not.toEqual(original);
+    fs.writeFileSync(descriptorPath, mutated, 'utf8');
+
+    const result = runCheck(sandbox);
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('stale generated file: src/contracts/generated/validators/queue-core.ts');
+    expect(result.output).toContain('scripts/contracts/ipc-descriptors/queue-core.mjs');
   });
 });

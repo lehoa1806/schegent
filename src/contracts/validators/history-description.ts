@@ -1,46 +1,7 @@
-import {
-  CMD_RESOLVE_HISTORY_DESCRIPTION,
-  type ResolveHistoryDescriptionResponse,
-  type SidebarCommand
-} from '../sidebar-ipc';
-import {
-  QUEUE_ID_MAX,
-  fail,
-  hasUnexpectedKeys,
-  ok,
-  type IpcValidationResult
-} from './shared';
+// FR-R3-071 — egress response validator for CMD_RESOLVE_HISTORY_DESCRIPTION.
+// Inbound request validation is generated in `src/contracts/generated/validators/history-evidence.ts`.
 
-// FR-R3-071 — one identifier and nothing else, on the same `QUEUE_ID_MAX`
-// bound every other identifier on this boundary uses. As with the evidence
-// drill-down, existence is state rather than shape: an unknown run id is the
-// handler's `unknown-run`, not a malformed message, or a stale history row
-// would be reported to the operator as a protocol error.
-export function validateResolveHistoryDescription(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_RESOLVE_HISTORY_DESCRIPTION, correlationId });
-  }
-  const value = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(value, ['runId'])) {
-    return fail('unexpected-payload-fields', {
-      type: CMD_RESOLVE_HISTORY_DESCRIPTION,
-      correlationId
-    });
-  }
-  const runId = value['runId'];
-  if (typeof runId !== 'string' || runId.length === 0 || runId.length > QUEUE_ID_MAX) {
-    return fail('invalid-runId', { type: CMD_RESOLVE_HISTORY_DESCRIPTION, correlationId });
-  }
-  return ok({
-    type: CMD_RESOLVE_HISTORY_DESCRIPTION,
-    correlationId,
-    payload: { runId }
-  } as SidebarCommand);
-}
+import type { ResolveHistoryDescriptionResponse } from '../sidebar-ipc';
 
 // FR-R3-071 — validated arm by arm, because the arms are rendered differently:
 // `resolved`/`legacy` replace what the operator is about to submit, while

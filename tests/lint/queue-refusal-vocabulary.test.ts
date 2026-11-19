@@ -71,7 +71,7 @@ function codesIn(body: string): readonly string[] {
 const QUEUE_MANAGER = read('src', 'queue', 'queue-manager.ts');
 const WORKSPACE_STATE = read('src', 'state', 'workspace-state.ts');
 const SCHEDULE_PARSER = read('src', 'lib', 'schedule-parser.ts');
-const VALIDATORS = read('src', 'contracts', 'validators', 'queue-management.ts');
+const VALIDATORS = read('src', 'contracts', 'generated', 'validators', 'queue-management.ts');
 const IPC_MODULE = read('webview-ui', 'src', 'lib', 'queue-control-ipc.ts');
 /**
  * FR-R3-150 (code-review finding) — the queue-scoped Clean All orchestrator is
