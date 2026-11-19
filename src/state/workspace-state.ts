@@ -431,6 +431,7 @@ import {
   type RunFieldInvariantCode
 } from './run-invariant-error';
 import {
+  ADMISSIBLE_INITIAL_RUN_STATUS,
   ALL_RUN_TRANSITION_ACTORS,
   DEFAULT_ACTOR_BY_RUN_UPDATE_LABEL,
   RUN_STATUS_TRANSITIONS,
@@ -3191,10 +3192,10 @@ export class WorkspaceStateStore {
       run,
       initialExisting !== null && initialExisting.id === run.id ? initialExisting : null
     );
-    if (run.status !== 'running') {
+    if (run.status !== ADMISSIBLE_INITIAL_RUN_STATUS) {
       throw new RunFieldInvariantError(
         'invalid-admission-status',
-        `WorkflowRun invariant violation: admitRunAtomically requires status 'running' (got '${run.status}')`
+        `WorkflowRun invariant violation: admitRunAtomically requires status '${ADMISSIBLE_INITIAL_RUN_STATUS}' (got '${run.status}')`
       );
     }
     if (!findQueue(this.getQueueRegistry(), queueId)) {

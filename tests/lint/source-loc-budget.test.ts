@@ -1072,14 +1072,14 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // quarantine moved to `memento-write-gate.ts`, which now also lifts the quarantine when the
       // timed-out write settles.
       //
-      // Feature 315 (FR-R7-01, 2026-11-19) — 3737 → 3932, +195: typed `RunFieldInvariantError`
+      // Feature 315 (FR-R7-01, 2026-11-19) — 3737 → 3933, +196: typed `RunFieldInvariantError`
       // throws in `validateRunInvariants`, `decideRunTransition` enforcement in `setRun` and
       // `updateRun`, re-exports of the new pure modules (`run-invariant-error.ts`,
       // `run-transition-decision.ts`), and `admitRunAtomically` inside
       // `serializeAcrossKeys([KEYS.run, KEYS.queue])` with same-`run.id` transition and
       // `running`-status admission checks. Pure transition and error definitions live
       // in their own modules; relocation of existing `workspace-state.ts` code belongs to FR-R7-07.
-      highWaterMark: 3932
+      highWaterMark: 3933
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
