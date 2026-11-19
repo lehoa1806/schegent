@@ -83,8 +83,12 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
   },
 
   // ---- Spend and usage
-  { path: 'src/parser/invocation-usage.ts', role: 'Spend and usage', how: 'record' },
-  { path: 'src/contracts/backend-spend-denomination.ts', role: 'Spend and usage', how: 'record' },
+  {
+    path: 'src/parser/invocation-usage.ts',
+    role: 'Spend and usage',
+    how: 'record',
+    note: 'behavior: function-valued JSONL usage row discriminators, envelope extractors, and token/cost field mappings per backend'
+  },
 
   // ---- Qualification
   { path: 'src/contracts/qualified-backend-versions.ts', role: 'Qualification', how: 'literal' },
