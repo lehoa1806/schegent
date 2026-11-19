@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../../src/contracts/backend-kinds';
+import { KEY_SPECS, type AllowedKey } from '../../../src/config/general-settings-keys';
 import {
   BACKEND_DESCRIPTORS,
   BACKEND_DESCRIPTOR_LIST,
@@ -73,7 +74,7 @@ describe('FR-R7-06 — BackendDescriptor table parity, purity, and unknown-safet
           '.claude/CLAUDE.md'
         ],
         supportsGitSideEffects: true,
-        autoCompactEnvVar: 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE',
+        supportsAutoCompactOverride: true,
         supportsSessionCompaction: true,
         modelDiscoveryArgs: null,
         unsupportedEffortLevels: [],
@@ -106,7 +107,7 @@ describe('FR-R7-06 — BackendDescriptor table parity, purity, and unknown-safet
         ambientConfigSegments: ['.codex', 'config.toml'],
         repoAgentConfigPaths: ['.codex/config.toml', 'AGENTS.md', 'AGENTS.override.md'],
         supportsGitSideEffects: false,
-        autoCompactEnvVar: null,
+        supportsAutoCompactOverride: false,
         supportsSessionCompaction: false,
         modelDiscoveryArgs: null,
         unsupportedEffortLevels: [],
@@ -139,7 +140,7 @@ describe('FR-R7-06 — BackendDescriptor table parity, purity, and unknown-safet
         ambientConfigSegments: null,
         repoAgentConfigPaths: [],
         supportsGitSideEffects: true,
-        autoCompactEnvVar: null,
+        supportsAutoCompactOverride: false,
         supportsSessionCompaction: false,
         modelDiscoveryArgs: ['models'],
         unsupportedEffortLevels: ['xhigh', 'max'],
@@ -219,5 +220,17 @@ describe('FR-R7-06 — BackendDescriptor table parity, purity, and unknown-safet
     expect(mutable.codex).toEqual([]);
 
     expect(emptyBackendModels()).toEqual({ claude: [], codex: [], agy: [] });
+  });
+
+  it('keeps cliPathSettingKey, cliPathFieldKey, and defaultCliBinary aligned with KEY_SPECS', () => {
+    for (const descriptor of BACKEND_DESCRIPTOR_LIST) {
+      const spec = Object.getOwnPropertyDescriptor(
+        KEY_SPECS,
+        descriptor.cliPathSettingKey as AllowedKey
+      )?.value as { readonly typedField: string; readonly defaultValue: unknown } | undefined;
+      expect(spec, `KEY_SPECS entry for ${descriptor.cliPathSettingKey}`).toBeDefined();
+      expect(spec?.typedField).toBe(descriptor.cliPathFieldKey);
+      expect(spec?.defaultValue).toBe(descriptor.defaultCliBinary);
+    }
   });
 });

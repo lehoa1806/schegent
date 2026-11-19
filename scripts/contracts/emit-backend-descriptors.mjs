@@ -41,7 +41,7 @@ function evalPureLiteral(node, sourceFile, context) {
     return expr.elements.map((el, idx) => evalPureLiteral(el, sourceFile, `${context}[${idx}]`));
   }
   if (ts.isObjectLiteralExpression(expr)) {
-    const out = {};
+    const out = Object.create(null);
     for (const prop of expr.properties) {
       if (!ts.isPropertyAssignment(prop)) {
         throw new Error(`${context}: unsupported non-data property in BackendDescriptor (${prop.getText(sourceFile)})`);
@@ -188,8 +188,11 @@ export function validateBackendManifestParity({
   }
 
   for (const kind of supportedBackends) {
+    if (!Object.prototype.hasOwnProperty.call(descriptors, kind)) continue;
     const desc = descriptors[kind];
-    if (!desc) continue;
+    if (desc.kind !== kind) {
+      errors.push(`BACKEND_DESCRIPTORS.${kind}.kind (${String(desc.kind)}) !== '${kind}'`);
+    }
     const fullKey = `schegent.${desc.cliPathSettingKey}`;
     const pathProp = props[fullKey];
     if (!pathProp) {
@@ -203,7 +206,10 @@ export function validateBackendManifestParity({
 
   const expectedAcpProfiles = [
     'auto',
-    ...supportedBackends.map((kind) => descriptors[kind]?.acpProfile?.profileId).filter(Boolean).sort()
+    ...supportedBackends
+      .map((kind) => (Object.prototype.hasOwnProperty.call(descriptors, kind) ? descriptors[kind]?.acpProfile?.profileId : undefined))
+      .filter(Boolean)
+      .sort()
   ];
   const actualAcpProfiles = props['schegent.acp.profile']?.enum ?? [];
   if (!sameArray(actualAcpProfiles, expectedAcpProfiles)) {
@@ -218,6 +224,88 @@ export function validateBackendManifestParity({
 }
 
 /**
+ * FR-R7-06 (FR-006): validates that `src/config/settings-schema.ts` derives its backend
+ * enumerations, CLI path defaults, models map, and ACP profile enum from `SUPPORTED_BACKENDS`
+ * and `BACKEND_DESCRIPTORS` rather than duplicating backend literals.
+ */
+export function validateSettingsSchemaParity(repoRoot, { supportedBackends, descriptors }) {
+  const schemaPath = path.join(repoRoot, 'src/config/settings-schema.ts');
+  const schemaText = fs.readFileSync(schemaPath, 'utf8');
+  const sf = ts.createSourceFile('src/config/settings-schema.ts', schemaText, ts.ScriptTarget.Latest, true);
+
+  let schemaObj = null;
+  const visit = (node) => {
+    if (
+      ts.isVariableDeclaration(node)
+      && ts.isIdentifier(node.name)
+      && node.name.text === 'SETTINGS_SCHEMA'
+      && node.initializer
+    ) {
+      const expr = unwrap(node.initializer);
+      if (ts.isObjectLiteralExpression(expr)) schemaObj = expr;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+
+  if (!schemaObj) {
+    throw new Error('src/config/settings-schema.ts: missing SETTINGS_SCHEMA object literal');
+  }
+
+  const propsByKey = new Map();
+  for (const prop of schemaObj.properties) {
+    if (ts.isPropertyAssignment(prop) && (ts.isStringLiteral(prop.name) || ts.isIdentifier(prop.name))) {
+      propsByKey.set(prop.name.text, prop.initializer.getText(sf));
+    }
+  }
+
+  const errors = [];
+  const runnerInit = propsByKey.get('schegent.backend.runner') ?? '';
+  if (!/\benum\s*:\s*SUPPORTED_BACKENDS\b/.test(runnerInit)) {
+    errors.push('src/config/settings-schema.ts: schegent.backend.runner.enum must reference SUPPORTED_BACKENDS');
+  }
+  if (!/\bdefault\s*:\s*DEFAULT_BACKEND\b/.test(runnerInit)) {
+    errors.push('src/config/settings-schema.ts: schegent.backend.runner.default must reference DEFAULT_BACKEND');
+  }
+
+  const uncontainedInit = propsByKey.get('schegent.backend.uncontainedBackends') ?? '';
+  if (!uncontainedInit) {
+    errors.push('src/config/settings-schema.ts: missing schegent.backend.uncontainedBackends entry');
+  }
+
+  const modelsInit = propsByKey.get('schegent.models') ?? '';
+  if (!/\bemptyBackendModels\s*\(\s*\)/.test(modelsInit)) {
+    errors.push('src/config/settings-schema.ts: schegent.models.default must call emptyBackendModels()');
+  }
+
+  const acpProfileInit = propsByKey.get('schegent.acp.profile') ?? '';
+  if (!/\bBACKEND_DESCRIPTOR_LIST\b/.test(acpProfileInit)) {
+    errors.push('src/config/settings-schema.ts: schegent.acp.profile.enum must derive from BACKEND_DESCRIPTOR_LIST');
+  }
+
+  for (const kind of supportedBackends) {
+    if (!Object.prototype.hasOwnProperty.call(descriptors, kind)) continue;
+    const desc = descriptors[kind];
+    const fullKey = `schegent.${desc.cliPathSettingKey}`;
+    const entryInit = propsByKey.get(fullKey);
+    if (!entryInit) {
+      errors.push(`src/config/settings-schema.ts: missing ${fullKey} declared by BACKEND_DESCRIPTORS.${kind}`);
+    } else if (!entryInit.includes(`BACKEND_DESCRIPTORS.${kind}.defaultCliBinary`)) {
+      errors.push(`src/config/settings-schema.ts: ${fullKey}.default must reference BACKEND_DESCRIPTORS.${kind}.defaultCliBinary`);
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Settings schema descriptor parity failed:\n- ${errors.join('\n- ')}`);
+  }
+}
+
+function formatObjectKey(key) {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : JSON.stringify(key);
+}
+
+/**
  * Emits a self-contained webview projection (`webview-ui/src/lib/generated/backend-descriptors.ts`)
  * carrying zero host-code imports and only webview-safe static descriptor fields.
  */
@@ -226,9 +314,12 @@ export function emitWebviewBackendDescriptors({
   defaultBackend,
   descriptors
 }) {
-  const unionExpr = supportedBackends.map((k) => `'${k}'`).join(' | ');
-  const projected = {};
+  const unionExpr = supportedBackends.map((k) => JSON.stringify(k)).join(' | ');
+  const projected = Object.create(null);
   for (const kind of supportedBackends) {
+    if (!Object.prototype.hasOwnProperty.call(descriptors, kind)) {
+      throw new Error(`emitWebviewBackendDescriptors: missing descriptor for '${kind}'`);
+    }
     const d = descriptors[kind];
     projected[kind] = {
       kind: d.kind,
@@ -237,7 +328,7 @@ export function emitWebviewBackendDescriptors({
       cliPathFieldKey: d.cliPathFieldKey,
       defaultCliBinary: d.defaultCliBinary,
       spendDenomination: d.spendDenomination,
-      supportsAutoCompactPctOverride: d.autoCompactEnvVar !== null,
+      supportsAutoCompactPctOverride: d.supportsAutoCompactOverride,
       supportsGitSideEffects: d.supportsGitSideEffects,
       supportsModelDiscovery: d.modelDiscoveryArgs !== null,
       unsupportedEffortLevels: d.unsupportedEffortLevels,
@@ -249,7 +340,7 @@ export function emitWebviewBackendDescriptors({
     .map((kind) => {
       const p = projected[kind];
       return [
-        `    ${kind}: Object.freeze({`,
+        `    ${formatObjectKey(kind)}: Object.freeze({`,
         `      kind: ${JSON.stringify(p.kind)},`,
         `      displayLabel: ${JSON.stringify(p.displayLabel)},`,
         `      cliPathSettingKey: ${JSON.stringify(p.cliPathSettingKey)},`,

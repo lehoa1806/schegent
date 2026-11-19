@@ -6,7 +6,7 @@
 //
 // Self-contained webview projection: carries zero imports from host `src/`.
 
-export type BackendRunnerKind = 'claude' | 'codex' | 'agy';
+export type BackendRunnerKind = "claude" | "codex" | "agy";
 
 export const SUPPORTED_BACKENDS: ReadonlyArray<BackendRunnerKind> = Object.freeze(["claude","codex","agy"]);
 
