@@ -4,6 +4,7 @@ import { policyRequestFields } from '../runner/spawn-env';
 import type { BackendRunner } from '../contracts/backend-runner';
 import type { BackendRunnerRegistry } from '../runner/backend-runner-registry';
 import { DEFAULT_BACKEND, type BackendRunnerKind } from '../contracts/backend-kinds';
+import { getBackendDescriptor } from '../contracts/backend-descriptors';
 import type { PromptBuilder } from '../runner/prompt-builder';
 import { RESUME_PROMPT_IDENTITY } from '../runner/prompt-identity';
 import type { ExecutionEnvelope } from '../contracts/run-request';
@@ -611,26 +612,27 @@ export class PhaseRunner {
     // Claude CLI reads to override its auto-compaction threshold; when
     // undefined, the key MUST NOT appear in the env map (no empty-string
     // fallback, no "undefined" literal).
+    const backendDescriptor = getBackendDescriptor(effectiveRunnerKind);
     const autoCompactPct =
       this.autoCompactOverrideAccessor?.readAutoCompactPctOverride();
     const env: Record<string, string> = {
       SCHEGENT_PHASE: inputs.phase,
       SCHEGENT_ITERATION: String(inputs.iteration)
     };
-    if (effectiveRunnerKind === 'claude' && autoCompactPct !== undefined) {
-      env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(autoCompactPct);
+    if (backendDescriptor.autoCompactEnvVar !== null && autoCompactPct !== undefined) {
+      env[backendDescriptor.autoCompactEnvVar] = String(autoCompactPct);
       await this.appendAudit(inputs, 'auto-compact-override-applied', 'info', {
         ...this.pipelineMeta(inputs),
         runId: inputs.runId,
         value: autoCompactPct
       });
     }
-    // Compact Claude sessions before cross-phase reuse to bound context bleed.
+    // Compact sessions before cross-phase reuse on backends that support compaction.
     let effectiveSessionReuse = inputs.sessionReuse === true;
     let effectiveIsContinue = inputs.isContinue === true;
     let effectiveResumeSessionId = inputs.resumeSessionId;
     if (
-      effectiveRunnerKind === 'claude' &&
+      backendDescriptor.supportsSessionCompaction &&
       effectiveSessionReuse &&
       typeof inputs.resumeSessionId === 'string'
     ) {
@@ -750,7 +752,7 @@ export class PhaseRunner {
     await this.appendAudit(inputs, 'cli-invocation', 'info', projectAuditPayload('cli-invocation', {
       runner: effectiveRunnerKind,
       operation: 'phase',
-      permissionMode: effectiveRunnerKind === 'codex' ? 'workspace-write' : 'unrestricted',
+      permissionMode: backendDescriptor.defaultAuditPermissionMode,
       continued: effectiveIsContinue,
       sessionReused: effectiveSessionReuse,
       ...(inputs.phaseDef?.model ? { modelId: inputs.phaseDef.model } : {}),

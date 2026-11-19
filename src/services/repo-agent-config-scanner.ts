@@ -21,6 +21,7 @@
 import { createHash } from 'node:crypto';
 import type * as fsp from 'node:fs/promises';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { mapBackends, type BackendMap } from '../contracts/backend-descriptors';
 import { openWithinRoot, type SafeOpenRefusal } from '../lib/safe-open';
 
 export const MAX_AGENT_CONFIG_FILE_BYTES = 262_144; // 256 KiB
@@ -29,19 +30,10 @@ export const MAX_AGENT_CONFIG_SCAN_MS = 2_000;
 const MAX_HOOK_EVENT_NAMES = 64;
 const MAX_HOOK_EVENT_NAME_CHARS = 64;
 
-/** Fixed repository-relative paths inspected per backend (POSIX separators). */
-export const REPO_AGENT_CONFIG_PATHS: Readonly<Record<BackendRunnerKind, readonly string[]>> =
-  Object.freeze({
-    claude: Object.freeze([
-      '.claude/settings.json',
-      '.claude/settings.local.json',
-      '.mcp.json',
-      'CLAUDE.md',
-      '.claude/CLAUDE.md'
-    ]),
-    codex: Object.freeze(['.codex/config.toml', 'AGENTS.md', 'AGENTS.override.md']),
-    agy: Object.freeze([])
-  });
+/** Fixed repository-relative paths inspected per backend (POSIX separators), read from `BACKEND_DESCRIPTORS`. */
+export const REPO_AGENT_CONFIG_PATHS: BackendMap<readonly string[]> = mapBackends(
+  (descriptor) => descriptor.repoAgentConfigPaths
+);
 
 const CLAUDE_SETTINGS_FILES: ReadonlySet<string> = new Set([
   '.claude/settings.json',

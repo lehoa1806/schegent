@@ -1,9 +1,7 @@
 import type { PingBackendCommand } from '../messages';
-import type { BackendRunnerKind } from '../../../contracts/backend-kinds';
+import { isBackendRunnerKind } from '../../../contracts/backend-kinds';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
-
-const RUNNERS: ReadonlySet<string> = new Set(['claude', 'codex', 'agy']);
 
 export const handler: CommandHandler<PingBackendCommand> = async (ctx, command) => {
   const payload = command.payload;
@@ -11,7 +9,7 @@ export const handler: CommandHandler<PingBackendCommand> = async (ctx, command) 
     payload === null
     || typeof payload !== 'object'
     || Object.keys(payload).length !== 1
-    || !RUNNERS.has(payload.runner)
+    || !isBackendRunnerKind(payload.runner)
   ) {
     await ack(ctx, 'rejected', 'invalid-payload');
     return;
@@ -21,7 +19,7 @@ export const handler: CommandHandler<PingBackendCommand> = async (ctx, command) 
     return;
   }
   const result = await ctx.deps.backendPingService.ping(
-    payload.runner as BackendRunnerKind,
+    payload.runner,
     ctx.correlationId
   );
   await ack(

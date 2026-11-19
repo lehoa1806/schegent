@@ -1,4 +1,10 @@
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend-kinds';
+import {
+  findBackendDescriptor,
+  type BackendContainmentMechanism
+} from '../contracts/backend-descriptors';
+
+export type { BackendContainmentMechanism };
 
 /**
  * FR-R3-056 (H-01) — whether a backend may run at all.
@@ -50,48 +56,11 @@ import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend
  * what a pre-FR-R3-125 log looks like, and "uncontained" must be distinguishable
  * from "not recorded".
  */
-export type BackendContainmentMechanism =
-  /** `codex exec --sandbox workspace-write`; macOS Seatbelt on darwin. */
-  | 'codex-sandbox-workspace-write'
-  /** No OS-enforced bound in the adapter's argv. */
-  | 'none';
-
-/**
- * Every backend's enforcing mechanism, and the reason for each.
- *
- * VERIFIED 2026-08-27 by invoking each installed CLI's own `--help`; versions and
- * evidence are in the qualification record. Do not edit a row here without editing
- * that record's matrix — the parity gate fails, which is the point.
- *
- * AGY IS `none` AND IT EXPOSES `--sandbox`. This is FR-R3-125's finding and it
- * contradicts the item that filed it: `agy 1.1.22` carries
- * `--sandbox` — "Run in a sandbox with terminal restrictions enabled" — and
- * Schegent does not request it by default; the planner adds it only when a Phase
- * withholds `process-spawn`. It is classified `none` anyway, deliberately:
- * this project's definition of contained is that the OPERATING SYSTEM, not a
- * prompt, decides what the process can reach, and "terminal restrictions" is
- * consistent with a tool-level gate — which is what `claude --disallowedTools`
- * already is and which this project has never counted. Qualifying it needs a live
- * invocation this cycle did not make. §4 of the qualification record names the
- * probe and the entry condition for requesting the flag; read it before changing
- * this row.
- */
-const MECHANISM_BY_BACKEND: ReadonlyMap<BackendRunnerKind, BackendContainmentMechanism> = new Map<
-  BackendRunnerKind,
-  BackendContainmentMechanism
->([
-  // `--dangerously-skip-permissions`: approval prompts off, no filesystem bound.
-  ['claude', 'none'],
-  // As above; `--sandbox` exists and is not requested by default. See the docblock.
-  ['agy', 'none'],
-  ['codex', 'codex-sandbox-workspace-write']
-]);
-
 export type BackendContainment = 'os-enforced' | 'none';
 
-/** The mechanism this backend's argv actually carries. */
+/** The mechanism this backend's argv actually carries (safe `'none'` for unknown kinds). */
 export function mechanismOf(kind: BackendRunnerKind): BackendContainmentMechanism {
-  return MECHANISM_BY_BACKEND.get(kind) ?? 'none';
+  return findBackendDescriptor(kind)?.containmentMechanism ?? 'none';
 }
 
 /**
@@ -295,7 +264,7 @@ export function judgeBackendContainment(
  * with its first letter capitalised, which extends to a fourth backend without an edit.
  */
 export function uncontainedGrantNotice(kind: BackendRunnerKind): string {
-  const name = `${kind.charAt(0).toUpperCase()}${kind.slice(1)}`;
+  const name = findBackendDescriptor(kind)?.displayLabel ?? `${kind.charAt(0).toUpperCase()}${kind.slice(1)}`;
   return (
     `${name} runs with no OS-enforced bound, so model-generated actions execute with your ` +
     'local user authority; you accepted that for this backend only, the grant is ' +

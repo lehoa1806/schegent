@@ -1,7 +1,6 @@
 /**
- * FR-R6-F13 (F13-B, F13-C; FR-001, FR-002, FR-003, FR-004, FR-015, FR-016, FR-021) — built-in
- * ACP agent profiles and host launch resolution for `agy` (native ACP stdio) and `claude` /
- * `codex` (maintained ACP stdio bridges).
+ * FR-R6-F13 (F13-B, F13-C; FR-001, FR-002, FR-003, FR-004, FR-015, FR-016, FR-021) & FR-R7-06 —
+ * built-in ACP agent profiles and host launch resolution derived from `BACKEND_DESCRIPTORS`.
  *
  * - Profiles are host-owned constants, never loaded from repository files or workspace text.
  * - Platform qualification is scoped to observed tuples (`darwin/arm64`); unverified platforms
@@ -13,19 +12,22 @@
 import * as path from 'node:path';
 
 import type { AgentProfile, AcpQualification } from '../../contracts/acp-runtime';
-import type { BackendRunnerKind } from '../../contracts/backend-kinds';
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../contracts/backend-kinds';
+import {
+  getBackendDescriptor,
+  mapBackends,
+  type BackendMap
+} from '../../contracts/backend-descriptors';
 import type { DeclaredCapabilitySet } from '../../contracts/phase-capabilities';
 import { planCapabilityEnforcement, unboundedArgs } from '../capability-enforcement-plan';
 import { CapabilityNotEnforceableError } from '../capability-refusal';
 import type { StdioLaunch } from './stdio-transport';
 
-export const ACP_PROFILE_IDS = Object.freeze({
-  agy: 'agy-acp-native',
-  claude: 'claude-acp-bridge',
-  codex: 'codex-acp-bridge'
-} as const satisfies Readonly<Record<BackendRunnerKind, string>>);
+export const ACP_PROFILE_IDS: BackendMap<string> = mapBackends(
+  (descriptor) => descriptor.acpProfile.profileId
+);
 
-export type BuiltinAcpProfileId = (typeof ACP_PROFILE_IDS)[BackendRunnerKind];
+export type BuiltinAcpProfileId = 'agy-acp-native' | 'claude-acp-bridge' | 'codex-acp-bridge';
 
 export interface AcpProfilePlatform {
   readonly os: string;
@@ -47,49 +49,24 @@ export function getBuiltinAcpProfile(
   const platform = options.platform ?? { os: process.platform, arch: process.arch };
   const qualification = acpQualificationForPlatform(platform);
   const model = options.model && options.model.trim().length > 0 ? options.model.trim() : 'default';
+  const descriptor = getBackendDescriptor(kind);
+  const profile = descriptor.acpProfile;
 
-  switch (kind) {
-    case 'agy':
-      return Object.freeze({
-        profileId: ACP_PROFILE_IDS.agy,
-        revision: 1,
-        kind: 'native',
-        executableRef: 'agy',
-        attribution: Object.freeze({ provider: 'google', backend: 'agy', model }),
-        requiredCapabilities: Object.freeze(['load-session', 'embedded-context'] as const),
-        qualification
-      });
-    case 'claude':
-      return Object.freeze({
-        profileId: ACP_PROFILE_IDS.claude,
-        revision: 1,
-        kind: 'bridge',
-        executableRef: 'claude',
-        attribution: Object.freeze({ provider: 'anthropic', backend: 'claude', model }),
-        requiredCapabilities: Object.freeze(['load-session', 'embedded-context'] as const),
-        qualification
-      });
-    case 'codex':
-      return Object.freeze({
-        profileId: ACP_PROFILE_IDS.codex,
-        revision: 1,
-        kind: 'bridge',
-        executableRef: 'codex',
-        attribution: Object.freeze({ provider: 'openai', backend: 'codex', model }),
-        requiredCapabilities: Object.freeze(['load-session', 'embedded-context'] as const),
-        qualification
-      });
-  }
+  return Object.freeze({
+    profileId: profile.profileId,
+    revision: profile.revision,
+    kind: profile.kind,
+    executableRef: profile.executableRef,
+    attribution: Object.freeze({ provider: profile.provider, backend: descriptor.kind, model }),
+    requiredCapabilities: profile.requiredCapabilities,
+    qualification
+  });
 }
 
 export function listBuiltinAcpProfiles(
   platform: AcpProfilePlatform = { os: process.platform, arch: process.arch }
 ): readonly AgentProfile[] {
-  return Object.freeze([
-    getBuiltinAcpProfile('claude', { platform }),
-    getBuiltinAcpProfile('codex', { platform }),
-    getBuiltinAcpProfile('agy', { platform })
-  ]);
+  return Object.freeze(SUPPORTED_BACKENDS.map((kind) => getBuiltinAcpProfile(kind, { platform })));
 }
 
 function resolvePermissionArgs(
@@ -129,11 +106,12 @@ export function defaultAcpBridgeScriptPath(extensionDistDir?: string): string {
  */
 export function resolveAcpProfileLaunch(input: ResolveAcpProfileLaunchInput): StdioLaunch {
   const permissionArgs = resolvePermissionArgs(input.kind, input.capabilities);
+  const profile = getBackendDescriptor(input.kind).acpProfile;
 
-  if (input.kind === 'agy') {
+  if (profile.kind === 'native' && profile.nativeStdioArgs !== null) {
     return {
       command: input.resolvedCliPath,
-      args: ['acp', '--stdio', '--disable-telemetry', ...permissionArgs],
+      args: [...profile.nativeStdioArgs, ...permissionArgs],
       cwd: input.cwd,
       env: input.env
     };

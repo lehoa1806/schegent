@@ -26,10 +26,10 @@ import type {
 } from '../contracts/acp-runtime';
 import type { AcpUsageUpdate } from '../services/usage-accounting/acp-usage-mapping';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { getBackendDescriptor } from '../contracts/backend-descriptors';
 import type {
   BackendRunner,
   MonitorSidecarHook,
-  RunnerLabel,
   TreeTeardownOutcome
 } from '../contracts/backend-runner';
 import { classifyFatal } from '../lib/fatal-signature-registry';
@@ -118,12 +118,6 @@ export interface AcpBackedRunnerOptions {
     generation: number
   ) => AcpStdioTransport;
 }
-
-const RUNNER_LABEL_BY_KIND: Readonly<Record<BackendRunnerKind, RunnerLabel>> = Object.freeze({
-  claude: 'claude-cli',
-  codex: 'codex-cli',
-  agy: 'agy-cli'
-});
 
 let nextAcpGeneration = 0;
 
@@ -229,7 +223,7 @@ export class AcpBackedRunner implements BackendRunner {
       ...(this.options.platform !== undefined ? { platform: this.options.platform } : {})
     });
     const generation = ++nextAcpGeneration;
-    const label = RUNNER_LABEL_BY_KIND[this.options.kind];
+    const label = getBackendDescriptor(this.options.kind).runnerLabel;
     const invocationId = nextInvocationId(label);
     const runId = request.runId ?? null;
     const attemptId = sanitizeHostToken(request.attemptId, sanitizeHostToken(invocationId, `attempt-${generation}`));

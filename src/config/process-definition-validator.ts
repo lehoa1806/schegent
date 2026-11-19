@@ -15,6 +15,7 @@ import {
 } from '../contracts/process-definitions';
 import { validate as validateRetryCondition } from '../lib/retry-condition';
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend-kinds';
+import { isUnsupportedEffortForBackend } from '../contracts/backend-descriptors';
 import {
   ALL_PHASE_CAPABILITIES,
   isPhaseCapability,
@@ -506,7 +507,7 @@ export function validatePhaseDefinition(
     }
   }
 
-  if (runner === 'agy' && (effort === 'xhigh' || effort === 'max')) {
+  if (effort !== undefined && isUnsupportedEffortForBackend(runner, effort)) {
     errors.push(
       fieldError(
         phaseId,
