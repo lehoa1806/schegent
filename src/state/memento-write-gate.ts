@@ -23,9 +23,20 @@ export class StorageWriteQuarantinedError extends Error {
   }
 }
 
-/** The one Memento call the gate makes. */
+/** One key/value pair in an atomic multi-key Memento batch commit. */
+export interface MementoBatchEntry {
+  readonly key: string;
+  readonly value: unknown;
+}
+
+/** The Memento write surface the gate bounds and quarantines. */
 export interface MementoWriter {
   update(key: string, value: unknown): Thenable<void>;
+  /**
+   * Optional multi-key atomic batch writer implemented by `SwitchableOperationalMemento`
+   * (backed by one `BEGIN IMMEDIATE ... COMMIT` transaction on `SqliteOperationalBacking`).
+   */
+  updateBatch?(entries: readonly MementoBatchEntry[]): Thenable<void>;
 }
 
 type WriteOutcome =
@@ -61,34 +72,52 @@ export class MementoWriteGate {
   }
 
   public async write(key: string, value: unknown): Promise<void> {
+    await this.executeBounded(key, () => this.memento.update(key, value));
+  }
+
+  /**
+   * FR-R7-01 — commit a multi-key batch through the same deadline/quarantine gate as `write`.
+   * Callers check `memento.updateBatch !== undefined` before invoking.
+   */
+  public async writeBatch(entries: readonly MementoBatchEntry[]): Promise<void> {
+    const label = entries.map((e) => e.key).join('+');
+    await this.executeBounded(label, () => {
+      if (!this.memento.updateBatch) {
+        throw new Error('MementoWriter does not support updateBatch');
+      }
+      return this.memento.updateBatch(entries);
+    });
+  }
+
+  private async executeBounded(label: string, invoke: () => Thenable<void>): Promise<void> {
     if (this.quarantine !== null) {
       throw new StorageWriteQuarantinedError(
         'storage-write-quarantined',
-        `Workspace state write refused for ${key}: storage writer is quarantined after an earlier write timed out`
+        `Workspace state write refused for ${label}: storage writer is quarantined after an earlier write timed out`
       );
     }
-    const settled = this.startWrite(key, value);
+    const settled = this.startWrite(invoke);
     const raced = await this.raceDeadline(settled);
     if (raced.outcome === 'ok') return;
     if (raced.outcome === 'error') throw raced.error;
     const token = {};
     this.quarantine = token;
     this.logger?.warn('workspace state write timed out; quarantining state writer', {
-      key,
+      key: label,
       deadlineMs: MEMENTO_WRITE_DEADLINE_MS
     });
     void settled.then((late) => {
-      this.liftOnLateSettle(token, key, late.outcome);
+      this.liftOnLateSettle(token, label, late.outcome);
     });
     throw new StorageWriteQuarantinedError(
       'storage-write-timeout',
-      `Workspace state write timed out after ${MEMENTO_WRITE_DEADLINE_MS}ms for ${key}; state writer is now quarantined`
+      `Workspace state write timed out after ${MEMENTO_WRITE_DEADLINE_MS}ms for ${label}; state writer is now quarantined`
     );
   }
 
-  private startWrite(key: string, value: unknown): Promise<WriteOutcome> {
+  private startWrite(invoke: () => Thenable<void>): Promise<WriteOutcome> {
     try {
-      return Promise.resolve(this.memento.update(key, value)).then(
+      return Promise.resolve(invoke()).then(
         () => ({ outcome: 'ok' as const }),
         (error: unknown) => ({ outcome: 'error' as const, error })
       );

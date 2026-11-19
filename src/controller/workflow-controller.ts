@@ -1,5 +1,5 @@
 import type { PhaseRunner } from './phase-runner';
-import { isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-state';
+import { QueueMutationRejected, isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-state';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SchegentStatusBar } from '../ui/status-bar';
 import type { Notifier } from '../ui/notifications';
@@ -528,28 +528,27 @@ export class SchegentWorkflowController {
     options: StartNewOptions = {}
   ): Promise<RunAdmission> {
     this.logger.info(`Workflow operation triggered: startNew`, { featureId: feature.id, featureDir, options });
-    let run: WorkflowRun | null = null;
+    let admittedRun: WorkflowRun | null = null;
     try {
       // Feature 098 (T026, US3, FR-033b) — no guard here, because that would be a
       // second refusal site. `''` is not nullish, so an empty catalog's empty
-      // `defaultPipelineId` reaches `create()` and is refused there, `run` left null.
-      run = await this.runFactory.create(feature, featureDir,
+      // `defaultPipelineId` reaches `create()` and is refused there, `admittedRun` left null.
+      const run = await this.runFactory.create(feature, featureDir,
         options.pipelineId ?? feature.pipelineId ?? this.catalog.defaultPipelineId
       );
-      // Feature 093 (T023) — pattern B. The Task is in hand, so its queue is
-      // resolved through the one existing resolver rather than a second copy of
-      // the `?? DEFAULT_QUEUE_ID` rule. The row is present here — `markInFlight`
-      // on the next line requires it — so the resolver's removed-Task fallback
-      // is not reachable from this call.
+      // Feature 093 (T023) — pattern B: resolve queue through the single task resolver;
+      // FR-R7-01 persists the Run and marks the Task in-flight in one atomic commit.
       const queueId = this.queue.queueIdForTask(feature.id);
-      await this.store.setRun(queueId, run, this.store.runCommitClaim(queueId));
-      await this.queue.markInFlight(feature.id, run.id, false);
-      // FR-R3-146 (FR-002) — the `catch` below covered the drive too before the
-      // split, so `guardedDrive` keeps covering it. The admission catch is left
-      // alone: no runner is constructed there, so nothing there can be refused.
+      await this.queue.admitRun(feature.id, run);
+      admittedRun = run;
+      // FR-R3-146 (FR-002) — `guardedDrive` keeps covering post-admission drive errors.
       return { completed: this.guardedDrive(queueId, run, feature) };
     } catch (err) {
-      await this.handleUnexpectedStartFailure(feature, run, feature.description, err);
+      if (isOwnershipRefusal(err) || (err instanceof QueueMutationRejected && err.reason === 'in-flight-ownership-conflict')) {
+        this.logger.warn(`admitNew declined before commit (${err.reason}); leaving queue state intact`, { featureId: feature.id, reason: err.reason });
+      } else {
+        await this.handleUnexpectedStartFailure(feature, admittedRun, feature.description, err);
+      }
       return NOTHING_TO_DRIVE;
     }
   }

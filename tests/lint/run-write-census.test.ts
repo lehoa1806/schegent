@@ -42,11 +42,9 @@ interface Row {
 
 /** `file#Class.method`: the whole-Run writes that stay whole, and why. */
 const KEPT_WHOLE: readonly Row[] = [
-  {
-    site: 'controller/workflow-controller.ts#SchegentWorkflowController.admitNew',
-    class: 'kept-whole: creation',
-    reason: 'writes a Run that did not exist a moment ago; there is no current Run to patch'
-  },
+  // FR-R7-01 — `controller/workflow-controller.ts#SchegentWorkflowController.admitNew` left this list
+  // when new-Run admission moved to the single atomic `queue.admitRun` -> `store.admitRunAtomically`
+  // commit (gated separately below so the two-call `setRun` + `markInFlight` form cannot return).
   {
     site: 'queue/queue-manager.ts#QueueManager.clearRunSnapshots',
     class: 'kept-whole: removal',
@@ -228,5 +226,45 @@ describe('the field-update label set (contract C2)', () => {
     // A non-literal label (a shorthand or an identifier) is checked by the compiler
     // against `RunUpdateLabel`, which is the point of the closed union.
     expect(problems).toEqual([]);
+  });
+});
+
+describe('FR-R7-01 — atomic admission census (admitNew)', () => {
+  it('routes SchegentWorkflowController.admitNew through queue.admitRun and forbids the two-call setRun + markInFlight form', () => {
+    const controllerPath = resolve(SRC, 'controller', 'workflow-controller.ts');
+    const source = ts.createSourceFile(
+      controllerPath,
+      readFileSync(controllerPath, 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS
+    );
+    let admitNewNode: ts.MethodDeclaration | null = null;
+    const findAdmitNew = (node: ts.Node): void => {
+      if (ts.isMethodDeclaration(node) && node.name.getText(source) === 'admitNew') {
+        admitNewNode = node;
+      }
+      ts.forEachChild(node, findAdmitNew);
+    };
+    findAdmitNew(source);
+    expect(admitNewNode, 'SchegentWorkflowController.admitNew must exist').not.toBeNull();
+
+    const calledMethods: string[] = [];
+    const visitCalls = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+        calledMethods.push(node.expression.name.text);
+      }
+      ts.forEachChild(node, visitCalls);
+    };
+    visitCalls(admitNewNode!);
+
+    expect(calledMethods).toContain('admitRun');
+    expect(calledMethods).not.toContain('setRun');
+    expect(calledMethods).not.toContain('markInFlight');
+  });
+
+  it('restricts store.admitRunAtomically in src/ exclusively to QueueManager.admitRun', () => {
+    const sites = callsTo('admitRunAtomically').map((c) => c.site);
+    expect(sites).toEqual(['queue/queue-manager.ts#QueueManager.admitRun']);
   });
 });

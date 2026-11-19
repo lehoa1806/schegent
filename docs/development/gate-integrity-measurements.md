@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 136
+    vacuity-census-denominator: 137
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **136** |
+| Gates the detector calls **controlled** (the denominator) | **137** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1698,3 +1698,13 @@ no directory, and is not a scanning gate. None left.
 | **+1** | `services-subsystem-table-parity.test.ts` (135 → 136) | Joined (GC-21). New: it walks the subdirectories of `src/services/` and fails on one with no row in the ARCHITECTURE.md "Services subsystems" table, or a row with no directory; its control is a floor of more than 20 names on each side, so an empty walk or an emptied table cannot pass |
 
 The rate stays **0.0%**: all 136 still read as uncontrolled once their controls are stripped.
+
+**Denominator movement 136 → 137 (2026-11-19, feature 315 / `FR-R7-01`).** One gate joined. Attribution is by census
+membership: `run-allowed-statuses-census.test.ts` walks `src/` via TypeScript AST for every `allowedStatuses` site and
+reads as both scanning and controlled. None left.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `run-allowed-statuses-census.test.ts` (136 → 137) | Joined (`FR-R7-01`, SC-004). New: it scans every `.ts` file under `src/` for `allowedStatuses` property sites and enforces that each is table-derived or explicitly justified; its controls are a floor on discovered sites and a negative-control fixture (`fixtures/unlisted-allowed-statuses.fixture.ts`) that drives the scanner red |
+
+The rate stays **0.0%**: all 137 still read as uncontrolled once their controls are stripped.

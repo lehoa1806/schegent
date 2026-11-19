@@ -289,7 +289,12 @@ export class TerminalTransitionCoordinator {
       // the queue" are the exception to "the intent stays journalled": replaying
       // them is how the loser's outcome reached the winner's Run. They end here.
       try {
-        await this.store.setRun(active.queueId, run, this.store.runCommitClaim(active.queueId));
+        await this.store.setRun(
+          active.queueId,
+          run,
+          this.store.runCommitClaim(active.queueId),
+          'recovery'
+        );
       } catch (error) {
         if (createdAt !== null && isOwnershipRefusal(error)) {
           await this.abandonRefused(run, createdAt, error.reason, active.queueId);
