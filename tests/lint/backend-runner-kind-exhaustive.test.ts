@@ -16,11 +16,12 @@ describe('Backend Runner Kind Exhaustive Parity (Feature 074 / FR-R7-06)', () =>
     const cases = new Set<string>();
     let match: RegExpExecArray | null;
     while ((match = caseRegex.exec(factoryContent)) !== null) {
-      if (match[1]) cases.add(match[1]);
+      cases.add(match[1]);
     }
 
     // 2. Read enum values directly from SETTINGS_SCHEMA
-    const schemaEnum = SETTINGS_SCHEMA['schegent.backend.runner']?.enum ?? [];
+    const runnerEntry = SETTINGS_SCHEMA['schegent.backend.runner'];
+    const schemaEnum = runnerEntry.enum ?? [];
 
     const supportedBackendsList = [...SUPPORTED_BACKENDS].sort();
     const casesList = [...cases].sort();

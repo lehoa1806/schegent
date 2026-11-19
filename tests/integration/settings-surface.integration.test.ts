@@ -35,6 +35,7 @@ import {
   KEY_SPECS,
   type GeneralSettingsConfig
 } from '../../src/config/general-settings';
+import { BACKEND_DESCRIPTOR_LIST } from '../../src/contracts/backend-descriptors';
 
 interface InspectResult<T> {
   defaultValue?: T;
@@ -278,6 +279,16 @@ function renderedSettingKeys(declared: ReadonlySet<string>): ReadonlySet<string>
     const source = fs.readFileSync(file, 'utf8');
     for (const match of source.matchAll(FIELD_KEY_LITERAL)) {
       if (declared.has(match[1])) rendered.add(match[1]);
+    }
+    // FR-R7-06 — BackendEnvironmentGroup derives per-backend CLI path controls from the
+    // generated webview descriptor mirror (`mapBackends` -> `ipcKey: descriptor.cliPathSettingKey`).
+    if (
+      source.includes('generated/backend-descriptors') &&
+      /ipcKey\s*:\s*descriptor\.cliPathSettingKey/.test(source)
+    ) {
+      for (const descriptor of BACKEND_DESCRIPTOR_LIST) {
+        if (declared.has(descriptor.cliPathSettingKey)) rendered.add(descriptor.cliPathSettingKey);
+      }
     }
   }
   return rendered;

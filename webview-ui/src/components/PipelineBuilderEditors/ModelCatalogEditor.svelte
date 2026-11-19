@@ -4,6 +4,7 @@
   // The add form opens from the section's "Add model" button, one section at a time, and a
   // duplicate id is refused under its input. Every row stays editable and removable: each one is a
   // catalog entry, whether Detect or the operator put it there.
+  import { findWebviewBackendDescriptor } from '../../lib/generated/backend-descriptors';
   import { exportModelCatalogYaml } from '../../lib/process-yaml-ipc';
 
   interface Props {
@@ -216,7 +217,7 @@
             value={newModelInput[backend] || ''}
             oninput={(event) => onnewmodelinput(backend, event.currentTarget.value)}
             onkeydown={(event) => onAddKeydown(event, toggleId)}
-            placeholder={`e.g. ${backend === 'claude' ? 'claude-3-7-sonnet-20250219' : 'model-name'}`}
+            placeholder={`e.g. ${findWebviewBackendDescriptor(backend)?.exampleModelPlaceholder ?? 'model-name'}`}
             use:focusOnMount
           />
           <button class="btn btn-primary btn-sm" type="submit">Add</button>

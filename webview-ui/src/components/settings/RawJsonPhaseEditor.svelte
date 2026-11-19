@@ -34,6 +34,10 @@
     RETRY_CAP_OUTCOMES
   } from '../../../../src/contracts/process-definitions';
   import { ALL_PHASE_CAPABILITIES } from '../../../../src/contracts/phase-capabilities';
+  import {
+    SUPPORTED_BACKENDS,
+    isBackendRunnerKind
+  } from '../../lib/generated/backend-descriptors';
 
   interface RawPhase {
     readonly id?: unknown;
@@ -167,9 +171,12 @@
     if (
       'runner' in obj &&
       obj['runner'] !== undefined &&
-      (typeof obj['runner'] !== 'string' || !['claude', 'codex', 'agy'].includes(obj['runner']))
+      !isBackendRunnerKind(obj['runner'])
     ) {
-      return { ok: false, error: 'field `runner` must be one of claude, codex, agy when present' };
+      return {
+        ok: false,
+        error: `field \`runner\` must be one of ${SUPPORTED_BACKENDS.join(', ')} when present`
+      };
     }
     if (
       'forceContinueOnRetryCap' in obj &&

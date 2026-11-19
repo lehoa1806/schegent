@@ -23,9 +23,13 @@
 // reset-transaction literals that `contracts/audit-events.ts` already reuses
 // rather than restates.
 //
-// ADDING A BACKEND is not three edits. The places that name a backend are listed, with their roles, in
-// `tests/fixtures/backend-recipe-sites.ts`, and `tests/lint/backend-recipe-sites.test.ts` fails when one is
-// missing from that list. Start there; the first edit is the union and the frozen list below.
+// ADDING A BACKEND (FR-R7-06) takes four explicit steps:
+//   1. Record the expansion-freeze decision (`tests/lint/expansion-freeze.test.ts` closes this union).
+//   2. Extend `BackendRunnerKind` and `SUPPORTED_BACKENDS` below.
+//   3. Add the complete data row in `src/contracts/backend-descriptors.ts` (typecheck fails there first)
+//      and run `npm run contracts:generate` so the webview mirror and manifest checks stay in sync.
+//   4. Implement and register the behavioural adapter (`src/runner/backend-runner-factory.ts` and the
+//      behavioural sites listed in `tests/fixtures/backend-recipe-sites.ts`).
 
 export type BackendRunnerKind = 'claude' | 'codex' | 'agy';
 

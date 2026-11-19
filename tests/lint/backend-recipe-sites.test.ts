@@ -119,10 +119,15 @@ describe('the backend recipe lists every site (L11)', () => {
     ).toEqual([]);
   });
 
-  it('lists no path twice, and gives every row a role', () => {
+  it('lists no path twice, gives every row a role and one-line rationale, and stays below half the baseline census (SC-001)', () => {
     const paths = BACKEND_RECIPE_SITES.map((site) => site.path);
     expect(new Set(paths).size).toBe(paths.length);
-    for (const site of BACKEND_RECIPE_SITES) expect(site.role.trim().length, site.path).toBeGreaterThan(0);
+    // FR-R7-06 (SC-001) — migrated data-only sites are retired; fewer than half of the original 54 remain.
+    expect(BACKEND_RECIPE_SITES.length).toBeLessThan(27);
+    for (const site of BACKEND_RECIPE_SITES) {
+      expect(site.role.trim().length, site.path).toBeGreaterThan(0);
+      expect(site.note.trim().length, `${site.path} must carry a one-line rationale`).toBeGreaterThan(10);
+    }
   });
 
   it('lists only paths that exist', () => {
