@@ -182,6 +182,8 @@ export function createBackendRunner(
           kind,
           inner: cliRunner,
           monitorHook: options.monitorHook ?? null,
+          ...(options.logger !== undefined ? { logger: options.logger } : {}),
+          ...(options.evidenceHealth !== undefined ? { evidenceHealth: options.evidenceHealth } : {}),
           readConfiguredProfile: options.acpDispatch.readConfiguredProfile,
           allowLegacyDrain: options.acpDispatch.allowLegacyDrain,
           bridgeScriptPath: options.acpDispatch.bridgeScriptPath,

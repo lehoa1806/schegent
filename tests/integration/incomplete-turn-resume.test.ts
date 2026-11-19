@@ -10,10 +10,18 @@
 //    `tests/integration/checkpoints/driver-harness.ts` builds them in `depsFor`. It shows what the
 //    drive does with the dispatch's last output, and what the mutation ledger is told.
 
+import { chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import { PromptBuilder } from '../../src/runner/prompt-builder';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { PhaseRunner, type PhaseRunInputs, type PhaseRunOutput } from '../../src/controller/phase-runner';
+import { transition } from '../../src/controller/phase';
+import { AcpBackedRunner } from '../../src/runner/acp-backed-runner';
+import type { BackendRunner } from '../../src/contracts/backend-runner';
+import { AcpAuthorityGate } from '../../src/services/containment-qualification/acp-authority-gate';
+import { removeTempRoot } from '../temp-root-cleanup';
 import {
   CONTINUATION_NOTES,
   dispatchResumingIncompleteTurns
@@ -422,5 +430,349 @@ describe('FR-R3-198 (T1877) limb 2 — the drive over a dispatch that resumes', 
     const unrecorded = recordingLedger();
     await drive([FINALIZE], [unfinished(null), finished(declaring('b.ts'))], unrecorded.ledger);
     expect(unrecorded.reports).toEqual([null]);
+  });
+});
+
+const AGY_QUALIFIED_PLATFORM = { os: 'darwin', arch: 'arm64' } as const;
+const AGY_SPECKIT_AUTO: PhaseDef = {
+  id: 'agy-speckit-auto',
+  name: 'AGY SpecKit Auto',
+  version: 1,
+  runner: 'agy',
+  instruction: 'Run Spec-Kit autonomously.'
+};
+
+function neverCliInnerRunner(): BackendRunner {
+  return {
+    hasActiveProcess: false,
+    async invoke() {
+      throw new Error('CLI fallback must not run when ACP dispatch is active');
+    },
+    cancelActive() {
+      return false;
+    },
+    close() {},
+    async settleTeardowns() {
+      return [];
+    }
+  };
+}
+
+describe('FR-R3-198 & BUG-001 (T1885) limb 3 — PhaseRunner + dispatchResumingIncompleteTurns over AcpBackedRunner (agy-acp-native)', () => {
+  it('J7 (SC-007, BUG-001): classifies an agy-speckit-auto background-yielding Turn 1 as incomplete_turn, loads the same ACP session with CONTINUATION NOTE, and completes cleanly on Iteration 1', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'schegent-agy-incomplete-turn-'));
+    try {
+      const rpcLogPath = path.join(tempDir, 'agy-rpc.jsonl');
+      await writeFile(rpcLogPath, '', 'utf8');
+
+      const mockAgyScript = `#!/usr/bin/env node
+import * as readline from 'node:readline';
+import { appendFileSync, readFileSync } from 'node:fs';
+
+const logPath = ${JSON.stringify(rpcLogPath)};
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+function send(obj) { process.stdout.write(JSON.stringify(obj) + '\\n'); }
+function logRow(row) { appendFileSync(logPath, JSON.stringify(row) + '\\n', 'utf8'); }
+
+rl.on('line', (line) => {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  const msg = JSON.parse(trimmed);
+  if (msg.method === 'initialize') {
+    send({
+      jsonrpc: '2.0',
+      id: msg.id,
+      result: {
+        protocolVersion: 1,
+        agentInfo: { name: 'Antigravity ACP Server', version: '1.5.12' },
+        agentCapabilities: { loadSession: true, promptCapabilities: { embeddedContext: true } }
+      }
+    });
+  } else if (msg.method === 'session/new') {
+    logRow({ method: 'session/new', sessionId: 'agy-sess-228' });
+    send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 'agy-sess-228' } });
+  } else if (msg.method === 'session/load') {
+    logRow({ method: 'session/load', sessionId: msg.params.sessionId });
+    send({ jsonrpc: '2.0', id: msg.id, result: {} });
+  } else if (msg.method === 'session/prompt') {
+    const sid = msg.params.sessionId;
+    const promptText = msg.params.prompt?.[0]?.text ?? '';
+    const existingPrompts = readFileSync(logPath, 'utf8')
+      .trim()
+      .split('\\n')
+      .filter(Boolean)
+      .map((entry) => JSON.parse(entry))
+      .filter((entry) => entry.method === 'session/prompt');
+    logRow({ method: 'session/prompt', turn: existingPrompts.length + 1, promptText });
+
+    if (existingPrompts.length === 0) {
+      // Turn 1: opens run_command + Run schedule without terminal tool_call_update and ends turn.
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId: sid,
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'tc-cmd-1',
+            title: 'run_command',
+            rawInput: { CommandLine: 'npm test' }
+          }
+        }
+      });
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId: sid,
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'tc-sched-1',
+            title: 'Run schedule',
+            rawInput: { DurationSeconds: 30 }
+          }
+        }
+      });
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId: sid,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'Waiting for background tasks to finish...' }
+          }
+        }
+      });
+      send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
+    } else {
+      // Turn 2 (resumed in same ACP session): finishes in foreground with valid contract block.
+      const cleanReport = [
+        '\`\`\`',
+        '=== SCHEGENT AUDIT LOG ===',
+        'phase: agy-speckit-auto',
+        'files_created: []',
+        'files_modified: []',
+        'files_deleted: []',
+        'commands_executed: ["npm test"]',
+        'network_calls: []',
+        'ruleset_switches: []',
+        'notes: completed all verification in foreground',
+        '=== END AUDIT LOG ===',
+        '\`\`\`',
+        '[SCHEGENT_STATUS: CLEAR]'
+      ].join('\\n');
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId: sid,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: cleanReport }
+          }
+        }
+      });
+      send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
+    }
+  }
+});
+`;
+      const mockAgyPath = path.join(tempDir, 'mock-agy-acp.mjs');
+      await writeFile(mockAgyPath, mockAgyScript, 'utf8');
+      await chmod(mockAgyPath, 0o755);
+
+      const acpRunner = new AcpBackedRunner({
+        kind: 'agy',
+        inner: neverCliInnerRunner(),
+        readConfiguredProfile: () => 'agy-acp-native',
+        authorityGate: new AcpAuthorityGate({
+          isWorkspaceTrusted: () => true,
+          holdsPrimacy: () => true,
+          currentOwnershipGeneration: () => 1
+        }),
+        primaryWorkspaceRoot: tempDir,
+        platform: AGY_QUALIFIED_PLATFORM
+      });
+
+      const { writer, entries } = capturingAuditWriter();
+      const runner = new PhaseRunner(acpRunner, new PromptBuilder(), writer, new SanitizedLogger());
+      const inputs: PhaseRunInputs = {
+        phase: AGY_SPECKIT_AUTO.id,
+        phaseDef: AGY_SPECKIT_AUTO,
+        pipelineId: 'agy-speckit-auto',
+        iteration: 1,
+        iterationCap: 10,
+        featureDescription: 'run speckit-auto',
+        featureDir: null,
+        cliPath: mockAgyPath,
+        cwd: tempDir,
+        timeoutMs: 10_000,
+        runId: 'run-agy-bug-001'
+      };
+
+      const output = await dispatchResumingIncompleteTurns(runner, inputs, () => {});
+      expect(output.outcome).toBe('clean');
+      expect(output.cliSessionId).toBe('agy-sess-228');
+
+      const nextStep = transition({
+        phase: AGY_SPECKIT_AUTO.id,
+        phaseDef: AGY_SPECKIT_AUTO,
+        outcome: output.outcome,
+        iteration: 1,
+        iterationCap: 10,
+        pipeline: { phases: [AGY_SPECKIT_AUTO] }
+      });
+      expect(nextStep).toMatchObject({ kind: 'advance', nextPhase: 'done' });
+
+      const rpcRows = (await readFile(rpcLogPath, 'utf8'))
+        .trim()
+        .split('\n')
+        .map((row) => JSON.parse(row) as { method: string; sessionId?: string; promptText?: string });
+      const sessionRpcSequence = rpcRows
+        .filter((row) => row.method === 'session/new' || row.method === 'session/load')
+        .map((row) => `${row.method}:${row.sessionId ?? ''}`);
+      expect(sessionRpcSequence).toEqual(['session/new:agy-sess-228', 'session/load:agy-sess-228']);
+
+      const promptRows = rpcRows.filter((row) => row.method === 'session/prompt');
+      expect(promptRows).toHaveLength(2);
+      expect(promptRows.at(0)?.promptText).not.toContain('CONTINUATION NOTE:');
+      expect(promptRows.at(1)?.promptText).toContain(
+        `CONTINUATION NOTE:\n${CONTINUATION_NOTES['background-work-open']}\n`
+      );
+
+      const phaseAudit = entries
+        .filter((entry) => entry.eventType === 'phase-start' || entry.eventType === 'phase-end')
+        .map((entry) =>
+          entry.eventType === 'phase-start'
+            ? { eventType: entry.eventType, isContinue: entry.payload.isContinue }
+            : { eventType: entry.eventType, outcome: entry.payload.outcome, warnings: entry.payload.warnings }
+        );
+      expect(phaseAudit).toMatchObject([
+        { eventType: 'phase-start', isContinue: false },
+        { eventType: 'phase-end', outcome: 'incomplete_turn' },
+        { eventType: 'phase-start', isContinue: true },
+        { eventType: 'phase-end', outcome: 'clean' }
+      ]);
+      const firstPhaseEnd = entries.find((entry) => entry.eventType === 'phase-end');
+      expect(firstPhaseEnd?.payload.warnings).toContain('incomplete-turn:background-work-open');
+    } finally {
+      await removeTempRoot(tempDir);
+    }
+  });
+
+  it('J8 (SC-007 bound, BUG-001): three consecutive unfinished ACP turns cap at MAX_IMMEDIATE_RESUMES (2) over session/load and halt as incomplete_turn_unresolved', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'schegent-agy-incomplete-bound-'));
+    try {
+      const rpcLogPath = path.join(tempDir, 'agy-stall-rpc.log');
+      await writeFile(rpcLogPath, '', 'utf8');
+
+      const mockStallScript = `#!/usr/bin/env node
+import * as readline from 'node:readline';
+import { appendFileSync } from 'node:fs';
+
+const logPath = ${JSON.stringify(rpcLogPath)};
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+function send(obj) { process.stdout.write(JSON.stringify(obj) + '\\n'); }
+
+rl.on('line', (line) => {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  const msg = JSON.parse(trimmed);
+  if (msg.method === 'initialize') {
+    send({
+      jsonrpc: '2.0',
+      id: msg.id,
+      result: {
+        protocolVersion: 1,
+        agentInfo: { name: 'Antigravity ACP Server', version: '1.5.12' },
+        agentCapabilities: { loadSession: true, promptCapabilities: { embeddedContext: true } }
+      }
+    });
+  } else if (msg.method === 'session/new') {
+    appendFileSync(logPath, 'session/new:agy-sess-stall\\n', 'utf8');
+    send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 'agy-sess-stall' } });
+  } else if (msg.method === 'session/load') {
+    appendFileSync(logPath, 'session/load:' + msg.params.sessionId + '\\n', 'utf8');
+    send({ jsonrpc: '2.0', id: msg.id, result: {} });
+  } else if (msg.method === 'session/prompt') {
+    send({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        sessionId: msg.params.sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Still working without emitting a contract block.' }
+        }
+      }
+    });
+    send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
+  }
+});
+`;
+      const mockStallPath = path.join(tempDir, 'mock-agy-stall.mjs');
+      await writeFile(mockStallPath, mockStallScript, 'utf8');
+      await chmod(mockStallPath, 0o755);
+
+      const acpRunner = new AcpBackedRunner({
+        kind: 'agy',
+        inner: neverCliInnerRunner(),
+        readConfiguredProfile: () => 'agy-acp-native',
+        authorityGate: new AcpAuthorityGate({
+          isWorkspaceTrusted: () => true,
+          holdsPrimacy: () => true,
+          currentOwnershipGeneration: () => 1
+        }),
+        primaryWorkspaceRoot: tempDir,
+        platform: AGY_QUALIFIED_PLATFORM
+      });
+
+      const { writer } = capturingAuditWriter();
+      const runner = new PhaseRunner(acpRunner, new PromptBuilder(), writer, new SanitizedLogger());
+      const output = await dispatchResumingIncompleteTurns(
+        runner,
+        {
+          phase: AGY_SPECKIT_AUTO.id,
+          phaseDef: AGY_SPECKIT_AUTO,
+          pipelineId: 'agy-speckit-auto',
+          iteration: 1,
+          iterationCap: 10,
+          featureDescription: 'run speckit-auto',
+          featureDir: null,
+          cliPath: mockStallPath,
+          cwd: tempDir,
+          timeoutMs: 10_000,
+          runId: 'run-agy-stall-001'
+        },
+        () => {}
+      );
+
+      expect(output.outcome).toBe('incomplete_turn');
+      expect(output.result).toMatchObject({ kind: 'incomplete_turn', cause: 'no-contract-block' });
+
+      const rpcSequence = (await readFile(rpcLogPath, 'utf8')).trim().split('\n');
+      expect(rpcSequence).toEqual([
+        'session/new:agy-sess-stall',
+        'session/load:agy-sess-stall',
+        'session/load:agy-sess-stall'
+      ]);
+
+      const nextStep = transition({
+        phase: AGY_SPECKIT_AUTO.id,
+        phaseDef: AGY_SPECKIT_AUTO,
+        outcome: output.outcome,
+        iteration: 1,
+        iterationCap: 10,
+        pipeline: { phases: [AGY_SPECKIT_AUTO] }
+      });
+      expect(nextStep).toMatchObject({
+        kind: 'halt',
+        status: 'failed',
+        cause: 'incomplete_turn_unresolved'
+      });
+    } finally {
+      await removeTempRoot(tempDir);
+    }
   });
 });
