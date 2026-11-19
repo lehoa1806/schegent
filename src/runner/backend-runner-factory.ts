@@ -28,13 +28,15 @@ import type { EvidenceHealthReporter } from '../services/evidence-health/evidenc
 // The `schegent.backend.runner` workspace setting picks the concrete
 // `BackendRunner` implementation at activation time. The default is
 // `'claude'`; existing workspaces see no behavior change. Adding a new
-// backend means:
-//   1. Implement `BackendRunner` in `src/runner/<your>-cli.ts` (no
-//      `shell:true`, monitor sidecar events, cancellation/timeout
-//      discipline — see `docs/operations/backends.md`).
-//   2. Extend the union in `src/contracts/backend-kinds.ts` and the
-//      `package.json` enum.
-//   3. Add a `case` here that constructs the new runner.
+// backend (FR-R7-06) follows the four-step recipe:
+//   1. Record an expansion-freeze decision (`tests/lint/expansion-freeze.test.ts`).
+//   2. Extend `BackendRunnerKind` and `SUPPORTED_BACKENDS` in
+//      `src/contracts/backend-kinds.ts` and `package.json`.
+//   3. Add the backend's pure-data row in `src/contracts/backend-descriptors.ts`
+//      and regenerate the webview mirror (`npm run contracts:generate`).
+//   4. Implement `BackendRunner` in `src/runner/<your>-cli.ts` (see
+//      `docs/operations/backends.md`), add a `case` here, and register any
+//      behavioural parser/bridge sites listed in `tests/fixtures/backend-recipe-sites.ts`.
 //
 // FR-R3-089 — the backend *identity* surface (`BackendRunnerKind`,
 // `SUPPORTED_BACKENDS`, `DEFAULT_BACKEND`, `isBackendRunnerKind`) moved to

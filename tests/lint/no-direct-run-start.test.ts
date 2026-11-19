@@ -103,6 +103,9 @@ const DECLARED_SEAM_CALLERS: ReadonlySet<string> = new Set([
   // Enqueue-side callers of the guarded service (feature 013 onward).
   'src/commands/enqueue.ts',
   'src/commands/rerun-from-history.ts',
+  // BUG-001 (FR-019) — explicit operator one-click manual Resume exits idle-pending
+  // via `applyStartQueueIntent(now)` with explicit `queueId` before draining or resuming.
+  'src/commands/resume-queue-execution.ts',
   'src/commands/retry-active-run.ts',
   'src/commands/schedule.ts',
   'src/ui/sidebar/commands/cmd-start.ts',

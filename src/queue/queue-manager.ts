@@ -2364,13 +2364,14 @@ export class QueueManager {
 
   private async resumeMatchingRunForQueue(queueId: string, now: number, resumePrompt?: string): Promise<void> {
     const run = this.store.getRun(queueId);
-    const matching = this.matchingRunForQueue(run, queueId);
+    const matching = this.matchingRunForQueue(run, queueId, true);
     if (!matching || matching.manualPauseCause !== 'queue-paused-mid-run') return;
+    const keepPaused = this.findById(matching.featureId)?.status === 'paused';
     await this.patchMatchingRun(queueId, matching.id, 'queue-resume', (current) =>
       current.manualPauseCause !== 'queue-paused-mid-run'
         ? {}
         : {
-            status: current.status === 'paused' ? 'running' : current.status,
+            status: !keepPaused && current.status === 'paused' ? 'running' : current.status,
             manualPauseAt: null,
             manualPauseCause: null,
             lastTransitionAt: now,
@@ -2397,12 +2398,11 @@ export class QueueManager {
     }
   }
 
-  private matchingRunForQueue(run: WorkflowRun | null, queueId: string): WorkflowRun | null {
+  private matchingRunForQueue(run: WorkflowRun | null, queueId: string, allowPaused = false): WorkflowRun | null {
     if (!run) return null;
     const feature = this.findById(run.featureId);
-    if (!feature) return null;
-    if ((feature.queueId ?? DEFAULT_QUEUE_ID) !== queueId) return null;
-    if (feature.status !== 'in-flight') return null;
+    if (!feature || (feature.queueId ?? DEFAULT_QUEUE_ID) !== queueId) return null;
+    if (feature.status !== 'in-flight' && !(allowPaused && feature.status === 'paused')) return null;
     return run;
   }
 

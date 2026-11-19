@@ -42,7 +42,7 @@ const FORBIDDEN: ReadonlyArray<{
   readonly why: string;
 }> = [
   {
-    module: 'src/queue/queue-registry.ts',
+    module: 'src/contracts/queue-registry.ts',
     // A refusal code produced by this module and nowhere else. Chosen after a first attempt
     // used `queueLifecycle`, which FAILED as a false positive: that identifier is shared
     // vocabulary the webview legitimately uses as a component prop, so the marker proved the

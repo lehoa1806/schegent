@@ -156,7 +156,10 @@
           "control-return",
           "control-notice",
           "control-command",
-          "artifact-lifecycle-mutation"
+          "artifact-lifecycle-mutation",
+          "agent-config-acknowledged",
+          "store-backup",
+          "store-restore"
         ]
       },
       "uniqueItems": true

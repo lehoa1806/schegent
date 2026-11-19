@@ -38,6 +38,7 @@ import { filesUnder } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const MIRROR = 'webview-ui/src/lib/snapshot-types.ts';
+const GENERATED_MIRROR = 'webview-ui/src/lib/generated/snapshot-mirror.ts';
 /**
  * The host tree this gate compares against.
  *
@@ -74,20 +75,8 @@ const MAX_IDENTICAL_MIRRORS = 0;
  * `PipelineDefinition`, under the webview's word for it.
  */
 const PERMITTED_COPIES: ReadonlyArray<{ readonly mirror: string; readonly reason: string }> = [
-  // `BuilderLifecycle` was here, excused because its `changes` field is a
-  // `ChangedFieldSummary` from `src/catalog/` and `contracts/` is a leaf layer.
-  // Widening this gate's walk from three directories to the whole host tree found
-  // `ChangedFieldSummary` itself duplicated, moved it into
-  // `src/contracts/snapshot-vocabulary.ts`, and the blocker dissolved. The entry
-  // was deleted rather than left to describe a constraint that had stopped
-  // existing — which is the failure mode an allowlist has.
-  {
-    mirror: 'CatalogVersionRef',
-    reason:
-      '2026-08-28 — structurally equal to `CatalogCollectableRecord` by coincidence: both are ' +
-      '`{ kind, id, versionId }`. They are different concepts and deduplicating them would ' +
-      'couple a version pointer to a collection record'
-  },
+  // FR-R7-05 — `CatalogVersionRef` moved into `webview-ui/src/lib/generated/snapshot-mirror.ts`
+  // (generated from `scripts/contracts/snapshot-descriptors.mjs`) and left this allowlist.
   {
     mirror: 'WorkflowCatalogPortProjection',
     reason:
@@ -189,15 +178,22 @@ function unionMembers(rawBody: string): ReadonlySet<string> | null {
 
 describe('FR-R3-132 — the snapshot mirror imports what it does not decide', () => {
   const mirror = declarationsIn(MIRROR);
+  const generatedMirror = declarationsIn(GENERATED_MIRROR);
   const host = hostDeclarations();
 
   it('has a mirror and a host tree to compare — the control', () => {
-    // Without this the two loops below are vacuous: an empty mirror has no
+    // Without this the loops below are vacuous: an empty mirror has no
     // identical declarations and no drifted unions, and this gate would report
-    // green on a deleted file. The floors are the measured figures with room to
-    // move, not the figures themselves.
-    expect(mirror.length, `no declarations parsed from ${MIRROR}`).toBeGreaterThan(20);
+    // green on a deleted file. FR-R7-05 moved 16 host-mirrored declarations into
+    // `generated/snapshot-mirror.ts`, leaving webview-local editor shapes here.
+    expect(mirror.length, `no declarations parsed from ${MIRROR}`).toBeGreaterThan(4);
+    expect(generatedMirror.length, `no declarations parsed from ${GENERATED_MIRROR}`).toBeGreaterThan(10);
     expect(host.size, 'no host declarations parsed').toBeGreaterThan(200);
+  });
+
+  it('generated snapshot-mirror.ts has zero repo/src/ imports (FR-R7-05)', () => {
+    const text = readFileSync(resolve(REPO_ROOT, GENERATED_MIRROR), 'utf8');
+    expect(text).not.toMatch(/from\s+['"][^'"]*src\//);
   });
 
   it('restates no host declaration verbatim', () => {
@@ -271,11 +267,11 @@ describe('FR-R3-132 — the snapshot mirror imports what it does not decide', ()
   });
 
   it('restates no host union with a member missing', () => {
-    // The half that catches F1's shape. A hand-written union in the mirror may be
-    // NARROWER in name only — the host's members are what arrive over IPC, so a
-    // missing member is a value the webview's type says cannot exist.
+    // The half that catches F1's shape. A hand-written or generated union in the
+    // mirror may be NARROWER in name only — the host's members are what arrive
+    // over IPC, so a missing member is a value the webview's type says cannot exist.
     const checked: string[] = [];
-    for (const declaration of mirror) {
+    for (const declaration of [...mirror, ...generatedMirror]) {
       const counterpart = host.get(declaration.name);
       if (counterpart === undefined) continue;
       const mine = unionMembers(declaration.body);
@@ -285,7 +281,7 @@ describe('FR-R3-132 — the snapshot mirror imports what it does not decide', ()
       checked.push(declaration.name);
       expect(
         missing,
-        `${MIRROR}'s ${declaration.name} omits string member(s) the host declares in ` +
+        `${declaration.file}'s ${declaration.name} omits string member(s) the host declares in ` +
           `${counterpart.file}. The host can send them; this type says they cannot exist. This is ` +
           "exactly how QueueSummary.pauseSource lost 'retry-cap' — found by measuring, not by a " +
           'gate. Import the host type, or add the member.'

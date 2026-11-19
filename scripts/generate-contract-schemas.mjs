@@ -3,6 +3,35 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import {
+  ALL_IPC_COMMANDS,
+  HOST_MESSAGES,
+  IPC_COMMAND_FAMILIES,
+  SHARED_IPC_DEFS,
+  SIDEBAR_IPC_SCHEMA_VERSION as DESCRIPTOR_IPC_SCHEMA_VERSION
+} from './contracts/ipc-descriptors/index.mjs';
+import {
+  HOST_SNAPSHOT_IMPORTS,
+  SHARED_SNAPSHOT_DEFS,
+  SNAPSHOT_DECLARATIONS,
+  SNAPSHOT_SCHEMA_VERSION,
+  WEBVIEW_LEAF_ALIASES,
+  WEBVIEW_LOCAL_IMPORTS
+} from './contracts/snapshot-descriptors.mjs';
+import {
+  emitHostIpcTypes,
+  emitHostSnapshotTypes,
+  emitTypeExpr
+} from './contracts/emit-types.mjs';
+import { emitFamilyValidatorModule } from './contracts/emit-validators.mjs';
+import { buildSidebarIpcJsonSchema } from './contracts/emit-json-schema.mjs';
+import { emitWebviewSnapshotMirror } from './contracts/emit-webview-mirror.mjs';
+import {
+  emitWebviewBackendDescriptors,
+  extractBackendDescriptorTable,
+  validateBackendManifestParity,
+  validateSettingsSchemaParity
+} from './contracts/emit-backend-descriptors.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHECK_ONLY = process.argv.includes('--check');
@@ -400,7 +429,7 @@ function assertSubstantive(relativePath, content) {
     if (value === undefined) return false;
     return (Array.isArray(value) ? value.length : Object.keys(value).length) === 0;
   };
-  const degenerate = ['properties', 'required', 'families'].filter(emptyOf);
+  const degenerate = ['properties', 'required', 'families', '$defs'].filter(emptyOf);
   if (degenerate.length > 0) {
     throw new Error(
       `refusing to write ${relativePath}: ${degenerate.join(' and ')} came out empty. ` +
@@ -427,19 +456,20 @@ function assertParses(relativePath, content) {
   return content;
 }
 
-function writeOrCheck(relativePath, content) {
+function writeOrCheck(relativePath, content, sourceDescriptor) {
   const absolutePath = repoPath(relativePath);
+  const sourceNote = sourceDescriptor ? ` (source: ${sourceDescriptor})` : '';
   if (CHECK_ONLY) {
     let existing = '';
     try {
       existing = fs.readFileSync(absolutePath, 'utf8');
     } catch (err) {
       if (err.code === 'ENOENT') {
-        return [`missing generated file: ${relativePath}`];
+        return [`missing generated file: ${relativePath}${sourceNote}`];
       }
       throw err;
     }
-    return existing === content ? [] : [`stale generated file: ${relativePath}`];
+    return existing === content ? [] : [`stale generated file: ${relativePath}${sourceNote}`];
   }
   fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
   fs.writeFileSync(absolutePath, content, 'utf8');
@@ -457,9 +487,11 @@ const backendAvailability = new SourceExtractor('src/contracts/backend-availabil
 const queueSnapshot = new SourceExtractor('src/contracts/queue-snapshot.ts');
 const featureRequest = new SourceExtractor('src/queue/feature-request.ts');
 const runner = new SourceExtractor('src/runner/invocation-result.ts');
-const snapshot = new SourceExtractor('src/ui/sidebar/snapshot.ts');
 
 const packageJson = JSON.parse(readText('package.json'));
+const backendDescriptorData = extractBackendDescriptorTable(REPO_ROOT);
+validateBackendManifestParity({ ...backendDescriptorData, packageJson });
+validateSettingsSchemaParity(REPO_ROOT, backendDescriptorData);
 const settingsProperties = packageJson.contributes.configuration.properties;
 const settings = Object.keys(settingsProperties)
   .sort()
@@ -467,6 +499,29 @@ const settings = Object.keys(settingsProperties)
 
 const commandTypes = sidebar.stringArray('COMMAND_TYPES');
 const hostMessageTypes = sidebar.stringArray('HOST_MESSAGE_TYPES');
+const sidebarIpcSchemaVersion = sidebar.numberConst('SIDEBAR_IPC_SCHEMA_VERSION');
+if (sidebarIpcSchemaVersion !== DESCRIPTOR_IPC_SCHEMA_VERSION) {
+  throw new Error(
+    `SIDEBAR_IPC_SCHEMA_VERSION mismatch: sidebar-ipc.ts=${sidebarIpcSchemaVersion} vs descriptor=${DESCRIPTOR_IPC_SCHEMA_VERSION}`
+  );
+}
+const descriptorCommandTypes = ALL_IPC_COMMANDS.map((cmd) => cmd.type);
+const missingCommandDescriptors = commandTypes.filter((t) => !descriptorCommandTypes.includes(t));
+const extraCommandDescriptors = descriptorCommandTypes.filter((t) => !commandTypes.includes(t));
+if (missingCommandDescriptors.length > 0 || extraCommandDescriptors.length > 0) {
+  throw new Error(
+    `IPC descriptor mismatch: missing=[${missingCommandDescriptors.join(', ')}], extra=[${extraCommandDescriptors.join(', ')}]`
+  );
+}
+const workflowSnapshotDecl = SNAPSHOT_DECLARATIONS.find((decl) => decl.name === 'WorkflowSnapshot');
+if (!workflowSnapshotDecl) {
+  throw new Error('scripts/contracts/snapshot-descriptors.mjs: missing WorkflowSnapshot descriptor');
+}
+const workflowSnapshotFields = Object.entries(workflowSnapshotDecl.schema.fields).map(([name, field]) => {
+  const baseType = emitTypeExpr(field.schema, { mode: 'host', indent: '' }).replace(/\s+/g, ' ').trim();
+  const fullType = field.nullable ? `${baseType} | null` : baseType;
+  return { name, optional: Boolean(field.optional), type: fullType };
+});
 const auditEventTypes = audit.stringArray('ALL_AUDIT_EVENT_TYPES');
 const queueStatuses = queueSnapshot.stringArray('QUEUE_STATUS');
 const featureRequestStatuses = featureRequest.stringUnion('FeatureRequestStatus');
@@ -490,19 +545,23 @@ const quotaObservationStatuses = backendAvailability.stringArray('QUOTA_OBSERVAT
 const quotaObservationSources = backendAvailability.stringArray('QUOTA_OBSERVATION_SOURCES');
 
 const schemas = {
-  'src/contracts/generated/schemas/sidebar-ipc.schema.json': makeSchema(
-    'sidebar-ipc',
-    'Schegent Sidebar IPC Contract',
-    ['src/contracts/sidebar-ipc.ts'],
-    {
-      // FR-R3-110 (FR-103) — renamed from the bare `SCHEMA_VERSION`, which collided with
-      // `src/ui/sidebar/snapshot.ts`'s constant of the same name and a different value.
-      schemaVersion: { type: 'integer', const: sidebar.numberConst('SIDEBAR_IPC_SCHEMA_VERSION') },
-      commandTypes: enumProperty(commandTypes),
-      hostMessageTypes: enumProperty(hostMessageTypes),
-      workflowSnapshotFields: interfaceProperty(snapshot.interfaceProperties('WorkflowSnapshot'))
-    }
-  ),
+  'src/contracts/generated/schemas/sidebar-ipc.schema.json': buildSidebarIpcJsonSchema({
+    generatedSchemaVersion: GENERATED_SCHEMA_VERSION,
+    ipcSchemaVersion: sidebarIpcSchemaVersion,
+    snapshotSchemaVersion: SNAPSHOT_SCHEMA_VERSION,
+    commandTypes,
+    hostMessageTypes,
+    workflowSnapshotFields,
+    commands: ALL_IPC_COMMANDS,
+    hostMessages: HOST_MESSAGES,
+    sharedDefs: { ...SHARED_IPC_DEFS, ...SHARED_SNAPSHOT_DEFS },
+    snapshotDeclarations: SNAPSHOT_DECLARATIONS,
+    sourceFiles: [
+      'src/contracts/sidebar-ipc.ts',
+      'scripts/contracts/ipc-descriptors/index.mjs',
+      'scripts/contracts/snapshot-descriptors.mjs'
+    ]
+  }),
   'src/contracts/generated/schemas/audit-events.schema.json': makeSchema(
     'audit-events',
     'Schegent Audit Event Contract',
@@ -581,8 +640,9 @@ const schemas = {
   'src/contracts/generated/schemas/backend-runner.schema.json': makeSchema(
     'backend-runner',
     'Schegent Backend Runner Contract',
-    ['src/contracts/backend-runner.ts', 'src/runner/invocation-result.ts', 'src/contracts/backend-availability.ts'],
+    ['src/contracts/backend-kinds.ts', 'src/contracts/backend-descriptors.ts', 'src/contracts/backend-runner.ts', 'src/runner/invocation-result.ts', 'src/contracts/backend-availability.ts'],
     {
+      supportedBackends: enumProperty(backendDescriptorData.supportedBackends),
       invocationRequestFields: interfaceProperty(runner.interfaceProperties('InvocationRequest')),
       rawInvocationOutputFields: interfaceProperty(runner.interfaceProperties('RawInvocationOutput')),
       quotaIdentityKinds: enumProperty(quotaIdentityKinds),
@@ -722,12 +782,83 @@ const generated = new Map([
       'webview-ui/src/lib/generated/queue-failure-policy.ts',
       mirrorWholeFile('src/contracts/queue-failure-policy.ts')
     )
+  ],
+  [
+    'src/contracts/generated/sidebar-ipc-types.ts',
+    assertParses(
+      'src/contracts/generated/sidebar-ipc-types.ts',
+      emitHostIpcTypes({
+        schemaVersion: sidebarIpcSchemaVersion,
+        commands: ALL_IPC_COMMANDS,
+        hostMessages: HOST_MESSAGES,
+        sourcePath: 'scripts/contracts/ipc-descriptors/index.mjs'
+      })
+    )
+  ],
+  ...IPC_COMMAND_FAMILIES.map((family) => [
+    family.outputPath,
+    assertParses(
+      family.outputPath,
+      emitFamilyValidatorModule({
+        family: family.family,
+        sourcePath: family.sourcePath,
+        headerNotes: family.headerNotes,
+        commands: family.commands
+      })
+    )
+  ]),
+  [
+    'src/contracts/generated/snapshot-types.ts',
+    assertParses(
+      'src/contracts/generated/snapshot-types.ts',
+      emitHostSnapshotTypes({
+        snapshotSchemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        hostImports: HOST_SNAPSHOT_IMPORTS,
+        declarations: SNAPSHOT_DECLARATIONS,
+        sourcePath: 'scripts/contracts/snapshot-descriptors.mjs'
+      })
+    )
+  ],
+  [
+    'webview-ui/src/lib/generated/snapshot-mirror.ts',
+    assertParses(
+      'webview-ui/src/lib/generated/snapshot-mirror.ts',
+      emitWebviewSnapshotMirror({
+        snapshotSchemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        webviewLocalImports: WEBVIEW_LOCAL_IMPORTS,
+        webviewLeafAliases: WEBVIEW_LEAF_ALIASES,
+        declarations: SNAPSHOT_DECLARATIONS,
+        sourcePath: 'scripts/contracts/snapshot-descriptors.mjs'
+      })
+    )
+  ],
+  [
+    'webview-ui/src/lib/generated/backend-descriptors.ts',
+    assertParses(
+      'webview-ui/src/lib/generated/backend-descriptors.ts',
+      emitWebviewBackendDescriptors(backendDescriptorData)
+    )
   ]
+]);
+
+const artifactSources = new Map([
+  ['src/contracts/generated/sidebar-ipc-types.ts', 'scripts/contracts/ipc-descriptors/index.mjs'],
+  ['src/contracts/generated/snapshot-types.ts', 'scripts/contracts/snapshot-descriptors.mjs'],
+  ['webview-ui/src/lib/generated/snapshot-mirror.ts', 'scripts/contracts/snapshot-descriptors.mjs'],
+  [
+    'webview-ui/src/lib/generated/backend-descriptors.ts',
+    'src/contracts/backend-kinds.ts, src/contracts/backend-descriptors.ts'
+  ],
+  [
+    'src/contracts/generated/schemas/sidebar-ipc.schema.json',
+    'scripts/contracts/ipc-descriptors/index.mjs, scripts/contracts/snapshot-descriptors.mjs'
+  ],
+  ...IPC_COMMAND_FAMILIES.map((family) => [family.outputPath, family.sourcePath])
 ]);
 
 const failures = [];
 for (const [relativePath, content] of generated) {
-  failures.push(...writeOrCheck(relativePath, content));
+  failures.push(...writeOrCheck(relativePath, content, artifactSources.get(relativePath)));
 }
 
 if (failures.length > 0) {

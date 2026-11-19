@@ -1,5 +1,6 @@
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
-import type { BackendRunnerKind } from '../../contracts/backend-kinds';
+import { DEFAULT_BACKEND, type BackendRunnerKind } from '../../contracts/backend-kinds';
+import { emptyBackendModels, type BackendMap } from '../../contracts/backend-descriptors';
 import type { ProjectionLogger } from './projection-failure-episodes';
 import type { WorkspaceStateStore } from '../../state/workspace-state';
 import type { WorkflowRun } from '../../state/workflow-run';
@@ -57,11 +58,7 @@ import {
  * Empty means "nothing known", which every consumer already handles; an
  * invented entry would be indistinguishable from a real one downstream.
  */
-const EMPTY_MODELS_BY_BACKEND: Record<BackendRunnerKind, readonly string[]> = Object.freeze({
-  claude: Object.freeze([]),
-  codex: Object.freeze([]),
-  agy: Object.freeze([])
-});
+const EMPTY_MODELS_BY_BACKEND: BackendMap<readonly string[]> = emptyBackendModels();
 
 type ProjectorStore = Pick<
   WorkspaceStateStore,
@@ -291,7 +288,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     availableModels: Object.freeze(availableModels),
     configuredModels: Object.freeze(configuredModels),
     availableBackends: Object.freeze(
-      deps.getAvailableBackends?.() ?? (['claude'] as readonly BackendRunnerKind[])
+      deps.getAvailableBackends?.() ?? ([DEFAULT_BACKEND] as readonly BackendRunnerKind[])
     ),
     ...composeBackendPostures(deps.getUncontainedGrantSetting?.(), deps.getBackendQualificationSource?.()),
     backendPingState: deps.getBackendPingState?.() ?? Object.freeze({ status: 'idle' as const }),

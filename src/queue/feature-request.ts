@@ -331,31 +331,12 @@ export interface QueueState {
   failurePolicy?: QueueFailurePolicy;
 }
 
-export const MAX_DESCRIPTION_LENGTH = 32_000;
-export const MAX_PENDING_TASKS_PER_QUEUE = 100;
-
-export function validateDescription(description: string): string {
-  const trimmed = description.trim();
-  if (trimmed.length === 0) {
-    throw new Error('Feature description must be non-empty');
-  }
-  if (trimmed.length > MAX_DESCRIPTION_LENGTH) {
-    throw new Error(`Feature description exceeds ${MAX_DESCRIPTION_LENGTH} characters`);
-  }
-  return trimmed;
-}
-
-export function ensureExtendedFeatureRequest(raw: Partial<FeatureRequest> & { id: string; description: string; enqueuedAt: number; status: FeatureRequestStatus; position: number; runId: string | null }): FeatureRequest {
-  return {
-    retryCount: 0,
-    lastError: null,
-    pausedReason: null,
-    queueId: 'default',
-    pauseCause: null,
-    startedAt: null,
-    completedAt: null,
-    createdAt: raw.enqueuedAt,
-    updatedAt: raw.enqueuedAt,
-    ...raw
-  };
-}
+// FR-R7-07 — Pure value helpers and bounds relocated to `src/contracts/queue-feature-request-helpers.ts`
+// so `src/state/` does not value-import `src/queue/`. Re-exported here unchanged while
+// `FeatureRequest` and `QueueState` interface declarations remain in this module for `contracts:check`.
+export {
+  MAX_DESCRIPTION_LENGTH,
+  MAX_PENDING_TASKS_PER_QUEUE,
+  validateDescription,
+  ensureExtendedFeatureRequest
+} from '../contracts/queue-feature-request-helpers';

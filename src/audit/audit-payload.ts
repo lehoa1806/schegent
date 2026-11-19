@@ -1,8 +1,15 @@
 import type { AuditEventType, CatalogLifecyclePayload } from '../contracts/audit-events';
 import { AuditPayloadValidationError } from './audit-payload-error';
 import { projectEvidenceExported } from './evidence-lifecycle-payload';
+import { projectAgentConfigAckPayload } from './agent-config-ack-payload';
 import { CATALOG_KINDS, type CatalogKind } from '../contracts/catalog-store';
-import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { DEFAULT_BACKEND, type BackendRunnerKind } from '../contracts/backend-kinds';
+import {
+  findBackendDescriptor,
+  type AuditPermissionMode
+} from '../contracts/backend-descriptors';
+
+export type { AuditPermissionMode };
 import { isCompletionProvenance } from '../contracts/completion-provenance';
 import { isFailureCause } from '../contracts/failure-cause';
 import { type CostBaselineMarker, costBaselineOf } from '../contracts/usage-accounting/cost-baseline';
@@ -62,11 +69,6 @@ export const CAP_EXHAUSTED_CAUSE = 'cap_exhausted';
  * note below (`:654-656`).
  */
 export const PRE_SPAWN_REFUSAL_CAUSE = 'pre_spawn_refusal';
-
-export type AuditPermissionMode =
-  | 'read-only'
-  | 'workspace-write'
-  | 'unrestricted';
 
 export interface CliInvocationPayloadV3 {
   readonly runner: BackendRunnerKind;
@@ -451,8 +453,9 @@ function projectMetrics(value: unknown): Readonly<Record<string, number>> {
 }
 
 function projectCliInvocation(payload: Record<string, unknown>): CliInvocationPayloadV3 {
-  const runner = stringValue(payload.runner, 'claude');
-  if (!['claude', 'codex', 'agy'].includes(runner)) {
+  const runner = stringValue(payload.runner, DEFAULT_BACKEND);
+  const descriptor = findBackendDescriptor(runner);
+  if (descriptor === undefined) {
     throw new AuditPayloadValidationError('invalid-runner');
   }
   const operation = stringValue(payload.operation, 'phase');
@@ -461,13 +464,13 @@ function projectCliInvocation(payload: Record<string, unknown>): CliInvocationPa
   }
   const permissionMode = stringValue(
     payload.permissionMode,
-    runner === 'codex' ? 'workspace-write' : 'unrestricted'
+    descriptor.defaultAuditPermissionMode
   );
   if (!['read-only', 'workspace-write', 'unrestricted'].includes(permissionMode)) {
     throw new AuditPayloadValidationError('invalid-permission-mode');
   }
   return Object.freeze({
-    runner: runner as BackendRunnerKind,
+    runner: descriptor.kind,
     operation: operation as CliInvocationPayloadV3['operation'],
     permissionMode: permissionMode as AuditPermissionMode,
     continued: booleanValue(payload.continued ?? payload.isContinue),
@@ -1040,6 +1043,8 @@ export function projectAuditPayload(
   } else if (eventType === 'evidence-exported') {
     // FR-R4-F04 (E2) — closed: no key a caller adds can reach the log, and no path can be represented.
     projected = { ...projectEvidenceExported(payload) };
+  } else if (eventType === 'agent-config-acknowledged') {
+    projected = { ...projectAgentConfigAckPayload(payload) };
   } else {
     projected = projectValue(payload, 0) as Record<string, unknown>;
   }

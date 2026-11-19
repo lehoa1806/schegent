@@ -203,18 +203,28 @@ Review every generated difference. Do not hand-edit `src/contracts/generated/` t
 
 ## Verify before opening a pull request
 
-**Three tiers, cheapest first** (`FR-R3-132`) — full detail, and what each one does *not* establish,
+**Four tiers, cheapest first** (`FR-R3-132`, extended by `FR-R7-08`) — full detail, the single step list, and what each tier does *not* establish,
 in [Verification tiers](docs/development/verification-tiers.md):
 
 ```bash
-npm run verify:edit      # typechecks + both unit suites — after a small change
+npm run test:gates       # lint, parity, and contract gates only (~27s)
+npm run verify:edit      # fast gates + webview build + typechecks + both unit suites — after a small change
 npm run verify:push      # + lint, contracts, docs, security, licences — before you push
-npm run verify:release   # everything, including the browser-backed suites — releases and CI
+npm run verify:release   # everything, including browser-backed suites and verify:linux — releases
 ```
 
 Each tier runs everything the tier below it runs; `repo/tests/lint/verification-tiers.test.ts` proves
-that as a set relation, so a cheap tier is never a shortcut. No tier reuses a build artifact: a
-ratchet that reads source cannot go stale, and a reused `dist/` can.
+that independently as a set relation over `package.json`, so a cheap tier is never a shortcut. All seven
+aggregate scripts (`verify:edit`, `verify:push`, `verify:release`, `verify:all`, `ci:fast`, `ci`, `gate`)
+are generated from one declared step list (`scripts/verification-steps.json`): edit that file and run
+`node scripts/generate-verification-scripts.mjs` rather than editing aggregate scripts by hand, and
+`npm run docs:check` enforces freshness via `node scripts/generate-verification-scripts.mjs --check`.
+No tier reuses a build artifact: a ratchet that reads source cannot go stale, and a reused `dist/` can.
+
+**Code-line rule for LoC budgets (`FR-R7-08`).** TypeScript size gates (`phase-runner-loc-budget.test.ts`,
+`source-loc-budget.test.ts`, `drive-loop-loc-budget.test.ts`) measure lexical **code lines** via
+`tests/lint/code-lines.ts` (TypeScript AST tokens excluding comments, JSDoc blocks, and blank lines),
+so adding explanatory comments never trips a size ceiling or forces a budget bump.
 
 There is deliberately **no devcontainer**: parity comes from `.nvmrc` plus the two lockfiles, and the
 reasoning and reopening conditions are recorded in

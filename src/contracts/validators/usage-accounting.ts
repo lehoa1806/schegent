@@ -1,4 +1,4 @@
-import { CMD_READ_USAGE_ACCOUNTING, type ReadUsageAccountingResponse, type SidebarCommand } from '../sidebar-ipc';
+import type { ReadUsageAccountingResponse } from '../sidebar-ipc';
 import {
   ACCOUNTING_REFUSAL_CODES,
   ATTEMPT_OUTCOMES,
@@ -18,7 +18,7 @@ import {
   type AccountingQueryRequest,
   type ReadGapsRequest
 } from '../usage-accounting/query-contract';
-import { type IpcValidationResult, fail, hasUnexpectedKeys, ok as ipcOk } from './shared';
+import { hasUnexpectedKeys } from './shared';
 
 // FR-R6-F06 (FR-022, contracts/accounting-service.md "Query request") — the one validator the
 // headless accounting reader and the sidebar read share, so the two surfaces accept exactly the
@@ -192,22 +192,6 @@ export function validateReadGapsRequest(input: unknown): AccountingResult<ReadGa
       ...(request.cursor !== undefined ? { cursor: request.cursor } : {})
     }
   };
-}
-
-const READ_COMMAND_KEYS = ['query'] as const;
-
-/**
- * The sidebar's accounting read envelope: a `query` and nothing else. The query itself is left
- * to the shared validator on the host, so an invalid query gets the same `invalid-query` result
- * the headless API returns (clarification 6), not an envelope rejection.
- */
-export function validateReadUsageAccounting(obj: Plain, correlationId: string): IpcValidationResult {
-  const context = { type: CMD_READ_USAGE_ACCOUNTING, correlationId };
-  const payload = obj['payload'];
-  if (!isPlain(payload)) return fail('missing-payload', context);
-  if (hasUnexpectedKeys(payload, READ_COMMAND_KEYS)) return fail('unexpected-payload-fields', context);
-  if (!Object.hasOwn(payload, 'query')) return fail('missing-query', context);
-  return ipcOk({ ...context, payload: { query: payload['query'] } } as SidebarCommand);
 }
 
 function isCount(value: unknown): boolean {

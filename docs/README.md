@@ -211,6 +211,7 @@ neither listed nor excluded.
 - [Shared memory and storage contracts](operations/shared-memory-storage-contracts.md) — C1 field dictionary, current-record mappings, C2 single-authority inventory, 15-feature consumer mapping, C4 retention inventory, and acceptance fixtures (`FR-R6-F02`)
 - [Runtime resource budgets and qualification](operations/runtime-resource-budgets.md) — runtime resource inventory, FR-015 common queue and query bounds, registered qualification targets, current-store migration baselines, and pending joint qualification (`FR-R6-F03`)
 - [SQLite application store and structured-state migration](operations/sqlite-application-store.md) — `node:sqlite` engine qualification, `STRICT` operational and domain schema (through Migration 9 per-entity Task and Run rows), seven `BEGIN IMMEDIATE` transaction units, bounded writer queue and WAL checkpoint policy, seven-stage migration and quarantine pipeline, and online backup/restore verification (`FR-R6-F04`, `FR-R7-02`)
+- [SQLite application store rollback runbook](operations/sqlite-rollback-runbook.md) — step-by-step operator runbook for online same-version restore and offline schema `N` → `N-1` downgrade rollback across `min_reader_version`, backup file sensitivity/permissions, and post-backup state loss disclosure (`FR-R7-03`)
 - [SQLite operational state commit latency measurement](operations/sqlite-operational-commit-latency-measurement.md) — **measured 2026-11-19**: host-thread write-commit, read-view, prune, and event-loop delay distributions on `WAL` + `synchronous = FULL` across four workload tiers, the pre-declared Round 6 decision gate that triggered Migration 9, and before/after Schema 8 → Schema 9 verification (`FR-R7-02`)
 - [Usage and metrics accounting](operations/usage-accounting.md) — how a usage or cost total is built and how far to trust it: completeness and coverage, reported and estimated cost lanes, currencies and credits, unattributed and historical observations, corrections and revisions, the legacy epoch, gaps, and limits (`FR-R6-F06`)
 - [Live-log delivery](operations/live-log-delivery.md) — what the live phase-log view can drop and how it reports it: byte bounds, the ten coverage-gap reasons, the six delivery counters, resumable cursors, and the segment index (`FR-R6-F07`)
@@ -258,6 +259,8 @@ neither listed nor excluded.
 - [Absent-field assertion classification](development/absent-field-classification.md) — how an
   absent-field assertion is judged against a payload contract, how a contradiction is resolved, and
   what the gate that produces the register does not read (FR-R3-167)
+- [Contract descriptors](development/contract-descriptors.md) — single-source IPC and snapshot
+  descriptors, generation commands, and parity-test retirement record (FR-R7-05)
 - [Coverage measurements](development/coverage-measurements.md)
 - [Gate integrity measurements](development/gate-integrity-measurements.md) — the vacuity detector's
   false-negative rate, the zero-offender enumeration, the product-versus-suite coverage split, and the

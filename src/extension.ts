@@ -38,6 +38,7 @@ import { wireTrustGrant } from './activation/trust-grant-wiring';
 import { wirePrimacyGain } from './activation/primacy-gain-wiring';
 import { wireEvidenceMaintenance } from './activation/evidence-maintenance-wiring';
 import { closeStage2Resources } from './activation/stage2-teardown';
+import { pauseQueuesAtLifecycleBoundary } from './activation/queue-lifecycle-boundary';
 import {
   readForceContinueOnRetryCap,
   readMaxUnchangedComparisons,
@@ -618,6 +619,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // FR-R3-136 (FR-009…FR-012) — THE TRUST GATE. Everything above constructs or
   // subscribes and writes nothing, which is why the fence line stays on this side;
   // `stage2-producers.ts` carries why the split falls on the act, not construction.
+  const pauseQueues = () => pauseQueuesAtLifecycleBoundary({ store, queue, lock, scheduledStartCoordinator, logger });
   const producers = createStage2Producers({
     isWorkspaceTrusted,
     logger,
@@ -626,13 +628,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     lock,
     controller,
     operatorAttribution,
-    watchdog,
-    scheduledStartCoordinator,
+    watchdog, scheduledStartCoordinator,
     replayEvidenceBacklog,
     runSafety,
     backendCapabilities,
-    startMountProbe,
-    refreshCatalog
+    startMountProbe, refreshCatalog,
+    pauseQueuesOnStartup: pauseQueues
   });
   disposables.push(wirePrimacyGain({ logger, lock, producers }));
   await producers.run();
@@ -644,7 +645,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       sync: [uiWiring, projector, watchdog, queueScheduleWatchdog, statusBar],
       disposables,
       transport: backend.transport,
-      teardown: backend.teardown // FR-R4-F06 (S5): the bounded teardown, awaited before any release below
+      teardown: backend.teardown, pauseQueues // FR-R4-F06 (S5) + BUG-001 (FR-015): teardown, then pause before releases
     });
     // Feature 092 (T049) — drop every queue lease this window holds before the workspace
     // lock, so a shutting-down window never leaves a queue claimed while advertising itself

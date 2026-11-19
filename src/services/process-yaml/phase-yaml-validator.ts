@@ -64,6 +64,7 @@ import {
   type RetryCapOutcome
 } from '../../contracts/process-definitions';
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../contracts/backend-kinds';
+import { isUnsupportedEffortForBackend } from '../../contracts/backend-descriptors';
 import {
   PHASE_YAML_API_VERSION,
   PHASE_YAML_KIND,
@@ -570,7 +571,7 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
 
   // The catalog's own cross-field rule. Checked here so preflight can say the
   // resource is invalid rather than letting the commit fail later (FR-021).
-  if (runner === 'agy' && (effort === 'xhigh' || effort === 'max')) {
+  if (effort !== undefined && isUnsupportedEffortForBackend(runner, effort)) {
     defects.push(defect('effort', 'runner-incompatible', 'Agy supports low, medium, or high effort'));
   }
 

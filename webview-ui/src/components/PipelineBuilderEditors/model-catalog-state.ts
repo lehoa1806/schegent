@@ -1,8 +1,9 @@
+import { SUPPORTED_BACKENDS } from '../../lib/generated/backend-descriptors';
 import { boundaryRefusalText } from '../../lib/boundary-refusal-text';
 import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 
 /** Every backend the editor shows a section for, whatever either list holds. */
-const EDITABLE_BACKENDS: readonly string[] = ['claude', 'codex', 'agy'];
+const EDITABLE_BACKENDS: readonly string[] = SUPPORTED_BACKENDS;
 
 /**
  * The editable catalog, seeded from CONFIGURATION — `schegent.models` — and

@@ -45,8 +45,14 @@ const scripts = (
   }
 ).scripts;
 
-/** The tiers, cheapest first. Each must be a superset of the one before it. */
-const TIERS = ['verify:edit', 'verify:push', 'verify:release'] as const;
+/** The tiers, cheapest first. Each must be a superset of the one before it.
+ *
+ * FR-R7-08 added `test:gates` as the lowest tier (lint, parity, and contract
+ * gates only). This file remains an INDEPENDENT proof reading `package.json`
+ * directly — it never imports `scripts/verification-steps.json` or
+ * `scripts/generate-verification-scripts.mjs` (FR-004).
+ */
+const TIERS = ['test:gates', 'verify:edit', 'verify:push', 'verify:release'] as const;
 
 /** Where the tiers are explained, and which claim each supports. */
 const TIER_DOCUMENT = 'docs/development/verification-tiers.md';
@@ -61,11 +67,12 @@ const TIER_DOCUMENT = 'docs/development/verification-tiers.md';
  */
 function transitiveTargets(
   entry: string,
-  options: { readonly leavesOnly?: boolean } = {},
+  options: { readonly leavesOnly?: boolean; readonly from?: Readonly<Record<string, string | undefined>> } = {},
   seen: Set<string> = new Set(),
   missing: Set<string> = new Set()
 ): ReadonlySet<string> {
-  const body = scripts[entry];
+  const source = options.from ?? scripts;
+  const body = source[entry];
   if (body === undefined) {
     // A DANGLING REFERENCE MUST FAIL, not vanish. A review found this returning
     // silently: rename `test:host` and leave `verify:edit` pointing at the old
@@ -94,17 +101,34 @@ function transitiveTargets(
 }
 
 /** Every `npm run` target a script reaches that package.json does not define. */
-function unresolvedTargets(entry: string): readonly string[] {
+function unresolvedTargets(
+  entry: string,
+  from: Readonly<Record<string, string | undefined>> = scripts
+): readonly string[] {
   const missing = new Set<string>();
-  transitiveTargets(entry, {}, new Set(), missing);
+  transitiveTargets(entry, { from }, new Set(), missing);
   return [...missing].sort();
 }
 
 /** The commands a tier actually runs, with the routing names removed. */
-const leaves = (entry: string): ReadonlySet<string> => transitiveTargets(entry, { leavesOnly: true });
+const leaves = (
+  entry: string,
+  from: Readonly<Record<string, string | undefined>> = scripts
+): ReadonlySet<string> => transitiveTargets(entry, { leavesOnly: true, from });
 
-describe('FR-R3-132 — the verification tiers are ordered, not merely named', () => {
-  it('declares all three tiers', () => {
+/** Leaf targets that `lower` runs and `higher` omits. */
+function missingFromHigher(
+  lower: string,
+  higher: string,
+  from: Readonly<Record<string, string | undefined>> = scripts
+): readonly string[] {
+  const lowerTargets = leaves(lower, from);
+  const higherTargets = leaves(higher, from);
+  return [...lowerTargets].filter((target) => !higherTargets.has(target));
+}
+
+describe('FR-R3-132 / FR-R7-08 — the verification tiers are ordered, not merely named', () => {
+  it('declares all four tiers', () => {
     // The control. Every assertion below iterates the tier list; a renamed script
     // would make those loops compare nothing and report green.
     for (const tier of TIERS) {
@@ -141,7 +165,7 @@ describe('FR-R3-132 — the verification tiers are ordered, not merely named', (
     for (const { lower, higher } of pairs) {
       const lowerTargets = leaves(lower);
       const higherTargets = leaves(higher);
-      const missing = [...lowerTargets].filter((target) => !higherTargets.has(target));
+      const missing = missingFromHigher(lower, higher);
       expect(
         missing,
         `${higher} does not run these targets that ${lower} runs: ${missing.join(', ')}. A tier ` +
@@ -155,6 +179,17 @@ describe('FR-R3-132 — the verification tiers are ordered, not merely named', (
           'name, because a contributor believes the second one bought something.'
       ).toBeGreaterThan(lowerTargets.size);
     }
+  });
+
+  it('NON-VACUITY (FR-R7-08): removing a lower-tier step from a higher tier fails the subset proof', () => {
+    // Control run: remove `test:gates` from `verify:edit` in a synthetic manifest
+    // and assert that the independent proof catches the omission.
+    const brokenEdit = (scripts['verify:edit'] ?? '').replace(/npm run test:gates\s*&&\s*/, '');
+    const synthetic: Readonly<Record<string, string | undefined>> = {
+      ...scripts,
+      'verify:edit': brokenEdit
+    };
+    expect(missingFromHigher('test:gates', 'verify:edit', synthetic)).toEqual(['test:gates']);
   });
 
   it('runs the whole release gate in the release tier', () => {

@@ -8,7 +8,10 @@ import * as vscode from 'vscode';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
 import { PhaseRunner } from '../controller/phase-runner';
+import { AgentConfigAckGate } from '../controller/agent-config-ack-gate';
 import { observeHostAmbientConfig } from '../services/ambient-config-observer';
+import { scanRepoAgentConfig } from '../services/repo-agent-config-scanner';
+import { createAgentConfigAckRequester } from './agent-config-acknowledgement';
 import type { LastRetryDecisionSink } from '../controller/phase-retry-evaluator';
 import { LIVE_RUN_STATUSES } from '../state/workflow-run';
 import type { SanitizedLogger } from '../lib/logger';
@@ -158,6 +161,22 @@ const lastRetryDecisionSink = createLastRetryDecisionSink(store);
 // not WHAT; passing the registry's captured boolean here would record an
 // activation-time posture for a Run happening now.
 const backendPostureAccessor = { isUncontainedAllowed: readUncontainedAllowed };
+// FR-R7-04 — per-workspace repository agent configuration acknowledgement gate.
+const agentConfigAckGate = new AgentConfigAckGate({
+  scan: (cwd, backend) => scanRepoAgentConfig(cwd, backend),
+  hasGrant: (fingerprint, backend) => store.hasAgentConfigGrant(fingerprint, backend),
+  latestGrantForBackend: (backend) => store.latestAgentConfigGrantForBackend(backend),
+  persistGrant: (grant) => store.recordAgentConfigGrant(grant),
+  request: createAgentConfigAckRequester({
+    confirm: (message, detail, actions) =>
+      Promise.resolve(
+        vscode.window.showWarningMessage(message, { modal: true, detail }, ...actions)
+      ),
+    logger
+  }),
+  appendAudit: (entry) => auditWriter.append(entry),
+  logger
+});
 const phaseRunner = new PhaseRunner(
   runnerRegistry,
   promptBuilder,
@@ -174,7 +193,8 @@ const phaseRunner = new PhaseRunner(
   // FR-R3-080 (T1075) — the refused-write drain. Without it a refusal reaches
   // the log and stops there, which is the state this item exists to leave.
   evidenceHealth,
-  (kind) => observeHostAmbientConfig(kind)
+  (kind) => observeHostAmbientConfig(kind),
+  agentConfigAckGate
 );
 const runSafety = await createRunSafetyWiring({
   context,

@@ -105,7 +105,10 @@ describe('the backend recipe lists every site (L11)', () => {
   it('scans a real tree: the control against a scan that found nothing', () => {
     expect(sources.size).toBeGreaterThan(500);
     const found = [...sources].filter(([, text]) => ANY_SITE.test(codeOf(text)));
-    expect(found.length, 'the sweep found about thirty sites at befeccc8').toBeGreaterThan(20);
+    // FR-R7-06 — after migrating data-only sites to BACKEND_DESCRIPTORS, only canonical/behavioral
+    // sites remain in the scan (at least the descriptor table, factory switch, ACP bridges,
+    // capability withhold planner, and usage parser).
+    expect(found.length, 'the scan must still observe surviving behavioral/canonical sites').toBeGreaterThanOrEqual(5);
   });
 
   it('lists every source file that compares to a backend or keys a record by the union', () => {
@@ -116,10 +119,15 @@ describe('the backend recipe lists every site (L11)', () => {
     ).toEqual([]);
   });
 
-  it('lists no path twice, and gives every row a role', () => {
+  it('lists no path twice, gives every row a role and one-line rationale, and stays below half the baseline census (SC-001)', () => {
     const paths = BACKEND_RECIPE_SITES.map((site) => site.path);
     expect(new Set(paths).size).toBe(paths.length);
-    for (const site of BACKEND_RECIPE_SITES) expect(site.role.trim().length, site.path).toBeGreaterThan(0);
+    // FR-R7-06 (SC-001) — migrated data-only sites are retired; fewer than half of the original 54 remain.
+    expect(BACKEND_RECIPE_SITES.length).toBeLessThan(27);
+    for (const site of BACKEND_RECIPE_SITES) {
+      expect(site.role.trim().length, site.path).toBeGreaterThan(0);
+      expect(site.note.trim().length, `${site.path} must carry a one-line rationale`).toBeGreaterThan(10);
+    }
   });
 
   it('lists only paths that exist', () => {
@@ -148,14 +156,15 @@ describe('the backend recipe lists every site (L11)', () => {
     expect(absorbing).toEqual([]);
   });
 
-  it('lists the factory as a switch, and the path accessor as an exhaustive one', () => {
+  it('lists the factory as a switch, and confirms cli-path-accessor reads the descriptor table', () => {
     const factory = BACKEND_RECIPE_SITES.find((site) => site.path === 'src/runner/backend-runner-factory.ts');
     expect(factory?.how).toBe('switch');
-    // Review gap GC-06 (2026-11-12) — the accessor was an `if` chain whose fallback was Claude; it is
-    // now a switch with a `never` default, so it no longer has a fallback site to name.
+    // FR-R7-06 — cli-path-accessor migrated from a per-backend switch to findBackendDescriptor(),
+    // retiring its census row while preserving GC-06's explicit throw on unknown kinds.
     const accessor = BACKEND_RECIPE_SITES.find((site) => site.path === 'src/config/cli-path-accessor.ts');
-    expect(accessor?.how).toBe('switch');
-    expect(accessor?.note).toMatch(/`never` default/);
+    expect(accessor).toBeUndefined();
+    const accessorSrc = readFileSync(resolve(REPO_ROOT, 'src/config/cli-path-accessor.ts'), 'utf8');
+    expect(accessorSrc).toContain('findBackendDescriptor');
   });
 
   describe('the check itself (seeded)', () => {

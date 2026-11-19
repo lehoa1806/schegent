@@ -60,7 +60,9 @@ import {
   type RecoveryHandoffService
 } from '../services/recovery-handoff';
 import {
+  relocateLegacySqliteStore,
   SqliteApplicationStore,
+  type StoreRelocationOutcome,
   type SwitchableCatalogFsAdapter
 } from '../services/sqlite-store';
 import type { TelemetrySecretPort } from '../contracts/telemetry-export';
@@ -154,17 +156,16 @@ export function deriveWorkspaceScopeId(workspaceRoot: string): string {
 }
 
 /**
- * The SQLite database a window opens: `<storage>/sqlite/<scope>/schegent-state.db`, where `<storage>`
- * is the window's `storageUri` (or `globalStorageUri` when it has none) and `<scope>` hashes the
- * workspace root. VS Code keys `storageUri` by workspace identity, so a folder opened directly and
- * through a `.code-workspace` resolve to two databases with one scope id (review gap GC-26).
+ * FR-R7-10 (closing review gap GC-26) — the canonical SQLite database a window opens:
+ * `<globalStorageUri>/sqlite/<scope>/schegent-state.db`, where `<scope>` hashes the workspace root.
+ * Keying strictly by `globalStorageUri` + `<scope>` gives one folder one operational store whether
+ * VS Code opens it directly, via a `.code-workspace` file, or without a per-window `storageUri`.
  */
 export function sqliteDatabasePathFor(
-  storage: { readonly storageUri: string | undefined; readonly globalStorageUri: string },
+  storage: { readonly storageUri?: string | undefined; readonly globalStorageUri: string },
   workspaceRoot: string
 ): string {
-  const storageRoot = storage.storageUri ?? storage.globalStorageUri;
-  return path.join(storageRoot, 'sqlite', deriveWorkspaceScopeId(workspaceRoot), 'schegent-state.db');
+  return path.join(storage.globalStorageUri, 'sqlite', deriveWorkspaceScopeId(workspaceRoot), 'schegent-state.db');
 }
 
 function buildNodeLifecycleFs(allowedRoots: readonly string[]): LifecycleFs {
@@ -309,10 +310,13 @@ export interface SqliteCutoverServices {
 
 export interface SqliteCutoverCoordinator {
   readonly scopeId: string;
+  readonly storageRoot: string;
   readonly expectedDatabasePath: string;
   activatePrimary(): Promise<SqliteCutoverServices | null>;
   getServices(): SqliteCutoverServices | null;
   getSqliteStore(): SqliteApplicationStore | null;
+  hasInFlightSqliteRun(): boolean;
+  reloadAfterRestore(): Promise<void>;
   getArtifactLifecycle(): ArtifactLifecycleService | null;
   getUsageAccounting(): UsageAccountingService | null;
   getTelemetryHost(): TelemetryHostService | null;
@@ -350,6 +354,12 @@ export interface CreateSqliteCutoverCoordinatorDeps {
   readonly isWorkspaceTrusted: () => boolean;
   readonly hasPrimacy: () => Promise<boolean>;
   readonly disposables: vscode.Disposable[];
+  /** Optional operator notice callback (defaults to `vscode.window.showWarningMessage`). */
+  readonly notifyOperator?: ((message: string) => void | Promise<void>) | undefined;
+  /** Optional filesystem type for canonical storage root (enables deterministic WAL-refusal testing). */
+  readonly canonicalFilesystemType?: string | undefined;
+  /** Optional additional legacy storage roots to inspect during one-time relocation (test seam). */
+  readonly additionalLegacyStorageRoots?: readonly string[] | undefined;
 }
 
 function buildSecretPort(
@@ -368,25 +378,116 @@ function buildSecretPort(
 interface OpenPrimarySqliteServicesInput {
   readonly deps: CreateSqliteCutoverCoordinatorDeps;
   readonly scopeId: string;
-  readonly storageRoot: string;
-  readonly expectedDatabasePath: string;
-  readonly hasWorkspaceStorage: boolean;
+  readonly globalStorageRoot: string;
+  readonly legacyStorageRoot: string | undefined;
   readonly operationalMemento: SwitchableOperationalMemento | undefined;
   readonly catalogFs: SwitchableCatalogFsAdapter | undefined;
   readonly reportSideEffectFailure: SideEffectFailureReport;
+  readonly onActiveLocationResolved: (location: {
+    readonly activeDatabasePath: string;
+    readonly preservedUnselectedPaths: readonly string[];
+  }) => void;
+}
+
+function defaultNotifyOperator(message: string): void {
+  void vscode.window.showWarningMessage(message);
+}
+
+function emitOperatorNotice(
+  deps: CreateSqliteCutoverCoordinatorDeps,
+  message: string
+): void {
+  try {
+    const fn = deps.notifyOperator ?? defaultNotifyOperator;
+    void Promise.resolve(fn(message)).catch(() => undefined);
+  } catch {
+    // Best-effort operator notice must never crash activation.
+  }
 }
 
 async function openPrimarySqliteServices(
   input: OpenPrimarySqliteServicesInput
 ): Promise<SqliteCutoverServices | null> {
-  const { deps, scopeId, storageRoot, expectedDatabasePath, hasWorkspaceStorage } = input;
+  const { deps, scopeId, globalStorageRoot, legacyStorageRoot } = input;
+
+  let relocationOutcome: StoreRelocationOutcome;
+  try {
+    relocationOutcome = await relocateLegacySqliteStore({
+      scopeId,
+      globalStorageUri: globalStorageRoot,
+      legacyStorageUri: legacyStorageRoot,
+      additionalLegacyStorageRoots: deps.additionalLegacyStorageRoots,
+      canonicalFilesystemType: deps.canonicalFilesystemType,
+      verifyPrimacy: deps.hasPrimacy
+    });
+  } catch (error) {
+    deps.logger.warn('sqlite cutover: relocation aborted', {
+      reason: error instanceof Error ? error.name : 'unknown'
+    });
+    return null;
+  }
+
+  if (relocationOutcome.outcome === 'refused_newer_schema') {
+    deps.logger.warn('sqlite cutover: refused relocation for newer schema', {
+      reason: relocationOutcome.reason,
+      recordedVersion: relocationOutcome.recordedVersion,
+      maxSupportedVersion: relocationOutcome.maxSupportedVersion,
+      offendingPath: relocationOutcome.offendingPath
+    });
+    emitOperatorNotice(
+      deps,
+      `Schegent refused to open or relocate the operational SQLite database (${relocationOutcome.reason}). Update Schegent before opening this workspace.`
+    );
+    return null;
+  }
+
+  const activeStorageRoot = relocationOutcome.activeStorageRoot;
+  const activeDatabasePath = relocationOutcome.activeDatabasePath;
+  const activeSourceKind = relocationOutcome.activeSourceKind;
+
+  input.onActiveLocationResolved({
+    activeDatabasePath,
+    preservedUnselectedPaths: relocationOutcome.preservedUnselectedPaths
+  });
+
+  if (relocationOutcome.outcome === 'relocated') {
+    deps.logger.info('sqlite cutover: relocated legacy store into folder-keyed global storage', {
+      relocatedFromPath: relocationOutcome.relocatedFromPath,
+      activeDatabasePath
+    });
+  } else if (relocationOutcome.outcome === 'conflict_resolved') {
+    deps.logger.warn('sqlite cutover: multiple databases held state; kept unselected database unmodified', {
+      selectionRule: relocationOutcome.selectionRule,
+      winnerSourcePath: relocationOutcome.winnerSourcePath,
+      preservedUnselectedPaths: relocationOutcome.preservedUnselectedPaths
+    });
+    if (relocationOutcome.noticeRequired) {
+      const preservedList = relocationOutcome.newlyDiscoveredConflictPaths.join(', ');
+      emitOperatorNotice(
+        deps,
+        `Schegent found more than one operational store for this folder and selected the most recently written database without merging rows. The unselected database was left unmodified at: ${preservedList}`
+      );
+    }
+  } else if (relocationOutcome.outcome === 'fallback_legacy_preserved') {
+    deps.logger.warn('sqlite cutover: canonical store target unavailable; keeping legacy store active in place', {
+      reason: relocationOutcome.reason,
+      activeDatabasePath
+    });
+    emitOperatorNotice(
+      deps,
+      `Schegent could not relocate the SQLite store to global storage (${relocationOutcome.reason}); the existing legacy store remains active in place at: ${activeDatabasePath}`
+    );
+  }
+
   let sqliteStore: SqliteApplicationStore;
   try {
     sqliteStore = await SqliteApplicationStore.openAtTrustedLocation({
-      trustedRootDir: storageRoot,
+      trustedRootDir: activeStorageRoot,
       relativeSegments: ['sqlite', scopeId],
       databaseFileName: 'schegent-state.db',
-      sourceKind: hasWorkspaceStorage ? 'host_storage_uri' : 'host_global_storage_uri'
+      sourceKind: activeSourceKind,
+      filesystemType:
+        activeSourceKind === 'host_global_storage_uri' ? deps.canonicalFilesystemType : undefined
     });
   } catch (error) {
     deps.logger.warn('sqlite cutover: failed to open application store', {
@@ -398,9 +499,14 @@ async function openPrimarySqliteServices(
   try {
     input.operationalMemento?.attachSqlite(sqliteStore, scopeId);
     input.operationalMemento?.configureDetachedTrustedSqliteWriter({
-      databasePath: expectedDatabasePath,
+      databasePath: activeDatabasePath,
       scopeId,
-      canWrite: () => deps.isWorkspaceTrusted()
+      canWrite: () => deps.isWorkspaceTrusted(),
+      openStore: (databasePath) =>
+        new SqliteApplicationStore({
+          databasePath,
+          journalMode: 'wal'
+        })
     });
     if (input.catalogFs !== undefined) {
       await input.catalogFs.attachSqlite(sqliteStore, scopeId);
@@ -410,7 +516,7 @@ async function openPrimarySqliteServices(
     const artifactLifecycle = createArtifactLifecycleService({
       conn: sqliteStore.writerConnection,
       nowMs: () => Date.now(),
-      fs: buildNodeLifecycleFs([deps.workspaceRoot, storageRoot]),
+      fs: buildNodeLifecycleFs([deps.workspaceRoot, activeStorageRoot]),
       probe,
       byteReader: reader,
       audit: {
@@ -447,7 +553,7 @@ async function openPrimarySqliteServices(
 
     const telemetryHost = createTelemetryHostService({
       sqliteStore,
-      storageRoot,
+      storageRoot: activeStorageRoot,
       secrets: buildSecretPort(deps.context.secrets),
       isWorkspaceTrusted: deps.isWorkspaceTrusted,
       serviceVersion: '0.2.0',
@@ -486,7 +592,7 @@ async function openPrimarySqliteServices(
     const laneService = LaneService.open({
       connection: sqliteStore.writerConnection,
       workspaceRoot: deps.workspaceRoot,
-      storageDir: storageRoot,
+      storageDir: activeStorageRoot,
       workspaceId: scopeId,
       liveLaneCap: readLanesLiveCap(deps.workspaceRoot),
       provisioningDeadlineMs: readLanesProvisioningDeadlineMs(deps.workspaceRoot),
@@ -643,19 +749,35 @@ export function createSqliteCutoverCoordinator(
   deps: CreateSqliteCutoverCoordinatorDeps
 ): SqliteCutoverCoordinator {
   const scopeId = deriveWorkspaceScopeId(deps.workspaceRoot);
-  const hasWorkspaceStorage = deps.context.storageUri !== undefined;
-  const storageRoot = deps.context.storageUri?.fsPath ?? deps.context.globalStorageUri.fsPath;
+  const globalStorageRoot = deps.context.globalStorageUri.fsPath;
+  const legacyStorageRoot = deps.context.storageUri?.fsPath;
   const expectedDatabasePath = sqliteDatabasePathFor(
-    { storageUri: deps.context.storageUri?.fsPath, globalStorageUri: deps.context.globalStorageUri.fsPath },
+    { storageUri: legacyStorageRoot, globalStorageUri: globalStorageRoot },
     deps.workspaceRoot
   );
+  const legacyDatabasePath =
+    legacyStorageRoot !== undefined && path.resolve(legacyStorageRoot) !== path.resolve(globalStorageRoot)
+      ? path.join(legacyStorageRoot, 'sqlite', scopeId, 'schegent-state.db')
+      : null;
 
   const operationalMemento = getOperationalMementoForStore(deps.store);
   const catalogFs = catalogFsByStore.get(deps.store);
 
   // Safe at wiring time (even in untrusted or non-primary windows): read-only snapshot probe only.
-  operationalMemento?.attachReadOnlySnapshotIfPresent(expectedDatabasePath, scopeId);
-  catalogFs?.attachReadOnlySnapshotIfPresent(expectedDatabasePath, scopeId);
+  // Probe canonical path first; if absent before first primary relocation, probe legacy path read-only.
+  const attachedOperational = operationalMemento?.attachReadOnlySnapshotIfPresent(expectedDatabasePath, scopeId) ?? false;
+  const attachedCatalog = catalogFs?.attachReadOnlySnapshotIfPresent(expectedDatabasePath, scopeId) ?? false;
+  if (legacyDatabasePath !== null) {
+    if (!attachedOperational) {
+      operationalMemento?.attachReadOnlySnapshotIfPresent(legacyDatabasePath, scopeId);
+    }
+    if (!attachedCatalog) {
+      catalogFs?.attachReadOnlySnapshotIfPresent(legacyDatabasePath, scopeId);
+    }
+  }
+
+  let activeDatabasePath = expectedDatabasePath;
+  let preservedUnselectedPaths: readonly string[] = [];
 
   let activeServices: SqliteCutoverServices | null = null;
   // Review gap GC-05 — the best-effort paths below report a failure instead of dropping it.
@@ -696,18 +818,22 @@ export function createSqliteCutoverCoordinator(
     activeServices = await openPrimarySqliteServices({
       deps,
       scopeId,
-      storageRoot,
-      expectedDatabasePath,
-      hasWorkspaceStorage,
+      globalStorageRoot,
+      legacyStorageRoot,
       operationalMemento,
       catalogFs,
-      reportSideEffectFailure
+      reportSideEffectFailure,
+      onActiveLocationResolved: (location) => {
+        activeDatabasePath = location.activeDatabasePath;
+        preservedUnselectedPaths = location.preservedUnselectedPaths;
+      }
     });
     return activeServices;
   };
 
   const coordinator: SqliteCutoverCoordinator = {
     scopeId,
+    storageRoot: globalStorageRoot,
     expectedDatabasePath,
     activatePrimary() {
       if (activeServices !== null) return Promise.resolve(activeServices);
@@ -718,6 +844,48 @@ export function createSqliteCutoverCoordinator(
     },
     getServices: () => activeServices,
     getSqliteStore: () => activeServices?.sqliteStore ?? null,
+    hasInFlightSqliteRun() {
+      if (activeServices === null) return false;
+      const conn = activeServices.sqliteStore.writerConnection;
+      try {
+        const activeRelational = Number(
+          conn.scalar(
+            `SELECT COUNT(*) FROM runs WHERE status NOT IN ('succeeded', 'failed', 'cancelled', 'aborted')`
+          ) ?? 0
+        );
+        if (activeRelational > 0) return true;
+        const activeOpRuns = Number(
+          conn.scalar(
+            `SELECT COUNT(*) FROM operational_runs WHERE status NOT IN ('completed', 'failed', 'canceled')`
+          ) ?? 0
+        );
+        if (activeOpRuns > 0) return true;
+        const activeQueue = Number(
+          conn.scalar(
+            `SELECT COUNT(*) FROM operational_queue_meta WHERE in_flight_id IS NOT NULL`
+          ) ?? 0
+        );
+        return activeQueue > 0;
+      } catch {
+        // Fail closed when SQLite active-run state cannot be read.
+        return true;
+      }
+    },
+    async reloadAfterRestore() {
+      operationalMemento?.reloadSqliteCache();
+      if (activeServices !== null) {
+        try {
+          await activeServices.runLaneCoordinator.refreshCacheFromStore();
+        } catch (err) {
+          reportSideEffectFailure('restore-lane-cache-reload', err);
+        }
+        try {
+          activeServices.recoveryHandoff.reopen();
+        } catch (err) {
+          reportSideEffectFailure('restore-handoff-reopen', err);
+        }
+      }
+    },
     getArtifactLifecycle: () => activeServices?.artifactLifecycle ?? null,
     getUsageAccounting: () => activeServices?.usageAccounting ?? null,
     getTelemetryHost: () => activeServices?.telemetryHost ?? null,
@@ -730,11 +898,19 @@ export function createSqliteCutoverCoordinator(
     getChangeReviewService: () => activeServices?.changeReviewService ?? null,
     getPhaseContextApi: () => createPhaseContextApi(() => activeServices?.phaseHandoffCoordinator ?? null),
     getProtectedRunIds: () => querySqliteProtectedRunIds(activeServices, reportSideEffectFailure),
-    getDatabaseProtectedPaths: () => [
-      expectedDatabasePath,
-      `${expectedDatabasePath}-wal`,
-      `${expectedDatabasePath}-shm`
-    ],
+    getDatabaseProtectedPaths: () => {
+      const protectedSet = new Set<string>([
+        activeDatabasePath,
+        `${activeDatabasePath}-wal`,
+        `${activeDatabasePath}-shm`,
+        ...preservedUnselectedPaths
+      ]);
+      for (const preserved of preservedUnselectedPaths) {
+        protectedSet.add(`${preserved}-wal`);
+        protectedSet.add(`${preserved}-shm`);
+      }
+      return [...protectedSet];
+    },
     onTerminalRun(summary) {
       if (activeServices === null) return;
       activeServices.usageWiring.onTerminalRun(summary);

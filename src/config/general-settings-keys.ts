@@ -34,6 +34,7 @@ import {
   SUPPORTED_BACKENDS,
   type BackendRunnerKind
 } from '../contracts/backend-kinds';
+import { BACKEND_DESCRIPTORS } from '../contracts/backend-descriptors';
 import { QUEUE_FAILURE_POLICIES, type QueueFailurePolicy } from '../contracts/queue-failure-policy'; // Feature 195
 import type { TransportCaptureSetting } from '../contracts/transport-capture-mode'; // FR-R4-F04
 
@@ -198,9 +199,9 @@ export interface KeySpec {
 }
 
 export const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
-  'cli.path': { scope: 'application', type: 'string', typedField: 'cliPath', defaultValue: 'claude' },
-  'codex.path': { scope: 'application', type: 'string', typedField: 'codexPath', defaultValue: 'codex' },
-  'agy.path': { scope: 'application', type: 'string', typedField: 'agyPath', defaultValue: 'agy' },
+  'cli.path': { scope: 'application', type: 'string', typedField: 'cliPath', defaultValue: BACKEND_DESCRIPTORS.claude.defaultCliBinary },
+  'codex.path': { scope: 'application', type: 'string', typedField: 'codexPath', defaultValue: BACKEND_DESCRIPTORS.codex.defaultCliBinary },
+  'agy.path': { scope: 'application', type: 'string', typedField: 'agyPath', defaultValue: BACKEND_DESCRIPTORS.agy.defaultCliBinary },
   'logging.verbose': { scope: 'resource',
     type: 'boolean',
     typedField: 'loggingVerbose',

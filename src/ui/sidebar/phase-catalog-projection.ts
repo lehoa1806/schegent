@@ -18,6 +18,7 @@ import {
 } from '../../contracts/process-definitions';
 import { freezeResultContract } from '../../contracts/decision-results';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
+import type { BackendMap } from '../../contracts/backend-descriptors';
 import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
 import { NO_BUILDER_LIFECYCLE, type BuilderLifecycleLookup } from './builder-lifecycle';
 import { projectAuthoredDisplay } from './display-projection';
@@ -38,7 +39,7 @@ const INSTRUCTION_MAX = 8192;
 
 export interface PhaseCatalogComposeOptions {
   readonly sanitize: Sanitize;
-  readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
+  readonly availableModels: BackendMap<readonly string[]>;
   readonly defaultRunnerKind: BackendRunnerKind;
   /**
    * Feature 101 (T014) — the lifecycle facts for this kind. Optional so a host

@@ -43,7 +43,7 @@ This catalog describes code-resident mitigations and residual risk. It does not 
 | [T23](#t23--operator-authored-value-escapes-its-declared-bound) | Identifiers or retry expressions reach bounded sinks without their owning bound | Each definition contract owns its maximum and validators/reporting sites reuse it. | <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/contracts/pipeline-definitions.ts --><!-- Source: src/contracts/workflow-definitions.ts --> |
 | [T24](#t24--legacy-persisted-state-re-enters-the-runtime) | Old or newer persisted state violates current invariants | Forward-only initialization migrates old state and refuses a schema newer than the runtime. | <!-- Source: src/state/workspace-state.ts --><!-- Source: src/state/queue-state-migrator.ts --> |
 | [T25](#t25--control-sentinel-carried-in-cli-output) | Model-controlled stdout carries apparent host control signals | Outcome parsing uses the trailing audit region; process termination uses the CLI harness result envelope. | <!-- Source: src/parser/audit-log-parser.ts --><!-- Source: src/parser/stdout-parser.ts --><!-- Source: src/runner/claude-cli.ts --> |
-| [T26](#t26--a-process-nobody-owns-keeps-writing-the-working-tree) | A CLI tree orphaned by a dead host, or a superseded window's live child, keeps mutating the shared checkout | Spawn identity (pid, group id, start time) persisted under the fence; an admission guard at every resume declines a live tree; fence loss runs the abort, SIGTERM, SIGKILL group ladder; a closed runner refuses spawns after teardown. | <!-- Source: src/contracts/spawn-identity.ts --><!-- Source: src/services/resume-admission-guard.ts --><!-- Source: src/runner/spawn-refused-after-close.ts --> |
+| [T26](#t26--a-process-nobody-owns-keeps-writing-the-working-tree) | A CLI tree orphaned by a dead host, or a superseded window's live child, keeps mutating the shared checkout | Spawn identity (pid, group id, start time) persisted under the fence; an admission guard at every resume declines a live tree; fence loss runs the abort, SIGTERM, SIGKILL group ladder; a closed runner refuses spawns after teardown; teardown and crash-safe startup persist queues paused until manual Resume. | <!-- Source: src/contracts/spawn-identity.ts --><!-- Source: src/services/resume-admission-guard.ts --><!-- Source: src/runner/spawn-refused-after-close.ts --><!-- Source: src/activation/queue-lifecycle-boundary.ts --> |
 | [T27](#t27--a-persisted-consent-grant-outlives-what-the-operator-agreed-to) | A remembered consent grant lasts longer, or applies more widely, than the operator meant | Uncontained-backend grant is application-scoped in User settings and re-judged at every runner lookup; Git-plan grant is keyed to this workspace and the exact plan fingerprint; cancel denies; withdrawal via setting or `Schegent: Git Approvals`. | <!-- Source: src/activation/uncontained-consent.ts --><!-- Source: src/activation/git-approval.ts --><!-- Source: src/state/git-plan-grants.ts --> |
 | [T28](#t28--a-command-acknowledgement-carries-an-error-message-to-the-webview) | An exception message with absolute paths reaches the webview in a command acknowledgement | Thrown dispatches become fixed codes (`command-dispatch-failed`, `command-result-unrecognized`); the sanitized message goes only to the extension log; `accepted` carries no reason; the webview shows only code-shaped reasons. | <!-- Source: src/ui/sidebar/message-router.ts --><!-- Source: src/contracts/command-outcome.ts --><!-- Source: webview-ui/src/lib/boundary-refusal-text.ts --> |
 | [T29](#t29--sqlite-operational-store-holds-unencrypted-state-at-rest) | The SQLite operational store holds structured state at rest, unencrypted, outside the workspace | Owner-only modes (`0700` directories, `0600` files), trusted-root-only path resolution, refusal of a WAL on a network filesystem, forward-only schema with a future schema refused, and one fenced writer in the trusted primary window. | <!-- Source: src/services/sqlite-store/storage-location-resolver.ts --><!-- Source: src/services/sqlite-store/schema-bootstrap.ts --> |
@@ -731,7 +731,18 @@ invocation fails the Run rather than resuming it.
 The refusal sits in the runner, not the resume loop, so a phase retry or an auto-drain
 admission after teardown is refused the same way. Teardown also closes the auto-drain before it
 stops any child, so a closed drain starts nothing, and a task waiting for the slot a stopped Run
-frees stays pending for the next session instead of being admitted and failed.
+frees stays pending for the next session instead of being admitted and failed. After
+`backend.teardown()` brings down active children and before execution-lease and primacy-lock
+release, teardown persists a pause across every non-empty, active, or scheduled queue
+(`operator-paused` with `pausedReason: 'extension-closed'`, armed schedules cancelled and cleared)
+and across every non-terminal Run (`status: 'paused'`, paired `manualPauseAt` / `manualPauseCause:
+'queue-paused-mid-run'` unless a phase-level pause is already recorded, retry and credit windows
+cleared, and any `in-flight` task row transitioned to `paused` with `inFlightId: null`). Primary
+Stage 2 activation applies the same pause once at startup (after terminal-transition replay and
+before recovery installers or composable workflow dispatch) as crash-safe defense against unclean
+shutdowns, and performs no unattended activation auto-drain or resume; execution restarts only
+when the operator explicitly enables a queue via Resume (`CMD_RESUME_QUEUE` or
+`schegent.resumeQueue`).
 
 **What remains, stated rather than implied:**
 
@@ -778,6 +789,8 @@ Permits a resume: `dead`, `unrecorded`, `unanswerable`
 All verdicts: `alive`, `dead`, `unrecorded`, `unanswerable`, `orphaned-group`
 <!-- liveness-verdicts:end -->
 
+<!-- Source: src/activation/queue-lifecycle-boundary.ts -->
+<!-- Source: src/commands/resume-queue-execution.ts -->
 <!-- Source: src/contracts/spawn-identity.ts -->
 <!-- Source: src/services/resume-admission-guard.ts -->
 <!-- Source: src/runner/backend-runner-registry.ts -->
@@ -829,9 +842,32 @@ workspace and this exact plan**: editing the pipeline changes the fingerprint an
 another repository asks. Withdrawn from `Schegent: Git Approvals`, which lists what this workspace
 holds and withdraws one entry or all of them; resetting workspace state also clears them.
 
-For both, cancelling or dismissing **denies**, and neither value is written except by its own
-affirmative action. A failed write does not become a denial of the run just approved — it means the
-next run asks again, which is the fail-closed direction for a grant that was never recorded.
+**The per-workspace repository agent configuration acknowledgement (`FR-R7-04`, review R1).** Because
+`schegent.backend.uncontainedBackends` is installation-wide while repository-controlled agent
+configuration (`.claude/settings.json`, `.claude/settings.local.json`, `.mcp.json`, `CLAUDE.md`,
+`.claude/CLAUDE.md`) travels with each repository, an uncontained Run runs a bounded, symlink-safe
+preflight scan (at most 256 KiB per file and 2,000 ms per scan via `openWithinRoot`) before spawning.
+When any listed file is present or unreadable and no matching workspace acknowledgement exists, a
+blocking modal discloses relative names, sizes, short SHA-256 digests, and Claude hook event /
+execution-relevant key names (never raw values, and `.mcp.json` is never parsed). `Approve This Run`
+approves once; `Acknowledge for This Workspace` stores a digest-bound grant under
+`schegent.consent.agentConfigGrants.v1` in this workspace's `workspaceState` memento (never persisted
+when any entry is unreadable or a scan error occurred). Any one-byte change re-prompts with a
+file-name and digest diff; every decision emits a closed `agent-config-acknowledged` audit event
+(`backend`, `fileCount`, `decision` only). Withdrawn from `Schegent: Agent Config Acknowledgements`
+or by resetting workspace state.
+
+**Limits of the repository configuration preflight (risk reduction, not containment):**
+- Disclosure and consent only: it does not block, strip, or rewrite repository configuration and does
+  not pin CLI settings flags.
+- Fixed path list: an attacker who controls the repository controls which files exist, so configuration
+  or execution mechanisms outside the fixed per-backend path list are not detected by this scan.
+- Contained (`os-enforced`) backends are excluded because the OS sandbox bounds them rather than an
+  uncontained consent waiver.
+
+For all three consent surfaces, cancelling or dismissing **denies**, and no value is written except by
+its own affirmative action. A failed write does not become a denial of the run just approved — it means
+the next run asks again, which is the fail-closed direction for a grant that was never recorded.
 
 **Residual risk, stated rather than implied:**
 
@@ -868,6 +904,9 @@ next run asks again, which is the fail-closed direction for a grant that was nev
 
 <!-- Source: src/activation/uncontained-consent.ts -->
 <!-- Source: src/activation/git-approval.ts -->
+<!-- Source: src/activation/agent-config-acknowledgement.ts -->
+<!-- Source: src/services/repo-agent-config-scanner.ts -->
+<!-- Source: src/state/agent-config-grants.ts -->
 <!-- Source: src/state/git-plan-grants.ts -->
 <!-- Source: src/runner/backend-runner-factory.ts -->
 <!-- Source: src/runner/backend-runner-registry.ts -->
@@ -922,8 +961,13 @@ code-shaped unknown inside a fixed sentence, and shows nothing of any other stri
 
 ### T29 — SQLite operational store holds unencrypted state at rest
 
-After the one-time cutover (FR-R6-F04), structured operational state lives in a `node:sqlite`
-database at `<storage>/sqlite/<scope>/schegent-state.db`, with `-wal` and `-shm` sidecar files.
+After the one-time cutover (FR-R6-F04) and folder-keyed store unification (FR-R7-10), structured
+operational state lives in a `node:sqlite` database at
+`<globalStorageUri>/sqlite/<scope>/schegent-state.db`, with `-wal` and `-shm` sidecar files (or
+under an explicit CLI `--state-dir` in headless runs). `<scope>` hashes the workspace root, so
+distinct folders sharing an editor profile stay in separate directories while two windows opening
+the same folder directly and via `.code-workspace` share one canonical store serialized by the
+folder's `.schegent/ownership` fence.
 It holds the queue and run state, catalog definitions, the usage and cost ledger, structured
 outputs and handoffs, log segments and similar records (16 of the 20 surfaces in the state
 census), and the receipts the ACP gate writes. The raw transcripts, the audit log and the other
@@ -934,9 +978,18 @@ What the store does:
 - The directories are created `0700` and the database file `0600`, so other local accounts cannot
   read it. This is the same boundary as the evidence files, and it has the same limit: it keeps out
   nothing that runs as the operator.
-- The location is resolved only from trusted roots, so repository text cannot point the host at a
-  database elsewhere.
-- A write-ahead log is refused on a network filesystem, where its locking is not reliable.
+- The location is resolved only from trusted roots (`globalStorageUri`, legacy `storageUri` for
+  one-time relocation or unwritable-target fallback, or explicit CLI `--state-dir`), so repository
+  text cannot point the host at a database elsewhere.
+- One-time relocation from legacy per-window `storageUri` roots runs only while the window is
+  trusted and holds `.schegent/ownership`, stages inside the canonical anchor with symlink refusal
+  and `0600` modes, refuses newer-schema databases (`min_reader_version` / `schema_version`)
+  untouched before any write, never merges conflicting stores silently, preserves any displaced
+  canonical store read-only (`0400`) beside the active database, and logs conflict/fallback paths
+  with zero row content (never writing workspace paths to `.schegent/audit.log`).
+- A write-ahead log is refused on a network filesystem, where its locking is not reliable; if the
+  canonical target is unwritable or WAL-refused, an existing legacy store remains active in place
+  rather than falling back to a third path.
 - The schema is forward-only. A database written by a newer schema is refused, not opened.
 - One serialized writer owns the file, in a trusted primary window. A non-primary window reads a
   snapshot and cannot write.
@@ -951,6 +1004,7 @@ What it does not do, stated rather than implied:
 - **It sits outside the workspace**, so ignore rules and a workspace clean-up do not touch it.
 
 <!-- Source: src/services/sqlite-store/storage-location-resolver.ts -->
+<!-- Source: src/services/sqlite-store/store-relocation.ts -->
 <!-- Source: src/services/sqlite-store/schema-bootstrap.ts -->
 <!-- Source: src/contracts/sqlite-store/state-census.ts -->
 

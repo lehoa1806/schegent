@@ -31,12 +31,12 @@ export interface MementoBatchEntry {
 
 /** The Memento write surface the gate bounds and quarantines. */
 export interface MementoWriter {
-  update(key: string, value: unknown): Thenable<void>;
+  update(key: string, value: unknown): PromiseLike<void>;
   /**
    * Optional multi-key atomic batch writer implemented by `SwitchableOperationalMemento`
    * (backed by one `BEGIN IMMEDIATE ... COMMIT` transaction on `SqliteOperationalBacking`).
    */
-  updateBatch?(entries: readonly MementoBatchEntry[]): Thenable<void>;
+  updateBatch?(entries: readonly MementoBatchEntry[]): PromiseLike<void>;
 }
 
 type WriteOutcome =
@@ -89,7 +89,7 @@ export class MementoWriteGate {
     });
   }
 
-  private async executeBounded(label: string, invoke: () => Thenable<void>): Promise<void> {
+  private async executeBounded(label: string, invoke: () => PromiseLike<void>): Promise<void> {
     if (this.quarantine !== null) {
       throw new StorageWriteQuarantinedError(
         'storage-write-quarantined',
@@ -115,7 +115,7 @@ export class MementoWriteGate {
     );
   }
 
-  private startWrite(invoke: () => Thenable<void>): Promise<WriteOutcome> {
+  private startWrite(invoke: () => PromiseLike<void>): Promise<WriteOutcome> {
     try {
       return Promise.resolve(invoke()).then(
         () => ({ outcome: 'ok' as const }),

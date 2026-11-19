@@ -2,7 +2,8 @@ export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
 import type { PhaseCapability } from '../contracts/phase-capabilities';
 import type { ResultContract } from '../contracts/decision-results';
-import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../contracts/backend-kinds';
+import { DEFAULT_BACKEND, SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../contracts/backend-kinds';
+import { emptyBackendModels, mapBackends, type BackendMap } from '../contracts/backend-descriptors';
 // One declaration serves the authored contract and the runtime shape. These were
 // duplicated string unions here; a Phase now declares its own containment class,
 // so a second copy would let the document field and the runtime field drift with
@@ -106,7 +107,7 @@ export interface PhaseDef {
 export interface PipelineCatalog {
   readonly phases: readonly PhaseDef[];
   readonly pipelines: readonly PipelineDef[];
-  readonly models: Record<BackendRunnerKind, readonly string[]>;
+  readonly models: BackendMap<readonly string[]>;
   readonly defaultPipelineId: string;
   readonly phasesById: ReadonlyMap<string, PhaseDef>;
   readonly pipelinesById: ReadonlyMap<string, PipelineDef>;
@@ -259,7 +260,7 @@ export function isPipelineDef(value: unknown): value is PipelineDef {
 }
 
 export interface RuntimePolicyInput {
-  readonly models?: Record<BackendRunnerKind, readonly string[]> | readonly string[]; // support migration from array
+  readonly models?: BackendMap<readonly string[]> | readonly string[]; // support migration from array
   readonly defaultPipelineId?: string;
 }
 
@@ -284,7 +285,7 @@ export function mergeRuntimePolicy(
   user: RuntimePolicyInput,
   workspace: RuntimePolicyInput
 ): {
-  models: Record<BackendRunnerKind, readonly string[]>;
+  models: BackendMap<readonly string[]>;
   defaultPipelineId: string;
 } {
   const modelsMap = new Map<BackendRunnerKind, Set<string>>();
@@ -293,16 +294,16 @@ export function mergeRuntimePolicy(
   for (const input of [workspace, user]) {
     if (!input.models) continue;
     if (Array.isArray(input.models)) {
-      let set = modelsMap.get('claude');
+      let set = modelsMap.get(DEFAULT_BACKEND);
       if (!set) {
         set = new Set<string>();
-        modelsMap.set('claude', set);
+        modelsMap.set(DEFAULT_BACKEND, set);
       }
       for (const m of input.models) set.add(m);
       continue;
     }
     for (const kind of SUPPORTED_BACKENDS) {
-      const arr = (input.models as Record<BackendRunnerKind, readonly string[]>)[kind];
+      const arr = (input.models as BackendMap<readonly string[]>)[kind];
       if (!arr) continue;
       let set = modelsMap.get(kind);
       if (!set) {
@@ -314,11 +315,7 @@ export function mergeRuntimePolicy(
   }
 
   return {
-    models: {
-      claude: Object.freeze(Array.from(modelsMap.get('claude') ?? [])),
-      codex: Object.freeze(Array.from(modelsMap.get('codex') ?? [])),
-      agy: Object.freeze(Array.from(modelsMap.get('agy') ?? []))
-    },
+    models: mapBackends((descriptor) => Object.freeze(Array.from(modelsMap.get(descriptor.kind) ?? []))),
     // Feature 098 (T081, FR-033) — no layer supplies a built-in default, so an
     // unconfigured host has none, and the empty string is how that is spelled.
     defaultPipelineId: workspace.defaultPipelineId ?? user.defaultPipelineId ?? ''
@@ -328,7 +325,7 @@ export function mergeRuntimePolicy(
 export function buildCatalog(
   phases: readonly PhaseDef[],
   pipelines: readonly PipelineDef[],
-  models: Record<BackendRunnerKind, readonly string[]>,
+  models: BackendMap<readonly string[]>,
   defaultPipelineId: string,
   workflows: readonly WorkflowDefinition[] = []
 ): PipelineCatalog {
@@ -375,7 +372,7 @@ export function buildCatalog(
 export const EMPTY_CATALOG: PipelineCatalog = buildCatalog(
   [],
   [],
-  { claude: [], codex: [], agy: [] },
+  emptyBackendModels(),
   ''
 );
 

@@ -72,7 +72,7 @@ operator's chosen value, and every definition site cites this authority record.
 <!-- Source: src/state/history-state-migrator.ts -->
 <!-- Source: src/queue/queue-manager.ts -->
 <!-- Source: src/services/auto-drain-coordinator.ts -->
-<!-- Source: src/contracts/validators/queue-management.ts -->
+<!-- Source: src/contracts/generated/validators/queue-management.ts -->
 <!-- Source: src/state/workspace-state.ts -->
 <!-- Source: src/contracts/queue-bounds.ts -->
 
@@ -291,7 +291,7 @@ execution, queue isolation, capacity, lease lifetime, terminal independence,
 retry, cancellation, and deterministic interleavings.
 
 <!-- Source: src/state/workspace-state.ts -->
-<!-- Source: src/contracts/validators/queue-management.ts -->
+<!-- Source: src/contracts/generated/validators/queue-management.ts -->
 <!-- Source: src/services/auto-drain-coordinator.ts -->
 <!-- Source: src/contracts/state-schema.ts -->
 <!-- Source: tests/integration/concurrent-run-execution.test.ts -->

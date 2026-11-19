@@ -10,6 +10,7 @@ Implemented in:
 - [`src/contracts/sqlite-store/state-census.ts`](../../src/contracts/sqlite-store/state-census.ts)
 - [`src/services/sqlite-store/sqlite-driver.ts`](../../src/services/sqlite-store/sqlite-driver.ts)
 - [`src/services/sqlite-store/storage-location-resolver.ts`](../../src/services/sqlite-store/storage-location-resolver.ts)
+- [`src/services/sqlite-store/store-relocation.ts`](../../src/services/sqlite-store/store-relocation.ts)
 - [`src/services/sqlite-store/schema-bootstrap.ts`](../../src/services/sqlite-store/schema-bootstrap.ts)
 - [`src/services/sqlite-store/writer-coordinator.ts`](../../src/services/sqlite-store/writer-coordinator.ts)
 - [`src/services/sqlite-store/transaction-units.ts`](../../src/services/sqlite-store/transaction-units.ts)
@@ -49,12 +50,20 @@ is synchronous on the extension host thread, so that cost would block the host o
 
 ---
 
-## 2. Trusted Storage Location & Network-Share WAL Refusal
+## 2. Trusted Storage Location, One-Store-Per-Folder Relocation & Network-Share WAL Refusal
 
 `resolveTrustedSqliteLocation` (`src/services/sqlite-store/storage-location-resolver.ts`) enforces:
 1. **Trusted Source Origin**: Only `host_storage_uri`, `host_global_storage_uri`, or explicit `cli_state_dir` roots are accepted. Paths supplied by webviews, workspace settings, or untrusted environment variables are refused (`untrusted_source`).
 2. **Containment & POSIX Permissions**: Directory chains and the database leaf file are created via `ensureAnchorWithinRoot` and `openWithinRoot` (`src/lib/safe-open.ts`) with `0700` directory mode and `0600` file mode (Hard Rule 69).
 3. **Network-Share WAL Refusal**: Opening in `WAL` mode on `nfs`, `smb`, `cifs`, `afp`, `webdav`, `fuse.sshfs`, `smbfs`, or `ncpfs` is refused (`network_share_wal_unsupported`) with an instruction to configure a local `--state-dir`.
+
+**One Store Per Folder (`FR-R7-10`, closing GC-26).** VS Code extension windows resolve their canonical store to `<globalStorageUri>/sqlite/<scope>/schegent-state.db` (`sqliteDatabasePathFor` in `src/activation/sqlite-cutover-wiring.ts`), where `<scope>` is the first 16 hex characters of SHA-256 of the workspace root. This eliminates the split between direct-folder openings and `.code-workspace` openings while leaving explicit CLI `--state-dir` resolution unchanged.
+
+On trusted primary activation (holding `.schegent/ownership`), `relocateLegacySqliteStore` (`src/services/sqlite-store/store-relocation.ts`) executes an idempotent, crash-safe one-time relocation from legacy per-window `storageUri` roots:
+- **Forward-only check first (GC-09)**: All candidates are inspected strictly read-only (`readOnly: true`) before any filesystem mutation. Any candidate recording `min_reader_version` or `schema_version` above the running build is refused untouched and reported.
+- **WAL-preserving staging & crash recovery**: The winning legacy store is snapshotted via read-only `VACUUM INTO` into `.schegent-state.relocate.staging.db` inside the canonical `<scope>` directory (preserving uncheckpointed WAL frames and avoiding cross-filesystem `EXDEV`), narrowed to `0600`, fsynced, verified with `PRAGMA quick_check`, journaled in `.relocation-in-progress.json` (`0600`) with its SHA-256 digest, re-checked against the ownership fence, and atomically published via contained `rename`. A crash at any stage leaves either the legacy source or the canonical target cleanly authoritative and recovers idempotently on the next primary activation without false conflicts.
+- **Deterministic two-database conflict handling (zero silent merge)**: When two or more populated databases exist for the same `<scope>` (empty zero-row shells are ignored), the winner is selected deterministically by `(1) highest persisted last-write timestamp` (falling back to max `.db`/`-wal` `mtimeMs`), `(2) highest persisted Run count`, `(3) canonical store preference`, `(4) lexicographical path order`. Rows are never merged. Unselected legacy databases remain untouched in place; a displaced canonical database is preserved unmodified at mode `0400` as `schegent-state.unselected-<shortHash>.db` beside the canonical store. Resolved conflict fingerprints are persisted in `relocation-receipt.json` (`0600`), logged via `SanitizedLogger` with zero row content, and surfaced in one deduplicated operator notice.
+- **Unwritable / network-FS fallback**: If the canonical target cannot be prepared (read-only directory, containment refusal, or WAL-refused network filesystem), the existing legacy database remains active in place and protected by `getDatabaseProtectedPaths()`, with a warning notice and zero fallback to a third location.
 
 ---
 
@@ -93,10 +102,12 @@ All authoritative multi-table state changes execute inside `AtomicTransactionUni
    - Any interruption prior to `publish-authority` leaves `cutover_sentinel.authority = 'legacy'` and resumes idempotently on restart.
    - Corrupt JSON or unknown-future-version (`schemaVersion > maxSupported`) records are preserved in `migration_quarantine` with full raw payload and diagnostic JSON (`0` silent drops). `retire-source` is blocked until all quarantine rows are resolved.
    - Once `publish-authority` completes, `CutoverAuthorityGuard.checkLegacyAccessAllowed` refuses legacy Memento/JSON access (`SQLITE_AUTHORITY_ACTIVE`).
-2. **Online Backup & Validated Restore (`BackupRestoreService`)**:
-   - `createOnlineBackup` uses `VACUUM INTO` to snapshot the live WAL database and builds a `BackupDependencyManifest` listing external content-addressed blobs (`F05`), bounded log segments (`F07`), and `AuditLogger` files with SHA-256 digests and byte lengths.
-   - `validateAndRestoreBackup` opens the backup in an isolated read-only connection, verifies `PRAGMA quick_check` (`ok`), `PRAGMA foreign_key_check` (`0` rows), schema version and `min_reader_version` compatibility, and every external file digest before restoring `runs`, `operational_queue_meta`, `operational_tasks`, `operational_runs`, `operational_kv_documents`, and `cutover_sentinel` atomically inside a single `BEGIN IMMEDIATE ... COMMIT` transaction.
-   - Both functions are library code. No host command, activation module or UI calls them, so there is no operator-facing way to back up or restore the database today.
+2. **Online Backup, Verification & Full-Authority Restore (`BackupRestoreService` & Operator Commands, `FR-R7-03`)**:
+   - `createOnlineBackup` uses `VACUUM INTO` to snapshot the live WAL database into `<storageRoot>/sqlite/<scopeId>/backups/` (`0700` dir, `0600` `.db` and companion `.db.manifest.json` via `ensureAnchorWithinRoot`/`openWithinRoot`/`narrowMode`), computes `BackupDependencyManifest.databaseSha256` and `databaseBytes` over the actual backup file bytes on disk, and records external content-addressed blobs (`F05`), bounded log segments (`F07`), and `AuditLogger` dependencies.
+   - `verifyBackup` and `validateAndRestoreBackup` reject any SQLite sidecar (`-wal`, `-shm`, `-journal`), recompute the file-byte SHA-256 digest before opening SQLite (`DATABASE_DIGEST_MISMATCH`), enforce deterministic external dependency ceilings (`10,000` entries / `512 MiB` cumulative bytes -> `EXTERNAL_DEPENDENCY_BOUND_EXCEEDED`), and verify `PRAGMA quick_check` (`ok`), `PRAGMA foreign_key_check` (`0` rows), `schema_version`, and `min_reader_version` in an isolated read-only connection.
+   - `validateAndRestoreBackup` replaces all `128` tables in `AUTHORITATIVE_RESTORE_TABLES` (`src/services/sqlite-store/authoritative-restore-tables.ts`, gated against all `CREATE TABLE` definitions and `sqlite_master` by `tests/lint/sqlite-authoritative-restore-census.test.ts`) atomically inside a single `BEGIN IMMEDIATE ... COMMIT` transaction with `PRAGMA defer_foreign_keys = ON`, transactional trigger preservation, and pre-commit `PRAGMA foreign_key_check`, followed by operational cache reload (`reloadCacheFromSqlite`) and UI snapshot refresh.
+   - Exposed to operators via **Schegent: Back Up Store** (`schegent.backupStore`, mutating, owner-only), **Schegent: Verify Store Backup** (`schegent.verifyStoreBackup`, read-only), and **Schegent: Restore Store Backup** (`schegent.restoreStoreBackup`, mutating, owner-only, refused with `RUN_IN_FLIGHT` while any Run is non-terminal), backed by the zero-`vscode` headless API in `src/headless/backup-restore-api.ts`. Backup and restore append sanitized metadata-only `store-backup` / `store-restore` audit rows (zero raw paths).
+   - For rolling back a failed migration or bad upgrade across a `min_reader_version` bump (schema `N` → `N-1`), see [`sqlite-rollback-runbook.md`](sqlite-rollback-runbook.md).
 
 ---
 

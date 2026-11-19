@@ -4,6 +4,7 @@ import { policyRequestFields } from '../runner/spawn-env';
 import type { BackendRunner } from '../contracts/backend-runner';
 import type { BackendRunnerRegistry } from '../runner/backend-runner-registry';
 import { DEFAULT_BACKEND, type BackendRunnerKind } from '../contracts/backend-kinds';
+import { getBackendDescriptor } from '../contracts/backend-descriptors';
 import type { PromptBuilder } from '../runner/prompt-builder';
 import { RESUME_PROMPT_IDENTITY } from '../runner/prompt-identity';
 import type { ExecutionEnvelope } from '../contracts/run-request';
@@ -43,6 +44,8 @@ import {
 } from './backend-posture-recorder';
 import type { CapabilityRefusalEventType } from '../contracts/audit-events';
 import { isCapabilityRefusal } from '../services/capability-refusal';
+import { isAgentConfigAcknowledgementRefusal } from '../services/agent-config-ack-refusal';
+import type { AgentConfigAckGate } from './agent-config-ack-gate';
 import { isUncontainedBackendRefusal } from '../services/backend-containment-policy';
 import { authoredPhaseTimeoutMs, effectivePhaseTimeoutMs } from './effective-phase-timeout';
 import {
@@ -355,7 +358,8 @@ export class PhaseRunner {
     private readonly evidenceHealthDrain: { drainPathRefusals(): readonly string[] } | null = null,
     private readonly ambientConfigObserver?: (
       kind: BackendRunnerKind
-    ) => Promise<import('../contracts/audit-events').AmbientConfigObservation | null>
+    ) => Promise<import('../contracts/audit-events').AmbientConfigObservation | null>,
+    private readonly agentConfigAckGate: AgentConfigAckGate | null = null
   ) {
     // Feature 074 — accept either a BackendRunnerRegistry (per-phase
     // runner resolution) or a plain BackendRunner (backwards compat
@@ -608,13 +612,13 @@ export class PhaseRunner {
     // Claude CLI reads to override its auto-compaction threshold; when
     // undefined, the key MUST NOT appear in the env map (no empty-string
     // fallback, no "undefined" literal).
-    const autoCompactPct =
-      this.autoCompactOverrideAccessor?.readAutoCompactPctOverride();
+    const backendDescriptor = getBackendDescriptor(effectiveRunnerKind);
+    const autoCompactPct = this.autoCompactOverrideAccessor?.readAutoCompactPctOverride();
     const env: Record<string, string> = {
       SCHEGENT_PHASE: inputs.phase,
       SCHEGENT_ITERATION: String(inputs.iteration)
     };
-    if (effectiveRunnerKind === 'claude' && autoCompactPct !== undefined) {
+    if (backendDescriptor.supportsAutoCompactOverride && autoCompactPct !== undefined) {
       env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(autoCompactPct);
       await this.appendAudit(inputs, 'auto-compact-override-applied', 'info', {
         ...this.pipelineMeta(inputs),
@@ -622,15 +626,11 @@ export class PhaseRunner {
         value: autoCompactPct
       });
     }
-    // Compact Claude sessions before cross-phase reuse to bound context bleed.
+    // Compact sessions before cross-phase reuse on backends that support compaction.
     let effectiveSessionReuse = inputs.sessionReuse === true;
     let effectiveIsContinue = inputs.isContinue === true;
     let effectiveResumeSessionId = inputs.resumeSessionId;
-    if (
-      effectiveRunnerKind === 'claude' &&
-      effectiveSessionReuse &&
-      typeof inputs.resumeSessionId === 'string'
-    ) {
+    if (backendDescriptor.supportsSessionCompaction && effectiveSessionReuse && typeof inputs.resumeSessionId === 'string') {
       try {
         await this.compactSession(inputs);
       } catch (err) {
@@ -681,6 +681,7 @@ export class PhaseRunner {
       // below is where both refusals are named. Kept as two statements because
       // the split is what makes the two throw sites separable at all.
       const backendRunner = this.resolveRunner(inputs);
+      await this.agentConfigAckGate?.ensureAcknowledged(inputs, effectiveRunnerKind);
       raw = await backendRunner.invoke({
         effectiveFatalSignatures,
         phase: inputs.phase,
@@ -727,7 +728,11 @@ export class PhaseRunner {
       // `:390`, codex-cli `:84`, agy-cli `:121`). Neither can have left a child,
       // which is exactly what `PRE_SPAWN_REFUSAL_CAUSE` asserts. By error type,
       // not by position: see `AttemptRef` for what position got wrong.
-      if (isCapabilityRefusal(err) || isUncontainedBackendRefusal(err)) {
+      if (
+        isCapabilityRefusal(err) ||
+        isUncontainedBackendRefusal(err) ||
+        isAgentConfigAcknowledgementRefusal(err)
+      ) {
         attemptRef.preSpawnRefusal = true;
       }
       await rawTranscriptCapture?.dispose();
@@ -742,7 +747,7 @@ export class PhaseRunner {
     await this.appendAudit(inputs, 'cli-invocation', 'info', projectAuditPayload('cli-invocation', {
       runner: effectiveRunnerKind,
       operation: 'phase',
-      permissionMode: effectiveRunnerKind === 'codex' ? 'workspace-write' : 'unrestricted',
+      permissionMode: backendDescriptor.defaultAuditPermissionMode,
       continued: effectiveIsContinue,
       sessionReused: effectiveSessionReuse,
       ...(inputs.phaseDef?.model ? { modelId: inputs.phaseDef.model } : {}),
