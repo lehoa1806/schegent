@@ -14,12 +14,38 @@
 import { describe, it, expect } from 'vitest';
 import { parseInvocation } from '../../../src/parser/stdout-parser';
 import type { InvocationResult, ParseInputs } from '../../../src/parser/stdout-parser';
-import { NO_REGION } from '../../../src/parser/audit-log-parser';
+import { NO_REGION, parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
+import type { AuditEntryFields } from '../../../src/audit/audit-entry';
 
 const SIGTERM_EXIT_CODE = 143;
 const NO_BLOCK = 'the build is still running in the background';
 const REMAINING_ISSUES = ['Remaining issues:', '- [test-failure] one case still fails'].join('\n');
 const OPEN_QUESTIONS = ['Open questions:', '- Which branch should the fix target?'].join('\n');
+const CLEAN_BLOCK = [
+  '=== SCHEGENT AUDIT LOG ===',
+  'phase: agy-speckit-auto',
+  'files_created: []',
+  'files_modified: []',
+  'files_deleted: []',
+  'commands_executed: []',
+  'network_calls: []',
+  'ruleset_switches: []',
+  'notes: clean ACP turn',
+  '=== END AUDIT LOG ===',
+  '[SCHEGENT_STATUS: CLEAR]'
+].join('\n');
+const VALID_AUDIT: AuditEntryFields = {
+  phase: 'agy-speckit-auto',
+  filesCreated: [],
+  filesModified: [],
+  filesDeleted: [],
+  commandsExecuted: [],
+  networkCalls: [],
+  rulesetSwitches: [],
+  notes: 'clean ACP turn',
+  metrics: Object.freeze({}),
+  warnings: Object.freeze([] as string[])
+};
 
 const REST: Omit<ParseInputs, 'stdout' | 'exitCode'> = {
   stderr: '',
@@ -149,5 +175,102 @@ describe('parseInvocation incomplete_turn FR-R3-198 (T1877)', () => {
 
     expect(result).toMatchObject({ kind: 'transient_error', exitCode: SIGTERM_EXIT_CODE });
     expect(incompleteTurnWarnings(result)).toEqual([]);
+  });
+
+  // BUG-001 (T1884) — ACP prompt-settled turns (`acpTurnSettled`).
+  it('I10 (Story 2 s9; C1, BUG-001): an ACP prompt-settled turn at exit 0 with no contract block is incomplete_turn, cause no-contract-block', () => {
+    const result = parseInvocation({
+      ...REST,
+      stdout: NO_BLOCK,
+      exitCode: 0,
+      turnEnd: { killed: false, acpTurnSettled: true }
+    });
+
+    expect(result).toMatchObject({ kind: 'incomplete_turn', cause: 'no-contract-block' });
+    expect(incompleteTurnWarnings(result)).toEqual(['incomplete-turn:no-contract-block']);
+  });
+
+  it('I11 (Story 2 s10; C1, BUG-001): an ACP prompt-settled turn with open background work is incomplete_turn, cause background-work-open', () => {
+    const result = parseInvocation({
+      ...REST,
+      stdout: NO_BLOCK,
+      exitCode: 0,
+      turnEnd: { killed: false, acpTurnSettled: true, backgroundWorkOpenAtResult: true }
+    });
+
+    expect(result).toMatchObject({ kind: 'incomplete_turn', cause: 'background-work-open' });
+    expect(incompleteTurnWarnings(result)).toEqual(['incomplete-turn:background-work-open']);
+  });
+
+  it('I12 (C4, BUG-001): an ACP prompt-settled turn with a clean token, Remaining issues, or Open questions resolves to that contract block', () => {
+    const clean = parseInvocation({
+      ...REST,
+      stdout: CLEAN_BLOCK,
+      exitCode: 0,
+      auditEntry: VALID_AUDIT,
+      region: parseAuditLogBlock(CLEAN_BLOCK).region,
+      turnEnd: { killed: false, acpTurnSettled: true }
+    });
+    expect(clean).toMatchObject({ kind: 'clean' });
+    expect(incompleteTurnWarnings(clean)).toEqual([]);
+
+    const issues = parseInvocation({
+      ...REST,
+      stdout: REMAINING_ISSUES,
+      exitCode: 0,
+      turnEnd: { killed: false, acpTurnSettled: true }
+    });
+    expect(issues).toMatchObject({
+      kind: 'remaining_issues',
+      issues: [{ tag: 'test-failure', summary: 'one case still fails' }]
+    });
+    expect(incompleteTurnWarnings(issues)).toEqual([]);
+
+    const questions = parseInvocation({
+      ...REST,
+      stdout: OPEN_QUESTIONS,
+      exitCode: 0,
+      turnEnd: { killed: false, acpTurnSettled: true }
+    });
+    expect(questions).toMatchObject({
+      kind: 'open_questions',
+      questions: ['Which branch should the fix target?']
+    });
+    expect(incompleteTurnWarnings(questions)).toEqual([]);
+  });
+
+  it('I13 (C3, BUG-001): acpTurnSettled false (e.g. stopReason refusal) at exit 0 with no contract block stays remaining_issues', () => {
+    const result = parseInvocation({
+      ...REST,
+      stdout: NO_BLOCK,
+      exitCode: 0,
+      turnEnd: { killed: false, acpTurnSettled: false }
+    });
+
+    expect(result).toMatchObject({
+      kind: 'remaining_issues',
+      issues: [{ tag: 'constitution', summary: 'no contract block detected', source: 'host' }]
+    });
+    expect(incompleteTurnWarnings(result)).toEqual([]);
+  });
+
+  it('I14 (C3, BUG-001): a killed invocation with acpTurnSettled true is never incomplete_turn', () => {
+    const cancelled130 = parseInvocation({
+      ...REST,
+      stdout: NO_BLOCK,
+      exitCode: 130,
+      turnEnd: { killed: true, acpTurnSettled: true }
+    });
+    expect(cancelled130).toMatchObject({ kind: 'transient_error', exitCode: 130 });
+    expect(incompleteTurnWarnings(cancelled130)).toEqual([]);
+
+    const cancelledZero = parseInvocation({
+      ...REST,
+      stdout: NO_BLOCK,
+      exitCode: 0,
+      turnEnd: { killed: true, acpTurnSettled: true }
+    });
+    expect(cancelledZero.kind).not.toBe('incomplete_turn');
+    expect(incompleteTurnWarnings(cancelledZero)).toEqual([]);
   });
 });

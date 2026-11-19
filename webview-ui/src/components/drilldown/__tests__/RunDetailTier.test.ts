@@ -1299,3 +1299,67 @@ describe('RunDetailTier — a leaf member Task shows its own Phase (Feature 265 
     expect(tileNames(container)).toEqual(PHASES.map((tile) => tile.name));
   });
 });
+
+describe('Feature 020 BUG-004 (T090, FR-008) — standalone single-Phase Task tile synthesis and mount selection', () => {
+  const STANDALONE_PHASE = 'agy-speckit-auto';
+
+  function buildStandalonePhaseSnapshot(status: QueueItem['status']): WorkflowSnapshot {
+    const base = buildSnapshot({
+      tasks: [task('t-agy', { status, currentPipelineId: STANDALONE_PHASE, currentPhase: null })]
+    });
+    const emptyIdleQueues = base.queues.map((q) =>
+      q.queueId === 'q-beta'
+        ? { ...q, lifecycle: 'active-empty' as const, phases: Object.freeze([]), inFlightRun: null }
+        : q
+    );
+    return Object.freeze({
+      ...base,
+      queues: Object.freeze(emptyIdleQueues),
+      availablePipelines: Object.freeze([]),
+      availablePhases: Object.freeze([
+        Object.freeze({
+          id: STANDALONE_PHASE,
+          name: 'AGY Speckit Auto',
+          prompt: '/speckit-auto',
+          runner: 'agy' as const
+        })
+      ])
+    }) as unknown as WorkflowSnapshot;
+  }
+
+  it.each([
+    ['paused', 'active'],
+    ['completed', 'completed'],
+    ['failed', 'completed'],
+    ['canceled', 'completed']
+  ] as const)(
+    'synthesizes the single Phase tile (%s -> %s) and auto-selects it on mount when runtime.phases is empty',
+    async (status, expectedState) => {
+      const { container, getByTestId, queryByTestId } = mount(buildStandalonePhaseSnapshot(status), {
+        runId: 't-agy'
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const tiles = [...container.querySelectorAll('[data-testid^="phase-progression-"]')]
+        .map((el) => el.getAttribute('data-testid') ?? '')
+        .filter((id) => id !== 'phase-progression-list' && !id.startsWith('phase-progression-header'))
+        .map((id) => id.slice('phase-progression-'.length));
+
+      expect(tiles).toEqual([STANDALONE_PHASE]);
+      expect(getByTestId(`phase-progression-${STANDALONE_PHASE}`).getAttribute('data-state')).toBe(
+        expectedState
+      );
+      expect(readPhaseLogSpy).toHaveBeenCalledWith({
+        selection: {
+          queueId: 'q-beta',
+          taskId: 't-agy',
+          pipelineId: STANDALONE_PHASE,
+          phaseId: STANDALONE_PHASE,
+          iterationN: null
+        }
+      });
+      expect(queryByTestId('phase-log-empty-no-phase')).toBeNull();
+    }
+  );
+});

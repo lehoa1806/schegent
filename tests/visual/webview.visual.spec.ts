@@ -1633,6 +1633,9 @@ test('every settings description opens inside the panel and clear of its control
         await expect(toggle, 'Details opens').toHaveAttribute('aria-expanded', 'true');
         await toggle.blur();
       }
+      // Move the pointer off the scrolling card region so scrolling back up in `scanControls`
+      // cannot park the cursor over a `Test` button and open an unrelated hover tooltip.
+      await page.mouse.move(0, 0);
       await expect(openDescriptions).toHaveCount(0);
       await scanControls(`${width}px, ${section}`, shown);
       await scanMenus(`${width}px, ${section}`, shown);

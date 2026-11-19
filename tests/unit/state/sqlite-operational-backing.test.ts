@@ -337,16 +337,14 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
       );
       expect(runRow).toEqual({ run_id: 'run-batch-1', status: 'running' });
 
-      // Fault injection: throw on the second operational_kv_documents write inside updateBatch;
-      // the whole transaction MUST roll back so neither key nor cache advances.
+      // Fault injection: throw on the queue-entity write after KEYS.run has already written
+      // inside updateBatch; the whole transaction MUST roll back so neither key nor cache advances.
       const conn = sqliteStore.writerConnection;
       const originalRun = conn.run.bind(conn);
-      let kvWrites = 0;
       conn.run = ((...args: Parameters<typeof conn.run>) => {
         const [sql] = args;
-        if (sql.includes('INSERT INTO operational_kv_documents')) {
-          kvWrites += 1;
-          if (kvWrites === 2) throw new Error('injected-mid-batch-failure');
+        if (sql.includes('INSERT INTO operational_queue_meta')) {
+          throw new Error('injected-mid-batch-failure');
         }
         return originalRun(...args);
       }) as typeof conn.run;

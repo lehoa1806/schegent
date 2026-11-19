@@ -32,6 +32,7 @@ import { F08_HANDOFF_TABLE_NAMES } from '../../src/services/recovery-handoff/han
 import { F10_LANES_TABLE_NAMES } from '../../src/services/execution-lanes/lane-schema';
 import { F11_REPORTING_TABLE_NAMES } from '../../src/services/reporting/reporting-schema';
 import { R6_INTEGRATION_TABLE_NAMES } from '../../src/services/sqlite-store/round6-integration-schema';
+import { FR_R7_02_OPERATIONAL_ENTITY_TABLE_NAMES } from '../../src/services/sqlite-store/operational-entity-schema';
 import {
   BUILTIN_SCHEMA_MIGRATIONS,
   NodeSqliteConnection,
@@ -258,8 +259,8 @@ describe('FR-R6-F07 T041 — the segment index across restarts (F07-AC-08)', () 
     const conn = new NodeSqliteConnection({ databasePath: join(workspaceRoot, 'schegent.db') });
     opened.push(conn);
     const result = SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
-    expect(result.appliedMigrations).toEqual([4, 5, 6, 7, 8]);
-    expect(result.schemaVersion).toBe(8);
+    expect(result.appliedMigrations).toEqual([4, 5, 6, 7, 8, 9]);
+    expect(result.schemaVersion).toBe(9);
     const tablesAfter = conn
       .all<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
       .map((row) => row.name);
@@ -269,7 +270,8 @@ describe('FR-R6-F07 T041 — the segment index across restarts (F07-AC-08)', () 
       ...F08_HANDOFF_TABLE_NAMES,
       ...F10_LANES_TABLE_NAMES,
       ...F11_REPORTING_TABLE_NAMES,
-      ...R6_INTEGRATION_TABLE_NAMES
+      ...R6_INTEGRATION_TABLE_NAMES,
+      ...FR_R7_02_OPERATIONAL_ENTITY_TABLE_NAMES
     ];
     expect(tablesAfter).toEqual(expected.sort((a, b) => a.localeCompare(b)));
   });

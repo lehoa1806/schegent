@@ -328,7 +328,11 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // filter vocabularies, which repeat the `runs` and `attempts` CHECK spellings of the
   // FR-R6-F04 entries above so a report filter matches stored rows; never the
   // legacy per-task Memento projection discriminator.
-  'src/contracts/reporting/report-query.ts'
+  'src/contracts/reporting/report-query.ts',
+  // Spec 228 BUG-001 (FR-005a) — `BACKGROUND_TASK_HANDOFF_PREFIX` matches the external
+  // Antigravity harness tool-result sentence `"Tool is running as a background task with task id:"`
+  // verbatim; this module reads and writes no task/run status discriminator.
+  'src/runner/acp-open-work-tracker.ts'
   // FR-R3-150 added `webview-ui/src/lib/queue-derived.ts` here for a comment
   // quoting `queue-manager.ts`'s lifecycle ternary verbatim. The comment is
   // gone (2026-09-04), so the entry excused nothing and

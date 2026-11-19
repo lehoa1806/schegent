@@ -48,6 +48,11 @@ import {
   AcpAuthorityGate,
   verifyAcpTransportTeardown
 } from '../services/containment-qualification/acp-authority-gate';
+import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
+import { SanitizedLogger } from '../lib/logger';
+import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
+import { AcpOpenWorkTracker } from './acp-open-work-tracker';
+import { AcpStreamEncoder } from './acp-stream-encoder';
 import { nextInvocationId } from './invocation-identity';
 import {
   armedMaxDurationMs,
@@ -86,6 +91,8 @@ export interface AcpBackedRunnerOptions {
   readonly kind: BackendRunnerKind;
   readonly inner: BackendRunner;
   readonly monitorHook?: MonitorSidecarHook | null;
+  readonly logger?: SanitizedLogger;
+  readonly evidenceHealth?: EvidenceHealthReporter;
   readonly readConfiguredProfile?: () => string;
   readonly allowLegacyDrain?: boolean;
   readonly bridgeScriptPath?: string;
@@ -129,13 +136,6 @@ function sanitizeHostToken(raw: string | undefined, fallback: string): string {
 
 function isValidAcpSessionToken(raw: string | undefined): raw is string {
   return typeof raw === 'string' && raw.length >= 1 && raw.length <= 256 && !/[\r\n\0]/.test(raw);
-}
-
-function encodeAssistantLine(text: string): string {
-  return `${JSON.stringify({
-    type: 'assistant',
-    message: { content: [{ type: 'text', text }] }
-  })}\n`;
 }
 
 function encodeUsageResultLine(
@@ -240,12 +240,26 @@ export class AcpBackedRunner implements BackendRunner {
     const stderrBuffer = new ZippedStreamBuffer();
     const startedAtMs = Date.now();
     const warnings: string[] = [];
+    const streamEncoder = new AcpStreamEncoder();
+    const openWorkTracker = new AcpOpenWorkTracker();
+    const tee = request.verboseDiagnostics
+      ? {
+          target: request.verboseDiagnostics,
+          writer: new VerboseDiagnosticWriter(
+            this.options.logger ?? new SanitizedLogger(),
+            this.options.evidenceHealth
+          )
+        }
+      : null;
+    let teeChain: Promise<void> = Promise.resolve();
 
     let transport: AcpStdioTransport | null = null as AcpStdioTransport | null;
     let connection: AcpConnection | null = null;
     let activeSessionId: string | null = null;
     let latestUsage: AcpUsageUpdate | null = null;
     let sawTerminalResult = false;
+    let acpTurnSettled = false;
+    let backgroundWorkOpenAtResult = false;
     let killed = false;
     let timedOut: boolean = false as boolean;
     let deadlineExceeded: boolean = false as boolean;
@@ -257,6 +271,10 @@ export class AcpBackedRunner implements BackendRunner {
       if (stream === 'stdout') {
         stdoutBuffer.append(chunk);
         liveStreamText += chunk;
+        if (tee !== null) {
+          const append = (): Promise<void> => tee.writer.teeStream(tee.target, chunk);
+          teeChain = teeChain.then(append, append);
+        }
         this.options.monitorHook?.({
           kind: 'stdout-chunk',
           runId,
@@ -384,13 +402,20 @@ export class AcpBackedRunner implements BackendRunner {
           timedOut,
           deadlineExceeded,
           sawTerminalResult: false,
+          acpTurnSettled: false,
+          backgroundWorkOpenAtResult: false,
           startedAtMs,
           warnings,
+          diagnosticsCaptured: false,
           commandDisplay: `acp:${profile.profileId}`,
           cliSessionId: undefined,
           effectiveFatalSignatures: request.effectiveFatalSignatures,
           liveStreamText
         });
+      }
+
+      if (tee !== null) {
+        await tee.writer.prepare(tee.target);
       }
 
       request.cancellationSignal?.addEventListener('abort', onAbort);
@@ -458,12 +483,11 @@ export class AcpBackedRunner implements BackendRunner {
           if (observation.origin !== 'live') {
             return;
           }
-          if (
-            observation.kind === 'display' &&
-            observation.event.kind === 'message' &&
-            typeof observation.event.text === 'string'
-          ) {
-            emitChunk('stdout', encodeAssistantLine(observation.event.text));
+          if (observation.kind === 'display') {
+            openWorkTracker.observe(observation.event);
+            for (const encodedLine of streamEncoder.push(observation.event)) {
+              emitChunk('stdout', encodedLine);
+            }
           } else if (observation.kind === 'usage') {
             latestUsage = observation.usage;
           }
@@ -476,24 +500,28 @@ export class AcpBackedRunner implements BackendRunner {
       } else {
         connection = opened.connection;
         const normalizedCwd = path.resolve(request.cwd);
-        const priorSessionRoot =
-          isValidAcpSessionToken(request.resumeSessionId)
-            ? this.sessionRoots.get(request.resumeSessionId)
-            : undefined;
+        const resumeId = request.resumeSessionId;
+        const priorSessionRoot = isValidAcpSessionToken(resumeId)
+          ? this.sessionRoots.get(resumeId)
+          : undefined;
         const rootMismatchOnResume =
           priorSessionRoot !== undefined && priorSessionRoot !== normalizedCwd;
         if (rootMismatchOnResume) {
           // F10-FR-19: session reuse/load cannot retain a prior lane's cwd or grants; open a fresh session.
           warnings.push('acp-session-rebind-fresh-root');
         }
-        const mayLoad =
+        // BUG-001 (FR-008): load ACP-owned sessions tracked in `sessionRoots` even when
+        // `resumeSessionOrigin` is omitted by standalone continuations, while still refusing
+        // `'legacy-cli'` and unknown pre-cutover IDs (`F13-FR-21`) and cross-lane roots (`F10-FR-19`).
+        const canLoadResumeSession =
           !rootMismatchOnResume &&
           (request.isContinue === true || request.sessionReuse === true) &&
-          request.resumeSessionOrigin === 'acp' &&
-          isValidAcpSessionToken(request.resumeSessionId);
-        const sessionRes = mayLoad
-          ? await connection.loadSession(request.resumeSessionId!, request.cwd, { mayLoad: true })
-          : await connection.newSession(request.cwd);
+          (request.resumeSessionOrigin === 'acp' ||
+            (request.resumeSessionOrigin === undefined && priorSessionRoot !== undefined));
+        const sessionRes =
+          canLoadResumeSession && isValidAcpSessionToken(resumeId)
+            ? await connection.loadSession(resumeId, request.cwd, { mayLoad: true })
+            : await connection.newSession(request.cwd);
 
         if (!sessionRes.ok) {
           warnings.push(`acp-session-failed:${sessionRes.reason}`);
@@ -558,9 +586,14 @@ export class AcpBackedRunner implements BackendRunner {
             });
 
             const elapsedMs = Date.now() - startedAtMs;
+            for (const encodedLine of streamEncoder.flush()) {
+              emitChunk('stdout', encodedLine);
+            }
             if (outcome.kind === 'completed') {
               emitChunk('stdout', encodeUsageResultLine(this.options.kind, activeSessionId, elapsedMs, latestUsage));
               sawTerminalResult = true;
+              acpTurnSettled = outcome.stopReason !== 'refusal';
+              backgroundWorkOpenAtResult = acpTurnSettled && openWorkTracker.hasOpenWork;
               exitCode = 0;
             } else if (outcome.kind === 'cancelled') {
               exitCode = 130;
@@ -584,10 +617,16 @@ export class AcpBackedRunner implements BackendRunner {
       if (idleTimer !== null) clearTimeout(idleTimer);
       if (deadlineTimer !== null) clearTimeout(deadlineTimer);
       request.cancellationSignal?.removeEventListener?.('abort', onAbort);
+      for (const encodedLine of streamEncoder.flush()) {
+        emitChunk('stdout', encodedLine);
+      }
       if (activeSessionId !== null) {
         gate?.revokeSession(activeSessionId);
       }
       await settleTeardown();
+      if (tee !== null) {
+        await Promise.allSettled([teeChain]);
+      }
       if (transport !== null) {
         this.options.monitorHook?.({
           kind: 'exited',
@@ -602,6 +641,9 @@ export class AcpBackedRunner implements BackendRunner {
       this.activeExecutions.delete(invocationId);
     }
 
+    const teeResult = tee?.writer.result();
+    const mergedWarnings = [...(teeResult ? teeResult.warnings : []), ...warnings];
+
     return this.finalizeOutput({
       stdoutBuffer,
       stderrBuffer,
@@ -610,8 +652,11 @@ export class AcpBackedRunner implements BackendRunner {
       timedOut,
       deadlineExceeded,
       sawTerminalResult,
+      acpTurnSettled,
+      backgroundWorkOpenAtResult,
       startedAtMs,
-      warnings,
+      warnings: mergedWarnings,
+      diagnosticsCaptured: teeResult?.streamCaptured === true,
       commandDisplay: `acp:${profile.profileId}`,
       cliSessionId: activeSessionId ?? undefined,
       effectiveFatalSignatures: request.effectiveFatalSignatures,
@@ -664,8 +709,11 @@ export class AcpBackedRunner implements BackendRunner {
     readonly timedOut: boolean;
     readonly deadlineExceeded: boolean;
     readonly sawTerminalResult: boolean;
+    readonly acpTurnSettled: boolean;
+    readonly backgroundWorkOpenAtResult: boolean;
     readonly startedAtMs: number;
     readonly warnings: readonly string[];
+    readonly diagnosticsCaptured: boolean;
     readonly commandDisplay: string;
     readonly cliSessionId: string | undefined;
     readonly effectiveFatalSignatures: InvocationRequest['effectiveFatalSignatures'];
@@ -685,8 +733,11 @@ export class AcpBackedRunner implements BackendRunner {
       timedOut: params.timedOut,
       ...(params.deadlineExceeded ? { deadlineExceeded: true } : {}),
       sawTerminalResult: params.sawTerminalResult,
+      ...(params.acpTurnSettled ? { acpTurnSettled: true } : {}),
+      ...(params.backgroundWorkOpenAtResult ? { backgroundWorkOpenAtResult: true } : {}),
       durationMs: Math.max(0, Date.now() - params.startedAtMs),
       ...(params.warnings.length > 0 ? { diagnosticWarnings: params.warnings } : {}),
+      ...(params.diagnosticsCaptured ? { diagnosticsCaptured: true } : {}),
       command: params.commandDisplay,
       ...(params.cliSessionId ? { cliSessionId: params.cliSessionId } : {}),
       ...(streamFatalMatch ? { streamFatalMatch } : {})

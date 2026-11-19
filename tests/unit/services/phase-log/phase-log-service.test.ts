@@ -251,3 +251,90 @@ describe('Feature 203 T060 — an unestablished progress makes no progress claim
     expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'nothing-displayable' });
   });
 });
+
+describe('Feature 020 BUG-004 (T090, FR-008) — historical standalone single-Phase Run tuple validation', () => {
+  const STANDALONE_PHASE = 'agy-speckit-auto';
+  const STANDALONE_RUN_ID = 'run-standalone-history-1';
+
+  async function writeStandaloneHistoryStream(): Promise<void> {
+    const streamPath = path.join(
+      workspaceRoot,
+      '.schegent',
+      'sessions',
+      STANDALONE_RUN_ID,
+      'diagnostics',
+      STANDALONE_PHASE,
+      STANDALONE_PHASE,
+      'iter-1',
+      'stream.jsonl'
+    );
+    await fs.mkdir(path.dirname(streamPath), { recursive: true });
+    await fs.writeFile(
+      streamPath,
+      `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'standalone phase log' }] } })}\n`,
+      'utf8'
+    );
+  }
+
+  it('accepts (phaseId, phaseId) from snapshot.history when availablePipelines is empty and availablePhases lists the Phase', async () => {
+    await writeStandaloneHistoryStream();
+    const service = createPhaseLogService({
+      workspaceRoot,
+      sanitize: (value) => value,
+      readVerboseSetting: () => true,
+      getSnapshot: () => ({
+        queues: [{ queueId: 'default', tasks: [] }],
+        history: [{ runId: STANDALONE_RUN_ID, queueId: 'default' }],
+        availablePipelines: [],
+        availablePhases: [{ id: STANDALONE_PHASE }]
+      }),
+      resolveRunId: () => null
+    });
+
+    const result = await service.read({
+      selection: {
+        queueId: 'default',
+        taskId: STANDALONE_RUN_ID,
+        pipelineId: STANDALONE_PHASE,
+        phaseId: STANDALONE_PHASE,
+        iterationN: null
+      }
+    });
+
+    expect(result.outcome).toBe('success');
+    if (result.outcome !== 'success') return;
+    expect(result.manifest.entries).toEqual([
+      expect.objectContaining({
+        kind: 'assistant-text',
+        body: expect.objectContaining({ text: 'standalone phase log' })
+      })
+    ]);
+  });
+
+  it('still refuses a historical tuple when phaseId is absent from availablePhases and availablePipelines is empty', async () => {
+    const service = createPhaseLogService({
+      workspaceRoot,
+      sanitize: (value) => value,
+      readVerboseSetting: () => true,
+      getSnapshot: () => ({
+        queues: [{ queueId: 'default', tasks: [] }],
+        history: [{ runId: STANDALONE_RUN_ID, queueId: 'default' }],
+        availablePipelines: [],
+        availablePhases: []
+      }),
+      resolveRunId: () => null
+    });
+
+    const result = await service.read({
+      selection: {
+        queueId: 'default',
+        taskId: STANDALONE_RUN_ID,
+        pipelineId: STANDALONE_PHASE,
+        phaseId: STANDALONE_PHASE,
+        iterationN: null
+      }
+    });
+
+    expect(result).toEqual({ outcome: 'failure', reason: 'unknown-tuple' });
+  });
+});
