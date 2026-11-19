@@ -266,7 +266,9 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // terminated.", "abort the running task") and template variable name
   // (`runningSuffix`). No pinned status discriminator literal.
   'webview-ui/src/lib/action-copy.ts',
-  'webview-ui/src/lib/snapshot-types.ts',
+  // FR-R7-05 — generated snapshot mirror & Draft 2020-12 schema carry the canonical lifecycle/ping `'running'` union members.
+  'webview-ui/src/lib/generated/snapshot-mirror.ts',
+  'src/contracts/generated/schemas/sidebar-ipc.schema.json',
   // Metrics wire entities own the in-flight `isRunning` projection field.
   'src/contracts/sidebar-ipc/metrics.ts',
   'webview-ui/src/components/MetricsDashboard/MetricsTaskTable.svelte',

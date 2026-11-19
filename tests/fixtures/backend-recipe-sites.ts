@@ -94,7 +94,6 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
   // ---- Validation
   { path: 'src/config/process-definition-validator.ts', role: 'Validation', how: 'equality' },
   { path: 'src/services/process-yaml/phase-yaml-validator.ts', role: 'Validation', how: 'equality' },
-  { path: 'src/contracts/runtime-validators.ts', role: 'Validation', how: 'equality' },
 
   // ---- Export and IPC
   { path: 'src/contracts/sidebar-ipc.ts', role: 'Export and IPC', how: 'equality' },
@@ -135,7 +134,6 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
   { path: 'src/contracts/backend-runner.ts', role: 'Runner label', how: 'literal', note: 'RunnerLabel names the adapter, not the backend' },
 
   // ---- Webview
-  { path: 'webview-ui/src/lib/snapshot-types.ts', role: 'Webview', how: 'record' },
   { path: 'webview-ui/src/components/settings/BackendHealthSection.svelte', role: 'Webview', how: 'record' },
   { path: 'webview-ui/src/components/settings/general/BackendEnvironmentGroup.svelte', role: 'Webview', how: 'record' },
   { path: 'webview-ui/src/components/settings/RawJsonPhaseEditor.svelte', role: 'Webview', how: 'literal' },

@@ -1,26 +1,57 @@
-export const SCHEMA_VERSION = 4 as const;
+// FR-R7-05 — All host-mirrored snapshot types and `SCHEMA_VERSION` are
+// generated from `scripts/contracts/snapshot-descriptors.mjs` into
+// `./generated/snapshot-mirror.ts` (zero `repo/src/` imports) and re-exported
+// here so all webview consumers keep importing from `./snapshot-types`.
+import {
+  SCHEMA_VERSION,
+  type BackendPingFailureCause,
+  type BackendPingState,
+  type CatalogVersionRef,
+  type EvidenceHealthProjection,
+  type GeneralSettings,
+  type GeneralSettingsProjection,
+  type HistoryEntry,
+  type InFlightRunProjection,
+  type PhaseCatalogProjection,
+  type PipelineCatalogProjection,
+  type QueueItem,
+  type QueueProjection,
+  type QueueRuntime,
+  type RunOriginRef,
+  type TransportDropCounts,
+  type WorkflowCatalogProjection,
+  type WorkflowSnapshot
+} from './generated/snapshot-mirror.js';
+
+export { SCHEMA_VERSION };
+export type {
+  BackendPingFailureCause,
+  BackendPingState,
+  CatalogVersionRef,
+  EvidenceHealthProjection,
+  GeneralSettings,
+  GeneralSettingsProjection,
+  HistoryEntry,
+  InFlightRunProjection,
+  PhaseCatalogProjection,
+  PipelineCatalogProjection,
+  QueueItem,
+  QueueProjection,
+  QueueRuntime,
+  RunOriginRef,
+  TransportDropCounts,
+  WorkflowCatalogProjection,
+  WorkflowSnapshot
+};
 
 import type {
-  ActiveFeatureSummary,
-  ActivePipelineSummary,
-  CliMonitorState,
-  CreditPollingProjection,
-  DegradedPhaseEntry,
   DelayedRetryState,
-  EffectiveLimitsProjection,
-  LaunchProjection,
   LiveActivity,
-  PhaseTile,
-  QueueItemStatus,
-  RunLivenessProjection,
-  RunProgressProjection,
   SessionArtifactsProjection,
   StreamPressureProjection,
-  TaskPhaseProgressProjection,
   WorkflowCatalogFieldErrorProjection,
-  WorkflowStatus,
   BuilderLifecycle,
-  QueueSettingsProjection,
+  QueueSettingsProjection
 } from '../../../src/contracts/snapshot-projections.js';
 // FR-R3-145 (T1572) — value imports for `IDLE_QUEUE_SETTINGS`, from the same
 // contract leaves the host reads. See that constant for why they are not literals.
@@ -31,12 +62,6 @@ import {
   DEFAULT_BACKEND,
   type BackendRunnerKind
 } from '../../../src/contracts/backend-kinds.js';
-import type {
-  PhaseName,
-} from '../../../src/contracts/phase-identity.js';
-import type {
-  ConnectedRunProjection,
-} from '../../../src/contracts/sidebar-ipc/workflow-run.js';
 // FR-R3-144 (T020, D-4) — imported, not mirrored. Everything else in this file
 // restates a host type by hand and is kept honest by a drift test; the posture
 // types are the one thing that must not be restatable, because a webview-side
@@ -71,12 +96,6 @@ import type {
   WorkflowSourceStatus,
 } from '../../../src/contracts/workflow-definitions.js';
 
-import type { CatalogKind, CatalogVersionId } from '../../../src/contracts/catalog-store.js';
-// Feature 195 (T008) — the generated mirror, not the host source: this is the
-// one field on `GeneralSettings` sourced from a contract this feature added,
-// on the same terms as `ActionKey` above.
-import type { QueueFailurePolicy } from './generated/queue-failure-policy.js';
-import type { HistoryTerminalStatus } from '../../../src/contracts/history-identity.js';
 import type { PhaseDefinitionEffort } from '../../../src/contracts/process-definitions.js';
 
 // FR-R3-132 (T1502, FR-001) — WHAT IS STILL HAND-WRITTEN HERE, AND WHY.
@@ -107,15 +126,6 @@ import type { PhaseDefinitionEffort } from '../../../src/contracts/process-defin
 // checks every union in the second as a superset of the host's, so a deliberate
 // difference cannot quietly become a missing member.
 
-import type {
-  AuditTailEntry,
-  QueueSummary
-} from '../../../src/contracts/snapshot-projections.js';
-import type {
-  IpcScheduledStartSource as ScheduledStartSource
-} from '../../../src/contracts/start-intent-types.js';
-
-import type { RunOutputRecord } from '../../../src/contracts/run-results.js';
 import type {
   PipelineDefinition as PortablePipelineDefinition
 } from '../../../src/contracts/pipeline-definitions.js';
@@ -402,189 +412,6 @@ export type {
   WorkflowSourceStatus
 } from '../../../src/contracts/workflow-definitions.js';
 
-export type BackendPingFailureCause =
-  | 'not-found'
-  | 'not-executable'
-  | 'non-zero-exit'
-  | 'timed-out'
-  | 'already-in-progress'
-  | 'unknown';
-export type BackendPingState =
-  | { readonly status: 'idle' }
-  | { readonly status: 'running'; readonly runner: BackendRunnerKind; readonly startedAt: number; readonly timeoutSeconds: number }
-  | { readonly status: 'success'; readonly runner: BackendRunnerKind; readonly startedAt: number; readonly completedAt: number; readonly latencyMs: number; readonly timeoutSeconds: number }
-  | { readonly status: 'failure'; readonly runner: BackendRunnerKind; readonly startedAt: number; readonly completedAt: number; readonly latencyMs: number; readonly timeoutSeconds: number; readonly cause: BackendPingFailureCause; readonly exitCode?: number };
-
-export interface QueueItem {
-  readonly id: string;
-  readonly label: string;
-  readonly enqueuedAt: string;
-  readonly startedAt: string | null;
-  readonly updatedAt: string;
-  readonly completedAt: string | null;
-  readonly status: QueueItemStatus;
-  readonly retryCount: number;
-  readonly lastErrorSummary: string | null;
-  readonly pausedReason: string | null;
-  readonly currentPhase: PhaseName | null;
-  readonly queueId?: string;
-  readonly position: number;
-  readonly pauseCause?:
-    | 'queue-paused'
-    | 'phase-paused'
-    | 'manually-paused-task'
-    | 'breakpoint'
-    | null;
-  /** Feature 020 — pipeline id under which the task is/was running. */
-  readonly currentPipelineId?: string | null;
-  /**
-   * BUG-006 (063) — Activity Feed cold-start fallback predicate. `true`
-   * when the task has entered the phase machinery at least once and may
-   * have audit-log iterations on disk. Optional for back-compat with
-   * snapshots emitted before the field landed.
-   */
-  readonly hasOnDiskLogs?: boolean;
-  /**
-   * Feature 065 / BUG-006 — paused-row enrichment for the webview. Present
-   * only on tasks with `status === 'paused'`. Drives the QueueItem badge
-   * (operator-paused vs. system-paused/rate-limit) and the auto-resume
-   * countdown. `resetsAtMs` carries the resolved restoration target.
-   */
-  readonly paused?: {
-    readonly pauseSource: 'operator-paused' | 'system-paused';
-    readonly pauseCauseCategory?: 'rate-limit' | 'fatal-signature' | 'operator-canceled';
-    readonly resetsAtMs?: number;
-  };
-  /**
-   * FR-R3-158 — the settled-phase pair the host resolved for this task.
-   * `null` means **unknown**, never "no progress": a row with `null` renders
-   * no figure at all. Required key and not optional, unlike the back-compat
-   * fields above it — a fixture that has not said what a task's progress is
-   * should be a type error, because the alternative is a row that silently
-   * renders nothing and looks like a task that made none.
-   */
-  readonly phaseProgress: TaskPhaseProgressProjection | null;
-  /**
-   * FR-R3-157 — the phases the host resolved as carried past their retry cap.
-   *
-   * Optional where `phaseProgress` above is required, and the asymmetry is the
-   * host's, mirrored rather than reasoned about again here: progress is a
-   * measurement that may be unavailable, so a row must say `null` out loud;
-   * degradation is an event that either happened or did not, so absence means
-   * NOT degraded and there is nothing to leave undecided. An empty list means
-   * the same thing and the host never writes one.
-   */
-  readonly degradedPhases?: readonly DegradedPhaseEntry[];
-}
-
-export interface QueueProjection {
-  readonly inFlight: QueueItem | null;
-  readonly pending: readonly QueueItem[];
-  readonly recent: readonly QueueItem[];
-  /**
-   * Feature 065 / BUG-009 (FR-029) — flattened single-source-of-truth row
-   * order for queue-surface rendering. Contains every `FeatureRequest`
-   * from `QueueState.requests` regardless of status (pending, in-flight,
-   * paused, completed, canceled, failed). The legacy `inFlight`/`pending`/
-   * `recent` bucket fields remain populated for backward compatibility,
-   * but new code MUST consume `orderedItems` and treat the buckets as
-   * derived/legacy.
-   */
-  readonly orderedItems: readonly QueueItem[];
-  readonly queues?: readonly QueueSummary[];
-  readonly paused: boolean;
-  readonly pausedReason?: string | null;
-  // Feature 065 — additive lifecycle / scheduled-start projection.
-  readonly lifecycle?: QueueLifecycle;
-  readonly scheduledStartAt?: number | null;
-  readonly scheduledStartSource?: ScheduledStartSource | null;
-  // Feature 065 (T054a / FR-020) — one-time post-migration operator notice.
-  readonly migrationNotice?: 'pending' | 'dismissed';
-}
-
-/**
- * Feature 103 (FR-009, FR-011) — the published version a run's plan froze,
- * mirroring the host's `contracts/catalog-version.ts`.
- *
- * Mirrored rather than imported, as every other host shape in this file is: the
- * module has no imports, which is what keeps the webview bundle from reaching
- * into host code that was never compiled for it.
- *
- * `kind` is part of the identity because the catalog lets a Pipeline and a
- * Workflow share an id. On a *recorded run* it is always `'pipeline'`, including
- * for a Workflow member — the member executes a frozen Pipeline snapshot. Which
- * makes it useless as an answer to "was this a Workflow run?"; that is `origin`.
- */
-export interface CatalogVersionRef {
-  /**
-   * The host's full `CatalogKind`, `'phase'` included, even though a recorded
-   * run's frozen body is never a phase. A mirror that narrowed the union would
-   * make the host's own `HistoryEntry` unassignable to this one, which is what
-   * `tests/integration/history/in-flight-not-persisted.test.ts` does when it
-   * feeds the real projector into the real fold.
-   */
-  readonly kind: CatalogKind;
-  readonly id: string;
-  /** Never `''`. Absence of the whole record means "not recorded". */
-  readonly versionId: CatalogVersionId;
-}
-
-/**
- * Feature 103 (FR-013, FR-014) — how a run was started, mirroring the host's
- * `contracts/run-origin.ts`.
- *
- * A second question from `CatalogVersionRef`, and neither derives the other:
- * a Workflow member reads `origin.kind === 'workflow-member'` and
- * `catalogVersion.kind === 'pipeline'` on the same row, and both are true.
- *
- * Absent is a third state, distinct from `'standalone'`: a run recorded before
- * this field existed has no origin, and no reader may fill one in.
- */
-export type RunOriginRef =
-  | { readonly kind: 'standalone' }
-  | { readonly kind: 'workflow-member'; readonly workflowId: string };
-
-export interface HistoryEntry {
-  readonly runId: string;
-  readonly featureId: string;
-  readonly descriptionPreview: string;
-  readonly terminalStatus: HistoryTerminalStatus;
-  readonly startedAt: string;
-  readonly completedAt: string;
-  readonly durationMs: number;
-  readonly lastErrorSummary: string | null;
-  readonly auditLogPointer: string;
-  // Feature 103 (FR-002) — the queue partition this entry was filed under.
-  // `HISTORY_UNATTRIBUTED_QUEUE_ID` ('__unattributed__') is a real value here,
-  // not a tombstone: a row whose queue can no longer be attributed is listed
-  // under that partition rather than omitted (FR-006).
-  readonly queueId: string;
-  /**
-   * Feature 103 (FR-009, FR-012) — the published version this run's plan froze.
-   *
-   * Absent means "not recorded", and the surface says so (FR-012). No reader
-   * fills it from the catalog: the catalog answers about now, this row is about
-   * this run, and a filled-in gap would claim the run froze something it did not.
-   */
-  readonly catalogVersion?: CatalogVersionRef;
-  /**
-   * Feature 103 (FR-013) — whether this run was started on its own or as a
-   * member of a Workflow, stamped when the run was recorded.
-   *
-   * Not `catalogVersion.kind`, which reads `'pipeline'` on a Workflow member.
-   */
-  readonly origin?: RunOriginRef;
-  /**
-   * Feature 103 (FR-053) — the length of the operator's original description.
-   *
-   * The number, not the text: `descriptionPreview` is bounded and is the only
-   * description content on the wire, so the detail needs this to say how much
-   * of the original it is showing. Absent for a row recorded before the store
-   * kept it, which is why no reader may treat it as zero.
-   */
-  readonly descriptionLength?: number;
-}
-
 // FR-R3-132 (T1502) — `EFFORT_LEVELS` was declared identically here and in
 // `src/contracts/process-definitions.ts` as `PHASE_EFFORT_LEVELS`. This is a VALUE,
 // not a type, and `webview-host-import-direction.test.ts` permits values from
@@ -664,16 +491,6 @@ export interface PhaseCatalogSourceRecord {
   readonly lifecycle?: BuilderLifecycle;
 }
 
-export interface PhaseCatalogProjection {
-  readonly state: 'ready' | 'error';
-  readonly records: readonly PhaseCatalogSourceRecord[];
-  readonly effective: readonly PortablePhaseDefinition[];
-  /** The store's revision for this kind, echoed back on save (FR-044, FR-044a). */
-  readonly revision: string;
-  readonly warnings: readonly { readonly code: string; readonly message: string }[];
-  readonly error?: { readonly code: string; readonly message: string };
-}
-
 /**
  * Session-input port types (FR-012). `pipeline-output` is the declared type an
  * input port uses when an earlier Phase's output feeds it rather than the
@@ -730,16 +547,6 @@ export interface PipelineCatalogSourceRecord {
   readonly lifecycle?: BuilderLifecycle;
 }
 
-export interface PipelineCatalogProjection {
-  readonly state: 'ready' | 'error';
-  readonly records: readonly PipelineCatalogSourceRecord[];
-  readonly effective: readonly PortablePipelineDefinition[];
-  /** The store's revision for this kind, echoed back on save (FR-043, FR-044a). */
-  readonly revision: string;
-  readonly warnings: readonly { readonly code: string; readonly message: string }[];
-  readonly error?: { readonly code: string; readonly message: string };
-}
-
 /** Collection selection rules; `exactlyOne` fails at run time on any size but one. */
 export const WORKFLOW_SELECTION_RULES = ['first', 'last', 'exactlyOne'] as const;
 
@@ -787,111 +594,11 @@ export interface WorkflowCatalogSourceProjection {
   readonly lifecycle?: BuilderLifecycle;
 }
 
-export interface WorkflowCatalogProjection {
-  readonly state: 'ready' | 'error';
-  readonly records: readonly WorkflowCatalogSourceProjection[];
-  readonly effective: readonly PortableWorkflowDefinition[];
-  /** The store's revision for this kind, echoed back on save (FR-043, FR-044a). */
-  readonly revision: string;
-  readonly warnings: readonly { readonly code: string; readonly message: string }[];
-  readonly error?: { readonly code: string; readonly message: string };
-}
-
 export const IDLE_DELAYED_RETRY: DelayedRetryState = Object.freeze({
   pendingRetryAt: null,
   pendingRetryCause: null,
   delayedRetryCount: 0
 });
-
-export interface GeneralSettings {
-  readonly cliPath: string;
-  readonly loggingVerbose: boolean;
-  readonly loopMaxIterations: number;
-  readonly invocationIdleTimeoutSeconds: number;
-  readonly invocationMaxDurationSeconds: number;
-  readonly watchdogPollIntervalMinutes: number;
-  readonly auditRotationSizeMB: number;
-  readonly auditRotationMaxAgeDays: number;
-  readonly defaultWorkflowId: string;
-  readonly fatalSignatures: readonly string[];
-  readonly claudeAutoCompactPctOverride: number | undefined;
-  readonly runtimeLogLevel: RuntimeLogLevel;
-  readonly runtimeLogFilePath: string;
-  readonly retryMaxAttempts: number;
-  readonly codexPath: string;
-  readonly agyPath: string;
-  readonly runtimeLogMaxBytes: number;
-  readonly runtimeLogMaxGenerations: number;
-  readonly sessionRetentionMaxAgeDays: number;
-  readonly sessionRetentionMaxBytes: number;
-  readonly rawTranscriptMode: 'always' | 'errors-only' | 'off';
-  // FR-R4-F04 (FR-001) — `inherit` is the default and follows `rawTranscriptMode`.
-  readonly transportCaptureMode: 'inherit' | 'off' | 'errors-only' | 'on';
-  /**
-   * FR-R3-051 (M-06) — the webview had no notion of this setting at all: absent
-   * from this type, from the idle snapshot and from `scopes`, while the manifest,
-   * the host fallback table and the host idle snapshot all carried it. Found by
-   * `settings-defaults-parity.test.ts`, which compares key SETS and not only
-   * values -- a missing key is how a default silently becomes whatever the code
-   * says.
-   */
-  readonly retryForceContinueOnCap: boolean;
-  // FR-R3-143 (T021) — six manifest settings the host now projects. Mirrored
-  // here for the same reason `retryForceContinueOnCap` above is: a key missing
-  // from this type is a default that silently becomes whatever the code says.
-  readonly cliInheritEnvironment: boolean;
-  readonly cliEnvironmentMode: string;
-  readonly cliEnvironmentAllowlist: readonly string[];
-  readonly backendProbeTimeoutSeconds: number;
-  readonly uiConfirmationsEnable: boolean;
-  readonly multiRootSuppressWarning: boolean;
-  // FR-R3-144 (T007) — the backend the tab now names, and the two bounds it can
-  // set. `null` on either bound is the manifest's own default and means NO
-  // bound; it is not a zero bound, and the surface must not render it as one.
-  readonly backendRunner: BackendRunnerKind;
-  readonly spendMaxUsdPerRun: number | null;
-  readonly spendMaxTokensPerRun: number | null;
-  // Feature 195 (T008) — mirrors the host's `general-settings-keys.ts` field
-  // of the same name; a key missing here is a default that silently becomes
-  // whatever the code says, exactly as the note on `retryForceContinueOnCap`
-  // above states.
-  readonly queueHaltOnTaskFailure: QueueFailurePolicy;
-  readonly scopes: {
-    readonly cliPath: SettingScope;
-    readonly loggingVerbose: SettingScope;
-    readonly loopMaxIterations: SettingScope;
-    readonly invocationIdleTimeoutSeconds: SettingScope;
-    readonly invocationMaxDurationSeconds: SettingScope;
-    readonly watchdogPollIntervalMinutes: SettingScope;
-    readonly auditRotationSizeMB: SettingScope;
-    readonly auditRotationMaxAgeDays: SettingScope;
-    readonly defaultWorkflowId: SettingScope;
-    readonly fatalSignatures: SettingScope;
-    readonly claudeAutoCompactPctOverride: SettingScope;
-    readonly runtimeLogLevel: SettingScope;
-    readonly runtimeLogFilePath: SettingScope;
-    readonly retryMaxAttempts: SettingScope;
-    readonly codexPath: SettingScope;
-    readonly agyPath: SettingScope;
-    readonly runtimeLogMaxBytes: SettingScope;
-    readonly runtimeLogMaxGenerations: SettingScope;
-    readonly sessionRetentionMaxAgeDays: SettingScope;
-    readonly sessionRetentionMaxBytes: SettingScope;
-    readonly rawTranscriptMode: SettingScope;
-    readonly transportCaptureMode: SettingScope;
-    readonly retryForceContinueOnCap: SettingScope;
-    readonly cliInheritEnvironment: SettingScope;
-    readonly cliEnvironmentMode: SettingScope;
-    readonly cliEnvironmentAllowlist: SettingScope;
-    readonly backendProbeTimeoutSeconds: SettingScope;
-    readonly uiConfirmationsEnable: SettingScope;
-    readonly multiRootSuppressWarning: SettingScope;
-    readonly backendRunner: SettingScope;
-    readonly spendMaxUsdPerRun: SettingScope;
-    readonly spendMaxTokensPerRun: SettingScope;
-    readonly queueHaltOnTaskFailure: SettingScope;
-  };
-}
 
 /**
  * FR-R3-145 (T1572) — what the webview shows before the host sends a snapshot,
@@ -994,342 +701,6 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     queueHaltOnTaskFailure: 'default'
   })
 });
-
-/**
- * Feature 092 (FR-048, FR-049) — the Run one queue owns, folded under that
- * queue. Every field here was a top-level singular in v3; the fold is what
- * makes "whose Run is this" unambiguous once more than one can be in flight.
- */
-export interface InFlightRunProjection {
-  readonly runId: string;
-  readonly status: WorkflowStatus;
-  readonly feature: ActiveFeatureSummary | null;
-  /** Null on the built-in `standard` pipeline, matching the v3 `activePipeline` omission. */
-  readonly pipeline: ActivePipelineSummary | null;
-  readonly elapsedMs: number | null;
-  readonly liveActivity: LiveActivity;
-  /**
-   * FR-R3-008 (T379) — the reload-durable half of the question `liveActivity`
-   * answers from memory. Optional as well as nullable: a host running an older
-   * bundle omits the key entirely, and both absence and `null` must render as
-   * unknown, so no consumer may treat one as different from the other.
-   */
-  readonly liveness?: RunLivenessProjection | null;
-  /** FR-R3-008 (T379) — progress against the Run's frozen total; absent or `null` is unknown. */
-  readonly progress?: RunProgressProjection | null;
-  readonly delayedRetry: DelayedRetryState;
-  readonly resumeTargetPhaseId: string | null;
-  readonly outputs: readonly RunOutputRecord[];
-  /**
-   * Feature 103 (FR-003) — the same two provenance readings the recorded rows
-   * carry, so a run reads identically in flight and once recorded.
-   *
-   * Read live off the Run here because there is no record yet. `catalogVersion`
-   * comes off the frozen plan, which is immutable for the Run's life; `origin`
-   * comes from the host's connected-run map. Absent on a host that cannot answer
-   * either question, which is not the same as `'standalone'`.
-   */
-  readonly catalogVersion?: CatalogVersionRef;
-  readonly origin?: RunOriginRef;
-  /** FR-R4-F02 (W6 G17) — non-null only while the Run carries a credit pause; absent or `null` means none. */
-  readonly creditPolling?: CreditPollingProjection | null;
-  /** FR-R4-F02 (E3 G8) — the limits this Run runs under; an older host omits the key, and absent and `null` both render nothing. */
-  readonly effectiveLimits?: EffectiveLimitsProjection | null;
-}
-
-/**
- * Feature 092 (FR-048, FR-053) — one entry per registered queue, in position
- * order. A queue that owns no Run publishes `inFlightRun: null` with every
- * run-derived list empty; it never borrows another queue's Run.
- */
-export interface QueueRuntime {
-  readonly queueId: string;
-  readonly name: string;
-  readonly position: number;
-  readonly lifecycle: QueueLifecycle;
-  readonly inFlightRun: InFlightRunProjection | null;
-  readonly phases: readonly PhaseTile[];
-  readonly phaseOverrides: readonly {
-    readonly phaseId: string;
-    readonly action: 'skipped' | 'disabled' | 'removed';
-  }[];
-  readonly manualPause: {
-    readonly at: string;
-    readonly cause:
-      | 'operator-paused'
-      | 'queue-paused-mid-run'
-      | 'breakpoint-paused'
-      // BUG-003 and FR-R3-112 — both were already reaching this field verbatim from
-      // the host's `ManualPauseCause`; the mirror simply had not been widened, so the
-      // two newest causes arrived as values this declaration said were impossible.
-      | 'verify-paused'
-      | 'spend-bound-reached';
-  } | null;
-  readonly phaseBreakpoints: readonly {
-    readonly phaseId: string;
-    readonly setAt: string;
-    readonly actor: 'operator' | 'system';
-  }[];
-  /**
-   * Feature 187 (FR-001, FR-002) — the queue's outstanding failed start, or
-   * `null` when its last start attempt did not fail. Mirrors the host's
-   * `QueueRuntime.startFailure`, which carries the reasoning.
-   *
-   * `summary` and `taskName` have already been through the host's sanitizer,
-   * so the surfaces render them as text and never re-derive them.
-   *
-   * Feature 195 (T028, FR-007, FR-008) — widened to the same discrimination
-   * as the host: `kind: 'halted'` is a halt-on-failure report, naming the
-   * failed task rather than an admission call's error.
-   *
-   * BUG-004 — and `kind: 'stranded-run'`, a Run holding the queue that no
-   * control can reach because its Task row is gone. `runId` and `phase` are
-   * host-generated identifiers, so unlike the two above they are not sanitized
-   * text; the surface still renders them as text and derives nothing from them.
-   */
-  readonly startFailure:
-    | {
-        readonly kind: 'admission';
-        readonly admission: 'admitNew' | 'admitResume';
-        readonly at: string;
-        readonly summary: string | null;
-      }
-    | {
-        readonly kind: 'halted';
-        readonly taskId: string;
-        readonly taskName: string;
-        readonly at: string;
-      }
-    | {
-        readonly kind: 'stranded-run';
-        readonly runId: string;
-        readonly phase: string;
-        readonly at: string;
-      }
-    | null;
-  /** Pending Tasks on this queue, derived from its own rows — never a total. */
-  readonly pendingCount: number;
-  /**
-   * Feature 092 (T108, FR-057) — this queue's own Task rows in position order,
-   * active and historical alike; the Queue Detail tier lists them. Distinct from
-   * `QueueProjection.orderedItems`, which is the default queue's rows and whose
-   * indices are the global address space the reorder handler translates.
-   */
-  readonly tasks: readonly QueueItem[];
-  /**
-   * FR-R3-152 (T1632, FR-005) — this queue's own scheduled-start reading,
-   * mirroring the host's `QueueRuntime.scheduledStartAt`/`scheduledStartSource`.
-   * Required-and-nullable like `startFailure` above: always present, `null`
-   * means "no schedule armed." `scheduledStartAt !== null` implies
-   * `lifecycle === 'idle-pending'` on this same runtime.
-   */
-  readonly scheduledStartAt: number | null;
-  readonly scheduledStartSource: ScheduledStartSource | null;
-}
-
-/**
- * FR-R4-F04 (FR-003) — the general settings the host sends: the typed read plus the transport usage line's data,
- * absent until the host has measured. Declared beside the interface and not inside it, as the host does
- * (`GeneralSettingsProjection` in `src/ui/sidebar/snapshot.ts`), so `snapshot-mirror-structural-parity.test.ts`
- * reads `transportUsage` as a field of the settings and not as a top-level snapshot field.
- */
-export type GeneralSettingsProjection = GeneralSettings & {
-  readonly transportUsage?: import('../../../src/contracts/sidebar-ipc/transport-usage.js').TransportUsage;
-};
-
-export interface WorkflowSnapshot {
-  readonly schemaVersion: 4;
-  readonly isPrimary: boolean;
-  /**
-   * Feature 092 (FR-048) — one runtime per registered queue. Replaces every
-   * per-run singular the root carried in v3; those were deleted rather than
-   * deprecated so a stale read fails to compile instead of silently reading
-   * one queue's Run as the workspace's.
-   */
-  readonly queues: readonly QueueRuntime[];
-  readonly queue: QueueProjection;
-  /** Effective host default; absent only when paired with a legacy host. */
-  readonly defaultRunnerKind?: BackendRunnerKind;
-  readonly auditTail: readonly AuditTailEntry[];
-  readonly debugLogTail?: readonly DebugLogEntry[];
-  readonly monitor: CliMonitorState | null;
-  readonly history: readonly HistoryEntry[];
-  readonly producedAt: string;
-  readonly availablePipelines: readonly PipelineDefinition[];
-  readonly availablePhases: readonly PhaseDefinition[];
-  /**
-   * Model ids each backend was DISCOVERED to offer — an advisory, live
-   * backend fact, not the operator's catalog and never a value to save back.
-   * Empty for `claude` and `codex`, whose CLIs cannot enumerate models; only
-   * `agy` reports a real list.
-   */
-  readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
-  /**
-   * The operator's Model Catalog (`schegent.models`) — what the Models editor
-   * loads, edits, saves, and exports, and what an import writes. Optional for
-   * legacy-tolerance: an older host bundle may not send it.
-   */
-  readonly configuredModels?: Record<BackendRunnerKind, readonly string[]>;
-  readonly availableBackends: readonly BackendRunnerKind[];
-  /**
-   * FR-R3-144 (T020, D-4) — every supported backend's containment posture, as the
-   * host derived it. The Settings tab RENDERS these discriminants and computes
-   * none of them; `tests/lint/webview-posture-derivation.test.ts` is what keeps
-   * that true.
-   *
-   * Optional for legacy-tolerance, like `generalSettings` above: an older host
-   * bundle may not send it, and the surface must show "not reported" rather than
-   * inventing a posture — an invented one would be a webview-side answer to the
-   * question this projection exists to keep on the host.
-   */
-  readonly backendPostures?: readonly BackendPosture[];
-  /** FR-R3-144 (T020, FR-004) — grant-setting entries that name no backend. */
-  readonly backendGrantProblems?: BackendGrantEntryProblems;
-  readonly backendPingState?: BackendPingState;
-  /**
-   * Feature 011 — typed read of the scalar `schegent.*` settings `KEY_SPECS`
-   * admits, with the effective scope for each field. FR-R3-145 (T1569): that
-   * is a subset of what the manifest declares, not every scalar key, which is
-   * what this said until keys were contributed without being added to
-   * `KEY_SPECS`. Optional for legacy-tolerance: an older host bundle may not
-   * include it; the webview must default to `IDLE_GENERAL_SETTINGS` in that case.
-   */
-  readonly generalSettings?: GeneralSettingsProjection;
-  /**
-   * FR-R3-145 (T1572) — the two queue settings, projected from the workspace
-   * memento the drain enforces against rather than from the configuration
-   * `generalSettings` reads. Imported, not restated: the shape is one both sides
-   * must agree on, which is the census gate's own rule for what gets imported.
-   * Optional for legacy-tolerance, as its neighbour is; the webview must default
-   * to `IDLE_QUEUE_SETTINGS` when an older host bundle omits it.
-   */
-  readonly queueSettings?: QueueSettingsProjection;
-  readonly sessionArtifacts?: SessionArtifactsProjection;
-  /** FR-R3-130 (T1496) — live aggregate stream pressure. Optional, as its neighbour is. */
-  readonly streamPressure?: StreamPressureProjection;
-  readonly evidenceHealth?: EvidenceHealthProjection;
-  /** Feature 081 — absent means the authoritative catalog is still loading. */
-  readonly phaseCatalog?: PhaseCatalogProjection;
-  /**
-   * Feature 082 — resolved Pipeline catalog for the Library and Builder.
-   * Additive and optional: absent means the authoritative catalog is still
-   * loading, and every mutating control stays disabled until it arrives
-   * (FR-028). `availablePipelines` keeps its runtime-selection meaning.
-   */
-  readonly pipelineCatalog?: PipelineCatalogProjection;
-  /**
-   * Feature 083 — resolved Workflow catalog for the Workflow Library and Graph
-   * Builder. Additive and optional on the same terms as `pipelineCatalog`:
-   * absent means the authoritative catalog is still loading, and every mutating
-   * control stays disabled until it arrives (FR-036).
-   */
-  readonly workflowCatalog?: WorkflowCatalogProjection;
-  /**
-   * Feature 102 — what Runs may start: Active only, at the active version,
-   * filtered and ordered host-side (FR-001, FR-002, FR-003).
-   *
-   * Additive and optional on the same terms as the catalog projections above:
-   * absent means the host has not resolved a catalog yet, so each section renders
-   * a loading state (FR-006). That is why `LaunchSection` has no `loading` arm.
-   */
-  readonly launchables?: LaunchProjection;
-  /**
-   * Feature 285 (FR-006a) — the resolved default Workflow ID, `''` for none. Absent while
-   * the Workflow catalog is unresolved. The Queue composer preselects it when offered.
-   */
-  readonly defaultWorkflowId?: string;
-  /**
-   * Feature 088 — the connected runs the operator can act on, already folded to
-   * per-node state, legal actions, and `hydrating` host-side. Additive and
-   * optional: a host with no connected-run wiring omits it, so the view treats
-   * absence as "none" rather than as an error.
-   */
-  readonly connectedRuns?: readonly ConnectedRunProjection[];
-  /**
-   * Feature 059 — per-capability trust projection. Optional for legacy-
-   * tolerance: an older host bundle may not include either field, in
-   * which case the webview must fail closed (treat as `false`) per the
-   * trust-projection contract's failure-mode rules.
-   *
-   * Contract:
-   * `specs/059-fine-grained-trust-scopes/contracts/trust-projection-contract.md`.
-   */
-  readonly workspaceTrust?: boolean;
-  /**
-   * Feature 099 (T494a, FR-046) — `pipelineOverrides` and `workflowOverrides` are
-   * gone with the layer tier. Both asked which layer was permitted to redefine
-   * another's row, and one layer has no such question; the Pipelines and Workflows
-   * tabs are governed by Workspace Trust alone, which `workspaceTrust` carries.
-   * The two survivors gate document CONTENT, not layering.
-   */
-  readonly resolvedTrust?: {
-    readonly phases: boolean;
-    readonly retryConditions: boolean;
-  };
-  /**
-   * FR-R3-143 (T037) — which step of the trust ladder decided each capability:
-   * `'user'`, `'workspace'`, or `'workspace-trust'` (the ceiling).
-   *
-   * Optional on the same legacy-tolerance terms as `resolvedTrust` above: an older
-   * host bundle omits it. A view that reads it must treat absence as "unknown" and
-   * say nothing, NOT as any particular step — naming the wrong step is the defect
-   * this field exists to fix (`TrustBanner` called every denial a workspace policy).
-   */
-  readonly resolvedScope?: {
-    readonly phases: 'user' | 'workspace' | 'workspace-trust';
-    readonly retryConditions: 'user' | 'workspace' | 'workspace-trust';
-  };
-  /**
-   * Feature 033 — ephemeral per-subprocess telemetry sample. Never
-   * persisted to WorkflowRun, never written to the audit log. The host
-   * projection clears this to `null` one publish after the runner's
-   * `exited` event. Optional for legacy-tolerance: an older host bundle
-   * may not include it, and the webview must treat `undefined` the same
-   * as `null` (no telemetry line rendered).
-   */
-  readonly telemetry?: TelemetrySnapshot | null;
-  /**
-   * Feature 063 (FR-021) — projected suppression set so the webview can
-   * skip the modal when the operator opted out for a given action key.
-   * Optional for legacy-tolerance: an older host bundle may not include
-   * it, and the webview must treat `undefined` the same as "no
-   * suppressions" (modal shown).
-   */
-  readonly confirmSuppression?: {
-    readonly version: 1;
-    readonly suppressedActionKeys: readonly string[];
-  };
-
-  /**
-   * Feature 063 (FR-019, T030) — projected value of the
-   * `schegent.ui.confirmations.enable` config flag. When `false`,
-   * `useConfirm` short-circuits and destructive actions run without
-   * opening the modal. Optional for legacy-tolerance: an older host
-   * bundle may not include it, and the webview must treat `undefined`
-   * the same as `true` (prompts on).
-   */
-  readonly confirmationsEnabled?: boolean;
-}
-
-export interface EvidenceHealthProjection {
-  readonly overall: EvidenceOverallStatus;
-  readonly audit: EvidenceSinkHealthProjection;
-  readonly rawTranscript: EvidenceSinkHealthProjection;
-  readonly runtimeLog: EvidenceSinkHealthProjection;
-  // FR-R3-009 — the durable metrics rollup is a fourth continue-degraded sink.
-  // A run whose rollup append failed still executes, but its contribution to
-  // cumulative totals lasts only as long as its audit evidence, so a degraded
-  // rollup is the operator's warning that totals may regress after rotation.
-  readonly metricsRollup: EvidenceSinkHealthProjection;
-  // FR-R3-010 — the fifth continue-degraded sink: whether a completed Run's
-  // recorded evidence can still be located. Degraded only on an unreadable
-  // corpus; an expired or legacy pointer is a fact about one record, not a
-  // condition of the sink.
-  readonly historyPointer: EvidenceSinkHealthProjection;
-  readonly auditCheckpoint?: EvidenceSinkHealthProjection;
-  readonly transport?: EvidenceSinkHealthProjection;
-  readonly verboseDiagnostics?: EvidenceSinkHealthProjection;
-}
 
 const HEALTHY_REQUIRED_EVIDENCE: EvidenceSinkHealthProjection = Object.freeze({
   status: 'healthy',

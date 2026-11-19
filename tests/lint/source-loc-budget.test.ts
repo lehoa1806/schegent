@@ -722,7 +722,9 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // execution-visibility command families (five literal imports, two validator module imports,
   // response guard re-exports and five switch arms) add 30 lines and land the file at 788 by
   // this gate's count. Measurement plus 26, keeping domain payload validation in focused modules.
-  { path: 'src/contracts/runtime-validators.ts', maxLines: 814 },
+  // FR-R7-05 — inbound validators generated into `src/contracts/generated/validators/*.ts`;
+  // `runtime-validators.ts` shrinks to the switch dispatch barrel (357 lines + headroom).
+  { path: 'src/contracts/runtime-validators.ts', maxLines: 390 },
   // P4 IPC-family extraction ratchet: 1,250 → 885. The stable barrel retains
   // literals and guards while domain wire shapes live in focused modules.
   // Feature 084 (T071) — 885 → 950 for the process-YAML command family. Its
@@ -836,7 +838,8 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // `COMMAND_GUARDS` rows) add 85 lines and land the file at 1268 by this gate's count;
   // payload types stay in their sub-modules. Measurement plus 28 keeps headroom outside
   // `tightMargin(1296)` (25 lines).
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1296 },
+  // FR-R7-05 — 22 core command interfaces re-exported from `generated/sidebar-ipc-types.ts` (1,146 + headroom).
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1185 },
   // Waived, not budgeted. Feature 063's operator decision retired the ceiling
   // on this file and on queue-manager.ts below; it did not set a large one. The
   // entries used to say `maxLines: 10_000` against files of 2,500 and 1,821,
@@ -1630,7 +1633,9 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // default and scope (4 lines) and the snapshot's `GeneralSettingsProjection` type with its reason (14
   // lines): 1,208 by this gate's count, and the ceiling is raised by the lines added, to the same order
   // of headroom `tightMargin` expects.
-  { path: 'src/ui/sidebar/snapshot.ts', maxLines: 1_250 },
+  // FR-R7-05 — snapshot projection interfaces generated into `src/contracts/generated/snapshot-types.ts`;
+  // `snapshot.ts` shrinks to barrel re-exports + idle constants + helpers (334 lines + headroom).
+  { path: 'src/ui/sidebar/snapshot.ts', maxLines: 370 },
   // 1,100, unchanged by this feature.
   { path: 'src/monitor/claude-cli-monitor.ts', maxLines: 1_140 },
   // 1,018, and captured only because the first workstream took it from 899

@@ -21,6 +21,7 @@
 // once (FR-013) where a boolean predicate can only say no.
 
 import { PIPELINE_INPUT_PORT_TYPES } from '../pipeline-definitions';
+import type { RunRequest } from '../run-request';
 import { hasUnexpectedKeys } from './shared';
 import { runRequestBudgetViolations } from './run-request-budgets';
 
@@ -122,7 +123,7 @@ function validTargetDefinitionIds(request: Record<string, unknown>): boolean {
   return true;
 }
 
-export function validRunRequest(value: unknown): boolean {
+export function validRunRequest(value: unknown): value is RunRequest {
   const request = record(value);
   return request !== null
     && !hasUnexpectedKeys(request, [

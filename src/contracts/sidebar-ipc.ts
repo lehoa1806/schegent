@@ -314,7 +314,6 @@ export type {
   StartQueueIntent
 } from './start-intent-types';
 
-import type { EnqueueStartIntent, StartQueueIntent } from './start-intent-types';
 import {
   isValidEnqueueStartIntent,
   isValidStartQueueIntent
@@ -506,100 +505,57 @@ export type {
 // writes, not a copy of them.
 export { COMMAND_ACK_OUTCOMES, type CommandAckOutcome } from './command-outcome';
 
-export interface StartCommand extends CommandBase<typeof CMD_START> {
-  readonly payload: {
-    readonly description: string;
-    // Feature 011 — optional catalog pipeline override; absent payload
-    // means "use the default pipeline at submission time".
-    readonly pipelineId?: string;
-    // Feature 017 — optional target queue and insertion position. Missing
-    // `queueId` resolves to the configured default queue; missing `position`
-    // appends at the end of that queue.
-    readonly queueId?: string;
-    readonly position?: number;
-    // Feature 065 — optional start-mode intent (additive). Omission is
-    // valid; the host's policy table routes it to the chooser default or
-    // the warn-level automation default. See sidebar-ipc.diff.md.
-    readonly startIntent?: EnqueueStartIntent;
-  };
-}
-
-// Feature 017 — BUG-001. The required `taskId` resolves the operator's
-// intended cancel target by `FeatureRequest.id` instead of via the
-// singular `store.getRun()` projection. This preserves action identity
-// when `globalConcurrencyCap > 1` AND after a queue pause/resume swaps
-// the current in-flight run.
-export interface CancelCommand extends CommandBase<typeof CMD_CANCEL> {
-  readonly payload: { readonly taskId: string };
-}
-export interface RemoveQueueItemCommand extends CommandBase<typeof CMD_REMOVE_QUEUE_ITEM> {
-  readonly payload: { readonly id: string; readonly confirmed: true };
-}
-
-export interface OpenAuditLogCommand extends CommandBase<typeof CMD_OPEN_AUDIT_LOG> {}
-
-export interface RetryQueueItemCommand extends CommandBase<typeof CMD_RETRY_QUEUE_ITEM> {
-  readonly payload: { readonly id: string };
-}
-
-export interface MoveQueueItemUpCommand extends CommandBase<typeof CMD_MOVE_QUEUE_ITEM_UP> {
-  readonly payload: { readonly id: string };
-}
-
-export interface MoveQueueItemDownCommand extends CommandBase<typeof CMD_MOVE_QUEUE_ITEM_DOWN> {
-  readonly payload: { readonly id: string };
-}
-
-// FR-R3-150 (T1621a) — required, not optional: no more implicit Default
-// via `clearCompleted`'s default parameter.
-export interface ClearCompletedCommand extends CommandBase<typeof CMD_CLEAR_COMPLETED> {
-  readonly payload: { readonly queueId: string };
-}
-
-// FR-R3-150 (T1618) — required, not optional: a queue-scoped Clean All
-// names the queue it addresses on the wire, the same shape
-// `ClearCompletedCommand` above carries for the same reason (FR-011).
-export interface ClearQueueCommand extends CommandBase<typeof CMD_CLEAR_QUEUE> {
-  readonly payload: { readonly queueId: string };
-}
-
-// Feature 063 — per-action confirmation-prompt suppression. The actionKey
-// is validated against the closed `ActionKey` union in the suppression
-// handler before any memento write.
-export interface SetConfirmSuppressionCommand
-  extends CommandBase<typeof CMD_SET_CONFIRM_SUPPRESSION> {
-  readonly payload: {
-    readonly actionKey: string;
-    readonly suppressed: boolean;
-  };
-}
-
-// Feature 065 (T054a / FR-020) — operator dismisses the one-time post-migration
-// notice. Payload is empty (the dismiss applies to the single workspace queue;
-// the host writes `migrationNotice: 'dismissed'` via `setQueue({...})`).
-export interface DismissMigrationNoticeCommand
-  extends CommandBase<typeof CMD_DISMISS_MIGRATION_NOTICE> {}
-
-export interface PauseQueueCommand extends CommandBase<typeof CMD_PAUSE_QUEUE> {
-  readonly payload?: { readonly queueId?: string; readonly reason?: string };
-}
-
-export interface ResumeQueueCommand extends CommandBase<typeof CMD_RESUME_QUEUE> {
-  readonly payload?: { readonly queueId?: string; readonly prompt?: string };
-}
-export interface OpenDashboardCommand extends CommandBase<typeof CMD_OPEN_DASHBOARD> {}
-
-export interface RerunFromHistoryCommand extends CommandBase<typeof CMD_RERUN_FROM_HISTORY> {
-  // Feature 013 — Wave 6 (US6, FR-031): `force` is the operator opt-in for
-  // legacy entries (recorded before `originalDescription` was persisted).
-  // When `force === true`, the rerun proceeds with the truncated preview;
-  // otherwise the command rejects with a sanitized warning.
-  readonly payload: { readonly runId: string; readonly force?: boolean };
-}
-
-export interface OpenHistoryItemDetailsCommand extends CommandBase<typeof CMD_OPEN_HISTORY_ITEM_DETAILS> {
-  readonly payload: { readonly id: string };
-}
+// FR-R7-05 — Core inbound command interfaces derived from the declarative IPC
+// descriptors (`scripts/contracts/ipc-descriptors/`). Re-exported here so all
+// host and webview callers keep importing from `./sidebar-ipc`.
+import type {
+  CancelCommand,
+  ClearCompletedCommand,
+  ClearQueueCommand,
+  DismissMigrationNoticeCommand,
+  MoveQueueItemDownCommand,
+  MoveQueueItemUpCommand,
+  OpenAuditLogCommand,
+  OpenDashboardCommand,
+  OpenHistoryItemDetailsCommand,
+  OpenTrustSettingsCommand,
+  OpenVerboseSettingCommand,
+  PauseQueueCommand,
+  PingBackendCommand,
+  RemoveQueueItemCommand,
+  RerunFromHistoryCommand,
+  ResumeQueueCommand,
+  RetryQueueItemCommand,
+  SaveGeneralSettingsCommand,
+  SaveModelsCommand,
+  SetConfirmSuppressionCommand,
+  StartCommand,
+  StartQueueCommand
+} from './generated/sidebar-ipc-types';
+export type {
+  CancelCommand,
+  ClearCompletedCommand,
+  ClearQueueCommand,
+  DismissMigrationNoticeCommand,
+  MoveQueueItemDownCommand,
+  MoveQueueItemUpCommand,
+  OpenAuditLogCommand,
+  OpenDashboardCommand,
+  OpenHistoryItemDetailsCommand,
+  OpenTrustSettingsCommand,
+  OpenVerboseSettingCommand,
+  PauseQueueCommand,
+  PingBackendCommand,
+  RemoveQueueItemCommand,
+  RerunFromHistoryCommand,
+  ResumeQueueCommand,
+  RetryQueueItemCommand,
+  SaveGeneralSettingsCommand,
+  SaveModelsCommand,
+  SetConfirmSuppressionCommand,
+  StartCommand,
+  StartQueueCommand
+} from './generated/sidebar-ipc-types';
 
 // Feature 100 — the per-definition lifecycle shapes and their payload
 // predicates. Same split as the launcher commands: the payload checks live in
@@ -627,44 +583,6 @@ export type {
 import { isCmdReadDefinitionVersion, type ReadDefinitionVersionCommand } from './sidebar-ipc/catalog-history';
 export * from './sidebar-ipc/catalog-history';
 
-export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {
-  readonly payload: {
-    readonly models: Record<string, readonly string[]>;
-    /**
-     * Feature 096 — present only on the import-confirm call site
-     * (`mutation` always accompanies it there); the manual add/remove call
-     * site omits both and keeps its unconditional-write behavior unchanged.
-     */
-    readonly expectedRevision?: string;
-    readonly mutation?: { readonly kind: 'manual-edit' | 'import-package' };
-  };
-}
-
-// Feature 011 — keys in `updates` are unprefixed scalar setting names;
-// the host prepends `schegent.` and validates the full batch against an
-// allowlist before writing any key. If a later workspace write fails, the
-// host compensates by restoring any keys already written by that batch. See
-// specs/011-webui-config-editor/contracts/general-settings-ipc.md.
-//
-// Supported keys: the `AllowedKey` union in src/config/general-settings.ts, which
-// `KEY_SPECS` is keyed by. The webview mirrors that list and is NOT the source of
-// truth; a key absent from it is refused as `unknown-key:<key>`.
-//
-// FR-R3-145 (T1569) deleted the copy of the list that stood here rather than
-// correcting it. Measured against `AllowedKey` at that point, the copy named 17 of
-// 22 keys, listed one that no longer existed (`queue.globalConcurrencyCap`, removed
-// by T1572), and omitted six that did — `codex.path`, `agy.path`,
-// `retry.forceContinueOnCap`, `logging.sessionRetentionMaxAgeDays`,
-// `logging.sessionRetentionMaxBytes`, `logging.rawTranscriptMode`. Restating a
-// union in a comment beside it buys nothing and drifts silently: the reader who
-// trusted this list would have sent a key the host refuses, and missed six it takes.
-export interface SaveGeneralSettingsCommand
-  extends CommandBase<typeof CMD_SAVE_GENERAL_SETTINGS> {
-  readonly payload: {
-    readonly updates: Readonly<Record<string, unknown>>;
-  };
-}
-
 // The live-queue controls — the phase controls, the two breakpoint commands,
 // and the task edits — moved to a focused module in feature 100 (FR-R3-016).
 // The ratchet in tests/lint/source-loc-budget.test.ts is what asked: this
@@ -690,45 +608,6 @@ import type {
 export type * from './sidebar-ipc/run-controls';
 // FR-R4-F04 (FR-003) — the transport usage the Settings tab shows; its one home is the sub-module.
 export * from './sidebar-ipc/transport-usage';
-
-export interface OpenVerboseSettingCommand
-  extends CommandBase<typeof CMD_OPEN_VERBOSE_SETTING> {}
-
-export interface OpenTrustSettingsCommand
-  extends CommandBase<typeof CMD_OPEN_TRUST_SETTINGS> {}
-
-export interface PingBackendCommand extends CommandBase<typeof CMD_PING_BACKEND> {
-  readonly payload: { readonly runner: 'claude' | 'codex' | 'agy' }; }
-
-// BUG-002 (FR-012a) — start-queue command. No payload; the host promotes
-// the oldest pending task to in-flight. Rejected when no pending tasks
-// exist, when the queue is paused, or when a run is already in-flight.
-//
-// Feature 065 — optional `startIntent` payload (additive). Carries
-// `startMode` for now/scheduled/cancel-schedule and the `'operator-restart'`
-// source literal. Omission preserves the legacy "no-op promote" semantics.
-//
-// Feature 092 (T061, FR-034) — optional `queueId` (additive). It names which
-// queue the start addresses; omission means the default queue, which is what
-// every pre-092 sender meant when there was only one. Sending it is how the
-// webview addresses a specific queue now that several may exist.
-//
-// FR-R3-154 (T1646) — ACK SEMANTICS, and this command is the one place in the
-// batch where they are asynchronous. With a `startIntent`, `accepted` means the
-// intent was applied: the schedule was armed, cancelled, or converted to a
-// start, and the ACK carries `rejected-horizon` / `rejected-untrusted` /
-// `start-intent-no-change` when it was not. WITHOUT a `startIntent`, `accepted`
-// means only that the queue was offered a drain pass —
-// `AutoDrainCoordinator.drainIfIdle` may decline it (paused, at cap, nothing
-// pending) and reports nothing, so the ACK cannot and does not claim a Run
-// started. That is the documented asynchronous acceptance T1646 reserves for
-// this branch; every other route in the batch ACKs a committed mutation.
-export interface StartQueueCommand extends CommandBase<typeof CMD_START_QUEUE> {
-  readonly payload?: {
-    readonly queueId?: string;
-    readonly startIntent?: StartQueueIntent;
-  } | Record<string, never>;
-}
 
 export type SidebarCommand =
   | StartCommand

@@ -43,8 +43,7 @@ import type { PhaseTile } from '../../src/ui/sidebar/snapshot';
 
 /**
  * The webview module is loaded by `.js` specifier through a dynamic `import()`,
- * exactly as `snapshot-mirror-structural-parity.test.ts:115` and
- * `action-key-parity.test.ts:116` already load their webview halves. Nothing
+ * matching `action-key-parity.test.ts:116`. Nothing
  * moves to make this test possible (FR-037): both deciders are imported where
  * they already live.
  */
