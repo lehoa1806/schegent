@@ -1,158 +1,180 @@
+/**
+ * FR-R7-07 — `WorkspaceStateStore` facade.
+ *
+ * Coordinates workspace state across cohesive key-family modules:
+ *   - `workspace-state-types.ts`      — `KEYS`, constants, public types, `QueueMutationRejected`, family context
+ *   - `workspace-state-migrations.ts` — forward migrations v2..v15 executed by `initialize()`
+ *   - `workspace-state-queue.ts`      — queue states, queue registry, task CRUD, concurrency cap & notice
+ *   - `workspace-state-runs.ts`       — Run map, quarantine, `setRun`, `updateRun`, `admitRunAtomically`, terminal intents
+ *   - `workspace-state-locks.ts`      — workspace lock, guarded mirror refresh, execution leases, watchdog, pseudonym
+ *   - `workspace-state-history.ts`    — per-queue history partitions & bounded append
+ *   - `workspace-state-grants.ts`     — confirmation suppression, Git plan grants, agent config grants
+ *   - `workspace-state-connected.ts`  — connected workflow runs CAS/delete, control ledger, reset transaction
+ *
+ * The facade exclusively owns the single `chains` serialization map (`serialize` /
+ * `serializeAcrossKeys`), the single `MementoWriteGate`, and the single `OwnershipRegistry`
+ * commit fence, passing them to family modules via `WorkspaceStateFamilyContext`
+ * (docs/hard-rules.md rules 4, 7, 28, 57, 58).
+ */
+
 import type {
   RunQuarantineEntry,
   RunRecordQuarantinedPayload
 } from '../contracts/audit-events';
-import { createRunQuarantine } from './run-quarantine';
-import { DEFAULT_GLOBAL_CONCURRENCY_CAP, MAX_QUEUES } from '../contracts/queue-bounds';
-import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
-import {
-  MAX_PENDING_TASKS_PER_QUEUE,
-  ensureExtendedFeatureRequest,
-  validateDescription,
-  type FeatureRequest,
-  type QueueState
-} from '../queue/feature-request';
-import { withRefreshedLifecycle } from '../queue/queue-lifecycle-refresh';
-import {
-  deleteQueue as removeQueueEntry,
-  findQueue,
-  makeDefaultRegistry,
-  projectQueueRegistry,
-  validateQueueRegistry,
-  type ProjectedQueueRegistry,
-  type QueuePauseSource,
-  type QueuePauseView,
-  type QueueRegistry,
-  type QueueRegistryEntry
-} from '../queue/queue-registry';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { MAX_QUEUES } from '../contracts/queue-bounds';
 import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
+import { ensureExtendedFeatureRequest } from '../contracts/queue-feature-request-helpers';
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
+import type {
+  ProjectedQueueRegistry,
+  QueuePauseSource,
+  QueueRegistry
+} from '../contracts/queue-registry';
+import type { SanitizedLogger } from '../lib/logger';
+import type { FeatureRequest, QueueState } from '../queue/feature-request';
+import type { AgentConfigGrant, AgentConfigGrantMap } from './agent-config-grants';
+import type { ConfirmSuppressionState } from './confirm-suppression';
+import type { ConnectedWorkflowRun } from './connected-workflow-run';
+import type { ExecutionLease } from './execution-lease';
+import type { GitPlanGrant, GitPlanGrantMap } from './git-plan-grants';
+import { systemScheduler, type Scheduler } from './lock';
+import { MementoWriteGate, StorageWriteQuarantinedError } from './memento-write-gate';
+import {
+  checkCommitFence,
+  unfencedCommit,
+  type CommitFenceFailure,
+  type QueueCommitClaim,
+  type RunCommitClaim
+} from './ownership-claim';
+import { createMementoOwnershipFs, type OwnershipFs } from './ownership-fs';
+import {
+  MEMENTO_OWNERSHIP_DIR,
+  OwnershipRegistry,
+  type FenceCheck
+} from './ownership-registry';
+import type { QueueStateMap } from './queue-state-migrator';
+import type { ResetMarker } from './reset-transaction';
+import { createRunQuarantine } from './run-quarantine';
+import type { RunStateMap } from './run-state-migrator';
+import type { RunTransitionActor } from './run-transition-decision';
+import type { RunUpdate } from './run-update';
 import type {
   TerminalTransitionIntent,
-  WorkflowRun,
   WatchdogState,
+  WorkflowRun,
   WorkspaceLock
 } from './workflow-run';
-import { STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION_V8 } from '../contracts/state-schema';
+import type { LoadRepairWarning } from './workflow-run-migrator';
+import * as connectedFamily from './workspace-state-connected';
+import * as grantsFamily from './workspace-state-grants';
+import * as historyFamily from './workspace-state-history';
+import * as locksFamily from './workspace-state-locks';
+import * as migrationsFamily from './workspace-state-migrations';
+import * as queueFamily from './workspace-state-queue';
+import * as runsFamily from './workspace-state-runs';
 import {
-  migrateLegacyRun,
-  repairRunOnLoad,
-  type LoadRepairWarning,
-  type WorkflowRunRepairedAuditEvent
-} from './workflow-run-migrator';
-import {
-  assertPersistedVersionSupported,
-  migrateLegacyQueueState,
-  migrateV5ToV6,
-  migrateV6ToV7,
-  migrateV9ToV10,
-  migrateV12ToV13,
-  type QueuePauseCollapseAuditEvent,
-  type QueueStateMap,
-  type StateMigratedV5ToV6AuditEvent,
-  type StateMigratedV6ToV7AuditEvent,
-  type StateMigratedV9ToV10AuditEvent
-} from './queue-state-migrator';
-import {
-  isRunStateMap,
-  isWorkflowRun,
-  migrateV10ToV11,
-  type RunStateMap,
-  type RunStateMigrationAuditEvent
-} from './run-state-migrator';
-import {
-  reconcileOrphanedRuns,
-  type OrphanedRunCanceledAuditEvent
-} from './orphaned-run-reconciler';
-import { assertPendingRetryShape } from './pending-retry-shape';
-import { assertCreditPauseShape, assertWatchdogShape, migrateV14ToV15 } from './credit-pause-state';
-import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
-import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../contracts/queue-identity';
-import {
-  migrateV11ToV12,
-  type HistoryStateMigrationAuditEvent
-} from './history-state-migrator';
-import {
-  forgetAgentConfigGrant,
-  latestGrantForBackend,
-  readAgentConfigGrants,
-  writeAgentConfigGrant,
-  type AgentConfigGrant,
-  type AgentConfigGrantMap
-} from './agent-config-grants';
-import type { SanitizedLogger } from '../lib/logger';
+  HISTORY_CAP_PER_QUEUE,
+  KEYS,
+  MAX_DELETED_HISTORY_PARTITIONS,
+  QueueMutationRejected,
+  RESET_CLEARED_KEYS,
+  RESET_EXEMPT_KEYS,
+  SCHEMA_VERSION,
+  STATE_SCHEMA_VERSION,
+  isRunRaceRefusal,
+  safeDisplay,
+  type ConcurrencyNotice,
+  type ConnectedRunWriteResult,
+  type Disposable,
+  type ForwardMigrationEvents,
+  type GuardedWriteOutcome,
+  type InitializeResult,
+  type Memento,
+  type OwnershipClaim,
+  type PersistedHistoryEntry,
+  type PersistedHistoryMap,
+  type PrimacyClaimSource,
+  type QueueDeletionView,
+  type QueueMutationRejectReason,
+  type RunClaimSource,
+  type RunReadVerdict,
+  type StoreChangeKey,
+  type StoreChangeListener,
+  type WorkspaceStateFamilyContext
+} from './workspace-state-types';
 
-export const SCHEMA_VERSION = '1.0.0';
-export { STATE_SCHEMA_VERSION };
-
-export type PersistedHistoryEntry = object;
+export {
+  HISTORY_CAP_PER_QUEUE,
+  KEYS,
+  MAX_DELETED_HISTORY_PARTITIONS,
+  QueueMutationRejected,
+  RESET_CLEARED_KEYS,
+  RESET_EXEMPT_KEYS,
+  SCHEMA_VERSION,
+  STATE_SCHEMA_VERSION,
+  isRunRaceRefusal,
+  type ConcurrencyNotice,
+  type ConnectedRunWriteResult,
+  type Disposable,
+  type ForwardMigrationEvents,
+  type GuardedWriteOutcome,
+  type InitializeResult,
+  type Memento,
+  type OwnershipClaim,
+  type PersistedHistoryEntry,
+  type PersistedHistoryMap,
+  type PrimacyClaimSource,
+  type QueueDeletionView,
+  type QueueMutationRejectReason,
+  type RunClaimSource,
+  type RunReadVerdict,
+  type StoreChangeKey,
+  type StoreChangeListener
+};
+export { CONFIRM_SUPPRESSION_VERSION, type ConfirmSuppressionState } from './confirm-suppression';
+export { type GitPlanGrant, type GitPlanGrantMap } from './git-plan-grants';
+export { RUN_UPDATE_LABELS, type RunUpdate, type RunUpdateLabel } from './run-update';
+export {
+  RunFieldInvariantError,
+  RunInvariantError,
+  RunTransitionError,
+  type RunFieldInvariantCode
+} from './run-invariant-error';
+export {
+  ALL_RUN_TRANSITION_ACTORS,
+  DEFAULT_ACTOR_BY_RUN_UPDATE_LABEL,
+  RUN_STATUS_TRANSITIONS,
+  allowedSameStatusFor,
+  allowedSourceStatusesFor,
+  allowedSourceStatusesForTargets,
+  decideRunTransition,
+  type RunTransitionActor,
+  type RunTransitionDecision,
+  type RunTransitionDecisionInput,
+  type RunTransitionRefusalReason,
+  type RunTransitionTable
+} from './run-transition-decision';
+export {
+  MEMENTO_WRITE_DEADLINE_MS,
+  StorageWriteQuarantinedError,
+  type MementoBatchEntry,
+  type StorageWriteFailureReason
+} from './memento-write-gate';
 
 /**
- * FR-R3-010 (T402) — the v12 persisted shape of `KEYS.history`: one array of
- * terminal-run records per queue, keyed by queue id.
+ * Feature 092 (T056, FR-026/FR-027) — the workspace concurrency ceiling's upper bound.
  *
- * A queue with no history has no key. Absence is the empty state, never a
- * stored `[]`, on the same reasoning as the v11 run map: a stored empty value
- * is a value, and it would survive a reset's `undefined` clear as a re-created
- * key on the next read.
- */
-export type PersistedHistoryMap = Record<string, PersistedHistoryEntry[]>;
-
-/**
- * Render an arbitrary persisted-value shape for diagnostic logs without
- * letting `JSON.stringify` throw on circular references or `BigInt`. The
- * sanitized logger redacts any embedded secret patterns downstream, so
- * the goal here is *durability* (don't crash the WARN path) rather than
- * sanitization (which is the logger's job).
- */
-function safeDisplay(value: unknown): string {
-  if (typeof value === 'number') return String(value);
-  if (typeof value === 'string') return JSON.stringify(value);
-  if (typeof value === 'boolean') return String(value);
-  if (value === null) return 'null';
-  if (value === undefined) return 'undefined';
-  try {
-    return JSON.stringify(value) ?? `<${typeof value}>`;
-  } catch {
-    return `<${typeof value}>`;
-  }
-}
-
-/**
- * Feature 092 (T056, FR-026/FR-027) — the workspace concurrency ceiling's
- * upper bound.
- *
- * The upper bound is `MAX_QUEUES` rather than a second literal 20, because a
- * ceiling above the number of queues is unreachable by construction: each queue
- * runs at most one Task, so no workspace can exceed `MAX_QUEUES` in flight. The
- * two numbers agreeing is a fact, not a coincidence to be maintained by hand.
- *
- * Feature 094 — the *authority* for a cap above one, as distinct from the
- * mechanism above that makes one representable, is
- * `docs/architecture/local-queue-parallelism-ratification.md`. It narrows one
- * clause of the remote/multi-user expansion gate for the local single-operator
- * shape only, dispositions the gate's seven exit criteria individually, and
- * enumerates the premises whose change reopens the question. Raising this
- * bound past `MAX_QUEUES`, or widening `MAX_QUEUES` itself, is outside what
- * that record authorises.
- *
- * FR-R3-145 (T1572) — this is one of *three* sites defining the cap's value or
- * its bounds, and all three enforce: here, `queue/queue-manager.ts`, and
- * `contracts/validators/queue-management.ts`, each deriving its ceiling from
- * `MAX_QUEUES`. The three that restated the numbers without enforcing them —
- * `config/settings-schema.ts`, `config/general-settings.ts`, `package.json` —
- * advertised a configuration key nothing read, and went with it. The default
- * now lives in `contracts/queue-bounds.ts` beside `MAX_QUEUES`: the projection
- * that displays it and the store that decides it are in different layers.
+ * Feature 094 — the authority for a cap above one is
+ * `docs/architecture/local-queue-parallelism-ratification.md`. Raising this bound
+ * past `MAX_QUEUES`, or widening `MAX_QUEUES` itself, is outside what that record authorises.
  */
 export const MAX_GLOBAL_CONCURRENCY_CAP = MAX_QUEUES;
 
-/**
- * The single range check both the reader and the setter use. `origin`
- * distinguishes "the operator just asked for this" from "this is what was on
- * disk", which is the only part of the two call sites that legitimately
- * differs.
- */
-function assertGlobalConcurrencyCap(value: unknown, origin: 'requested' | 'persisted'): asserts value is number {
+function assertGlobalConcurrencyCap(
+  value: unknown,
+  origin: 'requested' | 'persisted'
+): asserts value is number {
   if (
     typeof value !== 'number' ||
     !Number.isInteger(value) ||
@@ -166,21 +188,6 @@ function assertGlobalConcurrencyCap(value: unknown, origin: 'requested' | 'persi
   }
 }
 
-/**
- * Wake-up withdrawal — forward-only coercion of the retired
- * `'wake-up-runner'` start source.
- *
- * The literal was dropped from `ScheduledStartSource` with the capability
- * that produced it, but it may still sit in a queue record persisted by an
- * earlier release. It maps to `'programmatic-scheduled'` because that is
- * what it always meant operationally: a non-human caller armed a scheduled
- * start. Coercing on read rather than rewriting on upgrade keeps this a
- * pure projection — the value is normalized every time the record is read,
- * so there is no migration to miss and no half-migrated state.
- *
- * Every persisted `QueueState` reaches this through
- * `ensureExtendedQueueShape`, which is the single normalization point.
- */
 const RETIRED_START_SOURCE = 'wake-up-runner';
 
 function coerceRetiredStartSource(
@@ -189,66 +196,6 @@ function coerceRetiredStartSource(
   return (source as string | null) === RETIRED_START_SOURCE ? 'programmatic-scheduled' : source;
 }
 
-function ensureExtendedQueueShape(persisted: QueueState): QueueState {
-  const requests = Array.isArray(persisted.requests)
-    ? persisted.requests.map((r) => ensureExtendedFeatureRequest(r as FeatureRequest))
-    : [];
-  const normalizedRequests = compactRequestPositions(requests);
-  const paused = persisted.paused ?? false;
-  const inFlightId = persisted.inFlightId ?? null;
-  const persistedLifecycle = (persisted as QueueState).queueLifecycle;
-  const queueLifecycle = persistedLifecycle ?? deriveLifecycleFromLegacyShape(paused, inFlightId, normalizedRequests.length);
-  const scheduledStartAt = (persisted as QueueState).scheduledStartAt ?? null;
-  const scheduledStartSource = coerceRetiredStartSource(
-    (persisted as QueueState).scheduledStartSource ?? null
-  );
-  const migrationNotice = (persisted as QueueState).migrationNotice;
-  // FR-R3-011 — the legacy `paused` / `pausedReason` mirrors are read above (as
-  // migration input, to derive a lifecycle for a record that predates the
-  // discriminator) and are **not** written back. Normalising them forward would
-  // reinstate the second representation on every read, which is the one thing
-  // the collapse must not leave a way to do.
-  const pauseSource = normalizePauseSource(persisted, queueLifecycle, paused);
-  return {
-    inFlightId,
-    updatedAt: persisted.updatedAt ?? Date.now(),
-    requests: normalizedRequests,
-    queueLifecycle,
-    pauseSource,
-    // Kept, unlike `paused` above: the reason string is held nowhere else, and
-    // the controller matches its `retry-cap-exhausted:<runId>` marker. Cleared
-    // when the queue is not paused, which is the field's own invariant.
-    pausedReason: pauseSource === null ? null : persisted.pausedReason ?? null,
-    scheduledStartAt: queueLifecycle === 'idle-pending' ? scheduledStartAt : null,
-    scheduledStartSource: queueLifecycle === 'idle-pending' ? scheduledStartSource : null,
-    ...(migrationNotice ? { migrationNotice } : {}),
-    // Feature 195 (T033, T036, FR-003, FR-017) — carried through verbatim,
-    // same optionality rule as `migrationNotice` above: absent stays absent
-    // (a queue that has stated no opinion), and a present value travels
-    // unvalidated — an unrecognised string is `effectiveQueueFailurePolicy`'s
-    // job to read as absent, not this normaliser's job to reject. Without
-    // this line every write through `updateQueue()` silently dropped the
-    // field the moment after `QueueManager.setFailurePolicy` set it, because
-    // this function rebuilds the record from a fixed field list rather than
-    // spreading `persisted`.
-    ...(persisted.failurePolicy !== undefined
-      ? { failurePolicy: persisted.failurePolicy }
-      : {})
-  };
-}
-
-/**
- * FR-R3-011 — the pause attribution for a normalised queue record.
- *
- * A record written by this build carries its own `pauseSource` and it is
- * returned verbatim. A record that predates the collapse carries none, so a
- * queue that reads as paused is attributed `'operator'` — the conservative
- * reading, because an operator pause outranks a cascade one and must never be
- * demoted to it.
- *
- * The pairing is established here rather than asserted afterwards: a queue that
- * is not paused has no source, in one expression, from one input.
- */
 function normalizePauseSource(
   persisted: QueueState,
   queueLifecycle: QueueState['queueLifecycle'],
@@ -269,701 +216,58 @@ function deriveLifecycleFromLegacyShape(
   return 'active-empty';
 }
 
-export const KEYS = {
-  schemaVersion: 'schegent.schemaVersion',
-  schemaVersionNumeric: 'schegent.schemaVersionNumeric',
-  queue: 'schegent.queue',
-  queueRegistry: 'schegent.queues.registry',
-  queueMigrationQuarantine: 'schegent.state.quarantine.v2',
-  // FR-R3-111 (FR-112, FR-114) — the RUN half of the same idea.
-  //
-  // A separate key from the queue quarantine on purpose: the two hold different aggregates and
-  // are bounded independently, so a corruption loop in one cannot evict the other's evidence.
-  runQuarantine: 'schegent.state.runQuarantine.v1',
-  queueDefaultId: 'schegent.queue.defaultQueueId',
-  queueGlobalConcurrencyCap: 'schegent.queue.globalConcurrencyCap',
-  run: 'schegent.run',
-  lock: 'schegent.lock',
-  watchdog: 'schegent.watchdog',
-  history: 'schegent.history',
-  terminalTransitionIntent: 'schegent.terminalTransitionIntent',
-  // Feature 063 (FR-021) — per-action "don't ask again" suppression set.
-  confirmSuppression: 'schegent.ui.confirmSuppression',
-  // Feature 088 (FR-006) — connected Workflow runs, keyed by connectedRunId.
-  // A separate key from `run`/`queue` on purpose: the connected run is a
-  // different aggregate, and keeping it separate is what makes its migration
-  // a no-op for every workspace that predates the feature (FR-007).
-  connectedRuns: 'schegent.connectedRuns',
-  // Feature 092 (T049, FR-031) — per-queue execution leases, keyed by queueId.
-  // Deliberately NOT `lock`: that key stays the one-per-workspace window-primacy
-  // lease feeding `WorkflowSnapshot.isPrimary`, and merging the two would make a
-  // window primary the moment it drained any queue.
-  executionLeases: 'schegent.executionLeases',
-  // Feature 092 (T065, FR-037) — the once-per-workspace shared-working-tree
-  // notice, armed when the workspace first stops being single-queue.
-  //
-  // Its own key, and not a field on any `QueueState`: FR-037 scopes the notice
-  // to the workspace, so storing it inside a queue record would make it per
-  // queue by construction and deleting that queue would erase the operator's
-  // dismissal. It is also NOT `QueueState.migrationNotice` (feature 065), which
-  // is per queue, fires on a different trigger, and carries different text —
-  // one shared field would make dismissing either dismiss both.
-  concurrencyNotice: 'schegent.ui.concurrencyNotice',
-  // FR-R3-146 (FR-006) — durable Git-plan consent, keyed by mutation-plan
-  // fingerprint. Its own key for the reason `connectedRuns` gives above, and
-  // deliberately not folded into `confirmSuppression`: that one holds UI action
-  // names, and merging them would let "don't ask about clearing the queue" read
-  // as consent to mutate a repository. Absent means nothing granted, which is
-  // both fail-closed and the whole forward migration this record needs.
-  gitPlanGrants: 'schegent.consent.gitPlanGrants.v1',
-  // FR-R7-04 — durable per-workspace repository agent configuration acknowledgements.
-  agentConfigGrants: 'schegent.consent.agentConfigGrants.v1',
-  // Feature FR-R3-006 (T337, T341) — the reset generation marker.
-  //
-  // In `KEYS` and on `RESET_EXEMPT_KEYS` below, which is not a contradiction:
-  // it belongs here because the completeness test enumerates this map and a key
-  // reset does not clear has to be an accounted-for decision rather than an
-  // omission, and it is exempt because it is the one record that must survive
-  // the clear it describes. Clearing it would erase the evidence that a reset
-  // was underway at exactly the moment that evidence matters.
-  resetMarker: 'schegent.reset.marker',
-  // FR-R4-F04 (FR-027, data-model §9) — the operator pseudonym that replaces the OS username in
-  // attribution. In `KEYS` for the completeness test and on `RESET_EXEMPT_KEYS` below for the reason
-  // given there: a Reset clears Schegent's state, not the operator's identity, and rows already written
-  // keep the pseudonym they carry. A new one comes only from the reset command, which records it.
-  operatorPseudonym: 'schegent.operatorPseudonym',
-  // FR-R5-F26 (SPEC-04, D4) — durable control admission ledger (`version: 1`).
-  // Linked from `ConnectedWorkflowRun.controlState` (`{ version: 1, ledgerRunId }`)
-  // and cleared by `reset()` via `RESET_CLEARED_KEYS`.
-  controlLedger: 'schegent.controlLedger'
-} as const;
-
-/**
- * Feature FR-R3-006 (T338) — the keys `reset()` deliberately does not clear.
- *
- * Every other entry in `KEYS` is cleared. This list is the complement, and
- * `tests/unit/state/reset-covers-every-key.test.ts` asserts the two partition
- * `KEYS` exactly — so a key added to neither fails the build rather than being
- * silently missed, which is how `executionLeases` and `concurrencyNotice` came
- * to survive a reset for two features.
- *
- * The reason strings are the point of the structure. A bare list would record
- * that a key is exempt without recording why, and the next person to read it
- * cannot tell a decision from an oversight.
- */
-export const RESET_EXEMPT_KEYS: Readonly<Record<string, string>> = {
-  [KEYS.schemaVersion]:
-    'Reset re-stamps the version rather than clearing it. Clearing would make a ' +
-    'reset workspace indistinguishable from one that has never been opened, so ' +
-    'the next activation would take the unversioned branch and run the whole ' +
-    'forward-migration chain against empty state.',
-  [KEYS.schemaVersionNumeric]:
-    'Same as the version string above, and for the same reason: reset writes ' +
-    'STATE_SCHEMA_VERSION here so the cleared state is correctly labelled as ' +
-    'current rather than as unknown.',
-  [KEYS.resetMarker]:
-    'The marker records that a reset is underway. A reset that cleared its own ' +
-    'marker could not be detected as interrupted, which is the whole reason the ' +
-    'marker exists.',
-  [KEYS.operatorPseudonym]:
-    'The operator pseudonym names who acted in audit rows that are already written and cannot be ' +
-    'rewritten. A workspace reset clears Schegent\'s state, not the operator\'s identity, and a ' +
-    'pseudonym cleared by it would be created again under a new value, splitting one operator\'s rows ' +
-    'across two names for no decision of theirs. The reset-pseudonym command is the one way to change it, ' +
-    'and it records that it did.'
-} as const;
-
-/**
- * Feature FR-R3-006 (T339) — the keys a reset clears, derived rather than
- * listed.
- *
- * Derivation is the fix. The list this replaces was maintained by hand, so a key
- * was cleared only if someone remembered to add it, and two were not: feature
- * 092's `executionLeases` and `concurrencyNotice` both shipped into `KEYS` and
- * neither reached the clear. Deriving makes the default "cleared" and turns
- * exemption into the thing that has to be written down.
- */
-export const RESET_CLEARED_KEYS: readonly string[] = Object.values(KEYS).filter(
-  (key) => !(key in RESET_EXEMPT_KEYS)
-);
-
-import { readConfirmSuppression, writeConfirmSuppression } from './confirm-suppression';
-export { CONFIRM_SUPPRESSION_VERSION, type ConfirmSuppressionState } from './confirm-suppression';
-import {
-  forgetGitPlanGrant,
-  readGitPlanGrants,
-  writeGitPlanGrant,
-  type GitPlanGrant,
-  type GitPlanGrantMap
-} from './git-plan-grants';
-export { type GitPlanGrant, type GitPlanGrantMap } from './git-plan-grants';
-import { connectedRunRefusalWarning, connectedRunsWithout, migrateConnectedRuns } from './connected-run-migrator';
-import { assertConnectedRunInvariants, type ConnectedWorkflowRun } from './connected-workflow-run';
-// Type-only: `execution-lease.ts` imports the staleness constants from `lock.ts`,
-// so a value import here would close a cycle the type import cannot.
-import type { ClaimTenure, ExecutionLease } from './execution-lease';
-import {
-  checkCommitFence,
-  isFencedClaim,
-  OWNERSHIP_VERIFY_DEADLINE_MS,
-  unfencedCommit,
-  verifyWithin,
-  type CommitFenceFailure,
-  type QueueCommitClaim,
-  type RunCommitClaim
-} from './ownership-claim';
-import {
-  migrateRunVerdictBasis,
-  verdictBasisEvents,
-  type VerdictBasisMigrationEvent
-} from './host-verification-migrator';
-import { systemScheduler, type Scheduler } from './lock';
-import { MementoWriteGate, StorageWriteQuarantinedError } from './memento-write-gate';
-import { createMementoOwnershipFs, type OwnershipFs } from './ownership-fs';
-import {
-  isResetInterrupted,
-  isResetMarker,
-  nextResetGeneration,
-  type ResetMarker
-} from './reset-transaction';
-import {
-  MEMENTO_OWNERSHIP_DIR,
-  OwnershipRegistry,
-  queueResource,
-  type FenceCheck
-} from './ownership-registry';
-import { isSupersededRun, isTerminalRunStatus } from './workflow-run';
-import type { RunUpdate } from './run-update';
-import {
-  RunFieldInvariantError,
-  RunInvariantError,
-  RunTransitionError,
-  type RunFieldInvariantCode
-} from './run-invariant-error';
-import {
-  ADMISSIBLE_INITIAL_RUN_STATUS,
-  ALL_RUN_TRANSITION_ACTORS,
-  DEFAULT_ACTOR_BY_RUN_UPDATE_LABEL,
-  RUN_STATUS_TRANSITIONS,
-  allowedSameStatusFor,
-  allowedSourceStatusesFor,
-  allowedSourceStatusesForTargets,
-  decideRunTransition,
-  type RunTransitionActor,
-  type RunTransitionDecision,
-  type RunTransitionDecisionInput,
-  type RunTransitionRefusalReason,
-  type RunTransitionTable
-} from './run-transition-decision';
-export { RUN_UPDATE_LABELS, type RunUpdate, type RunUpdateLabel } from './run-update';
-export {
-  RunFieldInvariantError,
-  RunInvariantError,
-  RunTransitionError,
-  type RunFieldInvariantCode,
-  ALL_RUN_TRANSITION_ACTORS,
-  DEFAULT_ACTOR_BY_RUN_UPDATE_LABEL,
-  RUN_STATUS_TRANSITIONS,
-  allowedSameStatusFor,
-  allowedSourceStatusesFor,
-  allowedSourceStatusesForTargets,
-  decideRunTransition,
-  type RunTransitionActor,
-  type RunTransitionDecision,
-  type RunTransitionDecisionInput,
-  type RunTransitionRefusalReason,
-  type RunTransitionTable
-};
-
-/**
- * FR-R3-010 (T403) — retained terminal runs **per queue**.
- *
- * The number is unchanged from the flat cap it replaces; its denominator is
- * not. 50 used to be the whole workspace's history divided across up to
- * `MAX_QUEUES` queues, so a fully populated workspace kept an average of 2.5
- * runs each and one busy queue evicted everyone else's. It is now 50 for each
- * queue, applied at the write site and nowhere else.
- *
- * Raising it is now a bounded decision rather than the compounding one it used
- * to be: with the description moved out of the entry (T405) a record is a few
- * hundred bytes of counters and identifiers, so depth costs bytes linearly
- * instead of multiplying a 32 KB field by the cap on every completion.
- */
-export const HISTORY_CAP_PER_QUEUE = 50;
-
-/**
- * Feature FR-R3-003 (T302) — one window's claim on one arbitrated resource, as a
- * guarded operation carries it.
- *
- * `resource` is `PRIMACY_RESOURCE` or `queueResource(queueId)`; the two have
- * independent generation counters, so a fence is only meaningful against the
- * resource it was issued for. Passing them together as one value is what keeps a
- * caller from pairing a primacy token with a queue.
- */
-export interface OwnershipClaim {
-  readonly resource: string;
-  readonly ownerId: string;
-  readonly fence: number;
-}
-
-/**
- * FR-R3-077 — whoever can answer "does this window hold `queueId`, and at what
- * generation". `ExecutionLeaseManager` is the production implementation; the
- * narrow shape is what lets a test bind a stub without a lease manager.
- */
-export interface RunClaimSource {
-  claimFor(queueId: string): OwnershipClaim | null;
-  /**
-   * FR-R4-F01 (decision TA1) — whether the claim `claimFor` returns is held or
-   * lost. Optional, on the precedent of `ExecutionLeasePort.hasLease`: a source
-   * without it is read as before, `claimFor` alone deciding, so the doubles that
-   * predate the feature keep working and none of them exercises a loss.
-   */
-  tenureOf?(queueId: string): ClaimTenure;
-  /** FR-R4-F01 (contract C2 G8) — told when a commit is refused `fence-superseded`. */
-  markLost?(queueId: string, reason: 'superseded'): void;
-}
-
-/**
- * FR-R5-F08 — whoever can answer whether this window is authorized to commit or
- * recover connected workflow runs under workspace primacy.
- */
-export interface PrimacyClaimSource {
-  canCommitConnectedRun(): Promise<boolean>;
-}
-
-/**
- * FR-R3-077 — what `readRunIfLive` answers.
- *
- * `superseded` carries both generations rather than a bare boolean, because the
- * decline has to be observable: a reader that logged "declined" without the two
- * numbers gives an operator nothing to act on.
- */
-export type RunReadVerdict =
-  | { readonly outcome: 'absent' }
-  | { readonly outcome: 'live'; readonly run: WorkflowRun }
-  | {
-      readonly outcome: 'superseded';
-      readonly run: WorkflowRun;
-      readonly writtenAtFence: number;
-      readonly liveFence: number;
-    };
-
-/**
- * FR-R4-F01 (contract D3) — what the deletion predicate is shown: the registry, the queue's own
- * Run and its Task rows, as read inside the commit link.
- */
-export interface QueueDeletionView {
-  readonly registry: QueueRegistry;
-  readonly run: WorkflowRun | null;
-  readonly requests: readonly FeatureRequest[];
-}
-
-/**
- * The outcome of a guarded write (T302).
- *
- * `rejected` is the arm the fencing token exists to produce: the write did not
- * happen, and the caller is told which generation superseded it and who holds the
- * resource now. `unavailable` means storage could not answer — the claim may well
- * still be good — and is kept separate for that reason.
- */
-export type GuardedWriteOutcome =
-  | { readonly outcome: 'written' }
-  | {
-      readonly outcome: 'rejected';
-      readonly reason: 'stale-fence' | 'not-holder';
-      readonly currentFence: number;
-      readonly ownerOfRecord: string | null;
-    }
-  | { readonly outcome: 'unavailable' };
-
-/**
- * Feature 092 (T065, FR-037) — the answer to the shared-working-tree notice.
- *
- * Shares its two words with `QueueState.migrationNotice` and nothing else: that
- * one is per queue and records a migration, this one is per workspace and
- * records that the workspace stopped being single-queue. They are separate
- * types over separate keys so a future widening of either cannot silently reach
- * the other.
- */
-export type ConcurrencyNotice = 'pending' | 'dismissed';
-
-export type StoreChangeKey =
-  | typeof KEYS.run
-  | typeof KEYS.queue
-  | typeof KEYS.queueRegistry
-  | typeof KEYS.queueDefaultId
-  | typeof KEYS.queueGlobalConcurrencyCap
-  | typeof KEYS.lock
-  | typeof KEYS.history
-  | typeof KEYS.terminalTransitionIntent
-  | typeof KEYS.connectedRuns
-  | typeof KEYS.executionLeases
-  | typeof KEYS.concurrencyNotice
-  // FR-R4-F02: the credit poll's last outcome reaches the surface, so a write schedules a projection.
-  | typeof KEYS.watchdog
-  | typeof KEYS.controlLedger;
-
-export type StoreChangeListener = (key: StoreChangeKey) => void;
-
-export interface Disposable {
-  dispose(): void;
-}
-
-export interface Memento {
-  get<T>(key: string): T | undefined;
-  update(key: string, value: unknown): Thenable<void>;
-  updateBatch?(entries: readonly MementoBatchEntry[]): Thenable<void>;
-}
-
-/**
- * Feature 088 (FR-046) — the outcome of a compare-and-set connected-run write.
- * `current` is the authoritative record at the moment of the refusal, and is
- * `null` when the run does not exist at all.
- */
-export type ConnectedRunWriteResult =
-  | { readonly outcome: 'written'; readonly run: ConnectedWorkflowRun }
-  | { readonly outcome: 'stale'; readonly current: ConnectedWorkflowRun | null };
-
-/**
- * The refusal arm, built through a function so the variable that holds it keeps
- * its declared union type. Assigning the object literal directly would narrow
- * the variable to the refusal arm, and the write arm assigned inside the
- * serialized closure would then be unreachable as far as the checker is
- * concerned.
- */
-function staleConnectedRunWrite(current: ConnectedWorkflowRun | null): ConnectedRunWriteResult {
-  return { outcome: 'stale', current };
-}
-
-export type QueueMutationRejectReason =
-  | 'unknown-queue-id'
-  | 'position-out-of-range'
-  | 'task-cap-reached'
-  | 'task-not-found'
-  | 'task-not-in-pending-state'
-  // FR-R3-153 — the closed task-transition rejection vocabulary
-  // `decideTaskTransition` returns. See
-  // `src/queue/task-transition-decision.ts` and
-  // `specs/192-task-transitions-deletion-consent/data-model.md`.
-  // FR-R3-161 (T058) — `'queue-mismatch'` left here; record in that file.
-  | 'illegal-source-status'
-  | 'in-flight-ownership-conflict'
-  | 'phase-not-found'
-  | 'phase-already-removed'
-  | 'cannot-delete-default-queue'
-  | 'invalid-global-concurrency-cap'
-  // FR-R3-055 (H-06) — the mutator's execution fence is no longer the live
-  // generation for that resource, so its state mutation is refused AT THE COMMIT
-  // POINT rather than believed because admission once said yes.
-  | 'fence-superseded'
-  // The two refusals `fence-superseded` used to absorb; see `checkCommitFence`
-  // in `ownership-claim.ts` for why each is its own answer.
-  | 'fence-unverifiable'
-  | 'fence-wrong-resource'
-  // FR-R4-F01 (FR-001) — this window LOST its claim on the queue and knows it.
-  // Refused before any read of the ownership record, which is what separates it
-  // from `fence-superseded` (a loss the commit point discovers by reading).
-  | 'ownership-lost'
-  // FR-R4-F01 (FR-009) — `updateRun` refusals. The queue's current Run is not the
-  // one the update names (or there is none, and an update never recreates one),
-  // or its status is outside what the writer allows.
-  | 'stale-run-id'
-  | 'run-status-precondition';
-
-export class QueueMutationRejected extends Error {
-  public readonly reason: QueueMutationRejectReason;
-
-  constructor(reason: QueueMutationRejectReason, message: string) {
-    super(message);
-    this.name = 'QueueMutationRejected';
-    this.reason = reason;
-  }
-}
-
-// FR-R5-F09 (F-35, NU-02) — the write deadline and its quarantine error live with the gate that
-// enforces them (review gap GC-04); re-exported so their importers keep one import site.
-export {
-  MEMENTO_WRITE_DEADLINE_MS,
-  StorageWriteQuarantinedError,
-  type MementoBatchEntry,
-  type StorageWriteFailureReason
-} from './memento-write-gate';
-import type { MementoBatchEntry } from './memento-write-gate';
-
-/**
- * FR-R5-F09 (NU-03) — maximum number of deleted-queue history partitions retained in
- * `KEYS.history` alongside live queues' partitions.
- */
-export const MAX_DELETED_HISTORY_PARTITIONS = MAX_QUEUES;
-
-/**
- * FR-R4-F01 — an `updateRun` refusal that is only a race with another writer: the
- * queue's Run was replaced or removed (`stale-run-id`), or is no longer in a status
- * the writer acts on (`run-status-precondition`). Nothing was written, and for a
- * background writer there is nothing left to do. A lost claim or a fence refusal is
- * not one of these.
- */
-export function isRunRaceRefusal(error: unknown): error is QueueMutationRejected {
-  return (
-    error instanceof QueueMutationRejected &&
-    (error.reason === 'stale-run-id' || error.reason === 'run-status-precondition')
+function ensureExtendedQueueShape(persisted: QueueState): QueueState {
+  const requests = Array.isArray(persisted.requests)
+    ? persisted.requests.map((r) => ensureExtendedFeatureRequest(r as FeatureRequest))
+    : [];
+  const normalizedRequests = compactRequestPositions(requests);
+  const paused = persisted.paused ?? false;
+  const inFlightId = persisted.inFlightId ?? null;
+  const persistedLifecycle = (persisted as QueueState).queueLifecycle;
+  const queueLifecycle =
+    persistedLifecycle ??
+    deriveLifecycleFromLegacyShape(paused, inFlightId, normalizedRequests.length);
+  const scheduledStartAt = (persisted as QueueState).scheduledStartAt ?? null;
+  const scheduledStartSource = coerceRetiredStartSource(
+    (persisted as QueueState).scheduledStartSource ?? null
   );
+  const migrationNotice = (persisted as QueueState).migrationNotice;
+  const pauseSource = normalizePauseSource(persisted, queueLifecycle, paused);
+  return {
+    inFlightId,
+    updatedAt: persisted.updatedAt ?? Date.now(),
+    requests: normalizedRequests,
+    queueLifecycle,
+    pauseSource,
+    pausedReason: pauseSource === null ? null : persisted.pausedReason ?? null,
+    scheduledStartAt: queueLifecycle === 'idle-pending' ? scheduledStartAt : null,
+    scheduledStartSource: queueLifecycle === 'idle-pending' ? scheduledStartSource : null,
+    ...(migrationNotice ? { migrationNotice } : {}),
+    ...(persisted.failurePolicy !== undefined ? { failurePolicy: persisted.failurePolicy } : {})
+  };
 }
 
-/**
- * Upper bound for `WorkflowRun.delayedRetryCount` accepted by the
- * persisted-state invariant. The live cap is `DELAYED_RETRY_CAP` (5),
- * matching the current `retry.maxAttempts.maximum` schema bound. The
- * ceiling stays at 20 to absorb records persisted under an earlier
- * schema that allowed `retry.maxAttempts` up to 20; the gap (5..20)
- * is intentional headroom, not a live operator surface.
- *
- * Tightening below the current setting is safe — the live cap is
- * already 5. Widening the ceiling ABOVE 20 is the only direction that
- * requires a forward state migration (the old schema's effective
- * accepted range was [0, 20]).
- */
-const DELAYED_RETRY_COUNT_PERSISTED_CEILING = 20;
-
-/**
- * Feature 011 — invariant guard for `WorkflowRun` writes.
- *
- *  - `pendingRetryAt` and `pendingRetryCause` MUST be both null or both
- *    non-null. (data-model.md §WorkflowRun)
- *  - `delayedRetryCount === DELAYED_RETRY_CAP` (5) implies `status` is
- *    `'paused'` or `'failed'`.
- *
- * Throws a typed error from the controller call site before the memento
- * write so split-state corruption is prevented locally.
- */
-/**
- * Feature 093 (T048) — the one rule for recognising a persisted terminal
- * transition intent, used both for a legacy single value and for each entry of
- * the keyed journal. A second copy would be free to disagree about what counts
- * as an intent, and the disagreement would surface as a transition that replays
- * on one path and is silently dropped on the other.
- */
-function asTerminalTransitionIntent(raw: unknown): TerminalTransitionIntent | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const intent = raw as Partial<TerminalTransitionIntent> & { description?: unknown };
-  if (
-    intent.schemaVersion !== 1 ||
-    intent.run === undefined ||
-    typeof intent.run !== 'object' ||
-    typeof (intent.run as WorkflowRun).id !== 'string' ||
-    typeof intent.createdAt !== 'number'
-  ) {
-    return null;
+function compactRequestPositions(requests: readonly FeatureRequest[]): FeatureRequest[] {
+  const buckets = new Map<string, FeatureRequest[]>();
+  for (const request of requests) {
+    const queueId = request.queueId || DEFAULT_QUEUE_ID;
+    const bucket = buckets.get(queueId) ?? [];
+    bucket.push({ ...request, queueId });
+    buckets.set(queueId, bucket);
   }
-  // FR-R3-071 — the journalled description is optional; a non-string value is
-  // dropped rather than coerced or grounds for rejecting the whole intent,
-  // which would strand a replayable transition over a corrupt convenience field.
-  if (intent.description !== undefined && typeof intent.description !== 'string') {
-    const { description: _dropped, ...rest } = intent;
-    return rest as TerminalTransitionIntent;
+  const positioned = new Map<string, FeatureRequest>();
+  for (const bucket of buckets.values()) {
+    bucket
+      .slice()
+      .sort((a, b) => a.position - b.position)
+      .forEach((request, position) => {
+        positioned.set(request.id, { ...request, position });
+      });
   }
-  return intent as TerminalTransitionIntent;
-}
-
-function assertRunStatusTransition(
-  previous: WorkflowRun,
-  targetStatus: WorkflowRun['status'],
-  actor: RunTransitionActor
-): void {
-  const decision = decideRunTransition({
-    current: previous,
-    targetStatus,
-    actor
-  });
-  if (!decision.allowed) {
-    throw new RunTransitionError(decision.from, decision.to, decision.actor, decision.reasonCode);
-  }
-}
-
-function validateRunInvariants(run: WorkflowRun, previous: WorkflowRun | null = null): void {
-  if (
-    run.rawTranscriptMode !== undefined &&
-    run.rawTranscriptMode !== 'always' &&
-    run.rawTranscriptMode !== 'errors-only' &&
-    run.rawTranscriptMode !== 'off'
-  ) {
-    throw new RunFieldInvariantError(
-      'invalid-raw-transcript-mode',
-      'WorkflowRun invariant violation: invalid rawTranscriptMode'
-    );
-  }
-  const pendingAtSet = run.pendingRetryAt !== null;
-  const pendingCauseSet = run.pendingRetryCause !== null;
-  if (pendingAtSet !== pendingCauseSet) {
-    throw new RunFieldInvariantError(
-      'one-sided-pending-retry',
-      `WorkflowRun invariant violation: pendingRetryAt (${run.pendingRetryAt}) and pendingRetryCause (${run.pendingRetryCause}) must be both null or both non-null`
-    );
-  }
-  // FR-R5-F19 (FR-010) — a retry countdown sits on a paused Run only; stored legacy shapes are not refused.
-  assertPendingRetryShape(run, previous);
-  // When the cap is reached, the run must be paused or failed. Use >= to
-  // tolerate a dynamic cap that may have been lowered after the count
-  // was already persisted.
-  if (
-    run.delayedRetryCount >= DELAYED_RETRY_CAP &&
-    run.status !== 'paused' &&
-    run.status !== 'failed'
-  ) {
-    throw new RunFieldInvariantError(
-      'delayed-retry-cap-status',
-      `WorkflowRun invariant violation: delayedRetryCount >= ${DELAYED_RETRY_CAP} requires status 'paused' or 'failed' (got '${run.status}')`
-    );
-  }
-  if (
-    !Number.isFinite(run.delayedRetryCount) ||
-    run.delayedRetryCount < 0 ||
-    run.delayedRetryCount > DELAYED_RETRY_COUNT_PERSISTED_CEILING
-  ) {
-    throw new RunFieldInvariantError(
-      'delayed-retry-count-range',
-      `WorkflowRun invariant violation: delayedRetryCount must be in [0, ${DELAYED_RETRY_COUNT_PERSISTED_CEILING}] (got ${run.delayedRetryCount})`
-    );
-  }
-  // Feature 017 — both-null-or-both-non-null invariant on the manual pause pair.
-  // Feature 028 — invariant extended to accept `'breakpoint-paused'` as a valid cause.
-  const manualAtSet = run.manualPauseAt !== null;
-  const manualCauseSet = run.manualPauseCause !== null;
-  if (manualAtSet !== manualCauseSet) {
-    throw new RunFieldInvariantError(
-      'one-sided-manual-pause',
-      `WorkflowRun invariant violation: manualPauseAt (${run.manualPauseAt}) and manualPauseCause (${run.manualPauseCause}) must be both null or both non-null`
-    );
-  }
-  // FR-R4-F02 (data-model §3, hard rule 28) — a credit pause exists only on a Run paused for credits.
-  assertCreditPauseShape(run);
-  if (run.failureCause !== undefined && run.status !== 'failed') {
-    throw new RunFieldInvariantError(
-      'failure-cause-requires-failed',
-      `WorkflowRun invariant violation: failureCause requires status 'failed' (got '${run.status}')`
-    );
-  }
-  // Feature 028 — phaseBreakpoints + resumeTargetPhaseId invariants.
-  if (!Array.isArray(run.phaseBreakpoints)) {
-    throw new RunFieldInvariantError(
-      'invalid-phase-breakpoints',
-      `WorkflowRun invariant violation: phaseBreakpoints must be an array (got ${typeof run.phaseBreakpoints})`
-    );
-  }
-  const breakpointPhaseIds = new Set<string>();
-  const pipelinePhaseIds = run.pipeline
-    ? new Set<string>(run.pipeline.phases.map((p) => p.id))
-    : null;
-  const overrideIds = new Set<string>(run.phaseOverrides.map((o) => o.phaseId));
-  for (const bp of run.phaseBreakpoints) {
-    if (breakpointPhaseIds.has(bp.phaseId)) {
-      throw new RunFieldInvariantError(
-        'duplicate-phase-breakpoint',
-        `WorkflowRun invariant violation: phaseBreakpoints contains duplicate phaseId '${bp.phaseId}'`
-      );
-    }
-    breakpointPhaseIds.add(bp.phaseId);
-    if (pipelinePhaseIds !== null && !pipelinePhaseIds.has(bp.phaseId)) {
-      throw new RunFieldInvariantError(
-        'unknown-breakpoint-phase',
-        `WorkflowRun invariant violation: phaseBreakpoints phaseId '${bp.phaseId}' is not in pipeline.phases`
-      );
-    }
-    if (overrideIds.has(bp.phaseId)) {
-      throw new RunFieldInvariantError(
-        'breakpoint-override-conflict',
-        `WorkflowRun invariant violation: phaseId '${bp.phaseId}' appears in BOTH phaseBreakpoints AND phaseOverrides`
-      );
-    }
-  }
-  // resumeTargetPhaseId is non-null iff manualPauseCause === 'breakpoint-paused'.
-  const resumeTargetSet = run.resumeTargetPhaseId !== null;
-  const breakpointPaused = run.manualPauseCause === 'breakpoint-paused';
-  if (resumeTargetSet !== breakpointPaused) {
-    throw new RunFieldInvariantError(
-      'resume-target-phase-mismatch',
-      `WorkflowRun invariant violation: resumeTargetPhaseId (${run.resumeTargetPhaseId}) is non-null iff manualPauseCause === 'breakpoint-paused' (got '${run.manualPauseCause}')`
-    );
-  }
-}
-
-/**
- * The audit events the forward migration ladder produces.
- *
- * Derived from `InitializeResult` by omitting the fields the ladder does not
- * own, so adding a migration step means adding one field in one place. Declaring
- * a parallel interface would reintroduce, at the type level, exactly the
- * duplication `runForwardMigrations` removes at the call level.
- */
-export type ForwardMigrationEvents = Omit<
-  InitializeResult,
-  'migrated' | 'runRepairEvents'
->;
-
-/**
- * Did any step of the forward ladder actually produce events?
- *
- * Reads every field of the ladder's result rather than naming six of them, so a
- * seventh step is counted without editing this predicate. The version that stood
- * here spelled out six `.length > 0` checks; a step added without a seventh line
- * would have reported `migrated: false` on a workspace that had just been
- * migrated.
- */
-function anyForwardMigrationRan(events: ForwardMigrationEvents): boolean {
-  return Object.values(events).some((list) => list.length > 0);
-}
-
-export interface InitializeResult {
-  migrated: boolean;
-  // Feature 030 — emitted by the v5 → v6 migrator when it ran. Caller
-  // (extension.ts) forwards these through `appendAudit` after the
-  // `auditWriter` is constructed. Empty array when no migration occurred.
-  v6MigrationEvents: readonly StateMigratedV5ToV6AuditEvent[];
-  // Feature 065 — emitted by the v6 → v7 migrator when it ran. Same
-  // forwarding contract as `v6MigrationEvents` above.
-  v7MigrationEvents: readonly StateMigratedV6ToV7AuditEvent[];
-  // Feature 092 — emitted by the v9 → v10 migrator when it lifted the singular
-  // `QueueState` into the per-queue map. Same forwarding contract as
-  // `v6MigrationEvents` above; at most one event, and never on a fresh
-  // workspace (there is nothing to lift).
-  v10MigrationEvents: readonly StateMigratedV9ToV10AuditEvent[];
-  // Feature 093 — emitted by the v10 → v11 migrator when it reshaped the
-  // singular `WorkflowRun` record into the per-queue map, plus one event per
-  // repair it had to make on the way. Same forwarding contract as
-  // `v6MigrationEvents` above, and unlike `v10MigrationEvents` it is actually
-  // consumed — see the D2 wiring in `extension.ts`.
-  v11MigrationEvents: readonly RunStateMigrationAuditEvent[];
-  // FR-R3-010 — emitted by the v11 → v12 migrator when it partitioned the flat
-  // history array by queue, plus one summary event when entries could not be
-  // attributed. Same forwarding contract as `v11MigrationEvents` above.
-  v12MigrationEvents: readonly HistoryStateMigrationAuditEvent[];
-  // FR-R3-011 — emitted by the v12 → v13 pause collapse, plus one event per
-  // queue whose three representations disagreed. Same forwarding contract as
-  // `v12MigrationEvents` above.
-  //
-  // The divergence events are the durable record that replaces the retired
-  // reconciler's `logger.warn`. A warn line is neither durable nor
-  // correlatable, and an operator asking why a queue came back paused after an
-  // upgrade needs to see which representation said so.
-  v13MigrationEvents: readonly QueuePauseCollapseAuditEvent[];
-  // FR-R4-F01 (spec 239, US4, contract V2) — the verdict-basis step: one `verdict-basis-migrated`
-  // per Run whose legacy Phases were made explicit, and one `verdict-basis-provenance-unknown` per
-  // Run holding a Phase no production freeze could have written. In memory only, never persisted,
-  // and NOT audit events: the closed audit contract is unchanged. Activation discloses them.
-  v14MigrationEvents: readonly VerdictBasisMigrationEvent[];
-  // One per Run ended at load because its Task row was gone from every queue.
-  // Same forwarding contract as the migration events above, and it rides in the
-  // same result for the same reason — the store has no audit writer during
-  // `initialize()`. Not keyed on a schema shape, unlike its neighbours: see
-  // `reconcileOrphanedRunsIfNeeded()` for why it still runs from the ladder.
-  orphanedRunEvents: readonly OrphanedRunCanceledAuditEvent[];
-  // Feature 056 — emitted when persisted WorkflowRun snapshots are repaired.
-  runRepairEvents: readonly WorkflowRunRepairedAuditEvent[];
+  return requests.map((request) => positioned.get(request.id) ?? request);
 }
 
 export class WorkspaceStateStore {
-  /** FR-R3-111 — the quarantine, in its own module; see `state/run-quarantine.ts`. */
   private readonly runQuarantine = createRunQuarantine({
     read: () => this.memento.get<RunQuarantineEntry[]>(KEYS.runQuarantine) ?? [],
     write: (entries) => this.memento.update(KEYS.runQuarantine, entries),
@@ -976,38 +280,15 @@ export class WorkspaceStateStore {
   private readonly chains = new Map<string, Promise<void>>();
   private readonly listeners = new Set<StoreChangeListener>();
   private readonly logger: SanitizedLogger | null;
-  /** FR-R5-F09 / review gap GC-04 — the deadline-bounded writer and its quarantine. */
   private readonly writeGate: MementoWriteGate;
-  /** FR-R3-077 — bound at composition; see `bindRunClaimSource`. */
   private runClaimSource: RunClaimSource | null = null;
-  /** FR-R5-F08 — bound by `WorkspaceLockManager` when constructed. */
   private primacyClaimSource: PrimacyClaimSource | null = null;
-  /** One warn per queue, not one per commit: a stranded lease is not news twice. */
   private readonly unfencedQueuesWarned = new Set<string>();
-  /** FR-R3-146 — same rule for an unreadable Git-plan grant; see `getGitPlanGrants`. */
-  private readonly gitPlanGrantProblemsWarned = new Set<string>();
-  private readonly agentConfigGrantProblemsWarned = new Set<string>();
-  /** FR-R4-F08 — the dropped connected-run ids last named (`null`: none), so an unchanged set is named once. */
-  private connectedRunDropsWarned: string | null = null;
-  // Feature 092 (T056) retired the one-shot saturation-WARN guard that used to
-  // live here: the reader no longer saturates, so there is no silent coercion
-  // left to warn about.
-
-  // Feature FR-R3-003 (T295) — the compare-and-swap seam the two ownership
-  // leases acquire through. It is not a `KEYS` entry, because a `Memento` cannot
-  // answer the question either lease asks: `update` is unconditional and its
-  // cross-process visibility is undocumented, so two extension hosts reading
-  // this store's other keys would each elect themselves. Mutable because the
-  // store is constructed in activation stage 1, before a workspace folder is
-  // known, and the authoritative storage is rooted inside that folder.
+  private readonly grantsWarned = grantsFamily.createGrantsWarningState();
+  private readonly connectedRunsWarned = connectedFamily.createConnectedRunsWarningState();
   private ownershipRegistry: OwnershipRegistry;
-
-  /**
-   * FR-R4-F01 (FR-021, contract C3) — the timer a bounded ownership verify races against.
-   * Injectable so a test gives up on a never-answering verify without real time; the real timers
-   * otherwise, as `lock.ts` does for its own scheduler.
-   */
   private readonly scheduler: Scheduler;
+  private readonly familyContext: WorkspaceStateFamilyContext;
 
   constructor(memento: Memento, logger?: SanitizedLogger, scheduler: Scheduler = systemScheduler) {
     this.rawMemento = memento;
@@ -1022,63 +303,63 @@ export class WorkspaceStateStore {
       createMementoOwnershipFs(memento),
       MEMENTO_OWNERSHIP_DIR
     );
+    this.familyContext = {
+      supportsBatchWrite: this.rawMemento.updateBatch !== undefined,
+      memento: this.memento,
+      writeGate: this.writeGate,
+      logger: this.logger,
+      scheduler: this.scheduler,
+      runQuarantine: this.runQuarantine,
+      getOwnershipRegistry: () => this.ownershipRegistry,
+      getRunClaimSource: () => this.runClaimSource,
+      getPrimacyClaimSource: () => this.primacyClaimSource,
+      serialize: (key, op) => this.serialize(key, op),
+      serializeAcrossKeys: (keys, op) => this.serializeAcrossKeys(keys, op),
+      notify: (key) => this.notify(key),
+      runCommitClaim: (queueId) => this.runCommitClaim(queueId),
+      refuseIfClaimLost: (queueId) => this.refuseIfClaimLost(queueId),
+      verifyPrimacyForCommit: (label) => this.verifyPrimacyForCommit(label),
+      verifyQueueOwnershipForCommit: (queueId, label) =>
+        this.verifyQueueOwnershipForCommit(queueId, label),
+      refuseCommit: (failure, claim, queueId) => this.refuseCommit(failure, claim, queueId),
+      ensureExtendedQueueShape,
+      compactRequestPositions,
+      assertGlobalConcurrencyCap,
+      readQueueMap: () => queueFamily.readQueueMap(this.familyContext),
+      getQueue: (queueId) => queueFamily.getQueue(this.familyContext, queueId),
+      getQueueRegistry: () => queueFamily.getQueueRegistry(this.familyContext),
+      getRun: (queueId) => runsFamily.readRunForQueue(this.familyContext, queueId),
+      readHistoryMap: () => historyFamily.readHistoryMap(this.familyContext),
+      pruneExcessDeletedHistoryPartitions: (map, registeredIds) =>
+        historyFamily.pruneExcessDeletedHistoryPartitions(this.familyContext, map, registeredIds),
+      warnLoadRepairs: (warnings) => this.warnLoadRepairs(warnings),
+      getTerminalTransitionIntents: () =>
+        runsFamily.getTerminalTransitionIntents(this.familyContext),
+      migrationSteps: {
+        migrateV12ToV13IfNeeded: () => this.migrateV12ToV13IfNeeded(),
+        migrateVerdictBasisIfNeeded: () => this.migrateVerdictBasisIfNeeded(),
+        migrateCreditPauseIfNeeded: () => this.migrateCreditPauseIfNeeded(),
+        reconcileOrphanedRunsIfNeeded: () => this.reconcileOrphanedRunsIfNeeded()
+      }
+    };
   }
 
   public isWriterQuarantined(): boolean {
     return this.writeGate.isQuarantined();
   }
 
-  /**
-   * The registry both leases arbitrate through. Read at call time rather than
-   * captured, so a manager built before `useOwnershipStorage()` still lands on
-   * the authoritative storage.
-   */
   public get ownership(): OwnershipRegistry {
     return this.ownershipRegistry;
   }
 
-  /**
-   * Point ownership arbitration at storage two extension hosts can both see.
-   *
-   * Called once, from activation stage 2, with `<workspaceRoot>/.schegent/ownership`
-   * — the earliest point at which the workspace root is known. Until then the
-   * store falls back to a `Memento`-backed adapter, which is correct for a single
-   * host and is the reason this call is not optional in production;
-   * `tests/lint/ownership-registry-wiring.test.ts` pins it.
-   */
   public useOwnershipStorage(fs: OwnershipFs, dir: string): void {
     this.ownershipRegistry = new OwnershipRegistry(fs, dir);
   }
 
-  /**
-   * Feature FR-R3-003 (T302) — is this claim still good?
-   *
-   * The store's own view of a fencing token, so a caller asking "am I still the
-   * holder" does not reach past it into the registry. `rejected` carries the
-   * generation that superseded the claim and the owner of record, because a
-   * caller that has just been told it is not the holder is entitled to know who
-   * is — that is the half of the acceptance criterion the token exists for.
-   */
   public verifyClaim(claim: OwnershipClaim): Promise<FenceCheck> {
     return this.ownershipRegistry.verify(claim.resource, claim.ownerId, claim.fence);
   }
 
-  /**
-   * FR-R3-077 (T1038) — where a commit point gets the claim it is now required to
-   * carry.
-   *
-   * Bound once, at composition, by whoever owns the per-queue execution leases.
-   * The alternative considered and rejected was threading a lease manager through
-   * every service that writes a Run: `PhaseControlService` takes a `Pick<>` of the
-   * store and nothing else, and widening a dozen constructors is a large diff that
-   * changes nothing about *which* commits are fenced.
-   *
-   * What is NOT delegated is the choice. `setRun` takes `RunCommitClaim`, so every
-   * call site still says either "fence me against the lease I hold"
-   * (`store.runCommitClaim(queueId)`) or "I hold none, and here is why"
-   * (`unfencedCommit(reason)`), and the two are distinguishable in a diff and
-   * countable by `tests/unit/state/unfenced-commit-inventory.test.ts`.
-   */
   public bindRunClaimSource(source: RunClaimSource): void {
     this.runClaimSource = source;
   }
@@ -1091,23 +372,6 @@ export class WorkspaceStateStore {
     return this.primacyClaimSource?.canCommitConnectedRun() ?? Promise.resolve(true);
   }
 
-  /**
-   * The commit claim for `queueId`: this window's live lease claim when it holds
-   * one, and an observable unfenced commit when it does not.
-   *
-   * `lease-not-held` is the one reason produced here rather than written at a call
-   * site, and it is the honest answer to a real case: a Run's terminal transition
-   * releases its queue's lease, and a late write after that release has no claim
-   * to carry. Refusing it would strand the record; passing it silently is what
-   * this item exists to stop. So it is passed, warned once per queue, and the
-   * inventory test pins this file as the ONLY place the reason may appear.
-   *
-   * FR-R4-F01 (FR-001) — `lease-not-held` is for a window that gave the queue back
-   * or never held it. A window that LOST it is a different case, and the one this
-   * method used to launder: the lost claim read as "none", the write went through
-   * unfenced, and the loser overwrote the winner. It now throws `ownership-lost`
-   * before any I/O.
-   */
   public runCommitClaim(queueId: string): RunCommitClaim {
     this.refuseIfClaimLost(queueId);
     const claim = this.runClaimSource?.claimFor(queueId) ?? null;
@@ -1121,11 +385,6 @@ export class WorkspaceStateStore {
     return unfencedCommit('lease-not-held');
   }
 
-  /**
-   * FR-R4-F01 (FR-001) — throw `ownership-lost` when this window knows it lost
-   * `queueId`. Synchronous and read-free: it consults the claim source's memory,
-   * not the ownership record, so it also runs before any I/O of a commit.
-   */
   private refuseIfClaimLost(queueId: string): void {
     if (this.runClaimSource?.tenureOf?.(queueId).state !== 'lost') return;
     throw new QueueMutationRejected(
@@ -1135,7 +394,10 @@ export class WorkspaceStateStore {
   }
 
   private async verifyPrimacyForCommit(label: string): Promise<void> {
-    if (this.primacyClaimSource !== null && !(await this.primacyClaimSource.canCommitConnectedRun())) {
+    if (
+      this.primacyClaimSource !== null &&
+      !(await this.primacyClaimSource.canCommitConnectedRun())
+    ) {
       throw new QueueMutationRejected(
         'ownership-lost',
         `${label} mutation refused: this window does not hold workspace primacy`
@@ -1161,16 +423,6 @@ export class WorkspaceStateStore {
     }
   }
 
-  /**
-   * FR-R4-F01 (contract C2 G8) — refuse a fenced commit, and tell the claim source
-   * when the refusal is the first it has heard of the loss.
-   *
-   * `fence-superseded` is a loss the commit point found by reading the record
-   * before the heartbeat did. Marking the tenure lost here is what turns every
-   * LATER commit into `ownership-lost` without another read. Only the tenure the
-   * refused claim belongs to is marked: a straggler carrying an earlier
-   * generation must not condemn a newer claim the window has since acquired.
-   */
   private refuseCommit(
     failure: CommitFenceFailure,
     claim: OwnershipClaim,
@@ -1185,79 +437,10 @@ export class WorkspaceStateStore {
     throw new QueueMutationRejected(failure.reason, failure.message);
   }
 
-  /**
-   * FR-R3-003 (T302) → FR-R3-077 (T1041) — the advisory lock mirror, refreshed
-   * under a claim that reaches the write.
-   *
-   * This replaces `writeGuarded(claim, write)`, which is **deleted**. That
-   * helper verified the claim and then awaited a callback: two operations, with
-   * a reclaim able to land between them, behind a name that promised atomicity.
-   * The 2026-08-24 review found it had exactly one production caller — this
-   * one, guarding the advisory `KEYS.lock` mirror — so the exposure was narrow
-   * and the shape was the problem: a working helper of that shape is a working
-   * template for reintroducing the defect this round exists to remove. That is
-   * the same reasoning that deleted `withLock`, and it is recorded in AGENTS.md
-   * under the lock-release rule.
-   *
-   * What replaces it is not a general-purpose wrapper. It is one method for one
-   * write, with the verify INSIDE the `KEYS.lock` serialize chain that performs
-   * the mirror update — one link, the same shape `setRun` uses, and as close to
-   * a conditional write as `Memento` allows.
-   *
-   * `unavailable` and `rejected` stay distinct for the reason they always did: a
-   * failed read says nothing about who holds the resource, and a caller that
-   * conflates them surrenders a live claim on a transient error.
-   */
-  public async refreshLockMirrorGuarded(
-    claim: OwnershipClaim,
-    mirror: WorkspaceLock,
-    options: { readonly refreshHeartbeatAt?: number } = {}
-  ): Promise<GuardedWriteOutcome> {
-    let outcome: GuardedWriteOutcome = { outcome: 'unavailable' } as GuardedWriteOutcome;
-    await this.serialize(KEYS.lock, async () => {
-      const verdict =
-        options.refreshHeartbeatAt === undefined
-          ? // FR-R4-F01 (FR-021): bounded, like every other verify on a commit path. The
-            // heartbeat arm below is a WRITE and is not raced (FR-023).
-            await verifyWithin(
-              this.ownershipRegistry,
-              claim.resource,
-              claim.ownerId,
-              claim.fence,
-              OWNERSHIP_VERIFY_DEADLINE_MS,
-              this.scheduler
-            )
-          : await this.ownershipRegistry.heartbeat(
-              claim.resource,
-              claim.ownerId,
-              claim.fence,
-              options.refreshHeartbeatAt
-            );
-      if (verdict.outcome === 'unavailable') {
-        outcome = { outcome: 'unavailable' };
-        return;
-      }
-      if (verdict.outcome === 'rejected') {
-        outcome = {
-          outcome: 'rejected',
-          reason: verdict.reason,
-          currentFence: verdict.currentFence,
-          ownerOfRecord: verdict.ownerOfRecord
-        };
-        return;
-      }
-      try {
-        await this.memento.update(KEYS.lock, mirror);
-        outcome = { outcome: 'written' };
-      } catch {
-        // The claim was good and the write was not. Reported as `unavailable`
-        // for the same reason a failed read is: it says nothing about who holds
-        // the resource, and a caller must not read it as having lost one.
-        outcome = { outcome: 'unavailable' };
-      }
-    });
-    if (outcome.outcome === 'written') this.notify(KEYS.lock);
-    return outcome;
+  private warnLoadRepairs(warnings: readonly LoadRepairWarning[]): void {
+    for (const warning of warnings) {
+      this.logger?.warn('run record repaired on load', { reasonCode: warning.reasonCode });
+    }
   }
 
   public subscribe(listener: StoreChangeListener): Disposable {
@@ -1279,2634 +462,414 @@ export class WorkspaceStateStore {
     }
   }
 
-  /**
-   * Whether the legacy `WorkflowRun` forward-migrator has anything to do.
-   *
-   * A record persisted at v8 already carries every field the runtime expects,
-   * so running `migrateLegacyRun()` over it would rewrite it — adding a
-   * `mutationPlan` fingerprint it never had — for no reason. Feature 088's
-   * v8 → v9 step touches only the new `schegent.connectedRuns` key and MUST
-   * leave existing `WorkflowRun` records byte-identical (FR-007), so the gate
-   * is the persisted version rather than "the numeric version moved at all".
-   * Every earlier version still migrates exactly as before.
-   */
-  private static needsLegacyRunMigration(persistedNumeric: number | undefined): boolean {
-    return typeof persistedNumeric !== 'number' || persistedNumeric < STATE_SCHEMA_VERSION_V8;
+  // ── Migrations ────────────────────────────────────────────────────────────────
+
+  public initialize(): Promise<InitializeResult> {
+    return migrationsFamily.initializeWorkspaceState(this.familyContext);
   }
 
-  public async initialize(): Promise<InitializeResult> {
-    const persistedNumeric = this.memento.get<number>(KEYS.schemaVersionNumeric);
-    const rawRegistryBeforeInit = this.memento.get<unknown>(KEYS.queueRegistry);
-    const hadPersistedRegistry = rawRegistryBeforeInit !== undefined && rawRegistryBeforeInit !== null;
-    // Feature 093 (T014, defect D3) — the forward-only refusal of FR-007, which
-    // used to be an inline copy of the check `assertPersistedVersionSupported`
-    // already made. Delegating rather than duplicating is what keeps the two
-    // from drifting: the copy that was called had the right constant and the
-    // copy that had a test had the wrong one, and nothing in the build could
-    // notice, because each was correct on its own terms.
-    assertPersistedVersionSupported(persistedNumeric);
-    const persistedVersion = this.memento.get<string>(KEYS.schemaVersion);
-    if (!persistedVersion) {
-      const runRepairEvents = await this.normalizeRunForInitialize(
-        WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
-      );
-      const migrationEvents = await this.runForwardMigrations(persistedNumeric, hadPersistedRegistry);
-      await this.stampVersion(true);
-      return {
-        migrated: true,
-        ...migrationEvents,
-        runRepairEvents
-      };
-    }
-    if (persistedVersion === SCHEMA_VERSION) {
-      if (persistedNumeric !== STATE_SCHEMA_VERSION) {
-        // Numeric schema bump only (additive fields) — apply forward
-        // migrator so legacy `WorkflowRun` records gain the new fields.
-        const runRepairEvents = await this.normalizeRunForInitialize(
-          WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
-        );
-        const migrationEvents = await this.runForwardMigrations(persistedNumeric, hadPersistedRegistry);
-        await this.stampVersion(false);
-        return {
-          migrated: true,
-          ...migrationEvents,
-          runRepairEvents
-        };
-      }
-      const runRepairEvents = await this.normalizeRunForInitialize(false);
-      const migrationEvents = await this.runForwardMigrations(persistedNumeric, hadPersistedRegistry);
-      return {
-        migrated: anyForwardMigrationRan(migrationEvents) || runRepairEvents.length > 0,
-        ...migrationEvents,
-        runRepairEvents
-      };
-    }
-    const [persistedMajor] = persistedVersion.split('.');
-    const [runtimeMajor] = SCHEMA_VERSION.split('.');
-    if (persistedMajor === runtimeMajor) {
-      const runRepairEvents = await this.normalizeRunForInitialize(
-        WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
-      );
-      const migrationEvents = await this.runForwardMigrations(persistedNumeric, hadPersistedRegistry);
-      await this.stampVersion(true);
-      return {
-        migrated: true,
-        ...migrationEvents,
-        runRepairEvents
-      };
-    }
-    throw new Error(
-      `Schegent state version ${persistedVersion} is incompatible with runtime ${SCHEMA_VERSION}. Run "Schegent: Reset Workspace State" to clear.`
-    );
+  private migrateV12ToV13IfNeeded() {
+    return migrationsFamily.migrateV12ToV13IfNeeded(this.familyContext);
   }
 
-  /**
-   * Record the runtime schema version — **after** the migration chain, never
-   * before it.
-   *
-   * Feature 093 (FR-002a) moved this. The version keys and the records the
-   * migrators reshape are separate memento keys with separate writes, so
-   * stamping first meant a migration that threw left a workspace claiming a
-   * version whose shape it did not have. Stamping last makes the failure
-   * legible instead: the persisted version stays where it was, in the shape it
-   * had, and the next open re-runs the whole chain. Every migrator in that
-   * chain is idempotent, which is what makes re-running it the recovery path —
-   * forward-only leaves no other one.
-   *
-   * The success path is unchanged: the same two keys reach the same two values
-   * in the same order.
-   */
-  private async stampVersion(includeVersionString: boolean): Promise<void> {
-    if (includeVersionString) {
-      await this.memento.update(KEYS.schemaVersion, SCHEMA_VERSION);
-    }
-    await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
+  private migrateVerdictBasisIfNeeded() {
+    return migrationsFamily.migrateVerdictBasisIfNeeded(this.familyContext);
   }
 
-  /**
-   * Feature 092 — the pre-v10 migration chain, read through one seam.
-   *
-   * Every migrator numbered below v10 was written when `KEYS.queue` held a
-   * single `QueueState`, and each of them concerns exactly that one queue.
-   * After the v10 lift the key holds a map, so those readers would otherwise
-   * be handed a `Record` and try to migrate it as though it were a queue.
-   *
-   * The reserved queue is the right subject in both shapes: no non-default
-   * queue can exist at v9 or earlier, so the entry the lift produced under
-   * `DEFAULT_QUEUE_ID` *is* the record those migrators were written against.
-   * Reading through here keeps them byte-for-byte correct on a genuine v9
-   * record and idempotent on a lifted one.
-   */
-  private readLegacySingularQueue(): QueueState | null {
-    const raw = this.memento.get<unknown>(KEYS.queue);
-    if (raw === undefined || raw === null) return null;
-    if (Array.isArray((raw as QueueState).requests)) return raw as QueueState;
-    if (typeof raw === 'object') {
-      return (raw as QueueStateMap)[DEFAULT_QUEUE_ID] ?? null;
-    }
-    return null;
+  private migrateCreditPauseIfNeeded() {
+    return migrationsFamily.migrateCreditPauseIfNeeded(this.familyContext);
   }
 
-  /** The write half of `readLegacySingularQueue()`; preserves the stored shape. */
-  private writeLegacySingularQueue(next: QueueState): Thenable<void> {
-    const raw = this.memento.get<unknown>(KEYS.queue);
-    const isMap =
-      raw !== undefined
-      && raw !== null
-      && typeof raw === 'object'
-      && !Array.isArray((raw as QueueState).requests);
-    if (!isMap) return this.memento.update(KEYS.queue, next);
-    return this.memento.update(KEYS.queue, { ...(raw as QueueStateMap), [DEFAULT_QUEUE_ID]: next });
+  private reconcileOrphanedRunsIfNeeded() {
+    return migrationsFamily.reconcileOrphanedRunsIfNeeded(this.familyContext);
   }
 
-  /**
-   * Feature 092 (FR-001, FR-005) — the v9 → v10 forward migration.
-   *
-   * Runs *after* the v5 → v6 and v6 → v7 chains so each of those still sees
-   * the singular record it was written against, and it is the last step that
-   * changes the shape of `KEYS.queue`. Idempotent: a record already in map
-   * shape returns no events and is written back only if a per-entry lockstep
-   * repair was needed.
-   */
-  /**
-   * FR-R3-039 — the forward migration ladder, in one place.
-   *
-   * These seven steps were written out in full at four separate points in
-   * `initialize()`, once per version branch: the same calls, in the same order,
-   * four times. That is the maintainability defect the round-3 review was
-   * pointing at, though not where it looked — it described eight
-   * `migrateVnToVn+1` methods living in this class, and those were extracted
-   * into `queue-state-migrator.ts`, `run-state-migrator.ts`,
-   * `history-state-migrator.ts` and their siblings some time ago. What was left
-   * here is the orchestration, and the orchestration was duplicated.
-   *
-   * Duplicated in a way with teeth: adding a v13 → v14 step meant editing four
-   * places, and missing one left a branch that silently skipped a migration for
-   * whichever workspaces took it. Order is load-bearing here — each step's
-   * doc comment explains what it must run after and why — and an order stated
-   * four times is an order that can disagree with itself.
-   *
-   * The steps themselves are unchanged and still run against `this.memento`.
-   * This is a single definition of the sequence, not a new abstraction over it.
-   */
-  private async runForwardMigrations(
-    persistedNumeric: number | undefined,
-    hadPersistedRegistry = false
-  ): Promise<ForwardMigrationEvents> {
-    // Derived from InitializeResult rather than declared beside it: a parallel
-    // shape would be a second thing to update when a step is added, which is the
-    // duplication this method exists to remove.
-    await this.migrateQueueRegistryIfNeeded();
-    const throughVerdictBasis = {
-      v6MigrationEvents: await this.migrateV5ToV6IfNeeded(persistedNumeric),
-      v7MigrationEvents: await this.migrateV6ToV7IfNeeded(persistedNumeric),
-      v10MigrationEvents: await this.migrateV9ToV10IfNeeded(),
-      v11MigrationEvents: await this.migrateV10ToV11IfNeeded(),
-      v12MigrationEvents: await this.migrateV11ToV12IfNeeded(),
-      v13MigrationEvents: await this.migrateV12ToV13IfNeeded(),
-      v14MigrationEvents: await this.migrateVerdictBasisIfNeeded()
-    };
-    // FR-R4-F02 — the v15 step reports no events (it writes a default, it decides nothing), so it
-    // sits between the two steps that do rather than inside the literal.
-    await this.migrateCreditPauseIfNeeded();
-    const orphanedRunEvents = await this.reconcileOrphanedRunsIfNeeded();
-    if (hadPersistedRegistry) {
-      await this.reconcileDeletedQueueResidueIfNeeded();
-    }
-    return {
-      ...throughVerdictBasis,
-      orphanedRunEvents
-    };
-  }
+  // ── Queue & Registry ──────────────────────────────────────────────────────────
 
-  /**
-   * FR-R5-F09 (F-32, NF-05, NU-03) — reconcile deleted-queue residue on reload when
-   * `KEYS.queueRegistry` was persisted.
-   *
-   * 1. If an earlier `deleteQueueIfNoLiveRun` updated `KEYS.queueRegistry` and failed before
-   *    updating `KEYS.queue`, removes the orphaned `KEYS.queue[queueId]` entry so the deleted
-   *    queue is never resurrected and leaves no orphaned queue state.
-   * 2. Prunes any terminal `KEYS.run[queueId]` entry whose `queueId` is absent from
-   *    `KEYS.queueRegistry` (while `deleteQueueIfNoLiveRun` itself writes no Run per hard rule 58).
-   * 3. Bounds deleted-queue `KEYS.history` partitions at `MAX_DELETED_HISTORY_PARTITIONS`.
-   */
-  private async reconcileDeletedQueueResidueIfNeeded(): Promise<void> {
-    const registeredIds = new Set(this.getQueueRegistry().entries.map((entry) => entry.id));
-    const rawQueues = this.memento.get<unknown>(KEYS.queue);
-    if (
-      rawQueues !== undefined &&
-      rawQueues !== null &&
-      typeof rawQueues === 'object' &&
-      !Array.isArray((rawQueues as QueueState).requests)
-    ) {
-      const nextQueues: QueueStateMap = {};
-      let queuesChanged = false;
-      for (const [queueId, state] of Object.entries(rawQueues as QueueStateMap)) {
-        if (registeredIds.has(queueId)) {
-          nextQueues[queueId] = state;
-        } else {
-          queuesChanged = true;
-        }
-      }
-      if (queuesChanged) {
-        await this.memento.update(KEYS.queue, nextQueues);
-      }
-    }
-
-    const rawRuns = this.memento.get<unknown>(KEYS.run);
-    if (isRunStateMap(rawRuns)) {
-      const nextRuns: RunStateMap = {};
-      let runsChanged = false;
-      for (const [queueId, run] of Object.entries(rawRuns)) {
-        const status = run.status as string;
-        const isTerminal =
-          status === 'completed' || status === 'failed' || status === 'canceled';
-        if (!registeredIds.has(queueId) && isTerminal) {
-          runsChanged = true;
-        } else {
-          nextRuns[queueId] = run;
-        }
-      }
-      if (runsChanged) {
-        await this.memento.update(KEYS.run, nextRuns);
-      }
-    }
-
-    const prunedHistory = this.pruneExcessDeletedHistoryPartitions(
-      this.readHistoryMap(),
-      registeredIds
-    );
-    if (prunedHistory !== null) {
-      await this.memento.update(KEYS.history, prunedHistory);
-    }
-  }
-
-  private pruneExcessDeletedHistoryPartitions(
-    map: PersistedHistoryMap,
-    registeredIds: ReadonlySet<string> = new Set(
-      this.getQueueRegistry().entries.map((entry) => entry.id)
-    )
-  ): PersistedHistoryMap | null {
-    const deletedKeys = Object.keys(map).filter(
-      (queueId) => queueId !== HISTORY_UNATTRIBUTED_QUEUE_ID && !registeredIds.has(queueId)
-    );
-    if (deletedKeys.length <= MAX_DELETED_HISTORY_PARTITIONS) return null;
-    const latestCompletedAt = (queueId: string): number => {
-      const entries = map[queueId] ?? [];
-      let maxTs = 0;
-      for (const item of entries) {
-        const parsed = Date.parse((item as { completedAt?: string }).completedAt ?? '');
-        if (Number.isFinite(parsed) && parsed > maxTs) maxTs = parsed;
-      }
-      return maxTs;
-    };
-    const sortedOldestFirst = deletedKeys
-      .slice()
-      .sort((a, b) => latestCompletedAt(a) - latestCompletedAt(b));
-    const toDrop = new Set(
-      sortedOldestFirst.slice(0, deletedKeys.length - MAX_DELETED_HISTORY_PARTITIONS)
-    );
-    const next: PersistedHistoryMap = {};
-    for (const [queueId, entries] of Object.entries(map)) {
-      if (!toDrop.has(queueId)) next[queueId] = entries;
-    }
-    return next;
-  }
-
-  /**
-   * FR-R4-F02 (contract W4 G12, G13; hard rule 7) — the v14 → v15 step: give every Run its
-   * `creditPause` default and an existing watchdog record its `lastPollOutcome`.
-   *
-   * Keyed on the shape of each record, like the steps above it, never on the persisted number: a
-   * workspace whose Run write landed and whose stamp did not is repaired by the next open, and a
-   * second pass finds nothing to do. Forward-only, and ordered after `migrateVerdictBasisIfNeeded()`
-   * (which makes the Phases explicit) and before the orphaned-Run reconcile (which must see the key
-   * the record now carries). One `update()` of each key, only when something changed; a throw
-   * escapes before `stampVersion`, so an interrupted pre-v15 workspace keeps its old number.
-   *
-   * The terminal-transition journal is left alone: an intent replays through `setRun`, which reads
-   * an absent `creditPause` as `null`.
-   */
-  private async migrateCreditPauseIfNeeded(): Promise<void> {
-    const { runs, watchdog } = migrateV14ToV15(
-      this.memento.get<unknown>(KEYS.run),
-      this.memento.get<unknown>(KEYS.watchdog)
-    );
-    if (runs !== null) await this.memento.update(KEYS.run, runs);
-    if (watchdog !== null) await this.memento.update(KEYS.watchdog, watchdog);
-  }
-
-  /**
-   * FR-R4-F01 (FR-016 to FR-019, decision D2, contract V2) — give every frozen Phase its verdict
-   * basis, by the shape of what it records, before the version is stamped.
-   *
-   * `migrateV13ToV14` was meant to do this, expected a `record.plans` array no key had, was never
-   * called and was removed (FR-R5-F09); a workspace stamped 14 kept Phases whose ABSENT
-   * `hostVerification` the runtime reads as the stricter default. The live path is this method,
-   * through `migrateRunVerdictBasis`. It reads the snapshots execution uses, in `KEYS.run` and the
-   * terminal-transition journal, keyed on the Phase's own fields like the steps above, so it also
-   * repairs a workspace an earlier v14 build stamped without migrating; a second pass does nothing.
-   *
-   * ORDER: after `migrateV12ToV13IfNeeded()` and the v10-to-v11 reshape, which make `KEYS.run` a
-   * map, and before the orphaned-Run reconcile, which must see the Phases already explicit. One
-   * `update()` of each key, only when something changed; a throw escapes before `stampVersion`, so
-   * an interrupted pre-v14 workspace keeps its old number and the next open re-attempts (FR-018).
-   */
-  private async migrateVerdictBasisIfNeeded(): Promise<readonly VerdictBasisMigrationEvent[]> {
-    const events: VerdictBasisMigrationEvent[] = [];
-    const raw = this.memento.get<unknown>(KEYS.run);
-    if (isRunStateMap(raw)) {
-      const next: RunStateMap = {};
-      let changed = false;
-      for (const [queueId, run] of Object.entries(raw)) {
-        const result = migrateRunVerdictBasis(run);
-        next[queueId] = result.run;
-        if (!result.changed) continue;
-        changed = true;
-        events.push(...verdictBasisEvents(run.id, queueId, result.counts));
-      }
-      if (changed) await this.memento.update(KEYS.run, next);
-    }
-    const journal: Record<string, TerminalTransitionIntent> = {
-      ...this.getTerminalTransitionIntents()
-    };
-    let journalChanged = false;
-    for (const [runId, intent] of Object.entries(journal)) {
-      const result = migrateRunVerdictBasis(intent.run);
-      if (!result.changed) continue;
-      journalChanged = true;
-      journal[runId] = { ...intent, run: result.run };
-      events.push(...verdictBasisEvents(intent.run.id, null, result.counts));
-    }
-    if (journalChanged) await this.memento.update(KEYS.terminalTransitionIntent, journal);
-    return events;
-  }
-
-  /**
-   * A standing invariant, not a version step: no non-terminal Run outlives the
-   * Task row that addresses it. Why the repair ENDS the Run rather than deleting
-   * it, and why it is a pure function, is in `orphaned-run-reconciler.ts`; what
-   * belongs here is why it runs from the ladder.
-   *
-   * Every step above is keyed on a shape and stops applying once that shape is
-   * gone. This one asks the same question on every open, forever, because the
-   * state it repairs is produced at runtime rather than by an old schema. The
-   * ladder is still where it belongs: it runs on every branch of `initialize()`,
-   * and its ORDER here is load-bearing — after `migrateV9ToV10IfNeeded()` so the
-   * registry is in map shape, and after `migrateV10ToV11IfNeeded()` so `KEYS.run`
-   * is a map rather than a bare Run. Earlier, it would read one or both keys in a
-   * shape it does not understand and conclude that every Task row is missing.
-   * That is also why it cannot live in `normalizeRunForInitialize()`, the other
-   * load-path site touching `KEYS.run`: as its own note says, that one runs
-   * before the registry is migrated, where queue membership is unanswerable.
-   *
-   * One `update()`, only when a Run actually changed, so a rejected write leaves
-   * the previous state for the next open to re-attempt.
-   */
-  private async reconcileOrphanedRunsIfNeeded(): Promise<
-    readonly OrphanedRunCanceledAuditEvent[]
-  > {
-    const raw = this.memento.get<unknown>(KEYS.run);
-    if (!isRunStateMap(raw)) return [];
-    const result = reconcileOrphanedRuns(
-      raw,
-      // `queueIdForPersistedTask` scans `requests` and nothing else, which is the
-      // right question: a dangling `inFlightId` is not a surviving reference to a
-      // Task — `queue-state-migrator.ts` drops a pointer naming no row on sight.
-      (taskId) => this.queueIdForPersistedTask(taskId) !== null,
-      Date.now()
-    );
-    if (!result.changed) return [];
-    await this.memento.update(KEYS.run, result.runs);
-    return result.events;
-  }
-
-  private async migrateV9ToV10IfNeeded(): Promise<readonly StateMigratedV9ToV10AuditEvent[]> {
-    const raw = this.memento.get<unknown>(KEYS.queue);
-    if (raw === undefined || raw === null) return [];
-    const result = migrateV9ToV10(raw, Date.now());
-    if (Object.keys(result.queueStates).length === 0) return [];
-    await this.memento.update(KEYS.queue, result.queueStates);
-    if (!result.migrated) return [];
-    return result.auditEvents;
-  }
-
-  /**
-   * Feature 093 (FR-002, FR-002a) — the v10 → v11 forward migration.
-   *
-   * Runs last in the chain, after `migrateV9ToV10IfNeeded()`, so the task →
-   * queue resolver below reads a `KEYS.queue` already in map shape. It owns
-   * **exactly one** `update()` and performs it only when the migrator reports a
-   * change. That is what makes the reshape all-or-nothing: `KEYS.run` is the
-   * only key it touches, so a rejected write leaves valid v10 state behind
-   * rather than a half-populated workspace, and the next open re-attempts.
-   * Forward-only means re-attempt is the whole recovery story — there is no
-   * rollback to a shape the runtime no longer reads.
-   *
-   * The step is keyed on the **shape** of the record and never on the persisted
-   * version number. The two live in separate memento keys with separate writes,
-   * so a workspace whose version key moved but whose record did not must still
-   * be repaired the next time it is opened; a version-gated step would skip it
-   * forever.
-   */
-  private async migrateV10ToV11IfNeeded(): Promise<readonly RunStateMigrationAuditEvent[]> {
-    const result = migrateV10ToV11(
-      this.memento.get<unknown>(KEYS.run),
-      (taskId) => this.queueIdForPersistedTask(taskId),
-      Date.now()
-    );
-    if (!result.changed) return [];
-    await this.memento.update(KEYS.run, result.runs);
-    return result.events;
-  }
-
-  /**
-   * FR-R3-010 (T406) — the v11 → v12 forward migration.
-   *
-   * Runs after `migrateV10ToV11IfNeeded()` for the same reason that one runs
-   * after the v9 → v10 lift: it shares the task → queue resolver, which reads a
-   * `KEYS.queue` the earlier step has already put in map shape. It owns exactly
-   * one `update()` and performs it only when the migrator reports a change, so
-   * `KEYS.history` is the only key it touches and a rejected write leaves valid
-   * v11 state behind for the next open to re-attempt.
-   *
-   * Keyed on the **shape** of the record, never on the persisted version
-   * number, on the same reasoning as its v11 sibling: the two live in separate
-   * memento keys with separate writes, so a workspace whose version key moved
-   * but whose record did not must still be repaired the next time it is opened.
-   */
-  private async migrateV11ToV12IfNeeded(): Promise<readonly HistoryStateMigrationAuditEvent[]> {
-    const result = migrateV11ToV12(
-      this.memento.get<unknown>(KEYS.history),
-      (taskId) => this.queueIdForPersistedTask(taskId),
-      Date.now()
-    );
-    if (!result.changed) return [];
-    await this.memento.update(KEYS.history, result.history);
-    return result.events;
-  }
-
-  /**
-   * The queue a persisted Task belongs to, or `null` when no queue holds it.
-   *
-   * `QueueManager.queueIdForTask()` answers the same question but falls back to
-   * `DEFAULT_QUEUE_ID`, which is the wrong shape here: the v11 migrator has to
-   * *distinguish* "belongs to the default queue" from "belongs to no queue at
-   * all", because only the second one reassigns and audits. It also runs before
-   * the queue manager exists, so the persisted record is the only thing to ask.
-   */
-  private queueIdForPersistedTask(taskId: string): string | null {
-    for (const [queueId, state] of Object.entries(this.readQueueMap())) {
-      if ((state?.requests ?? []).some((request) => request.id === taskId)) return queueId;
-    }
-    return null;
-  }
-
-  /**
-   * FR-R3-011 (T419/T420) — the v12 → v13 pause collapse.
-   *
-   * This method **replaces** `reconcileQueuePauseStateIfDivergent()`, the
-   * BUG-001 startup repair pass that used to sit here. That pass compared the
-   * legacy `QueueState.paused` mirror against `QueueRegistryEntry.state` and, on
-   * disagreement, re-derived `queueLifecycle` from `(inFlightId, registryPaused,
-   * pendingCount)` — which made it a fourth writer of the discriminator, free to
-   * overwrite a legitimately held `idle-pending` or `active-empty` on the
-   * strength of a disagreement between two fields that were not the
-   * discriminator. It is deleted rather than tightened: a repair pass is a
-   * repair for a state that should be unrepresentable, and after the collapse
-   * there is one persisted value, so there is nothing left to reconcile.
-   *
-   * Runs last in the chain, after `migrateV11ToV12IfNeeded()`, because it reads
-   * a `KEYS.queue` the v9 → v10 lift has already put in map shape. Keyed on the
-   * **shape** of the record, never on the persisted version number, on the same
-   * reasoning as its v11 and v12 siblings.
-   *
-   * Two writes, and the ordering is the guarantee. `KEYS.queue` carries the
-   * authoritative value and is written first; `KEYS.queueRegistry` only has the
-   * now-derived copy removed from it. A window lost between them leaves a
-   * registry holding inert leftovers that `projectQueueRegistry()` overwrites on
-   * every read — never a queue whose authority has been erased. The registry
-   * write is skipped entirely when nothing on it changed.
-   */
-  private async migrateV12ToV13IfNeeded(): Promise<readonly QueuePauseCollapseAuditEvent[]> {
-    const queueStates = this.readQueueMap();
-    const registry = this.memento.get<QueueRegistry>(KEYS.queueRegistry) ?? makeDefaultRegistry();
-    const result = migrateV12ToV13(queueStates, registry, Date.now());
-    if (!result.changed) return [];
-    await this.memento.update(KEYS.queue, result.queueStates);
-    if (JSON.stringify(result.registry) !== JSON.stringify(registry)) {
-      await this.memento.update(KEYS.queueRegistry, result.registry);
-      this.notify(KEYS.queueRegistry);
-    }
-    this.notify(KEYS.queue);
-    return result.auditEvents;
-  }
-
-  /**
-   * Feature 011 — STATE_SCHEMA_VERSION 1 → 2: fills the three new `WorkflowRun`
-   * fields on legacy records.
-   *
-   * Feature 093 (T020) made it shape-aware. It runs **before** the v10 → v11
-   * reshape, so on an unmigrated workspace the record is still a bare Run and
-   * on a migrated one it is the per-queue map; each is normalized and written
-   * back in the shape it arrived in.
-   *
-   * Lifting the bare record onto the default queue here instead would hand the
-   * v11 migrator a record already in v11 shape. It would report `changed:
-   * false`, skip the task → queue resolution that is the only thing able to
-   * place a Run on a non-default queue, and emit no reshape event — a Run
-   * silently moved to `default`, with no audit record saying so. The reverse
-   * order is not available either: this step is what coerces a retired legacy
-   * `status` into one the v11 migrator's shape predicate accepts, and running
-   * it second would have that migrator discard the Run as unreadable.
-   *
-   * On invariant RM-4, T020's task text proposed routing these writes through
-   * `setRun`. That is the wrong instrument here and the rule is closed a
-   * different way. `setRun` validates by **throwing**, and this method is the
-   * one path whose whole purpose is to accept a record the current runtime
-   * would refuse — a throw at initialize does not protect the operator, it
-   * bricks the workspace on exactly the record repair exists to fix. It also
-   * rejects unknown queue ids, which is not yet answerable: the queue registry
-   * has not been migrated at this point in the chain. Both writers of
-   * `KEYS.run` are nonetheless covered: `migrateLegacyRun` normalizes every
-   * invariant `validateRunInvariants` checks (both retry-pair halves, both
-   * manual-pause halves, the cap-implies-paused-or-failed relation, and
-   * `rawTranscriptMode`) by repair rather than refusal, and every write the
-   * running system makes goes through `setRun` and is validated there.
-   */
-  private async normalizeRunForInitialize(
-    applyLegacyMigration: boolean
-  ): Promise<readonly WorkflowRunRepairedAuditEvent[]> {
-    const raw = this.memento.get<unknown>(KEYS.run);
-    if (raw === undefined || raw === null) return [];
-
-    if (isRunStateMap(raw)) {
-      const events: WorkflowRunRepairedAuditEvent[] = [];
-      const next: RunStateMap = {};
-      const quarantined: Array<{ queueId: string; raw: unknown }> = [];
-      let changed = applyLegacyMigration;
-      for (const [queueId, persisted] of Object.entries(raw)) {
-        const migrated = applyLegacyMigration ? migrateLegacyRun(persisted) : persisted;
-        if (migrated === null) {
-          // FR-R3-111 (FR-112) — quarantined, not discarded. This branch is currently
-          // UNREACHABLE (`isRunStateMap` and `migrateLegacyRun` have mutually exclusive
-          // requirements); `tests/unit/state/run-record-quarantine.test.ts` explains why and
-          // asserts it, so a divergence in either predicate reports that this became live. The
-          // singular branch below is the one that was losing records.
-          changed = true;
-          quarantined.push({ queueId, raw: persisted });
-          continue;
-        }
-        const repair = repairRunOnLoad(migrated);
-        next[queueId] = repair.run;
-        if (repair.auditEvents.length > 0) {
-          events.push(...repair.auditEvents);
-          changed = true;
-        }
-        if (repair.warnings.length > 0) {
-          this.warnLoadRepairs(repair.warnings);
-          changed = true;
-        }
-      }
-      if (changed) await this.memento.update(KEYS.run, next);
-      // After the map write, so a quarantine failure cannot cost the records that DID parse.
-      if (quarantined.length > 0) await this.runQuarantine.capture(quarantined);
-      return events;
-    }
-
-    const migrated = applyLegacyMigration ? migrateLegacyRun(raw) : (raw as WorkflowRun);
-    if (migrated === null) {
-      // FR-R3-111 (FR-113) — this returned `[]` with no bookkeeping at all, not even the
-      // `changed` flag the map branch set. Silence was the defect, so it is fixed regardless of
-      // what the retention policy should be.
-      await this.runQuarantine.capture([{ queueId: DEFAULT_QUEUE_ID, raw }]);
-      return [];
-    }
-    const repair = repairRunOnLoad(migrated);
-    this.warnLoadRepairs(repair.warnings);
-    if (applyLegacyMigration || repair.auditEvents.length > 0 || repair.warnings.length > 0) {
-      await this.memento.update(KEYS.run, repair.run);
-    }
-    return repair.auditEvents;
-  }
-
-  /**
-   * FR-R4-F02 — one metadata-only warning per repair that has no audit event of its own. The entry
-   * is a reason code and nothing from the Run, so the line names neither a Run, a queue nor a
-   * path (hard rules 22 and 23).
-   */
-  private warnLoadRepairs(warnings: readonly LoadRepairWarning[]): void {
-    for (const warning of warnings) {
-      this.logger?.warn('run record repaired on load', { reasonCode: warning.reasonCode });
-    }
-  }
-
-  /**
-   * FR-R3-111 — quarantine events awaiting an audit writer.
-   *
-   * `initialize()` runs before the audit writer exists — the same reason the migration events use a
-   * forwarder — so these are buffered and drained here. Dropping them instead would restore the
-   * silence this item removed, one layer further out.
-   */
-  public drainRunQuarantineEvents(): ReadonlyArray<{
-    readonly eventType: 'run-record-quarantined';
-    readonly payload: RunRecordQuarantinedPayload;
-  }> {
-    return this.runQuarantine.drain();
-  }
-
-  /**
-   * FR-R4-F04 (FR-027; data-model §9) — the operator pseudonym record, as stored and unvalidated: the
-   * attribution decides whether it is usable. A read never writes, so the untrusted window may call it.
-   */
-  public readOperatorPseudonym(): unknown {
-    return this.memento.get<unknown>(KEYS.operatorPseudonym);
-  }
-
-  /** FR-R4-F04 — stores the pseudonym record. `STATE_SCHEMA_VERSION` is unchanged: the value carries its own version. */
-  public async writeOperatorPseudonym(value: { readonly version: 1; readonly pseudonym: string }): Promise<void> {
-    await this.memento.update(KEYS.operatorPseudonym, value);
-  }
-
-  private async migrateQueueRegistryIfNeeded(): Promise<void> {
-    const existingRegistry = this.memento.get<QueueRegistry>(KEYS.queueRegistry);
-    if (existingRegistry !== undefined && existingRegistry !== null) {
-      // FR-R3-011 (T423) — the feature-028 v4 → v5 `pauseSource` backfill used
-      // to write here. It is gone, and deliberately not replaced: `pauseSource`
-      // is no longer a field of a registry entry, so the backfill had no
-      // destination left, and persisting it anyway would re-add on every
-      // activation the mirror `migrateV12ToV13()` strips on every load — two
-      // writes per open, churning against each other forever.
-      //
-      // A legacy entry that still carries `state`/`pauseSource` is read by
-      // `legacyRegistryPause()` during the collapse, with the same
-      // `manually-paused` ⇒ `'operator'` defaulting feature 028 applied. The
-      // rule moved to the surviving representation; it was not dropped.
-      return;
-    }
-    const lifted = migrateLegacyQueueState(this.readLegacySingularQueue());
-    await this.memento.update(KEYS.queueRegistry, lifted.registry);
-    await this.writeLegacySingularQueue(lifted.queueState);
-    await this.memento.update(KEYS.queueDefaultId, lifted.defaultQueueId);
-    if (lifted.quarantine !== null) {
-      await this.memento.update(KEYS.queueMigrationQuarantine, lifted.quarantine);
-    }
-  }
-
-  // Feature 030 — v5 → v6 forward migration. Runs after v2→v3 lift and
-  // v4→v5 pauseSource backfill; before snapshot/watchdog. Returns audit
-  // events forwarded by the caller via `appendAudit`. Idempotent.
-  private async migrateV5ToV6IfNeeded(
-    persistedNumeric: number | undefined
-  ): Promise<readonly StateMigratedV5ToV6AuditEvent[]> {
-    const registry = this.memento.get<QueueRegistry>(KEYS.queueRegistry) ?? null;
-    const queueState = this.readLegacySingularQueue();
-    // Treat missing/legacy numeric version as v5 so the migration runs once
-    // on first activation after the schema bump. A persisted numeric >= 6
-    // skips (idempotent no-op).
-    const effectiveVersion = persistedNumeric !== undefined && persistedNumeric >= 6 ? 6 : 5;
-    const result = migrateV5ToV6(
-      { schemaVersion: effectiveVersion, queueRegistry: registry, queueState },
-      Date.now()
-    );
-    if (!result.migrated) {
-      return [];
-    }
-    // Feature 030 — fresh workspaces (no prior persisted numeric AND the
-    // lift produced a default-shaped registry/queueState above) reach this
-    // path because the migrator runs unconditionally on version<6. The v6
-    // shape IS the new default for fresh workspaces, so an audit event
-    // would be misleading. Skip emission when the migrator's output is
-    // structurally identical to a freshly minted default and no prior
-    // tasks were coalesced.
-    const isFreshWorkspace =
-      persistedNumeric === undefined &&
-      result.auditEvents.length === 1 &&
-      result.auditEvents[0].sourceQueueCount <= 1 &&
-      result.auditEvents[0].pendingTaskCount === 0 &&
-      result.auditEvents[0].inFlightTaskCount === 0 &&
-      result.auditEvents[0].inheritedPausedState === false;
-    if (isFreshWorkspace) {
-      // Still persist the migrated shape (idempotent on default) but emit
-      // no audit event.
-      await this.memento.update(KEYS.queueRegistry, result.state.queueRegistry);
-      await this.writeLegacySingularQueue(result.state.queueState);
-      await this.memento.update(KEYS.queueDefaultId, DEFAULT_QUEUE_ID);
-      return [];
-    }
-    // Persist the unified registry and queue state. Order matters: write
-    // the registry first so concurrent readers see a consistent shape.
-    await this.memento.update(KEYS.queueRegistry, result.state.queueRegistry);
-    await this.writeLegacySingularQueue(result.state.queueState);
-    await this.memento.update(KEYS.queueDefaultId, DEFAULT_QUEUE_ID);
-    // If a WorkflowRun is persisted, ensure its `queueId` is `'default'`.
-    // The WorkflowRun shape itself is unchanged; only the queueId field is
-    // rewritten so downstream code can rely on the single-queue invariant.
-    //
-    // Feature 093 (T020) — asked rather than cast. A workspace at v5 can only
-    // hold the bare Run this step corrects, but from v11 on the same key holds
-    // the per-queue map, and reading that as a `WorkflowRun` gives the right
-    // answer here for the wrong reason: `queueId` is absent because a map has
-    // no such field, not because the Run was already on the default queue.
-    const raw = this.memento.get<unknown>(KEYS.run);
-    if (isWorkflowRun(raw)) {
-      const runRecord = raw as unknown as { queueId?: string };
-      if (runRecord.queueId !== undefined && runRecord.queueId !== DEFAULT_QUEUE_ID) {
-        await this.memento.update(KEYS.run, { ...raw, queueId: DEFAULT_QUEUE_ID });
-      }
-    }
-    return result.auditEvents;
-  }
-
-  // Feature 065 — v6 → v7 forward migration. Runs after v5→v6 coalesce; before
-  // snapshot/watchdog reconciliation. Returns audit events forwarded by the
-  // caller via `appendAudit`. Idempotent: a v7-shape record returns no events.
-  private async migrateV6ToV7IfNeeded(
-    persistedNumeric: number | undefined
-  ): Promise<readonly StateMigratedV6ToV7AuditEvent[]> {
-    const queueState = this.readLegacySingularQueue();
-    // No persisted queue yet (fresh workspace) — nothing to migrate; the empty
-    // QueueState is already born in v7 shape via `getQueue()` and `setQueue()`.
-    if (queueState === null) return [];
-    // If the persisted numeric is already v7 AND the record carries the
-    // discriminator, idempotent no-op.
-    const alreadyV7 =
-      persistedNumeric === 7
-      && typeof (queueState as QueueState).queueLifecycle === 'string';
-    if (alreadyV7) return [];
-    const result = migrateV6ToV7(queueState, Date.now());
-    if (!result.migrated) return [];
-    // Fresh-workspace suppression: when there are no pending tasks AND no
-    // in-flight AND not paused, the derived lifecycle is `active-empty` and
-    // emitting an audit event would be misleading (matches the v5→v6
-    // fresh-workspace heuristic).
-    const isFreshWorkspace =
-      result.queueState.requests.length === 0
-      && result.queueState.inFlightId === null
-      && result.queueState.paused === false;
-    await this.writeLegacySingularQueue(result.queueState);
-    if (isFreshWorkspace) return [];
-    return result.auditEvents;
-  }
-
-  /**
-   * Feature 092 (FR-006) — the raw v10 record: one `QueueState` per queue,
-   * keyed by queue id.
-   *
-   * A v9 record (a bare `QueueState`) still reads correctly here. That is not
-   * a second migration path: `initialize()` owns the write, and this is the
-   * projection that keeps a read taken before that write — an early snapshot
-   * pass, a test that seeds the memento directly — from seeing a queue with no
-   * tasks in it. It writes nothing.
-   */
-  private readQueueMap(): QueueStateMap {
-    const raw = this.memento.get<unknown>(KEYS.queue);
-    if (raw === undefined || raw === null) return {};
-    if (Array.isArray((raw as QueueState).requests)) {
-      return { [DEFAULT_QUEUE_ID]: raw as QueueState };
-    }
-    if (typeof raw === 'object' && !Array.isArray(raw)) {
-      return raw as QueueStateMap;
-    }
-    return {};
-  }
-
-  private static bornEmptyQueue(): QueueState {
-    return {
-      requests: [],
-      inFlightId: null,
-      updatedAt: Date.now(),
-      queueLifecycle: 'active-empty',
-      pauseSource: null,
-      pausedReason: null,
-      scheduledStartAt: null,
-      scheduledStartSource: null
-    };
-  }
-
-  /**
-   * One queue's execution state. `queueId` is **required** (FR-R3-002, T281).
-   * It used to default to `DEFAULT_QUEUE_ID` "so every pre-092 caller keeps its
-   * meaning unchanged", and that is exactly how three production seams came to
-   * read the Default queue while believing they had read the caller's: a
-   * default parameter turns "the caller forgot" into "the caller meant Default",
-   * silently and at the wrong layer. Deleting the default makes
-   * `npm run typecheck` the exhaustive call-site worklist, the same mechanism
-   * feature 093 used when it deleted the ambient `getRun()`.
-   *
-   * An unknown id returns a born-empty `QueueState` and persists **nothing**
-   * (FR-007). Reading is not a way to create a queue — the registry is the
-   * only thing that decides which queues exist, and a read that fabricated an
-   * entry would let a typo'd id quietly become a real one.
-   */
   public getQueue(queueId: string): QueueState {
-    const persisted = this.readQueueMap()[queueId];
-    if (!persisted) return WorkspaceStateStore.bornEmptyQueue();
-    return ensureExtendedQueueShape(persisted);
+    return queueFamily.getQueue(this.familyContext, queueId);
   }
 
-  /** Every persisted queue's execution state, normalized. */
   public getQueueStates(): QueueStateMap {
-    const map = this.readQueueMap();
-    const out: QueueStateMap = {};
-    for (const [queueId, state] of Object.entries(map)) {
-      out[queueId] = ensureExtendedQueueShape(state);
-    }
-    return out;
+    return queueFamily.getQueueStates(this.familyContext);
   }
 
-  /** The ids that have persisted execution state. Not the registry. */
   public getQueueStateIds(): readonly string[] {
-    return Object.keys(this.readQueueMap());
+    return queueFamily.getQueueStateIds(this.familyContext);
   }
 
-  /** Whether `queueId` has persisted execution state, without creating any. */
   public hasQueueState(queueId: string): boolean {
-    return Object.prototype.hasOwnProperty.call(this.readQueueMap(), queueId);
+    return queueFamily.hasQueueState(this.familyContext, queueId);
   }
 
   /** @internal Full replacement seam for migrations and test setup only. */
   public setQueue(queue: QueueState, queueId: string = DEFAULT_QUEUE_ID): Promise<void> {
-    // Feature 065 — normalize via `ensureExtendedQueueShape` so a partial
-    // QueueState (legacy callers / tests using `as never`) is persisted in
-    // v7 shape (carries `queueLifecycle` + nullable `scheduledStart*`).
-    // Without this, the next initialize() re-runs the v6→v7 migrator and
-    // breaks idempotency.
-    const next = ensureExtendedQueueShape({
-      ...queue,
-      requests: compactRequestPositions(queue.requests),
-      updatedAt: Date.now()
-    });
-    return this.serialize(KEYS.queue, () =>
-      this.memento.update(KEYS.queue, { ...this.readQueueMap(), [queueId]: next })
-    ).then(() => {
-      this.notify(KEYS.queue);
-    });
+    return queueFamily.writeQueueState(this.familyContext, queue, queueId);
   }
 
-  // Production deletion is `deleteQueueIfNoLiveRun`: one commit, nothing written while a Run lives.
   /** @internal Drop one queue's execution state unconditionally; no production path calls it. */
   public deleteQueueState(queueId: string): Promise<void> {
-    return this.serialize(KEYS.queue, () => {
-      const map = { ...this.readQueueMap() };
-      delete map[queueId];
-      return this.memento.update(KEYS.queue, map);
-    }).then(() => {
-      this.notify(KEYS.queue);
-    });
+    return queueFamily.deleteQueueState(this.familyContext, queueId);
   }
 
-  /**
-   * The only safe read/modify/write boundary for queue state. The current
-   * value is read after this mutation reaches the head of the queue chain,
-   * preventing callers from committing a snapshot captured before another
-   * queued mutation completed.
-   *
-   * Feature 092 — the mutation is scoped to one queue, but the *serialization*
-   * stays on `KEYS.queue`, because the whole map is one memento key and two
-   * concurrent read/modify/write cycles on different queues would still clobber
-   * each other's sibling entries. Per-queue concurrency is a property of what
-   * runs, not of how the record is written.
-   *
-   * FR-R3-002 (T280) — `queueId` is **required**, for the reason given on
-   * `getQueue()` above and with one extra edge here: a write that silently
-   * lands on Default does not read as a missing write, it reads as a *sibling's*
-   * write. A scheduled start armed on queue B cleared queue A's lifecycle
-   * fields for exactly this reason.
-   */
   public updateQueue<T>(
     mutate: (current: QueueState) => { readonly queue: QueueState; readonly result: T },
     queueId: string,
-    /**
-     * FR-R3-077 (T1045) — the execution fence this queue mutation is made under.
-     *
-     * **Required**, and delivered as its own change after the Run commit point's
-     * half landed, which is the order the escalated-residuals decision record
-     * (`INDEX.md` §7) item 2 sets. Folding the two into one change is what
-     * that record forbids: the Run path is the one the review measured and the
-     * one a stale host reaches first, and a single change that moved both would
-     * have made the smaller
-     * blast radius indistinguishable from the larger.
-     *
-     * The verification happens INSIDE the serialized link that performs the
-     * memento write, for the same reason `setRun`'s does: `Memento` offers no
-     * conditional write, and one link of the chain that already serializes this
-     * key is as close to a transaction as this storage allows — strictly closer
-     * than two.
-     */
     claim: QueueCommitClaim
   ): Promise<T> {
-    let result!: T;
-    return this.serialize(KEYS.queue, async () => {
-      if (isFencedClaim(claim)) {
-        const f = await checkCommitFence(
-          this.ownershipRegistry,
-          claim,
-          queueId,
-          'Queue',
-          this.scheduler
-        );
-        if (f !== null) this.refuseCommit(f, claim, queueId);
-      }
-      const current = this.getQueue(queueId);
-      const mutation = mutate(current);
-      const next = ensureExtendedQueueShape({
-        ...mutation.queue,
-        requests: compactRequestPositions(mutation.queue.requests),
-        updatedAt: Date.now()
-      });
-      result = mutation.result;
-      await this.memento.update(KEYS.queue, { ...this.readQueueMap(), [queueId]: next });
-    }).then(() => {
-      this.notify(KEYS.queue);
-      return result;
-    });
-  }
-
-  /**
-   * Feature 092 — a read/modify/write over **every** queue's state as one
-   * write. `updateQueue()` above is the right primitive for all but one
-   * operation; moving a Task between queues is that one, because it removes
-   * from one entry and inserts into another and must not be able to half-land.
-   * Serialised on the same `KEYS.queue` chain, so it composes with the
-   * single-queue writer rather than racing it.
-   */
-  private updateQueueMap<T>(
-    mutate: (current: QueueStateMap) => { readonly queueStates: QueueStateMap; readonly result: T },
-    touchedQueueIds: readonly string[] = []
-  ): Promise<T> {
-    let result!: T;
-    return this.serialize(KEYS.queue, async () => {
-      await this.verifyPrimacyForCommit('Queue');
-      for (const queueId of touchedQueueIds) {
-        await this.verifyQueueOwnershipForCommit(queueId, 'Queue');
-      }
-      const current = this.getQueueStates();
-      const mutation = mutate(current);
-      const next: QueueStateMap = {};
-      for (const [queueId, state] of Object.entries(mutation.queueStates)) {
-        next[queueId] = ensureExtendedQueueShape({
-          ...state,
-          requests: compactRequestPositions(state.requests),
-          updatedAt: Date.now()
-        });
-      }
-      result = mutation.result;
-      await this.memento.update(KEYS.queue, next);
-    }).then(() => {
-      this.notify(KEYS.queue);
-      return result;
-    });
-  }
-
-  /**
-   * Which queue holds `taskId`, if any.
-   *
-   * Task ids are globally unique, so a Task-addressed mutation names a Task
-   * and not a queue. Before feature 092 the owning queue was a field on the
-   * row and the whole array was one record; now the map key is the authority,
-   * so the owner has to be found before the row can be written. Returns the
-   * first match — a Task in two queues at once is not a state the writers can
-   * produce, and scanning for a second one would only hide it if it happened.
-   */
-  private findTaskOwner(taskId: string): { queueId: string; request: FeatureRequest } | null {
-    for (const [queueId, state] of Object.entries(this.readQueueMap())) {
-      const request = state.requests?.find((r) => r.id === taskId);
-      if (request) return { queueId, request };
-    }
-    return null;
+    return queueFamily.updateQueue(this.familyContext, mutate, queueId, claim);
   }
 
   public getQueueRegistry(): QueueRegistry {
-    const registry = this.memento.get<QueueRegistry>(KEYS.queueRegistry) ?? makeDefaultRegistry();
-    validateQueueRegistry(registry);
-    return registry;
+    return queueFamily.getQueueRegistry(this.familyContext);
   }
 
-  /**
-   * FR-R3-011 — the registry with each entry's pause view filled in from the
-   * queue that owns it.
-   *
-   * This is the read every surface that used to consult
-   * `entry.state === 'manually-paused'` now makes. The persisted registry names,
-   * orders and schedules queues; whether one is paused lives in its own
-   * `QueueState` and is projected here, from one record, on every read. There is
-   * no second copy to go stale, so there is nothing to reconcile at startup.
-   */
-  /**
-   * Feature 195 (T039, FR-014, FR-018) — `workspaceFailurePolicyDefault` is
-   * optional, defaulted to the literal package default (`'halt-on-failure'`):
-   * this store stays vscode-free, so it cannot read the live setting itself.
-   * The one caller that projects this registry for the webview
-   * (`snapshot-composer.ts`) passes the live value it already reads for
-   * `generalSettings`; every other caller gets the same answer the setting's
-   * own contributed default would give a workspace that never overrode it.
-   */
   public getProjectedQueueRegistry(
     workspaceFailurePolicyDefault: QueueFailurePolicy = 'halt-on-failure'
   ): ProjectedQueueRegistry {
-    const queueStates = this.readQueueMap();
-    const pauseByQueueId = new Map<string, QueuePauseView>();
-    const failurePolicyByQueueId = new Map<string, QueueFailurePolicy | undefined>();
-    for (const [queueId, state] of Object.entries(queueStates)) {
-      pauseByQueueId.set(queueId, {
-        paused: state.queueLifecycle === 'operator-paused',
-        pauseSource: state.pauseSource ?? null
-      });
-      failurePolicyByQueueId.set(queueId, state.failurePolicy);
-    }
-    return projectQueueRegistry(
-      this.getQueueRegistry(),
-      pauseByQueueId,
-      failurePolicyByQueueId,
+    return queueFamily.getProjectedQueueRegistry(
+      this.familyContext,
       workspaceFailurePolicyDefault
     );
   }
 
-  /**
-   * Persist the registry, minus anything derived.
-   *
-   * The strip is the write-side half of the collapse and it is defensive on
-   * purpose: a caller that spreads a `ProjectedQueueRegistryEntry` into an edit
-   * — a rename, a reorder — would otherwise persist the projected `state` and
-   * `pauseSource` back onto the record they were derived from, quietly
-   * recreating the second representation this feature removed. Stripping here
-   * means every write goes through one normaliser rather than every call site
-   * having to remember. `tests/lint/no-legacy-pause-mirror-write.test.ts` is the
-   * other half.
-   */
   public setQueueRegistry(registry: QueueRegistry): Promise<void> {
-    const normalized = this.normalizedRegistry(registry);
-    return this.serialize(KEYS.queueRegistry, () =>
-      this.memento.update(KEYS.queueRegistry, normalized)
-    ).then(() => {
-      this.notify(KEYS.queueRegistry);
-    });
+    return queueFamily.setQueueRegistry(this.familyContext, registry);
   }
 
-  /**
-   * FR-R5-F09 (F-34, F-39) — serialized and fenced read-modify-write over `KEYS.queueRegistry`.
-   *
-   * Reads the current registry, runs `mutate(current)`, and persists the normalized result inside
-   * one `KEYS.queueRegistry` serialize link after checking workspace primacy and per-queue
-   * ownership claims/fences for `queueIds`.
-   */
-  public async updateQueueRegistry<T>(
+  public updateQueueRegistry<T>(
     mutate: (current: QueueRegistry) => { readonly registry: QueueRegistry; readonly result: T },
     queueIds: readonly string[] = []
   ): Promise<T> {
-    let result!: T;
-    let updated = false as boolean;
-    await this.serialize(KEYS.queueRegistry, async () => {
-      await this.verifyPrimacyForCommit('Queue registry');
-      for (const queueId of queueIds) {
-        await this.verifyQueueOwnershipForCommit(queueId, 'Queue');
-      }
-      const current = this.getQueueRegistry();
-      const mutation = mutate(current);
-      result = mutation.result;
-      if (mutation.registry === current) return;
-      const normalized = this.normalizedRegistry(mutation.registry);
-      await this.memento.update(KEYS.queueRegistry, normalized);
-      updated = true;
-    });
-    if (updated) {
-      this.notify(KEYS.queueRegistry);
-    }
-    return result;
+    return queueFamily.updateQueueRegistry(this.familyContext, mutate, queueIds);
   }
 
-  /** The validated registry with every derived field stripped; see `setQueueRegistry`. */
-  private normalizedRegistry(registry: QueueRegistry): QueueRegistry {
-    validateQueueRegistry(registry);
-    return {
-      entries: registry.entries.map((entry) => {
-        const { state: _state, pauseSource: _pauseSource, ...rest } = entry as QueueRegistryEntry & {
-          state?: unknown;
-          pauseSource?: unknown;
-        };
-        return rest;
-      }),
-      updatedAt: registry.updatedAt
-    };
-  }
-
-  /**
-   * FR-R4-F01 (FR-012, FR-013, contract D3) — delete a queue unless it holds a live Run, with
-   * the decision made INSIDE the commit.
-   *
-   * A deletion used to be two separate writes behind a check made before either: the registry
-   * entry, then the queue's state. A Run committed between the operator's preview and their
-   * confirmation, or between the check and the first write, was stranded: the queue gone, the
-   * Run still in `KEYS.run`, holding a concurrency slot nothing could release. This is one
-   * `serializeAcrossKeys` link over the three chains involved. `recheck` is evaluated over
-   * values read inside it (hard rule 57: the Run is the queue's own), and the method writes
-   * NOTHING unless it answers `deletable`. On `deletable` it removes the registry entry and
-   * then the queue state, in the order the two separate writes had: a failure between them
-   * leaves an orphan record rather than a registry entry pointing at nothing.
-   *
-   * It writes no Run (hard rule 58). A Run write queued behind this link finds no registry
-   * entry and is refused `unknown-queue-id` (`setRun` re-checks inside its own link), and
-   * removing a Run for an unknown id stays allowed. It returns the impact it evaluated.
-   */
-  public async deleteQueueIfNoLiveRun<I extends { readonly outcome: 'refused' | 'deletable' }>(
+  public deleteQueueIfNoLiveRun<I extends { readonly outcome: 'refused' | 'deletable' }>(
     queueId: string,
     recheck: (view: QueueDeletionView) => I,
     now: number
   ): Promise<I> {
-    let impact!: I;
-    let registryUpdated = false as boolean;
-    let queueUpdated = false as boolean;
-    try {
-      await this.serializeAcrossKeys([KEYS.queueRegistry, KEYS.run, KEYS.queue], async () => {
-        await this.verifyPrimacyForCommit('Queue');
-        await this.verifyQueueOwnershipForCommit(queueId, 'Queue');
-        const registry = this.getQueueRegistry();
-        const requests = findQueue(registry, queueId)
-          ? this.getQueue(queueId)
-              .requests.slice()
-              .sort((a, b) => a.position - b.position)
-          : [];
-        impact = recheck({ registry, run: this.getRun(queueId), requests });
-        if (impact.outcome !== 'deletable') return;
-        await this.memento.update(
-          KEYS.queueRegistry,
-          this.normalizedRegistry(removeQueueEntry(registry, { id: queueId, now }))
-        );
-        registryUpdated = true;
-        const remaining = { ...this.readQueueMap() };
-        delete remaining[queueId];
-        await this.memento.update(KEYS.queue, remaining);
-        queueUpdated = true;
-      });
-    } finally {
-      if (registryUpdated) this.notify(KEYS.queueRegistry);
-      if (queueUpdated) this.notify(KEYS.queue);
-    }
-    return impact;
+    return queueFamily.deleteQueueIfNoLiveRun(this.familyContext, queueId, recheck, now);
   }
 
   public getDefaultQueueId(): string {
-    const id = this.memento.get<string>(KEYS.queueDefaultId) ?? DEFAULT_QUEUE_ID;
-    return findQueue(this.getQueueRegistry(), id) ? id : DEFAULT_QUEUE_ID;
+    return queueFamily.getDefaultQueueId(this.familyContext);
   }
 
   public setDefaultQueueId(id: string): Promise<void> {
-    if (!findQueue(this.getQueueRegistry(), id)) {
-      throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${id}`);
-    }
-    return this.serialize(KEYS.queueDefaultId, () =>
-      this.memento.update(KEYS.queueDefaultId, id)
-    ).then(() => {
-      this.notify(KEYS.queueDefaultId);
-    });
+    return queueFamily.setDefaultQueueId(this.familyContext, id);
   }
 
   public getGlobalConcurrencyCap(): number {
-    // Feature 092 (T056, FR-027) — the reader refuses an out-of-range value
-    // instead of saturating it to 1.
-    //
-    // Feature 056's saturation was defensible while the schema admitted
-    // exactly one value: every out-of-range record was a legacy artifact of a
-    // wider schema, and 1 was both the clamp and the only truth. Now that the
-    // schema *is* the wider one, silently returning 1 for a persisted 100
-    // would run the workspace at a twentieth of the operator's stated intent
-    // and say so only in a log line nobody reads. A refusal surfaces at the
-    // call site.
-    const value = this.memento.get<number>(KEYS.queueGlobalConcurrencyCap);
-    // The key having never been written is the normal cold-start case, not a
-    // corruption: fall back to `DEFAULT_GLOBAL_CONCURRENCY_CAP`, whose header in
-    // `contracts/queue-bounds.ts` carries the value's reason and its authority.
-    // FR-R3-145 (T1569) deleted the count that stood here — "the six defining
-    // sites agree on. Six, not five" — along with the three that only advertised
-    // the bound. `tests/lint/cap-authority-citation-parity.test.ts` counts now.
-    if (value === undefined || value === null) return DEFAULT_GLOBAL_CONCURRENCY_CAP;
-    assertGlobalConcurrencyCap(value, 'persisted');
-    return value;
+    return queueFamily.getGlobalConcurrencyCap(this.familyContext);
   }
 
   public setGlobalConcurrencyCap(value: number): Promise<void> {
-    // Feature 092 (T056, FR-026/FR-027) — `[1, MAX_QUEUES]`. FR-R3-145 removed the
-    // package contribution and `SETTINGS_SCHEMA` from the list that stood here; the
-    // host validator and `QueueManager.saveQueueSettings` still share the invariant.
-    assertGlobalConcurrencyCap(value, 'requested');
-    return this.serialize(KEYS.queueGlobalConcurrencyCap, () =>
-      this.memento.update(KEYS.queueGlobalConcurrencyCap, value)
-    ).then(() => {
-      this.notify(KEYS.queueGlobalConcurrencyCap);
-    });
+    return queueFamily.setGlobalConcurrencyCap(this.familyContext, value);
   }
 
-  /**
-   * Feature 092 (T065, FR-037) — the shared-working-tree notice's answer.
-   *
-   * Three states, and the third is not a default: `null` is "the workspace has
-   * never stopped being single-queue, so the question has not been asked",
-   * `'pending'` is "asked, unanswered", `'dismissed'` is "answered". Collapsing
-   * `null` into `'dismissed'` would suppress the notice for every workspace
-   * that has not yet earned it; collapsing it into `'pending'` would show it to
-   * a workspace with one queue, which has no shared working tree to warn about.
-   */
   public getConcurrencyNotice(): ConcurrencyNotice | null {
-    const value = this.memento.get<unknown>(KEYS.concurrencyNotice);
-    return value === 'pending' || value === 'dismissed' ? value : null;
+    return queueFamily.getConcurrencyNotice(this.familyContext);
   }
 
-  /**
-   * Feature 092 (T065, FR-037) — record the notice's state.
-   *
-   * Deliberately dumb: this writes what it is given, and the once-per-workspace
-   * rule lives at the two call sites in `QueueManager` that own the triggers
-   * (`createQueue` arms only from `null`, `dismissConcurrencyNotice` answers
-   * only from `'pending'`). Putting the rule here as well would give the
-   * invariant two homes and let them disagree.
-   */
   public setConcurrencyNotice(value: ConcurrencyNotice): Promise<void> {
-    return this.serialize(KEYS.concurrencyNotice, () =>
-      this.memento.update(KEYS.concurrencyNotice, value)
-    ).then(() => {
-      this.notify(KEYS.concurrencyNotice);
-    });
+    return queueFamily.setConcurrencyNotice(this.familyContext, value);
   }
 
   public getRequestsForQueue(queueId: string): FeatureRequest[] {
-    if (!findQueue(this.getQueueRegistry(), queueId)) {
-      throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
-    }
-    return this.getQueue(queueId)
-      .requests.slice()
-      .sort((a, b) => a.position - b.position);
+    return queueFamily.getRequestsForQueue(this.familyContext, queueId);
   }
 
-  public async insertPendingRequest(
+  public insertPendingRequest(
     request: FeatureRequest,
     params: { queueId?: string; position?: number | null } = {}
   ): Promise<FeatureRequest> {
-    const queueId = params.queueId ?? this.getDefaultQueueId();
-    if (!findQueue(this.getQueueRegistry(), queueId)) {
-      throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
-    }
-    return this.updateQueue((queue) => {
-      // BUG-004 — `insertAt` is the logical index into the pending list, and
-      // the position field must mirror that index for the queue projector's
-      // `position ascending` sort to honor FIFO order.
-      //
-      // Feature 092 — `queue` is now the target queue's own state, so the cap
-      // this counts against is per queue by construction rather than by
-      // filtering a shared array (FR-005).
-      const pendingInTarget = queue.requests
-        .filter((item) => item.status === 'pending')
-        .sort((a, b) => a.position - b.position);
-      if (pendingInTarget.length >= MAX_PENDING_TASKS_PER_QUEUE) {
-        throw new QueueMutationRejected(
-          'task-cap-reached',
-          `Queue ${queueId} already has ${MAX_PENDING_TASKS_PER_QUEUE} pending tasks`
-        );
-      }
-      const insertAt = params.position ?? queue.requests.length;
-      if (!Number.isInteger(insertAt) || insertAt < 0 || insertAt > queue.requests.length) {
-        throw new QueueMutationRejected(
-          'position-out-of-range',
-          `Position must be in [0, ${queue.requests.length}] (got ${String(params.position)})`
-        );
-      }
-      const now = Date.now();
-      const nextRequest: FeatureRequest = {
-        ...request,
-        queueId,
-        position: insertAt,
-        pauseCause: null,
-        updatedAt: now
-      };
-      const denseIndex = new Map<string, number>();
-      const allInTarget = queue.requests.slice().sort((a, b) => a.position - b.position);
-      allInTarget.forEach((item, idx) => denseIndex.set(item.id, idx));
-      const shifted = queue.requests.map((item) => {
-        const dense = denseIndex.get(item.id) ?? item.position;
-        const repositioned = dense >= insertAt ? dense + 1 : dense;
-        if (repositioned === item.position) return item;
-        return { ...item, position: repositioned, updatedAt: now };
-      });
-      return {
-        queue: { ...queue, requests: [...shifted, nextRequest] },
-        result: nextRequest
-      };
-    }, queueId,
-      this.runCommitClaim(queueId)
-    );
+    return queueFamily.insertPendingRequest(this.familyContext, request, params);
   }
-
-  // FR-R3-161 (T044, FR-007b) — 2026-09-04. `removePendingRequest` stood here
-  // and is removed with `QueueManager.remove`, its only caller in `src/` and in
-  // `tests/` alike (T010 re-confirmed both before the deletion, so no test
-  // coverage moves with it). Leaving it would have stranded a deletion
-  // primitive with a status restriction, no caller and no test — a stronger
-  // version of the defect this feature closes.
-  //
-  // Its `task-not-in-pending-state` throw site goes with it; the REASON stays
-  // in `QueueMutationRejectReason` above (T045, FR-007c). Three surviving
-  // storage operations raise it — `modifyPendingRequest`,
-  // `reorderPendingRequest` and `movePendingRequest` below — and two
-  // consumers read it: `queue-manager.ts` maps it to a distinct reorder cause,
-  // and the sidebar's message table renders it to an operator as "Cannot
-  // remove: task is no longer pending". Deleting the reason on the strength of
-  // this one producer leaving would have broken all five.
 
   public getRequest(taskId: string): FeatureRequest | null {
-    return this.findTaskOwner(taskId)?.request ?? null;
+    return queueFamily.getRequest(this.familyContext, taskId);
   }
 
-  public async removeRequest(taskId: string): Promise<FeatureRequest> {
-    const owner = this.findTaskOwner(taskId);
-    if (!owner) {
-      throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-    }
-    return this.updateQueue((queue) => {
-      const target = queue.requests.find((request) => request.id === taskId);
-      if (!target) {
-        throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-      }
-      // FR-R3-161 (T043a, FR-008) — the refresh was added here when
-      // `QueueManager.remove` was deleted. Research F7 named "no
-      // `withRefreshedLifecycle` after the row leaves" as a defect of the
-      // routine being removed; this primitive, the survivor's, had the same
-      // gap, so deleting the weaker route alone would have left the defect
-      // standing in the only route left: a queue that lost its last piece of
-      // work kept badging `running`, and the staleness survived a reload.
-      // Confined to the unheld pair by `refreshUnheldLifecycle` itself — a
-      // deletion from a held queue returns it unchanged — so this is not a
-      // second site deciding whether a queue may start. Pinned by
-      // tests/integration/task-removal-surviving-route.test.ts.
-      return {
-        queue: withRefreshedLifecycle({
-          ...queue,
-          inFlightId: queue.inFlightId === taskId ? null : queue.inFlightId,
-          requests: queue.requests.filter((request) => request.id !== taskId)
-        }),
-        result: target
-      };
-    }, owner.queueId,
-      this.runCommitClaim(owner.queueId)
-    );
+  public removeRequest(taskId: string): Promise<FeatureRequest> {
+    return queueFamily.removeRequest(this.familyContext, taskId);
   }
 
-  public async modifyPendingRequest(
+  public modifyPendingRequest(
     taskId: string,
     updates: { description?: string }
   ): Promise<FeatureRequest> {
-    const owner = this.findTaskOwner(taskId);
-    if (!owner) {
-      throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-    }
-    return this.updateQueue((queue) => {
-      const target = queue.requests.find((request) => request.id === taskId);
-      if (!target) {
-        throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-      }
-      if (target.status !== 'pending') {
-        throw new QueueMutationRejected(
-          'task-not-in-pending-state',
-          `Task ${taskId} is not pending`
-        );
-      }
-      const nextTarget: FeatureRequest = {
-        ...target,
-        ...(updates.description !== undefined
-          ? { description: validateDescription(updates.description) }
-          : {}),
-        updatedAt: Date.now()
-      };
-      return {
-        queue: {
-          ...queue,
-          requests: queue.requests.map((request) =>
-            request.id === taskId ? nextTarget : request
-          )
-        },
-        result: nextTarget
-      };
-    }, owner.queueId,
-      this.runCommitClaim(owner.queueId)
-    );
+    return queueFamily.modifyPendingRequest(this.familyContext, taskId, updates);
   }
 
-  // Feature 065 BUG-009 T078 (FR-030) — `position` is interpreted as a
-  // PENDING-ARRAY index in the queue's pending sub-array (not as a global
-  // `requests`-array index). The reshuffle is pending-only: pending rows
-  // permute within their existing global position SLOTS, and rows whose
-  // status is NOT `'pending'` keep their `.position` field unchanged. The
-  // caller (`QueueManager.reorderTaskInUnifiedQueue`) is responsible for
-  // translating the operator-emitted global `orderedItems` index into a
-  // pending-array index before invoking this writer.
-  public async reorderPendingRequest(taskId: string, position: number): Promise<FeatureRequest> {
-    const owner = this.findTaskOwner(taskId);
-    if (!owner) {
-      throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-    }
-    return this.updateQueue((queue) => {
-      const target = queue.requests.find((request) => request.id === taskId);
-      if (!target) {
-        throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-      }
-      if (target.status !== 'pending') {
-        throw new QueueMutationRejected(
-          'task-not-in-pending-state',
-          `Task ${taskId} is not pending`
-        );
-      }
-      // Feature 092 — the peers are the addressed queue's own pending rows;
-      // the map key already partitions them.
-      const pendingPeers = queue.requests
-        .filter((request) => request.status === 'pending')
-        .sort((a, b) => a.position - b.position);
-      if (!Number.isInteger(position) || position < 0 || position >= pendingPeers.length) {
-        throw new QueueMutationRejected(
-          'position-out-of-range',
-          `Position must be in [0, ${Math.max(0, pendingPeers.length - 1)}] (got ${position})`
-        );
-      }
-      const pendingSlots = pendingPeers.map((peer) => peer.position);
-      const reorderedPending = pendingPeers.filter((request) => request.id !== taskId);
-      reorderedPending.splice(position, 0, target);
-      const now = Date.now();
-      const byId = new Map(
-        reorderedPending.map((request, i) => {
-          const nextPosition = pendingSlots[i];
-          if (request.position === nextPosition) return [request.id, request];
-          return [request.id, { ...request, position: nextPosition, updatedAt: now }];
-        })
-      );
-      return {
-        queue: {
-          ...queue,
-          requests: queue.requests.map((request) => byId.get(request.id) ?? request)
-        },
-        result: byId.get(taskId) ?? target
-      };
-    }, owner.queueId,
-      this.runCommitClaim(owner.queueId)
-    );
+  public reorderPendingRequest(taskId: string, position: number): Promise<FeatureRequest> {
+    return queueFamily.reorderPendingRequest(this.familyContext, taskId, position);
   }
 
-  /**
-   * Feature 092 (FR-017) — move a pending Task from the queue that holds it to
-   * another one.
-   *
-   * The Task's own content is carried verbatim: description, `runPlan`,
-   * `pipelineId`, `rerun`, retry count and timestamps all survive, because the
-   * operator is re-filing work, not re-authoring it. Only `queueId`, `position`
-   * and `updatedAt` change.
-   *
-   * A same-queue "move" is a reorder and delegates to the reorder writer, so
-   * there is exactly one implementation of within-queue position arithmetic.
-   * A genuine cross-queue move goes through `updateQueueMap()` as a single
-   * write — removing the row from the source and inserting it into the target
-   * in two writes would leave a window where the Task is in neither queue, or
-   * in both.
-   */
-  public async movePendingRequest(
+  public movePendingRequest(
     taskId: string,
     params: { targetQueueId: string; position?: number | null }
   ): Promise<FeatureRequest> {
-    if (!findQueue(this.getQueueRegistry(), params.targetQueueId)) {
-      throw new QueueMutationRejected(
-        'unknown-queue-id',
-        `Unknown queue id: ${params.targetQueueId}`
-      );
-    }
-    const owner = this.findTaskOwner(taskId);
-    if (!owner) {
-      throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-    }
-    const target = owner.request;
-    if (target.status !== 'pending') {
-      throw new QueueMutationRejected(
-        'task-not-in-pending-state',
-        `Task ${taskId} is not pending`
-      );
-    }
-    const sameQueue = owner.queueId === params.targetQueueId;
-    if (sameQueue) {
-      const targetPending = this.getQueue(params.targetQueueId)
-        .requests.filter((request) => request.status === 'pending')
-        .sort((a, b) => a.position - b.position);
-      const maxPosition = targetPending.length - 1;
-      const insertAt = params.position ?? maxPosition;
-      if (!Number.isInteger(insertAt) || insertAt < 0 || insertAt > maxPosition) {
-        throw new QueueMutationRejected(
-          'position-out-of-range',
-          `Position must be in [0, ${maxPosition}] (got ${String(params.position)})`
-        );
-      }
-      return this.reorderPendingRequest(taskId, insertAt);
-    }
-    return this.updateQueueMap(
-      (current) => {
-        if (!findQueue(this.getQueueRegistry(), params.targetQueueId)) {
-          throw new QueueMutationRejected(
-            'unknown-queue-id',
-            `Unknown queue id: ${params.targetQueueId}`
-          );
-        }
-        const source = current[owner.queueId] ?? WorkspaceStateStore.bornEmptyQueue();
-        const freshTarget = source.requests.find((request) => request.id === taskId);
-        if (!freshTarget) {
-          throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-        }
-        if (freshTarget.status !== 'pending') {
-          throw new QueueMutationRejected(
-            'task-not-in-pending-state',
-            `Task ${taskId} is not pending`
-          );
-        }
-        const destination = current[params.targetQueueId] ?? WorkspaceStateStore.bornEmptyQueue();
-        const targetPending = destination.requests
-          .filter((request) => request.status === 'pending')
-          .sort((a, b) => a.position - b.position);
-        if (targetPending.length >= MAX_PENDING_TASKS_PER_QUEUE) {
-          throw new QueueMutationRejected(
-            'task-cap-reached',
-            `Queue ${params.targetQueueId} already has ${MAX_PENDING_TASKS_PER_QUEUE} pending tasks`
-          );
-        }
-        const maxPosition = targetPending.length;
-        const insertAt = params.position ?? maxPosition;
-        if (!Number.isInteger(insertAt) || insertAt < 0 || insertAt > maxPosition) {
-          throw new QueueMutationRejected(
-            'position-out-of-range',
-            `Position must be in [0, ${maxPosition}] (got ${String(params.position)})`
-          );
-        }
-        const last = targetPending.at(-1);
-        const ahead = targetPending.at(insertAt);
-        const insertSlot =
-          ahead?.position ??
-          (last === undefined ? destination.requests.length : last.position + 1);
-        const now = Date.now();
-        const moved: FeatureRequest = {
-          ...freshTarget,
-          queueId: params.targetQueueId,
-          position: insertSlot,
-          updatedAt: now
-        };
-        return {
-          queueStates: {
-            ...current,
-            [owner.queueId]: {
-              ...source,
-              requests: source.requests.filter((request) => request.id !== taskId)
-            },
-            [params.targetQueueId]: {
-              ...destination,
-              requests: [
-                ...destination.requests.map((request) =>
-                  request.position >= insertSlot
-                    ? { ...request, position: request.position + 1, updatedAt: now }
-                    : request
-                ),
-                moved
-              ]
-            }
-          },
-          result: moved
-        };
-      },
-      [owner.queueId, params.targetQueueId]
-    );
+    return queueFamily.movePendingRequest(this.familyContext, taskId, params);
   }
 
-  /**
-   * Feature 093 (T018, FR-008) — the raw v11 record: at most one **active**
-   * `WorkflowRun` per queue, keyed by queue id. The mirror of `readQueueMap()`.
-   *
-   * A v10 record (a bare `WorkflowRun`) still reads correctly here, lifted onto
-   * the default queue. That is not a second migration path — `initialize()`
-   * owns the write, and this is the projection that keeps a read taken *before*
-   * that write from reporting a workspace with nothing executing. It writes
-   * nothing.
-   *
-   * **Both** shape rules are imported from the migrator rather than restated, so
-   * the pre-write and post-write views cannot disagree about what a Run looks
-   * like. The map half used to be restated here as
-   * `typeof raw === 'object' && !Array.isArray(raw)`, which is laxer than
-   * `isRunStateMap` — it accepts a map whose values are not Runs. That is the
-   * one input on which the two views disagreed: this read cast the junk to
-   * `RunStateMap` and handed callers values typed as `WorkflowRun` that are not
-   * one, while the migrator classified the same record `unrecognised-record-shape`
-   * and repaired it to `{}`. Reading it as `{}` here is what the write is about
-   * to make true, and an empty map is the safe direction — a fabricated Run
-   * would hand the drain coordinator a queue that looks busy forever, which is
-   * the migrator's own stated reason for repairing rather than guessing.
-   */
-  private readRunMap(): RunStateMap {
-    const raw = this.memento.get<unknown>(KEYS.run);
-    if (raw === undefined || raw === null) return {};
-    if (isWorkflowRun(raw)) return { [DEFAULT_QUEUE_ID]: raw };
-    if (isRunStateMap(raw)) return raw;
-    return {};
-  }
+  // ── Runs, Quarantine & Terminal Intents ───────────────────────────────────────
 
-  /**
-   * The Run `queueId` holds, in any nonterminal state, or `null` when that queue has none. A paused
-   * Run is held as much as a running one: a key of the Run map means the queue holds a Run, not
-   * that a driver is executing it (FR-R4-F02, contract U7).
-   *
-   * An unknown id reads as `null` rather than throwing, matching `getQueue()`
-   * above: a read has nothing to corrupt, and making it throw would put a
-   * registry lookup in front of every projection that only wants to know
-   * whether something is running.
-   */
   public getRun(queueId: string): WorkflowRun | null {
-    return this.readRunMap()[queueId] ?? null;
+    return runsFamily.readRunForQueue(this.familyContext, queueId);
   }
 
-  /**
-   * Every queue that holds a Run in any nonterminal state (G-4): a key means the queue holds a Run,
-   * paused or running, which is not the same as one being executed (FR-R4-F02, contract U7).
-   *
-   * A copy, not the stored object: the map is handed to snapshot and status-bar
-   * projections, and a caller that mutated the live record would change what is
-   * running without going through the invariant check or the write chain.
-   */
-  /**
-   * FR-R3-077 (T1040) — the read-side half of the fence, with a production
-   * caller at last.
-   *
-   * `setRun` refuses a write it can SEE; `Memento` offers no conditional write,
-   * so a write made by a holder whose lease had already moved on can still land
-   * in the window between the verify and the update. This is how a reader
-   * disbelieves such a record instead of acting on it.
-   *
-   * An unstamped record answers `live`: records written before the stamp
-   * existed, and every `unfencedCommit`, carry no generation to compare, and
-   * reading absence as guilt would reject the entire existing corpus. The stamp
-   * is evidence when present.
-   *
-   * Storage that cannot answer resolves to the current generation `0`, which no
-   * stamp is below — so an unreadable registry never manufactures a decline. A
-   * fence check that fails open on a read is right for the same reason it is
-   * wrong on a write: declining here would strand a live Run on a transient I/O
-   * error, and the write path already refuses what it must.
-   */
-  public async readRunIfLive(queueId: string): Promise<RunReadVerdict> {
-    const run = this.getRun(queueId);
-    if (run === null) return { outcome: 'absent' };
-    const record = await this.ownershipRegistry.read(queueResource(queueId));
-    const liveFence = record?.fence ?? 0;
-    if (!isSupersededRun(run, liveFence)) return { outcome: 'live', run };
-    return {
-      outcome: 'superseded',
-      run,
-      writtenAtFence: run.writtenAtFence ?? 0,
-      liveFence
-    };
+  public readRunIfLive(queueId: string): Promise<RunReadVerdict> {
+    return runsFamily.readRunIfLive(this.familyContext, queueId);
   }
 
   public getRunMap(): Readonly<RunStateMap> {
-    return { ...this.readRunMap() };
+    return runsFamily.getRunMap(this.familyContext);
   }
 
-  /**
-   * The Run advancing `taskId`, together with the queue it executes on.
-   *
-   * Both halves or neither. A caller holding only the Run cannot release its
-   * execution lease or clear its record without guessing the queue, and a
-   * guessed queue in a window running several Runs clears a sibling's — the
-   * same failure the hard rule on `releaseExecutionLeaseForRun()` exists to
-   * prevent.
-   */
   public findRunByTask(
     taskId: string
   ): { readonly queueId: string; readonly run: WorkflowRun } | null {
-    for (const [queueId, run] of Object.entries(this.readRunMap())) {
-      if (run.featureId === taskId) return { queueId, run };
-    }
-    return null;
+    return runsFamily.findRunByTask(this.familyContext, taskId);
   }
 
-  /**
-   * FR-R3-008 (T377) — the Run with this id, together with the queue it is on.
-   *
-   * Sibling to `findRunByTask` above and exact for the same reason it is: the
-   * monitor identifies its subprocess by run id and nothing else, so the write
-   * that stamps that Run's liveness has to name a queue it did not receive.
-   * Both halves or neither — a `setRun` with a guessed queue id would overwrite
-   * a sibling Run's record, and run ids are `randomUUID()`, so this matches at
-   * most one entry.
-   */
   public findRunById(
     runId: string
   ): { readonly queueId: string; readonly run: WorkflowRun } | null {
-    for (const [queueId, run] of Object.entries(this.readRunMap())) {
-      if (run.id === runId) return { queueId, run };
-    }
-    return null;
+    return runsFamily.findRunById(this.familyContext, runId);
   }
 
-  /**
-   * Write or clear one queue's active Run.
-   *
-   * `null` **removes** the key rather than storing a null under it (G-5), so
-   * `Object.keys(getRunMap())` is exactly the set of queues holding a Run in any
-   * nonterminal state — a paused Run included, which is why it is not a count of what is
-   * executing (FR-R4-F02, contract U7). Clearing an id the
-   * registry no longer knows is allowed and removes nothing: a deleted queue
-   * has its registry entry dropped first, and refusing the cleanup afterwards
-   * would strand its Run record forever. Writing a Run for an unknown id is
-   * refused (G-6), because that is the direction in which a typo'd id would
-   * quietly become a running queue.
-   *
-   * Serialized on `KEYS.run` with the map re-read *inside* the chain, for the
-   * same reason `updateQueue()` does on `KEYS.queue`: the whole map is one
-   * memento key, so two concurrent single-queue writes would otherwise write
-   * back snapshots missing each other's entries. Per-queue concurrency is a
-   * property of what runs, not of how the record is written.
-   */
   public setRun(
     queueId: string,
     run: WorkflowRun | null,
-    /**
-     * FR-R3-055 (H-06) / FR-R3-077 (T1038) — the execution fence this mutation is
-     * made under. **Required.**
-     *
-     * It used to be optional, "so every existing caller is unchanged", and the
-     * 2026-08-24 review measured what that bought: 35 call sites, none passing
-     * one, `writtenAtFence` never written, `isSupersededRun` with no production
-     * caller. A required parameter is a compiler-enforced inventory — the same
-     * reasoning `createDiskOwnershipFs` applies to `containmentRoot` and
-     * `createBackendRunner` to `allowUncontained`.
-     *
-     * A caller that provably holds no lease passes `unfencedCommit(reason)` with
-     * a reason from the closed set in `state/ownership-claim.ts`. That is a
-     * recorded finding about the call site, which the item requires; it is not a
-     * default, which the item forbids.
-     */
     claim: RunCommitClaim,
     actor: RunTransitionActor = 'driver'
   ): Promise<void> {
-    if (run !== null) {
-      const previous = this.getRun(queueId);
-      if (previous !== null && previous.id === run.id) {
-        assertRunStatusTransition(previous, run.status, actor);
-      }
-      validateRunInvariants(run, previous);
-      if (!findQueue(this.getQueueRegistry(), queueId)) {
-        throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
-      }
-    }
-    return this.serialize(KEYS.run, async () => {
-      // FR-R4-F01 (contract D3 G3) — a queue deleted while this write waited its turn is not
-      // there to hold a Run. The check above ran at call time; this one runs at commit time.
-      if (run !== null && !findQueue(this.getQueueRegistry(), queueId)) {
-        throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
-      }
-      if (run !== null) {
-        const livePrevious = this.getRun(queueId);
-        if (livePrevious !== null && livePrevious.id === run.id) {
-          assertRunStatusTransition(livePrevious, run.status, actor);
-        }
-        validateRunInvariants(run, livePrevious);
-      }
-      // FR-R3-055 — the verify happens INSIDE this serialized link, not before
-      // it. That is the whole difference from `writeGuarded`, which verifies and
-      // then separately awaits a callback: two operations, with a reclaim able to
-      // land between them. `Memento` offers no conditional write, so one link of
-      // the chain that already serialises this key is as close to a transaction
-      // as this storage allows -- and it is strictly closer than two.
-      if (isFencedClaim(claim)) {
-        const f = await checkCommitFence(
-          this.ownershipRegistry,
-          claim,
-          queueId,
-          'Run',
-          this.scheduler
-        );
-        if (f !== null) this.refuseCommit(f, claim, queueId);
-      }
-      const next = { ...this.readRunMap() };
-      if (run === null) delete next[queueId];
-      // FR-R3-055 — stamp the generation the write was made under, so a reader
-      // holding a newer one can tell this entry came from a superseded holder.
-      // Additive and optional: a record written before this field deserializes
-      // unchanged, so no `STATE_SCHEMA_VERSION` moves.
-      else next[queueId] = isFencedClaim(claim) ? { ...run, writtenAtFence: claim.fence } : run;
-      await this.memento.update(KEYS.run, next);
-    }).then(() => {
-      this.notify(KEYS.run);
-    });
+    return runsFamily.writeRunForQueue(this.familyContext, queueId, run, claim, actor);
   }
 
-  /**
-   * FR-R4-F01 (contract C2 G6, G7, G9; research R3) — apply a field update to the
-   * Run a queue holds NOW.
-   *
-   * `setRun` writes a whole Run built from a read the caller took earlier, outside
-   * this chain, so two writers that read the same snapshot each write back a Run
-   * missing the other's change. This is the second kind of write, for a writer that
-   * owns a few fields: the whole check-and-patch is ONE link of the existing
-   * `serialize(KEYS.run, …)` chain, in this order, and nothing is written unless all
-   * of it passes:
-   *
-   *   1. re-read the queue's Run; refuse `stale-run-id` when it is absent or is
-   *      another Run, so an update never brings back a removed entry (G9);
-   *   2. refuse `run-status-precondition` when its status is outside
-   *      `allowedStatuses`, so a stale observation cannot reopen a terminal Run;
-   *   3. refuse `ownership-lost`, then check the fence exactly as `setRun` does;
-   *   4. apply `patch(current)` to the current Run;
-   *   5. `assertRunStatusTransition` (`decideRunTransition`) for `(current.status,
-   *      merged.status, actor)` (FR-R7-01);
-   *   6. `validateRunInvariants` on the merged Run, so an update that leaves one
-   *      half of a pause/retry pair throws here (hard rule 28);
-   *   7. one whole-map write, stamping `writtenAtFence`.
-   *
-   * It adds no write path (hard rule 58): it is a link on the chain `setRun` uses,
-   * and it writes the whole map. Resolves to the Run it wrote, so a caller can keep
-   * its in-memory copy current. No revision field is added (FR-011): every writer
-   * this found runs inside one host and can be routed through the chain.
-   */
   public updateRun(
     queueId: string,
     update: RunUpdate,
     claim: RunCommitClaim
   ): Promise<WorkflowRun> {
-    let written!: WorkflowRun;
-    return this.serialize(KEYS.run, async () => {
-      const current = this.getRun(queueId);
-      if (current === null || current.id !== update.runId) {
-        throw new QueueMutationRejected(
-          'stale-run-id',
-          `Run update '${update.label}' refused: queue ${queueId} no longer holds run ${update.runId.slice(0, 8)}`
-        );
-      }
-      if (!update.allowedStatuses.includes(current.status)) {
-        throw new QueueMutationRejected(
-          'run-status-precondition',
-          `Run update '${update.label}' refused: the run is ${current.status}`
-        );
-      }
-      this.refuseIfClaimLost(queueId);
-      if (isFencedClaim(claim)) {
-        const f = await checkCommitFence(
-          this.ownershipRegistry,
-          claim,
-          queueId,
-          'Run',
-          this.scheduler
-        );
-        if (f !== null) this.refuseCommit(f, claim, queueId);
-      }
-      const patch = update.patch(current);
-      const merged = { ...current, ...patch } as WorkflowRun;
-      // A patch value of `undefined` REMOVES the key. A Memento keeps an explicit
-      // `undefined` as a present key, and a field such as `spawnIdentity` must read
-      // as absent, not as present-and-empty.
-      for (const key of Object.keys(patch) as Array<keyof WorkflowRun>) {
-        if (patch[key] === undefined) delete merged[key];
-      }
-      const actor = update.actor ?? DEFAULT_ACTOR_BY_RUN_UPDATE_LABEL[update.label];
-      assertRunStatusTransition(current, merged.status, actor);
-      validateRunInvariants(merged, current);
-      written = isFencedClaim(claim) ? { ...merged, writtenAtFence: claim.fence } : merged;
-      await this.memento.update(KEYS.run, { ...this.readRunMap(), [queueId]: written });
-    }).then(() => {
-      this.notify(KEYS.run);
-      return written;
-    });
+    return runsFamily.updateRunForQueue(this.familyContext, queueId, update, claim);
   }
 
-  /**
-   * FR-R7-01 — atomically admit a new Run and apply the corresponding queue in-flight
-   * transition in a single commit through `serializeAcrossKeys([KEYS.run, KEYS.queue], ...)`
-   * and the queue's execution fence claim.
-   *
-   * When SQLite operational backing is attached (`rawMemento.updateBatch`), both `KEYS.run`
-   * (with relational `runs` projection) and `KEYS.queue` commit inside one `BEGIN IMMEDIATE ...
-   * COMMIT` transaction (Hard Rule 58). On pre-cutover in-memory test Mementos lacking
-   * `updateBatch`, writes execute inside the same serialized critical section with best-effort
-   * compensating rollback if the queue write throws.
-   */
   public admitRunAtomically<T>(
     queueId: string,
     run: WorkflowRun,
     mutateQueue: (queue: QueueState) => { readonly queue: QueueState; readonly result: T },
     claim: RunCommitClaim
   ): Promise<T> {
-    const initialExisting = this.getRun(queueId);
-    if (
-      initialExisting !== null &&
-      isTerminalRunStatus(initialExisting.status) &&
-      initialExisting.id === run.id
-    ) {
-      assertRunStatusTransition(initialExisting, run.status, 'driver');
-    }
-    validateRunInvariants(
-      run,
-      initialExisting !== null && initialExisting.id === run.id ? initialExisting : null
-    );
-    if (run.status !== ADMISSIBLE_INITIAL_RUN_STATUS) {
-      throw new RunFieldInvariantError(
-        'invalid-admission-status',
-        `WorkflowRun invariant violation: admitRunAtomically requires status '${ADMISSIBLE_INITIAL_RUN_STATUS}' (got '${run.status}')`
-      );
-    }
-    if (!findQueue(this.getQueueRegistry(), queueId)) {
-      throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
-    }
-    let result!: T;
-    return this.serializeAcrossKeys([KEYS.run, KEYS.queue], async () => {
-      if (!findQueue(this.getQueueRegistry(), queueId)) {
-        throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
-      }
-      const existingRun = this.getRun(queueId);
-      if (existingRun !== null && !isTerminalRunStatus(existingRun.status)) {
-        throw new QueueMutationRejected(
-          'in-flight-ownership-conflict',
-          `Cannot admit run ${run.id.slice(0, 8)} on queue ${queueId}: non-terminal run ${existingRun.id.slice(0, 8)} (${existingRun.status}) is already active`
-        );
-      }
-      if (existingRun !== null && existingRun.id === run.id) {
-        assertRunStatusTransition(existingRun, run.status, 'driver');
-      }
-      validateRunInvariants(
-        run,
-        existingRun !== null && existingRun.id === run.id ? existingRun : null
-      );
-      this.refuseIfClaimLost(queueId);
-      if (isFencedClaim(claim)) {
-        const f = await checkCommitFence(
-          this.ownershipRegistry,
-          claim,
-          queueId,
-          'Run',
-          this.scheduler
-        );
-        if (f !== null) this.refuseCommit(f, claim, queueId);
-      }
-      const currentQueue = this.getQueue(queueId);
-      const mutation = mutateQueue(currentQueue);
-      const nextQueue = ensureExtendedQueueShape({
-        ...mutation.queue,
-        requests: compactRequestPositions(mutation.queue.requests),
-        updatedAt: Date.now()
-      });
-      const stampedRun = isFencedClaim(claim) ? { ...run, writtenAtFence: claim.fence } : run;
-      const prevRawRunMap = this.memento.get<unknown>(KEYS.run);
-      const prevRunMap = this.readRunMap();
-      const nextRunMap = { ...prevRunMap, [queueId]: stampedRun };
-      const nextQueueMap = { ...this.readQueueMap(), [queueId]: nextQueue };
-      result = mutation.result;
-      if (this.rawMemento.updateBatch) {
-        await this.writeGate.writeBatch([
-          { key: KEYS.run, value: nextRunMap },
-          { key: KEYS.queue, value: nextQueueMap }
-        ]);
-      } else {
-        await this.memento.update(KEYS.run, nextRunMap);
-        try {
-          await this.memento.update(KEYS.queue, nextQueueMap);
-        } catch (queueErr) {
-          try {
-            await this.memento.update(KEYS.run, prevRawRunMap);
-          } catch {
-            // Best-effort compensating rollback on legacy Memento without batch transactions.
-          }
-          throw queueErr;
-        }
-      }
-    }).then(() => {
-      this.notify(KEYS.run);
-      this.notify(KEYS.queue);
-      return result;
-    });
+    return runsFamily.admitRunAtomically(this.familyContext, queueId, run, mutateQueue, claim);
   }
 
-  /**
-   * Feature 093 (T048) — every in-flight terminal transition, keyed by run id.
-   *
-   * The journal used to be one intent for the whole window. Two Runs reaching a
-   * terminal status at once meant the second `begin()` overwrote the first's
-   * intent and the first `complete()` cleared the record for both, so a crash
-   * between the second Run's record write and its queue/history projection had
-   * nothing left to replay — the durability the journal exists for, lost
-   * precisely when two Runs are executing.
-   *
-   * A legacy single-intent value is **lifted**, not dropped: it is the record of
-   * a terminal transition that has not finished projecting, and discarding it on
-   * the upgrade read would strand exactly the crash it was written for.
-   */
   public getTerminalTransitionIntents(): Readonly<Record<string, TerminalTransitionIntent>> {
-    const value = this.memento.get<unknown>(KEYS.terminalTransitionIntent);
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-    const legacy = asTerminalTransitionIntent(value);
-    if (legacy) return { [legacy.run.id]: legacy };
-    const entries: Record<string, TerminalTransitionIntent> = {};
-    for (const [runId, raw] of Object.entries(value as Record<string, unknown>)) {
-      const intent = asTerminalTransitionIntent(raw);
-      if (intent) entries[runId] = intent;
-    }
-    return entries;
+    return runsFamily.getTerminalTransitionIntents(this.familyContext);
   }
 
   public setTerminalTransitionIntent(
     runId: string,
     intent: TerminalTransitionIntent | null
   ): Promise<void> {
-    return this.serialize(KEYS.terminalTransitionIntent, () => {
-      const next = { ...this.getTerminalTransitionIntents() };
-      if (intent === null) delete next[runId];
-      else next[runId] = intent;
-      return this.memento.update(KEYS.terminalTransitionIntent, next);
-    }).then(() => this.notify(KEYS.terminalTransitionIntent));
+    return runsFamily.setTerminalTransitionIntent(this.familyContext, runId, intent);
   }
 
-  /**
-   * FR-R4-F01 (contract C2, research R2 #1) — remove the journalled intent for
-   * `runId` only if it is the one this caller wrote, and say whether it did.
-   *
-   * A window whose terminal commit was refused for lost ownership must not leave
-   * its outcome journalled: a later `replay()` would write it over the winner. But
-   * it must not clear the winner's intent either, and the intent is keyed by Run
-   * id, which both windows share. `createdAt` is what tells them apart, so the
-   * comparison and the delete are one link of the intent's own chain: a bare
-   * `setTerminalTransitionIntent(runId, null)` would be a read-then-delete with a
-   * rival's write able to land between the two.
-   */
-  public async removeTerminalIntentIfOwn(runId: string, createdAt: number): Promise<boolean> {
-    let removed = false as boolean;
-    await this.serialize(KEYS.terminalTransitionIntent, () => {
-      const intents: Readonly<Partial<Record<string, TerminalTransitionIntent>>> =
-        this.getTerminalTransitionIntents();
-      if (intents[runId]?.createdAt !== createdAt) return Promise.resolve();
-      const next = { ...intents };
-      delete next[runId];
-      removed = true;
-      return this.memento.update(KEYS.terminalTransitionIntent, next);
-    });
-    if (removed) this.notify(KEYS.terminalTransitionIntent);
-    return removed;
+  public removeTerminalIntentIfOwn(runId: string, createdAt: number): Promise<boolean> {
+    return runsFamily.removeTerminalIntentIfOwn(this.familyContext, runId, createdAt);
+  }
+
+  public drainRunQuarantineEvents(): ReadonlyArray<{
+    readonly eventType: 'run-record-quarantined';
+    readonly payload: RunRecordQuarantinedPayload;
+  }> {
+    return runsFamily.drainRunQuarantineEvents(this.familyContext);
+  }
+
+  // ── Locks, Leases, Watchdog & Operator Pseudonym ──────────────────────────────
+
+  public refreshLockMirrorGuarded(
+    claim: OwnershipClaim,
+    mirror: WorkspaceLock,
+    options: { readonly refreshHeartbeatAt?: number } = {}
+  ): Promise<GuardedWriteOutcome> {
+    return locksFamily.refreshLockMirrorGuarded(this.familyContext, claim, mirror, options);
   }
 
   public getLock(): WorkspaceLock | null {
-    return this.memento.get<WorkspaceLock>(KEYS.lock) ?? null;
+    return locksFamily.getLock(this.familyContext);
   }
 
   public setLock(lock: WorkspaceLock | null): Promise<void> {
-    return this.serialize(KEYS.lock, () => this.memento.update(KEYS.lock, lock)).then(() => {
-      this.notify(KEYS.lock);
-    });
+    return locksFamily.setLock(this.familyContext, lock);
   }
 
-  /**
-   * Feature 092 (T049, FR-031) — every queue's execution lease.
-   *
-   * Returned as a plain record so `ExecutionLeaseManager` owns the staleness
-   * arithmetic in one place; this accessor makes no judgement about whether a
-   * lease is live.
-   */
   public getExecutionLeases(): Record<string, ExecutionLease> {
-    const raw = this.memento.get<Record<string, ExecutionLease>>(KEYS.executionLeases);
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
-    return raw;
+    return locksFamily.getExecutionLeases(this.familyContext);
   }
 
   public setExecutionLease(queueId: string, lease: ExecutionLease | null): Promise<void> {
-    return this.serialize(KEYS.executionLeases, () => {
-      const next = { ...this.getExecutionLeases() };
-      if (lease === null) delete next[queueId];
-      else next[queueId] = lease;
-      return this.memento.update(KEYS.executionLeases, next);
-    }).then(() => {
-      this.notify(KEYS.executionLeases);
-    });
+    return locksFamily.setExecutionLease(this.familyContext, queueId, lease);
   }
 
   public getWatchdog(): WatchdogState {
-    return (
-      this.memento.get<WatchdogState>(KEYS.watchdog) ?? {
-        paused: false,
-        pausedSince: null,
-        nextPollAt: null,
-        pollIntervalMs: 30 * 60 * 1000,
-        lastStatusOk: null,
-        lastPollOutcome: null,
-        cause: null
-      }
-    );
+    return locksFamily.getWatchdog(this.familyContext);
   }
 
   public setWatchdog(state: WatchdogState): Promise<void> {
-    return this.serialize(KEYS.watchdog, () => {
-      assertWatchdogShape(state);
-      return this.memento.update(KEYS.watchdog, state);
-    }).then(() => {
-      this.notify(KEYS.watchdog);
-    });
+    return locksFamily.setWatchdog(this.familyContext, state);
   }
 
-  /**
-   * FR-R3-010 (T402) — every queue's history, keyed by queue id.
-   *
-   * Tolerates a legacy flat array on the same terms `readRunMap()` tolerates a
-   * single `WorkflowRun`: the migration is what converts it, but a read taken
-   * before `initialize()` has written must still answer, and answering `{}`
-   * would make a workspace with history read as empty on one path.
-   *
-   * A legacy array folds into `HISTORY_UNATTRIBUTED_QUEUE_ID` rather than into
-   * `DEFAULT_QUEUE_ID`, because at this level there is nothing to attribute
-   * *with* — the queue map is a different key and this function does not read
-   * it. The migrator does, and it is the one that files entries under the
-   * queues that actually own them.
-   */
-  private readHistoryMap(): PersistedHistoryMap {
-    const raw = this.memento.get<unknown>(KEYS.history);
-    if (raw === undefined || raw === null) return {};
-    if (Array.isArray(raw)) {
-      return raw.length > 0 ? { [HISTORY_UNATTRIBUTED_QUEUE_ID]: raw } : {};
-    }
-    if (typeof raw !== 'object') return {};
-    const map: PersistedHistoryMap = {};
-    for (const [queueId, entries] of Object.entries(raw as Record<string, unknown>)) {
-      if (Array.isArray(entries)) map[queueId] = entries;
-    }
-    return map;
+  public readOperatorPseudonym(): unknown {
+    return locksFamily.readOperatorPseudonym(this.familyContext);
   }
+
+  public writeOperatorPseudonym(value: {
+    readonly version: 1;
+    readonly pseudonym: string;
+  }): Promise<void> {
+    return locksFamily.writeOperatorPseudonym(this.familyContext, value);
+  }
+
+  // ── History ───────────────────────────────────────────────────────────────────
 
   public getHistoryMap(): Readonly<PersistedHistoryMap> {
-    return { ...this.readHistoryMap() };
+    return historyFamily.getHistoryMap(this.familyContext);
   }
 
-  /**
-   * Every queue's entries in one array, oldest first.
-   *
-   * An aggregate read, and named as one. It exists because the history pane
-   * shows the workspace's history rather than one queue's, so folding is the
-   * ordinary case rather than an escape hatch — the opposite of `KEYS.run`,
-   * where an ambient read picks a Run the operator was not looking at. Folding
-   * history picks nothing; it returns all of it.
-   */
   public getHistory(): PersistedHistoryEntry[] {
-    return Object.values(this.readHistoryMap()).flat();
+    return historyFamily.getHistory(this.familyContext);
   }
 
-  /**
-   * FR-R3-010 (T403) — append one entry to one queue's partition.
-   *
-   * Three things changed from the flat implementation this replaces:
-   *
-   * **The cap is per partition.** 50 entries used to be the workspace's whole
-   * history across up to 20 queues — an average of 2.5 runs each, and a single
-   * busy queue evicted every other queue's record of itself. It is now 50 per
-   * queue, which is the depth the constant always claimed to describe.
-   *
-   * **The dedupe scan is per partition too.** It was O(total history); it is
-   * now O(one queue's history), and it answers the same question — the same run
-   * id cannot terminate twice on two different queues.
-   *
-   * **The write is still a whole-map read-modify-write on this key's serialize
-   * chain.** Partitioning reduces the bytes a write carries; it does not add a
-   * second writer. A targeted per-partition write would need a facility the
-   * `Memento` does not have, and hand-rolling one is how two queues completing
-   * at the same moment drop each other's entry.
-   *
-   * Returns the entries the cap evicted, so the caller can clean up whatever it
-   * stored beside them. Eviction is the only moment an entry stops being
-   * reachable, and the store cannot do the cleanup itself without reaching for
-   * the filesystem from the persistence boundary.
-   */
-  public async appendHistory(
+  public appendHistory(
     queueId: string,
     entry: PersistedHistoryEntry
   ): Promise<readonly PersistedHistoryEntry[]> {
-    let evicted: readonly PersistedHistoryEntry[] = [];
-    await this.serialize(KEYS.history, async () => {
-      const map = this.readHistoryMap();
-      const existing = map[queueId] ?? [];
-      const incoming = entry as { runId?: unknown; terminalStatus?: unknown };
-      if (
-        typeof incoming.runId === 'string' &&
-        existing.some((candidate) => {
-          const prior = candidate as { runId?: unknown; terminalStatus?: unknown };
-          return prior.runId === incoming.runId && prior.terminalStatus === incoming.terminalStatus;
-        })
-      ) return;
-      const next = [...existing, entry];
-      const overflow = next.length - HISTORY_CAP_PER_QUEUE;
-      const trimmed = overflow > 0 ? next.slice(overflow) : next;
-      evicted = overflow > 0 ? next.slice(0, overflow) : [];
-      const updatedMap: PersistedHistoryMap = { ...map, [queueId]: trimmed };
-      const prunedMap = this.pruneExcessDeletedHistoryPartitions(updatedMap) ?? updatedMap;
-      await this.memento.update(KEYS.history, prunedMap);
-    });
-    this.notify(KEYS.history);
-    return evicted;
+    return historyFamily.appendHistory(this.familyContext, queueId, entry);
   }
 
-  // Feature 063 (FR-021) — suppression memento accessors. Narrowing and
-  // merge logic lives in `./confirm-suppression.ts` so this file stays
-  // focused on the persistence boundary.
-  public getConfirmSuppression(): import('./confirm-suppression').ConfirmSuppressionState {
-    return readConfirmSuppression(this.memento.get<unknown>(KEYS.confirmSuppression));
+  // ── Grants & Suppression ──────────────────────────────────────────────────────
+
+  public getConfirmSuppression(): ConfirmSuppressionState {
+    return grantsFamily.getConfirmSuppression(this.familyContext);
   }
 
-  public async setConfirmSuppression(actionKey: string, suppressed: boolean): Promise<void> {
-    const next = writeConfirmSuppression(this.getConfirmSuppression(), actionKey, suppressed);
-    await this.memento.update(KEYS.confirmSuppression, next);
+  public setConfirmSuppression(actionKey: string, suppressed: boolean): Promise<void> {
+    return grantsFamily.setConfirmSuppression(this.familyContext, actionKey, suppressed);
   }
 
-  /**
-   * FR-R3-146 (FR-006, FR-011) — the durable Git-plan grants. Narrowing, and the
-   * reasoning for its totality, are in `./git-plan-grants.ts`.
-   *
-   * Read per consultation, never captured: an operator who clears state
-   * mid-session means it. Warned once per distinct problem, not once per
-   * consultation — a drain asks on every task, and a corrupt entry is not news
-   * twenty times (the rule `unfencedQueuesWarned` already applies).
-   */
   public getGitPlanGrants(): GitPlanGrantMap {
-    const result = readGitPlanGrants(this.memento.get<unknown>(KEYS.gitPlanGrants));
-    for (const problem of result.problems) {
-      if (this.gitPlanGrantProblemsWarned.has(problem)) continue;
-      this.gitPlanGrantProblemsWarned.add(problem);
-      this.logger?.warn(`workspace-state: ${KEYS.gitPlanGrants}: ${problem}`);
-    }
-    return result.grants;
+    return grantsFamily.getGitPlanGrants(this.familyContext, this.grantsWarned);
   }
 
-  /** Is this exact plan granted here? `hasOwnProperty`, so a stored `toString` cannot consent. */
   public hasGitPlanGrant(fingerprint: string): boolean {
-    return Object.prototype.hasOwnProperty.call(this.getGitPlanGrants(), fingerprint);
+    return grantsFamily.hasGitPlanGrant(this.familyContext, this.grantsWarned, fingerprint);
   }
 
-  /** Record one grant; only the modal's `'persist'` decision reaches here. */
-  public async recordGitPlanGrant(grant: GitPlanGrant): Promise<void> {
-    const next = writeGitPlanGrant(this.getGitPlanGrants(), grant);
-    await this.memento.update(KEYS.gitPlanGrants, next);
+  public recordGitPlanGrant(grant: GitPlanGrant): Promise<void> {
+    return grantsFamily.recordGitPlanGrant(this.familyContext, this.grantsWarned, grant);
   }
 
-  /**
-   * FR-R3-146 (FR-012) — withdraw one grant. `true` when something was removed.
-   *
-   * The other half of a durable grant, and the half that shipped without a
-   * caller: FR-012 requires that a grant stay revocable and that removing it
-   * restore the prompt, and the only route the documentation offered was editing
-   * a `.schegent/state.json` that does not exist. `schegent.gitApprovals` is the
-   * route now, and this is what it calls.
-   *
-   * Read-modify-write over the LIVE map rather than one the caller passes in,
-   * for the reason `recordGitPlanGrant` does it that way: a list rendered in a
-   * QuickPick spans however long the operator takes to read it, and another
-   * window may have granted something in between. Withdrawing what the operator
-   * chose must not delete what they never saw.
-   */
-  public async forgetGitPlanGrant(fingerprint: string): Promise<boolean> {
-    const next = forgetGitPlanGrant(this.getGitPlanGrants(), fingerprint);
-    if (next === null) return false;
-    await this.memento.update(KEYS.gitPlanGrants, next);
-    return true;
+  public forgetGitPlanGrant(fingerprint: string): Promise<boolean> {
+    return grantsFamily.forgetGitPlanGrant(this.familyContext, this.grantsWarned, fingerprint);
   }
 
-  /** Withdraw every grant in this workspace; returns how many there were. */
-  public async forgetAllGitPlanGrants(): Promise<number> {
-    const count = Object.keys(this.getGitPlanGrants()).length;
-    // Written even at zero: the key may hold a value the reader dropped as
-    // malformed, and "forget everything" has to clear that too. `getGitPlanGrants`
-    // reports 0 for it, so an early return on the count would leave the one shape
-    // an operator most wants gone.
-    await this.memento.update(KEYS.gitPlanGrants, {});
-    return count;
+  public forgetAllGitPlanGrants(): Promise<number> {
+    return grantsFamily.forgetAllGitPlanGrants(this.familyContext, this.grantsWarned);
   }
 
-  /** FR-R7-04 — durable per-workspace repository agent config acknowledgements (`./agent-config-grants.ts`). */
   public getAgentConfigGrants(): AgentConfigGrantMap {
-    const result = readAgentConfigGrants(this.memento.get<unknown>(KEYS.agentConfigGrants));
-    for (const problem of result.problems) {
-      if (this.agentConfigGrantProblemsWarned.has(problem)) continue;
-      this.agentConfigGrantProblemsWarned.add(problem);
-      this.logger?.warn(`workspace-state: ${KEYS.agentConfigGrants}: ${problem}`);
-    }
-    return result.grants;
+    return grantsFamily.getAgentConfigGrants(this.familyContext, this.grantsWarned);
   }
 
-  public hasAgentConfigGrant(fingerprint: string, backend?: import('../contracts/backend-kinds').BackendRunnerKind): boolean {
-    const grants = this.getAgentConfigGrants();
-    if (!Object.prototype.hasOwnProperty.call(grants, fingerprint)) return false;
-    return backend === undefined || grants[fingerprint].backend === backend;
+  public hasAgentConfigGrant(fingerprint: string, backend?: BackendRunnerKind): boolean {
+    return grantsFamily.hasAgentConfigGrant(
+      this.familyContext,
+      this.grantsWarned,
+      fingerprint,
+      backend
+    );
   }
 
-  public latestAgentConfigGrantForBackend(backend: import('../contracts/backend-kinds').BackendRunnerKind): AgentConfigGrant | null {
-    return latestGrantForBackend(this.getAgentConfigGrants(), backend);
+  public latestAgentConfigGrantForBackend(backend: BackendRunnerKind): AgentConfigGrant | null {
+    return grantsFamily.latestAgentConfigGrantForBackend(
+      this.familyContext,
+      this.grantsWarned,
+      backend
+    );
   }
 
-  public async recordAgentConfigGrant(grant: AgentConfigGrant): Promise<void> {
-    const next = writeAgentConfigGrant(this.getAgentConfigGrants(), grant);
-    await this.memento.update(KEYS.agentConfigGrants, next);
+  public recordAgentConfigGrant(grant: AgentConfigGrant): Promise<void> {
+    return grantsFamily.recordAgentConfigGrant(this.familyContext, this.grantsWarned, grant);
   }
 
-  public async forgetAgentConfigGrant(fingerprint: string): Promise<boolean> {
-    const next = forgetAgentConfigGrant(this.getAgentConfigGrants(), fingerprint);
-    if (next === null) return false;
-    await this.memento.update(KEYS.agentConfigGrants, next);
-    return true;
+  public forgetAgentConfigGrant(fingerprint: string): Promise<boolean> {
+    return grantsFamily.forgetAgentConfigGrant(this.familyContext, this.grantsWarned, fingerprint);
   }
 
-  public async forgetAllAgentConfigGrants(): Promise<number> {
-    const count = Object.keys(this.getAgentConfigGrants()).length;
-    await this.memento.update(KEYS.agentConfigGrants, {});
-    return count;
+  public forgetAllAgentConfigGrants(): Promise<number> {
+    return grantsFamily.forgetAllAgentConfigGrants(this.familyContext, this.grantsWarned);
   }
 
-  /**
-   * Feature 088 (FR-006, FR-007) — the connected-run collection.
-   *
-   * Narrowing and the v8 → v9 lift live in `./connected-run-migrator.ts`; an
-   * absent key reads as an empty collection. A record that fails the aggregate's
-   * invariants is named in a WARN rather than dropped silently.
-   *
-   * FR-R4-F08 — named once per distinct set, not once per read. The sidebar composes
-   * this on every pass and once more per Run card, and a log line is what schedules
-   * the next pass, so a WARN per read was a loop (F-T9, `projection-feedback.test.ts`).
-   * Feature 261 FR-011 — a refused record stays in the key until an explicit `reset()`.
-   */
+  // ── Connected Runs, Control Ledger & Reset ────────────────────────────────────
+
   public getConnectedRuns(): Readonly<Record<string, ConnectedWorkflowRun>> {
-    return this.readConnectedRunCollection().runs;
-  }
-
-  private readConnectedRunCollection(): ReturnType<typeof migrateConnectedRuns> {
-    const result = migrateConnectedRuns(this.memento.get<unknown>(KEYS.connectedRuns));
-    const dropped = result.dropped.length === 0 ? null : result.dropped.join(', ');
-    if (dropped !== this.connectedRunDropsWarned) {
-      this.connectedRunDropsWarned = dropped;
-      if (dropped !== null) this.logger?.warn(connectedRunRefusalWarning(result));
-    }
-    return result;
+    return connectedFamily.getConnectedRuns(this.familyContext, this.connectedRunsWarned);
   }
 
   public getConnectedRun(connectedRunId: string): ConnectedWorkflowRun | null {
-    return this.getConnectedRuns()[connectedRunId] ?? null;
+    return connectedFamily.getConnectedRun(
+      this.familyContext,
+      this.connectedRunsWarned,
+      connectedRunId
+    );
   }
 
-  /**
-   * The single write path for connected-run state (FR-046).
-   *
-   * Compare-and-set, not last-writer-wins: `expectedRevision` is the revision
-   * the caller read, `0` for a run that does not exist yet, and the write is
-   * refused with the authoritative record when it does not match. The refusal
-   * carries `current` so a stale caller can correct itself in one round trip
-   * instead of re-reading and racing again.
-   *
-   * The stored revision must advance, but not necessarily by one: a caller may
-   * compose several in-memory mutations — creating a run and recording its
-   * first attempt is the common case — and persist them in a single write. Each
-   * helper still increments by exactly one, so the count of mutations remains
-   * readable from the revision.
-   *
-   * Serialized on the key, so two accepted writes cannot interleave between
-   * their read and their update.
-   */
-  public async compareAndSetConnectedRun(
+  public compareAndSetConnectedRun(
     next: ConnectedWorkflowRun,
     expectedRevision: number
   ): Promise<ConnectedRunWriteResult> {
-    let result = staleConnectedRunWrite(null);
-    await this.serialize(KEYS.connectedRuns, async () => {
-      const { runs, refused } = this.readConnectedRunCollection();
-      // A refused record holds this id, and replacing it is the deletion feature 261 FR-011 forbids.
-      if (Object.hasOwn(refused, next.connectedRunId)) return;
-      const current = runs[next.connectedRunId] ?? null;
-      if ((current?.revision ?? 0) !== expectedRevision || next.revision <= expectedRevision) {
-        result = staleConnectedRunWrite(current);
-        return;
-      }
-      // FR-R5-F08 — fence connected-run writes against lost or superseded queue
-      // execution leases and workspace primacy so a non-primary or superseded
-      // window cannot overwrite a rival primary's connected-run state.
-      const boundQueueId = next.queueId;
-      const claimSource = this.runClaimSource;
-      if (
-        boundQueueId !== undefined &&
-        claimSource?.tenureOf?.(boundQueueId).state === 'lost'
-      ) {
-        result = staleConnectedRunWrite(current);
-        return;
-      }
-      if (boundQueueId !== undefined && claimSource !== null) {
-        const queueClaim = claimSource.claimFor(boundQueueId);
-        if (queueClaim !== null) {
-          const f = await checkCommitFence(
-            this.ownershipRegistry,
-            queueClaim,
-            boundQueueId,
-            'Run',
-            this.scheduler
-          );
-          if (f !== null) {
-            if (f.reason === 'fence-superseded') {
-              const currentClaim = claimSource.claimFor(boundQueueId);
-              if (currentClaim?.ownerId === queueClaim.ownerId && currentClaim.fence === queueClaim.fence) {
-                claimSource.markLost?.(boundQueueId, 'superseded');
-              }
-            }
-            result = staleConnectedRunWrite(current);
-            return;
-          }
-        }
-      }
-      if (
-        this.primacyClaimSource !== null &&
-        !(await this.primacyClaimSource.canCommitConnectedRun())
-      ) {
-        result = staleConnectedRunWrite(current);
-        return;
-      }
-      // A violation here is a defect in the caller, not an operator-facing
-      // outcome, so it throws rather than joining the refusal arm.
-      //
-      // Feature 092 (T078, FR-045) — the registry is supplied here and only
-      // here. This is the single write path, so it is the one place that both
-      // holds the registry and sees every candidate record; the aggregate
-      // module itself must stay registry-free because the migrator loads it
-      // with nothing but a memento.
-      assertConnectedRunInvariants(next, {
-        knownQueueIds: new Set(this.getQueueRegistry().entries.map((entry) => entry.id))
-      });
-      await this.memento.update(KEYS.connectedRuns, { ...refused, ...runs, [next.connectedRunId]: next });
-      result = { outcome: 'written', run: next };
-    });
-    if (result.outcome === 'written') this.notify(KEYS.connectedRuns);
-    return result;
+    return connectedFamily.compareAndSetConnectedRun(
+      this.familyContext,
+      this.connectedRunsWarned,
+      next,
+      expectedRevision
+    );
   }
 
-  /**
-   * Feature 092 (T083, FR-016a) — terminate connected runs outright.
-   *
-   * The aggregate stores no lifecycle, so there is no `status` to set to
-   * `terminated`; removing the record IS the termination. No compare-and-set:
-   * the caller is a confirmed queue deletion, and the queue these runs are
-   * bound to no longer exists, so there is no revision at which keeping one
-   * would be correct.
-   *
-   * Serialized on the same key as the write path, so a delete cannot interleave
-   * between a compare-and-set's read and its update. A refused record stays, even when named.
-   */
-  public async deleteConnectedRuns(connectedRunIds: readonly string[]): Promise<number> {
-    if (connectedRunIds.length === 0) return 0;
-    let removed = 0;
-    await this.serialize(KEYS.connectedRuns, async () => {
-      const after = connectedRunsWithout(this.readConnectedRunCollection(), connectedRunIds);
-      removed = after.removed;
-      if (removed === 0) return;
-      await this.memento.update(KEYS.connectedRuns, after.stored);
-    });
-    if (removed > 0) this.notify(KEYS.connectedRuns);
-    return removed;
+  public deleteConnectedRuns(connectedRunIds: readonly string[]): Promise<number> {
+    return connectedFamily.deleteConnectedRuns(
+      this.familyContext,
+      this.connectedRunsWarned,
+      connectedRunIds
+    );
   }
 
-  /**
-   * FR-R5-F26 (SPEC-04, D4) — read the raw persisted `schegent.controlLedger` value.
-   */
   public getRawControlLedger(): unknown {
-    return this.memento.get<unknown>(KEYS.controlLedger);
+    return connectedFamily.getRawControlLedger(this.familyContext);
   }
 
-  /**
-   * FR-R5-F26 (SPEC-04, D4) — execute a serialized read-modify-write against
-   * `KEYS.controlLedger` on the store's per-key serialization chain so writes
-   * order cleanly against `reset()` (`serializeAcrossKeys`).
-   */
-  public async transactControlLedger<T>(
-    op: (
-      raw: unknown,
-      write: (next: unknown) => Promise<void>
-    ) => Promise<T>
+  public transactControlLedger<T>(
+    op: (raw: unknown, write: (next: unknown) => Promise<void>) => Promise<T>
   ): Promise<T> {
-    let outcome!: T;
-    const state = { didWrite: false };
-    await this.serialize(KEYS.controlLedger, async () => {
-      const current = this.memento.get<unknown>(KEYS.controlLedger);
-      outcome = await op(current, async (next: unknown) => {
-        await this.memento.update(KEYS.controlLedger, next);
-        state.didWrite = true;
-      });
-    });
-    if (state.didWrite) {
-      this.notify(KEYS.controlLedger);
-    }
-    return outcome;
+    return connectedFamily.transactControlLedger(this.familyContext, op);
   }
 
-  /** The marker as persisted, or `null` when absent or unreadable. */
   public getResetMarker(): ResetMarker | null {
-    const raw = this.memento.get<unknown>(KEYS.resetMarker);
-    return isResetMarker(raw) ? raw : null;
+    return connectedFamily.getResetMarker(this.familyContext);
   }
 
-  /**
-   * Feature FR-R3-006 (T339, T340, T341) — the clear, as a transaction.
-   *
-   * Three things changed and each closes a distinct defect:
-   *
-   * **It goes through the serialize chain.** The old implementation was a bare
-   * `Promise.all` of `memento.update` calls, which is the one write path in this
-   * store that does not queue behind the per-key chain. A `setRun` or
-   * `updateQueue` already in flight could therefore land *after* its key was
-   * cleared, recreating it. `serializeAcrossKeys` takes every affected chain, so
-   * a concurrent write either completes wholly before the clear or queues behind
-   * it — never inside it.
-   *
-   * **It clears every key.** `RESET_CLEARED_KEYS` is derived from `KEYS` minus
-   * `RESET_EXEMPT_KEYS` rather than hand-listed, so a key added to `KEYS` is
-   * cleared by construction. The hand-maintained list this replaces had missed
-   * `executionLeases` and `concurrencyNotice` — the first of which is precisely
-   * the state an operator reaches for reset to clear.
-   *
-   * **It is bracketed by the marker.** The marker is advanced to `in-progress`
-   * before the first clear and to `complete` after the last, so a host that dies
-   * mid-clear leaves a workspace that says so. Both marker writes are inside the
-   * same serialized section as the clear, because a marker that could interleave
-   * with the clear it brackets would describe the wrong thing.
-   *
-   * Cleared to `undefined`, never to an empty value: feature 093's note on
-   * `KEYS.run` generalizes, and `{}` would make the cleared state a stored value
-   * rather than an absent one.
-   *
-   * Returns the generation it committed, which is what the command layer puts in
-   * the audit event (T348). A generation number is safe there in a way nothing
-   * else about a reset is: it is a counter this build produced, not a path, a
-   * task description, or anything the operator wrote.
-   */
-  public async reset(): Promise<number> {
-    this.writeGate.lift();
-    const generation = nextResetGeneration(this.getResetMarker());
-    await this.serializeAcrossKeys([...RESET_CLEARED_KEYS, KEYS.resetMarker], async () => {
-      await this.memento.update(KEYS.resetMarker, {
-        generation,
-        status: 'in-progress'
-      } satisfies ResetMarker);
-      for (const key of RESET_CLEARED_KEYS) {
-        await this.memento.update(key, undefined);
-      }
-      await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
-      await this.memento.update(KEYS.resetMarker, {
-        generation,
-        status: 'complete'
-      } satisfies ResetMarker);
-    });
-    return generation;
+  public reset(): Promise<number> {
+    return connectedFamily.resetWorkspaceState(this.familyContext);
   }
 
-  /**
-   * Feature FR-R3-006 (T346) — finish a reset the host did not survive.
-   *
-   * Called from the activation path when the persisted marker still reads
-   * `in-progress`. It re-runs the clear at the *same* generation rather than
-   * claiming a new one, because this is the completion of one reset and not a
-   * second: advancing would make the generation count how many times a reset was
-   * attempted rather than how many the workspace has had.
-   *
-   * Re-running is safe because clearing is idempotent — every key is set to
-   * `undefined` whether or not the first attempt reached it — and re-running is
-   * the *only* safe response, since a partial clear is indistinguishable from a
-   * complete one by inspection. Reporting without finishing would leave the
-   * workspace in the state this feature exists to make impossible.
-   *
-   * Returns the generation it completed, or `null` when there was nothing to
-   * finish, so the caller can decide whether to audit.
-   */
-  public async completeInterruptedReset(): Promise<number | null> {
-    const marker = this.getResetMarker();
-    if (!isResetInterrupted(marker)) return null;
-    this.writeGate.lift();
-    const generation = marker!.generation;
-    await this.serializeAcrossKeys([...RESET_CLEARED_KEYS, KEYS.resetMarker], async () => {
-      for (const key of RESET_CLEARED_KEYS) {
-        await this.memento.update(key, undefined);
-      }
-      await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
-      await this.memento.update(KEYS.resetMarker, {
-        generation,
-        status: 'complete'
-      } satisfies ResetMarker);
-    });
-    return generation;
+  public completeInterruptedReset(): Promise<number | null> {
+    return connectedFamily.completeInterruptedReset(this.familyContext);
   }
 
-  /**
-   * Feature FR-R3-006 (T340) — `serialize`, widened to a set of keys.
-   *
-   * `serialize` orders writes against one key's chain, which is right for every
-   * ordinary write because each touches one key. Reset touches all of them at
-   * once, and ordering it against any single chain would leave the other keys
-   * unguarded — the same hole as not serializing at all, just narrower.
-   *
-   * So it waits on every named chain and then installs itself as every named
-   * chain. `Promise.all` over the predecessors is not a barrier being added
-   * where a pipeline would do: it is the definition of "after everything already
-   * queued", which is exactly what a clear has to mean.
-   *
-   * Failures are swallowed into the stored chain and rethrown to the caller,
-   * matching `serialize` — a failed reset must not wedge every subsequent write
-   * on a rejected promise.
-   */
+  // ── Single Serialization Chain (Hard Rule 58) ─────────────────────────────────
+
   private serializeAcrossKeys(
     keys: readonly string[],
     op: () => Thenable<void> | Promise<void>
@@ -3959,24 +922,4 @@ export class WorkspaceStateStore {
     );
     return next;
   }
-}
-
-function compactRequestPositions(requests: readonly FeatureRequest[]): FeatureRequest[] {
-  const buckets = new Map<string, FeatureRequest[]>();
-  for (const request of requests) {
-    const queueId = request.queueId || DEFAULT_QUEUE_ID;
-    const bucket = buckets.get(queueId) ?? [];
-    bucket.push({ ...request, queueId });
-    buckets.set(queueId, bucket);
-  }
-  const positioned = new Map<string, FeatureRequest>();
-  for (const bucket of buckets.values()) {
-    bucket
-      .slice()
-      .sort((a, b) => a.position - b.position)
-      .forEach((request, position) => {
-        positioned.set(request.id, { ...request, position });
-      });
-  }
-  return requests.map((request) => positioned.get(request.id) ?? request);
 }

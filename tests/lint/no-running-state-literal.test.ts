@@ -143,7 +143,9 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // projection; extracted from `queue-manager.ts` above so both it and
   // `commands/restart-canceled-task.ts` share one definition of the held/unheld
   // distinction.
-  'src/queue/queue-lifecycle-refresh.ts',
+  // FR-R7-07 — relocated from `src/queue/queue-lifecycle-refresh.ts` to `src/contracts/`
+  // so `src/state/` can refresh unheld queue lifecycles without value-importing `src/queue/`.
+  'src/contracts/queue-lifecycle-refresh.ts',
   // Feature 065 — `QueueLifecycle = 'running' | ...` union (FR-001..FR-005).
   // The literal is the lifecycle discriminator, not the pinned task-status
   // projection, and is required by the lifecycle entity.

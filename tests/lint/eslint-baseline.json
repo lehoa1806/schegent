@@ -22,7 +22,7 @@
   ],
   "rules": {
     "@typescript-eslint/no-unnecessary-condition": {
-      "host": 401,
+      "host": 391,
       "webview": 215,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
@@ -56,7 +56,6 @@
         "src/monitor/cli-transport-sink.ts": 1,
         "src/parser/stream-json-unwrapper.ts": 3,
         "src/queue/queue-manager.ts": 2,
-        "src/queue/queue-registry.ts": 2,
         "src/runner/child-completion.ts": 1,
         "src/runner/claude-cli.ts": 1,
         "src/runner/zipped-stream-buffer.ts": 1,
@@ -90,7 +89,8 @@
         "src/state/history-entry.ts": 1,
         "src/state/queue-state-migrator.ts": 3,
         "src/state/workflow-run.ts": 1,
-        "src/state/workspace-state.ts": 12,
+        "src/state/workspace-state-types.ts": 1,
+        "src/state/workspace-state.ts": 2,
         "src/telemetry/platform/platform-ps.ts": 4,
         "src/telemetry/platform/platform-windows.ts": 4,
         "src/ui/sidebar/audit-tail-projector.ts": 1,
@@ -150,6 +150,7 @@
         "tests/integration/run-request/catalog-version-provenance.test.ts": 4,
         "tests/integration/run-request/pipeline-enqueue.test.ts": 9,
         "tests/lint/catalog-purity.test.ts": 1,
+        "tests/lint/layer-dependency-direction.test.ts": 1,
         "tests/lint/no-envelope-reconstruction.test.ts": 1,
         "tests/lint/platform-branch-has-record-row.test.ts": 1,
         "tests/lint/process-yaml-grammar-frozen.test.ts": 1,

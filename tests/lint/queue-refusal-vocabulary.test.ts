@@ -69,7 +69,7 @@ function codesIn(body: string): readonly string[] {
 }
 
 const QUEUE_MANAGER = read('src', 'queue', 'queue-manager.ts');
-const WORKSPACE_STATE = read('src', 'state', 'workspace-state.ts');
+const WORKSPACE_STATE_QUEUE = read('src', 'state', 'workspace-state-queue.ts');
 const SCHEDULE_PARSER = read('src', 'lib', 'schedule-parser.ts');
 const VALIDATORS = read('src', 'contracts', 'generated', 'validators', 'queue-management.ts');
 const IPC_MODULE = read('webview-ui', 'src', 'lib', 'queue-control-ipc.ts');
@@ -153,7 +153,7 @@ function derivedCodes(): readonly string[] {
     ...codesIn(methodBody(QUEUE_MANAGER, 'public queueDeletionImpact(')),
     ...codesIn(methodBody(QUEUE_MANAGER, 'public async moveTask(')),
     ...codesIn(methodBody(QUEUE_MANAGER, 'public async saveQueueSettings(')),
-    ...codesIn(methodBody(WORKSPACE_STATE, 'public async movePendingRequest(')),
+    ...codesIn(methodBody(WORKSPACE_STATE_QUEUE, 'export async function movePendingRequest(')),
     ...codesIn(SCHEDULE_PARSER),
     ...codesIn(VALIDATORS),
     ...codesIn(CLEAR_QUEUE_ORCHESTRATOR),

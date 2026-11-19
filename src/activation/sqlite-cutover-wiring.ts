@@ -400,7 +400,12 @@ async function openPrimarySqliteServices(
     input.operationalMemento?.configureDetachedTrustedSqliteWriter({
       databasePath: expectedDatabasePath,
       scopeId,
-      canWrite: () => deps.isWorkspaceTrusted()
+      canWrite: () => deps.isWorkspaceTrusted(),
+      openStore: (databasePath) =>
+        new SqliteApplicationStore({
+          databasePath,
+          journalMode: 'wal'
+        })
     });
     if (input.catalogFs !== undefined) {
       await input.catalogFs.attachSqlite(sqliteStore, scopeId);
