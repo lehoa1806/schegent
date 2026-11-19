@@ -164,6 +164,14 @@ export function toolUseBody(toolName: string, inputValue: unknown): PhaseLogDisp
 }
 
 const CLAUDE_SYSTEM_SKIPPED_KEYS: ReadonlySet<string> = new Set(['type', 'subtype']);
+const CODEX_RESULT_SKIPPED_KEYS: ReadonlySet<string> = new Set(['type', 'usage']);
+
+function codexTurnCompletedSummary(rec: AnyRecord): string {
+  const parts = scalarSummaryParts(rec, CODEX_RESULT_SKIPPED_KEYS);
+  const usage = rec['usage'];
+  if (usage !== undefined) parts.push(`usage=${safeStringify(usage)}`);
+  return parts.length === 0 ? 'result' : parts.join(' ');
+}
 
 export function projectStreamJsonlLine(line: unknown): PhaseLogDisplayEntry | null {
   const rec = asRecord(line);
@@ -177,13 +185,18 @@ export function projectStreamJsonlLine(line: unknown): PhaseLogDisplayEntry | nu
       return extractUserBlock(rec);
     case 'system': {
       const subtype = asString(rec['subtype']) ?? '';
+      const explicitSummary =
+        subtype === 'acp-plan' || subtype === 'acp-status' ? asString(rec['summary']) : undefined;
       return {
         seq: 0,
         kind: 'system',
         ts: null,
         body: {
           systemSubtype: subtype,
-          systemSummary: scalarSummaryParts(rec, CLAUDE_SYSTEM_SKIPPED_KEYS).join(' ')
+          systemSummary:
+            explicitSummary !== undefined
+              ? explicitSummary
+              : scalarSummaryParts(rec, CLAUDE_SYSTEM_SKIPPED_KEYS).join(' ')
         },
         bodyTruncated: null
       };
@@ -209,6 +222,14 @@ export function projectStreamJsonlLine(line: unknown): PhaseLogDisplayEntry | nu
         bodyTruncated: null
       };
     }
+    case 'turn.completed':
+      return {
+        seq: 0,
+        kind: 'result',
+        ts: null,
+        body: { resultSummary: codexTurnCompletedSummary(rec) },
+        bodyTruncated: null
+      };
     default:
       // Framing kinds (message_start, message_stop, content_block_*,
       // message_delta) and unknown types are dropped silently.

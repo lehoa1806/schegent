@@ -2001,4 +2001,262 @@ describe('Feature 265 BUG-002 (FR-014) — live-log recovery from phase-running-
       }
     });
   });
+
+  it('bounds empty-iteration re-probes across auditTail-only snapshot churn until the Run activity signal advances (BUG-004, T092, FR-029a)', async () => {
+    const emptyRunning = {
+      outcome: 'success' as const,
+      manifest: {
+        iterations: [],
+        selectedIteration: null,
+        entries: [],
+        skippedLines: 0,
+        truncatedCount: 0,
+        verboseDiagnosticsState: { kind: 'phase-running-no-output' as const },
+        isInFlight: true
+      }
+    };
+    readSpy.mockResolvedValue(emptyRunning);
+
+    const store = createPhaseLogStore();
+    const snap = buildSnapshot();
+    const { rerender } = render(PhaseLogFeed, {
+      props: {
+        snapshot: snap,
+        store,
+        autoFollow: false,
+        liveTarget: { inFlight: snap.queue.inFlight }
+      }
+    });
+
+    await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
+    expect(readSpy).toHaveBeenCalledTimes(1);
+
+    // Simulate 5 rapid snapshot pushes caused solely by phase-log-read audit appends.
+    for (let i = 1; i <= 5; i += 1) {
+      await rerender({
+        snapshot: {
+          ...snap,
+          producedAt: `2026-05-10T12:00:0${i}.000Z`,
+          auditTail: [
+            ...snap.auditTail,
+            {
+              id: `audit-read-${i}`,
+              timestamp: `2026-05-10T12:00:0${i}.000Z`,
+              runId: 'task:run-1',
+              phase: 'speckit-plan',
+              category: 'other',
+              summary: 'phase-log-read',
+              outcome: 'success'
+            }
+          ]
+        } as WorkflowSnapshot,
+        store,
+        autoFollow: false,
+        liveTarget: { inFlight: snap.queue.inFlight }
+      });
+      await tick();
+      await tick();
+      await tick();
+      await tick();
+    }
+
+    // Initial read (1) + at most one immediate snapshot re-probe (1) = 2 total, never 6.
+    expect(readSpy).toHaveBeenCalledTimes(2);
+    expect(startSpy).not.toHaveBeenCalled();
+
+    // Now the Run's own liveActivity advances and iter-1/stream.jsonl is ready.
+    readSpy.mockResolvedValueOnce({
+      outcome: 'success',
+      manifest: {
+        iterations: [1],
+        selectedIteration: 1,
+        entries: [],
+        skippedLines: 0,
+        truncatedCount: 0,
+        verboseDiagnosticsState: { kind: 'entries-present' },
+        isInFlight: true
+      }
+    });
+    const defaultInFlightRun = snap.queues.find((r) => r.inFlightRun !== null)?.inFlightRun ?? null;
+    const updatedQueues = snap.queues.map((runtime) =>
+      runtime.queueId === 'q-1' && defaultInFlightRun !== null
+        ? {
+            ...runtime,
+            inFlightRun: {
+              ...defaultInFlightRun,
+              liveActivity: {
+                ...defaultInFlightRun.liveActivity,
+                summary: 'stdout-chunk',
+                lastEventAt: '2026-05-10T12:00:10.000Z',
+                freshness: 'live' as const,
+                staleSeconds: 0
+              }
+            }
+          }
+        : runtime
+    );
+    await rerender({
+      snapshot: {
+        ...snap,
+        producedAt: '2026-05-10T12:00:10.000Z',
+        queues: updatedQueues
+      } as WorkflowSnapshot,
+      store,
+      autoFollow: false,
+      liveTarget: { inFlight: snap.queue.inFlight }
+    });
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    expect(readSpy).toHaveBeenCalledTimes(3);
+    expect(store.state.iterations).toEqual([1]);
+    expect(startSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('BUG-005 (SC-013): appends cursor-resumed live tail batches (seq 1..M) onto a multi-entry initial read (seq 0..N-1) without throwing each_key_duplicate or stopping the tail', async () => {
+    readSpy.mockResolvedValue({
+      outcome: 'success',
+      manifest: {
+        iterations: [1],
+        selectedIteration: 1,
+        entries: [
+          makePushEntry(0, 'read-entry-0', 'system'),
+          makePushEntry(1, 'read-entry-1', 'assistant-text'),
+          makePushEntry(2, 'read-entry-2', 'assistant-text')
+        ],
+        skippedLines: 0,
+        truncatedCount: 0,
+        cursor: 'plc1.read-end',
+        verboseDiagnosticsState: { kind: 'entries-present' },
+        isInFlight: true
+      }
+    });
+    startSpy.mockResolvedValue({
+      outcome: 'success',
+      sessionId: 'sess-A',
+      mechanism: 'fs.watch',
+      snapshotCutoff: 'plc1.read-end',
+      nextCursor: 'plc1.read-end',
+      cursorStatus: 'accepted'
+    });
+
+    const store = createPhaseLogStore();
+    const { container } = render(PhaseLogFeed, {
+      props: { snapshot: buildSnapshot(), store }
+    });
+
+    await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
+    await tick();
+    await tick();
+
+    expect(startSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 1
+      },
+      fromCursor: 'plc1.read-end'
+    });
+    expect(capturedBatchListener).not.toBeNull();
+    expect(container.querySelectorAll('[data-testid="phase-log-entry"]')).toHaveLength(3);
+
+    // Host PhaseLogTailSession starts with this.seq = 0 on accepted cursor resume, so its
+    // first batch is mode: 'resume' with entry.seq = 1, 2 (overlapping read-entry-1 & read-entry-2).
+    capturedBatchListener?.({
+      protocol: 1,
+      tailSessionId: 'sess-A',
+      batchSeq: 1,
+      generation: 'g-1',
+      mode: 'resume',
+      toCursor: 'plc1.tail-1',
+      entries: [
+        { at: 100, n: 0, entry: makePushEntry(1, 'live-resumed-1') },
+        { at: 200, n: 0, entry: makePushEntry(2, 'live-resumed-2') }
+      ]
+    });
+    await tick();
+    await tick();
+
+    // Next batch is mode: 'continue' with entry.seq = 3.
+    capturedBatchListener?.({
+      protocol: 1,
+      tailSessionId: 'sess-A',
+      batchSeq: 2,
+      generation: 'g-1',
+      mode: 'continue',
+      toCursor: 'plc1.tail-2',
+      entries: [{ at: 300, n: 0, entry: makePushEntry(3, 'live-continued-3') }]
+    });
+    await tick();
+    await tick();
+
+    expect(stopSpy).not.toHaveBeenCalled();
+    expect(container.querySelectorAll('[data-testid="phase-log-entry"]')).toHaveLength(6);
+
+    // Restart tail on the same selection (fromCursor: 'plc1.tail-2'); new host TailSession
+    // sess-B restarts its per-session seq at 1, 2 again.
+    startSpy.mockResolvedValueOnce({
+      outcome: 'success',
+      sessionId: 'sess-B',
+      mechanism: 'fs.watch',
+      snapshotCutoff: 'plc1.tail-2',
+      nextCursor: 'plc1.tail-2',
+      cursorStatus: 'accepted'
+    });
+    await store.startTail({
+      selection: {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 1
+      }
+    });
+    await tick();
+    await tick();
+
+    expect(startSpy).toHaveBeenLastCalledWith({
+      selection: {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 1
+      },
+      fromCursor: 'plc1.tail-2'
+    });
+
+    capturedBatchListener?.({
+      protocol: 1,
+      tailSessionId: 'sess-B',
+      batchSeq: 1,
+      generation: 'g-1',
+      mode: 'resume',
+      toCursor: 'plc1.tail-3',
+      entries: [
+        { at: 400, n: 0, entry: makePushEntry(1, 'live-resumed-sessB-1') },
+        { at: 500, n: 0, entry: makePushEntry(2, 'live-resumed-sessB-2') }
+      ]
+    });
+    await tick();
+    await tick();
+
+    const rows = Array.from(container.querySelectorAll('[data-testid="phase-log-entry"] .body')).map(
+      (el) => el.textContent.trim()
+    );
+    expect(rows).toEqual([
+      '',
+      'read-entry-1',
+      'read-entry-2',
+      'live-resumed-1',
+      'live-resumed-2',
+      'live-continued-3',
+      'live-resumed-sessB-1',
+      'live-resumed-sessB-2'
+    ]);
+  });
 });

@@ -22,6 +22,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import PhaseLogReadingPane from '../PhaseLogReadingPane.svelte';
+import {
+  PHASE_LOG_WINDOW_MAX_ENTRIES,
+  appendToWindow
+} from '../../../lib/phase-log-window';
 import type { PhaseLogDisplayEntry } from '../../../../../src/services/phase-log/types';
 
 afterEach(() => cleanup());
@@ -351,5 +355,107 @@ describe('FR-R4-F08 L-T3 — the pane at the live-tail cap', () => {
     const affordance = queryByTestId('phase-log-new-entries');
     expect(affordance, 'three trimmed pushes are three new entries').not.toBeNull();
     expect(affordance?.textContent ?? '').toMatch(/\b3\b/);
+  });
+});
+
+// Feature 020 BUG-005 (T095, FR-015, SC-013) — `readIterationManifest` numbers
+// initial entries `seq: 0..N-1`, whereas a cursor-resumed `PhaseLogTailSession`
+// starts its per-session counter at `seq: 1..M`. Appending live tail entries
+// onto an initial read of `N >= 2` entries (or across a second resumed tail
+// session) produces overlapping `seq` numbers on distinct frozen entry objects
+// and must never throw `each_key_duplicate`.
+describe('Feature 020 BUG-005 — collision-free keying across read and resumed tail seq spaces', () => {
+  it('renders an initial read (seq 0..6) followed by cursor-resumed tail batches (seq 1..3) and a second resumed tail session (seq 1..2) without duplicate-key errors', async () => {
+    let entries: readonly PhaseLogDisplayEntry[] = Object.freeze(
+      Array.from({ length: 7 }, (_, idx) => makeEntry(idx, `read-${idx}`))
+    );
+
+    const { container, rerender } = render(PhaseLogReadingPane, {
+      props: {
+        entries,
+        loading: false,
+        skippedLines: 0,
+        truncatedCount: 0,
+        isLive: true
+      }
+    });
+    expect(container.querySelectorAll('[data-testid="phase-log-entry"]')).toHaveLength(7);
+
+    // Tail session 1 resumes at cursor and stamps seq 1, 2, 3 (overlapping read seq 1, 2, 3).
+    for (let s = 1; s <= 3; s += 1) {
+      entries = appendToWindow(entries, makeEntry(s, `tail1-${s}`), PHASE_LOG_WINDOW_MAX_ENTRIES);
+      await rerender({
+        entries,
+        loading: false,
+        skippedLines: 0,
+        truncatedCount: 0,
+        isLive: true
+      });
+    }
+    expect(container.querySelectorAll('[data-testid="phase-log-entry"]')).toHaveLength(10);
+
+    // Tail session 2 resumes at the new cursor and restarts its per-session seq at 1, 2.
+    for (let s = 1; s <= 2; s += 1) {
+      entries = appendToWindow(entries, makeEntry(s, `tail2-${s}`), PHASE_LOG_WINDOW_MAX_ENTRIES);
+      await rerender({
+        entries,
+        loading: false,
+        skippedLines: 0,
+        truncatedCount: 0,
+        isLive: true
+      });
+    }
+
+    const renderedTexts = Array.from(
+      container.querySelectorAll('[data-testid="phase-log-entry"] .text')
+    ).map((el) => el.textContent);
+    expect(renderedTexts).toEqual([
+      'read-0',
+      'read-1',
+      'read-2',
+      'read-3',
+      'read-4',
+      'read-5',
+      'read-6',
+      'tail1-1',
+      'tail1-2',
+      'tail1-3',
+      'tail2-1',
+      'tail2-2'
+    ]);
+  });
+
+  it('updates the single truncated-head marker in place while trimming over the 500-row cap with overlapping seq values', async () => {
+    let entries: readonly PhaseLogDisplayEntry[] = Object.freeze(
+      Array.from({ length: PHASE_LOG_WINDOW_MAX_ENTRIES }, (_, idx) => makeEntry(idx, `init-${idx}`))
+    );
+
+    const { container, rerender } = render(PhaseLogReadingPane, {
+      props: {
+        entries,
+        loading: false,
+        skippedLines: 0,
+        truncatedCount: 0,
+        isLive: true
+      }
+    });
+
+    // Push 3 live entries with seq 1, 2, 3 — each trims the head and increments the marker.
+    for (let s = 1; s <= 3; s += 1) {
+      entries = appendToWindow(entries, makeEntry(s, `live-trim-${s}`), PHASE_LOG_WINDOW_MAX_ENTRIES);
+      await rerender({
+        entries,
+        loading: false,
+        skippedLines: 0,
+        truncatedCount: 0,
+        isLive: true
+      });
+    }
+
+    const rows = container.querySelectorAll('[data-testid="phase-log-entry"]');
+    expect(rows).toHaveLength(PHASE_LOG_WINDOW_MAX_ENTRIES + 1);
+    expect(rows[0].getAttribute('data-kind')).toBe('truncated-head');
+    expect(rows[0].textContent).toContain('3 earlier entries hidden');
+    expect(rows[rows.length - 1].textContent).toContain('live-trim-3');
   });
 });

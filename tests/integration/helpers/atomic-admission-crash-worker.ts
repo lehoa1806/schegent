@@ -4,7 +4,7 @@ import { SqliteApplicationStore } from '../../../src/services/sqlite-store';
 import { createSwitchableOperationalMemento } from '../../../src/state/sqlite-operational-backing';
 import { unfencedCommit } from '../../../src/state/ownership-claim';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
-import { KEYS, WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
+import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 
 type CrashBoundaryMode =
   | 'before-begin'
@@ -96,14 +96,23 @@ async function main(): Promise<void> {
     return res;
   }) as typeof conn.exec;
 
-  let kvWritesInTx = 0;
+  let runRowWrittenInTx = false;
   conn.run = ((...args: Parameters<typeof conn.run>) => {
-    const [sql, ...params] = args;
-    if (armCrash && mode === 'mid-tx' && sql.includes('INSERT INTO operational_kv_documents')) {
-      kvWritesInTx += 1;
-      // Kill AFTER KEYS.run (kvWritesInTx === 1) has already been written inside the open
-      // BEGIN IMMEDIATE transaction, right before KEYS.queue (kvWritesInTx === 2) / COMMIT.
-      if (kvWritesInTx === 2 && params[1] === KEYS.queue) {
+    const [sql] = args;
+    if (armCrash && mode === 'mid-tx') {
+      if (sql.includes('INSERT INTO operational_runs')) {
+        const res = originalRun(...args);
+        runRowWrittenInTx = true;
+        return res;
+      }
+      // Kill AFTER KEYS.run (`operational_runs`) has already been written inside the open
+      // BEGIN IMMEDIATE transaction, right before KEYS.queue (`operational_queue_meta` /
+      // `operational_tasks`) / COMMIT.
+      if (
+        runRowWrittenInTx &&
+        (sql.includes('INSERT INTO operational_queue_meta') ||
+          sql.includes('INSERT INTO operational_tasks'))
+      ) {
         process.kill(process.pid, 'SIGKILL');
       }
     }

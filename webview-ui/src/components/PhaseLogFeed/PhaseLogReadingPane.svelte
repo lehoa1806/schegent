@@ -191,7 +191,7 @@
       data-testid="phase-log-entry-list"
       onscroll={handleScroll}
     >
-      {#each entries as e (e.seq)}
+      {#each entries as e (e.kind === 'truncated-head' ? 'truncated-head' : e)}
         <PhaseLogEntry entry={e} />
       {/each}
     </ol>
