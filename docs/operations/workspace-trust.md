@@ -47,7 +47,7 @@ Activation runs to completion. The extension activates, the sidebar renders, the
 from persisted state, and Stage 2 **constructs** its services. What it does not do is *act* — see the
 next section for where the line falls.
 
-**6 commands stay available** in an untrusted window, registered unwrapped because none of them
+**7 commands stay available** in an untrusted window, registered unwrapped because none of them
 mutates workspace state:
 
 | Command | What it does |
@@ -58,6 +58,7 @@ mutates workspace state:
 | `schegent.verifyAuditChain` | Recomputes the audit hash chain and reports |
 | `schegent.redetectClaudeTransport` | Re-reads which transport the resolved CLI offers |
 | `schegent.reportFailedRowExits` | Counts how failed rows were resolved and opens the report; writes nothing |
+| `schegent.verifyStoreBackup` | Lists and verifies SQLite store backups in read-only isolation; writes nothing |
 
 The two exports, the audit export and the Run evidence export, used to be on this list, because each
 writes to a place *you* named in a dialog *you* answered, and a dialog cannot be answered by repository
@@ -71,7 +72,7 @@ unaffected.
 
 ## What refuses untrusted
 
-**32 commands refuse.** Every mutating command id in
+**35 commands refuse.** Every mutating command id in
 `src/contracts/entry-point-dispositions.ts` is wrapped by `registerGuardedCommand`, which — when the
 window is untrusted — shows a warning, records `command refused: workspace not trusted` with the
 `commandId`, and returns without calling the handler.

@@ -45,6 +45,11 @@ const CENSUS: readonly CensusRow[] = [
     reason: 'retry-decision projections ignore terminal Runs; driver terminal same-status writes are solely for spawnIdentity cleanup'
   },
   {
+    site: 'activation/queue-lifecycle-boundary.ts#pauseNonTerminalRun',
+    classification: 'table-derived',
+    reason: 'derived via allowedSourceStatusesFor(\'paused\', \'operator\')'
+  },
+  {
     site: 'activation/run-safety-wiring.ts#pause',
     classification: 'table-derived',
     reason: 'derived via allowedSameStatusFor(\'watchdog\')'

@@ -54,6 +54,12 @@ import {
   getOrCreateProductionWorkflowComposition,
   type ProductionWorkflowComposition
 } from '../services/workflow-execution/production-workflow-composition';
+import {
+  createStoreProcessEvidencePort,
+  isAttemptPendingInQueue,
+  isQueueOrTaskLive,
+  reactivateRecoveryPausedConnectedRunForTask
+} from '../services/workflow-execution/recovery-liveness-sync';
 import type { DurableAttemptEvidenceResult } from '../services/workflow-execution/workflow-recovery-service';
 import { createBackendAvailabilityWiring } from './backend-wiring';
 import {
@@ -180,9 +186,10 @@ export async function createRunSafetyWiring(input: {
       getDefaultRunnerKind: () => boundDefaultRunnerKind
     });
   };
-  const replayTerminalTransitions = async (selfOwnerId?: string): Promise<void> => {
+  const replayTerminalTransitions = async (selfOwnerId?: string, beforeComposableRecovery?: () => Promise<void>): Promise<void> => {
     await sqliteCutover?.activatePrimary();
     await terminalTransitions.replay(selfOwnerId);
+    await beforeComposableRecovery?.();
     await runComposableWorkflowRecovery();
   };
   // Feature 093 (T053, FR-022a) — Runs that could hold uncommitted work in the
@@ -487,8 +494,12 @@ function makePhaseDispatcher(deps: {
   readonly historyStore?: Pick<HistoryStore, 'outputsFor'>;
   readonly getGuardedRun?: () => NodeRunStartDeps['guardedRun'] | undefined;
   readonly getDefaultRunnerKind?: () => BackendRunnerKind | undefined;
+  readonly isQueuePaused?: (queueId: string) => boolean;
 }): (phaseInput: PhaseAttemptDispatchInput) => Promise<PhaseAttemptDispatchResult> {
   return async (phaseInput) => {
+    if (deps.isQueuePaused?.(phaseInput.queueId)) {
+      return { outcome: 'rejected', reason: 'queue-paused' };
+    }
     const guardedRun = deps.getGuardedRun?.();
     if (guardedRun === undefined || phaseInput.run.frozenClosure === undefined) {
       return { outcome: 'rejected', reason: 'launcher-unavailable' };
@@ -539,6 +550,7 @@ export async function reconcileComposableWorkflowRuns(input: {
     canCommitConnectedRun?(): Promise<boolean>;
     getQueueRegistry?(): { readonly entries: readonly { readonly id: string }[] };
     getQueue?(queueId: string): {
+      readonly queueLifecycle?: string;
       readonly requests: readonly {
         readonly id: string;
         readonly status: string;
@@ -589,7 +601,15 @@ export async function reconcileComposableWorkflowRuns(input: {
         compareAndSetConnectedRun: (next, rev) =>
           input.store.compareAndSetConnectedRun(next, rev)
       },
-      dispatchPhase: makePhaseDispatcher(input),
+      dispatchPhase: makePhaseDispatcher({
+        ...input,
+        ...(input.store.getQueue !== undefined
+          ? {
+              isQueuePaused: (queueId: string) =>
+                input.store.getQueue!(queueId).queueLifecycle === 'operator-paused'
+            }
+          : {})
+      }),
       isQueueOrTaskPresent: (queueId, rootRunId) => {
         if (
           input.isQueueOrTaskPresent !== undefined &&
@@ -597,38 +617,24 @@ export async function reconcileComposableWorkflowRuns(input: {
         ) {
           return false;
         }
-        if (
-          input.store.getQueueRegistry !== undefined &&
-          !input.store.getQueueRegistry().entries.some((entry) => entry.id === queueId)
-        ) {
-          return false;
-        }
-        if (input.store.getQueue !== undefined) {
-          const wfRun = input.store.getConnectedRuns()[rootRunId] as
-            | ConnectedWorkflowRun
-            | undefined;
-          const requests = input.store.getQueue(queueId).requests;
-          for (const frame of Object.values(wfRun?.invocations ?? {})) {
-            if (frame.status !== 'in-flight' && frame.status !== 'paused') continue;
-            for (const attempts of Object.values(frame.attemptsByNodeId)) {
-              const last = attempts[attempts.length - 1] as
-                | (typeof attempts)[number]
-                | undefined;
-              if (
-                last !== undefined &&
-                last.queueItemId !== undefined &&
-                (last.status === 'in-flight' || last.status === 'paused') &&
-                requests.some(
-                  (req) => req.id === last.queueItemId && req.status === 'canceled'
-                )
-              ) {
-                return false;
-              }
-            }
-          }
-        }
-        return true;
+        return isQueueOrTaskLive({
+          store: input.store,
+          historyStore: input.historyStore,
+          queueId,
+          rootRunId
+        });
       },
+      isAttemptPendingInQueue: (queueId, _run, _frame, attempt) =>
+        isAttemptPendingInQueue({
+          store: input.store,
+          historyStore: input.historyStore,
+          queueId,
+          attempt
+        }),
+      processEvidencePort: createStoreProcessEvidencePort({
+        store: input.store,
+        historyStore: input.historyStore
+      }),
       ...(input.store.getQueue !== undefined
         ? {
             findMatchingEnqueuedAttempt: (queueId, attempt) =>
@@ -737,9 +743,27 @@ export async function recordConnectedWorkflowTransition(
           for (const attempts of Object.values(frame.attemptsByNodeId)) {
             const matchedAttempt = attempts.find(
               (candidate) =>
-                candidate.queueItemId === run.featureId && candidate.status === 'in-flight'
+                candidate.queueItemId === run.featureId &&
+                (candidate.status === 'in-flight' || candidate.status === 'paused')
             );
             if (matchedAttempt === undefined) continue;
+            const reactivation = await reactivateRecoveryPausedConnectedRunForTask({
+              store: input.store,
+              taskId: run.featureId,
+              logger: input.logger
+            });
+            if (reactivation.outcome === 'held-explicit-pause') {
+              input.logger.warn(
+                `run-safety-wiring: skipping terminal settlement for connected run '${workflowRun.connectedRunId}' invocation '${frame.invocationId}' node '${matchedAttempt.nodeId}' attempt '${matchedAttempt.attemptId}' held by explicit pause (${reactivation.pauseCause ?? 'unknown'}).`
+              );
+              return;
+            }
+            if (reactivation.outcome === 'stale') {
+              input.logger.warn(
+                `run-safety-wiring: skipping terminal settlement for connected run '${workflowRun.connectedRunId}' attempt '${matchedAttempt.attemptId}' after stale reactivation CAS.`
+              );
+              return;
+            }
             const composition =
               input.productionComposition ??
               getOrCreateProductionWorkflowComposition(input.store, {
@@ -780,7 +804,7 @@ export async function recordConnectedWorkflowTransition(
               },
               dispatchPhase: makePhaseDispatcher(input)
             });
-            await controlService.completeNodeAttemptSerialized({
+            const stepResult = await controlService.completeNodeAttemptSerialized({
               runId: workflowRun.connectedRunId,
               invocationId: frame.invocationId,
               nodeId: matchedAttempt.nodeId,
@@ -796,6 +820,15 @@ export async function recordConnectedWorkflowTransition(
                 ? { failureCode: evaluated.failureCode }
                 : {})
             });
+            if (
+              stepResult.outcome === 'ignored-not-in-flight' ||
+              stepResult.outcome === 'rejected-stale' ||
+              stepResult.outcome === 'workflow-failed'
+            ) {
+              input.logger.warn(
+                `run-safety-wiring: connected run '${workflowRun.connectedRunId}' invocation '${frame.invocationId}' node '${matchedAttempt.nodeId}' attempt '${matchedAttempt.attemptId}' terminal settlement did not advance (outcome=${stepResult.outcome}).`
+              );
+            }
             const refreshedWf = input.store.getConnectedRuns()[workflowRun.connectedRunId] as
               | ConnectedWorkflowRun
               | undefined;

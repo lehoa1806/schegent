@@ -73,9 +73,14 @@ Probe failure causes exposed to the host are `not-found`, `not-executable`, `non
 
 ## Contract every adapter must honor
 
-Adding a backend is not three edits: the places that name a backend, with their roles, are listed in
-`tests/fixtures/backend-recipe-sites.ts`, and a census gate fails when a source file names a backend and is
-not on that list. Start from the list.
+Adding a backend follows four steps (the backend set is currently held closed by the expansion freeze):
+
+1. **Expansion-freeze decision**: record an explicit freeze-lifting decision before widening the three-backend union (`tests/lint/expansion-freeze.test.ts`).
+2. **Union member**: add the identifier to `BackendRunnerKind` and `SUPPORTED_BACKENDS` in `src/contracts/backend-kinds.ts`, and mirror the enum in `package.json`.
+3. **Descriptor table row**: add the complete static metadata row in `src/contracts/backend-descriptors.ts` (`typecheck` fails directly at the table until every field is supplied) and run `npm run contracts:generate` so the generated webview mirror and `contracts:check` manifest parity pass.
+4. **Behavioural adapter**: implement `BackendRunner` in `src/runner/<kind>-cli.ts`, register construction in `src/runner/backend-runner-factory.ts`, and update any behavioural protocol sites (ACP bridge/result encoding, capability withhold policy, usage JSONL parsing) listed in `tests/fixtures/backend-recipe-sites.ts`.
+
+Every adapter MUST honor the following runtime contract:
 
 1. One `invoke()` represents one non-interactive subprocess and resolves when it exits or is terminated.
 2. The prompt travels over stdin; it is not appended to argv.

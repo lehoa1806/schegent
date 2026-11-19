@@ -377,9 +377,10 @@ function isTestFile(rel: string): boolean {
   return rel.includes('__tests__/') || rel.endsWith('.test.ts');
 }
 
-/** The files that declare command interfaces: the IPC root and its modules. */
+/** The files that declare command interfaces: the IPC root, generated types, and its modules. */
 const CONTRACT_FILES: readonly string[] = [
   IPC_ROOT,
+  resolve(CONTRACTS_DIR, 'generated', 'sidebar-ipc-types.ts'),
   ...readdirSync(IPC_MODULES)
     .filter((entry) => entry.endsWith('.ts'))
     .map((entry) => join(IPC_MODULES, entry))
@@ -445,7 +446,10 @@ function readCommandContracts(): readonly CommandContract[] {
   const found: CommandContract[] = [];
   for (const file of CONTRACT_FILES) {
     const code = stripComments(readFileSync(file, 'utf8'));
-    for (const match of code.matchAll(/extends\s+CommandBase<typeof\s+(CMD_[A-Z0-9_]+)>/g)) {
+    for (const match of code.matchAll(
+      /extends\s+(?:CommandBase<typeof\s+|GeneratedCommandBase<')(CMD_[A-Z0-9_]+)(?:>|'>)/g
+    )) {
+      const cmdName = match[1]!;
       const brace = code.indexOf('{', match.index + match[0].length);
       if (brace === -1) continue;
       const interfaceBody = argumentList(code, brace);
@@ -456,7 +460,7 @@ function readCommandContracts(): readonly CommandContract[] {
       );
       const anywhere = /\bqueueId\??\s*:/.test(body);
       found.push({
-        command: match[1]!,
+        command: cmdName,
         file: relative(REPO_ROOT, file),
         payloadType: via,
         addressing: topLevel ? 'top-level' : anywhere ? 'nested' : 'none'

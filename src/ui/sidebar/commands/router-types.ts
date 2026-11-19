@@ -261,6 +261,12 @@ export interface RouterDeps {
    */
   readonly isTrusted?: () => boolean;
   readonly notifyWarning?: (message: string) => void;
+  /**
+   * BUG-001 (FR-019) — optional post-unpause hook invoked after `CMD_RESUME_QUEUE`
+   * transitions a queue out of `'operator-paused'` so one-click manual Resume
+   * immediately resumes a paused Run or drains pending work.
+   */
+  readonly onQueueResumed?: (queueId?: string, prompt?: string) => Promise<void>;
   readonly logger: Pick<SanitizedLogger, 'info' | 'warn' | 'error' | 'debug' | 'sanitize'>;
   readonly audit?: {
     append(entry: {

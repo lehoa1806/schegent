@@ -58,6 +58,7 @@ import {
   createWorkflowLeafControlHooks,
   createWorkflowQueueWake
 } from '../services/workflow-execution/workflow-leaf-control';
+import { resumePausedQueueExecution } from '../commands/resume-queue-execution';
 
 /**
  * FR-R3-119 — the sidebar message router, wired.
@@ -188,6 +189,13 @@ export function createSidebarRouter(deps: SidebarRouterWiringDeps): MessageRoute
     // longer declares the capability; task removal goes through `phaseOps` below.
     queueOps: queue,
     phaseOps: controller,
+    onQueueResumed: async (queueId, prompt) => {
+      await resumePausedQueueExecution(
+        queueId ?? store.getDefaultQueueId(),
+        { store, guardedRunService, controller, logger },
+        prompt
+      );
+    },
     // Feature FR-R3-003 (T300) — the fenced record, not the mirror. `Memento` is
     // per extension host, so `!isForeignLockHeld()` could only ever read a lock
     // this window wrote: a reclaimed window kept answering `true` and kept

@@ -404,19 +404,19 @@ describe('FR-R5-F09 — Queue ownership, serialized registry/cross-queue mutatio
       expect(reArm).toHaveBeenCalledTimes(1);
       expect(reattachOnActivation).toHaveBeenCalledTimes(1);
       expect(resumeExistingFromActivation).toHaveBeenCalledTimes(1);
-      expect(scheduleAutoDrain).toHaveBeenCalledTimes(1);
+      expect(scheduleAutoDrain).not.toHaveBeenCalled();
 
       // Lose primacy fence: watchdog timer is canceled and recovery latch resets.
       expect(fenceLostListener).toBeDefined();
       fenceLostListener!();
       expect(cancelPendingTimer).toHaveBeenCalledTimes(1);
 
-      // Tenure 2: recovery hooks run again on re-election.
+      // Tenure 2: recovery hooks run again on re-election (without unattended auto-drain).
       await producers.installRecovery({ acquired: true, ownerId: 'win-1' });
       expect(reArm).toHaveBeenCalledTimes(2);
       expect(reattachOnActivation).toHaveBeenCalledTimes(2);
       expect(resumeExistingFromActivation).toHaveBeenCalledTimes(2);
-      expect(scheduleAutoDrain).toHaveBeenCalledTimes(2);
+      expect(scheduleAutoDrain).not.toHaveBeenCalled();
     });
   });
 

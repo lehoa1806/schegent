@@ -541,7 +541,7 @@ describe('WorkflowRun — hierarchical invocation tree and controls (FR-R5-F06)'
             currentNodeId: 'node-a',
             pauseCause: 'recovery-uncertain-effect',
             pauseExplanation:
-              'Paused during restart recovery because the active Phase attempt had no live queue task or verified settlement evidence.',
+              'Paused during restart recovery because an interrupted Phase attempt had unconfirmed completion evidence.',
             pauseGuidance:
               'Inspect workspace outputs, then choose Resume (reconciles evidence before re-dispatching), Retry Phase, or Cancel.',
             allowedActions: ['resume', 'retry-phase', 'cancel']

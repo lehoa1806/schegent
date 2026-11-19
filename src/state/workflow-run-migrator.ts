@@ -46,8 +46,8 @@
  */
 
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
-import { isSessionIdShape } from '../parser/session-id-extractor';
-import { buildMutationPlan } from '../services/mutation-plan';
+import { isSessionIdShape } from '../lib/session-id-shape';
+import { buildMutationPlan } from './mutation-plan';
 import type {
   CreditPause,
   DelayedRetryCause,

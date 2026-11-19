@@ -65,7 +65,7 @@ Export resolves the selected definition from the effective catalog (or a structu
 The host opens the save dialog and reports only `saved`, `canceled`, `unavailable`, or a bounded `failed` message. The webview supplies no output path and receives none.
 
 <!-- Source: src/contracts/sidebar-ipc/process-yaml.ts -->
-<!-- Source: src/contracts/validators/process-yaml.ts -->
+<!-- Source: src/contracts/generated/validators/catalog.ts -->
 <!-- Source: src/services/process-yaml/export-service.ts -->
 <!-- Source: tests/unit/contracts/process-yaml-no-paths.test.ts -->
 
@@ -98,7 +98,7 @@ The plan records the catalog revisions against which it was computed. The later 
 - Identifiers and displayed diagnostics are sanitized and bounded before they cross IPC; the non-rendered definition body remains verbatim for the validated publish command.
 - Parsing and planning return typed error values rather than executing document content.
 
-<!-- Source: src/contracts/validators/process-yaml.ts -->
+<!-- Source: src/contracts/generated/validators/catalog.ts -->
 <!-- Source: src/services/process-yaml/types.ts -->
 <!-- Source: src/services/process-yaml/preflight-service.ts -->
 <!-- Source: src/contracts/sidebar-command-metadata.ts -->

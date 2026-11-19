@@ -143,7 +143,9 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // projection; extracted from `queue-manager.ts` above so both it and
   // `commands/restart-canceled-task.ts` share one definition of the held/unheld
   // distinction.
-  'src/queue/queue-lifecycle-refresh.ts',
+  // FR-R7-07 — relocated from `src/queue/queue-lifecycle-refresh.ts` to `src/contracts/`
+  // so `src/state/` can refresh unheld queue lifecycles without value-importing `src/queue/`.
+  'src/contracts/queue-lifecycle-refresh.ts',
   // Feature 065 — `QueueLifecycle = 'running' | ...` union (FR-001..FR-005).
   // The literal is the lifecycle discriminator, not the pinned task-status
   // projection, and is required by the lifecycle entity.
@@ -266,7 +268,9 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // terminated.", "abort the running task") and template variable name
   // (`runningSuffix`). No pinned status discriminator literal.
   'webview-ui/src/lib/action-copy.ts',
-  'webview-ui/src/lib/snapshot-types.ts',
+  // FR-R7-05 — generated snapshot mirror & Draft 2020-12 schema carry the canonical lifecycle/ping `'running'` union members.
+  'webview-ui/src/lib/generated/snapshot-mirror.ts',
+  'src/contracts/generated/schemas/sidebar-ipc.schema.json',
   // Metrics wire entities own the in-flight `isRunning` projection field.
   'src/contracts/sidebar-ipc/metrics.ts',
   'webview-ui/src/components/MetricsDashboard/MetricsTaskTable.svelte',

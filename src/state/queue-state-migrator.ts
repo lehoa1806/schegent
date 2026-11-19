@@ -12,17 +12,17 @@
 
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import {
+  makeDefaultRegistry,
   type QueueRegistry,
   type QueueRegistryEntry,
   type QueueRegistryState,
   type QueuePauseSource
-} from '../queue/queue-registry';
-import { makeDefaultRegistry } from '../queue/queue-registry';
-import {
-  ensureExtendedFeatureRequest,
-  type FeatureRequest,
-  type FeatureRequestStatus,
-  type QueueState
+} from '../contracts/queue-registry';
+import { ensureExtendedFeatureRequest } from '../contracts/queue-feature-request-helpers';
+import type {
+  FeatureRequest,
+  FeatureRequestStatus,
+  QueueState
 } from '../queue/feature-request';
 import { STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION_V13 } from '../contracts/state-schema';
 

@@ -23,6 +23,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { AmbientConfigObservation } from '../contracts/audit-events';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { findBackendDescriptor } from '../contracts/backend-descriptors';
 import { openWithinRootByPath } from '../lib/safe-open';
 
 /** A minimal read seam, so tests never touch a real home directory. */
@@ -38,16 +39,8 @@ export interface AmbientConfigReader {
  * facts and an operator reading evidence should be able to tell them apart.
  */
 function configPathFor(kind: BackendRunnerKind, home: string = homedir()): string | null {
-  switch (kind) {
-    case 'claude':
-      return join(home, '.claude', 'settings.json');
-    case 'codex':
-      return join(home, '.codex', 'config.toml');
-    case 'agy':
-      return null;
-    default:
-      return null;
-  }
+  const segments = findBackendDescriptor(kind)?.ambientConfigSegments ?? null;
+  return segments === null ? null : join(home, ...segments);
 }
 
 /**

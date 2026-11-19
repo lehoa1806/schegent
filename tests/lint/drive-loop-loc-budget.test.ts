@@ -20,6 +20,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { methodCodeLineCount } from './code-lines';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const DRIVER = 'src/services/run-driver.ts';
@@ -140,28 +141,22 @@ const SIGNATURE = 'public async drive(';
  *   649  Review gap GC-07 (2026-11-12) — the start-of-Run backend probe no longer skips itself
  *        when `NODE_ENV` is `test`; the clause and its comment line went, 650 → 649.
  *
+ *   524  FR-R7-08 (2026-11-19) — migrated from raw brace-counted physical lines (649) to
+ *        TypeScript lexical code lines (`tests/lint/code-lines.ts`, excluding comment-only and
+ *        blank lines). Re-derived at 524 code lines so adding explanatory comments inside
+ *        `drive()` no longer trips the shrink-only method budget.
+ *
  * Next candidates, named so the next decrement does not start with a
  * re-measurement: the four pause arms — breakpoint, delayed-retry, rate-limit,
  * verify — are roughly 230 lines between them. The probe-failure arm is NOT a
  * candidate for merging into the shared sequence: its audit emission order differs,
  * and unifying it is an observable change.
  */
-const DRIVE_MAX_LINES = 649;
+const DRIVE_MAX_LINES = 524;
 
-/** Lines from the signature to the closing brace, inclusive. */
+/** Code lines from the method signature to the closing brace, inclusive (excluding comments/blanks). */
 export function methodLineCount(source: string, signature: string): number {
-  const lines = source.split('\n');
-  const start = lines.findIndex((line) => line.includes(signature));
-  if (start < 0) return -1;
-  let depth = 0;
-  let opened = false;
-  for (let index = start; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    depth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length;
-    if (line.includes('{')) opened = true;
-    if (opened && depth === 0) return index - start + 1;
-  }
-  return -1;
+  return methodCodeLineCount(source, signature, DRIVER);
 }
 
 describe('RunDriver.drive() is shrink-only (FR-R3-128)', () => {
@@ -198,12 +193,14 @@ describe('RunDriver.drive() is shrink-only (FR-R3-128)', () => {
     expect(DRIVE_MAX_LINES - methodLineCount(source, SIGNATURE)).toBeLessThanOrEqual(0);
   });
 
-  it('counts a method, proved on a fixture', () => {
+  it('counts a method in code lines excluding comments, proved on a fixture', () => {
     // The counter is the whole gate; a counter that returned a small number for
     // anything would pass every assertion above.
     const fixture = [
       'class X {',
       '  public async drive(a: number): Promise<void> {',
+      '    // explanatory comment must not count',
+      '',
       '    if (a > 0) {',
       '      return;',
       '    }',

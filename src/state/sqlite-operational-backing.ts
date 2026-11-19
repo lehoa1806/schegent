@@ -19,32 +19,39 @@
  * Zero raw `node:fs` write primitives (docs/hard-rules.md rule 69).
  */
 
+import { isBackendRunnerKind } from '../contracts/backend-kinds';
 import { ACCEPTANCE_BINDINGS_KEY } from '../contracts/containment-qualification';
 import type { AcceptanceMementoPort } from '../services/containment-qualification/acceptance-bindings';
 import type { SanitizedLogger } from '../lib/logger';
 import {
-  NodeSqliteConnection,
-  SqliteApplicationStore,
   deepFreezeValue,
-  deleteOperationalQueueScopeInTx,
-  deleteOperationalRunScopeInTx,
   freezeSnapshotWithStructuralSharing,
   hasOwnDefinedEntries,
   isDeepEqualJsonValue,
   isDeepFrozenSnapshot,
-  isOperationalQueueMap,
-  isOperationalRunMap,
   parseStrictSchemaMetaVersion,
-  readOperationalQueueMapFromDb,
-  readOperationalRunMapFromDb,
   setOwnProp,
   toSafeIntOrDefault,
-  toStringOrNull,
+  toStringOrNull
+} from '../lib/operational-value-helpers';
+import {
+  openReadOnlySqliteConnection,
+  type DetachedSqliteWriterConfig,
+  type LegacyRunRecordInputPort,
+  type OperationalMigrationOutcomePort,
+  type SqliteConnectionPort,
+  type SqliteOperationalStorePort
+} from './sqlite-operational-port';
+import {
+  deleteOperationalQueueScopeInTx,
+  deleteOperationalRunScopeInTx,
+  isOperationalQueueMap,
+  isOperationalRunMap,
+  readOperationalQueueMapFromDb,
+  readOperationalRunMapFromDb,
   writeOperationalQueueMapDiffInTx,
-  writeOperationalRunMapDiffInTx,
-  type LegacyRunRecordInput,
-  type MigrationPipelineOutcome
-} from '../services/sqlite-store';
+  writeOperationalRunMapDiffInTx
+} from './sqlite-operational-rows';
 import {
   SQLITE_SCHEMA_CURRENT_VERSION,
   type RunStatus
@@ -257,10 +264,10 @@ export function pruneConnectedRunsMap(
 export class SqliteOperationalBacking {
   private readonly cache = new Map<string, unknown>();
   private readonly kvDocKeysPresent = new Set<string>();
-  public readonly migrationOutcome: MigrationPipelineOutcome | null;
+  public readonly migrationOutcome: OperationalMigrationOutcomePort | null;
 
   public constructor(
-    public readonly store: SqliteApplicationStore,
+    public readonly store: SqliteOperationalStorePort,
     public readonly scopeId: string,
     legacyMemento: Memento,
     private readonly nowMs: () => number = () => Date.now(),
@@ -395,13 +402,13 @@ export class SqliteOperationalBacking {
     }
   }
 
-  private importIfNeeded(legacyMemento: Memento): MigrationPipelineOutcome | null {
+  private importIfNeeded(legacyMemento: Memento): OperationalMigrationOutcomePort | null {
     const sentinel = this.store.cutoverGuard.getSentinel(this.scopeId);
     if (sentinel && (sentinel.authority === 'sqlite' || sentinel.authority === 'retired_legacy')) {
       return null;
     }
 
-    const legacyRunRecords: LegacyRunRecordInput[] = [];
+    const legacyRunRecords: LegacyRunRecordInputPort[] = [];
     const runMapRaw = legacyMemento.get<unknown>(KEYS.run);
     if (runMapRaw !== null && typeof runMapRaw === 'object' && !Array.isArray(runMapRaw)) {
       for (const [queueId, rawRun] of Object.entries(runMapRaw as Record<string, unknown>)) {
@@ -459,7 +466,7 @@ export class SqliteOperationalBacking {
    * an earlier committed copy and removes keys the legacy source no longer holds.
    */
   private copyLegacyDocumentsInTx(
-    conn: NodeSqliteConnection,
+    conn: SqliteConnectionPort,
     legacyMemento: Memento,
     keys: readonly string[],
     liveRuns: Readonly<Record<string, WorkflowRun | undefined>>,
@@ -495,11 +502,11 @@ export class SqliteOperationalBacking {
     }
   }
 
-  private deleteKvDocInTx(conn: NodeSqliteConnection, key: string): void {
+  private deleteKvDocInTx(conn: SqliteConnectionPort, key: string): void {
     conn.run(`DELETE FROM operational_kv_documents WHERE doc_namespace = ? AND doc_key = ?`, this.scopeId, key);
   }
 
-  private upsertKvDocInTx(conn: NodeSqliteConnection, key: string, value: unknown, now: number): void {
+  private upsertKvDocInTx(conn: SqliteConnectionPort, key: string, value: unknown, now: number): void {
     const json = JSON.stringify(value);
     conn.run(
       `INSERT INTO operational_kv_documents (
@@ -557,7 +564,7 @@ export class SqliteOperationalBacking {
   }
 
   private projectRunEntriesInTx(
-    conn: NodeSqliteConnection,
+    conn: SqliteConnectionPort,
     entries: readonly (readonly [string, Record<string, unknown>])[],
     now: number
   ): void {
@@ -603,7 +610,7 @@ export class SqliteOperationalBacking {
   }
 
   private projectRelationalStateInTx(
-    conn: NodeSqliteConnection,
+    conn: SqliteConnectionPort,
     key: string,
     value: unknown,
     previousValue: unknown,
@@ -694,7 +701,7 @@ export class SqliteOperationalBacking {
       const record = value as { bindings?: Record<string, unknown> };
       if (record.bindings && typeof record.bindings === 'object') {
         for (const [backendKind, entry] of Object.entries(record.bindings)) {
-          if (backendKind !== 'claude' && backendKind !== 'codex' && backendKind !== 'agy') continue;
+          if (!isBackendRunnerKind(backendKind)) continue;
           if (!entry || typeof entry !== 'object') continue;
           const typed = entry as {
             boundAt?: string;
@@ -732,14 +739,16 @@ export interface SwitchableOperationalMemento extends Memento, AcceptanceMemento
   update(key: string, value: unknown): Promise<void>;
   updateBatch(entries: readonly MementoBatchEntry[]): Promise<void>;
   attachSqlite(
-    store: SqliteApplicationStore,
+    store: SqliteOperationalStorePort,
     scopeId: string,
     nowMs?: () => number
   ): SqliteOperationalBacking;
-  attachReadOnlySnapshotIfPresent(databasePath: string, scopeId: string): boolean;
-  configureDetachedTrustedSqliteWriter(
-    config: { readonly databasePath: string; readonly scopeId: string; readonly canWrite: () => boolean } | null
-  ): void;
+  attachReadOnlySnapshotIfPresent(
+    databasePath: string,
+    scopeId: string,
+    openReadOnlyConnection?: (databasePath: string) => SqliteConnectionPort
+  ): boolean;
+  configureDetachedTrustedSqliteWriter(config: DetachedSqliteWriterConfig | null): void;
   reloadSqliteCache(): void;
   detachSqlite(): void;
   isSqliteAttached(): boolean;
@@ -763,11 +772,7 @@ export function createSwitchableOperationalMemento(
   let activeSqlite: SqliteOperationalBacking | null = null;
   let readOnlyCache: Map<string, unknown> | null = null;
   let postCutoverScopeId: string | null = null;
-  let detachedWriter: {
-    readonly databasePath: string;
-    readonly scopeId: string;
-    readonly canWrite: () => boolean;
-  } | null = null;
+  let detachedWriter: DetachedSqliteWriterConfig | null = null;
 
   return {
     get<T>(key: string): T | undefined {
@@ -797,10 +802,7 @@ export function createSwitchableOperationalMemento(
           return;
         }
         if (detachedWriter !== null && detachedWriter.scopeId === postCutoverScopeId && detachedWriter.canWrite()) {
-          const transient = new SqliteApplicationStore({
-            databasePath: detachedWriter.databasePath,
-            journalMode: 'wal'
-          });
+          const transient = detachedWriter.openStore(detachedWriter.databasePath);
           try {
             const backing = new SqliteOperationalBacking(transient, postCutoverScopeId, legacyMemento, () => Date.now(), logger);
             backing.update(key, value);
@@ -854,10 +856,7 @@ export function createSwitchableOperationalMemento(
               detachedWriter.scopeId === postCutoverScopeId &&
               detachedWriter.canWrite()
             ) {
-              const transient = new SqliteApplicationStore({
-                databasePath: detachedWriter.databasePath,
-                journalMode: 'wal'
-              });
+              const transient = detachedWriter.openStore(detachedWriter.databasePath);
               try {
                 const backing = new SqliteOperationalBacking(
                   transient,
@@ -888,7 +887,7 @@ export function createSwitchableOperationalMemento(
     },
 
     attachSqlite(
-      store: SqliteApplicationStore,
+      store: SqliteOperationalStorePort,
       scopeId: string,
       nowMs: () => number = () => Date.now()
     ): SqliteOperationalBacking {
@@ -906,11 +905,15 @@ export function createSwitchableOperationalMemento(
       return activeSqlite;
     },
 
-    attachReadOnlySnapshotIfPresent(databasePath: string, scopeId: string): boolean {
+    attachReadOnlySnapshotIfPresent(
+      databasePath: string,
+      scopeId: string,
+      openReadOnlyConnection: (databasePath: string) => SqliteConnectionPort = openReadOnlySqliteConnection
+    ): boolean {
       if (activeSqlite !== null) return true;
-      let roConn: NodeSqliteConnection | null = null;
+      let roConn: SqliteConnectionPort | null = null;
       try {
-        roConn = new NodeSqliteConnection({ databasePath, readOnly: true });
+        roConn = openReadOnlyConnection(databasePath);
         roConn.exec('BEGIN');
         try {
           const minReaderRow = roConn.get<{ meta_value: string }>(

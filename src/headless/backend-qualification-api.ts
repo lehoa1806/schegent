@@ -12,6 +12,7 @@
 // This module imports no editor host API (rule 13).
 
 import { isBackendRunnerKind, type BackendRunnerKind } from '../contracts/backend-kinds';
+import type { BackendMap } from '../contracts/backend-descriptors';
 import {
   DIGEST_PATTERN,
   EXECUTABLE_UNRESOLVED_CAUSES,
@@ -29,7 +30,7 @@ import { qualifyBackend } from '../services/containment-qualification/qualify';
 export interface BackendQualificationInspectionInput {
   readonly identities: readonly BackendIdentity[];
   readonly granted: readonly BackendRunnerKind[];
-  readonly bindings: Readonly<Partial<Record<BackendRunnerKind, AcceptanceBinding>>>;
+  readonly bindings: Readonly<Partial<BackendMap<AcceptanceBinding>>>;
 }
 
 export interface BackendQualificationInspection {

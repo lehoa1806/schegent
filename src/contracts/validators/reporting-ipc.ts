@@ -1,171 +1,18 @@
-import {
-  CMD_MUTATE_REPORT,
-  CMD_READ_REPORT,
-  type MutateReportResponse,
-  type ReadReportResponse,
-  type SidebarCommand
-} from '../sidebar-ipc';
+// Egress response validators for reporting IPC.
+// Inbound request validators are generated in `src/contracts/generated/validators/analytics-reporting.ts`.
+
+import type { MutateReportResponse, ReadReportResponse } from '../sidebar-ipc';
 import {
   FAILURE_REASONS,
   LIMIT_REASONS,
   REFUSAL_REASONS,
   type ReportResult
 } from '../reporting/report-outcomes';
-import {
-  QUEUE_ID_MAX,
-  fail,
-  hasUnexpectedKeys,
-  isSafePathSegment,
-  ok as ipcOk,
-  type IpcValidationResult
-} from './shared';
 
 type Plain = Record<string, unknown>;
 
-const CURSOR_MAX = 512;
-
 function isPlain(value: unknown): value is Plain {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isBoundedId(value: unknown): value is string {
-  return isSafePathSegment(value);
-}
-
-function isCursor(value: unknown): value is string {
-  return typeof value === 'string' && value.length >= 1 && value.length <= CURSOR_MAX;
-}
-
-export function validateReadReport(obj: Plain, correlationId: string): IpcValidationResult {
-  const context = { type: CMD_READ_REPORT, correlationId };
-  const payload = obj['payload'];
-  if (!isPlain(payload)) return fail('missing-payload', context);
-  const op = payload['op'];
-  if (typeof op !== 'string') return fail('missing-op', context);
-
-  switch (op) {
-    case 'run': {
-      if (hasUnexpectedKeys(payload, ['op', 'query'])) {
-        return fail('unexpected-payload-fields', context);
-      }
-      if (!Object.hasOwn(payload, 'query')) return fail('missing-query', context);
-      return ipcOk({
-        ...context,
-        payload: { op: 'run', query: payload['query'] }
-      } as SidebarCommand);
-    }
-    case 'page': {
-      if (hasUnexpectedKeys(payload, ['op', 'cursor'])) {
-        return fail('unexpected-payload-fields', context);
-      }
-      const cursor = payload['cursor'];
-      if (!isCursor(cursor)) return fail('invalid-cursor', context);
-      return ipcOk({
-        ...context,
-        payload: { op: 'page', cursor }
-      } as SidebarCommand);
-    }
-    case 'drillDown': {
-      if (hasUnexpectedKeys(payload, ['op', 'reportId', 'rootId'])) {
-        return fail('unexpected-payload-fields', context);
-      }
-      const reportId = payload['reportId'];
-      const rootId = payload['rootId'];
-      if (!isBoundedId(reportId)) return fail('invalid-reportId', context);
-      if (!isBoundedId(rootId)) return fail('invalid-rootId', context);
-      return ipcOk({
-        ...context,
-        payload: { op: 'drillDown', reportId, rootId }
-      } as SidebarCommand);
-    }
-    case 'close':
-    case 'rerunSaved':
-    case 'reproduceSaved': {
-      if (hasUnexpectedKeys(payload, ['op', 'reportId'])) {
-        return fail('unexpected-payload-fields', context);
-      }
-      const reportId = payload['reportId'];
-      if (!isBoundedId(reportId)) return fail('invalid-reportId', context);
-      return ipcOk({
-        ...context,
-        payload: { op, reportId }
-      } as SidebarCommand);
-    }
-    case 'listSaved': {
-      if (hasUnexpectedKeys(payload, ['op', 'request'])) {
-        return fail('unexpected-payload-fields', context);
-      }
-      const request = payload['request'];
-      return ipcOk({
-        ...context,
-        payload: request === undefined ? { op: 'listSaved' } : { op: 'listSaved', request }
-      } as SidebarCommand);
-    }
-    case 'cancelActive': {
-      if (hasUnexpectedKeys(payload, ['op'])) {
-        return fail('unexpected-payload-fields', context);
-      }
-      return ipcOk({
-        ...context,
-        payload: { op: 'cancelActive' }
-      } as SidebarCommand);
-    }
-    default:
-      return fail('invalid-op', context);
-  }
-}
-
-export function validateMutateReport(obj: Plain, correlationId: string): IpcValidationResult {
-  const context = { type: CMD_MUTATE_REPORT, correlationId };
-  const payload = obj['payload'];
-  if (!isPlain(payload)) return fail('missing-payload', context);
-  const op = payload['op'];
-  if (typeof op !== 'string') return fail('missing-op', context);
-
-  switch (op) {
-    case 'export': {
-      // FR-R6-F11 (FR-016): zero filesystem paths may cross webview IPC; destination comes solely
-      // from the host's native save dialog.
-      if (hasUnexpectedKeys(payload, ['op', 'reportId', 'format'])) {
-        return fail('unexpected-payload-fields', context);
-      }
-      const reportId = payload['reportId'];
-      if (!isBoundedId(reportId)) return fail('invalid-reportId', context);
-      const format = payload['format'];
-      if (format !== 'json' && format !== 'csv') return fail('invalid-format', context);
-      return ipcOk({
-        ...context,
-        payload: { op: 'export', reportId, format }
-      } as SidebarCommand);
-    }
-    case 'save': {
-      if (hasUnexpectedKeys(payload, ['op', 'reportId'])) {
-        return fail('unexpected-payload-fields', context);
-      }
-      const reportId = payload['reportId'];
-      if (!isBoundedId(reportId)) return fail('invalid-reportId', context);
-      return ipcOk({
-        ...context,
-        payload: { op: 'save', reportId }
-      } as SidebarCommand);
-    }
-    case 'deleteSaved': {
-      if (hasUnexpectedKeys(payload, ['op', 'reportId', 'confirmed'])) {
-        return fail('unexpected-payload-fields', context);
-      }
-      const reportId = payload['reportId'];
-      if (typeof reportId !== 'string' || reportId.length === 0 || reportId.length > QUEUE_ID_MAX || !isBoundedId(reportId)) {
-        return fail('invalid-reportId', context);
-      }
-      if (payload['confirmed'] !== true) return fail('missing-confirmation', context);
-      return ipcOk({
-        ...context,
-        payload: { op: 'deleteSaved', reportId, confirmed: true }
-      } as SidebarCommand);
-    }
-    default:
-      return fail('invalid-op', context);
-  }
 }
 
 function isReportResultShape(value: unknown, checkValue: (v: unknown) => boolean): value is ReportResult<unknown> {

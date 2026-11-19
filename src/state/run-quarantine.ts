@@ -30,7 +30,7 @@ import {
 
 export interface RunQuarantineDeps {
   readonly read: () => RunQuarantineEntry[];
-  readonly write: (entries: readonly RunQuarantineEntry[]) => Thenable<void> | Promise<void>;
+  readonly write: (entries: readonly RunQuarantineEntry[]) => PromiseLike<void> | Promise<void>;
   readonly now: () => number;
   readonly warn: (reason: string) => void;
 }

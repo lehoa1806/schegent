@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { closeStage2Resources } from '../../../src/activation/stage2-teardown';
 
 /**
  * FR-R3-137 — who closes the transport sink, on both paths out of `wireStage2`.
@@ -301,5 +302,38 @@ describe('FR-R3-137 — one stop path (T1530g, FR-011)', () => {
   it('the host teardown releases the runtime log writer, and nothing else does (FR-R3-191)', () => {
     const releases = code.match(/runtimeLogSink\.flushAndDispose\(/g) ?? [];
     expect(releases, 'the writer is released once, by the host teardown').toHaveLength(1);
+  });
+
+  it('BUG-001 (FR-015): `dispose` passes `pauseQueues` into `closeStage2Resources` ahead of lease and primacy releases, and `createStage2Producers` receives `pauseQueuesOnStartup`', () => {
+    const call = code.slice(code.indexOf('closeStage2Resources('));
+    const argumentsEnd = call.indexOf('});');
+    expect(argumentsEnd).toBeGreaterThan(-1);
+    expect(call.slice(0, argumentsEnd)).toMatch(/pauseQueues\b/);
+
+    const producersCall = code.slice(code.indexOf('createStage2Producers('));
+    const producersEnd = producersCall.indexOf('});');
+    expect(producersEnd).toBeGreaterThan(-1);
+    expect(producersCall.slice(0, producersEnd)).toMatch(/pauseQueuesOnStartup\b/);
+  });
+
+  it('BUG-001 (FR-015): `closeStage2Resources` awaits `pauseQueues` after `teardown()` and before `disposables` and `transport.flushAndDispose()`, swallowing errors', async () => {
+    const order: string[] = [];
+    await closeStage2Resources({
+      sync: [{ dispose: () => void order.push('sync') }],
+      teardown: async () => {
+        order.push('teardown');
+      },
+      pauseQueues: async () => {
+        order.push('pauseQueues');
+        throw new Error('pause failed');
+      },
+      disposables: [{ dispose: () => void order.push('disposables') }],
+      transport: {
+        flushAndDispose: async () => {
+          order.push('transport');
+        }
+      }
+    });
+    expect(order).toEqual(['sync', 'teardown', 'pauseQueues', 'disposables', 'transport']);
   });
 });

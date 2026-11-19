@@ -1,12 +1,5 @@
-import {
-  CMD_READ_METRICS,
-  isReadMetricsRunIdList,
-  type ReadMetricsRequest,
-  type ReadMetricsResponse,
-  type SidebarCommand
-} from '../sidebar-ipc';
+import type { ReadMetricsResponse } from '../sidebar-ipc';
 import { isFailureCause } from '../failure-cause';
-import { fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
 
 // Covers the outer envelope the webview must trust before rendering. Deep
 // TaskRecord/PhaseRecord validation remains outside this boundary.
@@ -120,38 +113,4 @@ function isValidMetricsCoverage(value: unknown): boolean {
 
 function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === 'string';
-}
-
-export function validateReadMetrics(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_READ_METRICS, correlationId });
-  }
-  const value = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(value, ['includeArchives', 'runIds'])) {
-    return fail('unexpected-payload-fields', { type: CMD_READ_METRICS, correlationId });
-  }
-  const includeArchives = value['includeArchives'];
-  if (includeArchives !== undefined && typeof includeArchives !== 'boolean') {
-    return fail('invalid-payload-field', { type: CMD_READ_METRICS, correlationId });
-  }
-  // Feature 103 (T092, FR-023) — `runIds` arrives from the webview, so it is
-  // checked here and not merely where it is used. The bound matters as much as
-  // the shape: the host filters the rollup by this list, and an unbounded list
-  // is an unbounded scan the webview chose.
-  const runIds = value['runIds'];
-  if (runIds !== undefined && !isReadMetricsRunIdList(runIds)) {
-    return fail('invalid-payload-field', { type: CMD_READ_METRICS, correlationId });
-  }
-
-  // Rebuilt field by field rather than passed through, so an absent field stays
-  // absent instead of arriving as `undefined` on a key that exists.
-  const request: { -readonly [K in keyof ReadMetricsRequest]: ReadMetricsRequest[K] } = {};
-  if (includeArchives !== undefined) request.includeArchives = includeArchives;
-  if (runIds !== undefined) request.runIds = runIds;
-
-  return ok({ type: CMD_READ_METRICS, correlationId, payload: request } as SidebarCommand);
 }

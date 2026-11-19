@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { countFileCodeLines } from './code-lines';
 
 // Feature 057 Track 4 — regression guard. Pins the LoC budgets agreed
 // in spec 057 (FR-005, FR-006, SC-001, SC-003) so a future contributor
@@ -612,7 +612,15 @@ const BUDGETS = [
   // field beside `sessionReuse` in the start payload (one). The plan estimated three lines for
   // CP7 and PI4 together and assumed the ternary stayed on one line; it cannot, once it selects a
   // pair. Nothing else moved. The sibling waiver's mark moved by the same lines in the same diff.
-  { path: 'src/controller/phase-runner.ts', max: 1_413 },
+  // Feature 318 (FR-R7-04, 2026-11-19) — 1,413 → 1,421 (+8) for optional `agentConfigAckGate`
+  // seam right after `resolveRunner` and `isAgentConfigAcknowledgementRefusal` pre-spawn refusal
+  // marking; all preflight logic and ledger live in `src/controller/agent-config-ack-gate.ts`.
+  // FR-R7-08 (2026-11-19) — migrated from raw `wc -l` physical lines to lexical
+  // code lines (`tests/lint/code-lines.ts`, excluding comments and blank lines).
+  // Prior raw-line ceiling: 1,421 (measured 1,418 raw lines); re-derived code-line
+  // count: 845. Retained: protects spec 057 coordinator shell size without taxing
+  // explanatory comments.
+  { path: 'src/controller/phase-runner.ts', max: 845 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the
@@ -626,7 +634,9 @@ const BUDGETS = [
   // refusal mapping that keeps `path-symlink-redirect` distinct from
   // `missing-sidecar`, and the note recording what the old comment was right
   // about and what it left out. Nothing to extract — it is one open.
-  { path: 'src/controller/phase-sidecar-reader.ts', max: 439 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 439
+  // (measured 438 raw lines) → 305 code lines. Retained under spec 057.
+  { path: 'src/controller/phase-sidecar-reader.ts', max: 305 },
   // Feature 194 (FR-006 through FR-009, 2026-09-03) — 180 → 296 for the stagnation
   // tracker: a real, new stateful subsystem, not headroom on existing work.
   // What the 116 lines buy: `StagnationEntry` and the nested
@@ -753,7 +763,9 @@ const BUDGETS = [
   // `||` arm; the two comment lines above the condition were reworded at the same
   // count. A constant set lookup was measured as the alternative and came to 366,
   // so the chain stayed. No responsibility was added.
-  { path: 'src/controller/phase-retry-evaluator.ts', max: 364 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 364
+  // (measured 364 raw lines) → 181 code lines. Retained under spec 057.
+  { path: 'src/controller/phase-retry-evaluator.ts', max: 181 },
   // Raised from 100 on 2026-08-16. The truncation arm of `mapOutcome` stopped
   // returning 'failed' and now returns 'transient_error'; the budget is spent
   // on recording why, because a reader who assumed the old mapping was
@@ -764,22 +776,18 @@ const BUDGETS = [
   // `mapTerminationReason` each gained a `case 'incomplete_turn'` arm, two lines
   // apiece, for the new invocation kind. No responsibility was added to the file —
   // it is still pure classification — so the raise is headroom, not a split.
-  { path: 'src/controller/phase-outcome-mapper.ts', max: 114 }
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 114
+  // (measured 114 raw lines) → 66 code lines. Retained under spec 057.
+  { path: 'src/controller/phase-outcome-mapper.ts', max: 66 }
 ] as const;
 
 function countLines(absPath: string): number {
-  const contents = readFileSync(absPath, 'utf8');
-  // wc -l semantics: count newline terminators. A final newline-less
-  // line still counts because we split and exclude the trailing empty.
-  const lines = contents.split('\n');
-  // Mirror `wc -l` exactly: it counts \n bytes.
-  if (lines[lines.length - 1] === '') lines.pop();
-  return lines.length;
+  return countFileCodeLines(absPath);
 }
 
-describe('feature 057 LoC budgets', () => {
+describe('feature 057 LoC budgets (code lines, FR-R7-08)', () => {
   for (const { path: relPath, max } of BUDGETS) {
-    it(`${relPath} ≤ ${max} LoC`, () => {
+    it(`${relPath} ≤ ${max} code lines`, () => {
       const count = countLines(resolve(REPO_ROOT, relPath));
       expect(count).toBeLessThanOrEqual(max);
     });

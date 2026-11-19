@@ -64,6 +64,9 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'operator-pseudonym-reset': 'system',
   // Feature 304 — an artifact lifecycle mutation, with no run (system)
   'artifact-lifecycle-mutation': 'system',
+  // FR-R7-03 — SQLite store backup and restore have no run; System tab only.
+  'store-backup': 'system',
+  'store-restore': 'system',
   // Retry-condition decision (task)
   'phase.retry_evaluated': 'task',
   // Delayed retry (system)
@@ -173,6 +176,9 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // admitted to and under what posture, so it belongs to that Run's story
   // rather than to the window's. `phase-start`, which it precedes, is task too.
   'backend-posture-admitted': 'task',
+  // FR-R7-04 — task-scoped: records per-workspace repository agent config acknowledgement
+  // for one Run (`backend`, `fileCount`, `decision` only — zero paths or values).
+  'agent-config-acknowledged': 'task',
   // FR-R3-086 — task-scoped for the same reason its sibling is: it records what
   // one Run was allowed to do, not a workspace-level event. An operator
   // reconstructing why a phase never started reads it beside that Run's other
@@ -416,6 +422,7 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'phase-optional-failure-continued':
         case 'backend-ping':
         case 'backend-posture-admitted':
+        case 'agent-config-acknowledged':
         case 'capability-refused':
         case 'capability-applied':
         case 'process-tree-unconfirmed':
@@ -442,7 +449,9 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'control-wait':
         case 'control-return':
         case 'control-notice':
-        case 'control-command': {
+        case 'control-command':
+        case 'store-backup':
+        case 'store-restore': {
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);
           break;

@@ -16,12 +16,14 @@
   //
   // The per-backend rendering lives in `general/BackendSection.svelte`; this file
   // owns the heading, the shared probe state and nothing else.
-  import { SUPPORTED_BACKENDS } from '../../../../src/contracts/backend-kinds';
+  import {
+    SUPPORTED_BACKENDS,
+    type BackendMap
+  } from '../../lib/generated/backend-descriptors';
   import {
     IDLE_GENERAL_SETTINGS,
     type BackendPingState,
     type BackendPosture,
-    type BackendRunnerKind,
     type GeneralSettings,
     type PortableWorkflowDefinition,
     type WorkflowSnapshot
@@ -48,7 +50,7 @@
      * the tab's declaration a compile error until that backend has a section,
      * where an array would compile and silently render three of four.
      */
-    backends: Readonly<Record<BackendRunnerKind, BackendSectionSpec>>;
+    backends: BackendMap<BackendSectionSpec>;
     draft: Draft;
     statusByKey: StatusByKey;
     fieldChanged: (key: ScalarKey) => boolean;

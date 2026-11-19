@@ -19,7 +19,8 @@ import type { ResolvedPortValue } from '../../contracts/run-request';
 import type { DecisionFieldValue } from '../../contracts/decision-results';
 import type {
   ControlAdmissionPort,
-  ExecutionFence
+  ExecutionFence,
+  ProcessEvidencePort
 } from '../../contracts/control-ledger';
 import type { WorkflowNodeTerminalStatus } from '../../contracts/workflow-definitions';
 import type { ControlAttemptAdmissionService } from './control-attempt-admission';
@@ -96,6 +97,13 @@ export interface WorkflowRecoveryServiceDeps {
     input: PhaseAttemptDispatchInput
   ) => Promise<PhaseAttemptDispatchResult>;
   readonly isQueueOrTaskPresent?: (queueId: string, rootRunId: string) => boolean;
+  readonly isAttemptPendingInQueue?: (
+    queueId: string,
+    run: ConnectedWorkflowRun,
+    frame: WorkflowInvocationFrame,
+    attempt: NodeAttemptRecord
+  ) => Promise<boolean> | boolean;
+  readonly processEvidencePort?: ProcessEvidencePort | undefined;
   readonly findMatchingEnqueuedAttempt?: (
     queueId: string,
     attempt: NodeAttemptRecord
@@ -271,7 +279,10 @@ export class WorkflowRecoveryService {
       const reconciledRoot = await this.deps.controlAdmission.reconcileControlRoot({
         ledgerRunId: run.controlState.ledgerRunId,
         connectedRun: run,
-        newFence: recoveryFence
+        newFence: recoveryFence,
+        ...(this.deps.processEvidencePort !== undefined
+          ? { processEvidencePort: this.deps.processEvidencePort }
+          : {})
       });
       if (reconciledRoot.ledger !== undefined) {
         const uncertainList: QuotaPermit[] = [];
@@ -683,6 +694,25 @@ export class WorkflowRecoveryService {
             projection: buildWorkflowRunControlProjection(finalRun)
           };
         }
+      }
+
+      if (
+        attempt.status === 'in-flight' &&
+        attempt.queueItemId !== undefined &&
+        this.deps.isAttemptPendingInQueue !== undefined &&
+        (await this.deps.isAttemptPendingInQueue(queueId, run, frame, attempt))
+      ) {
+        return {
+          runId: run.connectedRunId,
+          mutated: false,
+          disposition: run.recoveryDisposition ?? null,
+          run,
+          projection: buildWorkflowRunControlProjection(run),
+          ...(retainedUncertainPermits !== undefined
+            ? { retainedUncertainPermits }
+            : {}),
+          ...(claimedNotificationIds !== undefined ? { claimedNotificationIds } : {})
+        };
       }
 
       // No durable completion evidence: transition to 'paused' with 'recovery-uncertain-effect'.

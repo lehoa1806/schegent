@@ -360,3 +360,47 @@ describe('every outcome other than admitted logs one metadata-only line (G8)', (
     expect(r.warn).not.toHaveBeenCalled();
   });
 });
+
+describe('BUG-001 (FR-018) — refuses wakeups for operator-paused queues', () => {
+  it('returns ineligible, drops any due wakeup, and never calls admit when queueLifecycle is operator-paused', async () => {
+    const runs = new Map<string, WorkflowRun>([[QUEUE_A, creditPausedRun()]]);
+    let lifecycle: 'running' | 'operator-paused' = 'running';
+    const admit = vi.fn<UnattendedAdmissionDeps['admit']>(async () => 'capacity-refused');
+    const info = vi.fn();
+    const warn = vi.fn();
+    const admission = new UnattendedAdmission({
+      lock: { hasPrimacy: async () => true },
+      store: {
+        getRun: (queueId: string) => runs.get(queueId) ?? null,
+        getRunMap: () => Object.fromEntries(runs),
+        getQueue: (_queueId: string) => ({ queueLifecycle: lifecycle } as never)
+      },
+      admit,
+      clock: () => NOW,
+      pollIntervalMs: () => POLL_INTERVAL_MS,
+      pollNow: vi.fn(),
+      logger: { info, warn }
+    });
+
+    // Queue starts running -> capacity-refused puts wakeup into due map.
+    expect(await admission.admit(credits(QUEUE_A))).toBe('capacity-refused');
+    admit.mockClear();
+    admit.mockResolvedValue('admitted');
+
+    // Queue transitions to operator-paused -> retryDue and direct admit both refuse.
+    lifecycle = 'operator-paused';
+    await admission.retryDue();
+    expect(admit).not.toHaveBeenCalled();
+    expect(await admission.admit(credits(QUEUE_A))).toBe('ineligible');
+    expect(admit).not.toHaveBeenCalled();
+
+    // creditsRestored sweep also refuses without calling admit.
+    await admission.creditsRestored(NOW);
+    expect(admit).not.toHaveBeenCalled();
+
+    // Verify metadata-only log discipline still holds (no queue name or Run id leaked).
+    const serialized = JSON.stringify([...info.mock.calls, ...warn.mock.calls]);
+    expect(serialized).not.toContain('secret');
+    expect(serialized).toContain('queue-paused');
+  });
+});

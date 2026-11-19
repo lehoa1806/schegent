@@ -348,6 +348,11 @@ const ATOMIC_PUBLISH_RENAME_RESIDUAL: readonly string[] = [
   // rename itself cannot be handle-relative, for the reason this list exists. The no-overwrite
   // publish is a `link`, which never replaces a file.
   'services/reporting/export-publisher.ts',
+  // FR-R7-10 — one-time crash-safe SQLite store relocation into globalStorageUri. Staged copies,
+  // crash-recovery journals, and receipts are written inside the resolved anchor via `openWithinRoot`
+  // (`0600` / `0400`) or `VACUUM INTO` + `narrowMode` (`0600`), and containment of both names as
+  // direct entries of the anchor is proven via `resolveContainedLink` immediately before `fsp.rename`.
+  'services/sqlite-store/store-relocation.ts',
   'state/ownership-fs.ts'
 ];
 

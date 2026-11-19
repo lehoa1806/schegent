@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { PhaseDefinition } from '../../../../src/contracts/process-definitions';
 import type { WorkflowDefinition } from '../../../../src/contracts/workflow-definitions';
-import type { ConnectedWorkflowRun } from '../../../../src/state/connected-workflow-run';
+import {
+  attemptsForNode,
+  type ConnectedWorkflowRun
+} from '../../../../src/state/connected-workflow-run';
 import { createComposableWorkflowRunSnapshot } from '../../../../src/services/workflow-execution/connected-run-factory';
 import {
   completeComposableNodeAttempt,
@@ -388,5 +391,68 @@ describe('WorkflowRecoveryService — US3: Deterministic Restart Recovery (FR-R5
     const rootFrame = reconciled!.run.invocations![rootInvocationId]!;
     expect(rootFrame.status).toBe('paused');
     expect(rootFrame.controlMarkers?.manualPauseCause).toBe('recovery-uncertain-effect');
+  });
+
+  it('preserves an in-flight leaf Phase attempt as in-flight (mutated: false) when its backing queue item is still unstarted pending (BUG-001, FR-008)', async () => {
+    const store = createStore();
+    const { dispatchPhase, rootInvocationId } = await createStartedRun(store, 'run-pending-keep', 'q-1');
+    const before = store.get('run-pending-keep')!;
+
+    const recovery = new WorkflowRecoveryService({
+      connectedRuns: store,
+      dispatchPhase,
+      isQueueOrTaskPresent: () => true,
+      isAttemptPendingInQueue: (_queueId, _run, _frame, attempt) => attempt.queueItemId === 'qi-1',
+      checkDurableAttemptEvidence: () => ({ completed: false })
+    });
+
+    const reconciled = await recovery.reconcileRun('run-pending-keep', 2000);
+    expect(reconciled).toBeDefined();
+    expect(reconciled?.mutated).toBe(false);
+    expect(reconciled?.disposition).toBeNull();
+    expect(reconciled?.run.revision).toBe(before.revision);
+    const rootFrame = reconciled!.run.invocations![rootInvocationId]!;
+    expect(rootFrame.status).toBe('in-flight');
+    expect(rootFrame.controlMarkers?.manualPauseCause ?? null).toBeNull();
+    expect(attemptsForNode(rootFrame, 'n1').at(0)?.status).toBe('in-flight');
+  });
+
+  it('cancels a run as orphaned-canceled when its backing task row is missing or canceled (BUG-001, FR-008)', async () => {
+    const store = createStore();
+    const { dispatchPhase, rootInvocationId } = await createStartedRun(store, 'run-missing-row', 'q-1');
+
+    const recovery = new WorkflowRecoveryService({
+      connectedRuns: store,
+      dispatchPhase,
+      isQueueOrTaskPresent: () => false,
+      isAttemptPendingInQueue: () => false,
+      checkDurableAttemptEvidence: () => ({ completed: false })
+    });
+
+    const reconciled = await recovery.reconcileRun('run-missing-row', 2000);
+    expect(reconciled?.mutated).toBe(true);
+    expect(reconciled?.disposition?.status).toBe('orphaned-canceled');
+    expect(reconciled?.run.invocations?.[rootInvocationId]?.status).toBe('canceled');
+  });
+
+  it('still pauses an already-started interrupted leaf attempt as recovery-uncertain-effect when isAttemptPendingInQueue is false (BUG-001, 262 FR-006)', async () => {
+    const store = createStore();
+    const { dispatchPhase, rootInvocationId } = await createStartedRun(store, 'run-started-crash', 'q-1');
+
+    const recovery = new WorkflowRecoveryService({
+      connectedRuns: store,
+      dispatchPhase,
+      isQueueOrTaskPresent: () => true,
+      isAttemptPendingInQueue: () => false,
+      checkDurableAttemptEvidence: () => ({ completed: false })
+    });
+
+    const reconciled = await recovery.reconcileRun('run-started-crash', 2000);
+    expect(reconciled?.mutated).toBe(true);
+    expect(reconciled?.disposition?.status).toBe('uncertain-effect-paused');
+    const rootFrame = reconciled!.run.invocations![rootInvocationId]!;
+    expect(rootFrame.status).toBe('paused');
+    expect(rootFrame.controlMarkers?.manualPauseCause).toBe('recovery-uncertain-effect');
+    expect(attemptsForNode(rootFrame, 'n1').at(0)?.status).toBe('paused');
   });
 });

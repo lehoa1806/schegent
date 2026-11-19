@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
+import { countFileCodeLines, topLevelFunctionCodeLines } from './code-lines';
 import { envelopePresent } from './envelope-presence';
 import { filesUnder } from './source-scan';
 
@@ -422,7 +423,9 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // the file back outside the margin: this feature's trust wiring had pushed it
   // to within 25 lines of 715, and the gate below caught that before review did.
   // Same rule as the line above — measurement plus 34.
-  { path: 'src/extension.ts', maxLines: 709 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines (`tests/lint/code-lines.ts`):
+  // prior raw ceiling 709 (measured 683 raw) → 516 code lines; ceiling 555.
+  { path: 'src/extension.ts', maxLines: 555 },
   //
   // FR-R3-103 (FR-042, FR-046) — 1459 -> 1471. Nine lines for the dependency wiring of the resume
   // liveness check plus two imports, three more registering the fence-loss abort, and the
@@ -700,7 +703,8 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // consent gate is constructed with (the binding an accepted fingerprint writes) adds 1 line
   // and lands the file at 1,015 by this gate's count, inside `tightMargin`'s band. Measurement
   // plus 26, the rule the runtime-validators entry uses.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 1_041 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,041 (1,012 raw) → 613 code; ceiling 650.
+  { path: 'src/controller/workflow-controller.ts', maxLines: 650 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log and metrics validators own shape rules.
   // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both
@@ -722,7 +726,10 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // execution-visibility command families (five literal imports, two validator module imports,
   // response guard re-exports and five switch arms) add 30 lines and land the file at 788 by
   // this gate's count. Measurement plus 26, keeping domain payload validation in focused modules.
-  { path: 'src/contracts/runtime-validators.ts', maxLines: 814 },
+  // FR-R7-05 — inbound validators generated into `src/contracts/generated/validators/*.ts`;
+  // `runtime-validators.ts` shrinks to the switch dispatch barrel (357 lines + headroom).
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 390 (358 raw) → 342 code; ceiling 380.
+  { path: 'src/contracts/runtime-validators.ts', maxLines: 380 },
   // P4 IPC-family extraction ratchet: 1,250 → 885. The stable barrel retains
   // literals and guards while domain wire shapes live in focused modules.
   // Feature 084 (T071) — 885 → 950 for the process-YAML command family. Its
@@ -836,7 +843,9 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // `COMMAND_GUARDS` rows) add 85 lines and land the file at 1268 by this gate's count;
   // payload types stay in their sub-modules. Measurement plus 28 keeps headroom outside
   // `tightMargin(1296)` (25 lines).
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1296 },
+  // FR-R7-05 — 22 core command interfaces re-exported from `generated/sidebar-ipc-types.ts` (1,146 + headroom).
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,185 (1,148 raw) → 874 code; ceiling 920.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 920 },
   // Waived, not budgeted. Feature 063's operator decision retired the ceiling
   // on this file and on queue-manager.ts below; it did not set a large one. The
   // entries used to say `maxLines: 10_000` against files of 2,500 and 1,821,
@@ -1079,14 +1088,28 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // `serializeAcrossKeys([KEYS.run, KEYS.queue])` with same-`run.id` transition and
       // `running`-status admission checks. Pure transition and error definitions live
       // in their own modules; relocation of existing `workspace-state.ts` code belongs to FR-R7-07.
-      highWaterMark: 3933
+      //
+      // Feature 318 (FR-R7-04, 2026-11-19) — 3933 → 3983, +50: minimal memento seam for
+      // `KEYS.agentConfigGrants` (`schegent.consent.agentConfigGrants.v1`) mirroring `gitPlanGrants`.
+      // All validation, narrowing, and pure writers live in `src/state/agent-config-grants.ts`.
+      //
+      // Feature 321 (FR-R7-07, 2026-11-19) — 3983 → 926, -3057: split by key family into
+      // `workspace-state-{types,migrations,queue,runs,locks,history,grants,connected}.ts`
+      // behind the `WorkspaceStateStore` facade and single serialize chain.
+      // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw mark 926 (926 raw) → 775 code lines.
+      highWaterMark: 775
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
-  // hard physical-LOC ceilings. Composition, lifecycle, and timing are split.
-  { path: 'src/ui/sidebar/state-projector.ts', maxLines: 250 },
-  { path: 'src/ui/sidebar/state-projector-runtime.ts', maxLines: 300 },
-  { path: 'src/ui/sidebar/projector-bookkeeping.ts', maxLines: 300 },
+  // hard code-line ceilings (migrated from physical lines in FR-R7-08).
+  // FR-R7-08 (2026-11-19) — state-projector.ts: prior raw ceiling 250 (218 raw) → 110 code; ceiling 145.
+  // FR-R7-08 / FR-021 retirements (2026-11-19):
+  //   - `src/ui/sidebar/state-projector-runtime.ts` (prior raw ceiling 300, 300 raw → 212 code)
+  //   - `src/ui/sidebar/projector-bookkeeping.ts` (prior raw ceiling 300, 216 raw → 182 code)
+  //   Both entries are retired from `BUDGETS` under FR-021 because the wildcard check in this
+  //   same file (`every sidebar projector module stays at or below 300 code lines`, matching
+  //   every `src/ui/sidebar/*projector*.ts` module) enforces the exact same `<= 300` bound.
+  { path: 'src/ui/sidebar/state-projector.ts', maxLines: 145 },
   // Feature 087 (T064) — 300 → 301 for the recorded-run-outputs projection
   // (FR-043). The composition itself was extracted first, to
   // `projectRunOutputs` in run-projector.ts; what landed here is the one thing
@@ -1157,7 +1180,8 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // capped separately, which is the same move `trust-projection.ts` and
   // `phase-catalog-projection.ts` record above. Set to exactly what the file
   // measures.
-  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 322 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 322 (319 raw) → 242 code; ceiling 280 (departs UNDECIDED_CEILING_BASELINE).
+  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 280 },
   // The second file of the same 2026-05-22 decision; see the waiver above.
   {
     path: 'src/queue/queue-manager.ts',
@@ -1366,7 +1390,8 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // through `store.admitRunAtomically` plus shared `applyMarkInFlight` and
       // `emitTaskStartedPostCommit` helpers so `markInFlight` and `admitRun` share one Task
       // transition site and post-commit audit hook without duplicating either.
-      highWaterMark: 2469
+      // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw mark 2,469 (2,469 raw) → 1,477 code lines.
+      highWaterMark: 1477
     }
   },
   // Feature 267 (FR-R5-F08, 2026-11-06) — `workflow-control-service.ts` crossed the
@@ -1375,13 +1400,15 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // paused leaf Phase node). Budgeted at 1,200 with ~105 lines of headroom.
   // Feature 294 (FR-R5-F31, 2026-11-08) — 1,200 -> 1,260 for `executeCandidateControlCommand`
   // and generic `retry-phase` redirection to `ControlCommandService`, keeping ~49 lines of headroom.
-  { path: 'src/services/workflow-execution/workflow-control-service.ts', maxLines: 1260 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,260 (1,234 raw) → 1,068 code; ceiling 1,125.
+  { path: 'src/services/workflow-execution/workflow-control-service.ts', maxLines: 1_125 },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
   // built-in phases (speckit-checklist, speckit-review) and enriched
   // skill-aligned instruction text for clarify, analyze, review, and finalize.
   // Feature 074 — bumped 800 → 850 for runner field on PhaseDef, ALLOWED_PHASE_FIELDS,
   // isPhaseDef runner check, and validatePhaseRaw runner validation.
-  { path: 'src/config/pipeline-config.ts', maxLines: 900 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 900 (494 raw) → 331 code; ceiling 370.
+  { path: 'src/config/pipeline-config.ts', maxLines: 370 },
   // `retry.forceContinueOnCap` (2026-08-16) — 650 → 660 for the retry-cap
   // force-continue default. Extraction was considered and rejected on shape,
   // not on cost: every line added is a row in a declaration this file exists to
@@ -1435,7 +1462,8 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // and not a slice of the same one. This ceiling is retired DOWN, not raised;
   // an 800 ceiling on a 384-line file has stopped being a forcing function long
   // before `WAIVER_FACTOR` would notice at 3x.
-  { path: 'src/config/general-settings.ts', maxLines: 420 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 420 (393 raw) → 264 code; ceiling 300.
+  { path: 'src/config/general-settings.ts', maxLines: 300 },
   // FR-R3-144 (T002) — the settings TABLE and the payload shape it projects.
   //
   // This is where the four-surface lock-step now lives, so this is the ceiling
@@ -1447,7 +1475,8 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // FR-R4-F04 (feature 251, 2026-10-31) — 450 -> 475. The transport capture setting is the third and
   // fourth settings' worth of rows the note above allowed for: the typed field, its scope, its
   // `AllowedKey` member and its `KEY_SPECS` entry, plus the reason it exists. 437 by this gate's count.
-  { path: 'src/config/general-settings-keys.ts', maxLines: 475 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 475 (439 raw) → 323 code; ceiling 360.
+  { path: 'src/config/general-settings-keys.ts', maxLines: 360 },
   // FR-R3-144 (T002) — the validator, a pure function of a spec and a value.
   //
   // Budgeted despite being the smallest entry in this list, because "it is only
@@ -1456,7 +1485,8 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // the one that grew. Its growth is bounded by `RuntimeType`, a closed union in
   // the file above, which is itself budgeted — so this number should move only
   // when a runtime type is added, and that is a change worth seeing.
-  { path: 'src/config/general-settings-validate.ts', maxLines: 165 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 165 (137 raw) → 98 code; ceiling 135.
+  { path: 'src/config/general-settings-validate.ts', maxLines: 135 },
   // FR-R3-107 (FR-079) — `run-driver.ts` enters the ratchet at its measured size.
   //
   // WHY IT WAS NOT HERE BEFORE, which is the finding rather than an oversight. The
@@ -1561,7 +1591,8 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // two parameters that carry the result to it; the logic is in `blocker-notice.ts`), +15 net.
   // Raised because the margin rule left no choice; the note above stands: the next change here
   // reduces or splits the file.
-  { path: 'src/services/run-driver.ts', maxLines: 1_345 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,345 (1,318 raw) → 942 code; ceiling 990.
+  { path: 'src/services/run-driver.ts', maxLines: 990 },
   // FR-R3-128 — the extraction's destination is governed in the same change. An
   // extraction that shrinks one method and adds an ungoverned file has moved the
   // debt, not reduced it. 182 lines measured; 210 carries the 25-line margin this
@@ -1574,7 +1605,8 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // returning rather than throwing, per this feature's closed transition
   // table), adding ten measured lines. 192 lines measured; 225 keeps the same
   // 25-line-plus margin this file's ceiling has always carried.
-  { path: 'src/services/run-terminal-effects.ts', maxLines: 225 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 225 (193 raw) → 81 code; ceiling 120.
+  { path: 'src/services/run-terminal-effects.ts', maxLines: 120 },
   // Feature 217 (FR-R3-183; FR-041, FR-043) — the seven files the entry condition
   // captured when it arrived. Every file at or above `ENTRY_CONDITION_LINES` has to
   // carry an entry now, and these were the seven that carried none. Each is placed
@@ -1600,7 +1632,8 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // store), and what stays is the formatting, the redactor registry, the pending bound and the
   // disposal. 594 by this gate's count; 50 lines keeps it clear of `tightMargin(650)` = 25 and below
   // where it was.
-  { path: 'src/monitor/cli-transport-sink.ts', maxLines: 650 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 650 (596 raw) → 208 code; ceiling 245.
+  { path: 'src/monitor/cli-transport-sink.ts', maxLines: 245 },
   // FR-R4-F04 (feature 251, 2026-10-31) — the audit writer crosses the 1,000-line entry condition (998 ->
   // 1,009 by this gate's count). The age logic lives in three new modules (`audit-generation-age.ts`,
   // `audit-generation-sidecar.ts`, `audit-generation-classify.ts`), so the writer gained only an import, a
@@ -1609,7 +1642,8 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // FR-R5-F13 (feature 272, 2026-11-06) — 1,050 -> 1,220 for chronological pre-verified archive pruning,
   // audited `chain-broken` recovery (`noteChainVerified`), and in-place checkpoint re-anchoring
   // (`reanchorCheckpoint`), leaving ~43 lines of headroom above `tightMargin`.
-  { path: 'src/audit/audit-log-writer.ts', maxLines: 1_220 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,220 (1,175 raw) → 856 code; ceiling 900.
+  { path: 'src/audit/audit-log-writer.ts', maxLines: 900 },
   // FR-R4-F04 (feature 251, 2026-10-31) — `audit-payload.ts` reaches the 1,000-line entry condition (998 ->
   // 1,001 by this gate's count). The closed `evidence-exported` projection is its own module
   // (`evidence-lifecycle-payload.ts`) and the validation error moved to `audit-payload-error.ts` so the
@@ -1617,25 +1651,34 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // 1,050 leaves 49 lines, clear of `tightMargin(1050)` = 25.
   // FR-R5-F13 (feature 272, 2026-11-06) — 1,050 -> 1,080 for `chain-verified` and `checkpoint-reanchored`
   // projection arms and the three new evidence-sink path-refused warning literals.
-  { path: 'src/audit/audit-payload.ts', maxLines: 1_080 },
+  // Feature 318 (FR-R7-04, 2026-11-19) — 1,080 -> 1,090 for the 3-line `agent-config-acknowledged`
+  // dispatch arm; the closed projector lives in `src/audit/agent-config-ack-payload.ts`.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,090 (1,057 raw) → 544 code; ceiling 580.
+  { path: 'src/audit/audit-payload.ts', maxLines: 580 },
   // 1,186, unchanged by feature 217's workstream.
   //
   // FR-R4-F04 (feature 251, 2026-10-31) — 1,225 -> 1,250. The transport capture setting adds its idle
   // default and scope (4 lines) and the snapshot's `GeneralSettingsProjection` type with its reason (14
   // lines): 1,208 by this gate's count, and the ceiling is raised by the lines added, to the same order
   // of headroom `tightMargin` expects.
-  { path: 'src/ui/sidebar/snapshot.ts', maxLines: 1_250 },
+  // FR-R7-05 — snapshot projection interfaces generated into `src/contracts/generated/snapshot-types.ts`;
+  // `snapshot.ts` shrinks to barrel re-exports + idle constants + helpers (334 lines + headroom).
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 370 (336 raw) → 276 code; ceiling 315.
+  { path: 'src/ui/sidebar/snapshot.ts', maxLines: 315 },
   // 1,100, unchanged by this feature.
-  { path: 'src/monitor/claude-cli-monitor.ts', maxLines: 1_140 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,140 (1,112 raw) → 635 code; ceiling 670.
+  { path: 'src/monitor/claude-cli-monitor.ts', maxLines: 670 },
   // 1,018, and captured only because the first workstream took it from 899
   // (FR-004, FR-005): the rollover's successor opens through the checked walk and
   // rotated generations are narrowed where they lie. It gets an entry rather than
   // a trim back under 1,000, because cutting that work to slip below the condition
   // is the gaming FR-046 exists to stop.
-  { path: 'src/lib/runtime-log/runtime-log-sink.ts', maxLines: 1_060 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,060 (1,027 raw) → 536 code; ceiling 575.
+  { path: 'src/lib/runtime-log/runtime-log-sink.ts', maxLines: 575 },
   // 1,008, unchanged by this feature, and the same size as workflow-controller.ts,
   // which already carried a ceiling.
-  { path: 'src/state/queue-state-migrator.ts', maxLines: 1_050 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,050 (1,008 raw) → 638 code; ceiling 675.
+  { path: 'src/state/queue-state-migrator.ts', maxLines: 675 },
   // The two the filing named by hand. Both are larger than every ceiling in this
   // table, and the review calls audit-events.ts "the most likely next god-file".
   // They take a waiver because it is the tighter bound: a plain ceiling has to keep
@@ -1725,22 +1768,44 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // note (three), which state the ladder's result in the qualification vocabulary. No event
       // type or constant changed; the mapping lives in
       // `src/services/containment-qualification/teardown-qualification.ts`, not here.
-      highWaterMark: 1688
+      //
+      // Feature 317 (FR-R7-03, 2026-11-19) — `STORE_BACKUP_RESTORE_EVENT_TYPES` (`'store-backup'`,
+      // `'store-restore'`), its spread into `ALL_AUDIT_EVENT_TYPES`, and `SYSTEM_SCOPED_EVENT_TYPES`.
+      // Feature 318 (FR-R7-04, 2026-11-19) — `AGENT_CONFIG_ACK_EVENT_TYPES` (`agent-config-acknowledged`)
+      // and its spread into `ALL_AUDIT_EVENT_TYPES`.
+      // FR-R7-08 (2026-11-19) — migrated to code lines (combined 317 + 318: 612 code lines).
+      highWaterMark: 612
     }
   },
+  // Feature 317 + 324 (FR-R7-03 / FR-R7-10, 2026-11-19) — `sqlite-cutover-wiring.ts` (1,017 code
+  // lines) and `store-relocation.ts` (1,040 code lines) crossed the 1,000-line entry condition;
+  // declared with plain ceilings leaving ~55 lines of headroom above `tightMargin`.
+  { path: 'src/activation/sqlite-cutover-wiring.ts', maxLines: 1_075 },
+  { path: 'src/services/sqlite-store/store-relocation.ts', maxLines: 1_100 },
   // Round 5 workflow control-flow, backend recovery, and admission modules (FR-R5-F26..F34, 2026-11-08) —
   // each crosses the 1,000-line entry condition and carries a plain ceiling with ~50 lines of headroom
   // above `tightMargin`.
-  { path: 'src/services/backend-availability-service.ts', maxLines: 1_420 },
-  { path: 'src/services/workflow-execution/candidate-block-executor.ts', maxLines: 1_980 },
-  { path: 'src/services/workflow-execution/connected-run-coordinator.ts', maxLines: 1_450 },
-  { path: 'src/services/workflow-execution/control-attempt-admission.ts', maxLines: 1_860 },
-  { path: 'src/services/workflow-execution/control-command-service.ts', maxLines: 1_380 },
-  { path: 'src/services/workflow-execution/control-usage-accounting.ts', maxLines: 1_220 },
-  { path: 'src/services/workflow-execution/control-wakeup-planner.ts', maxLines: 1_330 },
-  { path: 'src/services/workflow-execution/quota-permit-arbiter.ts', maxLines: 1_840 },
-  { path: 'src/services/workflow-execution/workflow-recovery-service.ts', maxLines: 1_320 },
-  { path: 'src/state/connected-workflow-run.ts', maxLines: 1_070 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines (prior raw ceiling / raw lines → code lines / new ceiling):
+  //   backend-availability-service.ts: 1,420 / 1,375 → 1,233 / 1,295
+  //   candidate-block-executor.ts:     1,980 / 1,921 → 1,752 / 1,840
+  //   connected-run-coordinator.ts:    1,450 / 1,409 → 1,262 / 1,330
+  //   control-attempt-admission.ts:    1,860 / 1,821 → 1,695 / 1,780
+  //   control-command-service.ts:      1,380 / 1,326 → 1,231 / 1,295
+  //   control-usage-accounting.ts:     1,220 / 1,168 → 1,020 / 1,075
+  //   control-wakeup-planner.ts:       1,330 / 1,273 → 1,124 / 1,185
+  //   quota-permit-arbiter.ts:         1,840 / 1,780 → 1,587 / 1,670
+  //   workflow-recovery-service.ts:    1,320 / 1,187 → 1,101 / 1,160
+  //   connected-workflow-run.ts:       1,070 / 1,038 →   794 /   835
+  { path: 'src/services/backend-availability-service.ts', maxLines: 1_295 },
+  { path: 'src/services/workflow-execution/candidate-block-executor.ts', maxLines: 1_840 },
+  { path: 'src/services/workflow-execution/connected-run-coordinator.ts', maxLines: 1_330 },
+  { path: 'src/services/workflow-execution/control-attempt-admission.ts', maxLines: 1_780 },
+  { path: 'src/services/workflow-execution/control-command-service.ts', maxLines: 1_295 },
+  { path: 'src/services/workflow-execution/control-usage-accounting.ts', maxLines: 1_075 },
+  { path: 'src/services/workflow-execution/control-wakeup-planner.ts', maxLines: 1_185 },
+  { path: 'src/services/workflow-execution/quota-permit-arbiter.ts', maxLines: 1_670 },
+  { path: 'src/services/workflow-execution/workflow-recovery-service.ts', maxLines: 1_160 },
+  { path: 'src/state/connected-workflow-run.ts', maxLines: 835 },
   // The second file of the same 2026-10-01 decision; see the waiver above.
   {
     path: 'src/controller/phase-runner.ts',
@@ -1774,14 +1839,22 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // The lines select the composed prompt's identity beside the prompt and set it on `phase-start`
       // (PI4). The why is the second FR-R4-F12 note on this file's entry in
       // tests/lint/phase-runner-loc-budget.test.ts, whose ceiling moved 1,409 → 1,413 in the same diff.
-      highWaterMark: 1414
+      //
+      // Feature 318 (FR-R7-04, 2026-11-19) — 1414 → 1422, +8, by this gate's count. Optional
+      // `agentConfigAckGate` injection, call right after `resolveRunner`, and `preSpawnRefusal`
+      // recognition for `AgentConfigAcknowledgementRefusedError`. All preflight logic and the
+      // per-(runId, backend) ledger live in `src/controller/agent-config-ack-gate.ts`.
+      //
+      // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw mark 1,422 (1,419 raw) → 845 code lines.
+      // Retained alongside `phase-runner-loc-budget.test.ts` (845 code lines) because this waiver also
+      // enforces the `RATCHET_SLACK` shrink-down check.
+      highWaterMark: 845
     }
   }
 ];
 
 function lineCount(path: string): number {
-  const contents = readFileSync(resolve(REPO_ROOT, path), 'utf8');
-  return contents.length === 0 ? 0 : contents.split(/\r?\n/).length;
+  return countFileCodeLines(resolve(REPO_ROOT, path));
 }
 
 describe('large source file LOC budgets', () => {
@@ -1913,13 +1986,14 @@ describe('large source file LOC budgets', () => {
   // Its ceiling of 1,040 is left where it is, on the same terms as the four above:
   // real headroom on a file that shrank is a budget, which is the state this list
   // exists to move files into.
+  // FR-R7-08 (2026-11-19) — both remaining entries departed upon migrating to code lines:
+  // `state-projector-runtime.ts` (212 code lines) retired under FR-021 to the 300-code-line
+  // sidebar projector wildcard check below; `snapshot-composer.ts` (242 code lines, ceiling 280)
+  // now carries real headroom above `tightMargin`. The baseline reaches zero; no new file may join.
   const UNDECIDED_CEILING_BASELINE: ReadonlyArray<{
     readonly path: string;
     readonly ceiling: number;
-  }> = [
-    { path: 'src/ui/sidebar/state-projector-runtime.ts', ceiling: 300 },
-    { path: 'src/ui/sidebar/snapshot-composer.ts', ceiling: 322 }
-  ];
+  }> = [];
 
   const BASELINE_PATHS: ReadonlySet<string> = new Set(
     UNDECIDED_CEILING_BASELINE.map((entry) => entry.path)
@@ -2171,36 +2245,20 @@ describe('large source file LOC budgets', () => {
     // reconciler was the kind that put the function over. Missing one of those
     // three edits is how feature 092's v10 events shipped unaudited, so the
     // per-kind form was a defect as well as a length.
-    'src/extension.ts:wireStage2': 403
+    //
+    // FR-R7-08 (2026-11-19) — graduated: on code lines (excluding comments and
+    // blank lines), `src/extension.ts:wireStage2` measures 319 code lines,
+    // strictly under `MAX_FUNCTION_LINES = 400`. The legacy exemption list is
+    // now empty and remains closed.
   };
 
-  /** Top-level function declarations and their extents, brace-counted. */
+  /** Top-level function declarations and their code-line extents (AST-derived). */
   function topLevelFunctions(relPath: string): ReadonlyArray<{ name: string; lines: number }> {
-    const body = readFileSync(resolve(REPO_ROOT, relPath), 'utf8').split('\n');
-    const found: Array<{ name: string; lines: number }> = [];
-    for (let index = 0; index < body.length; index += 1) {
-      const opener = /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/.exec(body[index] ?? '');
-      if (opener === null) continue;
-      let depth = 0;
-      let started = false;
-      let end = index;
-      for (let scan = index; scan < body.length; scan += 1) {
-        const line = body[scan] ?? '';
-        for (const ch of line) {
-          if (ch === '{') {
-            depth += 1;
-            started = true;
-          } else if (ch === '}') depth -= 1;
-        }
-        if (started && depth <= 0) {
-          end = scan;
-          break;
-        }
-      }
-      found.push({ name: opener[1]!, lines: end - index + 1 });
-      index = end;
-    }
-    return found;
+    const absPath = resolve(REPO_ROOT, relPath);
+    return topLevelFunctionCodeLines(readFileSync(absPath, 'utf8'), absPath).map((fn) => ({
+      name: fn.name,
+      lines: fn.lines
+    }));
   }
 
   function scopedFiles(): readonly string[] {
@@ -2254,7 +2312,11 @@ describe('large source file LOC budgets', () => {
     //
     // The two numbers being equal is the point. Lowering the exemption is a
     // two-line edit that shows up in review as a pair; raising it fails here.
-    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 403 };
+    const CEILING: Readonly<Record<string, number>> = {};
+    expect(
+      Object.keys(LEGACY_FUNCTION_EXEMPTIONS),
+      'LEGACY_FUNCTION_EXEMPTIONS graduated to empty in FR-R7-08 and stays closed'
+    ).toEqual([]);
     for (const [key, allowed] of Object.entries(LEGACY_FUNCTION_EXEMPTIONS)) {
       expect(allowed, `${key}: an exemption may be lowered, never raised`).toBeLessThanOrEqual(
         CEILING[key] ?? 0

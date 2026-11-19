@@ -64,7 +64,7 @@ import {
   TRIM_THRESHOLD_BYTES
 } from '../../metrics/metrics-rollup-writer';
 import { METRICS_SCAN_CORPUS_MAX_ENTRIES } from '../../metrics/metrics-service';
-import { MAX_PENDING_TASKS_PER_QUEUE } from '../../queue/feature-request';
+import { MAX_PENDING_TASKS_PER_QUEUE } from '../../contracts/queue-feature-request-helpers';
 import { MAX_OPEN_TASKS } from '../../runner/background-task-tracker';
 import { DIAGNOSTIC_WRITE_CHAIN_CONCURRENCY } from '../../runner/diagnostic-write-chain';
 import { MAX_TRACKED_SESSIONS } from '../../runner/session-cost-ledger';
@@ -84,7 +84,7 @@ import { CONNECTED_RUNS_CACHE_MAX } from '../../state/sqlite-operational-backing
 import {
   HISTORY_CAP_PER_QUEUE,
   MAX_DELETED_HISTORY_PARTITIONS
-} from '../../state/workspace-state';
+} from '../../state/workspace-state-types';
 import type { ValidationResult } from '../../contracts/runtime-resource-budgets/qualification-record';
 
 export const RUNTIME_RESOURCE_INVENTORY_VERSION = 1 as const;
@@ -220,12 +220,15 @@ export const AUTHORITATIVE_CONSTANT_VALUES: ReadonlyMap<string, number> = new Ma
     MAX_SETTLED_CHECK_SUMMARIES_PER_ROOT
   ],
   ['src/state/connected-workflow-run.ts#MAX_COMMAND_RECEIPTS', MAX_COMMAND_RECEIPTS],
-  ['src/state/workspace-state.ts#HISTORY_CAP_PER_QUEUE', HISTORY_CAP_PER_QUEUE],
+  ['src/state/workspace-state-types.ts#HISTORY_CAP_PER_QUEUE', HISTORY_CAP_PER_QUEUE],
   [
-    'src/state/workspace-state.ts#MAX_DELETED_HISTORY_PARTITIONS',
+    'src/state/workspace-state-types.ts#MAX_DELETED_HISTORY_PARTITIONS',
     MAX_DELETED_HISTORY_PARTITIONS
   ],
-  ['src/queue/feature-request.ts#MAX_PENDING_TASKS_PER_QUEUE', MAX_PENDING_TASKS_PER_QUEUE],
+  [
+    'src/contracts/queue-feature-request-helpers.ts#MAX_PENDING_TASKS_PER_QUEUE',
+    MAX_PENDING_TASKS_PER_QUEUE
+  ],
   ['src/audit/audit-log-writer.ts#AUDIT_ROTATION_DEFAULT_SIZE_BYTES', AUDIT_ROTATION_DEFAULT_SIZE_BYTES],
   ['src/audit/audit-log-writer.ts#AUDIT_ARCHIVE_DEFAULT_MAX_COUNT', AUDIT_ARCHIVE_DEFAULT_MAX_COUNT],
   ['src/metrics/metrics-rollup-writer.ts#TRIM_THRESHOLD_BYTES', TRIM_THRESHOLD_BYTES],
@@ -375,21 +378,21 @@ export const RUNTIME_RESOURCE_INVENTORY: readonly InventoryEntry[] = Object.free
   {
     id: 'queue-pending-tasks',
     category: 'queue', owner: 'src/state/workspace-state.ts', lifetime: 'persisted', units: 'items',
-    limit: { kind: 'authority', module: 'src/queue/feature-request.ts', symbol: 'MAX_PENDING_TASKS_PER_QUEUE', value: MAX_PENDING_TASKS_PER_QUEUE },
+    limit: { kind: 'authority', module: 'src/contracts/queue-feature-request-helpers.ts', symbol: 'MAX_PENDING_TASKS_PER_QUEUE', value: MAX_PENDING_TASKS_PER_QUEUE },
     overflow: 'Refuse enqueue when a queue already holds 100 pending tasks.',
     architecture: 'current', consumers: ['F01', 'F03']
   },
   {
     id: 'queue-history-per-partition',
     category: 'snapshot', owner: 'src/state/workspace-state.ts', lifetime: 'persisted', units: 'items',
-    limit: { kind: 'authority', module: 'src/state/workspace-state.ts', symbol: 'HISTORY_CAP_PER_QUEUE', value: HISTORY_CAP_PER_QUEUE },
+    limit: { kind: 'authority', module: 'src/state/workspace-state-types.ts', symbol: 'HISTORY_CAP_PER_QUEUE', value: HISTORY_CAP_PER_QUEUE },
     overflow: 'Drop oldest history entries per partition beyond 50.',
     architecture: 'current', consumers: ['F03', 'F11']
   },
   {
     id: 'deleted-history-partitions',
     category: 'snapshot', owner: 'src/state/workspace-state.ts', lifetime: 'persisted', units: 'items',
-    limit: { kind: 'authority', module: 'src/state/workspace-state.ts', symbol: 'MAX_DELETED_HISTORY_PARTITIONS', value: MAX_DELETED_HISTORY_PARTITIONS },
+    limit: { kind: 'authority', module: 'src/state/workspace-state-types.ts', symbol: 'MAX_DELETED_HISTORY_PARTITIONS', value: MAX_DELETED_HISTORY_PARTITIONS },
     overflow: 'Evict deleted-queue history partition with oldest completedAt.',
     architecture: 'current', consumers: ['F03', 'F11']
   },

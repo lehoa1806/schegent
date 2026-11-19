@@ -8,7 +8,9 @@ export type SideEffectOperation =
   | 'usage-accounting'
   | 'sweep-protection-query'
   | 'acp-authorization-receipt'
-  | 'telemetry-spool';
+  | 'telemetry-spool'
+  | 'restore-lane-cache-reload'
+  | 'restore-handoff-reopen';
 
 export type SideEffectFailureReport = (operation: SideEffectOperation, thrown: unknown) => void;
 

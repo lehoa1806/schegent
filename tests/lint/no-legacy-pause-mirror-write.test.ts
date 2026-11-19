@@ -97,13 +97,16 @@ const READ_ALLOWED: ReadonlyMap<string, string> = new Map([
   ],
   [
     'src/state/workspace-state.ts',
-    'reads the mirror as migration input in `ensureExtendedQueueShape` and the ' +
-      'v6 → v7 step, both of which run on records that predate the discriminator'
+    'reads the mirror as migration input in `ensureExtendedQueueShape` on records that predate the discriminator'
   ],
   [
-    'src/queue/queue-registry.ts',
+    'src/state/workspace-state-migrations.ts',
+    'reads the mirror as migration input in `migrateV6ToV7IfNeeded` (extracted from `workspace-state.ts` by FR-R7-07)'
+  ],
+  [
+    'src/contracts/queue-registry.ts',
     'reads `QueuePauseView.paused` — the derived view the projection is handed, ' +
-      'not a persisted field'
+      'not a persisted field (relocated from `src/queue/queue-registry.ts` by FR-R7-07)'
   ],
   [
     'src/watchdog/credit-watchdog.ts',
@@ -136,7 +139,7 @@ const READ_ALLOWED: ReadonlyMap<string, string> = new Map([
  */
 const ANCHORS = [
   'src/state/queue-state-migrator.ts',
-  'src/state/workspace-state.ts',
+  'src/state/workspace-state-queue.ts',
   'src/queue/queue-manager.ts'
 ] as const;
 

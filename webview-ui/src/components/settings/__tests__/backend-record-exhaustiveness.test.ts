@@ -20,8 +20,8 @@
 import { describe, expect, it } from 'vitest';
 // The same import the tab itself uses: the enumeration is a host contract, and
 // `src/contracts/` is the one host directory the webview may value-import from.
-import type { BackendRunnerKind } from '../../../../../src/contracts/backend-kinds';
-import { SUPPORTED_BACKENDS } from '../../../../../src/contracts/backend-kinds';
+import type { BackendRunnerKind } from '../../../lib/generated/backend-descriptors';
+import { SUPPORTED_BACKENDS } from '../../../lib/generated/backend-descriptors';
 import type { BackendSection } from '../general/field-types';
 
 const SECTION: BackendSection = {

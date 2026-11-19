@@ -12,6 +12,7 @@ import { runClearAll } from '../commands/clear-all';
 import { runClearQueue } from '../commands/clear-queue';
 import { runEnqueue, type EnqueueCommandArgs } from '../commands/enqueue';
 import { runGitApprovals, type GitApprovalItem } from '../commands/git-approvals';
+import { registerAgentConfigCommands } from './agent-config-commands-wiring';
 import { runOpenDashboard } from '../commands/open-dashboard';
 import {
   runClearCompleted,
@@ -21,6 +22,7 @@ import {
   runPauseQueue,
   runResumeQueue
 } from '../commands/queue-ops';
+import { resumePausedQueueExecution } from '../commands/resume-queue-execution';
 import { runRerunFromHistory } from '../commands/rerun-from-history';
 import {
   runReportFailedRowExits,
@@ -46,6 +48,7 @@ import {
 import { registerQueueFailurePolicyCommand } from './queue-failure-policy-wiring';
 import { registerAuditChainCommands } from './audit-commands-wiring';
 import { registerEvidenceCommands } from './evidence-commands-wiring';
+import { registerSqliteBackupCommands } from './sqlite-backup-commands-wiring';
 import type { TransportRouter } from '../monitor/transport/transport-router';
 import type { OperatorAttribution } from '../lib/operator-attribution';
 import type { RuntimeLogAccessor } from '../lib/runtime-log/runtime-log-settings';
@@ -255,7 +258,15 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     queue: deps.queue,
     lock: deps.lock,
     notifier: deps.notifier,
-    logger: deps.logger
+    logger: deps.logger,
+    onQueueResumed: async (queueId: string) => {
+      await resumePausedQueueExecution(queueId, {
+        store: deps.store,
+        guardedRunService: deps.guardedRunService,
+        controller: deps.controller,
+        logger: deps.logger
+      });
+    }
   };
   /**
    * FR-R3-154 (T1645) — the three Phase controls take the same three
@@ -264,7 +275,8 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
   const phaseControlCommandDeps = (d: typeof deps): PhaseControlCommandDeps => ({
     controller: d.controller,
     notifier: d.notifier,
-    logger: d.logger
+    logger: d.logger,
+    store: d.store
   });
 
   // FR-R3-136 (FR-005, FR-006) — the trust guard every registration below goes
@@ -418,6 +430,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         info: (message) => deps.notifier.info(message)
       })
     ),
+    ...registerAgentConfigCommands(guard, { store: deps.store, notifier: deps.notifier }),
     // FR-R3-112 — the chain verification, from the surface rather than only from a shell. FR-R4-F03 (TA3):
     // registered with the reset command in `audit-commands-wiring.ts`, because this function is at its bound.
     ...registerAuditChainCommands(guard, {
@@ -438,6 +451,12 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
       transportRouter: deps.transportRouter,
       operatorAttribution: deps.operatorAttribution,
       runtimeLogAccessor: deps.runtimeLogAccessor
+    }),
+    // FR-R7-03 — SQLite store backup, verify, and restore commands, registered in their own module.
+    ...registerSqliteBackupCommands(guard, {
+      workspaceRoot: deps.workspaceRoot, globalStorageRoot: deps.globalStorageRoot,
+      store: deps.store, controller: deps.controller, lock: deps.lock,
+      auditWriter: deps.auditWriter, notifier: deps.notifier, projector: deps.projector
     }),
     // Feature 195 (T064) — retry and attested completion, the two queue-item
     // exits that must offer the queue a drain; extracted together for the

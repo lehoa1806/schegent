@@ -141,18 +141,22 @@ describe('stage 2 runs archive maintenance once, after trust, in the owner', () 
     };
     const lines: string[] = [];
     const logger = new SanitizedLogger([{ appendLine: (line: string) => lines.push(line) }]);
-    let drained = 0;
+    let rearmed = 0;
     const deps = {
       ...h.deps,
       logger,
       auditWriter: failing,
-      controller: { ...h.deps.controller, scheduleAutoDrain: () => (drained += 1) }
+      scheduledStartCoordinator: {
+        reArm: async () => {
+          rearmed += 1;
+        }
+      }
     } as unknown as Parameters<typeof createStage2Producers>[0];
 
     await createStage2Producers(deps).run();
     await flush();
 
-    expect(drained).toBe(1);
+    expect(rearmed).toBe(1);
     expect(lines.filter((line) => line.includes('archive maintenance failed'))).toHaveLength(1);
   });
 });

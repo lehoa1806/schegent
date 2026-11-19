@@ -26,7 +26,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Schegent activates in an untrusted window and serves reads. What stays available: state, history, the audit log and the runtime log, and the 6 read-only commands \u2014 showAuditLog, showActiveRun, openDashboard, verifyAuditChain, redetectClaudeTransport and reportFailedRowExits. What is refused: the 32 commands in the mutating set \u2014 starting, resuming, cancelling and retrying a Run, every queue mutation, every phase override, deleting run evidence, exporting run evidence or the audit log, creating a diagnostics bundle, resetting the operator pseudonym, withdrawing a stored Git approval, and retiring the audit history checkpoint. Refused at the point of effect, not at registration, so the refusal holds for an invocation from the palette, from the sidebar, from a task, and from another extension alike; VS Code's own guidance is that contributed visibility is not authorization. The sidebar message router refuses the mutating IPC set on the same read of the same trust state, which is what makes publishing a process definition unavailable too. FR-R3-136 also stopped the untrusted window ACTING at activation: it does not acquire the workspace ownership lock, replay terminal transitions, re-arm a scheduled start, reattach the watchdog, resume a persisted Run, or probe backend capabilities \u2014 so no backend CLI is spawned, and nothing is written under .schegent/ by that half. Granting trust runs it once, through the onDidGrantWorkspaceTrust subscriber. The 15 restrictedConfigurations below are the properties whose workspace value could vote on a capability, silence an operator signal, or redirect and truncate evidence, so while the folder is untrusted VS Code hands Schegent the operator's own value for each of them instead; the list is derived from the sensitivity classes in src/contracts/configuration-trust-dispositions.ts, not hand-kept. What shows all of this is tests/integration/trust-untrusted-workspace.host.test.ts, in a launch where Workspace Trust is genuinely live \u2014 until FR-R3-136 every host-leg launch passed --disable-workspace-trust, so no assertion this repository had ever made observed an untrusted window.",
+      "description": "Schegent activates in an untrusted window and serves reads. What stays available: state, history, the audit log and the runtime log, and the 7 read-only commands \u2014 showAuditLog, showActiveRun, openDashboard, verifyAuditChain, redetectClaudeTransport, reportFailedRowExits and verifyStoreBackup. What is refused: the 35 commands in the mutating set \u2014 starting, resuming, cancelling and retrying a Run, every queue mutation, every phase override, deleting run evidence, exporting run evidence or the audit log, creating a diagnostics bundle, resetting the operator pseudonym, withdrawing a stored Git approval or repository agent config acknowledgement, retiring the audit history checkpoint, and backing up or restoring the SQLite store. Refused at the point of effect, not at registration, so the refusal holds for an invocation from the palette, from the sidebar, from a task, and from another extension alike; VS Code's own guidance is that contributed visibility is not authorization. The sidebar message router refuses the mutating IPC set on the same read of the same trust state, which is what makes publishing a process definition unavailable too. FR-R3-136 also stopped the untrusted window ACTING at activation: it does not acquire the workspace ownership lock, replay terminal transitions, re-arm a scheduled start, reattach the watchdog, resume a persisted Run, or probe backend capabilities \u2014 so no backend CLI is spawned, and nothing is written under .schegent/ by that half. Granting trust runs it once, through the onDidGrantWorkspaceTrust subscriber. The 15 restrictedConfigurations below are the properties whose workspace value could vote on a capability, silence an operator signal, or redirect and truncate evidence, so while the folder is untrusted VS Code hands Schegent the operator's own value for each of them instead; the list is derived from the sensitivity classes in src/contracts/configuration-trust-dispositions.ts, not hand-kept. What shows all of this is tests/integration/trust-untrusted-workspace.host.test.ts, in a launch where Workspace Trust is genuinely live \u2014 until FR-R3-136 every host-leg launch passed --disable-workspace-trust, so no assertion this repository had ever made observed an untrusted window.",
       "restrictedConfigurations": [
         "schegent.audit.rotation.maxAgeDays",
         "schegent.audit.rotation.sizeMB",
@@ -104,6 +104,10 @@
         "title": "Schegent: Git Approvals"
       },
       {
+        "command": "schegent.agentConfigAcknowledgements",
+        "title": "Schegent: Agent Config Acknowledgements"
+      },
+      {
         "command": "schegent.verifyAuditChain",
         "title": "Schegent: Verify Audit Chain"
       },
@@ -178,6 +182,18 @@
       {
         "command": "schegent.redetectClaudeTransport",
         "title": "Schegent: Re-detect Claude CLI prompt transport"
+      },
+      {
+        "command": "schegent.backupStore",
+        "title": "Schegent: Back Up Store"
+      },
+      {
+        "command": "schegent.verifyStoreBackup",
+        "title": "Schegent: Verify Store Backup"
+      },
+      {
+        "command": "schegent.restoreStoreBackup",
+        "title": "Schegent: Restore Store Backup"
       }
     ],
     "configuration": {
@@ -624,7 +640,7 @@
     "build:webview": "node scripts/check-webview-install.mjs && npm --prefix webview-ui run build",
     "contracts:generate": "node scripts/generate-contract-schemas.mjs",
     "contracts:check": "node scripts/generate-contract-schemas.mjs --check",
-    "docs:check": "node scripts/check-docs.mjs && node scripts/check-doc-links.mjs && node scripts/check-gate-coverage-parity.mjs",
+    "docs:check": "node scripts/check-docs.mjs && node scripts/check-doc-links.mjs && node scripts/check-gate-coverage-parity.mjs && node scripts/generate-verification-scripts.mjs --check",
     "security:secrets": "node scripts/scan-secrets.mjs",
     "security:secrets:staged": "node scripts/scan-secrets.mjs --staged",
     "security:actions": "node scripts/check-workflow-pins.mjs",
@@ -640,6 +656,7 @@
     "lint": "node scripts/lint.mjs host",
     "lint:webview": "node scripts/lint.mjs webview",
     "test": "npm run build:webview && vitest run && npm --prefix webview-ui run test",
+    "test:gates": "vitest run tests/lint tests/parity tests/contract",
     "test:host": "vitest run",
     "test:coverage": "vitest run --coverage",
     "coverage:headroom": "node scripts/check-coverage-headroom.mjs host",
@@ -656,10 +673,10 @@
     "test:integration:compile": "tsc -p tsconfig.integration.json",
     "test:integration": "npm run build && npm run test:integration:compile && node ./out/tests/integration/runTest.js",
     "verify:all": "npm run build:webview && npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run test:host && npm run test:webview:coverage",
-    "verify:edit": "npm run build:webview && npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run test:host && npm run test:webview",
+    "verify:edit": "npm run test:gates && npm run build:webview && npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run test:host && npm run test:webview",
     "verify:linux": "sh scripts/linux-leg.sh",
     "verify:push": "npm run verify:edit && npm run lint && npm run lint:webview && npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check",
-    "verify:release": "npm run verify:push && npm run build:webview && npm run test:coverage && npm run coverage:headroom && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run a11y && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
+    "verify:release": "npm run verify:push && npm run build:webview && npm run test:coverage && npm run coverage:headroom && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run a11y && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration && npm run verify:linux",
     "ci:fast": "npm run typecheck:tests && npm run lint && npm run verify:all && npm run test:evals && npm run test:visual && npm run test:perf && npm run build:host && npm run package:smoke",
     "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run build:webview && npm run test:coverage && npm run coverage:headroom && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run a11y && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
     "gate": "npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run ci",

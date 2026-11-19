@@ -21,12 +21,7 @@ import {
   type ParsedRecordName
 } from '../failure-record';
 import { isFailureCause } from '../failure-cause';
-import {
-  CMD_READ_FAILURE_RECORD,
-  type ReadFailureRecordResponse,
-  type SidebarCommand
-} from '../sidebar-ipc';
-import { fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
+import type { ReadFailureRecordResponse } from '../sidebar-ipc';
 
 // FR-R4-F15 (feature 243, contract R2.2, R3) — the one validator for a failure record, and the name
 // parser it is checked against. The host reader and the webview both call `isValidFailureRecord`, so
@@ -236,28 +231,6 @@ export function isValidFailureRecord(value: unknown, expected?: ParsedRecordName
   } catch {
     return false;
   }
-}
-
-// FR-R4-F15 (contract Q2.1) — two identifiers and nothing else. As with the history description, a
-// row that exists is state, not shape: an identifier that is well formed and names no row is the
-// handler's `unknown-row`, so a stale queue id is not reported to the operator as a protocol error.
-// A value that is not an identifier at all (`../x`, `a/b`, `C:\x`, `%2e%2e`) is refused here and never
-// reaches a filesystem call.
-export function validateReadFailureRecord(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const context = { type: CMD_READ_FAILURE_RECORD, correlationId };
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
-    return fail('missing-payload', context);
-  }
-  const value = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(value, ['queueId', 'taskId'])) return fail('unexpected-payload-fields', context);
-  const { queueId, taskId } = value;
-  if (!isRecordIdentifier(queueId)) return fail('invalid-queueId', context);
-  if (!isRecordIdentifier(taskId)) return fail('invalid-taskId', context);
-  return ok({ ...context, payload: { queueId, taskId } } as SidebarCommand);
 }
 
 const READ_FAILURE_RECORD_FAILURES = ['unknown-row', 'internal-error'] as const;

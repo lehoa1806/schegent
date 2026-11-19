@@ -16,6 +16,7 @@
 // one named anything else.
 
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { findBackendDescriptor } from '../contracts/backend-descriptors';
 import type { PhaseHostVerification } from '../contracts/process-definitions';
 import type { PhaseSideEffects } from './pipeline-config';
 
@@ -36,7 +37,7 @@ export function phaseRunnerPolicyError(
   runner: BackendRunnerKind | undefined
 ): string | null {
   if (!writesGitMetadata(sideEffects)) return null;
-  if (runner === 'claude' || runner === 'agy') return null;
+  if (findBackendDescriptor(runner)?.supportsGitSideEffects === true) return null;
   return `Phase '${phaseId}' must explicitly use a Git-capable runner (claude or agy); Codex workspace-write keeps .git read-only`;
 }
 
