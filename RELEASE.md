@@ -405,7 +405,7 @@ because the derivation had always been sound; its subject had not.
 - `build:webview` — `node scripts/check-webview-install.mjs && npm --prefix webview-ui run build`
 - `contracts:check` — `node scripts/generate-contract-schemas.mjs --check`
 - `coverage:headroom` — `node scripts/check-coverage-headroom.mjs host`
-- `docs:check` — `node scripts/check-docs.mjs && node scripts/check-doc-links.mjs && node scripts/check-gate-coverage-parity.mjs`
+- `docs:check` — `node scripts/check-docs.mjs && node scripts/check-doc-links.mjs && node scripts/check-gate-coverage-parity.mjs && node scripts/generate-verification-scripts.mjs --check`
 - `license:check` — `node scripts/check-licenses.mjs`
 - `lint` — `node scripts/lint.mjs host`
 - `lint:webview` — `node scripts/lint.mjs webview`

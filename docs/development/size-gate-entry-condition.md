@@ -169,3 +169,27 @@ Any one of these:
 The gate enforces the condition itself and the shape of every entry. It does not watch these four
 conditions. The first is measured by the script above, and the other three are events in a change or
 a review that only a reader will notice. This record exists so that reader knows what to look for.
+
+## Addendum (2026-11-19, `FR-R7-08`): code-line counting replaces physical lines
+
+As of `FR-R7-08`, `source-loc-budget.test.ts`, `phase-runner-loc-budget.test.ts`, and
+`drive-loop-loc-budget.test.ts` count **code lines** via `tests/lint/code-lines.ts` (distinct lines
+containing at least one non-comment, non-whitespace TypeScript syntax token, excluding JSDoc,
+block comments, line comments, and blank lines, while preserving strings, template literals, and
+regex literals that contain comment markers). Adding comments or blank lines no longer moves any
+ceiling, high-water mark, function bound, or entry-condition verdict.
+
+- **Entry condition (`ENTRY_CONDITION_LINES = 1_000`)**: re-measured on code lines on 2026-11-19,
+  **11** files sit at or above 1,000 code lines and **0** are unlisted (every one is governed in
+  `BUDGETS`).
+- **FR-021 retirements**: `src/ui/sidebar/state-projector-runtime.ts` (212 code lines) and
+  `src/ui/sidebar/projector-bookkeeping.ts` (182 code lines) were retired from `BUDGETS` because
+  `source-loc-budget.test.ts`'s wildcard check (`every sidebar projector module stays at or below
+  300 code lines`) enforces the exact same `<= 300` invariant.
+- **Graduations**: `UNDECIDED_CEILING_BASELINE` reached `[]` (`snapshot-composer.ts` measures 242
+  code lines against a re-derived ceiling of 280), and `LEGACY_FUNCTION_EXEMPTIONS` reached `{}`
+  (`src/extension.ts:wireStage2` measures 319 code lines, strictly below `MAX_FUNCTION_LINES = 400`).
+- **Dual entry for `phase-runner.ts`**: retained in both `phase-runner-loc-budget.test.ts` (845
+  code lines) and `source-loc-budget.test.ts` (`highWaterMark: 845`) because the latter also
+  enforces the `RATCHET_SLACK` shrink-down rule.
+
