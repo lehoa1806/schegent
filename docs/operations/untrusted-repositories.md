@@ -109,19 +109,25 @@ builds such a runner.
 Set `schegent.cli.environmentMode` to `allowlist` or `minimal` whenever an uncontained backend is
 granted. It is not containment; it removes one class of reachable secret.
 
-## The two grants, and how to withdraw them
+## The consent grants, and how to withdraw them
 
-Schegent asks for consent in exactly two places, and both are asked **once** rather than per task.
-They are different grants with different scopes and different storage, and neither implies the
-other.
+Schegent asks for consent in three places, and each is remembered on its own scope rather than asked
+on every unchanged task. They are separate grants with different scopes and storage, and none implies
+another.
 
-| | Uncontained backend | Git mutation plan |
-|---|---|---|
-| **What it permits** | Constructing a runner for a backend with no OS-enforced bound (`claude`, `agy`). Everything that backend does then runs with your local user authority. | The phases of **one exact pipeline plan** staging, committing, or changing branches in this workspace. |
-| **When you are asked** | At the first refusal, as a blocking modal answered before anything is spawned — or ahead of that, on the Settings tab, where each backend's section states its posture and offers the grant behind the same confirmation. Both routes write the same setting through the same writer. | Before the first Run on that plan. `Approve This Run` covers that Run only and records nothing; `Always Approve This Plan Here` records the grant. |
-| **Scope** | **Machine.** `application`-scoped: every workspace in this installation. | **This workspace, this plan.** Editing the pipeline changes the fingerprint and asks again. Another repository asks. |
-| **Where it is stored** | `schegent.backend.uncontainedBackends` in your User settings (`settings.json`). | This workspace's `workspaceState` memento, under `schegent.consent.gitPlanGrants.v1`, keyed by fingerprint — with the pipeline id, the phase ids, and when you gave it. VS Code keeps that memento in its own `workspaceStorage`, **not** in the repository. |
-| **How to withdraw it** | Turn the grant off in that backend's section on the Settings tab, or remove the backend id from the setting by hand — the tab's control removes exactly that id and leaves the rest of the list alone. Applies to the next runner Schegent builds; a runner already built in this window is not torn down, so reload the window if you need it to bite now. | Run **`Schegent: Git Approvals`** from the Command Palette. It lists every plan this workspace approves without asking, and withdraws the one you pick or all of them, behind a confirmation. Resetting Schegent's workspace state also clears them. The next Run on that plan asks again. |
+| | Uncontained backend | Git mutation plan | Repository agent configuration (`FR-R7-04`) |
+|---|---|---|---|
+| **What it permits** | Constructing a runner for a backend with no OS-enforced bound (`claude`, `agy`). Everything that backend does then runs with your local user authority. | The phases of **one exact pipeline plan** staging, committing, or changing branches in this workspace. | Starting an **uncontained** Run in a workspace whose repository contains listed agent configuration files (such as `.claude/settings.json` hooks, `.mcp.json`, or `CLAUDE.md`). |
+| **When you are asked** | At the first refusal, as a blocking modal answered before anything is spawned — or ahead of that, on the Settings tab, where each backend's section states its posture and offers the grant behind the same confirmation. Both routes write the same setting through the same writer. | Before the first Run on that plan. `Approve This Run` covers that Run only and records nothing; `Always Approve This Plan Here` records the grant. | Before an uncontained Run starts when listed files exist (or cannot be read safely) and no matching workspace acknowledgement exists. `Approve This Run` covers that Run only; `Acknowledge for This Workspace` records the digest set (only when every discovered file was safely read). |
+| **Scope** | **Machine.** `application`-scoped: every workspace in this installation. | **This workspace, this plan.** Editing the pipeline changes the fingerprint and asks again. Another repository asks. | **This workspace, this backend, this exact digest set.** A one-byte change, file addition/removal, or unreadable entry asks again. Contained (`codex`) runs are excluded. |
+| **Where it is stored** | `schegent.backend.uncontainedBackends` in your User settings (`settings.json`). | This workspace's `workspaceState` memento, under `schegent.consent.gitPlanGrants.v1`, keyed by fingerprint — with the pipeline id, the phase ids, and when you gave it. VS Code keeps that memento in its own `workspaceStorage`, **not** in the repository. | This workspace's `workspaceState` memento, under `schegent.consent.agentConfigGrants.v1`, keyed by digest-set fingerprint — with backend, file names/digests, and timestamp. Kept in VS Code `workspaceStorage`, **not** in the repository. |
+| **How to withdraw it** | Turn the grant off in that backend's section on the Settings tab, or remove the backend id from the setting by hand — the tab's control removes exactly that id and leaves the rest of the list alone. Applies to the next runner Schegent builds; a runner already built in this window is not torn down, so reload the window if you need it to bite now. | Run **`Schegent: Git Approvals`** from the Command Palette. It lists every plan this workspace approves without asking, and withdraws the one you pick or all of them, behind a confirmation. Resetting Schegent's workspace state also clears them. The next Run on that plan asks again. | Run **`Schegent: Agent Config Acknowledgements`** from the Command Palette. It lists every stored repository configuration acknowledgement for this workspace and withdraws one or all of them behind a confirmation. Resetting workspace state also clears them. |
+
+The repository agent configuration preflight is **disclosure and consent, not enforcement**: it does not
+block or rewrite repository files, and because it scans a fixed per-backend path list, an attacker who
+controls the repository may use unlisted mechanisms that the scan does not see. It reduces risk for
+known project-level configuration surfaces; it does not make an uncontained backend safe on an untrusted
+repository.
 
 The stored Git grant is written to be read: it names the pipeline and the phases, not just a hash,
 so a grant you find months later can be judged without reading source. `Schegent: Git Approvals` is

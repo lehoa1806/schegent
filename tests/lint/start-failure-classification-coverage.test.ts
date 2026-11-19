@@ -9,6 +9,7 @@ import { AuditPathRefusedError } from '../../src/audit/audit-log-writer';
 import { CapabilityNotEnforceableError } from '../../src/services/capability-refusal';
 import { OutputTargetRefusedAtDispatch } from '../../src/services/dispatch-output-guard';
 import { UncontainedBackendRefusedError } from '../../src/services/backend-containment-policy';
+import { AgentConfigAcknowledgementRefusedError } from '../../src/services/agent-config-ack-refusal';
 import { ContainmentAdmissionRefusedError } from '../../src/services/containment-qualification/admission-refusal';
 import { SpawnRefusedAfterCloseError } from '../../src/runner/spawn-refused-after-close';
 import { AgentStdinRefusedError } from '../../src/services/acp-runtime/stdio-transport';
@@ -112,6 +113,11 @@ const REFUSALS: ReadonlyArray<{ readonly name: string; readonly make: () => Erro
     // FR-R6-F10: 66 characters at its longest LaneRefusalReason (`provisioning-deadline-exceeded`),
     // well below UNEXPECTED_MESSAGE_MAX (240), so nothing is severed by the catch-all bound.
     make: () => new IsolatedLaneProvisionRefusedError('provisioning-deadline-exceeded')
+  },
+  {
+    name: 'AgentConfigAcknowledgementRefusedError',
+    // FR-R7-04: operator declined or prompt unavailable for repository agent configuration.
+    make: () => new AgentConfigAcknowledgementRefusedError('claude', 5, 'unavailable')
   }
 ];
 

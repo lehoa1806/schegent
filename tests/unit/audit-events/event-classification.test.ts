@@ -173,6 +173,9 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // admitted to and under what posture, so it belongs to that Run's story
   // rather than to the window's. `phase-start`, which it precedes, is task too.
   'backend-posture-admitted': 'task',
+  // FR-R7-04 — task-scoped: records per-workspace repository agent config acknowledgement
+  // for one Run (`backend`, `fileCount`, `decision` only — zero paths or values).
+  'agent-config-acknowledged': 'task',
   // FR-R3-086 — task-scoped for the same reason its sibling is: it records what
   // one Run was allowed to do, not a workspace-level event. An operator
   // reconstructing why a phase never started reads it beside that Run's other
@@ -416,6 +419,7 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'phase-optional-failure-continued':
         case 'backend-ping':
         case 'backend-posture-admitted':
+        case 'agent-config-acknowledged':
         case 'capability-refused':
         case 'capability-applied':
         case 'process-tree-unconfirmed':

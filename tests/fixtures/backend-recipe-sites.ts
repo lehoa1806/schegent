@@ -104,6 +104,7 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
   // ---- Capability probing
   { path: 'src/services/backend-capability-service.ts', role: 'Capability probing', how: 'record' },
   { path: 'src/services/ambient-config-observer.ts', role: 'Capability probing', how: 'switch' },
+  { path: 'src/services/repo-agent-config-scanner.ts', role: 'Capability probing', how: 'record' },
 
   // ---- Spend and usage
   { path: 'src/parser/invocation-usage.ts', role: 'Spend and usage', how: 'record' },

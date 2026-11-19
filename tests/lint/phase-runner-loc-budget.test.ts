@@ -612,7 +612,10 @@ const BUDGETS = [
   // field beside `sessionReuse` in the start payload (one). The plan estimated three lines for
   // CP7 and PI4 together and assumed the ternary stayed on one line; it cannot, once it selects a
   // pair. Nothing else moved. The sibling waiver's mark moved by the same lines in the same diff.
-  { path: 'src/controller/phase-runner.ts', max: 1_413 },
+  // Feature 318 (FR-R7-04, 2026-11-19) — 1,413 → 1,421 (+8) for optional `agentConfigAckGate`
+  // seam right after `resolveRunner` and `isAgentConfigAcknowledgementRefusal` pre-spawn refusal
+  // marking; all preflight logic and ledger live in `src/controller/agent-config-ack-gate.ts`.
+  { path: 'src/controller/phase-runner.ts', max: 1_421 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

@@ -2,6 +2,7 @@ import { LockHeldError } from '../lib/errors';
 import { isUncontainedBackendRefusal } from '../services/backend-containment-policy';
 import { isContainmentAdmissionRefusal } from '../services/containment-qualification/admission-refusal';
 import { isCapabilityRefusal } from '../services/capability-refusal';
+import { isAgentConfigAcknowledgementRefusal } from '../services/agent-config-ack-refusal';
 import { isConsentWriteFailure } from './uncontained-consent-gate';
 
 // FR-R3-146 (FR-005) — how a start failure is REPORTED, decided in one place.
@@ -34,6 +35,7 @@ export type StartFailureKind =
   | 'lock-held'
   | 'containment-admission-refused'
   | 'uncontained-backend-refused'
+  | 'agent-config-ack-refused'
   | 'capability-not-enforceable'
   | 'consent-write-failed'
   | 'unexpected';
@@ -136,6 +138,19 @@ export function classifyStartFailure(
       // readable. Five hundred characters in a status-bar tooltip would not make it
       // more readable — it would make the bar unusable.
       statusDetail: `backend '${err.kind}' refused: no OS-enforced bound`,
+      announcement: `Schegent: backend '${err.kind}' was refused — ${message}`
+    };
+  }
+
+  if (isAgentConfigAcknowledgementRefusal(err)) {
+    const message = sanitize(err.message);
+    return {
+      kind: 'agent-config-ack-refused',
+      code: 'agent-config-ack-refused',
+      message,
+      level: 'warn',
+      logLine: `workflow ${featureId} refused: ${message}`,
+      statusDetail: `backend '${err.kind}' refused: repository agent configuration not acknowledged`,
       announcement: `Schegent: backend '${err.kind}' was refused — ${message}`
     };
   }
