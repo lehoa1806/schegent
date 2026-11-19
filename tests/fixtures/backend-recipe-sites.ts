@@ -84,18 +84,6 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
     note: 'behavior: function-valued JSONL usage row discriminators, envelope extractors, and token/cost field mappings per backend'
   },
 
-  // ---- Models and projection
-  { path: 'src/ui/sidebar/snapshot-composer.ts', role: 'Models and projection', how: 'record' },
-  { path: 'src/ui/sidebar/snapshot.ts', role: 'Models and projection', how: 'record' },
-  { path: 'src/ui/sidebar/state-projector.ts', role: 'Models and projection', how: 'record' },
-  { path: 'src/ui/sidebar/placeholder-projector.ts', role: 'Models and projection', how: 'record' },
-  { path: 'src/ui/sidebar/phase-catalog-projection.ts', role: 'Models and projection', how: 'record' },
-  { path: 'src/ui/sidebar/commands/cmd-save-models.ts', role: 'Models and projection', how: 'record' },
-  { path: 'src/config/pipeline-config.ts', role: 'Models and projection', how: 'record' },
-  { path: 'src/config/pipeline-config-loader.ts', role: 'Models and projection', how: 'record' },
-  { path: 'src/config/model-catalog.ts', role: 'Models and projection', how: 'record' },
-  { path: 'src/services/process-yaml/model-catalog-import-planner.ts', role: 'Models and projection', how: 'record' },
-
   // ---- Runner label
   { path: 'src/contracts/backend-runner.ts', role: 'Runner label', how: 'literal', note: 'RunnerLabel names the adapter, not the backend' },
 

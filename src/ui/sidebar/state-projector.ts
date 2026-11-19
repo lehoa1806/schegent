@@ -5,6 +5,7 @@ import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
+import type { BackendMap } from '../../contracts/backend-descriptors';
 import type { EvidenceHealthSnapshot } from '../../services/evidence-health/evidence-health-monitor';
 import type { BackendPingState } from '../../services/backend-ping-service';
 import type { QueueStartFailure } from '../../services/queue-start-failure-registry';
@@ -88,7 +89,7 @@ export interface StateProjectorDeps {
   readonly getCatalog?: () => {
     phases: readonly PhaseDef[];
     pipelines: readonly PipelineDef[];
-    models: Record<BackendRunnerKind, readonly string[]>;
+    models: BackendMap<readonly string[]>;
   };
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly getGeneralSettings?: () => GeneralSettingsProjection;
@@ -165,7 +166,7 @@ export interface StateProjectorDeps {
    */
   readonly getDefaultWorkflowId?: () => string;
   readonly getDebugLogTail?: () => readonly DebugLogEntry[];
-  readonly getAvailableModels?: () => Record<BackendRunnerKind, readonly string[]>;
+  readonly getAvailableModels?: () => BackendMap<readonly string[]>;
   readonly getAvailableBackends?: () => readonly BackendRunnerKind[];
   readonly getBackendPingState?: () => BackendPingState;
   /**

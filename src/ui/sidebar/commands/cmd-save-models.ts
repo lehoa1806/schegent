@@ -15,7 +15,12 @@
 // what distinguishes an import-confirm from a manual add/remove here.
 
 import { modelsLayerRevision } from '../../../config/model-catalog';
-import { isBackendRunnerKind, type BackendRunnerKind } from '../../../contracts/backend-kinds';
+import { isBackendRunnerKind } from '../../../contracts/backend-kinds';
+import {
+  emptyBackendModels,
+  mapMutableBackends,
+  type BackendMap
+} from '../../../contracts/backend-descriptors';
 import { planModelCatalogImport } from '../../../services/process-yaml/model-catalog-import-planner';
 import {
   MODEL_CATALOG_YAML_KIND,
@@ -31,9 +36,9 @@ import {
   type ImportCommitTarget
 } from './process-exchange-commit-audit';
 
-type ModelsConfig = Record<BackendRunnerKind, readonly string[]>;
+type ModelsConfig = BackendMap<readonly string[]>;
 
-const EMPTY_MODELS_CONFIG: ModelsConfig = { claude: [], codex: [], agy: [] };
+const EMPTY_MODELS_CONFIG: ModelsConfig = emptyBackendModels();
 
 /**
  * Reshapes the wire payload directly into planner input, deliberately NOT
@@ -62,11 +67,7 @@ function mergeImportedRows(
   current: ModelsConfig,
   rows: ReturnType<typeof planModelCatalogImport>
 ): ModelsConfig {
-  const merged: Record<BackendRunnerKind, string[]> = {
-    claude: [...current.claude],
-    codex: [...current.codex],
-    agy: [...current.agy]
-  };
+  const merged = mapMutableBackends((descriptor) => [...current[descriptor.kind]]);
   for (const row of rows) {
     if (row.outcome !== 'import' || row.resourceKind !== 'modelCatalog') continue;
     if (isBackendRunnerKind(row.backend)) merged[row.backend].push(row.modelId);

@@ -14,7 +14,8 @@ import {
   type QueueRuntime,
   type WorkflowSnapshot
 } from './snapshot';
-import type { BackendRunnerKind } from '../../contracts/backend-kinds';
+import { DEFAULT_BACKEND, type BackendRunnerKind } from '../../contracts/backend-kinds';
+import { emptyBackendModels } from '../../contracts/backend-descriptors';
 
 export type PlaceholderReason = 'no-workspace' | 'init-failed';
 
@@ -72,7 +73,7 @@ export class PlaceholderProjector implements ProjectorHandle {
         scheduledStartAt: null,
         scheduledStartSource: null
       }),
-      defaultRunnerKind: 'claude',
+      defaultRunnerKind: DEFAULT_BACKEND,
       auditTail: tail.slice(-AUDIT_TAIL_MAX),
       debugLogTail: Object.freeze([]),
       monitor: null,
@@ -80,9 +81,9 @@ export class PlaceholderProjector implements ProjectorHandle {
       producedAt,
       availablePipelines: Object.freeze([]),
       availablePhases: Object.freeze([]),
-      availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
-      configuredModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
-      availableBackends: Object.freeze(['claude']) as readonly BackendRunnerKind[],
+      availableModels: emptyBackendModels(),
+      configuredModels: emptyBackendModels(),
+      availableBackends: Object.freeze([DEFAULT_BACKEND]) as readonly BackendRunnerKind[],
       // FR-R3-144 (T021) — empty, like the idle snapshot's. The placeholder stands
       // in before any configuration has been read, and a posture composed from
       // nothing would assert a grant state no setting supports.
