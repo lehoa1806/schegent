@@ -343,21 +343,40 @@ export interface RawInvocationOutput {
    */
   sawTerminalResult?: boolean;
   /**
-   * FR-R3-198 (T1876) — did this invocation's last accepted terminal result
-   * arrive while a backgrounded task was still open?
+   * FR-R3-198 (T1876) & BUG-001 (FR-005a) — did this invocation's last accepted
+   * terminal result arrive while backgrounded or async-delegated work was open?
    *
-   * `true` iff it did, which is iff that result began a hold of the settle
-   * window. The claude runner always sets it, as it does `sawTerminalResult`.
-   * Each accepted result decides it again, so a woken turn that ends with
-   * nothing open leaves it `false`, although the first turn's result began a
-   * hold. A result the CLI writes after the settle's SIGTERM is its shutdown,
-   * not a turn, and leaves it as it was.
+   * `true` iff it did:
+   * - In `ClaudeCliRunner`, iff the last accepted `result` began a hold of the
+   *   settle window (`BackgroundTaskTracker`). Each accepted result decides it
+   *   again, so a woken turn that ends with nothing open leaves it `false`; a
+   *   result the CLI writes after the settle's SIGTERM is its shutdown and
+   *   leaves it as it was.
+   * - In `AcpBackedRunner`, iff `outcome.kind === 'completed'` (with
+   *   `stopReason !== 'refusal'`) settled while `AcpOpenWorkTracker.hasOpenWork`
+   *   held (`src/runner/acp-open-work-tracker.ts`).
    *
-   * Absent from a runner that does not track backgrounded tasks (codex, agy)
-   * and from a fixture, and absent reads as `false`. That is the difference
-   * from `sawTerminalResult`, whose absence means unknown.
+   * Absent from direct legacy non-claude CLI runners, fixtures, or ACP turns
+   * with no open background work; absent reads as `false`. That is the
+   * difference from `sawTerminalResult`, whose absence means unknown.
    */
   backgroundWorkOpenAtResult?: boolean;
+  /**
+   * FR-R3-198 BUG-001 (FR-006) — `true` iff `AcpBackedRunner` observed an ACP
+   * `session/prompt` complete (`outcome.kind === 'completed'`) with
+   * `outcome.stopReason !== 'refusal'` (`end_turn`, `max_tokens`, or
+   * `max_turn_requests`).
+   *
+   * Over ACP, `session/prompt` settles per conversational turn (`exitCode: 0`,
+   * `hostValidationRequired: true`) rather than waiting for backgrounded tasks
+   * or subagents inside a persistent process. Kept separate from
+   * `completedAwaitingExit` so `hostExitStatusIsAttributable()` in
+   * `src/controller/phase-runner.ts` continues to identify runner-authored
+   * `SIGTERM` exits exclusively. Absent from direct CLI runners, fixtures,
+   * cancelled/failed ACP prompts, and `stopReason === 'refusal'`; absent reads
+   * as `false`.
+   */
+  acpTurnSettled?: boolean;
   /**
    * FR-R3-198 (FR-011) — the cumulative `total_cost_usd` this runner last
    * recorded for this invocation's CLI session, before this invocation.

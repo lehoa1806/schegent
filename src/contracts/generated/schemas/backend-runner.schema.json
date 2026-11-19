@@ -254,6 +254,11 @@
           "type": "boolean"
         },
         {
+          "name": "acpTurnSettled",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
           "name": "sessionCostBaselineUsd",
           "optional": true,
           "type": "number"

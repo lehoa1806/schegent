@@ -553,7 +553,7 @@ export interface ParseInputs {
    */
   turnEnd?: Pick<
     RawInvocationOutput,
-    'completedAwaitingExit' | 'backgroundWorkOpenAtResult' | 'killed'
+    'completedAwaitingExit' | 'backgroundWorkOpenAtResult' | 'acpTurnSettled' | 'killed'
   >;
   /**
    * FR-R4-F12 (FR-006) -- where `stdout` came from, as `unwrapStreamJson` names it.
@@ -573,7 +573,9 @@ export interface ParseInputs {
 function incompleteTurnCause(turnEnd: ParseInputs['turnEnd']): IncompleteTurnCause | null {
   if (turnEnd === undefined || turnEnd.killed === true) return null;
   if (turnEnd.backgroundWorkOpenAtResult === true) return 'background-work-open';
-  if (turnEnd.completedAwaitingExit === true) return 'no-contract-block';
+  if (turnEnd.completedAwaitingExit === true || turnEnd.acpTurnSettled === true) {
+    return 'no-contract-block';
+  }
   return null;
 }
 
