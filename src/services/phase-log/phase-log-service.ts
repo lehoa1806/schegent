@@ -200,13 +200,14 @@ function validateSelection(
   // tuple resolves to an empty manifest, not a hard failure.
   const pipelineKnown = snapshot.availablePipelines.some((p) => p.id === selection.pipelineId);
   const phaseKnown = snapshot.availablePhases.some((p) => p.id === selection.phaseId);
-  // Feature 265 BUG-001 (FR-012) — a Workflow leaf Task runs one Phase under its own id
-  // (`buildPhaseAttemptRequest` sets `pipelineId` to the Phase id), so (Phase, Phase) is the only
-  // tuple its log has, and the catalog lists that id as a Phase, never as a Pipeline. The Task's
-  // own row vouches for that one tuple; every other tuple still needs the catalog.
+  // Feature 265 BUG-001 (FR-012) & Feature 020 BUG-004 (FR-008) — a Workflow leaf Task or a
+  // standalone catalog Phase runs one Phase under its own id (`pipelineId === phaseId`), and the
+  // catalog lists that id as a Phase rather than a Pipeline. Accept it when the Task's own queue
+  // row vouches for it OR when the Run sits in `snapshot.history` and `phaseKnown` holds.
   const ownLeafTuple =
     selection.phaseId === selection.pipelineId &&
-    runtime.tasks.some((t) => t.id === selection.taskId && t.currentPipelineId === selection.pipelineId);
+    (runtime.tasks.some((t) => t.id === selection.taskId && t.currentPipelineId === selection.pipelineId) ||
+      (historyMatch && phaseKnown));
   if (!inFlightMatch && !ownLeafTuple && (!pipelineKnown || !phaseKnown)) {
     return { outcome: 'failure', reason: 'unknown-tuple' };
   }
