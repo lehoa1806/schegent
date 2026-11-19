@@ -86,6 +86,8 @@ export const MUTATING_COMMAND_IDS = Object.freeze({
   // the folder does not immediately return, and `schegent.reset` is classified the
   // same way for the same reason.
   'schegent.gitApprovals': 'git approval withdrawal',
+  // FR-R7-04 (FR-006) — lists and withdraws workspace repository agent config acknowledgements.
+  'schegent.agentConfigAcknowledgements': 'agent config acknowledgement withdrawal',
 
   // FR-R4-F03 (FR-017) — writes the audit head checkpoint outside the workspace, retiring it. Mutating
   // and owner-only, and it refuses while any audit file is present: it never deletes or moves evidence.

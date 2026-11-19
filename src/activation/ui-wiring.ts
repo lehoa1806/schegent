@@ -12,6 +12,7 @@ import { runClearAll } from '../commands/clear-all';
 import { runClearQueue } from '../commands/clear-queue';
 import { runEnqueue, type EnqueueCommandArgs } from '../commands/enqueue';
 import { runGitApprovals, type GitApprovalItem } from '../commands/git-approvals';
+import { registerAgentConfigCommands } from './agent-config-commands-wiring';
 import { runOpenDashboard } from '../commands/open-dashboard';
 import {
   runClearCompleted,
@@ -418,6 +419,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         info: (message) => deps.notifier.info(message)
       })
     ),
+    ...registerAgentConfigCommands(guard, { store: deps.store, notifier: deps.notifier }),
     // FR-R3-112 — the chain verification, from the surface rather than only from a shell. FR-R4-F03 (TA3):
     // registered with the reset command in `audit-commands-wiring.ts`, because this function is at its bound.
     ...registerAuditChainCommands(guard, {

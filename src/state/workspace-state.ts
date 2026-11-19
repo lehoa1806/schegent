@@ -71,6 +71,14 @@ import {
   migrateV11ToV12,
   type HistoryStateMigrationAuditEvent
 } from './history-state-migrator';
+import {
+  forgetAgentConfigGrant,
+  latestGrantForBackend,
+  readAgentConfigGrants,
+  writeAgentConfigGrant,
+  type AgentConfigGrant,
+  type AgentConfigGrantMap
+} from './agent-config-grants';
 import type { SanitizedLogger } from '../lib/logger';
 
 export const SCHEMA_VERSION = '1.0.0';
@@ -308,6 +316,8 @@ export const KEYS = {
   // as consent to mutate a repository. Absent means nothing granted, which is
   // both fail-closed and the whole forward migration this record needs.
   gitPlanGrants: 'schegent.consent.gitPlanGrants.v1',
+  // FR-R7-04 — durable per-workspace repository agent configuration acknowledgements.
+  agentConfigGrants: 'schegent.consent.agentConfigGrants.v1',
   // Feature FR-R3-006 (T337, T341) — the reset generation marker.
   //
   // In `KEYS` and on `RESET_EXEMPT_KEYS` below, which is not a contradiction:
@@ -976,6 +986,7 @@ export class WorkspaceStateStore {
   private readonly unfencedQueuesWarned = new Set<string>();
   /** FR-R3-146 — same rule for an unreadable Git-plan grant; see `getGitPlanGrants`. */
   private readonly gitPlanGrantProblemsWarned = new Set<string>();
+  private readonly agentConfigGrantProblemsWarned = new Set<string>();
   /** FR-R4-F08 — the dropped connected-run ids last named (`null`: none), so an unchanged set is named once. */
   private connectedRunDropsWarned: string | null = null;
   // Feature 092 (T056) retired the one-shot saturation-WARN guard that used to
@@ -3562,6 +3573,45 @@ export class WorkspaceStateStore {
     // reports 0 for it, so an early return on the count would leave the one shape
     // an operator most wants gone.
     await this.memento.update(KEYS.gitPlanGrants, {});
+    return count;
+  }
+
+  /** FR-R7-04 — durable per-workspace repository agent config acknowledgements (`./agent-config-grants.ts`). */
+  public getAgentConfigGrants(): AgentConfigGrantMap {
+    const result = readAgentConfigGrants(this.memento.get<unknown>(KEYS.agentConfigGrants));
+    for (const problem of result.problems) {
+      if (this.agentConfigGrantProblemsWarned.has(problem)) continue;
+      this.agentConfigGrantProblemsWarned.add(problem);
+      this.logger?.warn(`workspace-state: ${KEYS.agentConfigGrants}: ${problem}`);
+    }
+    return result.grants;
+  }
+
+  public hasAgentConfigGrant(fingerprint: string, backend?: import('../contracts/backend-kinds').BackendRunnerKind): boolean {
+    const grants = this.getAgentConfigGrants();
+    if (!Object.prototype.hasOwnProperty.call(grants, fingerprint)) return false;
+    return backend === undefined || grants[fingerprint].backend === backend;
+  }
+
+  public latestAgentConfigGrantForBackend(backend: import('../contracts/backend-kinds').BackendRunnerKind): AgentConfigGrant | null {
+    return latestGrantForBackend(this.getAgentConfigGrants(), backend);
+  }
+
+  public async recordAgentConfigGrant(grant: AgentConfigGrant): Promise<void> {
+    const next = writeAgentConfigGrant(this.getAgentConfigGrants(), grant);
+    await this.memento.update(KEYS.agentConfigGrants, next);
+  }
+
+  public async forgetAgentConfigGrant(fingerprint: string): Promise<boolean> {
+    const next = forgetAgentConfigGrant(this.getAgentConfigGrants(), fingerprint);
+    if (next === null) return false;
+    await this.memento.update(KEYS.agentConfigGrants, next);
+    return true;
+  }
+
+  public async forgetAllAgentConfigGrants(): Promise<number> {
+    const count = Object.keys(this.getAgentConfigGrants()).length;
+    await this.memento.update(KEYS.agentConfigGrants, {});
     return count;
   }
 

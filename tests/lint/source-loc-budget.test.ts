@@ -1079,7 +1079,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // `serializeAcrossKeys([KEYS.run, KEYS.queue])` with same-`run.id` transition and
       // `running`-status admission checks. Pure transition and error definitions live
       // in their own modules; relocation of existing `workspace-state.ts` code belongs to FR-R7-07.
-      highWaterMark: 3933
+      //
+      // Feature 318 (FR-R7-04, 2026-11-19) — 3933 → 3983, +50: minimal memento seam for
+      // `KEYS.agentConfigGrants` (`schegent.consent.agentConfigGrants.v1`) mirroring `gitPlanGrants`.
+      // All validation, narrowing, and pure writers live in `src/state/agent-config-grants.ts`.
+      highWaterMark: 3983
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1617,7 +1621,9 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // 1,050 leaves 49 lines, clear of `tightMargin(1050)` = 25.
   // FR-R5-F13 (feature 272, 2026-11-06) — 1,050 -> 1,080 for `chain-verified` and `checkpoint-reanchored`
   // projection arms and the three new evidence-sink path-refused warning literals.
-  { path: 'src/audit/audit-payload.ts', maxLines: 1_080 },
+  // Feature 318 (FR-R7-04, 2026-11-19) — 1,080 -> 1,090 for the 3-line `agent-config-acknowledged`
+  // dispatch arm; the closed projector lives in `src/audit/agent-config-ack-payload.ts`.
+  { path: 'src/audit/audit-payload.ts', maxLines: 1_090 },
   // 1,186, unchanged by feature 217's workstream.
   //
   // FR-R4-F04 (feature 251, 2026-10-31) — 1,225 -> 1,250. The transport capture setting adds its idle
@@ -1725,7 +1731,13 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // note (three), which state the ladder's result in the qualification vocabulary. No event
       // type or constant changed; the mapping lives in
       // `src/services/containment-qualification/teardown-qualification.ts`, not here.
-      highWaterMark: 1688
+      //
+      // Feature 318 (FR-R7-04, 2026-11-19) — 1688 → 1696, +8 by this gate's count: header note,
+      // `AGENT_CONFIG_ACK_EVENT_TYPES` (`agent-config-acknowledged`), and its spread into
+      // `ALL_AUDIT_EVENT_TYPES`. The closed payload type lives in
+      // `src/contracts/agent-config-acknowledgement.ts`, and the projector in
+      // `src/audit/agent-config-ack-payload.ts`.
+      highWaterMark: 1696
     }
   },
   // Round 5 workflow control-flow, backend recovery, and admission modules (FR-R5-F26..F34, 2026-11-08) —
@@ -1774,7 +1786,12 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // The lines select the composed prompt's identity beside the prompt and set it on `phase-start`
       // (PI4). The why is the second FR-R4-F12 note on this file's entry in
       // tests/lint/phase-runner-loc-budget.test.ts, whose ceiling moved 1,409 → 1,413 in the same diff.
-      highWaterMark: 1414
+      //
+      // Feature 318 (FR-R7-04, 2026-11-19) — 1414 → 1422, +8, by this gate's count. Optional
+      // `agentConfigAckGate` injection, call right after `resolveRunner`, and `preSpawnRefusal`
+      // recognition for `AgentConfigAcknowledgementRefusedError`. All preflight logic and the
+      // per-(runId, backend) ledger live in `src/controller/agent-config-ack-gate.ts`.
+      highWaterMark: 1422
     }
   }
 ];

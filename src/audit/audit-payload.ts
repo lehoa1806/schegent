@@ -1,6 +1,7 @@
 import type { AuditEventType, CatalogLifecyclePayload } from '../contracts/audit-events';
 import { AuditPayloadValidationError } from './audit-payload-error';
 import { projectEvidenceExported } from './evidence-lifecycle-payload';
+import { projectAgentConfigAckPayload } from './agent-config-ack-payload';
 import { CATALOG_KINDS, type CatalogKind } from '../contracts/catalog-store';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { isCompletionProvenance } from '../contracts/completion-provenance';
@@ -1040,6 +1041,8 @@ export function projectAuditPayload(
   } else if (eventType === 'evidence-exported') {
     // FR-R4-F04 (E2) — closed: no key a caller adds can reach the log, and no path can be represented.
     projected = { ...projectEvidenceExported(payload) };
+  } else if (eventType === 'agent-config-acknowledged') {
+    projected = { ...projectAgentConfigAckPayload(payload) };
   } else {
     projected = projectValue(payload, 0) as Record<string, unknown>;
   }

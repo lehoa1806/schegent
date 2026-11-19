@@ -43,6 +43,8 @@ import {
 } from './backend-posture-recorder';
 import type { CapabilityRefusalEventType } from '../contracts/audit-events';
 import { isCapabilityRefusal } from '../services/capability-refusal';
+import { isAgentConfigAcknowledgementRefusal } from '../services/agent-config-ack-refusal';
+import type { AgentConfigAckGate } from './agent-config-ack-gate';
 import { isUncontainedBackendRefusal } from '../services/backend-containment-policy';
 import { authoredPhaseTimeoutMs, effectivePhaseTimeoutMs } from './effective-phase-timeout';
 import {
@@ -355,7 +357,8 @@ export class PhaseRunner {
     private readonly evidenceHealthDrain: { drainPathRefusals(): readonly string[] } | null = null,
     private readonly ambientConfigObserver?: (
       kind: BackendRunnerKind
-    ) => Promise<import('../contracts/audit-events').AmbientConfigObservation | null>
+    ) => Promise<import('../contracts/audit-events').AmbientConfigObservation | null>,
+    private readonly agentConfigAckGate: AgentConfigAckGate | null = null
   ) {
     // Feature 074 — accept either a BackendRunnerRegistry (per-phase
     // runner resolution) or a plain BackendRunner (backwards compat
@@ -681,6 +684,7 @@ export class PhaseRunner {
       // below is where both refusals are named. Kept as two statements because
       // the split is what makes the two throw sites separable at all.
       const backendRunner = this.resolveRunner(inputs);
+      await this.agentConfigAckGate?.ensureAcknowledged(inputs, effectiveRunnerKind);
       raw = await backendRunner.invoke({
         effectiveFatalSignatures,
         phase: inputs.phase,
@@ -727,7 +731,11 @@ export class PhaseRunner {
       // `:390`, codex-cli `:84`, agy-cli `:121`). Neither can have left a child,
       // which is exactly what `PRE_SPAWN_REFUSAL_CAUSE` asserts. By error type,
       // not by position: see `AttemptRef` for what position got wrong.
-      if (isCapabilityRefusal(err) || isUncontainedBackendRefusal(err)) {
+      if (
+        isCapabilityRefusal(err) ||
+        isUncontainedBackendRefusal(err) ||
+        isAgentConfigAcknowledgementRefusal(err)
+      ) {
         attemptRef.preSpawnRefusal = true;
       }
       await rawTranscriptCapture?.dispose();
