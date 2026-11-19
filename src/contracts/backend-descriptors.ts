@@ -50,17 +50,32 @@ export type AcpProfileKind = 'native' | 'bridge';
 /** Built-in ACP capability tokens required by host profiles. */
 export type AcpRequiredCapability = 'load-session' | 'embedded-context';
 
-/** Static built-in ACP profile descriptor for a backend. */
-export interface BackendAcpProfileDescriptor {
-  readonly profileId: string;
+/** Built-in ACP profile identifiers declared by `BACKEND_DESCRIPTORS`. */
+export type BuiltinAcpProfileId =
+  | 'agy-acp-native'
+  | 'claude-acp-bridge'
+  | 'codex-acp-bridge';
+
+interface BackendAcpProfileBase {
+  readonly profileId: BuiltinAcpProfileId;
   readonly revision: number;
-  readonly kind: AcpProfileKind;
   readonly provider: string;
   readonly executableRef: string;
   readonly requiredCapabilities: readonly AcpRequiredCapability[];
-  /** Native ACP stdio launch arguments before permission flags, or `null` for bridged backends. */
-  readonly nativeStdioArgs: readonly string[] | null;
 }
+
+/** Static built-in ACP profile descriptor for a backend (discriminated on `kind`). */
+export type BackendAcpProfileDescriptor =
+  | (BackendAcpProfileBase & {
+      readonly kind: 'native';
+      /** Native ACP stdio launch arguments before permission flags. */
+      readonly nativeStdioArgs: readonly string[];
+    })
+  | (BackendAcpProfileBase & {
+      readonly kind: 'bridge';
+      /** Bridged backends spawn the maintained Node.js stdio bridge instead of native stdio args. */
+      readonly nativeStdioArgs: null;
+    });
 
 /**
  * Complete static metadata for one supported backend.
@@ -98,8 +113,8 @@ export interface BackendDescriptor {
   readonly repoAgentConfigPaths: readonly string[];
   /** Whether the backend can execute phases declaring `sideEffects: git`. */
   readonly supportsGitSideEffects: boolean;
-  /** Environment variable exported for auto-compaction percentage override, or `null`. */
-  readonly autoCompactEnvVar: string | null;
+  /** Whether the backend honours the auto-compaction percentage override env var. */
+  readonly supportsAutoCompactOverride: boolean;
   /** Whether the controller runs pre-phase session compaction on session reuse. */
   readonly supportsSessionCompaction: boolean;
   /** CLI arguments for dynamic model discovery, or `null` when the CLI cannot list models. */
@@ -161,7 +176,7 @@ export const BACKEND_DESCRIPTORS: Readonly<Record<BackendRunnerKind, BackendDesc
         '.claude/CLAUDE.md'
       ]),
       supportsGitSideEffects: true,
-      autoCompactEnvVar: 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE',
+      supportsAutoCompactOverride: true,
       supportsSessionCompaction: true,
       modelDiscoveryArgs: null,
       unsupportedEffortLevels: Object.freeze([] as const),
@@ -198,7 +213,7 @@ export const BACKEND_DESCRIPTORS: Readonly<Record<BackendRunnerKind, BackendDesc
         'AGENTS.override.md'
       ]),
       supportsGitSideEffects: false,
-      autoCompactEnvVar: null,
+      supportsAutoCompactOverride: false,
       supportsSessionCompaction: false,
       modelDiscoveryArgs: null,
       unsupportedEffortLevels: Object.freeze([] as const),
@@ -231,7 +246,7 @@ export const BACKEND_DESCRIPTORS: Readonly<Record<BackendRunnerKind, BackendDesc
       ambientConfigSegments: null,
       repoAgentConfigPaths: Object.freeze([]),
       supportsGitSideEffects: true,
-      autoCompactEnvVar: null,
+      supportsAutoCompactOverride: false,
       supportsSessionCompaction: false,
       modelDiscoveryArgs: Object.freeze(['models']),
       unsupportedEffortLevels: Object.freeze(['xhigh', 'max'] as const),

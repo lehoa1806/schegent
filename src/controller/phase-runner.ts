@@ -613,14 +613,13 @@ export class PhaseRunner {
     // undefined, the key MUST NOT appear in the env map (no empty-string
     // fallback, no "undefined" literal).
     const backendDescriptor = getBackendDescriptor(effectiveRunnerKind);
-    const autoCompactPct =
-      this.autoCompactOverrideAccessor?.readAutoCompactPctOverride();
+    const autoCompactPct = this.autoCompactOverrideAccessor?.readAutoCompactPctOverride();
     const env: Record<string, string> = {
       SCHEGENT_PHASE: inputs.phase,
       SCHEGENT_ITERATION: String(inputs.iteration)
     };
-    if (backendDescriptor.autoCompactEnvVar !== null && autoCompactPct !== undefined) {
-      env[backendDescriptor.autoCompactEnvVar] = String(autoCompactPct);
+    if (backendDescriptor.supportsAutoCompactOverride && autoCompactPct !== undefined) {
+      env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(autoCompactPct);
       await this.appendAudit(inputs, 'auto-compact-override-applied', 'info', {
         ...this.pipelineMeta(inputs),
         runId: inputs.runId,
@@ -631,11 +630,7 @@ export class PhaseRunner {
     let effectiveSessionReuse = inputs.sessionReuse === true;
     let effectiveIsContinue = inputs.isContinue === true;
     let effectiveResumeSessionId = inputs.resumeSessionId;
-    if (
-      backendDescriptor.supportsSessionCompaction &&
-      effectiveSessionReuse &&
-      typeof inputs.resumeSessionId === 'string'
-    ) {
+    if (backendDescriptor.supportsSessionCompaction && effectiveSessionReuse && typeof inputs.resumeSessionId === 'string') {
       try {
         await this.compactSession(inputs);
       } catch (err) {

@@ -278,7 +278,8 @@ function renderedSettingKeys(declared: ReadonlySet<string>): ReadonlySet<string>
   for (const file of svelteFilesUnder(SETTINGS_COMPONENT_ROOT)) {
     const source = fs.readFileSync(file, 'utf8');
     for (const match of source.matchAll(FIELD_KEY_LITERAL)) {
-      if (declared.has(match[1])) rendered.add(match[1]);
+      const key = match.at(1);
+      if (key !== undefined && declared.has(key)) rendered.add(key);
     }
     // FR-R7-06 — BackendEnvironmentGroup derives per-backend CLI path controls from the
     // generated webview descriptor mirror (`mapBackends` -> `ipcKey: descriptor.cliPathSettingKey`).

@@ -199,24 +199,9 @@ export interface KeySpec {
 }
 
 export const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
-  'cli.path': {
-    scope: 'application',
-    type: 'string',
-    typedField: 'cliPath',
-    defaultValue: BACKEND_DESCRIPTORS.claude.defaultCliBinary
-  },
-  'codex.path': {
-    scope: 'application',
-    type: 'string',
-    typedField: 'codexPath',
-    defaultValue: BACKEND_DESCRIPTORS.codex.defaultCliBinary
-  },
-  'agy.path': {
-    scope: 'application',
-    type: 'string',
-    typedField: 'agyPath',
-    defaultValue: BACKEND_DESCRIPTORS.agy.defaultCliBinary
-  },
+  'cli.path': { scope: 'application', type: 'string', typedField: 'cliPath', defaultValue: BACKEND_DESCRIPTORS.claude.defaultCliBinary },
+  'codex.path': { scope: 'application', type: 'string', typedField: 'codexPath', defaultValue: BACKEND_DESCRIPTORS.codex.defaultCliBinary },
+  'agy.path': { scope: 'application', type: 'string', typedField: 'agyPath', defaultValue: BACKEND_DESCRIPTORS.agy.defaultCliBinary },
   'logging.verbose': { scope: 'resource',
     type: 'boolean',
     typedField: 'loggingVerbose',

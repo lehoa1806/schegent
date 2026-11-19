@@ -29,7 +29,8 @@ import { emitWebviewSnapshotMirror } from './contracts/emit-webview-mirror.mjs';
 import {
   emitWebviewBackendDescriptors,
   extractBackendDescriptorTable,
-  validateBackendManifestParity
+  validateBackendManifestParity,
+  validateSettingsSchemaParity
 } from './contracts/emit-backend-descriptors.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -490,6 +491,7 @@ const runner = new SourceExtractor('src/runner/invocation-result.ts');
 const packageJson = JSON.parse(readText('package.json'));
 const backendDescriptorData = extractBackendDescriptorTable(REPO_ROOT);
 validateBackendManifestParity({ ...backendDescriptorData, packageJson });
+validateSettingsSchemaParity(REPO_ROOT, backendDescriptorData);
 const settingsProperties = packageJson.contributes.configuration.properties;
 const settings = Object.keys(settingsProperties)
   .sort()

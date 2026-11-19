@@ -16,18 +16,19 @@ import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../contracts/back
 import {
   getBackendDescriptor,
   mapBackends,
-  type BackendMap
+  type BackendMap,
+  type BuiltinAcpProfileId
 } from '../../contracts/backend-descriptors';
 import type { DeclaredCapabilitySet } from '../../contracts/phase-capabilities';
 import { planCapabilityEnforcement, unboundedArgs } from '../capability-enforcement-plan';
 import { CapabilityNotEnforceableError } from '../capability-refusal';
 import type { StdioLaunch } from './stdio-transport';
 
-export const ACP_PROFILE_IDS: BackendMap<string> = mapBackends(
+export type { BuiltinAcpProfileId };
+
+export const ACP_PROFILE_IDS: BackendMap<BuiltinAcpProfileId> = mapBackends(
   (descriptor) => descriptor.acpProfile.profileId
 );
-
-export type BuiltinAcpProfileId = 'agy-acp-native' | 'claude-acp-bridge' | 'codex-acp-bridge';
 
 export interface AcpProfilePlatform {
   readonly os: string;
@@ -108,7 +109,7 @@ export function resolveAcpProfileLaunch(input: ResolveAcpProfileLaunchInput): St
   const permissionArgs = resolvePermissionArgs(input.kind, input.capabilities);
   const profile = getBackendDescriptor(input.kind).acpProfile;
 
-  if (profile.kind === 'native' && profile.nativeStdioArgs !== null) {
+  if (profile.kind === 'native') {
     return {
       command: input.resolvedCliPath,
       args: [...profile.nativeStdioArgs, ...permissionArgs],
