@@ -207,7 +207,7 @@ function createInMemoryLegacyMemento(initial: Record<string, unknown>): Memento 
   };
 }
 
-function buildRealisticPipelineSnapshot(index: number): WorkflowRun['pipeline'] {
+function buildRealisticPipelineSnapshot(index: number): NonNullable<WorkflowRun['pipeline']> {
   return {
     id: `wf-sdd-${index % 4}`,
     name: `Spec-Driven Autonomous Workflow ${index % 4}`,
@@ -1060,6 +1060,8 @@ export function evaluateDecisionGate(
 }
 
 export function captureBenchmarkEnvironment(sqliteVersion: string): BenchmarkEnvironmentSummary {
+  const safeLoad = (value: number | undefined): number =>
+    Number((value !== undefined && Number.isFinite(value) ? value : 0).toFixed(2));
   const [load1, load5, load15] = os.loadavg();
   return {
     platform: os.platform(),
@@ -1070,8 +1072,8 @@ export function captureBenchmarkEnvironment(sqliteVersion: string): BenchmarkEnv
     totalMemGiB: Number((os.totalmem() / 1024 ** 3).toFixed(1)),
     nodeVersion: process.version,
     sqliteVersion,
-    loadAvg1m: Number((Number.isFinite(load1) ? load1 : 0).toFixed(2)),
-    loadAvg5m: Number((Number.isFinite(load5) ? load5 : 0).toFixed(2)),
-    loadAvg15m: Number((Number.isFinite(load15) ? load15 : 0).toFixed(2))
+    loadAvg1m: safeLoad(load1),
+    loadAvg5m: safeLoad(load5),
+    loadAvg15m: safeLoad(load15)
   };
 }
