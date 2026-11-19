@@ -56,12 +56,6 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
     how: 'equality',
     note: 'behavior: maintained ACP v1 stdio bridge CLI flag translation and stdout stream parsing for bridged backends (claude and codex)'
   },
-  {
-    path: 'src/state/sqlite-operational-backing.ts',
-    role: 'Qualification',
-    how: 'equality',
-    note: 'projects containment_acceptance_bindings rows for supported backend kinds during SQLite sync'
-  },
 
   // ---- Permission posture and policy
   {
@@ -88,15 +82,6 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
     role: 'Spend and usage',
     how: 'record',
     note: 'behavior: function-valued JSONL usage row discriminators, envelope extractors, and token/cost field mappings per backend'
-  },
-
-  // ---- Qualification
-  { path: 'src/contracts/qualified-backend-versions.ts', role: 'Qualification', how: 'literal' },
-  {
-    path: 'src/headless/backend-qualification-api.ts',
-    role: 'Qualification',
-    how: 'record',
-    note: 'a Partial record of acceptance bindings, keyed by kind; a new kind is accepted with no binding'
   },
 
   // ---- Models and projection
