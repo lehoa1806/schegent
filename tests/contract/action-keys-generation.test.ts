@@ -27,6 +27,7 @@ const REQUIRED_FILES: readonly string[] = [
   // FR-R7-05 declarative descriptor modules & emitters
   'scripts/contracts/canonical-enums.mjs',
   'scripts/contracts/descriptor-dsl.mjs',
+  'scripts/contracts/emit-backend-descriptors.mjs',
   'scripts/contracts/emit-json-schema.mjs',
   'scripts/contracts/emit-types.mjs',
   'scripts/contracts/emit-validators.mjs',
@@ -43,8 +44,11 @@ const REQUIRED_FILES: readonly string[] = [
   'scripts/contracts/ipc-descriptors/phase-log.mjs',
   'scripts/contracts/ipc-descriptors/queue-core.mjs',
   'scripts/contracts/ipc-descriptors/queue-management.mjs',
-  // Canonical enum sources read by canonical-enums.mjs
+  // Canonical enum sources read by canonical-enums.mjs and emit-backend-descriptors.mjs
   'src/contracts/backend-kinds.ts',
+  'src/contracts/backend-descriptors.ts',
+  'src/contracts/backend-runner.ts',
+  'src/config/settings-schema.ts',
   'src/contracts/catalog-store.ts',
   'src/contracts/pipeline-definitions.ts',
   'src/contracts/command-outcome.ts',
@@ -67,6 +71,7 @@ const REQUIRED_FILES: readonly string[] = [
   'src/contracts/action-keys.ts',
   'src/contracts/queue-failure-policy.ts',
   // Generated outputs
+  'webview-ui/src/lib/generated/backend-descriptors.ts',
   'webview-ui/src/lib/generated/queue-failure-policy.ts',
   'webview-ui/src/lib/generated/action-keys.ts',
   'webview-ui/src/lib/generated/snapshot-mirror.ts',

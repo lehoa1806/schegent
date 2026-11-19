@@ -43,7 +43,7 @@ const ALLOWED_UNIONS: ReadonlyArray<{ name: string; file: string }> = [
   // argv and no operator string — which is the property this gate exists to keep.
   {
     name: 'BackendContainmentMechanism',
-    file: 'src/services/backend-containment-policy.ts'
+    file: 'src/contracts/backend-descriptors.ts'
   }
 ];
 

@@ -1046,6 +1046,8 @@ export async function relocateLegacySqliteStore(
   // leave the winning legacy store working in place with zero third-location fallback.
   const anchorResult = await ensureAnchorWithinRoot(canonicalRoot, ['sqlite', request.scopeId], DIR_MODE);
   if (anchorResult.outcome === 'refused') {
+    // Reparse-point detection relies on `ensureAnchorWithinRoot` (JS-only containment;
+    // native syscall residual recorded in `docs/architecture/native-binding-decision.md`).
     const isSymlinkRefusal =
       anchorResult.reason === 'symlink-component' ||
       anchorResult.reason === 'symlink-leaf' ||

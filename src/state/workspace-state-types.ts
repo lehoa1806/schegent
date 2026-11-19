@@ -206,8 +206,8 @@ export interface Disposable {
 
 export interface Memento {
   get<T>(key: string): T | undefined;
-  update(key: string, value: unknown): Thenable<void>;
-  updateBatch?(entries: readonly MementoBatchEntry[]): Thenable<void>;
+  update(key: string, value: unknown): PromiseLike<void>;
+  updateBatch?(entries: readonly MementoBatchEntry[]): PromiseLike<void>;
 }
 
 export type ConnectedRunWriteResult =
@@ -292,10 +292,10 @@ export interface WorkspaceStateFamilyContext {
   getOwnershipRegistry(): OwnershipRegistry;
   getRunClaimSource(): RunClaimSource | null;
   getPrimacyClaimSource(): PrimacyClaimSource | null;
-  serialize(key: string, op: () => Thenable<void> | Promise<void>): Promise<void>;
+  serialize(key: string, op: () => PromiseLike<void> | Promise<void>): Promise<void>;
   serializeAcrossKeys(
     keys: readonly string[],
-    op: () => Thenable<void> | Promise<void>
+    op: () => PromiseLike<void> | Promise<void>
   ): Promise<void>;
   notify(key: StoreChangeKey): void;
   runCommitClaim(queueId: string): RunCommitClaim;

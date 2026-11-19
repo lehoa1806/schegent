@@ -833,7 +833,7 @@ export function createSqliteCutoverCoordinator(
 
   const coordinator: SqliteCutoverCoordinator = {
     scopeId,
-    storageRoot,
+    storageRoot: globalStorageRoot,
     expectedDatabasePath,
     activatePrimary() {
       if (activeServices !== null) return Promise.resolve(activeServices);
