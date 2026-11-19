@@ -1769,15 +1769,19 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // type or constant changed; the mapping lives in
       // `src/services/containment-qualification/teardown-qualification.ts`, not here.
       //
-      // Feature 318 (FR-R7-04, 2026-11-19) — 1688 → 1696, +8 by this gate's count: header note,
-      // `AGENT_CONFIG_ACK_EVENT_TYPES` (`agent-config-acknowledged`), and its spread into
-      // `ALL_AUDIT_EVENT_TYPES`. The closed payload type lives in
-      // `src/contracts/agent-config-acknowledgement.ts`, and the projector in
-      // `src/audit/agent-config-ack-payload.ts`.
-      // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw mark 1,696 (1,696 raw) → 608 code lines.
-      highWaterMark: 608
+      // Feature 317 (FR-R7-03, 2026-11-19) — `STORE_BACKUP_RESTORE_EVENT_TYPES` (`'store-backup'`,
+      // `'store-restore'`), its spread into `ALL_AUDIT_EVENT_TYPES`, and `SYSTEM_SCOPED_EVENT_TYPES`.
+      // Feature 318 (FR-R7-04, 2026-11-19) — `AGENT_CONFIG_ACK_EVENT_TYPES` (`agent-config-acknowledged`)
+      // and its spread into `ALL_AUDIT_EVENT_TYPES`.
+      // FR-R7-08 (2026-11-19) — migrated to code lines (combined 317 + 318: 612 code lines).
+      highWaterMark: 612
     }
   },
+  // Feature 317 + 324 (FR-R7-03 / FR-R7-10, 2026-11-19) — `sqlite-cutover-wiring.ts` (1,017 code
+  // lines) and `store-relocation.ts` (1,040 code lines) crossed the 1,000-line entry condition;
+  // declared with plain ceilings leaving ~55 lines of headroom above `tightMargin`.
+  { path: 'src/activation/sqlite-cutover-wiring.ts', maxLines: 1_075 },
+  { path: 'src/services/sqlite-store/store-relocation.ts', maxLines: 1_100 },
   // Round 5 workflow control-flow, backend recovery, and admission modules (FR-R5-F26..F34, 2026-11-08) —
   // each crosses the 1,000-line entry condition and carries a plain ceiling with ~50 lines of headroom
   // above `tightMargin`.

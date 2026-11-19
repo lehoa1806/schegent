@@ -37,6 +37,10 @@ export const SQLITE_WAL_PAUSE_BACKGROUND_BYTES = 134_217_728 as const; // 128 Mi
 export const SQLITE_BENCHMARK_WARMUP_SAMPLES = 20 as const;
 export const SQLITE_BENCHMARK_MEASURED_SAMPLES = 200 as const;
 
+/** FR-R7-03 (FR-009) — deterministic bounds for external dependency verification during backup verify/restore. */
+export const MAX_BACKUP_EXTERNAL_DEPENDENCIES = 10_000 as const;
+export const MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES = 536_870_912 as const; // 512 MiB
+
 export const ATOMIC_TRANSACTION_UNITS = [
   'Admission',
   'Terminal acceptance',
@@ -456,6 +460,31 @@ export interface BackupDependencyManifest {
   readonly databaseBytes: number;
   readonly cutoverAuthority: StorageAuthority;
   readonly externalDependencies: readonly BackupExternalDependency[];
+}
+
+export type BackupRestoreRejectionCode =
+  | 'QUICK_CHECK_FAILED'
+  | 'FOREIGN_KEY_CHECK_FAILED'
+  | 'UNSUPPORTED_SCHEMA_VERSION'
+  | 'DATABASE_DIGEST_MISMATCH'
+  | 'EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT'
+  | 'EXTERNAL_DEPENDENCY_BOUND_EXCEEDED'
+  | 'BACKUP_OPEN_FAILED';
+
+/**
+ * FR-R7-03 (FR-004, FR-005, Hard Rule 22) — closed metadata-only audit payload for
+ * `store-backup` and `store-restore` events. Deliberately has no path fields.
+ */
+export interface StoreBackupRestoreAuditPayload {
+  readonly operation: 'backup' | 'restore';
+  readonly outcome: 'succeeded' | 'rejected' | 'refused' | 'failed';
+  readonly backupId: string;
+  readonly errorCode?: string | undefined;
+  readonly schemaVersion?: number | undefined;
+  readonly databaseBytes?: number | undefined;
+  readonly restoredTableCount?: number | undefined;
+  readonly restoredRowCount?: number | undefined;
+  readonly verifiedExternalDependencies?: number | undefined;
 }
 
 export interface LatencyDistributionSummary {

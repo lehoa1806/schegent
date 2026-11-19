@@ -217,7 +217,9 @@ export const AUDIT_EVENT_TYPES = [
   "control-notice",
   "control-command",
   "artifact-lifecycle-mutation",
-  "agent-config-acknowledged"
+  "agent-config-acknowledged",
+  "store-backup",
+  "store-restore"
 ] as const;
 
 export const SETTINGS_KEYS = [

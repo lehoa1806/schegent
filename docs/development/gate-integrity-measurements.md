@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 139
+    vacuity-census-denominator: 140
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **139** |
+| Gates the detector calls **controlled** (the denominator) | **140** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 

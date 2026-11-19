@@ -64,6 +64,9 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'operator-pseudonym-reset': 'system',
   // Feature 304 — an artifact lifecycle mutation, with no run (system)
   'artifact-lifecycle-mutation': 'system',
+  // FR-R7-03 — SQLite store backup and restore have no run; System tab only.
+  'store-backup': 'system',
+  'store-restore': 'system',
   // Retry-condition decision (task)
   'phase.retry_evaluated': 'task',
   // Delayed retry (system)
@@ -446,7 +449,9 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'control-wait':
         case 'control-return':
         case 'control-notice':
-        case 'control-command': {
+        case 'control-command':
+        case 'store-backup':
+        case 'store-restore': {
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);
           break;

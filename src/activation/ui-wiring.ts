@@ -48,6 +48,7 @@ import {
 import { registerQueueFailurePolicyCommand } from './queue-failure-policy-wiring';
 import { registerAuditChainCommands } from './audit-commands-wiring';
 import { registerEvidenceCommands } from './evidence-commands-wiring';
+import { registerSqliteBackupCommands } from './sqlite-backup-commands-wiring';
 import type { TransportRouter } from '../monitor/transport/transport-router';
 import type { OperatorAttribution } from '../lib/operator-attribution';
 import type { RuntimeLogAccessor } from '../lib/runtime-log/runtime-log-settings';
@@ -450,6 +451,12 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
       transportRouter: deps.transportRouter,
       operatorAttribution: deps.operatorAttribution,
       runtimeLogAccessor: deps.runtimeLogAccessor
+    }),
+    // FR-R7-03 — SQLite store backup, verify, and restore commands, registered in their own module.
+    ...registerSqliteBackupCommands(guard, {
+      workspaceRoot: deps.workspaceRoot, globalStorageRoot: deps.globalStorageRoot,
+      store: deps.store, controller: deps.controller, lock: deps.lock,
+      auditWriter: deps.auditWriter, notifier: deps.notifier, projector: deps.projector
     }),
     // Feature 195 (T064) — retry and attested completion, the two queue-item
     // exits that must offer the queue a drain; extracted together for the

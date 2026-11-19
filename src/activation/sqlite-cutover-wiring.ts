@@ -310,10 +310,13 @@ export interface SqliteCutoverServices {
 
 export interface SqliteCutoverCoordinator {
   readonly scopeId: string;
+  readonly storageRoot: string;
   readonly expectedDatabasePath: string;
   activatePrimary(): Promise<SqliteCutoverServices | null>;
   getServices(): SqliteCutoverServices | null;
   getSqliteStore(): SqliteApplicationStore | null;
+  hasInFlightSqliteRun(): boolean;
+  reloadAfterRestore(): Promise<void>;
   getArtifactLifecycle(): ArtifactLifecycleService | null;
   getUsageAccounting(): UsageAccountingService | null;
   getTelemetryHost(): TelemetryHostService | null;
@@ -830,6 +833,7 @@ export function createSqliteCutoverCoordinator(
 
   const coordinator: SqliteCutoverCoordinator = {
     scopeId,
+    storageRoot,
     expectedDatabasePath,
     activatePrimary() {
       if (activeServices !== null) return Promise.resolve(activeServices);
@@ -840,6 +844,48 @@ export function createSqliteCutoverCoordinator(
     },
     getServices: () => activeServices,
     getSqliteStore: () => activeServices?.sqliteStore ?? null,
+    hasInFlightSqliteRun() {
+      if (activeServices === null) return false;
+      const conn = activeServices.sqliteStore.writerConnection;
+      try {
+        const activeRelational = Number(
+          conn.scalar(
+            `SELECT COUNT(*) FROM runs WHERE status NOT IN ('succeeded', 'failed', 'cancelled', 'aborted')`
+          ) ?? 0
+        );
+        if (activeRelational > 0) return true;
+        const activeOpRuns = Number(
+          conn.scalar(
+            `SELECT COUNT(*) FROM operational_runs WHERE status NOT IN ('completed', 'failed', 'canceled')`
+          ) ?? 0
+        );
+        if (activeOpRuns > 0) return true;
+        const activeQueue = Number(
+          conn.scalar(
+            `SELECT COUNT(*) FROM operational_queue_meta WHERE in_flight_id IS NOT NULL`
+          ) ?? 0
+        );
+        return activeQueue > 0;
+      } catch {
+        // Fail closed when SQLite active-run state cannot be read.
+        return true;
+      }
+    },
+    async reloadAfterRestore() {
+      operationalMemento?.reloadSqliteCache();
+      if (activeServices !== null) {
+        try {
+          await activeServices.runLaneCoordinator.refreshCacheFromStore();
+        } catch (err) {
+          reportSideEffectFailure('restore-lane-cache-reload', err);
+        }
+        try {
+          activeServices.recoveryHandoff.reopen();
+        } catch (err) {
+          reportSideEffectFailure('restore-handoff-reopen', err);
+        }
+      }
+    },
     getArtifactLifecycle: () => activeServices?.artifactLifecycle ?? null,
     getUsageAccounting: () => activeServices?.usageAccounting ?? null,
     getTelemetryHost: () => activeServices?.telemetryHost ?? null,
