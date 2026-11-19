@@ -1,5 +1,9 @@
-import { OPERABLE_RUN_STATUSES, type RunPatch, type WorkflowRun } from '../state/workflow-run';
-import { isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-state';
+import type { RunPatch, WorkflowRun } from '../state/workflow-run';
+import {
+  allowedSourceStatusesFor,
+  isRunRaceRefusal,
+  type WorkspaceStateStore
+} from '../state/workspace-state';
 import { decideUnattendedEligibility, type UnattendedWakeup } from '../services/unattended-eligibility';
 
 /**
@@ -154,13 +158,20 @@ export async function patchRunForResumeAdmission(
   // A holder, not a `let`: the flag is set inside the patch callback, which control-flow analysis
   // does not follow, so a `let` would read as always false at the check below.
   const recheck = { refused: false };
-  const next = await patchRunForResume(store, queueId, run, 'resume-admission', (current) => {
-    if (unattended !== undefined && !decideUnattendedEligibility(current, unattended, Date.now()).eligible) {
-      recheck.refused = true;
-      throw new UnattendedAdmissionRefused();
-    }
-    return resumeAdmissionPatch(current, fields, unattended);
-  });
+  const next = await patchRunForResume(
+    store,
+    queueId,
+    run,
+    'resume-admission',
+    (current) => {
+      if (unattended !== undefined && !decideUnattendedEligibility(current, unattended, Date.now()).eligible) {
+        recheck.refused = true;
+        throw new UnattendedAdmissionRefused();
+      }
+      return resumeAdmissionPatch(current, fields, unattended);
+    },
+    unattended !== undefined ? 'watchdog' : 'operator'
+  );
   if (next !== null) return next;
   return recheck.refused ? 'ineligible' : null;
 }
@@ -174,12 +185,22 @@ export async function patchRunForResume(
   queueId: string,
   run: WorkflowRun,
   label: 'resume-prompt' | 'resume-admission',
-  patch: (current: WorkflowRun) => RunPatch
+  patch: (current: WorkflowRun) => RunPatch,
+  actor: 'operator' | 'watchdog' = 'operator'
 ): Promise<WorkflowRun | null> {
   try {
     return await store.updateRun(
       queueId,
-      { runId: run.id, allowedStatuses: OPERABLE_RUN_STATUSES, label, patch },
+      {
+        runId: run.id,
+        allowedStatuses:
+          label === 'resume-admission'
+            ? allowedSourceStatusesFor('running', 'operator')
+            : allowedSourceStatusesFor('running', actor),
+        label,
+        actor,
+        patch
+      },
       store.runCommitClaim(queueId)
     );
   } catch (error) {

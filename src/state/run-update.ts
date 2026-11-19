@@ -8,6 +8,7 @@
 // unchanged.
 
 import type { RunPatch, WorkflowRun, WorkflowRunStatus } from './workflow-run';
+import type { RunTransitionActor } from './run-transition-decision';
 
 /**
  * FR-R4-F01 (contract C2) — the closed set of writers `updateRun` accepts a label
@@ -59,4 +60,10 @@ export interface RunUpdate {
   readonly allowedStatuses: readonly WorkflowRunStatus[];
   readonly patch: (current: WorkflowRun) => RunPatch;
   readonly label: RunUpdateLabel;
+  /**
+   * FR-R7-01 — optional actor override when one `label` serves more than one actor class
+   * (for example `'resume-admission'` for unattended `'watchdog'` wakeups vs `'operator'`).
+   * Defaults to `DEFAULT_ACTOR_BY_RUN_UPDATE_LABEL[label]`.
+   */
+  readonly actor?: RunTransitionActor;
 }

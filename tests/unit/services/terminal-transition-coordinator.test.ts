@@ -182,8 +182,8 @@ describe('TerminalTransitionCoordinator concurrent transitions (Feature 093 T048
     expect(queue.finish).toHaveBeenCalledWith('task-b', 'failed');
     // FR-R3-077 — the commit point now carries a claim; these doubles hold no
     // lease, so it is the recorded unfenced form rather than a fence.
-    expect(store.setRun).toHaveBeenCalledWith('queue-a', runA, unfencedCommit('test-fixture'));
-    expect(store.setRun).toHaveBeenCalledWith('queue-b', runB, unfencedCommit('test-fixture'));
+    expect(store.setRun).toHaveBeenCalledWith('queue-a', runA, unfencedCommit('test-fixture'), 'recovery');
+    expect(store.setRun).toHaveBeenCalledWith('queue-b', runB, unfencedCommit('test-fixture'), 'recovery');
     expect(journal.entries).toEqual({});
   });
 
@@ -556,7 +556,7 @@ describe('TerminalTransitionCoordinator FR-R3-196 (T1873)', () => {
     await world.drive();
     expect(world.calls).toEqual(['run', 'queue', 'history']);
     expect(world.store.setRun).toHaveBeenCalledWith(
-      DEFAULT_QUEUE_ID, world.run, unfencedCommit('test-fixture')
+      DEFAULT_QUEUE_ID, world.run, unfencedCommit('test-fixture'), 'recovery'
     );
     expectCleared(world);
   });

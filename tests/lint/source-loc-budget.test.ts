@@ -1071,7 +1071,15 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // Review gap GC-04 (2026-11-12) — 3795 → 3737, -58: the bounded write, its deadline and its
       // quarantine moved to `memento-write-gate.ts`, which now also lifts the quarantine when the
       // timed-out write settles.
-      highWaterMark: 3737
+      //
+      // Feature 315 (FR-R7-01, 2026-11-19) — 3737 → 3932, +195: typed `RunFieldInvariantError`
+      // throws in `validateRunInvariants`, `decideRunTransition` enforcement in `setRun` and
+      // `updateRun`, re-exports of the new pure modules (`run-invariant-error.ts`,
+      // `run-transition-decision.ts`), and `admitRunAtomically` inside
+      // `serializeAcrossKeys([KEYS.run, KEYS.queue])` with same-`run.id` transition and
+      // `running`-status admission checks. Pure transition and error definitions live
+      // in their own modules; relocation of existing `workspace-state.ts` code belongs to FR-R7-07.
+      highWaterMark: 3932
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1353,7 +1361,12 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       //
       // Feature 278 (FR-R5-F19, 2026-11-06) — 2434 → 2435, +1: the retry keeps the failure it came
       // from, so one `lastError: null` line became a two-line comment saying why it stays.
-      highWaterMark: 2435
+      //
+      // Feature 315 (FR-R7-01, 2026-11-19) — 2435 → 2469, +34: `admitRun` routing new-Run admission
+      // through `store.admitRunAtomically` plus shared `applyMarkInFlight` and
+      // `emitTaskStartedPostCommit` helpers so `markInFlight` and `admitRun` share one Task
+      // transition site and post-commit audit hook without duplicating either.
+      highWaterMark: 2469
     }
   },
   // Feature 267 (FR-R5-F08, 2026-11-06) — `workflow-control-service.ts` crossed the

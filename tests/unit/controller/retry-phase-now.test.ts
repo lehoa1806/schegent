@@ -162,6 +162,7 @@ describe('retryPhaseNow — rejection guards', () => {
     // with no armed retry, which is what is arranged here.
     await store.setRun(DEFAULT_QUEUE_ID, {
       ...store.getRun(DEFAULT_QUEUE_ID)!,
+      id: 'run-paused-not-retrying',
       status: 'paused',
       pendingRetryAt: null,
       pendingRetryCause: null

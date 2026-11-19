@@ -12,6 +12,7 @@
 // leaving `paused` with its countdown still armed is the new write the rule exists to refuse. Loading never calls this, and
 // `decideUnattendedEligibility` reads `status` before the fields, so a legacy combination is never woken.
 import type { WorkflowRun } from './workflow-run';
+import { RunFieldInvariantError } from './run-invariant-error';
 
 const isSet = (value: unknown): boolean => value !== null && value !== undefined;
 
@@ -31,7 +32,8 @@ export function assertPendingRetryShape(next: WorkflowRun, previous: WorkflowRun
   ) {
     return;
   }
-  throw new Error(
+  throw new RunFieldInvariantError(
+    'pending-retry-requires-paused',
     `WorkflowRun invariant violation: pendingRetryAt (${next.pendingRetryAt}) and pendingRetryCause (${next.pendingRetryCause}) require status 'paused' (got '${next.status}')`
   );
 }

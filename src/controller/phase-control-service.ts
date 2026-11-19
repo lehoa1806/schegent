@@ -3,17 +3,20 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
 import {
   QueueMutationRejected,
+  allowedSameStatusFor,
   type RunUpdateLabel,
   type WorkspaceStateStore
 } from '../state/workspace-state';
 import {
   LIVE_RUN_STATUSES as LIVE,
-  OPERABLE_RUN_STATUSES as OPERABLE,
   type PhaseOverride,
   type RunPatch,
   type WorkflowRun,
   type WorkflowRunStatus
 } from '../state/workflow-run';
+
+// FR-R7-01 — derived from `RUN_STATUS_TRANSITIONS` (`['running', 'paused', 'failed']`).
+const OPERABLE = allowedSameStatusFor('operator');
 import type { RetryCoordinator } from '../services/retry-coordinator';
 import { plannedTotalPatch } from '../services/run-planned-total';
 import {

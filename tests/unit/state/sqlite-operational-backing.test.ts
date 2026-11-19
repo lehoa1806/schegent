@@ -304,4 +304,113 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
       sqliteStore.close();
     }
   });
+
+  it('commits multiple keys atomically via updateBatch in one SQLite transaction and rolls back all keys on error (FR-R7-01)', async () => {
+    const sqliteStore = SqliteApplicationStore.openInMemory();
+    try {
+      const switchable = createSwitchableOperationalMemento(createMemoryMemento());
+      const now = 1_800_000_000_000;
+      const backing = switchable.attachSqlite(sqliteStore, 'scope-batch', () => now);
+
+      const runPayload = {
+        default: {
+          id: 'run-batch-1',
+          featureId: 'feat-1',
+          status: 'running',
+          currentPhase: 'speckit-plan',
+          startedAt: now,
+          lastTransitionAt: now,
+          pipeline: { id: 'default-pipeline', name: 'Default', phases: [] }
+        }
+      };
+      const queuePayload = { default: { requests: [{ id: 'feat-1', status: 'in-flight' }], inFlightId: 'feat-1' } };
+
+      await switchable.updateBatch([
+        { key: KEYS.run, value: runPayload },
+        { key: KEYS.queue, value: queuePayload }
+      ]);
+
+      expect(switchable.get<typeof runPayload>(KEYS.run)?.default.id).toBe('run-batch-1');
+      expect(switchable.get<typeof queuePayload>(KEYS.queue)?.default.inFlightId).toBe('feat-1');
+      const runRow = sqliteStore.writerConnection.get<{ run_id: string; status: string }>(
+        `SELECT run_id, status FROM runs WHERE run_id = 'run-batch-1'`
+      );
+      expect(runRow).toEqual({ run_id: 'run-batch-1', status: 'running' });
+
+      // Fault injection: throw on the second operational_kv_documents write inside updateBatch;
+      // the whole transaction MUST roll back so neither key nor cache advances.
+      const conn = sqliteStore.writerConnection;
+      const originalRun = conn.run.bind(conn);
+      let kvWrites = 0;
+      conn.run = ((...args: Parameters<typeof conn.run>) => {
+        const [sql] = args;
+        if (sql.includes('INSERT INTO operational_kv_documents')) {
+          kvWrites += 1;
+          if (kvWrites === 2) throw new Error('injected-mid-batch-failure');
+        }
+        return originalRun(...args);
+      }) as typeof conn.run;
+
+      try {
+        expect(() =>
+          backing.updateBatch([
+            {
+              key: KEYS.run,
+              value: {
+                default: { ...runPayload.default, id: 'run-batch-2' }
+              }
+            },
+            {
+              key: KEYS.queue,
+              value: { default: { requests: [{ id: 'feat-2', status: 'in-flight' }], inFlightId: 'feat-2' } }
+            }
+          ])
+        ).toThrow('injected-mid-batch-failure');
+      } finally {
+        conn.run = originalRun;
+      }
+
+      // Both cache and SQLite must still reflect run-batch-1 / feat-1.
+      expect(switchable.get<typeof runPayload>(KEYS.run)?.default.id).toBe('run-batch-1');
+      expect(switchable.get<typeof queuePayload>(KEYS.queue)?.default.inFlightId).toBe('feat-1');
+      const rolledBackRow = sqliteStore.writerConnection.get<{ run_id: string }>(
+        `SELECT run_id FROM runs WHERE run_id = 'run-batch-2'`
+      );
+      expect(rolledBackRow).toBeUndefined();
+
+      // Post-cutover detached updateBatch must still throw PostCutoverMementoWriteForbiddenError.
+      switchable.detachSqlite();
+      await expect(
+        switchable.updateBatch([
+          { key: KEYS.run, value: { default: { ...runPayload.default, id: 'run-batch-3' } } },
+          { key: KEYS.queue, value: { default: { requests: [], inFlightId: null } } }
+        ])
+      ).rejects.toBeInstanceOf(PostCutoverMementoWriteForbiddenError);
+    } finally {
+      sqliteStore.close();
+    }
+  });
+
+  it('rolls back already-written legacy Memento entries when pre-cutover SwitchableOperationalMemento.updateBatch fails mid-batch (FR-009)', async () => {
+    const legacy = createMemoryMemento();
+    const origUpdate = legacy.update.bind(legacy);
+    legacy.update = (key: string, value: unknown): Thenable<void> => {
+      if (key === KEYS.queue) {
+        return Promise.reject(new Error('legacy-queue-write-failed'));
+      }
+      return origUpdate(key, value);
+    };
+    const switchable = createSwitchableOperationalMemento(legacy);
+
+    await expect(
+      switchable.updateBatch([
+        { key: KEYS.run, value: { default: { id: 'run-pre-cutover', status: 'running' } } },
+        { key: KEYS.queue, value: { default: { requests: [], inFlightId: 'feat-1' } } }
+      ])
+    ).rejects.toThrow('legacy-queue-write-failed');
+
+    // Compensating rollback restored KEYS.run back to undefined.
+    expect(legacy.get(KEYS.run)).toBeUndefined();
+    expect(switchable.get(KEYS.run)).toBeUndefined();
+  });
 });
