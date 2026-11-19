@@ -26,6 +26,11 @@ import {
 import { emitFamilyValidatorModule } from './contracts/emit-validators.mjs';
 import { buildSidebarIpcJsonSchema } from './contracts/emit-json-schema.mjs';
 import { emitWebviewSnapshotMirror } from './contracts/emit-webview-mirror.mjs';
+import {
+  emitWebviewBackendDescriptors,
+  extractBackendDescriptorTable,
+  validateBackendManifestParity
+} from './contracts/emit-backend-descriptors.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHECK_ONLY = process.argv.includes('--check');
@@ -483,6 +488,8 @@ const featureRequest = new SourceExtractor('src/queue/feature-request.ts');
 const runner = new SourceExtractor('src/runner/invocation-result.ts');
 
 const packageJson = JSON.parse(readText('package.json'));
+const backendDescriptorData = extractBackendDescriptorTable(REPO_ROOT);
+validateBackendManifestParity({ ...backendDescriptorData, packageJson });
 const settingsProperties = packageJson.contributes.configuration.properties;
 const settings = Object.keys(settingsProperties)
   .sort()
@@ -631,8 +638,9 @@ const schemas = {
   'src/contracts/generated/schemas/backend-runner.schema.json': makeSchema(
     'backend-runner',
     'Schegent Backend Runner Contract',
-    ['src/contracts/backend-runner.ts', 'src/runner/invocation-result.ts', 'src/contracts/backend-availability.ts'],
+    ['src/contracts/backend-kinds.ts', 'src/contracts/backend-descriptors.ts', 'src/contracts/backend-runner.ts', 'src/runner/invocation-result.ts', 'src/contracts/backend-availability.ts'],
     {
+      supportedBackends: enumProperty(backendDescriptorData.supportedBackends),
       invocationRequestFields: interfaceProperty(runner.interfaceProperties('InvocationRequest')),
       rawInvocationOutputFields: interfaceProperty(runner.interfaceProperties('RawInvocationOutput')),
       quotaIdentityKinds: enumProperty(quotaIdentityKinds),
@@ -821,6 +829,13 @@ const generated = new Map([
         sourcePath: 'scripts/contracts/snapshot-descriptors.mjs'
       })
     )
+  ],
+  [
+    'webview-ui/src/lib/generated/backend-descriptors.ts',
+    assertParses(
+      'webview-ui/src/lib/generated/backend-descriptors.ts',
+      emitWebviewBackendDescriptors(backendDescriptorData)
+    )
   ]
 ]);
 
@@ -828,6 +843,10 @@ const artifactSources = new Map([
   ['src/contracts/generated/sidebar-ipc-types.ts', 'scripts/contracts/ipc-descriptors/index.mjs'],
   ['src/contracts/generated/snapshot-types.ts', 'scripts/contracts/snapshot-descriptors.mjs'],
   ['webview-ui/src/lib/generated/snapshot-mirror.ts', 'scripts/contracts/snapshot-descriptors.mjs'],
+  [
+    'webview-ui/src/lib/generated/backend-descriptors.ts',
+    'src/contracts/backend-kinds.ts, src/contracts/backend-descriptors.ts'
+  ],
   [
     'src/contracts/generated/schemas/sidebar-ipc.schema.json',
     'scripts/contracts/ipc-descriptors/index.mjs, scripts/contracts/snapshot-descriptors.mjs'
