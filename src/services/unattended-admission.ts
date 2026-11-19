@@ -38,7 +38,8 @@ export interface UnattendedAdmissionDeps {
   /** Primacy, asked at call time. */
   readonly lock: Pick<WorkspaceLockManager, 'hasPrimacy'>;
   /** Reads only; the resume's own patch is the one write. */
-  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'getRunMap'>;
+  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'getRunMap'> &
+    Partial<Pick<WorkspaceStateStore, 'getQueue'>>;
   /** `AutoDrainCoordinator.admitUnattended`: capacity, the lease, and the in-lease recheck. */
   readonly admit: (queueId: string, wakeup: UnattendedWakeup) => Promise<UnattendedAdmitOutcome>;
   readonly clock: () => number;
@@ -76,6 +77,11 @@ export class UnattendedAdmission {
   public async admit(wakeup: UnattendedWakeup): Promise<UnattendedAdmissionOutcome> {
     if (!(await this.deps.lock.hasPrimacy())) {
       return this.notAdmitted(wakeup, 'not-primary', 'not-primary');
+    }
+    const queueState = this.deps.store.getQueue?.(wakeup.queueId);
+    if (queueState?.queueLifecycle === 'operator-paused' && queueState.pauseSource !== 'cascade') {
+      this.due.delete(wakeup.queueId);
+      return this.notAdmitted(wakeup, 'ineligible', 'queue-paused');
     }
     const decision = decideUnattendedEligibility(
       this.deps.store.getRun(wakeup.queueId),

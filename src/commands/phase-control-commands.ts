@@ -31,6 +31,9 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { Notifier } from '../ui/notifications';
 import { ACCEPTED, failed, refused, type CommandOutcome } from '../contracts/command-outcome';
 import { errorMessage } from '../lib/errors';
+import { reactivateRecoveryPausedConnectedRunForTask } from '../services/workflow-execution/recovery-liveness-sync';
+import { isTerminalRunStatus } from '../state/workflow-run';
+import type { WorkspaceStateStore } from '../state/workspace-state';
 
 export interface PhaseControlCommandDeps {
   readonly controller: Pick<
@@ -38,7 +41,13 @@ export interface PhaseControlCommandDeps {
     'pauseActivePhase' | 'resumeActivePhase' | 'restartActivePhase'
   >;
   readonly notifier: Pick<Notifier, 'warn' | 'error'>;
-  readonly logger: Pick<SanitizedLogger, 'error'>;
+  readonly logger: Pick<SanitizedLogger, 'error'> & Partial<Pick<SanitizedLogger, 'warn'>>;
+  readonly store?:
+    | Pick<
+        WorkspaceStateStore,
+        'getRun' | 'getRunMap' | 'getConnectedRuns' | 'compareAndSetConnectedRun'
+      >
+    | undefined;
 }
 
 type PhaseControlAction = 'pause' | 'resume' | 'restart';
@@ -85,14 +94,37 @@ export function runPausePhase(
   return runPhaseControl('pause', deps, () => deps.controller.pauseActivePhase(queueId));
 }
 
-export function runResumePhase(
+function resolveResumedTaskId(
+  queueId: string | undefined,
+  store: NonNullable<PhaseControlCommandDeps['store']>
+): string | undefined {
+  if (queueId !== undefined) {
+    return store.getRun(queueId)?.featureId;
+  }
+  const nonTerminal = Object.values(store.getRunMap()).filter(
+    (run) => !isTerminalRunStatus(run.status)
+  );
+  return nonTerminal.length === 1 ? nonTerminal.at(0)?.featureId : undefined;
+}
+
+export async function runResumePhase(
   prompt: string | undefined,
   queueId: string | undefined,
   deps: PhaseControlCommandDeps
 ): Promise<CommandOutcome> {
-  return runPhaseControl('resume', deps, () =>
+  const targetTaskId =
+    deps.store !== undefined ? resolveResumedTaskId(queueId, deps.store) : undefined;
+  const outcome = await runPhaseControl('resume', deps, () =>
     deps.controller.resumeActivePhase(prompt, queueId)
   );
+  if (outcome.outcome === 'accepted' && targetTaskId !== undefined && deps.store !== undefined) {
+    await reactivateRecoveryPausedConnectedRunForTask({
+      store: deps.store,
+      taskId: targetTaskId,
+      logger: deps.logger
+    });
+  }
+  return outcome;
 }
 
 export function runRestartPhase(

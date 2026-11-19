@@ -8,6 +8,7 @@ import {
 } from '../../../src/services/resume-admission-guard';
 import {
   NOT_RESUMED,
+  NOT_RESUMED_INELIGIBLE,
   NOT_RESUMED_SHUTDOWN,
   NOT_RESUMED_TREE_LIVE
 } from '../../../src/controller/run-admission';
@@ -88,6 +89,7 @@ function harness(
     run?: WorkflowRun | null;
     driving?: boolean;
     closed?: boolean;
+    queuePaused?: boolean;
     probe?: ProbeScript;
     appendAudit?: ResumeAdmissionGuardDeps['appendAudit'];
   } = {}
@@ -104,6 +106,7 @@ function harness(
       getRun: (_queueId: string) => run,
       isDriving: () => over.driving ?? false,
       isClosed: () => over.closed ?? false,
+      ...(over.queuePaused !== undefined ? { isQueuePaused: () => over.queuePaused! } : {}),
       liveness: probe,
       appendAudit:
         over.appendAudit ??
@@ -320,10 +323,22 @@ describe('toResumeAdmission maps a refusal to the value the drain reads (TA3)', 
     ['no-run', NOT_RESUMED],
     ['run-ended', NOT_RESUMED],
     ['shutdown-begun', NOT_RESUMED_SHUTDOWN],
+    ['queue-paused', NOT_RESUMED_INELIGIBLE],
     ['previous-tree-alive', NOT_RESUMED_TREE_LIVE],
     ['previous-group-orphaned', NOT_RESUMED_TREE_LIVE]
   ])('%s', (refusal, expected) => {
     expect(toResumeAdmission(refusal)).toBe(expected);
+  });
+
+  it('BUG-001 (FR-018): refuses an operator-paused queue before probing liveness and maps to NOT_RESUMED_INELIGIBLE', async () => {
+    const h = harness({ queuePaused: true, probe: { exists: () => true } });
+    expect(await admitResumeCandidate(h.deps, QUEUE)).toEqual({
+      admitted: false,
+      refusal: 'queue-paused'
+    });
+    expect(h.probeAsked()).toBe(0);
+    expect(h.appended).toEqual([]);
+    expect(h.notices).toEqual([]);
   });
 
   it('gives the two new values their own refusal codes, so the drain can tell them from NOT_RESUMED', () => {

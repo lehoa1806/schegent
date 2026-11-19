@@ -682,7 +682,7 @@ export class SchegentWorkflowController {
     { customPrompt, unattended }: ResumeOptions
   ): Promise<ResumeAdmission> {
     this.logger.info(`Workflow operation triggered: resumeExisting`);
-    const run = await admitResumeRun(resumeGuardDeps({ store: this.store, coordinator: this.autoDrainCoordinator, auditor: this.lifecycleAuditor, notifier: this.notifier, options: this.options, isDriving: (id) => this.isDriving(id) }), queueId); // FR-R4-F06 (P7)
+    const run = await admitResumeRun(resumeGuardDeps({ store: this.store, coordinator: this.autoDrainCoordinator, auditor: this.lifecycleAuditor, notifier: this.notifier, options: this.options, isDriving: (id) => this.isDriving(id), unattended }), queueId); // FR-R4-F06 (P7)
     if ('resumed' in run) return run;
 
     // FR-R4-F01 (FR-008) — both resume writes are PATCHES of the Run as it is inside the chain.

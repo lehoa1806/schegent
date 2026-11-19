@@ -55,17 +55,19 @@ const SRC_ROOT = resolve(REPO_ROOT, 'src');
 const ACTIVATION_ROOT = resolve(SRC_ROOT, 'activation');
 
 /**
- * Where the drain that has no command to hang off it lives, and the call that
- * performs it. Held by name because the `commandId: null` entries below cite it:
- * a rename that leaves those reasons pointing at nothing fails here rather than
- * quietly restoring the gap.
- *
- * `elect-before-recovering.test.ts` holds the same call to the ordering and the
- * primacy gate; this one holds only that it exists, which is the half the
- * pending-writer table depends on.
+ * BUG-001 (2026-11-19, FR-017, FR-019, FR-020) — activation no longer auto-drains
+ * pending tasks on open/restart. Instead, primary activation runs the crash-safe
+ * startup pause (`pauseQueuesOnStartup`) in `stage2-producers.ts`, and pending rows
+ * (including rows demoted during state-load migration) are drained when the operator
+ * explicitly resumes the paused queue via `CMD_RESUME_QUEUE` or `schegent.resumeQueue`,
+ * both wired through `resumePausedQueueExecution`.
  */
 const ACTIVATION_PRODUCERS = resolve(SRC_ROOT, 'activation', 'stage2-producers.ts');
-const ACTIVATION_DRAIN = 'controller.scheduleAutoDrain()';
+const STARTUP_PAUSE = 'pauseQueuesOnStartup?.()';
+const RETIRED_ACTIVATION_DRAIN = 'controller.scheduleAutoDrain()';
+const MANUAL_RESUME_HELPER = resolve(SRC_ROOT, 'commands', 'resume-queue-execution.ts');
+const SIDEBAR_ROUTER_WIRING = resolve(SRC_ROOT, 'activation', 'sidebar-router-wiring.ts');
+const UI_WIRING = resolve(SRC_ROOT, 'activation', 'ui-wiring.ts');
 
 // The literal that puts a Task into the state only a drain can leave.
 const PENDING_WRITE = "status: 'pending'";
@@ -117,8 +119,8 @@ const PENDING_WRITERS: readonly PendingWriter[] = [
     reason:
       'Not operator-initiated. The migrator demotes rows left `in-flight` by a host that ' +
       'died mid-run, and it runs during state load, before a controller exists to drain ' +
-      'with. The drain that picks these up is the one activation performs once the ' +
-      'controller is up, so a trigger here would fire into nothing.'
+      'with. Per BUG-001 (FR-017, FR-019), startup pauses the queue rather than auto-draining ' +
+      'on open, and explicit operator Resume (`resumePausedQueueExecution`) drains those rows.'
   }
 ];
 
@@ -229,28 +231,31 @@ describe('Lifecycle round-check finding A — a pending transition must trigger 
     ).toEqual([]);
   });
 
-  it('performs the activation sweep the null-registration entries rely on', () => {
-    // DIRECTION 3, added by the bug "there is no way to start a pending task"
-    // (2026-09-02). The migrator's entry above excused itself on the grounds
-    // that "the drain that picks these up is the one activation performs once
-    // the controller is up". No such drain existed. Rows a crashed host left
-    // `in-flight`, demoted to `pending` during state load, were therefore
-    // drained by nothing, and because the coordinator is edge-triggered the
-    // wedge survived every subsequent restart — the operator restarted the
-    // window, which is the one remedy that looks like it should work.
-    //
-    // This is the assertion that excuse always needed. An entry may only claim
-    // "activation drains it" while activation actually does, so deleting the
-    // sweep fails here instead of silently re-stranding the rows.
+  it('pauses leftover queues on startup and wires explicit manual Resume to drain them (BUG-001 FR-017/FR-019/FR-020)', () => {
     const producers = readFileSync(ACTIVATION_PRODUCERS, 'utf8');
     expect(
-      producers.includes(ACTIVATION_DRAIN),
-      `${relativize(ACTIVATION_PRODUCERS)} must call ${ACTIVATION_DRAIN}. The ` +
-        `\`commandId: null\` entries in PENDING_WRITERS carry no trigger of their own ` +
-        `because they name this sweep as the one that collects them; without it a row ` +
-        `demoted from in-flight during state load is drained by nothing and no restart ` +
-        `recovers it.`
+      producers.includes(STARTUP_PAUSE),
+      `${relativize(ACTIVATION_PRODUCERS)} must invoke ${STARTUP_PAUSE} on primary startup.`
     ).toBe(true);
+    expect(
+      producers.includes(RETIRED_ACTIVATION_DRAIN),
+      `${relativize(ACTIVATION_PRODUCERS)} must not call ${RETIRED_ACTIVATION_DRAIN} on startup (BUG-001 FR-017).`
+    ).toBe(false);
+
+    const resumeHelper = readFileSync(MANUAL_RESUME_HELPER, 'utf8');
+    expect(
+      resumeHelper.includes('drainQueuedWork(queueId)'),
+      `${relativize(MANUAL_RESUME_HELPER)} must call drainQueuedWork(queueId) so explicit operator Resume drains migrated/paused pending rows.`
+    ).toBe(true);
+
+    for (const wiringPath of [SIDEBAR_ROUTER_WIRING, UI_WIRING]) {
+      const wiring = readFileSync(wiringPath, 'utf8');
+      expect(
+        wiring.includes('resumePausedQueueExecution('),
+        `${relativize(wiringPath)} must wire manual Resume through resumePausedQueueExecution.`
+      ).toBe(true);
+    }
+
     // Non-vacuity for the citation itself: at least one entry must actually be
     // relying on it, or this test is holding the codebase to a promise nobody made.
     expect(PENDING_WRITERS.some((w) => w.commandId === null)).toBe(true);

@@ -353,4 +353,72 @@ describe('Control admission crash-window reconciliation (FR-R5-F26 / SPEC-04 / D
     await recoveryService.reconcileRun('crun-a', clockMs);
     expect(blindDispatchCount).toBe(0);
   });
+
+  it('BUG-001 (FR-008): preserves a committed pending-dispatch attempt when evidence.queueItemPresent is true by refreshing its fence instead of pausing as recovery-uncertain-effect', async () => {
+    const m = createBackingMemento();
+    const wsStore = new WorkspaceStateStore(m);
+    const ledgerStore = new ControlLedgerStore(wsStore);
+    const service1 = new ControlAttemptAdmissionService({ ledgerStore });
+
+    await service1.prepareRootLink({
+      ledgerRunId: 'ledger-pending-live',
+      connectedRunId: 'crun-pending-live',
+      rootWorkflowId: 'wf-crash-test',
+      queueId: 'queue-a',
+      fence: FENCE_GEN_1
+    });
+    await service1.activateRootLink({
+      ledgerRunId: 'ledger-pending-live',
+      connectedRunId: 'crun-pending-live',
+      fence: FENCE_GEN_1
+    });
+
+    const prep = await service1.prepareAttempt({
+      ledgerRunId: 'ledger-pending-live',
+      connectedRunId: 'crun-pending-live',
+      queueId: 'queue-a',
+      frameKey: 'root',
+      workflowId: 'wf-crash-test',
+      invocationId: 'crun-pending-live:root',
+      nodeId: 'step-1',
+      attemptId: 'att-pending-live',
+      backend: 'claude',
+      reservedMicrousd: 25_000,
+      quotaKeys: ['quota:claude'],
+      fence: FENCE_GEN_1
+    });
+    expect(prep.ok).toBe(true);
+    if (!prep.ok) return;
+
+    const committed = await service1.commitAttempt(prep.token);
+    expect(committed.ok).toBe(true);
+
+    // Service constructed without a default processEvidencePort; supplied at reconcile time.
+    const service2 = new ControlAttemptAdmissionService({
+      ledgerStore: new ControlLedgerStore(wsStore)
+    });
+    const connectedRun = makeConnectedRun('crun-pending-live', 'ledger-pending-live', 'queue-a');
+    const reconciled = await service2.reconcileControlRoot({
+      ledgerRunId: 'ledger-pending-live',
+      connectedRun,
+      newFence: FENCE_GEN_2,
+      processEvidencePort: {
+        inspectAttempt: (): ProcessEvidenceSnapshot => ({
+          processState: 'not-found',
+          queueItemPresent: true
+        })
+      }
+    });
+
+    expect(reconciled.ok).toBe(true);
+    expect(reconciled.disposition).toBe('noop');
+    expect(reconciled.pauseCause).toBeUndefined();
+    expect(reconciled.root?.status).toBe('in-flight');
+    expect(reconciled.root?.fence).toEqual(FENCE_GEN_2);
+    expect(reconciled.root?.attemptsById['att-pending-live']?.stage).toBe('pending-dispatch');
+    expect(reconciled.root?.attemptsById['att-pending-live']?.fence).toEqual(FENCE_GEN_2);
+    expect(reconciled.root?.framesByKey['root']?.status).not.toBe('paused');
+    expect(reconciled.ledger?.permits['permit:att-pending-live']?.status).not.toBe('held-uncertain');
+    expect(reconciled.ledger?.permits['permit:att-pending-live']?.status).not.toBe('released');
+  });
 });

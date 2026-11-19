@@ -133,6 +133,9 @@ function recorder(options: {
         note('operatorAttribution.ensureStored', undefined);
         return 'pseudonym-0123456789abcdef';
       }
+    },
+    pauseQueuesOnStartup: async () => {
+      note('pauseQueuesOnStartup', undefined);
     }
   } as unknown as Parameters<typeof createStage2Producers>[0];
 
@@ -160,6 +163,7 @@ const EVERY_ACT = Object.freeze([
   'lock.tryAcquire',
   'startMountProbe',
   'runSafety.replayTerminalTransitions',
+  'pauseQueuesOnStartup',
   'replayEvidenceBacklog',
   'refreshCatalog',
   'runSafety.sweepCheckpointRetention',
@@ -168,26 +172,27 @@ const EVERY_ACT = Object.freeze([
   'watchdog.reattachOnActivation',
   'controller.resumeExistingFromActivation',
   'store.getRunMap',
-  'controller.scheduleAutoDrain',
   'auditWriter.runArchiveMaintenance',
   // FR-R4-F04 (TA7) — creates the operator pseudonym; PREAMBLE, so a lost election still has one.
   'operatorAttribution.ensureStored'
 ]);
 
 /**
- * FR-R4-F03 (R12) — acts that run after a WON election at activation or at a trust grant, and never
- * at a later primacy gain. Archive maintenance is the one: the owner's rotation prune keeps
- * retention moving after that, so a gain is not a maintenance trigger.
+ * FR-R4-F03 (R12) + BUG-001 (FR-017) — acts that run after a WON election at activation or at a
+ * trust grant, and never at a later primacy gain. Archive maintenance and crash-safe startup queue
+ * pause both run once per primary activation, never on mid-session primacy regain.
  */
-const ELECTION_ONLY = Object.freeze(['auditWriter.runArchiveMaintenance']);
+const ELECTION_ONLY = Object.freeze([
+  'auditWriter.runArchiveMaintenance',
+  'pauseQueuesOnStartup'
+]);
 
-/** The five FR-R3-070 installers, gated on the election rather than on trust. */
+/** The FR-R3-070 recovery installers, gated on the election rather than on trust. */
 const PRIMACY_GATED = Object.freeze([
   'scheduledStartCoordinator.reArm',
   'watchdog.reattachOnActivation',
   'controller.resumeExistingFromActivation',
-  'store.getRunMap',
-  'controller.scheduleAutoDrain'
+  'store.getRunMap'
 ]);
 
 describe('stage 2 producers: nothing happens in an untrusted window', () => {
@@ -237,41 +242,59 @@ describe('stage 2 producers: nothing happens in an untrusted window', () => {
     );
   });
 
-  it('sweeps every queue for drainable work, after the recovery installers', async () => {
-    // Bug "there is no way to start a pending task" (2026-09-02), second finding.
-    //
-    // The drain is edge-triggered — nothing polls — so every transition to
-    // `pending` needs a call site that asks for one. Two producers of pending
-    // rows have no call site to put a trigger in: `queue-state-migrator.ts`
-    // demotes rows a crashed host left `in-flight`, during state load, before a
-    // controller exists; and a queue whose drain was refused mid-session (at the
-    // concurrency ceiling, or by a lost execution lease) was never re-asked.
-    // `pending-transition-drain-trigger.test.ts` excuses the migrator on the
-    // recorded grounds that "the drain that picks these up is the one activation
-    // performs once the controller is up" — this is that drain, and until it
-    // existed the excuse named nothing and the rows survived every restart.
-    //
-    // LAST, and that ordering is the assertion. `replayTerminalTransitions`
-    // finishes Runs whose completion was journalled but not projected, and the
-    // three installers above re-arm or resume the Runs a live queue already
-    // owns. A sweep that ran before them would read a queue as busy on a Run
-    // that had already ended, or start a second Run on a queue about to resume
-    // its own — so this asks last, once the picture is settled.
+  it('BUG-001 (FR-017): pauses leftover queues once at primary startup, does not auto-drain, and does not re-pause on mid-session primacy regain', async () => {
+    let onFenceLostCb: (() => void) | undefined;
     const r = recorder({ trusted: true });
+    (r.deps as unknown as { lock: Record<string, unknown> }).lock.onFenceLost = (cb: () => void) => {
+      onFenceLostCb = cb;
+      return { dispose: () => undefined };
+    };
+    const producers = createStage2Producers(r.deps);
+
+    await producers.run();
+
+    expect(r.calls).not.toContain('controller.scheduleAutoDrain');
+    expect(r.calls.filter((c) => c === 'pauseQueuesOnStartup')).toHaveLength(1);
+    expect(r.calls.indexOf('lock.tryAcquire')).toBeLessThan(
+      r.calls.indexOf('pauseQueuesOnStartup')
+    );
+    expect(r.calls.indexOf('pauseQueuesOnStartup')).toBeLessThan(
+      r.calls.indexOf('scheduledStartCoordinator.reArm')
+    );
+
+    // Mid-session fence loss followed by primacy regain must NOT re-pause queues the operator enabled.
+    onFenceLostCb?.();
+    await producers.installRecovery({ acquired: true, ownerId: 'window-a' });
+    expect(r.calls.filter((c) => c === 'pauseQueuesOnStartup')).toHaveLength(1);
+    expect(r.calls).not.toContain('controller.scheduleAutoDrain');
+  });
+
+  it('BUG-001 (FR-018): persisted-run sweep filters out operator-paused queues and Runs with manualPauseAt set', async () => {
+    const r = recorder({ trusted: true });
+    const admitted: string[] = [];
+    (r.deps as unknown as { store: Record<string, unknown> }).store = {
+      getRunMap: () => {
+        r.calls.push('store.getRunMap');
+        return {
+          'q-paused': { id: 'run-1', status: 'running', manualPauseAt: null, spawnIdentity: undefined },
+          'q-manual': { id: 'run-2', status: 'running', manualPauseAt: 1_700_000_000_000, spawnIdentity: undefined }
+        };
+      },
+      getQueue: (queueId: string) => ({
+        queueLifecycle: queueId === 'q-paused' ? 'operator-paused' : 'running'
+      })
+    };
+    (r.deps as unknown as { controller: Record<string, unknown> }).controller.admitResume = async (
+      queueId: string
+    ) => {
+      admitted.push(queueId);
+      return { resumed: true, completed: Promise.resolve() };
+    };
 
     await createStage2Producers(r.deps).run();
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
 
-    expect(r.calls).toContain('controller.scheduleAutoDrain');
-    expect(r.calls.filter((c) => c === 'controller.scheduleAutoDrain')).toHaveLength(1);
-    expect(r.calls.indexOf('runSafety.replayTerminalTransitions')).toBeLessThan(
-      r.calls.indexOf('controller.scheduleAutoDrain')
-    );
-    expect(r.calls.indexOf('controller.resumeExistingFromActivation')).toBeLessThan(
-      r.calls.indexOf('controller.scheduleAutoDrain')
-    );
-    expect(r.calls.indexOf('store.getRunMap')).toBeLessThan(
-      r.calls.indexOf('controller.scheduleAutoDrain')
-    );
+    expect(admitted).toEqual([]);
   });
 
   it('runs on the grant, from the same object that refused at activation (FR-005)', async () => {
@@ -423,7 +446,7 @@ describe('stage 2 producers: nothing happens in an untrusted window', () => {
     await flush();
 
     expect(r.calls.length).toBe(afterFirst);
-    expect(r.calls.filter((call) => call === 'controller.scheduleAutoDrain')).toHaveLength(1);
+    expect(r.calls.filter((call) => call === 'scheduledStartCoordinator.reArm')).toHaveLength(1);
   });
 
   it('does not let a gain mid-activation overtake the terminal-transition replay', async () => {
@@ -478,7 +501,7 @@ describe('stage 2 producers: a failing recovery installer does not stop the rest
     for (let round = 0; round < 8; round += 1) await Promise.resolve();
   };
 
-  it('still resumes, sweeps and drains when the watchdog reattach throws', async () => {
+  it('still resumes and sweeps when the watchdog reattach throws', async () => {
     const r = recorder({ trusted: true });
     (r.deps as unknown as Mutable).watchdog.reattachOnActivation = async () => {
       throw new Error('reattach exploded');
@@ -489,11 +512,10 @@ describe('stage 2 producers: a failing recovery installer does not stop the rest
 
     expect(r.calls).toContain('controller.resumeExistingFromActivation');
     expect(r.calls).toContain('store.getRunMap');
-    expect(r.calls).toContain('controller.scheduleAutoDrain');
     expect(r.lines.some((line) => line.includes('watchdog reattach failed'))).toBe(true);
   });
 
-  it('still sweeps and drains when the delayed-retry resume throws', async () => {
+  it('still sweeps when the delayed-retry resume throws', async () => {
     const r = recorder({ trusted: true });
     (r.deps as unknown as Mutable).controller.resumeExistingFromActivation = async () => {
       throw new Error('resume exploded');
@@ -503,7 +525,6 @@ describe('stage 2 producers: a failing recovery installer does not stop the rest
     await settle();
 
     expect(r.calls).toContain('store.getRunMap');
-    expect(r.calls).toContain('controller.scheduleAutoDrain');
     expect(r.lines.some((line) => line.includes('delayed-retry re-arm failed'))).toBe(true);
   });
 
@@ -516,7 +537,7 @@ describe('stage 2 producers: a failing recovery installer does not stop the rest
     await createStage2Producers(r.deps).run();
     await settle();
 
-    expect(r.calls).toContain('controller.scheduleAutoDrain');
+    expect(r.calls).not.toContain('controller.scheduleAutoDrain');
     expect(r.lines.some((line) => line.includes('persisted-run resume failed'))).toBe(true);
   });
 });

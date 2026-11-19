@@ -181,6 +181,7 @@ export interface ReconcileControlRootInput {
   readonly ledgerRunId: string;
   readonly connectedRun: ConnectedWorkflowRun | null;
   readonly newFence: ExecutionFence;
+  readonly processEvidencePort?: ProcessEvidencePort | undefined;
 }
 
 export interface ReconcileControlRootResult {
@@ -1564,9 +1565,10 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
       string,
       Awaited<ReturnType<ProcessEvidencePort['inspectAttempt']>>
     >();
-    if (this.processEvidencePort !== undefined) {
+    const evidencePort = input.processEvidencePort ?? this.processEvidencePort;
+    if (evidencePort !== undefined) {
       for (const attempt of nonSettledAttempts) {
-        const snap = await this.processEvidencePort.inspectAttempt({
+        const snap = await evidencePort.inspectAttempt({
           ledgerRunId: attempt.ledgerRunId,
           connectedRunId: attempt.connectedRunId,
           invocationId: attempt.invocationId,
@@ -1712,6 +1714,16 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
             rootStatus = 'paused';
             pauseCause = 'crash-before-spawn-intent';
             disposition = 'failed-pre-spawn-attempt';
+            continue;
+          }
+
+          // BUG-001 (FR-008): pending-dispatch attempt whose backing queue item is still live
+          // stays pending-dispatch with its fence refreshed rather than pausing as uncertain-effect.
+          if (attempt.stage === 'pending-dispatch' && evidence.queueItemPresent === true) {
+            attemptsById[attempt.attemptId] = Object.freeze({
+              ...attempt,
+              fence: input.newFence
+            });
             continue;
           }
 
