@@ -1,8 +1,11 @@
 import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
 import type { RetryCoordinator } from '../services/retry-coordinator';
-import { QueueMutationRejected, type WorkspaceStateStore } from '../state/workspace-state';
-import { OPERABLE_RUN_STATUSES } from '../state/workflow-run';
+import {
+  QueueMutationRejected,
+  allowedSameStatusFor,
+  type WorkspaceStateStore
+} from '../state/workspace-state';
 import type { MutationResult } from './phase-control-service';
 import type { RunSessionRegistry } from './run-session';
 import { resolveControlTarget } from './sole-run-resolver';
@@ -85,7 +88,7 @@ export async function applyManualRetryOverride(
       target.queueId,
       {
         runId: run.id,
-        allowedStatuses: OPERABLE_RUN_STATUSES,
+        allowedStatuses: allowedSameStatusFor('operator'),
         label: 'manual-retry-override',
         patch: (current) => {
           if (current.pendingRetryAt === null) throw new CountdownAlreadyFired();

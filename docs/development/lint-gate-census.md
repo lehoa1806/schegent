@@ -19,10 +19,10 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **233** | 2026-11-12 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 208 | 2026-11-12 | hand verdict |
-| Marked `partially redundant` | 25 | 2026-11-12 | hand verdict |
-| Marked `redundant` | 0 | 2026-11-12 | hand verdict |
+| Gate files | **234** | 2026-11-19 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 209 | 2026-11-19 | hand verdict |
+| Marked `partially redundant` | 25 | 2026-11-19 | hand verdict |
+| Marked `redundant` | 0 | 2026-11-19 | hand verdict |
 
 <!-- census:prose -->
 The three verdict rows sum to the gate-file count, so they are one measurement and carry one
@@ -519,6 +519,7 @@ is decided about this one entry.
 | `retry-condition-bound-declared-once.test.ts` | the retryCondition bound is declared exactly once (111, FR-005) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `retry-condition-stays-inert.test.ts` | T511a — the retryConditions gate keys on presence, never on contents (FR-046) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `review-due-is-report-only.test.ts` | review:due is report-only | — | unique | no sibling asserts that no script reachable from the gate, `ci`, `ci:fast`, the release, the package or any `verify:*` tier names `review:due` or `review-due-report.mjs`. `advisory-diff-is-report-only.test.ts` holds the same shape for a different command and does not name this one. The `verify:*` tiers are read from the manifest at run time, so a new tier is covered without an edit. Two planted manifests turn it red: a `gate` that runs the command, and a `verify:*` tier that reaches a helper running the file (FR-R5-F21, FR-014). |
+| `run-allowed-statuses-census.test.ts` | FR-R7-01 — Run allowedStatuses site census (SC-004) | — | unique | AST census enumerating every `allowedStatuses` property site in `src/` as table-derived or explicitly justified with a one-line reason, plus a negative-control fixture (`fixtures/unlisted-allowed-statuses.fixture.ts`). `run-write-census.test.ts` checks `setRun` sites and `updateRun` labels, not `allowedStatuses` derivation; no sibling gate holds this invariant. |
 | `run-request-purity.test.ts` | Feature 087 — request validation imports no host API (T033) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `run-write-census.test.ts` | the whole-Run write census (R3a) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this. `RunUpdateLabel` makes the compiler refuse an unknown label, and `unfenced-commit-inventory.test.ts` pins the fence's exemptions in the same style, but neither says which `setRun(` sites stay whole; see Method |
 | `runners-report-not-record.test.ts` | runners report, they do not record (FR-R3-083) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

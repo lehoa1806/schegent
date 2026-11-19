@@ -422,9 +422,47 @@ import {
   queueResource,
   type FenceCheck
 } from './ownership-registry';
-import { isSupersededRun } from './workflow-run';
+import { isSupersededRun, isTerminalRunStatus } from './workflow-run';
 import type { RunUpdate } from './run-update';
+import {
+  RunFieldInvariantError,
+  RunInvariantError,
+  RunTransitionError,
+  type RunFieldInvariantCode
+} from './run-invariant-error';
+import {
+  ALL_RUN_TRANSITION_ACTORS,
+  DEFAULT_ACTOR_BY_RUN_UPDATE_LABEL,
+  RUN_STATUS_TRANSITIONS,
+  allowedSameStatusFor,
+  allowedSourceStatusesFor,
+  allowedSourceStatusesForTargets,
+  decideRunTransition,
+  type RunTransitionActor,
+  type RunTransitionDecision,
+  type RunTransitionDecisionInput,
+  type RunTransitionRefusalReason,
+  type RunTransitionTable
+} from './run-transition-decision';
 export { RUN_UPDATE_LABELS, type RunUpdate, type RunUpdateLabel } from './run-update';
+export {
+  RunFieldInvariantError,
+  RunInvariantError,
+  RunTransitionError,
+  type RunFieldInvariantCode,
+  ALL_RUN_TRANSITION_ACTORS,
+  DEFAULT_ACTOR_BY_RUN_UPDATE_LABEL,
+  RUN_STATUS_TRANSITIONS,
+  allowedSameStatusFor,
+  allowedSourceStatusesFor,
+  allowedSourceStatusesForTargets,
+  decideRunTransition,
+  type RunTransitionActor,
+  type RunTransitionDecision,
+  type RunTransitionDecisionInput,
+  type RunTransitionRefusalReason,
+  type RunTransitionTable
+};
 
 /**
  * FR-R3-010 (T403) — retained terminal runs **per queue**.
@@ -564,6 +602,7 @@ export interface Disposable {
 export interface Memento {
   get<T>(key: string): T | undefined;
   update(key: string, value: unknown): Thenable<void>;
+  updateBatch?(entries: readonly MementoBatchEntry[]): Thenable<void>;
 }
 
 /**
@@ -636,8 +675,10 @@ export class QueueMutationRejected extends Error {
 export {
   MEMENTO_WRITE_DEADLINE_MS,
   StorageWriteQuarantinedError,
+  type MementoBatchEntry,
   type StorageWriteFailureReason
 } from './memento-write-gate';
+import type { MementoBatchEntry } from './memento-write-gate';
 
 /**
  * FR-R5-F09 (NU-03) — maximum number of deleted-queue history partitions retained in
@@ -714,6 +755,21 @@ function asTerminalTransitionIntent(raw: unknown): TerminalTransitionIntent | nu
   return intent as TerminalTransitionIntent;
 }
 
+function assertRunStatusTransition(
+  previous: WorkflowRun,
+  targetStatus: WorkflowRun['status'],
+  actor: RunTransitionActor
+): void {
+  const decision = decideRunTransition({
+    current: previous,
+    targetStatus,
+    actor
+  });
+  if (!decision.allowed) {
+    throw new RunTransitionError(decision.from, decision.to, decision.actor, decision.reasonCode);
+  }
+}
+
 function validateRunInvariants(run: WorkflowRun, previous: WorkflowRun | null = null): void {
   if (
     run.rawTranscriptMode !== undefined &&
@@ -721,12 +777,16 @@ function validateRunInvariants(run: WorkflowRun, previous: WorkflowRun | null = 
     run.rawTranscriptMode !== 'errors-only' &&
     run.rawTranscriptMode !== 'off'
   ) {
-    throw new Error('WorkflowRun invariant violation: invalid rawTranscriptMode');
+    throw new RunFieldInvariantError(
+      'invalid-raw-transcript-mode',
+      'WorkflowRun invariant violation: invalid rawTranscriptMode'
+    );
   }
   const pendingAtSet = run.pendingRetryAt !== null;
   const pendingCauseSet = run.pendingRetryCause !== null;
   if (pendingAtSet !== pendingCauseSet) {
-    throw new Error(
+    throw new RunFieldInvariantError(
+      'one-sided-pending-retry',
       `WorkflowRun invariant violation: pendingRetryAt (${run.pendingRetryAt}) and pendingRetryCause (${run.pendingRetryCause}) must be both null or both non-null`
     );
   }
@@ -740,7 +800,8 @@ function validateRunInvariants(run: WorkflowRun, previous: WorkflowRun | null = 
     run.status !== 'paused' &&
     run.status !== 'failed'
   ) {
-    throw new Error(
+    throw new RunFieldInvariantError(
+      'delayed-retry-cap-status',
       `WorkflowRun invariant violation: delayedRetryCount >= ${DELAYED_RETRY_CAP} requires status 'paused' or 'failed' (got '${run.status}')`
     );
   }
@@ -749,7 +810,8 @@ function validateRunInvariants(run: WorkflowRun, previous: WorkflowRun | null = 
     run.delayedRetryCount < 0 ||
     run.delayedRetryCount > DELAYED_RETRY_COUNT_PERSISTED_CEILING
   ) {
-    throw new Error(
+    throw new RunFieldInvariantError(
+      'delayed-retry-count-range',
       `WorkflowRun invariant violation: delayedRetryCount must be in [0, ${DELAYED_RETRY_COUNT_PERSISTED_CEILING}] (got ${run.delayedRetryCount})`
     );
   }
@@ -758,16 +820,23 @@ function validateRunInvariants(run: WorkflowRun, previous: WorkflowRun | null = 
   const manualAtSet = run.manualPauseAt !== null;
   const manualCauseSet = run.manualPauseCause !== null;
   if (manualAtSet !== manualCauseSet) {
-    throw new Error(
+    throw new RunFieldInvariantError(
+      'one-sided-manual-pause',
       `WorkflowRun invariant violation: manualPauseAt (${run.manualPauseAt}) and manualPauseCause (${run.manualPauseCause}) must be both null or both non-null`
     );
   }
   // FR-R4-F02 (data-model §3, hard rule 28) — a credit pause exists only on a Run paused for credits.
   assertCreditPauseShape(run);
-  if (run.failureCause !== undefined && run.status !== 'failed') throw new Error(`WorkflowRun invariant violation: failureCause requires status 'failed' (got '${run.status}')`);
+  if (run.failureCause !== undefined && run.status !== 'failed') {
+    throw new RunFieldInvariantError(
+      'failure-cause-requires-failed',
+      `WorkflowRun invariant violation: failureCause requires status 'failed' (got '${run.status}')`
+    );
+  }
   // Feature 028 — phaseBreakpoints + resumeTargetPhaseId invariants.
   if (!Array.isArray(run.phaseBreakpoints)) {
-    throw new Error(
+    throw new RunFieldInvariantError(
+      'invalid-phase-breakpoints',
       `WorkflowRun invariant violation: phaseBreakpoints must be an array (got ${typeof run.phaseBreakpoints})`
     );
   }
@@ -778,18 +847,21 @@ function validateRunInvariants(run: WorkflowRun, previous: WorkflowRun | null = 
   const overrideIds = new Set<string>(run.phaseOverrides.map((o) => o.phaseId));
   for (const bp of run.phaseBreakpoints) {
     if (breakpointPhaseIds.has(bp.phaseId)) {
-      throw new Error(
+      throw new RunFieldInvariantError(
+        'duplicate-phase-breakpoint',
         `WorkflowRun invariant violation: phaseBreakpoints contains duplicate phaseId '${bp.phaseId}'`
       );
     }
     breakpointPhaseIds.add(bp.phaseId);
     if (pipelinePhaseIds !== null && !pipelinePhaseIds.has(bp.phaseId)) {
-      throw new Error(
+      throw new RunFieldInvariantError(
+        'unknown-breakpoint-phase',
         `WorkflowRun invariant violation: phaseBreakpoints phaseId '${bp.phaseId}' is not in pipeline.phases`
       );
     }
     if (overrideIds.has(bp.phaseId)) {
-      throw new Error(
+      throw new RunFieldInvariantError(
+        'breakpoint-override-conflict',
         `WorkflowRun invariant violation: phaseId '${bp.phaseId}' appears in BOTH phaseBreakpoints AND phaseOverrides`
       );
     }
@@ -798,7 +870,8 @@ function validateRunInvariants(run: WorkflowRun, previous: WorkflowRun | null = 
   const resumeTargetSet = run.resumeTargetPhaseId !== null;
   const breakpointPaused = run.manualPauseCause === 'breakpoint-paused';
   if (resumeTargetSet !== breakpointPaused) {
-    throw new Error(
+    throw new RunFieldInvariantError(
+      'resume-target-phase-mismatch',
       `WorkflowRun invariant violation: resumeTargetPhaseId (${run.resumeTargetPhaseId}) is non-null iff manualPauseCause === 'breakpoint-paused' (got '${run.manualPauseCause}')`
     );
   }
@@ -2956,10 +3029,15 @@ export class WorkspaceStateStore {
      * recorded finding about the call site, which the item requires; it is not a
      * default, which the item forbids.
      */
-    claim: RunCommitClaim
+    claim: RunCommitClaim,
+    actor: RunTransitionActor = 'driver'
   ): Promise<void> {
     if (run !== null) {
-      validateRunInvariants(run, this.getRun(queueId));
+      const previous = this.getRun(queueId);
+      if (previous !== null && previous.id === run.id) {
+        assertRunStatusTransition(previous, run.status, actor);
+      }
+      validateRunInvariants(run, previous);
       if (!findQueue(this.getQueueRegistry(), queueId)) {
         throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
       }
@@ -2969,6 +3047,13 @@ export class WorkspaceStateStore {
       // there to hold a Run. The check above ran at call time; this one runs at commit time.
       if (run !== null && !findQueue(this.getQueueRegistry(), queueId)) {
         throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
+      }
+      if (run !== null) {
+        const livePrevious = this.getRun(queueId);
+        if (livePrevious !== null && livePrevious.id === run.id) {
+          assertRunStatusTransition(livePrevious, run.status, actor);
+        }
+        validateRunInvariants(run, livePrevious);
       }
       // FR-R3-055 — the verify happens INSIDE this serialized link, not before
       // it. That is the whole difference from `writeGuarded`, which verifies and
@@ -3016,9 +3101,11 @@ export class WorkspaceStateStore {
    *      `allowedStatuses`, so a stale observation cannot reopen a terminal Run;
    *   3. refuse `ownership-lost`, then check the fence exactly as `setRun` does;
    *   4. apply `patch(current)` to the current Run;
-   *   5. `validateRunInvariants` on the merged Run, so an update that leaves one
+   *   5. `assertRunStatusTransition` (`decideRunTransition`) for `(current.status,
+   *      merged.status, actor)` (FR-R7-01);
+   *   6. `validateRunInvariants` on the merged Run, so an update that leaves one
    *      half of a pause/retry pair throws here (hard rule 28);
-   *   6. one whole-map write, stamping `writtenAtFence`.
+   *   7. one whole-map write, stamping `writtenAtFence`.
    *
    * It adds no write path (hard rule 58): it is a link on the chain `setRun` uses,
    * and it writes the whole map. Resolves to the Run it wrote, so a caller can keep
@@ -3064,12 +3151,120 @@ export class WorkspaceStateStore {
       for (const key of Object.keys(patch) as Array<keyof WorkflowRun>) {
         if (patch[key] === undefined) delete merged[key];
       }
+      const actor = update.actor ?? DEFAULT_ACTOR_BY_RUN_UPDATE_LABEL[update.label];
+      assertRunStatusTransition(current, merged.status, actor);
       validateRunInvariants(merged, current);
       written = isFencedClaim(claim) ? { ...merged, writtenAtFence: claim.fence } : merged;
       await this.memento.update(KEYS.run, { ...this.readRunMap(), [queueId]: written });
     }).then(() => {
       this.notify(KEYS.run);
       return written;
+    });
+  }
+
+  /**
+   * FR-R7-01 — atomically admit a new Run and apply the corresponding queue in-flight
+   * transition in a single commit through `serializeAcrossKeys([KEYS.run, KEYS.queue], ...)`
+   * and the queue's execution fence claim.
+   *
+   * When SQLite operational backing is attached (`rawMemento.updateBatch`), both `KEYS.run`
+   * (with relational `runs` projection) and `KEYS.queue` commit inside one `BEGIN IMMEDIATE ...
+   * COMMIT` transaction (Hard Rule 58). On pre-cutover in-memory test Mementos lacking
+   * `updateBatch`, writes execute inside the same serialized critical section with best-effort
+   * compensating rollback if the queue write throws.
+   */
+  public admitRunAtomically<T>(
+    queueId: string,
+    run: WorkflowRun,
+    mutateQueue: (queue: QueueState) => { readonly queue: QueueState; readonly result: T },
+    claim: RunCommitClaim
+  ): Promise<T> {
+    const initialExisting = this.getRun(queueId);
+    if (
+      initialExisting !== null &&
+      isTerminalRunStatus(initialExisting.status) &&
+      initialExisting.id === run.id
+    ) {
+      assertRunStatusTransition(initialExisting, run.status, 'driver');
+    }
+    validateRunInvariants(
+      run,
+      initialExisting !== null && initialExisting.id === run.id ? initialExisting : null
+    );
+    if (run.status !== 'running') {
+      throw new RunFieldInvariantError(
+        'invalid-admission-status',
+        `WorkflowRun invariant violation: admitRunAtomically requires status 'running' (got '${run.status}')`
+      );
+    }
+    if (!findQueue(this.getQueueRegistry(), queueId)) {
+      throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
+    }
+    let result!: T;
+    return this.serializeAcrossKeys([KEYS.run, KEYS.queue], async () => {
+      if (!findQueue(this.getQueueRegistry(), queueId)) {
+        throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
+      }
+      const existingRun = this.getRun(queueId);
+      if (existingRun !== null && !isTerminalRunStatus(existingRun.status)) {
+        throw new QueueMutationRejected(
+          'in-flight-ownership-conflict',
+          `Cannot admit run ${run.id.slice(0, 8)} on queue ${queueId}: non-terminal run ${existingRun.id.slice(0, 8)} (${existingRun.status}) is already active`
+        );
+      }
+      if (existingRun !== null && existingRun.id === run.id) {
+        assertRunStatusTransition(existingRun, run.status, 'driver');
+      }
+      validateRunInvariants(
+        run,
+        existingRun !== null && existingRun.id === run.id ? existingRun : null
+      );
+      this.refuseIfClaimLost(queueId);
+      if (isFencedClaim(claim)) {
+        const f = await checkCommitFence(
+          this.ownershipRegistry,
+          claim,
+          queueId,
+          'Run',
+          this.scheduler
+        );
+        if (f !== null) this.refuseCommit(f, claim, queueId);
+      }
+      const currentQueue = this.getQueue(queueId);
+      const mutation = mutateQueue(currentQueue);
+      const nextQueue = ensureExtendedQueueShape({
+        ...mutation.queue,
+        requests: compactRequestPositions(mutation.queue.requests),
+        updatedAt: Date.now()
+      });
+      const stampedRun = isFencedClaim(claim) ? { ...run, writtenAtFence: claim.fence } : run;
+      const prevRawRunMap = this.memento.get<unknown>(KEYS.run);
+      const prevRunMap = this.readRunMap();
+      const nextRunMap = { ...prevRunMap, [queueId]: stampedRun };
+      const nextQueueMap = { ...this.readQueueMap(), [queueId]: nextQueue };
+      result = mutation.result;
+      if (this.rawMemento.updateBatch) {
+        await this.writeGate.writeBatch([
+          { key: KEYS.run, value: nextRunMap },
+          { key: KEYS.queue, value: nextQueueMap }
+        ]);
+      } else {
+        await this.memento.update(KEYS.run, nextRunMap);
+        try {
+          await this.memento.update(KEYS.queue, nextQueueMap);
+        } catch (queueErr) {
+          try {
+            await this.memento.update(KEYS.run, prevRawRunMap);
+          } catch {
+            // Best-effort compensating rollback on legacy Memento without batch transactions.
+          }
+          throw queueErr;
+        }
+      }
+    }).then(() => {
+      this.notify(KEYS.run);
+      this.notify(KEYS.queue);
+      return result;
     });
   }
 

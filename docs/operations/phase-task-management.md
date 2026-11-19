@@ -117,6 +117,10 @@ Cancel's own acknowledgement reaches exactly three of the four outcomes named un
 
 Use the Queue and Run identifiers from the latest sidebar snapshot. A stale `taskId`, a Queue without an active Run, or a phase absent from that Run's snapshot is rejected — each with its own reason, and without redirecting the mutation to another Queue. For removals, *What a refused removal means* under **Override one phase** says which reason answers which condition. <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/queue/queue-manager.ts -->
 
+### Run status transitions and atomic admission
+
+Run status transitions follow the same single-decision-site discipline as Task transitions above: one compile-time exhaustive table (`RUN_STATUS_TRANSITIONS`) and pure decision function (`decideRunTransition`) govern every `(from, to, actor)` transition across the five Run statuses (`running`, `paused`, `failed`, `completed`, `canceled`) and four actor classes (`driver`, `operator`, `watchdog`, `recovery`), and new-Run admission commits the Run record and the Task's `in-flight` mark in one SQLite transaction. See [Run Status Transitions and Atomic Admission](run-status-transitions.md) for the full 5×5 matrix, actor rules, typed error hierarchy, and crash-atomicity guarantees. <!-- Source: src/state/run-transition-decision.ts --> <!-- Source: src/state/run-invariant-error.ts --> <!-- Source: src/state/workspace-state.ts -->
+
 ## Audit the result
 
 Successful phase controls append phase-control events such as `phase-paused`, `phase-resumed`, `phase-restarted`, `phase-skipped`, `phase-disabled`, `phase-enabled`, or `phase-removed`. Successful task description and reorder operations append their queue audit events. Treat the command acknowledgement as the immediate result and the audit record as the durable operator-attributed evidence. <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/ui/sidebar/commands/cmd-remove-task-phase.ts --> <!-- Source: src/ui/sidebar/commands/cmd-modify-task.ts --> <!-- Source: src/ui/sidebar/commands/cmd-reorder-task.ts -->

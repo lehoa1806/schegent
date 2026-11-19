@@ -7,6 +7,7 @@
 // and a reader of the store needs to know *that* they run, not their case analysis.
 import { isRunStateMap, type RunStateMap } from './run-state-migrator';
 import type { WatchdogState, WorkflowRun } from './workflow-run';
+import { RunFieldInvariantError } from './run-invariant-error';
 
 /**
  * Refuse a Run whose `creditPause` sits on a state it has no meaning in.
@@ -26,7 +27,8 @@ export function assertCreditPauseShape(run: WorkflowRun): void {
   ) {
     return;
   }
-  throw new Error(
+  throw new RunFieldInvariantError(
+    'invalid-credit-pause-shape',
     `WorkflowRun invariant violation: creditPause requires status 'paused' with no pending retry and no manual pause (got status '${run.status}', pendingRetryAt ${run.pendingRetryAt}, pendingRetryCause ${run.pendingRetryCause}, manualPauseCause ${run.manualPauseCause})`
   );
 }
