@@ -109,7 +109,13 @@ export const MUTATING_COMMAND_IDS = Object.freeze({
 
   // FR-R4-F04 (FR-034, R34) — builds a diagnostics bundle for one Run and records that it did, like the
   // two exports above: mutating and owner-only, for the same reason (the row needs an owner to write it).
-  'schegent.createDiagnosticsBundle': 'diagnostics bundle, recorded in the audit log'
+  'schegent.createDiagnosticsBundle': 'diagnostics bundle, recorded in the audit log',
+
+  // FR-R7-03 (FR-003, FR-004) — SQLite store backup and full-authority restore. Both write files or
+  // replace authoritative SQLite tables and append a sanitized audit row, so both are mutating and
+  // owner-only (refused in untrusted or secondary windows).
+  'schegent.backupStore': 'SQLite store backup, recorded in the audit log',
+  'schegent.restoreStoreBackup': 'SQLite store full-authority restore, recorded in the audit log'
 } as const);
 
 /**
@@ -148,7 +154,12 @@ export const READ_ONLY_COMMAND_IDS = Object.freeze({
   // document. It is given no audit writer, queue manager, controller or lock (`failedRowCensusPorts`),
   // so it appends nothing and starts nothing, and what it opens carries only counts, closed tokens and
   // ids that pass their patterns: no title, error text, actor or path from the workspace.
-  'schegent.reportFailedRowExits': 'failed-row census read'
+  'schegent.reportFailedRowExits': 'failed-row census read',
+
+  // FR-R7-03 (FR-004) — lists and verifies SQLite backup images in read-only isolation (file digest,
+  // quick_check, foreign_key_check, schema compatibility, bounded external dependencies). Writes no
+  // file and no audit row, so it remains usable in untrusted or non-owner windows like verifyAuditChain.
+  'schegent.verifyStoreBackup': 'SQLite store backup read-only verification'
 } as const);
 
 export type MutatingCommandId = keyof typeof MUTATING_COMMAND_IDS;
@@ -186,7 +197,9 @@ export const OWNER_ONLY_COMMAND_IDS = Object.freeze({
   'schegent.exportRunEvidence': 'records the export',
   'schegent.exportAuditLog': 'records the export',
   'schegent.resetOperatorPseudonym': 'records the reset',
-  'schegent.createDiagnosticsBundle': 'records the export'
+  'schegent.createDiagnosticsBundle': 'records the export',
+  'schegent.backupStore': 'writes a backup and records the audit entry',
+  'schegent.restoreStoreBackup': 'replaces authoritative store state and records the audit entry'
 } as const satisfies Partial<Record<ExtensionCommandId, string>>);
 
 export type OwnerOnlyCommandId = keyof typeof OWNER_ONLY_COMMAND_IDS;

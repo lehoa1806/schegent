@@ -57,6 +57,7 @@ literals into these families:
 | Audit integrity | `audit-integrity-condition` | The audit writer's own record that the log's last line was damaged, or that a history began after a deliberate reset of the head checkpoint. Written only by the writer. |
 | Operator evidence acts | `evidence-exported`, `evidence-deleted`, `operator-pseudonym-reset` | An operator taking evidence out of the workspace (a Run export, the metadata-only audit export, a diagnostics bundle), removing one Run's evidence, or replacing their pseudonym. |
 | Backend trees and resume | `process-tree-unconfirmed`, `host-teardown-unconfirmed`, `run-resumed`, `run-resume-declined-orphan-alive` | A backend process group that survived SIGKILL, a tree shutdown could not answer for, and the decision to resume or decline a Run whose previous backend might still be alive. |
+| SQLite store backup and restore | `store-backup`, `store-restore` | Metadata-only records of operator SQLite store backup and full-authority restore attempts (`operation`, `outcome`, opaque `backupId`, optional `errorCode`, `schemaVersion`, `databaseBytes`, `restoredTableCount`, `restoredRowCount`, `verifiedExternalDependencies`; zero raw filesystem paths; System scope). |
 
 <!-- Source: src/contracts/audit-events.ts -->
 
