@@ -88,7 +88,7 @@ function readLegacySingularQueue(ctx: WorkspaceStateFamilyContext): QueueState |
 function writeLegacySingularQueue(
   ctx: WorkspaceStateFamilyContext,
   next: QueueState
-): Thenable<void> {
+): PromiseLike<void> {
   const raw = ctx.memento.get<unknown>(KEYS.queue);
   const isMap =
     raw !== undefined &&

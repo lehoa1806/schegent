@@ -14,6 +14,7 @@ import {
   resolveTrustedSqliteLocation,
   type RelocationStage
 } from '../../../src/services/sqlite-store';
+import { removeTempRoot } from '../../temp-root-cleanup';
 
 const SCOPE_ID = 'a1b2c3d4e5f60708';
 const tempDirs: string[] = [];
@@ -30,7 +31,7 @@ afterEach(async () => {
     const dir = tempDirs.pop()!;
     // Restore writable permissions on any read-only test directories before cleanup.
     await restoreWritableTree(dir).catch(() => undefined);
-    await fsp.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    await removeTempRoot(dir);
   }
 });
 

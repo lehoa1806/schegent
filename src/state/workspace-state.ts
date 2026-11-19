@@ -294,7 +294,7 @@ export class WorkspaceStateStore {
     this.rawMemento = memento;
     this.memento = {
       get: <T>(key: string): T | undefined => this.rawMemento.get<T>(key),
-      update: (key: string, value: unknown): Thenable<void> => this.writeGate.write(key, value)
+      update: (key: string, value: unknown): PromiseLike<void> => this.writeGate.write(key, value)
     };
     this.logger = logger ?? null;
     this.scheduler = scheduler;
@@ -872,7 +872,7 @@ export class WorkspaceStateStore {
 
   private serializeAcrossKeys(
     keys: readonly string[],
-    op: () => Thenable<void> | Promise<void>
+    op: () => PromiseLike<void> | Promise<void>
   ): Promise<void> {
     if (this.writeGate.isQuarantined()) {
       return Promise.reject(
@@ -897,7 +897,7 @@ export class WorkspaceStateStore {
     return next;
   }
 
-  private serialize(key: string, op: () => Thenable<void> | Promise<void>): Promise<void> {
+  private serialize(key: string, op: () => PromiseLike<void> | Promise<void>): Promise<void> {
     if (this.writeGate.isQuarantined()) {
       return Promise.reject(
         new StorageWriteQuarantinedError(

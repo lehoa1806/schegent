@@ -32,6 +32,7 @@ import type { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import type { SanitizedLogger } from '../../../src/lib/logger';
 import type { RecoveryEnvelopePort } from '../../../src/services/recovery-handoff';
 import type { WorkspaceStateStore } from '../../../src/state/workspace-state';
+import { removeTempRoot } from '../../temp-root-cleanup';
 
 const tempDirs: string[] = [];
 
@@ -45,7 +46,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 afterEach(async () => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()!;
-    await fsp.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    await removeTempRoot(dir);
   }
 });
 
