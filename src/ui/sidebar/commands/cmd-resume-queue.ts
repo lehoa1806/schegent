@@ -9,9 +9,11 @@ export const handler: CommandHandler<ResumeQueueCommand> = async (ctx, command) 
   const result = await ops.setQueuePausedState(false, queueId, null, 'operator');
   await ackGenericResult(ctx, result);
   if (result.ok) {
+    const resolvedQueueId = result.queueId ?? queueId;
     await appendQueueAudit(ctx, 'queue-resumed', {
-      queueId: result.queueId ?? queueId ?? null,
+      queueId: resolvedQueueId ?? null,
       source: 'operator'
     });
+    await ctx.deps.onQueueResumed?.(resolvedQueueId);
   }
 };

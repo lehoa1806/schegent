@@ -9,6 +9,7 @@ export interface QueueOpsCtx {
   lock: WorkspaceLockManager;
   notifier: Notifier;
   logger: SanitizedLogger;
+  onQueueResumed?: (queueId: string) => Promise<void>;
 }
 
 const ILLEGAL_STATE_MESSAGES: Record<string, string> = {
@@ -236,7 +237,10 @@ export async function runPauseQueue(arg: unknown, ctx: QueueOpsCtx): Promise<voi
 export async function runResumeQueue(ctx: QueueOpsCtx): Promise<void> {
   if (!(await ensurePrimary(ctx))) return;
   try {
-    await ctx.queue.setQueuePausedState(false, undefined, null, 'operator');
+    const result = await ctx.queue.setQueuePausedState(false, undefined, null, 'operator');
+    if (result.ok && result.queueId) {
+      await ctx.onQueueResumed?.(result.queueId);
+    }
     ctx.notifier.info('Schegent: queue resumed.');
   } catch (err) {
     ctx.logger.error(`runResumeQueue failed: ${(err as Error).message}`);

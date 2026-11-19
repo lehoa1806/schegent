@@ -267,7 +267,7 @@
                 >
                   {inv.pauseExplanation ??
                     (inv.pauseCause === 'recovery-uncertain-effect'
-                      ? 'Paused during restart recovery because the active Phase attempt had no live queue task or verified settlement evidence.'
+                      ? 'Paused during restart recovery because an interrupted Phase attempt had unconfirmed completion evidence.'
                       : '')}
                   {inv.pauseGuidance ??
                     (inv.pauseCause === 'recovery-uncertain-effect'

@@ -22,6 +22,7 @@ import {
   runPauseQueue,
   runResumeQueue
 } from '../commands/queue-ops';
+import { resumePausedQueueExecution } from '../commands/resume-queue-execution';
 import { runRerunFromHistory } from '../commands/rerun-from-history';
 import {
   runReportFailedRowExits,
@@ -256,7 +257,15 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     queue: deps.queue,
     lock: deps.lock,
     notifier: deps.notifier,
-    logger: deps.logger
+    logger: deps.logger,
+    onQueueResumed: async (queueId: string) => {
+      await resumePausedQueueExecution(queueId, {
+        store: deps.store,
+        guardedRunService: deps.guardedRunService,
+        controller: deps.controller,
+        logger: deps.logger
+      });
+    }
   };
   /**
    * FR-R3-154 (T1645) — the three Phase controls take the same three
@@ -265,7 +274,8 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
   const phaseControlCommandDeps = (d: typeof deps): PhaseControlCommandDeps => ({
     controller: d.controller,
     notifier: d.notifier,
-    logger: d.logger
+    logger: d.logger,
+    store: d.store
   });
 
   // FR-R3-136 (FR-005, FR-006) — the trust guard every registration below goes

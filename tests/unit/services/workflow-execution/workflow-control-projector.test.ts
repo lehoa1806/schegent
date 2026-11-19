@@ -9,7 +9,8 @@ import {
 } from '../../../../src/services/workflow-execution/connected-run-coordinator';
 import {
   buildAncestryEvidenceMetadata,
-  buildWorkflowRunControlProjection
+  buildWorkflowRunControlProjection,
+  describeWorkflowPauseCause
 } from '../../../../src/services/workflow-execution/workflow-control-projector';
 import { isNodeStartable, projectConnectedRun } from '../../../../src/ui/sidebar/connected-run-projector';
 
@@ -236,5 +237,13 @@ describe('workflow-control-projector — US4: Bounded Ancestry Evidence & Contro
     expect(projection.nodes.map((node) => [node.nodeId, node.state, node.attemptCount])).toEqual([
       ['constructor', 'available', 0]
     ]);
+  });
+
+  it('describes recovery-uncertain-effect as an interrupted attempt with unconfirmed completion (BUG-001, FR-006)', () => {
+    const desc = describeWorkflowPauseCause('recovery-uncertain-effect');
+    expect(desc).not.toBeNull();
+    expect(desc!.explanation).toContain('interrupted Phase attempt');
+    expect(desc!.explanation).toContain('unconfirmed completion');
+    expect(desc!.explanation).not.toContain('no live queue task');
   });
 });

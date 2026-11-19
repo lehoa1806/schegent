@@ -88,14 +88,12 @@ const RECOVERY_LANDMARKS = [
   // until now, which is what made the missing count assertion consequential
   // rather than merely untidy.
   'resumePersistedRuns({',
-  // Bug "there is no way to start a pending task" (2026-09-02), second finding —
-  // the fifth. A pending row the previous host left behind is recovery in the
-  // same sense as the four above: it belongs to the window that won the
-  // election, and a non-primary window that swept it would start a second Run on
-  // a queue the primary owns, which is the two-spawn defect this whole gate
-  // exists to prevent. Listed here on arrival, which `GATE_COUNT` now makes
-  // mandatory rather than optional.
-  'controller.scheduleAutoDrain()',
+  // BUG-001 (2026-11-19, FR-017) — replaces the former activation `controller.scheduleAutoDrain()`.
+  // Primary activation now pauses leftover non-empty/active/scheduled queues and non-terminal Runs
+  // once at startup (crash-safe defense after unclean shutdowns) instead of auto-draining pending
+  // work on open/restart. Like every recovery act, it belongs strictly to the window that won the
+  // election (`if (lockResult.acquired)`) so a non-primary window never mutates persisted queues.
+  'pauseQueuesOnStartup?.()',
   // FR-R4-F03 — the sixth, an act on `.schegent/` that belongs to the window that won the
   // election: the audit writer's retention sweep (prune, narrow, cut record), which its
   // constructor used to queue before any trust check or election. Run once at trusted startup or

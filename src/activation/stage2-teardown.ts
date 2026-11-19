@@ -54,6 +54,15 @@ export interface Stage2ResourceTeardown {
    * would abandon the lease release and the primacy release that follow.
    */
   readonly teardown: () => Promise<void>;
+  /**
+   * BUG-001 (FR-015, FR-016) — persist a pause on every non-empty/active/scheduled queue and
+   * non-terminal Run after `teardown()` finishes stopping children and BEFORE `disposables`,
+   * `transport.flushAndDispose()`, `executionLeases.releaseAll()`, and `lock.release()`.
+   *
+   * Optional so unit callers without a queue store keep their shape; production `extension.ts`
+   * wires it unconditionally. Never rejects by contract; guarded defensively below.
+   */
+  readonly pauseQueues?: () => Promise<void>;
 }
 
 /**
@@ -87,6 +96,13 @@ export async function closeStage2Resources(deps: Stage2ResourceTeardown): Promis
     await deps.teardown();
   } catch {
     // Contractually never rejects; the guard is for the caller that promised and was wrong.
+  }
+  if (deps.pauseQueues) {
+    try {
+      await deps.pauseQueues();
+    } catch {
+      // BUG-001 (FR-015): teardown pause is best-effort; never abandon disposables, transport flush, or lock release.
+    }
   }
   for (const d of deps.disposables) {
     try {

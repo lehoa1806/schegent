@@ -23,10 +23,12 @@
 import type { WorkflowRun } from '../state/workflow-run';
 import {
   NOT_RESUMED,
+  NOT_RESUMED_INELIGIBLE,
   NOT_RESUMED_SHUTDOWN,
   NOT_RESUMED_TREE_LIVE,
   type ResumeAdmission
 } from '../controller/run-admission';
+import type { UnattendedWakeup } from './unattended-eligibility';
 import { checkLiveness, createLivenessProbe, type LivenessProbe } from './process-liveness';
 import {
   decideResume,
@@ -41,6 +43,7 @@ export type ResumeAdmissionRefusal =
   | 'no-run'
   | 'run-ended' // completed or canceled: the two checks that moved from the controller
   | 'shutdown-begun' // the auto-drain coordinator is closed
+  | 'queue-paused' // BUG-001 (FR-018): queue is operator-paused
   | 'previous-tree-alive' // liveness gave `alive`
   | 'previous-group-orphaned'; // liveness gave `orphaned-group`
 
@@ -63,6 +66,12 @@ export interface ResumeAdmissionGuardDeps {
   readonly isDriving: (queueId: string) => boolean;
   /** Has shutdown begun (`AutoDrainCoordinator.isClosed`)? */
   readonly isClosed: () => boolean;
+  /**
+   * BUG-001 (FR-018) — optional queue-pause probe for unattended resume admission.
+   * When present and returning `true`, refuses `'queue-paused'` (`NOT_RESUMED_INELIGIBLE`)
+   * without probing liveness.
+   */
+  readonly isQueuePaused?: ((queueId: string) => boolean) | undefined;
   readonly liveness: LivenessProbe;
   readonly appendAudit: ResumeWalkDeps['appendAudit'];
   readonly notify: (message: string) => void;
@@ -79,12 +88,19 @@ export interface ResumeGuardOptions {
 
 /** The controller's own parts the guard's deps are assembled from. */
 export interface ResumeGuardParts {
-  readonly store: { getRun(queueId: string): WorkflowRun | null };
+  readonly store: {
+    getRun(queueId: string): WorkflowRun | null;
+    getQueue?(queueId: string): {
+      readonly queueLifecycle?: string;
+      readonly pauseSource?: string | null;
+    };
+  };
   readonly coordinator: { isClosed(): boolean };
   readonly auditor: { appendResumeDeclined: ResumeAdmissionGuardDeps['appendAudit'] };
   readonly notifier: { warn(message: string): unknown };
   readonly options: ResumeGuardOptions;
   readonly isDriving: (queueId: string) => boolean;
+  readonly unattended?: UnattendedWakeup | undefined;
 }
 
 /**
@@ -96,6 +112,16 @@ export function resumeGuardDeps(parts: ResumeGuardParts): ResumeAdmissionGuardDe
     getRun: (queueId) => parts.store.getRun(queueId),
     isDriving: parts.isDriving,
     isClosed: () => parts.coordinator.isClosed(),
+    isQueuePaused:
+      parts.unattended !== undefined && typeof parts.store.getQueue === 'function'
+        ? (queueId) => {
+            const queueState = parts.store.getQueue!(queueId);
+            return (
+              queueState.queueLifecycle === 'operator-paused' &&
+              queueState.pauseSource !== 'cascade'
+            );
+          }
+        : undefined,
     liveness: parts.options.livenessProbe ?? createLivenessProbe(),
     appendAudit: (entry) => parts.auditor.appendResumeDeclined(entry),
     notify: (message) => void parts.notifier.warn(message)
@@ -124,6 +150,7 @@ export async function admitResumeCandidate(
   if (!run) return refuse('no-run');
   if (run.status === 'completed' || run.status === 'canceled') return refuse('run-ended');
   if (deps.isClosed()) return refuse('shutdown-begun');
+  if (deps.isQueuePaused?.(queueId)) return refuse('queue-paused');
   if (run.spawnIdentity === undefined || deps.isDriving(queueId)) return { admitted: true, run };
 
   const candidate: ResumeCandidate = { queueId, runId: run.id, spawnIdentity: run.spawnIdentity };
@@ -152,6 +179,7 @@ const ADMISSION_FOR_REFUSAL: Readonly<Record<ResumeAdmissionRefusal, ResumeAdmis
   'no-run': NOT_RESUMED,
   'run-ended': NOT_RESUMED,
   'shutdown-begun': NOT_RESUMED_SHUTDOWN,
+  'queue-paused': NOT_RESUMED_INELIGIBLE,
   'previous-tree-alive': NOT_RESUMED_TREE_LIVE,
   'previous-group-orphaned': NOT_RESUMED_TREE_LIVE
 };
