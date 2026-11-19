@@ -157,3 +157,4 @@ export * from './domain-adapters/agent-runtime-adapter';
 export * from './domain-adapters/handoff-review-adapter';
 export * from './sqlite-catalog-store';
 export * from './operational-entity-schema';
+export * from './store-relocation';

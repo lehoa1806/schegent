@@ -961,8 +961,13 @@ code-shaped unknown inside a fixed sentence, and shows nothing of any other stri
 
 ### T29 — SQLite operational store holds unencrypted state at rest
 
-After the one-time cutover (FR-R6-F04), structured operational state lives in a `node:sqlite`
-database at `<storage>/sqlite/<scope>/schegent-state.db`, with `-wal` and `-shm` sidecar files.
+After the one-time cutover (FR-R6-F04) and folder-keyed store unification (FR-R7-10), structured
+operational state lives in a `node:sqlite` database at
+`<globalStorageUri>/sqlite/<scope>/schegent-state.db`, with `-wal` and `-shm` sidecar files (or
+under an explicit CLI `--state-dir` in headless runs). `<scope>` hashes the workspace root, so
+distinct folders sharing an editor profile stay in separate directories while two windows opening
+the same folder directly and via `.code-workspace` share one canonical store serialized by the
+folder's `.schegent/ownership` fence.
 It holds the queue and run state, catalog definitions, the usage and cost ledger, structured
 outputs and handoffs, log segments and similar records (16 of the 20 surfaces in the state
 census), and the receipts the ACP gate writes. The raw transcripts, the audit log and the other
@@ -973,9 +978,18 @@ What the store does:
 - The directories are created `0700` and the database file `0600`, so other local accounts cannot
   read it. This is the same boundary as the evidence files, and it has the same limit: it keeps out
   nothing that runs as the operator.
-- The location is resolved only from trusted roots, so repository text cannot point the host at a
-  database elsewhere.
-- A write-ahead log is refused on a network filesystem, where its locking is not reliable.
+- The location is resolved only from trusted roots (`globalStorageUri`, legacy `storageUri` for
+  one-time relocation or unwritable-target fallback, or explicit CLI `--state-dir`), so repository
+  text cannot point the host at a database elsewhere.
+- One-time relocation from legacy per-window `storageUri` roots runs only while the window is
+  trusted and holds `.schegent/ownership`, stages inside the canonical anchor with symlink refusal
+  and `0600` modes, refuses newer-schema databases (`min_reader_version` / `schema_version`)
+  untouched before any write, never merges conflicting stores silently, preserves any displaced
+  canonical store read-only (`0400`) beside the active database, and logs conflict/fallback paths
+  with zero row content (never writing workspace paths to `.schegent/audit.log`).
+- A write-ahead log is refused on a network filesystem, where its locking is not reliable; if the
+  canonical target is unwritable or WAL-refused, an existing legacy store remains active in place
+  rather than falling back to a third path.
 - The schema is forward-only. A database written by a newer schema is refused, not opened.
 - One serialized writer owns the file, in a trusted primary window. A non-primary window reads a
   snapshot and cannot write.
@@ -990,6 +1004,7 @@ What it does not do, stated rather than implied:
 - **It sits outside the workspace**, so ignore rules and a workspace clean-up do not touch it.
 
 <!-- Source: src/services/sqlite-store/storage-location-resolver.ts -->
+<!-- Source: src/services/sqlite-store/store-relocation.ts -->
 <!-- Source: src/services/sqlite-store/schema-bootstrap.ts -->
 <!-- Source: src/contracts/sqlite-store/state-census.ts -->
 
