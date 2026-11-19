@@ -148,14 +148,15 @@ describe('the backend recipe lists every site (L11)', () => {
     expect(absorbing).toEqual([]);
   });
 
-  it('lists the factory as a switch, and the path accessor as an exhaustive one', () => {
+  it('lists the factory as a switch, and confirms cli-path-accessor reads the descriptor table', () => {
     const factory = BACKEND_RECIPE_SITES.find((site) => site.path === 'src/runner/backend-runner-factory.ts');
     expect(factory?.how).toBe('switch');
-    // Review gap GC-06 (2026-11-12) — the accessor was an `if` chain whose fallback was Claude; it is
-    // now a switch with a `never` default, so it no longer has a fallback site to name.
+    // FR-R7-06 — cli-path-accessor migrated from a per-backend switch to findBackendDescriptor(),
+    // retiring its census row while preserving GC-06's explicit throw on unknown kinds.
     const accessor = BACKEND_RECIPE_SITES.find((site) => site.path === 'src/config/cli-path-accessor.ts');
-    expect(accessor?.how).toBe('switch');
-    expect(accessor?.note).toMatch(/`never` default/);
+    expect(accessor).toBeUndefined();
+    const accessorSrc = readFileSync(resolve(REPO_ROOT, 'src/config/cli-path-accessor.ts'), 'utf8');
+    expect(accessorSrc).toContain('findBackendDescriptor');
   });
 
   describe('the check itself (seeded)', () => {

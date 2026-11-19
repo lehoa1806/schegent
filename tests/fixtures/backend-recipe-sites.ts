@@ -69,14 +69,6 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
     note: 'projects containment_acceptance_bindings rows for supported backend kinds during SQLite sync'
   },
 
-  // ---- Path resolution
-  {
-    path: 'src/config/cli-path-accessor.ts',
-    role: 'Path resolution',
-    how: 'switch',
-    note: 'an exhaustive switch with a `never` default (review gap GC-06), so a fourth backend fails to compile here until it has a path setting'
-  },
-
   // ---- Permission posture and policy
   { path: 'src/services/backend-containment-policy.ts', role: 'Permission posture and policy', how: 'literal' },
   { path: 'src/services/capability-enforcement-plan.ts', role: 'Permission posture and policy', how: 'record' },

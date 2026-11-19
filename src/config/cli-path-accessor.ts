@@ -1,12 +1,13 @@
 import * as vscode from 'vscode';
 
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { findBackendDescriptor } from '../contracts/backend-descriptors';
 
 /**
- * Feature 074 — Resolves the CLI binary path for a given runner kind.
- * Reads the setting dynamically so the operator can change
- * `schegent.agy.path`, `schegent.codex.path`, or `schegent.cli.path`
- * without restarting the VS Code extension host.
+ * Feature 074 / FR-R7-06 — Resolves the CLI binary path for a given runner kind.
+ * Reads the setting dynamically from the descriptor table's `cliPathSettingKey`
+ * so the operator can change `schegent.agy.path`, `schegent.codex.path`, or
+ * `schegent.cli.path` without restarting the VS Code extension host.
  *
  * This accessor is intentionally isolated from the main `PipelineConfig`
  * because runner paths are strictly local machine configuration, whereas
@@ -17,28 +18,20 @@ export function resolveCliPath(
   workspaceRoot: string,
   fallbackDefaultPath: string
 ): string {
+  const descriptor = findBackendDescriptor(runnerKind);
+  if (descriptor === undefined) {
+    // Review gap GC-06 / FR-R7-06 FR-002 — unknown kind throws rather than launching
+    // Claude's binary under another backend's name.
+    throw new TypeError(`no CLI path setting for backend kind "${String(runnerKind)}"`);
+  }
   const config = vscode.workspace.getConfiguration(
     'schegent',
     vscode.Uri.file(workspaceRoot)
   );
-  switch (runnerKind) {
-    case 'agy':
-      return readNonBlankPath(config.get<unknown>('agy.path'), 'agy');
-    case 'codex':
-      return readNonBlankPath(config.get<unknown>('codex.path'), 'codex');
-    case 'claude':
-      return readNonBlankPath(
-        config.get<unknown>('cli.path'),
-        readNonBlankPath(fallbackDefaultPath, 'claude')
-      );
-    default: {
-      // Review gap GC-06 — unreachable while every kind has a case; a kind added to the union
-      // without one fails to compile here, and a kind cast in from outside throws rather than
-      // launching Claude's binary under another backend's name.
-      const unhandled: never = runnerKind;
-      throw new TypeError(`no CLI path setting for backend kind "${String(unhandled)}"`);
-    }
-  }
+  const defaultPath = descriptor.usesLegacyFallbackPath
+    ? readNonBlankPath(fallbackDefaultPath, descriptor.defaultCliBinary)
+    : descriptor.defaultCliBinary;
+  return readNonBlankPath(config.get<unknown>(descriptor.cliPathSettingKey), defaultPath);
 }
 
 function readNonBlankPath(value: unknown, fallback: string): string {
