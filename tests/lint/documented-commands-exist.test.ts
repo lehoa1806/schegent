@@ -208,12 +208,16 @@ describe('a document may not name a command that does not exist (FR-R3-127)', ()
     //
     // FR-R4-F04 (TA4) — `evidence-commands-wiring.ts` joins it, the fourth, for the same reason: it
     // registers the two exports and the Run evidence deletion, moved out of `registerStage2Ui()`.
+    //
+    // FR-R7-03 — `sqlite-backup-commands-wiring.ts` joins it, the fifth, registering backup, verify,
+    // and restore for the SQLite application store out of `registerStage2Ui()`.
     const stage2 =
       guardedIn('src/activation/ui-wiring.ts') +
       guardedIn('src/activation/queue-failure-policy-wiring.ts') +
       guardedIn('src/activation/queue-item-exit-wiring.ts') +
       guardedIn('src/activation/audit-commands-wiring.ts') +
-      guardedIn('src/activation/evidence-commands-wiring.ts');
+      guardedIn('src/activation/evidence-commands-wiring.ts') +
+      guardedIn('src/activation/sqlite-backup-commands-wiring.ts');
     const stage1 = guardedIn('src/extension.ts');
     expect(stage1, 'Stage 1 registers no command through the guard helper').toBeGreaterThan(0);
     expect(stage2, 'Stage 2 registers no command through the guard helper').toBeGreaterThan(15);

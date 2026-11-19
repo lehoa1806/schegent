@@ -1011,6 +1011,9 @@ export const OPERATOR_ATTRIBUTION_EVENT_TYPES = ['operator-pseudonym-reset'] as 
 /** FR-R6-F05 (FR-022) — one artifact lifecycle mutation: kind, operation id, counts and result only. */
 export const ARTIFACT_LIFECYCLE_EVENT_TYPES = ['artifact-lifecycle-mutation'] as const;
 
+/** FR-R7-03 (FR-004, FR-005) — metadata-only SQLite backup and restore events; zero raw paths. */
+export const STORE_BACKUP_RESTORE_EVENT_TYPES = ['store-backup', 'store-restore'] as const;
+
 /** FR-R5-F30 (SPEC-08, D7) — metadata-only workflow control-flow events (IDs, enums, counts, generation, timestamps only). */
 export const CONTROL_FLOW_EVENT_TYPES = [
   'control-decision',
@@ -1077,7 +1080,9 @@ export const ALL_AUDIT_EVENT_TYPES = [
   // FR-R5-F30 — metadata-only workflow control-flow events.
   ...CONTROL_FLOW_EVENT_TYPES,
   // FR-R6-F05 — an artifact lifecycle mutation (deletion, quarantine, archival, policy adoption).
-  ...ARTIFACT_LIFECYCLE_EVENT_TYPES
+  ...ARTIFACT_LIFECYCLE_EVENT_TYPES,
+  // FR-R7-03 — SQLite store backup and restore operator actions (metadata-only, zero paths).
+  ...STORE_BACKUP_RESTORE_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -1603,6 +1608,9 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'operator-pseudonym-reset',
     // FR-R6-F05 — a lifecycle mutation has no run; it belongs on the System tab.
     'artifact-lifecycle-mutation',
+    // FR-R7-03 — workspace SQLite store backup/restore has no run; System tab only.
+    'store-backup',
+    'store-restore',
     // State migration / repair
     'state-migrated',
     'workflow-run-repaired',

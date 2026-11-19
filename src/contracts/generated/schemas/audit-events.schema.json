@@ -156,7 +156,9 @@
           "control-return",
           "control-notice",
           "control-command",
-          "artifact-lifecycle-mutation"
+          "artifact-lifecycle-mutation",
+          "store-backup",
+          "store-restore"
         ]
       },
       "uniqueItems": true
