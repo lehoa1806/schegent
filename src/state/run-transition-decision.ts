@@ -23,6 +23,9 @@ export const ALL_RUN_TRANSITION_ACTORS: readonly RunTransitionActor[] = [
   'recovery'
 ] as const;
 
+/** Initial status required when admitting a brand-new Run via `admitRunAtomically`. */
+export const ADMISSIBLE_INITIAL_RUN_STATUS: WorkflowRunStatus = 'running';
+
 /**
  * Closed refusal-reason vocabulary returned by `decideRunTransition` and carried
  * by `RunTransitionError`.
