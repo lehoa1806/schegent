@@ -19,6 +19,7 @@
  * Zero raw `node:fs` write primitives (docs/hard-rules.md rule 69).
  */
 
+import { isBackendRunnerKind } from '../contracts/backend-kinds';
 import { ACCEPTANCE_BINDINGS_KEY } from '../contracts/containment-qualification';
 import type { AcceptanceMementoPort } from '../services/containment-qualification/acceptance-bindings';
 import type { SanitizedLogger } from '../lib/logger';
@@ -694,7 +695,7 @@ export class SqliteOperationalBacking {
       const record = value as { bindings?: Record<string, unknown> };
       if (record.bindings && typeof record.bindings === 'object') {
         for (const [backendKind, entry] of Object.entries(record.bindings)) {
-          if (backendKind !== 'claude' && backendKind !== 'codex' && backendKind !== 'agy') continue;
+          if (!isBackendRunnerKind(backendKind)) continue;
           if (!entry || typeof entry !== 'object') continue;
           const typed = entry as {
             boundAt?: string;
