@@ -15,11 +15,12 @@ Implemented in:
 - [`src/services/sqlite-store/transaction-units.ts`](../../src/services/sqlite-store/transaction-units.ts)
 - [`src/services/sqlite-store/migration-coordinator.ts`](../../src/services/sqlite-store/migration-coordinator.ts)
 - [`src/services/sqlite-store/backup-restore-service.ts`](../../src/services/sqlite-store/backup-restore-service.ts)
+- [`src/services/sqlite-store/operational-entity-schema.ts`](../../src/services/sqlite-store/operational-entity-schema.ts)
 - [`src/services/sqlite-store/catalog-config-store.ts`](../../src/services/sqlite-store/catalog-config-store.ts)
 - [`src/services/sqlite-store/engine-qualification.ts`](../../src/services/sqlite-store/engine-qualification.ts)
 - [`src/services/sqlite-store/index.ts`](../../src/services/sqlite-store/index.ts)
 
-For shared identity, authority, and retention contracts, see [`docs/operations/shared-memory-storage-contracts.md`](shared-memory-storage-contracts.md). For runtime queue and query budgets, see [`docs/operations/runtime-resource-budgets.md`](runtime-resource-budgets.md).
+For shared identity, authority, and retention contracts, see [`docs/operations/shared-memory-storage-contracts.md`](shared-memory-storage-contracts.md). For runtime queue and query budgets, see [`docs/operations/runtime-resource-budgets.md`](runtime-resource-budgets.md). For host-thread operational commit latency measurements and the Migration 9 decision record, see [`docs/operations/sqlite-operational-commit-latency-measurement.md`](sqlite-operational-commit-latency-measurement.md).
 
 ---
 
@@ -94,5 +95,19 @@ All authoritative multi-table state changes execute inside `AtomicTransactionUni
    - Once `publish-authority` completes, `CutoverAuthorityGuard.checkLegacyAccessAllowed` refuses legacy Memento/JSON access (`SQLITE_AUTHORITY_ACTIVE`).
 2. **Online Backup & Validated Restore (`BackupRestoreService`)**:
    - `createOnlineBackup` uses `VACUUM INTO` to snapshot the live WAL database and builds a `BackupDependencyManifest` listing external content-addressed blobs (`F05`), bounded log segments (`F07`), and `AuditLogger` files with SHA-256 digests and byte lengths.
-   - `validateAndRestoreBackup` opens the backup in an isolated read-only connection, verifies `PRAGMA quick_check` (`ok`), `PRAGMA foreign_key_check` (`0` rows), schema version compatibility, and every external file digest before modifying the active store.
+   - `validateAndRestoreBackup` opens the backup in an isolated read-only connection, verifies `PRAGMA quick_check` (`ok`), `PRAGMA foreign_key_check` (`0` rows), schema version and `min_reader_version` compatibility, and every external file digest before restoring `runs`, `operational_queue_meta`, `operational_tasks`, `operational_runs`, `operational_kv_documents`, and `cutover_sentinel` atomically inside a single `BEGIN IMMEDIATE ... COMMIT` transaction.
    - Both functions are library code. No host command, activation module or UI calls them, so there is no operator-facing way to back up or restore the database today.
+
+---
+
+## 6. Per-Entity Operational Rows and Migration 9 (`FR-R7-02`)
+
+Baseline host-thread measurement on schema 8 (`WAL` + `synchronous = FULL`) exceeded the Round 6 event-loop budget (`worst write commit p95 = 21.490 ms > 20 ms`), triggering forward-only checksummed Migration 9 (`009_fr_r7_02_operational_per_entity_rows`; see [`sqlite-operational-commit-latency-measurement.md`](sqlite-operational-commit-latency-measurement.md)):
+
+- **Schema & reader floor**: `SQLITE_SCHEMA_CURRENT_VERSION = 9`, `SQLITE_MIN_READER_VERSION = 9`. Older builds (`maxSupportedVersion <= 8`) fail closed at open with `UNSUPPORTED_MIN_READER_VERSION` without modifying the database file.
+- **Per-entity `STRICT` tables**:
+  - `operational_queue_meta (scope_id, queue_id, ...)` — queue lifecycle metadata plus lossless `remainder_json`.
+  - `operational_tasks (scope_id, queue_id, task_id, ...)` — indexed by `(scope_id, queue_id, position ASC)` with lossless `payload_json`.
+  - `operational_runs (scope_id, queue_id, run_id, ...)` — indexed by `(scope_id, run_id)` with lossless `payload_json`.
+- **Atomic transactional backfill**: Migration 9 copies existing `schegent.queue` and `schegent.run` documents from `operational_kv_documents` inside the single migration transaction, verifies exact row counts and canonical SHA-256 content digests against the source documents, and rolls back completely on any error or mismatch.
+- **Incremental writes & frozen views**: `SqliteOperationalBacking.updateBatch` diffs incoming queue/Task, Run, and relational `runs` projections inside one `BEGIN IMMEDIATE ... COMMIT` transaction, writing only changed entity rows and incrementing only their revisions. `get()` returns deeply frozen, structurally-shared snapshot views in O(1) without per-read whole-document `structuredClone`, reducing single-Task `p99` latency at `documented-max-capacity` (2,000 Tasks) from `4.054 ms` to `0.231 ms` and overall worst write-commit `p95` from `21.490 ms` to `2.380 ms` (single-platform `darwin/arm64` measurement).

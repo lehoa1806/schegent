@@ -25,11 +25,20 @@ import { F08_HANDOFF_DDL, F08_HANDOFF_MIGRATION_NAME, F08_HANDOFF_MIGRATION_VERS
 import { F10_LANES_DDL, F10_LANES_MIGRATION_NAME, F10_LANES_MIGRATION_VERSION } from '../execution-lanes/lane-schema';
 import { F11_REPORTING_DDL, F11_REPORTING_MIGRATION_NAME, F11_REPORTING_MIGRATION_VERSION } from '../reporting/reporting-schema';
 import { R6_INTEGRATION_DDL, R6_INTEGRATION_MIGRATION_NAME, R6_INTEGRATION_MIGRATION_VERSION } from './round6-integration-schema';
+import {
+  backfillOperationalEntitiesInTx,
+  FR_R7_02_OPERATIONAL_ENTITY_DDL,
+  FR_R7_02_OPERATIONAL_ENTITY_MIGRATION_NAME,
+  FR_R7_02_OPERATIONAL_ENTITY_MIGRATION_VERSION,
+  parseStrictSchemaMetaVersion
+} from './operational-entity-schema';
 
 export interface SchemaMigrationDefinition {
   readonly version: number;
   readonly name: string;
   readonly ddlStatements: readonly string[];
+  readonly minReaderVersion?: number | undefined;
+  readonly postDdlMigrate?: ((conn: NodeSqliteConnection, nowMs: number) => void) | undefined;
 }
 
 export const INITIAL_STRICT_SCHEMA_STATEMENTS: readonly string[] = Object.freeze([
@@ -790,63 +799,34 @@ export const BUILTIN_SCHEMA_MIGRATIONS: readonly SchemaMigrationDefinition[] = O
       `CREATE INDEX IF NOT EXISTS idx_findings_loop_status ON findings(review_loop_id, status)`
     ]
   },
+  { version: F05_LIFECYCLE_MIGRATION_VERSION, name: F05_LIFECYCLE_MIGRATION_NAME, ddlStatements: F05_LIFECYCLE_DDL },
+  { version: F06_ACCOUNTING_MIGRATION_VERSION, name: F06_ACCOUNTING_MIGRATION_NAME, ddlStatements: F06_ACCOUNTING_DDL },
+  { version: F07_LIVE_LOG_MIGRATION_VERSION, name: F07_LIVE_LOG_MIGRATION_NAME, ddlStatements: F07_LIVE_LOG_DDL },
+  { version: F08_HANDOFF_MIGRATION_VERSION, name: F08_HANDOFF_MIGRATION_NAME, ddlStatements: F08_HANDOFF_DDL },
+  { version: F10_LANES_MIGRATION_VERSION, name: F10_LANES_MIGRATION_NAME, ddlStatements: F10_LANES_DDL },
+  { version: F11_REPORTING_MIGRATION_VERSION, name: F11_REPORTING_MIGRATION_NAME, ddlStatements: F11_REPORTING_DDL },
+  { version: R6_INTEGRATION_MIGRATION_VERSION, name: R6_INTEGRATION_MIGRATION_NAME, ddlStatements: R6_INTEGRATION_DDL },
   {
-    // FR-R6-F05: additive and forward-only; never edit migration 1.
-    version: F05_LIFECYCLE_MIGRATION_VERSION,
-    name: F05_LIFECYCLE_MIGRATION_NAME,
-    ddlStatements: F05_LIFECYCLE_DDL
-  },
-  {
-    // FR-R6-F06: additive and forward-only; never edit migrations 1 or 2.
-    version: F06_ACCOUNTING_MIGRATION_VERSION,
-    name: F06_ACCOUNTING_MIGRATION_NAME,
-    ddlStatements: F06_ACCOUNTING_DDL
-  },
-  {
-    // FR-R6-F07: additive and forward-only; never edit migrations 1 to 3.
-    version: F07_LIVE_LOG_MIGRATION_VERSION,
-    name: F07_LIVE_LOG_MIGRATION_NAME,
-    ddlStatements: F07_LIVE_LOG_DDL
-  },
-  {
-    // FR-R6-F08: additive and forward-only; never edit migrations 1 to 4.
-    version: F08_HANDOFF_MIGRATION_VERSION,
-    name: F08_HANDOFF_MIGRATION_NAME,
-    ddlStatements: F08_HANDOFF_DDL
-  },
-  {
-    // FR-R6-F10: additive and forward-only; never edit migrations 1 to 5.
-    version: F10_LANES_MIGRATION_VERSION,
-    name: F10_LANES_MIGRATION_NAME,
-    ddlStatements: F10_LANES_DDL
-  },
-  {
-    // FR-R6-F11: additive and forward-only; never edit migrations 1 to 6.
-    version: F11_REPORTING_MIGRATION_VERSION,
-    name: F11_REPORTING_MIGRATION_NAME,
-    ddlStatements: F11_REPORTING_DDL
-  },
-  {
-    // Round 6 integration (F04, F01-B, F09-FR-17, F10, F11, F13, F14-B, F15-B): additive and forward-only.
-    version: R6_INTEGRATION_MIGRATION_VERSION,
-    name: R6_INTEGRATION_MIGRATION_NAME,
-    ddlStatements: R6_INTEGRATION_DDL
+    // FR-R7-02: forward-only per-entity operational rows + transactional backfill & digest check.
+    version: FR_R7_02_OPERATIONAL_ENTITY_MIGRATION_VERSION,
+    name: FR_R7_02_OPERATIONAL_ENTITY_MIGRATION_NAME,
+    ddlStatements: FR_R7_02_OPERATIONAL_ENTITY_DDL,
+    minReaderVersion: SQLITE_MIN_READER_VERSION,
+    postDdlMigrate: (conn, nowMs) => {
+      backfillOperationalEntitiesInTx(conn, nowMs);
+    }
   }
 ]);
 
 export class SchemaBootstrapService {
-  /**
-   * Review gap GC-09 (2026-11-12) — refuses a database whose recorded `min_reader_version` is
-   * above what this build reads, before the future-schema check, so a downgrade gets the precise
-   * reason. Returns the recorded floor, or 0 when none is recorded.
-   */
+  /** Refuses a database whose recorded `min_reader_version` exceeds what this build reads (GC-09). */
   private static assertReaderFloor(conn: NodeSqliteConnection, maxSupportedVersion: number): number {
     const row = conn.get<{ meta_value: string }>(
       `SELECT meta_value FROM schema_meta WHERE meta_key = 'min_reader_version'`
     );
     if (row === undefined) return 0;
-    const floor = Number(row.meta_value);
-    if (!Number.isSafeInteger(floor) || floor < 0) {
+    const floor = parseStrictSchemaMetaVersion(row.meta_value);
+    if (floor === null) {
       throw new Error('UNSUPPORTED_MIN_READER_VERSION: database records an unreadable reader floor');
     }
     if (floor > maxSupportedVersion) {
@@ -867,27 +847,23 @@ export class SchemaBootstrapService {
     conn: NodeSqliteConnection,
     nowMs: () => number = () => Date.now(),
     migrations: readonly SchemaMigrationDefinition[] = BUILTIN_SCHEMA_MIGRATIONS
-  ): {
-    readonly schemaVersion: number;
-    readonly strictTableCount: number;
-    readonly appliedMigrations: readonly number[];
-  } {
+  ): { readonly schemaVersion: number; readonly strictTableCount: number; readonly appliedMigrations: readonly number[] } {
     conn.exec('BEGIN IMMEDIATE');
     try {
-      // Ensure schema_meta and schema_migrations exist first so we can check existing version
       conn.exec(INITIAL_STRICT_SCHEMA_STATEMENTS[0]!);
       conn.exec(INITIAL_STRICT_SCHEMA_STATEMENTS[1]!);
 
+      const sorted = [...migrations].sort((a, b) => a.version - b.version);
+      const maxSupportedVersion = sorted.length > 0 ? sorted[sorted.length - 1]!.version : SQLITE_SCHEMA_CURRENT_VERSION;
+      const recordedReaderFloor = SchemaBootstrapService.assertReaderFloor(conn, maxSupportedVersion);
       const currentVersionRow = conn.get<{ meta_value: string }>(
         `SELECT meta_value FROM schema_meta WHERE meta_key = 'schema_version'`
       );
-      const maxSupportedVersion = migrations.reduce<number>(
-        (max, m) => (m.version > max ? m.version : max),
-        SQLITE_SCHEMA_CURRENT_VERSION
-      );
-      const recordedReaderFloor = SchemaBootstrapService.assertReaderFloor(conn, maxSupportedVersion);
       if (currentVersionRow) {
-        const existingVersion = Number(currentVersionRow.meta_value);
+        const existingVersion = parseStrictSchemaMetaVersion(currentVersionRow.meta_value);
+        if (existingVersion === null) {
+          throw new Error('UNSUPPORTED_FUTURE_SCHEMA_VERSION: database records an unreadable schema_version');
+        }
         if (existingVersion > maxSupportedVersion) {
           throw new Error(
             `UNSUPPORTED_FUTURE_SCHEMA_VERSION: database schema_version=${existingVersion} exceeds supported max=${maxSupportedVersion}`
@@ -898,30 +874,33 @@ export class SchemaBootstrapService {
       const appliedRows = conn.all<{ version: number; checksum_sha256: string }>(
         `SELECT version, checksum_sha256 FROM schema_migrations ORDER BY version ASC`
       );
-      const appliedMap = new Map<number, string>(
-        appliedRows.map((r) => [r.version, r.checksum_sha256])
-      );
-
+      for (const appliedRow of appliedRows) {
+        if (!Number.isSafeInteger(appliedRow.version) || appliedRow.version < 1) {
+          throw new Error('UNSUPPORTED_FUTURE_SCHEMA_VERSION: database records an unreadable migration version');
+        }
+        if (appliedRow.version > maxSupportedVersion) {
+          throw new Error(
+            `UNSUPPORTED_FUTURE_SCHEMA_VERSION: applied migration version=${appliedRow.version} exceeds supported max=${maxSupportedVersion}`
+          );
+        }
+      }
+      const appliedMap = new Map<number, string>(appliedRows.map((r) => [r.version, r.checksum_sha256]));
       const newlyApplied: number[] = [];
-      const sorted = [...migrations].sort((a, b) => a.version - b.version);
 
       for (const migration of sorted) {
         const expectedChecksum = SchemaBootstrapService.computeMigrationChecksum(migration);
         const existingChecksum = appliedMap.get(migration.version);
         if (existingChecksum !== undefined) {
           if (existingChecksum !== expectedChecksum) {
-            throw new Error(
-              `SCHEMA_MIGRATION_CHECKSUM_MISMATCH: version ${migration.version} (${migration.name})`
-            );
+            throw new Error(`SCHEMA_MIGRATION_CHECKSUM_MISMATCH: version ${migration.version} (${migration.name})`);
           }
           continue;
         }
-
         for (const stmt of migration.ddlStatements) {
           conn.exec(stmt);
         }
-
         const ts = nowMs();
+        migration.postDdlMigrate?.(conn, ts);
         conn.run(
           `INSERT INTO schema_migrations (version, name, checksum_sha256, applied_at_ms) VALUES (?, ?, ?, ?)`,
           migration.version,
@@ -939,12 +918,11 @@ export class SchemaBootstrapService {
 
       const runtimeMeta = conn.inspectRuntimeMetadata();
       const latestVersion = sorted.length > 0 ? sorted[sorted.length - 1]!.version : SQLITE_SCHEMA_CURRENT_VERSION;
+      const buildMinReaderVersion = sorted.reduce<number>((max, m) => Math.max(max, m.minReaderVersion ?? 1), 1);
       const ts = nowMs();
-
       const upsertMeta = (key: string, value: string): void => {
         conn.run(
-          `INSERT INTO schema_meta (meta_key, meta_value, updated_at_ms)
-           VALUES (?, ?, ?)
+          `INSERT INTO schema_meta (meta_key, meta_value, updated_at_ms) VALUES (?, ?, ?)
            ON CONFLICT(meta_key) DO UPDATE SET meta_value = excluded.meta_value, updated_at_ms = excluded.updated_at_ms`,
           key,
           value,
@@ -953,11 +931,10 @@ export class SchemaBootstrapService {
       };
 
       upsertMeta('schema_version', String(latestVersion));
-      upsertMeta('min_reader_version', String(Math.max(recordedReaderFloor, SQLITE_MIN_READER_VERSION)));
+      upsertMeta('min_reader_version', String(Math.max(recordedReaderFloor, buildMinReaderVersion)));
       upsertMeta('sqlite_version', runtimeMeta.sqliteVersion);
       upsertMeta('sqlite_source_id', runtimeMeta.sqliteSourceId);
 
-      // Initialize default catalog_revisions rows if absent
       for (const scope of ['workspace', 'global', 'combined'] as const) {
         conn.run(
           `INSERT OR IGNORE INTO catalog_revisions (scope, revision, updated_at_ms) VALUES (?, 0, ?)`,
@@ -967,13 +944,8 @@ export class SchemaBootstrapService {
       }
 
       conn.exec('COMMIT');
-
       const strictTableCount = SchemaBootstrapService.verifyAllTablesStrict(conn);
-      return {
-        schemaVersion: latestVersion,
-        strictTableCount,
-        appliedMigrations: newlyApplied
-      };
+      return { schemaVersion: latestVersion, strictTableCount, appliedMigrations: newlyApplied };
     } catch (error) {
       try {
         conn.exec('ROLLBACK');

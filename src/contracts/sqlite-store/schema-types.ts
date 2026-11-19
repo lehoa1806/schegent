@@ -7,14 +7,16 @@
  */
 
 export const SQLITE_STORE_CONTRACT_VERSION = 1 as const;
-export const SQLITE_SCHEMA_CURRENT_VERSION = 8 as const;
+export const SQLITE_SCHEMA_CURRENT_VERSION = 9 as const;
 /**
- * Review gap GC-09 — the lowest schema version a build must read up to before it may open a
- * database this build has written. Recorded as `schema_meta.min_reader_version`, never lowered,
- * and enforced at open. Migrations 1 to 8 are additive, so the floor stays 1; a migration an older
- * build cannot safely read raises it.
+ * Review gap GC-09 & FR-R7-02 — the lowest schema version a build must read up to before it may
+ * open a database this build has written. Recorded as `schema_meta.min_reader_version`, never
+ * lowered, and enforced at open. Migrations 1 to 8 were additive (floor 1); Migration 9 moves
+ * authoritative operational queue/Task and Run state out of `operational_kv_documents` into
+ * per-entity tables (`operational_queue_meta`, `operational_tasks`, `operational_runs`), so
+ * schema-8-and-earlier readers cannot read the store safely and the floor rises to 9.
  */
-export const SQLITE_MIN_READER_VERSION = 1 as const;
+export const SQLITE_MIN_READER_VERSION = 9 as const;
 /** STRICT tables created by migration 1 (F04); later migrations add to this. */
 export const F04_INITIAL_STRICT_TABLE_COUNT = 78 as const;
 export const SQLITE_MIN_SUPPORTED_ENGINE_VERSION = '3.51.3' as const;

@@ -8,7 +8,11 @@ import {
   SQLITE_MIN_READER_VERSION,
   SQLITE_SCHEMA_CURRENT_VERSION
 } from '../../../src/contracts/sqlite-store/schema-types';
-import { NodeSqliteConnection, SchemaBootstrapService } from '../../../src/services/sqlite-store';
+import {
+  BUILTIN_SCHEMA_MIGRATIONS,
+  NodeSqliteConnection,
+  SchemaBootstrapService
+} from '../../../src/services/sqlite-store';
 
 const NOW = 1_700_000_000_000;
 
@@ -67,14 +71,25 @@ describe('GC-09 — min_reader_version is enforced at open', () => {
   });
 
   it('never lowers a floor a build at or below this one recorded', () => {
-    withBootstrapped((conn) => {
-      const raised = SQLITE_MIN_READER_VERSION + 1;
-      expect(raised).toBeLessThanOrEqual(SQLITE_SCHEMA_CURRENT_VERSION);
-      conn.run(`UPDATE schema_meta SET meta_value = ? WHERE meta_key = 'min_reader_version'`, String(raised));
+    // Exercise with a schema-8 build (min_reader_version=1) when the database already recorded floor=2.
+    const upToEight = BUILTIN_SCHEMA_MIGRATIONS.filter((m) => m.version <= 8);
+    const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
+    try {
+      SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW, upToEight);
+      expect(readMinReader(conn)).toBe('1');
+      conn.run(`UPDATE schema_meta SET meta_value = '2' WHERE meta_key = 'min_reader_version'`);
 
-      SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1);
+      SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1, upToEight);
+      expect(readMinReader(conn)).toBe('2');
 
-      expect(readMinReader(conn)).toBe(String(raised));
-    });
+      // Upgrading to schema 9 raises the floor to 9 and refuses schema-8 readers.
+      SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 2);
+      expect(readMinReader(conn)).toBe(String(SQLITE_MIN_READER_VERSION));
+      expect(() => SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 3, upToEight)).toThrow(
+        `UNSUPPORTED_MIN_READER_VERSION: database requires a reader of schema ${SQLITE_MIN_READER_VERSION} or later; this build reads up to 8`
+      );
+    } finally {
+      conn.close();
+    }
   });
 });
