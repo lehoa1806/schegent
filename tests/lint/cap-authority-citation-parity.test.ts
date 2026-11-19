@@ -126,6 +126,11 @@ const NON_DEFINITION_MENTIONS: ReadonlySet<string> = new Set([
   'src/contracts/snapshot-projections.ts',
   'src/ui/sidebar/snapshot-composer.ts',
   'src/ui/sidebar/snapshot.ts',
+  // FR-R7-07 — key-family split of `workspace-state.ts`: `workspace-state.ts` remains
+  // the enforcing site (`assertGlobalConcurrencyCap` + `MAX_GLOBAL_CONCURRENCY_CAP`),
+  // while `-types.ts` and `-queue.ts` carry `KEYS.queueGlobalConcurrencyCap` and delegate.
+  'src/state/workspace-state-queue.ts',
+  'src/state/workspace-state-types.ts',
   // FR-R3-145 (T1570) — three entries were removed from this set rather than
   // kept: `src/contracts/generated/boundary-contracts.ts` and
   // `src/contracts/generated/schemas/settings.schema.json` (generated from

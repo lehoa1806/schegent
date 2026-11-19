@@ -1086,7 +1086,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // Feature 318 (FR-R7-04, 2026-11-19) — 3933 → 3983, +50: minimal memento seam for
       // `KEYS.agentConfigGrants` (`schegent.consent.agentConfigGrants.v1`) mirroring `gitPlanGrants`.
       // All validation, narrowing, and pure writers live in `src/state/agent-config-grants.ts`.
-      highWaterMark: 3983
+      //
+      // Feature 321 (FR-R7-07, 2026-11-19) — 3983 → 926, -3057: split by key family into
+      // `workspace-state-{types,migrations,queue,runs,locks,history,grants,connected}.ts`
+      // behind the `WorkspaceStateStore` facade and single serialize chain.
+      highWaterMark: 926
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have

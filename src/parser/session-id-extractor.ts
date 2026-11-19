@@ -23,6 +23,10 @@
  * to the existing `-c` flag behavior.
  */
 
+import { isSessionIdShape } from '../lib/session-id-shape';
+
+export { isSessionIdShape };
+
 /**
  * Minimum viable length for a JSON line to contain a session_id field.
  * `{"session_id":"x"}` = 20 chars minimum. This avoids JSON.parse on
@@ -35,23 +39,6 @@ const MIN_SESSION_JSON_LEN = 18;
  * substring are skipped without JSON.parse.
  */
 const SESSION_ID_SIGILS = ['session_id', 'conversation_id', 'conversationId'] as const;
-
-/**
- * UUID-like validation: the session_id should be a non-empty string.
- * We don't enforce a strict UUID format because the CLI may use other
- * identifier formats in the future.
- */
-const MAX_SESSION_ID_LEN = 256;
-
-/**
- * The characters an id may hold: a letter or digit first, then letters,
- * digits, `.`, `_`, `:` and `-`. The id is spawned as the argument of
- * `--resume` or `--conversation`, so one beginning with `-` would reach the CLI
- * as an option (feature-228 security review, I2). This narrows the note above:
- * a UUID passes, and so does another format made only of these characters.
- * Linear: no nested quantifier.
- */
-const SESSION_ID_SHAPE = /^[A-Za-z0-9][\w.:-]*$/;
 
 /**
  * Extract the CLI session ID from stream-json stdout.
@@ -133,16 +120,6 @@ function parseSessionIdLine(line: string): string | null {
     }
   }
   return null;
-}
-
-/** The one shape check for a session id, shared by the extractor and the load-time repair. */
-export function isSessionIdShape(value: unknown): value is string {
-  return (
-    typeof value === 'string' &&
-    value.length > 0 &&
-    value.length <= MAX_SESSION_ID_LEN &&
-    SESSION_ID_SHAPE.test(value)
-  );
 }
 
 function readId(record: Record<string, unknown>): string | null {

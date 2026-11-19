@@ -673,6 +673,27 @@ other over a single constant, and neither existing gate could see it — both fi
 are in `ui/`, so `dependency-direction.test.ts`'s leaf-to-acting rule never looked.
 The constant moved to the module that consumes it as a default.
 
+**Layer-level value-import direction and `state/` isolation (`FR-R7-07`).**
+File-level acyclicity alone still permits bidirectional *layer* cycles (`state <-> queue`,
+`state <-> services`). `tests/lint/architecture-layers.ts` now declares the
+extensible per-layer allowed value-import map (`LAYER_ALLOWED_VALUE_IMPORTS`) and
+shrink-only, filing-attributed exception list (`LAYER_IMPORT_ALLOWLIST`), enforced
+by `tests/lint/layer-dependency-direction.test.ts` with non-vacuity mutation
+controls. `src/state/` may value-import only `contracts/`, `lib/`, within `state/`,
+and the non-acting `config/` and `audit/` layers (outside `ACTING_LAYERS` per
+`architecture-layers.ts`); it starts green with an empty allowlist (zero
+exceptions) and permanently enforces that no `src/state/` module transitively
+value-imports `queue/`, `parser/`, `services/`, `controller/`, or `ui/`. Shared
+pure queue shapes/helpers (`src/contracts/queue-registry.ts`,
+`src/contracts/queue-feature-request-helpers.ts`,
+`src/contracts/queue-lifecycle-refresh.ts`), `isSessionIdShape`
+(`src/lib/session-id-shape.ts`), and pure JSON/value helpers
+(`src/lib/operational-value-helpers.ts`) live in leaf layers; `buildMutationPlan`
+lives in `src/state/mutation-plan.ts`; and `SqliteOperationalBacking` takes its
+connection and store through `state/`-owned ports (`src/state/sqlite-operational-port.ts`,
+`src/state/sqlite-operational-rows.ts`). Non-state acting-layer cycles (such as
+`controller <-> services`) remain for their own successor filings.
+
 **Agent capability boundary (FR-R3-086).** A Phase may declare a capability set —
 `workspace-write`, `outside-workspace-write`, `process-spawn`, `network` — frozen
 into the Run's plan snapshot. `services/capability-enforcement-plan.ts` translates
@@ -766,10 +787,25 @@ through the shared containment oracle and act on the resolved path.
 ## Persistence and ownership
 
 Workspace-scoped durable files live below `.schegent/`; memento-backed state is
-owned by `WorkspaceStateStore`. Before the SQLite cutover below, the host writes
-whole addressed queue, Run, and history maps rather than partially mutating
-independently serialized fragments. Schema upgrades are forward-only. State
-written by a newer unsupported version is refused rather than guessed backward.
+owned by `WorkspaceStateStore` (`src/state/workspace-state.ts`). Since `FR-R7-07`,
+`WorkspaceStateStore` is a thin coordinating facade over cohesive key-family
+modules — `workspace-state-types.ts` (key catalog, constants, types, errors, and
+shared `WorkspaceStateFamilyContext`), `workspace-state-migrations.ts` (forward
+migrations v2–v15), `workspace-state-queue.ts` (queue states, registry, task CRUD,
+concurrency cap and notice), `workspace-state-runs.ts` (Run map, quarantine,
+atomic admission, terminal transition intents), `workspace-state-locks.ts`
+(workspace lock, guarded mirror refresh, execution leases, watchdog, operator
+pseudonym), `workspace-state-history.ts` (per-queue history partitions),
+`workspace-state-grants.ts` (confirmation suppression, Git plan grants, agent
+config grants), and `workspace-state-connected.ts` (connected workflow runs,
+control ledger, reset transaction). The facade exclusively owns the single
+`serialize` / `serializeAcrossKeys` promise chain, the single `MementoWriteGate`,
+and the single `OwnershipRegistry` commit fence, injecting them into every family
+module through `WorkspaceStateFamilyContext` (Hard Rules 57 & 58). Before the
+SQLite cutover below, the host writes whole addressed queue, Run, and history
+maps rather than partially mutating independently serialized fragments. Schema
+upgrades are forward-only. State written by a newer unsupported version is
+refused rather than guessed backward.
 
 **SQLite operational store (FR-R6-F04).** Structured operational state moves into
 an embedded `node:sqlite` database, `schegent-state.db`, at
@@ -821,7 +857,18 @@ ceiling for catalog and sidebar mutations, with capability-specific decisions
 applied only below that ceiling.
 
 <!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/state/workspace-state-types.ts -->
+<!-- Source: src/state/workspace-state-migrations.ts -->
+<!-- Source: src/state/workspace-state-queue.ts -->
+<!-- Source: src/state/workspace-state-runs.ts -->
+<!-- Source: src/state/workspace-state-locks.ts -->
+<!-- Source: src/state/workspace-state-history.ts -->
+<!-- Source: src/state/workspace-state-grants.ts -->
+<!-- Source: src/state/workspace-state-connected.ts -->
+<!-- Source: src/state/mutation-plan.ts -->
 <!-- Source: src/state/sqlite-operational-backing.ts -->
+<!-- Source: src/state/sqlite-operational-port.ts -->
+<!-- Source: src/state/sqlite-operational-rows.ts -->
 <!-- Source: src/activation/sqlite-cutover-wiring.ts -->
 <!-- Source: src/services/sqlite-store/index.ts -->
 <!-- Source: src/contracts/sqlite-store/state-census.ts -->

@@ -335,7 +335,7 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
   // Restored below against the current API.
   //
   // `position` is a PENDING-ARRAY INDEX on this writer, the same reading
-  // `reorderPendingRequest` documents at `workspace-state.ts:1990`. An index
+  // `reorderPendingRequest` documents at `workspace-state-queue.ts:514`. An index
   // and a `.position` slot value coincide only while a queue's pending slots
   // run 0..n-1, so the cases below stage a target where they do not — that is
   // the arithmetic the deleted test was named for, and it is the half a

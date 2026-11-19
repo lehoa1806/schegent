@@ -124,6 +124,8 @@ const DISCLOSURE_SURFACES: readonly Surface[] = [
 const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['src/contracts/queue-bounds.ts', 'declares the ceiling and the default; a leaf, no prose'],
   ['src/state/workspace-state.ts', 'enforces the bound; no operator-facing prose'],
+  ['src/state/workspace-state-queue.ts', 'delegates cap reads/writes to workspace-state.ts; no operator-facing prose'],
+  ['src/state/workspace-state-types.ts', 'declares KEYS.queueGlobalConcurrencyCap; no operator-facing prose'],
   ['src/queue/queue-manager.ts', 'enforces the bound; no operator-facing prose'],
   ['src/contracts/generated/validators/queue-management.ts', 'enforces the bound; no operator-facing prose'],
   ['src/contracts/generated/schemas/sidebar-ipc.schema.json', 'generated JSON schema, carries the field'],

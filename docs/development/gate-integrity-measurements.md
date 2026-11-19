@@ -13,7 +13,7 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 137
+    vacuity-census-denominator: 138
 
 | Measure | Value |
 |---|---|

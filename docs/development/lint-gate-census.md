@@ -19,8 +19,8 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **235** | 2026-11-19 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 210 | 2026-11-19 | hand verdict |
+| Gate files | **236** | 2026-11-19 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 211 | 2026-11-19 | hand verdict |
 | Marked `partially redundant` | 25 | 2026-11-19 | hand verdict |
 | Marked `redundant` | 0 | 2026-11-19 | hand verdict |
 
@@ -426,6 +426,7 @@ is decided about this one entry.
 | `invoked-as-script.test.ts` | invokedAsScript is true for a script started by any path to it, and false otherwise (FR-R3-200) | `doc-section-references.test.ts` (the link checker's own starts through a symlink, imported, evaluated with no start path, and from a start path that vanished), `tests/unit/build/canary-import-is-free.test.ts` (the canary imported) | partially redundant | those cases hold the shared function's answer for one caller each; the encoded path, the symlink kept in the module URL, the non-`file:` URLs and the raw control are held only here |
 | `key-fixture-bodies-are-filler.test.ts` | FR-R3-109 — the exempted key fixtures carry filler, not key material | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `launch-config-outfiles.test.ts` | FR-R3-101 — the debugger looks where the bundler writes | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `layer-dependency-direction.test.ts` | FR-R7-07 — layer-level value-import direction gate | `dependency-direction.test.ts` (leaf->acting only), `import-graph-acyclic.test.ts` (file cycles only) | unique | neither sibling constrains acting-layer import direction or transitive reach: `dependency-direction.test.ts` covers only `contracts`/`lib` leaves, and `import-graph-acyclic.test.ts` admits layer cycles when no file cycle exists. This gate reads `LAYER_ALLOWED_VALUE_IMPORTS` and `LAYER_IMPORT_ALLOWLIST` from `architecture-layers.ts`, enforces `state/` isolation (direct + SC-005 transitive reach + SC-002 per-file size + FR-005 single-instance serialize/gate ownership), and includes non-vacuity mutation controls |
 | `license-check-descriptions.test.ts` | FR-R4-F09 — no live page describes license:check as validating dependency licenses | — | unique | no sibling gate reads license wording; `current-control-claims.test.ts` covers workflows, the audit, the SBOM, checksums, provenance and the Node floor, not what `license:check` covers |
 | `lifecycle-refusal-vocabulary.test.ts` | FR-R3-154 (T1646) — lifecycle refusal vocabulary matches the hosts that emit it | — | unique | nothing else relates a webview refusal-message key to the host constant that emits it: the keys are plain object properties, and the fall-through sentence (`The host refused: <code>`) renders a wrong key as an error nowhere. On its first run this gate named five table keys no host emits and one host reason, `command-dispatch-failed`, the table had no sentence for |
 | `lint-anchor-grounding.test.ts` | the lint suite’s own anchors are grounded in the tree | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

@@ -62,11 +62,11 @@ by reading each site's call chain, not inferred from the code's neighbourhood.
 | 3 | `src/services/phase-log/phase-log-sanitizer.ts:81-89` | `toolArguments`, recursively | site 2's output | **Yes — unguarded** |
 | 4 | `src/state/connected-run-migrator.ts:67-87` | the connected-run map | persisted workspace state | No — see [persisted state](#the-persisted-state-cluster) |
 | 5 | `src/state/connected-workflow-run.ts:179-183` | a persisted run, deep-copied | persisted workspace state | No — same |
-| 6 | `src/state/workspace-state.ts:1313-1329` | the run-state map, on read | persisted workspace state | No — same |
-| 7 | `src/state/workspace-state.ts:1550-1552` | the queue-state map, on read | persisted workspace state | No — same |
-| 8 | `src/state/workspace-state.ts:1673-1680` | the queue-state map, on write | site 7's output | No — same |
-| 9 | `src/state/workspace-state.ts:2408-2411` | terminal-transition intents | persisted workspace state | No — same |
-| 10 | `src/state/workspace-state.ts:2500-2502` | the history map | persisted workspace state | No — same |
+| 6 | `src/state/workspace-state-migrations.ts:355-370` | the run-state map, on initialize | persisted workspace state | No — same |
+| 7 | `src/state/workspace-state-queue.ts:76-82` | the queue-state map, on read | persisted workspace state | No — same |
+| 8 | `src/state/workspace-state-queue.ts:169-177` | the queue-state map, on write | site 7's output | No — same |
+| 9 | `src/state/workspace-state-runs.ts:438-442` | terminal-transition intents | persisted workspace state | No — same |
+| 10 | `src/state/workspace-state-history.ts:27-30` | the history map | persisted workspace state | No — same |
 | 11 | `src/state/queue-state-migrator.ts:711-713` | queue states, v9→v10 | persisted workspace state | No — same |
 | 12 | `src/state/queue-state-migrator.ts:962-967` | collapsed queue states | site 11's output | No — same |
 | 13 | `src/state/git-plan-grants.ts:106-111` | the plan-grant map | persisted workspace state | No — same, and see the note |
@@ -200,10 +200,10 @@ All 71 step-1 hits that step 2 dropped, grouped by the reason they were dropped.
 `queue-manager.ts:1736`, `:1740`, `queue-state-migrator.ts:993`,
 `entry-point-dispositions.ts:137`, `:141`, `settings-schema.ts:436`,
 `sidebar-command-metadata.ts:144`, `general-settings-keys.ts:423`, `run-state-migrator.ts:139`,
-`history-state-migrator.ts:115`, `cmd-save-models.ts:51`, `workspace-state.ts:1559`,
+`history-state-migrator.ts:115`, `cmd-save-models.ts:51`, `workspace-state-queue.ts:86`,
 `scheduled-work-wiring.ts:212`, `sidebar-ipc.ts:890`.
 
-**Counts or length-tests the key set only** (8): `workspace-state.ts:1156`, `:2641`,
+**Counts or length-tests the key set only** (8): `workspace-state-migrations.ts:189`, `workspace-state-grants.ts:102`,
 `phase-sidecar-reader.ts:363`, `cmd-ping-backend.ts:13`, `uncontained-grant.ts:71`,
 `sidebar-ipc.ts:962`, `:1004`, `src/parser/invocation-usage.ts:184`.
 
@@ -216,7 +216,7 @@ All 71 step-1 hits that step 2 dropped, grouped by the reason they were dropped.
 **Iterates to read, filter, or collect into an array, `Map`, or `Set`** (23):
 `spawn-identity-recorder.ts:45`, `changed-fields.ts:94`, `:95`, `history-store.ts:129`,
 `queue-manager.ts:1758`, `:1786`, `configuration-trust-dispositions.ts:265`,
-`workflow-export-selection.ts:86`, `workspace-state.ts:1227`, `:1700`, `:1738`, `:2295`, `:2314`,
+`workflow-export-selection.ts:86`, `workspace-state-migrations.ts:103`, `workspace-state-queue.ts:189`, `:209`, `workspace-state-runs.ts:224`, `:234`,
 `connected-workflow-run.ts:296`, `schedule-watchdog.ts:167`, `stage2-producers.ts:251`,
 `workflow-controller.ts:923`, `sole-run-resolver.ts:49`, `pipeline-config.ts:433`, `:441`,
 `general-settings.ts:189`, `scheduled-start-coordinator.ts:343`, `phase-execution-wiring.ts:115`.
@@ -229,7 +229,7 @@ serialises through `parts.push`; it never assigns.
 
 **Not code** (1): `yaml-serializer.ts:6`, a comment.
 
-**Documentation of the shape, not an instance** (1): `workspace-state.ts:2324`, a JSDoc line.
+**Documentation of the shape, not an instance** (1): `workspace-state-runs.ts:321`, a patch-key cleanup loop (replaced the earlier `workspace-state.ts` JSDoc line after the FR-R7-07 split).
 
 ---
 
@@ -259,7 +259,7 @@ field name the caller passed as a literal: `catalog-revision.ts:65`, `phase-log-
 `:380`, `claude-cli-monitor.ts:465`, `authored-display.ts:56`, `:67`,
 `backend-capability-service.ts:187`, `condition-context.ts:89`, `connected-run-factory.ts:137`,
 `metrics-rollup.ts:292`, `audit-payload.ts:508`, `invocation-usage.ts:137`, `:148`,
-`workspace-state.ts:2382`, `:2423`, `:2455`.
+`workspace-state-runs.ts:285`, `:450`, `workspace-state-locks.ts:96`.
 
 ---
 
