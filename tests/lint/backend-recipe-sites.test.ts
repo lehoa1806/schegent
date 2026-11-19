@@ -105,7 +105,10 @@ describe('the backend recipe lists every site (L11)', () => {
   it('scans a real tree: the control against a scan that found nothing', () => {
     expect(sources.size).toBeGreaterThan(500);
     const found = [...sources].filter(([, text]) => ANY_SITE.test(codeOf(text)));
-    expect(found.length, 'the sweep found about thirty sites at befeccc8').toBeGreaterThan(20);
+    // FR-R7-06 — after migrating data-only sites to BACKEND_DESCRIPTORS, only canonical/behavioral
+    // sites remain in the scan (at least the descriptor table, factory switch, ACP bridges,
+    // capability withhold planner, and usage parser).
+    expect(found.length, 'the scan must still observe surviving behavioral/canonical sites').toBeGreaterThanOrEqual(5);
   });
 
   it('lists every source file that compares to a backend or keys a record by the union', () => {

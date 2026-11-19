@@ -8,7 +8,8 @@ import {
   type ValidationError,
   type ValidationWarning
 } from './pipeline-config';
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend-kinds';
+import { DEFAULT_BACKEND, SUPPORTED_BACKENDS } from '../contracts/backend-kinds';
+import { mapMutableBackends, type BackendMap } from '../contracts/backend-descriptors';
 import { resolvePhaseCatalog, type ResolvedPhaseCatalog } from './process-catalog';
 import { resolvePipelineCatalog, type ResolvedPipelineCatalog } from './pipeline-catalog';
 import { resolveWorkflowCatalog } from './workflow-catalog';
@@ -85,20 +86,16 @@ function pipelineResolutionWarnings(
  * exact same legacy-array-migration + trim/filter coercion the Pipeline
  * catalog loader already uses, rather than a second copy of this logic.
  */
-export function coerceModels(raw: unknown): Record<BackendRunnerKind, readonly string[]> {
-  const out: Record<BackendRunnerKind, string[]> = {
-    claude: [],
-    codex: [],
-    agy: []
-  };
+export function coerceModels(raw: unknown): BackendMap<readonly string[]> {
+  const out = mapMutableBackends<string[]>(() => []);
 
   if (!raw) return out;
 
-  // Migration for old array format (assumes claude models)
+  // Migration for old array format (assumes default backend models)
   if (Array.isArray(raw)) {
     for (const entry of raw) {
       if (typeof entry === 'string' && entry.trim().length > 0) {
-        out.claude.push(entry.trim());
+        out[DEFAULT_BACKEND].push(entry.trim());
       }
     }
     return out;

@@ -26,6 +26,7 @@ import type {
 } from '../../catalog/changed-fields';
 import type { QueueLifecycle, ScheduledStartSource } from '../../queue/feature-request';
 import { DEFAULT_BACKEND, type BackendRunnerKind } from '../../contracts/backend-kinds';
+import { BACKEND_DESCRIPTORS, emptyBackendModels } from '../../contracts/backend-descriptors';
 import type { GeneralSettings } from '../../config/general-settings';
 // FR-R3-145 (T1572) — value imports, so the idle projection restates neither
 // number. Both live in the contract layer precisely so this module and
@@ -195,7 +196,7 @@ export function buildIdleSnapshot(opts: {
       scheduledStartAt: null,
       scheduledStartSource: null
     }),
-    defaultRunnerKind: 'claude',
+    defaultRunnerKind: DEFAULT_BACKEND,
     auditTail: Object.freeze([]) as readonly AuditTailEntry[],
     debugLogTail: Object.freeze([]) as readonly DebugLogEntry[],
     monitor: null,
@@ -203,8 +204,8 @@ export function buildIdleSnapshot(opts: {
     producedAt: opts.producedAt ?? new Date().toISOString(),
     availablePipelines: Object.freeze([]),
     availablePhases: Object.freeze([]),
-    availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as unknown as Record<BackendRunnerKind, readonly string[]>,
-    configuredModels: Object.freeze({ claude: [], codex: [], agy: [] }) as unknown as Record<BackendRunnerKind, readonly string[]>,
+    availableModels: emptyBackendModels(),
+    configuredModels: emptyBackendModels(),
     availableBackends: Object.freeze([] as readonly BackendRunnerKind[]),
     // FR-R3-144 (T020) — empty, not a computed default.
     backendPostures: Object.freeze([] as readonly BackendPosture[]),
@@ -263,9 +264,9 @@ export const IDLE_SESSION_ARTIFACTS: SessionArtifactsProjection = Object.freeze(
  * `onDidChangeConfiguration` round-trip.
  */
 export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
-  cliPath: 'claude',
-  codexPath: 'codex',
-  agyPath: 'agy',
+  cliPath: BACKEND_DESCRIPTORS.claude.defaultCliBinary,
+  codexPath: BACKEND_DESCRIPTORS.codex.defaultCliBinary,
+  agyPath: BACKEND_DESCRIPTORS.agy.defaultCliBinary,
   loggingVerbose: false,
   loopMaxIterations: 10,
   invocationIdleTimeoutSeconds: 5400,
