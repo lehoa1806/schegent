@@ -27,6 +27,10 @@
 // the installed CLI lists is refused and named `unqualified`; a flag nobody has seen is never relied on.
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import {
+  getBackendDescriptor,
+  type BackendMap
+} from '../contracts/backend-descriptors';
+import {
   ALL_PHASE_CAPABILITIES,
   grants,
   type CapabilityEnforcement,
@@ -83,14 +87,11 @@ interface WithholdDeclaration {
  * and a phase withholding it is refused rather than run unbounded.
  */
 interface BackendSurface {
-  /** The argv this backend spawns with when every capability is granted. */
-  readonly unbounded: readonly string[];
   readonly withhold: Partial<Record<PhaseCapability, WithholdDeclaration>>;
 }
 
 const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
   claude: {
-    unbounded: ['--dangerously-skip-permissions'],
     withhold: {
       // `Bash` is the tool that spawns processes; denying it is the CLI's own
       // way of withholding that authority, and it refuses non-interactively.
@@ -124,7 +125,6 @@ const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
     }
   },
   agy: {
-    unbounded: ['--dangerously-skip-permissions'],
     withhold: {
       // Agy's sandbox is documented as "terminal restrictions enabled", which is
       // the process-spawn boundary. Feature 280: headless at agy 1.5.2, `--sandbox`
@@ -157,9 +157,6 @@ const SURFACES: Readonly<Record<BackendRunnerKind, BackendSurface>> = {
     }
   },
   codex: {
-    // Already contained. Read from this one authority rather than restated at
-    // the adapter, so the two cannot disagree.
-    unbounded: ['--sandbox', 'workspace-write'],
     withhold: {
       'outside-workspace-write': {
         flags: [['--sandbox', 'workspace-write']],
@@ -222,13 +219,13 @@ function strictest(flag: string, current: string, incoming: string): string {
 export function planCapabilityEnforcement(
   kind: BackendRunnerKind,
   declared: DeclaredCapabilitySet,
-  confirmed: Readonly<Record<BackendRunnerKind, readonly string[]>> = CONFIRMED_FLAGS
+  confirmed: BackendMap<readonly string[]> = CONFIRMED_FLAGS
 ): CapabilityEnforcementPlan {
   const surface = SURFACES[kind];
   const withheld = ALL_PHASE_CAPABILITIES.filter((capability) => !grants(declared, capability));
 
   if (withheld.length === 0) {
-    return { outcome: 'argv', args: surface.unbounded, enforcement: 'none-withheld', residuals: [] };
+    return { outcome: 'argv', args: unboundedArgs(kind), enforcement: 'none-withheld', residuals: [] };
   }
 
   // A capability the backend cannot express, and one it could express with a flag nobody has confirmed, are
@@ -313,7 +310,7 @@ export function enforceableCapabilities(kind: BackendRunnerKind): readonly Phase
   );
 }
 
-/** The argv a backend spawns with when nothing is withheld. */
+/** The argv a backend spawns with when nothing is withheld (read from `BACKEND_DESCRIPTORS`). */
 export function unboundedArgs(kind: BackendRunnerKind): readonly string[] {
-  return SURFACES[kind].unbounded;
+  return getBackendDescriptor(kind).unboundedFlags;
 }

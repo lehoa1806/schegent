@@ -6,6 +6,12 @@ import {
   type BackendRunnerKind
 } from '../contracts/backend-kinds';
 import {
+  emptyBackendModels,
+  getBackendDescriptor,
+  mapMutableBackends,
+  type BackendMap
+} from '../contracts/backend-descriptors';
+import {
   BACKEND_AVAILABILITY_VERSION,
   UNKNOWN_LOCAL_QUOTA_ID,
   validateQuotaContext,
@@ -49,7 +55,7 @@ interface BackendInspection {
 export interface BackendCapabilitySnapshot {
   readonly generation: number;
   readonly availableBackends: readonly BackendRunnerKind[];
-  readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
+  readonly availableModels: BackendMap<readonly string[]>;
 }
 
 export interface BackendAvailabilityProbe {
@@ -87,15 +93,11 @@ export interface BackendCapabilityServiceDeps {
   /** Test seam; production always uses the complete closed registry. */
   readonly backendKinds?: readonly BackendRunnerKind[];
   readonly availabilityAdapters?:
-    | Partial<Record<BackendRunnerKind, BackendAvailabilityAdapter>>
+    | Partial<BackendMap<BackendAvailabilityAdapter>>
     | undefined;
 }
 
-const EMPTY_MODELS: Record<BackendRunnerKind, readonly string[]> = Object.freeze({
-  claude: Object.freeze([]),
-  codex: Object.freeze([]),
-  agy: Object.freeze([])
-});
+const EMPTY_MODELS: BackendMap<readonly string[]> = emptyBackendModels();
 
 export function normalizeBackendProbeTimeoutSeconds(value: unknown): number {
   return typeof value === 'number'
@@ -188,7 +190,7 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
     return this.snapshot.availableBackends;
   }
 
-  public getAvailableModels(): Record<BackendRunnerKind, readonly string[]> {
+  public getAvailableModels(): BackendMap<readonly string[]> {
     return this.snapshot.availableModels;
   }
 
@@ -236,11 +238,7 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
       return this.snapshot;
     }
 
-    const models: Record<BackendRunnerKind, readonly string[]> = {
-      claude: Object.freeze([]),
-      codex: Object.freeze([]),
-      agy: Object.freeze([])
-    };
+    const models = mapMutableBackends<readonly string[]>(() => Object.freeze([]));
     const available: BackendRunnerKind[] = [];
     for (const inspection of inspections) {
       if (!inspection.available) continue;
@@ -287,11 +285,12 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
     // editor and drove the `modelAvailable` advisory, they silently displaced
     // the operator's own `schegent.models` catalog. The catalog is
     // configuration and now reaches the webview as such, on its own field.
-    if (kind === 'claude' || kind === 'codex') {
+    const discoveryArgs = getBackendDescriptor(kind).modelDiscoveryArgs;
+    if (discoveryArgs === null) {
       return { kind, available: true, models: NO_MODELS };
     }
 
-    const detected = await this.runBoundedCommand(kind, ['models']);
+    const detected = await this.runBoundedCommand(kind, discoveryArgs);
     const models = detected.ok
       ? parseAgyModels(detected.stdout)
       : Object.freeze([] as string[]);

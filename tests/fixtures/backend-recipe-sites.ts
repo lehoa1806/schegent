@@ -42,25 +42,19 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
     path: 'src/runner/backend-runner-factory.ts',
     role: 'Construction',
     how: 'switch',
-    note: 'each backend has its own case; the default assigns the kind to never and throws (TA7)'
+    note: 'behavior: constructs per-backend CLI adapter class with adapter-specific constructor options; exhaustive never default'
   },
   {
     path: 'src/runner/acp-backed-runner.ts',
     role: 'ACP runtime and bridge launch',
     how: 'equality',
-    note: 'maps RunnerLabel by kind and formats synthetic compatibility result lines per backend'
-  },
-  {
-    path: 'src/services/acp-runtime/profiles.ts',
-    role: 'ACP runtime and bridge launch',
-    how: 'switch',
-    note: 'built-in ACP profile descriptors and native-vs-bridge launch resolution per backend'
+    note: 'behavior: synthesizes backend-specific wire-format JSONL terminal usage envelopes for ACP turns'
   },
   {
     path: 'src/services/acp-runtime/bridges/acp-stdio-bridge.ts',
     role: 'ACP runtime and bridge launch',
     how: 'equality',
-    note: 'maintained ACP v1 stdio bridge CLI flag translation for bridged backends (claude and codex)'
+    note: 'behavior: maintained ACP v1 stdio bridge CLI flag translation and stdout stream parsing for bridged backends (claude and codex)'
   },
   {
     path: 'src/state/sqlite-operational-backing.ts',
@@ -70,31 +64,23 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
   },
 
   // ---- Permission posture and policy
-  { path: 'src/services/backend-containment-policy.ts', role: 'Permission posture and policy', how: 'literal' },
-  { path: 'src/services/capability-enforcement-plan.ts', role: 'Permission posture and policy', how: 'record' },
-  { path: 'src/services/capability-confirmed-flags.ts', role: 'Permission posture and policy', how: 'record' },
-  { path: 'src/runner/claude-cli.ts', role: 'Permission posture and policy', how: 'literal', note: 'the adapter\'s unrestricted argv' },
-  { path: 'src/runner/codex-cli.ts', role: 'Permission posture and policy', how: 'literal', note: 'the adapter\'s unrestricted argv' },
-  { path: 'src/runner/agy-cli.ts', role: 'Permission posture and policy', how: 'literal', note: 'the adapter\'s unrestricted argv' },
-  { path: 'src/config/phase-runner-policy.ts', role: 'Permission posture and policy', how: 'equality' },
-
-  // ---- Permission-mode audit and Claude-only behaviour
-  { path: 'src/audit/audit-payload.ts', role: 'Permission-mode audit', how: 'equality' },
-  { path: 'src/controller/phase-runner.ts', role: 'Claude-only behaviour and permission-mode audit', how: 'equality' },
-
-  // ---- Validation
-  { path: 'src/config/process-definition-validator.ts', role: 'Validation', how: 'equality' },
-  { path: 'src/services/process-yaml/phase-yaml-validator.ts', role: 'Validation', how: 'equality' },
+  {
+    path: 'src/services/capability-enforcement-plan.ts',
+    role: 'Permission posture and policy',
+    how: 'record',
+    note: 'behavior: declares per-backend CLI capability withholding flags, enforcement classes, and conditional residuals'
+  },
+  { path: 'src/runner/claude-cli.ts', role: 'Permission posture and policy', how: 'literal', note: 'behavior: Claude CLI subprocess adapter argv construction and unconditional permission literal' },
+  { path: 'src/runner/codex-cli.ts', role: 'Permission posture and policy', how: 'literal', note: 'behavior: Codex CLI subprocess adapter argv construction and unconditional sandbox literal' },
+  { path: 'src/runner/agy-cli.ts', role: 'Permission posture and policy', how: 'literal', note: 'behavior: Agy CLI subprocess adapter argv construction, effort rejection, and unconditional permission literal' },
 
   // ---- Export and IPC
-  { path: 'src/contracts/sidebar-ipc.ts', role: 'Export and IPC', how: 'equality' },
-  { path: 'src/ui/sidebar/commands/cmd-ping-backend.ts', role: 'Export and IPC', how: 'literal' },
-  { path: 'src/ui/sidebar/commands/router-types.ts', role: 'Export and IPC', how: 'record' },
-
-  // ---- Capability probing
-  { path: 'src/services/backend-capability-service.ts', role: 'Capability probing', how: 'record' },
-  { path: 'src/services/ambient-config-observer.ts', role: 'Capability probing', how: 'switch' },
-  { path: 'src/services/repo-agent-config-scanner.ts', role: 'Capability probing', how: 'record' },
+  {
+    path: 'src/ui/sidebar/commands/router-types.ts',
+    role: 'Export and IPC',
+    how: 'record',
+    note: 'runtime RouterDeps.readModelsConfig type signature (untouched during FR-R7-06 due to pre-existing working-tree edit)'
+  },
 
   // ---- Spend and usage
   { path: 'src/parser/invocation-usage.ts', role: 'Spend and usage', how: 'record' },

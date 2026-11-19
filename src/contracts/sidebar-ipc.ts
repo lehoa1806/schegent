@@ -324,6 +324,7 @@ import type {
   StartPhaseLogTailCommand,
   StopPhaseLogTailCommand
 } from './sidebar-ipc/phase-log';
+import { isBackendRunnerKind } from './backend-kinds';
 import type { ReadMetricsCommand } from './sidebar-ipc/metrics';
 import { isReadMetricsRequest } from './sidebar-ipc/metrics';
 import type { ResolveAuditPointerCommand } from './sidebar-ipc/history-evidence';
@@ -1006,7 +1007,7 @@ export function isCmdPingBackend(value: unknown): value is PingBackendCommand {
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
   if (Object.keys(payload).length !== 1) return false;
   const runner = (payload as { runner?: unknown }).runner;
-  return runner === 'claude' || runner === 'codex' || runner === 'agy';
+  return isBackendRunnerKind(runner);
 }
 
 // Feature 084 / feature 085 — read-only export guard. The payload is the
