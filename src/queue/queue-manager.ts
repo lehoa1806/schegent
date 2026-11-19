@@ -36,7 +36,8 @@ import {
   type QueueDeletionView,
   type WorkspaceStateStore
 } from '../state/workspace-state';
-import { OPERABLE_RUN_STATUSES, type RunPatch, type WorkflowRun } from '../state/workflow-run';
+import type { RunPatch, WorkflowRun } from '../state/workflow-run';
+import { allowedSameStatusFor } from '../state/run-transition-decision';
 import { connectedRunOwnsQueueItem, resolveBoundQueueId, workflowAttemptEndedForQueueItem } from '../state/connected-workflow-run';
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { SanitizedLogger } from '../lib/logger';
@@ -535,6 +536,62 @@ export class QueueManager {
     return inserted;
   }
 
+  private applyMarkInFlight(
+    queue: QueueState,
+    featureId: string,
+    runId: string,
+    now: number
+  ): { readonly queue: QueueState; readonly result: FeatureRequest | undefined } {
+    const current = queue.requests.find((r) => r.id === featureId);
+    const decision = decideTaskTransition({
+      operation: 'mark-in-flight',
+      currentStatus: current?.status,
+      queueAlreadyHasDifferentInFlight: queue.inFlightId !== null && queue.inFlightId !== featureId
+    });
+    if (!decision.eligible) {
+      // Thrown, not returned — a value returned from this mutator is always
+      // committed (with a bumped `updatedAt`) by `store.updateQueue` / `admitRunAtomically`, so
+      // the only way to leave the task row, queue ownership, and
+      // timestamps completely unchanged on refusal (spec FR-004) is to
+      // never reach that commit at all.
+      throw new QueueMutationRejected(
+        decision.reason,
+        `Cannot mark ${featureId} in-flight: ${decision.reason}`
+      );
+    }
+    const requests = queue.requests.map((r) =>
+      r.id === featureId
+        ? {
+            ...r,
+            status: 'in-flight' as FeatureRequestStatus,
+            runId,
+            startedAt: r.startedAt ?? now,
+            updatedAt: now
+          }
+        : r
+    );
+    return {
+      queue: withRefreshedLifecycle({ ...queue, requests, inFlightId: featureId }),
+      result: requests.find((request) => request.id === featureId)
+    };
+  }
+
+  /**
+   * FR-R7-01 — atomically persist a new `WorkflowRun` and mark its Task `in-flight` in one
+   * commit, then emit the post-commit dequeue debug log and `task-execution-started` audit event.
+   */
+  public async admitRun(featureId: string, run: WorkflowRun): Promise<void> {
+    const now = Date.now();
+    const ownerQueueId = this.queueIdForTask(featureId);
+    const movedRequest = await this.store.admitRunAtomically(
+      ownerQueueId,
+      run,
+      (queue) => this.applyMarkInFlight(queue, featureId, run.id, now),
+      this.store.runCommitClaim(ownerQueueId)
+    );
+    await this.emitTaskStartedPostCommit(ownerQueueId, featureId, run.id, movedRequest, false);
+  }
+
   public async markInFlight(featureId: string, runId: string, isResume: boolean = false): Promise<void> {
     const now = Date.now();
     // FR-R3-153 (T1636/T1637) — strict resolution (research.md R2): a missing
@@ -543,45 +600,22 @@ export class QueueManager {
     // row is opened at its own queue, so the mutator's `queue.requests.find`
     // is the true, race-safe answer to "does this queue own it."
     const ownerQueueId = this.queueIdForTask(featureId);
-    const movedRequest = await this.store.updateQueue((queue) => {
-      const current = queue.requests.find((r) => r.id === featureId);
-      const decision = decideTaskTransition({
-        operation: 'mark-in-flight',
-        currentStatus: current?.status,
-        queueAlreadyHasDifferentInFlight: queue.inFlightId !== null && queue.inFlightId !== featureId
-      });
-      if (!decision.eligible) {
-        // Thrown, not returned — a value returned from this mutator is always
-        // committed (with a bumped `updatedAt`) by `store.updateQueue`, so
-        // the only way to leave the task row, queue ownership, and
-        // timestamps completely unchanged on refusal (spec FR-004) is to
-        // never reach that commit at all. Matches this method's own
-        // pre-existing throw-to-refuse contract (`admitNew` already
-        // try/catches it).
-        throw new QueueMutationRejected(
-          decision.reason,
-          `Cannot mark ${featureId} in-flight: ${decision.reason}`
-        );
-      }
-      const requests = queue.requests.map((r) =>
-        r.id === featureId
-          ? {
-              ...r,
-              status: 'in-flight' as FeatureRequestStatus,
-              runId,
-              startedAt: r.startedAt ?? now,
-              updatedAt: now
-            }
-          : r
-      );
-      return {
-        queue: withRefreshedLifecycle({ ...queue, requests, inFlightId: featureId }),
-        result: requests.find((request) => request.id === featureId)
-      };
-    }, ownerQueueId,
+    const movedRequest = await this.store.updateQueue(
+      (queue) => this.applyMarkInFlight(queue, featureId, runId, now),
+      ownerQueueId,
       this.store.runCommitClaim(ownerQueueId)
     );
-    // Feature 019 — DEBUG instrumentation. `markInFlight` is the
+    await this.emitTaskStartedPostCommit(ownerQueueId, featureId, runId, movedRequest, isResume);
+  }
+
+  private async emitTaskStartedPostCommit(
+    ownerQueueId: string,
+    featureId: string,
+    runId: string,
+    movedRequest: FeatureRequest | undefined,
+    isResume: boolean
+  ): Promise<void> {
+    // Feature 019 — DEBUG instrumentation. `markInFlight` / `admitRun` is the
     // effective "dequeue" — a pending task transitions to in-flight.
     // `sizeAfter` reflects the pending count after the transition.
     const updatedQueue = this.store.getQueue(ownerQueueId);
@@ -592,7 +626,7 @@ export class QueueManager {
       sizeAfter: pendingAfter
     });
 
-    // Feature 072 — emit task-execution-started after markInFlight succeeds
+    // Feature 072 — emit task-execution-started after admission / markInFlight succeeds
     if (this.lifecycleAuditHook) {
       try {
         // Feature 093 (T022) — the queue is already resolved above as the one
@@ -2355,7 +2389,7 @@ export class QueueManager {
     try {
       await this.store.updateRun(
         queueId,
-        { runId, allowedStatuses: OPERABLE_RUN_STATUSES, label, patch },
+        { runId, allowedStatuses: allowedSameStatusFor('operator'), label, patch },
         this.store.runCommitClaim(queueId)
       );
     } catch (error) {

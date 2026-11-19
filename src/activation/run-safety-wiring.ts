@@ -18,7 +18,8 @@ import { withHostGitConfig } from '../lib/host-git-config';
 import { spawnCommandFor } from '../lib/spawn-command';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
-import { isOperableRunStatus, isTerminalRunStatus, LIVE_RUN_STATUSES } from '../state/workflow-run';
+import { isOperableRunStatus, isTerminalRunStatus } from '../state/workflow-run';
+import { allowedSameStatusFor } from '../state/run-transition-decision';
 import { createGitApprovalRequester, createPersistentGitApproval } from './git-approval';
 import { UNRECORDED_PIPELINE_ID } from '../state/git-plan-grants';
 import { createUncontainedConsentRequester } from './uncontained-consent';
@@ -262,7 +263,7 @@ export async function createRunSafetyWiring(input: {
         queueId,
         {
           runId: run.id,
-          allowedStatuses: LIVE_RUN_STATUSES,
+          allowedStatuses: allowedSameStatusFor('watchdog'),
           label: 'spend-pause',
           patch: (current) =>
             current.manualPauseAt !== null

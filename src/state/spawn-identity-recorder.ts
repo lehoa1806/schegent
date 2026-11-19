@@ -19,7 +19,8 @@
 // hours ago — a false refusal is worse than no check, because it cannot be cleared by waiting.
 import { errorMessage } from '../lib/errors';
 import type { SpawnIdentity } from '../contracts/spawn-identity';
-import { ALL_RUN_STATUSES, LIVE_RUN_STATUSES, type WorkflowRun } from './workflow-run';
+import { LIVE_RUN_STATUSES, type WorkflowRun } from './workflow-run';
+import { allowedSameStatusFor } from './run-transition-decision';
 import type { WorkspaceStateStore } from './workspace-state';
 
 /** The store surface this needs. Narrow, so a test supplies two methods. */
@@ -84,7 +85,8 @@ export function createSpawnIdentityRecorder(deps: SpawnIdentityRecorderDeps): {
         found.queueId,
         {
           runId: found.run.id,
-          allowedStatuses: identity === undefined ? ALL_RUN_STATUSES : LIVE_RUN_STATUSES,
+          allowedStatuses:
+            identity === undefined ? allowedSameStatusFor('driver') : LIVE_RUN_STATUSES,
           label: 'spawn-identity',
           // `undefined` removes the key: a Memento would keep an explicit `undefined` as a
           // present key, and `unrecorded` must mean absent.

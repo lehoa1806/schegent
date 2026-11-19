@@ -31,6 +31,7 @@ import {
 import type { RunStatus } from '../contracts/sqlite-store/schema-types';
 import type { ConnectedWorkflowRun } from './connected-workflow-run';
 import { isTerminalRunStatus, type WorkflowRun } from './workflow-run';
+import type { MementoBatchEntry } from './memento-write-gate';
 import { KEYS, type Memento } from './workspace-state';
 
 /** F03 authority bound for `finding-persisted-connected-runs-map` (`target-sqlite-run-step-attempt-history`). */
@@ -239,42 +240,64 @@ export class SqliteOperationalBacking {
   }
 
   public update(key: string, value: unknown): void {
+    this.updateBatch([{ key, value }]);
+  }
+
+  /**
+   * FR-R7-01 — commit multiple operational keys atomically in one `BEGIN IMMEDIATE ... COMMIT`
+   * SQLite transaction (Hard Rule 58). Updates `this.cache` only after `COMMIT` succeeds; any
+   * failure rolls back all keys and leaves `this.cache` unchanged.
+   */
+  public updateBatch(entries: readonly MementoBatchEntry[]): void {
+    if (entries.length === 0) return;
     const conn = this.store.writerConnection;
     const now = this.nowMs();
-    const liveRuns = (this.cache.get(KEYS.run) as Readonly<Record<string, WorkflowRun | undefined>> | undefined) ?? {};
-    const effectiveValue =
-      key === KEYS.connectedRuns && value !== undefined
-        ? pruneConnectedRunsMap(value, liveRuns, now)
-        : value;
+    const runEntry = entries.find((entry) => entry.key === KEYS.run);
+    const liveRuns =
+      ((runEntry !== undefined ? runEntry.value : this.cache.get(KEYS.run)) as
+        | Readonly<Record<string, WorkflowRun | undefined>>
+        | undefined) ?? {};
+
+    const prepared: Array<{ readonly key: string; readonly value: unknown }> = entries.map(
+      ({ key, value }) => ({
+        key,
+        value:
+          key === KEYS.connectedRuns && value !== undefined
+            ? pruneConnectedRunsMap(value, liveRuns, now)
+            : value
+      })
+    );
 
     conn.exec('BEGIN IMMEDIATE');
     try {
-      if (effectiveValue === undefined) {
-        conn.run(
-          `DELETE FROM operational_kv_documents WHERE doc_namespace = ? AND doc_key = ?`,
-          this.scopeId,
-          key
-        );
-      } else {
-        const json = JSON.stringify(effectiveValue);
-        const bytes = Buffer.byteLength(json, 'utf8');
-        conn.run(
-          `INSERT INTO operational_kv_documents (
-            doc_namespace, doc_key, revision, schema_version, payload_json, payload_bytes, is_terminal, updated_at_ms
-          ) VALUES (?, ?, 1, 1, ?, ?, 0, ?)
-          ON CONFLICT(doc_namespace, doc_key) DO UPDATE SET
-            revision = operational_kv_documents.revision + 1,
-            payload_json = excluded.payload_json,
-            payload_bytes = excluded.payload_bytes,
-            updated_at_ms = excluded.updated_at_ms`,
-          this.scopeId,
-          key,
-          json,
-          bytes,
-          now
-        );
+      for (const { key, value: effectiveValue } of prepared) {
+        if (effectiveValue === undefined) {
+          conn.run(
+            `DELETE FROM operational_kv_documents WHERE doc_namespace = ? AND doc_key = ?`,
+            this.scopeId,
+            key
+          );
+        } else {
+          const json = JSON.stringify(effectiveValue);
+          const bytes = Buffer.byteLength(json, 'utf8');
+          conn.run(
+            `INSERT INTO operational_kv_documents (
+              doc_namespace, doc_key, revision, schema_version, payload_json, payload_bytes, is_terminal, updated_at_ms
+            ) VALUES (?, ?, 1, 1, ?, ?, 0, ?)
+            ON CONFLICT(doc_namespace, doc_key) DO UPDATE SET
+              revision = operational_kv_documents.revision + 1,
+              payload_json = excluded.payload_json,
+              payload_bytes = excluded.payload_bytes,
+              updated_at_ms = excluded.updated_at_ms`,
+            this.scopeId,
+            key,
+            json,
+            bytes,
+            now
+          );
+        }
+        this.projectRelationalStateInTx(conn, key, effectiveValue, now);
       }
-      this.projectRelationalStateInTx(conn, key, effectiveValue, now);
       conn.exec('COMMIT');
     } catch (error) {
       try {
@@ -285,10 +308,12 @@ export class SqliteOperationalBacking {
       throw error;
     }
 
-    if (effectiveValue === undefined) {
-      this.cache.delete(key);
-    } else {
-      this.cache.set(key, structuredClone(effectiveValue));
+    for (const { key, value: effectiveValue } of prepared) {
+      if (effectiveValue === undefined) {
+        this.cache.delete(key);
+      } else {
+        this.cache.set(key, structuredClone(effectiveValue));
+      }
     }
   }
 
@@ -549,6 +574,7 @@ export class SqliteOperationalBacking {
 export interface SwitchableOperationalMemento extends Memento, AcceptanceMementoPort {
   get<T>(key: string): T | undefined;
   update(key: string, value: unknown): Promise<void>;
+  updateBatch(entries: readonly MementoBatchEntry[]): Promise<void>;
   attachSqlite(
     store: SqliteApplicationStore,
     scopeId: string,
@@ -631,6 +657,78 @@ export function createSwitchableOperationalMemento(
         throw new PostCutoverMementoWriteForbiddenError(key, postCutoverScopeId);
       }
       await legacyMemento.update(key, value);
+    },
+
+    async updateBatch(entries: readonly MementoBatchEntry[]): Promise<void> {
+      if (entries.length === 0) return;
+      const passthroughEntries = entries.filter((entry) => PASSTHROUGH_OWNERSHIP_KEYS.has(entry.key));
+      const operationalEntries = entries.filter((entry) => !PASSTHROUGH_OWNERSHIP_KEYS.has(entry.key));
+      const appliedLegacy: Array<{ readonly key: string; readonly previous: unknown }> = [];
+      const applyLegacyWithRollback = async (batch: readonly MementoBatchEntry[]): Promise<void> => {
+        for (const entry of batch) {
+          const previous = legacyMemento.get<unknown>(entry.key);
+          try {
+            await legacyMemento.update(entry.key, entry.value);
+            appliedLegacy.push({ key: entry.key, previous });
+          } catch (error) {
+            for (let i = appliedLegacy.length - 1; i >= 0; i -= 1) {
+              const prior = appliedLegacy[i]!;
+              try {
+                await legacyMemento.update(prior.key, prior.previous);
+              } catch {
+                // Best-effort compensating rollback on pre-cutover legacy Memento.
+              }
+            }
+            throw error;
+          }
+        }
+      };
+      if (operationalEntries.length > 0) {
+        if (activeSqlite !== null) {
+          activeSqlite.updateBatch(operationalEntries);
+        } else if (postCutoverScopeId !== null) {
+          const allUnchanged =
+            readOnlyCache !== null &&
+            operationalEntries.every((entry) =>
+              isSameSerializedState(readOnlyCache?.get(entry.key), entry.value)
+            );
+          if (!allUnchanged) {
+            if (
+              detachedWriter !== null &&
+              detachedWriter.scopeId === postCutoverScopeId &&
+              detachedWriter.canWrite()
+            ) {
+              const transient = new SqliteApplicationStore({
+                databasePath: detachedWriter.databasePath,
+                journalMode: 'wal'
+              });
+              try {
+                const backing = new SqliteOperationalBacking(
+                  transient,
+                  postCutoverScopeId,
+                  legacyMemento,
+                  () => Date.now(),
+                  logger
+                );
+                backing.updateBatch(operationalEntries);
+                readOnlyCache = backing.exportSnapshot();
+              } finally {
+                transient.close();
+              }
+            } else {
+              throw new PostCutoverMementoWriteForbiddenError(
+                operationalEntries.map((entry) => entry.key).join('+'),
+                postCutoverScopeId
+              );
+            }
+          }
+        } else {
+          await applyLegacyWithRollback(operationalEntries);
+        }
+      }
+      if (passthroughEntries.length > 0) {
+        await applyLegacyWithRollback(passthroughEntries);
+      }
     },
 
     attachSqlite(

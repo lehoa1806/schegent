@@ -202,6 +202,7 @@ neither listed nor excluded.
 - [Merge-gate observation](operations/merge-gate-observation.md)
 - [Multi-queue concurrency](operations/multi-queue-concurrency.md)
 - [Phase and task management](operations/phase-task-management.md) — the Phase controls, what each refusal means, and what Disable and Enable now say when the host refuses them (FR-R5-F19)
+- [Run status transitions and atomic admission](operations/run-status-transitions.md) — the exhaustive Run status transition table, actor classes, typed error hierarchy, and single-transaction atomic admission invariant (FR-R7-01)
 - [Platform observation record](operations/platform-observation-record.md)
 - [Process YAML](operations/process-yaml.md)
 - [Recovery from an interrupted run](operations/recovery-checkpoints.md)

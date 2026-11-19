@@ -215,6 +215,10 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // Feature 065 — host activation path reads `queueLifecycle` and re-arms.
   'src/state/workspace-state.ts',
   'src/state/workflow-run.ts',
+  // FR-R7-01 — single authoritative WorkflowRun status transition table keyed on all five
+  // `WorkflowRunStatus` values (including `'running'`); owns Run status transition legality
+  // beside `workflow-run.ts`, never the pinned per-task status projection.
+  'src/state/run-transition-decision.ts',
   'src/state/workflow-run-migrator.ts',
   // Feature 093 — the v10 → v11 run-record reshape. `RUN_STATUSES` enumerates
   // the `WorkflowRunStatus` union so `isWorkflowRun` can tell a persisted Run
