@@ -23,12 +23,14 @@
   // and an instance script share one module scope: the markup and the `$derived`
   // values read these same bindings, and importing a name in both blocks is a
   // redeclaration.
-  import type { BackendSection, FieldSpec } from './field-types';
+  import type { BackendSection, FieldSpec, ScalarKey } from './field-types';
   import {
     SUPPORTED_BACKENDS,
-    type BackendRunnerKind
-  } from '../../../../../src/contracts/backend-kinds';
-  import type { SpendDenomination } from '../../../../../src/contracts/backend-spend-denomination';
+    mapBackends,
+    spendDenominationOf,
+    type BackendMap,
+    type SpendDenomination
+  } from '../../../lib/generated/backend-descriptors';
   // FR-R3-143 (T030, T034) — the mode list and the allowlist element pattern are
   // READ from the module that enforces them, not copied. A copy on the far side of
   // the IPC boundary is the one that would drift, and it would drift silently: the
@@ -81,23 +83,18 @@
   // — because a fourth member of `BackendRunnerKind` must be a COMPILE error here.
   // A `Map` or an array would compile and render three backends out of four. That
   // property is asserted directly in `backend-record-exhaustiveness.test.ts`.
-  export const BACKENDS: Readonly<Record<BackendRunnerKind, BackendSection>> = {
-    claude: {
-      label: 'Claude',
-      path: { key: 'cliPath', ipcKey: 'cli.path', label: 'Claude CLI path', kind: 'string' },
-      specific: [AUTO_COMPACT_FIELD]
+  // FR-R7-06 — derived from the generated webview backend descriptor mirror so adding a
+  // backend to `BACKEND_DESCRIPTORS` renders and saves its section without editing this file.
+  export const BACKENDS: BackendMap<BackendSection> = mapBackends((descriptor) => ({
+    label: descriptor.displayLabel,
+    path: {
+      key: descriptor.cliPathFieldKey as ScalarKey,
+      ipcKey: descriptor.cliPathSettingKey,
+      label: `${descriptor.displayLabel} CLI path`,
+      kind: 'string'
     },
-    codex: {
-      label: 'Codex',
-      path: { key: 'codexPath', ipcKey: 'codex.path', label: 'Codex CLI path', kind: 'string' },
-      specific: []
-    },
-    agy: {
-      label: 'Agy',
-      path: { key: 'agyPath', ipcKey: 'agy.path', label: 'Agy CLI path', kind: 'string' },
-      specific: []
-    }
-  };
+    specific: descriptor.supportsAutoCompactPctOverride ? [AUTO_COMPACT_FIELD] : []
+  }));
 
   // FR-R3-144 (T031, C7-2) — the setting the whole item turns on. The product has
   // supported three backends since FR-R3-089 and the tab had no control for
@@ -219,10 +216,6 @@
   // FR-R3-143 (T035) — the SAME function the spawn calls. See T034's header in
   // that module for why it is reachable from here at all.
   import { resolveProcessEnvironmentPolicy } from '../../../../../src/contracts/process-environment-policy';
-  // FR-R3-144 (T036) — and the same rule again for the spend denomination: which
-  // bound is in force for a backend is one fact, stated in `src/contracts/` and
-  // read by both the settings tab and the autonomy-bounds document.
-  import { spendDenominationOf } from '../../../../../src/contracts/backend-spend-denomination';
 
   // FR-R3-144 (T025) — `fields` is GONE, and its absence is the point. It was
   // this group's slice of `BACKEND_FIELDS`, handed to `BackendHealthSection`,

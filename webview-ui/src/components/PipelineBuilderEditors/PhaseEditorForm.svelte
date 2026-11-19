@@ -5,7 +5,11 @@
   // Every field writes through `onphasechange` exactly as the single-card editor it replaces did;
   // only the grouping and the controls' look changed. The error list the fields point at with
   // `aria-describedby` is drawn in the page's Summary, under "Issues".
-  import { DEFAULT_BACKEND } from '../../../../src/contracts/backend-kinds';
+  import {
+    DEFAULT_BACKEND,
+    SUPPORTED_BACKENDS,
+    isUnsupportedEffortForBackend
+  } from '../../lib/generated/backend-descriptors';
   import type { PhaseDefinition, WorkflowSnapshot } from '../../lib/snapshot-types';
   import RetryConditionEditor from '../settings/RetryConditionEditor.svelte';
   import { mergeDetectedModels } from './model-catalog-state';
@@ -14,7 +18,7 @@
   import type { MutablePhase } from './types';
 
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-  const RUNNER_KINDS = ['claude', 'codex', 'agy'] as const;
+  const RUNNER_KINDS = SUPPORTED_BACKENDS;
   // Feature 098 T018 — runner sideEffects containment is enforced by the host save gate and runner.
 
   type DirectiveKind = 'instruction' | 'skill';
@@ -76,7 +80,7 @@
   }
 
   function effortOptionDisabled(effort: string): boolean {
-    return effectiveRunner === 'agy' && (effort === 'xhigh' || effort === 'max');
+    return isUnsupportedEffortForBackend(effectiveRunner, effort);
   }
 </script>
 
