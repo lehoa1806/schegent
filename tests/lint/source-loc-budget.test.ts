@@ -1725,7 +1725,13 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // note (three), which state the ladder's result in the qualification vocabulary. No event
       // type or constant changed; the mapping lives in
       // `src/services/containment-qualification/teardown-qualification.ts`, not here.
-      highWaterMark: 1688
+      //
+      // Feature 317 (FR-R7-03, 2026-11-19) — 1688 → 1696, +8 by this gate's count:
+      // `STORE_BACKUP_RESTORE_EVENT_TYPES` (`'store-backup'`, `'store-restore'`) with its doc
+      // comment and blank line (three), its spread into `ALL_AUDIT_EVENT_TYPES` with note (two),
+      // and both literals in `SYSTEM_SCOPED_EVENT_TYPES` with note (three). The payload interface
+      // `StoreBackupRestoreAuditPayload` lives in `src/contracts/sqlite-store/schema-types.ts`.
+      highWaterMark: 1696
     }
   },
   // Round 5 workflow control-flow, backend recovery, and admission modules (FR-R5-F26..F34, 2026-11-08) —

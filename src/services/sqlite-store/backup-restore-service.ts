@@ -1,118 +1,74 @@
 /**
- * FR-R6-F04 (F04-A, FR-009, SC-009) — Consistent online backup in `WAL` mode,
- * `BackupDependencyManifest` generation for external content-addressed blobs /
- * log segments / audit JSONL files, and validated restore with `PRAGMA quick_check`,
- * `PRAGMA foreign_key_check`, schema compatibility, and external dependency verification.
+ * FR-R6-F04 (F04-A, FR-009, SC-009) & FR-R7-03 (FR-001, FR-002, FR-005, FR-009, FR-010) —
+ * Consistent online backup in `WAL` mode, file-byte SHA-256 `BackupDependencyManifest`
+ * generation and persistence (`0700` dir / `0600` files), read-only listing and
+ * verification, bounded external dependency checks, and full-authority atomic restore
+ * across every table in `AUTHORITATIVE_RESTORE_TABLES`.
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  * Zero raw `node:fs` write primitives (docs/hard-rules.md rule 69).
  */
 
-import { createHash } from 'node:crypto';
-import { lstatSync } from 'node:fs';
 import * as path from 'node:path';
+import type { SQLInputValue } from 'node:sqlite';
 import {
+  MAX_BACKUP_EXTERNAL_DEPENDENCIES,
+  MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES,
   SQLITE_SCHEMA_CURRENT_VERSION,
   type BackupDependencyManifest,
   type BackupExternalDependency,
+  type BackupRestoreRejectionCode,
   type StorageAuthority
 } from '../../contracts/sqlite-store/schema-types';
 import { narrowMode } from '../../lib/narrow-mode';
-import { ensureAnchorWithinRoot, judgeLeafRedirect, platformLacksNoFollow } from '../../lib/safe-open';
+import {
+  ensureAnchorWithinRoot,
+  judgeLeafRedirect,
+  openWithinRoot,
+  platformLacksNoFollow
+} from '../../lib/safe-open';
+import {
+  AUTHORITATIVE_RESTORE_TABLES,
+  type AuthoritativeRestoreTableName
+} from './authoritative-restore-tables';
+import {
+  assertPathAndSidecarsAbsent,
+  computeFileDigestSync,
+  manifestFileNameFor,
+  MAX_BACKUP_DATABASE_BYTES,
+  SAFE_BACKUP_FILENAME_PATTERN,
+  SAFE_BACKUP_ID_PATTERN,
+  validateBackupPathBeforeOpen
+} from './backup-manifest-store';
 import {
   backfillOperationalEntitiesInTx,
   parseStrictSchemaMetaVersion
 } from './operational-entity-schema';
 import { NodeSqliteConnection } from './sqlite-driver';
 
-const SAFE_BACKUP_FILENAME_PATTERN = /^[A-Za-z0-9._-]+\.(?:db|sqlite|sqlite3)$/;
-const MAX_BACKUP_DATABASE_BYTES = 512 * 1024 * 1024;
-const SQLITE_SIDECAR_SUFFIXES = Object.freeze(['-wal', '-shm', '-journal'] as const);
+const SAFE_SQL_IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const AUTHORITATIVE_TABLE_SET = new Set<string>(AUTHORITATIVE_RESTORE_TABLES);
 
-interface BackupSnapshotTables {
+interface CapturedTableData {
+  readonly table: AuthoritativeRestoreTableName;
+  readonly columns: readonly string[];
+  readonly rows: readonly Record<string, unknown>[];
+}
+
+interface CapturedBackupSnapshot {
+  readonly schemaVersion: number;
   readonly hasQueueMeta: boolean;
   readonly hasTasks: boolean;
   readonly hasOperationalRuns: boolean;
-  readonly hasKvDocs: boolean;
-  readonly hasSentinels: boolean;
-  readonly runs: ReadonlyArray<{
-    readonly run_id: string;
-    readonly workspace_id: string;
-    readonly workflow_id: string;
-    readonly frozen_closure_id: string | null;
-    readonly status: string;
-    readonly revision: number;
-    readonly current_step_id: string | null;
-    readonly started_at_ms: number | null;
-    readonly completed_at_ms: number | null;
-    readonly terminal_reason: string | null;
-    readonly created_at_ms: number;
-    readonly updated_at_ms: number;
-    readonly queue_id?: string | null;
-    readonly backend_kind?: string | null;
-    readonly model_id?: string | null;
-    readonly profile_id?: string | null;
-    readonly lane_id?: string | null;
-    readonly invocation_count?: number;
-  }>;
-  readonly queueMeta: ReadonlyArray<{
-    readonly scope_id: string;
-    readonly queue_id: string;
-    readonly revision: number;
-    readonly in_flight_id: string | null;
-    readonly queue_lifecycle: string;
-    readonly pause_source: string | null;
-    readonly paused_reason: string | null;
-    readonly scheduled_start_at_ms: number | null;
-    readonly scheduled_start_source: string | null;
-    readonly failure_policy: string | null;
-    readonly updated_at_ms: number;
-    readonly remainder_json: string;
-  }>;
-  readonly tasks: ReadonlyArray<{
-    readonly scope_id: string;
-    readonly queue_id: string;
-    readonly task_id: string;
-    readonly revision: number;
-    readonly position: number;
-    readonly status: string;
-    readonly run_id: string | null;
-    readonly enqueued_at_ms: number;
-    readonly updated_at_ms: number;
-    readonly payload_json: string;
-  }>;
-  readonly operationalRuns: ReadonlyArray<{
-    readonly scope_id: string;
-    readonly queue_id: string;
-    readonly run_id: string;
-    readonly revision: number;
-    readonly feature_id: string;
-    readonly status: string;
-    readonly current_phase: string;
-    readonly started_at_ms: number;
-    readonly last_transition_at_ms: number;
-    readonly failure_cause: string | null;
-    readonly payload_json: string;
-  }>;
-  readonly kvDocs: ReadonlyArray<{
-    readonly doc_namespace: string;
-    readonly doc_key: string;
-    readonly revision: number;
-    readonly schema_version: number;
-    readonly payload_json: string;
-    readonly payload_bytes: number;
-    readonly is_terminal: number;
-    readonly updated_at_ms: number;
-  }>;
-  readonly sentinels: ReadonlyArray<{
-    readonly scope_id: string;
-    readonly authority: string;
-    readonly stage: string;
-    readonly cutover_epoch: number;
-    readonly legacy_digest_sha256: string;
-    readonly sqlite_digest_sha256: string;
-    readonly updated_at_ms: number;
-  }>;
+  readonly tables: ReadonlyMap<AuthoritativeRestoreTableName, CapturedTableData>;
+  readonly sqliteSequence: ReadonlyArray<{ readonly name: string; readonly seq: number }>;
+}
+
+function assertSafeSqlIdentifier(identifier: string, label: string): string {
+  if (!SAFE_SQL_IDENTIFIER_PATTERN.test(identifier)) {
+    throw new Error(`BACKUP_INVALID_SQL_IDENTIFIER: unsafe ${label}`);
+  }
+  return identifier;
 }
 
 function hasTableInConn(conn: NodeSqliteConnection, table: string): boolean {
@@ -124,56 +80,42 @@ function hasTableInConn(conn: NodeSqliteConnection, table: string): boolean {
   );
 }
 
-function computeDatabaseBytes(conn: NodeSqliteConnection): number {
-  const pageCount = Number(conn.scalar('PRAGMA page_count') ?? 0);
-  const pageSize = Number(conn.scalar('PRAGMA page_size') ?? 4096);
-  return pageCount * pageSize;
+function getTableColumns(conn: NodeSqliteConnection, table: string): readonly string[] {
+  const safeTable = assertSafeSqlIdentifier(table, 'table');
+  const cols = conn
+    .all<{ name: string }>(`PRAGMA table_info("${safeTable}")`)
+    .map((c) => assertSafeSqlIdentifier(c.name, 'column'));
+  return cols;
 }
 
-function readSnapshotTablesOnce(conn: NodeSqliteConnection): BackupSnapshotTables {
-  const hasQueueMeta = hasTableInConn(conn, 'operational_queue_meta');
-  const hasTasks = hasTableInConn(conn, 'operational_tasks');
-  const hasOperationalRuns = hasTableInConn(conn, 'operational_runs');
-  const hasKvDocs = hasTableInConn(conn, 'operational_kv_documents');
-  const hasSentinels = hasTableInConn(conn, 'cutover_sentinel');
+function readAllAuthoritativeTablesOnce(
+  conn: NodeSqliteConnection,
+  schemaVersion: number
+): CapturedBackupSnapshot {
+  const tables = new Map<AuthoritativeRestoreTableName, CapturedTableData>();
+  for (const table of AUTHORITATIVE_RESTORE_TABLES) {
+    if (!hasTableInConn(conn, table)) continue;
+    const safeTable = assertSafeSqlIdentifier(table, 'table');
+    const columns = getTableColumns(conn, safeTable);
+    const rows = conn.all<Record<string, unknown>>(`SELECT * FROM "${safeTable}"`);
+    tables.set(table, { table, columns, rows });
+  }
+
+  let sqliteSequence: Array<{ readonly name: string; readonly seq: number }> = [];
+  if (hasTableInConn(conn, 'sqlite_sequence')) {
+    sqliteSequence = conn
+      .all<{ name: string; seq: number }>(`SELECT name, seq FROM sqlite_sequence`)
+      .filter((row) => AUTHORITATIVE_TABLE_SET.has(row.name) && Number.isSafeInteger(row.seq));
+  }
+
   return {
-    hasQueueMeta,
-    hasTasks,
-    hasOperationalRuns,
-    hasKvDocs,
-    hasSentinels,
-    runs: conn.all(`SELECT * FROM runs ORDER BY run_id ASC`),
-    queueMeta: hasQueueMeta
-      ? conn.all(`SELECT * FROM operational_queue_meta ORDER BY scope_id ASC, queue_id ASC`)
-      : [],
-    tasks: hasTasks
-      ? conn.all(`SELECT * FROM operational_tasks ORDER BY scope_id ASC, queue_id ASC, position ASC, task_id ASC`)
-      : [],
-    operationalRuns: hasOperationalRuns
-      ? conn.all(`SELECT * FROM operational_runs ORDER BY scope_id ASC, queue_id ASC`)
-      : [],
-    kvDocs: hasKvDocs
-      ? conn.all(`SELECT * FROM operational_kv_documents ORDER BY doc_namespace ASC, doc_key ASC`)
-      : [],
-    sentinels: hasSentinels
-      ? conn.all(`SELECT * FROM cutover_sentinel ORDER BY scope_id ASC`)
-      : []
+    schemaVersion,
+    hasQueueMeta: tables.has('operational_queue_meta'),
+    hasTasks: tables.has('operational_tasks'),
+    hasOperationalRuns: tables.has('operational_runs'),
+    tables,
+    sqliteSequence
   };
-}
-
-/**
- * Deterministic full-row SHA-256 digest over a single-read `BackupSnapshotTables` object,
- * covering every restored column including `payload_json` and `remainder_json`.
- */
-function hashSnapshotTables(schemaVersion: number, snapshot: BackupSnapshotTables): string {
-  const hasher = createHash('sha256').update(`v:${schemaVersion}`);
-  hasher.update(`|runs:${JSON.stringify(snapshot.runs)}`);
-  if (snapshot.hasQueueMeta) hasher.update(`|q:${JSON.stringify(snapshot.queueMeta)}`);
-  if (snapshot.hasTasks) hasher.update(`|t:${JSON.stringify(snapshot.tasks)}`);
-  if (snapshot.hasOperationalRuns) hasher.update(`|or:${JSON.stringify(snapshot.operationalRuns)}`);
-  if (snapshot.hasKvDocs) hasher.update(`|kv:${JSON.stringify(snapshot.kvDocs)}`);
-  if (snapshot.hasSentinels) hasher.update(`|cs:${JSON.stringify(snapshot.sentinels)}`);
-  return hasher.digest('hex');
 }
 
 function collectExternalDependenciesFromConn(
@@ -234,104 +176,12 @@ function collectExternalDependenciesFromConn(
   return deps;
 }
 
-function validateBackupPathBeforeOpen(
-  backupDatabasePath: string,
-  trustedRootDir?: string
-): { readonly ok: true; readonly resolvedPath: string } | { readonly ok: false; readonly error: string } {
-  if (backupDatabasePath.length === 0 || backupDatabasePath.includes('\0')) {
-    return { ok: false, error: 'Backup database path is empty or contains a NUL byte' };
-  }
-  const rawSegments = backupDatabasePath.split(/[\\/]/);
-  if (rawSegments.some((seg) => seg === '.' || seg === '..')) {
-    return { ok: false, error: 'Backup database path must not contain relative "." or ".." segments' };
-  }
-  const resolvedTarget = path.resolve(backupDatabasePath);
-  const leafName = path.basename(resolvedTarget);
-  if (!SAFE_BACKUP_FILENAME_PATTERN.test(leafName) || leafName.includes('..')) {
-    return { ok: false, error: 'Backup database filename must be a plain *.db or *.sqlite leaf name' };
-  }
-  if (trustedRootDir !== undefined) {
-    if (!path.isAbsolute(trustedRootDir) || trustedRootDir.includes('\0')) {
-      return { ok: false, error: 'Trusted backup root directory must be an absolute path' };
-    }
-    if (!path.isAbsolute(backupDatabasePath)) {
-      return { ok: false, error: 'Backup database path must be an absolute path under trusted root' };
-    }
-    const resolvedRoot = path.resolve(trustedRootDir);
-    const rel = path.relative(resolvedRoot, resolvedTarget);
-    if (rel.length === 0 || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
-      return { ok: false, error: 'Backup database path escapes trusted root directory' };
-    }
-    const parts = rel.split(path.sep);
-    let current = resolvedRoot;
-    for (let i = 0; i < parts.length - 1; i += 1) {
-      current = path.join(current, parts[i]!);
-      try {
-        const dirStat = lstatSync(current);
-        if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
-          return { ok: false, error: 'Backup path traverses a symlink or non-directory component' };
-        }
-      } catch {
-        return { ok: false, error: 'Backup parent directory is unreadable' };
-      }
-    }
-  }
-  let stat: ReturnType<typeof lstatSync>;
-  try {
-    stat = lstatSync(resolvedTarget);
-  } catch {
-    return { ok: false, error: 'Backup database file does not exist or is unreadable' };
-  }
-  if (stat.isSymbolicLink()) {
-    return { ok: false, error: 'Backup database path must not be a symbolic link' };
-  }
-  if (!stat.isFile()) {
-    return { ok: false, error: 'Backup database path must be a regular file' };
-  }
-  let totalBytes = stat.size;
-  for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
-    try {
-      const sidecarStat = lstatSync(`${resolvedTarget}${suffix}`);
-      if (sidecarStat.isSymbolicLink() || !sidecarStat.isFile()) {
-        return { ok: false, error: `Backup SQLite sidecar (${suffix}) must not be a symlink or non-regular file` };
-      }
-      totalBytes += sidecarStat.size;
-    } catch (err) {
-      const code = (err as { code?: unknown } | null)?.code;
-      if (code !== 'ENOENT') {
-        return { ok: false, error: `Backup SQLite sidecar (${suffix}) could not be verified` };
-      }
-    }
-  }
-  if (totalBytes > MAX_BACKUP_DATABASE_BYTES) {
-    return {
-      ok: false,
-      error: `Backup database size (${totalBytes} bytes) exceeds maximum limit (${MAX_BACKUP_DATABASE_BYTES} bytes)`
-    };
-  }
-  return { ok: true, resolvedPath: resolvedTarget };
-}
-
-function assertPathAndSidecarsAbsent(backupDatabasePath: string, includeLeaf: boolean): void {
-  const targets = includeLeaf
-    ? [backupDatabasePath, ...SQLITE_SIDECAR_SUFFIXES.map((s) => `${backupDatabasePath}${s}`)]
-    : SQLITE_SIDECAR_SUFFIXES.map((s) => `${backupDatabasePath}${s}`);
-  for (const target of targets) {
-    let exists = false;
-    try {
-      lstatSync(target);
-      exists = true;
-    } catch (err) {
-      const code = (err as { code?: unknown } | null)?.code;
-      if (code !== 'ENOENT') {
-        throw new Error('BACKUP_PATH_REFUSED: unable to verify backup output path absence');
-      }
-    }
-    if (exists) {
-      throw new Error('BACKUP_PATH_REFUSED: backup output file or SQLite sidecar already exists');
-    }
-  }
-}
+export type { ListedBackupEntry } from './backup-manifest-store';
+export {
+  listBackupsInRoot,
+  manifestFileNameFor,
+  parseAndValidateBackupManifest
+} from './backup-manifest-store';
 
 export interface ExternalDependencyState {
   readonly exists: boolean;
@@ -350,17 +200,23 @@ export interface CreateOnlineBackupRequest {
   readonly relativeBackupDirSegments: readonly string[];
   readonly backupFileName?: string | undefined;
   readonly auditLogDependencies?: readonly BackupExternalDependency[] | undefined;
+  /** Persist companion `<backupFileName>.manifest.json` (`0o600`). Defaults to `true`. */
+  readonly writeManifestFile?: boolean | undefined;
 }
 
-export interface ValidateAndRestoreRequest {
+export interface VerifyBackupRequest {
   readonly backupDatabasePath: string;
   readonly manifest: BackupDependencyManifest;
   readonly trustedRootDir?: string | undefined;
   readonly maxSupportedSchemaVersion?: number | undefined;
+  readonly maxExternalDependencies?: number | undefined;
+  readonly maxExternalDependencyBytes?: number | undefined;
   readonly inspectExternalDependency?: ExternalDependencyInspector | undefined;
   /** Optional test hook to simulate quick_check failure on backup image. */
   readonly simulateQuickCheckFailure?: boolean | undefined;
 }
+
+export type ValidateAndRestoreRequest = VerifyBackupRequest;
 
 export interface RestoredOperationalCounts {
   readonly queueMetaCount: number;
@@ -370,25 +226,373 @@ export interface RestoredOperationalCounts {
   readonly cutoverSentinelCount: number;
 }
 
+export type VerifyBackupOutcome =
+  | {
+      readonly status: 'verified';
+      readonly backupId: string;
+      readonly schemaVersion: number;
+      readonly databaseBytes: number;
+      readonly databaseSha256: string;
+      readonly verifiedExternalDependencies: number;
+      readonly authoritativeTableCount: number;
+    }
+  | {
+      readonly status: 'rejected';
+      readonly reasonCode: BackupRestoreRejectionCode;
+      readonly message: string;
+    };
+
 export type RestoreValidationOutcome =
   | {
       readonly status: 'restored';
       readonly restoredRunCount: number;
+      readonly restoredTableCount: number;
+      readonly restoredRowCount: number;
       readonly restoredOperational?: RestoredOperationalCounts | undefined;
       readonly verifiedExternalDependencies: number;
       readonly schemaVersion: number;
     }
   | {
       readonly status: 'rejected';
-      readonly reasonCode:
-        | 'QUICK_CHECK_FAILED'
-        | 'FOREIGN_KEY_CHECK_FAILED'
-        | 'UNSUPPORTED_SCHEMA_VERSION'
-        | 'DATABASE_DIGEST_MISMATCH'
-        | 'EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT'
-        | 'BACKUP_OPEN_FAILED';
+      readonly reasonCode: BackupRestoreRejectionCode;
       readonly message: string;
     };
+
+type ValidatedBackupInternal =
+  | {
+      readonly ok: true;
+      readonly dbSchemaVersion: number;
+      readonly fileBytes: number;
+      readonly fileSha256: string;
+      readonly verifiedExternalDependencies: number;
+      readonly snapshot: CapturedBackupSnapshot;
+      readonly backupHasAllEntityTables: boolean;
+    }
+  | {
+      readonly ok: false;
+      readonly reasonCode: BackupRestoreRejectionCode;
+      readonly message: string;
+    };
+
+function validateBackupImageReadOnly(
+  request: VerifyBackupRequest,
+  captureRows: boolean
+): ValidatedBackupInternal {
+  const maxSchemaVersion = request.maxSupportedSchemaVersion ?? SQLITE_SCHEMA_CURRENT_VERSION;
+  const maxExternalDeps = request.maxExternalDependencies ?? MAX_BACKUP_EXTERNAL_DEPENDENCIES;
+  const maxExternalBytes =
+    request.maxExternalDependencyBytes ?? MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES;
+
+  if (
+    !Number.isSafeInteger(request.manifest.schemaVersion) ||
+    request.manifest.schemaVersion < 1 ||
+    request.manifest.schemaVersion > maxSchemaVersion
+  ) {
+    return {
+      ok: false,
+      reasonCode: 'UNSUPPORTED_SCHEMA_VERSION',
+      message:
+        `Backup manifest schemaVersion is invalid or exceeds supported maximum ${maxSchemaVersion}`
+    };
+  }
+
+  const validatedPath = validateBackupPathBeforeOpen(
+    request.backupDatabasePath,
+    request.trustedRootDir
+  );
+  if (!validatedPath.ok) {
+    return {
+      ok: false,
+      reasonCode: 'BACKUP_OPEN_FAILED',
+      message: validatedPath.error
+    };
+  }
+
+  // 1. Verify raw database file byte size and SHA-256 digest BEFORE opening SQLite (FR-002, SC-002).
+  const fileDigest = computeFileDigestSync(validatedPath.resolvedPath, MAX_BACKUP_DATABASE_BYTES);
+  if (!fileDigest.ok) {
+    return {
+      ok: false,
+      reasonCode: 'BACKUP_OPEN_FAILED',
+      message: fileDigest.error
+    };
+  }
+  if (
+    fileDigest.byteLength !== request.manifest.databaseBytes ||
+    fileDigest.sha256 !== request.manifest.databaseSha256
+  ) {
+    return {
+      ok: false,
+      reasonCode: 'DATABASE_DIGEST_MISMATCH',
+      message: 'Backup database file SHA-256 digest or byte size does not match manifest'
+    };
+  }
+
+  // 2. Verify external dependencies with deterministic count & cumulative byte bounds (FR-009).
+  const deps = request.manifest.externalDependencies;
+  if (deps.length > maxExternalDeps) {
+    return {
+      ok: false,
+      reasonCode: 'EXTERNAL_DEPENDENCY_BOUND_EXCEEDED',
+      message: `Backup manifest declares ${deps.length} external dependencies, exceeding limit ${maxExternalDeps}`
+    };
+  }
+  let declaredBytesTotal = 0;
+  for (const dep of deps) {
+    if (!Number.isSafeInteger(dep.byteLength) || dep.byteLength < 0) {
+      return {
+        ok: false,
+        reasonCode: 'EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT',
+        message: `External dependency '${dep.referenceId}' has an invalid byteLength`
+      };
+    }
+    declaredBytesTotal += dep.byteLength;
+    if (declaredBytesTotal > maxExternalBytes) {
+      return {
+        ok: false,
+        reasonCode: 'EXTERNAL_DEPENDENCY_BOUND_EXCEEDED',
+        message: `Backup external dependencies exceed cumulative byte ceiling (${maxExternalBytes} bytes)`
+      };
+    }
+  }
+
+  let verifiedExternalDependencies = 0;
+  if (deps.length > 0) {
+    if (!request.inspectExternalDependency) {
+      return {
+        ok: false,
+        reasonCode: 'EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT',
+        message:
+          `Backup manifest declares ${deps.length} external ` +
+          'dependency(ies) but no external dependency inspector was provided'
+      };
+    }
+    let inspectedBytesTotal = 0;
+    for (const dep of deps) {
+      const state = request.inspectExternalDependency(dep.relativePath);
+      if (
+        !state ||
+        !state.exists ||
+        !Number.isSafeInteger(state.byteLength) ||
+        state.byteLength < 0
+      ) {
+        return {
+          ok: false,
+          reasonCode: 'EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT',
+          message:
+            `External dependency verification failed for ${dep.dependencyKind} ` +
+            `'${dep.referenceId}'`
+        };
+      }
+      inspectedBytesTotal += state.byteLength;
+      if (inspectedBytesTotal > maxExternalBytes) {
+        return {
+          ok: false,
+          reasonCode: 'EXTERNAL_DEPENDENCY_BOUND_EXCEEDED',
+          message: `Inspected external dependencies exceed cumulative byte ceiling (${maxExternalBytes} bytes)`
+        };
+      }
+      if (state.byteLength !== dep.byteLength || state.sha256Digest !== dep.sha256Digest) {
+        return {
+          ok: false,
+          reasonCode: 'EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT',
+          message:
+            `External dependency digest or size mismatch for ${dep.dependencyKind} ` +
+            `'${dep.referenceId}'`
+        };
+      }
+      verifiedExternalDependencies += 1;
+    }
+  }
+
+  // 3. Open verified canonical backup path in an isolated read-only connection and validate in ONE snapshot.
+  let backupConn: NodeSqliteConnection;
+  try {
+    backupConn = new NodeSqliteConnection({
+      databasePath: validatedPath.resolvedPath,
+      readOnly: true
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      reasonCode: 'BACKUP_OPEN_FAILED',
+      message: err instanceof Error ? err.message : String(err)
+    };
+  }
+
+  try {
+    backupConn.exec('BEGIN');
+    try {
+      const quickCheckResults = request.simulateQuickCheckFailure
+        ? ['*** in database main ***\ncorrupt page 2']
+        : backupConn.runQuickCheck();
+
+      if (quickCheckResults.length !== 1 || quickCheckResults[0] !== 'ok') {
+        return {
+          ok: false,
+          reasonCode: 'QUICK_CHECK_FAILED',
+          message: `Backup failed PRAGMA quick_check: ${quickCheckResults.join('; ')}`
+        };
+      }
+
+      const fkViolations = backupConn.runForeignKeyCheck();
+      if (fkViolations.length > 0) {
+        return {
+          ok: false,
+          reasonCode: 'FOREIGN_KEY_CHECK_FAILED',
+          message: `Backup failed PRAGMA foreign_key_check with ${fkViolations.length} violation(s)`
+        };
+      }
+
+      if (!hasTableInConn(backupConn, 'schema_meta') || !hasTableInConn(backupConn, 'runs')) {
+        return {
+          ok: false,
+          reasonCode: 'BACKUP_OPEN_FAILED',
+          message: 'Backup database is missing required schema_meta or runs tables'
+        };
+      }
+
+      const minReaderRow = backupConn.get<{ meta_value: string }>(
+        `SELECT meta_value FROM schema_meta WHERE meta_key = 'min_reader_version'`
+      );
+      if (minReaderRow !== undefined) {
+        const minReaderVersion = parseStrictSchemaMetaVersion(minReaderRow.meta_value);
+        if (minReaderVersion === null) {
+          return {
+            ok: false,
+            reasonCode: 'UNSUPPORTED_SCHEMA_VERSION',
+            message: 'Backup database records an unreadable min_reader_version'
+          };
+        }
+        if (minReaderVersion > maxSchemaVersion) {
+          return {
+            ok: false,
+            reasonCode: 'UNSUPPORTED_SCHEMA_VERSION',
+            message: `Backup database min_reader_version=${minReaderVersion} exceeds supported max=${maxSchemaVersion}`
+          };
+        }
+      }
+
+      const dbVersionRow = backupConn.get<{ meta_value: string }>(
+        `SELECT meta_value FROM schema_meta WHERE meta_key = 'schema_version'`
+      );
+      const parsedDbVersion =
+        dbVersionRow !== undefined
+          ? parseStrictSchemaMetaVersion(dbVersionRow.meta_value)
+          : request.manifest.schemaVersion;
+      if (parsedDbVersion === null || parsedDbVersion > maxSchemaVersion) {
+        return {
+          ok: false,
+          reasonCode: 'UNSUPPORTED_SCHEMA_VERSION',
+          message: `Backup database schema_version is invalid or exceeds supported max=${maxSchemaVersion}`
+        };
+      }
+      if (parsedDbVersion !== request.manifest.schemaVersion) {
+        return {
+          ok: false,
+          reasonCode: 'DATABASE_DIGEST_MISMATCH',
+          message: 'Backup database schema_version does not match manifest'
+        };
+      }
+
+      const hasQueueMeta = hasTableInConn(backupConn, 'operational_queue_meta');
+      const hasTasks = hasTableInConn(backupConn, 'operational_tasks');
+      const hasOperationalRuns = hasTableInConn(backupConn, 'operational_runs');
+      const backupHasAllEntityTables = hasQueueMeta && hasTasks && hasOperationalRuns;
+      const backupHasAnyEntityTable = hasQueueMeta || hasTasks || hasOperationalRuns;
+      if (
+        (parsedDbVersion >= 9 && !backupHasAllEntityTables) ||
+        (backupHasAnyEntityTable && !backupHasAllEntityTables)
+      ) {
+        return {
+          ok: false,
+          reasonCode: 'BACKUP_OPEN_FAILED',
+          message: 'Backup database has an incomplete schema-9 per-entity table set'
+        };
+      }
+
+      const snapshot: CapturedBackupSnapshot = captureRows
+        ? readAllAuthoritativeTablesOnce(backupConn, parsedDbVersion)
+        : {
+            schemaVersion: parsedDbVersion,
+            hasQueueMeta,
+            hasTasks,
+            hasOperationalRuns,
+            tables: new Map(
+              AUTHORITATIVE_RESTORE_TABLES.filter((t) => hasTableInConn(backupConn, t)).map(
+                (t) => [t, { table: t, columns: [], rows: [] }]
+              )
+            ),
+            sqliteSequence: []
+          };
+
+      // Re-verify file digest after snapshot read (TOCTOU defense against mid-read file replacement).
+      const postReadDigest = computeFileDigestSync(
+        validatedPath.resolvedPath,
+        MAX_BACKUP_DATABASE_BYTES
+      );
+      if (
+        !postReadDigest.ok ||
+        postReadDigest.byteLength !== fileDigest.byteLength ||
+        postReadDigest.sha256 !== fileDigest.sha256
+      ) {
+        return {
+          ok: false,
+          reasonCode: 'DATABASE_DIGEST_MISMATCH',
+          message: 'Backup database file changed during validation; restore aborted'
+        };
+      }
+
+      return {
+        ok: true,
+        dbSchemaVersion: parsedDbVersion,
+        fileBytes: fileDigest.byteLength,
+        fileSha256: fileDigest.sha256,
+        verifiedExternalDependencies,
+        snapshot,
+        backupHasAllEntityTables
+      };
+    } finally {
+      try {
+        backupConn.exec('COMMIT');
+      } catch {
+        // Ignore read-transaction close error
+      }
+    }
+  } catch {
+    return {
+      ok: false,
+      reasonCode: 'BACKUP_OPEN_FAILED',
+      message: 'Backup database structure is invalid or unreadable'
+    };
+  } finally {
+    backupConn.close();
+  }
+}
+
+/**
+ * Verifies a backup image and its manifest in read-only isolation without requiring
+ * an open target database connection (usable both online and during offline rollback).
+ */
+export function verifyBackupStandalone(request: VerifyBackupRequest): VerifyBackupOutcome {
+  const validated = validateBackupImageReadOnly(request, false);
+  if (!validated.ok) {
+    return {
+      status: 'rejected',
+      reasonCode: validated.reasonCode,
+      message: validated.message
+    };
+  }
+  return {
+    status: 'verified',
+    backupId: request.manifest.backupId,
+    schemaVersion: validated.dbSchemaVersion,
+    databaseBytes: validated.fileBytes,
+    databaseSha256: validated.fileSha256,
+    verifiedExternalDependencies: validated.verifiedExternalDependencies,
+    authoritativeTableCount: validated.snapshot.tables.size
+  };
+}
 
 export class BackupRestoreService {
   private readonly conn: NodeSqliteConnection;
@@ -413,16 +617,21 @@ export class BackupRestoreService {
   /**
    * Produces a consistent online backup using SQLite's `VACUUM INTO` while the
    * store is active in `WAL` mode, inside a `0700` directory verified via
-   * `ensureAnchorWithinRoot` (Hard Rule 69).
+   * `ensureAnchorWithinRoot` (Hard Rule 69), computing file-byte SHA-256 and
+   * persisting the companion manifest (`0600`).
    */
   public async createOnlineBackup(
     request: CreateOnlineBackupRequest
   ): Promise<{
     readonly backupDatabasePath: string;
+    readonly manifestPath: string;
     readonly manifest: BackupDependencyManifest;
   }> {
     if (!path.isAbsolute(request.trustedRootDir) || request.trustedRootDir.includes('\0')) {
       throw new Error('BACKUP_PATH_REFUSED: trustedRootDir must be an absolute path');
+    }
+    if (!SAFE_BACKUP_ID_PATTERN.test(request.backupId) || request.backupId.includes('..')) {
+      throw new Error('INVALID_BACKUP_ID: backupId must match [A-Za-z0-9._-] without ".."');
     }
 
     const anchorRes = await ensureAnchorWithinRoot(
@@ -454,6 +663,10 @@ export class BackupRestoreService {
     }
 
     const backupDatabasePath = path.join(anchorRes.anchor, fileName);
+    const manifestFileName = manifestFileNameFor(fileName);
+    const manifestPath = path.join(anchorRes.anchor, manifestFileName);
+    const writeManifestFile = request.writeManifestFile ?? true;
+
     const leafJudgement = await judgeLeafRedirect(
       backupDatabasePath,
       ['ENOENT'],
@@ -462,7 +675,11 @@ export class BackupRestoreService {
     if (leafJudgement.outcome === 'refused') {
       throw new Error(`BACKUP_PATH_REFUSED: ${leafJudgement.reason}`);
     }
-    assertPathAndSidecarsAbsent(backupDatabasePath, true);
+    assertPathAndSidecarsAbsent(
+      backupDatabasePath,
+      true,
+      writeManifestFile ? manifestPath : undefined
+    );
 
     this.conn.run('VACUUM INTO ?', backupDatabasePath);
 
@@ -482,8 +699,6 @@ export class BackupRestoreService {
     });
     let schemaVersion: number;
     let cutoverAuthority: StorageAuthority;
-    let databaseBytes: number;
-    let databaseSha256: string;
     let externalDependencies: readonly BackupExternalDependency[];
     try {
       snapshotConn.exec('BEGIN');
@@ -505,9 +720,6 @@ export class BackupRestoreService {
           request.scopeId
         );
         cutoverAuthority = sentinelRow?.authority ?? 'sqlite';
-        databaseBytes = computeDatabaseBytes(snapshotConn);
-        const snapshot = readSnapshotTablesOnce(snapshotConn);
-        databaseSha256 = hashSnapshotTables(schemaVersion, snapshot);
         externalDependencies = collectExternalDependenciesFromConn(
           snapshotConn,
           request.auditLogDependencies
@@ -523,476 +735,230 @@ export class BackupRestoreService {
       snapshotConn.close();
     }
 
+    assertPathAndSidecarsAbsent(backupDatabasePath, false);
+    const fileDigest = computeFileDigestSync(backupDatabasePath, MAX_BACKUP_DATABASE_BYTES);
+    if (!fileDigest.ok) {
+      throw new Error(`BACKUP_DIGEST_FAILED: ${fileDigest.error}`);
+    }
+
     const manifest: BackupDependencyManifest = {
       backupId: request.backupId,
       createdAtMs: this.nowMs(),
       schemaVersion,
       sqliteVersion: runtimeMeta.sqliteVersion,
-      databaseSha256,
-      databaseBytes,
+      databaseSha256: fileDigest.sha256,
+      databaseBytes: fileDigest.byteLength,
       cutoverAuthority,
       externalDependencies
     };
 
+    if (writeManifestFile) {
+      const opened = await openWithinRoot(
+        request.trustedRootDir,
+        [...request.relativeBackupDirSegments, manifestFileName],
+        {
+          flags: 'wx',
+          createDirs: false,
+          fileMode: 0o600
+        }
+      );
+      if (opened.outcome === 'refused') {
+        throw new Error(`BACKUP_MANIFEST_WRITE_REFUSED: ${opened.reason}`);
+      }
+      try {
+        await opened.handle.writeFile(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+        await opened.handle.sync();
+      } finally {
+        await opened.handle.close();
+      }
+      const manifestNarrow = await narrowMode(manifestPath, 0o600);
+      if (manifestNarrow.outcome === 'refused-symlink') {
+        throw new Error('BACKUP_PATH_REFUSED: backup manifest resolved to a symlink');
+      }
+      if (process.platform !== 'win32' && manifestNarrow.outcome === 'unsupported') {
+        throw new Error(
+          `BACKUP_MODE_NARROWING_FAILED: backup manifest mode narrowing failed (${manifestNarrow.code})`
+        );
+      }
+    }
+
     return {
       backupDatabasePath,
+      manifestPath,
       manifest
     };
   }
 
   /**
+   * Read-only verification of a backup image and manifest without touching the live store.
+   */
+  public verifyBackup(request: VerifyBackupRequest): VerifyBackupOutcome {
+    return verifyBackupStandalone(request);
+  }
+
+  /**
    * Validates a backup image and its `BackupDependencyManifest` in an isolated
-   * connection BEFORE modifying the active store (`SC-009`).
-   * If any integrity, foreign-key, schema-version, or external-file digest check
-   * fails, the active store remains completely untouched.
+   * connection BEFORE modifying the active store (`SC-009`, `FR-R7-03`), then
+   * replaces every authoritative table in `AUTHORITATIVE_RESTORE_TABLES` atomically
+   * inside one `BEGIN IMMEDIATE ... COMMIT` transaction with FK and trigger preservation.
    */
   public validateAndRestoreBackup(
     request: ValidateAndRestoreRequest
   ): RestoreValidationOutcome {
-    const maxSchemaVersion = request.maxSupportedSchemaVersion ?? SQLITE_SCHEMA_CURRENT_VERSION;
+    const validated = validateBackupImageReadOnly(request, true);
+    if (!validated.ok) {
+      return {
+        status: 'rejected',
+        reasonCode: validated.reasonCode,
+        message: validated.message
+      };
+    }
 
-    if (
-      !Number.isSafeInteger(request.manifest.schemaVersion) ||
-      request.manifest.schemaVersion < 1 ||
-      request.manifest.schemaVersion > maxSchemaVersion
-    ) {
+    const { dbSchemaVersion, verifiedExternalDependencies, snapshot, backupHasAllEntityTables } =
+      validated;
+
+    const targetHasEntityTables =
+      hasTableInConn(this.conn, 'operational_queue_meta') &&
+      hasTableInConn(this.conn, 'operational_tasks') &&
+      hasTableInConn(this.conn, 'operational_runs');
+
+    if (backupHasAllEntityTables && !targetHasEntityTables) {
       return {
         status: 'rejected',
         reasonCode: 'UNSUPPORTED_SCHEMA_VERSION',
-        message:
-          `Backup manifest schemaVersion is invalid or exceeds supported maximum ${maxSchemaVersion}`
+        message: 'Target database lacks schema-9 per-entity operational tables required by backup'
       };
     }
 
-    const validatedPath = validateBackupPathBeforeOpen(
-      request.backupDatabasePath,
-      request.trustedRootDir
-    );
-    if (!validatedPath.ok) {
-      return {
-        status: 'rejected',
-        reasonCode: 'BACKUP_OPEN_FAILED',
-        message: validatedPath.error
-      };
-    }
+    const hasTargetTable = (table: string): boolean => hasTableInConn(this.conn, table);
 
-    // 1. Verify external dependencies before touching the live database (fail closed if inspector omitted)
-    let verifiedExternalDependencies = 0;
-    if (request.manifest.externalDependencies.length > 0) {
-      if (!request.inspectExternalDependency) {
-        return {
-          status: 'rejected',
-          reasonCode: 'EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT',
-          message:
-            `Backup manifest declares ${request.manifest.externalDependencies.length} external ` +
-            'dependency(ies) but no external dependency inspector was provided'
+    let restoredTableCount = 0;
+    let restoredRowCount = 0;
+    let restoredOperational: RestoredOperationalCounts;
+    let inBackfill = false;
+
+    this.conn.exec('BEGIN IMMEDIATE');
+    try {
+      this.conn.exec('PRAGMA defer_foreign_keys = ON');
+
+      // Preserve triggers (e.g., recovery_handoff_revisions immutability triggers) transactionally:
+      // drop before bulk replacement, recreate verbatim before COMMIT; ROLLBACK restores them on failure.
+      const savedTriggers = this.conn.all<{ name: string; sql: string }>(
+        `SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND sql IS NOT NULL ORDER BY name ASC`
+      );
+      for (const trig of savedTriggers) {
+        const safeTrigName = assertSafeSqlIdentifier(trig.name, 'trigger');
+        this.conn.exec(`DROP TRIGGER "${safeTrigName}"`);
+      }
+
+      for (const table of AUTHORITATIVE_RESTORE_TABLES) {
+        if (!hasTargetTable(table)) continue;
+        const safeTable = assertSafeSqlIdentifier(table, 'table');
+        this.conn.run(`DELETE FROM "${safeTable}"`);
+        restoredTableCount += 1;
+
+        const captured = snapshot.tables.get(table);
+        if (!captured || captured.rows.length === 0) continue;
+
+        const targetCols = getTableColumns(this.conn, safeTable);
+        const backupColSet = new Set(captured.columns);
+        const sharedCols = targetCols.filter((c) => backupColSet.has(c));
+        if (sharedCols.length === 0) continue;
+
+        const quotedCols = sharedCols.map((c) => `"${c}"`).join(', ');
+        const placeholders = sharedCols.map(() => '?').join(', ');
+        const insertSql = `INSERT INTO "${safeTable}" (${quotedCols}) VALUES (${placeholders})`;
+
+        for (const row of captured.rows) {
+          const params = sharedCols.map((col) => {
+            const val = row[col];
+            return (val === undefined ? null : val) as SQLInputValue;
+          });
+          this.conn.run(insertSql, ...params);
+          restoredRowCount += 1;
+        }
+      }
+
+      // Restore AUTOINCREMENT sequence numbers for authoritative tables (e.g. state_change_outbox).
+      if (hasTargetTable('sqlite_sequence')) {
+        for (const seqEntry of snapshot.sqliteSequence) {
+          this.conn.run(`DELETE FROM sqlite_sequence WHERE name = ?`, seqEntry.name);
+          this.conn.run(
+            `INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)`,
+            seqEntry.name,
+            seqEntry.seq
+          );
+        }
+      }
+
+      // Materialize pre-Migration-9 operational KV documents into schema-9 per-entity tables
+      // atomically before COMMIT so a restored schema-8 backup is immediately coherent on schema 9.
+      if (targetHasEntityTables && !backupHasAllEntityTables) {
+        inBackfill = true;
+        backfillOperationalEntitiesInTx(this.conn, this.nowMs());
+        inBackfill = false;
+        restoredOperational = {
+          queueMetaCount: Number(
+            this.conn.scalar(`SELECT COUNT(*) FROM operational_queue_meta`) ?? 0
+          ),
+          taskCount: Number(this.conn.scalar(`SELECT COUNT(*) FROM operational_tasks`) ?? 0),
+          operationalRunCount: Number(
+            this.conn.scalar(`SELECT COUNT(*) FROM operational_runs`) ?? 0
+          ),
+          kvDocumentCount: Number(
+            this.conn.scalar(`SELECT COUNT(*) FROM operational_kv_documents`) ?? 0
+          ),
+          cutoverSentinelCount: snapshot.tables.get('cutover_sentinel')?.rows.length ?? 0
+        };
+      } else {
+        restoredOperational = {
+          queueMetaCount: snapshot.tables.get('operational_queue_meta')?.rows.length ?? 0,
+          taskCount: snapshot.tables.get('operational_tasks')?.rows.length ?? 0,
+          operationalRunCount: snapshot.tables.get('operational_runs')?.rows.length ?? 0,
+          kvDocumentCount: snapshot.tables.get('operational_kv_documents')?.rows.length ?? 0,
+          cutoverSentinelCount: snapshot.tables.get('cutover_sentinel')?.rows.length ?? 0
         };
       }
-      for (const dep of request.manifest.externalDependencies) {
-        const state = request.inspectExternalDependency(dep.relativePath);
-        if (
-          !state ||
-          !state.exists ||
-          state.byteLength !== dep.byteLength ||
-          state.sha256Digest !== dep.sha256Digest
-        ) {
-          return {
-            status: 'rejected',
-            reasonCode: 'EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT',
-            message:
-              `External dependency verification failed for ${dep.dependencyKind} ` +
-              `'${dep.referenceId}' (${dep.relativePath})`
-          };
-        }
-        verifiedExternalDependencies += 1;
+
+      for (const trig of savedTriggers) {
+        this.conn.exec(trig.sql);
       }
-    }
 
-    // 2. Open verified canonical backup path in an isolated connection and validate in ONE read snapshot
-    let backupConn: NodeSqliteConnection;
-    try {
-      backupConn = new NodeSqliteConnection({
-        databasePath: validatedPath.resolvedPath,
-        readOnly: true
-      });
+      const postFkViolations = this.conn.runForeignKeyCheck();
+      if (postFkViolations.length > 0) {
+        this.conn.exec('ROLLBACK');
+        return {
+          status: 'rejected',
+          reasonCode: 'FOREIGN_KEY_CHECK_FAILED',
+          message: `Restored state failed PRAGMA foreign_key_check with ${postFkViolations.length} violation(s)`
+        };
+      }
+
+      this.conn.exec('COMMIT');
     } catch (err) {
-      return {
-        status: 'rejected',
-        reasonCode: 'BACKUP_OPEN_FAILED',
-        message: err instanceof Error ? err.message : String(err)
-      };
-    }
-
-    try {
-      let dbSchemaVersion: number;
-      let backupHasAllEntityTables: boolean;
-      let targetHasEntityTables: boolean;
-      let snapshot: BackupSnapshotTables;
-
       try {
-        backupConn.exec('BEGIN');
-        try {
-          const quickCheckResults = request.simulateQuickCheckFailure
-            ? ['*** in database main ***\ncorrupt page 2']
-            : backupConn.runQuickCheck();
-
-          if (quickCheckResults.length !== 1 || quickCheckResults[0] !== 'ok') {
-            return {
-              status: 'rejected',
-              reasonCode: 'QUICK_CHECK_FAILED',
-              message: `Backup failed PRAGMA quick_check: ${quickCheckResults.join('; ')}`
-            };
-          }
-
-          const fkViolations = backupConn.runForeignKeyCheck();
-          if (fkViolations.length > 0) {
-            return {
-              status: 'rejected',
-              reasonCode: 'FOREIGN_KEY_CHECK_FAILED',
-              message: `Backup failed PRAGMA foreign_key_check with ${fkViolations.length} violation(s)`
-            };
-          }
-
-          if (!hasTableInConn(backupConn, 'schema_meta') || !hasTableInConn(backupConn, 'runs')) {
-            return {
-              status: 'rejected',
-              reasonCode: 'BACKUP_OPEN_FAILED',
-              message: 'Backup database is missing required schema_meta or runs tables'
-            };
-          }
-
-          const minReaderRow = backupConn.get<{ meta_value: string }>(
-            `SELECT meta_value FROM schema_meta WHERE meta_key = 'min_reader_version'`
-          );
-          if (minReaderRow !== undefined) {
-            const minReaderVersion = parseStrictSchemaMetaVersion(minReaderRow.meta_value);
-            if (minReaderVersion === null) {
-              return {
-                status: 'rejected',
-                reasonCode: 'UNSUPPORTED_SCHEMA_VERSION',
-                message: 'Backup database records an unreadable min_reader_version'
-              };
-            }
-            if (minReaderVersion > maxSchemaVersion) {
-              return {
-                status: 'rejected',
-                reasonCode: 'UNSUPPORTED_SCHEMA_VERSION',
-                message: `Backup database min_reader_version=${minReaderVersion} exceeds supported max=${maxSchemaVersion}`
-              };
-            }
-          }
-
-          const dbVersionRow = backupConn.get<{ meta_value: string }>(
-            `SELECT meta_value FROM schema_meta WHERE meta_key = 'schema_version'`
-          );
-          const parsedDbVersion =
-            dbVersionRow !== undefined
-              ? parseStrictSchemaMetaVersion(dbVersionRow.meta_value)
-              : request.manifest.schemaVersion;
-          if (parsedDbVersion === null || parsedDbVersion > maxSchemaVersion) {
-            return {
-              status: 'rejected',
-              reasonCode: 'UNSUPPORTED_SCHEMA_VERSION',
-              message: `Backup database schema_version is invalid or exceeds supported max=${maxSchemaVersion}`
-            };
-          }
-          dbSchemaVersion = parsedDbVersion;
-          if (dbSchemaVersion !== request.manifest.schemaVersion) {
-            return {
-              status: 'rejected',
-              reasonCode: 'DATABASE_DIGEST_MISMATCH',
-              message: 'Backup database schema_version does not match manifest'
-            };
-          }
-
-          const actualBytes = computeDatabaseBytes(backupConn);
-          snapshot = readSnapshotTablesOnce(backupConn);
-          const actualSha256 = hashSnapshotTables(dbSchemaVersion, snapshot);
-          if (
-            actualBytes !== request.manifest.databaseBytes ||
-            actualSha256 !== request.manifest.databaseSha256
-          ) {
-            return {
-              status: 'rejected',
-              reasonCode: 'DATABASE_DIGEST_MISMATCH',
-              message: 'Backup database digest or byte size does not match manifest'
-            };
-          }
-
-          backupHasAllEntityTables =
-            snapshot.hasQueueMeta && snapshot.hasTasks && snapshot.hasOperationalRuns;
-          const backupHasAnyEntityTable =
-            snapshot.hasQueueMeta || snapshot.hasTasks || snapshot.hasOperationalRuns;
-          if (
-            (dbSchemaVersion >= 9 && !backupHasAllEntityTables) ||
-            (backupHasAnyEntityTable && !backupHasAllEntityTables)
-          ) {
-            return {
-              status: 'rejected',
-              reasonCode: 'BACKUP_OPEN_FAILED',
-              message: 'Backup database has an incomplete schema-9 per-entity table set'
-            };
-          }
-
-          targetHasEntityTables =
-            hasTableInConn(this.conn, 'operational_queue_meta') &&
-            hasTableInConn(this.conn, 'operational_tasks') &&
-            hasTableInConn(this.conn, 'operational_runs');
-
-          if (backupHasAllEntityTables && !targetHasEntityTables) {
-            return {
-              status: 'rejected',
-              reasonCode: 'UNSUPPORTED_SCHEMA_VERSION',
-              message: 'Target database lacks schema-9 per-entity operational tables required by backup'
-            };
-          }
-        } finally {
-          try {
-            backupConn.exec('COMMIT');
-          } catch {
-            // Ignore read-transaction close error
-          }
-        }
+        this.conn.exec('ROLLBACK');
       } catch {
+        // Ignore rollback error
+      }
+      if (inBackfill) {
         return {
           status: 'rejected',
           reasonCode: 'BACKUP_OPEN_FAILED',
-          message: 'Backup database structure is invalid or unreadable'
+          message: 'Failed to backfill legacy operational documents into schema-9 tables'
         };
       }
-
-      const backupRuns = snapshot.runs;
-      const backupQueueMeta = snapshot.queueMeta;
-      const backupTasks = snapshot.tasks;
-      const backupOperationalRuns = snapshot.operationalRuns;
-      const backupKvDocs = snapshot.kvDocs;
-      const backupSentinels = snapshot.sentinels;
-
-      const hasTargetTable = (table: string): boolean => hasTableInConn(this.conn, table);
-
-      const targetRunColumns = new Set(
-        this.conn.all<{ name: string }>(`PRAGMA table_info(runs)`).map((c) => c.name)
-      );
-      const targetHasExtendedRunCols = targetRunColumns.has('queue_id');
-
-      // 3. Apply validated restore atomically to the active connection
-      let restoredOperational: RestoredOperationalCounts;
-      let inBackfill = false;
-      this.conn.exec('BEGIN IMMEDIATE');
-      try {
-        this.conn.run(`DELETE FROM runs`);
-        for (const r of backupRuns) {
-          if (targetHasExtendedRunCols) {
-            this.conn.run(
-              `INSERT INTO runs (
-                run_id, workspace_id, workflow_id, frozen_closure_id, status, revision,
-                current_step_id, started_at_ms, completed_at_ms, terminal_reason, created_at_ms, updated_at_ms,
-                queue_id, backend_kind, model_id, profile_id, lane_id, invocation_count
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              r.run_id,
-              r.workspace_id,
-              r.workflow_id,
-              r.frozen_closure_id,
-              r.status,
-              r.revision,
-              r.current_step_id,
-              r.started_at_ms,
-              r.completed_at_ms,
-              r.terminal_reason,
-              r.created_at_ms,
-              r.updated_at_ms,
-              r.queue_id ?? null,
-              r.backend_kind ?? null,
-              r.model_id ?? null,
-              r.profile_id ?? null,
-              r.lane_id ?? null,
-              typeof r.invocation_count === 'number' ? r.invocation_count : 0
-            );
-          } else {
-            this.conn.run(
-              `INSERT INTO runs (
-                run_id, workspace_id, workflow_id, frozen_closure_id, status, revision,
-                current_step_id, started_at_ms, completed_at_ms, terminal_reason, created_at_ms, updated_at_ms
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              r.run_id,
-              r.workspace_id,
-              r.workflow_id,
-              r.frozen_closure_id,
-              r.status,
-              r.revision,
-              r.current_step_id,
-              r.started_at_ms,
-              r.completed_at_ms,
-              r.terminal_reason,
-              r.created_at_ms,
-              r.updated_at_ms
-            );
-          }
-        }
-
-        if (hasTargetTable('operational_tasks')) {
-          this.conn.run(`DELETE FROM operational_tasks`);
-          for (const t of backupTasks) {
-            this.conn.run(
-              `INSERT INTO operational_tasks (
-                scope_id, queue_id, task_id, revision, position, status, run_id,
-                enqueued_at_ms, updated_at_ms, payload_json
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              t.scope_id,
-              t.queue_id,
-              t.task_id,
-              t.revision,
-              t.position,
-              t.status,
-              t.run_id,
-              t.enqueued_at_ms,
-              t.updated_at_ms,
-              t.payload_json
-            );
-          }
-        }
-
-        if (hasTargetTable('operational_queue_meta')) {
-          this.conn.run(`DELETE FROM operational_queue_meta`);
-          for (const q of backupQueueMeta) {
-            this.conn.run(
-              `INSERT INTO operational_queue_meta (
-                scope_id, queue_id, revision, in_flight_id, queue_lifecycle,
-                pause_source, paused_reason, scheduled_start_at_ms, scheduled_start_source,
-                failure_policy, updated_at_ms, remainder_json
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              q.scope_id,
-              q.queue_id,
-              q.revision,
-              q.in_flight_id,
-              q.queue_lifecycle,
-              q.pause_source,
-              q.paused_reason,
-              q.scheduled_start_at_ms,
-              q.scheduled_start_source,
-              q.failure_policy,
-              q.updated_at_ms,
-              q.remainder_json
-            );
-          }
-        }
-
-        if (hasTargetTable('operational_runs')) {
-          this.conn.run(`DELETE FROM operational_runs`);
-          for (const orRow of backupOperationalRuns) {
-            this.conn.run(
-              `INSERT INTO operational_runs (
-                scope_id, queue_id, run_id, revision, feature_id, status, current_phase,
-                started_at_ms, last_transition_at_ms, failure_cause, payload_json
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              orRow.scope_id,
-              orRow.queue_id,
-              orRow.run_id,
-              orRow.revision,
-              orRow.feature_id,
-              orRow.status,
-              orRow.current_phase,
-              orRow.started_at_ms,
-              orRow.last_transition_at_ms,
-              orRow.failure_cause,
-              orRow.payload_json
-            );
-          }
-        }
-
-        if (hasTargetTable('operational_kv_documents')) {
-          this.conn.run(`DELETE FROM operational_kv_documents`);
-          for (const kv of backupKvDocs) {
-            this.conn.run(
-              `INSERT INTO operational_kv_documents (
-                doc_namespace, doc_key, revision, schema_version, payload_json,
-                payload_bytes, is_terminal, updated_at_ms
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-              kv.doc_namespace,
-              kv.doc_key,
-              kv.revision,
-              kv.schema_version,
-              kv.payload_json,
-              kv.payload_bytes,
-              kv.is_terminal,
-              kv.updated_at_ms
-            );
-          }
-        }
-
-        if (hasTargetTable('cutover_sentinel')) {
-          this.conn.run(`DELETE FROM cutover_sentinel`);
-          for (const s of backupSentinels) {
-            this.conn.run(
-              `INSERT INTO cutover_sentinel (
-                scope_id, authority, stage, cutover_epoch, legacy_digest_sha256,
-                sqlite_digest_sha256, updated_at_ms
-              ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-              s.scope_id,
-              s.authority,
-              s.stage,
-              s.cutover_epoch,
-              s.legacy_digest_sha256,
-              s.sqlite_digest_sha256,
-              s.updated_at_ms
-            );
-          }
-        }
-
-        // Materialize pre-Migration-9 operational KV documents into schema-9 per-entity tables
-        // atomically before COMMIT so a restored schema-8 backup is immediately coherent on schema 9.
-        if (targetHasEntityTables && !backupHasAllEntityTables) {
-          inBackfill = true;
-          backfillOperationalEntitiesInTx(this.conn, this.nowMs());
-          inBackfill = false;
-          restoredOperational = {
-            queueMetaCount: Number(
-              this.conn.scalar(`SELECT COUNT(*) FROM operational_queue_meta`) ?? 0
-            ),
-            taskCount: Number(this.conn.scalar(`SELECT COUNT(*) FROM operational_tasks`) ?? 0),
-            operationalRunCount: Number(
-              this.conn.scalar(`SELECT COUNT(*) FROM operational_runs`) ?? 0
-            ),
-            kvDocumentCount: Number(
-              this.conn.scalar(`SELECT COUNT(*) FROM operational_kv_documents`) ?? 0
-            ),
-            cutoverSentinelCount: backupSentinels.length
-          };
-        } else {
-          restoredOperational = {
-            queueMetaCount: backupQueueMeta.length,
-            taskCount: backupTasks.length,
-            operationalRunCount: backupOperationalRuns.length,
-            kvDocumentCount: backupKvDocs.length,
-            cutoverSentinelCount: backupSentinels.length
-          };
-        }
-        this.conn.exec('COMMIT');
-      } catch (err) {
-        try {
-          this.conn.exec('ROLLBACK');
-        } catch {
-          // Ignore
-        }
-        if (inBackfill) {
-          return {
-            status: 'rejected',
-            reasonCode: 'BACKUP_OPEN_FAILED',
-            message: 'Failed to backfill legacy operational documents into schema-9 tables'
-          };
-        }
-        throw err;
-      }
-
-      return {
-        status: 'restored',
-        restoredRunCount: backupRuns.length,
-        restoredOperational,
-        verifiedExternalDependencies,
-        schemaVersion: dbSchemaVersion
-      };
-    } finally {
-      backupConn.close();
+      throw err;
     }
+
+    return {
+      status: 'restored',
+      restoredRunCount: snapshot.tables.get('runs')?.rows.length ?? 0,
+      restoredTableCount,
+      restoredRowCount,
+      restoredOperational,
+      verifiedExternalDependencies,
+      schemaVersion: dbSchemaVersion
+    };
   }
 }
