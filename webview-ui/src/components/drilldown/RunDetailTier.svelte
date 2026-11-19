@@ -30,8 +30,9 @@
   import { findQueueRuntime } from '../../lib/queue-runtime-view';
   import { queueRowStatusChip } from '../../lib/queue-row-status';
   import { formatDuration } from '../../lib/format-duration';
-  import type { PhaseTile, QueueItemStatus } from '../../lib/snapshot-types';
+  import type { QueueItemStatus } from '../../lib/snapshot-types';
   import { resolveTaskPipelineName } from '../../lib/resolve-pipeline-name';
+  import { deriveRunDetailPhases, isSinglePhaseTask } from '../../lib/single-phase-task';
   import { createPhaseLogStore } from '../../lib/phase-log-store.svelte';
   import { TERMINAL_PHASE_SENTINEL } from '../../lib/activity-feed-selection.svelte';
   import { deriveRunLivenessView, deriveRunProgressView } from '../../lib/run-liveness-view';
@@ -141,40 +142,19 @@
       : null
   );
 
-  // Feature 265 BUG-001 (FR-011) — a leaf member Task, one a connected run names through a
-  // `phase` attempt, ran one Phase: `currentPipelineId` is that Phase's id. While it is not the
-  // one executing, `runtime.phases` is some other Run's strip, so it shows its own one tile, the
-  // non-borrowing rule `liveActivity` and `outputs` already follow. Standalone and legacy
-  // `pipeline`-node Tasks keep the queue's strip. Assumed mapping: no `failed` PhaseState
-  // exists, so a settled Task reads `completed` and the header's status names the outcome.
-  const isLeafMember = $derived(
-    (snapshot.connectedRuns ?? []).some((run) =>
-      (run.invocations ?? []).some((frame) =>
-        frame.attempts.some((attempt) => attempt.nodeKind === 'phase' && attempt.queueItemId === runId)
-      )
-    )
+  // Feature 265 BUG-001 (FR-011) & Feature 020 BUG-004 (FR-008) — Workflow leaf `phase` Tasks and
+  // standalone single-Phase Tasks synthesize their own Phase tile when not executing rather than
+  // reading an empty or sibling Run's `runtime.phases`. Multi-phase Pipelines keep `runtime.phases`.
+  const singlePhaseTask = $derived(isSinglePhaseTask(snapshot, task, runId));
+  const phases = $derived(
+    deriveRunDetailPhases({
+      snapshot,
+      task,
+      taskId: runId,
+      isExecuting,
+      runtimePhases: runtime?.phases ?? []
+    })
   );
-  const LEAF_TILE_STATE: Record<QueueItemStatus, PhaseTile['state']> = {
-    'pending': 'not-started',
-    'in-flight': 'active',
-    'paused': 'active',
-    'completed': 'completed',
-    'failed': 'completed',
-    'canceled': 'completed'
-  };
-  const phases = $derived.by((): readonly PhaseTile[] => {
-    const leafPhase = task?.currentPipelineId ?? null;
-    if (!isLeafMember || isExecuting || task === null || leafPhase === null) return runtime?.phases ?? [];
-    return [{
-      name: leafPhase,
-      order: 1,
-      state: LEAF_TILE_STATE[task.status],
-      iteration: 1,
-      lastResult: task.status === 'failed' ? 'failed' : null,
-      elapsedMs: 0,
-      subProgress: null
-    }];
-  });
   const activePhaseIndex = $derived(
     phases.findIndex((p) => p.state === 'active')
   );
@@ -209,7 +189,7 @@
     // typed as any string and the refusal this produces is silent.
     const currentPhase =
       task.currentPhase === TERMINAL_PHASE_SENTINEL ? null : task.currentPhase ?? null;
-    const effectivePhase = currentPhase ?? (isLeafMember ? (task.currentPipelineId ?? null) : null);
+    const effectivePhase = currentPhase ?? (singlePhaseTask ? (task.currentPipelineId ?? null) : null);
     const key = `${queueId}:${runId}:${task.currentPipelineId}:${effectivePhase}`;
     if (key === pinnedTaskKey) return;
     // A re-pin follows the Run as it advances, which is right up until the

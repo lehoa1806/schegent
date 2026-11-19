@@ -469,3 +469,97 @@ describe('Feature 020 BUG-002 — agy lines project by their shape', () => {
     expect(manifest.entries.map((entry) => entry.body.text)).toEqual([kept]);
   });
 });
+
+describe('Feature 020 BUG-004 (T087, FR-012b) — ACP-dispatched system and turn.completed lines', () => {
+  let workspaceRoot: string;
+
+  const SELECTION = {
+    queueId: 'q-agy',
+    taskId: 'run-acp-proj',
+    pipelineId: 'agy-speckit-auto',
+    phaseId: 'agy-speckit-auto',
+    iterationN: 1
+  } as const;
+
+  const CAPS = { perFieldBytes: 4096, maxEntries: 500 } as const;
+
+  beforeEach(async () => {
+    workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'acp-projector-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  function streamPath(): string {
+    return path.join(
+      workspaceRoot,
+      '.schegent',
+      'sessions',
+      SELECTION.taskId,
+      'diagnostics',
+      SELECTION.pipelineId,
+      SELECTION.phaseId,
+      `iter-${SELECTION.iterationN}`,
+      'stream.jsonl'
+    );
+  }
+
+  it('projects acp-plan, acp-status, and turn.completed identically in one-shot read and live tail', async () => {
+    const lines = [
+      { type: 'system', subtype: 'acp-status', summary: 'Thinking through transition table...' },
+      { type: 'system', subtype: 'acp-plan', summary: '[in_progress] Specify\n[pending] Implement' },
+      { type: 'turn.completed', session_id: 'codex-s1', usage: { input_tokens: 0, output_tokens: 0 } }
+    ]
+      .map((row) => JSON.stringify(row))
+      .join('\n') + '\n';
+
+    await fs.mkdir(path.dirname(streamPath()), { recursive: true });
+    await fs.writeFile(streamPath(), lines, 'utf8');
+
+    const manifest = await readIterationManifest({
+      workspaceRoot,
+      selection: SELECTION,
+      isInFlight: false,
+      progress: 'not-running',
+      caps: CAPS,
+      sanitize: (s) => s
+    });
+
+    expect(manifest.entries.map((e) => ({ kind: e.kind, body: e.body }))).toEqual([
+      {
+        kind: 'system',
+        body: { systemSubtype: 'acp-status', systemSummary: 'Thinking through transition table...' }
+      },
+      {
+        kind: 'system',
+        body: { systemSubtype: 'acp-plan', systemSummary: '[in_progress] Specify\n[pending] Implement' }
+      },
+      {
+        kind: 'result',
+        body: { resultSummary: 'session_id=codex-s1 usage={"input_tokens":0,"output_tokens":0}' }
+      }
+    ]);
+
+    const pushed: LiveLogBatchItem[] = [];
+    const session = new PhaseLogTailSession({
+      sessionId: 'tail-acp-1',
+      workspaceRoot,
+      filePath: streamPath(),
+      selection: SELECTION,
+      postBatch: (batch) => {
+        pushed.push(...batch.entries);
+        return true;
+      },
+      sanitize: (s) => s,
+      caps: { perFieldBytes: CAPS.perFieldBytes }
+    });
+    await session.start();
+    session.ack({ batchSeq: 0 });
+    await session.tick();
+
+    expect(pushed.map((p) => ({ kind: p.entry.kind, body: p.entry.body }))).toEqual(
+      manifest.entries.map((e) => ({ kind: e.kind, body: e.body }))
+    );
+  });
+});

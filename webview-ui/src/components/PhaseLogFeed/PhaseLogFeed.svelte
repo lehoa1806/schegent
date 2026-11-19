@@ -10,6 +10,7 @@
     isTransientTailFailure,
     type PhaseLogStore
   } from '../../lib/phase-log-store.svelte';
+  import { createEmptyIterationReprobeGate } from '../../lib/phase-log-empty-reprobe';
   import PhaseLogSelectors from './PhaseLogSelectors.svelte';
   import PhaseLogIterationStepper from './PhaseLogIterationStepper.svelte';
   import PhaseLogReadingPane from './PhaseLogReadingPane.svelte';
@@ -184,16 +185,12 @@
     store.applyInFlightIdentityChange({ queue: { inFlight: liveInFlight } });
   });
 
-  // Feature 265 BUG-002 (FR-014) — reload on new snapshot when an in-flight phase read 0 iterations.
-  let lastObservedSnapshot: WorkflowSnapshot | null = null;
+  // Feature 265 BUG-002 (FR-014) & Feature 020 BUG-004 (FR-029a) — bounded empty-iteration re-probe.
+  const emptyReprobeGate = createEmptyIterationReprobeGate();
   $effect(() => {
-    const prev = lastObservedSnapshot;
-    lastObservedSnapshot = snapshot;
-    if (
-      !state.loading && prev !== null && prev !== snapshot &&
-      state.iterations.length === 0 && state.verboseDiagnosticsState?.kind === 'phase-running-no-output' &&
-      tailInFlight !== null && tailInFlight.id === state.selection.taskId && tailInFlight.currentPhase === state.selection.phaseId
-    ) {
+    const isEmptyAwaitingOutput =
+      state.iterations.length === 0 && state.verboseDiagnosticsState?.kind === 'phase-running-no-output';
+    if (emptyReprobeGate.shouldReload({ snapshot, loading: state.loading, isEmptyAwaitingOutput, selection: state.selection, tailInFlight })) {
       void store.reload();
     }
   });
