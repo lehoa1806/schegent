@@ -6,7 +6,6 @@
   // themselves are `PhaseCatalogList.svelte` and `PhaseEditorPage.svelte`; every handler reaches
   // them unchanged from PipelineBuilder.
   import type { BuilderLifecycle, WorkflowSnapshot } from '../../lib/snapshot-types';
-  import { importDisabledReason, storedWritableLayers } from '../ProcessImport/process-exchange-entry';
   import TrustBanner from '../TrustBanner.svelte';
   import PhaseCatalogList from './PhaseCatalogList.svelte';
   import { phaseEditorOpen, type PhaseStatusView } from './phase-catalog-view';
@@ -28,13 +27,12 @@
     savePending: boolean;
     mutationActive: boolean;
     editableSourceKey: string | null;
+    importDisabledReason?: string | null;
     onselect: (index: number | null) => void;
     onadd: () => void;
     onremove: (index: number, originatingElement?: HTMLElement | null) => void | Promise<void>;
     onreset: (index: number) => void;
     onphasechange: (index: number, patch: Partial<MutablePhase>) => void;
-    onmoveup: (index: number) => void;
-    onmovedown: (index: number) => void;
     onundo: () => void;
     onredo: () => void;
     onsave: () => void;
@@ -45,6 +43,7 @@
     onretrychange: (index: number, event: { source: string; valid: boolean }) => void;
     onduplicate: (index: number) => void;
     onopenworkflow?: (workflowId: string) => void;
+    onopenimport?: (originatingElement: HTMLElement | null) => void;
   }
 
   const {
@@ -62,13 +61,12 @@
     savePending,
     mutationActive,
     editableSourceKey,
+    importDisabledReason = null,
     onselect,
     onadd,
     onremove,
     onreset,
     onphasechange,
-    onmoveup,
-    onmovedown,
     onundo,
     onredo,
     onsave,
@@ -78,7 +76,8 @@
     ontoggleretry,
     onretrychange,
     onduplicate,
-    onopenworkflow
+    onopenworkflow,
+    onopenimport
   }: Props = $props();
 
   const selectedPhase = $derived(selectedIndex !== null ? phases[selectedIndex] : null);
@@ -89,16 +88,6 @@
   const selectedReadOnly = $derived(
     !trusted || savePending ||
       (editableSourceKey !== null && selectedPhase?.sourceKey !== editableSourceKey)
-  );
-
-  const importLayers = $derived(
-    storedWritableLayers(
-      snapshot.phaseCatalog?.records ?? [],
-      snapshot.workflowCatalog?.records ?? []
-    )
-  );
-  const importUnavailable = $derived(
-    importDisabledReason({ catalog: 'phase', trusted, savePending, mutationActive })
   );
 
   const lifecycleByKey = $derived(
@@ -209,7 +198,6 @@
     {snapshot}
     {phase}
     index={selectedIndex}
-    phaseCount={phases.length}
     editState={selectedEditState ?? { rawJsonMode: false }}
     lifecycle={lifecycleByKey.get(phase.sourceKey)}
     workflows={allWorkflowDefinitions}
@@ -226,8 +214,6 @@
     {onremove}
     onreset={resetPhase}
     {onphasechange}
-    {onmoveup}
-    {onmovedown}
     {onundo}
     {onredo}
     {onsave}
@@ -242,10 +228,7 @@
   <PhaseCatalogList
     {phases}
     {lifecycleOf}
-    {importLayers}
-    {importUnavailable}
-    {historyIndex}
-    {historyLength}
+    {importDisabledReason}
     {trusted}
     {savePending}
     {mutationActive}
@@ -256,10 +239,8 @@
     {notices}
     {onselect}
     {onadd}
-    {onmoveup}
-    {onmovedown}
-    {onundo}
-    {onredo}
-    {onsave}
+    {onduplicate}
+    {onremove}
+    {onopenimport}
   />
 {/if}

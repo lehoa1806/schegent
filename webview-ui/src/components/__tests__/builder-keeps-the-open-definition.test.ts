@@ -305,7 +305,11 @@ describe('BUG-002 (101) — the Workflows tab keeps the open Workflow across an 
     });
     await tick();
 
-    expect(container.querySelector('[data-testid="workflows-no-selection"]')).not.toBeNull();
+    // Feature 326 — when the open Workflow disappears from the projection, the
+    // canvas closes and returns to the Workflows list view showing the sibling.
+    expect(container.querySelector('[data-testid="workflow-catalog-editor"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflow-catalog-list"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflows-list-item-sibling"]')).not.toBeNull();
   });
 
   it('leaves only the front door of the empty catalog when the last Workflow goes', async () => {

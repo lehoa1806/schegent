@@ -159,15 +159,14 @@ describe('definition-row-state — which actions to offer (US1, T034)', () => {
     ]);
   });
 
-  it('offers only Deactivate on an Active definition', () => {
-    expect(deriveDefinitionRowView(lifecycle({ state: 'active' })).actions).toEqual(['deactivate']);
+  it('offers no panel actions on an Active definition (Deactivate… lives in the header/row ⋯ menu)', () => {
+    expect(deriveDefinitionRowView(lifecycle({ state: 'active' })).actions).toEqual([]);
   });
 
-  it('offers all three on Active with draft', () => {
+  it('offers Publish and Discard draft on Active with draft (without duplicate Deactivate)', () => {
     expect(deriveDefinitionRowView(lifecycle({ state: 'active-with-draft' })).actions).toEqual([
       'publish',
-      'discard-draft',
-      'deactivate'
+      'discard-draft'
     ]);
   });
 

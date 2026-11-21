@@ -242,4 +242,17 @@ describe('DefinitionLifecyclePanel — the history expands in place (US4, T057, 
     expect(container.querySelector('[data-testid="definition-history-speckit-specify"]')).toBeNull();
     expect(document.activeElement).toBe(toggle);
   });
+
+  it('never renders a duplicate Deactivate button inside the lifecycle panel (Feature 326)', () => {
+    for (const state of ['draft', 'active', 'active-with-draft'] as const) {
+      const { container, unmount } = renderPanel({
+        lifecycle: lifecycle({ state })
+      });
+      expect(
+        container.querySelector('[data-testid="definition-action-deactivate-speckit-specify"]'),
+        `Deactivate must live only in overflow menus, not in lifecycle panel (${state})`
+      ).toBeNull();
+      unmount();
+    }
+  });
 });

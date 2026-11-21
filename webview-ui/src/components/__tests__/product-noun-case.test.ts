@@ -63,6 +63,7 @@ const NAMES = new Set([
   'phase detail for',
   // Placeholders and field, crumb and setting captions.
   'Search phases',
+  'Search workflows',
   'All workflows',
   'Selected phase',
   'Default workflow',
