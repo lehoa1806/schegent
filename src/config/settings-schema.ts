@@ -85,6 +85,8 @@ export interface SettingsSchemaEntry {
   readonly itemType?: 'string' | 'integer' | 'number' | 'boolean' | 'enum' | 'object';
   /** Optional element pattern for string arrays. */
   readonly itemPattern?: string;
+  /** Optional closed element enum for string arrays (mirrors `items.enum` in package.json). */
+  readonly itemEnum?: readonly string[];
   /** `true` when `default === null` and the value may be cleared back to null. */
   readonly nullable?: boolean;
 }
@@ -157,6 +159,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     type: 'array',
     default: [],
     itemType: 'string',
+    itemEnum: SUPPORTED_BACKENDS,
     scope: 'application',
     docLabel: 'Backends allowed to run with no OS-enforced bound'
   },
@@ -608,9 +611,12 @@ export function isSchemaCompliantValue(
             case 'enum': return typeof item === 'string';
           }
         })();
-        return typeMatches && (
-          entry.itemPattern === undefined ||
-          (typeof item === 'string' && new RegExp(entry.itemPattern).test(item))
+        return (
+          typeMatches &&
+          (entry.itemPattern === undefined ||
+            (typeof item === 'string' && new RegExp(entry.itemPattern).test(item))) &&
+          (entry.itemEnum === undefined ||
+            (typeof item === 'string' && entry.itemEnum.includes(item)))
         );
       });
     }

@@ -15,6 +15,7 @@ import { SpawnRefusedAfterCloseError } from '../../src/runner/spawn-refused-afte
 import { AgentStdinRefusedError } from '../../src/services/acp-runtime/stdio-transport';
 import { IsolatedLaneProvisionRefusedError } from '../../src/services/execution-lanes/run-lane-binding';
 import { UnattendedAdmissionRefused } from '../../src/controller/resume-pause-fields';
+import { RelocationWalFilesystemRefusedError } from '../../src/services/sqlite-store/store-relocation';
 import { ALL_PHASE_CAPABILITIES } from '../../src/contracts/phase-capabilities';
 
 /**
@@ -118,6 +119,17 @@ const REFUSALS: ReadonlyArray<{ readonly name: string; readonly make: () => Erro
     name: 'AgentConfigAcknowledgementRefusedError',
     // FR-R7-04: operator declined or prompt unavailable for repository agent configuration.
     make: () => new AgentConfigAcknowledgementRefusedError('claude', 5, 'unavailable')
+  },
+  {
+    name: 'RelocationWalFilesystemRefusedError',
+    // FR-R7-11 (Task 16): activation-time SQLite WAL refusal on network filesystems; ~125 chars,
+    // well below UNEXPECTED_MESSAGE_MAX (240), and caught during SQLite cutover activation.
+    make: () =>
+      new RelocationWalFilesystemRefusedError(
+        'Refused SQLite WAL mode: both canonical (nfs4) and legacy (cifs) are WAL-ineligible.',
+        { classification: 'network', filesystemType: 'nfs4' },
+        { classification: 'network', filesystemType: 'cifs' }
+      )
   }
 ];
 

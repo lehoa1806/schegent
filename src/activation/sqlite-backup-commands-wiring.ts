@@ -21,6 +21,8 @@ import {
   createStoreBackupRestoreApi,
   createWorkspaceExternalDependencyInspector
 } from '../headless/backup-restore-api';
+import type { SanitizedLogger } from '../lib/logger';
+import { isTerminalInvocationStatus } from '../services/workflow-execution/workflow-control-transition-table';
 import type { WorkspaceLockManager } from '../state/lock';
 import { isTerminalRunStatus } from '../state/workflow-run';
 import type { WorkspaceStateStore } from '../state/workspace-state';
@@ -41,6 +43,8 @@ export interface SqliteBackupCommandsWiringDeps {
   readonly auditWriter: AuditLogWriter;
   readonly notifier: Notifier;
   readonly projector: Pick<StateProjector, 'kick'>;
+  readonly refreshCatalog?: (() => Promise<void>) | undefined;
+  readonly logger?: Pick<SanitizedLogger, 'warn'> | undefined;
 }
 
 function createVscodeBackupRestoreUi(notifier: Notifier): BackupRestoreCommandUi {
@@ -80,9 +84,28 @@ function hasAnyInFlightRun(deps: SqliteBackupCommandsWiringDeps): boolean {
   }
   const connectedRuns = deps.store.getConnectedRuns();
   for (const connected of Object.values(connectedRuns)) {
-    const status = (connected as { readonly status?: unknown } | undefined)?.status;
-    if (status === 'in-flight' || status === 'waiting-for-handoff' || status === 'paused') {
+    if (connected.pendingHandoff !== undefined && connected.pendingHandoff !== null) {
       return true;
+    }
+    for (const frame of Object.values(connected.invocations ?? {})) {
+      if (!isTerminalInvocationStatus(frame.status)) {
+        return true;
+      }
+      if (frame.pendingHandoff !== undefined && frame.pendingHandoff !== null) {
+        return true;
+      }
+      for (const attempts of Object.values(frame.attemptsByNodeId)) {
+        if (
+          attempts.some(
+            (attempt) =>
+              attempt.status === 'pending-dispatch' ||
+              attempt.status === 'in-flight' ||
+              attempt.status === 'paused'
+          )
+        ) {
+          return true;
+        }
+      }
     }
   }
   const coordinator = getSqliteCutoverCoordinator(deps.store);
@@ -100,26 +123,43 @@ export function registerSqliteBackupCommands(
   const inspectExternalDependency = createWorkspaceExternalDependencyInspector(deps.workspaceRoot);
 
   const buildApi = () => {
-    const coordinator = getSqliteCutoverCoordinator(deps.store);
-    const trustedRootDir = coordinator?.storageRoot ?? deps.globalStorageRoot;
-    const scopeId = coordinator?.scopeId ?? deriveWorkspaceScopeId(deps.workspaceRoot);
+    const getCoordinator = () => getSqliteCutoverCoordinator(deps.store);
+    const scopeId = getCoordinator()?.scopeId ?? deriveWorkspaceScopeId(deps.workspaceRoot);
 
     return createStoreBackupRestoreApi({
-      getSqliteStore: () => coordinator?.getSqliteStore() ?? null,
+      getSqliteStore: () => getCoordinator()?.getSqliteStore() ?? null,
       ensurePrimaryStore: async () => {
-        const services = await coordinator?.activatePrimary();
+        const services = await getCoordinator()?.activatePrimary();
         return services?.sqliteStore ?? null;
       },
-      trustedRootDir,
+      trustedRootDir: () => getCoordinator()?.storageRoot ?? deps.globalStorageRoot,
       scopeId,
       hasPrimacy: () => deps.lock.hasPrimacy(),
       hasInFlightRun: () => hasAnyInFlightRun(deps),
       reloadAfterRestore: async () => {
-        await coordinator?.reloadAfterRestore();
-        deps.projector.kick();
+        const errors: unknown[] = [];
+        try {
+          await getCoordinator()?.reloadAfterRestore();
+        } catch (err) {
+          errors.push(err);
+        }
+        try {
+          await deps.refreshCatalog?.();
+        } catch (err) {
+          errors.push(err);
+        }
+        try {
+          deps.projector.kick();
+        } catch (err) {
+          errors.push(err);
+        }
+        if (errors.length > 0) {
+          throw errors[0];
+        }
       },
       inspectExternalDependency,
-      auditWriter: deps.auditWriter
+      auditWriter: deps.auditWriter,
+      logger: deps.logger
     });
   };
 

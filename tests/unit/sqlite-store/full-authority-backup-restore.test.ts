@@ -11,7 +11,8 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createWorkspaceExternalDependencyInspector } from '../../../src/headless/backup-restore-api';
 import {
   listBackupsInRoot,
   NodeSqliteConnection,
@@ -500,7 +501,7 @@ describe('Full-authority SQLite backup & restore (FR-R7-03 SC-001, SC-002, SC-00
       const flipped = Buffer.from(rawBytes);
       const flipIdx = Math.floor(flipped.length / 2);
       flipped[flipIdx] = (flipped[flipIdx] ?? 0) ^ 0x01;
-      await fs.writeFile(flippedPath, flipped);
+      await fs.writeFile(flippedPath, flipped, { mode: 0o600 });
 
       const flipVerify = store.backupRestore.verifyBackup({
         backupDatabasePath: flippedPath,
@@ -648,6 +649,208 @@ describe('Full-authority SQLite backup & restore (FR-R7-03 SC-001, SC-002, SC-00
         expect(fkFail.reasonCode).toBe('FOREIGN_KEY_CHECK_FAILED');
       }
       assertLiveUnchanged();
+    } finally {
+      store.close();
+    }
+  });
+
+  it('enforces POSIX owner-only modes (0700 dir, 0600 db/manifest) before reading and rejects oversized external dependencies before exceeding remaining budget (FR-R7-11 Task 05)', async () => {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-fr-r7-11-t05-'));
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-fr-r7-11-ws-'));
+    tempDirs.push(rootDir, workspaceRoot);
+    const now = 1_763_715_000_000;
+    const scopeId = 'scope-t05';
+
+    const store = new SqliteApplicationStore({
+      databasePath: path.join(rootDir, 'live.db'),
+      journalMode: 'wal',
+      nowMs: () => now
+    });
+
+    try {
+      store.writerConnection.run(
+        `INSERT INTO runs (
+          run_id, workspace_id, workflow_id, frozen_closure_id, status, revision,
+          current_step_id, started_at_ms, completed_at_ms, terminal_reason, created_at_ms, updated_at_ms
+        ) VALUES ('run-before-t05', ?, 'wf-t05', NULL, 'succeeded', 1, NULL, ?, ?, 'ok', ?, ?)`,
+        scopeId,
+        now,
+        now,
+        now,
+        now
+      );
+
+      const backup = await store.backupRestore.createOnlineBackup({
+        backupId: 'bkp-t05',
+        scopeId,
+        trustedRootDir: rootDir,
+        relativeBackupDirSegments: ['sqlite', scopeId, 'backups']
+      });
+
+      store.writerConnection.run(
+        `INSERT INTO runs (
+          run_id, workspace_id, workflow_id, frozen_closure_id, status, revision,
+          current_step_id, started_at_ms, completed_at_ms, terminal_reason, created_at_ms, updated_at_ms
+        ) VALUES ('run-live-t05-sentinel', ?, 'wf-t05', NULL, 'succeeded', 2, NULL, ?, ?, 'ok', ?, ?)`,
+        scopeId,
+        now + 50,
+        now + 50,
+        now + 50,
+        now + 50
+      );
+
+      const assertLiveUnchanged = () => {
+        const ids = store.writerConnection
+          .all<{ run_id: string }>(`SELECT run_id FROM runs ORDER BY run_id ASC`)
+          .map((r) => r.run_id);
+        expect(ids).toEqual(['run-before-t05', 'run-live-t05-sentinel']);
+      };
+
+      // 1. Oversized external dependency exceeding remaining budget refuses EXTERNAL_DEPENDENCY_BOUND_EXCEEDED
+      // before opening/hashing the file, leaving live store untouched.
+      const blobsDir = path.join(workspaceRoot, 'blobs');
+      await fs.mkdir(blobsDir, { recursive: true });
+      const smallBuf = Buffer.alloc(60, 0x41);
+      const smallSha = createHash('sha256').update(smallBuf).digest('hex');
+      const oversizedBuf = Buffer.alloc(512, 0x42);
+      const oversizedDeclaredSha = createHash('sha256').update(Buffer.alloc(30, 0x42)).digest('hex');
+      await fs.writeFile(path.join(blobsDir, 'small.bin'), smallBuf);
+      await fs.writeFile(path.join(blobsDir, 'oversized.bin'), oversizedBuf);
+
+      const realInspector = createWorkspaceExternalDependencyInspector(workspaceRoot);
+      const calls: Array<{
+        readonly relativePath: string;
+        readonly remainingBudgetBytes: number | undefined;
+        readonly result: ReturnType<typeof realInspector>;
+      }> = [];
+      const spiedInspector = vi.fn(
+        (relPath: string, opts?: { readonly remainingBudgetBytes?: number | undefined }) => {
+        const result = realInspector(relPath, opts);
+        calls.push({ relativePath: relPath, remainingBudgetBytes: opts?.remainingBudgetBytes, result });
+        return result;
+      });
+
+      const extManifest = {
+        ...backup.manifest,
+        externalDependencies: [
+          {
+            dependencyKind: 'artifact_blob' as const,
+            referenceId: 'blob-small',
+            relativePath: 'blobs/small.bin',
+            byteLength: 60,
+            sha256Digest: smallSha
+          },
+          {
+            dependencyKind: 'artifact_blob' as const,
+            referenceId: 'blob-oversized',
+            relativePath: 'blobs/oversized.bin',
+            byteLength: 30, // declared total 90 <= 100 ceiling, but disk file is 512 > 40 remaining
+            sha256Digest: oversizedDeclaredSha
+          }
+        ]
+      };
+
+      const extVerify = store.backupRestore.verifyBackup({
+        backupDatabasePath: backup.backupDatabasePath,
+        manifest: extManifest,
+        trustedRootDir: rootDir,
+        maxExternalDependencyBytes: 100,
+        inspectExternalDependency: spiedInspector
+      });
+      expect(extVerify.status).toBe('rejected');
+      if (extVerify.status === 'rejected') {
+        expect(extVerify.reasonCode).toBe('EXTERNAL_DEPENDENCY_BOUND_EXCEEDED');
+      }
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.remainingBudgetBytes).toBe(100);
+      expect(calls[0]?.result?.exceededByteBudget).toBeUndefined();
+      expect(calls[1]?.remainingBudgetBytes).toBe(40);
+      expect(calls[1]?.result).toEqual({
+        exists: true,
+        byteLength: 512,
+        sha256Digest: '',
+        exceededByteBudget: true
+      });
+
+      const extRestore = store.backupRestore.validateAndRestoreBackup({
+        backupDatabasePath: backup.backupDatabasePath,
+        manifest: extManifest,
+        trustedRootDir: rootDir,
+        maxExternalDependencyBytes: 100,
+        inspectExternalDependency: realInspector
+      });
+      expect(extRestore.status).toBe('rejected');
+      if (extRestore.status === 'rejected') {
+        expect(extRestore.reasonCode).toBe('EXTERNAL_DEPENDENCY_BOUND_EXCEEDED');
+      }
+      assertLiveUnchanged();
+
+      // Multi-chunk streaming (> 64 KiB chunk size) hashes accurately when within budget.
+      const multiChunkBuf = Buffer.alloc(150 * 1024, 0x5a);
+      const multiChunkSha = createHash('sha256').update(multiChunkBuf).digest('hex');
+      await fs.writeFile(path.join(blobsDir, 'multi-chunk.bin'), multiChunkBuf);
+      expect(realInspector('blobs/multi-chunk.bin', { remainingBudgetBytes: 200 * 1024 })).toEqual({
+        exists: true,
+        byteLength: 150 * 1024,
+        sha256Digest: multiChunkSha
+      });
+
+      // 2. POSIX owner-only mode refusals (0644 manifest, 0644 db, 0755 backup dir) before reading.
+      if (process.platform !== 'win32') {
+        const backupsDir = path.dirname(backup.backupDatabasePath);
+
+        // 2a. Companion manifest widened to 0644 -> listBackupsInRoot marks invalid without reading, restore rejects.
+        await fs.chmod(backup.manifestPath, 0o644);
+        const listedBadManifest = await listBackupsInRoot(rootDir, ['sqlite', scopeId, 'backups']);
+        expect(listedBadManifest).toHaveLength(1);
+        expect(listedBadManifest[0]?.manifestStatus).toBe('invalid');
+        expect(listedBadManifest[0]?.manifest).toBeUndefined();
+        const restoreBadManifest = store.backupRestore.validateAndRestoreBackup({
+          backupDatabasePath: backup.backupDatabasePath,
+          manifest: backup.manifest,
+          trustedRootDir: rootDir
+        });
+        expect(restoreBadManifest.status).toBe('rejected');
+        if (restoreBadManifest.status === 'rejected') {
+          expect(restoreBadManifest.reasonCode).toBe('BACKUP_OPEN_FAILED');
+        }
+        assertLiveUnchanged();
+        await fs.chmod(backup.manifestPath, 0o600);
+
+        // 2b. Backup .db widened to 0644 -> listBackupsInRoot marks invalid without reading manifest, restore rejects.
+        await fs.chmod(backup.backupDatabasePath, 0o644);
+        const listedBadDb = await listBackupsInRoot(rootDir, ['sqlite', scopeId, 'backups']);
+        expect(listedBadDb).toHaveLength(1);
+        expect(listedBadDb[0]?.manifestStatus).toBe('invalid');
+        expect(listedBadDb[0]?.manifest).toBeUndefined();
+        const restoreBadDb = store.backupRestore.validateAndRestoreBackup({
+          backupDatabasePath: backup.backupDatabasePath,
+          manifest: backup.manifest,
+          trustedRootDir: rootDir
+        });
+        expect(restoreBadDb.status).toBe('rejected');
+        if (restoreBadDb.status === 'rejected') {
+          expect(restoreBadDb.reasonCode).toBe('BACKUP_OPEN_FAILED');
+        }
+        assertLiveUnchanged();
+        await fs.chmod(backup.backupDatabasePath, 0o600);
+
+        // 2c. Backup directory widened to 0755 -> listBackupsInRoot returns [] before readdirSync, restore rejects.
+        await fs.chmod(backupsDir, 0o755);
+        const listedBadDir = await listBackupsInRoot(rootDir, ['sqlite', scopeId, 'backups']);
+        expect(listedBadDir).toEqual([]);
+        const restoreBadDir = store.backupRestore.validateAndRestoreBackup({
+          backupDatabasePath: backup.backupDatabasePath,
+          manifest: backup.manifest,
+          trustedRootDir: rootDir
+        });
+        expect(restoreBadDir.status).toBe('rejected');
+        if (restoreBadDir.status === 'rejected') {
+          expect(restoreBadDir.reasonCode).toBe('BACKUP_OPEN_FAILED');
+        }
+        assertLiveUnchanged();
+        await fs.chmod(backupsDir, 0o700);
+      }
     } finally {
       store.close();
     }

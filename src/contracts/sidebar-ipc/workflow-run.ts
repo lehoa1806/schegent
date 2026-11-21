@@ -26,8 +26,11 @@
 // terminal state, not the presence of any particular one.
 
 import type { ExecutionDecisionObservation } from '../execution-decision-observation';
-import type { CMD_CONTINUE_WORKFLOW, CMD_LAUNCH_WORKFLOW, CommandBase } from '../sidebar-ipc';
 import type { RunRequest, RunRequestFieldError } from '../run-request';
+export type {
+  LaunchWorkflowCommand,
+  ContinueWorkflowCommand
+} from '../generated/sidebar-ipc-types';
 import {
   CANDIDATE_AVAILABILITY_POLICIES,
   MAX_CANDIDATES_PER_BLOCK,
@@ -434,10 +437,6 @@ export interface LaunchWorkflowPayload {
   readonly queueId?: string;
 }
 
-export interface LaunchWorkflowCommand extends CommandBase<typeof CMD_LAUNCH_WORKFLOW> {
-  readonly payload: LaunchWorkflowPayload;
-}
-
 /**
  * Why a start was refused for a reason that is neither a field nor the queue.
  *
@@ -500,10 +499,6 @@ export interface ContinueWorkflowPayload {
   readonly commandId?: string;
   /** FR-R5-F31 (SPEC-09, D8) — version-1 candidate/workflow control command envelope. */
   readonly controlCommand?: ControlCommandEnvelope;
-}
-
-export interface ContinueWorkflowCommand extends CommandBase<typeof CMD_CONTINUE_WORKFLOW> {
-  readonly payload: ContinueWorkflowPayload;
 }
 
 /**

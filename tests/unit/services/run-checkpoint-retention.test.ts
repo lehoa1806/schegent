@@ -415,5 +415,85 @@ describe('FR-R3-012 (T436) cross-run checkpoint retention', () => {
       expect(result.removedRunCount).toBe(1);
       expect(await survivors()).toEqual(['pinned-old-run']);
     });
+
+    it('refuses removing targets overlapping canonical, fallback, sidecar, or preserved unselected protected database paths (FR-R7-11, FR-020)', async () => {
+      const canonicalHolder = await writeRun('canonical-holder', 40, { bytes: 2_048 });
+      const fallbackHolder = await writeRun('fallback-holder', 40, { bytes: 2_048 });
+      const sidecarHolder = await writeRun('sidecar-holder', 40, { bytes: 2_048 });
+      const preservedHolder = await writeRun('preserved-holder', 40, { bytes: 2_048 });
+      await writeRun('disposable-old', 40, { bytes: 2_048 });
+
+      const protectedDbPaths = [
+        path.join(canonicalHolder, 'schegent-state.db'),
+        path.join(fallbackHolder, 'schegent-state.db'),
+        path.join(sidecarHolder, 'schegent-state.db-wal'),
+        path.join(preservedHolder, 'schegent-state.unselected-abcdef012345.db')
+      ];
+
+      const info = vi.fn();
+      const warn = vi.fn();
+      const svc = new RunCheckpointRetentionService({
+        globalStorageRoot,
+        logger: { info, warn },
+        now: () => NOW,
+        policy: {
+          maxAgeMs: CHECKPOINT_MAX_AGE_MS,
+          maxTotalBytes: 1,
+          recentRunFloor: 0
+        },
+        protectedPaths: () => protectedDbPaths
+      });
+
+      const result = await svc.sweep();
+      expect(result.removedRunCount).toBe(1);
+      expect(result.failures).toBe(4);
+      expect(await survivors()).toEqual([
+        'canonical-holder',
+        'fallback-holder',
+        'preserved-holder',
+        'sidecar-holder'
+      ]);
+      expect(warn).toHaveBeenCalledWith('checkpoint-retention: remove-run refused', {
+        reason: 'protected-path'
+      });
+      // Warning payload must remain path-free
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(globalStorageRoot);
+    });
+
+    it('fails closed on unresolvable protected paths (ELOOP) and enforces case-variant protection on case-insensitive platforms', async () => {
+      const targetHolder = await writeRun('case-holder', 40, { bytes: 2_048 });
+      const loopA = path.join(globalStorageRoot, 'loop-a');
+      const loopB = path.join(globalStorageRoot, 'loop-b');
+      await fs.symlink(loopB, loopA);
+      await fs.symlink(loopA, loopB);
+
+      const warnLoop = vi.fn();
+      const loopSvc = new RunCheckpointRetentionService({
+        globalStorageRoot,
+        logger: { info: vi.fn(), warn: warnLoop },
+        now: () => NOW,
+        policy: { maxAgeMs: CHECKPOINT_MAX_AGE_MS, maxTotalBytes: 1, recentRunFloor: 0 },
+        protectedPaths: () => [path.join(loopA, 'schegent-state.db')]
+      });
+      const loopResult = await loopSvc.sweep();
+      expect(loopResult.removedRunCount).toBe(0);
+      expect(loopResult.failures).toBe(1);
+      expect(await survivors()).toEqual(['case-holder']);
+
+      if (process.platform === 'darwin' || process.platform === 'win32') {
+        const upperCaseProtected = path.join(targetHolder, 'SCHEGENT-STATE.DB').toUpperCase();
+        const caseSvc = new RunCheckpointRetentionService({
+          globalStorageRoot,
+          logger: { info: vi.fn(), warn: vi.fn() },
+          now: () => NOW,
+          policy: { maxAgeMs: CHECKPOINT_MAX_AGE_MS, maxTotalBytes: 1, recentRunFloor: 0 },
+          protectedPaths: () => [upperCaseProtected]
+        });
+        const caseResult = await caseSvc.sweep();
+        expect(caseResult.removedRunCount).toBe(0);
+        expect(caseResult.failures).toBe(1);
+        expect(await survivors()).toEqual(['case-holder']);
+      }
+    });
   });
 });

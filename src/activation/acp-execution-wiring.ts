@@ -118,6 +118,7 @@ export function buildHostAcpDispatchOptions(
     bridgeScriptPath,
     authorityGate,
     primaryWorkspaceRoot: deps.workspaceRoot,
+    protectedDatabasePaths: () => getSqliteCutoverCoordinator(deps.store)?.getDatabaseProtectedPaths() ?? [],
     readConfiguredProfile: () => readUncachedAcpProfileSelector(),
     // Read once per session, as it registers its scope: start a verify so a verdict is in place
     // before the session's first callback.

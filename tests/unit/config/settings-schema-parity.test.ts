@@ -31,7 +31,11 @@ interface PackageProperty {
   readonly maximum?: number;
   readonly enum?: readonly string[];
   readonly pattern?: string;
-  readonly items?: { readonly type?: string; readonly pattern?: string };
+  readonly items?: {
+    readonly type?: string;
+    readonly pattern?: string;
+    readonly enum?: readonly string[];
+  };
 }
 
 function loadPackageProperties(): Record<string, PackageProperty> {
@@ -161,8 +165,24 @@ describe('SETTINGS_SCHEMA parity with package.json', () => {
       if ((entry.itemPattern ?? null) !== (pkg.items?.pattern ?? null)) {
         mismatches.push(`${key}: itemPattern schema=${entry.itemPattern ?? null} package=${pkg.items?.pattern ?? null}`);
       }
+      if (!deepEqual(entry!.itemEnum ?? null, pkg!.items?.enum ?? null)) {
+        mismatches.push(
+          `${key}: itemEnum schema=${JSON.stringify(entry!.itemEnum ?? null)} package=${JSON.stringify(pkg!.items?.enum ?? null)}`
+        );
+      }
     }
     expect(mismatches, `array item mismatches: ${mismatches.join('; ')}`).toEqual([]);
+  });
+
+  it('isSchemaCompliantValue enforces itemEnum on schegent.backend.uncontainedBackends', () => {
+    const entry = SETTINGS_SCHEMA['schegent.backend.uncontainedBackends']!;
+    expect(entry.itemEnum).toEqual(['claude', 'codex', 'agy']);
+    expect(isSchemaCompliantValue(entry, [])).toBe(true);
+    expect(isSchemaCompliantValue(entry, ['claude'])).toBe(true);
+    expect(isSchemaCompliantValue(entry, ['claude', 'codex', 'agy'])).toBe(true);
+    expect(isSchemaCompliantValue(entry, ['unknown-backend'])).toBe(false);
+    expect(isSchemaCompliantValue(entry, ['claude', 'gemini'])).toBe(false);
+    expect(isSchemaCompliantValue(entry, [42])).toBe(false);
   });
 
   it('scope agrees between schema and package', () => {

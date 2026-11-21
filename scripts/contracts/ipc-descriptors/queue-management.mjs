@@ -24,7 +24,6 @@ export const QUEUE_MANAGEMENT_COMMANDS = Object.freeze([
     interfaceName: 'CreateQueueCommand',
     validatorName: 'validateCreateQueue',
     family: 'queue-management',
-    emitInterface: false,
     doc: 'Create a new named queue.',
     payloadMode: 'required',
     payload: d.obj({ name: queueNameField() })
@@ -35,7 +34,6 @@ export const QUEUE_MANAGEMENT_COMMANDS = Object.freeze([
     interfaceName: 'RenameQueueCommand',
     validatorName: 'validateRenameQueue',
     family: 'queue-management',
-    emitInterface: false,
     doc: 'Rename an existing queue.',
     payloadMode: 'required',
     payload: d.obj({
@@ -49,7 +47,6 @@ export const QUEUE_MANAGEMENT_COMMANDS = Object.freeze([
     interfaceName: 'DeleteQueueCommand',
     validatorName: 'validateDeleteQueue',
     family: 'queue-management',
-    emitInterface: false,
     doc: 'Two-phase queue deletion (preview without confirmed, execute with confirmed: true).',
     payloadMode: 'required',
     payload: d.obj({
@@ -66,7 +63,6 @@ export const QUEUE_MANAGEMENT_COMMANDS = Object.freeze([
     interfaceName: 'SaveQueueSettingsCommand',
     validatorName: 'validateSaveQueueSettings',
     family: 'queue-management',
-    emitInterface: false,
     doc: 'Persist workspace queue concurrency cap and default queue id.',
     payloadMode: 'required',
     payload: d.obj({
@@ -80,13 +76,19 @@ export const QUEUE_MANAGEMENT_COMMANDS = Object.freeze([
     interfaceName: 'SetQueueFailurePolicyCommand',
     validatorName: 'validateSetQueueFailurePolicy',
     family: 'queue-management',
-    emitInterface: false,
     doc: 'Set a queue-level halt-on-failure override or null to inherit workspace default.',
+    extraTypeImports: {
+      '../../queue-failure-policy': ['QueueFailurePolicy']
+    },
     payloadMode: 'required',
     payload: d.obj({
       queueId: queueIdField(),
       policy: d.field(
-        d.enum(QUEUE_FAILURE_POLICIES, { err: 'invalid-failure-policy' }),
+        d.enum(QUEUE_FAILURE_POLICIES, {
+          refName: 'QueueFailurePolicy',
+          refImport: '../queue-failure-policy',
+          err: 'invalid-failure-policy'
+        }),
         { nullable: true }
       )
     })
@@ -97,7 +99,6 @@ export const QUEUE_MANAGEMENT_COMMANDS = Object.freeze([
     interfaceName: 'AttestTaskCompletedCommand',
     validatorName: 'validateAttestTaskCompleted',
     family: 'queue-management',
-    emitInterface: false,
     doc: 'Operator attests that a failed task completed externally.',
     payloadMode: 'required',
     payload: d.obj({
@@ -111,7 +112,6 @@ export const QUEUE_MANAGEMENT_COMMANDS = Object.freeze([
     interfaceName: 'MoveTaskCommand',
     validatorName: 'validateMoveTask',
     family: 'queue-management',
-    emitInterface: false,
     doc: 'Move a task across queues with an optional insertion position.',
     payloadMode: 'required',
     payload: d.obj({

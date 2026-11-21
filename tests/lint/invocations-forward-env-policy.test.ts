@@ -434,6 +434,11 @@ const CHILD_PROCESS_IMPORTERS: readonly ImporterRow[] = [
     path: 'src/telemetry/platform/platform-windows.ts',
     role: 'diagnostic',
     reason: 'dynamic import; runs `powershell.exe` for process telemetry'
+  },
+  {
+    path: 'src/services/sqlite-store/filesystem-type-detector.ts',
+    role: 'diagnostic',
+    reason: 'runs `/sbin/mount` on macOS to classify host filesystem WAL eligibility (FR-R7-11); a fixed system tool'
   }
 ];
 
@@ -715,14 +720,14 @@ describe('every child_process importer is classified, and a spawner forwards env
     expect(censusFailures(CHILD_PROCESS_IMPORTERS, productionSources(), readRepoFile)).toEqual([]);
   });
 
-  it('is not vacuous: it finds all 20 importers and every role is exercised', () => {
+  it('is not vacuous: it finds all 21 importers and every role is exercised', () => {
     const found = productionSources().filter((file) =>
       importsChildProcess(withoutComments(file.text))
     );
     expect(found.map((file) => file.path).sort()).toEqual(
       CHILD_PROCESS_IMPORTERS.map((row) => row.path).sort()
     );
-    expect(found).toHaveLength(20);
+    expect(found).toHaveLength(21);
     const roles = new Set(CHILD_PROCESS_IMPORTERS.map((row) => row.role));
     expect([...roles].sort()).toEqual(['diagnostic', 'spawner', 'type-only']);
     // Both probes are spawners with a rule, which is the whole reason for the census.

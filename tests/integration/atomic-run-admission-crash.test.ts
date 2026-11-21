@@ -390,4 +390,123 @@ describe('FR-R7-01 — Atomic Run admission crash boundaries & negative control 
     expect(store.getTerminalTransitionIntents()).toEqual({});
     expect(auditAppend).not.toHaveBeenCalled();
   });
+
+  it('refuses durable admission across store, controller.admitNew, and AutoDrainCoordinator when requireDurableBatch is set without SQLite, leaving 0 writes and releasing lease (FR-R7-11)', async () => {
+    const legacyData = new Map<string, unknown>();
+    let legacyWrites = 0;
+    const legacyMemento: Memento = {
+      get<T>(key: string): T | undefined {
+        return legacyData.get(key) as T | undefined;
+      },
+      update(key: string, value: unknown): Thenable<void> {
+        legacyWrites += 1;
+        if (value === undefined) legacyData.delete(key);
+        else legacyData.set(key, value);
+        return Promise.resolve();
+      }
+    };
+    const operationalMemento = createSwitchableOperationalMemento(legacyMemento, undefined, {
+      requireDurableBatch: true
+    });
+    operationalMemento.setDurableBatchUnavailableReason('sqlite-unavailable');
+    const store = new WorkspaceStateStore(operationalMemento);
+    await store.initialize();
+    const queue = new QueueManager(store);
+    const task = await queue.enqueue('Needs durable admission');
+    const writesBeforeAdmission = legacyWrites;
+
+    // 1. Direct admitRun / admitRunAtomically fails closed with durable-store-unavailable and 0 writes.
+    await expect(queue.admitRun(task.id, makeRun(task.id, 'run-direct-refused'))).rejects.toMatchObject({
+      reason: 'durable-store-unavailable'
+    });
+    expect(legacyWrites).toBe(writesBeforeAdmission);
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).inFlightId).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests.find((r) => r.id === task.id)?.status).toBe('pending');
+
+    // 2. Controller.admitNew catches durable-store-unavailable BEFORE handleUnexpectedStartFailure,
+    // returns typed refusal, never calls queue.finish, and leaves 0 writes.
+    const releaseSpy = vi.fn().mockResolvedValue(undefined);
+    const tryAcquireSpy = vi.fn().mockResolvedValue({ acquired: true, ownerId: 'win-1' });
+    const recordFailureSpy = vi.fn();
+    const clearFailureSpy = vi.fn();
+    const auditAppend = vi.fn().mockResolvedValue(undefined);
+    const catalog = buildCatalog(
+      [{ id: 'speckit-specify', name: 'Specify', instruction: 'Specify', runner: 'claude' }],
+      [{ id: 'p1', name: 'P1', phases: ['speckit-specify'] }],
+      { claude: [], codex: [], agy: [] },
+      'p1'
+    );
+    const phaseRunner = {
+      run: vi.fn(),
+      evictStagnationTracker: vi.fn()
+    } as unknown as PhaseRunner;
+    const statusBar = { update: vi.fn(), show: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar;
+    const notifier = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Notifier;
+    const lock = {
+      id: 'win-1',
+      tryAcquire: vi.fn().mockResolvedValue({ acquired: true }),
+      release: vi.fn().mockResolvedValue(undefined),
+      isHeldByCurrentWindow: vi.fn().mockReturnValue(true)
+    } as unknown as WorkspaceLockManager;
+
+    const controller = new SchegentWorkflowController(
+      phaseRunner,
+      store,
+      queue,
+      statusBar,
+      notifier,
+      new SanitizedLogger(),
+      lock,
+      { cliPath: 'claude', cwd: suiteDir, iterationCap: 3, timeoutMs: 5_000 },
+      {
+        catalog,
+        auditWriter: { append: auditAppend },
+        startFailures: { recordFailure: recordFailureSpy, clear: clearFailureSpy },
+        executionLease: {
+          tryAcquire: tryAcquireSpy,
+          release: releaseSpy,
+          claimFor: () => null
+        }
+      }
+    );
+
+    const admission = await controller.admitNew(task, null);
+    await admission.completed;
+    expect(admission.refusal).toBe('durable-store-unavailable');
+    expect(admission.refusalMessage).toContain('sqlite-unavailable');
+    expect(legacyWrites).toBe(writesBeforeAdmission);
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).inFlightId).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests.find((r) => r.id === task.id)?.status).toBe('pending');
+    expect(store.getTerminalTransitionIntents()).toEqual({});
+    expect(auditAppend).not.toHaveBeenCalled();
+
+    // 3. AutoDrainCoordinator.drainIfIdle via controller.drainQueuedWork releases execution lease
+    // immediately, records admission failure, and leaves 0 legacy writes.
+    await controller.drainQueuedWork(DEFAULT_QUEUE_ID);
+    expect(tryAcquireSpy).toHaveBeenCalledWith(DEFAULT_QUEUE_ID);
+    expect(releaseSpy).toHaveBeenCalledWith(DEFAULT_QUEUE_ID);
+    expect(recordFailureSpy).toHaveBeenCalledWith(
+      DEFAULT_QUEUE_ID,
+      expect.objectContaining({
+        kind: 'admission',
+        admission: 'admitNew'
+      })
+    );
+    expect(clearFailureSpy).not.toHaveBeenCalled();
+    expect(legacyWrites).toBe(writesBeforeAdmission);
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests.find((r) => r.id === task.id)?.status).toBe('pending');
+  });
+
+  it('preserves explicit in-memory WorkspaceStateStore(createMemoryMemento()) admission fallback for tests (FR-R7-11)', async () => {
+    const store = new WorkspaceStateStore(createMemoryMemento());
+    await store.initialize();
+    const queue = new QueueManager(store);
+    const task = await queue.enqueue('In-memory harness task');
+    await queue.admitRun(task.id, makeRun(task.id, 'run-memory-ok'));
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.id).toBe('run-memory-ok');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).inFlightId).toBe(task.id);
+  });
 });

@@ -18,6 +18,17 @@ import { describe, it, expect, vi } from 'vitest';
 import { AutoDrainCoordinator } from '../../../src/services/auto-drain-coordinator';
 import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { QueueLifecycle } from '../../../src/queue/feature-request';
+import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
+import type { PhaseRunner } from '../../../src/controller/phase-runner';
+import { buildCatalog } from '../../../src/config/pipeline-config';
+import { SanitizedLogger } from '../../../src/lib/logger';
+import { QueueManager } from '../../../src/queue/queue-manager';
+import type { WorkspaceLockManager } from '../../../src/state/lock';
+import { createSwitchableOperationalMemento } from '../../../src/state/sqlite-operational-backing';
+import type { SqliteConnectionPort } from '../../../src/state/sqlite-operational-port';
+import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
+import type { Notifier } from '../../../src/ui/notifications';
+import type { SchegentStatusBar } from '../../../src/ui/status-bar';
 
 // FR-R3-011 — `paused` is gone from this fixture, not merely unset. It was the
 // retired `QueueState.paused` mirror, and step 2 used to read it; a fixture that
@@ -1749,5 +1760,169 @@ describe('AutoDrainCoordinator — FR-R3-205: a closed drain starts nothing', ()
     const second = new AutoDrainCoordinator(first.deps);
     await second.drainIfIdle(QUEUE);
     expect(first.admitNew).toHaveBeenCalledTimes(1);
+  });
+
+  it('FR-R7-11 — releases the execution lease immediately, records start failure, and logs warning when admitNew returns durable-store-unavailable refusal', async () => {
+    const f = build({
+      admitNew: async () => ({
+        completed: Promise.resolve(),
+        refusal: 'durable-store-unavailable' as const,
+        refusalMessage: 'Refused atomic operational batch write: durable SQLite store is unavailable.'
+      })
+    });
+
+    await f.coord.drainIfIdle(QUEUE);
+
+    expect(f.admitNew).toHaveBeenCalledTimes(1);
+    expect(f.lease.tryAcquire).toHaveBeenCalledWith(QUEUE);
+    expect(f.lease.release).toHaveBeenCalledTimes(1);
+    expect(f.lease.release).toHaveBeenCalledWith(QUEUE);
+    expect(f.startFailures.clear).not.toHaveBeenCalled();
+    expect(f.startFailures.recordFailure).toHaveBeenCalledTimes(1);
+    expect(f.startFailures.recordFailure).toHaveBeenCalledWith(QUEUE, {
+      kind: 'admission',
+      admission: 'admitNew',
+      message: 'Refused atomic operational batch write: durable SQLite store is unavailable.'
+    });
+    expect(f.logger.warn).toHaveBeenCalledTimes(1);
+    expect(f.logger.warn.mock.calls[0]?.[0]).toContain('durable-store-unavailable');
+    expect(f.auditWriter.append).not.toHaveBeenCalled();
+  });
+
+  it('FR-R7-11 — maps post-cutover PostCutoverMementoWriteForbiddenError to durable-store-unavailable, releases lease immediately, records start failure, and leaves queue intact', async () => {
+    const seedData = new Map<string, unknown>();
+    const seedMemento: Memento = {
+      get<T>(key: string): T | undefined {
+        return seedData.has(key) ? (seedData.get(key) as T) : undefined;
+      },
+      update(key: string, value: unknown): Promise<void> {
+        if (value === undefined) seedData.delete(key);
+        else seedData.set(key, value);
+        return Promise.resolve();
+      }
+    };
+    const seedStore = new WorkspaceStateStore(seedMemento);
+    await seedStore.initialize();
+    const seedQueue = new QueueManager(seedStore);
+    const task = await seedQueue.enqueue('Post-cutover pending task');
+
+    let legacyWrites = 0;
+    const legacyData = new Map<string, unknown>();
+    const legacyMemento: Memento = {
+      get<T>(key: string): T | undefined {
+        return legacyData.has(key) ? (legacyData.get(key) as T) : undefined;
+      },
+      update(key: string, value: unknown): Promise<void> {
+        legacyWrites += 1;
+        if (value === undefined) legacyData.delete(key);
+        else legacyData.set(key, value);
+        return Promise.resolve();
+      }
+    };
+    const scopeId = 'scope-post-cutover-unavailable';
+    const snapshotRows = Array.from(seedData.entries()).map(([docKey, value]) => ({
+      doc_key: docKey,
+      payload_json: JSON.stringify(value)
+    }));
+    const fakeReadOnlyConn: SqliteConnectionPort = {
+      exec: () => undefined,
+      run: () => ({ changes: 0, lastInsertRowid: 0 }),
+      get<T extends Record<string, unknown>>(sql: string): T | undefined {
+        if (sql.includes('FROM cutover_sentinel')) {
+          return { authority: 'sqlite' } as unknown as T;
+        }
+        return undefined;
+      },
+      all<T extends Record<string, unknown>>(sql: string): T[] {
+        if (sql.includes('FROM operational_kv_documents')) {
+          return snapshotRows as unknown as T[];
+        }
+        return [];
+      },
+      close: () => undefined
+    };
+
+    const operationalMemento = createSwitchableOperationalMemento(legacyMemento, undefined, {
+      requireDurableBatch: true
+    });
+    const attached = operationalMemento.attachReadOnlySnapshotIfPresent(
+      '/virtual/post-cutover-state.db',
+      scopeId,
+      () => fakeReadOnlyConn
+    );
+    expect(attached).toBe(true);
+    expect(operationalMemento.isSqliteAttached()).toBe(false);
+    expect(operationalMemento.isPostCutoverAuthorityActive()).toBe(true);
+
+    const store = new WorkspaceStateStore(operationalMemento);
+    await store.initialize();
+    const queue = new QueueManager(store);
+
+    const tryAcquireSpy = vi.fn().mockResolvedValue({ acquired: true, ownerId: 'win-post-cutover' });
+    const releaseSpy = vi.fn().mockResolvedValue(undefined);
+    const recordFailureSpy = vi.fn();
+    const clearFailureSpy = vi.fn();
+    const auditAppendSpy = vi.fn().mockResolvedValue(undefined);
+    const catalog = buildCatalog(
+      [{ id: 'speckit-specify', name: 'Specify', instruction: 'Specify', runner: 'claude' }],
+      [{ id: 'p1', name: 'P1', phases: ['speckit-specify'] }],
+      { claude: [], codex: [], agy: [] },
+      'p1'
+    );
+    const controller = new SchegentWorkflowController(
+      { run: vi.fn(), evictStagnationTracker: vi.fn() } as unknown as PhaseRunner,
+      store,
+      queue,
+      { update: vi.fn(), show: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar,
+      { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Notifier,
+      new SanitizedLogger(),
+      {
+        id: 'win-post-cutover',
+        tryAcquire: vi.fn().mockResolvedValue({ acquired: true }),
+        release: vi.fn().mockResolvedValue(undefined),
+        isHeldByCurrentWindow: vi.fn().mockReturnValue(true)
+      } as unknown as WorkspaceLockManager,
+      { cliPath: 'claude', cwd: process.cwd(), iterationCap: 3, timeoutMs: 5_000 },
+      {
+        catalog,
+        auditWriter: { append: auditAppendSpy },
+        startFailures: { recordFailure: recordFailureSpy, clear: clearFailureSpy },
+        executionLease: {
+          tryAcquire: tryAcquireSpy,
+          release: releaseSpy,
+          claimFor: () => null
+        }
+      }
+    );
+
+    const admission = await controller.admitNew(task, null);
+    await admission.completed;
+    expect(admission.refusal).toBe('durable-store-unavailable');
+    expect(admission.refusalMessage).toContain('post-cutover-memento-write-forbidden');
+    expect(legacyWrites).toBe(0);
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).inFlightId).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests.find((r) => r.id === task.id)?.status).toBe('pending');
+    expect(store.getTerminalTransitionIntents()).toEqual({});
+    expect(auditAppendSpy).not.toHaveBeenCalled();
+
+    await controller.drainQueuedWork(DEFAULT_QUEUE_ID);
+    expect(tryAcquireSpy).toHaveBeenCalledWith(DEFAULT_QUEUE_ID);
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+    expect(releaseSpy).toHaveBeenCalledWith(DEFAULT_QUEUE_ID);
+    expect(recordFailureSpy).toHaveBeenCalledTimes(1);
+    expect(recordFailureSpy).toHaveBeenCalledWith(
+      DEFAULT_QUEUE_ID,
+      expect.objectContaining({
+        kind: 'admission',
+        admission: 'admitNew',
+        message: expect.stringContaining('post-cutover-memento-write-forbidden')
+      })
+    );
+    expect(clearFailureSpy).not.toHaveBeenCalled();
+    expect(legacyWrites).toBe(0);
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).inFlightId).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests.find((r) => r.id === task.id)?.status).toBe('pending');
   });
 });

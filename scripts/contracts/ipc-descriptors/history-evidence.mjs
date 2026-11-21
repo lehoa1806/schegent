@@ -10,7 +10,6 @@ export const HISTORY_EVIDENCE_COMMANDS = Object.freeze([
     interfaceName: 'RerunFromHistoryCommand',
     validatorName: 'validateRerunFromHistory',
     family: 'history-evidence',
-    emitInterface: true,
     doc: 'Rerun a historical run by runId with optional force flag for legacy preview entries.',
     payloadMode: 'required',
     payload: d.obj(
@@ -27,7 +26,6 @@ export const HISTORY_EVIDENCE_COMMANDS = Object.freeze([
     interfaceName: 'OpenHistoryItemDetailsCommand',
     validatorName: 'validateOpenHistoryItemDetails',
     family: 'history-evidence',
-    emitInterface: true,
     doc: 'Open detail view for a recorded history item by id.',
     payloadMode: 'required',
     payload: d.obj(
@@ -43,7 +41,6 @@ export const HISTORY_EVIDENCE_COMMANDS = Object.freeze([
     interfaceName: 'ResolveAuditPointerCommand',
     validatorName: 'validateResolveAuditPointer',
     family: 'history-evidence',
-    emitInterface: false,
     doc: 'Resolve a completed run auditLogPointer to its audit records.',
     payloadMode: 'required',
     payload: d.obj(
@@ -59,7 +56,6 @@ export const HISTORY_EVIDENCE_COMMANDS = Object.freeze([
     interfaceName: 'ResolveHistoryDescriptionCommand',
     validatorName: 'validateResolveHistoryDescription',
     family: 'history-evidence',
-    emitInterface: false,
     doc: 'Resolve a completed run stored description for replay.',
     payloadMode: 'required',
     payload: d.obj(
@@ -75,7 +71,6 @@ export const HISTORY_EVIDENCE_COMMANDS = Object.freeze([
     interfaceName: 'ReadFailureRecordCommand',
     validatorName: 'validateReadFailureRecord',
     family: 'history-evidence',
-    emitInterface: false,
     doc: 'Read the newest failure record for a (queueId, taskId) row.',
     payloadMode: 'required',
     payload: d.obj({
@@ -89,7 +84,6 @@ export const HISTORY_EVIDENCE_COMMANDS = Object.freeze([
     interfaceName: 'OpenDecisionRecordCommand',
     validatorName: 'validateOpenDecisionRecord',
     family: 'history-evidence',
-    emitInterface: false,
     doc: 'Open the decisions.md record for a blocked row.',
     payloadMode: 'required',
     payload: d.obj({

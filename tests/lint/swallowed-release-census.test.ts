@@ -56,7 +56,9 @@ const NOW_LOGGED: readonly LoggedRow[] = [
   // FR-R4-F06 (TA3): 3 -> 4. The fourth is the drain's branch for a resume refused because the previous
   // backend's tree is alive or shutdown has begun: it starts nothing and gives back the lease claimed at
   // step 6, through `releaseLeaseLogged` like the other three. A release, not a swallowed one.
-  { site: 'services/auto-drain-coordinator.ts#AutoDrainCoordinator.startPendingHead', calls: 4 },
+  // FR-R7-11 (Task 01): 4 -> 5. The fifth releases the execution lease immediately when durable-store
+  // admission refuses (`durable-store-unavailable`), also through `releaseLeaseLogged`.
+  { site: 'services/auto-drain-coordinator.ts#AutoDrainCoordinator.startPendingHead', calls: 5 },
   { site: 'controller/workflow-controller.ts#SchegentWorkflowController.resumeExistingOnQueue', calls: 1 }
 ];
 

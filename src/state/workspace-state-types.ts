@@ -231,7 +231,8 @@ export type QueueMutationRejectReason =
   | 'fence-wrong-resource'
   | 'ownership-lost'
   | 'stale-run-id'
-  | 'run-status-precondition';
+  | 'run-status-precondition'
+  | 'durable-store-unavailable';
 
 export class QueueMutationRejected extends Error {
   public readonly reason: QueueMutationRejectReason;

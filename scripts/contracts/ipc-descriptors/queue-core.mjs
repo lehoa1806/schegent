@@ -25,7 +25,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'StartCommand',
     validatorName: 'validateStart',
     family: 'queue-core',
-    emitInterface: true,
     doc: 'Enqueue a new feature request onto a queue with optional pipeline, position, and start-intent overrides.',
     payloadMode: 'required',
     payload: d.obj(
@@ -73,7 +72,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'CancelCommand',
     validatorName: 'validateCancel',
     family: 'queue-core',
-    emitInterface: true,
     doc: 'Cancel a target task/run resolved explicitly by FeatureRequest.id.',
     payloadMode: 'required',
     payload: d.obj({ taskId: taskIdField() }, { allowArray: true })
@@ -84,7 +82,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'RemoveQueueItemCommand',
     validatorName: 'validateRemoveQueueItem',
     family: 'queue-core',
-    emitInterface: true,
     doc: 'Remove an item from a queue after explicit operator confirmation.',
     payloadMode: 'required',
     payload: d.obj(
@@ -101,7 +98,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'RetryQueueItemCommand',
     validatorName: 'validateRetryQueueItem',
     family: 'queue-core',
-    emitInterface: true,
     doc: 'Retry a failed or canceled queue item by id.',
     payloadMode: 'required',
     payload: d.obj({ id: idField() }, { allowArray: true })
@@ -112,7 +108,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'MoveQueueItemUpCommand',
     validatorName: 'validateMoveQueueItemUp',
     family: 'queue-core',
-    emitInterface: true,
     doc: 'Move a pending queue item one position earlier.',
     payloadMode: 'required',
     payload: d.obj({ id: idField() }, { allowArray: true })
@@ -123,7 +118,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'MoveQueueItemDownCommand',
     validatorName: 'validateMoveQueueItemDown',
     family: 'queue-core',
-    emitInterface: true,
     doc: 'Move a pending queue item one position later.',
     payloadMode: 'required',
     payload: d.obj({ id: idField() }, { allowArray: true })
@@ -134,7 +128,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'PauseQueueCommand',
     validatorName: 'validatePauseQueue',
     family: 'queue-core',
-    emitInterface: true,
     doc: 'Pause a queue with an optional operator-supplied reason.',
     payloadMode: 'optional',
     emptyPayloadValue: 'undefined',
@@ -160,7 +153,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'ResumeQueueCommand',
     validatorName: 'validateResumeQueue',
     family: 'queue-core',
-    emitInterface: true,
     doc: 'Resume a paused queue (canonized to live validator allowlist: queueId only).',
     payloadMode: 'optional',
     emptyPayloadValue: 'undefined',
@@ -178,7 +170,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'StartQueueCommand',
     validatorName: 'validateStartQueue',
     family: 'queue-core',
-    emitInterface: true,
     doc: 'Offer a queue a drain pass or apply an explicit start/schedule intent.',
     payloadMode: 'optional-empty-object',
     payloadInvalidErr: 'invalid-payload',
@@ -207,7 +198,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'ClearCompletedCommand',
     validatorName: 'validateClearCompleted',
     family: 'queue-core',
-    emitInterface: true,
     doc: 'Clear completed items from the explicitly addressed queue.',
     payloadMode: 'required',
     payload: d.obj({ queueId: queueIdField() }, { allowArray: true })
@@ -218,7 +208,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'ClearQueueCommand',
     validatorName: 'validateClearQueue',
     family: 'queue-core',
-    emitInterface: true,
     doc: 'Queue-scoped Clean All addressing one explicit queueId.',
     payloadMode: 'required',
     payload: d.obj({ queueId: queueIdField() }, { allowArray: true })
@@ -229,7 +218,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'ModifyTaskCommand',
     validatorName: 'validateModifyTask',
     family: 'queue-core',
-    emitInterface: false,
     doc: 'Edit the description of a queued task.',
     payloadMode: 'required',
     payload: d.obj(
@@ -252,7 +240,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'ReorderTaskCommand',
     validatorName: 'validateReorderTask',
     family: 'queue-core',
-    emitInterface: false,
     doc: 'Reorder a pending task within its queue to a new zero-based position.',
     payloadMode: 'required',
     payload: d.obj(
@@ -269,7 +256,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'RestartCanceledTaskCommand',
     validatorName: 'validateRestartCanceledTask',
     family: 'queue-core',
-    emitInterface: false,
     doc: 'Transition a canceled task back to pending by taskId.',
     payloadMode: 'required',
     payload: d.obj({ taskId: taskIdField() }, { allowArray: true })
@@ -280,7 +266,6 @@ export const QUEUE_CORE_COMMANDS = Object.freeze([
     interfaceName: 'RemoveTaskPhaseCommand',
     validatorName: 'validateRemoveTaskPhase',
     family: 'queue-core',
-    emitInterface: false,
     doc: 'Remove a phase from a task after explicit operator confirmation.',
     payloadMode: 'required',
     payload: d.obj(

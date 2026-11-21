@@ -164,8 +164,11 @@ export function emitHostIpcTypes(spec) {
   };
 
   for (const cmd of spec.commands) {
-    if (!cmd.emitInterface) continue;
-    collectTypeImports(cmd.payload, addImport);
+    if (cmd.payloadTypeRef) {
+      addImport(cmd.payloadTypeRef.from, cmd.payloadTypeRef.name);
+    } else {
+      collectTypeImports(cmd.payload, addImport);
+    }
   }
   for (const msg of spec.hostMessages) {
     collectTypeImports(msg.schema, addImport);
@@ -197,14 +200,15 @@ export function emitHostIpcTypes(spec) {
   lines.push('');
 
   for (const cmd of spec.commands) {
-    if (!cmd.emitInterface) continue;
     const doc = formatDoc(cmd.doc, '');
     if (cmd.payloadMode === 'none') {
       lines.push(`${doc}export interface ${cmd.interfaceName} extends GeneratedCommandBase<'${cmd.type}'> {}`);
       lines.push('');
       continue;
     }
-    const payloadExpr = emitTypeExpr(cmd.payload, { mode: 'host', indent: '  ' });
+    const payloadExpr = cmd.payloadTypeRef
+      ? cmd.payloadTypeRef.name
+      : emitTypeExpr(cmd.payload, { mode: 'host', indent: '  ' });
     const opt = cmd.payloadMode === 'optional' || cmd.payloadMode === 'optional-empty-object' ? '?' : '';
     const extra =
       cmd.payloadMode === 'optional-empty-object'
@@ -212,9 +216,25 @@ export function emitHostIpcTypes(spec) {
         : cmd.emptyPayloadValue === 'undefined'
           ? ' | undefined'
           : '';
+    const colon = payloadExpr.startsWith('\n') ? ':' : ': ';
     lines.push(`${doc}export interface ${cmd.interfaceName} extends GeneratedCommandBase<'${cmd.type}'> {`);
-    lines.push(`  readonly payload${opt}: ${payloadExpr}${extra};`);
+    lines.push(`  readonly payload${opt}${colon}${payloadExpr}${extra};`);
     lines.push('}');
+    lines.push('');
+  }
+
+  for (const msg of spec.hostMessages) {
+    const doc = formatDoc(msg.doc, '');
+    const typeParams = msg.typeParams ?? '';
+    const body = emitTypeExpr(msg.schema, { mode: 'host', indent: '' });
+    lines.push(`${doc}export interface ${msg.interfaceName}${typeParams} ${body}`);
+    lines.push('');
+  }
+
+  if (spec.hostMessages.length > 0) {
+    const members = spec.hostMessages.map((msg) => `  | ${msg.interfaceName}${msg.typeParams ?? ''}`);
+    lines.push('export type HostMessage<S> =');
+    lines.push(`${members.join('\n')};`);
     lines.push('');
   }
 

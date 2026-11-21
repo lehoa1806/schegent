@@ -608,6 +608,19 @@ export class PhaseRunner {
     );
 
     phaseLogger(this.logger, inputs).info(`phase-start ${inputs.phase} iter=${inputs.iteration}`);
+    // FR-R7-11 — resolve installation containment and repository agent-config
+    // acknowledgement immediately after `phase-start`, strictly before
+    // `auto-compact-override-applied`, `compactSession`, native review, raw
+    // transcript, or phase subprocess execution. Both refusal classes mark
+    // `preSpawnRefusal` so `run()` pairs `phase-start` with `pre_spawn_refusal`.
+    let backendRunner: BackendRunner;
+    try {
+      backendRunner = this.resolveRunner(inputs);
+      await this.agentConfigAckGate?.ensureAcknowledged(inputs, effectiveRunnerKind);
+    } catch (err) {
+      if (isUncontainedBackendRefusal(err) || isAgentConfigAcknowledgementRefusal(err)) attemptRef.preSpawnRefusal = true;
+      throw err;
+    }
     // Feature 010 FR-024: read schegent.logging.verbose at run() entry
     // (never cached on the runner) so a mid-run toggle applies on the
     // next invocation. The accessor is the workspace-setting read site.
@@ -620,10 +633,7 @@ export class PhaseRunner {
     // fallback, no "undefined" literal).
     const backendDescriptor = getBackendDescriptor(effectiveRunnerKind);
     const autoCompactPct = this.autoCompactOverrideAccessor?.readAutoCompactPctOverride();
-    const env: Record<string, string> = {
-      SCHEGENT_PHASE: inputs.phase,
-      SCHEGENT_ITERATION: String(inputs.iteration)
-    };
+    const env: Record<string, string> = { SCHEGENT_PHASE: inputs.phase, SCHEGENT_ITERATION: String(inputs.iteration) };
     if (backendDescriptor.supportsAutoCompactOverride && autoCompactPct !== undefined) {
       env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(autoCompactPct);
       await this.appendAudit(inputs, 'auto-compact-override-applied', 'info', {
@@ -638,8 +648,15 @@ export class PhaseRunner {
     let effectiveResumeSessionId = inputs.resumeSessionId;
     if (backendDescriptor.supportsSessionCompaction && effectiveSessionReuse && typeof inputs.resumeSessionId === 'string') {
       try {
-        await this.compactSession(inputs);
+        await this.compactSession(inputs, backendRunner);
       } catch (err) {
+        // FR-R7-11 — a containment/admission refusal raised while invoking compaction
+        // (e.g. `ContainmentAdmissionRefusedError` from `SpawnGatedRunner`) is a
+        // hard pre-spawn refusal, never a recoverable compaction failure.
+        if (isUncontainedBackendRefusal(err)) {
+          attemptRef.preSpawnRefusal = true;
+          throw err;
+        }
         effectiveSessionReuse = false;
         effectiveIsContinue = false;
         effectiveResumeSessionId = undefined;
@@ -676,12 +693,6 @@ export class PhaseRunner {
       getEffectiveSignatures(this.fatalSignaturesAccessor?.readOperatorAdditions() ?? []);
     let raw: RawInvocationOutput;
     try {
-      // Split from the `invoke()` call deliberately. `resolveRunner` is where a
-      // containment refusal is thrown (`backend-runner-factory.ts`); the catch
-      // below is where both refusals are named. Kept as two statements because
-      // the split is what makes the two throw sites separable at all.
-      const backendRunner = this.resolveRunner(inputs);
-      await this.agentConfigAckGate?.ensureAcknowledged(inputs, effectiveRunnerKind);
       const invoke: BackendRunner['invoke'] = (invocation, capture) =>
         backendRunner.invoke({ ...invocation, ...policyRequestFields(inputs) }, capture);
       let request: InvocationRequest = {
@@ -713,9 +724,7 @@ export class PhaseRunner {
         ...(effectiveSessionReuse ? { sessionReuse: true } : {}),
         // Session ID capture — forward the persisted session ID so the
         // runner uses `--resume <id>` instead of `-c`.
-        ...(typeof effectiveResumeSessionId === 'string'
-          ? { resumeSessionId: effectiveResumeSessionId }
-          : {}),
+        ...(typeof effectiveResumeSessionId === 'string' ? { resumeSessionId: effectiveResumeSessionId } : {}),
         ...(typeof effectiveResumeSessionId === 'string' && inputs.resumeSessionCostUsd !== undefined ? { resumeSessionCostUsd: inputs.resumeSessionCostUsd } : {}),
         // FR-R3-086 — without this the adapter never sees the declared set.
         ...capabilityRequestFields(inputs)
@@ -743,20 +752,12 @@ export class PhaseRunner {
       ) ?? null;
       raw = await invoke(request, rawTranscriptCapture ?? undefined);
     } catch (err) {
-      // THE two refusals, and the only place either is claimed. A containment
-      // refusal comes from `resolveRunner` above, before any runner exists; a
-      // capability refusal is raised while the argv is being ASSEMBLED — every
-      // adapter calls `capabilityArgs` before it spawns (claude-cli `:336` vs
-      // `:390`, codex-cli `:84`, agy-cli `:121`). Neither can have left a child,
-      // which is exactly what `PRE_SPAWN_REFUSAL_CAUSE` asserts. By error type,
-      // not by position: see `AttemptRef` for what position got wrong.
-      if (!reviewAttempt.invoked && (
-        isCapabilityRefusal(err) ||
-        isUncontainedBackendRefusal(err) ||
-        isAgentConfigAcknowledgementRefusal(err)
-      )) {
-        attemptRef.preSpawnRefusal = true;
-      }
+      // Capability refusals are raised while argv is assembled before spawn;
+      // spawn-admission refusals (`ContainmentAdmissionRefusedError`, subclass of
+      // `UncontainedBackendRefusedError`) are raised before `SpawnGatedRunner`
+      // spawns. Neither can have left a child when `reviewAttempt.invoked` is false.
+      // By error type, not by position: see `AttemptRef` for what position got wrong.
+      if (!reviewAttempt.invoked && (isCapabilityRefusal(err) || isUncontainedBackendRefusal(err))) attemptRef.preSpawnRefusal = true;
       await rawTranscriptCapture?.dispose();
       throw err;
     }
@@ -1148,9 +1149,9 @@ export class PhaseRunner {
     };
   }
 
-  private async compactSession(inputs: PhaseRunInputs): Promise<void> {
+  private async compactSession(inputs: PhaseRunInputs, runner: BackendRunner): Promise<void> {
     await compactClaudeSession({
-      runner: this.resolveRunner(inputs),
+      runner,
       rawTranscript: this.rawTranscript,
       rawTranscriptMode: inputs.rawTranscriptMode,
       runId: inputs.runId,

@@ -28,6 +28,13 @@ import type {
   AcpAuthorizationReason,
   TeardownQualification
 } from '../../contracts/containment-qualification';
+import {
+  canonicalizePathWithTailSync,
+  isTargetProtectedPathSync,
+  isWorkspaceProtectedPattern,
+  normalizeProtectedComparePath,
+  verifySymlinkFreeUnderAnchorSync
+} from '../../lib/protected-path-match';
 import type { AcpStdioTransport } from '../acp-runtime/stdio-transport';
 
 export interface AcpReceiptSqlSink {
@@ -46,7 +53,7 @@ export interface AcpAttemptAuthorityScope {
   /** Primary workspace root where `.schegent/` and protected state reside. */
   readonly primaryWorkspaceRoot?: string;
   /** Protected SQLite store directory or file paths that no callback may ever read or write. */
-  readonly protectedDatabasePaths?: readonly string[];
+  readonly protectedDatabasePaths?: readonly string[] | (() => readonly string[]) | undefined;
   /** Explicit F15 accepted upstream artifact paths permitted for read-only access. */
   readonly authorizedUpstreamInputPaths?: readonly string[];
   /** Explicit declared output paths permitted for write access when outside `executionRoot`. */
@@ -79,6 +86,8 @@ export interface AcpCallbackAuthorizationRequest {
   readonly requestKind: AcpCallbackKind;
   readonly acpSessionId: string;
   readonly connectionGeneration: number;
+  /** Optional caller-claimed attempt id; when supplied (including `null` for unattributed callbacks), must match the registered session scope. */
+  readonly attemptId?: string | null | undefined;
   /** Unique per-request or per-tool-call token used to prevent duplicate effect replay. */
   readonly effectRequestKey?: string;
   readonly mutating: boolean;
@@ -96,52 +105,54 @@ export interface AcpAuthorizationDecision {
 const MAX_IN_MEMORY_RECEIPTS = 512;
 const MAX_TRACKED_EFFECT_KEYS = 2_048;
 
-const PROTECTED_BASENAME_PATTERNS: readonly RegExp[] = [
-  /\.sqlite3?(?:-(?:wal|shm|journal))?$/i,
-  /^\.env(?:\..+)?$/i,
-  /^\.git-credentials$/i,
-  /^\.netrc$/i,
-  /^\.npmrc$/i,
-  /^id_(?:rsa|ed25519|ecdsa)$/i
-];
-
-const PROTECTED_SEGMENT_NAMES: ReadonlySet<string> = new Set([
-  '.schegent',
-  '.ssh',
-  '.gnupg',
-  'secrets'
-]);
-
 function normalizeCandidatePath(baseRoot: string, rawPath: string): string | null {
   if (typeof rawPath !== 'string' || rawPath.trim().length === 0 || rawPath.includes('\0')) {
     return null;
   }
-  return path.resolve(baseRoot, rawPath);
+  if (process.platform === 'win32') {
+    if (/^[/\\](?![/\\])/.test(rawPath) || /^[A-Za-z]:(?![/\\])/.test(rawPath)) {
+      return null;
+    }
+    if (
+      rawPath
+        .split(/[/\\]+/)
+        .some((seg) => seg !== '' && seg !== '.' && seg !== '..' && /[. ]$/.test(seg))
+    ) {
+      return null;
+    }
+  }
+  // Preserve `..` segments uncollapsed so `canonicalizePathWithTailSync` walks
+  // symlinks left-to-right before applying `..` (matching POSIX kernel order).
+  if (path.isAbsolute(rawPath)) {
+    return rawPath;
+  }
+  const trimmedBase = baseRoot.endsWith(path.sep) ? baseRoot.slice(0, -1) : baseRoot;
+  return `${trimmedBase}${path.sep}${rawPath}`;
+}
+
+function resolveScopeProtectedDatabasePaths(
+  source: AcpAttemptAuthorityScope['protectedDatabasePaths']
+): readonly string[] {
+  if (source === undefined) return [];
+  return typeof source === 'function' ? source() : source;
 }
 
 function isWithinDirectory(rootDir: string, targetPath: string): boolean {
-  const resolvedRoot = path.resolve(rootDir);
-  const resolvedTarget = path.resolve(targetPath);
+  const resolvedRoot = normalizeProtectedComparePath(rootDir);
+  const resolvedTarget = normalizeProtectedComparePath(targetPath);
   const rel = path.relative(resolvedRoot, resolvedTarget);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
 function isProtectedPath(
   resolvedTarget: string,
   scope: AcpAttemptAuthorityScope
 ): boolean {
-  const base = path.basename(resolvedTarget);
-  if (PROTECTED_BASENAME_PATTERNS.some((pattern) => pattern.test(base))) {
+  if (isWorkspaceProtectedPattern(resolvedTarget)) {
     return true;
   }
-  for (const dbPath of scope.protectedDatabasePaths ?? []) {
-    const resolvedDb = path.resolve(dbPath);
-    if (resolvedTarget === resolvedDb || isWithinDirectory(resolvedDb, resolvedTarget)) {
-      return true;
-    }
-  }
-  const segments = resolvedTarget.split(path.sep);
-  if (segments.some((segment) => PROTECTED_SEGMENT_NAMES.has(segment))) {
+  const dbPaths = resolveScopeProtectedDatabasePaths(scope.protectedDatabasePaths);
+  if (dbPaths.length > 0 && isTargetProtectedPathSync(resolvedTarget, dbPaths)) {
     return true;
   }
   return false;
@@ -227,6 +238,9 @@ export class AcpAuthorityGate {
     if (scope === undefined) {
       return record('unattributed', 'denied', 'session-attempt-mismatch');
     }
+    if (request.attemptId !== undefined && request.attemptId !== scope.attemptId) {
+      return record(scope.attemptId, 'denied', 'session-attempt-mismatch');
+    }
     if (request.connectionGeneration !== scope.connectionGeneration) {
       return record(scope.attemptId, 'denied', 'stale-connection-generation');
     }
@@ -248,16 +262,113 @@ export class AcpAuthorityGate {
       if (resolvedTarget === null) {
         return record(scope.attemptId, 'denied', 'outside-execution-root');
       }
-      const allowedReadRefs = new Set((scope.authorizedUpstreamInputPaths ?? []).map((p) => path.resolve(p)));
-      const allowedWriteRefs = new Set((scope.authorizedOutputPaths ?? []).map((p) => path.resolve(p)));
-      const explicitlyAuthorizedRef = request.mutating
-        ? allowedWriteRefs.has(resolvedTarget)
-        : allowedReadRefs.has(resolvedTarget) || allowedWriteRefs.has(resolvedTarget);
-
-      if (!explicitlyAuthorizedRef && isProtectedPath(resolvedTarget, scope)) {
+      const dbPaths = resolveScopeProtectedDatabasePaths(scope.protectedDatabasePaths);
+      if (dbPaths.length > 0 && isTargetProtectedPathSync(resolvedTarget, dbPaths)) {
         return record(scope.attemptId, 'denied', 'protected-target-refused');
       }
-      if (!explicitlyAuthorizedRef && !isWithinDirectory(scope.executionRoot, resolvedTarget)) {
+      const targetCanon = canonicalizePathWithTailSync(resolvedTarget);
+      if (!targetCanon.ok) {
+        return record(scope.attemptId, 'denied', 'outside-execution-root');
+      }
+      const canonicalTarget = targetCanon.canonical;
+      // Win32 verbatim extended-length paths (`\\?\...`) are already validated by
+      // `canonicalizePathWithTailSync` to contain zero `/`, `.`, or `..` segments,
+      // and passing `\\?\C:\` to `path.win32.resolve` would corrupt it to `\\?\C:`.
+      const isWin32Verbatim = process.platform === 'win32' && resolvedTarget.startsWith('\\\\?\\');
+      const lexicalResolved = isWin32Verbatim ? resolvedTarget : path.resolve(resolvedTarget);
+      const lexicalCanon = isWin32Verbatim
+        ? targetCanon
+        : canonicalizePathWithTailSync(lexicalResolved);
+      if (!lexicalCanon.ok) {
+        return record(scope.attemptId, 'denied', 'outside-execution-root');
+      }
+      const canonicalLexicalTarget = lexicalCanon.canonical;
+      if (
+        dbPaths.length > 0 &&
+        (isTargetProtectedPathSync(canonicalTarget, dbPaths) ||
+          isTargetProtectedPathSync(lexicalResolved, dbPaths) ||
+          isTargetProtectedPathSync(canonicalLexicalTarget, dbPaths))
+      ) {
+        return record(scope.attemptId, 'denied', 'protected-target-refused');
+      }
+
+      const rootCanon = canonicalizePathWithTailSync(scope.executionRoot);
+      const primaryCanon =
+        scope.primaryWorkspaceRoot !== undefined
+          ? canonicalizePathWithTailSync(scope.primaryWorkspaceRoot)
+          : null;
+      const anchorPairs: Array<{ readonly raw: string; readonly canonical: string }> = [];
+      if (rootCanon.ok) {
+        anchorPairs.push({ raw: scope.executionRoot, canonical: rootCanon.canonical });
+      }
+      if (scope.primaryWorkspaceRoot !== undefined && primaryCanon !== null && primaryCanon.ok) {
+        anchorPairs.push({ raw: scope.primaryWorkspaceRoot, canonical: primaryCanon.canonical });
+      }
+
+      const verifyAuthorizedRefPath = (candidatePath: string): string | null => {
+        for (const anchor of anchorPairs) {
+          const verified = verifySymlinkFreeUnderAnchorSync(
+            anchor.raw,
+            anchor.canonical,
+            candidatePath
+          );
+          if (verified !== null) {
+            if (isWorkspaceProtectedPattern(verified, { allowSchegent: true })) {
+              return null;
+            }
+            if (dbPaths.length > 0 && isTargetProtectedPathSync(verified, dbPaths)) {
+              return null;
+            }
+            return normalizeProtectedComparePath(verified);
+          }
+        }
+        return null;
+      };
+
+      const toAuthorizedCanonicalSet = (paths: readonly string[] | undefined): ReadonlySet<string> => {
+        const set = new Set<string>();
+        for (const p of paths ?? []) {
+          const verified = verifyAuthorizedRefPath(p);
+          if (verified !== null) set.add(verified);
+        }
+        return set;
+      };
+      const allowedReadRefs = toAuthorizedCanonicalSet(scope.authorizedUpstreamInputPaths);
+      const allowedWriteRefs = toAuthorizedCanonicalSet(scope.authorizedOutputPaths);
+      // Require the requested target itself to be symlink-free beneath an authorized
+      // anchor so a planted symlink cannot escalate into an authorized ref entry.
+      const verifiedRequestRef = verifyAuthorizedRefPath(resolvedTarget);
+      const normCanonicalTarget = normalizeProtectedComparePath(canonicalTarget);
+      const matchesAuthorizedRefSet = (refs: ReadonlySet<string>): boolean =>
+        verifiedRequestRef !== null &&
+        verifiedRequestRef === normCanonicalTarget &&
+        refs.has(normCanonicalTarget);
+      const explicitlyAuthorizedRef = request.mutating
+        ? matchesAuthorizedRefSet(allowedWriteRefs)
+        : matchesAuthorizedRefSet(allowedReadRefs) || matchesAuthorizedRefSet(allowedWriteRefs);
+
+      if (
+        !explicitlyAuthorizedRef &&
+        (isProtectedPath(resolvedTarget, scope) ||
+          isProtectedPath(canonicalTarget, scope) ||
+          isProtectedPath(lexicalResolved, scope) ||
+          isProtectedPath(canonicalLexicalTarget, scope))
+      ) {
+        return record(scope.attemptId, 'denied', 'protected-target-refused');
+      }
+      // Enforce BOTH canonical (POSIX symlink-before-`..`) and lexical-then-canonical
+      // (Win32 `..`-before-symlink) execution-root containment so neither kernel
+      // resolution order can escape via symlinks or NTFS junctions.
+      const lexicallyWithinRoot =
+        isWithinDirectory(scope.executionRoot, lexicalResolved) ||
+        (rootCanon.ok && isWithinDirectory(rootCanon.canonical, lexicalResolved));
+      if (
+        !explicitlyAuthorizedRef &&
+        (!rootCanon.ok ||
+          !lexicallyWithinRoot ||
+          !isWithinDirectory(rootCanon.canonical, canonicalTarget) ||
+          !isWithinDirectory(rootCanon.canonical, canonicalLexicalTarget))
+      ) {
         return record(scope.attemptId, 'denied', 'outside-execution-root');
       }
     }
@@ -288,11 +399,12 @@ export class AcpAuthorityGate {
   ): AcpPermissionPolicy {
     return (request: AcpPermissionRequest) => {
       const scope = this.scopesBySession.get(request.sessionId);
-      if (scope === undefined || (request.attemptId !== null && request.attemptId !== scope.attemptId)) {
+      if (scope === undefined || request.attemptId !== scope.attemptId) {
         this.authorize({
           requestKind: 'permission',
           acpSessionId: request.sessionId,
           connectionGeneration,
+          attemptId: request.attemptId,
           mutating: true
         });
         return 'undecided';
@@ -302,6 +414,7 @@ export class AcpAuthorityGate {
         requestKind: 'permission',
         acpSessionId: request.sessionId,
         connectionGeneration,
+        attemptId: request.attemptId,
         ...(request.toolCallId !== null ? { effectRequestKey: request.toolCallId } : {}),
         mutating: true
       });

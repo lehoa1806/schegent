@@ -130,7 +130,7 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['src/contracts/generated/validators/queue-management.ts', 'enforces the bound; no operator-facing prose'],
   ['src/contracts/generated/schemas/sidebar-ipc.schema.json', 'generated JSON schema, carries the field'],
   ['src/contracts/sidebar-ipc.ts', 'contract surface, carries the field'],
-  ['src/contracts/sidebar-ipc/queue.ts', 'contract surface, carries the field'],
+  ['src/contracts/generated/sidebar-ipc-types.ts', 'generated contract surface, carries the field'],
   ['src/contracts/snapshot-projections.ts', 'contract surface, declares the projected field'],
   ['src/ui/sidebar/commands/router-types.ts', 'router types, carries the field'],
   ['src/ui/sidebar/snapshot.ts', 'idle projection, imports the value'],
