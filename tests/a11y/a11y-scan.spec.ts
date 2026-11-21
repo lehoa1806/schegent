@@ -149,10 +149,9 @@ async function scanOpenedPicker(page: Page, theme: ThemeName): Promise<ScanResul
   await page.getByTestId('dashboard-route-builder').click();
   await page.getByTestId('pipeline-builder-root').waitFor({ state: 'visible', timeout: 15_000 });
   await page.getByRole('tab', { name: 'Workflows' }).click();
-  const picker = page.getByTestId('workflow-picker-toggle');
-  if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
   await page.getByTestId('workflows-list-item-dev-new-feature').click();
   await expect(page.getByTestId('workflow-field-name')).toBeVisible();
+  const picker = page.getByTestId('workflow-picker-toggle');
   await expect(picker).toHaveAttribute('aria-expanded', 'false');
   await picker.click();
   await expect(picker).toHaveAttribute('aria-expanded', 'true');

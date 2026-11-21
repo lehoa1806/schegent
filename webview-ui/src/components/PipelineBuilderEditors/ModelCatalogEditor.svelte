@@ -6,6 +6,7 @@
   // catalog entry, whether Detect or the operator put it there.
   import { findWebviewBackendDescriptor } from '../../lib/generated/backend-descriptors';
   import { exportModelCatalogYaml } from '../../lib/process-yaml-ipc';
+  import SgMenu from '../sg/SgMenu.svelte';
 
   interface Props {
     /** What each backend's CLI reported when probed — a live fact, not the catalog. */
@@ -13,24 +14,35 @@
     /** The editable catalog, seeded from `schegent.models`. What Save writes. */
     models: Record<string, string[]>;
     newModelInput: Record<string, string>;
+    /** Whether local edits differ from the adopted saved snapshot. */
+    dirty?: boolean;
+    /** Whether a Save write is currently in flight. */
+    savePending?: boolean;
+    /** Whether this window can persist model saves (defaults true for standalone tests). */
+    canSave?: boolean;
     onnewmodelinput: (backend: string, value: string) => void;
     onmodelchange: (backend: string, index: number, value: string) => void;
     onadd: (backend: string) => void;
     onremove: (backend: string, index: number) => void;
     onsave: () => void;
     ondetect: (backend: string) => void;
+    onrevert?: () => void;
   }
 
   const {
     availableModels,
     models,
     newModelInput,
+    dirty = false,
+    savePending = false,
+    canSave = true,
     onnewmodelinput,
     onmodelchange,
     onadd,
     onremove,
     onsave,
-    ondetect
+    ondetect,
+    onrevert
   }: Props = $props();
 
   /**
@@ -49,12 +61,14 @@
    * A backend is shown because it is editable, not because something was
    * detected for it.
    */
+  const mutatingDisabled = $derived(!canSave || savePending);
+
   const backends = $derived([
     ...new Set([...Object.keys(models || {}), ...Object.keys(availableModels || {})])
   ]);
 
   function detectedFor(backend: string): readonly string[] {
-    return availableModels?.[backend] ?? [];
+    return Object.hasOwn(availableModels, backend) ? availableModels[backend] : [];
   }
 
   /**
@@ -83,7 +97,7 @@
    * that dispatches past `disabled`, gets the same answer the operator sees.
    */
   function onDetectClick(backend: string): void {
-    if (detectedFor(backend).length === 0) return;
+    if (mutatingDisabled || detectedFor(backend).length === 0) return;
     ondetect(backend);
   }
 
@@ -103,6 +117,17 @@
     exportModelCatalogYaml();
   }
 
+  function handleSave(): void {
+    if (!dirty || mutatingDisabled) return;
+    onsave();
+  }
+
+  function handleRevert(): void {
+    if (!dirty || mutatingDisabled) return;
+    dropDraft();
+    onrevert?.();
+  }
+
   /**
    * Feature 096 T030, FR-005 — a duplicate add used to silently no-op.
    * `onadd` is the only path from this component to a catalog mutation, so
@@ -112,9 +137,10 @@
    */
   let duplicateMessage = $state<string | null>(null);
   function onAddSubmit(backend: string): void {
+    if (mutatingDisabled) return;
     duplicateMessage = null;
     const value = (newModelInput[backend] || '').trim();
-    if (value && (models[backend] || []).includes(value)) {
+    if (value && entriesFor(backend).includes(value)) {
       duplicateMessage = `"${value}" already exists for ${backend}.`;
       return;
     }
@@ -123,6 +149,10 @@
 
   /** The backend whose add form is open. A refusal shown under one form never outlives it. */
   let addingFor = $state<string | null>(null);
+
+  $effect(() => {
+    if (mutatingDisabled && addingFor !== null) dropDraft();
+  });
 
   /**
    * However a form closes — Cancel, Escape, its button again, or another section's form opening —
@@ -135,6 +165,7 @@
   }
 
   function toggleAdd(backend: string): void {
+    if (mutatingDisabled) return;
     const wasOpen = addingFor === backend;
     dropDraft();
     if (!wasOpen) addingFor = backend;
@@ -164,8 +195,14 @@
   <div class="toolbar">
     <span class="small muted">Models a Phase can choose. Detected models come from each installed backend.</span>
     <div class="push">
-      <button type="button" class="btn btn-secondary" aria-label="Export Model Catalog" onclick={onExport}>Export…</button>
-      <button type="button" class="btn btn-primary" onclick={onsave}>Save</button>
+      {#if dirty}
+        <span class="chip s-warn" data-testid="models-unsaved">Unsaved changes</span>
+      {/if}
+      <SgMenu label="More model actions" testid="models-menu">
+        <button type="button" role="menuitem" data-testid="models-export" onclick={onExport}><svg class="i" aria-hidden="true"><use href="#i-export"></use></svg>Export YAML…</button>
+        <button type="button" role="menuitem" data-testid="models-revert" aria-disabled={!dirty || mutatingDisabled} onclick={handleRevert}><svg class="i" aria-hidden="true"><use href="#i-undo"></use></svg>Revert unsaved changes</button>
+      </SgMenu>
+      <button type="button" class="btn btn-primary" data-testid="models-save" disabled={!dirty || mutatingDisabled} onclick={handleSave}>{savePending ? 'Saving…' : 'Save'}</button>
     </div>
   </div>
 
@@ -189,7 +226,7 @@
             class="btn btn-ghost btn-sm"
             aria-label={`Detect ${backend} models`}
             title={detectTitle(backend)}
-            disabled={detectedFor(backend).length === 0}
+            disabled={mutatingDisabled || detectedFor(backend).length === 0}
             onclick={() => onDetectClick(backend)}
           ><svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg>Detect</button>
           <button
@@ -198,6 +235,7 @@
             id={toggleId}
             aria-expanded={addingFor === backend}
             aria-controls={addingFor === backend ? formId : undefined}
+            disabled={mutatingDisabled}
             onclick={() => toggleAdd(backend)}
           ><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>Add model</button>
         </span>
@@ -258,7 +296,10 @@
                       class="input mono model-id"
                       aria-label={`${backend} model ${index + 1}`}
                       value={model}
-                      oninput={(event) => onmodelchange(backend, index, event.currentTarget.value)}
+                      disabled={mutatingDisabled}
+                      oninput={(event) => {
+                        if (!mutatingDisabled) onmodelchange(backend, index, event.currentTarget.value);
+                      }}
                     />
                   </td>
                   <td>{sourceOf(backend, model)}</td>
@@ -267,7 +308,10 @@
                       type="button"
                       class="icon-btn"
                       aria-label={`Remove ${backend} model ${model}`}
-                      onclick={() => onremove(backend, index)}
+                      disabled={mutatingDisabled}
+                      onclick={() => {
+                        if (!mutatingDisabled) onremove(backend, index);
+                      }}
                     ><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button>
                   </td>
                 </tr>

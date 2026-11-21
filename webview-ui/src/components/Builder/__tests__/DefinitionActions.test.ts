@@ -199,11 +199,11 @@ afterEach(() => cleanup());
 // T039 — the offer matrix (FR-016 – FR-019)
 // ---------------------------------------------------------------------------
 
-describe('Feature 101 T039 — which actions a row offers (FR-016 – FR-019)', () => {
+describe('Feature 101 T039 / Feature 326 — which actions a row offers (FR-016 – FR-019)', () => {
   const MATRIX: readonly { state: DefinitionState; offered: readonly Action[] }[] = [
     { state: 'draft', offered: ['publish', 'discard-draft'] },
-    { state: 'active', offered: ['deactivate'] },
-    { state: 'active-with-draft', offered: ['publish', 'discard-draft', 'deactivate'] }
+    { state: 'active', offered: [] },
+    { state: 'active-with-draft', offered: ['publish', 'discard-draft'] }
   ];
 
   for (const { state, offered } of MATRIX) {
@@ -267,24 +267,13 @@ describe('Feature 101 T039 — which actions a row offers (FR-016 – FR-019)', 
 // T039 — the gate on the two destructive actions (FR-020, FR-022, SC-003)
 // ---------------------------------------------------------------------------
 
-describe('Feature 101 T039 — the two destructive actions are gated (FR-020, FR-022)', () => {
+describe('Feature 101 T039 / Feature 326 — Discard draft is gated (FR-020, FR-022)', () => {
   it('posts nothing when Discard draft is dismissed', async () => {
     confirmAnswer = false;
     const { container } = renderActions({ state: 'active-with-draft' });
     await click(actionButton(container, 'discard-draft'));
 
     expect(confirmCalls.map((call) => call.actionKey)).toEqual(['catalog.discard-draft']);
-    expect(posted, 'a dismissed confirmation must post no command').toEqual([]);
-  });
-
-  it('posts nothing when Deactivate is dismissed', async () => {
-    confirmAnswer = false;
-    const { container } = renderActions({ state: 'active' });
-    await click(actionButton(container, 'deactivate'));
-
-    expect(confirmCalls.map((call) => call.actionKey)).toEqual([
-      'catalog.deactivate-definition'
-    ]);
     expect(posted, 'a dismissed confirmation must post no command').toEqual([]);
   });
 
@@ -298,19 +287,6 @@ describe('Feature 101 T039 — the two destructive actions are gated (FR-020, FR
       kind: 'pipeline',
       id: DEFINITION_ID,
       expectedDraftVersion: 'v4'
-    });
-  });
-
-  it('posts the deactivation once the confirmation is accepted', async () => {
-    const { container } = renderActions({ state: 'active' });
-    await click(actionButton(container, 'deactivate'));
-
-    expect(posted).toHaveLength(1);
-    expect(posted[0]?.type).toBe(WIRE.deactivate);
-    expect(posted[0]?.payload).toEqual({
-      kind: 'pipeline',
-      id: DEFINITION_ID,
-      expectedDraftVersion: 'no-draft'
     });
   });
 
@@ -334,20 +310,10 @@ describe('Feature 101 T039 — the two destructive actions are gated (FR-020, FR
     expect(confirmCalls[0]?.context).toMatchObject({ removesEntry: false });
   });
 
-  it('names the definition in the deactivate prompt, not just its id', async () => {
-    const { container } = renderActions({ state: 'active' });
-    await click(actionButton(container, 'deactivate'));
-    expect(confirmCalls[0]?.context).toMatchObject({
-      definitionName: DEFINITION_NAME,
-      definitionId: DEFINITION_ID,
-      kindLabel: 'Pipeline'
-    });
-  });
-
-  it('reports nothing to the operator when they dismissed the prompt themselves', async () => {
+  it('reports nothing to the operator when they dismissed the discard prompt themselves', async () => {
     confirmAnswer = false;
-    const { container } = renderActions({ state: 'active' });
-    await click(actionButton(container, 'deactivate'));
+    const { container } = renderActions({ state: 'active-with-draft' });
+    await click(actionButton(container, 'discard-draft'));
     expect(
       container.querySelector(`[data-testid="definition-action-refusal-${DEFINITION_ID}"]`),
       'a declined confirmation is not a failure to report back'

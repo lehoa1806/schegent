@@ -69,7 +69,7 @@ function mount(options: {
       mutationActive: false,
       editableSourceKey: null,
       onselect: vi.fn(), onadd: vi.fn(), onremove: vi.fn(), onreset: vi.fn(),
-      onphasechange: options.onphasechange ?? vi.fn(), onmoveup: vi.fn(), onmovedown: vi.fn(),
+      onphasechange: options.onphasechange ?? vi.fn(),
       onundo: vi.fn(), onredo: vi.fn(), onsave: vi.fn(),
       ondismisssaveerror: vi.fn(), ontoggleraw: vi.fn(), onrawsave: vi.fn(),
       ontoggleretry: vi.fn(), onretrychange: vi.fn(), onduplicate: vi.fn()

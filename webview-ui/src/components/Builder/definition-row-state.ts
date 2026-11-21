@@ -27,11 +27,11 @@ import { formatAbsoluteTime } from '../../lib/format';
 export const EM_DASH = '—';
 
 /**
- * The four lifecycle actions (FR-016 – FR-019). `restore` is in the union but
- * never in a row's offer: it belongs to a version in the history panel, and the
- * row is not history.
+ * The three lifecycle actions offered inside the Summary / Inspector panel and
+ * version history (`publish`, `discard-draft`, `restore`). `Deactivate…` lives
+ * exclusively in the editor header `⋯` menu and list row `⋯` menus (Feature 326).
  */
-export type DefinitionRowAction = 'publish' | 'discard-draft' | 'deactivate' | 'restore';
+export type DefinitionRowAction = 'publish' | 'discard-draft' | 'restore';
 
 /**
  * Validity as the host projects it.
@@ -88,11 +88,10 @@ export const STATE_TONE_CLASSES: Readonly<Record<DefinitionState, string>> = Obj
 const STATE_ACTIONS: Readonly<Record<DefinitionState, readonly DefinitionRowAction[]>> =
   Object.freeze({
     draft: Object.freeze<DefinitionRowAction[]>(['publish', 'discard-draft']),
-    active: Object.freeze<DefinitionRowAction[]>(['deactivate']),
+    active: Object.freeze<DefinitionRowAction[]>([]),
     'active-with-draft': Object.freeze<DefinitionRowAction[]>([
       'publish',
-      'discard-draft',
-      'deactivate'
+      'discard-draft'
     ])
   });
 
