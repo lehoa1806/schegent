@@ -9,7 +9,7 @@ import {
   SqliteCutoverMigrationIncompleteError,
   createSwitchableOperationalMemento
 } from '../../../src/state/sqlite-operational-backing';
-import { KEYS, type Memento } from '../../../src/state/workspace-state';
+import { KEYS, QueueMutationRejected, type Memento } from '../../../src/state/workspace-state';
 import type { ConnectedWorkflowRun } from '../../../src/state/connected-workflow-run';
 import type { CatalogFsPort } from '../../../src/catalog/ports';
 
@@ -410,5 +410,80 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
     // Compensating rollback restored KEYS.run back to undefined.
     expect(legacy.get(KEYS.run)).toBeUndefined();
     expect(switchable.get(KEYS.run)).toBeUndefined();
+  });
+
+  it('refuses updateBatch with QueueMutationRejected(durable-store-unavailable) and 0 legacy writes when requireDurableBatch is active without SQLite (FR-R7-11)', async () => {
+    const legacy = createMemoryMemento();
+    const switchable = createSwitchableOperationalMemento(legacy, undefined, {
+      requireDurableBatch: true
+    });
+    switchable.setDurableBatchUnavailableReason('sqlite-init-failed');
+
+    let caught: unknown;
+    try {
+      await switchable.updateBatch([
+        { key: KEYS.run, value: { default: { id: 'run-refused', status: 'running' } } },
+        { key: KEYS.queue, value: { default: { requests: [], inFlightId: 'feat-1' } } }
+      ]);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(QueueMutationRejected);
+    expect((caught as QueueMutationRejected).reason).toBe('durable-store-unavailable');
+    expect((caught as QueueMutationRejected).message).toContain('sqlite-init-failed');
+    expect(legacy.writes).toBe(0);
+    expect(legacy.get(KEYS.run)).toBeUndefined();
+    expect(legacy.get(KEYS.queue)).toBeUndefined();
+
+    // Switching on requireDurableBatch dynamically after construction also fails closed.
+    const legacy2 = createMemoryMemento();
+    const dynamicSwitchable = createSwitchableOperationalMemento(legacy2);
+    dynamicSwitchable.requireDurableBatch('storage-relocation-failed');
+    await expect(
+      dynamicSwitchable.updateBatch([
+        { key: KEYS.run, value: { default: { id: 'run-refused-2', status: 'running' } } },
+        { key: KEYS.queue, value: { default: { requests: [], inFlightId: 'feat-2' } } }
+      ])
+    ).rejects.toMatchObject({ reason: 'durable-store-unavailable' });
+    expect(legacy2.writes).toBe(0);
+
+    // Attaching SQLite restores durable atomic updateBatch without touching legacy Memento.
+    const sqliteStore = SqliteApplicationStore.openInMemory();
+    try {
+      switchable.attachSqlite(sqliteStore, 'scope-durable-ready', () => 1_800_000_000_000);
+      await switchable.updateBatch([
+        {
+          key: KEYS.run,
+          value: {
+            default: {
+              id: 'run-ready-1',
+              featureId: 'feat-1',
+              status: 'running',
+              currentPhase: 'speckit-plan',
+              startedAt: 1_800_000_000_000,
+              lastTransitionAt: 1_800_000_000_000,
+              pipeline: { id: 'default-pipeline', name: 'Default', phases: [] }
+            }
+          }
+        },
+        { key: KEYS.queue, value: { default: { requests: [{ id: 'feat-1', status: 'in-flight' }], inFlightId: 'feat-1' } } }
+      ]);
+      expect(legacy.writes).toBe(0);
+      expect(switchable.get<Record<string, { id: string } | undefined>>(KEYS.run)?.default?.id).toBe('run-ready-1');
+    } finally {
+      sqliteStore.close();
+    }
+  });
+
+  it('keeps default pre-cutover SwitchableOperationalMemento in-memory fallback functional when requireDurableBatch is false (FR-R7-11)', async () => {
+    const legacy = createMemoryMemento();
+    const switchable = createSwitchableOperationalMemento(legacy);
+    await switchable.updateBatch([
+      { key: KEYS.run, value: { default: { id: 'run-fallback', status: 'running' } } },
+      { key: KEYS.queue, value: { default: { requests: [], inFlightId: 'feat-fallback' } } }
+    ]);
+    expect(legacy.writes).toBe(2);
+    expect(switchable.get<Record<string, { id: string } | undefined>>(KEYS.run)?.default?.id).toBe('run-fallback');
   });
 });

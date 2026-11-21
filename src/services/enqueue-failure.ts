@@ -40,10 +40,15 @@ const STORAGE_FAULT: EnqueueFailureClass = Object.freeze({
 
 /**
  * Classify whatever `queue.enqueue` threw. A queue rule refusal keeps its own code; the
- * unverifiable-fence refusal, and everything that is not a refusal, is a storage fault.
+ * unverifiable-fence and durable-store-unavailable refusals, and everything that is not a
+ * refusal, are storage faults.
  */
 export function classifyEnqueueFailure(thrown: unknown): EnqueueFailureClass {
-  if (thrown instanceof QueueMutationRejected && thrown.reason !== 'fence-unverifiable') {
+  if (
+    thrown instanceof QueueMutationRejected &&
+    thrown.reason !== 'fence-unverifiable' &&
+    thrown.reason !== 'durable-store-unavailable'
+  ) {
     return { outcome: 'rejected-validation', reason: thrown.reason };
   }
   return STORAGE_FAULT;

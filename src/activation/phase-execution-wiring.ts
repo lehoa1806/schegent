@@ -210,7 +210,8 @@ const runSafety = await createRunSafetyWiring({
   evidenceHealth,
   auditWriter,
   notifier,
-  recordContainmentAcceptance
+  recordContainmentAcceptance,
+  agentConfigAckGate
 });
   return { phaseRunner, runSafety };
 }

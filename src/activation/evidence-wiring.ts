@@ -256,7 +256,8 @@ const sessionRetention = new SessionArtifactRetentionService({
   // the triggers (activation, a terminal Run, a changed setting) are the ones that already exist.
   failureRecords: {
     sweep: (maxAgeMs, now) => sweepFailureRecords({ workspaceRoot, logger }, maxAgeMs, now)
-  }
+  },
+  protectedPaths: () => getSqliteCutoverCoordinator(store)?.getDatabaseProtectedPaths() ?? []
 });
 const protectedSessionRunIds = (): ReadonlySet<string> => {
   // Feature 093 (T037/T039) — C-4 aggregate. Retention protects the session

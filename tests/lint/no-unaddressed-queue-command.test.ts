@@ -561,13 +561,18 @@ describe('every webview queue-lifecycle command names its queue', () => {
   });
 
   it('reads every file that declares a command interface', () => {
-    // The derivation used to read `sidebar-ipc.ts` alone and miss eleven
-    // queue-addressed commands in its sibling modules. A module added to
-    // `sidebar-ipc/` is picked up by the directory read; a module *renamed away*
-    // would shrink this count, which is what these floors are for.
+    // All 71 live inbound command interfaces are emitted into
+    // `src/contracts/generated/sidebar-ipc-types.ts` from the declarative IPC
+    // descriptors and re-exported by `sidebar-ipc/*.ts` and `sidebar-ipc.ts`.
+    // The floor guarantees the scan is reading the generated declaration module
+    // and deriving the full command population rather than an empty slice.
     const files = new Set(CONTRACTS.map((contract) => contract.file));
-    expect(files.size, 'files contributing a command interface').toBeGreaterThanOrEqual(10);
-    expect(CONTRACTS.length, 'command interfaces derived').toBeGreaterThanOrEqual(55);
+    expect(files.size, 'files contributing a command interface').toBeGreaterThanOrEqual(1);
+    expect(
+      files.has('src/contracts/generated/sidebar-ipc-types.ts'),
+      'generated sidebar-ipc-types.ts must contribute the live command interfaces'
+    ).toBe(true);
+    expect(CONTRACTS.length, 'command interfaces derived').toBeGreaterThanOrEqual(71);
     expect(QUEUE_ADDRESSED.length, 'queue-addressed commands derived').toBeGreaterThanOrEqual(18);
   });
 

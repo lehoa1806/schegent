@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 import { KEY_SPECS, type AllowedKey } from '../../../src/config/general-settings-keys';
@@ -232,5 +233,146 @@ describe('FR-R7-06 — BackendDescriptor table parity, purity, and unknown-safet
       expect(spec?.typedField).toBe(descriptor.cliPathFieldKey);
       expect(spec?.defaultValue).toBe(descriptor.defaultCliBinary);
     }
+  });
+
+  it('FR-R7-11: validateSettingsSchemaParity validates effective backend-valued settings metadata and rejects drift', async () => {
+    const repoRoot = resolve(__dirname, '../../..');
+    const emitterUrl = pathToFileURL(
+      resolve(repoRoot, 'scripts/contracts/emit-backend-descriptors.mjs')
+    ).href;
+    const emitter = (await import(emitterUrl)) as {
+      extractBackendDescriptorTable: (root: string) => {
+        unionMembers: string[];
+        supportedBackends: string[];
+        defaultBackend: string;
+        descriptors: Record<string, unknown>;
+      };
+      validateBackendManifestParity: (args: Record<string, unknown>) => void;
+      validateSettingsSchemaParity: (
+        root: string,
+        args: Record<string, unknown>
+      ) => void;
+    };
+
+    const descriptorData = emitter.extractBackendDescriptorTable(repoRoot);
+    const packageJson = JSON.parse(
+      readFileSync(resolve(repoRoot, 'package.json'), 'utf8')
+    ) as Record<string, unknown>;
+    const settingsSchemaSource = readFileSync(
+      resolve(repoRoot, 'src/config/settings-schema.ts'),
+      'utf8'
+    );
+
+    // Positive control: current repo passes both manifest and settings-schema parity.
+    expect(() =>
+      emitter.validateBackendManifestParity({ ...descriptorData, packageJson })
+    ).not.toThrow();
+    expect(() =>
+      emitter.validateSettingsSchemaParity(repoRoot, {
+        ...descriptorData,
+        packageJson,
+        schemaText: settingsSchemaSource
+      })
+    ).not.toThrow();
+
+    // Negative control 1: dropping `itemEnum` from schegent.backend.uncontainedBackends.
+    const droppedItemEnum = settingsSchemaSource.replace(
+      /\s*itemEnum:\s*SUPPORTED_BACKENDS,/,
+      ''
+    );
+    expect(droppedItemEnum).not.toEqual(settingsSchemaSource);
+    expect(() =>
+      emitter.validateSettingsSchemaParity(repoRoot, {
+        ...descriptorData,
+        packageJson,
+        schemaText: droppedItemEnum
+      })
+    ).toThrow(/uncontainedBackends.*itemEnum/i);
+
+    // Negative control 2: hardcoding `itemEnum` as a literal array instead of SUPPORTED_BACKENDS.
+    const hardcodedItemEnum = settingsSchemaSource.replace(
+      'itemEnum: SUPPORTED_BACKENDS',
+      "itemEnum: ['claude', 'codex', 'agy']"
+    );
+    expect(hardcodedItemEnum).not.toEqual(settingsSchemaSource);
+    expect(() =>
+      emitter.validateSettingsSchemaParity(repoRoot, {
+        ...descriptorData,
+        packageJson,
+        schemaText: hardcodedItemEnum
+      })
+    ).toThrow(/uncontainedBackends\.itemEnum must reference SUPPORTED_BACKENDS/);
+
+    // Negative control 3: drifting schegent.backend.runner default away from DEFAULT_BACKEND.
+    const driftedRunnerDefault = settingsSchemaSource.replace(
+      'default: DEFAULT_BACKEND',
+      "default: 'codex'"
+    );
+    expect(() =>
+      emitter.validateSettingsSchemaParity(repoRoot, {
+        ...descriptorData,
+        packageJson,
+        schemaText: driftedRunnerDefault
+      })
+    ).toThrow(/schegent\.backend\.runner\.default/);
+
+    // Negative control 4: drifting schegent.models default away from emptyBackendModels().
+    const driftedModels = settingsSchemaSource.replace(
+      'default: emptyBackendModels()',
+      'default: { claude: [], codex: [], agy: [] }'
+    );
+    expect(() =>
+      emitter.validateSettingsSchemaParity(repoRoot, {
+        ...descriptorData,
+        packageJson,
+        schemaText: driftedModels
+      })
+    ).toThrow(/schegent\.models\.default must call emptyBackendModels/);
+
+    // Negative control 5: drifting schegent.acp.profile enum (omitting 'auto').
+    const driftedAcp = settingsSchemaSource.replace(
+      "enum: Object.freeze([\n      'auto',",
+      'enum: Object.freeze(['
+    );
+    expect(driftedAcp).not.toEqual(settingsSchemaSource);
+    expect(() =>
+      emitter.validateSettingsSchemaParity(repoRoot, {
+        ...descriptorData,
+        packageJson,
+        schemaText: driftedAcp
+      })
+    ).toThrow(/schegent\.acp\.profile\.enum/);
+
+    // Negative control 6: drifting a CLI path entry's docLabel away from BACKEND_DESCRIPTORS.
+    const driftedCliDoc = settingsSchemaSource.replace(
+      'docLabel: BACKEND_DESCRIPTORS.codex.cliPathDocLabel',
+      "docLabel: 'Codex binary'"
+    );
+    expect(() =>
+      emitter.validateSettingsSchemaParity(repoRoot, {
+        ...descriptorData,
+        packageJson,
+        schemaText: driftedCliDoc
+      })
+    ).toThrow(/schegent\.codex\.path\.docLabel/);
+
+    // Negative control 7: drifting package.json uncontainedBackends items.enum.
+    const driftedPkg = structuredClone(packageJson) as {
+      contributes: {
+        configuration: {
+          properties: Record<string, { items?: { enum?: string[] } }>;
+        };
+      };
+    };
+    driftedPkg.contributes.configuration.properties[
+      'schegent.backend.uncontainedBackends'
+    ]!.items!.enum = ['claude', 'codex'];
+    expect(() =>
+      emitter.validateSettingsSchemaParity(repoRoot, {
+        ...descriptorData,
+        packageJson: driftedPkg,
+        schemaText: settingsSchemaSource
+      })
+    ).toThrow(/uncontainedBackends\.itemEnum disagrees with package\.json/);
   });
 });

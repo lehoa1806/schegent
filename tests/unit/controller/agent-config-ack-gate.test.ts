@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AgentConfigAckGate } from '../../../src/controller/agent-config-ack-gate';
+import {
+  AgentConfigAckGate,
+  type AgentConfigAckGateDeps
+} from '../../../src/controller/agent-config-ack-gate';
+import { POSTURE_LEDGER_MAX_PAIRS } from '../../../src/controller/backend-posture-recorder';
 import { projectAuditPayload } from '../../../src/audit/audit-payload';
 import {
   AgentConfigAcknowledgementRefusedError,
@@ -96,7 +100,7 @@ describe('AgentConfigAckGate (FR-R7-04, SC-002, SC-005, SC-006)', () => {
     const gate = new AgentConfigAckGate({
       scan: async () => currentScan,
       hasGrant: (fp, b) =>
-        Object.prototype.hasOwnProperty.call(grants, fp) && grants[fp].backend === b,
+        Object.prototype.hasOwnProperty.call(grants, fp) && grants[fp]!.backend === b,
       latestGrantForBackend: (b) => latestGrantForBackend(grants, b),
       persistGrant: async (g) => {
         grants = writeAgentConfigGrant(grants, g);
@@ -260,7 +264,7 @@ describe('AgentConfigAckGate (FR-R7-04, SC-002, SC-005, SC-006)', () => {
     const gate = new AgentConfigAckGate({
       scan: async () => scanResult,
       hasGrant: (fp, b) =>
-        Object.prototype.hasOwnProperty.call(grants, fp) && grants[fp].backend === b,
+        Object.prototype.hasOwnProperty.call(grants, fp) && grants[fp]!.backend === b,
       latestGrantForBackend: (b) => latestGrantForBackend(grants, b),
       persistGrant: vi.fn(),
       request,
@@ -272,22 +276,157 @@ describe('AgentConfigAckGate (FR-R7-04, SC-002, SC-005, SC-006)', () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  it('permits an explicitly approved run even if persisting the grant fails', async () => {
+  it('FR-R7-11 Task 09: emits decision approved-once (never acknowledged) when persistGrant fails and prompts again on the next Run', async () => {
     const warn = vi.fn();
+    const auditEvents: Array<Record<string, unknown>> = [];
+    const request = vi.fn(async () => 'persist' as const);
     const gate = new AgentConfigAckGate({
       scan: async () =>
-        makeScan('claude', [{ name: 'CLAUDE.md', status: 'present', size: 12, digest: DIGEST_1 }]),
+        makeScan('claude', [
+          {
+            name: '.claude/settings.json',
+            status: 'present',
+            size: 64,
+            digest: DIGEST_1,
+            hookEvents: ['PreToolUse']
+          }
+        ]),
       hasGrant: () => false,
       latestGrantForBackend: () => null,
       persistGrant: async () => {
         throw new Error('memento write failed');
       },
-      request: async () => 'persist',
-      appendAudit: vi.fn(async () => undefined),
+      request,
+      appendAudit: async (entry) => {
+        auditEvents.push(projectAuditPayload(entry.eventType, entry.payload));
+      },
       logger: { warn }
     });
 
-    await expect(gate.ensureAcknowledged(ctx(), 'claude')).resolves.toBeUndefined();
+    await expect(gate.ensureAcknowledged(ctx('run-1'), 'claude')).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledOnce();
+    expect(auditEvents).toEqual([{ backend: 'claude', fileCount: 1, decision: 'approved-once' }]);
+
+    const serialized = JSON.stringify(auditEvents);
+    expect(serialized).not.toContain('.claude');
+    expect(serialized).not.toContain('settings.json');
+    expect(serialized).not.toContain('PreToolUse');
+    expect(serialized).not.toContain(DIGEST_1);
+
+    // Because persistence failed, run-2 has no stored grant and must prompt again.
+    await expect(gate.ensureAcknowledged(ctx('run-2'), 'claude')).resolves.toBeUndefined();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(auditEvents[1]).toEqual({ backend: 'claude', fileCount: 1, decision: 'approved-once' });
+  });
+
+  it('FR-R7-11 Task 08: coalesces overlapping concurrent ensureAcknowledged calls for the same (runId, backend)', async () => {
+    let markPromptEntered!: () => void;
+    const promptEntered = new Promise<void>((resolve) => {
+      markPromptEntered = resolve;
+    });
+    let releasePrompt!: (choice: 'this-run') => void;
+    const scan = vi.fn(async () =>
+      makeScan('claude', [{ name: 'CLAUDE.md', status: 'present', size: 12, digest: DIGEST_1 }])
+    );
+    const request = vi.fn(
+      () =>
+        new Promise<'this-run'>((resolve) => {
+          releasePrompt = resolve;
+          markPromptEntered();
+        })
+    );
+    const appendAudit = vi.fn<AgentConfigAckGateDeps['appendAudit']>(async (entry) => {
+      projectAuditPayload(entry.eventType, entry.payload);
+    });
+    const gate = new AgentConfigAckGate({
+      scan,
+      hasGrant: () => false,
+      latestGrantForBackend: () => null,
+      persistGrant: vi.fn(),
+      request,
+      appendAudit,
+      logger: { warn: vi.fn() }
+    });
+
+    const p1 = gate.ensureAcknowledged(ctx('run-concurrent'), 'claude');
+    const p2 = gate.ensureAcknowledged({ ...ctx('run-concurrent'), phase: 'plan' }, 'claude');
+    await promptEntered;
+    releasePrompt('this-run');
+    await Promise.all([p1, p2]);
+
+    expect(scan).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(appendAudit).toHaveBeenCalledTimes(1);
+  });
+
+  it('FR-R7-11 Task 08: forgetRun clears only the target Run so a fresh check runs without affecting sibling Runs', async () => {
+    const scan = vi.fn(async (_cwd: string, backend: 'claude' | 'codex' | 'agy') =>
+      makeScan(backend, [{ name: 'CLAUDE.md', status: 'present', size: 12, digest: DIGEST_1 }])
+    );
+    const request = vi.fn(async () => 'this-run' as const);
+    const gate = new AgentConfigAckGate({
+      scan,
+      hasGrant: () => false,
+      latestGrantForBackend: () => null,
+      persistGrant: vi.fn(),
+      request,
+      appendAudit: vi.fn(async () => undefined),
+      logger: { warn: vi.fn() }
+    });
+
+    await gate.ensureAcknowledged(ctx('run-a'), 'claude');
+    await gate.ensureAcknowledged(ctx('run-a'), 'agy');
+    await gate.ensureAcknowledged(ctx('run-b'), 'claude');
+    expect(request).toHaveBeenCalledTimes(3);
+
+    // Forget run-a; run-b remains cleared while both run-a backends re-check.
+    gate.forgetRun('run-a');
+    await gate.ensureAcknowledged(ctx('run-b'), 'claude');
+    expect(request).toHaveBeenCalledTimes(3);
+
+    await gate.ensureAcknowledged(ctx('run-a'), 'claude');
+    await gate.ensureAcknowledged(ctx('run-a'), 'agy');
+    expect(request).toHaveBeenCalledTimes(5);
+  });
+
+  it('FR-R7-11 Task 08: refreshes LRU order on cleared hits and fails closed when evicted past POSTURE_LEDGER_MAX_PAIRS', async () => {
+    const scan = vi.fn(async () =>
+      makeScan('claude', [{ name: 'CLAUDE.md', status: 'present', size: 12, digest: DIGEST_1 }])
+    );
+    const request = vi.fn(async () => 'this-run' as const);
+    const gate = new AgentConfigAckGate({
+      scan,
+      hasGrant: () => false,
+      latestGrantForBackend: () => null,
+      persistGrant: vi.fn(),
+      request,
+      appendAudit: vi.fn(async () => undefined),
+      logger: { warn: vi.fn() }
+    });
+
+    // Insert run-active first, then run-stale second, then fill up to capacity.
+    await gate.ensureAcknowledged(ctx('run-active'), 'claude');
+    await gate.ensureAcknowledged(ctx('run-stale'), 'claude');
+    for (let i = 2; i < POSTURE_LEDGER_MAX_PAIRS; i += 1) {
+      await gate.ensureAcknowledged(ctx(`run-fill-${i}`), 'claude');
+    }
+    const callsBeforeRefresh = request.mock.calls.length;
+    expect(callsBeforeRefresh).toBe(POSTURE_LEDGER_MAX_PAIRS);
+
+    // Refresh run-active so it moves to the newest LRU slot, making run-stale the oldest.
+    await gate.ensureAcknowledged(ctx('run-active'), 'claude');
+    expect(request).toHaveBeenCalledTimes(callsBeforeRefresh);
+
+    // Adding one more Run evicts run-stale (oldest), NOT run-active.
+    await gate.ensureAcknowledged(ctx('run-overflow'), 'claude');
+    expect(request).toHaveBeenCalledTimes(callsBeforeRefresh + 1);
+
+    // run-active is still in the ledger (no prompt).
+    await gate.ensureAcknowledged(ctx('run-active'), 'claude');
+    expect(request).toHaveBeenCalledTimes(callsBeforeRefresh + 1);
+
+    // run-stale was evicted and fails closed by re-running the scan and prompt.
+    await gate.ensureAcknowledged(ctx('run-stale'), 'claude');
+    expect(request).toHaveBeenCalledTimes(callsBeforeRefresh + 2);
   });
 });

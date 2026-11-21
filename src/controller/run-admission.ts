@@ -28,6 +28,12 @@ import type { UnattendedWakeup } from '../services/unattended-eligibility';
 
 export interface RunAdmission {
   readonly completed: Promise<void>;
+  /**
+   * FR-R7-11 — why a fresh Run admission was refused before commit.
+   * Absent on an admitted Run and on silent ownership-decline returns.
+   */
+  readonly refusal?: 'durable-store-unavailable';
+  readonly refusalMessage?: string;
 }
 
 /** A resume also reports whether there was anything to resume. */
@@ -41,7 +47,7 @@ export interface ResumeOptions {
   readonly unattended?: UnattendedWakeup | undefined;
 }
 
-export interface ResumeAdmission extends RunAdmission {
+export interface ResumeAdmission extends Pick<RunAdmission, 'completed'> {
   readonly resumed: boolean;
   /**
    * FR-R4-F02 (contract U4) — why a resume was refused, for the refusals a caller has to tell

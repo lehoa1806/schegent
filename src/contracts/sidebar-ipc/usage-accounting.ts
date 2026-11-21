@@ -1,4 +1,3 @@
-import type { CMD_READ_USAGE_ACCOUNTING, CommandBase } from '../sidebar-ipc';
 import type { AccountingResult } from '../usage-accounting/accounting-types';
 import type { ProviderQualification } from '../usage-accounting/provider-qualifications';
 import type { AccountingQueryResponse, ReadGapsResponse } from '../usage-accounting/query-contract';
@@ -14,9 +13,7 @@ export interface ReadUsageAccountingRequest {
   readonly query: unknown;
 }
 
-export interface ReadUsageAccountingCommand extends CommandBase<typeof CMD_READ_USAGE_ACCOUNTING> {
-  readonly payload: ReadUsageAccountingRequest;
-}
+export type { ReadUsageAccountingCommand } from '../generated/sidebar-ipc-types';
 
 export type ReadUsageAccountingResponse = AccountingResult<AccountingQueryResponse>;
 

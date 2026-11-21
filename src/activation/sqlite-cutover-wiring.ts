@@ -5,7 +5,6 @@
 // At wiring time this module only attaches a read-only SQLite snapshot if an existing DB file is present.
 
 import { createHash, randomBytes } from 'node:crypto';
-import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
@@ -17,20 +16,23 @@ import { createPhaseContextApi, type PhaseContextApi } from '../headless/phase-c
 import { createUsageAccountingReader } from '../headless/usage-accounting-api';
 import type { SanitizedLogger } from '../lib/logger';
 import { createSideEffectFailureReporter, type SideEffectFailureReport } from '../lib/side-effect-failure-reporter';
-import { resolveContainedLink } from '../lib/path-containment';
-import { openWithinRoot } from '../lib/safe-open';
 import type { AcpRunnerObservationEvent } from '../runner/acp-backed-runner';
 import {
   createArtifactLifecycleService,
   DENY_ALL_ACCESS_POLICY,
-  type ArtifactByteProbe,
-  type ArtifactByteReader,
-  type ArtifactLifecycleService,
-  type ArtifactLocator,
-  type LifecycleFs,
-  type OwnerResolver,
-  type StorageScanRoot
+  type ArtifactLifecycleService
 } from '../services/artifact-lifecycle';
+import {
+  buildContainedProbeAndReader,
+  buildDurableHandoffSeam,
+  buildNodeLifecycleFs,
+  buildOwnerResolver,
+  buildScanRoots,
+  buildSecretPort,
+  disposeSqliteRuntimeResources,
+  isChildOfActiveComposableRun,
+  reportRelocationOutcome
+} from './sqlite-cutover-helpers';
 import {
   createExecFileGitRunner,
   createRunLaneCoordinator,
@@ -61,11 +63,12 @@ import {
 } from '../services/recovery-handoff';
 import {
   relocateLegacySqliteStore,
+  RelocationWalFilesystemRefusedError,
   SqliteApplicationStore,
   type StoreRelocationOutcome,
   type SwitchableCatalogFsAdapter
 } from '../services/sqlite-store';
-import type { TelemetrySecretPort } from '../contracts/telemetry-export';
+import type { FilesystemTypeVerdict } from '../services/sqlite-store/filesystem-type-detector';
 import {
   createTelemetryHostService,
   type TelemetryHostService
@@ -83,16 +86,13 @@ import {
 } from '../services/usage-accounting/usage-accounting-wiring';
 import {
   createCutoverAuthorityGuard,
-  createWorkflowRefusalOutcome,
   defaultCapabilityAssessment,
   getOrCreateProductionWorkflowComposition,
   registerProductionWorkflowComposition,
-  type DurableArtifactHandoverSeam,
   type ProductionWorkflowComposition
 } from '../services/workflow-execution/production-workflow-composition';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { SwitchableOperationalMemento } from '../state/sqlite-operational-backing';
-import { isTerminalRunStatus } from '../state/workflow-run';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import {
   readLanesEnabled,
@@ -168,130 +168,6 @@ export function sqliteDatabasePathFor(
   return path.join(storage.globalStorageUri, 'sqlite', deriveWorkspaceScopeId(workspaceRoot), 'schegent-state.db');
 }
 
-function buildNodeLifecycleFs(allowedRoots: readonly string[]): LifecycleFs {
-  return {
-    async lstat(absolutePath) {
-      try {
-        const st = await fsp.lstat(absolutePath);
-        const kind = st.isSymbolicLink()
-          ? 'symlink'
-          : st.isDirectory()
-            ? 'directory'
-            : st.isFile()
-              ? 'file'
-              : 'other';
-        return { kind, sizeBytes: st.size, mtimeMs: st.mtimeMs };
-      } catch {
-        return null;
-      }
-    },
-    async readdir(absolutePath) {
-      try {
-        return await fsp.readdir(absolutePath);
-      } catch {
-        return [];
-      }
-    },
-    realpath: (absolutePath) => fsp.realpath(absolutePath),
-    async unlink(absolutePath) {
-      const contained = await resolveContainedLink(absolutePath, allowedRoots);
-      if (contained.outcome === 'absent') return;
-      if (contained.outcome !== 'contained') {
-        throw new Error(`lifecycle unlink refused outside allowed roots (${contained.reason})`);
-      }
-      await fsp.unlink(contained.resolved);
-    }
-  };
-}
-
-function splitRelativeSegments(relPath: string): readonly string[] | null {
-  const normalized = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
-  if (normalized.length === 0) return null;
-  const parts = normalized.split('/').filter((s) => s.length > 0);
-  if (parts.some((p) => p === '.' || p === '..')) return null;
-  return parts;
-}
-
-function buildContainedProbeAndReader(workspaceRoot: string): {
-  readonly probe: ArtifactByteProbe;
-  readonly reader: ArtifactByteReader;
-} {
-  const readSafeBytes = async (locator: ArtifactLocator): Promise<Buffer | null> => {
-    if (locator.storageTier !== 'workspace_file') return null;
-    const segments = splitRelativeSegments(locator.uriOrRelpath);
-    if (segments === null) return null;
-    const opened = await openWithinRoot(workspaceRoot, segments, { flags: 'r' });
-    if (opened.outcome === 'refused') return null;
-    try {
-      return await opened.handle.readFile();
-    } catch {
-      return null;
-    } finally {
-      await opened.handle.close().catch(() => undefined);
-    }
-  };
-
-  return {
-    probe: {
-      async observe(locator) {
-        const bytes = await readSafeBytes(locator);
-        if (bytes === null) {
-          return { exists: false, sizeBytes: 0, producerIdentity: null, generation: null };
-        }
-        return { exists: true, sizeBytes: bytes.byteLength, producerIdentity: null, generation: null };
-      },
-      async digestSha256(locator) {
-        const bytes = await readSafeBytes(locator);
-        if (bytes === null) return null;
-        return createHash('sha256').update(bytes).digest('hex');
-      }
-    },
-    reader: {
-      async read(locator) {
-        return await readSafeBytes(locator);
-      }
-    }
-  };
-}
-
-function buildScanRoots(workspaceRoot: string): readonly StorageScanRoot[] {
-  return [
-    {
-      rootId: 'transcripts',
-      root: path.join(workspaceRoot, '.schegent', 'transcripts'),
-      retentionClass: 'transcripts-diagnostics-checkpoints-audit-catalog',
-      storeKind: 'transcript'
-    },
-    {
-      rootId: 'diagnostics',
-      root: path.join(workspaceRoot, '.schegent', 'diagnostics'),
-      retentionClass: 'transcripts-diagnostics-checkpoints-audit-catalog',
-      storeKind: 'diagnostic'
-    },
-    {
-      rootId: 'reports',
-      root: path.join(workspaceRoot, '.schegent', 'reports'),
-      retentionClass: 'generated-reports-handoff-exports',
-      storeKind: 'report'
-    }
-  ];
-}
-
-function buildOwnerResolver(store: WorkspaceStateStore): OwnerResolver {
-  return (ownerKind, ownerId) => {
-    if (ownerKind === 'run') {
-      const live = Object.values(store.getRunMap()).find((r) => r.id === ownerId);
-      if (live) {
-        return isTerminalRunStatus(live.status) ? 'settled' : 'live';
-      }
-      const connectedRuns: Readonly<Record<string, unknown>> = store.getConnectedRuns();
-      if (connectedRuns[ownerId] !== undefined) return 'live';
-      return 'settled';
-    }
-    return 'live';
-  };
-}
-
 export interface SqliteCutoverServices {
   readonly sqliteStore: SqliteApplicationStore;
   readonly artifactLifecycle: ArtifactLifecycleService;
@@ -306,12 +182,14 @@ export interface SqliteCutoverServices {
   readonly reportingService: ReportingService;
   readonly changeReviewService: ChangeReviewService;
   readonly workflowComposition: ProductionWorkflowComposition;
+  readonly disposeTelemetryConfig?: () => void;
 }
 
 export interface SqliteCutoverCoordinator {
   readonly scopeId: string;
   readonly storageRoot: string;
   readonly expectedDatabasePath: string;
+  probePassiveSnapshots(): Promise<void>;
   activatePrimary(): Promise<SqliteCutoverServices | null>;
   getServices(): SqliteCutoverServices | null;
   getSqliteStore(): SqliteApplicationStore | null;
@@ -358,21 +236,12 @@ export interface CreateSqliteCutoverCoordinatorDeps {
   readonly notifyOperator?: ((message: string) => void | Promise<void>) | undefined;
   /** Optional filesystem type for canonical storage root (enables deterministic WAL-refusal testing). */
   readonly canonicalFilesystemType?: string | undefined;
+  /** Optional filesystem type for legacy storage root (test seam). */
+  readonly legacyFilesystemType?: string | undefined;
+  /** Optional host filesystem verdict probe (defaults to OS mount detector). */
+  readonly detectFilesystemType?: ((targetPath: string) => Promise<FilesystemTypeVerdict>) | undefined;
   /** Optional additional legacy storage roots to inspect during one-time relocation (test seam). */
   readonly additionalLegacyStorageRoots?: readonly string[] | undefined;
-}
-
-function buildSecretPort(
-  secrets: Pick<vscode.SecretStorage, 'get'> | undefined
-): TelemetrySecretPort | null {
-  if (secrets === undefined) return null;
-  return {
-    availability: () => 'available',
-    async read(reference: string): Promise<string | null> {
-      const value = await secrets.get(reference);
-      return typeof value === 'string' && value.length > 0 ? value : null;
-    }
-  };
 }
 
 interface OpenPrimarySqliteServicesInput {
@@ -384,9 +253,13 @@ interface OpenPrimarySqliteServicesInput {
   readonly catalogFs: SwitchableCatalogFsAdapter | undefined;
   readonly reportSideEffectFailure: SideEffectFailureReport;
   readonly onActiveLocationResolved: (location: {
+    readonly activeStorageRoot: string;
     readonly activeDatabasePath: string;
     readonly preservedUnselectedPaths: readonly string[];
+    readonly legacyRetired: boolean;
   }) => void;
+  readonly getProtectedPaths: () => readonly string[];
+  readonly isClosed: () => boolean;
 }
 
 function defaultNotifyOperator(message: string): void {
@@ -418,16 +291,27 @@ async function openPrimarySqliteServices(
       legacyStorageUri: legacyStorageRoot,
       additionalLegacyStorageRoots: deps.additionalLegacyStorageRoots,
       canonicalFilesystemType: deps.canonicalFilesystemType,
+      legacyFilesystemType: deps.legacyFilesystemType,
+      detectFilesystemType: deps.detectFilesystemType,
+      logger: deps.logger,
       verifyPrimacy: deps.hasPrimacy
     });
   } catch (error) {
+    const isWalFsRefusal = error instanceof RelocationWalFilesystemRefusedError;
+    input.operationalMemento?.setDurableBatchUnavailableReason(
+      isWalFsRefusal ? 'network-share-wal-unsupported' : 'relocation-aborted'
+    );
     deps.logger.warn('sqlite cutover: relocation aborted', {
-      reason: error instanceof Error ? error.name : 'unknown'
+      reason: isWalFsRefusal ? error.reason : error instanceof Error ? error.name : 'unknown'
     });
+    if (isWalFsRefusal) {
+      emitOperatorNotice(deps, `Schegent refused to open the operational SQLite store on a WAL-ineligible network filesystem (${error.canonicalVerdict.filesystemType}).`);
+    }
     return null;
   }
 
   if (relocationOutcome.outcome === 'refused_newer_schema') {
+    input.operationalMemento?.setDurableBatchUnavailableReason('refused-newer-schema');
     deps.logger.warn('sqlite cutover: refused relocation for newer schema', {
       reason: relocationOutcome.reason,
       recordedVersion: relocationOutcome.recordedVersion,
@@ -444,79 +328,81 @@ async function openPrimarySqliteServices(
   const activeStorageRoot = relocationOutcome.activeStorageRoot;
   const activeDatabasePath = relocationOutcome.activeDatabasePath;
   const activeSourceKind = relocationOutcome.activeSourceKind;
+  const legacyRetired =
+    activeSourceKind === 'host_global_storage_uri' &&
+    relocationOutcome.retirementPending !== true;
 
   input.onActiveLocationResolved({
+    activeStorageRoot,
     activeDatabasePath,
-    preservedUnselectedPaths: relocationOutcome.preservedUnselectedPaths
+    preservedUnselectedPaths: relocationOutcome.preservedUnselectedPaths,
+    legacyRetired
   });
+  reportRelocationOutcome(relocationOutcome, deps.logger, (msg) => emitOperatorNotice(deps, msg));
 
-  if (relocationOutcome.outcome === 'relocated') {
-    deps.logger.info('sqlite cutover: relocated legacy store into folder-keyed global storage', {
-      relocatedFromPath: relocationOutcome.relocatedFromPath,
-      activeDatabasePath
-    });
-  } else if (relocationOutcome.outcome === 'conflict_resolved') {
-    deps.logger.warn('sqlite cutover: multiple databases held state; kept unselected database unmodified', {
-      selectionRule: relocationOutcome.selectionRule,
-      winnerSourcePath: relocationOutcome.winnerSourcePath,
-      preservedUnselectedPaths: relocationOutcome.preservedUnselectedPaths
-    });
-    if (relocationOutcome.noticeRequired) {
-      const preservedList = relocationOutcome.newlyDiscoveredConflictPaths.join(', ');
-      emitOperatorNotice(
-        deps,
-        `Schegent found more than one operational store for this folder and selected the most recently written database without merging rows. The unselected database was left unmodified at: ${preservedList}`
-      );
-    }
-  } else if (relocationOutcome.outcome === 'fallback_legacy_preserved') {
-    deps.logger.warn('sqlite cutover: canonical store target unavailable; keeping legacy store active in place', {
-      reason: relocationOutcome.reason,
-      activeDatabasePath
-    });
-    emitOperatorNotice(
-      deps,
-      `Schegent could not relocate the SQLite store to global storage (${relocationOutcome.reason}); the existing legacy store remains active in place at: ${activeDatabasePath}`
-    );
+  if (input.isClosed() || !(await deps.hasPrimacy()) || input.isClosed()) {
+    return null;
   }
 
   let sqliteStore: SqliteApplicationStore;
   try {
+    const activeVerdict = relocationOutcome.activeFilesystemVerdict;
     sqliteStore = await SqliteApplicationStore.openAtTrustedLocation({
       trustedRootDir: activeStorageRoot,
       relativeSegments: ['sqlite', scopeId],
       databaseFileName: 'schegent-state.db',
       sourceKind: activeSourceKind,
       filesystemType:
-        activeSourceKind === 'host_global_storage_uri' ? deps.canonicalFilesystemType : undefined
+        activeVerdict?.filesystemType ??
+        (activeSourceKind === 'host_global_storage_uri'
+          ? deps.canonicalFilesystemType
+          : deps.legacyFilesystemType),
+      filesystemClassification: activeVerdict?.classification,
+      detectFilesystemType: deps.detectFilesystemType
     });
   } catch (error) {
+    input.operationalMemento?.setDurableBatchUnavailableReason('sqlite-open-failed');
     deps.logger.warn('sqlite cutover: failed to open application store', {
       reason: error instanceof Error ? error.name : 'unknown'
     });
     return null;
   }
 
+  let createdTelemetryHost: TelemetryHostService | null = null;
+  let usageWiring: UsageAccountingWiring | null = null;
+  let workflowComposition: ProductionWorkflowComposition | null = null;
+  let configSub: vscode.Disposable | null = null;
+  const cleanupPartial = (): void => {
+    disposeSqliteRuntimeResources({
+      operationalMemento: input.operationalMemento,
+      catalogFs: input.catalogFs,
+      disposeTelemetryConfig: () => configSub?.dispose(),
+      usageWiring,
+      workflowComposition,
+      telemetryHost: createdTelemetryHost,
+      sqliteStore
+    });
+  };
+  if (input.isClosed()) {
+    cleanupPartial();
+    return null;
+  }
+
   try {
     input.operationalMemento?.attachSqlite(sqliteStore, scopeId);
-    input.operationalMemento?.configureDetachedTrustedSqliteWriter({
-      databasePath: activeDatabasePath,
-      scopeId,
-      canWrite: () => deps.isWorkspaceTrusted(),
-      openStore: (databasePath) =>
-        new SqliteApplicationStore({
-          databasePath,
-          journalMode: 'wal'
-        })
-    });
     if (input.catalogFs !== undefined) {
       await input.catalogFs.attachSqlite(sqliteStore, scopeId);
+      if (input.isClosed()) {
+        cleanupPartial();
+        return null;
+      }
     }
 
     const { probe, reader } = buildContainedProbeAndReader(deps.workspaceRoot);
     const artifactLifecycle = createArtifactLifecycleService({
       conn: sqliteStore.writerConnection,
       nowMs: () => Date.now(),
-      fs: buildNodeLifecycleFs([deps.workspaceRoot, activeStorageRoot]),
+      fs: buildNodeLifecycleFs([deps.workspaceRoot, activeStorageRoot], input.getProtectedPaths),
       probe,
       byteReader: reader,
       audit: {
@@ -541,6 +427,10 @@ async function openPrimarySqliteServices(
       primary: true,
       auditHealthy: true
     });
+    if (input.isClosed()) {
+      cleanupPartial();
+      return null;
+    }
 
     const usageAccounting = createUsageAccountingService({
       conn: sqliteStore.writerConnection,
@@ -550,6 +440,10 @@ async function openPrimarySqliteServices(
       logger: deps.logger
     });
     await usageAccounting.importLegacyEpoch(metricsRollupLegacySource(deps.workspaceRoot));
+    if (input.isClosed()) {
+      cleanupPartial();
+      return null;
+    }
 
     const telemetryHost = createTelemetryHostService({
       sqliteStore,
@@ -559,16 +453,10 @@ async function openPrimarySqliteServices(
       serviceVersion: '0.2.0',
       reportSideEffectFailure: input.reportSideEffectFailure
     });
+    createdTelemetryHost = telemetryHost;
     telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
-    void replayTelemetrySpoolAfterSettling(telemetryHost, input.reportSideEffectFailure);
-    const configSub = vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration('schegent.telemetry.export')) {
-        telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
-      }
-    });
-    deps.disposables.push(configSub);
 
-    const usageWiring = createUsageAccountingWiring({
+    usageWiring = createUsageAccountingWiring({
       service: usageAccounting,
       auditWriter: deps.auditWriter,
       subscriptions: deps.disposables,
@@ -610,6 +498,10 @@ async function openPrimarySqliteServices(
         });
       }
     }
+    if (input.isClosed()) {
+      cleanupPartial();
+      return null;
+    }
 
     const runLaneCoordinator = createRunLaneCoordinator({
       getLaneService: () => laneService,
@@ -617,6 +509,10 @@ async function openPrimarySqliteServices(
       primaryWorkspaceRoot: deps.workspaceRoot
     });
     await runLaneCoordinator.refreshCacheFromStore();
+    if (input.isClosed()) {
+      cleanupPartial();
+      return null;
+    }
 
     const handoffStore = createSqliteHandoffStore(sqliteStore.writerConnection);
     const phaseHandoffCoordinator = createPhaseHandoffCoordinator({
@@ -645,6 +541,10 @@ async function openPrimarySqliteServices(
       }
     });
     await reportingService.reconcileExports();
+    if (input.isClosed() || !(await deps.hasPrimacy()) || input.isClosed()) {
+      cleanupPartial();
+      return null;
+    }
 
     const changeReviewService = createChangeReviewService({
       source: integrationStoreSource(new IntegrationStore(sqliteStore.writerConnection), scopeId),
@@ -652,30 +552,9 @@ async function openPrimarySqliteServices(
       cwd: deps.workspaceRoot
     });
 
-    const durableHandoffSeam: DurableArtifactHandoverSeam = Object.freeze({
-      status: 'qualified' as const,
-      requestHandover(req: Parameters<DurableArtifactHandoverSeam['requestHandover']>[0]) {
-        for (const artifactId of req.artifactIds) {
-          const check = artifactLifecycle.getArtifact(artifactId);
-          if (!check.ok) {
-            return {
-              accepted: false,
-              refusal: createWorkflowRefusalOutcome({
-                category: 'missing-collaborator',
-                reasonCode: `durable-handoff-artifact-unavailable:${check.refusal.code}`,
-                message: check.refusal.message,
-                rootExecutionId: req.rootExecutionId,
-                invocationId: req.invocationId,
-                attemptsConsumed: 0
-              })
-            };
-          }
-        }
-        return { accepted: true };
-      }
-    });
+    const durableHandoffSeam = buildDurableHandoffSeam(artifactLifecycle);
 
-    const workflowComposition = getOrCreateProductionWorkflowComposition(deps.store, {
+    workflowComposition = getOrCreateProductionWorkflowComposition(deps.store, {
       workspaceRoot: deps.workspaceRoot,
       isWorkspaceTrusted: deps.isWorkspaceTrusted,
       durableHandoffSeam,
@@ -700,6 +579,25 @@ async function openPrimarySqliteServices(
     });
     registerProductionWorkflowComposition(deps.store, workflowComposition);
 
+    void replayTelemetrySpoolAfterSettling(telemetryHost, input.reportSideEffectFailure);
+    configSub = vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('schegent.telemetry.export')) {
+        telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
+      }
+    });
+    const boundConfigSub = configSub;
+
+    input.operationalMemento?.configureDetachedTrustedSqliteWriter({
+      databasePath: activeDatabasePath,
+      scopeId,
+      canWrite: () => deps.isWorkspaceTrusted(),
+      openStore: (databasePath) =>
+        new SqliteApplicationStore({
+          databasePath,
+          journalMode: 'wal'
+        })
+    });
+
     return {
       sqliteStore,
       artifactLifecycle,
@@ -713,36 +611,17 @@ async function openPrimarySqliteServices(
       phaseHandoffCoordinator,
       reportingService,
       changeReviewService,
-      workflowComposition
+      workflowComposition,
+      disposeTelemetryConfig: () => boundConfigSub.dispose()
     };
   } catch (error) {
-    input.operationalMemento?.detachSqlite();
-    input.catalogFs?.detachSqlite();
-    sqliteStore.close();
+    input.operationalMemento?.setDurableBatchUnavailableReason('sqlite-init-failed');
+    cleanupPartial();
     deps.logger.warn('sqlite cutover: initialization failed', {
       reason: error instanceof Error ? error.name : 'unknown'
     });
     return null;
   }
-}
-
-function isChildOfActiveComposableRun(store: WorkspaceStateStore, featureId: string | undefined): boolean {
-  if (featureId === undefined) return false;
-  for (const wfRun of Object.values(store.getConnectedRuns())) {
-    if (wfRun.invocations === undefined) continue;
-    for (const frame of Object.values(wfRun.invocations)) {
-      for (const attempts of Object.values(frame.attemptsByNodeId)) {
-        if (attempts.some((a) => a.queueItemId === featureId)) {
-          const rootFrame = Object.values(wfRun.invocations).find(
-            (f) => f.parentInvocationId === null
-          );
-          const status = rootFrame?.status;
-          return status === 'in-flight' || status === 'waiting-for-handoff' || status === 'paused';
-        }
-      }
-    }
-  }
-  return false;
 }
 
 export function createSqliteCutoverCoordinator(
@@ -762,22 +641,44 @@ export function createSqliteCutoverCoordinator(
 
   const operationalMemento = getOperationalMementoForStore(deps.store);
   const catalogFs = catalogFsByStore.get(deps.store);
+  operationalMemento?.requireDurableBatch();
 
-  // Safe at wiring time (even in untrusted or non-primary windows): read-only snapshot probe only.
-  // Probe canonical path first; if absent before first primary relocation, probe legacy path read-only.
-  const attachedOperational = operationalMemento?.attachReadOnlySnapshotIfPresent(expectedDatabasePath, scopeId) ?? false;
-  const attachedCatalog = catalogFs?.attachReadOnlySnapshotIfPresent(expectedDatabasePath, scopeId) ?? false;
-  if (legacyDatabasePath !== null) {
+  const relSegments = ['sqlite', scopeId] as const;
+  const canonicalContainment = { rootDir: globalStorageRoot, relativeDirSegments: relSegments, dbFileName: 'schegent-state.db' };
+  const legacyContainment =
+    legacyDatabasePath !== null && legacyStorageRoot !== undefined
+      ? { rootDir: legacyStorageRoot, relativeDirSegments: relSegments, dbFileName: 'schegent-state.db' }
+      : null;
+
+  // Safe at wiring time (even in untrusted or non-primary windows): strict-contained,
+  // zero-mutation read-only snapshot probe (`immutable=1` when `-wal` absent).
+  let canonicalOperationalAttached = operationalMemento?.attachReadOnlySnapshotIfPresent(expectedDatabasePath, scopeId, canonicalContainment) ?? false;
+  let canonicalCatalogAttached = catalogFs?.attachReadOnlySnapshotIfPresent(expectedDatabasePath, scopeId, canonicalContainment) ?? false;
+  let attachedOperational = canonicalOperationalAttached;
+  let attachedCatalog = canonicalCatalogAttached;
+  let canonicalPassiveAttached = canonicalOperationalAttached || canonicalCatalogAttached;
+  let legacyPassiveAttached = false;
+  if (legacyDatabasePath !== null && legacyContainment !== null) {
     if (!attachedOperational) {
-      operationalMemento?.attachReadOnlySnapshotIfPresent(legacyDatabasePath, scopeId);
+      attachedOperational = operationalMemento?.attachReadOnlySnapshotIfPresent(legacyDatabasePath, scopeId, legacyContainment) ?? false;
+      if (attachedOperational) legacyPassiveAttached = true;
     }
     if (!attachedCatalog) {
-      catalogFs?.attachReadOnlySnapshotIfPresent(legacyDatabasePath, scopeId);
+      attachedCatalog = catalogFs?.attachReadOnlySnapshotIfPresent(legacyDatabasePath, scopeId, legacyContainment) ?? false;
+      if (attachedCatalog) legacyPassiveAttached = true;
     }
   }
 
-  let activeDatabasePath = expectedDatabasePath;
+  let activeStorageRoot =
+    !canonicalPassiveAttached && legacyPassiveAttached && legacyStorageRoot !== undefined
+      ? legacyStorageRoot
+      : globalStorageRoot;
+  let activeDatabasePath =
+    !canonicalPassiveAttached && legacyPassiveAttached && legacyDatabasePath !== null
+      ? legacyDatabasePath
+      : expectedDatabasePath;
   let preservedUnselectedPaths: readonly string[] = [];
+  let legacyRetired = legacyDatabasePath === null;
 
   let activeServices: SqliteCutoverServices | null = null;
   // Review gap GC-05 — the best-effort paths below report a failure instead of dropping it.
@@ -785,37 +686,126 @@ export function createSqliteCutoverCoordinator(
   let activatingPromise: Promise<SqliteCutoverServices | null> | null = null;
   let closed = false;
 
+  const getDatabaseProtectedPaths = (): readonly string[] => {
+    const bases = [activeDatabasePath, ...preservedUnselectedPaths];
+    if (legacyDatabasePath !== null && !legacyRetired) bases.push(legacyDatabasePath);
+    const protectedSet = new Set<string>();
+    for (const base of bases) {
+      protectedSet.add(base);
+      protectedSet.add(`${base}-wal`);
+      protectedSet.add(`${base}-shm`);
+    }
+    return [...protectedSet];
+  };
+
+  const isPassive = (): boolean =>
+    !closed &&
+    activeServices === null &&
+    activatingPromise === null &&
+    !(operationalMemento?.isSqliteAttached() ?? false) &&
+    !(catalogFs?.isSqliteAttached() ?? false);
+  const safeProbeAsync = async (probe: () => Promise<boolean>): Promise<boolean> => {
+    try {
+      return await probe();
+    } catch {
+      return false;
+    }
+  };
+
+  let passiveProbePromise: Promise<void> | null = null;
+  const runPassiveProbeOnce = async (): Promise<void> => {
+    if (!isPassive()) return;
+    if (!canonicalOperationalAttached && operationalMemento !== undefined) {
+      const canonicalOk = await safeProbeAsync(() =>
+        operationalMemento.attachReadOnlySnapshotIfPresentAsync(globalStorageRoot, relSegments, 'schegent-state.db', scopeId)
+      );
+      if (!isPassive()) return;
+      if (canonicalOk) {
+        canonicalOperationalAttached = true;
+        attachedOperational = true;
+        canonicalPassiveAttached = true;
+      } else if (!attachedOperational && legacyStorageRoot !== undefined && legacyDatabasePath !== null) {
+        attachedOperational = await safeProbeAsync(() =>
+          operationalMemento.attachReadOnlySnapshotIfPresentAsync(legacyStorageRoot, relSegments, 'schegent-state.db', scopeId)
+        );
+        if (!isPassive()) return;
+        if (attachedOperational) legacyPassiveAttached = true;
+      }
+    }
+    if (!canonicalCatalogAttached && catalogFs !== undefined) {
+      const canonicalOk = await safeProbeAsync(() =>
+        catalogFs.attachReadOnlySnapshotIfPresentAsync(globalStorageRoot, relSegments, 'schegent-state.db', scopeId)
+      );
+      if (!isPassive()) return;
+      if (canonicalOk) {
+        canonicalCatalogAttached = true;
+        attachedCatalog = true;
+        canonicalPassiveAttached = true;
+      } else if (!attachedCatalog && legacyStorageRoot !== undefined && legacyDatabasePath !== null) {
+        attachedCatalog = await safeProbeAsync(() =>
+          catalogFs.attachReadOnlySnapshotIfPresentAsync(legacyStorageRoot, relSegments, 'schegent-state.db', scopeId)
+        );
+        if (!isPassive()) return;
+        if (attachedCatalog) legacyPassiveAttached = true;
+      }
+    }
+    if (isPassive()) {
+      if (canonicalPassiveAttached) {
+        activeStorageRoot = globalStorageRoot;
+        activeDatabasePath = expectedDatabasePath;
+      } else if (legacyPassiveAttached && legacyStorageRoot !== undefined && legacyDatabasePath !== null) {
+        activeStorageRoot = legacyStorageRoot;
+        activeDatabasePath = legacyDatabasePath;
+      }
+    }
+  };
+
+  const probePassiveSnapshots = (): Promise<void> => {
+    if (!isPassive()) return Promise.resolve();
+    passiveProbePromise ??= runPassiveProbeOnce().finally(() => {
+      passiveProbePromise = null;
+    });
+    return passiveProbePromise;
+  };
+
+  const disposeServices = (current: SqliteCutoverServices): void => {
+    disposeSqliteRuntimeResources({
+      operationalMemento,
+      catalogFs,
+      disposeTelemetryConfig: current.disposeTelemetryConfig,
+      usageWiring: current.usageWiring,
+      workflowComposition: current.workflowComposition,
+      telemetryHost: current.telemetryHost,
+      sqliteStore: current.sqliteStore
+    });
+  };
+
   const close = (): void => {
     if (closed) return;
     closed = true;
     if (activeServices !== null) {
       const current = activeServices;
       activeServices = null;
+      disposeServices(current);
+    } else {
+      operationalMemento?.configureDetachedTrustedSqliteWriter(null);
       operationalMemento?.detachSqlite();
       catalogFs?.detachSqlite();
-      current.usageWiring.dispose();
-      current.workflowComposition.dispose();
-      if (current.telemetryHost.getStatus().evaluation.kind === 'disabled') {
-        void current.telemetryHost.shutdown();
-        current.sqliteStore.close();
-      } else {
-        void current.telemetryHost.shutdown().finally(() => {
-          current.sqliteStore.close();
-        });
-      }
     }
     coordinatorByStore.delete(deps.store);
   };
 
   deps.disposables.push({ dispose: close });
 
+  const isClosed = (): boolean => closed;
   const openAndWirePrimary = async (): Promise<SqliteCutoverServices | null> => {
-    if (closed) return null;
+    if (isClosed()) return null;
     if (!deps.isWorkspaceTrusted() || !(await deps.hasPrimacy())) {
       return null;
     }
+    if (isClosed()) return null;
     if (activeServices !== null) return activeServices;
-    activeServices = await openPrimarySqliteServices({
+    const opened = await openPrimarySqliteServices({
       deps,
       scopeId,
       globalStorageRoot,
@@ -824,17 +814,32 @@ export function createSqliteCutoverCoordinator(
       catalogFs,
       reportSideEffectFailure,
       onActiveLocationResolved: (location) => {
+        if (isClosed()) return;
+        activeStorageRoot = location.activeStorageRoot;
         activeDatabasePath = location.activeDatabasePath;
         preservedUnselectedPaths = location.preservedUnselectedPaths;
-      }
+        legacyRetired = location.legacyRetired;
+      },
+      getProtectedPaths: getDatabaseProtectedPaths,
+      isClosed
     });
+    if (isClosed()) {
+      if (opened !== null) {
+        disposeServices(opened);
+      }
+      return null;
+    }
+    activeServices = opened;
     return activeServices;
   };
 
   const coordinator: SqliteCutoverCoordinator = {
     scopeId,
-    storageRoot: globalStorageRoot,
+    get storageRoot() {
+      return activeStorageRoot;
+    },
     expectedDatabasePath,
+    probePassiveSnapshots,
     activatePrimary() {
       if (activeServices !== null) return Promise.resolve(activeServices);
       activatingPromise ??= openAndWirePrimary().finally(() => {
@@ -872,19 +877,27 @@ export function createSqliteCutoverCoordinator(
       }
     },
     async reloadAfterRestore() {
-      operationalMemento?.reloadSqliteCache();
+      const errors: unknown[] = [];
+      try {
+        operationalMemento?.reloadSqliteCache();
+      } catch (err) {
+        errors.push(err);
+      }
       if (activeServices !== null) {
         try {
           await activeServices.runLaneCoordinator.refreshCacheFromStore();
         } catch (err) {
           reportSideEffectFailure('restore-lane-cache-reload', err);
+          errors.push(err);
         }
         try {
           activeServices.recoveryHandoff.reopen();
         } catch (err) {
           reportSideEffectFailure('restore-handoff-reopen', err);
+          errors.push(err);
         }
       }
+      if (errors.length > 0) throw errors[0];
     },
     getArtifactLifecycle: () => activeServices?.artifactLifecycle ?? null,
     getUsageAccounting: () => activeServices?.usageAccounting ?? null,
@@ -898,19 +911,7 @@ export function createSqliteCutoverCoordinator(
     getChangeReviewService: () => activeServices?.changeReviewService ?? null,
     getPhaseContextApi: () => createPhaseContextApi(() => activeServices?.phaseHandoffCoordinator ?? null),
     getProtectedRunIds: () => querySqliteProtectedRunIds(activeServices, reportSideEffectFailure),
-    getDatabaseProtectedPaths: () => {
-      const protectedSet = new Set<string>([
-        activeDatabasePath,
-        `${activeDatabasePath}-wal`,
-        `${activeDatabasePath}-shm`,
-        ...preservedUnselectedPaths
-      ]);
-      for (const preserved of preservedUnselectedPaths) {
-        protectedSet.add(`${preserved}-wal`);
-        protectedSet.add(`${preserved}-shm`);
-      }
-      return [...protectedSet];
-    },
+    getDatabaseProtectedPaths,
     onTerminalRun(summary) {
       if (activeServices === null) return;
       activeServices.usageWiring.onTerminalRun(summary);

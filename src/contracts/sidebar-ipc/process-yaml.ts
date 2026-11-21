@@ -13,12 +13,11 @@
 import { MODEL_ID_MAX_LEN } from '../pipeline-definitions';
 import { PHASE_ID_MAX_LEN } from '../process-definitions';
 import { WORKFLOW_ID_MAX_LEN } from '../workflow-definitions';
-import type {
-  CMD_EXPORT_PROCESS_YAML,
-  CMD_PREFLIGHT_PROCESS_YAML,
-  CommandBase
-} from '../sidebar-ipc';
 import type { DocumentRefusal, ImportPlan, ProcessYamlResourceKind } from '../../services/process-yaml/types';
+export type {
+  ExportProcessYamlCommand,
+  PreflightProcessYamlCommand
+} from '../generated/sidebar-ipc-types';
 
 // The plan types have exactly one definition, in the service module that also
 // produces them, rather than a host copy and a webview copy that can drift.
@@ -100,11 +99,6 @@ export type ExportProcessYamlRequest =
        * references, so there is nothing to include or exclude (contract §3).
        */
     };
-
-export interface ExportProcessYamlCommand
-  extends CommandBase<typeof CMD_EXPORT_PROCESS_YAML> {
-  readonly payload: ExportProcessYamlRequest;
-}
 
 /**
  * The inclusion vocabulary as a value, and the one function that decides
@@ -210,11 +204,6 @@ export type ExportProcessYamlResult =
  * a deliberate edit here rather than an accident at a call site.
  */
 export type PreflightProcessYamlRequest = Record<string, never>;
-
-export interface PreflightProcessYamlCommand
-  extends CommandBase<typeof CMD_PREFLIGHT_PROCESS_YAML> {
-  readonly payload: PreflightProcessYamlRequest;
-}
 
 /**
  * A discriminated union so an illegal outcome/field combination cannot be

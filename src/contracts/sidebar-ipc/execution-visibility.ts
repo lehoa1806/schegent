@@ -7,12 +7,6 @@
  * Node-free and `vscode`-free so both host and webview bundle it cleanly.
  */
 import type {
-  CMD_DECIDE_PHASE_HANDOFF,
-  CMD_OPEN_CHANGE_REVIEW,
-  CMD_READ_EXECUTION_VISIBILITY,
-  CommandBase
-} from '../sidebar-ipc';
-import type {
   ReviewDescriptor,
   ReviewOpened,
   ReviewPage,
@@ -148,10 +142,11 @@ export type ReadExecutionVisibilityRequest =
     }
   | { readonly op: 'runtimePosture' };
 
-export interface ReadExecutionVisibilityCommand
-  extends CommandBase<typeof CMD_READ_EXECUTION_VISIBILITY> {
-  readonly payload: ReadExecutionVisibilityRequest;
-}
+export type {
+  ReadExecutionVisibilityCommand,
+  OpenChangeReviewCommand,
+  DecidePhaseHandoffCommand
+} from '../generated/sidebar-ipc-types';
 
 export type ReadExecutionVisibilityResponse =
   | { readonly op: 'attemptDetail'; readonly detail: ExecutionAttemptVisibility }
@@ -169,10 +164,6 @@ export type OpenChangeReviewRequest =
   | { readonly op: 'page'; readonly cursor: string }
   | { readonly op: 'close'; readonly reviewId: string }
   | { readonly op: 'cancelOpen' };
-
-export interface OpenChangeReviewCommand extends CommandBase<typeof CMD_OPEN_CHANGE_REVIEW> {
-  readonly payload: OpenChangeReviewRequest;
-}
 
 export interface ChangeReviewEditorOpenOutcome {
   readonly mode: 'native' | 'fallback' | 'none';
@@ -206,12 +197,8 @@ export type DecidePhaseHandoffRequest =
       readonly op: 'edit';
       readonly handoffId: string;
       readonly baseRevision: number;
-      readonly replacementSources: unknown;
+      readonly replacementSources: readonly unknown[];
     };
-
-export interface DecidePhaseHandoffCommand extends CommandBase<typeof CMD_DECIDE_PHASE_HANDOFF> {
-  readonly payload: DecidePhaseHandoffRequest;
-}
 
 export type DecidePhaseHandoffResponse =
   | {

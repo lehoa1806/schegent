@@ -9,7 +9,6 @@
 // `getCanonicalWorkspaceRoot()`; the webview neither supplies a resolved path
 // nor learns one back, including in an error (FR-020).
 
-import type { CMD_LAUNCH_PIPELINE, CommandBase } from '../sidebar-ipc';
 import type { RunRequest, RunRequestFieldError } from '../run-request';
 import { validRunRequest } from '../validators/run-request-shape';
 import { hasUnexpectedKeys, QUEUE_ID_MAX } from '../validators/shared';
@@ -36,9 +35,7 @@ export interface LaunchPipelineRequest {
   readonly queueId?: string;
 }
 
-export interface LaunchPipelineCommand extends CommandBase<typeof CMD_LAUNCH_PIPELINE> {
-  readonly payload: LaunchPipelineRequest;
-}
+export type { LaunchPipelineCommand } from '../generated/sidebar-ipc-types';
 
 /**
  * Why a launch was refused, kept distinct from `rejected-validation` because

@@ -361,12 +361,16 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
   // wire and the service to drift silently, both sides being structural. `scope`
   // and `mutation` are checked as retired fields rather than required ones.
   it('every lifecycle command payload is the service request, re-declared nowhere', () => {
-    // Declared together in the focused lifecycle module; the barrel re-exports
-    // them so `sidebar-ipc.ts` remains the single import site for the wire
-    // contract.
+    // Declared in the generated IPC contract module from declarative descriptors;
+    // `sidebar-ipc/catalog-lifecycle.ts` and the barrel re-export them so all
+    // public import sites stay stable without hand-written copies.
     const barrel = fs.readFileSync(path.join(REPO_ROOT, 'src/contracts/sidebar-ipc.ts'), 'utf8');
-    const source = fs.readFileSync(
+    const lifecycleModule = fs.readFileSync(
       path.join(REPO_ROOT, 'src/contracts/sidebar-ipc/catalog-lifecycle.ts'),
+      'utf8'
+    );
+    const generatedSource = fs.readFileSync(
+      path.join(REPO_ROOT, 'src/contracts/generated/sidebar-ipc-types.ts'),
       'utf8'
     );
     const REQUESTS: Readonly<Record<string, string>> = {
@@ -382,10 +386,16 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       expect(barrel, `sidebar-ipc.ts must re-export ${command}`).toMatch(
         new RegExp(`export type \\{[^}]*${command}[^}]*\\} from '\\./sidebar-ipc/catalog-lifecycle'`)
       );
-      const declaration = source.match(
+      expect(lifecycleModule, `catalog-lifecycle.ts must re-export ${command} from generated`).toMatch(
+        new RegExp(`export type \\{[^}]*${command}[^}]*\\} from '\\.\\./generated/sidebar-ipc-types'`)
+      );
+      expect(lifecycleModule, `catalog-lifecycle.ts must not hand-declare ${command}`).not.toMatch(
+        new RegExp(`export interface ${command}\\b`)
+      );
+      const declaration = generatedSource.match(
         new RegExp(`export interface ${command}[\\s\\S]*?\\n\\}`)
       )?.[0];
-      expect(declaration, `${command} must declare a payload`).toBeDefined();
+      expect(declaration, `${command} must declare a payload in generated/sidebar-ipc-types.ts`).toBeDefined();
       // One line, naming the request. Anything else is a re-declaration.
       expect(declaration, `${command} payload must be ${request} itself`).toMatch(
         new RegExp(`readonly payload:\\s*${request};`)
@@ -415,9 +425,10 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       const authoritative = (Authoritative as unknown as Record<string, unknown>)[guard];
       expect(authoritative, `sidebar-ipc must export ${guard}`).toBeTypeOf('function');
       expect((HostShim as unknown as Record<string, unknown>)[guard]).toBe(authoritative);
-      const type = (Authoritative as unknown as Record<string, string>)[command];
+      const type = (Authoritative as unknown as Record<string, string | undefined>)[command];
+      expect(type, `sidebar-ipc must export ${command}`).toBeTypeOf('string');
       expect(
-        (Authoritative.COMMAND_GUARDS as unknown as Record<string, unknown>)[type]
+        (Authoritative.COMMAND_GUARDS as unknown as Record<string, unknown>)[type!]
       ).toBe(authoritative);
     }
   });

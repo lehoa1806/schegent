@@ -57,11 +57,14 @@ import type {
 // contract leaves the host reads. See that constant for why they are not literals.
 import { DEFAULT_GLOBAL_CONCURRENCY_CAP } from '../../../src/contracts/queue-bounds.js';
 import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity.js';
-// FR-R3-144 (T007) — value import, same edge and same reason as the two above.
+// FR-R7-06 / FR-R7-11 — consume backend identity constants and types from the
+// lightweight generated webview leaf mirror rather than reaching into host
+// `src/contracts/backend-kinds` or dragging dashboard-only descriptor metadata
+// into the synchronous sidebar bundle.
 import {
   DEFAULT_BACKEND,
   type BackendRunnerKind
-} from '../../../src/contracts/backend-kinds.js';
+} from './generated/backend-kinds.js';
 // FR-R3-144 (T020, D-4) — imported, not mirrored. Everything else in this file
 // restates a host type by hand and is kept honest by a drift test; the posture
 // types are the one thing that must not be restatable, because a webview-side
@@ -281,7 +284,7 @@ export {
 } from '../../../src/contracts/snapshot-projections.js';
 export type {
   BackendRunnerKind
-} from '../../../src/contracts/backend-kinds.js';
+} from './generated/backend-kinds.js';
 export type {
   PhaseName
 } from '../../../src/contracts/phase-identity.js';

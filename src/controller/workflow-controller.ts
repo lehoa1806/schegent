@@ -1,5 +1,6 @@
 import type { PhaseRunner } from './phase-runner';
 import { QueueMutationRejected, isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-state';
+import { PostCutoverMementoWriteForbiddenError } from '../state/sqlite-operational-backing';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SchegentStatusBar } from '../ui/status-bar';
 import type { Notifier } from '../ui/notifications';
@@ -544,6 +545,11 @@ export class SchegentWorkflowController {
       // FR-R3-146 (FR-002) — `guardedDrive` keeps covering post-admission drive errors.
       return { completed: this.guardedDrive(queueId, run, feature) };
     } catch (err) {
+      if ((err instanceof QueueMutationRejected && err.reason === 'durable-store-unavailable') || err instanceof PostCutoverMementoWriteForbiddenError) {
+        const reason = err instanceof PostCutoverMementoWriteForbiddenError ? err.code : err.reason;
+        this.logger.warn(`admitNew declined before commit (${reason}); leaving queue state intact`, { featureId: feature.id, reason });
+        return { completed: Promise.resolve(), refusal: 'durable-store-unavailable', refusalMessage: err.message };
+      }
       if (isOwnershipRefusal(err) || (err instanceof QueueMutationRejected && err.reason === 'in-flight-ownership-conflict')) {
         this.logger.warn(`admitNew declined before commit (${err.reason}); leaving queue state intact`, { featureId: feature.id, reason: err.reason });
       } else {

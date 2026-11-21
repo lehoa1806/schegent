@@ -30,6 +30,8 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 import type { Notifier } from '../ui/notifications';
 import type { ContainmentAcceptancePort } from '../controller/uncontained-consent-gate';
+import type { AgentConfigAckGate } from '../controller/agent-config-ack-gate';
+import { cleanupSessionArtifacts } from '../services/session-cleanup/session-cleanup-service';
 import { createSpendBoundWatcher, spendSeedTargets } from '../services/spend-bound-watcher';
 import { readSpendReplay } from '../services/spend-bound-replay';
 import { readLanesEnabled, readSpendLimits } from './uncached-settings-accessors';
@@ -95,6 +97,8 @@ export async function createRunSafetyWiring(input: {
   notifier: Notifier;
   /** FR-R6-F09 -- binds the fingerprint an operator accepted; returned beside the consent requester. */
   recordContainmentAcceptance?: ContainmentAcceptancePort;
+  /** FR-R7-11 (Task 08) — releases per-run ack ledger entries when a Run becomes non-operable. */
+  agentConfigAckGate?: Pick<AgentConfigAckGate, 'forgetRun'>;
 }) {
   // FR-R3-009 — the durable cumulative-totals rollup. Constructed here so the
   // terminal-transition coordinator, which is the single append site, is the only
@@ -134,6 +138,7 @@ export async function createRunSafetyWiring(input: {
       recordTerminalRun: async (run) => {
         if (!isOperableRunStatus(run.status)) {
           spendWatcher.forget(run.id);
+          input.agentConfigAckGate?.forgetRun(run.id);
         }
         await terminalRollupRecorder.recordTerminalRun(run);
         // FR-R6-F06 (T026) — after the rollup, and in its own guard: accounting never decides
@@ -307,7 +312,8 @@ export async function createRunSafetyWiring(input: {
   const checkpointRetention = new RunCheckpointRetentionService({
     globalStorageRoot: input.context.globalStorageUri.fsPath,
     logger: input.logger,
-    isPinnedRun: recoveryPinnedRunPredicate(() => input.store.getRunMap())
+    isPinnedRun: recoveryPinnedRunPredicate(() => input.store.getRunMap()),
+    protectedPaths: () => getSqliteCutoverCoordinator(input.store)?.getDatabaseProtectedPaths() ?? []
   });
   // FR-R3-136 (FR-011) — deferred with the same reasoning, and it needs its own
   // sentence because the writes are NOT under the workspace: the sweep deletes
@@ -357,6 +363,7 @@ export async function createRunSafetyWiring(input: {
         disposables: lockRegistration.disposables
       })
     : undefined;
+  await sqliteCutover?.probePassiveSnapshots();
   const provisionRunLane = async (rootExecutionId: string, aliasRunId?: string) => {
     if (!readLanesEnabled(input.workspaceRoot)) return null;
     await sqliteCutover?.activatePrimary();
@@ -427,9 +434,15 @@ export async function createRunSafetyWiring(input: {
       logger: input.logger
     }),
     recordContainmentAcceptance: input.recordContainmentAcceptance,
+    sessionCleanup: (cleanInput: Parameters<typeof cleanupSessionArtifacts>[0]) =>
+      cleanupSessionArtifacts({
+        ...cleanInput,
+        protectedPaths: () => sqliteCutover?.getDatabaseProtectedPaths() ?? []
+      }),
     onRunTerminal: async (run: import('../state/workflow-run').WorkflowRun) => {
       if (!isOperableRunStatus(run.status)) {
         spendWatcher.forget(run.id);
+        input.agentConfigAckGate?.forgetRun(run.id);
       }
       // FR-R4-F04 (X5) — transport first, in its own `try`, so a failure here never stops the raw
       // transcript's finalize or the retention sweep below. `finalizeRun` reports its own failures and

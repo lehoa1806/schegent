@@ -21,17 +21,29 @@ import {
   type StorageLocationResolution
 } from '../../contracts/sqlite-store/schema-types';
 import { ensureAnchorWithinRoot, openWithinRoot } from '../../lib/safe-open';
+import {
+  classifyFilesystemTypeName,
+  detectFilesystemType,
+  type FilesystemClassification,
+  type FilesystemTypeVerdict
+} from './filesystem-type-detector';
 
 const SAFE_DB_FILENAME_PATTERN = /^[A-Za-z0-9._-]+\.(?:db|sqlite|sqlite3)$/;
+
+export interface TrustedSqliteLocationRequest extends StorageLocationRequest {
+  readonly filesystemClassification?: FilesystemClassification | undefined;
+  readonly detectFilesystemType?: ((targetPath: string) => Promise<FilesystemTypeVerdict>) | undefined;
+}
 
 export function isNetworkFilesystem(filesystemType: string | undefined): boolean {
   if (!filesystemType) return false;
   const normalized = filesystemType.trim().toLowerCase();
-  return (NETWORK_FILESYSTEM_TYPES as readonly string[]).includes(normalized);
+  if ((NETWORK_FILESYSTEM_TYPES as readonly string[]).includes(normalized)) return true;
+  return classifyFilesystemTypeName(normalized).classification === 'network';
 }
 
 export async function resolveTrustedSqliteLocation(
-  request: StorageLocationRequest
+  request: TrustedSqliteLocationRequest
 ): Promise<StorageLocationResolution> {
   if (
     request.sourceKind !== 'host_storage_uri' &&
@@ -69,18 +81,6 @@ export async function resolveTrustedSqliteLocation(
     };
   }
 
-  const journalMode = request.requestedJournalMode ?? 'wal';
-  const fsType = (request.filesystemType ?? 'local').trim().toLowerCase();
-  if (journalMode === 'wal' && isNetworkFilesystem(fsType)) {
-    return {
-      status: 'refused',
-      reason: 'network_share_wal_unsupported',
-      operatorDiagnostic:
-        `Refused SQLite WAL mode on network filesystem '${fsType}'. ` +
-        'Shared-memory WAL (.shm) locking is unsafe across network shares; configure a local --state-dir.'
-    };
-  }
-
   if (request.relativeSegments.length === 0) {
     return {
       status: 'refused',
@@ -103,6 +103,36 @@ export async function resolveTrustedSqliteLocation(
         operatorDiagnostic: `Refused storage path containing invalid or traversal segment '${segment}'.`
       };
     }
+  }
+
+  const journalMode = request.requestedJournalMode ?? 'wal';
+  let fsType: string;
+  let fsClassification: FilesystemClassification;
+  if (request.filesystemType !== undefined) {
+    const classified = classifyFilesystemTypeName(request.filesystemType);
+    fsType = classified.filesystemType;
+    fsClassification =
+      isNetworkFilesystem(fsType)
+        ? 'network'
+        : (request.filesystemClassification ?? classified.classification);
+  } else if (request.filesystemClassification !== undefined) {
+    fsClassification = request.filesystemClassification;
+    fsType = fsClassification === 'network' ? 'network' : fsClassification;
+  } else {
+    const probed = await (request.detectFilesystemType ?? detectFilesystemType)(
+      path.join(request.trustedRootDir, ...request.relativeSegments)
+    );
+    fsClassification = probed.classification;
+    fsType = probed.filesystemType;
+  }
+  if (journalMode === 'wal' && (fsClassification === 'network' || isNetworkFilesystem(fsType))) {
+    return {
+      status: 'refused',
+      reason: 'network_share_wal_unsupported',
+      operatorDiagnostic:
+        `Refused SQLite WAL mode on network filesystem '${fsType}'. ` +
+        'Shared-memory WAL (.shm) locking is unsafe across network shares; configure a local --state-dir.'
+    };
   }
 
   const anchorResult = await ensureAnchorWithinRoot(

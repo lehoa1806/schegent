@@ -1,5 +1,3 @@
-import type { CMD_RESOLVE_AUDIT_POINTER, CommandBase } from '../sidebar-ipc';
-
 // FR-R3-010 — the read side of `HistoryEntry.auditLogPointer`. A completed Run
 // leaves a pointer in its history record; this command is what turns that
 // pointer back into evidence the operator can see.
@@ -15,10 +13,7 @@ export interface ResolveAuditPointerRequest {
   readonly runId: string;
 }
 
-export interface ResolveAuditPointerCommand
-  extends CommandBase<typeof CMD_RESOLVE_AUDIT_POINTER> {
-  readonly payload: ResolveAuditPointerRequest;
-}
+export type { ResolveAuditPointerCommand } from '../generated/sidebar-ipc-types';
 
 /**
  * One audit record, as the drill-down presents it.

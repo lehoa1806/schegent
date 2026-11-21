@@ -123,11 +123,29 @@ another.
 | **Where it is stored** | `schegent.backend.uncontainedBackends` in your User settings (`settings.json`). | This workspace's `workspaceState` memento, under `schegent.consent.gitPlanGrants.v1`, keyed by fingerprint — with the pipeline id, the phase ids, and when you gave it. VS Code keeps that memento in its own `workspaceStorage`, **not** in the repository. | This workspace's `workspaceState` memento, under `schegent.consent.agentConfigGrants.v1`, keyed by digest-set fingerprint — with backend, file names/digests, and timestamp. Kept in VS Code `workspaceStorage`, **not** in the repository. |
 | **How to withdraw it** | Turn the grant off in that backend's section on the Settings tab, or remove the backend id from the setting by hand — the tab's control removes exactly that id and leaves the rest of the list alone. Applies to the next runner Schegent builds; a runner already built in this window is not torn down, so reload the window if you need it to bite now. | Run **`Schegent: Git Approvals`** from the Command Palette. It lists every plan this workspace approves without asking, and withdraws the one you pick or all of them, behind a confirmation. Resetting Schegent's workspace state also clears them. The next Run on that plan asks again. | Run **`Schegent: Agent Config Acknowledgements`** from the Command Palette. It lists every stored repository configuration acknowledgement for this workspace and withdraws one or all of them behind a confirmation. Resetting workspace state also clears them. |
 
-The repository agent configuration preflight is **disclosure and consent, not enforcement**: it does not
-block or rewrite repository files, and because it scans a fixed per-backend path list, an attacker who
-controls the repository may use unlisted mechanisms that the scan does not see. It reduces risk for
-known project-level configuration surfaces; it does not make an uncontained backend safe on an untrusted
+The repository agent configuration preflight is **disclosure and consent, not enforcement**: it runs
+before any uncontained backend subprocess starts (including pre-phase session compaction), does not block
+or rewrite repository files, and because it scans a fixed per-backend path list, an attacker who controls
+the repository may use unlisted mechanisms that the scan does not see. It is risk reduction for known
+project-level configuration surfaces; it does not make an uncontained backend safe on an untrusted
 repository.
+
+**Scanner bounds and re-acknowledgement (`FR-R7-11`):**
+- **Bounded reads (`<= 256 KiB` per file, `2,000 ms` total):** each candidate file opened through
+  `openWithinRoot` is verified with pre- and post-read `fstat` checks so reads never request bytes past
+  `256 KiB` and concurrent growth past `256 KiB` fails closed. The scan enforces a `2,000 ms` monotonic
+  deadline via `AbortSignal` threaded through file opens and chunk reads, failing closed on timeout and
+  closing descriptors once settled without mutating returned entries. Because Node/libuv cannot interrupt
+  a single in-flight OS read syscall mid-flight, the deadline halts any subsequent I/O immediately, returns
+  fail-closed, and releases the handle when that syscall finishes.
+- **Re-acknowledgement policy:** within one extension-host activation, acknowledgement is evaluated once
+  per `(runId, backend)` across subsequent phases, retries, and same-session resumes, coalescing
+  overlapping concurrent checks for the same pair into a single scan, modal, and audit event. Completed
+  and canceled Runs are cleared from the in-memory ledger via `forgetRun`, backed by a 512-pair LRU
+  defensive bound whose eviction fails closed by re-running the check. Across an extension-host reload,
+  matching persistent workspace grants clear silently as `stored`, whereas one-Run approvals, unreadable
+  or timed-out scans, failed persistence writes (audited as `approved-once`), and modified configuration
+  re-prompt before spawning.
 
 The stored Git grant is written to be read: it names the pipeline and the phases, not just a hash,
 so a grant you find months later can be judged without reading source. `Schegent: Git Approvals` is

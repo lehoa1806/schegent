@@ -1,4 +1,3 @@
-import type { CMD_READ_METRICS, CommandBase } from '../sidebar-ipc';
 // The identifier length bound every id crossing this boundary gets. Imported
 // rather than restated: two copies of 256 are two things to keep in step, and
 // `validators/shared` only type-imports back, so nothing circular is created.
@@ -206,9 +205,7 @@ export function isReadMetricsRequest(value: unknown): value is ReadMetricsReques
   return runIds === undefined || isReadMetricsRunIdList(runIds);
 }
 
-export interface ReadMetricsCommand extends CommandBase<typeof CMD_READ_METRICS> {
-  readonly payload: ReadMetricsRequest;
-}
+export type { ReadMetricsCommand } from '../generated/sidebar-ipc-types';
 
 export interface ReadMetricsResponse {
   readonly tasks: readonly TaskRecord[];

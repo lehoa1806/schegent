@@ -1,5 +1,5 @@
 /**
- * FR-R7-03 (FR-001..FR-005, FR-008..FR-010) — Zero-`vscode` headless API for
+ * FR-R7-03 (FR-001..FR-005, FR-008..FR-010) & FR-R7-11 — Zero-`vscode` headless API for
  * SQLite store backup, listing, read-only verification, and guarded full-authority restore.
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
@@ -8,9 +8,11 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import { lstatSync, readFileSync } from 'node:fs';
+import { closeSync, fstatSync, lstatSync, readSync } from 'node:fs';
 import * as path from 'node:path';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
+import type { SanitizedLogger } from '../lib/logger';
+import { openReadOnlyNoFollowSync } from '../lib/safe-open';
 import {
   MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES,
   type BackupDependencyManifest,
@@ -55,6 +57,14 @@ export type CreateStoreBackupResult =
 export type GuardedRestoreResult =
   | RestoreValidationOutcome
   | {
+      readonly status: 'committed_refresh_failed';
+      readonly errorCode: 'POST_COMMIT_REFRESH_FAILED';
+      readonly restoredTableCount: number;
+      readonly restoredRunCount: number;
+      readonly schemaVersion: number;
+      readonly message: string;
+    }
+  | {
       readonly status: 'refused';
       readonly reasonCode: StoreBackupGuardRefusalCode;
       readonly message: string;
@@ -91,7 +101,7 @@ export interface StoreBackupRestoreApi {
 export interface StoreBackupRestoreApiDeps {
   readonly getSqliteStore: () => SqliteApplicationStore | null;
   readonly ensurePrimaryStore?: (() => Promise<SqliteApplicationStore | null>) | undefined;
-  readonly trustedRootDir: string;
+  readonly trustedRootDir: string | (() => string);
   readonly scopeId: string;
   readonly hasPrimacy: () => Promise<boolean>;
   readonly hasInFlightRun: () => boolean;
@@ -99,6 +109,7 @@ export interface StoreBackupRestoreApiDeps {
   readonly inspectExternalDependency?: ExternalDependencyInspector | undefined;
   readonly collectAuditLogDependencies?: (() => readonly BackupExternalDependency[]) | undefined;
   readonly auditWriter?: Pick<AuditLogWriter, 'append'> | undefined;
+  readonly logger?: Pick<SanitizedLogger, 'warn'> | undefined;
   readonly nowMs?: (() => number) | undefined;
 }
 
@@ -113,6 +124,7 @@ const KNOWN_BACKUP_ERROR_PREFIXES = [
 ] as const;
 
 const SAFE_OPAQUE_BACKUP_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
+const EXTERNAL_DEP_READ_CHUNK_BYTES = 64 * 1024;
 
 function sanitizeAuditBackupId(backupId: string): string {
   if (SAFE_OPAQUE_BACKUP_ID_RE.test(backupId) && !backupId.includes('..')) {
@@ -140,13 +152,14 @@ function generateBackupId(nowMs: number): string {
 
 /**
  * Safe read-only external dependency inspector confined strictly within `workspaceRoot`.
- * Refuses path traversal, symlinks, non-regular files, and files exceeding the byte ceiling.
+ * Refuses path traversal, symlinks, non-regular files, and files exceeding the remaining byte budget
+ * before reading past the budget ceiling.
  */
 export function createWorkspaceExternalDependencyInspector(
   workspaceRoot: string
 ): ExternalDependencyInspector {
   const resolvedRoot = path.resolve(workspaceRoot);
-  return (relativePath: string) => {
+  return (relativePath: string, options?: { readonly remainingBudgetBytes?: number | undefined }) => {
     if (
       relativePath.length === 0 ||
       relativePath.includes('\0') ||
@@ -178,17 +191,74 @@ export function createWorkspaceExternalDependencyInspector(
       }
     }
 
+    const rawBudget = options?.remainingBudgetBytes;
+    const boundedBudget =
+      rawBudget !== undefined && Number.isFinite(rawBudget)
+        ? Math.max(0, Math.floor(rawBudget))
+        : MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES;
+    const effectiveLimit = Math.min(boundedBudget, MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES);
+
     try {
       const st = lstatSync(target);
       if (st.isSymbolicLink() || !st.isFile()) {
         return { exists: false, byteLength: 0, sha256Digest: '' };
       }
-      if (st.size > MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES) {
-        return { exists: true, byteLength: st.size, sha256Digest: '' };
+      if (st.size > effectiveLimit) {
+        return { exists: true, byteLength: st.size, sha256Digest: '', exceededByteBudget: true };
       }
-      const bytes = readFileSync(target);
-      const sha256Digest = createHash('sha256').update(bytes).digest('hex');
-      return { exists: true, byteLength: bytes.byteLength, sha256Digest };
+
+      let fd: number | null = null;
+      try {
+        fd = openReadOnlyNoFollowSync(target);
+        const preStat = fstatSync(fd);
+        if (!preStat.isFile()) {
+          return { exists: false, byteLength: 0, sha256Digest: '' };
+        }
+        if (preStat.size > effectiveLimit) {
+          return {
+            exists: true,
+            byteLength: preStat.size,
+            sha256Digest: '',
+            exceededByteBudget: true
+          };
+        }
+        const hash = createHash('sha256');
+        let totalRead = 0;
+        if (effectiveLimit > 0) {
+          const chunk = Buffer.allocUnsafe(Math.min(EXTERNAL_DEP_READ_CHUNK_BYTES, effectiveLimit));
+          while (totalRead < effectiveLimit) {
+            const toRead = Math.min(chunk.byteLength, effectiveLimit - totalRead);
+            const bytesRead = readSync(fd, chunk, 0, toRead, null);
+            if (bytesRead === 0) break;
+            hash.update(chunk.subarray(0, bytesRead));
+            totalRead += bytesRead;
+          }
+        }
+        const postStat = fstatSync(fd);
+        if (!postStat.isFile()) {
+          return { exists: false, byteLength: 0, sha256Digest: '' };
+        }
+        if (postStat.size > effectiveLimit) {
+          return {
+            exists: true,
+            byteLength: postStat.size,
+            sha256Digest: '',
+            exceededByteBudget: true
+          };
+        }
+        if (totalRead !== postStat.size) {
+          return { exists: false, byteLength: 0, sha256Digest: '' };
+        }
+        return { exists: true, byteLength: totalRead, sha256Digest: hash.digest('hex') };
+      } finally {
+        if (fd !== null) {
+          try {
+            closeSync(fd);
+          } catch {
+            // Ignore close failure.
+          }
+        }
+      }
     } catch {
       return { exists: false, byteLength: 0, sha256Digest: '' };
     }
@@ -199,27 +269,34 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
   const nowMs = deps.nowMs ?? (() => Date.now());
   const relativeBackupDirSegments = Object.freeze(['sqlite', deps.scopeId, 'backups'] as const);
 
+  const resolveTrustedRootDir = (): string =>
+    typeof deps.trustedRootDir === 'function' ? deps.trustedRootDir() : deps.trustedRootDir;
+
+  const logNotWorkspaceOwner = (operation: 'backup' | 'restore', backupId: string): void => {
+    deps.logger?.warn('store operation refused: not workspace owner', {
+      operation,
+      outcome: 'refused',
+      backupId: sanitizeAuditBackupId(backupId),
+      errorCode: 'NOT_WORKSPACE_OWNER'
+    });
+  };
+
   const appendAudit = async (
     eventType: 'store-backup' | 'store-restore',
     payload: StoreBackupRestoreAuditPayload
   ): Promise<void> => {
     if (!deps.auditWriter) return;
+    const cleanBackupId = sanitizeAuditBackupId(payload.backupId);
     const cleanPayload: Record<string, unknown> = {
       operation: payload.operation,
       outcome: payload.outcome,
-      backupId: sanitizeAuditBackupId(payload.backupId)
+      backupId: cleanBackupId
     };
     if (payload.errorCode !== undefined) cleanPayload.errorCode = payload.errorCode;
     if (payload.schemaVersion !== undefined) cleanPayload.schemaVersion = payload.schemaVersion;
     if (payload.databaseBytes !== undefined) cleanPayload.databaseBytes = payload.databaseBytes;
     if (payload.restoredTableCount !== undefined) {
       cleanPayload.restoredTableCount = payload.restoredTableCount;
-    }
-    if (payload.restoredRowCount !== undefined) {
-      cleanPayload.restoredRowCount = payload.restoredRowCount;
-    }
-    if (payload.verifiedExternalDependencies !== undefined) {
-      cleanPayload.verifiedExternalDependencies = payload.verifiedExternalDependencies;
     }
     try {
       await deps.auditWriter.append({
@@ -230,9 +307,21 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
         payload: cleanPayload,
         outcome: payload.outcome === 'succeeded' ? 'success' : 'failure'
       });
-    } catch {
+    } catch (err) {
       // Never fail a completed store operation because of a secondary audit sink error,
       // and never leak raw paths or raw errors.
+      const reasonCode =
+        err instanceof Error && 'reasonCode' in err && typeof err.reasonCode === 'string'
+          ? err.reasonCode
+          : err instanceof Error
+            ? err.name
+            : 'audit-append-failed';
+      deps.logger?.warn('store operation audit append failed', {
+        operation: payload.operation,
+        outcome: payload.outcome,
+        backupId: cleanBackupId,
+        reasonCode
+      });
     }
   };
 
@@ -246,10 +335,11 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
   };
 
   const listBackups = async (): Promise<readonly ListedBackupEntry[]> =>
-    listBackupsInRoot(deps.trustedRootDir, relativeBackupDirSegments);
+    listBackupsInRoot(resolveTrustedRootDir(), relativeBackupDirSegments);
 
   return {
     async createBackup(options): Promise<CreateStoreBackupResult> {
+      const backupId = options?.backupId ?? generateBackupId(nowMs());
       let isOwner = false;
       try {
         isOwner = await deps.hasPrimacy();
@@ -257,6 +347,7 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
         isOwner = false;
       }
       if (!isOwner) {
+        logNotWorkspaceOwner('backup', backupId);
         return {
           status: 'refused',
           reasonCode: 'NOT_WORKSPACE_OWNER',
@@ -264,28 +355,30 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
         };
       }
 
-      const backupId = options?.backupId ?? generateBackupId(nowMs());
-      const store = await resolvePrimaryStore();
-      if (store === null) {
-        await appendAudit('store-backup', {
-          operation: 'backup',
-          outcome: 'refused',
-          backupId,
-          errorCode: 'STORE_UNAVAILABLE'
-        });
-        return {
-          status: 'refused',
-          reasonCode: 'STORE_UNAVAILABLE',
-          message: 'SQLite application store is not open for this workspace.'
-        };
-      }
-
+      let failureFallback: 'STORE_OPEN_FAILED' | 'BACKUP_FAILED' = 'STORE_OPEN_FAILED';
       try {
+        const store = await resolvePrimaryStore();
+        if (store === null) {
+          await appendAudit('store-backup', {
+            operation: 'backup',
+            outcome: 'refused',
+            backupId,
+            errorCode: 'STORE_UNAVAILABLE'
+          });
+          return {
+            status: 'refused',
+            reasonCode: 'STORE_UNAVAILABLE',
+            message: 'SQLite application store is not open for this workspace.'
+          };
+        }
+
+        failureFallback = 'BACKUP_FAILED';
+        const trustedRootDir = resolveTrustedRootDir();
         const auditLogDependencies = deps.collectAuditLogDependencies?.() ?? [];
         const created = await store.backupRestore.createOnlineBackup({
           backupId,
           scopeId: deps.scopeId,
-          trustedRootDir: deps.trustedRootDir,
+          trustedRootDir,
           relativeBackupDirSegments,
           auditLogDependencies,
           writeManifestFile: true
@@ -295,8 +388,7 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
           outcome: 'succeeded',
           backupId: created.manifest.backupId,
           schemaVersion: created.manifest.schemaVersion,
-          databaseBytes: created.manifest.databaseBytes,
-          verifiedExternalDependencies: created.manifest.externalDependencies.length
+          databaseBytes: created.manifest.databaseBytes
         });
         return {
           status: 'created',
@@ -306,7 +398,7 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
           manifest: created.manifest
         };
       } catch (err) {
-        const errorCode = extractClosedErrorCode(err, 'BACKUP_FAILED');
+        const errorCode = extractClosedErrorCode(err, failureFallback);
         await appendAudit('store-backup', {
           operation: 'backup',
           outcome: 'failed',
@@ -324,7 +416,8 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
     listBackups,
 
     async verifyBackup(backupId, options): Promise<VerifyBackupOutcome> {
-      const entries = await listBackups();
+      const trustedRootDir = resolveTrustedRootDir();
+      const entries = await listBackupsInRoot(trustedRootDir, relativeBackupDirSegments);
       const entry = entries.find((e) => e.backupId === backupId);
       if (!entry) {
         return {
@@ -343,7 +436,7 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
       return verifyBackupStandalone({
         backupDatabasePath: entry.backupDatabasePath,
         manifest: entry.manifest,
-        trustedRootDir: deps.trustedRootDir,
+        trustedRootDir,
         maxSupportedSchemaVersion: options?.maxSupportedSchemaVersion,
         maxExternalDependencies: options?.maxExternalDependencies,
         maxExternalDependencyBytes: options?.maxExternalDependencyBytes,
@@ -360,6 +453,7 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
         isOwner = false;
       }
       if (!isOwner) {
+        logNotWorkspaceOwner('restore', backupId);
         return {
           status: 'refused',
           reasonCode: 'NOT_WORKSPACE_OWNER',
@@ -367,89 +461,99 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
         };
       }
 
-      if (deps.hasInFlightRun()) {
-        await appendAudit('store-restore', {
-          operation: 'restore',
-          outcome: 'refused',
-          backupId,
-          errorCode: 'RUN_IN_FLIGHT'
-        });
-        return {
-          status: 'refused',
-          reasonCode: 'RUN_IN_FLIGHT',
-          message:
-            'Cannot restore store while a Run is in flight. Wait for or cancel active Runs before restoring.'
-        };
-      }
-
-      const store = await resolvePrimaryStore();
-      if (store === null) {
-        await appendAudit('store-restore', {
-          operation: 'restore',
-          outcome: 'refused',
-          backupId,
-          errorCode: 'STORE_UNAVAILABLE'
-        });
-        return {
-          status: 'refused',
-          reasonCode: 'STORE_UNAVAILABLE',
-          message: 'SQLite application store is not open for this workspace.'
-        };
-      }
-
-      const entries = await listBackups();
-      const entry = entries.find((e) => e.backupId === backupId);
-      if (!entry || entry.manifestStatus !== 'valid' || !entry.manifest) {
-        const reasonCode: BackupRestoreRejectionCode = 'BACKUP_OPEN_FAILED';
-        await appendAudit('store-restore', {
-          operation: 'restore',
-          outcome: 'rejected',
-          backupId,
-          errorCode: reasonCode
-        });
-        return {
-          status: 'rejected',
-          reasonCode,
-          message: !entry
-            ? `Backup '${sanitizeAuditBackupId(backupId)}' was not found in the workspace backup directory.`
-            : `Backup '${entry.backupId}' has a ${entry.manifestStatus} companion manifest.`
-        };
-      }
-
-      // Re-check ownership fence and in-flight Runs immediately before opening the write transaction.
-      let stillOwner = false;
-      try {
-        stillOwner = await deps.hasPrimacy();
-      } catch {
-        stillOwner = false;
-      }
-      if (!stillOwner) {
-        return {
-          status: 'refused',
-          reasonCode: 'NOT_WORKSPACE_OWNER',
-          message: 'Workspace ownership fence was lost before restore; restore refused.'
-        };
-      }
-      if (deps.hasInFlightRun()) {
-        await appendAudit('store-restore', {
-          operation: 'restore',
-          outcome: 'refused',
-          backupId: entry.backupId,
-          errorCode: 'RUN_IN_FLIGHT'
-        });
-        return {
-          status: 'refused',
-          reasonCode: 'RUN_IN_FLIGHT',
-          message:
-            'Cannot restore store while a Run is in flight. Wait for or cancel active Runs before restoring.'
-        };
-      }
+      let auditBackupId = backupId;
+      let failureFallback: 'STORE_OPEN_FAILED' | 'RESTORE_FAILED' = 'RESTORE_FAILED';
+      let committedOutcome: Extract<RestoreValidationOutcome, { readonly status: 'restored' }>;
+      let committedDatabaseBytes: number;
 
       try {
+        if (deps.hasInFlightRun()) {
+          await appendAudit('store-restore', {
+            operation: 'restore',
+            outcome: 'refused',
+            backupId,
+            errorCode: 'RUN_IN_FLIGHT'
+          });
+          return {
+            status: 'refused',
+            reasonCode: 'RUN_IN_FLIGHT',
+            message:
+              'Cannot restore store while a Run is in flight. Wait for or cancel active Runs before restoring.'
+          };
+        }
+
+        failureFallback = 'STORE_OPEN_FAILED';
+        const store = await resolvePrimaryStore();
+        failureFallback = 'RESTORE_FAILED';
+        if (store === null) {
+          await appendAudit('store-restore', {
+            operation: 'restore',
+            outcome: 'refused',
+            backupId,
+            errorCode: 'STORE_UNAVAILABLE'
+          });
+          return {
+            status: 'refused',
+            reasonCode: 'STORE_UNAVAILABLE',
+            message: 'SQLite application store is not open for this workspace.'
+          };
+        }
+
+        const trustedRootDir = resolveTrustedRootDir();
+        const entries = await listBackupsInRoot(trustedRootDir, relativeBackupDirSegments);
+        const entry = entries.find((e) => e.backupId === backupId);
+        if (!entry || entry.manifestStatus !== 'valid' || !entry.manifest) {
+          const reasonCode: BackupRestoreRejectionCode = 'BACKUP_OPEN_FAILED';
+          await appendAudit('store-restore', {
+            operation: 'restore',
+            outcome: 'rejected',
+            backupId,
+            errorCode: reasonCode
+          });
+          return {
+            status: 'rejected',
+            reasonCode,
+            message: !entry
+              ? `Backup '${sanitizeAuditBackupId(backupId)}' was not found in the workspace backup directory.`
+              : `Backup '${entry.backupId}' has a ${entry.manifestStatus} companion manifest.`
+          };
+        }
+        auditBackupId = entry.backupId;
+
+        // Re-check ownership fence and in-flight Runs immediately before opening the write transaction.
+        let stillOwner = false;
+        try {
+          stillOwner = await deps.hasPrimacy();
+        } catch {
+          stillOwner = false;
+        }
+        if (!stillOwner) {
+          logNotWorkspaceOwner('restore', entry.backupId);
+          return {
+            status: 'refused',
+            reasonCode: 'NOT_WORKSPACE_OWNER',
+            message: 'Workspace ownership fence was lost before restore; restore refused.'
+          };
+        }
+        if (deps.hasInFlightRun()) {
+          await appendAudit('store-restore', {
+            operation: 'restore',
+            outcome: 'refused',
+            backupId: entry.backupId,
+            errorCode: 'RUN_IN_FLIGHT'
+          });
+          return {
+            status: 'refused',
+            reasonCode: 'RUN_IN_FLIGHT',
+            message:
+              'Cannot restore store while a Run is in flight. Wait for or cancel active Runs before restoring.'
+          };
+        }
+
         const outcome = store.backupRestore.validateAndRestoreBackup({
           backupDatabasePath: entry.backupDatabasePath,
           manifest: entry.manifest,
-          trustedRootDir: deps.trustedRootDir,
+          trustedRootDir,
           maxSupportedSchemaVersion: options?.maxSupportedSchemaVersion,
           maxExternalDependencies: options?.maxExternalDependencies,
           maxExternalDependencyBytes: options?.maxExternalDependencyBytes,
@@ -467,25 +571,14 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
           return outcome;
         }
 
-        await deps.reloadAfterRestore();
-
-        await appendAudit('store-restore', {
-          operation: 'restore',
-          outcome: 'succeeded',
-          backupId: entry.backupId,
-          schemaVersion: outcome.schemaVersion,
-          databaseBytes: entry.databaseBytes,
-          restoredTableCount: outcome.restoredTableCount,
-          restoredRowCount: outcome.restoredRowCount,
-          verifiedExternalDependencies: outcome.verifiedExternalDependencies
-        });
-        return outcome;
+        committedOutcome = outcome;
+        committedDatabaseBytes = entry.databaseBytes;
       } catch (err) {
-        const errorCode = extractClosedErrorCode(err, 'RESTORE_FAILED');
+        const errorCode = extractClosedErrorCode(err, failureFallback);
         await appendAudit('store-restore', {
           operation: 'restore',
           outcome: 'failed',
-          backupId: entry.backupId,
+          backupId: auditBackupId,
           errorCode
         });
         return {
@@ -494,6 +587,41 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
           message: `Store restore failed (${errorCode}).`
         };
       }
+
+      // Post-commit cache/catalog refresh: SQLite restore is already committed on disk.
+      try {
+        await deps.reloadAfterRestore();
+      } catch {
+        const errorCode = 'POST_COMMIT_REFRESH_FAILED' as const;
+        await appendAudit('store-restore', {
+          operation: 'restore',
+          outcome: 'failed',
+          backupId: auditBackupId,
+          errorCode,
+          schemaVersion: committedOutcome.schemaVersion,
+          databaseBytes: committedDatabaseBytes,
+          restoredTableCount: committedOutcome.restoredTableCount
+        });
+        return {
+          status: 'committed_refresh_failed',
+          errorCode,
+          restoredTableCount: committedOutcome.restoredTableCount,
+          restoredRunCount: committedOutcome.restoredRunCount,
+          schemaVersion: committedOutcome.schemaVersion,
+          message:
+            'Restore committed on disk, but post-commit cache/catalog refresh failed (POST_COMMIT_REFRESH_FAILED). Reload the window to synchronize in-memory state.'
+        };
+      }
+
+      await appendAudit('store-restore', {
+        operation: 'restore',
+        outcome: 'succeeded',
+        backupId: auditBackupId,
+        schemaVersion: committedOutcome.schemaVersion,
+        databaseBytes: committedDatabaseBytes,
+        restoredTableCount: committedOutcome.restoredTableCount
+      });
+      return committedOutcome;
     }
   };
 }

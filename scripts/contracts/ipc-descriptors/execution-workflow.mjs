@@ -15,13 +15,13 @@ export const EXECUTION_WORKFLOW_COMMANDS = Object.freeze([
     interfaceName: 'LaunchPipelineCommand',
     validatorName: 'validateLaunchPipeline',
     family: 'execution-workflow',
-    emitInterface: false,
     doc: 'Compose, validate, freeze, and enqueue a Pipeline RunRequest.',
     payloadMode: 'required',
     payload: d.obj(
       {
         request: d.ref('RunRequest', {
           tsType: 'RunRequest',
+          tsImport: '../run-request',
           predicate: {
             fn: 'validRunRequest',
             importFrom: '../../validators/run-request-shape',
@@ -41,7 +41,6 @@ export const EXECUTION_WORKFLOW_COMMANDS = Object.freeze([
     interfaceName: 'LaunchWorkflowCommand',
     validatorName: 'validateLaunchWorkflow',
     family: 'execution-workflow',
-    emitInterface: false,
     doc: 'Launch a connected Workflow run from a declared startNodeId.',
     payloadMode: 'required',
     payload: d.obj(
@@ -50,6 +49,7 @@ export const EXECUTION_WORKFLOW_COMMANDS = Object.freeze([
         startNodeId: d.str({ minLen: 1, maxLen: ID_MAX, err: 'invalid-payload' }),
         request: d.ref('RunRequest', {
           tsType: 'RunRequest',
+          tsImport: '../run-request',
           predicate: {
             fn: 'validRunRequest',
             importFrom: '../../validators/run-request-shape',
@@ -69,7 +69,6 @@ export const EXECUTION_WORKFLOW_COMMANDS = Object.freeze([
     interfaceName: 'ContinueWorkflowCommand',
     validatorName: 'validateContinueWorkflow',
     family: 'execution-workflow',
-    emitInterface: false,
     doc: 'Continue or apply a control operation to a connected Workflow run.',
     payloadMode: 'required',
     extraTypeImports: {
@@ -82,6 +81,7 @@ export const EXECUTION_WORKFLOW_COMMANDS = Object.freeze([
         nodeId: d.str({ minLen: 1, maxLen: ID_MAX, err: 'invalid-payload' }),
         request: d.ref('RunRequest', {
           tsType: 'RunRequest',
+          tsImport: '../run-request',
           predicate: {
             fn: 'validRunRequest',
             importFrom: '../../validators/run-request-shape',
@@ -94,6 +94,7 @@ export const EXECUTION_WORKFLOW_COMMANDS = Object.freeze([
         operation: d.field(
           d.enum(WORKFLOW_CONTROL_ACTIONS, {
             refName: 'WorkflowControlAction',
+            refImport: '../sidebar-ipc/workflow-run',
             err: 'invalid-payload'
           }),
           { optional: true }
@@ -104,6 +105,7 @@ export const EXECUTION_WORKFLOW_COMMANDS = Object.freeze([
         controlCommand: d.field(
           d.ref('ControlCommandEnvelope', {
             tsType: 'ControlCommandEnvelope',
+            tsImport: '../sidebar-ipc/workflow-run',
             predicate: {
               fn: 'isControlCommandEnvelope',
               importFrom: '../../sidebar-ipc/workflow-run',
@@ -122,7 +124,6 @@ export const EXECUTION_WORKFLOW_COMMANDS = Object.freeze([
     interfaceName: 'ReadExecutionVisibilityCommand',
     validatorName: 'validateReadExecutionVisibility',
     family: 'execution-workflow',
-    emitInterface: false,
     doc: 'Read attempt visibility details or runtime lane/telemetry posture.',
     payloadMode: 'required',
     payload: d.discUnion(
@@ -151,7 +152,6 @@ export const EXECUTION_WORKFLOW_COMMANDS = Object.freeze([
     interfaceName: 'OpenChangeReviewCommand',
     validatorName: 'validateOpenChangeReview',
     family: 'execution-workflow',
-    emitInterface: false,
     doc: 'Open, refresh, classify, page, close, or cancel an immutable candidate change review.',
     payloadMode: 'required',
     payload: d.discUnion(
@@ -201,7 +201,6 @@ export const EXECUTION_WORKFLOW_COMMANDS = Object.freeze([
     interfaceName: 'DecidePhaseHandoffCommand',
     validatorName: 'validateDecidePhaseHandoff',
     family: 'execution-workflow',
-    emitInterface: false,
     doc: 'Approve or edit a manual phase-to-phase context handoff revision.',
     payloadMode: 'required',
     payload: d.discUnion(
