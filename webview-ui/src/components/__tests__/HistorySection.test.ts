@@ -145,13 +145,35 @@ describe('HistorySection', () => {
     expect(getByTestId('history-item-r-1-completed-at')).not.toBeNull();
   });
 
-  it('renders Rerun / Open Audit Log / Open Details buttons per entry', () => {
+  it('renders Open Details / Open Audit Log before Rerun inside the row SgMenu', () => {
     const { getByTestId } = render(HistorySection, {
       props: { rows: [entry()], isPrimary: true }
     });
-    expect(getByTestId('history-item-rerun-r-1')).not.toBeNull();
-    expect(getByTestId('history-item-open-audit-r-1')).not.toBeNull();
-    expect(getByTestId('history-item-open-details-r-1')).not.toBeNull();
+    const rerun = getByTestId('history-item-rerun-r-1');
+    const audit = getByTestId('history-item-open-audit-r-1');
+    const details = getByTestId('history-item-open-details-r-1');
+    const menuWithoutSelect = audit.closest('[role="menu"]') as HTMLElement | null;
+    expect(menuWithoutSelect).not.toBeNull();
+    expect([...menuWithoutSelect!.children].map((el) => el.getAttribute('data-testid'))).toEqual([
+      'history-item-open-audit-r-1',
+      'history-item-rerun-r-1'
+    ]);
+    expect(details).not.toBeNull();
+    expect(rerun).not.toBeNull();
+    cleanup();
+
+    const withSelect = render(HistorySection, {
+      props: { rows: [entry()], isPrimary: true, onTaskSelect: vi.fn() }
+    });
+    const menuWithSelect = withSelect
+      .getByTestId('history-item-open-details-r-1')
+      .closest('[role="menu"]') as HTMLElement | null;
+    expect(menuWithSelect).not.toBeNull();
+    expect([...menuWithSelect!.children].map((el) => el.getAttribute('data-testid'))).toEqual([
+      'history-item-open-details-r-1',
+      'history-item-open-audit-r-1',
+      'history-item-rerun-r-1'
+    ]);
   });
 
   it('Rerun is aria-disabled when isPrimary === false; Open Audit Log / Open Details remain enabled', () => {

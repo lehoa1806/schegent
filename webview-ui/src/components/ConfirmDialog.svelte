@@ -112,7 +112,7 @@
 </script>
 
 <div
-  class="confirm-backdrop"
+  class="sg confirm-backdrop"
   role="presentation"
   onkeydown={handleKeydown}
 >
@@ -131,14 +131,14 @@
     <div class="confirm-actions">
       <button
         type="button"
-        class="btn-cancel"
+        class="btn btn-secondary btn-cancel"
         data-testid="confirm-dialog-cancel"
         bind:this={cancelButtonEl}
         onclick={onCancel}
       >Cancel</button>
       <button
         type="button"
-        class="btn-confirm btn-{request.severity}"
+        class="btn {request.severity === 'destructive' ? 'btn-danger' : 'btn-primary'} btn-confirm btn-{request.severity}"
         data-testid="confirm-dialog-confirm"
         bind:this={confirmButtonEl}
         onclick={handleConfirm}
@@ -212,38 +212,6 @@
     justify-content: flex-end;
     gap: 8px;
     margin-top: 16px;
-  }
-
-  button {
-    min-height: 28px;
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: transparent;
-    color: var(--schegent-fg);
-    font: inherit;
-    padding: 0 10px;
-    cursor: pointer;
-  }
-
-  button:hover,
-  button:focus-visible {
-    border-color: var(--schegent-focus-border);
-    outline: none;
-  }
-
-  .btn-info {
-    border-color: var(--schegent-color-active);
-    color: var(--schegent-status-active-text);
-  }
-
-  .btn-caution {
-    border-color: var(--schegent-color-warning, var(--schegent-color-active));
-    color: var(--schegent-status-warning-text);
-  }
-
-  .btn-destructive {
-    border-color: var(--schegent-error-border);
-    color: var(--schegent-error-text);
   }
 
   .suppression-row {

@@ -291,14 +291,14 @@
   <div class="rj-actions">
     <button
       type="button"
-      class="btn btn-secondary"
+      class="btn btn-primary"
       data-testid="raw-json-save"
       disabled={!verdict.ok}
       onclick={onSaveClick}
     >Save</button>
     <button
       type="button"
-      class="btn btn-ghost"
+      class="btn btn-secondary"
       data-testid="raw-json-reset"
       onclick={onResetClick}
     >Reset</button>
@@ -351,16 +351,4 @@
     display: flex;
     gap: 8px;
   }
-  .btn {
-    padding: 4px 12px;
-    border-radius: var(--schegent-radius);
-    font-size: 0.9em;
-    font-weight: 500;
-    cursor: pointer;
-    border: 1px solid transparent;
-  }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-secondary { background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); }
-  .btn-ghost { background: transparent; color: var(--schegent-muted-fg); }
-  .btn-ghost:hover:not(:disabled) { background: var(--schegent-list-hover); }
 </style>

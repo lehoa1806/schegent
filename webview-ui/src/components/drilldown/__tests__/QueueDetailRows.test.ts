@@ -207,13 +207,19 @@ describe('QueueDetailRows — the row menu', () => {
     expect(onSelectRun).toHaveBeenCalledWith('cr-1');
   });
 
-  it('puts Move up and Move down in a pending Task’s menu', () => {
+  it('puts Move up and Move down in a pending Task’s menu with aligned vector icons', () => {
     const { getByTestId } = mount([task('solo')]);
 
-    for (const testId of ['queue-task-reorder-up-solo', 'queue-task-reorder-down-solo']) {
+    const expected: readonly [string, string][] = [
+      ['queue-task-open-solo', '#i-open'],
+      ['queue-task-reorder-up-solo', '#i-up'],
+      ['queue-task-reorder-down-solo', '#i-down']
+    ];
+    for (const [testId, icon] of expected) {
       const item = getByTestId(testId);
       expect(item.getAttribute('role')).toBe('menuitem');
       expect(item.closest('[role="menu"]')?.getAttribute('aria-label')).toBe('Actions for task solo');
+      expect(item.querySelector('svg.i use')?.getAttribute('href')).toBe(icon);
     }
   });
 

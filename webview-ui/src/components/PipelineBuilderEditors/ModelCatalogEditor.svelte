@@ -170,7 +170,7 @@
   </div>
 
   {#if backends.length === 0}
-    <div class="empty card"><strong>No backends available</strong></div>
+    <div class="empty"><strong>No backends available</strong></div>
   {/if}
 
   {#each backends as backend, sectionIndex (backend)}
@@ -229,7 +229,7 @@
       {/if}
 
       {#if entries.length === 0}
-        <div class="empty card">
+        <div class="empty">
           <strong>No {backend} models yet</strong>
           {#if detectedFor(backend).length > 0}
             Detect adds the models {backend} reported.

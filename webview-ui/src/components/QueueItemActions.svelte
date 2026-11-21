@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { flushSync } from 'svelte';
   import type { QueueItem } from '../lib/snapshot-types';
   import { OUTCOME_NOT_YET_KNOWN_TEXT, boundaryRefusalText } from '../lib/boundary-refusal-text';
   import { sendIntent } from '../lib/intent-ledger';
@@ -25,13 +26,16 @@
   import { useConfirm } from '../lib/use-confirm';
   // Spec 278 (OD-2) — the failed row's Restart, through the shared phase-control helper.
   import QueueItemRestartPhase from './QueueItemRestartPhase.svelte';
+  import SgMenu from './sg/SgMenu.svelte';
 
   interface Props {
     item: QueueItem;
     isPrimary: boolean;
+    /** `'compact'` draws SVG icon buttons (halted-queue strip); `'header'` draws one contextual action + SgMenu (Run Detail). */
+    variant?: 'compact' | 'header';
   }
 
-  const { item, isPrimary }: Props = $props();
+  const { item, isPrimary, variant = 'compact' }: Props = $props();
 
   const status = $derived(item.status);
   // Feature 065 BUG-009 T080 (FR-026) — Retry (↻) affordance is available
@@ -68,16 +72,24 @@
   // of adding no IPC call of its own. `QueueStartFailureNotice.svelte` is
   // read-only by intent and states the third exit in prose instead.
   const showAttestCompleted = $derived(status === 'failed');
+  const showRestartPhase = $derived(status === 'failed' && item.currentPhase !== null);
+  const hasSecondaryMenuItems = $derived(
+    showPendingEdit || showRestartPhase || showAttestCompleted
+  );
   const disabled = $derived(!isPrimary);
   const ariaDisabled = $derived(disabled ? 'true' : 'false');
 
+  let actionsEl = $state<HTMLDivElement | undefined>(undefined);
+  let editTriggerEl = $state<HTMLButtonElement | undefined>(undefined);
   let editOpen = $state(false);
   let editDraft = $state('');
+  let editInput = $state<HTMLInputElement | undefined>(undefined);
   // BUG-002 (T117) — transient inline rejection message when the host
   // rejects CMD_REMOVE_QUEUE_ITEM (e.g., the row was no longer pending
   // by the time the click reached the host). Cleared on the next click
   // attempt so the operator can retry without stale text lingering.
   let removeError = $state<string | null>(null);
+  let restartPhaseError = $state<string | null>(null);
   // FR-R4-F05 (I7, I8) — the remove wait is the ledger's 5 s; its signal is aborted when this
   // component goes.
   const REMOVE_TIMEOUT_MS = 5_000;
@@ -88,13 +100,41 @@
     editDraft = item.label;
   });
 
+  // Reset transient per-task state when the component switches to another task id.
+  let previousItemId: string | undefined;
+  $effect(() => {
+    const id = item.id;
+    if (previousItemId !== undefined && previousItemId !== id) {
+      editOpen = false;
+      removeError = null;
+      restartPhaseError = null;
+    }
+    previousItemId = id;
+  });
+
+  $effect(() => {
+    if (!showPendingEdit && editOpen) {
+      editOpen = false;
+      editDraft = item.label;
+    }
+  });
+
+  $effect(() => {
+    if (!showRestartPhase && restartPhaseError !== null) {
+      restartPhaseError = null;
+    }
+  });
+
   function safePost(emit: () => void): void {
     if (disabled) return;
     emit();
   }
 
   function onRetry(): void {
-    safePost(() => postCommand(CMD_RETRY_QUEUE_ITEM, { id: item.id }));
+    safePost(() => {
+      restartPhaseError = null;
+      postCommand(CMD_RETRY_QUEUE_ITEM, { id: item.id });
+    });
   }
   async function onCancelInFlight(event: MouseEvent): Promise<void> {
     if (disabled) return;
@@ -178,6 +218,17 @@
     // FR-R4-F05 (O1) — the shared boundary text, never the raw reason.
     return `Cannot remove. ${boundaryRefusalText(reason ?? '')}`;
   }
+  function closeEdit(restoreFocus: boolean): void {
+    editOpen = false;
+    editDraft = item.label;
+    if (!restoreFocus) return;
+    flushSync();
+    const target =
+      variant === 'header'
+        ? actionsEl?.querySelector<HTMLElement>('[aria-haspopup="menu"]')
+        : editTriggerEl;
+    target?.focus();
+  }
   async function onSaveEdit(event: SubmitEvent): Promise<void> {
     if (disabled) return;
     const description = editDraft.trim();
@@ -188,7 +239,18 @@
     });
     if (!ok) return;
     postCommand(CMD_MODIFY_TASK, { taskId: item.id, description });
-    editOpen = false;
+    closeEdit(true);
+  }
+  function onToggleEdit(): void {
+    if (disabled) return;
+    if (editOpen) {
+      closeEdit(true);
+      return;
+    }
+    editDraft = item.label;
+    editOpen = true;
+    flushSync();
+    editInput?.focus();
   }
   // Feature 030 (US3, T045) — `onMoveTask` and the per-row "Move to
   // another queue" form were removed alongside the move-task command.
@@ -197,111 +259,182 @@
   const labelHint = $derived(item.label.length > 24 ? `${item.label.slice(0, 24)}...` : item.label);
 </script>
 
-<div class="actions" data-testid="queue-item-actions-{item.id}">
-  {#if showInFlightCancel}
-    <button
-      type="button"
-      class="icon-btn"
-      data-testid="queue-item-cancel-{item.id}"
-      aria-label={`Cancel '${labelHint}'`}
-      title={`Cancel '${labelHint}'`}
-      aria-disabled={ariaDisabled}
-      onclick={onCancelInFlight}
-    >⏹</button>
-  {/if}
-  {#if showRemove}
-    {#if showPendingEdit}
+<div class="actions" data-testid="queue-item-actions-{item.id}" bind:this={actionsEl}>
+  {#if variant === 'header'}
+    {#if showInFlightCancel}
+      <button
+        type="button"
+        class="btn btn-secondary"
+        data-testid="queue-item-cancel-{item.id}"
+        aria-label={`Cancel '${labelHint}'`}
+        title={`Cancel '${labelHint}'`}
+        aria-disabled={ariaDisabled}
+        onclick={onCancelInFlight}
+      ><svg class="i" aria-hidden="true"><use href="#i-stop"></use></svg>Cancel…</button>
+    {:else if showRetry}
+      <button
+        type="button"
+        class="btn btn-secondary"
+        data-testid="queue-item-retry-{item.id}"
+        aria-label={`Retry feature '${labelHint}'`}
+        title={`Retry feature '${labelHint}'`}
+        aria-disabled={ariaDisabled}
+        onclick={onRetry}
+      ><svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg>Retry</button>
+    {:else if showRestartCanceled}
+      <button
+        type="button"
+        class="btn btn-secondary"
+        data-testid="queue-item-restart-{item.id}"
+        aria-label={`Restart canceled task '${labelHint}'`}
+        title={`Restart canceled task '${labelHint}'`}
+        aria-disabled={ariaDisabled}
+        onclick={onRestartCanceled}
+      ><svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg>Restart…</button>
+    {/if}
+    {#if showRemove}
+      <SgMenu label={`More actions for '${labelHint}'`} testid={`queue-item-menu-${item.id}`}>
+        {#if showPendingEdit}
+          <button
+            type="button"
+            role="menuitem"
+            data-testid="queue-item-edit-{item.id}"
+            aria-label={`Edit description of '${labelHint}'`}
+            title={`Edit '${labelHint}'`}
+            aria-disabled={ariaDisabled}
+            onclick={onToggleEdit}
+          ><svg class="i" aria-hidden="true"><use href="#i-edit"></use></svg>Edit description…</button>
+        {/if}
+        {#if status === 'failed'}
+          <QueueItemRestartPhase {item} {disabled} asMenuItem onMessage={(msg) => (restartPhaseError = msg)} />
+        {/if}
+        {#if showAttestCompleted}
+          <button
+            type="button"
+            role="menuitem"
+            data-testid="queue-item-attest-{item.id}"
+            aria-label={`Mark as completed: '${labelHint}'`}
+            title={`Mark '${labelHint}' as completed`}
+            aria-disabled={ariaDisabled}
+            onclick={onAttestCompleted}
+          ><svg class="i" aria-hidden="true"><use href="#i-check"></use></svg>Mark as completed…</button>
+        {/if}
+        {#if hasSecondaryMenuItems}
+          <hr />
+        {/if}
+        <button
+          type="button"
+          role="menuitem"
+          class="danger"
+          data-testid="queue-item-remove-{item.id}"
+          aria-label={`Remove from queue: '${labelHint}'`}
+          title={`Remove '${labelHint}' from queue`}
+          aria-disabled={ariaDisabled}
+          onclick={onRequestRemove}
+        ><svg class="i" aria-hidden="true"><use href="#i-trash"></use></svg>Remove from queue…</button>
+      </SgMenu>
+    {/if}
+    {#if removeError}
+      <span class="remove-error" role="status" data-testid="queue-item-remove-error-{item.id}">{removeError}</span>
+    {/if}
+    {#if restartPhaseError}
+      <span class="remove-error" role="status" data-testid="queue-item-restart-phase-message-{item.id}">{restartPhaseError}</span>
+    {/if}
+  {:else}
+    {#if showInFlightCancel}
       <button
         type="button"
         class="icon-btn"
-        data-testid="queue-item-edit-{item.id}"
-        aria-label={`Edit '${labelHint}'`}
-        title={`Edit '${labelHint}'`}
+        data-testid="queue-item-cancel-{item.id}"
+        aria-label={`Cancel '${labelHint}'`}
+        title={`Cancel '${labelHint}'`}
         aria-disabled={ariaDisabled}
-        onclick={() => (editOpen = !editOpen)}
-      >✎</button>
-      <!--
-        Feature 030 (US3, T045) — removed the "Move to another queue"
-        affordance alongside the multi-queue surfaces. The single
-        unified queue has no other queue to move into.
-      -->
+        onclick={onCancelInFlight}
+      ><svg class="i" aria-hidden="true"><use href="#i-stop"></use></svg></button>
     {/if}
-    <button
-      type="button"
-      class="icon-btn"
-      data-testid="queue-item-remove-{item.id}"
-      aria-label={`Remove '${labelHint}' from queue`}
-      title={`Remove '${labelHint}' from queue`}
-      aria-disabled={ariaDisabled}
-      onclick={onRequestRemove}
-    >✖</button>
-    {#if removeError}
-      <span
-        class="remove-error"
-        role="status"
-        data-testid="queue-item-remove-error-{item.id}"
-      >{removeError}</span>
+    {#if showRemove}
+      {#if showPendingEdit}
+        <button
+          type="button"
+          class="icon-btn"
+          bind:this={editTriggerEl}
+          data-testid="queue-item-edit-{item.id}"
+          aria-label={`Edit '${labelHint}'`}
+          title={`Edit '${labelHint}'`}
+          aria-disabled={ariaDisabled}
+          onclick={onToggleEdit}
+        ><svg class="i" aria-hidden="true"><use href="#i-edit"></use></svg></button>
+      {/if}
+      <button
+        type="button"
+        class="icon-btn"
+        data-testid="queue-item-remove-{item.id}"
+        aria-label={`Remove '${labelHint}' from queue`}
+        title={`Remove '${labelHint}' from queue`}
+        aria-disabled={ariaDisabled}
+        onclick={onRequestRemove}
+      ><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button>
+      {#if removeError}
+        <span
+          class="remove-error"
+          role="status"
+          data-testid="queue-item-remove-error-{item.id}"
+        >{removeError}</span>
+      {/if}
     {/if}
-  {/if}
-  {#if showRetry}
-    <button
-      type="button"
-      class="icon-btn"
-      data-testid="queue-item-retry-{item.id}"
-      aria-label={`Retry feature '${labelHint}'`}
-      title={`Retry feature '${labelHint}'`}
-      aria-disabled={ariaDisabled}
-      onclick={onRetry}
-    >↻</button>
-  {/if}
-  {#if showAttestCompleted}
-    <button
-      type="button"
-      class="icon-btn"
-      data-testid="queue-item-attest-{item.id}"
-      aria-label={`Mark '${labelHint}' as completed`}
-      title={`Mark '${labelHint}' as completed`}
-      aria-disabled={ariaDisabled}
-      onclick={onAttestCompleted}
-    >✓</button>
-  {/if}
-  {#if status === 'failed'}
-    <QueueItemRestartPhase {item} {disabled} />
-  {/if}
-  {#if showRestartCanceled}
-    <button
-      type="button"
-      class="icon-btn"
-      data-testid="queue-item-restart-{item.id}"
-      aria-label={`Restart canceled task '${labelHint}'`}
-      title={`Restart canceled task '${labelHint}'`}
-      aria-disabled={ariaDisabled}
-      onclick={onRestartCanceled}
-    >↻</button>
+    {#if showRetry}
+      <button
+        type="button"
+        class="icon-btn"
+        data-testid="queue-item-retry-{item.id}"
+        aria-label={`Retry feature '${labelHint}'`}
+        title={`Retry feature '${labelHint}'`}
+        aria-disabled={ariaDisabled}
+        onclick={onRetry}
+      ><svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg></button>
+    {/if}
+    {#if showAttestCompleted}
+      <button
+        type="button"
+        class="icon-btn"
+        data-testid="queue-item-attest-{item.id}"
+        aria-label={`Mark '${labelHint}' as completed`}
+        title={`Mark '${labelHint}' as completed`}
+        aria-disabled={ariaDisabled}
+        onclick={onAttestCompleted}
+      ><svg class="i" aria-hidden="true"><use href="#i-check"></use></svg></button>
+    {/if}
+    {#if status === 'failed'}
+      <QueueItemRestartPhase {item} {disabled} />
+    {/if}
+    {#if showRestartCanceled}
+      <button
+        type="button"
+        class="icon-btn"
+        data-testid="queue-item-restart-{item.id}"
+        aria-label={`Restart canceled task '${labelHint}'`}
+        title={`Restart canceled task '${labelHint}'`}
+        aria-disabled={ariaDisabled}
+        onclick={onRestartCanceled}
+      ><svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg></button>
+    {/if}
   {/if}
 </div>
 
-
-
-{#if editOpen}
+{#if editOpen && showPendingEdit}
   <form class="inline-form" data-testid="queue-item-edit-form-{item.id}" onsubmit={(event) => { event.preventDefault(); void onSaveEdit(event); }}>
-    <input class="input" bind:value={editDraft} data-testid="queue-item-edit-input-{item.id}" aria-label="Edit task description for {labelHint}" title="Edit task description" />
-    <button type="submit" class="btn btn-secondary btn-sm" data-testid="queue-item-edit-save-{item.id}" aria-disabled={ariaDisabled} title="Save edits">Save</button>
+    <input class="input" bind:this={editInput} bind:value={editDraft} data-testid="queue-item-edit-input-{item.id}" aria-label="Edit task description for {labelHint}" title="Edit task description" />
+    <button type="submit" class="btn btn-primary btn-sm" data-testid="queue-item-edit-save-{item.id}" aria-disabled={ariaDisabled} title="Save edits">Save</button>
+    <button type="button" class="btn btn-ghost btn-sm" data-testid="queue-item-edit-cancel-{item.id}" onclick={() => closeEdit(true)}>Cancel</button>
   </form>
 {/if}
-
-<!--
-  Feature 030 (US3, T045) — the move-to-another-queue inline form was
-  removed alongside the move-task command and the multi-queue surfaces.
-  The per-row Edit form above remains intact (CMD_MODIFY_TASK).
--->
 
 <style>
   /* The redesign's icon buttons: borderless, square, muted until pointed at. */
   .actions {
     display: inline-flex;
     flex-direction: row;
-    gap: var(--schegent-space-0-5);
+    gap: var(--schegent-space-1-5);
     align-items: center;
   }
   .icon-btn {
@@ -311,15 +444,6 @@
       background-color var(--schegent-duration-fast) var(--schegent-ease-out),
       color var(--schegent-duration-fast) var(--schegent-ease-out),
       opacity var(--schegent-duration-fast) var(--schegent-ease-out);
-  }
-  /* Barred controls stay focusable (aria-disabled), so they are dimmed here rather than by
-     the shared `:disabled` rule, and they do not light up under the pointer. */
-  .icon-btn[aria-disabled='true'] {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-  .icon-btn[aria-disabled='true']:hover {
-    background: transparent;
   }
   .icon-btn:hover:not([aria-disabled='true']) {
     color: var(--schegent-fg);

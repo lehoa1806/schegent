@@ -348,4 +348,33 @@ describe('ConfirmDialog', () => {
     expect(pRule).toMatch(/word-break:\s*break-word/);
     expect(pRule).toMatch(/overflow-wrap:\s*anywhere/);
   });
+
+  it('inherits shared .sg .btn classes for Cancel and Confirm with zero bespoke button CSS', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const svelteSource = readFileSync(join(here, '..', 'ConfirmDialog.svelte'), 'utf8');
+    const styleBlock = svelteSource.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+    expect(styleBlock).not.toMatch(/(?:^|\n)\s*(?:button|\.btn-)/);
+
+    const destructive = renderDialog(makeRequest({ severity: 'destructive' }));
+    expect(destructive.container.querySelector('.confirm-backdrop')?.classList.contains('sg')).toBe(
+      true
+    );
+    const cancel = destructive.getByTestId('confirm-dialog-cancel');
+    expect(cancel.classList.contains('btn')).toBe(true);
+    expect(cancel.classList.contains('btn-secondary')).toBe(true);
+    const destructiveConfirm = destructive.getByTestId('confirm-dialog-confirm');
+    expect(destructiveConfirm.classList.contains('btn')).toBe(true);
+    expect(destructiveConfirm.classList.contains('btn-danger')).toBe(true);
+    expect(destructiveConfirm.classList.contains('btn-primary')).toBe(false);
+    cleanup();
+
+    for (const severity of ['info', 'caution'] as const) {
+      const view = renderDialog(makeRequest({ severity }));
+      const confirm = view.getByTestId('confirm-dialog-confirm');
+      expect(confirm.classList.contains('btn')).toBe(true);
+      expect(confirm.classList.contains('btn-primary')).toBe(true);
+      expect(confirm.classList.contains('btn-danger')).toBe(false);
+      cleanup();
+    }
+  });
 });

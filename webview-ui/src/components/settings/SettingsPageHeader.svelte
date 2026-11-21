@@ -107,17 +107,6 @@
     margin-bottom: 0;
   }
 
-  /* Revert and Save while they are off, dimmed as `sg-core.css` dims a disabled button. */
-  .btn[aria-disabled='true'] {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  /* `sg-core.css` darkens Save on hover unless it is `disabled`; an off Save keeps its colour. */
-  .phead .btn-primary[aria-disabled='true']:hover {
-    background: var(--schegent-button-bg);
-  }
-
   /* The row of actions claims a fixed share of the header: the field at its narrowest, a count
      of two digits and both buttons. Whether the row fits beside the title therefore never
      depends on the count, so the first edit cannot move the row to a line of its own and push

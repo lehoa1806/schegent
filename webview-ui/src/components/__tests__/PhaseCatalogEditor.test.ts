@@ -534,3 +534,50 @@ describe('Phase editor names what an unset backend runs on', () => {
     expect(select.value).toBe('');
   });
 });
+
+describe('Phase catalog overflow menu and button hierarchy consistency', () => {
+  it('orders Revert before Export, icons every menu item, and marks Deactivate as danger', () => {
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
+    const menu = container.querySelector('[role="menu"]') as HTMLElement | null;
+    expect(menu).not.toBeNull();
+    const children = [...menu!.children];
+    const testIds = children.map((el) =>
+      el.tagName === 'HR' ? 'hr' : el.getAttribute('data-testid')
+    );
+    const revertIdx = testIds.indexOf('phases-revert');
+    const exportIdx = testIds.indexOf('process-export-button');
+    const hrIdx = testIds.indexOf('hr');
+    const removeIdx = testIds.indexOf('phases-remove');
+    expect(revertIdx).toBeGreaterThan(-1);
+    expect(exportIdx).toBeGreaterThan(revertIdx);
+    expect(hrIdx).toBeGreaterThan(exportIdx);
+    expect(removeIdx).toBe(hrIdx + 1);
+
+    const iconOf = (testId: string): string | null | undefined =>
+      menu!.querySelector(`[data-testid="${testId}"] use`)?.getAttribute('href');
+    expect(iconOf('phases-raw-json-toggle')).toBe('#i-edit');
+    expect(iconOf('phases-duplicate')).toBe('#i-copy');
+    expect(iconOf('phases-move-up-custom')).toBe('#i-up');
+    expect(iconOf('phases-move-down-custom')).toBe('#i-down');
+    expect(iconOf('phases-revert')).toBe('#i-undo');
+    expect(iconOf('process-export-button')).toBe('#i-export');
+    expect(iconOf('phases-remove')).toBe('#i-trash');
+
+    const removeBtn = menu!.querySelector('[data-testid="phases-remove"]');
+    expect(removeBtn?.classList.contains('danger')).toBe(true);
+    expect(removeBtn?.textContent.trim()).toBe('Deactivate…');
+  });
+
+  it('uses btn-primary for Save and yields New phase to btn-secondary while a mutation is active', () => {
+    const idle = mount({ phases: [STORED_PHASE], mutationActive: false });
+    expect(idle.container.querySelector('[data-testid="phases-add"]')?.classList.contains('btn-primary')).toBe(true);
+    cleanup();
+
+    const editing = mount({ phases: [STORED_PHASE], mutationActive: true });
+    const save = editing.container.querySelector('[data-testid="phases-save-all"]');
+    const add = editing.container.querySelector('[data-testid="phases-add"]');
+    expect(save?.classList.contains('btn-primary')).toBe(true);
+    expect(add?.classList.contains('btn-secondary')).toBe(true);
+    expect(add?.classList.contains('btn-primary')).toBe(false);
+  });
+});

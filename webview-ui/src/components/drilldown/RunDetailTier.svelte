@@ -295,7 +295,7 @@
     </div>
     {#if connectedRun === null && task !== null && isPrimary}
       <div class="actions" data-testid="run-detail-controls">
-        <QueueItemActions item={task} {isPrimary} />
+        <QueueItemActions item={task} {isPrimary} variant="header" />
       </div>
     {/if}
   </div>

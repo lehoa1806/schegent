@@ -59,7 +59,7 @@
   aria-label={`Export ${phaseId}`}
   aria-describedby={disabled ? reasonId : undefined}
   onclick={onClick}
-><span class="export-word">Export…</span>{#if disabled}<span class="export-why" id={reasonId}
+><svg class="i" aria-hidden="true"><use href="#i-export"></use></svg><span class="export-word">Export…</span>{#if disabled}<span class="export-why" id={reasonId}
       data-testid="process-export-disabled-reason">{disabledReason}</span>{/if}</button>
 
 <style>
@@ -72,9 +72,11 @@
      `:global(.menu)` outranks sg-pages' `.menu button`, which makes every item a flex row. */
   :global(.menu) .export-item {
     display: grid;
+    grid-template-columns: auto 1fr;
     row-gap: var(--schegent-space-0-5);
   }
   .export-why {
+    grid-column: 2;
     max-width: 32ch;
     white-space: normal;
     font-size: var(--schegent-text-caption);

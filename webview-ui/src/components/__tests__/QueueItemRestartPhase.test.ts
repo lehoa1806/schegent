@@ -43,6 +43,8 @@ describe('QueueItemRestartPhase (spec 278, OD-2)', () => {
     const button = queryByTestId('queue-item-restart-phase-task-7');
     expect(button).not.toBeNull();
     expect(button?.getAttribute('aria-label')).toContain('implement');
+    expect(button?.querySelector('svg.i use')?.getAttribute('href')).toBe('#i-loop');
+    expect(button?.textContent).not.toContain('⟲');
   });
 
   it.each(['pending', 'in-flight', 'paused', 'completed', 'canceled'] as const)(
@@ -105,6 +107,27 @@ describe('QueueItemRestartPhase (spec 278, OD-2)', () => {
     );
     await fireEvent.click(getByTestId('queue-item-restart-phase-task-7'));
     await settle();
+    expect(queryByTestId('queue-item-restart-phase-message-task-7')).toBeNull();
+  });
+
+  it('renders as an SgMenu menuitem and relays refusal messages via onMessage when asMenuItem is true', async () => {
+    restartPhaseSpy.mockResolvedValueOnce({
+      outcome: 'refused',
+      message: 'Restart is not available for this Run.'
+    } as LifecycleControlResult);
+    const onMessage = vi.fn();
+    const { getByTestId, queryByTestId } = render(QueueItemRestartPhase, {
+      props: { item: FAILED_ROW, disabled: false, asMenuItem: true, onMessage }
+    });
+    const item = getByTestId('queue-item-restart-phase-task-7');
+    expect(item.getAttribute('role')).toBe('menuitem');
+    expect(item.querySelector('svg.i use')?.getAttribute('href')).toBe('#i-loop');
+    expect(item.textContent.trim()).toBe('Restart failed phase');
+
+    await fireEvent.click(item);
+    await settle();
+    expect(onMessage).toHaveBeenCalledWith(null);
+    expect(onMessage).toHaveBeenLastCalledWith('Restart is not available for this Run.');
     expect(queryByTestId('queue-item-restart-phase-message-task-7')).toBeNull();
   });
 });

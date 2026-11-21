@@ -46,9 +46,16 @@ describe('QueueControls — the clear actions', () => {
   it('names them as the redesign does, with the ellipsis of an action that asks first', () => {
     const { getByTestId } = render(QueueControls, { props: props() });
 
-    expect(getByTestId('dashboard-queue-clear-done').textContent).toBe('Clear completed tasks…');
-    expect(getByTestId('dashboard-queue-clean').textContent).toBe('Clear everything…');
-    expect(getByTestId('dashboard-queue-clean').classList.contains('danger')).toBe(true);
+    const clearDone = getByTestId('dashboard-queue-clear-done');
+    const clean = getByTestId('dashboard-queue-clean');
+    expect(clearDone.textContent).toBe('Clear completed tasks…');
+    expect(clean.textContent).toBe('Clear everything…');
+    expect(clean.classList.contains('danger')).toBe(true);
+    const menu = clearDone.closest('[role="menu"]') as HTMLElement | null;
+    expect(menu).not.toBeNull();
+    expect(
+      [...menu!.children].map((el) => (el.tagName === 'HR' ? 'hr' : el.getAttribute('data-testid')))
+    ).toEqual(['dashboard-queue-clear-done', 'hr', 'dashboard-queue-clean']);
   });
 
   it('hands a chosen item to the caller’s handler', async () => {
