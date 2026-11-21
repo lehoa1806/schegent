@@ -161,10 +161,6 @@ test.describe('FR-R5-F32 — workflow control visual & layout checks', () => {
       await page.getByTestId('dashboard-route-builder').click();
       await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
       await page.getByRole('tab', { name: 'Workflows' }).click();
-      const picker = page.getByTestId('workflow-picker-toggle');
-      if ((await picker.getAttribute('aria-expanded')) !== 'true') {
-        await picker.click();
-      }
       await page.getByTestId(`workflows-list-item-${POLICY_SMOKE_WORKFLOW_ID}`).click();
 
       const editor = page.getByTestId('candidate-block-editor');
@@ -276,10 +272,6 @@ test.describe('the toolbar of a card in a fork', () => {
     await page.getByTestId('dashboard-route-builder').click();
     await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
     await page.getByRole('tab', { name: 'Workflows' }).click();
-    const picker = page.getByTestId('workflow-picker-toggle');
-    if ((await picker.getAttribute('aria-expanded')) !== 'true') {
-      await picker.click();
-    }
     await page.getByTestId(`workflows-list-item-${POLICY_SMOKE_WORKFLOW_ID}`).click();
     await expect(page.getByTestId(`workflow-node-${FORK_CARDS.ship}`)).toBeVisible();
   }

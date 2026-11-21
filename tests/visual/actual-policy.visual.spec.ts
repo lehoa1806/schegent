@@ -472,8 +472,6 @@ async function openBuilderRoute(page: Page, route: PolicySmokeRoute): Promise<vo
     await expect(page.getByTestId(`phases-model-${POLICY_SMOKE_PHASE_ID}`)).toBeVisible();
   }
   if (route === 'workflows') {
-    const picker = page.getByTestId('workflow-picker-toggle');
-    if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
     await page.getByTestId(`workflows-list-item-${POLICY_SMOKE_WORKFLOW_ID}`).click();
     await expect(page.locator('.wf-branches')).toHaveCount(1);
     await expect(page.getByTestId('candidate-block-editor')).toBeVisible();
@@ -514,6 +512,9 @@ async function walkBuilder(context: PolicyContext): Promise<BuilderWalk> {
           if (view === null) throw new Error('the element has no window');
           return view.getComputedStyle(element).getPropertyValue('--wf-arms').trim();
         });
+      // Feature 326: the Workflow editor is a full-page surface like the Phase editor,
+      // so its breadcrumb leads back to the list and tabs before the next tab is chosen.
+      await page.getByTestId('workflow-crumb-list').click();
     }
   }
   const records = await collectViolations(page);

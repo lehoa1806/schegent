@@ -32,7 +32,6 @@ import type {
 } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
 import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
-import { isMenuItemOff } from '../sg/__tests__/menu-item-state';
 
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: vi.fn(() => ({ correlationId: 'corr-trust-test' }))
@@ -306,7 +305,7 @@ describe('PipelineBuilder trust gating (059, T022) — workflows under Workspace
     });
     const add = container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement | null;
     expect(add).not.toBeNull();
-    expect(isMenuItemOff(add)).toBe(false);
+    expect(add?.disabled).toBe(false);
     expect(container.querySelector('[data-testid="trust-banner-workflows"]')).toBeNull();
     expect(container.querySelector('[data-testid="trust-banner-workspace-trust"]')).toBeNull();
   });

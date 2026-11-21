@@ -112,19 +112,39 @@ describe('CatalogEmptyState — it goes away once there is something (US6, T062,
   });
 });
 
-describe('CatalogEmptyState — the remedy is reachable (US6, T064)', () => {
-  it('offers the import action beside the guidance', () => {
-    // "Import a process document to get started" beside no way to import one is
-    // an instruction, not a front door. On the Pipelines and Workflows tabs this
-    // is the only import entry that exists.
-    const { container } = renderEmpty();
-    expect(container.querySelector('[data-testid="process-import-preflight"]')).not.toBeNull();
+describe('CatalogEmptyState — the remedy is reachable (US6, T064 / Feature 326)', () => {
+  it('offers the secondary Import… button delegating to the Builder modal instead of embedding a preflight band', () => {
+    const onimport = vi.fn();
+    const { container } = render(CatalogEmptyState, {
+      props: { kind: 'workflow' as const, count: 0, onimport }
+    });
+    expect(container.querySelector('[data-testid="process-import-preflight"]')).toBeNull();
+    const btn = container.querySelector<HTMLButtonElement>(
+      '[data-testid="catalog-empty-import-workflow"]'
+    );
+    expect(btn).not.toBeNull();
+    expect(btn?.className).toContain('btn-secondary');
+    expect(btn?.textContent.trim()).toBe('Import…');
+    expect(btn?.querySelector('use')?.getAttribute('href')).toBe('#i-import');
+    btn?.click();
+    expect(onimport).toHaveBeenCalledTimes(1);
+    expect(onimport).toHaveBeenCalledWith(btn);
   });
 
-  it('passes the tab\'s reason through when an import cannot start', () => {
+  it('passes the disabled reason through when an import cannot start', () => {
     const { container } = render(CatalogEmptyState, {
-      props: { kind: 'workflow' as const, count: 0, disabledReason: 'A save is in flight.' }
+      props: {
+        kind: 'workflow' as const,
+        count: 0,
+        disabledReason: 'Only the primary window can import.'
+      }
     });
-    expect(text(container, 'process-import-unavailable')).toBe('A save is in flight.');
+    const btn = container.querySelector<HTMLButtonElement>(
+      '[data-testid="catalog-empty-import-workflow"]'
+    );
+    expect(btn?.disabled).toBe(true);
+    expect(text(container, 'catalog-empty-import-unavailable-workflow')).toBe(
+      'Only the primary window can import.'
+    );
   });
 });

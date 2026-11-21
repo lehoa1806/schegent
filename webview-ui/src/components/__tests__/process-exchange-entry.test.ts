@@ -11,10 +11,15 @@ import type {
   WorkflowCatalogSourceProjection
 } from '../../lib/snapshot-types';
 import {
+  confirmTargetBlockedReason,
   importDisabledReason,
   phaseExportAvailability,
-  storedWritableLayers
+  storedWritableLayers,
+  topLevelImportDisabledReason,
+  workflowExportDisabledReason,
+  type ImportTargetGate
 } from '../ProcessImport/process-exchange-entry';
+import type { ImportPlan } from '../../lib/messages';
 
 function record(overrides: Partial<PhaseCatalogSourceRecord> = {}): PhaseCatalogSourceRecord {
   return {
@@ -280,5 +285,153 @@ describe('Feature 084/085 — what an import appends to (T066/T048, FR-037, FR-0
     const layers = storedWritableLayers([record()]);
     expect(layers.workflows).toEqual([]);
     expect(layers.phases).toHaveLength(1);
+  });
+});
+
+describe('Feature 326 — top-level Import entry, Workflow export availability, and target-kind commit gating', () => {
+  const OPEN_GATE: ImportTargetGate = {
+    isPrimary: true,
+    workspaceTrust: true,
+    trustPhases: true,
+    phaseSavePending: false,
+    phaseMutationActive: false,
+    workflowSavePending: false,
+    workflowMutationActive: false,
+    modelsSavePending: false,
+    modelsDirty: false
+  };
+
+  const PHASE_PLAN: ImportPlan = {
+    rows: [
+      {
+        outcome: 'import',
+        resourceKind: 'phase',
+        resourceId: 'p1',
+        name: 'Phase 1',
+        requiresRetryConditionCapability: false,
+        definition: { phaseId: 'p1', name: 'Phase 1', version: 1, instruction: 'Run.' }
+      }
+    ],
+    counts: { import: 1, skip: 0, blocked: 0, invalid: 0 },
+    computedAgainstRevision: 'rev-1'
+  };
+
+  const WORKFLOW_PLAN: ImportPlan = {
+    rows: [
+      {
+        outcome: 'import',
+        resourceKind: 'workflow',
+        resourceId: 'wf1',
+        name: 'Workflow 1',
+        definition: {
+          workflowId: 'wf1',
+          name: 'Workflow 1',
+          version: 1,
+          nodes: [{ nodeId: 'a', kind: 'phase', phaseId: 'p1' }],
+          connections: [],
+          startNodeIds: ['a']
+        }
+      }
+    ],
+    counts: { import: 1, skip: 0, blocked: 0, invalid: 0 },
+    computedAgainstRevision: 'rev-1',
+    computedAgainstWorkflowRevision: 'wf-rev-1'
+  };
+
+  const MODEL_PLAN: ImportPlan = {
+    rows: [
+      {
+        outcome: 'import',
+        resourceKind: 'modelCatalog',
+        resourceId: 'claude-x',
+        backend: 'claude',
+        modelId: 'claude-x'
+      }
+    ],
+    counts: { import: 1, skip: 0, blocked: 0, invalid: 0 },
+    computedAgainstRevision: 'rev-1',
+    computedAgainstModelsRevision: 'm-rev-1'
+  };
+
+  it('topLevelImportDisabledReason gates only on window primacy', () => {
+    expect(topLevelImportDisabledReason(true)).toBeNull();
+    expect(topLevelImportDisabledReason(false)).toContain('primary window');
+  });
+
+  it('workflowExportDisabledReason refuses unsaved drafts and allows saved rows', () => {
+    expect(workflowExportDisabledReason({ persisted: true })).toBeNull();
+    expect(workflowExportDisabledReason({ persisted: false })).toContain('Save this Workflow first');
+  });
+
+  it('allows Model Catalog commits in an untrusted workspace while blocking Phase and Workflow commits', () => {
+    const untrusted: ImportTargetGate = {
+      ...OPEN_GATE,
+      workspaceTrust: false,
+      trustPhases: false
+    };
+    expect(confirmTargetBlockedReason(MODEL_PLAN, untrusted)).toBeNull();
+    expect(confirmTargetBlockedReason(PHASE_PLAN, untrusted)).toContain('not trusted');
+    expect(confirmTargetBlockedReason(WORKFLOW_PLAN, untrusted)).toContain('not trusted');
+  });
+
+  it('blocks only the dirty or saving target catalog, leaving unrelated catalogs importable', () => {
+    const dirtyPhases = { ...OPEN_GATE, phaseMutationActive: true };
+    expect(confirmTargetBlockedReason(PHASE_PLAN, dirtyPhases)).toContain('pending Phase changes');
+    expect(confirmTargetBlockedReason(WORKFLOW_PLAN, dirtyPhases)).toBeNull();
+    expect(confirmTargetBlockedReason(MODEL_PLAN, dirtyPhases)).toBeNull();
+
+    const dirtyWorkflows = { ...OPEN_GATE, workflowMutationActive: true };
+    expect(confirmTargetBlockedReason(WORKFLOW_PLAN, dirtyWorkflows)).toContain('pending Workflow changes');
+    expect(confirmTargetBlockedReason(PHASE_PLAN, dirtyWorkflows)).toBeNull();
+    expect(confirmTargetBlockedReason(MODEL_PLAN, dirtyWorkflows)).toBeNull();
+
+    const dirtyModels = { ...OPEN_GATE, modelsDirty: true };
+    expect(confirmTargetBlockedReason(MODEL_PLAN, dirtyModels)).toContain('pending Model Catalog changes');
+    expect(confirmTargetBlockedReason(PHASE_PLAN, dirtyModels)).toBeNull();
+    expect(confirmTargetBlockedReason(WORKFLOW_PLAN, dirtyModels)).toBeNull();
+
+    const savingModels = { ...OPEN_GATE, modelsSavePending: true };
+    expect(confirmTargetBlockedReason(MODEL_PLAN, savingModels)).toContain('in progress');
+    expect(confirmTargetBlockedReason(PHASE_PLAN, savingModels)).toBeNull();
+  });
+
+  it('blocks any kind in a secondary window', () => {
+    const secondary = { ...OPEN_GATE, isPrimary: false };
+    for (const plan of [PHASE_PLAN, WORKFLOW_PLAN, MODEL_PLAN]) {
+      expect(confirmTargetBlockedReason(plan, secondary)).toContain('primary window');
+    }
+  });
+
+  it('evaluates multi-kind packages per written kind (skips ignored, trustPhases vs workspaceTrust isolated)', () => {
+    const COMBINED_PLAN: ImportPlan = {
+      rows: [...PHASE_PLAN.rows, ...WORKFLOW_PLAN.rows],
+      counts: { import: 2, skip: 0, blocked: 0, invalid: 0 },
+      computedAgainstRevision: 'rev-1',
+      computedAgainstWorkflowRevision: 'wf-rev-1'
+    };
+    const SKIPPED_PHASE_WITH_WORKFLOW: ImportPlan = {
+      rows: [
+        { outcome: 'skip', resourceKind: 'phase', resourceId: 'p1', name: 'Phase 1', presentRowStatus: 'effective' },
+        ...WORKFLOW_PLAN.rows
+      ],
+      counts: { import: 1, skip: 1, blocked: 0, invalid: 0 },
+      computedAgainstRevision: 'rev-1',
+      computedAgainstWorkflowRevision: 'wf-rev-1'
+    };
+
+    // workspaceTrust true + trustPhases false blocks Phase writes, allows Workflow-only writes
+    const phasesUntrusted: ImportTargetGate = { ...OPEN_GATE, trustPhases: false };
+    expect(confirmTargetBlockedReason(COMBINED_PLAN, phasesUntrusted)).toContain('Custom Phase changes are disabled');
+    expect(confirmTargetBlockedReason(SKIPPED_PHASE_WITH_WORKFLOW, phasesUntrusted)).toBeNull();
+
+    // Dirty Phases blocks COMBINED_PLAN (writes Phase), allows SKIPPED_PHASE_WITH_WORKFLOW (only writes Workflow)
+    const dirtyPhases: ImportTargetGate = { ...OPEN_GATE, phaseMutationActive: true };
+    expect(confirmTargetBlockedReason(COMBINED_PLAN, dirtyPhases)).toContain('pending Phase changes');
+    expect(confirmTargetBlockedReason(SKIPPED_PHASE_WITH_WORKFLOW, dirtyPhases)).toBeNull();
+
+    // Dirty Workflows blocks both plans because both write a Workflow
+    const dirtyWorkflows: ImportTargetGate = { ...OPEN_GATE, workflowMutationActive: true };
+    expect(confirmTargetBlockedReason(COMBINED_PLAN, dirtyWorkflows)).toContain('pending Workflow changes');
+    expect(confirmTargetBlockedReason(SKIPPED_PHASE_WITH_WORKFLOW, dirtyWorkflows)).toContain('pending Workflow changes');
   });
 });

@@ -117,9 +117,29 @@ export type ImportSurfaceState =
   | 'planned'
   | 'committing';
 
+/**
+ * Target-kind-aware gate signals for Confirm import (Feature 326).
+ *
+ * Evaluated ONLY against the catalog(s) the inspected plan will actually write:
+ * a Model Catalog plan never consults workspace/Phase trust or Phase/Workflow
+ * dirtiness, and a Phase/Workflow plan never consults Model Catalog dirtiness.
+ */
+export interface ImportTargetGate {
+  readonly isPrimary: boolean;
+  readonly workspaceTrust: boolean;
+  readonly trustPhases: boolean;
+  readonly phaseSavePending: boolean;
+  readonly phaseMutationActive: boolean;
+  readonly workflowSavePending: boolean;
+  readonly workflowMutationActive: boolean;
+  readonly modelsSavePending: boolean;
+  readonly modelsDirty: boolean;
+}
+
 export interface ConfirmGate {
   readonly state: ImportSurfaceState;
   readonly plan: ImportPlan | null;
+  readonly targetGate?: ImportTargetGate;
 }
 
 // FR-R4-F05 (I5, FR-024) — `unknown`: the write's wait ran out and the host may still apply it,
@@ -395,12 +415,55 @@ export function refusalHeadline(code: DocumentRefusalCode): string {
 }
 
 /**
+ * Target-kind-aware confirmation gate evaluated once preflight identifies the
+ * plan's document kind. Returns operator-facing prose when blocked, or `null`
+ * when every target catalog the plan writes is ready to accept the commit.
+ */
+export function confirmTargetBlockedReason(
+  plan: ImportPlan,
+  gate: ImportTargetGate
+): string | null {
+  if (!gate.isPrimary) {
+    return 'Only the primary window can import.';
+  }
+  if (isModelCatalogPlan(plan)) {
+    if (gate.modelsSavePending) return 'A Model Catalog save is still in progress.';
+    if (gate.modelsDirty) {
+      return 'Save or revert your pending Model Catalog changes before importing.';
+    }
+    return null;
+  }
+  const writesPhases = phaseImportRows(plan).length > 0;
+  const writesWorkflows = workflowImportRows(plan).length > 0;
+  if ((writesPhases || writesWorkflows) && !gate.workspaceTrust) {
+    return 'This workspace is not trusted, so an imported resource could not be saved.';
+  }
+  if (writesPhases) {
+    if (!gate.trustPhases) {
+      return 'Custom Phase changes are disabled in this workspace, so Phase imports cannot be saved.';
+    }
+    if (gate.phaseSavePending) return 'A Phase save is still in progress.';
+    if (gate.phaseMutationActive) {
+      return 'Save or revert your pending Phase changes before importing.';
+    }
+  }
+  if (writesWorkflows) {
+    if (gate.workflowSavePending) return 'A Workflow save is still in progress.';
+    if (gate.workflowMutationActive) {
+      return 'Save or revert your pending Workflow changes before importing.';
+    }
+  }
+  return null;
+}
+
+/**
  * Why Confirm is unavailable, or `null` when it is available.
  *
  * Every branch returns prose (FR-057) — a disabled control that does not say why
  * reads as a broken one. The order is the order the operator hits them: a commit
  * already in flight, then a preflight still in flight, then not having a plan at
- * all, then having one with nothing to do, then not having chosen where to write.
+ * all, then having one with nothing to do, then missing revision, then target
+ * primacy/trust/unsaved-edits gates for the catalog(s) this plan writes.
  */
 export function confirmBlockedReason(gate: ConfirmGate): string | null {
   if (gate.state === 'committing') return 'A commit is already in progress.';
@@ -420,9 +483,10 @@ export function confirmBlockedReason(gate: ConfirmGate): string | null {
   // and its revision comes from a different authority (FR-056), so none of the
   // Pipeline/Workflow checks below apply to it.
   if (modelCatalogImportRows(gate.plan).length > 0) {
-    return gate.plan.computedAgainstModelsRevision === undefined
-      ? 'This plan does not carry the Model Catalog revision its write has to check. Inspect the document again.'
-      : null;
+    if (gate.plan.computedAgainstModelsRevision === undefined) {
+      return 'This plan does not carry the Model Catalog revision its write has to check. Inspect the document again.';
+    }
+    return gate.targetGate ? confirmTargetBlockedReason(gate.plan, gate.targetGate) : null;
   }
   // The writability question, asked once per layer that has rows to write
   // (T048, T054). A row whose plan carries no revision for its own layer has no
@@ -436,7 +500,7 @@ export function confirmBlockedReason(gate: ConfirmGate): string | null {
   ) {
     return 'This plan does not carry the Workflow catalog revision its write has to check. Inspect the document again.';
   }
-  return null;
+  return gate.targetGate ? confirmTargetBlockedReason(gate.plan, gate.targetGate) : null;
 }
 
 /**

@@ -25,8 +25,6 @@
     phase: MutablePhase;
     /** The Phase's position in the authored list, which every write addresses. */
     index: number;
-    /** How many Phases the list holds, so the last one cannot move further down. */
-    phaseCount: number;
     editState: PhaseEditState;
     /** Absent on a host with no catalog store wired. */
     lifecycle?: BuilderLifecycle;
@@ -47,8 +45,6 @@
     onremove: (index: number, originatingElement?: HTMLElement | null) => void | Promise<void>;
     onreset: (index: number) => void;
     onphasechange: (index: number, patch: Partial<MutablePhase>) => void;
-    onmoveup: (index: number) => void;
-    onmovedown: (index: number) => void;
     onundo: () => void;
     onredo: () => void;
     onsave: () => void;
@@ -64,7 +60,6 @@
     snapshot,
     phase,
     index,
-    phaseCount,
     editState,
     lifecycle,
     workflows,
@@ -81,8 +76,6 @@
     onremove,
     onreset,
     onphasechange,
-    onmoveup,
-    onmovedown,
     onundo,
     onredo,
     onsave,
@@ -98,8 +91,7 @@
   const dependents = $derived(dependentWorkflowsForPhase(phase.id, workflows));
   /** Whether the pending edit is this Phase's: only then has it changes to save or revert. */
   const editing = $derived(mutationActive && editableSourceKey === phase.sourceKey);
-  /** A move is refused while any edit is pending, as the list's own move buttons always were. */
-  const moveBlocked = $derived(!trusted || savePending || mutationActive);
+  const duplicateBlocked = $derived(!trusted || savePending || mutationActive);
 
   /**
    * The page opens from a row of the list, and that row's button leaves with the list, so focus
@@ -140,26 +132,19 @@
         {#if !readOnly}
           <button type="button" role="menuitem" data-testid="phases-raw-json-toggle" onclick={() => ontoggleraw(phase.sourceKey)}><svg class="i" aria-hidden="true"><use href="#i-edit"></use></svg>{editState.rawJsonMode ? 'Form view' : 'Edit as JSON'}</button>
         {/if}
-        <button type="button" role="menuitem" data-testid="phases-duplicate" aria-disabled={moveBlocked} onclick={() => onduplicate(index)}><svg class="i" aria-hidden="true"><use href="#i-copy"></use></svg>Duplicate</button>
-        <!-- Feature 099 (T494a, FR-043) — every row is reorderable against every other: one layer
-             leaves no neighbour in a different one. -->
-        <button type="button" role="menuitem" data-testid="phases-move-up-{phase.id}" aria-disabled={moveBlocked || index === 0} onclick={() => onmoveup(index)}><svg class="i" aria-hidden="true"><use href="#i-up"></use></svg>Move up</button>
-        <button type="button" role="menuitem" data-testid="phases-move-down-{phase.id}" aria-disabled={moveBlocked || index === phaseCount - 1} onclick={() => onmovedown(index)}><svg class="i" aria-hidden="true"><use href="#i-down"></use></svg>Move down</button>
-        <button type="button" role="menuitem" data-testid="phases-revert" aria-disabled={readOnly || !editing} onclick={() => onreset(index)}><svg class="i" aria-hidden="true"><use href="#i-undo"></use></svg>Revert unsaved changes</button>
-        <!-- FR-052 — Export is per phase, writes a file the operator names
-             and changes no catalog state; shown here in the editor header
-             rather than the sidebar to reduce visual clutter. -->
+        <button type="button" role="menuitem" data-testid="phases-duplicate" aria-disabled={duplicateBlocked} onclick={() => { if (!duplicateBlocked) onduplicate(index); }}><svg class="i" aria-hidden="true"><use href="#i-copy"></use></svg>Duplicate</button>
         <ProcessExportButton
           phaseId={phase.id}
           rowKey={phase.sourceKey}
           resolves={exportable.resolves}
           disabledReason={exportable.disabledReason}
         />
+        <button type="button" role="menuitem" data-testid="phases-revert" aria-disabled={readOnly || !editing} onclick={() => { if (!readOnly && editing) onreset(index); }}><svg class="i" aria-hidden="true"><use href="#i-undo"></use></svg>Revert unsaved changes</button>
         {#if !readOnly}
           <hr />
           <!-- A deactivation, not a delete: the Phase stays in the catalog and can be restored, so
                the item says what it does. The confirmation returns focus to this menu's button. -->
-          <button type="button" role="menuitem" class="danger" data-testid="phases-remove" aria-disabled={!trusted || savePending} onclick={(event) => onremove(index, event.currentTarget)}><svg class="i" aria-hidden="true"><use href="#i-trash"></use></svg>Deactivate…</button>
+          <button type="button" role="menuitem" class="danger" data-testid="phases-remove" aria-disabled={!trusted || savePending || !phase.persisted || mutationActive} onclick={(event) => { if (trusted && !savePending && phase.persisted && !mutationActive) void onremove(index, event.currentTarget); }}><svg class="i" aria-hidden="true"><use href="#i-trash"></use></svg>Deactivate…</button>
         {/if}
       </SgMenu>
       <button type="button" class="btn btn-primary" data-testid="phases-save-all" disabled={!trusted || savePending || !mutationActive} onclick={onsave}>{savePending ? 'Saving…' : 'Save'}</button>

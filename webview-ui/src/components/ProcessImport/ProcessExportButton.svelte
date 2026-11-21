@@ -40,7 +40,10 @@
   }: Props = $props();
 
   const disabled = $derived(!resolves);
-  const reasonId = $derived(`process-export-reason-${rowKey ?? phaseId}`);
+  const safeReasonKey = $derived(
+    (rowKey ?? phaseId).replace(/\s+/g, '-')
+  );
+  const reasonId = $derived(`process-export-reason-${safeReasonKey}`);
   const title = $derived(disabled ? disabledReason : `Export ${phaseId} as a document`);
 
   function onClick(): void {
@@ -56,10 +59,10 @@
   data-testid="process-export-button"
   aria-disabled={disabled}
   {title}
-  aria-label={`Export ${phaseId}`}
+  aria-label={`Export YAML for ${phaseId}`}
   aria-describedby={disabled ? reasonId : undefined}
   onclick={onClick}
-><svg class="i" aria-hidden="true"><use href="#i-export"></use></svg><span class="export-word">Export…</span>{#if disabled}<span class="export-why" id={reasonId}
+><svg class="i" aria-hidden="true"><use href="#i-export"></use></svg><span class="export-word">Export YAML…</span>{#if disabled}<span class="export-why" id={reasonId}
       data-testid="process-export-disabled-reason">{disabledReason}</span>{/if}</button>
 
 <style>

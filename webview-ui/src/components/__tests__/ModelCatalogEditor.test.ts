@@ -42,25 +42,110 @@ describe('ModelCatalogEditor accessibility', () => {
   });
 });
 
-describe('ModelCatalogEditor export (feature 096 T017)', () => {
-  it('asks the host to export the Model Catalog, with no resourceId or location', async () => {
-    const { getByRole } = render(ModelCatalogEditor, { props: baseProps });
+describe('ModelCatalogEditor export, dirty state, and revert (feature 096 T017 / feature 326)', () => {
+  it('exposes Export YAML… inside the toolbar ⋯ menu with #i-export and zero direct Export buttons', async () => {
+    const { container, getByTestId, queryByRole } = render(ModelCatalogEditor, { props: baseProps });
 
-    // Builder redesign: the button reads "Export…" and keeps "Export Model Catalog" as its name.
-    await fireEvent.click(getByRole('button', { name: 'Export Model Catalog' }));
+    expect(queryByRole('button', { name: /Export/ })).toBeNull();
+    const item = getByTestId('models-export');
+    expect(item.getAttribute('role')).toBe('menuitem');
+    expect(item.textContent.trim()).toBe('Export YAML…');
+    expect(item.querySelector('use')?.getAttribute('href')).toBe('#i-export');
 
+    await fireEvent.click(item);
     expect(exportSpy).toHaveBeenCalledTimes(1);
     expect(exportSpy).toHaveBeenCalledWith();
+    expect(container.querySelector('[data-testid="models-menu"]')).not.toBeNull();
   });
 
-  it('does not call export when Save is clicked', async () => {
-    const { getByRole } = render(ModelCatalogEditor, { props: baseProps });
+  it('disables Save and Revert unsaved changes when clean and hides the Unsaved changes chip', async () => {
+    const onsave = vi.fn();
+    const onrevert = vi.fn();
+    const { getByTestId, queryByTestId } = render(ModelCatalogEditor, {
+      props: { ...baseProps, dirty: false, onsave, onrevert }
+    });
 
-    // Builder redesign: "Save All Models" reads "Save", as on the other Builder tabs.
-    await fireEvent.click(getByRole('button', { name: 'Save' }));
+    expect(queryByTestId('models-unsaved')).toBeNull();
+    const save = getByTestId('models-save') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    const revert = getByTestId('models-revert');
+    expect(revert.getAttribute('aria-disabled')).toBe('true');
 
-    expect(baseProps.onsave).toHaveBeenCalledTimes(1);
+    await fireEvent.click(save);
+    await fireEvent.click(revert);
+    expect(onsave).not.toHaveBeenCalled();
+    expect(onrevert).not.toHaveBeenCalled();
+  });
+
+  it('shows Unsaved changes and enables Save without calling export when dirty', async () => {
+    const onsave = vi.fn();
+    const { getByTestId } = render(ModelCatalogEditor, {
+      props: { ...baseProps, dirty: true, onsave }
+    });
+
+    expect(getByTestId('models-unsaved').textContent.trim()).toBe('Unsaved changes');
+    const save = getByTestId('models-save') as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    await fireEvent.click(save);
+
+    expect(onsave).toHaveBeenCalledTimes(1);
     expect(exportSpy).not.toHaveBeenCalled();
+  });
+
+  it('disables Save while a save is in flight and shows Saving…', () => {
+    const { getByTestId } = render(ModelCatalogEditor, {
+      props: { ...baseProps, dirty: true, savePending: true }
+    });
+    const save = getByTestId('models-save') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect(save.textContent.trim()).toBe('Saving…');
+  });
+
+  it('calls onrevert and clears any open add-model draft on Revert unsaved changes', async () => {
+    const onrevert = vi.fn();
+    const onnewmodelinput = vi.fn();
+    const { getByRole, getByTestId, queryByLabelText } = render(ModelCatalogEditor, {
+      props: { ...baseProps, dirty: true, onrevert, onnewmodelinput }
+    });
+
+    await fireEvent.click(getByRole('button', { name: 'Add model' }));
+    expect(queryByLabelText('New claude model name')).not.toBeNull();
+
+    await fireEvent.click(getByTestId('models-revert'));
+    expect(onrevert).toHaveBeenCalledTimes(1);
+    expect(onnewmodelinput).toHaveBeenCalledWith('claude', '');
+    expect(queryByLabelText('New claude model name')).toBeNull();
+  });
+
+  it('disables Detect, Add model, model inputs, Remove, and Revert in secondary windows (!canSave) and during savePending', async () => {
+    for (const overrides of [{ canSave: false }, { savePending: true }]) {
+      const ondetect = vi.fn();
+      const onremove = vi.fn();
+      const onrevert = vi.fn();
+      const { getByRole, getByLabelText, getByTestId, unmount } = render(ModelCatalogEditor, {
+        props: { ...baseProps, dirty: true, ondetect, onremove, onrevert, ...overrides }
+      });
+
+      const detect = getByRole('button', { name: 'Detect claude models' }) as HTMLButtonElement;
+      const addToggle = getByRole('button', { name: 'Add model' }) as HTMLButtonElement;
+      const input = getByLabelText('claude model 1') as HTMLInputElement;
+      const remove = getByRole('button', { name: 'Remove claude model claude-sonnet' }) as HTMLButtonElement;
+      const revert = getByTestId('models-revert');
+
+      expect(detect.disabled).toBe(true);
+      expect(addToggle.disabled).toBe(true);
+      expect(input.disabled).toBe(true);
+      expect(remove.disabled).toBe(true);
+      expect(revert.getAttribute('aria-disabled')).toBe('true');
+
+      await fireEvent.click(detect);
+      await fireEvent.click(remove);
+      await fireEvent.click(revert);
+      expect(ondetect).not.toHaveBeenCalled();
+      expect(onremove).not.toHaveBeenCalled();
+      expect(onrevert).not.toHaveBeenCalled();
+      unmount();
+    }
   });
 });
 

@@ -1,92 +1,89 @@
 <script lang="ts">
-  // Feature 083 / 264 (FR-R5-F05) — the unified Workflow Library and Builder.
-  //
-  // Owns the catalog projection, per-workflow undo/redo/discard history,
-  // hierarchy breadcrumb navigation, lifecycle writes, and draft saves.
+  // Feature 083 / 264 / 326 — the unified Workflows tab: switches between the
+  // searchable Workflows list (`WorkflowCatalogList`) and the full-page Canvas
+  // Editor (`WorkflowFlowBuilder`), owning catalog projection, per-workflow
+  // undo/redo/discard history, breadcrumb drill-down, export modal, and saves.
+  import { onDestroy } from 'svelte';
   import type {
-    BuilderLifecycle,
-    PortablePhaseDefinition,
-    PortablePipelineDefinition,
-    PortableWorkflowDefinition,
-    WorkflowSnapshot
+    BuilderLifecycle, PortablePhaseDefinition, PortablePipelineDefinition, PortableWorkflowDefinition, WorkflowSnapshot
   } from '../../lib/snapshot-types';
+  import type { WorkflowExportInclusion } from '../../lib/messages';
+  import { exportWorkflowYaml } from '../../lib/process-yaml-ipc';
   import {
-    deactivateDefinition,
-    draftTokenOfRecord,
-    saveDefinitionDraft,
-    type CatalogWriteWait,
-    type LifecycleResult
+    deactivateDefinition, draftTokenOfRecord, saveDefinitionDraft,
+    type CatalogWriteWait, type LifecycleResult
   } from '../../lib/catalog-lifecycle';
   import {
-    buildWorkflowRemoval,
-    makeWorkflowGraphActions,
-    mergeWorkflowRows,
-    pushWorkflowHistory,
-    stepWorkflowHistory,
-    takenWorkflowIds,
-    withWorkflowDraftEdited,
-    type WorkflowHistoryTrack
+    buildWorkflowRemoval, makeWorkflowGraphActions, mergeWorkflowRows, pushWorkflowHistory,
+    stepWorkflowHistory, takenWorkflowIds, withWorkflowDraftEdited, type WorkflowHistoryTrack
   } from './workflow-catalog-actions';
   import {
-    formatWorkflowSaveRejection,
-    makeDuplicateWorkflowDraft,
-    makeNewWorkflowDraft,
-    sourceRecordToMutableWorkflow,
-    toSaveWorkflowRow,
-    validateWorkflowDraft,
-    visibleWorkflowDefects,
-    type WorkflowDraftError
+    formatWorkflowSaveRejection, makeDuplicateWorkflowDraft, makeNewWorkflowDraft,
+    sourceRecordToMutableWorkflow, toSaveWorkflowRow, validateWorkflowDraft,
+    visibleWorkflowDefects, type WorkflowDraftError
   } from './workflow-catalog-state';
   import { reselectIndex, type DefinitionIdentity } from '../../lib/builder-selection';
-  import {
-    hydrateWorkflowSlice,
-    readPersistedBuilderState,
-    writePersistedWorkflowSlice
-  } from '../../lib/builder-webview-state';
-  import CatalogEmptyState from '../Builder/CatalogEmptyState.svelte';
-  import ProcessImportPreflight from '../ProcessImport/ProcessImportPreflight.svelte';
-  import {
-    importDisabledReason,
-    storedWritableLayers
-  } from '../ProcessImport/process-exchange-entry';
+  import { hydrateWorkflowSlice, readPersistedBuilderState, writePersistedWorkflowSlice } from '../../lib/builder-webview-state';
+  import WorkflowCatalogList from './WorkflowCatalogList.svelte';
+  import WorkflowExportDialog from './WorkflowExportDialog.svelte';
   import WorkflowFlowBuilder from './WorkflowFlowBuilder.svelte';
   import WorkflowFlowTopBar, { type WorkflowBreadcrumbEntry } from './WorkflowFlowTopBar.svelte';
   import WorkflowToolbar from './WorkflowToolbar.svelte';
+  import { hasUnresolvedWorkflowNodes, type WorkflowStatusView } from './workflow-catalog-view';
   import type { MutableWorkflow } from './types';
 
   interface Props {
     snapshot: WorkflowSnapshot;
-    /** Workspace Trust, resolved host-side; the host re-checks on save. */
+    /** Workspace Trust + primacy, resolved host-side; the host re-checks on save. */
     trusted: boolean;
     initialWorkflowId?: string | null;
+    importDisabledReason?: string | null;
     onopenphase?: (phaseId: string) => void;
+    onopenimport?: (originatingElement: HTMLElement | null) => void;
+    oneditorchange?: (open: boolean) => void;
+    ondirtychange?: (state: { readonly dirty: boolean; readonly savePending: boolean }) => void;
+    oninitialworkflowconsumed?: () => void;
   }
 
-  const { snapshot, trusted, initialWorkflowId = null, onopenphase }: Props = $props();
+  const {
+    snapshot,
+    trusted,
+    initialWorkflowId = null,
+    importDisabledReason = null,
+    onopenphase,
+    onopenimport,
+    oneditorchange,
+    ondirtychange,
+    oninitialworkflowconsumed
+  }: Props = $props();
+
   const initialWfSlice = (() => {
     const raw = readPersistedBuilderState()?.workflowSlice;
     return raw ? hydrateWorkflowSlice(raw, snapshot) : null;
   })();
-  /** Rows the operator created but the host has not accepted yet. */
   let drafts = $state<MutableWorkflow[]>(initialWfSlice?.drafts ?? []);
-  /** In-place edits to persisted Workflows, keyed by `sourceKey`. */
   let editedByKey = $state<Record<string, MutableWorkflow>>(initialWfSlice?.editedByKey ?? {});
-  /** Per-Workflow undo/redo stacks, keyed by `sourceKey`. */
   let historyByKey = $state<Record<string, WorkflowHistoryTrack>>(initialWfSlice?.historyByKey ?? {});
-  /** Breadcrumb trail when drilling into child Workflows. */
   let breadcrumbs = $state<WorkflowBreadcrumbEntry[]>(initialWfSlice?.breadcrumbs ?? []);
   let selectedKey = $state<string | null>(initialWfSlice?.selectedKey ?? null);
   let selectedId = $state<string | null>(initialWfSlice?.selectedId ?? null);
   let restoredNodeId = $state<string | null>(initialWfSlice?.restoredNodeId ?? null);
   let saveError = $state<string | null>(null);
-  /** The revision submitted with the in-flight save; null when none is. */
   let submittedRevision = $state<string | null>(null);
   let submittedKey = $state<string | null>(null);
+  let query = $state('');
+  let view = $state<WorkflowStatusView>('all');
+  let returnFocusKey: string | null = null;
+  let exportInclusion = $state<WorkflowExportInclusion>('references-only');
+  let exportTarget = $state<{
+    readonly workflowId: string;
+    readonly name: string;
+    readonly originatingElement: HTMLElement | null;
+  } | null>(null);
 
   const catalog = $derived(snapshot.workflowCatalog);
   const ready = $derived(catalog?.state === 'ready');
   const revision = $derived(ready ? (catalog?.revision ?? '') : '');
-
   const persisted = $derived(
     ready ? (catalog?.records ?? []).map(sourceRecordToMutableWorkflow) : []
   );
@@ -104,18 +101,21 @@
   const effectivePipelines = $derived<readonly PortablePipelineDefinition[]>(
     snapshot.pipelineCatalog?.state === 'ready' ? snapshot.pipelineCatalog.effective : []
   );
-  const hasBuildingBlocks = $derived(
-    effectivePhases.length > 0 || effectivePipelines.length > 0
-  );
+  const hasBuildingBlocks = $derived(effectivePhases.length > 0 || effectivePipelines.length > 0);
   const buildingBlocksResolved = $derived(
     snapshot.phaseCatalog?.state === 'ready' || snapshot.pipelineCatalog?.state === 'ready'
   );
   const noBuildingBlocks = $derived(!hasBuildingBlocks);
   const rows = $derived<MutableWorkflow[]>(mergeWorkflowRows(persisted, editedByKey, drafts));
   const selected = $derived(rows.find((row) => row.sourceKey === selectedKey) ?? null);
-  const isSelectedDirty = $derived(
-    selected !== null && (!selected.persisted || selected.sourceKey in editedByKey)
+  const dirtyKeys = $derived(
+    new Set<string>([
+      ...drafts.map((draft) => draft.sourceKey),
+      ...Object.keys(editedByKey)
+    ])
   );
+  const hasDirtyWorkflows = $derived(dirtyKeys.size > 0);
+  const isSelectedDirty = $derived(selected !== null && dirtyKeys.has(selected.sourceKey));
   const selectedHistory = $derived(
     selected && selected.sourceKey in historyByKey ? historyByKey[selected.sourceKey] : null
   );
@@ -126,11 +126,20 @@
   const canReset = $derived(
     selected !== null && selected.persisted && selected.sourceKey in editedByKey
   );
-
   const savePending = $derived(submittedRevision !== null && revision === submittedRevision);
 
   $effect(() => {
-    // Once the catalog moves, clear only the saved row's draft/edit state so unsaved parents stay intact.
+    oneditorchange?.(ready && selected !== null);
+  });
+
+  $effect(() => {
+    ondirtychange?.({ dirty: hasDirtyWorkflows, savePending });
+  });
+  onDestroy(() => {
+    ondirtychange?.({ dirty: hasDirtyWorkflows, savePending: false });
+  });
+
+  $effect(() => {
     if (submittedRevision !== null && revision !== '' && revision !== submittedRevision) {
       const key = submittedKey;
       submittedRevision = null;
@@ -167,7 +176,7 @@
     if (selectedKey === null) return;
     if (rows.some((row) => row.sourceKey === selectedKey)) return;
     const index = reselectIndex(rows, { sourceKey: selectedKey, id: selectedId ?? '' }, identity);
-    select(index === null ? null : rows[index].sourceKey, true);
+    select(index === null ? null : rows[index].sourceKey, index !== null);
   });
 
   let appliedInitialWorkflowId: string | null = null;
@@ -176,21 +185,30 @@
       appliedInitialWorkflowId = null;
       return;
     }
-    if (appliedInitialWorkflowId === initialWorkflowId) return;
-    const target = rows.find((row) => row.workflowId === initialWorkflowId);
-    if (!target) return;
+    if (!ready || appliedInitialWorkflowId === initialWorkflowId) return;
     appliedInitialWorkflowId = initialWorkflowId;
-    select(target.sourceKey);
+    const target = rows.find((row) => row.workflowId === initialWorkflowId);
+    if (target) select(target.sourceKey);
+    oninitialworkflowconsumed?.();
   });
 
   function identity(row: MutableWorkflow): DefinitionIdentity {
     return { sourceKey: row.sourceKey, id: row.workflowId };
+  }
+  function takeReturnFocus(): string | null {
+    const key = returnFocusKey;
+    returnFocusKey = null;
+    return key;
   }
   function select(key: string | null, preserveBreadcrumbs = false, fromNode: string | null = null): void {
     selectedKey = key;
     selectedId = key === null ? null : (rows.find((row) => row.sourceKey === key)?.workflowId ?? selectedId);
     restoredNodeId = fromNode;
     if (!preserveBreadcrumbs) breadcrumbs = [];
+  }
+  function closeEditor(): void {
+    returnFocusKey = selected?.sourceKey ?? null;
+    select(null);
   }
   function openChildWorkflow(workflowId: string, fromNodeId?: string): void {
     const target = rows.find((row) => row.workflowId === workflowId);
@@ -207,17 +225,13 @@
     breadcrumbs = breadcrumbs.slice(0, index);
     select(crumb.sourceKey, true, crumb.fromNodeId ?? null);
   }
+
   const draftErrors = $derived<readonly WorkflowDraftError[]>(
     selected ? validateWorkflowDraft(selected, rows.filter((row) => row.sourceKey !== selected.sourceKey).map((row) => row.workflowId)) : []
   );
   const draftNodesUnresolved = $derived(
     selected !== null &&
-      selected.nodes.some((node) => {
-        if (node.phaseId) return !effectivePhases.some((phase) => phase.phaseId === node.phaseId);
-        if (node.workflowId) return !effectiveWorkflows.some((wf) => wf.workflowId === node.workflowId) && !rows.some((row) => row.workflowId === node.workflowId);
-        if (node.pipelineId) return !effectivePipelines.some((pipe) => pipe.pipelineId === node.pipelineId);
-        return false;
-      })
+      hasUnresolvedWorkflowNodes(selected.nodes, effectivePhases, effectiveWorkflows, effectivePipelines, rows)
   );
   const defects = $derived(
     selected ? visibleWorkflowDefects(selected, draftErrors) : { byNode: [], byConnection: [], rest: [], hiddenChecks: 0 }
@@ -227,8 +241,6 @@
   const saveDisabled = $derived(!editable || !isSelectedDirty || draftErrors.length > 0 || noBuildingBlocks || draftNodesUnresolved);
   const duplicateDisabled = $derived(selected === null || mutatingDisabled);
   const removeDisabled = $derived(selected === null || !selected.persisted || mutatingDisabled);
-  const importLayers = $derived(storedWritableLayers(snapshot.phaseCatalog?.records ?? [], snapshot.workflowCatalog?.records ?? []));
-  const importUnavailable = $derived(importDisabledReason({ catalog: 'workflow', trusted, savePending, mutationActive: isSelectedDirty || drafts.length > 0 }));
 
   function selectNewDraft(draft: MutableWorkflow): void {
     drafts = [...drafts, draft];
@@ -236,67 +248,50 @@
     select(draft.sourceKey);
     saveError = null;
   }
-
   function addWorkflow(): void {
     if (mutatingDisabled) return;
     selectNewDraft(makeNewWorkflowDraft(takenWorkflowIds(rows)));
   }
-
+  function duplicateWorkflowByKey(sourceKey: string): void {
+    if (mutatingDisabled) return;
+    const target = rows.find((row) => row.sourceKey === sourceKey);
+    if (!target) return;
+    selectNewDraft(makeDuplicateWorkflowDraft(target, takenWorkflowIds(rows)));
+  }
   function duplicateWorkflow(): void {
     if (duplicateDisabled || !selected) return;
-    selectNewDraft(makeDuplicateWorkflowDraft(selected, takenWorkflowIds(rows)));
+    duplicateWorkflowByKey(selected.sourceKey);
   }
-
   function applyRowEdit(edit: (workflow: MutableWorkflow) => MutableWorkflow): void {
     if (!selected || !editable) return;
     const current = selected;
     const next = edit(current);
-    // An edit that changes nothing is no step. A + with no Phase or Pipeline to
-    // add hands the row back as it was; recorded, it would mark a stored row
-    // edited and push a copy that takes the place of the step Redo holds.
     if (next === current || JSON.stringify(next) === JSON.stringify(current)) return;
     historyByKey = pushWorkflowHistory(historyByKey, current.sourceKey, current, next);
-    if (current.persisted) {
-      editedByKey = { ...editedByKey, [current.sourceKey]: next };
-    } else {
-      drafts = withWorkflowDraftEdited(drafts, current.sourceKey, () => next);
-    }
+    if (current.persisted) editedByKey = { ...editedByKey, [current.sourceKey]: next };
+    else drafts = withWorkflowDraftEdited(drafts, current.sourceKey, () => next);
   }
-
   function patchSelected(patch: Partial<MutableWorkflow>): void {
     applyRowEdit((row) => ({ ...row, ...patch }));
   }
-
-  function applyGraphEdit(edit: (workflow: MutableWorkflow) => MutableWorkflow): void {
-    applyRowEdit(edit);
-  }
-
   function undoSelected(): void {
     if (!selected || !canUndo) return;
     const stepped = stepWorkflowHistory(historyByKey, selected.sourceKey, -1);
     if (!stepped) return;
     historyByKey = stepped.nextHistory;
-    if (selected.persisted) {
-      editedByKey = { ...editedByKey, [selected.sourceKey]: stepped.workflow };
-    } else {
-      drafts = withWorkflowDraftEdited(drafts, selected.sourceKey, () => stepped.workflow);
-    }
+    if (selected.persisted) editedByKey = { ...editedByKey, [selected.sourceKey]: stepped.workflow };
+    else drafts = withWorkflowDraftEdited(drafts, selected.sourceKey, () => stepped.workflow);
   }
-
   function redoSelected(): void {
     if (!selected || !canRedo) return;
     const stepped = stepWorkflowHistory(historyByKey, selected.sourceKey, 1);
     if (!stepped) return;
     historyByKey = stepped.nextHistory;
-    if (selected.persisted) {
-      editedByKey = { ...editedByKey, [selected.sourceKey]: stepped.workflow };
-    } else {
-      drafts = withWorkflowDraftEdited(drafts, selected.sourceKey, () => stepped.workflow);
-    }
+    if (selected.persisted) editedByKey = { ...editedByKey, [selected.sourceKey]: stepped.workflow };
+    else drafts = withWorkflowDraftEdited(drafts, selected.sourceKey, () => stepped.workflow);
   }
-
   function resetSelected(): void {
-    if (!selected || !canReset) return;
+    if (!selected || !canReset || mutatingDisabled) return;
     const nextEdited = { ...editedByKey };
     delete nextEdited[selected.sourceKey];
     editedByKey = nextEdited;
@@ -306,7 +301,7 @@
   }
 
   const graph = makeWorkflowGraphActions(
-    applyGraphEdit,
+    applyRowEdit,
     () => effectivePipelines,
     () => effectivePhases,
     () => effectiveWorkflows
@@ -328,7 +323,6 @@
     submittedKey = targetKey;
     saveError = null;
     const outcome = await send({ signal: lifetime.signal, onLateOutcome: showLateWrite });
-
     if (outcome.status === 'rejected') {
       submittedRevision = null;
       submittedKey = null;
@@ -353,58 +347,72 @@
       : undefined;
     await submit(row.sourceKey, (wait) =>
       saveDefinitionDraft(
-        {
-          kind: 'workflow',
-          id: row.workflowId,
-          expectedDraftVersion: draftTokenOfRecord(record),
-          body: toSaveWorkflowRow(row)
-        },
+        { kind: 'workflow', id: row.workflowId, expectedDraftVersion: draftTokenOfRecord(record), body: toSaveWorkflowRow(row) },
         undefined,
         wait
       )
     );
   }
 
-  async function removeSelected(event: MouseEvent): Promise<void> {
-    if (removeDisabled || !selected || catalog?.state !== 'ready') return;
-    const row = selected;
+  async function removeRow(row: MutableWorkflow, originatingElement: HTMLElement | null): Promise<void> {
+    if (mutatingDisabled || !row.persisted || catalog?.state !== 'ready') return;
     const record = catalog.records.find((candidate) => candidate.key === row.sourceKey);
     const removal = buildWorkflowRemoval({
       row,
       expectedDraftVersion: draftTokenOfRecord(record),
-      originatingElement: event.currentTarget as HTMLElement
+      originatingElement: originatingElement ?? document.body
     });
     await submit(row.sourceKey, (wait) =>
       deactivateDefinition(removal.request, { ...removal.options, wait })
     );
   }
+
+  function openExportFor(row: MutableWorkflow, originatingElement: HTMLElement | null): void {
+    if (!row.persisted) return;
+    exportTarget = { workflowId: row.workflowId, name: row.name || row.workflowId, originatingElement };
+  }
+
+  function confirmExport(): void {
+    if (!exportTarget) return;
+    exportWorkflowYaml(exportTarget.workflowId, exportInclusion);
+    exportTarget = null;
+  }
 </script>
 
+{#snippet notices()}
+  {#if catalog?.state === 'ready' && catalog.warnings.length > 0}
+    <div class="attn warn" role="status" aria-live="polite" data-testid="workflow-catalog-warnings">
+      <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+      <div class="body">
+        {#each catalog.warnings as warning (warning.code + warning.message)}
+          <div>{warning.message}</div>
+        {/each}
+      </div>
+    </div>
+  {/if}
+  {#if saveError}
+    <div class="attn" data-testid="workflow-save-error-banner" role="alert">
+      <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+      <div class="body">Save rejected: {saveError}</div>
+      <button type="button" class="icon-btn" aria-label="Dismiss Workflow save error" onclick={() => (saveError = null)}><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button>
+    </div>
+  {/if}
+{/snippet}
+
 {#if !catalog}
-  <div
-    class="catalog-state"
-    role="status"
-    aria-live="polite"
-    aria-busy="true"
-    data-testid="workflow-catalog-loading"
-  >
+  <div class="catalog-state" role="status" aria-live="polite" aria-busy="true" data-testid="workflow-catalog-loading">
     Loading authoritative Workflow catalog…
   </div>
 {:else if catalog.state === 'error'}
   <div class="catalog-state catalog-error" role="alert" data-testid="workflow-catalog-error">
-    {catalog.error?.message ??
-      'The Workflow catalog could not be loaded. Reload the view to retry.'}
+    {catalog.error?.message ?? 'The Workflow catalog could not be loaded. Reload the view to retry.'}
   </div>
-{:else}
-  <!-- `.editor` (sg-builder.css) stacks the head above the shell, which takes the
-       rest of the height pipeline-builder.css gives this tab. -->
+{:else if selected}
   <div
     class="editor"
     data-testid="workflow-catalog-editor"
-    data-selected-workflow-id={selected?.workflowId ?? undefined}
+    data-selected-workflow-id={selected.workflowId}
   >
-    <!-- The redesign's editor head: one row, the breadcrumb and chips on the left
-         and the document actions at its right end (sg-builder.css `.ed-head`). -->
     <div class="ed-head">
       <WorkflowFlowTopBar
         {rows}
@@ -415,6 +423,7 @@
         {breadcrumbs}
         onselect={(key) => select(key)}
         onbreadcrumbselect={selectBreadcrumb}
+        onclose={closeEditor}
       />
       <WorkflowToolbar
         {savePending}
@@ -427,61 +436,60 @@
         {canRedo}
         {canReset}
         {selected}
-        onadd={addWorkflow}
         onduplicate={duplicateWorkflow}
-        onremove={removeSelected}
+        onremove={(event) => void removeRow(selected, event.currentTarget instanceof HTMLElement ? event.currentTarget : null)}
         onsave={save}
         onundo={undoSelected}
         onredo={redoSelected}
         onreset={resetSelected}
+        onopenexport={(origin) => openExportFor(selected, origin)}
       />
     </div>
-
-    {#if catalog.warnings.length > 0}
-      <div class="attn warn" role="status" aria-live="polite" data-testid="workflow-catalog-warnings">
-        <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
-        <div class="body">
-          {#each catalog.warnings as warning (warning.code + warning.message)}
-            <div>{warning.message}</div>
-          {/each}
-        </div>
-      </div>
-    {/if}
-
-    {#if saveError}
-      <div class="attn" data-testid="workflow-save-error-banner" role="alert">
-        <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
-        <div class="body">Save rejected: {saveError}</div>
-        <button type="button" class="icon-btn" aria-label="Dismiss Workflow save error" onclick={() => (saveError = null)}><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button>
-      </div>
-    {/if}
-
-    <CatalogEmptyState kind="workflow" count={rows.length} disabledReason={importUnavailable} />
-    {#if rows.length > 0}
-      <ProcessImportPreflight layers={importLayers} disabledReason={importUnavailable} />
-    {/if}
-
-    {#if selected}
-      <WorkflowFlowBuilder
-        row={selected}
-        pipelines={effectivePipelines}
-        phases={effectivePhases}
-        workflows={effectiveWorkflows}
-        allWorkflows={rows}
-        {defects}
-        {editable}
-        {graph}
-        lifecycle={lifecycleByKey.get(selected.sourceKey)}
-        {restoredNodeId}
-        onworkflowpatch={patchSelected}
-        onopenworkflow={openChildWorkflow}
-        {onopenphase}
-      />
-    {:else if rows.length > 0}
-      <!-- With no Workflow to select, the empty state above is the one notice. -->
-      <div class="catalog-state" data-testid="workflows-no-selection">
-        Select a Workflow to view it.
-      </div>
-    {/if}
+    {@render notices()}
+    <WorkflowFlowBuilder
+      row={selected}
+      pipelines={effectivePipelines}
+      phases={effectivePhases}
+      workflows={effectiveWorkflows}
+      allWorkflows={rows}
+      {defects}
+      {editable}
+      {graph}
+      lifecycle={lifecycleByKey.get(selected.sourceKey)}
+      {restoredNodeId}
+      onworkflowpatch={patchSelected}
+      onopenworkflow={openChildWorkflow}
+      {onopenphase}
+    />
   </div>
+{:else}
+  <WorkflowCatalogList
+    {rows}
+    {lifecycleByKey}
+    {dirtyKeys}
+    {mutatingDisabled}
+    {importDisabledReason}
+    bind:query
+    bind:view
+    {takeReturnFocus}
+    {notices}
+    onselect={(key) => select(key)}
+    onadd={addWorkflow}
+    onduplicate={duplicateWorkflowByKey}
+    onexport={openExportFor}
+    onremove={removeRow}
+    {onopenimport}
+  />
+{/if}
+
+{#if exportTarget}
+  <WorkflowExportDialog
+    workflowId={exportTarget.workflowId}
+    workflowName={exportTarget.name}
+    inclusion={exportInclusion}
+    originatingElement={exportTarget.originatingElement}
+    oninclusionchange={(value) => (exportInclusion = value)}
+    onconfirm={confirmExport}
+    oncancel={() => (exportTarget = null)}
+  />
 {/if}

@@ -19,7 +19,7 @@
 // tests/unit/state/state-projector-trust.test.ts.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import PipelineBuilder from '../PipelineBuilder.svelte';
 import type {
   WorkflowSnapshot,
@@ -28,7 +28,6 @@ import type {
 } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
 import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
-import { isMenuItemOff } from '../sg/__tests__/menu-item-state';
 
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: vi.fn(() => ({ correlationId: 'corr-workflows-tab-test' }))
@@ -161,19 +160,25 @@ describe('PipelineBuilder — Workflow Library mount (083)', () => {
     expect(labels).toEqual(['Phases', 'Workflows', 'Models']);
   });
 
-  it('mounts the Workflow Library when initialTab is "workflows"', () => {
+  it('mounts the Workflows list when initialTab is "workflows" and opens the full-page editor on New workflow', async () => {
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot(), initialTab: 'workflows' }
     });
-    expect(container.querySelector('[data-testid="workflows-add"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="workflows-save-all"]')).not.toBeNull();
-    // The other catalogs stay unmounted so their save affordances cannot be
-    // reached from this tab.
+    const add = container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement | null;
+    expect(add).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflow-catalog-list"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflows-save-all"]')).toBeNull();
     expect(container.querySelector('[data-testid="pipelines-save-all"]')).toBeNull();
     expect(container.querySelector('[data-testid="phases-save-all"]')).toBeNull();
+
+    await fireEvent.click(add!);
+    expect(container.querySelector('[data-testid="workflow-catalog-editor"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflows-save-all"]')).not.toBeNull();
+    // Full-page Workflow Editor hides the top-level Builder header and tabs.
+    expect(container.querySelector('.builder-tabs')).toBeNull();
   });
 
-  it('mounts the Workflow Library when the Workflows tab is activated', async () => {
+  it('mounts the Workflows list when the Workflows tab is activated', async () => {
     const { container } = render(PipelineBuilder, { props: { snapshot: buildSnapshot() } });
     expect(container.querySelector('[data-testid="workflows-add"]')).toBeNull();
     const tab = Array.from(container.querySelectorAll('.builder-tabs .tab-btn')).find(
@@ -184,36 +189,27 @@ describe('PipelineBuilder — Workflow Library mount (083)', () => {
     expect(container.querySelector('[data-testid="workflows-add"]')).not.toBeNull();
   });
 
-  it('explains the missing prerequisite when the effective Pipeline catalog is empty', () => {
+  it('explains the missing prerequisite in the Workflow Editor when the effective Pipeline/Phase catalog is empty', async () => {
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot({ pipelines: [] }), initialTab: 'workflows' }
     });
+    await fireEvent.click(container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement);
     expect(container.querySelector('[data-testid="workflows-no-pipelines"]')).not.toBeNull();
   });
 });
 
 describe('PipelineBuilder — Workflow trust gating (083)', () => {
-  // Feature 099 (T496f, FR-046, FR-052) — three cases stood here, all keyed on
-  // the deleted `workflowOverrides` capability: it withheld the controls, it was
-  // distinct from `pipelineOverrides`, and an older bundle omitting it failed
-  // closed. Workspace Trust is the single gate now, and the three claims map onto
-  // it one for one — it opens the tab, it closes the tab, and its absence from an
-  // older bundle fails closed.
-  it('opens the Workflows tab for editing under workspace trust', () => {
+  it('opens the Workflows list for editing under workspace trust', () => {
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot(), initialTab: 'workflows' }
     });
-    const add = container.querySelector('[data-testid="workflows-add"]');
-    const save = container.querySelector('[data-testid="workflows-save-all"]') as HTMLButtonElement;
-    expect(isMenuItemOff(add)).toBe(false);
-    expect(save).not.toBeNull();
+    const add = container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement | null;
+    expect(add).not.toBeNull();
+    expect(add?.disabled).toBe(false);
     expect(container.querySelector('[data-testid="trust-banner-workflows"]')).toBeNull();
   });
 
   it('withholds the editor entirely in an untrusted workspace, and says why (FR-052)', () => {
-    // Not a disabled Add button: an untrusted workspace activates no catalog at
-    // all, so rendering the Library would present it empty — which reads as "no
-    // Workflows are defined" when the truth is "this workspace is not trusted".
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot({ workspaceTrust: false }), initialTab: 'workflows' }
     });
@@ -222,11 +218,6 @@ describe('PipelineBuilder — Workflow trust gating (083)', () => {
   });
 
   it('fails closed when the host bundle omits workspaceTrust', () => {
-    // Legacy tolerance, and the reason the projection is read as `=== true`
-    // rather than `!== false`: an older bundle that never learned the field
-    // must not be read as trusting. The editor still mounts, because the banner
-    // is keyed on an explicit `false` and this bundle says nothing — so the
-    // gate that has to hold is the one on the controls.
     const { workspaceTrust: _omitted, ...withoutField } = buildSnapshot() as unknown as Record<
       string,
       unknown
@@ -234,14 +225,18 @@ describe('PipelineBuilder — Workflow trust gating (083)', () => {
     const { container } = render(PipelineBuilder, {
       props: { snapshot: withoutField as unknown as WorkflowSnapshot, initialTab: 'workflows' }
     });
-    expect(isMenuItemOff(container.querySelector('[data-testid="workflows-add"]'))).toBe(true);
+    expect(
+      (container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement | null)?.disabled
+    ).toBe(true);
   });
 
   it('disables Workflow mutations in a secondary window', () => {
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot({ isPrimary: false }), initialTab: 'workflows' }
     });
-    expect(isMenuItemOff(container.querySelector('[data-testid="workflows-add"]'))).toBe(true);
+    expect(
+      (container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement | null)?.disabled
+    ).toBe(true);
   });
 
   it('reports the ceiling once, and no per-capability banner beside it', () => {
