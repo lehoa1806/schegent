@@ -80,6 +80,7 @@ const REQUIRED_FILES: readonly string[] = [
   'src/contracts/action-keys.ts',
   'src/contracts/queue-failure-policy.ts',
   // Generated outputs
+  'webview-ui/src/lib/generated/backend-kinds.ts',
   'webview-ui/src/lib/generated/backend-descriptors.ts',
   'webview-ui/src/lib/generated/queue-failure-policy.ts',
   'webview-ui/src/lib/generated/action-keys.ts',

@@ -8,7 +8,7 @@
 
 export type BackendRunnerKind = "claude" | "codex" | "agy";
 
-export const SUPPORTED_BACKENDS: ReadonlyArray<BackendRunnerKind> = Object.freeze(["claude","codex","agy"]);
+export const SUPPORTED_BACKENDS: ReadonlyArray<BackendRunnerKind> = /*#__PURE__*/ Object.freeze(["claude","codex","agy"]);
 
 export const DEFAULT_BACKEND: BackendRunnerKind = "claude";
 
@@ -37,8 +37,8 @@ export type BackendMap<T> = { readonly [K in BackendRunnerKind]: T };
 export type MutableBackendMap<T> = { [K in BackendRunnerKind]: T };
 
 export const WEBVIEW_BACKEND_DESCRIPTORS: Readonly<Record<BackendRunnerKind, WebviewBackendDescriptor>> =
-  Object.freeze({
-    claude: Object.freeze({
+  /*#__PURE__*/ Object.freeze({
+    claude: /*#__PURE__*/ Object.freeze({
       kind: "claude",
       displayLabel: "Claude",
       cliPathSettingKey: "cli.path",
@@ -48,10 +48,10 @@ export const WEBVIEW_BACKEND_DESCRIPTORS: Readonly<Record<BackendRunnerKind, Web
       supportsAutoCompactPctOverride: true,
       supportsGitSideEffects: true,
       supportsModelDiscovery: false,
-      unsupportedEffortLevels: Object.freeze([] as const),
+      unsupportedEffortLevels: /*#__PURE__*/ Object.freeze([] as const),
       exampleModelPlaceholder: "claude-3-7-sonnet-20250219"
     }),
-    codex: Object.freeze({
+    codex: /*#__PURE__*/ Object.freeze({
       kind: "codex",
       displayLabel: "Codex",
       cliPathSettingKey: "codex.path",
@@ -61,10 +61,10 @@ export const WEBVIEW_BACKEND_DESCRIPTORS: Readonly<Record<BackendRunnerKind, Web
       supportsAutoCompactPctOverride: false,
       supportsGitSideEffects: false,
       supportsModelDiscovery: false,
-      unsupportedEffortLevels: Object.freeze([] as const),
+      unsupportedEffortLevels: /*#__PURE__*/ Object.freeze([] as const),
       exampleModelPlaceholder: "model-name"
     }),
-    agy: Object.freeze({
+    agy: /*#__PURE__*/ Object.freeze({
       kind: "agy",
       displayLabel: "Agy",
       cliPathSettingKey: "agy.path",
@@ -74,14 +74,12 @@ export const WEBVIEW_BACKEND_DESCRIPTORS: Readonly<Record<BackendRunnerKind, Web
       supportsAutoCompactPctOverride: false,
       supportsGitSideEffects: true,
       supportsModelDiscovery: true,
-      unsupportedEffortLevels: Object.freeze(["xhigh","max"] as const),
+      unsupportedEffortLevels: /*#__PURE__*/ Object.freeze(["xhigh","max"] as const),
       exampleModelPlaceholder: "model-name"
     })
   });
 
-export const WEBVIEW_BACKEND_LIST: readonly WebviewBackendDescriptor[] = Object.freeze(
-  SUPPORTED_BACKENDS.map((kind) => WEBVIEW_BACKEND_DESCRIPTORS[kind])
-);
+export const WEBVIEW_BACKEND_LIST: readonly WebviewBackendDescriptor[] = /*#__PURE__*/ Object.freeze([WEBVIEW_BACKEND_DESCRIPTORS["claude"], WEBVIEW_BACKEND_DESCRIPTORS["codex"], WEBVIEW_BACKEND_DESCRIPTORS["agy"]]);
 
 export function findWebviewBackendDescriptor(kind: unknown): WebviewBackendDescriptor | undefined {
   if (typeof kind !== 'string') return undefined;

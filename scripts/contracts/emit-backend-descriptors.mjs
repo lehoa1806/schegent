@@ -602,6 +602,38 @@ function formatObjectKey(key) {
 }
 
 /**
+ * Emits a self-contained leaf webview projection (`webview-ui/src/lib/generated/backend-kinds.ts`)
+ * carrying zero host-code imports and only backend identity symbols so lightweight
+ * sidebar startup bundles do not pull in dashboard-only descriptor metadata.
+ */
+export function emitWebviewBackendKinds({
+  supportedBackends,
+  defaultBackend
+}) {
+  const unionExpr = supportedBackends.map((k) => JSON.stringify(k)).join(' | ');
+  return [
+    '// GENERATED FILE — do not edit.',
+    '//',
+    '// Emitted from src/contracts/backend-kinds.ts by scripts/generate-contract-schemas.mjs (FR-R7-06 / FR-R7-11).',
+    '// Edit the host contract source and run: npm run contracts:generate',
+    '//',
+    '// Self-contained leaf webview projection: carries zero imports from host `src/`.',
+    '',
+    `export type BackendRunnerKind = ${unionExpr};`,
+    '',
+    `export const SUPPORTED_BACKENDS: ReadonlyArray<BackendRunnerKind> = /*#__PURE__*/ Object.freeze(${JSON.stringify(supportedBackends)});`,
+    '',
+    `export const DEFAULT_BACKEND: BackendRunnerKind = ${JSON.stringify(defaultBackend)};`,
+    '',
+    'export function isBackendRunnerKind(value: unknown): value is BackendRunnerKind {',
+    "  return typeof value === 'string' &&",
+    '    (SUPPORTED_BACKENDS as ReadonlyArray<string>).includes(value);',
+    '}',
+    ''
+  ].join('\n');
+}
+
+/**
  * Emits a self-contained webview projection (`webview-ui/src/lib/generated/backend-descriptors.ts`)
  * carrying zero host-code imports and only webview-safe static descriptor fields.
  */
@@ -636,7 +668,7 @@ export function emitWebviewBackendDescriptors({
     .map((kind) => {
       const p = projected[kind];
       return [
-        `    ${formatObjectKey(kind)}: Object.freeze({`,
+        `    ${formatObjectKey(kind)}: /*#__PURE__*/ Object.freeze({`,
         `      kind: ${JSON.stringify(p.kind)},`,
         `      displayLabel: ${JSON.stringify(p.displayLabel)},`,
         `      cliPathSettingKey: ${JSON.stringify(p.cliPathSettingKey)},`,
@@ -646,12 +678,16 @@ export function emitWebviewBackendDescriptors({
         `      supportsAutoCompactPctOverride: ${JSON.stringify(p.supportsAutoCompactPctOverride)},`,
         `      supportsGitSideEffects: ${JSON.stringify(p.supportsGitSideEffects)},`,
         `      supportsModelDiscovery: ${JSON.stringify(p.supportsModelDiscovery)},`,
-        `      unsupportedEffortLevels: Object.freeze(${JSON.stringify(p.unsupportedEffortLevels)} as const),`,
+        `      unsupportedEffortLevels: /*#__PURE__*/ Object.freeze(${JSON.stringify(p.unsupportedEffortLevels)} as const),`,
         `      exampleModelPlaceholder: ${JSON.stringify(p.exampleModelPlaceholder)}`,
         `    })`
       ].join('\n');
     })
     .join(',\n');
+
+  const descriptorListItems = supportedBackends
+    .map((kind) => `WEBVIEW_BACKEND_DESCRIPTORS[${JSON.stringify(kind)}]`)
+    .join(', ');
 
   return [
     '// GENERATED FILE — do not edit.',
@@ -664,7 +700,7 @@ export function emitWebviewBackendDescriptors({
     '',
     `export type BackendRunnerKind = ${unionExpr};`,
     '',
-    `export const SUPPORTED_BACKENDS: ReadonlyArray<BackendRunnerKind> = Object.freeze(${JSON.stringify(supportedBackends)});`,
+    `export const SUPPORTED_BACKENDS: ReadonlyArray<BackendRunnerKind> = /*#__PURE__*/ Object.freeze(${JSON.stringify(supportedBackends)});`,
     '',
     `export const DEFAULT_BACKEND: BackendRunnerKind = ${JSON.stringify(defaultBackend)};`,
     '',
@@ -693,13 +729,11 @@ export function emitWebviewBackendDescriptors({
     'export type MutableBackendMap<T> = { [K in BackendRunnerKind]: T };',
     '',
     'export const WEBVIEW_BACKEND_DESCRIPTORS: Readonly<Record<BackendRunnerKind, WebviewBackendDescriptor>> =',
-    '  Object.freeze({',
+    '  /*#__PURE__*/ Object.freeze({',
     descriptorEntries,
     '  });',
     '',
-    'export const WEBVIEW_BACKEND_LIST: readonly WebviewBackendDescriptor[] = Object.freeze(',
-    '  SUPPORTED_BACKENDS.map((kind) => WEBVIEW_BACKEND_DESCRIPTORS[kind])',
-    ');',
+    `export const WEBVIEW_BACKEND_LIST: readonly WebviewBackendDescriptor[] = /*#__PURE__*/ Object.freeze([${descriptorListItems}]);`,
     '',
     'export function findWebviewBackendDescriptor(kind: unknown): WebviewBackendDescriptor | undefined {',
     '  if (typeof kind !== \'string\') return undefined;',

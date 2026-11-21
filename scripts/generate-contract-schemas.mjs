@@ -28,6 +28,7 @@ import { buildSidebarIpcJsonSchema } from './contracts/emit-json-schema.mjs';
 import { emitWebviewSnapshotMirror } from './contracts/emit-webview-mirror.mjs';
 import {
   emitWebviewBackendDescriptors,
+  emitWebviewBackendKinds,
   extractBackendDescriptorTable,
   validateBackendManifestParity,
   validateSettingsSchemaParity
@@ -835,6 +836,13 @@ const generated = new Map([
     )
   ],
   [
+    'webview-ui/src/lib/generated/backend-kinds.ts',
+    assertParses(
+      'webview-ui/src/lib/generated/backend-kinds.ts',
+      emitWebviewBackendKinds(backendDescriptorData)
+    )
+  ],
+  [
     'webview-ui/src/lib/generated/backend-descriptors.ts',
     assertParses(
       'webview-ui/src/lib/generated/backend-descriptors.ts',
@@ -847,6 +855,10 @@ const artifactSources = new Map([
   ['src/contracts/generated/sidebar-ipc-types.ts', 'scripts/contracts/ipc-descriptors/index.mjs'],
   ['src/contracts/generated/snapshot-types.ts', 'scripts/contracts/snapshot-descriptors.mjs'],
   ['webview-ui/src/lib/generated/snapshot-mirror.ts', 'scripts/contracts/snapshot-descriptors.mjs'],
+  [
+    'webview-ui/src/lib/generated/backend-kinds.ts',
+    'src/contracts/backend-kinds.ts'
+  ],
   [
     'webview-ui/src/lib/generated/backend-descriptors.ts',
     'src/contracts/backend-kinds.ts, src/contracts/backend-descriptors.ts'
