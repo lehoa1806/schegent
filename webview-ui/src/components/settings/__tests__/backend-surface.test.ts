@@ -934,15 +934,18 @@ describe('Settings redesign — the backend card', () => {
       expect(itemTexts(getByTestId('backend-actions-codex'))).toEqual(['Change path…']);
     });
 
-    it('marks the grant as the dangerous choice and the revoke as an ordinary one', () => {
+    it('marks the grant as the dangerous choice with a preceding divider and the revoke as an ordinary one', () => {
       const ungranted = mount();
-      expect(ungranted.getByTestId('backend-grant-claude').classList.contains('danger')).toBe(true);
+      const grant = ungranted.getByTestId('backend-grant-claude');
+      expect(grant.classList.contains('danger')).toBe(true);
+      expect(grant.previousElementSibling?.tagName).toBe('HR');
       ungranted.unmount();
 
       const granted = mount({ postures: GRANTED_CLAUDE });
       const revoke = granted.getByTestId('backend-grant-claude');
       expect(collapse(revoke.textContent)).toBe('Revoke permission to run unsandboxed');
       expect(revoke.classList.contains('danger')).toBe(false);
+      expect(revoke.previousElementSibling?.tagName).not.toBe('HR');
     });
 
     it('takes the user to the path field from "Set path…"', async () => {

@@ -25,6 +25,10 @@
   --schegent-button-border: var(--vscode-button-border, transparent);
   --schegent-button-secondary-bg: var(--vscode-button-secondaryBackground, #3a3d41);
   --schegent-button-secondary-fg: var(--vscode-button-secondaryForeground, #f0f0f0);
+  --schegent-button-secondary-hover: var(
+    --vscode-button-secondaryHoverBackground,
+    color-mix(in srgb, var(--schegent-fg) 10%, var(--schegent-button-secondary-bg))
+  );
 
   --schegent-input-bg: var(--vscode-input-background, #252526);
   --schegent-input-fg: var(--vscode-input-foreground, #cccccc);

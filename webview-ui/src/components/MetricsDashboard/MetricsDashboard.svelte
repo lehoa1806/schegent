@@ -193,23 +193,6 @@
         <h1>Metrics</h1>
         <div class="purpose">Throughput, time and cost from the audit log.</div>
       </div>
-      {#if surfaceMode === 'rollup'}
-        <!-- The mockup's time-range switch and refresh. The audit read has no
-             time range, so the switch sets the one scope it does take: whether
-             run detail reaches into the archived logs. -->
-        <div class="actions metrics-toolbar" data-testid="metrics-toolbar">
-          <div class="seg" role="group" aria-label="Run detail scope">
-            <button type="button" aria-pressed={!includeArchives}
-              onclick={() => setIncludeArchives(false)}>Live log</button>
-            <button type="button" aria-pressed={includeArchives} data-testid="metrics-include-archived"
-              onclick={() => setIncludeArchives(true)}>With archives</button>
-          </div>
-          <button type="button" class="icon-btn refresh" aria-label="Refresh metrics" title="Refresh"
-            data-testid="metrics-refresh" disabled={loading} onclick={() => void fetchMetrics()}>
-            <svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg>
-          </button>
-        </div>
-      {/if}
     </div>
 
     {#if refusal !== null}
@@ -233,14 +216,31 @@
     <div role="tabpanel" id="metrics-panel" aria-labelledby="metrics-tab-{surfaceMode}">
       {#if surfaceMode === 'reports'}
         <HistoricalReportsPanel />
-      {:else if !loaded}
+      {:else}
+        <!-- Overview-only scope switch and refresh live inside the Overview tab toolbar so
+             switching between Overview and Reports leaves the page header unchanged. -->
+        <div class="toolbar metrics-toolbar" data-testid="metrics-toolbar">
+          <div class="seg" role="group" aria-label="Run detail scope">
+            <button type="button" aria-pressed={!includeArchives}
+              onclick={() => setIncludeArchives(false)}>Live log</button>
+            <button type="button" aria-pressed={includeArchives} data-testid="metrics-include-archived"
+              onclick={() => setIncludeArchives(true)}>With archives</button>
+          </div>
+          <div class="push">
+            <button type="button" class="icon-btn refresh" aria-label="Refresh metrics" title="Refresh"
+              data-testid="metrics-refresh" disabled={loading} onclick={() => void fetchMetrics()}>
+              <svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg>
+            </button>
+          </div>
+        </div>
+        {#if !loaded}
         <div class="metrics-loading" data-testid="metrics-loading" role="status">
           <span class="muted">Scanning audit history…</span>
           <div class="grid g4 metrics-skeleton" aria-hidden="true">
             <span class="tile"></span><span class="tile"></span><span class="tile"></span><span class="tile"></span>
           </div>
         </div>
-      {:else}
+        {:else}
         <!-- FR-R3-009 — cumulative totals stand above the log-derived detail and
              survive a retention prune, so they are rendered whenever the rollup has
              anything to report, including when the detail below is empty. -->
@@ -275,6 +275,7 @@
           <MetricsTaskTable tasks={pagedTasks} {expandedRunIds} {currentPage} {pageCount}
             {ariaSort} onSort={toggleSort}
             {onExpandToggleClick} onPageChange={goToPage} />
+        {/if}
         {/if}
       {/if}
     </div>
@@ -322,11 +323,7 @@
     margin-top: var(--schegent-space-4-5);
   }
   .detail-head p { margin: 0; }
-  /* The mockup's empty state, boxed so it reads as the place the detail would be. */
   .page .empty {
     margin-top: var(--schegent-space-3);
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    line-height: 1.5;
   }
 </style>

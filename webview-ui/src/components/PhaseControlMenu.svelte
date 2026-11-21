@@ -378,12 +378,6 @@
     color: var(--schegent-error-text);
   }
 
-  /* Dimmed as `sg-core.css` dims a disabled button. */
-  .btn[aria-disabled='true'] {
-    opacity: 0.4;
-    cursor: default;
-  }
-
   /* The prompt takes the row, so Resume sits at its end. */
   .resume-group {
     display: flex;

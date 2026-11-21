@@ -39,7 +39,7 @@
 </script>
 
 {#if guidance}
-  <div class="catalog-empty-state" data-testid="catalog-empty-state-{kind}">
+  <div class="empty catalog-empty-state" data-testid="catalog-empty-state-{kind}">
     <p
       class="empty-catalog-headline"
       data-testid="catalog-empty-headline-{kind}"
@@ -57,17 +57,26 @@
   .catalog-empty-state {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 12px;
+    align-items: center;
+    gap: var(--schegent-space-2);
   }
 
   .empty-catalog-headline {
+    color: var(--schegent-fg);
+    font-size: var(--schegent-text-subheading);
     font-weight: 600;
     margin: 0;
   }
 
   .empty-catalog-body {
     color: var(--schegent-muted-fg);
+    max-width: 52ch;
     margin: 0;
+  }
+
+  .catalog-empty-state > :global(.preflight) {
+    width: 100%;
+    color: var(--schegent-fg);
+    text-align: left;
   }
 </style>

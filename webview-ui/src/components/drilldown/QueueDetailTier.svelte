@@ -329,7 +329,6 @@
   <SgMenu label="More queue actions">
     {#if !renaming}
       <button type="button" role="menuitem" data-testid="queue-rename-open" onclick={openRename}>Rename…</button>
-      <hr />
     {/if}
     {@render clearItems()}
     <!--

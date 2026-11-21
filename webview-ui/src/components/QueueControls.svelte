@@ -150,6 +150,7 @@
     aria-disabled={clearDoneDisabled || !isPrimary}
     title="Clear completed tasks from Recent"
   >Clear completed tasks…</button>
+  <hr />
   <button
     type="button"
     role="menuitem"

@@ -359,6 +359,10 @@ describe('HistoricalReportsPanel & ReportDrillDownPanel (FR-R6-F11)', () => {
     await findByTestId('report-rows-table');
     const csv = getByTestId('report-export-csv');
     const json = getByTestId('report-export-json');
+    expect(csv.textContent.trim()).toBe('Export CSV…');
+    expect(json.textContent.trim()).toBe('Export JSON…');
+    expect(csv.querySelector('use')?.getAttribute('href')).toBe('#i-export');
+    expect(json.querySelector('use')?.getAttribute('href')).toBe('#i-export');
     expect([isMenuItemOff(csv), isMenuItemOff(json)]).toEqual([false, false]);
 
     await fireEvent.click(csv);

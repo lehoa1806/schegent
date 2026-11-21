@@ -14,41 +14,61 @@
   interface Props {
     item: QueueItem;
     disabled: boolean;
+    /** Render as an SgMenu menuitem instead of a standalone icon button. */
+    asMenuItem?: boolean;
+    /** Optional callback so a menu host can surface status messages outside the closed menu. */
+    onMessage?: (message: string | null) => void;
   }
 
-  const { item, disabled }: Props = $props();
+  const { item, disabled, asMenuItem = false, onMessage }: Props = $props();
 
   const failedPhase = $derived(item.status === 'failed' ? item.currentPhase : null);
   const labelHint = $derived(item.label.length > 24 ? `${item.label.slice(0, 24)}...` : item.label);
 
   let message = $state<string | null>(null);
+  function setMessage(next: string | null): void {
+    message = next;
+    onMessage?.(next);
+  }
   const lifetime = new AbortController();
   $effect(() => () => lifetime.abort());
-  const wait = lifecycleWait(lifetime.signal, (late) => (message = late));
+  const wait = lifecycleWait(lifetime.signal, (late) => setMessage(late));
 
   async function onRestart(): Promise<void> {
     if (disabled || failedPhase === null) return;
-    message = null;
+    setMessage(null);
     const result = await restartPhase(failedPhase, item.queueId ?? DEFAULT_QUEUE_ID, wait);
     if (lifetime.signal.aborted) return;
-    message = lifecycleMessage(result);
+    setMessage(lifecycleMessage(result));
   }
 </script>
 
 {#if failedPhase !== null}
-  <button
-    type="button"
-    class="icon-btn"
-    data-testid="queue-item-restart-phase-{item.id}"
-    aria-label={`Restart failed phase ${failedPhase} of '${labelHint}'`}
-    title={`Restart failed phase ${failedPhase} of '${labelHint}'`}
-    aria-disabled={disabled ? 'true' : 'false'}
-    onclick={onRestart}
-  >⟲</button>
-  {#if message}
-    <span class="restart-message" role="status" data-testid="queue-item-restart-phase-message-{item.id}"
-      >{message}</span
-    >
+  {#if asMenuItem}
+    <button
+      type="button"
+      role="menuitem"
+      data-testid="queue-item-restart-phase-{item.id}"
+      aria-label={`Restart failed phase ${failedPhase} of '${labelHint}'`}
+      title={`Restart failed phase ${failedPhase} of '${labelHint}'`}
+      aria-disabled={disabled ? 'true' : 'false'}
+      onclick={onRestart}
+    ><svg class="i" aria-hidden="true"><use href="#i-loop"></use></svg>Restart failed phase</button>
+  {:else}
+    <button
+      type="button"
+      class="icon-btn"
+      data-testid="queue-item-restart-phase-{item.id}"
+      aria-label={`Restart failed phase ${failedPhase} of '${labelHint}'`}
+      title={`Restart failed phase ${failedPhase} of '${labelHint}'`}
+      aria-disabled={disabled ? 'true' : 'false'}
+      onclick={onRestart}
+    ><svg class="i" aria-hidden="true"><use href="#i-loop"></use></svg></button>
+    {#if message}
+      <span class="restart-message" role="status" data-testid="queue-item-restart-phase-message-{item.id}"
+        >{message}</span
+      >
+    {/if}
   {/if}
 {/if}
 
@@ -57,13 +77,6 @@
   .icon-btn {
     color: var(--schegent-muted-fg);
     font: inherit;
-  }
-  .icon-btn[aria-disabled='true'] {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-  .icon-btn[aria-disabled='true']:hover {
-    background: transparent;
   }
   .icon-btn:hover:not([aria-disabled='true']) {
     color: var(--schegent-fg);

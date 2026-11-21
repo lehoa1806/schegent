@@ -373,12 +373,19 @@ describe('RunDetailTier — Pipeline-backed rendering (FR-058)', () => {
     });
   });
 
-  it('offers the Task’s lifecycle controls', () => {
+  it('offers the Task’s lifecycle controls in header mode (contextual button + SgMenu)', () => {
     const { getByTestId } = mount(
       buildSnapshot({ tasks: [task('r-1', { status: 'in-flight' })] })
     );
 
-    expect(getByTestId('run-detail-controls')).not.toBeNull();
+    const controls = getByTestId('run-detail-controls');
+    expect(controls).not.toBeNull();
+    const cancel = getByTestId('queue-item-cancel-r-1');
+    expect(cancel.classList.contains('btn')).toBe(true);
+    expect(cancel.classList.contains('btn-secondary')).toBe(true);
+    expect(cancel.textContent.trim()).toBe('Cancel…');
+    expect(getByTestId('queue-item-menu-r-1')).not.toBeNull();
+    expect(controls.textContent).not.toMatch(/[⏹✎✖↻✓⟲]/u);
   });
 
   it('does not mount the topology view for a Pipeline-backed Run', () => {

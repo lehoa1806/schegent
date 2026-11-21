@@ -395,6 +395,57 @@ describe('redesign stylesheet set', () => {
       'var(--vscode-contrastBorder, transparent)'
     );
   });
+
+  it('defines token-backed hover feedback for secondary and danger buttons and unifies disabled states', () => {
+    const core = sheetRules('sg-core.css');
+    expect(
+      lastValue(core, ".sg .btn-secondary:hover:not(:disabled, [aria-disabled='true'])", 'background')
+    ).toBe('var(--schegent-button-secondary-hover)');
+    expect(lastValue(core, '.sg .btn-danger', 'border-color')).toBe('var(--schegent-error-border)');
+    expect(
+      lastValue(core, ".sg .btn-danger:hover:not(:disabled, [aria-disabled='true'])", 'background')
+    ).toBe('var(--schegent-error-bg)');
+    expect(
+      lastValue(core, ".sg .btn-danger:hover:not(:disabled, [aria-disabled='true'])", 'border-color')
+    ).toBe('var(--schegent-error-border)');
+    expect(
+      lastValue(core, ".sg .btn:is(:disabled, [aria-disabled='true'])", 'opacity')
+    ).toBe('0.4');
+    expect(
+      lastValue(core, ".sg .btn:is(:disabled, [aria-disabled='true'])", 'cursor')
+    ).toBe('default');
+    expect(
+      lastValue(core, ".sg .icon-btn:is(:disabled, [aria-disabled='true'])", 'opacity')
+    ).toBe('0.4');
+    expect(
+      lastValue(core, ".sg .icon-btn:is(:disabled, [aria-disabled='true'])", 'cursor')
+    ).toBe('default');
+  });
+
+  it('aligns segmented controls and filter pills to the shared control height token', () => {
+    const core = sheetRules('sg-core.css');
+    expect(lastValue(core, '.sg .seg', 'min-height')).toBe('var(--schegent-control-height)');
+    expect(lastValue(core, '.sg .seg button', 'min-height')).toBe(
+      'calc(var(--schegent-control-height) - 2px)'
+    );
+    expect(lastValue(core, '.sg .filter-btn', 'height')).toBe('var(--schegent-control-height)');
+    expect(lastValue(core, '.sg .filter-btn', 'border-radius')).toBe(
+      'calc(var(--schegent-control-height) / 2)'
+    );
+  });
+
+  it('defines framed empty states, nested empty border suppression, menu icon spacer, and programmatic heading focus suppression in sg-pages.css', () => {
+    const pages = sheetRules('sg-pages.css');
+    expect(lastValue(pages, '.sg .empty', 'border')).toBe('1px solid var(--schegent-border)');
+    expect(lastValue(pages, '.sg .empty', 'border-radius')).toBe('var(--schegent-radius)');
+    expect(lastValue(pages, '.sg .empty', 'line-height')).toBe('1.5');
+    expect(lastValue(pages, '.sg :is(.table-wrap, .card) .empty', 'border')).toBe('0');
+    expect(lastValue(pages, '.sg :is(.table-wrap, .card) .empty', 'border-radius')).toBe('0');
+    expect(lastValue(pages, '.sg .menu .menu-icon-spacer', 'width')).toBe('16px');
+    expect(lastValue(pages, '.sg .menu .menu-icon-spacer', 'height')).toBe('16px');
+    expect(lastValue(pages, ".sg h1[tabindex='-1']:focus:not(:focus-visible)", 'outline')).toBe('none');
+    expect(lastValue(pages, ".sg h1[tabindex='-1'][data-focus-source='pointer']:focus", 'outline')).toBe('none');
+  });
 });
 
 describe.each(ALL_SHEETS)('%s', (sheet) => {
@@ -518,5 +569,15 @@ describe.each(MOCKUP_PALETTES)('contrast in the $name mockup palette', (palette)
 
   it('keeps foreground text on the selection background at WCAG AA', () => {
     expect(contrast(palette.fg, palette.selection)).toBeGreaterThanOrEqual(WCAG_AA_TEXT);
+  });
+
+  it('keeps danger button text at WCAG AA on its tinted hover fill', () => {
+    const theme = themeRules();
+    const share = saturatedShare('--schegent-error-text', lastValue(theme, ':root', '--schegent-error-text'));
+    const errorText = mix(palette.error, palette.fg, share);
+    for (const surface of TEXT_SURFACES) {
+      const hoverBg = mix(palette.error, palette[surface], 0.09);
+      expect(contrast(errorText, hoverBg)).toBeGreaterThanOrEqual(WCAG_AA_TEXT);
+    }
   });
 });

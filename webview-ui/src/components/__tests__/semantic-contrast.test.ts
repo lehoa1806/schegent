@@ -40,4 +40,25 @@ describe('semantic error text contrast', () => {
     expect(contrast(errorText, surface)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(errorText, tintedSurface)).toBeGreaterThanOrEqual(4.5);
   });
+
+  it('keeps secondary and danger button hover fallbacks at WCAG AA contrast', () => {
+    const css = readFileSync(join(__dirname, '../../lib/theme.css'), 'utf8');
+    expect(css).toMatch(
+      /--schegent-button-secondary-hover:[\s\S]*?--vscode-button-secondaryHoverBackground[\s\S]*?10%/
+    );
+    expect(css).toMatch(/--schegent-error-bg:[\s\S]*?9%/);
+
+    const fg: Rgb = [204, 204, 204];
+    const secondaryBg: Rgb = [58, 61, 65];
+    const secondaryFg: Rgb = [240, 240, 240];
+    const secondaryHoverBg = mix(fg, secondaryBg, 0.1);
+    expect(contrast(secondaryFg, secondaryHoverBg)).toBeGreaterThanOrEqual(4.5);
+
+    const errorRed: Rgb = [241, 76, 76];
+    const surface: Rgb = [37, 37, 38];
+    const bg: Rgb = [30, 30, 30];
+    const errorText = mix(errorRed, fg, 0.55);
+    expect(contrast(errorText, mix(errorRed, surface, 0.09))).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(errorText, mix(errorRed, bg, 0.09))).toBeGreaterThanOrEqual(4.5);
+  });
 });
