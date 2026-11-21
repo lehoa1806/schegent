@@ -238,11 +238,6 @@
 </section>
 
 <style>
-  /* The empty state sits where the table would, in the table's own frame. */
-  .empty {
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-  }
   .empty span {
     display: block;
     max-width: 38ch;

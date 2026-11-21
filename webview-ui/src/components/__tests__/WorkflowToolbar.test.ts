@@ -149,4 +149,39 @@ describe('WorkflowToolbar export inclusion (T023, FR-013)', () => {
 
     expect(exportSpy).toHaveBeenCalledWith('other-flow', 'include-closure');
   });
+
+  it('orders Revert before Export YAML and renders Deactivate with danger tone and trash icon after <hr />', () => {
+    const { container } = render(WorkflowToolbar, {
+      savePending: false,
+      mutatingDisabled: false,
+      noPipelines: false,
+      duplicateDisabled: false,
+      removeDisabled: false,
+      saveDisabled: false,
+      canReset: true,
+      selected: row(),
+      onadd: () => {},
+      onduplicate: () => {},
+      onremove: () => {},
+      onsave: () => {},
+      onreset: () => {}
+    });
+    const menu = container.querySelector('[role="menu"]') as HTMLElement | null;
+    expect(menu).not.toBeNull();
+    const entries = [...menu!.children].map((el) =>
+      el.tagName === 'HR' ? 'hr' : el.getAttribute('data-testid')
+    );
+    expect(entries).toEqual([
+      'workflows-add',
+      'workflows-duplicate',
+      'workflows-discard',
+      'workflows-export-open',
+      'hr',
+      'workflows-remove'
+    ]);
+    const deactivate = menu!.querySelector('[data-testid="workflows-remove"]');
+    expect(deactivate?.classList.contains('danger')).toBe(true);
+    expect(deactivate?.querySelector('use')?.getAttribute('href')).toBe('#i-trash');
+    expect(deactivate?.textContent.trim()).toBe('Deactivate…');
+  });
 });

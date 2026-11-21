@@ -159,9 +159,6 @@
 
   .runtime .empty {
     margin: 0;
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    line-height: 1.5;
   }
 
   .card > p {

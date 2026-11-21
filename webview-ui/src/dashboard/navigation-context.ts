@@ -35,5 +35,5 @@ export interface DashboardNavigation {
    * Open the Settings route on its Queues section, with focus on the page's heading, as the top
    * navigation opens a page. Changes no host state and posts nothing.
    */
-  readonly openQueueSettings: () => void;
+  readonly openQueueSettings: (fromPointer?: boolean) => void;
 }

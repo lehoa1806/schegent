@@ -42,6 +42,8 @@
   <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5Z" /></symbol>
   <symbol id="i-start" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5Z" /></symbol>
   <symbol id="i-pause" viewBox="0 0 16 16"><path d="M5.5 3.5v9M10.5 3.5v9" /></symbol>
+  <symbol id="i-stop" viewBox="0 0 16 16"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5" /></symbol>
+  <symbol id="i-edit" viewBox="0 0 16 16"><path d="M11.3 2.7a1.4 1.4 0 0 1 2 2L6 12l-3.2.8.8-3.2 7.7-6.9Z" /></symbol>
   <symbol id="i-dot" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.5" fill="currentColor" /></symbol>
   <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5" y="5" width="8.5" height="8.5" rx="1.2" /><path d="M11 5V3.7A1.2 1.2 0 0 0 9.8 2.5H3.7a1.2 1.2 0 0 0-1.2 1.2v6.1A1.2 1.2 0 0 0 3.7 11H5" /></symbol>
   <symbol id="i-refresh" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6" /><path d="M13 2.5v2.8h-2.8" /></symbol>

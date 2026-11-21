@@ -2495,3 +2495,103 @@ test('the Workflow editor stands as far under the tabs as the builder mockup dra
 
   assertNoPageErrors(page, 'Builder tabs spacing');
 });
+
+/**
+ * Track 1 (325-dashboard-ui-consistency): verifies Metrics header stability across tabs,
+ * 28px toolbar control height baseline across `.btn`/`.input`/`.icon-btn`/`.seg`/`.filter-btn`,
+ * and clean programmatic heading focus on mouse click without suppressing keyboard `:focus-visible`.
+ */
+test('Dashboard UI consistency: stable Metrics header, 28px control rhythm, and clean heading focus', async ({
+  page
+}) => {
+  await installDeterministicHost(page);
+  await page.goto('/dashboard.html');
+  await page.addStyleTag({ content: themeCss('dark') });
+  await publishSnapshot(page);
+
+  const headingFocusState = (): Promise<{ isActive: boolean; outlineStyle: string | null }> =>
+    page.evaluate(`(() => {
+      const h1 = document.querySelector('#dashboard-content h1');
+      return {
+        isActive: document.activeElement === h1,
+        outlineStyle: h1 ? getComputedStyle(h1).outlineStyle : null
+      };
+    })()`) as Promise<{ isActive: boolean; outlineStyle: string | null }>;
+
+  // Pointer-click navigation moves focus to the page heading without painting an outline.
+  await page.getByTestId('dashboard-route-metrics').click();
+  await expect(page.getByTestId('metrics-toolbar')).toBeVisible();
+  await expect
+    .poll(() => headingFocusState(), 'route click moves focus to Metrics h1 without outline')
+    .toEqual({ isActive: true, outlineStyle: 'none' });
+
+  // Metrics Overview toolbar sits inside #metrics-panel (not .phead) and shares 28px control height.
+  const overviewLayout = (await page.evaluate(`(() => {
+    const phead = document.querySelector('[data-testid="metrics-section"] .phead');
+    const panel = document.querySelector('#metrics-panel');
+    const toolbar = document.querySelector('[data-testid="metrics-toolbar"]');
+    const seg = toolbar ? toolbar.querySelector('.seg') : null;
+    const refresh = toolbar ? toolbar.querySelector('[data-testid="metrics-refresh"]') : null;
+    return {
+      inPhead: Boolean(phead && toolbar && phead.contains(toolbar)),
+      inPanel: Boolean(panel && toolbar && panel.contains(toolbar)),
+      pheadHeight: phead ? Math.round(phead.getBoundingClientRect().height) : 0,
+      segHeight: seg ? Math.round(seg.getBoundingClientRect().height) : 0,
+      refreshHeight: refresh ? Math.round(refresh.getBoundingClientRect().height) : 0
+    };
+  })()`)) as {
+    inPhead: boolean;
+    inPanel: boolean;
+    pheadHeight: number;
+    segHeight: number;
+    refreshHeight: number;
+  };
+  expect(overviewLayout.inPhead, 'Metrics toolbar is not inside .phead').toBe(false);
+  expect(overviewLayout.inPanel, 'Metrics toolbar sits inside #metrics-panel').toBe(true);
+  expect(overviewLayout.segHeight, '.seg matches 28px desktop control height').toBe(28);
+  expect(overviewLayout.refreshHeight, '.icon-btn matches 28px desktop control height').toBe(28);
+
+  // Switching to Reports leaves .phead height completely unchanged.
+  await page.getByTestId('metrics-mode-reports').click();
+  await expect(page.getByTestId('historical-reports-panel')).toBeVisible();
+  await expect(page.getByTestId('metrics-toolbar')).toHaveCount(0);
+  const reportsPheadHeight = (await page.evaluate(`(() => {
+    const phead = document.querySelector('[data-testid="metrics-section"] .phead');
+    return phead ? Math.round(phead.getBoundingClientRect().height) : 0;
+  })()`)) as number;
+  expect(reportsPheadHeight, 'Metrics .phead height stays unchanged across Overview and Reports').toBe(
+    overviewLayout.pheadHeight
+  );
+
+  // History route: pointer click keeps heading outline hidden, controls align to 28px, and Tab restores focus outline.
+  await page.getByTestId('dashboard-route-history').click();
+  await expect(page.getByTestId('history-section')).toBeVisible();
+  await expect
+    .poll(() => headingFocusState(), 'route click moves focus to History h1 without outline')
+    .toEqual({ isActive: true, outlineStyle: 'none' });
+
+  const historyHeights = (await page.evaluate(`(() => {
+    const root = document.querySelector('[data-testid="history-dashboard"]');
+    const input = root ? root.querySelector('.toolbar .input') : null;
+    const seg = root ? root.querySelector('.toolbar .seg') : null;
+    const filterBtn = root ? root.querySelector('.toolbar .filter-btn') : null;
+    return {
+      input: input ? Math.round(input.getBoundingClientRect().height) : null,
+      seg: seg ? Math.round(seg.getBoundingClientRect().height) : null,
+      filterBtn: filterBtn ? Math.round(filterBtn.getBoundingClientRect().height) : null
+    };
+  })()`)) as { input: number | null; seg: number | null; filterBtn: number | null };
+  expect(historyHeights.input, 'History search input matches 28px control height').toBe(28);
+  expect(historyHeights.seg, 'History outcome segmented control matches 28px control height').toBe(28);
+  expect(historyHeights.filterBtn, 'History filter pill matches 28px control height').toBe(28);
+
+  // Keyboard Tab navigation still displays visible focus outlines on interactive controls.
+  await page.keyboard.press('Tab');
+  const keyboardOutline = (await page.evaluate(`(() => {
+    const active = document.activeElement;
+    return active ? getComputedStyle(active).outlineStyle : null;
+  })()`)) as string | null;
+  expect(keyboardOutline, 'keyboard Tab shows visible focus outline on interactive control').not.toBe('none');
+
+  assertNoPageErrors(page, 'Dashboard UI consistency');
+});

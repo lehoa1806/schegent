@@ -111,6 +111,7 @@ describe('useConfirm', () => {
     });
     await tick();
     expect(getDialog()).not.toBeNull();
+    expect(document.querySelector('.confirm-dialog-host')?.classList.contains('sg')).toBe(true);
     expect(resolvedValue).toBeNull();
     // Cleanup: cancel to settle the promise.
     getButton('confirm-dialog-cancel').click();

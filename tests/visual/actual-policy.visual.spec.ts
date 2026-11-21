@@ -597,8 +597,11 @@ test.describe('actual policy smoke', () => {
     await page.getByTestId(`queue-card-${POLICY_SMOKE_QUEUE_ID}`).click();
     await page.getByTestId(`queue-task-row-${POLICY_SMOKE_PENDING_TASK_ID}`).click();
     await expect(page.getByTestId('run-detail-tier'), 'the Run Detail tier must open').toBeVisible();
+    const taskMenu = page.locator('button[data-testid^="queue-item-menu-"]').first();
+    await expect(taskMenu, 'a Task\'s overflow menu must be present on Run Detail').toBeVisible();
+    await taskMenu.click();
     const editToggle = page.locator('button[data-testid^="queue-item-edit-"][aria-label^="Edit "]').first();
-    await expect(editToggle, 'a Task\'s Edit control must be present before its form is submitted').toBeVisible();
+    await expect(editToggle, 'a Task\'s Edit control must be visible inside its overflow menu').toBeVisible();
     await editToggle.click();
     const editForm = page.locator('form[data-testid^="queue-item-edit-form-"]').first();
     await expect(editForm, 'the Task edit form must be present before it is submitted').toBeVisible();

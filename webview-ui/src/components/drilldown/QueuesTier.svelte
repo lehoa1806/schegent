@@ -162,7 +162,7 @@
             type="button"
             class="btn btn-secondary"
             data-testid="queue-settings-open"
-            onclick={() => navigation.openQueueSettings()}
+            onclick={(event) => navigation.openQueueSettings(event.detail > 0)}
           >
             Queue defaults
           </button>

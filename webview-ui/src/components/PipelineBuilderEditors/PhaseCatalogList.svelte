@@ -134,9 +134,9 @@
         <span class="chip s-warn" data-testid="phases-unsaved">Unsaved changes</span>
         <button type="button" class="icon-btn" aria-label="Undo" title="Undo" disabled={!trusted || savePending || historyIndex <= 0} onclick={onundo}><svg class="i" aria-hidden="true"><use href="#i-undo"></use></svg></button>
         <button type="button" class="icon-btn" aria-label="Redo" title="Redo" disabled={!trusted || savePending || historyIndex >= historyLength - 1} onclick={onredo}><svg class="i" aria-hidden="true"><use href="#i-redo"></use></svg></button>
-        <button type="button" class="btn btn-secondary" data-testid="phases-save-all" disabled={!trusted || savePending} onclick={onsave}>{savePending ? 'Saving…' : 'Save'}</button>
+        <button type="button" class="btn btn-primary" data-testid="phases-save-all" disabled={!trusted || savePending} onclick={onsave}>{savePending ? 'Saving…' : 'Save'}</button>
       {/if}
-      <button type="button" class="btn btn-primary" data-testid="phases-add" disabled={!trusted || savePending || mutationActive} onclick={onadd}><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>New phase</button>
+      <button type="button" class="btn {mutationActive ? 'btn-secondary' : 'btn-primary'}" data-testid="phases-add" disabled={!trusted || savePending || mutationActive} onclick={onadd}><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>New phase</button>
     </div>
   </div>
 
@@ -192,7 +192,7 @@
         </table>
       </div>
     {:else}
-      <p class="no-match" data-testid="phases-no-match">No Phases match the search or the status filter.</p>
+      <p class="empty" data-testid="phases-no-match">No Phases match the search or the status filter.</p>
     {/if}
     <p class="countline" data-testid="phases-countline">{phaseCountLine(rows.length, phases.length)}</p>
   {/if}
@@ -230,10 +230,5 @@
     width: 1%;
     white-space: nowrap;
     text-align: right;
-  }
-
-  .no-match {
-    margin: var(--schegent-space-4) var(--schegent-space-0-5);
-    color: var(--schegent-muted-fg);
   }
 </style>

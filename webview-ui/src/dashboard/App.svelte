@@ -91,7 +91,7 @@
   const HEADING_WAIT_FRAMES = 120;
   let headingRequest = 0;
 
-  async function focusPageHeading(): Promise<void> {
+  async function focusPageHeading(fromPointer = false): Promise<void> {
     headingRequest += 1;
     const request = headingRequest;
     const origin = document.activeElement;
@@ -106,6 +106,12 @@
         const focusMoved = focused !== origin && focused !== document.body;
         if (focusMoved) return;
         heading.tabIndex = -1;
+        if (fromPointer) {
+          heading.dataset.focusSource = 'pointer';
+          heading.addEventListener('blur', () => { delete heading.dataset.focusSource; }, { once: true });
+        } else {
+          delete heading.dataset.focusSource;
+        }
         heading.focus();
         return;
       }
@@ -125,10 +131,11 @@
 
   function openRoute(
     next: DashboardRoute,
-    section: SettingsSectionId = OPENING_SETTINGS_SECTION
+    section: SettingsSectionId = OPENING_SETTINGS_SECTION,
+    fromPointer = false
   ): void {
     showRoute(next, section);
-    void focusPageHeading();
+    void focusPageHeading(fromPointer);
   }
 
   const navigation: DashboardNavigation = {
@@ -138,8 +145,8 @@
     },
     // The Queues list's "Queue defaults": the page opens on Queues and lands focus on its heading,
     // as a page opened from the top navigation does. Webview-local, like the link above.
-    openQueueSettings: () => {
-      openRoute('settings', 'queues');
+    openQueueSettings: (fromPointer = false) => {
+      openRoute('settings', 'queues', fromPointer);
     }
   };
   setContext(DASHBOARD_NAVIGATION, navigation);
@@ -165,7 +172,7 @@
             title={DASHBOARD_ROUTE_LABELS[r]}
             onpointerenter={() => preloadRoute(r)}
             onfocus={() => preloadRoute(r)}
-            onclick={() => openRoute(r)}
+            onclick={(event) => openRoute(r, OPENING_SETTINGS_SECTION, event.detail > 0)}
           >
             <svg class="i" aria-hidden="true"><use href={ROUTE_ICONS[r]}></use></svg>
             <span class="nav-label">{DASHBOARD_ROUTE_LABELS[r]}</span>
