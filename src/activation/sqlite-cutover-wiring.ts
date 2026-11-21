@@ -368,7 +368,7 @@ async function openPrimarySqliteServices(
     return null;
   }
 
-  let telemetryHost: TelemetryHostService | null = null;
+  let createdTelemetryHost: TelemetryHostService | null = null;
   let usageWiring: UsageAccountingWiring | null = null;
   let workflowComposition: ProductionWorkflowComposition | null = null;
   let configSub: vscode.Disposable | null = null;
@@ -379,7 +379,7 @@ async function openPrimarySqliteServices(
       disposeTelemetryConfig: () => configSub?.dispose(),
       usageWiring,
       workflowComposition,
-      telemetryHost,
+      telemetryHost: createdTelemetryHost,
       sqliteStore
     });
   };
@@ -445,7 +445,7 @@ async function openPrimarySqliteServices(
       return null;
     }
 
-    telemetryHost = createTelemetryHostService({
+    const telemetryHost = createTelemetryHostService({
       sqliteStore,
       storageRoot: activeStorageRoot,
       secrets: buildSecretPort(deps.context.secrets),
@@ -453,8 +453,8 @@ async function openPrimarySqliteServices(
       serviceVersion: '0.2.0',
       reportSideEffectFailure: input.reportSideEffectFailure
     });
-    const boundTelemetryHost = telemetryHost;
-    boundTelemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
+    createdTelemetryHost = telemetryHost;
+    telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
 
     usageWiring = createUsageAccountingWiring({
       service: usageAccounting,
@@ -462,7 +462,7 @@ async function openPrimarySqliteServices(
       subscriptions: deps.disposables,
       logger: deps.logger,
       onAcceptedObservation: (observationId) => {
-        boundTelemetryHost.offerAcceptedObservationById(observationId);
+        telemetryHost.offerAcceptedObservationById(observationId);
       }
     });
 
@@ -579,10 +579,10 @@ async function openPrimarySqliteServices(
     });
     registerProductionWorkflowComposition(deps.store, workflowComposition);
 
-    void replayTelemetrySpoolAfterSettling(boundTelemetryHost, input.reportSideEffectFailure);
+    void replayTelemetrySpoolAfterSettling(telemetryHost, input.reportSideEffectFailure);
     configSub = vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('schegent.telemetry.export')) {
-        boundTelemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
+        telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
       }
     });
     const boundConfigSub = configSub;
@@ -603,7 +603,7 @@ async function openPrimarySqliteServices(
       artifactLifecycle,
       usageAccounting,
       usageWiring,
-      telemetryHost: boundTelemetryHost,
+      telemetryHost,
       liveLogIndex,
       recoveryHandoff,
       laneService,
