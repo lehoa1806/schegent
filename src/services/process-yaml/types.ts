@@ -21,6 +21,7 @@ import type {
   PhaseDefinitionEffort,
   PhaseEvidencePolicy,
   PhaseHostVerification,
+  NativeReviewKind,
   PhaseSideEffects,
   PhaseSourceStatus,
   RetryCapOutcome
@@ -141,6 +142,7 @@ interface PhaseYamlSpecBase {
   readonly retryCondition?: string;
   /** FR-R5-F24 (D2) — typed decision result contract for this Phase. */
   readonly resultContract?: ResultContract;
+  readonly nativeReview?: NativeReviewKind;
 }
 
 export interface InstructionPhaseYamlSpec extends PhaseYamlSpecBase {

@@ -77,7 +77,7 @@ import {
   worktreeCount,
   type FeatureWorkspace
 } from '../../fixtures/finalization-workspaces';
-import { resolveReviewScope, type ScopeResolution } from '../../fixtures/review-scope-harness';
+import { readNativeReviewScope, type NativeReviewScope } from '../../../src/services/native-review-scope';
 import {
   buildE1,
   buildE2,
@@ -105,12 +105,13 @@ import {
   type Snapshot,
   type Workspace
 } from '../../fixtures/review-scope-workspaces';
-import { instructionOf, loadExample, phaseOf } from '../../fixtures/speckit-new-feature-example';
+import { instructionOf, loadExample, loadLegacyIntegrationPhase, phaseOf } from '../../fixtures/speckit-new-feature-example';
 
 const example = loadExample();
 
-/** The shipped instruction of a Phase, read inside each row so a missing Phase fails that row alone. */
-const shipped = (phaseId: 'finalize' | 'integrate' | 'speckit-code-review'): string => instructionOf(phaseOf(example, phaseId));
+const legacyIntegrate = instructionOf(loadLegacyIntegrationPhase());
+const shipped = (phaseId: 'claude-finalize' | 'claude-speckit-integrate'): string =>
+  phaseId === 'claude-speckit-integrate' ? legacyIntegrate : instructionOf(phaseOf(example, phaseId));
 
 /** The text with one clause swapped for another, in memory only. The clause must occur, and must change the text. */
 function replaced(text: string, from: string, to: string): string {
@@ -166,14 +167,14 @@ interface RowOptions {
  */
 function runRow(workspace: FeatureWorkspace, options: RowOptions = {}): IntegrationRow {
   const commits = options.commit
-    ? commitFeature(options.finalize ?? shipped('finalize'), workspace.root, workspace.inputs)
+    ? commitFeature(options.finalize ?? shipped('claude-finalize'), workspace.root, workspace.inputs)
     : null;
   options.between?.();
   for (const repository of workspace.repositories) seedStatDirty(repository);
   const count = (): number => workspace.repositories.reduce((sum, repository) => sum + worktreeCount(repository), 0);
   const worktreesBefore = count();
   const before = snapshot(workspace.repositories);
-  const record = integrate(options.integrate ?? shipped('integrate'), workspace.root, workspace.inputs, options.hooks);
+  const record = integrate(options.integrate ?? shipped('claude-speckit-integrate'), workspace.root, workspace.inputs, options.hooks);
   expectClearOnlyWhenSettled(record);
   const after = snapshot(workspace.repositories);
   return { workspace, record, commits, before, after, worktreesBefore, worktreesAfter: count() };
@@ -329,7 +330,7 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
     };
 
     /** The envelope F19 adds: the root, when it is a repository top level and not itself a target. */
-    function envelopeExpected(root: string, review: ScopeResolution): Array<{ path: string; base: string }> {
+    function envelopeExpected(root: string, review: NativeReviewScope): Array<{ path: string; base: string }> {
       const isTopLevel = ((): boolean => {
         try {
           return git(root, ['rev-parse', '--show-prefix']).trim() === '';
@@ -340,10 +341,10 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
       return isTopLevel && !review.targets.some((target) => target.path === '.') ? [{ path: '.', base: 'develop' }] : [];
     }
 
-    it.each(F18_WORKSPACES)('%s: the same targets and bases, or the same findings', (name, build) => {
+    it.each(F18_WORKSPACES)('%s: the same targets and bases, or the same findings', async (name, build) => {
       const workspace = build();
-      const review = resolveReviewScope(shipped('speckit-code-review'), workspace.root);
-      const resolution = resolveRepositories(shipped('finalize'), workspace.root);
+      const review = await readNativeReviewScope(workspace.root);
+      const resolution = resolveRepositories(shipped('claude-finalize'), workspace.root);
 
       if (COMMITTED_GITLINK_EXCEPTION.has(name)) {
         // C3: F18 flags a root gitlink a commit moved; this block reads the status only, and the
@@ -361,7 +362,7 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
         ];
         expect(resolution.repositories.map(({ path, base }) => ({ path, base })), `${name}: targets and bases`).toEqual(expected);
         for (const target of review.targets) {
-          expect(resolution.repositories.find(({ path }) => path === target.path)?.mergeBase, `${name}: ${target.path} merge base`).toBe(target.mergeBase);
+          expect(resolution.repositories.find(({ path }) => path === target.path)?.mergeBase, `${name}: ${target.path} merge base`).toBe('mergeBase' in target ? target.mergeBase : undefined);
         }
         return;
       }
@@ -377,11 +378,11 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
       }
     });
 
-    it('control: the committed-gitlink exception covers E4 alone, and F18 does flag it', () => {
+    it('control: the committed-gitlink exception covers E4 alone, and F18 does flag it', async () => {
       const covered = F18_WORKSPACES.filter(([name]) => COMMITTED_GITLINK_EXCEPTION.has(name)).map(([name]) => name);
       expect(covered).toEqual(['E4']);
       const workspace = buildE4();
-      expect(resolveReviewScope(shipped('speckit-code-review'), workspace.root).findings).toBeGreaterThan(0);
+      expect((await readNativeReviewScope(workspace.root)).findings).toBeGreaterThan(0);
     });
   });
 
@@ -417,18 +418,18 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
     };
 
     it('S1: A\'s commit holds exactly A\'s owned set, and B\'s bytes, staged entry and files are unchanged', () => {
-      rowS1(shipped('finalize'));
+      rowS1(shipped('claude-finalize'));
     });
 
     it('S2: a shared pointer naming B\'s directory is not committed, and is unchanged', () => {
       const workspace = buildS2('B');
-      const { paths } = finalizeRow(shipped('finalize'), workspace);
+      const { paths } = finalizeRow(shipped('claude-finalize'), workspace);
       expect(paths).not.toContain('.specify/feature.json');
       expect(paths).toEqual([...S1_OWNED]);
     });
 
     it('S2 control: the same pointer naming A\'s directory is committed, so the pointer rule is live', () => {
-      const { paths } = finalizeRow(shipped('finalize'), (() => {
+      const { paths } = finalizeRow(shipped('claude-finalize'), (() => {
         const workspace = buildS2('A');
         // The pointer is A's own now, so it is no longer among B's paths.
         return { ...workspace, otherPaths: workspace.otherPaths.filter((path) => path !== '.specify/feature.json') };
@@ -438,13 +439,13 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
 
     it('S3: the formatter command names only owned paths, never a formatter-dirty B file', () => {
       const workspace = buildS3();
-      const resolution = resolveRepositories(shipped('finalize'), workspace.root);
+      const resolution = resolveRepositories(shipped('claude-finalize'), workspace.root);
       const repository = resolution.repositories[0]!;
       const claims = readClaims(workspace.root, workspace.inputs.feature);
-      const owned = classifyChanges(shipped('finalize'), workspace.root, repository, claims, workspace.inputs.ties, new Set())
+      const owned = classifyChanges(shipped('claude-finalize'), workspace.root, repository, claims, workspace.inputs.ties, new Set())
         .filter(({ class: kind }) => kind === 'owned')
         .map(({ path }) => path);
-      const argv = formatterArgv(shipped('finalize'), owned);
+      const argv = formatterArgv(shipped('claude-finalize'), owned);
       expect(argv.slice(0, 4)).toEqual(['npx', 'prettier', '--write', '--']);
       expect(argv.slice(4).sort()).toEqual([...S1_OWNED]);
       expect(argv).not.toContain('src/b-format.ts');
@@ -455,10 +456,10 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
 
     it('S1: step 3\'s listing of the branch\'s files names the tracked changes and changes no byte of the index (FR-012)', () => {
       const workspace = buildS1();
-      const [repository] = resolveRepositories(shipped('finalize'), workspace.root).repositories;
+      const [repository] = resolveRepositories(shipped('claude-finalize'), workspace.root).repositories;
       for (const dir of workspace.repositories) seedStatDirty(dir);
       const before = snapshot(workspace.repositories);
-      const listed = listBranchChanges(shipped('finalize'), workspace.root, repository!);
+      const listed = listBranchChanges(shipped('claude-finalize'), workspace.root, repository!);
       expect(snapshot(workspace.repositories), 'the listing wrote nothing').toEqual(before);
       expect(listed).toEqual(expect.arrayContaining(['src/a.ts', 'src/b-staged.ts', 'src/b.ts']));
       // Control: an untracked file is not listed, so the list is the tracked changes the text promises.
@@ -466,7 +467,7 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
     });
 
     it('B3: with `commit -a -m <message>` for the pathspec commit, S1 fails because B\'s change is committed', () => {
-      const mutated = replaced(shipped('finalize'), '`git -C <path> commit -m <message> -- <owned paths>`', '`git -C <path> commit -a -m <message>`');
+      const mutated = replaced(shipped('claude-finalize'), '`git -C <path> commit -m <message> -- <owned paths>`', '`git -C <path> commit -a -m <message>`');
       expectRowFails('B3', /staged entry|exactly A's owned set/, () => rowS1(mutated));
     });
   });
@@ -490,7 +491,7 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
     it.each(U_ROWS)('%s: the path is a hand-off with its reason, absent from the commit, its bytes and entry unchanged', (_name, build, path, reason, absent) => {
       const workspace = build();
       const before = observe(workspace, path);
-      const commits = commitFeature(shipped('finalize'), workspace.root, workspace.inputs);
+      const commits = commitFeature(shipped('claude-finalize'), workspace.root, workspace.inputs);
       const repository = commits.repositories[0]!;
       expect(repository.changes.find((change) => change.path === path), `${path} is classified`).toMatchObject({ class: 'ambiguous', reason });
       const paths = committedPaths(workspace.root, repository.outcome.committed!);
@@ -512,7 +513,7 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
 
     it('control: U3 with only the first change (`M `) is owned, and committed', () => {
       const workspace = buildU3(false);
-      const commits = commitFeature(shipped('finalize'), workspace.root, workspace.inputs);
+      const commits = commitFeature(shipped('claude-finalize'), workspace.root, workspace.inputs);
       expect(commits.repositories[0]!.changes.find((change) => change.path === 'src/a.ts')).toMatchObject({ x: 'M', y: ' ', class: 'owned' });
       expect(committedPaths(workspace.root, commits.repositories[0]!.outcome.committed!)).toContain('src/a.ts');
     });
@@ -520,7 +521,7 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
     it('control: U4 tied to A by the review is owned, and committed', () => {
       const workspace = buildU4();
       const tied = { ...workspace.inputs, ties: { owned: ['src/orphan.ts'], mixed: [] } };
-      const commits = commitFeature(shipped('finalize'), workspace.root, tied);
+      const commits = commitFeature(shipped('claude-finalize'), workspace.root, tied);
       expect(committedPaths(workspace.root, commits.repositories[0]!.outcome.committed!)).toContain('src/orphan.ts');
     });
   });
@@ -537,7 +538,7 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
     };
 
     it('I1: a clean integration moves only the target ref, to a merge of the old target and the source', () => {
-      rowI1(shipped('integrate'));
+      rowI1(shipped('claude-speckit-integrate'));
     });
 
     it('I2: the checkout on the target is already integrated, not refused, and nothing moves', () => {
@@ -569,7 +570,7 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
 
       const detached = buildI4();
       writeLate(detached.root);
-      const commits = commitFeature(shipped('finalize'), detached.root, detached.inputs);
+      const commits = commitFeature(shipped('claude-finalize'), detached.root, detached.inputs);
       expect(commits.repositories[0]!.outcome).toEqual({ committed: null, skipped: 'detached' });
     });
 
@@ -642,21 +643,21 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
     };
 
     it('I8: a tag named as the base is refused "no such local branch", not read as already integrated', () => {
-      rowI8(shipped('integrate'));
+      rowI8(shipped('claude-speckit-integrate'));
     });
 
     it('B2: with `refs/heads/` dropped from step 1\'s command, a tag is read as already integrated, so I8 fails', () => {
       const clause = '`git -C <path> merge-base --is-ancestor <source commit> refs/heads/<target>`';
-      expectRowFails('B2', /not read as already integrated/, () => rowI8(replaced(shipped('integrate'), clause, clause.replace('refs/heads/<target>', '<target>'))));
+      expectRowFails('B2', /not read as already integrated/, () => rowI8(replaced(shipped('claude-speckit-integrate'), clause, clause.replace('refs/heads/<target>', '<target>'))));
     });
 
     it('B4: with `--no-optional-locks` dropped from the status command, the index is rewritten, so I1 fails', () => {
-      const mutated = replaced(shipped('integrate'), '`git --no-optional-locks -C <path> status', '`git -C <path> status');
+      const mutated = replaced(shipped('claude-speckit-integrate'), '`git --no-optional-locks -C <path> status', '`git -C <path> status');
       expectRowFails('B4', /index bytes/, () => rowI1(mutated));
     });
 
     it('B5: with `-p <target commit>` dropped from commit-tree, the merge has one parent, so I1 fails', () => {
-      const mutated = replaced(shipped('integrate'), 'commit-tree <tree> -p <target commit> -p <source commit>', 'commit-tree <tree> -p <source commit>');
+      const mutated = replaced(shipped('claude-speckit-integrate'), 'commit-tree <tree> -p <target commit> -p <source commit>', 'commit-tree <tree> -p <source commit>');
       expectRowFails('B5', /parents/, () => rowI1(mutated));
     });
   });
@@ -732,13 +733,13 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
     };
 
     it('M5: the first target moved, the second failed: partially integrated, with the restoring command recorded and not run', () => {
-      rowM5(shipped('integrate'));
+      rowM5(shipped('claude-speckit-integrate'));
     });
 
     it('B1: with the old and new commits swapped in step 5\'s apply, nothing is compare-and-swapped, so M5 fails', () => {
       const apply = '`git -C <path> update-ref refs/heads/<target> <merge> <target commit>`';
       const compensate = '`git -C <path> update-ref refs/heads/<target> <target commit> <merge>`';
-      expectRowFails('B1', /first target moved and the second failed/, () => rowM5(replaced(shipped('integrate'), apply, compensate)));
+      expectRowFails('B1', /first target moved and the second failed/, () => rowM5(replaced(shipped('claude-speckit-integrate'), apply, compensate)));
     });
 
     it('H1: a gitlink left at an older commit is a recorded HEAD that differs, so integration is withheld', () => {
@@ -869,7 +870,7 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
   // and then check that the shipped text says what the row needs it to say; each has a control that
   // removes the clause and must fail the same check.
   describe('prompt conflicts are resolved without relaxing commit safety (FR-R5-F19, US4)', () => {
-    const PHASES = ['finalize', 'integrate'] as const;
+    const PHASES = ['claude-finalize', 'claude-speckit-integrate'] as const;
     const GITLINK_ALTERNATIVE = 'the changed gitlink of a repository with feature work';
     const NO_FEATURE_CLAUSE = 'or claimed by no feature, other than the changed gitlink of a repository with feature work.';
     const STATUS_ARGS = ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'] as const;
@@ -898,13 +899,13 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
     });
 
     it('control: the clause as it stood sends the changed gitlink to ambiguous, so the reading above can fail', () => {
-      const before = replaced(shipped('finalize'), NO_FEATURE_CLAUSE, 'or claimed by no feature.');
+      const before = replaced(shipped('claude-finalize'), NO_FEATURE_CLAUSE, 'or claimed by no feature.');
       expect(gitlinkIsAmbiguous(before)).toBe(true);
     });
 
     it('W8: a declared gitlink with a real new commit is a changed gitlink only the explicit flag shows', () => {
       const { root } = buildW8();
-      const resolution = resolveRepositories(shipped('finalize'), root);
+      const resolution = resolveRepositories(shipped('claude-finalize'), root);
       const delta = join(root, 'delta');
 
       expect(resolution.findings).toEqual([]);
@@ -934,52 +935,21 @@ describe('the finalization Phases, run on fixture workspaces (FR-R4-F19)', () =>
         text.includes('Before committing, list the untracked owned paths') &&
         text.includes('any that looks like a credential, key or token file') &&
         text.includes('or exceeds 1 MiB') &&
-        text.includes('an owned gitlink change does not excuse it');
-      expect(refuses(shipped('finalize'))).toBe(true);
-      for (const clause of ['a credential, key or token file', 'or exceeds 1 MiB', 'an owned gitlink change does not excuse it']) {
-        expect(refuses(replaced(shipped('finalize'), clause, 'x')), `without "${clause}"`).toBe(false);
+        text.includes('even with an owned gitlink change');
+      expect(refuses(shipped('claude-finalize'))).toBe(true);
+      for (const clause of ['a credential, key or token file', 'or exceeds 1 MiB', 'even with an owned gitlink change']) {
+        expect(refuses(replaced(shipped('claude-finalize'), clause, 'x')), `without "${clause}"`).toBe(false);
       }
     });
 
     it('S-gitlink: the size default is written once, and the mechanism is stated as prompt-only with its backstop', () => {
-      const text = shipped('finalize');
+      const text = shipped('claude-finalize');
 
       expect(text.split('1 MiB')).toHaveLength(2);
-      expect(text).toContain('Prompt-only');
+      expect(text).toContain('prompt-only check');
       expect(text).toContain('the post-commit tracked-files scan is the backstop');
       // Integrate never commits, so it carries no copy of the clause.
-      expect(shipped('integrate')).not.toContain('1 MiB');
-    });
-
-    it('C1: a test that pins behavior the requirements now change is handed off, not edited to pass (FR-019)', () => {
-      const clause = 'A test that pins behavior the requirements now change is not edited to pass';
-      const text = shipped('finalize');
-
-      expect(text).toContain(clause);
-      expect(text).toContain('Do NOT mask failures');
-      expect(replaced(text, clause, 'x')).not.toContain(clause);
-    });
-
-    it('D1: a dependency advisory gets only the limited repair, or is reported (FR-019, FR-020, FR-022)', () => {
-      const text = shipped('finalize');
-      const bounds = [
-        'a dependency the feature did not add or change',
-        'by patch or minor versions only, with a targeted command that does not force',
-        'Change at most three packages in all',
-        'already holds a change that is not owned, do not apply it; report the advisory',
-        'Nor over uncommitted owned edits',
-        'If a check that was green before the change now fails, undo the commit with git revert and report the advisory'
-      ];
-      const bans = [
-        'a major version bump',
-        'an overrides, resolutions or constraints entry',
-        'a forced or blanket update, such as `npm audit fix`',
-        'any change to the audit command, its threshold, its ignore list or a waiver',
-        'Do not edit unrelated code to silence it'
-      ];
-
-      for (const phrase of [...bounds, ...bans]) expect(text, phrase).toContain(phrase);
-      for (const phrase of bans) expect(replaced(text, phrase, 'x'), phrase).not.toContain(phrase);
+      expect(shipped('claude-speckit-integrate')).not.toContain('1 MiB');
     });
 
     it('the mixed, partially staged and shared-path refusals keep their clauses beside the new exception', () => {

@@ -713,9 +713,9 @@ describe('planWorkflowImport', () => {
   });
 });
 
-describe('the shipped workflow example imports into a workspace that has never imported', () => {
+describe('the conditional workflow fixture imports into a workspace that has never imported', () => {
   const EXAMPLE = readFileSync(
-    join(__dirname, '..', '..', '..', 'examples', 'example-two-node.workflow.yaml'),
+    join(__dirname, '..', '..', 'fixtures', 'workflows', 'example-two-node.workflow.yaml'),
     'utf8'
   );
 

@@ -846,8 +846,8 @@ interface CommitCommands {
 }
 
 function commitCommands(sections: Sections): CommitCommands {
-  const step = stepOf(sections, 5);
-  return { add: commandWith('step 5', step, 'add --'), commit: commandWith('step 5', step, ' commit ') };
+  const step = stepOf(sections, 4);
+  return { add: commandWith('step 4', step, 'add --'), commit: commandWith('step 4', step, ' commit ') };
 }
 
 /** The pathspecs a commit of `change` names: a rename names both sides. */
@@ -856,7 +856,7 @@ function pathspecs(change: ClassifiedChange): string[] {
 }
 
 /**
- * Runs `finalize` step 5 in one repository: `add --` the untracked owned paths, then `commit -m
+ * Runs `finalize` step 4 in one repository: `add --` the untracked owned paths, then `commit -m
  * <message> --` every owned path. Nothing is run when nothing is owned, `HEAD` is detached or the
  * branch is the base.
  */

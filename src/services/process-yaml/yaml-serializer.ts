@@ -119,6 +119,7 @@ export const SPEC_KEY_ORDER = Object.freeze([
   // silently reverts the author's decision to the boolean's two-valued answer.
   'onRetryCap',
   'retryCondition',
+  'nativeReview',
   'resultContract'
 ] as const);
 

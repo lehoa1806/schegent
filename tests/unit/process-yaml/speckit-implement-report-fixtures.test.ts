@@ -29,6 +29,7 @@ import {
   type PipelineLike,
   type TransitionResult
 } from '../../../src/controller/phase';
+import { resolveRetryCapOutcome } from '../../../src/contracts/retry-cap-outcome';
 import { parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import {
   extractOpenQuestions,
@@ -39,8 +40,9 @@ import {
 import { DEFAULT_ITERATION_CAP } from '../../../src/services/run-planned-total';
 import { loadExample, phaseOf } from '../../fixtures/speckit-new-feature-example';
 
-const IMPLEMENT = 'speckit-implement';
-const NEXT_PHASE = 'speckit-code-review';
+const IMPLEMENT = 'claude-speckit-implement';
+const CONVERGE = 'claude-speckit-converge';
+const NEXT_PHASE = CONVERGE;
 const OPEN_MARKER = '=== SCHEGENT AUDIT LOG ===';
 const CLOSE_MARKER = '=== END AUDIT LOG ===';
 const CLEAR_TOKEN = '[SCHEGENT_STATUS: CLEAR]';
@@ -86,7 +88,6 @@ const example = loadExample();
 const retryCondition = phaseOf(example, IMPLEMENT).spec.retryCondition;
 if (retryCondition === undefined) throw new Error(`${IMPLEMENT} carries no retryCondition`);
 
-const phaseDef = { id: IMPLEMENT, retryCondition };
 const pipeline: PipelineLike = {
   phases: example.phaseIds.map((id) => {
     const condition = phaseOf(example, id).spec.retryCondition;
@@ -117,23 +118,27 @@ function buildReport(
   }
   if (lists.length > 0) sections.push(lists.join(joinIssuesAndHandoffs));
 
-  const block = [
+  const block = auditBlock(IMPLEMENT, { ...fixture.figures });
+  sections.push(fixture.token ? `${block}\n${CLEAR_TOKEN}` : block);
+  return sections.join('\n\n');
+}
+
+function auditBlock(phase: string, figures: Readonly<Record<string, number>>): string {
+  return [
     FENCE,
     OPEN_MARKER,
-    `phase: ${IMPLEMENT}`,
+    `phase: ${phase}`,
     'files_created: []',
     'files_modified: []',
     'files_deleted: []',
     'commands_executed: []',
     'network_calls: [none]',
     'ruleset_switches: [none]',
-    'notes: one implement pass',
-    ...Object.entries(fixture.figures).map(([name, value]) => `${name}: ${value}`),
+    'notes: one phase pass',
+    ...Object.entries(figures).map(([name, value]) => `${name}: ${value}`),
     CLOSE_MARKER,
     FENCE
   ].join('\n');
-  sections.push(fixture.token ? `${block}\n${CLEAR_TOKEN}` : block);
-  return sections.join('\n\n');
 }
 
 interface Run {
@@ -146,7 +151,7 @@ interface Run {
 }
 
 /** The four steps production runs on one invocation's output, in its order. */
-function run(stdout: string, iteration: number): Run {
+function run(stdout: string, iteration: number, phase = IMPLEMENT, continueOnCap = false): Run {
   const audit = parseAuditLogBlock(stdout);
   if (audit.entry === null) throw new Error(`no audit entry: ${audit.warnings.join('; ')}`);
   const result = parseInvocation({
@@ -159,13 +164,15 @@ function run(stdout: string, iteration: number): Run {
     region: audit.region
   });
   const outcome = mapOutcome(result, 0);
+  const spec = phaseOf(example, phase).spec;
   const decision = transition({
-    phase: IMPLEMENT,
+    phase,
     outcome,
     iteration,
     iterationCap: DEFAULT_ITERATION_CAP,
     pipeline,
-    phaseDef,
+    phaseDef: { id: phase, ...(spec.retryCondition ? { retryCondition: spec.retryCondition } : {}) },
+    capOutcome: resolveRetryCapOutcome(spec, continueOnCap),
     metrics: audit.entry.metrics
   });
   return {
@@ -223,7 +230,7 @@ function expectFixture(fixture: Fixture): void {
   expectDecision(taken.decision, fixture.decision);
 }
 
-const ADVANCE_TO_REVIEW: Decision = { kind: 'advance', nextPhase: NEXT_PHASE };
+const ADVANCE_TO_CONVERGE: Decision = { kind: 'advance', nextPhase: NEXT_PHASE };
 const NO_OPEN_WORK = {
   pending_tasks: 0,
   spec_gaps: 0,
@@ -250,7 +257,7 @@ const ONLY_HANDOFF_FIXTURES: readonly Fixture[] = [
     token: true,
     kind: 'clean',
     outcome: 'clean',
-    decision: ADVANCE_TO_REVIEW,
+    decision: ADVANCE_TO_CONVERGE,
     iteration: 1
   },
   {
@@ -268,7 +275,7 @@ const ONLY_HANDOFF_FIXTURES: readonly Fixture[] = [
     token: true,
     kind: 'clean',
     outcome: 'clean',
-    decision: ADVANCE_TO_REVIEW,
+    decision: ADVANCE_TO_CONVERGE,
     iteration: 1
   },
   {
@@ -286,7 +293,7 @@ const ONLY_HANDOFF_FIXTURES: readonly Fixture[] = [
     token: true,
     kind: 'clean',
     outcome: 'clean',
-    decision: ADVANCE_TO_REVIEW,
+    decision: ADVANCE_TO_CONVERGE,
     iteration: 1
   },
   {
@@ -298,7 +305,7 @@ const ONLY_HANDOFF_FIXTURES: readonly Fixture[] = [
     token: true,
     kind: 'clean',
     outcome: 'clean',
-    decision: ADVANCE_TO_REVIEW,
+    decision: ADVANCE_TO_CONVERGE,
     iteration: 1
   }
 ];
@@ -332,7 +339,7 @@ const OPEN_WORK_FIXTURES: readonly Fixture[] = [
     token: false,
     kind: 'remaining_issues',
     outcome: 'issues_remain',
-    decision: ADVANCE_TO_REVIEW,
+    decision: ADVANCE_TO_CONVERGE,
     iteration: 1
   },
   {
@@ -344,7 +351,7 @@ const OPEN_WORK_FIXTURES: readonly Fixture[] = [
     token: false,
     kind: 'remaining_issues',
     outcome: 'issues_remain',
-    decision: ADVANCE_TO_REVIEW,
+    decision: ADVANCE_TO_CONVERGE,
     iteration: 1
   },
   {
@@ -440,5 +447,61 @@ describe('implement report fixtures: the host, through the real parser and trans
         WRITE_PARSER_TEST
       ]);
     });
+  });
+});
+
+describe('the shipped Converge gate', () => {
+  it('advances to code review when the audit reports successful convergence', () => {
+    const report = auditBlock(CONVERGE, { converged: 1 }) + '\n' + CLEAR_TOKEN;
+    expect(run(report, 1, CONVERGE).decision).toMatchObject({
+      kind: 'advance',
+      nextPhase: 'claude-code-review'
+    });
+  });
+
+  it('repeats after tasks are appended and stops at the cap even if the workspace would continue', () => {
+    const report =
+      'Remaining issues:\n- T042 covers the missing acceptance case.\n\n' +
+      auditBlock(CONVERGE, { converged: 0 });
+    expect(run(report, 1, CONVERGE).decision).toMatchObject({
+      kind: 'loop',
+      nextPhase: CONVERGE,
+      nextIteration: 2
+    });
+    expect(run(report, DEFAULT_ITERATION_CAP, CONVERGE, true).decision).toMatchObject({
+      kind: 'halt',
+      status: 'failed',
+      cause: CAP_EXHAUSTED_CAUSE
+    });
+  });
+
+  it('repeats when the metric is missing even if the completion token is present', () => {
+    const report = auditBlock(CONVERGE, {}) + '\n' + CLEAR_TOKEN;
+    expect(run(report, 1, CONVERGE).decision).toMatchObject({ kind: 'loop', nextPhase: CONVERGE });
+  });
+});
+
+describe.each([
+  ['claude-code-review', 'code_review', 'claude-security-review'],
+  ['claude-security-review', 'security_review', 'claude-finalize']
+])('%s gate', (phase, metric, successor) => {
+  const findings = `${metric}_findings`;
+  const verified = `${metric}_verified`;
+
+  it('repeats for findings or missing verification and fails at the cap', () => {
+    const report = auditBlock(phase, { [findings]: 1, [verified]: 1 }) + '\n' + CLEAR_TOKEN;
+    expect(run(report, 1, phase).decision).toMatchObject({ kind: 'loop', nextPhase: phase });
+    expect(run(report, DEFAULT_ITERATION_CAP, phase, true).decision).toMatchObject({
+      kind: 'halt',
+      status: 'failed',
+      cause: CAP_EXHAUSTED_CAUSE
+    });
+    const unverified = auditBlock(phase, { [findings]: 0 }) + '\n' + CLEAR_TOKEN;
+    expect(run(unverified, 1, phase).decision).toMatchObject({ kind: 'loop', nextPhase: phase });
+  });
+
+  it('advances after a verified pass with no remaining findings', () => {
+    const report = auditBlock(phase, { [findings]: 0, [verified]: 1 }) + '\n' + CLEAR_TOKEN;
+    expect(run(report, 1, phase).decision).toMatchObject({ kind: 'advance', nextPhase: successor });
   });
 });

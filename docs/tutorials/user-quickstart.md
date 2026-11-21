@@ -130,10 +130,8 @@ The dashboard opens on **Queues** and also exposes **History**, **Metrics**, **S
 The document is a package: it defines the Workflow and includes all five phase definitions it references. A successful confirmed import publishes the complete set so that the Workflow is launchable; the implementation first stages draft records and then publishes them as one import operation.
 
 **The other files in that folder** (`FR-R3-132`, `FR-R5-F07`): `examples/speckit-new-feature.workflow.yaml` is the
-same shape for the feature process, `examples/example-two-node.workflow.yaml` is a two-node
-Workflow whose single edge is conditional — the second node runs only if the first failed — and
-`examples/example-nested-delivery.workflow.yaml` is a three-level composable Workflow hierarchy
-demonstrating child Workflow reuse across two call sites. See
+same shape for the feature process, and `examples/model-catalog.yaml` lists model identifiers for
+the Models tab. See
 [`examples/README.md`](../../examples/README.md). Every file there is parsed and validated by
 `repo/tests/integration/examples-import.test.ts`, so an example cannot rot into a broken first
 experience.

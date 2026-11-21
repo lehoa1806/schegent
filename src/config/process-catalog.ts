@@ -183,6 +183,7 @@ export function phaseDefinitionToPhaseDef(definition: PhaseDefinition): PhaseDef
     ...(definition.evidencePolicy !== undefined
       ? { evidencePolicy: definition.evidencePolicy }
       : {}),
+    ...(definition.nativeReview !== undefined ? { nativeReview: definition.nativeReview } : {}),
     ...(definition.resultContract !== undefined
       ? { resultContract: definition.resultContract }
       : {})

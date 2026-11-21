@@ -620,7 +620,9 @@ const BUDGETS = [
   // Prior raw-line ceiling: 1,421 (measured 1,418 raw lines); re-derived code-line
   // count: 845. Retained: protects spec 057 coordinator shell size without taxing
   // explanatory comments.
-  { path: 'src/controller/phase-runner.ts', max: 845 },
+  // Native review adds dispatch and audit hooks here. Scope resolution, report
+  // handling, and the freshness check live in the review modules.
+  { path: 'src/controller/phase-runner.ts', max: 871 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

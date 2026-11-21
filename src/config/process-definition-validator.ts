@@ -7,6 +7,7 @@ import {
   PHASE_RETRY_CONDITION_MAX_LEN,
   PHASE_SIDE_EFFECTS,
   RETRY_CAP_OUTCOMES,
+  isNativeReviewKind,
   type PhaseDefinition,
   type PhaseEvidencePolicy,
   type PhaseHostVerification,
@@ -657,6 +658,11 @@ export function validatePhaseDefinition(
     }
   }
 
+  const nativeReview = value.nativeReview;
+  if (nativeReview !== undefined && !isNativeReviewKind(nativeReview)) {
+    errors.push(fieldError(phaseId, 'nativeReview', 'invalid-enum', 'Phase nativeReview must be code or security'));
+  }
+
   let resultContract: ResultContract | undefined;
   if (value.resultContract !== undefined) {
     const validatedContract = validateResultContract(value.resultContract, 'resultContract');
@@ -699,6 +705,7 @@ export function validatePhaseDefinition(
     ...(evidencePolicy !== undefined ? { evidencePolicy } : {}),
     ...(hostVerification !== undefined ? { hostVerification } : {}),
     ...(capabilities !== undefined ? { capabilities } : {}),
+    ...(isNativeReviewKind(nativeReview) ? { nativeReview } : {}),
     ...(resultContract !== undefined ? { resultContract } : {})
   };
   const definition: PhaseDefinition = hasInstruction

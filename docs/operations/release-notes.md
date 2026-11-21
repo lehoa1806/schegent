@@ -582,7 +582,7 @@ checkout, and reports how far it got.
   steps are in
   [Bring an existing catalog to a revised example](process-yaml.md#bring-an-existing-catalog-to-a-revised-example);
   the behavior is in
-  [Finalize and integrate across repositories](process-yaml.md#finalize-and-integrate-across-repositories).
+  [Finalize across repositories](process-yaml.md#finalize-across-repositories).
 - No setting, event, field, schema version or host behavior changed, and there is no migration. Runs
   already created keep the text they were created with, and an item composed before the publish still
   merges the old way.

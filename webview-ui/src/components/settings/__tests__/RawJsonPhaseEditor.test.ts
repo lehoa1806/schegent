@@ -224,6 +224,7 @@ describe('Feature 011 T054 — RawJsonPhaseEditor (SC-008, FR-028, FR-029, FR-03
       sideEffects: 'git',
       evidencePolicy: 'best-effort',
       hostVerification: 'exit-code',
+      nativeReview: 'code',
       capabilities: ['workspace-write'],
       spendBoundUsd: 5,
       spendBoundTokens: 100_000,

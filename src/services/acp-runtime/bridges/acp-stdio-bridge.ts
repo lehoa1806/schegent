@@ -12,6 +12,10 @@
  * - Zero `vscode` imports and zero direct `child_process` imports (spawns via `stdio-transport`).
  */
 import { ACP_PROTOCOL_VERSION, ACP_RUNTIME_LIMITS } from '../../../contracts/acp-runtime';
+import { isNativeReviewKind, type NativeReviewKind } from '../../../contracts/process-definitions';
+import {
+  codexSecurityLaunch, isReviewCommit, isReviewExclusion, summarizeSecurityScan, type NativeReviewInvocation
+} from '../../../runner/native-review-launch';
 import {
   JSON_RPC_INVALID_PARAMS,
   JSON_RPC_METHOD_NOT_FOUND,
@@ -37,6 +41,7 @@ export interface AcpBridgeLaunchConfig {
   readonly permissionFlags: readonly string[];
   readonly model?: string;
   readonly effort?: string;
+  readonly nativeReview?: NativeReviewInvocation;
   readonly env: NodeJS.ProcessEnv;
   readonly spawnChild?: (input: StdioLaunch) => ManagedCliChild;
 }
@@ -117,9 +122,13 @@ function buildCliArgs(config: AcpBridgeLaunchConfig, providerSessionId: string |
   const args: string[] =
     providerSessionId !== null
       ? ['exec', 'resume', '--json', ...config.permissionFlags, providerSessionId]
-      : ['exec', '--json', ...config.permissionFlags];
+      : [
+          'exec', '--json',
+          ...(config.nativeReview?.kind === 'code' ? ['--sandbox', 'read-only'] : config.permissionFlags)
+        ];
   if (isNonEmptyString(config.model)) args.push('--model', config.model);
   if (isNonEmptyString(config.effort)) args.push('--config', `model_reasoning_effort=${config.effort}`);
+  if (config.nativeReview?.kind === 'code') args.push('review');
   args.push('-');
   return args;
 }
@@ -132,11 +141,14 @@ export function parseBridgeCliArgv(
   let cliPath: string | null = null;
   let model: string | undefined;
   let effort: string | undefined;
+  let nativeReview: NativeReviewKind | undefined;
+  let mergeBase: string | undefined;
+  const excludedPaths: string[] = [];
   const permissionFlags: string[] = [];
 
   for (let idx = 0; idx < argv.length; idx += 1) {
     const flag = argv[idx];
-    const next = argv[idx + 1];
+    const next = argv.at(idx + 1);
     if (flag === '--backend' && (next === 'claude' || next === 'codex')) {
       backend = next;
       idx += 1;
@@ -152,17 +164,31 @@ export function parseBridgeCliArgv(
     } else if (flag === '--effort' && isNonEmptyString(next)) {
       effort = next;
       idx += 1;
+    } else if (flag === '--native-review' && nativeReview === undefined && isNativeReviewKind(next)) {
+      nativeReview = next;
+      idx += 1;
+    } else if (flag === '--review-base' && mergeBase === undefined && isReviewCommit(next)) {
+      mergeBase = next;
+      idx += 1;
+    } else if (flag === '--review-exclude' && next !== undefined && isReviewExclusion(next)) {
+      excludedPaths.push(next);
+      idx += 1;
     } else {
       return null;
     }
   }
   if (backend === null || cliPath === null) return null;
+  if ((nativeReview === undefined) !== (mergeBase === undefined)) return null;
+  if (excludedPaths.length > 0 && (backend !== 'codex' || nativeReview !== 'security')) return null;
   return {
     backend,
     cliPath,
     permissionFlags,
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
+    ...(nativeReview !== undefined && mergeBase !== undefined
+      ? { nativeReview: { kind: nativeReview, mergeBase, ...(excludedPaths.length > 0 ? { excludedPaths } : {}) } }
+      : {}),
     env
   };
 }
@@ -357,13 +383,28 @@ export function startAcpStdioBridgeServer(
     session: BridgeSession,
     promptText: string
   ): void => {
-    const args = buildCliArgs(config, session.providerSessionId);
-    const child = spawnChild({
-      command: config.cliPath,
-      args,
-      cwd: session.cwd,
-      env: config.env
-    });
+    const securityReview = config.backend === 'codex' && config.nativeReview?.kind === 'security'
+      ? config.nativeReview
+      : undefined;
+    let security: ReturnType<typeof codexSecurityLaunch> | undefined;
+    let child: ManagedCliChild;
+    try {
+      if (securityReview !== undefined) {
+        security = codexSecurityLaunch(securityReview, config.env, config.model, config.effort);
+      }
+      const cli: Omit<StdioLaunch, 'cwd'> = security ?? {
+        command: config.cliPath,
+        args: buildCliArgs(config, config.nativeReview === undefined ? session.providerSessionId : null),
+        env: config.env
+      };
+      child = spawnChild({ ...cli, cwd: session.cwd });
+    } catch {
+      void security?.cleanup().catch(() => undefined);
+      sendFramedLine(errorLine(rpcId, RPC_INTERNAL_ERROR, securityReview === undefined
+        ? 'Backend executable failed to launch'
+        : 'Codex Security executable failed to launch'));
+      return;
+    }
     const turn: ActiveBridgeTurn = { rpcId, child, cancelled: false };
     session.activeTurn = turn;
 
@@ -371,14 +412,23 @@ export function startAcpStdioBridgeServer(
     let lineRemainder = '';
     let completedStopReason: 'end_turn' | 'max_tokens' | 'refusal' | null = null;
     let streamErrorText: string | null = null;
+    let securityBytes = 0;
 
     const processStdoutLine = (rawLine: string): void => {
       const trimmed = rawLine.trim();
-      if (trimmed.length === 0 || Buffer.byteLength(trimmed, 'utf8') > MAX_CLI_LINE_BYTES) return;
+      if (trimmed.length === 0) return;
+      if (Buffer.byteLength(trimmed, 'utf8') > MAX_CLI_LINE_BYTES) {
+        if (config.nativeReview !== undefined) streamErrorText = 'Native reviewer output exceeded the line limit';
+        return;
+      }
       let parsed: unknown;
       try {
         parsed = JSON.parse(trimmed);
       } catch {
+        if (config.nativeReview !== undefined) {
+          streamErrorText = 'Native reviewer emitted malformed JSONL';
+          return;
+        }
         // Non-JSON stdout text from a bridged CLI is surfaced as a message chunk rather than raw stdout.
         emitSessionUpdate(session.acpSessionId, {
           sessionUpdate: 'agent_message_chunk',
@@ -396,6 +446,11 @@ export function startAcpStdioBridgeServer(
     };
 
     child.onStdout((chunk) => {
+      if (securityReview !== undefined) {
+        securityBytes += chunk.byteLength;
+        if (securityBytes <= MAX_CLI_LINE_BYTES) lineRemainder += childDecoder.decode(chunk, { stream: true });
+        return;
+      }
       lineRemainder += childDecoder.decode(chunk, { stream: true });
       let newlineIdx = lineRemainder.indexOf('\n');
       while (newlineIdx !== -1) {
@@ -404,21 +459,43 @@ export function startAcpStdioBridgeServer(
         processStdoutLine(line);
         newlineIdx = lineRemainder.indexOf('\n');
       }
+      if (config.nativeReview !== undefined && Buffer.byteLength(lineRemainder, 'utf8') > MAX_CLI_LINE_BYTES) {
+        lineRemainder = '';
+        streamErrorText = 'Native reviewer output exceeded the line limit';
+        void child.terminate();
+      }
     });
 
     child.onStderr((chunk) => {
       io.writeStderr(Buffer.from(chunk).toString('utf8'));
     });
 
-    const wrote = child.writeStdin(promptText.endsWith('\n') ? promptText : `${promptText}\n`);
+    const wrote = securityReview !== undefined ||
+      child.writeStdin(promptText.endsWith('\n') ? promptText : `${promptText}\n`);
     child.endStdin();
     if (!wrote) {
       void child.terminate();
     }
 
-    void child.exited.then((exit) => {
+    void child.exited.then(async (exit) => {
       const tail = lineRemainder + childDecoder.decode();
-      if (tail.trim().length > 0) processStdoutLine(tail);
+      if (securityReview === undefined) {
+        if (tail.trim().length > 0) processStdoutLine(tail);
+      } else {
+        await security?.cleanup().catch(() => undefined);
+        const report = securityBytes <= MAX_CLI_LINE_BYTES && exit.code === 0
+          ? summarizeSecurityScan(tail, securityReview.mergeBase)
+          : null;
+        if (report === null) {
+          streamErrorText = 'Codex Security did not return a complete scan report';
+        } else {
+          emitSessionUpdate(session.acpSessionId, {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: report }
+          });
+          completedStopReason = 'end_turn';
+        }
+      }
       if (session.activeTurn === turn) session.activeTurn = null;
 
       if (turn.cancelled) {
@@ -429,7 +506,14 @@ export function startAcpStdioBridgeServer(
         return;
       }
       if (exit.launchFailed) {
-        sendFramedLine(errorLine(rpcId, RPC_INTERNAL_ERROR, 'Backend executable failed to launch'));
+        const message = securityReview === undefined
+          ? 'Backend executable failed to launch'
+          : 'Codex Security executable failed to launch';
+        sendFramedLine(errorLine(rpcId, RPC_INTERNAL_ERROR, message));
+        return;
+      }
+      if (config.nativeReview !== undefined && (exit.code !== 0 || completedStopReason !== 'end_turn')) {
+        sendFramedLine(errorLine(rpcId, RPC_INTERNAL_ERROR, streamErrorText ?? 'Native review did not finish'));
         return;
       }
       if (streamErrorText !== null || (exit.code !== 0 && completedStopReason === null)) {

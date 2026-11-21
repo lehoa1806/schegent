@@ -92,6 +92,18 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
     how: 'equality',
     note: 'behaviour: maintained ACP v1 stdio bridge CLI flag translation and stdout stream parsing for bridged backends'
   },
+  {
+    path: 'src/services/acp-runtime/profiles.ts',
+    role: 'ACP runtime and bridge launch',
+    how: 'equality',
+    note: 'Checks the standalone Codex Security scanner against the declared Phase capability set'
+  },
+  {
+    path: 'src/controller/native-review.ts',
+    role: 'Native review and repair',
+    how: 'equality',
+    note: 'Chooses the vendor review entry point and records the reviewer invocation'
+  },
 
   // ---- Capability withholding policy and usage stream parsing (behaviour)
   {

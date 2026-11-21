@@ -5,6 +5,11 @@
 **Measured at**: workspace `0be7f0e`, `repo/` `62265e71` plus the uncommitted work of feature 259 (none of
 which touches a file listed below).
 
+**2026-11-19 refresh**: the conditional and nested delivery Workflows moved to
+`tests/fixtures/workflows/`. The example and fixture hashes reflect those moves, the revised
+new-feature workflow and the updated model catalog. The template measurements are from the original
+capture.
+
 **Refresh obligation**: whoever changes a file listed below, or re-installs Spec Kit, re-measures with the
 command at the foot of this page and updates this table and the hashes in
 `tests/evals/artifacts/criteria.json` in the same change. `tests/lint/template-provenance-parity.test.ts`
@@ -38,11 +43,11 @@ manifest". "State" is one of `matches 1.2.3`, `locally adapted (<commits>)`, `lo
 | `.specify/templates/checklist-template.md` | `speckit_version` 1.2.3 | `sha256:856532b3cb66171c662cc16f16b31a5856e4655a8666aad1e545bbfc7f603ca1` | `sha256:856532b3cb66171c662cc16f16b31a5856e4655a8666aad1e545bbfc7f603ca1` | matches 1.2.3 | pending qualification |
 | `.specify/templates/constitution-template.md` | `speckit_version` 1.2.3 | `sha256:ce7549540fa45543cca797a150201d868e64495fdff39dc38246fb17bd4024b3` | `sha256:ce7549540fa45543cca797a150201d868e64495fdff39dc38246fb17bd4024b3` | matches 1.2.3 | pending qualification |
 | `.specify/templates/overrides/checklist-template.md` | none | not in a manifest | `sha256:e38d2051505616cd15537f616ec2069e12cf1a9984e7e405762f0a03999a7a02` | local override | not applicable |
-| `repo/examples/speckit-new-feature.workflow.yaml` | none | not in a manifest | `sha256:1c621a5b303f81746f1a4e70974e8a80aab617eef4f0e1054741552ea879ebf7` | repo-authored (`repo/` `0dc779a0`) | not applicable |
+| `repo/examples/speckit-new-feature.workflow.yaml` | none | not in a manifest | `sha256:ffdfab588314ec49f0d4d502696727cf9ba27791a1f77fe200b3e1297b4f9fa2` | repo-authored (`repo/` `0dc779a0`) | not applicable |
 | `repo/examples/speckit-bugfix.workflow.yaml` | none | not in a manifest | `sha256:934bf0552a70d19514daace9895334e48ae275f25b07f7d728866ef9ee19cf30` | repo-authored (`repo/` `0dc779a0`) | not applicable |
-| `repo/examples/example-two-node.workflow.yaml` | none | not in a manifest | `sha256:9d83a99004e1f5a6f048748ec840d8c9def9d2f481b02c0668b6421af749f4c6` | repo-authored (`repo/` `0dc779a0`) | not applicable |
-| `repo/examples/example-nested-delivery.workflow.yaml` | none | not in a manifest | `sha256:a4a787b652b8714ad73e2e5fd492058a8f73c4abdc9f9af4a90133191b52b619` | repo-authored (`repo/` `0dc779a0`) | not applicable |
-| `repo/examples/model-catalog.yaml` | none | not in a manifest | `sha256:f727213b8b19d7013373b07e0d37d935a162ca290ab2e00fd85f1a556d4cbb01` | repo-authored (`repo/` `62265e71`) | not applicable |
+| `repo/tests/fixtures/workflows/example-two-node.workflow.yaml` | none | not in a manifest | `sha256:9d83a99004e1f5a6f048748ec840d8c9def9d2f481b02c0668b6421af749f4c6` | repo-authored (`repo/` `0dc779a0`) | not applicable |
+| `repo/tests/fixtures/workflows/example-nested-delivery.workflow.yaml` | none | not in a manifest | `sha256:3ff7f09b6e1e3f2987a2b102ad44e4d800afefed5e34ac409480f75b3b1113b6` | repo-authored (`repo/` `0dc779a0`) | not applicable |
+| `repo/examples/model-catalog.yaml` | none | not in a manifest | `sha256:3b1271a33392636c733c649ba066d8a892d8830ff0ee5af7f533bf7638acd64a` | repo-authored (`repo/` `62265e71`) | not applicable |
 
 Reading the table:
 
@@ -51,7 +56,7 @@ Reading the table:
   manifest (10 files) and the `codex` manifest (10 files) match in full.
 - The criteria for the **tasks** artifact were derived from the *adapted* `tasks-template.md`, not from an
   upstream original this page cannot show.
-- The override and the four example files belong to no manifest. They are listed so that nothing a Phase
+- The override, example files, and workflow test fixtures belong to no manifest. They are listed so that nothing a Phase
   or an author reads as a template is left unaccounted for.
 
 ## The upstream revision: pending qualification

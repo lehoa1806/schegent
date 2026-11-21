@@ -87,6 +87,7 @@ const FULL_INSTRUCTION: PhaseDefinition = {
   // Disagreement makes the drop visible as a changed decision. Precedence is not
   // this file's business — the mapper carries, it does not resolve (FR-007).
   onRetryCap: 'fail',
+  nativeReview: 'code',
   isRequired: false,
   runner: 'claude',
   // Feature 098 T012/T014 — both values are deliberately NOT the FR-005 defaults

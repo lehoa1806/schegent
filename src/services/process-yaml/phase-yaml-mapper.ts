@@ -78,7 +78,8 @@ export function documentFromPhaseDefinition(definition: PhaseDefinition): PhaseY
       : {}),
     ...(definition.resultContract !== undefined
       ? { resultContract: definition.resultContract }
-      : {})
+      : {}),
+    ...(definition.nativeReview !== undefined ? { nativeReview: definition.nativeReview } : {})
   };
   const spec: PhaseYamlSpec =
     definition.instruction !== undefined
@@ -130,7 +131,8 @@ export function phaseDefinitionFromDocument(document: PhaseYamlDocument): PhaseD
       ? { hostVerification: spec.hostVerification }
       : {}),
     ...(spec.capabilities !== undefined ? { capabilities: spec.capabilities } : {}),
-    ...(spec.resultContract !== undefined ? { resultContract: spec.resultContract } : {})
+    ...(spec.resultContract !== undefined ? { resultContract: spec.resultContract } : {}),
+    ...(spec.nativeReview !== undefined ? { nativeReview: spec.nativeReview } : {})
   };
   return spec.instruction !== undefined
     ? { ...common, instruction: spec.instruction }

@@ -1848,7 +1848,9 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw mark 1,422 (1,419 raw) → 845 code lines.
       // Retained alongside `phase-runner-loc-budget.test.ts` (845 code lines) because this waiver also
       // enforces the `RATCHET_SLACK` shrink-down check.
-      highWaterMark: 845
+      // Native review adds the orchestration seam and applies its evidence before
+      // the normal retry decision. Review execution lives in its own module.
+      highWaterMark: 871
     }
   }
 ];

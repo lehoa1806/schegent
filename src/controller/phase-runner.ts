@@ -34,7 +34,7 @@ import {
   type CapExhaustedPhaseEndPayload
 } from './cap-exhausted-payload';
 import { assertPhaseRunnerPolicy } from '../config/phase-runner-policy';
-import type { RawInvocationOutput, VerboseDiagnosticTarget } from '../runner/invocation-result';
+import type { InvocationRequest, RawInvocationOutput, VerboseDiagnosticTarget } from '../runner/invocation-result';
 import { composeVerboseDiagnosticPath } from '../audit/verbose-diagnostic-path';
 import { getEffectiveSignatures } from '../lib/fatal-signature-registry';
 import type { PhaseBreakpointAccessor } from './breakpoint-accessor';
@@ -67,6 +67,12 @@ import {
 import { resolveHostVerification } from '../config/phase-runner-policy';
 import { COMPACTION_MODEL_ID, compactClaudeSession, compactionFailureRecord } from './session-compactor';
 import { RequiredEvidenceUnavailableError } from '../lib/errors';
+import {
+  collectNativeReview,
+  applyNativeReviewEvidence,
+  invokeNativeReviewer,
+  type NativeReviewEvidence
+} from './native-review';
 // Compatibility re-export; canonical owner is phase-sidecar-reader.
 export { composePhaseMessagePath };
 export type { PhaseMessageResult };
@@ -661,16 +667,10 @@ export class PhaseRunner {
         });
       }
     }
-    await this.rawTranscript?.appendStart({
-      runId: inputs.runId,
-      phase: inputs.phase,
-      iteration: inputs.iteration,
-      prompt,
-      mode: inputs.rawTranscriptMode
-    });
-    const rawTranscriptCapture = await this.rawTranscript?.createInvocationCapture?.(
-      inputs.runId, inputs.rawTranscriptMode
-    ) ?? null;
+    const reviewKind = inputs.phaseDef?.nativeReview;
+    let reviewEvidence: NativeReviewEvidence | undefined;
+    const reviewAttempt = { invoked: false };
+    let rawTranscriptCapture: Awaited<ReturnType<RawTranscriptWriter['createInvocationCapture']>> | null = null;
     // FR-033 — one read per invocation (never cached), shared by both scans.
     const effectiveFatalSignatures =
       getEffectiveSignatures(this.fatalSignaturesAccessor?.readOperatorAdditions() ?? []);
@@ -682,7 +682,9 @@ export class PhaseRunner {
       // the split is what makes the two throw sites separable at all.
       const backendRunner = this.resolveRunner(inputs);
       await this.agentConfigAckGate?.ensureAcknowledged(inputs, effectiveRunnerKind);
-      raw = await backendRunner.invoke({
+      const invoke: BackendRunner['invoke'] = (invocation, capture) =>
+        backendRunner.invoke({ ...invocation, ...policyRequestFields(inputs) }, capture);
+      let request: InvocationRequest = {
         effectiveFatalSignatures,
         phase: inputs.phase,
         iteration: inputs.iteration,
@@ -695,8 +697,6 @@ export class PhaseRunner {
         cliPath: inputs.cliPath,
         cwd: inputs.cwd,
         env,
-        // FR-R3-049 — via the shared helper; see its docstring for why.
-        ...policyRequestFields(inputs),
         cancellationSignal: inputs.cancellationSignal,
         // FR-R3-105 (FR-063) — the defensive half; a frozen plan can predate the bound.
         // Dropped, never rewritten; `contracts/argv-value.ts` states why. `effort` needs
@@ -719,7 +719,29 @@ export class PhaseRunner {
         ...(typeof effectiveResumeSessionId === 'string' && inputs.resumeSessionCostUsd !== undefined ? { resumeSessionCostUsd: inputs.resumeSessionCostUsd } : {}),
         // FR-R3-086 — without this the adapter never sees the declared set.
         ...capabilityRequestFields(inputs)
-      }, rawTranscriptCapture ?? undefined);
+      };
+      if (reviewKind !== undefined) {
+        const reviewed = await collectNativeReview(reviewKind, effectiveRunnerKind, request, (reviewRequest) => {
+          return invokeNativeReviewer(invoke, reviewRequest, effectiveRunnerKind, this.rawTranscript,
+            inputs.rawTranscriptMode, (payload) => {
+              reviewAttempt.invoked = true;
+              return this.appendAudit(inputs, 'cli-invocation', 'info', payload);
+            });
+        });
+        request = reviewed.request;
+        reviewEvidence = reviewed.evidence;
+      }
+      await this.rawTranscript?.appendStart({
+        runId: inputs.runId,
+        phase: inputs.phase,
+        iteration: inputs.iteration,
+        prompt: request.prompt,
+        mode: inputs.rawTranscriptMode
+      });
+      rawTranscriptCapture = await this.rawTranscript?.createInvocationCapture?.(
+        inputs.runId, inputs.rawTranscriptMode
+      ) ?? null;
+      raw = await invoke(request, rawTranscriptCapture ?? undefined);
     } catch (err) {
       // THE two refusals, and the only place either is claimed. A containment
       // refusal comes from `resolveRunner` above, before any runner exists; a
@@ -728,11 +750,11 @@ export class PhaseRunner {
       // `:390`, codex-cli `:84`, agy-cli `:121`). Neither can have left a child,
       // which is exactly what `PRE_SPAWN_REFUSAL_CAUSE` asserts. By error type,
       // not by position: see `AttemptRef` for what position got wrong.
-      if (
+      if (!reviewAttempt.invoked && (
         isCapabilityRefusal(err) ||
         isUncontainedBackendRefusal(err) ||
         isAgentConfigAcknowledgementRefusal(err)
-      ) {
+      )) {
         attemptRef.preSpawnRefusal = true;
       }
       await rawTranscriptCapture?.dispose();
@@ -770,7 +792,10 @@ export class PhaseRunner {
     // Feature 030 BUG-002 — parse up front so the timeout branch can tell a
     // completed-but-non-exiting run (clean stdout, FR-025) from an idle stall.
     const rateLimit = detectCreditError(raw.stdoutBuffer, raw.stderrBuffer, raw.exitCode);
-    const audit = parseAuditLogBlock(unwrappedStream.textSource === 'raw-stream' ? '' : unwrappedStream.text);
+    const parsedAudit = parseAuditLogBlock(unwrappedStream.textSource === 'raw-stream' ? '' : unwrappedStream.text);
+    const audit = reviewKind !== undefined && reviewEvidence !== undefined
+      ? await applyNativeReviewEvidence(parsedAudit, reviewKind, reviewEvidence, inputs.cwd)
+      : parsedAudit;
     const stderrTail = typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100);
     const parsedResult = parseInvocation({
       stdout: unwrappedStream.text,

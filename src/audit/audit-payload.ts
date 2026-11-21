@@ -72,7 +72,7 @@ export const PRE_SPAWN_REFUSAL_CAUSE = 'pre_spawn_refusal';
 
 export interface CliInvocationPayloadV3 {
   readonly runner: BackendRunnerKind;
-  readonly operation: 'phase' | 'session-compaction' | 'probe';
+  readonly operation: 'phase' | 'native-review' | 'session-compaction' | 'probe';
   readonly permissionMode: AuditPermissionMode;
   readonly continued: boolean;
   readonly sessionReused: boolean;
@@ -459,7 +459,7 @@ function projectCliInvocation(payload: Record<string, unknown>): CliInvocationPa
     throw new AuditPayloadValidationError('invalid-runner');
   }
   const operation = stringValue(payload.operation, 'phase');
-  if (!['phase', 'session-compaction', 'probe'].includes(operation)) {
+  if (!['phase', 'native-review', 'session-compaction', 'probe'].includes(operation)) {
     throw new AuditPayloadValidationError('invalid-operation');
   }
   const permissionMode = stringValue(

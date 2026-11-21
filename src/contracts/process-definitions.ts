@@ -197,6 +197,17 @@ export type EvidencePolicyOrigin = (typeof EVIDENCE_POLICY_ORIGINS)[number];
 export const PHASE_HOST_VERIFICATIONS = ['model-token', 'exit-code'] as const;
 export type PhaseHostVerification = (typeof PHASE_HOST_VERIFICATIONS)[number];
 
+export const NATIVE_REVIEW_KINDS = ['code', 'security'] as const;
+export type NativeReviewKind = (typeof NATIVE_REVIEW_KINDS)[number];
+
+export function isNativeReviewKind(value: unknown): value is NativeReviewKind {
+  return value === 'code' || value === 'security';
+}
+
+export function nativeReviewRetryCondition(kind: NativeReviewKind): string {
+  return `${kind}_review_findings > 0 or ${kind}_review_verified != 1`;
+}
+
 /**
  * Every field an author may write on a Phase. **The single closed set.**
  *
@@ -253,6 +264,7 @@ export const AUTHORED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   // path and refused by the save path on the same field is the defect this set
   // exists to prevent.
   'hostVerification',
+  'nativeReview',
   'capabilities',
   'resultContract'
 ]);
@@ -356,6 +368,8 @@ interface PhaseDefinitionBase {
    */
   readonly onRetryCap?: RetryCapOutcome;
   readonly runner?: BackendRunnerKind;
+  /** Run the selected backend's reviewer before the Phase's repair instructions. */
+  readonly nativeReview?: NativeReviewKind;
   /**
    * FR-R5-F24 (D2) — bounded typed result contract (`structured-result` or
    * `diagnostic-result`) evaluated in a terminable worker after an attempt.
