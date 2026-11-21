@@ -98,6 +98,15 @@ export const d = Object.freeze({
     });
   },
 
+  /** @param {readonly object[]} members @param {object} [opts] */
+  oneOf(members, opts = {}) {
+    return Object.freeze({
+      kind: 'oneOf',
+      members: Object.freeze([...members]),
+      ...opts
+    });
+  },
+
   /** @param {object} [opts] */
   unknown(opts = {}) {
     return Object.freeze({ kind: 'unknown', ...opts });

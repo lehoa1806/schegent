@@ -13,8 +13,9 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuditLogWriter } from '../../../src/audit/audit-log-writer';
+import { AuditPayloadValidationError, projectAuditPayload } from '../../../src/audit/audit-payload';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import {
   runBackupStore,
@@ -29,7 +30,9 @@ import {
 } from '../../../src/headless/backup-restore-api';
 import {
   NodeSqliteConnection,
-  SqliteApplicationStore
+  SqliteApplicationStore,
+  computeFileDigestSync,
+  MAX_BACKUP_DATABASE_BYTES
 } from '../../../src/services/sqlite-store';
 
 function createStubUi(options?: {
@@ -300,7 +303,7 @@ describe('SQLite backup, verify, and restore operator commands (FR-R7-03)', () =
       ) => {
         const dbPath = path.join(backupsDir, `${id}.db`);
         const mfPath = path.join(backupsDir, `${id}.db.manifest.json`);
-        await fs.writeFile(dbPath, dbBytes);
+        await fs.writeFile(dbPath, dbBytes, { mode: 0o600 });
         const manifest = {
           ...created.manifest,
           backupId: id,
@@ -308,7 +311,7 @@ describe('SQLite backup, verify, and restore operator commands (FR-R7-03)', () =
           databaseBytes: dbBytes.byteLength,
           ...manifestPatch
         };
-        await fs.writeFile(mfPath, JSON.stringify(manifest, null, 2));
+        await fs.writeFile(mfPath, JSON.stringify(manifest, null, 2), { mode: 0o600 });
       };
 
       const baseBytes = await fs.readFile(created.backupDatabasePath);
@@ -359,11 +362,11 @@ describe('SQLite backup, verify, and restore operator commands (FR-R7-03)', () =
       });
 
       // 5. BACKUP_OPEN_FAILED (missing companion manifest)
-      await fs.writeFile(path.join(backupsDir, 'bkp-no-manifest.db'), baseBytes);
+      await fs.writeFile(path.join(backupsDir, 'bkp-no-manifest.db'), baseBytes, { mode: 0o600 });
 
       // 6. FOREIGN_KEY_CHECK_FAILED
       const fkPath = path.join(backupsDir, 'bkp-fk-bad.db');
-      await fs.writeFile(fkPath, baseBytes);
+      await fs.writeFile(fkPath, baseBytes, { mode: 0o600 });
       const fkConn = new NodeSqliteConnection({ databasePath: fkPath, journalMode: 'delete' });
       try {
         fkConn.exec('PRAGMA foreign_keys = OFF');
@@ -447,10 +450,11 @@ describe('SQLite backup, verify, and restore operator commands (FR-R7-03)', () =
       // 9. Spoofed manifest backupId mismatching its filename stem is rejected as invalid
       const spoofDb = path.join(backupsDir, 'bkp-real-stem.db');
       const spoofMf = path.join(backupsDir, 'bkp-real-stem.db.manifest.json');
-      await fs.writeFile(spoofDb, baseBytes);
+      await fs.writeFile(spoofDb, baseBytes, { mode: 0o600 });
       await fs.writeFile(
         spoofMf,
-        JSON.stringify({ ...created.manifest, backupId: 'bkp-spoofed-other' }, null, 2)
+        JSON.stringify({ ...created.manifest, backupId: 'bkp-spoofed-other' }, null, 2),
+        { mode: 0o600 }
       );
       const spoofVerify = await h.api.verifyBackup('bkp-real-stem');
       expect(spoofVerify.status).toBe('rejected');
@@ -460,5 +464,505 @@ describe('SQLite backup, verify, and restore operator commands (FR-R7-03)', () =
     } finally {
       h.store.close();
     }
+  });
+
+  it('surfaces committed_refresh_failed when post-commit reloadAfterRestore throws without claiming live store was unmodified (FR-R7-11 Task 03)', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cmd-t03-ws-'));
+    const storageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cmd-t03-storage-'));
+    tempDirs.push(workspaceRoot, storageRoot);
+
+    const scopeId = 'scope-cmd-t03';
+    const now = 1_763_730_000_000;
+    const dbDir = path.join(storageRoot, 'sqlite', scopeId);
+    await fs.mkdir(dbDir, { recursive: true, mode: 0o700 });
+    const store = new SqliteApplicationStore({
+      databasePath: path.join(dbDir, 'schegent-state.db'),
+      journalMode: 'wal',
+      nowMs: () => now
+    });
+    const auditWriter = new AuditLogWriter({ workspaceRoot }, new SanitizedLogger([]));
+
+    try {
+      store.writerConnection.run(
+        `INSERT INTO runs (
+          run_id, workspace_id, workflow_id, frozen_closure_id, status, revision,
+          current_step_id, started_at_ms, completed_at_ms, terminal_reason, created_at_ms, updated_at_ms
+        ) VALUES ('run-before-t03', ?, 'wf-t03', NULL, 'succeeded', 1, NULL, ?, ?, 'ok', ?, ?)`,
+        scopeId,
+        now,
+        now,
+        now,
+        now
+      );
+
+      const api = createStoreBackupRestoreApi({
+        getSqliteStore: () => store,
+        trustedRootDir: storageRoot,
+        scopeId,
+        hasPrimacy: async () => true,
+        hasInFlightRun: () => false,
+        reloadAfterRestore: async () => {
+          throw new Error(`catalog cache refresh crashed at ${workspaceRoot}/secret`);
+        },
+        inspectExternalDependency: createWorkspaceExternalDependencyInspector(workspaceRoot),
+        auditWriter,
+        nowMs: () => now
+      });
+
+      const created = await api.createBackup({ backupId: 'bkp-refresh-fail' });
+      expect(created.status).toBe('created');
+
+      store.writerConnection.run(
+        `INSERT INTO runs (
+          run_id, workspace_id, workflow_id, frozen_closure_id, status, revision,
+          current_step_id, started_at_ms, completed_at_ms, terminal_reason, created_at_ms, updated_at_ms
+        ) VALUES ('run-post-backup-t03', ?, 'wf-t03', NULL, 'succeeded', 2, NULL, ?, ?, 'ok', ?, ?)`,
+        scopeId,
+        now + 10,
+        now + 10,
+        now + 10,
+        now + 10
+      );
+
+      const ui = createStubUi({ confirmResult: true });
+      const outcome = await runRestoreStoreBackup(
+        { api, ui: ui.ui },
+        { backupId: 'bkp-refresh-fail' }
+      );
+      expect(outcome.status).toBe('committed_refresh_failed');
+      if (outcome.status === 'committed_refresh_failed') {
+        expect(outcome.errorCode).toBe('POST_COMMIT_REFRESH_FAILED');
+        expect(outcome.restoredTableCount).toBeGreaterThan(0);
+        expect(outcome.restoredRunCount).toBe(1);
+        expect(outcome.schemaVersion).toBeGreaterThanOrEqual(1);
+      }
+
+      // Live SQLite store WAS committed on disk.
+      const survivingRuns = store.writerConnection
+        .all<{ run_id: string }>(`SELECT run_id FROM runs ORDER BY run_id ASC`)
+        .map((r) => r.run_id);
+      expect(survivingRuns).toEqual(['run-before-t03']);
+
+      // Command UI clearly tells operator backup was committed on disk and instructs reload,
+      // and NEVER falsely claims live store was not modified.
+      expect(ui.errors).toHaveLength(1);
+      expect(ui.errors[0]).toContain("backup 'bkp-refresh-fail' was committed on disk");
+      expect(ui.errors[0]).toContain('POST_COMMIT_REFRESH_FAILED');
+      expect(ui.errors[0]).toMatch(/reload/i);
+      expect(ui.errors[0]).not.toMatch(/not modified/i);
+
+      // Audit log records POST_COMMIT_REFRESH_FAILED with closed 7-field shape and zero raw paths.
+      const auditText = await fs.readFile(path.join(workspaceRoot, '.schegent', 'audit.log'), 'utf8');
+      expect(auditText).not.toContain(workspaceRoot);
+      expect(auditText).not.toContain(storageRoot);
+      const entries = auditText
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { eventType: string; payload: Record<string, unknown> });
+      expect(entries).toHaveLength(2);
+      expect(entries[1]?.eventType).toBe('store-restore');
+      expect(entries[1]?.payload).toEqual({
+        operation: 'restore',
+        outcome: 'failed',
+        backupId: 'bkp-refresh-fail',
+        errorCode: 'POST_COMMIT_REFRESH_FAILED',
+        schemaVersion: expect.any(Number),
+        databaseBytes: expect.any(Number),
+        restoredTableCount: expect.any(Number)
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('hardens opener rejections, non-owner refusals, audit append failures, dynamic trustedRootDir, and closed 7-field audit projection (FR-R7-11 T004 & Task 06)', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cmd-t06-ws-'));
+    const initialStorageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cmd-t06-init-'));
+    const relocatedStorageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cmd-t06-reloc-'));
+    tempDirs.push(workspaceRoot, initialStorageRoot, relocatedStorageRoot);
+
+    const scopeId = 'scope-cmd-t06';
+    const now = 1_763_740_000_000;
+    const auditLogPath = path.join(workspaceRoot, '.schegent', 'audit.log');
+    const warnSpy = vi.fn();
+
+    // 1. Non-owner refusals leave .schegent/audit.log untouched and log path-free warnings.
+    const auditWriter = new AuditLogWriter({ workspaceRoot }, new SanitizedLogger([]));
+    const nonOwnerApi = createStoreBackupRestoreApi({
+      getSqliteStore: () => null,
+      trustedRootDir: initialStorageRoot,
+      scopeId,
+      hasPrimacy: async () => false,
+      hasInFlightRun: () => false,
+      reloadAfterRestore: () => undefined,
+      auditWriter,
+      logger: { warn: warnSpy },
+      nowMs: () => now
+    });
+
+    const noOwnerBkpUi = createStubUi({ confirmResult: true });
+    const noOwnerBkp = await runBackupStore(
+      { api: nonOwnerApi, ui: noOwnerBkpUi.ui },
+      { backupId: 'bkp-no-owner' }
+    );
+    expect(noOwnerBkp).toMatchObject({ status: 'refused', reasonCode: 'NOT_WORKSPACE_OWNER' });
+    expect(noOwnerBkpUi.warns).toHaveLength(1);
+    expect(noOwnerBkpUi.warns[0]).toContain('NOT_WORKSPACE_OWNER');
+    expect(noOwnerBkpUi.warns[0]).not.toContain(workspaceRoot);
+    expect(noOwnerBkpUi.warns[0]).not.toContain(initialStorageRoot);
+    expect(noOwnerBkpUi.warns[0]).not.toContain(relocatedStorageRoot);
+    expect(noOwnerBkpUi.infos).toHaveLength(0);
+    expect(noOwnerBkpUi.errors).toHaveLength(0);
+
+    const noOwnerRestUi = createStubUi({ confirmResult: true });
+    const noOwnerRest = await runRestoreStoreBackup(
+      { api: nonOwnerApi, ui: noOwnerRestUi.ui },
+      { backupId: 'bkp-no-owner' }
+    );
+    expect(noOwnerRest).toMatchObject({ status: 'refused', reasonCode: 'NOT_WORKSPACE_OWNER' });
+    expect(noOwnerRestUi.warns).toHaveLength(1);
+    expect(noOwnerRestUi.warns[0]).toContain('NOT_WORKSPACE_OWNER');
+    expect(noOwnerRestUi.warns[0]).not.toContain(workspaceRoot);
+    expect(noOwnerRestUi.warns[0]).not.toContain(initialStorageRoot);
+    expect(noOwnerRestUi.warns[0]).not.toContain(relocatedStorageRoot);
+    expect(noOwnerRestUi.infos).toHaveLength(0);
+    expect(noOwnerRestUi.errors).toHaveLength(0);
+
+    await expect(fs.access(auditLogPath)).rejects.toThrow();
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(warnSpy.mock.calls[0]).toEqual([
+      'store operation refused: not workspace owner',
+      {
+        operation: 'backup',
+        outcome: 'refused',
+        backupId: 'bkp-no-owner',
+        errorCode: 'NOT_WORKSPACE_OWNER'
+      }
+    ]);
+    expect(warnSpy.mock.calls[1]).toEqual([
+      'store operation refused: not workspace owner',
+      {
+        operation: 'restore',
+        outcome: 'refused',
+        backupId: 'bkp-no-owner',
+        errorCode: 'NOT_WORKSPACE_OWNER'
+      }
+    ]);
+
+    // 2. ensurePrimaryStore rejection returns typed failed (STORE_OPEN_FAILED) + sanitized audit event
+    // and UI error through the command boundary, never throwing an unhandled rejection or claiming success.
+    const failingOpenApi = createStoreBackupRestoreApi({
+      getSqliteStore: () => null,
+      ensurePrimaryStore: async () => {
+        throw new Error(`EACCES opening ${relocatedStorageRoot}/secret.db`);
+      },
+      trustedRootDir: initialStorageRoot,
+      scopeId,
+      hasPrimacy: async () => true,
+      hasInFlightRun: () => false,
+      reloadAfterRestore: () => undefined,
+      auditWriter,
+      logger: { warn: warnSpy },
+      nowMs: () => now
+    });
+
+    const openFailBkpUi = createStubUi({ confirmResult: true });
+    const bkpOpenFail = await runBackupStore(
+      { api: failingOpenApi, ui: openFailBkpUi.ui },
+      { backupId: 'bkp-open-fail' }
+    );
+    expect(bkpOpenFail).toMatchObject({ status: 'failed', errorCode: 'STORE_OPEN_FAILED' });
+    if (bkpOpenFail.status === 'failed') {
+      expect(bkpOpenFail.message).not.toContain(workspaceRoot);
+      expect(bkpOpenFail.message).not.toContain(initialStorageRoot);
+      expect(bkpOpenFail.message).not.toContain(relocatedStorageRoot);
+    }
+    expect(openFailBkpUi.errors).toHaveLength(1);
+    expect(openFailBkpUi.errors[0]).toContain('STORE_OPEN_FAILED');
+    expect(openFailBkpUi.errors[0]).not.toContain(workspaceRoot);
+    expect(openFailBkpUi.errors[0]).not.toContain(initialStorageRoot);
+    expect(openFailBkpUi.errors[0]).not.toContain(relocatedStorageRoot);
+    expect(openFailBkpUi.errors[0]).not.toMatch(/created|succeeded/i);
+    expect(openFailBkpUi.infos).toHaveLength(0);
+    expect(openFailBkpUi.warns).toHaveLength(0);
+
+    const openFailRestUi = createStubUi({ confirmResult: true });
+    const restOpenFail = await runRestoreStoreBackup(
+      { api: failingOpenApi, ui: openFailRestUi.ui },
+      { backupId: 'bkp-open-fail' }
+    );
+    expect(restOpenFail).toMatchObject({ status: 'failed', errorCode: 'STORE_OPEN_FAILED' });
+    if (restOpenFail.status === 'failed') {
+      expect(restOpenFail.message).not.toContain(workspaceRoot);
+      expect(restOpenFail.message).not.toContain(initialStorageRoot);
+      expect(restOpenFail.message).not.toContain(relocatedStorageRoot);
+    }
+    expect(openFailRestUi.errors).toHaveLength(1);
+    expect(openFailRestUi.errors[0]).toContain('STORE_OPEN_FAILED');
+    expect(openFailRestUi.errors[0]).not.toContain(workspaceRoot);
+    expect(openFailRestUi.errors[0]).not.toContain(initialStorageRoot);
+    expect(openFailRestUi.errors[0]).not.toContain(relocatedStorageRoot);
+    expect(openFailRestUi.errors[0]).not.toMatch(/restored|succeeded/i);
+    expect(openFailRestUi.infos).toHaveLength(0);
+    expect(openFailRestUi.warns).toHaveLength(0);
+
+    const openFailAuditText = await fs.readFile(auditLogPath, 'utf8');
+    expect(openFailAuditText).not.toContain(workspaceRoot);
+    expect(openFailAuditText).not.toContain(relocatedStorageRoot);
+    const openFailEntries = openFailAuditText
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { eventType: string; payload: Record<string, unknown> });
+    expect(openFailEntries).toHaveLength(2);
+    expect(openFailEntries[0]?.payload).toEqual({
+      operation: 'backup',
+      outcome: 'failed',
+      backupId: 'bkp-open-fail',
+      errorCode: 'STORE_OPEN_FAILED'
+    });
+    expect(openFailEntries[1]?.payload).toEqual({
+      operation: 'restore',
+      outcome: 'failed',
+      backupId: 'bkp-open-fail',
+      errorCode: 'STORE_OPEN_FAILED'
+    });
+
+    // 3. Dynamic trustedRootDir thunk resolves AFTER ensurePrimaryStore(), and TOCTOU primacy loss
+    // before restore commit leaves audit.log untouched while logging path-free warning.
+    let activeRoot = initialStorageRoot;
+    const storeRef: { current: SqliteApplicationStore | null } = { current: null };
+    let primacyCalls = 0;
+    let losePrimacyOnSecondCheck = false;
+    const dynamicApi = createStoreBackupRestoreApi({
+      getSqliteStore: () => storeRef.current,
+      ensurePrimaryStore: async () => {
+        activeRoot = relocatedStorageRoot;
+        const dbDir = path.join(relocatedStorageRoot, 'sqlite', scopeId);
+        await fs.mkdir(dbDir, { recursive: true, mode: 0o700 });
+        storeRef.current = new SqliteApplicationStore({
+          databasePath: path.join(dbDir, 'schegent-state.db'),
+          journalMode: 'wal',
+          nowMs: () => now
+        });
+        return storeRef.current;
+      },
+      trustedRootDir: () => activeRoot,
+      scopeId,
+      hasPrimacy: async () => {
+        primacyCalls += 1;
+        if (losePrimacyOnSecondCheck && primacyCalls === 2) return false;
+        return true;
+      },
+      hasInFlightRun: () => false,
+      reloadAfterRestore: () => undefined,
+      auditWriter,
+      logger: { warn: warnSpy },
+      nowMs: () => now
+    });
+
+    try {
+      const relocBkpUi = createStubUi({ confirmResult: true });
+      const created = await runBackupStore(
+        { api: dynamicApi, ui: relocBkpUi.ui },
+        { backupId: 'bkp-reloc-1' }
+      );
+      expect(created.status).toBe('created');
+      if (created.status === 'created') {
+        expect(created.backupDatabasePath.startsWith(relocatedStorageRoot)).toBe(true);
+      }
+      expect(relocBkpUi.infos).toHaveLength(1);
+      expect(relocBkpUi.errors).toHaveLength(0);
+      expect(relocBkpUi.warns).toHaveLength(0);
+
+      const auditLinesBeforeToctou = (await fs.readFile(auditLogPath, 'utf8')).trim().split('\n').length;
+      warnSpy.mockClear();
+      primacyCalls = 0;
+      losePrimacyOnSecondCheck = true;
+      const toctouUi = createStubUi({ confirmResult: true });
+      const toctouRefused = await runRestoreStoreBackup(
+        { api: dynamicApi, ui: toctouUi.ui },
+        { backupId: 'bkp-reloc-1' }
+      );
+      expect(toctouRefused).toMatchObject({ status: 'refused', reasonCode: 'NOT_WORKSPACE_OWNER' });
+      expect(toctouUi.warns).toHaveLength(1);
+      expect(toctouUi.warns[0]).toContain('NOT_WORKSPACE_OWNER');
+      expect(toctouUi.warns[0]).not.toContain(workspaceRoot);
+      expect(toctouUi.warns[0]).not.toContain(initialStorageRoot);
+      expect(toctouUi.warns[0]).not.toContain(relocatedStorageRoot);
+      expect(toctouUi.infos).toHaveLength(0);
+      expect(toctouUi.errors).toHaveLength(0);
+      const auditLinesAfterToctou = (await fs.readFile(auditLogPath, 'utf8')).trim().split('\n').length;
+      expect(auditLinesAfterToctou).toBe(auditLinesBeforeToctou);
+      expect(warnSpy).toHaveBeenCalledWith('store operation refused: not workspace owner', {
+        operation: 'restore',
+        outcome: 'refused',
+        backupId: 'bkp-reloc-1',
+        errorCode: 'NOT_WORKSPACE_OWNER'
+      });
+
+      // 4. Audit append failure logs a sanitized path-free warning without failing completed backup/restore
+      // or reporting UI errors through the command boundary.
+      warnSpy.mockClear();
+      const throwingAuditApi = createStoreBackupRestoreApi({
+        getSqliteStore: () => storeRef.current,
+        trustedRootDir: () => activeRoot,
+        scopeId,
+        hasPrimacy: async () => true,
+        hasInFlightRun: () => false,
+        reloadAfterRestore: () => undefined,
+        auditWriter: {
+          append: async () => {
+            throw new Error(`ENOSPC at ${workspaceRoot}/.schegent/audit.log`);
+          }
+        },
+        logger: { warn: warnSpy },
+        nowMs: () => now
+      });
+
+      const auditErrBkpUi = createStubUi({ confirmResult: true });
+      const bkpWithAuditErr = await runBackupStore(
+        { api: throwingAuditApi, ui: auditErrBkpUi.ui },
+        { backupId: 'bkp-audit-err' }
+      );
+      expect(bkpWithAuditErr.status).toBe('created');
+      expect(auditErrBkpUi.infos).toHaveLength(1);
+      expect(auditErrBkpUi.infos[0]).toContain("backup 'bkp-audit-err' created");
+      expect(auditErrBkpUi.infos[0]).not.toContain(workspaceRoot);
+      expect(auditErrBkpUi.infos[0]).not.toContain('ENOSPC');
+      expect(auditErrBkpUi.errors).toHaveLength(0);
+      expect(auditErrBkpUi.warns).toHaveLength(0);
+
+      const auditErrRestUi = createStubUi({ confirmResult: true });
+      const restWithAuditErr = await runRestoreStoreBackup(
+        { api: throwingAuditApi, ui: auditErrRestUi.ui },
+        { backupId: 'bkp-audit-err' }
+      );
+      expect(restWithAuditErr.status).toBe('restored');
+      expect(auditErrRestUi.infos).toHaveLength(1);
+      expect(auditErrRestUi.infos[0]).toContain("store restored from 'bkp-audit-err'");
+      expect(auditErrRestUi.infos[0]).not.toContain(workspaceRoot);
+      expect(auditErrRestUi.infos[0]).not.toContain(initialStorageRoot);
+      expect(auditErrRestUi.infos[0]).not.toContain(relocatedStorageRoot);
+      expect(auditErrRestUi.infos[0]).not.toContain('ENOSPC');
+      expect(auditErrRestUi.errors).toHaveLength(0);
+      expect(auditErrRestUi.warns).toHaveLength(0);
+
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(workspaceRoot);
+      expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(relocatedStorageRoot);
+
+      // 5. Closed 7-field audit projector pins exact allowed keys and rejects extra/malformed keys.
+      const allowedKeys = new Set([
+        'operation',
+        'outcome',
+        'backupId',
+        'errorCode',
+        'schemaVersion',
+        'databaseBytes',
+        'restoredTableCount'
+      ]);
+      const allAuditEntries = (await fs.readFile(auditLogPath, 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { eventType: string; payload: Record<string, unknown> });
+      for (const entry of allAuditEntries) {
+        for (const key of Object.keys(entry.payload)) {
+          expect(allowedKeys.has(key), `unexpected key '${key}' in ${entry.eventType}`).toBe(true);
+        }
+        expect(entry.payload).not.toHaveProperty('restoredRowCount');
+        expect(entry.payload).not.toHaveProperty('verifiedExternalDependencies');
+      }
+
+      expect(
+        projectAuditPayload('store-backup', {
+          operation: 'backup',
+          outcome: 'succeeded',
+          backupId: 'bkp-closed-1',
+          schemaVersion: 9,
+          databaseBytes: 4096
+        })
+      ).toEqual({
+        operation: 'backup',
+        outcome: 'succeeded',
+        backupId: 'bkp-closed-1',
+        schemaVersion: 9,
+        databaseBytes: 4096
+      });
+      expect(
+        projectAuditPayload('store-restore', {
+          operation: 'restore',
+          outcome: 'succeeded',
+          backupId: 'bkp-closed-1',
+          schemaVersion: 9,
+          databaseBytes: 4096,
+          restoredTableCount: 128
+        })
+      ).toEqual({
+        operation: 'restore',
+        outcome: 'succeeded',
+        backupId: 'bkp-closed-1',
+        schemaVersion: 9,
+        databaseBytes: 4096,
+        restoredTableCount: 128
+      });
+
+      expect(() =>
+        projectAuditPayload('store-restore', {
+          operation: 'restore',
+          outcome: 'succeeded',
+          backupId: 'bkp-closed-1',
+          restoredRowCount: 42
+        })
+      ).toThrow(AuditPayloadValidationError);
+      expect(() =>
+        projectAuditPayload('store-backup', {
+          operation: 'backup',
+          outcome: 'succeeded',
+          backupId: 'bkp-closed-1',
+          verifiedExternalDependencies: 1
+        })
+      ).toThrow(AuditPayloadValidationError);
+      expect(() =>
+        projectAuditPayload('store-backup', {
+          operation: 'backup',
+          outcome: 'succeeded',
+          backupId: '../escape/path'
+        })
+      ).toThrow(AuditPayloadValidationError);
+      expect(() =>
+        projectAuditPayload('store-backup', {
+          operation: 'restore',
+          outcome: 'succeeded',
+          backupId: 'bkp-closed-1'
+        })
+      ).toThrow(AuditPayloadValidationError);
+    } finally {
+      storeRef.current?.close();
+    }
+  });
+
+  it('refuses leaf symlinks atomically via O_NOFOLLOW in computeFileDigestSync and external dependency inspector (FR-R7-11 Sec-M3)', async () => {
+    if (process.platform === 'win32') return;
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-symlink-ws-'));
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-symlink-out-'));
+    tempDirs.push(workspaceRoot, outsideDir);
+
+    const outsideFile = path.join(outsideDir, 'target.db');
+    await fs.writeFile(outsideFile, 'secret-bytes', { mode: 0o600 });
+    const symlinkDb = path.join(workspaceRoot, 'linked.db');
+    await fs.symlink(outsideFile, symlinkDb);
+
+    const digestRes = computeFileDigestSync(symlinkDb, MAX_BACKUP_DATABASE_BYTES);
+    expect(digestRes).toEqual({
+      ok: false,
+      error: 'Backup database path must not be a symbolic link'
+    });
+
+    const inspector = createWorkspaceExternalDependencyInspector(workspaceRoot);
+    expect(inspector('linked.db')).toEqual({
+      exists: false,
+      byteLength: 0,
+      sha256Digest: ''
+    });
   });
 });

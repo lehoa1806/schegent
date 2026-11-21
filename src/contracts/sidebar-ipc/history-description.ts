@@ -1,5 +1,3 @@
-import type { CMD_RESOLVE_HISTORY_DESCRIPTION, CommandBase } from '../sidebar-ipc';
-
 // FR-R3-071 (feature 152) — the sidebar's half of history description replay.
 //
 // FR-R3-010 moved the full sanitized description out of the memento into a
@@ -25,10 +23,7 @@ export interface ResolveHistoryDescriptionRequest {
   readonly runId: string;
 }
 
-export interface ResolveHistoryDescriptionCommand
-  extends CommandBase<typeof CMD_RESOLVE_HISTORY_DESCRIPTION> {
-  readonly payload: ResolveHistoryDescriptionRequest;
-}
+export type { ResolveHistoryDescriptionCommand } from '../generated/sidebar-ipc-types';
 
 /**
  * The four resolver outcomes, plus the failure arm the boundary needs.

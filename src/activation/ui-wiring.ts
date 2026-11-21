@@ -83,6 +83,7 @@ interface Stage2UiWiringDeps {
   readonly extensionRoot: string;
   readonly workspaceRoot: string;
   readonly projector: StateProjector;
+  readonly refreshCatalog: () => Promise<void>;
   readonly dispatch: ConstructorParameters<typeof DashboardBridge>[0]['dispatch'];
   readonly guardedRunService: GuardedRunService;
   readonly store: WorkspaceStateStore;
@@ -456,7 +457,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     ...registerSqliteBackupCommands(guard, {
       workspaceRoot: deps.workspaceRoot, globalStorageRoot: deps.globalStorageRoot,
       store: deps.store, controller: deps.controller, lock: deps.lock,
-      auditWriter: deps.auditWriter, notifier: deps.notifier, projector: deps.projector
+      auditWriter: deps.auditWriter, notifier: deps.notifier, projector: deps.projector, refreshCatalog: deps.refreshCatalog, logger: deps.logger
     }),
     // Feature 195 (T064) — retry and attested completion, the two queue-item
     // exits that must offer the queue a drain; extracted together for the

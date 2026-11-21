@@ -7,6 +7,7 @@ import {
   resolveContainedTarget,
   type ContainmentRefusal
 } from '../../lib/path-containment';
+import { doesSubtreeOverlapProtectedPathsSync } from '../../lib/protected-path-match';
 
 export interface SessionArtifactRetentionPolicy {
   readonly maxAgeMs: number;
@@ -74,6 +75,11 @@ export interface SessionArtifactRetentionDeps {
    * payload, because the spec gives the audit log no new field.
    */
   readonly failureRecords?: { sweep(maxAgeMs: number, now: Date): Promise<unknown> };
+  /**
+   * FR-R7-11 (FR-020) — Protected database paths (active canonical/fallback DB,
+   * sidecars, and preserved unselected copies) that session retention must never delete.
+   */
+  readonly protectedPaths?: () => readonly string[];
 }
 
 const EMPTY_USAGE: SessionArtifactUsage = Object.freeze({
@@ -296,6 +302,7 @@ export class SessionArtifactRetentionService {
       .filter((group) => !group.scanFailed && !protectedRunIds.has(group.runId))
       .sort((a, b) => a.mtimeMs - b.mtimeMs || a.runId.localeCompare(b.runId));
     const removed = new Set<string>();
+    const refusedGroups = new Set<string>();
     let removedBytes = 0;
 
     for (const group of candidates) {
@@ -304,6 +311,7 @@ export class SessionArtifactRetentionService {
       failures += outcome.failures;
       removedBytes += outcome.removedBytes;
       if (outcome.complete) removed.add(group.runId);
+      else if (outcome.failures > 0) refusedGroups.add(group.runId);
     }
 
     let retainedBytes = [...groups.values()]
@@ -311,7 +319,7 @@ export class SessionArtifactRetentionService {
       .reduce((sum, group) => sum + group.size, 0);
     for (const group of candidates) {
       if (retainedBytes <= policy.maxBytes) break;
-      if (removed.has(group.runId)) continue;
+      if (removed.has(group.runId) || refusedGroups.has(group.runId)) continue;
       const outcome = await this.removeGroup(group, sessionsRoot);
       failures += outcome.failures;
       removedBytes += outcome.removedBytes;
@@ -420,6 +428,12 @@ export class SessionArtifactRetentionService {
         // Vanished between the measure and the removal. `rm` with `force`
         // treated this as success before the guard existed, and it still is.
         removedBytes += target.size;
+        continue;
+      }
+      const protectedList = this.deps.protectedPaths?.() ?? [];
+      if (protectedList.length > 0 && doesSubtreeOverlapProtectedPathsSync(target.fullPath, protectedList)) {
+        failures += 1;
+        this.deps.logger.warn('session-retention: remove-artifact refused', { reason: 'protected-path' });
         continue;
       }
       try {

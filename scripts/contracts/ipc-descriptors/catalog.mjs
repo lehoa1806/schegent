@@ -43,9 +43,9 @@ export const CATALOG_COMMANDS = Object.freeze([
     interfaceName: 'SaveDefinitionDraftCommand',
     validatorName: 'validateSaveDefinitionDraft',
     family: 'catalog',
-    emitInterface: false,
     doc: 'Save an authored draft body for one catalog definition.',
     payloadMode: 'required',
+    payloadTypeRef: { name: 'SaveDraftRequest', from: '../catalog-lifecycle' },
     payload: d.obj(
       {
         ...lifecycleTargetFields(),
@@ -61,9 +61,9 @@ export const CATALOG_COMMANDS = Object.freeze([
     interfaceName: 'PublishDefinitionCommand',
     validatorName: 'validatePublishDefinition',
     family: 'catalog',
-    emitInterface: false,
     doc: 'Publish the current draft of one catalog definition.',
     payloadMode: 'required',
+    payloadTypeRef: { name: 'PublishRequest', from: '../catalog-lifecycle' },
     payloadMissingErr: 'invalid-payload',
     payload: d.obj(lifecycleTargetFields(), {
       collapseInvalidErr: 'invalid-payload',
@@ -76,9 +76,9 @@ export const CATALOG_COMMANDS = Object.freeze([
     interfaceName: 'DeactivateDefinitionCommand',
     validatorName: 'validateDeactivateDefinition',
     family: 'catalog',
-    emitInterface: false,
     doc: 'Deactivate one published catalog definition.',
     payloadMode: 'required',
+    payloadTypeRef: { name: 'DeactivateRequest', from: '../catalog-lifecycle' },
     payloadMissingErr: 'invalid-payload',
     payload: d.obj(lifecycleTargetFields(), {
       collapseInvalidErr: 'invalid-payload',
@@ -91,9 +91,9 @@ export const CATALOG_COMMANDS = Object.freeze([
     interfaceName: 'RestoreDefinitionVersionCommand',
     validatorName: 'validateRestoreDefinitionVersion',
     family: 'catalog',
-    emitInterface: false,
     doc: 'Copy a historical published version back into a draft.',
     payloadMode: 'required',
+    payloadTypeRef: { name: 'RestoreRequest', from: '../catalog-lifecycle' },
     payload: d.obj(
       {
         ...lifecycleTargetFields(),
@@ -108,9 +108,9 @@ export const CATALOG_COMMANDS = Object.freeze([
     interfaceName: 'DiscardDefinitionDraftCommand',
     validatorName: 'validateDiscardDefinitionDraft',
     family: 'catalog',
-    emitInterface: false,
     doc: 'Discard an unpublished draft for one catalog definition.',
     payloadMode: 'required',
+    payloadTypeRef: { name: 'DiscardDraftRequest', from: '../catalog-lifecycle' },
     payloadMissingErr: 'invalid-payload',
     payload: d.obj(lifecycleTargetFields(), {
       collapseInvalidErr: 'invalid-payload',
@@ -123,9 +123,9 @@ export const CATALOG_COMMANDS = Object.freeze([
     interfaceName: 'PublishPackageCommand',
     validatorName: 'validatePublishPackage',
     family: 'catalog',
-    emitInterface: false,
     doc: 'Commit a multi-layer imported catalog package.',
     payloadMode: 'required',
+    payloadTypeRef: { name: 'PackagePublishRequest', from: '../catalog-lifecycle' },
     payload: d.obj(
       {
         layers: d.arr(publishPackageLayer, {
@@ -143,11 +143,14 @@ export const CATALOG_COMMANDS = Object.freeze([
     interfaceName: 'ReadDefinitionVersionCommand',
     validatorName: 'validateReadDefinitionVersion',
     family: 'catalog',
-    emitInterface: false,
     doc: 'Read a historical definition version body by (kind, id, versionId).',
     payloadMode: 'required',
     payload: d.obj({
-      kind: d.enum(CATALOG_KINDS, { err: 'invalid-payload-field' }),
+      kind: d.enum(CATALOG_KINDS, {
+        refName: 'CatalogKind',
+        refImport: '../catalog-store',
+        err: 'invalid-payload-field'
+      }),
       id: d.str({ minLen: 1, maxLen: ID_MAX, err: 'invalid-payload-field' }),
       versionId: d.str({ minLen: 1, maxLen: VERSION_ID_MAX, err: 'invalid-payload-field' })
     })
@@ -158,7 +161,6 @@ export const CATALOG_COMMANDS = Object.freeze([
     interfaceName: 'ExportProcessYamlCommand',
     validatorName: 'validateExportProcessYaml',
     family: 'catalog',
-    emitInterface: false,
     doc: 'Export a Phase, Workflow, or Model Catalog to a host-dialog YAML file (never carries a path).',
     payloadMode: 'required',
     payload: d.discUnion(
@@ -216,9 +218,9 @@ export const CATALOG_COMMANDS = Object.freeze([
     interfaceName: 'PreflightProcessYamlCommand',
     validatorName: 'validatePreflightProcessYaml',
     family: 'catalog',
-    emitInterface: false,
     doc: 'Open host dialog to preflight an imported process YAML document (empty payload only).',
     payloadMode: 'required',
+    payloadTypeRef: { name: 'PreflightProcessYamlRequest', from: '../sidebar-ipc/process-yaml' },
     payload: d.obj({})
   })
 ]);

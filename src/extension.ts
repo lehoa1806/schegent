@@ -100,7 +100,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     { dispose: () => placeholder.dispose() }
   );
 
-  const operationalMemento = createSwitchableOperationalMemento(context.workspaceState, logger);
+  const operationalMemento = createSwitchableOperationalMemento(context.workspaceState, logger, { requireDurableBatch: true });
   const store = new WorkspaceStateStore(operationalMemento, logger);
   registerOperationalMementoForStore(store, operationalMemento);
 
@@ -592,7 +592,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     extensionRoot: context.extensionUri.fsPath,
     globalStorageRoot: context.globalStorageUri.fsPath,
     workspaceRoot,
-    projector,
+    projector, refreshCatalog,
     dispatch: (cmd, ack) => sidebarRouter.dispatch(cmd, ack),
     guardedRunService,
     store,

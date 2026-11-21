@@ -1,4 +1,3 @@
-import type { CMD_OPEN_DECISION_RECORD, CommandBase } from '../sidebar-ipc';
 import type { DecisionRecordOutcome } from '../decision-record';
 
 // FR-R5-F19 (feature 278, T19.1) — the sidebar's "open the decision record" request.
@@ -17,9 +16,7 @@ export interface OpenDecisionRecordRequest {
   readonly rowId: string;
 }
 
-export interface OpenDecisionRecordCommand extends CommandBase<typeof CMD_OPEN_DECISION_RECORD> {
-  readonly payload: OpenDecisionRecordRequest;
-}
+export type { OpenDecisionRecordCommand } from '../generated/sidebar-ipc-types';
 
 export interface OpenDecisionRecordResponse {
   readonly outcome: DecisionRecordOutcome;

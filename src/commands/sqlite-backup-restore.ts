@@ -196,6 +196,10 @@ export async function runRestoreStoreBackup(
     deps.ui.info(
       `Schegent: store restored from '${targetBackupId}' (${outcome.restoredTableCount} tables, ${outcome.restoredRowCount} rows, ${outcome.restoredRunCount} Runs, schema v${outcome.schemaVersion}). Caches reloaded.`
     );
+  } else if (outcome.status === 'committed_refresh_failed') {
+    deps.ui.error(
+      `Schegent: backup '${targetBackupId}' was committed on disk (${outcome.restoredTableCount} tables, schema v${outcome.schemaVersion}), but post-commit cache/catalog refresh failed (${outcome.errorCode}). Reload the window to synchronize in-memory state.`
+    );
   } else if (outcome.status === 'refused') {
     deps.ui.warn(
       `Schegent: restore refused (${outcome.reasonCode}) — ${outcome.message} Live store was not modified.`

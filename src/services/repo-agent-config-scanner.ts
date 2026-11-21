@@ -10,8 +10,10 @@
 //      limits recorded in `docs/architecture/native-binding-decision.md`), and non-regular
 //      files are refused without ever reading outside the workspace root.
 //   3. Reads are strictly bounded to `MAX_AGENT_CONFIG_FILE_BYTES` (256 KiB) per
-//      file (using a bounded chunked `handle.read` loop that never buffers past
-//      `maxBytes + 1` bytes) and `MAX_AGENT_CONFIG_SCAN_MS` (2,000 ms) total.
+//      file (using a bounded chunked `handle.read` loop that never requests or
+//      buffers past `maxBytes` bytes, paired with pre- and post-read `fstat`
+//      checks) and `MAX_AGENT_CONFIG_SCAN_MS` (2,000 ms) total via monotonic
+//      `performance.now()` and an `AbortSignal` deadline.
 //   4. Values and raw file contents NEVER leave this module. Only relative names,
 //      byte sizes, SHA-256 digests, closed unreadable reason categories, and —
 //      for Claude JSON settings files only — sorted hook event names and
@@ -20,6 +22,7 @@
 //      presence, size, and SHA-256 digest only.
 import { createHash } from 'node:crypto';
 import type * as fsp from 'node:fs/promises';
+import { performance } from 'node:perf_hooks';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { mapBackends, type BackendMap } from '../contracts/backend-descriptors';
 import { openWithinRoot, type SafeOpenRefusal } from '../lib/safe-open';
@@ -93,8 +96,37 @@ export interface ScanRepoAgentConfigOptions {
   readonly scanPath?: (
     workspaceRoot: string,
     relPath: string,
-    maxBytes: number
+    maxBytes: number,
+    signal?: AbortSignal
   ) => Promise<ScannedAgentConfigEntry | null>;
+}
+
+const ABORT_SENTINEL = Symbol('agent-config-scan-aborted');
+
+async function raceWithAbort<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal
+): Promise<T | typeof ABORT_SENTINEL> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) {
+    void promise.catch(() => undefined);
+    return ABORT_SENTINEL;
+  }
+  let resolveAbort!: (value: typeof ABORT_SENTINEL) => void;
+  const abortPromise = new Promise<typeof ABORT_SENTINEL>((resolve) => {
+    resolveAbort = resolve;
+  });
+  const onAbort = (): void => resolveAbort(ABORT_SENTINEL);
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    const result = await Promise.race([promise, abortPromise]);
+    if (result === ABORT_SENTINEL) {
+      void promise.catch(() => undefined);
+    }
+    return result;
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 
 function mapSafeOpenRefusal(reason: SafeOpenRefusal): AgentConfigUnreadableReason {
@@ -189,31 +221,64 @@ function extractClaudeSettingsMetadata(rawBytes: Buffer): {
 
 /**
  * Read at most `maxBytes` bytes from an open descriptor. Checks `fstat().size`
- * first and also bounds the chunked read to `maxBytes + 1` bytes so a growing
- * file cannot bypass the limit.
+ * before and after the bounded chunked read loop so `handle.read()` never
+ * requests bytes past `maxBytes` and concurrent file growth past `maxBytes`
+ * fails closed. Races awaits against `signal` when supplied.
  */
-async function readBoundedBytes(
+export async function readBoundedBytes(
   handle: fsp.FileHandle,
-  maxBytes: number
-): Promise<{ readonly outcome: 'ok'; readonly bytes: Buffer } | { readonly outcome: 'too-large' }> {
-  const stat = await handle.stat();
+  maxBytes: number,
+  signal?: AbortSignal
+): Promise<
+  | { readonly outcome: 'ok'; readonly bytes: Buffer }
+  | { readonly outcome: 'too-large' }
+  | { readonly outcome: 'changed' }
+  | { readonly outcome: 'aborted'; readonly pendingOp?: Promise<unknown> }
+> {
+  if (signal?.aborted) return { outcome: 'aborted' };
+
+  const preStatPromise = handle.stat();
+  const stat = await raceWithAbort(preStatPromise, signal);
+  if (stat === ABORT_SENTINEL || signal?.aborted) {
+    return { outcome: 'aborted', pendingOp: preStatPromise };
+  }
   if (stat.size > maxBytes) {
     return { outcome: 'too-large' };
   }
+
   const chunks: Buffer[] = [];
   let total = 0;
-  const chunkSize = Math.min(16_384, maxBytes + 1);
-  while (total <= maxBytes) {
-    const remaining = maxBytes + 1 - total;
+  const chunkSize = Math.min(16_384, maxBytes);
+  while (total < maxBytes) {
+    if (signal?.aborted) return { outcome: 'aborted' };
+    const remaining = maxBytes - total;
     const buf = Buffer.allocUnsafe(Math.min(chunkSize, remaining));
-    const { bytesRead } = await handle.read(buf, 0, buf.length, null);
-    if (bytesRead === 0) break;
-    total += bytesRead;
+    const readPromise = handle.read(buf, 0, buf.length, null);
+    const readResult = await raceWithAbort(readPromise, signal);
+    if (readResult === ABORT_SENTINEL || signal?.aborted) {
+      return { outcome: 'aborted', pendingOp: readPromise };
+    }
+    if (readResult.bytesRead === 0) break;
+    total += readResult.bytesRead;
     if (total > maxBytes) {
       return { outcome: 'too-large' };
     }
-    chunks.push(buf.subarray(0, bytesRead));
+    chunks.push(buf.subarray(0, readResult.bytesRead));
   }
+
+  if (signal?.aborted) return { outcome: 'aborted' };
+  const postStatPromise = handle.stat();
+  const postStat = await raceWithAbort(postStatPromise, signal);
+  if (postStat === ABORT_SENTINEL || signal?.aborted) {
+    return { outcome: 'aborted', pendingOp: postStatPromise };
+  }
+  if (postStat.size > maxBytes) {
+    return { outcome: 'too-large' };
+  }
+  if (total !== postStat.size) {
+    return { outcome: 'changed' };
+  }
+
   return { outcome: 'ok', bytes: chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total) };
 }
 
@@ -238,35 +303,33 @@ export function computeAgentConfigFingerprint(
   return createHash('sha256').update(lines.join('\n'), 'utf8').digest('hex');
 }
 
-async function scanSinglePath(
-  workspaceRoot: string,
+export async function scanOpenedHandle(
   relPath: string,
-  maxBytes: number
+  handle: fsp.FileHandle,
+  maxBytes: number,
+  signal?: AbortSignal
 ): Promise<ScannedAgentConfigEntry | null> {
-  const segments = relPath.split('/');
-  const opened = await openWithinRoot(workspaceRoot, segments, {
-    flags: 'r',
-    createDirs: false
-  });
-  if (opened.outcome === 'refused') {
-    // Missing parent directory or missing file is ordinary absence, not an unreadable file.
-    if (opened.reason === 'io-failed' && opened.errno === 'ENOENT') {
+  let pendingOp: Promise<unknown> | undefined;
+  try {
+    if (signal?.aborted) return null;
+    const read = await readBoundedBytes(handle, maxBytes, signal);
+    if (read.outcome === 'aborted') {
+      pendingOp = read.pendingOp;
       return null;
     }
-    return {
-      name: relPath,
-      status: 'unreadable',
-      unreadableReason: mapSafeOpenRefusal(opened.reason)
-    };
-  }
-
-  try {
-    const read = await readBoundedBytes(opened.handle, maxBytes);
+    if (signal?.aborted) return null;
     if (read.outcome === 'too-large') {
       return {
         name: relPath,
         status: 'unreadable',
         unreadableReason: 'size-limit-exceeded'
+      };
+    }
+    if (read.outcome === 'changed') {
+      return {
+        name: relPath,
+        status: 'unreadable',
+        unreadableReason: 'io-failed'
       };
     }
     const digest = createHash('sha256').update(read.bytes).digest('hex');
@@ -283,14 +346,67 @@ async function scanSinglePath(
       ...claudeMeta
     };
   } catch {
+    if (signal?.aborted) return null;
     return {
       name: relPath,
       status: 'unreadable',
       unreadableReason: 'io-failed'
     };
   } finally {
-    await opened.handle.close().catch(() => undefined);
+    try {
+      await handle.close();
+    } catch {
+      if (pendingOp !== undefined) {
+        void pendingOp
+          .catch(() => undefined)
+          .finally(() => {
+            void handle.close().catch(() => undefined);
+          });
+      }
+    }
   }
+}
+
+async function scanSinglePath(
+  workspaceRoot: string,
+  relPath: string,
+  maxBytes: number,
+  signal?: AbortSignal
+): Promise<ScannedAgentConfigEntry | null> {
+  if (signal?.aborted) return null;
+  const segments = relPath.split('/');
+  const openPromise = openWithinRoot(workspaceRoot, segments, {
+    flags: 'r',
+    createDirs: false
+  });
+  const opened = await raceWithAbort(openPromise, signal);
+  if (opened === ABORT_SENTINEL) {
+    void openPromise
+      .then((late) =>
+        late.outcome === 'opened' ? late.handle.close().catch(() => undefined) : undefined
+      )
+      .catch(() => undefined);
+    return null;
+  }
+  if (signal?.aborted) {
+    if (opened.outcome === 'opened') {
+      await opened.handle.close().catch(() => undefined);
+    }
+    return null;
+  }
+  if (opened.outcome === 'refused') {
+    // Missing parent directory or missing file is ordinary absence, not an unreadable file.
+    if (opened.reason === 'io-failed' && opened.errno === 'ENOENT') {
+      return null;
+    }
+    return {
+      name: relPath,
+      status: 'unreadable',
+      unreadableReason: mapSafeOpenRefusal(opened.reason)
+    };
+  }
+
+  return scanOpenedHandle(relPath, opened.handle, maxBytes, signal);
 }
 
 export async function scanRepoAgentConfig(
@@ -330,16 +446,17 @@ export async function scanRepoAgentConfig(
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   const work = async (): Promise<void> => {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = performance.now() + timeoutMs;
     for (const relPath of candidates) {
-      if (isAborted() || Date.now() >= deadline) {
+      if (isAborted() || performance.now() >= deadline) {
         if (!isAborted()) {
+          abortController.abort();
           scanError = true;
           scanErrorReason = 'timeout';
         }
         return;
       }
-      const entry = await scanPathImpl(workspaceRoot, relPath, maxBytes);
+      const entry = await scanPathImpl(workspaceRoot, relPath, maxBytes, abortController.signal);
       if (isAborted()) return;
       if (entry !== null) {
         entries.push(entry);

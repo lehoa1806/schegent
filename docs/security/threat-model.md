@@ -842,20 +842,39 @@ workspace and this exact plan**: editing the pipeline changes the fingerprint an
 another repository asks. Withdrawn from `Schegent: Git Approvals`, which lists what this workspace
 holds and withdraws one entry or all of them; resetting workspace state also clears them.
 
-**The per-workspace repository agent configuration acknowledgement (`FR-R7-04`, review R1).** Because
-`schegent.backend.uncontainedBackends` is installation-wide while repository-controlled agent
+**The per-workspace repository agent configuration acknowledgement (`FR-R7-04`, `FR-R7-11`, review R1).**
+Because `schegent.backend.uncontainedBackends` is installation-wide while repository-controlled agent
 configuration (`.claude/settings.json`, `.claude/settings.local.json`, `.mcp.json`, `CLAUDE.md`,
 `.claude/CLAUDE.md`) travels with each repository, an uncontained Run runs a bounded, symlink-safe
-preflight scan (at most 256 KiB per file and 2,000 ms per scan via `openWithinRoot`) before spawning.
-When any listed file is present or unreadable and no matching workspace acknowledgement exists, a
-blocking modal discloses relative names, sizes, short SHA-256 digests, and Claude hook event /
-execution-relevant key names (never raw values, and `.mcp.json` is never parsed). `Approve This Run`
-approves once; `Acknowledge for This Workspace` stores a digest-bound grant under
+preflight scan before any uncontained backend subprocess starts (including pre-phase session compaction as
+well as phase invocation). When any listed file is present or unreadable and no matching workspace
+acknowledgement exists, a blocking modal discloses relative names, sizes, short SHA-256 digests, and
+Claude hook event / execution-relevant key names (never raw values, and `.mcp.json` is never parsed).
+`Approve This Run` approves once; `Acknowledge for This Workspace` stores a digest-bound grant under
 `schegent.consent.agentConfigGrants.v1` in this workspace's `workspaceState` memento (never persisted
-when any entry is unreadable or a scan error occurred). Any one-byte change re-prompts with a
-file-name and digest diff; every decision emits a closed `agent-config-acknowledged` audit event
-(`backend`, `fileCount`, `decision` only). Withdrawn from `Schegent: Agent Config Acknowledgements`
-or by resetting workspace state.
+when any entry is unreadable or a scan error occurred). Any one-byte change re-prompts with a file-name
+and digest diff; every decision emits a closed `agent-config-acknowledged` audit event (`backend`,
+`fileCount`, `decision` only). Withdrawn from `Schegent: Agent Config Acknowledgements` or by resetting
+workspace state.
+
+**Scanner limits and re-acknowledgement policy (`FR-R7-11`):**
+- **Per-file byte bound (`<= 256 KiB`)**: each file opened via `openWithinRoot` is checked with a pre-read
+  `fstat`, read in chunks without ever requesting bytes past `262,144` bytes (`256 KiB`), and re-checked
+  with a post-read `fstat` so concurrent growth past `256 KiB` fails closed as `size-limit-exceeded`.
+- **Scan deadline (`2,000 ms`, fail-closed)**: each scan enforces a `2,000 ms` monotonic deadline with an
+  `AbortSignal` threaded through file opens and chunk reads, failing closed as `timeout` and closing open
+  descriptors when settled without mutating returned entries. Because Node/libuv cannot preempt an
+  individual in-flight kernel `read` or `open` syscall mid-flight, the `AbortSignal` stops further I/O
+  immediately, races pending awaits so the scan returns fail-closed at the deadline, and closes the
+  descriptor once the single syscall settles.
+- **Re-acknowledgement cadence**: within one extension-host activation, the preflight is evaluated once
+  per `(runId, backend)` across subsequent phases, retries, and same-session resumes, with overlapping
+  concurrent checks for the same `(runId, backend)` coalesced into one scan, prompt, and audit entry.
+  Terminal Runs (`completed` or `canceled`) release their ledger keys via `forgetRun`, and the in-memory
+  ledger keeps a 512-pair LRU defensive bound whose eviction fails closed by re-running the preflight.
+  Across an extension-host reload, the in-memory ledger starts empty: matching persistent grants in
+  `schegent.consent.agentConfigGrants.v1` clear silently with audit decision `stored`, whereas one-Run
+  approvals, unreadable or timed-out scans, and modified configuration re-prompt before spawning.
 
 **Limits of the repository configuration preflight (risk reduction, not containment):**
 - Disclosure and consent only: it does not block, strip, or rewrite repository configuration and does
@@ -866,8 +885,10 @@ or by resetting workspace state.
   uncontained consent waiver.
 
 For all three consent surfaces, cancelling or dismissing **denies**, and no value is written except by
-its own affirmative action. A failed write does not become a denial of the run just approved — it means
-the next run asks again, which is the fail-closed direction for a grant that was never recorded.
+its own affirmative action. A failed write does not become a denial of the run just approved — for
+repository agent configuration, a failed persistence write emits audit decision `approved-once` rather
+than `acknowledged`, and in every case the next run asks again, which is the fail-closed direction for a
+grant that was never recorded.
 
 **Residual risk, stated rather than implied:**
 
@@ -905,6 +926,7 @@ the next run asks again, which is the fail-closed direction for a grant that was
 <!-- Source: src/activation/uncontained-consent.ts -->
 <!-- Source: src/activation/git-approval.ts -->
 <!-- Source: src/activation/agent-config-acknowledgement.ts -->
+<!-- Source: src/controller/agent-config-ack-gate.ts -->
 <!-- Source: src/services/repo-agent-config-scanner.ts -->
 <!-- Source: src/state/agent-config-grants.ts -->
 <!-- Source: src/state/git-plan-grants.ts -->

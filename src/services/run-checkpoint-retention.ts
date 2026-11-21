@@ -2,7 +2,11 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
 import type { SanitizedLogger } from '../lib/logger';
-import { resolveContainedTarget, type ContainmentRefusal } from '../lib/path-containment';
+import {
+  resolveContainedTarget,
+  type ContainmentRefusal
+} from '../lib/path-containment';
+import { doesSubtreeOverlapProtectedPathsSync } from '../lib/protected-path-match';
 import { RECOVERY_ENVELOPE_SUFFIX, RUN_CHECKPOINT_DIRECTORY } from './run-checkpoint-paths';
 
 export function isRecoveryEnvelopeArtifact(fileName: string): boolean {
@@ -115,6 +119,11 @@ export interface RunCheckpointRetentionDeps {
    */
   readonly isPinnedRun?: (runId: string) => boolean;
   readonly pinnedRunIds?: ReadonlySet<string>;
+  /**
+   * FR-R7-11 (FR-020) — Protected database paths (active canonical/fallback DB,
+   * sidecars, and preserved unselected copies) that retention must never delete.
+   */
+  readonly protectedPaths?: () => readonly string[];
 }
 
 interface RunDirectory {
@@ -307,6 +316,7 @@ export class RunCheckpointRetentionService {
 
     const sweptAt = this.now();
     const removed = new Set<string>();
+    const refused = new Set<string>();
     const removedByTrigger: Record<CheckpointReapTrigger, number> = { age: 0, 'total-bytes': 0 };
     let removedBytes = 0;
 
@@ -316,7 +326,10 @@ export class RunCheckpointRetentionService {
       if (sweptAt - dir.mtimeMs <= this.policy.maxAgeMs) continue;
       const outcome = await this.removeRun(dir, root, refusals);
       failures += outcome.failures;
-      if (!outcome.removed) continue;
+      if (!outcome.removed) {
+        refused.add(dir.name);
+        continue;
+      }
       removed.add(dir.name);
       removedBytes += dir.bytes;
       removedByTrigger.age += 1;
@@ -327,7 +340,7 @@ export class RunCheckpointRetentionService {
       .reduce((sum, dir) => sum + dir.bytes, 0);
     for (const dir of ordered) {
       if (retainedBytes <= this.policy.maxTotalBytes) break;
-      if (removed.has(dir.name) || protectedFromSize.has(dir.name)) continue;
+      if (removed.has(dir.name) || refused.has(dir.name) || protectedFromSize.has(dir.name)) continue;
       const outcome = await this.removeRun(dir, root, refusals);
       failures += outcome.failures;
       if (!outcome.removed) continue;
@@ -488,6 +501,15 @@ export class RunCheckpointRetentionService {
       // Vanished between the measure and the removal. `rm` with `force` treated
       // this as success before the guard existed, and it still is.
       return { removed: true, failures: 0 };
+    }
+    const protectedList = this.deps.protectedPaths?.() ?? [];
+    if (
+      protectedList.length > 0 &&
+      (doesSubtreeOverlapProtectedPathsSync(dir.fullPath, protectedList) ||
+        doesSubtreeOverlapProtectedPathsSync(verdict.resolved, protectedList))
+    ) {
+      this.deps.logger.warn('checkpoint-retention: remove-run refused', { reason: 'protected-path' });
+      return { removed: false, failures: 1 };
     }
     try {
       await this.fs.rm(verdict.resolved, { recursive: true, force: true });

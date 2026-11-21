@@ -2,6 +2,7 @@ import type { AuditEventType, CatalogLifecyclePayload } from '../contracts/audit
 import { AuditPayloadValidationError } from './audit-payload-error';
 import { projectEvidenceExported } from './evidence-lifecycle-payload';
 import { projectAgentConfigAckPayload } from './agent-config-ack-payload';
+import { projectStoreBackupRestorePayload } from './store-backup-restore-payload';
 import { CATALOG_KINDS, type CatalogKind } from '../contracts/catalog-store';
 import { DEFAULT_BACKEND, type BackendRunnerKind } from '../contracts/backend-kinds';
 import {
@@ -1045,6 +1046,8 @@ export function projectAuditPayload(
     projected = { ...projectEvidenceExported(payload) };
   } else if (eventType === 'agent-config-acknowledged') {
     projected = { ...projectAgentConfigAckPayload(payload) };
+  } else if (eventType === 'store-backup' || eventType === 'store-restore') {
+    projected = { ...projectStoreBackupRestorePayload(payload, eventType) };
   } else {
     projected = projectValue(payload, 0) as Record<string, unknown>;
   }

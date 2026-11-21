@@ -25,7 +25,6 @@ export const PHASE_LOG_COMMANDS = Object.freeze([
     interfaceName: 'ReadPhaseLogCommand',
     validatorName: 'validateReadPhaseLog',
     family: 'phase-log',
-    emitInterface: false,
     doc: 'Read persisted phase log entries for a safe-path-segment tuple.',
     payloadMode: 'required',
     payload: d.obj(
@@ -44,7 +43,6 @@ export const PHASE_LOG_COMMANDS = Object.freeze([
     interfaceName: 'StartPhaseLogTailCommand',
     validatorName: 'validateStartPhaseLogTail',
     family: 'phase-log',
-    emitInterface: false,
     doc: 'Start a live phase log tail session for a concrete iteration.',
     payloadMode: 'required',
     payload: d.obj(
@@ -76,7 +74,6 @@ export const PHASE_LOG_COMMANDS = Object.freeze([
     interfaceName: 'StopPhaseLogTailCommand',
     validatorName: 'validateStopPhaseLogTail',
     family: 'phase-log',
-    emitInterface: false,
     doc: 'Stop an active live phase log tail session.',
     payloadMode: 'required',
     payload: d.obj(
@@ -92,7 +89,6 @@ export const PHASE_LOG_COMMANDS = Object.freeze([
     interfaceName: 'AckPhaseLogTailCommand',
     validatorName: 'validateAckPhaseLogTail',
     family: 'phase-log',
-    emitInterface: false,
     doc: 'Acknowledge a live phase log batch with credit, resync, or duplicate flags.',
     payloadMode: 'required',
     payload: d.obj(

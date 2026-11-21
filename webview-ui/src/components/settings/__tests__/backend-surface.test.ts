@@ -26,7 +26,7 @@ import type {
   WorkflowSnapshot
 } from '../../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
-import { SUPPORTED_BACKENDS } from '../../../../../src/contracts/backend-kinds';
+import { SUPPORTED_BACKENDS } from '../../../lib/generated/backend-descriptors';
 import { foldLegacyRun } from '../../../lib/__tests__/queue-runtime-fixture';
 import { setUncontainedBackendGrant } from '../../../lib/uncontained-grant-ipc';
 import { useConfirm } from '../../../lib/use-confirm';

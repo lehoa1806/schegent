@@ -187,10 +187,16 @@ export interface ExternalDependencyState {
   readonly exists: boolean;
   readonly byteLength: number;
   readonly sha256Digest: string;
+  readonly exceededByteBudget?: boolean | undefined;
+}
+
+export interface ExternalDependencyInspectOptions {
+  readonly remainingBudgetBytes?: number | undefined;
 }
 
 export type ExternalDependencyInspector = (
-  relativePath: string
+  relativePath: string,
+  options?: ExternalDependencyInspectOptions
 ) => ExternalDependencyState | undefined;
 
 export interface CreateOnlineBackupRequest {
@@ -369,7 +375,15 @@ function validateBackupImageReadOnly(
     }
     let inspectedBytesTotal = 0;
     for (const dep of deps) {
-      const state = request.inspectExternalDependency(dep.relativePath);
+      const remainingBudgetBytes = Math.max(0, maxExternalBytes - inspectedBytesTotal);
+      const state = request.inspectExternalDependency(dep.relativePath, { remainingBudgetBytes });
+      if (state?.exceededByteBudget) {
+        return {
+          ok: false,
+          reasonCode: 'EXTERNAL_DEPENDENCY_BOUND_EXCEEDED',
+          message: `Inspected external dependencies exceed cumulative byte ceiling (${maxExternalBytes} bytes)`
+        };
+      }
       if (
         !state ||
         !state.exists ||

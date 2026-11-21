@@ -26,88 +26,16 @@
 //   * **No filesystem path crosses this boundary**, in either direction — the
 //     same rule the process-YAML and connected-run families hold.
 
-import type {
-  CMD_ATTEST_TASK_COMPLETED,
-  CMD_CREATE_QUEUE,
-  CMD_DELETE_QUEUE,
-  CMD_MOVE_TASK,
-  CMD_RENAME_QUEUE,
-  CMD_SAVE_QUEUE_SETTINGS,
-  CMD_SET_QUEUE_FAILURE_POLICY,
-  CommandBase
-} from '../sidebar-ipc';
-import type { QueueFailurePolicy } from '../queue-failure-policy';
-
-export interface CreateQueueCommand extends CommandBase<typeof CMD_CREATE_QUEUE> {
-  readonly payload: { readonly name: string };
-}
-
-export interface RenameQueueCommand extends CommandBase<typeof CMD_RENAME_QUEUE> {
-  readonly payload: { readonly queueId: string; readonly name: string };
-}
-
-/**
- * Feature 092 (US1, FR-014) — two-phase, like `RemoveTaskPhaseCommand`.
- *
- * Without `confirmed`, the host answers `rejected` / `confirmation-required`
- * and returns the impact — the pending-Task count and every connected run
- * bound to the queue — so the webview can name it in the prompt. The host
- * stays the single oracle for that count; the webview never derives it from
- * a snapshot that may have moved on.
- */
-export interface DeleteQueueCommand extends CommandBase<typeof CMD_DELETE_QUEUE> {
-  readonly payload: { readonly queueId: string; readonly confirmed?: true };
-}
-
-export interface SaveQueueSettingsCommand extends CommandBase<typeof CMD_SAVE_QUEUE_SETTINGS> {
-  readonly payload: {
-    readonly globalConcurrencyCap: number;
-    readonly defaultQueueId: string;
-  };
-}
-
-/** Feature 092 (US1, FR-017) — move a pending Task to another queue. */
-export interface MoveTaskCommand extends CommandBase<typeof CMD_MOVE_TASK> {
-  readonly payload: {
-    readonly taskId: string;
-    readonly targetQueueId: string;
-    readonly position?: number;
-  };
-}
-
-/**
- * Feature 195 (T035, FR-018, FR-019) — this queue's own answer to the
- * halt-on-failure question, or `null` to follow the workspace default.
- * `policy: null` MUST remove the stored `QueueState.failurePolicy` field
- * rather than write a concrete value: FR-018's stated/unstated distinction
- * is what lets a later change to the workspace default reach exactly the
- * queues that never stated an opinion (data-model.md §2).
- */
-export interface SetQueueFailurePolicyCommand
-  extends CommandBase<typeof CMD_SET_QUEUE_FAILURE_POLICY> {
-  readonly payload: {
-    readonly queueId: string;
-    readonly policy: QueueFailurePolicy | null;
-  };
-}
-
-/**
- * Feature 195 (T064, FR-025) — the operator asserts that a `failed` task's work
- * actually completed outside the tool, ending the halt it caused without a
- * re-run and without discarding the row.
- *
- * `confirmed: true` is on the wire, not merely in the webview, for the same
- * reason `RemoveQueueItemCommand` carries it: FR-025 requires the operator to
- * assert the outcome explicitly and forbids the system inferring it, so a
- * webview that forgot its prompt must be unable to attest. The ingress gate
- * refuses anything but the literal `true` — a truthy value is a coercion, and
- * an assertion read out of a coercion is the inference FR-025 rules out.
- *
- * The task is addressed by identifier alone. No queue id: the host resolves the
- * task's queue itself (`queueIdForTask`), which is what keeps the halt's owner
- * and the attestation's target from disagreeing.
- */
-export interface AttestTaskCompletedCommand
-  extends CommandBase<typeof CMD_ATTEST_TASK_COMPLETED> {
-  readonly payload: { readonly taskId: string; readonly confirmed: true };
-}
+// Queue command interfaces are generated from
+// `scripts/contracts/ipc-descriptors/queue-management.mjs` into
+// `src/contracts/generated/sidebar-ipc-types.ts`. Re-exported here so existing
+// imports from `src/contracts/sidebar-ipc/queue` remain stable.
+export type {
+  CreateQueueCommand,
+  RenameQueueCommand,
+  DeleteQueueCommand,
+  SaveQueueSettingsCommand,
+  MoveTaskCommand,
+  SetQueueFailurePolicyCommand,
+  AttestTaskCompletedCommand
+} from '../generated/sidebar-ipc-types';

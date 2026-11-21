@@ -1,9 +1,11 @@
 import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_AGENT_CONFIG_FILE_BYTES,
+  readBoundedBytes,
+  scanOpenedHandle,
   scanRepoAgentConfig
 } from '../../../src/services/repo-agent-config-scanner';
 
@@ -245,5 +247,199 @@ describe('scanRepoAgentConfig (FR-R7-04, SC-001, SC-003, SC-004)', () => {
     expect(result.persistable).toBe(false);
     expect(result.entries).toEqual([]);
     expect(calls).toHaveLength(1);
+  });
+
+  it('FR-R7-11: reads exact-cap files without ever requesting bytes past maxBytes (zero 1-byte overshoot)', async () => {
+    const cap = 40_000; // Spans multiple 16 KiB chunks.
+    const payload = Buffer.alloc(cap, 0x61);
+    let offset = 0;
+    let totalRequested = 0;
+    const requestedLengths: number[] = [];
+
+    const fakeHandle = {
+      stat: vi.fn(async () => ({ size: cap })),
+      read: vi.fn(async (buf: Buffer, bufOffset: number, length: number) => {
+        totalRequested += length;
+        requestedLengths.push(length);
+        const toCopy = Math.min(length, payload.length - offset);
+        payload.copy(buf, bufOffset, offset, offset + toCopy);
+        offset += toCopy;
+        return { bytesRead: toCopy, buffer: buf };
+      }),
+      close: vi.fn(async () => undefined)
+    } as unknown as fsp.FileHandle;
+
+    const read = await readBoundedBytes(fakeHandle, cap);
+    expect(read.outcome).toBe('ok');
+    if (read.outcome === 'ok') {
+      expect(read.bytes.length).toBe(cap);
+      expect(read.bytes.equals(payload)).toBe(true);
+    }
+    // Every chunk request stays strictly within maxBytes — zero sentinel overshoot.
+    expect(totalRequested).toBe(cap);
+    expect(requestedLengths.reduce((sum, n) => sum + n, 0)).toBeLessThanOrEqual(cap);
+
+    // Also verify exact MAX_AGENT_CONFIG_FILE_BYTES on disk succeeds as present.
+    const root = await makeTempDir('schegent-ack-exactcap-');
+    await fsp.writeFile(path.join(root, 'CLAUDE.md'), Buffer.alloc(MAX_AGENT_CONFIG_FILE_BYTES, 0x42));
+    const diskResult = await scanRepoAgentConfig(root, 'claude');
+    expect(diskResult.scanError).toBe(false);
+    expect(diskResult.persistable).toBe(true);
+    expect(diskResult.entries).toHaveLength(1);
+    expect(diskResult.entries[0]).toMatchObject({
+      name: 'CLAUDE.md',
+      status: 'present',
+      size: MAX_AGENT_CONFIG_FILE_BYTES
+    });
+  });
+
+  it('FR-R7-11: catches a file growing past maxBytes via post-read fstat without reading past maxBytes', async () => {
+    const cap = 64;
+    const initialData = Buffer.alloc(cap, 0x78);
+    let offset = 0;
+    let statCalls = 0;
+    let totalRequested = 0;
+
+    const growingHandle = {
+      stat: vi.fn(async () => {
+        statCalls += 1;
+        // Pre-read stat fits cap; post-read stat reflects concurrent growth past cap.
+        return { size: statCalls === 1 ? cap : cap + 1 };
+      }),
+      read: vi.fn(async (buf: Buffer, bufOffset: number, length: number) => {
+        totalRequested += length;
+        const toCopy = Math.min(length, initialData.length - offset);
+        initialData.copy(buf, bufOffset, offset, offset + toCopy);
+        offset += toCopy;
+        return { bytesRead: toCopy, buffer: buf };
+      }),
+      close: vi.fn(async () => undefined)
+    } as unknown as fsp.FileHandle;
+
+    const entry = await scanOpenedHandle('CLAUDE.md', growingHandle, cap);
+    expect(entry).toEqual({
+      name: 'CLAUDE.md',
+      status: 'unreadable',
+      unreadableReason: 'size-limit-exceeded'
+    });
+    expect(totalRequested).toBeLessThanOrEqual(cap);
+    expect(statCalls).toBe(2);
+    expect(growingHandle.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('FR-R7-11: threads AbortSignal into stalled read, fails closed on timeout, closes handle, and never mutates entries', async () => {
+    const root = await makeTempDir('schegent-ack-stalled-');
+    let observedSignal: AbortSignal | undefined;
+    let releaseRead: ((res: { bytesRead: number; buffer: Buffer }) => void) | undefined;
+    let markFirstCloseAttempt!: () => void;
+    const firstCloseAttempted = new Promise<void>((resolve) => {
+      markFirstCloseAttempt = resolve;
+    });
+    let markClosedCleanly!: () => void;
+    const closedCleanly = new Promise<void>((resolve) => {
+      markClosedCleanly = resolve;
+    });
+    let closeAttempts = 0;
+    let readSettled = false;
+
+    const stalledHandle = {
+      stat: vi.fn(async () => ({ size: 128 })),
+      read: vi.fn(
+        (buf: Buffer) =>
+          new Promise<{ bytesRead: number; buffer: Buffer }>((resolve) => {
+            releaseRead = (res) => {
+              readSettled = true;
+              resolve(res);
+            };
+            void buf;
+          })
+      ),
+      close: vi.fn(async () => {
+        closeAttempts += 1;
+        // Simulate EBUSY while the single libuv syscall is in flight; succeed once settled.
+        if (!readSettled) {
+          markFirstCloseAttempt();
+          throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+        }
+        markClosedCleanly();
+      })
+    } as unknown as fsp.FileHandle;
+
+    const result = await scanRepoAgentConfig(root, 'claude', {
+      timeoutMs: 25,
+      scanPath: (_ws, relPath, maxBytes, signal) => {
+        observedSignal = signal;
+        return scanOpenedHandle(relPath, stalledHandle, maxBytes, signal);
+      }
+    });
+
+    expect(result.scanError).toBe(true);
+    expect(result.scanErrorReason).toBe('timeout');
+    expect(result.persistable).toBe(false);
+    expect(result.entries).toEqual([]);
+    expect(observedSignal).toBeDefined();
+    expect(observedSignal?.aborted).toBe(true);
+
+    // Wait for the immediate close attempt (EBUSY while read is in flight), then settle the
+    // stalled read and confirm the descriptor closes cleanly without mutating result.entries.
+    await firstCloseAttempted;
+    releaseRead?.({ bytesRead: 0, buffer: Buffer.alloc(0) });
+    await closedCleanly;
+    expect(closeAttempts).toBe(2);
+    expect(result.entries).toEqual([]);
+  });
+
+  it('FR-R7-11: rejects concurrent size mutation within maxBytes (total !== postStat.size) as unreadable with persistable=false and zero digest', async () => {
+    const root = await makeTempDir('schegent-ack-mutated-');
+    const cap = 256;
+    const initialData = Buffer.alloc(50, 0x6d);
+
+    const makeMutatedHandle = (postSize: number) => {
+      let offset = 0;
+      let statCalls = 0;
+      const close = vi.fn(async () => undefined);
+      const handle = {
+        stat: vi.fn(async () => {
+          statCalls += 1;
+          return { size: statCalls === 1 ? initialData.length : postSize };
+        }),
+        read: vi.fn(async (buf: Buffer, bufOffset: number, length: number) => {
+          const toCopy = Math.min(length, initialData.length - offset);
+          initialData.copy(buf, bufOffset, offset, offset + toCopy);
+          offset += toCopy;
+          return { bytesRead: toCopy, buffer: buf };
+        }),
+        close
+      } as unknown as fsp.FileHandle;
+      return { handle, close, getStatCalls: () => statCalls };
+    };
+
+    const direct = makeMutatedHandle(150);
+    const readOutcome = await readBoundedBytes(direct.handle, cap);
+    expect(readOutcome).toEqual({ outcome: 'changed' });
+    expect(direct.getStatCalls()).toBe(2);
+
+    const scanned = makeMutatedHandle(150);
+    const result = await scanRepoAgentConfig(root, 'claude', {
+      maxBytes: cap,
+      scanPath: (_ws, relPath, maxBytes, signal) => {
+        if (relPath === 'CLAUDE.md') {
+          return scanOpenedHandle(relPath, scanned.handle, maxBytes, signal);
+        }
+        return Promise.resolve(null);
+      }
+    });
+
+    expect(result.scanError).toBe(false);
+    expect(result.persistable).toBe(false);
+    expect(result.entries).toEqual([
+      {
+        name: 'CLAUDE.md',
+        status: 'unreadable',
+        unreadableReason: 'io-failed'
+      }
+    ]);
+    expect('digest' in (result.entries[0] ?? {})).toBe(false);
+    expect(scanned.close).toHaveBeenCalledTimes(1);
   });
 });

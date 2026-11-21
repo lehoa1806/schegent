@@ -472,8 +472,8 @@ export type BackupRestoreRejectionCode =
   | 'BACKUP_OPEN_FAILED';
 
 /**
- * FR-R7-03 (FR-004, FR-005, Hard Rule 22) — closed metadata-only audit payload for
- * `store-backup` and `store-restore` events. Deliberately has no path fields.
+ * FR-R7-03 & FR-R7-11 (FR-004, FR-005, Hard Rule 22) — closed 7-field metadata-only
+ * audit payload for `store-backup` and `store-restore` events. Deliberately has no path fields.
  */
 export interface StoreBackupRestoreAuditPayload {
   readonly operation: 'backup' | 'restore';
@@ -483,8 +483,6 @@ export interface StoreBackupRestoreAuditPayload {
   readonly schemaVersion?: number | undefined;
   readonly databaseBytes?: number | undefined;
   readonly restoredTableCount?: number | undefined;
-  readonly restoredRowCount?: number | undefined;
-  readonly verifiedExternalDependencies?: number | undefined;
 }
 
 export interface LatencyDistributionSummary {
