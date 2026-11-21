@@ -61,9 +61,11 @@ describe('Feature 084 T026 — exporting a Phase', () => {
 });
 
 describe('Feature 084 T067 — the control names itself and its reason', () => {
-  it('names the row it belongs to, since "Export" repeats down the list', () => {
+  it('names the row it belongs to, since "Export YAML" repeats down the list', () => {
     const { getByTestId } = render(ProcessExportButton, { props: { phaseId: 'specify' } });
-    expect(getByTestId('process-export-button').getAttribute('aria-label')).toBe('Export specify');
+    expect(getByTestId('process-export-button').getAttribute('aria-label')).toBe(
+      'Export YAML for specify'
+    );
   });
 
   it('points its description at the reason it rendered', () => {
@@ -98,6 +100,15 @@ describe('Feature 084 T067 — the control names itself and its reason', () => {
     expect(document.querySelectorAll(`[id="${firstId}"]`)).toHaveLength(1);
     expect(document.querySelectorAll(`[id="${secondId}"]`)).toHaveLength(1);
   });
+
+  it('sanitizes whitespace in rowKey so aria-describedby stays a single valid IDREF', () => {
+    const { getByTestId } = render(ProcessExportButton, {
+      props: { phaseId: 'bad', resolves: false, rowKey: 'draft::has spaces' }
+    });
+    const describedBy = getByTestId('process-export-button').getAttribute('aria-describedby') ?? '';
+    expect(describedBy).not.toMatch(/\s/);
+    expect(getByTestId('process-export-disabled-reason').id).toBe(describedBy);
+  });
 });
 
 describe('the control as an item of a menu', () => {
@@ -109,8 +120,9 @@ describe('the control as an item of a menu', () => {
     });
     const item = getByTestId('process-export-button');
     expect(item.getAttribute('role')).toBe('menuitem');
-    expect(item.textContent.trim()).toBe('Export…');
-    expect(item.getAttribute('aria-label')).toBe('Export specify');
+    expect(item.textContent.trim()).toBe('Export YAML…');
+    expect(item.getAttribute('aria-label')).toBe('Export YAML for specify');
+    expect(item.querySelector('use')?.getAttribute('href')).toBe('#i-export');
 
     await fireEvent.click(item);
     expect(exportSpy).toHaveBeenCalledWith('specify');

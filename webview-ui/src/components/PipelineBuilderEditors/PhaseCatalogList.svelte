@@ -1,18 +1,14 @@
 <script lang="ts">
-  // The Phases tab's list page: a search and a status filter, the Phases as a table in their
-  // authored order, and the import region under it.
-  //
-  // A row shows what FR-003 lets a list row show, the Phase's name, its id and its state and
-  // validity badges, plus the model warning and the order buttons the old list had beside it. The
-  // name opens the Phase's editor page, which holds every other action. The filter only hides
-  // rows: every write still addresses the whole list by index, which is why a move is refused
-  // while the filter hides any row.
+  // The Phases tab's list page: search, status filter, primary `+ New phase`,
+  // optional unsaved-edits attention banner, table with per-row `⋯` menus, and
+  // framed empty state delegating import to the single top-level Builder modal.
   import type { Snippet } from 'svelte';
   import type { BuilderLifecycle } from '../../lib/snapshot-types';
   import CatalogEmptyState from '../Builder/CatalogEmptyState.svelte';
   import DefinitionLifecycleRow from '../Builder/DefinitionLifecycleRow.svelte';
-  import ProcessImportPreflight from '../ProcessImport/ProcessImportPreflight.svelte';
-  import type { ImportTargetLayers } from '../ProcessImport/process-import-state';
+  import ProcessExportButton from '../ProcessImport/ProcessExportButton.svelte';
+  import { phaseExportAvailability } from '../ProcessImport/process-exchange-entry';
+  import SgMenu from '../sg/SgMenu.svelte';
   import {
     PHASE_STATUS_VIEWS,
     phaseCountLine,
@@ -26,11 +22,8 @@
     phases: MutablePhase[];
     /** A row's stored lifecycle, by its source key; absent for a row not saved yet. */
     lifecycleOf: (sourceKey: string) => BuilderLifecycle | undefined;
-    importLayers: ImportTargetLayers;
-    /** Why an import cannot start right now, or null. */
-    importUnavailable: string | null;
-    historyIndex: number;
-    historyLength: number;
+    /** Why top-level import cannot start (e.g. secondary window), or null. */
+    importDisabledReason?: string | null;
     trusted: boolean;
     savePending: boolean;
     mutationActive: boolean;
@@ -45,20 +38,15 @@
     notices?: Snippet;
     onselect: (index: number) => void;
     onadd: () => void;
-    onmoveup: (index: number) => void;
-    onmovedown: (index: number) => void;
-    onundo: () => void;
-    onredo: () => void;
-    onsave: () => void;
+    onduplicate: (index: number) => void;
+    onremove: (index: number, originatingElement?: HTMLElement | null) => void | Promise<void>;
+    onopenimport?: (originatingElement: HTMLElement | null) => void;
   }
 
   let {
     phases,
     lifecycleOf,
-    importLayers,
-    importUnavailable,
-    historyIndex,
-    historyLength,
+    importDisabledReason = null,
     trusted,
     savePending,
     mutationActive,
@@ -69,11 +57,9 @@
     notices,
     onselect,
     onadd,
-    onmoveup,
-    onmovedown,
-    onundo,
-    onredo,
-    onsave
+    onduplicate,
+    onremove,
+    onopenimport
   }: Props = $props();
 
   function rowFacts(phase: MutablePhase): PhaseRowFacts {
@@ -92,15 +78,16 @@
       .map((phase, index) => ({ phase, index }))
       .filter(({ phase }) => phaseRowVisible(rowFacts(phase), view, query))
   );
-  const filtered = $derived(query.trim() !== '' || view !== 'all');
-  /** A move is refused while any edit is pending, as the list's move buttons always were. */
-  const moveBlocked = $derived(!trusted || savePending || mutationActive || filtered);
 
-  /**
-   * The list comes back when a Phase's editor closes, and the button that closed it left with the
-   * editor, so focus would drop to the document. It goes back to that Phase's row instead; focus
-   * the operator put somewhere else stays where it is.
-   */
+  /** When the operator returned to the list with an unsaved Phase edit, name it for quick resume. */
+  const editedEntry = $derived(
+    mutationActive && editableSourceKey !== null
+      ? (phases
+          .map((phase, index) => ({ phase, index }))
+          .find(({ phase }) => phase.sourceKey === editableSourceKey) ?? null)
+      : null
+  );
+
   function restoreFocus(node: HTMLElement): void {
     const key = takeReturnFocus();
     if (key === null) return;
@@ -115,6 +102,21 @@
 <div class="phase-catalog-page" use:restoreFocus>
   {@render notices?.()}
 
+  {#if editedEntry}
+    <div class="attn warn" role="status" aria-live="polite" data-testid="phases-unsaved-banner">
+      <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+      <div class="body">
+        <strong>{editedEntry.phase.name || editedEntry.phase.id || 'Untitled Phase'}</strong> has unsaved changes.
+      </div>
+      <button
+        type="button"
+        class="btn btn-secondary btn-sm"
+        data-testid="phases-resume-editing"
+        onclick={() => onselect(editedEntry.index)}
+      >Resume editing</button>
+    </div>
+  {/if}
+
   <div class="toolbar">
     {#if phases.length > 0}
       <div class="search">
@@ -128,15 +130,7 @@
       </div>
     {/if}
     <div class="push">
-      <!-- The list's own edits are its moves; a Phase's other edits are made, undone and saved on
-           its editor page. So the list offers these only while an edit is pending. -->
-      {#if mutationActive}
-        <span class="chip s-warn" data-testid="phases-unsaved">Unsaved changes</span>
-        <button type="button" class="icon-btn" aria-label="Undo" title="Undo" disabled={!trusted || savePending || historyIndex <= 0} onclick={onundo}><svg class="i" aria-hidden="true"><use href="#i-undo"></use></svg></button>
-        <button type="button" class="icon-btn" aria-label="Redo" title="Redo" disabled={!trusted || savePending || historyIndex >= historyLength - 1} onclick={onredo}><svg class="i" aria-hidden="true"><use href="#i-redo"></use></svg></button>
-        <button type="button" class="btn btn-primary" data-testid="phases-save-all" disabled={!trusted || savePending} onclick={onsave}>{savePending ? 'Saving…' : 'Save'}</button>
-      {/if}
-      <button type="button" class="btn {mutationActive ? 'btn-secondary' : 'btn-primary'}" data-testid="phases-add" disabled={!trusted || savePending || mutationActive} onclick={onadd}><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>New phase</button>
+      <button type="button" class="btn btn-primary" data-testid="phases-add" disabled={!trusted || savePending || mutationActive} onclick={onadd}><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>New phase</button>
     </div>
   </div>
 
@@ -149,28 +143,21 @@
             <tr>
               <th scope="col">Phase</th>
               <th scope="col">Status</th>
-              <th scope="col" class="order"><span class="sr-only">Order</span></th>
+              <th scope="col" class="row-actions-col"><span class="sr-only">Actions</span></th>
             </tr>
           </thead>
           <tbody>
             {#each rows as { phase, index } (phase.sourceKey)}
               {@const name = phase.name || 'Untitled Phase'}
+              {@const exportable = phaseExportAvailability(phase)}
               <tr>
                 <td>
-                  <!-- Feature 099 (T494a, FR-043) — no scope badge. A badge that can
-                       only ever read one value is not a badge. -->
                   <button type="button" class="rowname" data-testid="phases-list-item-{phase.id}" data-row-key={phase.sourceKey} onclick={() => onselect(index)}>{name}</button>
                   <span class="mono muted small">{phase.id}</span>
                 </td>
                 <td>
-                  <!-- In its own cell, not inside the name's button: T042 hung the
-                       lifecycle chrome off the row, and a control nested in a button is
-                       invalid markup and unreachable by keyboard. -->
                   <div class="status-cell">
                     <DefinitionLifecycleRow definitionId={phase.id} lifecycle={lifecycleOf(phase.sourceKey)} validity={phase.sourceStatus} />
-                    <!-- Feature 101 (T037) — the validity badge left with the lifecycle
-                         chrome. Model availability is a runtime fact about the backend, not
-                         a lifecycle state, so it stayed on the row. -->
                     {#if phase.modelAvailable === false}
                       <span class="chip s-err"><svg class="i" aria-hidden="true"><use href="#i-warn"></use></svg>model unavailable</span>
                     {/if}
@@ -179,12 +166,19 @@
                     {/if}
                   </div>
                 </td>
-                <td class="order">
-                  <!-- Feature 099 (T494a, FR-043) — the two guards these lost asked
-                       whether the row or its neighbour sat in a different layer. One
-                       layer, so every row is reorderable against every other. -->
-                  <button type="button" class="icon-btn" aria-label="Move {name} up" title="Move up" data-testid="phases-move-up-{phase.id}" disabled={moveBlocked || index === 0} onclick={() => onmoveup(index)}><svg class="i" aria-hidden="true"><use href="#i-up"></use></svg></button>
-                  <button type="button" class="icon-btn" aria-label="Move {name} down" title="Move down" data-testid="phases-move-down-{phase.id}" disabled={moveBlocked || index === phases.length - 1} onclick={() => onmovedown(index)}><svg class="i" aria-hidden="true"><use href="#i-down"></use></svg></button>
+                <td class="row-actions-col">
+                  <SgMenu label="Actions for {name}" testid="phases-row-menu-{phase.id}">
+                    <button type="button" role="menuitem" data-testid="phases-row-open-{phase.id}" onclick={() => onselect(index)}><svg class="i" aria-hidden="true"><use href="#i-open"></use></svg>Open</button>
+                    <button type="button" role="menuitem" data-testid="phases-row-duplicate-{phase.id}" aria-disabled={!trusted || savePending || mutationActive} onclick={() => { if (trusted && !savePending && !mutationActive) onduplicate(index); }}><svg class="i" aria-hidden="true"><use href="#i-copy"></use></svg>Duplicate</button>
+                    <ProcessExportButton
+                      phaseId={phase.id}
+                      rowKey={phase.sourceKey}
+                      resolves={exportable.resolves}
+                      disabledReason={exportable.disabledReason}
+                    />
+                    <hr />
+                    <button type="button" role="menuitem" class="danger" data-testid="phases-row-remove-{phase.id}" aria-disabled={!trusted || savePending || !phase.persisted || mutationActive} onclick={(event) => { if (trusted && !savePending && phase.persisted && !mutationActive) void onremove(index, event.currentTarget); }}><svg class="i" aria-hidden="true"><use href="#i-trash"></use></svg>Deactivate…</button>
+                  </SgMenu>
                 </td>
               </tr>
             {/each}
@@ -197,26 +191,15 @@
     <p class="countline" data-testid="phases-countline">{phaseCountLine(rows.length, phases.length)}</p>
   {/if}
 
-  <!-- Feature 101 (US6, T065, FR-032/FR-033) — the front door, and it brings its
-       own import region. Ordered after the trust check by construction: an
-       untrusted workspace never renders this editor at all (PipelineBuilder gates
-       the three definition tabs), so guidance can never point at an action that
-       cannot succeed. It self-guards on the count, so the condition for showing it
-       is stated once, in the component that owns it. -->
-  <CatalogEmptyState kind="phase" count={phases.length} disabledReason={importUnavailable} />
-  {#if phases.length > 0}
-    <!-- FR-053 — the import entry point. Its own region rather than a toolbar button,
-         because the preflight it opens renders in place: the plan, the scope choice,
-         and the per-row result all belong to this landmark. Withheld while the
-         catalog is empty because the empty state above already offers one, and two
-         import regions on one screen is two answers to one question. -->
-    <ProcessImportPreflight layers={importLayers} disabledReason={importUnavailable} />
-  {/if}
+  <CatalogEmptyState
+    kind="phase"
+    count={phases.length}
+    disabledReason={importDisabledReason}
+    onimport={onopenimport}
+  />
 </div>
 
 <style>
-  /* sg-pages' `.toolbar`, `.table-wrap`, `table.t`, `.rowname` and `.countline` draw the list;
-     these place what the redesign sets inline. */
   .status-cell {
     display: flex;
     flex-wrap: wrap;
@@ -224,9 +207,7 @@
     gap: var(--schegent-space-1);
   }
 
-  /* The two order buttons keep to one line at the row's end, and the column takes only their
-     width, so the name and the status share the rest. */
-  .order {
+  .row-actions-col {
     width: 1%;
     white-space: nowrap;
     text-align: right;

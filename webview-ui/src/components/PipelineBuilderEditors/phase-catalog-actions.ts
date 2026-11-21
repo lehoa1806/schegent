@@ -99,35 +99,6 @@ export function duplicatePhaseRow(
 }
 
 /**
- * The rows with `index` and `target` swapped, the selection following whichever
- * of the two it was on.
- *
- * One function for both directions, with the neighbour named rather than
- * derived: the up and down handlers differed only in `index - 1` versus
- * `index + 1`, and their two bounds checks (`index <= 0`,
- * `index >= phases.length - 1`) are the same check on the neighbour.
- */
-export function movePhaseRow(
-  phases: readonly MutablePhase[],
-  index: number,
-  target: number,
-  selectedIndex: number | null
-): PhaseRowsEdit | null {
-  const moved = phases[index];
-  if (!moved || target < 0 || target >= phases.length) return null;
-  const next = [...phases];
-  next[target] = moved;
-  next[index] = phases[target];
-  return {
-    phases: next,
-    selectedIndex:
-      selectedIndex === index ? target : selectedIndex === target ? index : selectedIndex,
-    mutation: { kind: 'edit', phaseId: moved.id },
-    mutationSourceKey: moved.sourceKey
-  };
-}
-
-/**
  * The row at `index` returned to what the catalog holds, or dropped when the
  * catalog holds nothing for it — a draft that was never saved has no stored
  * state to return to, so discarding the edit discards the row.

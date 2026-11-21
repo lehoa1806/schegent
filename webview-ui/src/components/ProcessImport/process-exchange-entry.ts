@@ -19,7 +19,39 @@ import type {
   SavePhaseRow,
   SaveWorkflowRow
 } from '../../lib/definition-rows';
-import type { ImportTargetLayers } from './process-import-state';
+import {
+  confirmTargetBlockedReason,
+  type ImportTargetGate,
+  type ImportTargetLayers
+} from './process-import-state';
+
+export { confirmTargetBlockedReason, type ImportTargetGate };
+
+/**
+ * Top-level Builder Import button gate (Feature 326).
+ *
+ * Only window primacy blocks starting an import from the Builder header:
+ * untrusted primary windows still admit Model Catalog imports (FR-056), and
+ * per-catalog trust / unsaved-edits checks run at Confirm once preflight
+ * identifies which catalog(s) the document writes.
+ */
+export function topLevelImportDisabledReason(isPrimary: boolean): string | null {
+  return isPrimary ? null : 'Only the primary window can import.';
+}
+
+/**
+ * Why a Workflow cannot be exported, or `null` when it can.
+ *
+ * Unsaved drafts are not in the catalog yet; stored Workflows remain exportable
+ * even with missing references so broken graphs stay portable (FR-016).
+ */
+export function workflowExportDisabledReason(
+  row: { readonly persisted: boolean } | null
+): string | null {
+  return row === null || row.persisted
+    ? null
+    : 'Save this Workflow first. Export writes the definition the catalog holds, not an unsaved draft.';
+}
 
 /** Whatever a row can be asked about. The list rows are a superset of this. */
 export interface ExportableRow {

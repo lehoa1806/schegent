@@ -60,7 +60,12 @@ function mount(options: {
   selectedIndex?: number | null;
   mutationActive?: boolean;
   editableSourceKey?: string | null;
+  importDisabledReason?: string | null;
+  onselect?: (index: number | null) => void;
   onphasechange?: (index: number, patch: Partial<MutablePhase>) => void;
+  onduplicate?: (index: number) => void;
+  onremove?: (index: number, originatingElement?: HTMLElement | null) => void;
+  onopenimport?: (originatingElement: HTMLElement | null) => void;
 } = {}) {
   const phases = options.phases ?? [];
   return render(PhaseCatalogEditor, {
@@ -74,11 +79,15 @@ function mount(options: {
       showRetryTrustBanner: false, saveError: null, savePending: false,
       mutationActive: options.mutationActive ?? false,
       editableSourceKey: options.editableSourceKey ?? null,
-      onselect: vi.fn(), onadd: vi.fn(), onremove: vi.fn(), onreset: vi.fn(),
-      onphasechange: options.onphasechange ?? vi.fn(), onmoveup: vi.fn(), onmovedown: vi.fn(),
+      importDisabledReason: options.importDisabledReason ?? null,
+      onselect: options.onselect ?? vi.fn(), onadd: vi.fn(),
+      onremove: options.onremove ?? vi.fn(), onreset: vi.fn(),
+      onphasechange: options.onphasechange ?? vi.fn(),
       onundo: vi.fn(), onredo: vi.fn(), onsave: vi.fn(),
       ondismisssaveerror: vi.fn(), ontoggleraw: vi.fn(), onrawsave: vi.fn(),
-      ontoggleretry: vi.fn(), onretrychange: vi.fn(), onduplicate: vi.fn()
+      ontoggleretry: vi.fn(), onretrychange: vi.fn(),
+      onduplicate: options.onduplicate ?? vi.fn(),
+      onopenimport: options.onopenimport ?? vi.fn()
     }
   });
 }
@@ -321,23 +330,18 @@ describe('Phase catalog source editor states', () => {
   });
 });
 
-// Feature 084 T066 — the exchange entry points, as the manager offers them. The
-// decisions themselves are pinned in process-exchange-entry.test.ts; what is
-// asserted here is that the surface is wired to them.
+// Feature 084 T066 / Feature 326 — the exchange entry points, as the manager offers them.
+// Import moved to Builder's single top-level Import… modal (PipelineBuilder.test.ts), while
+// Export YAML… lives in both the Phase editor overflow menu and each Phase list row's ⋯ menu.
 describe('Phase catalog exchange entry points', () => {
-  // Export moved from the sidebar row to the editor header, so it is offered for
-  // the selected Phase rather than once per row; Import stays with the catalog.
-  it('offers Export for the selected Phase and Import once for the catalog', () => {
-    // The redesign splits the tab into the list and the open Phase's editor page:
-    // Export is an item of the editor's "More phase actions" menu, and the import
-    // region sits under the list, so each page offers one of them and not the other.
+  it('offers Export YAML… in the editor menu and per-row list menu, with no inline import band', () => {
     const editor = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
     expect(editor.container.querySelectorAll('[data-testid="process-export-button"]')).toHaveLength(1);
     expect(editor.container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(0);
 
     const list = mount({ phases: [STORED_PHASE] });
-    expect(list.container.querySelectorAll('[data-testid="process-export-button"]')).toHaveLength(0);
-    expect(list.container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
+    expect(list.container.querySelectorAll('[data-testid="process-export-button"]')).toHaveLength(1);
+    expect(list.container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(0);
   });
 
   it('keeps Export enabled where every other row control is closed', () => {
@@ -358,14 +362,25 @@ describe('Phase catalog exchange entry points', () => {
       .toContain('Save this Phase');
   });
 
-  it('closes Import while a Phase mutation is outstanding, and says why', () => {
-    // The commit sends the whole persisted layer, so an import started now would
-    // ask the operator to confirm a write that excludes their pending edit.
-    const { container } = mount({ phases: [STORED_PHASE], mutationActive: true });
-    expect((container.querySelector('[data-testid="process-import-inspect"]') as HTMLButtonElement)
-      .disabled).toBe(true);
-    expect(container.querySelector('[data-testid="process-import-unavailable"]')?.textContent)
-      .toContain('pending');
+  it('routes empty-catalog Import… to the top-level import handler and honors importDisabledReason', async () => {
+    const onopenimport = vi.fn();
+    const openable = mount({ phases: [], onopenimport });
+    const emptyImport = openable.container.querySelector(
+      '[data-testid="catalog-empty-import-phase"]'
+    ) as HTMLButtonElement;
+    expect(emptyImport).not.toBeNull();
+    expect(emptyImport.disabled).toBe(false);
+    await fireEvent.click(emptyImport);
+    expect(onopenimport).toHaveBeenCalledWith(emptyImport);
+    cleanup();
+
+    const blocked = mount({ phases: [], importDisabledReason: 'Only the primary window can import.' });
+    const disabledImport = blocked.container.querySelector(
+      '[data-testid="catalog-empty-import-phase"]'
+    ) as HTMLButtonElement;
+    expect(disabledImport.disabled).toBe(true);
+    expect(blocked.container.querySelector('[data-testid="catalog-empty-import-unavailable-phase"]')?.textContent)
+      .toContain('primary window');
   });
 
   it('offers neither control while the catalog is still loading', () => {
@@ -437,29 +452,58 @@ describe('Phase catalog lifecycle relocation (US1, T007)', () => {
     expect(container.querySelector('[data-testid="definition-row-defects-custom"]')).toBeNull();
   });
 
-  // The mockup's row also has a description, "Runs on", "Used by" and Modified
-  // cells and a menu that ends in Deactivate…. FR-003 lets a row show only the
-  // Phase's name, its id and its state and validity badges, so the row keeps what
-  // it showed before the redesign, the order buttons included, drawn in the
-  // mockup's table (decision 2 of the port review, 2026-11-14).
-  it('draws a list row with only the name, the id, the badges and the order buttons (FR-003)', () => {
+  // Feature 326: the non-functional Order column (↑ ↓) is retired; each Phase row shows
+  // Phase (name + id), Status (badges), and Actions (⋯ overflow menu: Open, Duplicate,
+  // Export YAML…, divider, Deactivate…).
+  it('draws a list row with Phase, Status, and per-row ⋯ Actions menu (no Order buttons)', async () => {
     const phase: MutablePhase = { ...STORED_PHASE, description: 'Checks the custom rules.', model: 'model-a' };
-    const { container } = mount({ snapshot: LIFECYCLE_SNAPSHOT, phases: [phase] });
+    const onselect = vi.fn();
+    const onduplicate = vi.fn();
+    const onremove = vi.fn();
+    const { container } = mount({
+      snapshot: LIFECYCLE_SNAPSHOT,
+      phases: [phase],
+      onselect,
+      onduplicate,
+      onremove
+    });
 
     const headers = [...container.querySelectorAll('thead th')].map((cell) => cell.textContent.trim());
-    expect(headers).toEqual(['Phase', 'Status', 'Order']);
+    expect(headers).toEqual(['Phase', 'Status', 'Actions']);
 
     const row = container.querySelector('[data-testid="phases-list-item-custom"]')?.closest('tr') as HTMLElement;
     expect(row.querySelectorAll('td')).toHaveLength(3);
     expect(row.textContent).not.toContain('Checks the custom rules.');
     expect(row.textContent).not.toContain('model-a');
-    expect(row.textContent).not.toContain('Deactivate');
-    expect(row.querySelector('[aria-haspopup]')).toBeNull();
-    expect([...row.querySelectorAll('button')].map((button) => button.dataset.testid)).toEqual([
-      'phases-list-item-custom',
-      'phases-move-up-custom',
-      'phases-move-down-custom'
+    expect(row.querySelector('[data-testid="phases-move-up-custom"]')).toBeNull();
+    expect(row.querySelector('[data-testid="phases-move-down-custom"]')).toBeNull();
+
+    const menuTrigger = row.querySelector('[data-testid="phases-row-menu-custom"]');
+    expect(menuTrigger?.getAttribute('aria-haspopup')).toBe('menu');
+
+    const menu = row.querySelector('[role="menu"]') as HTMLElement;
+    const itemOrder = [...menu.children].map((el) =>
+      el.tagName === 'HR' ? 'hr' : el.getAttribute('data-testid')
+    );
+    expect(itemOrder).toEqual([
+      'phases-row-open-custom',
+      'phases-row-duplicate-custom',
+      'process-export-button',
+      'hr',
+      'phases-row-remove-custom'
     ]);
+
+    await fireEvent.click(menu.querySelector('[data-testid="phases-row-open-custom"]')!);
+    expect(onselect).toHaveBeenCalledWith(0);
+
+    await fireEvent.click(menu.querySelector('[data-testid="phases-row-duplicate-custom"]')!);
+    expect(onduplicate).toHaveBeenCalledWith(0);
+
+    const removeItem = menu.querySelector('[data-testid="phases-row-remove-custom"]') as HTMLElement;
+    expect(removeItem.classList.contains('danger')).toBe(true);
+    expect(removeItem.textContent.trim()).toBe('Deactivate…');
+    await fireEvent.click(removeItem);
+    expect(onremove).toHaveBeenCalledWith(0, removeItem);
   });
 
   it('marks a row whose model is unavailable beside its badges, without the model', () => {
@@ -535,8 +579,8 @@ describe('Phase editor names what an unset backend runs on', () => {
   });
 });
 
-describe('Phase catalog overflow menu and button hierarchy consistency', () => {
-  it('orders Revert before Export, icons every menu item, and marks Deactivate as danger', () => {
+describe('Phase catalog overflow menu and list unsaved banner consistency', () => {
+  it('orders Edit/Duplicate/Export/Revert before hr + danger Deactivate…, with zero move items', () => {
     const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
     const menu = container.querySelector('[role="menu"]') as HTMLElement | null;
     expect(menu).not.toBeNull();
@@ -544,40 +588,59 @@ describe('Phase catalog overflow menu and button hierarchy consistency', () => {
     const testIds = children.map((el) =>
       el.tagName === 'HR' ? 'hr' : el.getAttribute('data-testid')
     );
-    const revertIdx = testIds.indexOf('phases-revert');
-    const exportIdx = testIds.indexOf('process-export-button');
-    const hrIdx = testIds.indexOf('hr');
-    const removeIdx = testIds.indexOf('phases-remove');
-    expect(revertIdx).toBeGreaterThan(-1);
-    expect(exportIdx).toBeGreaterThan(revertIdx);
-    expect(hrIdx).toBeGreaterThan(exportIdx);
-    expect(removeIdx).toBe(hrIdx + 1);
+    expect(testIds).toEqual([
+      'phases-raw-json-toggle',
+      'phases-duplicate',
+      'process-export-button',
+      'phases-revert',
+      'hr',
+      'phases-remove'
+    ]);
 
     const iconOf = (testId: string): string | null | undefined =>
       menu!.querySelector(`[data-testid="${testId}"] use`)?.getAttribute('href');
     expect(iconOf('phases-raw-json-toggle')).toBe('#i-edit');
     expect(iconOf('phases-duplicate')).toBe('#i-copy');
-    expect(iconOf('phases-move-up-custom')).toBe('#i-up');
-    expect(iconOf('phases-move-down-custom')).toBe('#i-down');
-    expect(iconOf('phases-revert')).toBe('#i-undo');
     expect(iconOf('process-export-button')).toBe('#i-export');
+    expect(iconOf('phases-revert')).toBe('#i-undo');
     expect(iconOf('phases-remove')).toBe('#i-trash');
 
+    expect(menu!.querySelector('[data-testid^="phases-move-"]')).toBeNull();
     const removeBtn = menu!.querySelector('[data-testid="phases-remove"]');
     expect(removeBtn?.classList.contains('danger')).toBe(true);
     expect(removeBtn?.textContent.trim()).toBe('Deactivate…');
   });
 
-  it('uses btn-primary for Save and yields New phase to btn-secondary while a mutation is active', () => {
+  it('keeps list clean of editor Undo/Redo/Save and shows an unsaved-edits banner with Resume editing', async () => {
     const idle = mount({ phases: [STORED_PHASE], mutationActive: false });
     expect(idle.container.querySelector('[data-testid="phases-add"]')?.classList.contains('btn-primary')).toBe(true);
+    expect(idle.container.querySelector('[data-testid="phases-save-all"]')).toBeNull();
+    expect(idle.container.querySelector('[data-testid="phases-unsaved-banner"]')).toBeNull();
     cleanup();
 
-    const editing = mount({ phases: [STORED_PHASE], mutationActive: true });
-    const save = editing.container.querySelector('[data-testid="phases-save-all"]');
-    const add = editing.container.querySelector('[data-testid="phases-add"]');
-    expect(save?.classList.contains('btn-primary')).toBe(true);
-    expect(add?.classList.contains('btn-secondary')).toBe(true);
-    expect(add?.classList.contains('btn-primary')).toBe(false);
+    const onselect = vi.fn();
+    const editing = mount({
+      phases: [STORED_PHASE],
+      mutationActive: true,
+      editableSourceKey: STORED_PHASE.sourceKey,
+      onselect
+    });
+    expect(editing.container.querySelector('[data-testid="phases-save-all"]')).toBeNull();
+    expect(editing.container.querySelector('[aria-label="Undo"]')).toBeNull();
+    expect(editing.container.querySelector('[aria-label="Redo"]')).toBeNull();
+
+    const add = editing.container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement;
+    expect(add.classList.contains('btn-primary')).toBe(true);
+    expect(add.disabled).toBe(true);
+
+    const banner = editing.container.querySelector('[data-testid="phases-unsaved-banner"]');
+    expect(banner).not.toBeNull();
+    expect(banner?.textContent).toContain('has unsaved changes');
+    expect(banner?.textContent).toContain('Custom');
+
+    const resume = editing.container.querySelector('[data-testid="phases-resume-editing"]') as HTMLButtonElement;
+    expect(resume).not.toBeNull();
+    await fireEvent.click(resume);
+    expect(onselect).toHaveBeenCalledWith(0);
   });
 });

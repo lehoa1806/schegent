@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  areModelsEqual,
   initialModels,
   mergeDetectedModels,
   withModelAdded,
@@ -169,5 +170,37 @@ describe('withModelsDetected', () => {
     const models = { agy: ['mine'] };
     withModelsDetected(models, 'agy', ['new']);
     expect(models).toEqual({ agy: ['mine'] });
+  });
+});
+
+describe('areModelsEqual (Feature 326)', () => {
+  it('returns true for identical backend maps', () => {
+    expect(
+      areModelsEqual(
+        { claude: ['a', 'b'], codex: [], agy: ['z'] },
+        { claude: ['a', 'b'], codex: [], agy: ['z'] }
+      )
+    ).toBe(true);
+  });
+
+  it('detects added, removed, renamed, or reordered model entries', () => {
+    expect(areModelsEqual({ claude: ['a', 'b'] }, { claude: ['a'] })).toBe(false);
+    expect(areModelsEqual({ claude: ['a', 'b'] }, { claude: ['b', 'a'] })).toBe(false);
+    expect(areModelsEqual({ claude: ['a'] }, { claude: ['b'] })).toBe(false);
+    expect(areModelsEqual({ claude: ['a'], codex: ['x'] }, { claude: ['a'] })).toBe(false);
+  });
+
+  it('treats an omitted backend key the same as an empty array for that backend', () => {
+    expect(areModelsEqual({ claude: ['a'], codex: [] }, { claude: ['a'] })).toBe(true);
+  });
+
+  it('uses own-property lookups so prototype property names cannot spoof equality or pollute state', () => {
+    expect(areModelsEqual({ toString: ['x'] }, {})).toBe(false);
+    expect(areModelsEqual({ toString: [] }, {})).toBe(true);
+    expect(withModelAdded({ claude: ['a'] }, '__proto__', 'evil')).toBeNull();
+    expect(withModelAdded({ claude: ['a'] }, 'constructor', 'evil')).toBeNull();
+    expect(withModelRemoved({ claude: ['a'] }, 'toString', 0)).toEqual({ claude: ['a'] });
+    expect(withModelReplaced({ claude: ['a'] }, 'toString', 0, 'b')).toEqual({ claude: ['a'] });
+    expect(withModelsDetected({ claude: ['a'] }, 'prototype', ['b'])).toEqual({ claude: ['a'] });
   });
 });

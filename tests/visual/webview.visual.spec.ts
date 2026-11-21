@@ -441,9 +441,6 @@ async function openSurface(page: Page, surface: SurfaceName, theme: ThemeName): 
     const builder = page.getByTestId('pipeline-builder-root');
     await expect(builder).toBeVisible();
     await page.getByRole('tab', { name: 'Workflows' }).click();
-    const picker = page.getByTestId('workflow-picker-toggle');
-    if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
-    await expect(picker).toHaveAttribute('aria-expanded', 'true');
     await page.getByTestId('workflows-list-item-dev-new-feature').click();
     await expect(page.getByTestId('workflow-field-name')).toBeVisible();
     return builder;
@@ -1748,9 +1745,7 @@ test('the dashboard pages and the sidebar fit a 320px panel without scrolling si
   await measure('the Phase editor');
   await page.getByTestId('phases-editor-back').click();
   await page.getByRole('tab', { name: 'Workflows' }).click();
-  const picker = page.getByTestId('workflow-picker-toggle');
-  if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
-  await expect(picker).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByTestId('workflow-catalog-list')).toBeVisible();
   await measure('the Workflow list');
   await page.getByTestId('workflows-list-item-dev-new-feature').click();
   await expect(page.getByTestId('workflow-field-name')).toBeVisible();
@@ -2250,8 +2245,7 @@ test.describe('responsive accessibility hardening', () => {
     await measure('Phases', page.getByTestId('phases-search'));
 
     await page.getByRole('tab', { name: 'Workflows' }).click();
-    const picker = page.getByTestId('workflow-picker-toggle');
-    if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
+    await measure('Workflows', page.getByTestId('workflows-search'));
     await page.getByTestId('workflows-list-item-dev-new-feature').click();
     await measure('Add steps', page.getByTestId('workflow-palette-search'));
 
@@ -2359,8 +2353,6 @@ test.describe('the stacked Workflows tab', () => {
     await page.getByTestId('dashboard-route-builder').click();
     await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
     await page.getByRole('tab', { name: 'Workflows' }).click();
-    const picker = page.getByTestId('workflow-picker-toggle');
-    if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
     await page.getByTestId('workflows-list-item-dev-new-feature').click();
 
     const toggle = page.getByTestId('workflow-palette-toggle');
@@ -2389,54 +2381,13 @@ test.describe('the stacked Workflows tab', () => {
   });
 });
 
-/** One control of the Workflow editor's head, as the keyboard meets it, and where it is drawn. */
-interface HeadStop {
-  readonly unit: unknown;
-  readonly name: string;
-  readonly top: number;
-  readonly bottom: number;
-  readonly left: number;
-}
-
 /**
- * Where the Workflow editor's head breaks reading order, as "from -> to" pairs of the controls
- * the keyboard meets in turn. Read left to right and top to bottom, each control must sit on the
- * same line as the one before it and to its right, or on a later line. The open Workflow list
- * counts as one control, its own box, so rows scrolled out of its height stay out of the measure.
+ * Track 2 (326-builder-ux-unification, FR-013, SC-005): the Workflow switcher
+ * popover floats over the canvas (`position: absolute`) so toggling it causes
+ * `0 px` vertical shift of the `.ed-head` actions (`Undo`/`Redo`/`⋯`/`Save`)
+ * and the `.shell` canvas, and dismisses cleanly on `Escape` and outside click.
  */
-async function editorHeadOrderBreaks(page: Page): Promise<string[]> {
-  return page.locator('[data-testid="workflow-catalog-editor"] .ed-head').evaluate((head) => {
-    const list = head.querySelector('[data-testid="workflow-picker-list"]');
-    const stops: HeadStop[] = [];
-    for (const element of head.querySelectorAll('button, a[href], input, select, textarea, [tabindex]')) {
-      if (element.tabIndex < 0 || element.matches(':disabled') || !element.checkVisibility()) continue;
-      const unit = list?.contains(element) === true ? list : element;
-      if (stops.at(-1)?.unit === unit) continue;
-      const { top, bottom, left } = unit.getBoundingClientRect();
-      const name = unit.getAttribute('data-testid') ?? unit.getAttribute('aria-label') ?? unit.tagName;
-      stops.push({ unit, name, top, bottom, left });
-    }
-    const breaks: string[] = [];
-    let before: HeadStop | undefined;
-    for (const stop of stops) {
-      if (before !== undefined) {
-        const laterLine = stop.top >= before.bottom - 1;
-        const sameLineAfter = stop.top < before.bottom && stop.bottom > before.top && stop.left >= before.left;
-        if (!laterLine && !sameLineAfter) breaks.push(`${before.name} -> ${stop.name}`);
-      }
-      before = stop;
-    }
-    return breaks;
-  });
-}
-
-/**
- * The open Workflow list is the switcher's: it comes straight after the switcher in the DOM and
- * the tab order, so it must come straight after the switcher's line on screen too, with the
- * head's actions after it. Drawn below the actions, a list the keyboard reaches before them sends
- * focus down and then back up the page (WCAG 2.4.3). Finding 54 of the webview port review.
- */
-test('the open Workflow list comes after the switcher on screen as in the tab order', async ({
+test('the Workflow switcher popover floats with 0px layout shift and dismisses on Escape and outside click', async ({
   page
 }) => {
   await installDeterministicHost(page);
@@ -2446,26 +2397,49 @@ test('the open Workflow list comes after the switcher on screen as in the tab or
   await page.getByTestId('dashboard-route-builder').click();
   await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
   await page.getByRole('tab', { name: 'Workflows' }).click();
-  const picker = page.getByTestId('workflow-picker-toggle');
-  if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
-  await expect(page.getByTestId('workflow-picker-list')).toBeVisible();
-  expect(await editorHeadOrderBreaks(page), 'with no Workflow open').toEqual([]);
-
   await page.getByTestId('workflows-list-item-dev-new-feature').click();
   await expect(page.getByTestId('workflow-field-name')).toBeVisible();
+
+  const measureGeometry = (): Promise<{ saveTop: number; shellTop: number }> =>
+    page.evaluate(`(() => {
+      const save = document.querySelector('[data-testid="workflows-save-all"]');
+      const shell = document.querySelector('[data-testid="workflow-catalog-editor"] .shell');
+      return {
+        saveTop: save ? Math.round(save.getBoundingClientRect().top * 10) / 10 : -1,
+        shellTop: shell ? Math.round(shell.getBoundingClientRect().top * 10) / 10 : -1
+      };
+    })()`) as Promise<{ saveTop: number; shellTop: number }>;
+
+  const before = await measureGeometry();
+  const picker = page.getByTestId('workflow-picker-toggle');
   await picker.click();
   await expect(page.getByTestId('workflow-picker-list')).toBeVisible();
-  expect(await editorHeadOrderBreaks(page), 'with a Workflow open').toEqual([]);
 
-  assertNoPageErrors(page, 'Workflow picker order');
+  const during = await measureGeometry();
+  expect(during.saveTop, 'opening Workflow switcher must not shift .ed-head actions vertically').toBe(before.saveTop);
+  expect(during.shellTop, 'opening Workflow switcher must not shift .shell canvas vertically').toBe(before.shellTop);
+
+  // Escape closes popover and restores focus to the switcher trigger.
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('workflow-picker-list')).toHaveCount(0);
+  await expect(picker).toBeFocused();
+
+  // Outside click closes popover as well (click the inspector on the right, clear of the floating menu).
+  await picker.click();
+  await expect(page.getByTestId('workflow-picker-list')).toBeVisible();
+  await page.getByTestId('workflow-settings-inspector').click({ position: { x: 10, y: 10 } });
+  await expect(page.getByTestId('workflow-picker-list')).toHaveCount(0);
+
+  assertNoPageErrors(page, 'Workflow floating switcher');
 });
 
 /**
- * The space under the Builder's tabs. The workflow builder mockup draws its editor 10px under its
- * tabs, and the surfaces mockup, which leaves the Workflows tab to it, spaces its other pages 14px
- * under theirs. Finding 66 of the webview port review.
+ * Track 2 (326-builder-ux-unification, FR-012, FR-014): all three catalog list
+ * views (Phases, Workflows, Models) sit 14px under `.builder-tabs`, while
+ * opening either a Phase Editor or a Workflow Editor transitions to a full-page
+ * editor that hides `.phead` and `.builder-tabs` until its breadcrumb returns.
  */
-test('the Workflow editor stands as far under the tabs as the builder mockup draws it', async ({
+test('Builder list views share 14px tab spacing and both editors open full-page', async ({
   page
 }) => {
   await installDeterministicHost(page);
@@ -2474,26 +2448,32 @@ test('the Workflow editor stands as far under the tabs as the builder mockup dra
   await publishSnapshot(page);
   await page.getByTestId('dashboard-route-builder').click();
   await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
-  // Pixels from the tabs' bottom edge down to the top of the box the selector names.
+
   const gapUnderTabs = (selector: string): Promise<unknown> =>
     page.evaluate(`(() => {
       const tabs = document.querySelector('.builder-tabs').getBoundingClientRect();
       const below = document.querySelector('${selector}').getBoundingClientRect();
       return Math.round((below.top - tabs.bottom) * 10) / 10;
     })()`);
-  await expect.poll(() => gapUnderTabs('.builder-canvas'), 'under the Phases tab').toBe(14);
 
+  await expect.poll(() => gapUnderTabs('.builder-canvas'), 'under the Phases tab').toBe(14);
   await page.getByRole('tab', { name: 'Workflows' }).click();
-  const head = '[data-testid="workflow-catalog-editor"] .ed-head';
-  await expect(page.locator(head)).toBeVisible();
-  await expect.poll(() => gapUnderTabs(head), 'with no Workflow open').toBe(10);
-  const picker = page.getByTestId('workflow-picker-toggle');
-  if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
+  await expect(page.getByTestId('workflow-catalog-list')).toBeVisible();
+  await expect.poll(() => gapUnderTabs('.builder-canvas'), 'under the Workflows tab').toBe(14);
+  await page.getByRole('tab', { name: 'Models' }).click();
+  await expect.poll(() => gapUnderTabs('.builder-canvas'), 'under the Models tab').toBe(14);
+
+  // Full-page Workflow editor hides Builder header and tabs; breadcrumb restores them.
+  await page.getByRole('tab', { name: 'Workflows' }).click();
   await page.getByTestId('workflows-list-item-dev-new-feature').click();
   await expect(page.getByTestId('workflow-field-name')).toBeVisible();
-  await expect.poll(() => gapUnderTabs(head), 'with a Workflow open').toBe(10);
+  await expect(page.locator('.builder-tabs')).toHaveCount(0);
+  await expect(page.getByTestId('builder-import-btn')).toHaveCount(0);
+  await page.getByTestId('workflow-crumb-list').click();
+  await expect(page.locator('.builder-tabs')).toHaveCount(1);
+  await expect(page.getByTestId('builder-import-btn')).toBeVisible();
 
-  assertNoPageErrors(page, 'Builder tabs spacing');
+  assertNoPageErrors(page, 'Builder tabs spacing and full-page parity');
 });
 
 /**
@@ -2594,4 +2574,66 @@ test('Dashboard UI consistency: stable Metrics header, 28px control rhythm, and 
   expect(keyboardOutline, 'keyboard Tab shows visible focus outline on interactive control').not.toBe('none');
 
   assertNoPageErrors(page, 'Dashboard UI consistency');
+});
+
+/**
+ * Track 2 (326-builder-ux-unification): verifies single header Import… trigger
+ * with zero inline import bands, retired Phase reorder controls, Workflow row ⋯
+ * Export YAML… modal dialog, and Models dirty-gated Save / Revert unsaved changes.
+ */
+test('Builder UX unification: single Import modal, overflow Export, and Models dirty tracking', async ({
+  page
+}) => {
+  await installDeterministicHost(page);
+  await page.goto('/dashboard.html');
+  await page.addStyleTag({ content: themeCss('dark') });
+  await publishSnapshot(page);
+  await page.getByTestId('dashboard-route-builder').click();
+  await expect(page.getByTestId('pipeline-builder-root')).toBeVisible();
+
+  // Single header Import… across all 3 tabs and zero inline import bands or Phase reorder buttons.
+  for (const tab of ['Phases', 'Workflows', 'Models'] as const) {
+    await page.getByRole('tab', { name: tab }).click();
+    await expect(page.getByTestId('builder-import-btn')).toHaveCount(1);
+    await expect(page.getByTestId('process-import-preflight')).toHaveCount(0);
+  }
+  await page.getByRole('tab', { name: 'Phases' }).click();
+  await expect(page.locator('[data-testid^="phases-move-"]')).toHaveCount(0);
+
+  // Header Import… opens the single modal dialog using .sg .btn controls (no .preflight-button).
+  await page.getByTestId('builder-import-btn').click();
+  const importModal = page.getByTestId('builder-import-modal');
+  await expect(importModal).toBeVisible();
+  await expect(importModal).toHaveAttribute('role', 'dialog');
+  await expect(importModal).toHaveAttribute('aria-modal', 'true');
+  await expect(importModal.locator('.preflight-button')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(importModal).toHaveCount(0);
+
+  // Workflows list row ⋯ menu opens the WorkflowExportDialog modal.
+  await page.getByRole('tab', { name: 'Workflows' }).click();
+  await page.getByTestId('workflows-row-menu-dev-new-feature').click();
+  await page.getByTestId('workflows-row-export-dev-new-feature').click();
+  const exportDialog = page.getByTestId('workflows-export-panel');
+  await expect(exportDialog).toBeVisible();
+  await expect(exportDialog).toHaveAttribute('role', 'dialog');
+  await page.getByTestId('workflows-export-cancel').click();
+  await expect(exportDialog).toHaveCount(0);
+
+  // Models tab: Save is disabled when clean, enables on edit with Unsaved changes chip, and reverts cleanly.
+  await page.getByRole('tab', { name: 'Models' }).click();
+  const modelsSave = page.getByTestId('models-save');
+  await expect(modelsSave).toBeDisabled();
+  await expect(page.getByTestId('models-unsaved')).toHaveCount(0);
+  const firstModel = page.locator('.model-list-item input').first();
+  const originalValue = await firstModel.inputValue();
+  await firstModel.fill(`${originalValue}-edited`);
+  await expect(page.getByTestId('models-unsaved')).toBeVisible();
+  await expect(modelsSave).toBeEnabled();
+  await page.getByTestId('models-menu').click();
+  await page.getByTestId('models-revert').click();
+  await expect(firstModel).toHaveValue(originalValue);
+  await expect(modelsSave).toBeDisabled();
+
+  assertNoPageErrors(page, 'Builder UX unification');
 });

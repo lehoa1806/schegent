@@ -164,10 +164,6 @@ test.describe('FR-R5-F32 — WCAG 2.1 AA accessibility scan for workflow control
       await page.getByTestId('dashboard-route-builder').click();
       await page.getByTestId('pipeline-builder-root').waitFor({ state: 'visible' });
       await page.getByRole('tab', { name: 'Workflows' }).click();
-      const picker = page.getByTestId('workflow-picker-toggle');
-      if ((await picker.getAttribute('aria-expanded')) !== 'true') {
-        await picker.click();
-      }
       await page.getByTestId(`workflows-list-item-${POLICY_SMOKE_WORKFLOW_ID}`).click();
 
       const editor = page.getByTestId('candidate-block-editor');
@@ -222,6 +218,36 @@ test.describe('FR-R5-F32 — WCAG 2.1 AA accessibility scan for workflow control
         '[data-testid="foreach-node-projection-triage"]'
       );
       expect(forEachViolations, `ForEach projection axe violations in ${theme}`).toEqual([]);
+    });
+  }
+});
+
+test.describe('Feature 326 — WCAG 2.1 AA accessibility scan for Builder Import & Export modals', () => {
+  for (const theme of THEMES) {
+    test(`BuilderImportModal and WorkflowExportDialog pass WCAG 2.1 AA in ${theme} theme`, async ({
+      page
+    }) => {
+      await mountControlDashboard(page, theme);
+      await page.getByTestId('dashboard-route-builder').click();
+      await page.getByTestId('pipeline-builder-root').waitFor({ state: 'visible' });
+
+      // 1. Scan BuilderImportModal
+      await page.getByTestId('builder-import-btn').click();
+      await expect(page.getByTestId('builder-import-modal')).toBeVisible();
+      const importViolations = await runScopedAxe(page, '[data-testid="builder-import-modal"]');
+      expect(importViolations, `BuilderImportModal axe violations in ${theme}`).toEqual([]);
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('builder-import-modal')).toHaveCount(0);
+
+      // 2. Scan WorkflowExportDialog
+      await page.getByRole('tab', { name: 'Workflows' }).click();
+      await page.getByTestId(`workflows-row-menu-${POLICY_SMOKE_WORKFLOW_ID}`).click();
+      await page.getByTestId(`workflows-row-export-${POLICY_SMOKE_WORKFLOW_ID}`).click();
+      await expect(page.getByTestId('workflows-export-panel')).toBeVisible();
+      const exportViolations = await runScopedAxe(page, '[data-testid="workflows-export-panel"]');
+      expect(exportViolations, `WorkflowExportDialog axe violations in ${theme}`).toEqual([]);
+      await page.getByTestId('workflows-export-cancel').click();
+      await expect(page.getByTestId('workflows-export-panel')).toHaveCount(0);
     });
   }
 });

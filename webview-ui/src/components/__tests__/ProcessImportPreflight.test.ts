@@ -1331,3 +1331,74 @@ describe('Feature 096 T024 — the Model Catalog branch (FR-015, FR-056)', () =>
     expect(getByTestId('process-import-result-detail').textContent).toContain('inspect it again');
   });
 });
+
+describe('Feature 326 — modal mode, .sg .btn adoption, targetGate, and cancel preservation', () => {
+  it('retires .preflight-button in favor of .sg .btn classes', async () => {
+    preflightSpy.mockResolvedValue({ outcome: 'planned', plan: modelCatalogPlan([MODEL_IMPORT_ROW]) });
+    const { container, getByTestId } = render(ProcessImportPreflight, {
+      props: { modalMode: true }
+    });
+    expect(container.querySelector('.preflight-button')).toBeNull();
+    const inspectBtn = getByTestId('process-import-inspect');
+    expect(inspectBtn.classList.contains('btn')).toBe(true);
+
+    await inspect(getByTestId);
+    expect(container.querySelector('.preflight-button')).toBeNull();
+    const confirmBtn = getByTestId('process-import-confirm');
+    expect(confirmBtn.classList.contains('btn')).toBe(true);
+    expect(confirmBtn.classList.contains('btn-primary')).toBe(true);
+  });
+
+  it('calls oncancelwithoutplan when OS picker cancels with no prior plan', async () => {
+    preflightSpy.mockResolvedValueOnce({ outcome: 'canceled' });
+    const oncancelwithoutplan = vi.fn();
+    render(ProcessImportPreflight, {
+      props: { modalMode: true, autoInspect: true, oncancelwithoutplan }
+    });
+    await tick();
+    await tick();
+    expect(oncancelwithoutplan).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an existing plan and shows a quiet canceled notice when Choose another file… cancels', async () => {
+    preflightSpy
+      .mockResolvedValueOnce({ outcome: 'planned', plan: modelCatalogPlan([MODEL_IMPORT_ROW]) })
+      .mockResolvedValueOnce({ outcome: 'canceled' });
+    const oncancelwithoutplan = vi.fn();
+    const { getByTestId, queryByTestId } = render(ProcessImportPreflight, {
+      props: { modalMode: true, autoInspect: true, oncancelwithoutplan }
+    });
+    await tick();
+    await tick();
+    expect(queryByTestId('process-import-plan')).not.toBeNull();
+
+    // Choose another file… and cancel the OS file picker
+    await inspect(getByTestId);
+    expect(oncancelwithoutplan).not.toHaveBeenCalled();
+    expect(queryByTestId('process-import-plan')).not.toBeNull();
+    expect(getByTestId('process-import-canceled').textContent).toContain('unchanged');
+  });
+
+  it('blocks Confirm via targetGate when the inspected kind has pending edits', async () => {
+    preflightSpy.mockResolvedValue({ outcome: 'planned', plan: modelCatalogPlan([MODEL_IMPORT_ROW]) });
+    const { getByTestId } = render(ProcessImportPreflight, {
+      props: {
+        modalMode: true,
+        targetGate: {
+          isPrimary: true,
+          workspaceTrust: true,
+          trustPhases: true,
+          phaseSavePending: false,
+          phaseMutationActive: false,
+          workflowSavePending: false,
+          workflowMutationActive: false,
+          modelsSavePending: false,
+          modelsDirty: true
+        }
+      }
+    });
+    await inspect(getByTestId);
+    expect((getByTestId('process-import-confirm') as HTMLButtonElement).disabled).toBe(true);
+    expect(getByTestId('process-import-confirm-blocked').textContent).toContain('Model Catalog');
+  });
+});

@@ -192,20 +192,22 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
     expect(lifecycleRowFor(container, 'broken-one').textContent).toContain('invalid');
   });
 
-  // Feature 186 (FR-003): a row shows the name, the id and the two badges, and nothing else.
-  // Feature 083 (US5 scenario 2) had the row summarise the whole definition. That summary is on
-  // the open Workflow now: the purpose in General, the steps on the canvas, and the inputs and
-  // outputs in their own section, where the redesign keeps a Workflow's ports.
-  it('shows only the name and the id in a row, beside its two badges (feature 186, FR-003)', () => {
+  // Feature 326: the Workflows tab opens on a list table mirroring Phases:
+  // Workflow (name + id), Status (badges), Steps (node count), and Actions (per-row ⋯ menu).
+  it('draws each list row with name, id, status badges, step count, and per-row ⋯ menu', () => {
     const { container } = mount([record()]);
-    const row = rowFor(container, 'design-then-build');
+    const headers = [...container.querySelectorAll('thead th')].map((cell) => cell.textContent.trim());
+    expect(headers).toEqual(['Workflow', 'Status', 'Steps', 'Actions']);
 
-    expect([...row.children].map((part) => part.textContent.trim())).toEqual([
-      'Design then Build',
-      'design-then-build'
-    ]);
-    expect(row.parentElement?.children).toHaveLength(2);
-    expect(row.parentElement?.lastElementChild).toBe(lifecycleRowFor(container, 'design-then-build'));
+    const button = rowFor(container, 'design-then-build');
+    expect(button.textContent.trim()).toBe('Design then Build');
+    const tr = button.closest('tr') as HTMLElement;
+    const cells = tr.querySelectorAll('td');
+    expect(cells).toHaveLength(4);
+    expect(cells[0].textContent).toContain('design-then-build');
+    expect(cells[1].contains(lifecycleRowFor(container, 'design-then-build'))).toBe(true);
+    expect(cells[2].textContent.trim()).toBe('2');
+    expect(tr.querySelector('[data-testid="workflows-row-menu-design-then-build"]')).not.toBeNull();
   });
 
   it('shows the purpose on the open Workflow, so it reads to someone who did not author it', async () => {
@@ -325,6 +327,7 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
     ];
     expect(ports()).toEqual(['none', 'none']);
 
+    await fireEvent.click(getByTestId('workflow-crumb-list'));
     await fireEvent.click(getByTestId('workflows-add'));
     expect(ports()).toEqual(['derived once saved', 'derived once saved']);
     const headings = [...getByTestId('workflow-settings-inspector').querySelectorAll('h3')].map((heading) =>
@@ -964,14 +967,14 @@ describe('WorkflowCatalogEditor duplicate (US5, T055)', () => {
   });
 
   it('leaves the original untouched', async () => {
-    const { container } = mount([record({ workflowId: 'shipped-flow' })]);
+    const { container, getByTestId } = mount([record({ workflowId: 'shipped-flow' })]);
     const before = rowFor(container, 'shipped-flow').textContent;
     await fireEvent.click(rowFor(container, 'shipped-flow'));
     await fireEvent.click(
       container.querySelector('[data-testid="workflows-duplicate"]') as HTMLElement
     );
 
-    await openPicker(container);
+    await fireEvent.click(getByTestId('workflow-crumb-list'));
     const original = rowFor(container, 'shipped-flow');
     expect(original.textContent).toBe(before);
   });
@@ -1012,54 +1015,119 @@ describe('WorkflowCatalogEditor duplicate (US5, T055)', () => {
   });
 });
 
-// ── An empty catalog (finding 229) ─────────────────────────────────────────
+// ── Workflows list parity, empty catalog, and Track 2 UX unification ───────
 
-describe('WorkflowCatalogEditor with no Workflows says so once', () => {
-  it('shows the front door of the empty catalog and nothing else that says the tab is empty', () => {
-    const { container } = mount([]);
+describe('WorkflowCatalogEditor list-first view and empty catalog (Feature 326)', () => {
+  it('shows the framed empty state with Import… when no Workflows exist, and no picker', async () => {
+    const onopenimport = vi.fn();
+    const { container } = render(WorkflowCatalogEditor, {
+      snapshot: snapshot([]),
+      trusted: true,
+      onopenimport
+    });
     expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="workflows-no-selection"]')).toBeNull();
-    // The picker opens by itself only when it holds something to choose.
+    expect(container.querySelector('[data-testid="workflow-picker-list"]')).toBeNull();
+    expect(container.querySelector('[data-testid="process-import-preflight"]')).toBeNull();
+
+    const emptyImport = container.querySelector('[data-testid="catalog-empty-import-workflow"]') as HTMLButtonElement;
+    expect(emptyImport).not.toBeNull();
+    await fireEvent.click(emptyImport);
+    expect(onopenimport).toHaveBeenCalledWith(emptyImport);
+  });
+
+  it('opens on the Workflows list table when Workflows exist, without an open picker', () => {
+    const { container } = mount([record({ workflowId: 'shipped-flow' })]);
+    expect(container.querySelector('[data-testid="workflow-catalog-list"]')).not.toBeNull();
+    expect(rowFor(container, 'shipped-flow')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflow-picker-list"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflows-no-selection"]')).toBeNull();
+  });
+
+  it('filters Workflows by search query and status view pills and reports count', async () => {
+    const { container, getByTestId } = mount([
+      record({ workflowId: 'alpha-flow' }),
+      record({ workflowId: 'broken-flow', status: 'invalid' })
+    ]);
+
+    expect(getByTestId('workflows-countline').textContent.trim()).toBe('2 workflows');
+
+    await fireEvent.click(getByTestId('workflows-show-invalid'));
+    expect(container.querySelector('[data-testid="workflows-list-item-alpha-flow"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflows-list-item-broken-flow"]')).not.toBeNull();
+    expect(getByTestId('workflows-countline').textContent.trim()).toBe('1 of 2 workflows');
+
+    await fireEvent.click(getByTestId('workflows-show-all'));
+    await fireEvent.input(getByTestId('workflows-search'), { target: { value: 'zzz' } });
+    expect(getByTestId('workflows-no-match').textContent.trim()).toBe(
+      'No Workflows match the search or the status filter.'
+    );
+  });
+
+  it('offers Open, Duplicate, Export YAML… dialog, and Deactivate… in the per-row ⋯ menu', async () => {
+    deactivateSpy.mockClear();
+    const { container, getByTestId } = mount([record({ workflowId: 'shipped-flow' })]);
+    const tr = rowFor(container, 'shipped-flow').closest('tr') as HTMLElement;
+    const menu = tr.querySelector('[role="menu"]') as HTMLElement;
+    const itemOrder = [...menu.children].map((el) =>
+      el.tagName === 'HR' ? 'hr' : el.getAttribute('data-testid')
+    );
+    expect(itemOrder).toEqual([
+      'workflows-row-open-shipped-flow',
+      'workflows-row-duplicate-shipped-flow',
+      'workflows-row-export-shipped-flow',
+      'hr',
+      'workflows-row-remove-shipped-flow'
+    ]);
+
+    // Export YAML… opens the modal inclusion dialog
+    await fireEvent.click(getByTestId('workflows-row-export-shipped-flow'));
+    const dialog = getByTestId('workflows-export-panel');
+    expect(dialog.getAttribute('role')).toBe('dialog');
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    await fireEvent.click(getByTestId('workflows-export-cancel'));
+    expect(container.querySelector('[data-testid="workflows-export-panel"]')).toBeNull();
+
+    // Deactivate… routes through deactivateDefinition
+    await fireEvent.click(getByTestId('workflows-row-remove-shipped-flow'));
+    expect(deactivateSpy).toHaveBeenCalledTimes(1);
+    expect(deactivateSpy.mock.calls[0][0].id).toBe('shipped-flow');
+  });
+
+  it('dismisses the floating switcher popover on outside click and Escape', async () => {
+    const { container, getByTestId } = mount([record({ workflowId: 'shipped-flow' })]);
+    await fireEvent.click(rowFor(container, 'shipped-flow'));
+    await openPicker(container);
+    expect(container.querySelector('[data-testid="workflow-picker-list"]')).not.toBeNull();
+
+    // Outside mousedown closes the popover
+    await fireEvent.mouseDown(getByTestId('workflow-canvas'));
+    expect(container.querySelector('[data-testid="workflow-picker-list"]')).toBeNull();
+
+    // Reopen and dismiss via Escape
+    await openPicker(container);
+    expect(container.querySelector('[data-testid="workflow-picker-list"]')).not.toBeNull();
+    await fireEvent.keyDown(window, { key: 'Escape' });
     expect(container.querySelector('[data-testid="workflow-picker-list"]')).toBeNull();
   });
 
-  it('explains the blank in one line when the operator opens the empty picker', async () => {
-    const { container } = mount([]);
-    await fireEvent.click(
-      container.querySelector('[data-testid="workflow-picker-toggle"]') as HTMLElement
-    );
-    const list = container.querySelector('[data-testid="workflow-picker-list"]');
-    expect(list).not.toBeNull();
-    expect(list?.querySelector('[data-testid="workflow-picker-empty"]')?.textContent).toBe(
-      'No Workflow yet.'
-    );
-    expect(list?.querySelector('[data-testid="workflows-empty"]')).toBeNull();
-  });
+  it('reports dirty state upward to Builder so top-level Import… gates Workflow commits accurately', async () => {
+    const ondirtychange = vi.fn();
+    const { container } = render(WorkflowCatalogEditor, {
+      snapshot: snapshot([record({ workflowId: 'shipped-flow' })]),
+      trusted: true,
+      ondirtychange
+    });
+    expect(container.querySelector('[data-testid="process-import-preflight"]')).toBeNull();
+    expect(ondirtychange).toHaveBeenLastCalledWith({ dirty: false, savePending: false });
 
-  it('still opens the picker by itself when Workflows exist and none is open', () => {
-    const { container } = mount([record({ workflowId: 'shipped-flow' })]);
-    expect(container.querySelector('[data-testid="workflow-picker-list"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="workflows-no-selection"]')).not.toBeNull();
-  });
-});
-
-// ── Import while a Workflow edit is outstanding (finding 62) ───────────────
-
-describe('WorkflowCatalogEditor closes Import over its own unsaved work', () => {
-  it('says the pending changes are Workflow ones, not Phase ones', async () => {
-    const { container } = mount([record({ workflowId: 'shipped-flow' })]);
     await fireEvent.click(rowFor(container, 'shipped-flow'));
     await fireEvent.click(
       container.querySelector('[data-testid="workflows-duplicate"]') as HTMLElement
     );
+    await tick();
 
-    const inspect = container.querySelector<HTMLButtonElement>(
-      '[data-testid="process-import-inspect"]'
-    );
-    expect(inspect?.disabled).toBe(true);
-    expect(container.querySelector('[data-testid="process-import-unavailable"]')?.textContent).toBe(
-      'Save or discard your pending Workflow changes before importing.'
-    );
+    expect(ondirtychange).toHaveBeenLastCalledWith({ dirty: true, savePending: false });
   });
 });
 
@@ -1566,8 +1634,9 @@ describe('missing-Pipeline prerequisite (US7, FR-045)', () => {
   const saveIn = (container: HTMLElement) =>
     container.querySelector('[data-testid="workflows-save-all"]') as HTMLButtonElement;
 
-  it('explains the missing prerequisite as text, not as a bare disabled control', () => {
-    const { container } = mountWith(EMPTY);
+  it('explains the missing prerequisite as text, not as a bare disabled control', async () => {
+    const { container, getByTestId } = mountWith(EMPTY);
+    await fireEvent.click(getByTestId('workflows-add'));
     const notice = noticeIn(container);
     expect(notice).not.toBeNull();
     expect(notice?.getAttribute('role')).toBe('status');
@@ -1576,8 +1645,9 @@ describe('missing-Pipeline prerequisite (US7, FR-045)', () => {
     expect(saveIn(container).disabled).toBe(true);
   });
 
-  it('treats a catalog whose every Pipeline is invalid exactly like an empty one', () => {
-    const { container } = mountWith(ALL_INVALID);
+  it('treats a catalog whose every Pipeline is invalid exactly like an empty one', async () => {
+    const { container, getByTestId } = mountWith(ALL_INVALID);
+    await fireEvent.click(getByTestId('workflows-add'));
     expect(noticeIn(container)).not.toBeNull();
     expect(saveIn(container).disabled).toBe(true);
   });
@@ -1613,10 +1683,11 @@ describe('missing-Pipeline prerequisite (US7, FR-045)', () => {
     expect(saveIn(container).disabled).toBe(false);
   });
 
-  it('says nothing about a missing Pipeline while the catalog is still loading', () => {
+  it('says nothing about a missing Pipeline while the catalog is still loading', async () => {
     // Absent is not empty. Nothing resolves yet, so save stays disabled, but
     // telling the operator to go create a Pipeline would be a false statement.
-    const { container } = mountWith(undefined);
+    const { container, getByTestId } = mountWith(undefined);
+    await fireEvent.click(getByTestId('workflows-add'));
     expect(noticeIn(container)).toBeNull();
     expect(saveIn(container).disabled).toBe(true);
   });

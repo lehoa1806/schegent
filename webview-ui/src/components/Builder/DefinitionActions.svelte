@@ -29,7 +29,6 @@
   import type { IntentWaitOptions } from "../../lib/intent-ledger";
   import type { BuilderLifecycle } from "../../lib/snapshot-types";
   import {
-    deactivateDefinition,
     discardDefinitionDraft,
     publishDefinition,
     restoreDefinitionVersion,
@@ -67,20 +66,18 @@
     Object.freeze({
       publish: "Publish",
       "discard-draft": "Discard draft",
-      deactivate: "Deactivate",
       restore: "Restore this version",
     });
 
   /**
-   * sg-core's button tone for each action. The two that take something away
-   * (the draft, the active version) read in the danger tone; the two that put a
-   * version live are secondary, because the page's Save already holds primary.
+   * sg-core's button tone for each action. Discard draft takes something away
+   * and reads in the danger tone; Publish and Restore put a version live as
+   * secondary actions, because the page's Save already holds primary.
    */
   const ACTION_TONE: Readonly<Record<DefinitionRowAction, string>> =
     Object.freeze({
       publish: "btn-secondary",
       "discard-draft": "btn-danger",
-      deactivate: "btn-danger",
       restore: "btn-secondary",
     });
 
@@ -210,12 +207,6 @@
     switch (action) {
       case "publish":
         return publishDefinition(target, undefined, wait);
-      case "deactivate":
-        return deactivateDefinition(target, {
-          definitionName,
-          originatingElement,
-          wait,
-        });
       case "discard-draft":
         return discardDefinitionDraft(target, {
           definitionName,

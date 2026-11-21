@@ -27,6 +27,7 @@ import {
   saveDefinitionDraft as saveDraftHelper
 } from '../../lib/catalog-lifecycle';
 import { saveModels as saveModelsHelper } from '../../lib/save-models';
+import { preflightProcessYaml as preflightHelper } from '../../lib/process-yaml-ipc';
 import { useConfirm } from '../../lib/use-confirm';
 import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
 import { isMenuItemOff } from '../sg/__tests__/menu-item-state';
@@ -58,6 +59,10 @@ vi.mock('../../lib/catalog-lifecycle', async (importOriginal) => ({
 }));
 vi.mock('../../lib/save-models', () => ({
   saveModels: vi.fn(async () => ({ status: 'accepted' as const }))
+}));
+vi.mock('../../lib/process-yaml-ipc', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/process-yaml-ipc')>()),
+  preflightProcessYaml: vi.fn(async () => ({ outcome: 'canceled' as const }))
 }));
 vi.mock('../../lib/use-confirm', () => ({
   useConfirm: vi.fn(async () => true)
@@ -697,20 +702,27 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     expect(items.length).toBe(2);
   });
 
-  it('Models tab: mounts the Model Catalog import entry point', async () => {
+  it('header mounts one top-level Import… button and zero inline import bands across all tabs', async () => {
     const snap = buildSnapshot([], [], ['claude-sonnet-5-5']);
     const { container } = render(PipelineBuilder, {
       props: { snapshot: snap, initialTab: 'workflows' }
     });
-    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="builder-import-btn"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(0);
     expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="catalog-empty-import-workflow"]')).not.toBeNull();
+
     await switchTab(container, 'Models');
     expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).toBeNull();
-    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
-    expect(container.querySelector('[data-testid="process-import-inspect"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-testid="builder-import-btn"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(0);
+
+    await switchTab(container, 'Phases');
+    expect(container.querySelectorAll('[data-testid="builder-import-btn"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(0);
   });
 
-  it('Workflows tab: save is inert until a mutation is declared', async () => {
+  it('Workflows tab: opens list-first and Save inside the editor is inert until a mutation is declared', async () => {
     vi.mocked(saveDraftHelper).mockClear();
     const pipeline: PipelineDefinition = Object.freeze({
       id: 'custom',
@@ -722,30 +734,57 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       props: { snapshot: snap, initialTab: 'workflows' }
     });
     await tick();
+    // List view has no editor Save button until a Workflow is opened.
+    expect(container.querySelector('[data-testid="workflows-save-all"]')).toBeNull();
+    const row = container.querySelector('[data-testid="workflows-list-item-custom"]') as HTMLButtonElement;
+    expect(row).not.toBeNull();
+    await fireEvent.click(row);
+    await tick();
+
     const saveBtn = container.querySelector(
       '[data-testid="workflows-save-all"]'
     ) as HTMLButtonElement | null;
     expect(saveBtn).not.toBeNull();
+    expect(saveBtn!.disabled).toBe(true);
     await fireEvent.click(saveBtn!);
     await tick();
     expect(saveDraftHelper).not.toHaveBeenCalled();
   });
 
-  it('Models tab: saves through the shared save-models helper', async () => {
+  it('Models tab: gates Save on dirty state, saves edits through save-models, and reverts cleanly', async () => {
     vi.mocked(saveModelsHelper).mockClear();
     const snap = buildSnapshot([], [], ['claude-sonnet-5-5', 'claude-opus-5-5']);
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     await switchTab(container, 'Models');
-    // Builder redesign: the Models tab's "Save All Models" reads "Save".
-    const saveBtn = [...container.querySelectorAll('button')].find(
-      (btn) => btn.textContent?.trim() === 'Save'
-    ) as HTMLButtonElement | undefined;
-    expect(saveBtn).toBeDefined();
-    await fireEvent.click(saveBtn!);
+
+    const saveBtn = container.querySelector('[data-testid="models-save"]') as HTMLButtonElement;
+    expect(saveBtn).not.toBeNull();
+    expect(saveBtn.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="models-unsaved"]')).toBeNull();
+
+    // Edit the first model entry to dirty the catalog
+    const firstInput = container.querySelector('.model-list-item input') as HTMLInputElement;
+    await fireEvent.input(firstInput, { target: { value: 'claude-sonnet-5-6' } });
+    await tick();
+
+    expect(container.querySelector('[data-testid="models-unsaved"]')?.textContent?.trim()).toBe('Unsaved changes');
+    expect(saveBtn.disabled).toBe(false);
+
+    // Revert restores adopted models and clears dirty state
+    await fireEvent.click(container.querySelector('[data-testid="models-revert"]')!);
+    await tick();
+    expect(firstInput.value).toBe('claude-sonnet-5-5');
+    expect(container.querySelector('[data-testid="models-unsaved"]')).toBeNull();
+    expect(saveBtn.disabled).toBe(true);
+
+    // Edit again and Save
+    await fireEvent.input(firstInput, { target: { value: 'claude-sonnet-5-6' } });
+    await tick();
+    await fireEvent.click(saveBtn);
     await tick();
     expect(saveModelsHelper).toHaveBeenCalledTimes(1);
     expect(vi.mocked(saveModelsHelper).mock.calls[0][0]).toEqual({
-      claude: ['claude-sonnet-5-5', 'claude-opus-5-5'],
+      claude: ['claude-sonnet-5-6', 'claude-opus-5-5'],
       codex: [],
       agy: []
     });
@@ -1143,147 +1182,238 @@ describe('PipelineBuilder — BUG-002 cross-tab phase visibility', () => {
   });
 });
 
-describe('PipelineBuilder — BUG-012 phase list reordering', () => {
+describe('PipelineBuilder — Track 2 Builder UX unification (no Phase reorder, single Import modal, full-page Workflow editor)', () => {
   const phaseA: PhaseDefinition = Object.freeze({
     id: 'phase-a', name: 'Alpha', instruction: 'Do alpha.'
   }) as unknown as PhaseDefinition;
   const phaseB: PhaseDefinition = Object.freeze({
     id: 'phase-b', name: 'Beta', instruction: 'Do beta.'
   }) as unknown as PhaseDefinition;
-  const phaseC: PhaseDefinition = Object.freeze({
-    id: 'phase-c', name: 'Charlie', instruction: 'Do charlie.'
-  }) as unknown as PhaseDefinition;
+  const workflowA: PipelineDefinition = Object.freeze({
+    id: 'wf-a', name: 'Workflow A', phases: Object.freeze(['phase-a'])
+  }) as unknown as PipelineDefinition;
 
-  async function renderPhasesList() {
-    const snap = buildSnapshot([phaseA, phaseB, phaseC]);
-    const { container } = render(PipelineBuilder, {
-      props: { snapshot: snap, initialTab: 'phases' }
-    });
-    await tick();
-    return container;
-  }
-
-  it('move down swaps a phase with the one below it', async () => {
-    const container = await renderPhasesList();
-    expect(getPhaseIds(container)).toEqual(['phase-a', 'phase-b', 'phase-c']);
-
-    const moveDown = container.querySelector('[data-testid="phases-move-down-phase-a"]') as HTMLButtonElement;
-    expect(moveDown).not.toBeNull();
-    await fireEvent.click(moveDown);
-    await tick();
-
-    expect(getPhaseIds(container)).toEqual(['phase-b', 'phase-a', 'phase-c']);
-  });
-
-  it('saves the moved row after a reorder, the list order being the store\'s to keep', async () => {
-    const container = await renderPhasesList();
-    await fireEvent.click(container.querySelector(
-      '[data-testid="phases-move-down-phase-a"]'
-    )!);
-    await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
-    await tick();
-
-    // Feature 101 (T030) — this asserted the reordered layer travelled as one
-    // atomic write: `phase-b`, `phase-a`, `phase-c`, in that order. It could,
-    // because the write WAS the layer and the array's order was the catalog's
-    // order. A draft write names one definition, and the order definitions are
-    // listed in belongs to the store's manifest (FR-002, FR-018), which no
-    // lifecycle command reorders. So the reorder is a view arrangement, and what
-    // the save persists is the moved row's body.
-    expect(saveDraftHelper).toHaveBeenCalledTimes(1);
-    expect(saveDraftHelper).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'phase',
-      id: 'phase-a',
-      body: expect.objectContaining({ id: 'phase-a' })
-    }), undefined, expect.objectContaining({ onLateOutcome: expect.any(Function) }));
-  });
-
-  it('reorders any two adjacent rows, there being no boundary left to cross', async () => {
-    // Feature 099 (T496f, FR-042) — this seeded `phase-a` at `user` and
-    // `phase-b` at `workspace` and pinned both move controls DISABLED: a reorder
-    // is one save against one layer, so a pair straddling two layers had no
-    // single save to express it. One layer removes the straddle, and the
-    // inversion is the point — the same fixture that could not move must now
-    // move, or the controls are dead for a reason nothing states.
+  it('renders zero Phase reorder controls in both the Phases list and Phase Editor', async () => {
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot([phaseA, phaseB]), initialTab: 'phases' }
     });
-    const moveDown = container.querySelector(
-      '[data-testid="phases-move-down-phase-a"]'
-    ) as HTMLButtonElement;
-    const moveUp = container.querySelector(
-      '[data-testid="phases-move-up-phase-b"]'
-    ) as HTMLButtonElement;
-    expect(moveDown.disabled).toBe(false);
-    expect(moveUp.disabled).toBe(false);
-    await fireEvent.click(moveDown);
     await tick();
-    expect(getPhaseIds(container)).toEqual(['phase-b', 'phase-a']);
+    expect(getPhaseIds(container)).toEqual(['phase-a', 'phase-b']);
+    expect(container.querySelector('[data-testid^="phases-move-"]')).toBeNull();
+
+    await fireEvent.click(container.querySelector('[data-testid="phases-list-item-phase-a"]')!);
+    await tick();
+    expect(container.querySelector('[data-testid^="phases-move-"]')).toBeNull();
   });
 
-  it('move up swaps a phase with the one above it', async () => {
-    const container = await renderPhasesList();
-
-    const moveUp = container.querySelector('[data-testid="phases-move-up-phase-c"]') as HTMLButtonElement;
-    expect(moveUp).not.toBeNull();
-    await fireEvent.click(moveUp);
-    await tick();
-
-    expect(getPhaseIds(container)).toEqual(['phase-a', 'phase-c', 'phase-b']);
+  it('disables header Import… with an inline reason in a secondary window', () => {
+    const secondary = { ...buildSnapshot([phaseA]), isPrimary: false } as WorkflowSnapshot;
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: secondary, initialTab: 'phases' }
+    });
+    const importBtn = container.querySelector('[data-testid="builder-import-btn"]') as HTMLButtonElement;
+    expect(importBtn.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="builder-import-unavailable"]')?.textContent)
+      .toContain('primary window');
   });
 
-  it('first item up button is disabled', async () => {
-    const container = await renderPhasesList();
-    const upBtn = container.querySelector('[data-testid="phases-move-up-phase-a"]') as HTMLButtonElement;
-    expect(upBtn).not.toBeNull();
-    expect(upBtn.disabled).toBe(true);
+  it('opens BuilderImportModal from header Import… and gates commit by inspected target kind', async () => {
+    vi.mocked(preflightHelper).mockResolvedValueOnce({
+      outcome: 'planned',
+      plan: {
+        rows: [
+          {
+            outcome: 'import',
+            resourceKind: 'phase',
+            resourceId: 'imported-phase',
+            name: 'Imported',
+            requiresRetryConditionCapability: false,
+            definition: { phaseId: 'imported-phase', name: 'Imported', version: 1, instruction: 'Run.' }
+          }
+        ],
+        counts: { import: 1, skip: 0, blocked: 0, invalid: 0 },
+        computedAgainstRevision: 'phase-revision'
+      }
+    });
+
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([phaseA], [workflowA], ['claude-sonnet-5-5']), initialTab: 'phases' }
+    });
+    await tick();
+
+    // Dirty a Phase, then return to list
+    await fireEvent.click(container.querySelector('[data-testid="phases-list-item-phase-a"]')!);
+    await tick();
+    await fireEvent.input(container.querySelector('[data-testid="phases-name-field-phase-a"]')!, {
+      target: { value: 'Alpha Edited' }
+    });
+    await fireEvent.click(container.querySelector('[data-testid="phases-editor-back"]')!);
+    await tick();
+
+    // Open BuilderImportModal — autoInspect runs preflight returning a Phase entry
+    await fireEvent.click(container.querySelector('[data-testid="builder-import-btn"]')!);
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="builder-import-modal"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="process-import-plan"]')).not.toBeNull();
+    });
+
+    // Confirm is blocked specifically because Phases has pending edits
+    const confirmBtn = container.querySelector('[data-testid="process-import-confirm"]') as HTMLButtonElement;
+    expect(confirmBtn.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="process-import-confirm-blocked"]')?.textContent)
+      .toContain('pending Phase changes');
+
+    // Now re-inspect a Model Catalog YAML — commit MUST be allowed even though Phases is dirty!
+    vi.mocked(preflightHelper).mockResolvedValueOnce({
+      outcome: 'planned',
+      plan: {
+        rows: [
+          {
+            outcome: 'import',
+            resourceKind: 'modelCatalog',
+            resourceId: 'custom-model-a',
+            backend: 'claude',
+            modelId: 'custom-model-a'
+          }
+        ],
+        counts: { import: 1, skip: 0, blocked: 0, invalid: 0 },
+        computedAgainstRevision: 'phase-revision',
+        computedAgainstModelsRevision: 'models-rev-1'
+      }
+    });
+    await fireEvent.click(container.querySelector('[data-testid="process-import-inspect"]')!);
+    await vi.waitFor(() => {
+      expect((container.querySelector('[data-testid="process-import-confirm"]') as HTMLButtonElement).disabled)
+        .toBe(false);
+    });
   });
 
-  it('last item down button is disabled', async () => {
-    const container = await renderPhasesList();
-    const downBtn = container.querySelector('[data-testid="phases-move-down-phase-c"]') as HTMLButtonElement;
-    expect(downBtn).not.toBeNull();
-    expect(downBtn.disabled).toBe(true);
+  it('hides Builder header and tabs in full-page Workflow Editor and restores them with unsaved banner on return', async () => {
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([phaseA], [workflowA]), initialTab: 'workflows' }
+    });
+    await tick();
+    expect(container.querySelector('.phead')).not.toBeNull();
+    expect(container.querySelector('.builder-tabs')).not.toBeNull();
+
+    // Open Workflow Editor
+    await fireEvent.click(container.querySelector('[data-testid="workflows-list-item-wf-a"]')!);
+    await tick();
+    expect(container.querySelector('.phead')).toBeNull();
+    expect(container.querySelector('.builder-tabs')).toBeNull();
+
+    // Make an edit, then click the Workflows breadcrumb to return to the list
+    await fireEvent.input(container.querySelector('[data-testid="workflow-field-name"]')!, {
+      target: { value: 'Workflow A Edited' }
+    });
+    await fireEvent.click(container.querySelector('[data-testid="workflow-crumb-list"]')!);
+    await tick();
+
+    // Builder header + tabs are back, and the unsaved banner + row chip preserve the edit
+    expect(container.querySelector('.phead')).not.toBeNull();
+    expect(container.querySelector('.builder-tabs')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflows-unsaved-banner"]')?.textContent)
+      .toContain('Workflow A Edited');
+    expect(container.querySelector('[data-testid="workflows-row-unsaved-wf-a"]')).not.toBeNull();
+
+    // Resume editing returns straight to the edited Workflow
+    await fireEvent.click(container.querySelector('[data-testid="workflows-resume-editing"]')!);
+    await tick();
+    expect((container.querySelector('[data-testid="workflow-field-name"]') as HTMLInputElement).value)
+      .toBe('Workflow A Edited');
   });
 
-  it('selectedPhaseIndex follows the moved phase when moving down', async () => {
-    const container = await renderPhasesList();
-
-    // Select phase-a (index 0)
-    const itemA = container.querySelector('[data-testid="phases-list-item-phase-a"]') as HTMLButtonElement;
-    await fireEvent.click(itemA);
+  it('preserves post-save Models edits across later snapshot updates and isolates Models vs Phases save errors', async () => {
+    vi.mocked(saveModelsHelper).mockResolvedValueOnce({ status: 'accepted' });
+    const snapV1 = buildSnapshot([phaseA], [], ['claude-sonnet-5-5']);
+    const { container, rerender } = render(PipelineBuilder, {
+      props: { snapshot: snapV1, initialTab: 'models' }
+    });
     await tick();
 
-    // Verify it's selected (has the editor open)
-    expect(container.querySelector('[data-testid="phases-editor-phase-a"]')).not.toBeNull();
-
-    // Move phase-a down
-    const moveDown = container.querySelector('[data-testid="phases-move-down-phase-a"]') as HTMLButtonElement;
-    await fireEvent.click(moveDown);
+    const input = () => container.querySelector('.model-list-item input') as HTMLInputElement;
+    await fireEvent.input(input(), { target: { value: 'claude-sonnet-5-6' } });
     await tick();
+    await fireEvent.click(container.querySelector('[data-testid="models-save"]')!);
+    await tick();
+    expect(container.querySelector('[data-testid="models-unsaved"]')).toBeNull();
 
-    // phase-a is now at index 1 — selection should follow it
-    // The editor should still show phase-a
-    expect(container.querySelector('[data-testid="phases-editor-phase-a"]')).not.toBeNull();
+    // Start a NEW edit before a delayed snapshot arrives — snapshot must NOT clobber it!
+    await fireEvent.input(input(), { target: { value: 'claude-sonnet-5-7' } });
+    await tick();
+    await rerender({ snapshot: buildSnapshot([phaseA], [], ['claude-sonnet-5-6']), initialTab: 'models' });
+    await tick();
+    expect(input().value).toBe('claude-sonnet-5-7');
+    expect(container.querySelector('[data-testid="models-unsaved"]')).not.toBeNull();
+
+    // A rejected Models save shows models-save-error-banner on Models, NEVER save-error-banner on Phases
+    vi.mocked(saveModelsHelper).mockResolvedValueOnce({ status: 'rejected', reason: 'stale-catalog' });
+    await fireEvent.click(container.querySelector('[data-testid="models-save"]')!);
+    await tick();
+    expect(container.querySelector('[data-testid="models-save-error-banner"]')).not.toBeNull();
+
+    await switchTab(container, 'Phases');
+    expect(container.querySelector('[data-testid="save-error-banner"]')).toBeNull();
   });
 
-  it('selectedPhaseIndex follows the moved phase when moving up', async () => {
-    const container = await renderPhasesList();
+  it('blocks Phase row Deactivate… while another Phase has unsaved edits and avoids false unsaved banner during clean removal', async () => {
+    vi.mocked(deactivateHelper).mockClear();
+    let resolveRemove!: (result: { status: 'rejected'; reason: 'declined' }) => void;
+    vi.mocked(deactivateHelper).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveRemove = resolve; })
+    );
 
-    // Select phase-c (index 2)
-    const itemC = container.querySelector('[data-testid="phases-list-item-phase-c"]') as HTMLButtonElement;
-    await fireEvent.click(itemC);
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([phaseA, phaseB]), initialTab: 'phases' }
+    });
     await tick();
 
-    expect(container.querySelector('[data-testid="phases-editor-phase-c"]')).not.toBeNull();
-
-    // Move phase-c up
-    const moveUp = container.querySelector('[data-testid="phases-move-up-phase-c"]') as HTMLButtonElement;
-    await fireEvent.click(moveUp);
+    // Trigger Deactivate… on clean phase-a — no false "has unsaved changes" banner/chip should flash!
+    await fireEvent.click(container.querySelector('[data-testid="phases-row-remove-phase-a"]')!);
+    await tick();
+    expect(container.querySelector('[data-testid="phases-unsaved-banner"]')).toBeNull();
+    expect(container.querySelector('[data-testid="phases-row-unsaved-phase-a"]')).toBeNull();
+    resolveRemove({ status: 'rejected', reason: 'declined' });
+    await tick();
     await tick();
 
-    // phase-c is now at index 1 — selection should follow
-    expect(container.querySelector('[data-testid="phases-editor-phase-c"]')).not.toBeNull();
+    // Now dirty phase-a, return to list, and verify phase-b Deactivate… is disabled & inert
+    await fireEvent.click(container.querySelector('[data-testid="phases-list-item-phase-a"]')!);
+    await tick();
+    await fireEvent.input(container.querySelector('[data-testid="phases-name-field-phase-a"]')!, {
+      target: { value: 'Alpha Edited' }
+    });
+    await fireEvent.click(container.querySelector('[data-testid="phases-editor-back"]')!);
+    await tick();
+
+    vi.mocked(deactivateHelper).mockClear();
+    const removeB = container.querySelector('[data-testid="phases-row-remove-phase-b"]') as HTMLButtonElement;
+    expect(isMenuItemOff(removeB)).toBe(true);
+    await fireEvent.click(removeB);
+    await tick();
+    expect(deactivateHelper).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="phases-unsaved-banner"]')).not.toBeNull();
+  });
+
+  it('unlocks Phases controls cleanly when host rejects Deactivate… with a non-declined reason', async () => {
+    vi.mocked(deactivateHelper).mockResolvedValueOnce({
+      status: 'rejected',
+      reason: 'referenced'
+    });
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([phaseA, phaseB]), initialTab: 'phases' }
+    });
+    await tick();
+
+    await fireEvent.click(container.querySelector('[data-testid="phases-row-remove-phase-a"]')!);
+    await tick();
+    await tick();
+
+    expect(container.querySelector('[data-testid="save-error-banner"]')).not.toBeNull();
+    expect((container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(container.querySelector('[data-testid="phases-row-duplicate-phase-a"]'))).toBe(false);
+    expect(isMenuItemOff(container.querySelector('[data-testid="phases-row-remove-phase-a"]'))).toBe(false);
+    expect(isMenuItemOff(container.querySelector('[data-testid="phases-row-remove-phase-b"]'))).toBe(false);
   });
 });
 
