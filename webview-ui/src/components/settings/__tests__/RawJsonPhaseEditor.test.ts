@@ -9,6 +9,9 @@
  *   FR-031  — host-owned and unknown top-level fields are rejected.
  */
 
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { AUTHORED_PHASE_FIELDS } from '../../../../../src/contracts/process-definitions.js';
@@ -359,5 +362,22 @@ describe('Feature 011 T054 — RawJsonPhaseEditor (SC-008, FR-028, FR-029, FR-03
     await fireEvent.click(save);
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onSave.mock.calls[0][0]).toEqual(edited);
+  });
+
+  it('uses shared .sg .btn semantic roles (primary Save, secondary Reset) with zero local .btn CSS overrides', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const source = readFileSync(join(here, '..', 'RawJsonPhaseEditor.svelte'), 'utf8');
+    const styleBlock = source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+    expect(styleBlock).not.toMatch(/(?:^|\n)\s*\.btn\b/);
+
+    const { container } = render(RawJsonPhaseEditor, {
+      props: { phase: PHASE_FIXTURE }
+    });
+    const save = container.querySelector('[data-testid="raw-json-save"]');
+    const reset = container.querySelector('[data-testid="raw-json-reset"]');
+    expect(save?.classList.contains('btn')).toBe(true);
+    expect(save?.classList.contains('btn-primary')).toBe(true);
+    expect(reset?.classList.contains('btn')).toBe(true);
+    expect(reset?.classList.contains('btn-secondary')).toBe(true);
   });
 });

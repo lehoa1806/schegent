@@ -191,27 +191,6 @@
   <td class="nowrap" data-testid="history-item-{row.runId}-completed-at" title={timeTitle}>{timeText}</td>
   <td class="acts">
     <SgMenu label={`Actions for '${label}'`} testid="history-item-actions-{row.runId}">
-      <button
-        type="button"
-        role="menuitem"
-        data-testid="history-item-rerun-{row.runId}"
-        aria-disabled={ariaRerun}
-        onclick={(event) => (rerunOff ? undefined : onRerun(event, row))}
-      >
-        <svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg>
-        Run again…
-        {#if isLive}<span class="hint">Not finished</span>{/if}
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        data-testid="history-item-open-audit-{row.runId}"
-        aria-disabled={auditPending ? 'true' : readOnlyAria}
-        onclick={() => onOpenAudit(row.runId)}
-      >
-        <svg class="i" aria-hidden="true"><use href="#i-pulse"></use></svg>
-        Open audit log
-      </button>
       {#if onSelect}
         <!-- The name selects here, so the detail needs a way in of its own. -->
         <button
@@ -225,6 +204,27 @@
           Open details
         </button>
       {/if}
+      <button
+        type="button"
+        role="menuitem"
+        data-testid="history-item-open-audit-{row.runId}"
+        aria-disabled={auditPending ? 'true' : readOnlyAria}
+        onclick={() => onOpenAudit(row.runId)}
+      >
+        <svg class="i" aria-hidden="true"><use href="#i-pulse"></use></svg>
+        Open audit log
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        data-testid="history-item-rerun-{row.runId}"
+        aria-disabled={ariaRerun}
+        onclick={(event) => (rerunOff ? undefined : onRerun(event, row))}
+      >
+        <svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg>
+        Run again…
+        {#if isLive}<span class="hint">Not finished</span>{/if}
+      </button>
     </SgMenu>
   </td>
 </tr>

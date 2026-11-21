@@ -138,13 +138,14 @@
       <span class="sep" aria-hidden="true"></span>
       <SgMenu label="More phase actions" testid="phases-editor-menu">
         {#if !readOnly}
-          <button type="button" role="menuitem" data-testid="phases-raw-json-toggle" onclick={() => ontoggleraw(phase.sourceKey)}>{editState.rawJsonMode ? 'Form view' : 'Edit as JSON'}</button>
+          <button type="button" role="menuitem" data-testid="phases-raw-json-toggle" onclick={() => ontoggleraw(phase.sourceKey)}><svg class="i" aria-hidden="true"><use href="#i-edit"></use></svg>{editState.rawJsonMode ? 'Form view' : 'Edit as JSON'}</button>
         {/if}
         <button type="button" role="menuitem" data-testid="phases-duplicate" aria-disabled={moveBlocked} onclick={() => onduplicate(index)}><svg class="i" aria-hidden="true"><use href="#i-copy"></use></svg>Duplicate</button>
         <!-- Feature 099 (T494a, FR-043) — every row is reorderable against every other: one layer
              leaves no neighbour in a different one. -->
-        <button type="button" role="menuitem" data-testid="phases-move-up-{phase.id}" aria-disabled={moveBlocked || index === 0} onclick={() => onmoveup(index)}>Move up</button>
-        <button type="button" role="menuitem" data-testid="phases-move-down-{phase.id}" aria-disabled={moveBlocked || index === phaseCount - 1} onclick={() => onmovedown(index)}>Move down</button>
+        <button type="button" role="menuitem" data-testid="phases-move-up-{phase.id}" aria-disabled={moveBlocked || index === 0} onclick={() => onmoveup(index)}><svg class="i" aria-hidden="true"><use href="#i-up"></use></svg>Move up</button>
+        <button type="button" role="menuitem" data-testid="phases-move-down-{phase.id}" aria-disabled={moveBlocked || index === phaseCount - 1} onclick={() => onmovedown(index)}><svg class="i" aria-hidden="true"><use href="#i-down"></use></svg>Move down</button>
+        <button type="button" role="menuitem" data-testid="phases-revert" aria-disabled={readOnly || !editing} onclick={() => onreset(index)}><svg class="i" aria-hidden="true"><use href="#i-undo"></use></svg>Revert unsaved changes</button>
         <!-- FR-052 — Export is per phase, writes a file the operator names
              and changes no catalog state; shown here in the editor header
              rather than the sidebar to reduce visual clutter. -->
@@ -154,12 +155,11 @@
           resolves={exportable.resolves}
           disabledReason={exportable.disabledReason}
         />
-        <button type="button" role="menuitem" data-testid="phases-revert" aria-disabled={readOnly || !editing} onclick={() => onreset(index)}><svg class="i" aria-hidden="true"><use href="#i-undo"></use></svg>Revert unsaved changes</button>
         {#if !readOnly}
           <hr />
           <!-- A deactivation, not a delete: the Phase stays in the catalog and can be restored, so
                the item says what it does. The confirmation returns focus to this menu's button. -->
-          <button type="button" role="menuitem" data-testid="phases-remove" aria-disabled={!trusted || savePending} onclick={(event) => onremove(index, event.currentTarget)}>Deactivate…</button>
+          <button type="button" role="menuitem" class="danger" data-testid="phases-remove" aria-disabled={!trusted || savePending} onclick={(event) => onremove(index, event.currentTarget)}><svg class="i" aria-hidden="true"><use href="#i-trash"></use></svg>Deactivate…</button>
         {/if}
       </SgMenu>
       <button type="button" class="btn btn-primary" data-testid="phases-save-all" disabled={!trusted || savePending || !mutationActive} onclick={onsave}>{savePending ? 'Saving…' : 'Save'}</button>
@@ -227,9 +227,6 @@
   /* sg-pages' `.phead`, `.crumbs` and `.titlerow` head the page, sg-builder's `.ed-grid` sets the
      form beside the Summary, and sg-core's `.kv` lists the Summary's facts. These place what the
      redesign sets inline. */
-  .phase-title:focus {
-    outline: none;
-  }
 
   /* The redesign's Summary is one key and value list. Here Used by is the page's own row and
      Created, Modified and Active version are the lifecycle panel's, so the card is a two-column

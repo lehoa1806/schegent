@@ -394,6 +394,9 @@
         }}
       >Change path…</button>
       {#if grantable}
+        {#if !granted}
+          <hr />
+        {/if}
         <!-- Allowing is the redesign's danger item; revoking narrows a permission, so it is an
              ordinary one. -->
         <button

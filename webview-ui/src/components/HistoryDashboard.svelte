@@ -406,12 +406,6 @@
     line-height: 1.45;
     text-wrap: pretty;
   }
-  /* The filtered-empty state sits where the table would, in the table's frame,
-     the same frame HistorySection gives the empty history. */
-  .empty {
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-  }
   .empty span {
     display: block;
     max-width: 38ch;

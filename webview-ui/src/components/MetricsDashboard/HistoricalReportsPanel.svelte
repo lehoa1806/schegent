@@ -348,10 +348,10 @@
                They wait with `aria-disabled`, which keeps them in reach, and the menu refuses a click. -->
           <SgMenu label="Export report">
             <button type="button" role="menuitem" aria-disabled={mutating} onclick={() => void exportActive('csv')} data-testid="report-export-csv">
-              Export as CSV
+              <svg class="i" aria-hidden="true"><use href="#i-export"></use></svg>Export CSV…
             </button>
             <button type="button" role="menuitem" aria-disabled={mutating} onclick={() => void exportActive('json')} data-testid="report-export-json">
-              Export as JSON
+              <svg class="i" aria-hidden="true"><use href="#i-export"></use></svg>Export JSON…
             </button>
           </SgMenu>
         </span>

@@ -264,7 +264,6 @@
       onclick={onadd}
       ><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>New workflow</button
     >
-    <hr />
     <button
       type="button"
       role="menuitem"
@@ -273,6 +272,16 @@
       onclick={onduplicate}
       ><svg class="i" aria-hidden="true"><use href="#i-copy"></use></svg>Duplicate</button
     >
+    {#if onreset}
+      <button
+        type="button"
+        role="menuitem"
+        data-testid="workflows-discard"
+        aria-disabled={mutatingDisabled || !canReset}
+        onclick={onreset}
+        ><svg class="i" aria-hidden="true"><use href="#i-undo"></use></svg>Revert unsaved changes</button
+      >
+    {/if}
     <!-- Export is read-only: it needs neither trust nor an idle save, because it
          writes nothing this extension owns. When it cannot run, the reason sits
          under its word, so an operator does not have to guess why it is dead.
@@ -294,16 +303,6 @@
           data-testid="workflows-export-disabled-reason">{exportDisabledReason}</span
         >{/if}</button
     >
-    {#if onreset}
-      <button
-        type="button"
-        role="menuitem"
-        data-testid="workflows-discard"
-        aria-disabled={mutatingDisabled || !canReset}
-        onclick={onreset}
-        ><svg class="i" aria-hidden="true"><use href="#i-undo"></use></svg>Revert unsaved changes</button
-      >
-    {/if}
     <hr />
     <!-- A deactivation, not a delete (`deactivateDefinition`): the Workflow stays
          in the catalog and can be restored, so the item says what it does. The
@@ -311,9 +310,10 @@
     <button
       type="button"
       role="menuitem"
+      class="danger"
       data-testid="workflows-remove"
       aria-disabled={removeDisabled}
-      onclick={onremove}>Deactivate…</button
+      onclick={onremove}><svg class="i" aria-hidden="true"><use href="#i-trash"></use></svg>Deactivate…</button
     >
   </SgMenu>
   <button

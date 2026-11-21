@@ -172,4 +172,32 @@ describe('dashboard shell', () => {
     });
     expect(document.activeElement).toBe(metrics);
   });
+
+  it('tags pointer-driven route heading focus with data-focus-source="pointer" (cleared on blur) while leaving keyboard activation untagged', async () => {
+    const { container, getByTestId } = mountShell();
+    // Warm up History so lazy import has already settled.
+    await openPage(getByTestId('dashboard-route-history'));
+    await waitForHeading(container, 'History');
+    await openPage(getByTestId('dashboard-route-operations'));
+    await waitForFocusOnHeading(container, 'Queues');
+
+    // Pointer click (detail = 1): heading still receives focus, tagged as pointer-sourced.
+    const historyBtn = getByTestId('dashboard-route-history');
+    historyBtn.focus();
+    await fireEvent.click(historyBtn, { detail: 1 });
+    await waitForFocusOnHeading(container, 'History');
+    const historyHeading = pageHeading(container)!;
+    expect(historyHeading.dataset.focusSource).toBe('pointer');
+
+    // Moving focus away clears the pointer tag.
+    historyBtn.focus();
+    expect(historyHeading.dataset.focusSource).toBeUndefined();
+
+    // Keyboard activation (detail = 0): heading receives focus without pointer tag.
+    const queuesBtn = getByTestId('dashboard-route-operations');
+    queuesBtn.focus();
+    await fireEvent.click(queuesBtn, { detail: 0 });
+    await waitForFocusOnHeading(container, 'Queues');
+    expect(pageHeading(container)?.dataset.focusSource).toBeUndefined();
+  });
 });

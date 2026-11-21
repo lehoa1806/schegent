@@ -26,6 +26,11 @@ vi.mock('../../lib/use-confirm', () => ({
   useConfirm: vi.fn(async () => true)
 }));
 
+const restartPhaseSpy = vi.fn(async () => ({ outcome: 'accepted' as const }));
+vi.mock('../../lib/phase-control', () => ({
+  restartPhase: (...args: unknown[]) => restartPhaseSpy(...(args as []))
+}));
+
 // BUG-002 (T119) — capture the most recent `onceAck` listener so each
 // test can synthesize an accepted / rejected ACK and assert the inline
 // rejection text the operator sees.
@@ -49,6 +54,7 @@ import {
   CMD_RETRY_QUEUE_ITEM,
   CMD_CANCEL,
   CMD_REMOVE_QUEUE_ITEM,
+  CMD_MODIFY_TASK,
   CMD_RESTART_CANCELED_TASK,
   CMD_ATTEST_TASK_COMPLETED
 } from '../../lib/messages';
@@ -65,6 +71,8 @@ beforeEach(() => {
   lastAckListener = null;
   useConfirmMock.mockReset();
   useConfirmMock.mockResolvedValue(true);
+  restartPhaseSpy.mockReset();
+  restartPhaseSpy.mockResolvedValue({ outcome: 'accepted' as const });
 });
 afterEach(() => {
   cleanup();
@@ -107,39 +115,47 @@ async function confirmRemove(getByTestId: (id: string) => HTMLElement, id = 'q-1
   await tick();
 }
 
+const RAW_UNICODE_ACTION_GLYPHS = /[⏹✎✖↻✓⟲]/u;
+
+function iconHref(el: Element | null): string | null {
+  return el?.querySelector('svg.i use')?.getAttribute('href') ?? null;
+}
+
 describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
   describe('Per-status action set is exhaustive', () => {
-    it('in-flight row renders Cancel plus Delete', () => {
+    it('in-flight row renders Cancel plus Delete using shared SVG symbols', () => {
       const { container, queryByTestId } = render(QueueItemActions, {
         props: { item: buildItem({ status: 'in-flight' }), isPrimary: true }
       });
-      expect(queryByTestId('queue-item-cancel-q-1')).not.toBeNull();
+      expect(iconHref(queryByTestId('queue-item-cancel-q-1'))).toBe('#i-stop');
       expect(queryByTestId('queue-item-retry-q-1')).toBeNull();
-      expect(queryByTestId('queue-item-remove-q-1')).not.toBeNull();
+      expect(iconHref(queryByTestId('queue-item-remove-q-1'))).toBe('#i-x');
       // Feature 030 (US2, T034) — up/down arrows moved to QueueItem.svelte.
       expect(queryByTestId('queue-item-move-up-q-1')).toBeNull();
       expect(queryByTestId('queue-item-move-down-q-1')).toBeNull();
       expect(container.querySelectorAll('button').length).toBe(2);
+      expect(container.textContent).not.toMatch(RAW_UNICODE_ACTION_GLYPHS);
     });
 
-    it('pending row renders edit plus ✖ remove controls', () => {
+    it('pending row renders SVG edit plus remove controls without raw Unicode glyphs', () => {
       // Feature 030 (US2, T034) — up/down arrows are no longer rendered by
       // QueueItemActions; they live on QueueItem.svelte and route through
       // the shared helper at webview-ui/src/lib/reorder-task.ts.
       // Feature 030 (US3, T045) — the per-row "Move to another queue"
       // affordance (`queue-item-move-task-{id}`) was removed alongside
-      // the multi-queue surfaces. A pending row now renders edit + ✖.
+      // the multi-queue surfaces. A pending row now renders edit + remove.
       const { container, queryByTestId } = render(QueueItemActions, {
         props: { item: buildItem({ status: 'pending' }), isPrimary: true }
       });
-      expect(queryByTestId('queue-item-remove-q-1')?.textContent?.trim()).toBe('✖');
+      expect(iconHref(queryByTestId('queue-item-remove-q-1'))).toBe('#i-x');
+      expect(iconHref(queryByTestId('queue-item-edit-q-1'))).toBe('#i-edit');
       expect(queryByTestId('queue-item-move-up-q-1')).toBeNull();
       expect(queryByTestId('queue-item-move-down-q-1')).toBeNull();
       expect(queryByTestId('queue-item-cancel-q-1')).toBeNull();
       expect(queryByTestId('queue-item-retry-q-1')).toBeNull();
-      expect(queryByTestId('queue-item-edit-q-1')).not.toBeNull();
       expect(queryByTestId('queue-item-move-task-q-1')).toBeNull();
       expect(container.querySelectorAll('button').length).toBe(2);
+      expect(container.textContent).not.toMatch(RAW_UNICODE_ACTION_GLYPHS);
     });
 
     // Feature 195 (T064, FR-025) — was "Retry plus Delete", asserting two
@@ -149,17 +165,18 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
     // updated here rather than excused — an exhaustiveness assertion that
     // still names two of three actions is the defect T064 closes, one layer
     // down.
-    it('failed row renders Retry plus Attest plus Delete', () => {
+    it('failed row renders Retry plus Attest plus Delete using shared SVG symbols', () => {
       const { container, queryByTestId } = render(QueueItemActions, {
         props: { item: buildItem({ status: 'failed' }), isPrimary: true }
       });
       const retry = queryByTestId('queue-item-retry-q-1');
       expect(retry).not.toBeNull();
-      expect(retry?.textContent?.trim()).toBe('↻');
+      expect(iconHref(retry)).toBe('#i-refresh');
       expect(queryByTestId('queue-item-cancel-q-1')).toBeNull();
-      expect(queryByTestId('queue-item-attest-q-1')).not.toBeNull();
-      expect(queryByTestId('queue-item-remove-q-1')).not.toBeNull();
+      expect(iconHref(queryByTestId('queue-item-attest-q-1'))).toBe('#i-check');
+      expect(iconHref(queryByTestId('queue-item-remove-q-1'))).toBe('#i-x');
       expect(container.querySelectorAll('button').length).toBe(3);
+      expect(container.textContent).not.toMatch(RAW_UNICODE_ACTION_GLYPHS);
     });
 
     // Spec 278 (OD-2) — a failed row whose Run is still the queue's stored Run carries that
@@ -169,14 +186,15 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       const { container, queryByTestId } = render(QueueItemActions, {
         props: { item: buildItem({ status: 'failed', currentPhase: 'implement' }), isPrimary: true }
       });
-      expect(queryByTestId('queue-item-restart-phase-q-1')).not.toBeNull();
+      expect(iconHref(queryByTestId('queue-item-restart-phase-q-1'))).toBe('#i-loop');
       expect(queryByTestId('queue-item-retry-q-1')).not.toBeNull();
       expect(queryByTestId('queue-item-attest-q-1')).not.toBeNull();
       expect(queryByTestId('queue-item-remove-q-1')).not.toBeNull();
       expect(container.querySelectorAll('button').length).toBe(4);
+      expect(container.textContent).not.toMatch(RAW_UNICODE_ACTION_GLYPHS);
     });
 
-    // Feature 065 BUG-009 T080 (FR-026) — Retry (↻) is also available for
+    // Feature 065 BUG-009 T080 (FR-026) — Retry is also available for
     // paused rows so the operator can resurrect a stuck task without
     // removing + re-enqueueing it.
     it('paused row renders Retry plus Delete (BUG-009 T080 — FR-026)', () => {
@@ -185,18 +203,20 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       });
       const retry = queryByTestId('queue-item-retry-q-1');
       expect(retry).not.toBeNull();
-      expect(retry?.textContent?.trim()).toBe('↻');
+      expect(iconHref(retry)).toBe('#i-refresh');
       expect(queryByTestId('queue-item-cancel-q-1')).toBeNull();
-      expect(queryByTestId('queue-item-remove-q-1')).not.toBeNull();
+      expect(iconHref(queryByTestId('queue-item-remove-q-1'))).toBe('#i-x');
       expect(container.querySelectorAll('button').length).toBe(2);
+      expect(container.textContent).not.toMatch(RAW_UNICODE_ACTION_GLYPHS);
     });
 
     it('completed row renders Delete', () => {
       const { container, queryByTestId } = render(QueueItemActions, {
         props: { item: buildItem({ status: 'completed' }), isPrimary: true }
       });
-      expect(queryByTestId('queue-item-remove-q-1')).not.toBeNull();
+      expect(iconHref(queryByTestId('queue-item-remove-q-1'))).toBe('#i-x');
       expect(container.querySelectorAll('button').length).toBe(1);
+      expect(container.textContent).not.toMatch(RAW_UNICODE_ACTION_GLYPHS);
     });
 
     it('canceled row renders Restart plus Delete (BUG-001 — resurrect canceled task)', () => {
@@ -205,11 +225,12 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       });
       const restart = queryByTestId('queue-item-restart-q-1');
       expect(restart).not.toBeNull();
-      expect(restart?.textContent?.trim()).toBe('↻');
+      expect(iconHref(restart)).toBe('#i-refresh');
       expect(queryByTestId('queue-item-cancel-q-1')).toBeNull();
       expect(queryByTestId('queue-item-retry-q-1')).toBeNull();
-      expect(queryByTestId('queue-item-remove-q-1')).not.toBeNull();
+      expect(iconHref(queryByTestId('queue-item-remove-q-1'))).toBe('#i-x');
       expect(container.querySelectorAll('button').length).toBe(2);
+      expect(container.textContent).not.toMatch(RAW_UNICODE_ACTION_GLYPHS);
     });
   });
 
@@ -596,5 +617,200 @@ describe('a remove whose wait ran out (T117; FR-024, FR-026)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('QueueItemActions variant="header" (Run Detail grouping)', () => {
+  it.each([
+    ['in-flight', 'queue-item-cancel-q-1', 'Cancel…', '#i-stop'],
+    ['failed', 'queue-item-retry-q-1', 'Retry', '#i-refresh'],
+    ['paused', 'queue-item-retry-q-1', 'Retry', '#i-refresh'],
+    ['canceled', 'queue-item-restart-q-1', 'Restart…', '#i-refresh']
+  ] as const)(
+    'renders a single contextual .btn.btn-secondary button plus SgMenu for %s tasks',
+    (status, testId, expectedLabel, expectedIcon) => {
+      const { container, getByTestId } = render(QueueItemActions, {
+        props: { item: buildItem({ status }), isPrimary: true, variant: 'header' }
+      });
+      const direct = getByTestId(testId);
+      expect(direct.classList.contains('btn')).toBe(true);
+      expect(direct.classList.contains('btn-secondary')).toBe(true);
+      expect(direct.textContent?.trim()).toBe(expectedLabel);
+      expect(iconHref(direct)).toBe(expectedIcon);
+      expect(getByTestId('queue-item-menu-q-1')).not.toBeNull();
+      expect(container.textContent).not.toMatch(RAW_UNICODE_ACTION_GLYPHS);
+    }
+  );
+
+  it('groups failed-task secondary actions in SgMenu with divider before destructive Remove', () => {
+    const { container, getByTestId } = render(QueueItemActions, {
+      props: {
+        item: buildItem({ status: 'failed', currentPhase: 'implement' }),
+        isPrimary: true,
+        variant: 'header'
+      }
+    });
+    const menu = container.querySelector('[role="menu"]') as HTMLElement | null;
+    expect(menu).not.toBeNull();
+    const entries = [...menu!.children].map((el) =>
+      el.tagName === 'HR' ? 'hr' : el.getAttribute('data-testid')
+    );
+    expect(entries).toEqual([
+      'queue-item-restart-phase-q-1',
+      'queue-item-attest-q-1',
+      'hr',
+      'queue-item-remove-q-1'
+    ]);
+    expect(iconHref(getByTestId('queue-item-restart-phase-q-1'))).toBe('#i-loop');
+    expect(getByTestId('queue-item-restart-phase-q-1').textContent?.trim()).toBe(
+      'Restart failed phase'
+    );
+    expect(iconHref(getByTestId('queue-item-attest-q-1'))).toBe('#i-check');
+    expect(getByTestId('queue-item-attest-q-1').textContent?.trim()).toBe('Mark as completed…');
+    const remove = getByTestId('queue-item-remove-q-1');
+    expect(remove.classList.contains('danger')).toBe(true);
+    expect(iconHref(remove)).toBe('#i-trash');
+    expect(remove.textContent?.trim()).toBe('Remove from queue…');
+    expect(container.textContent).not.toMatch(RAW_UNICODE_ACTION_GLYPHS);
+  });
+
+  it('omits leading <hr /> when Remove from queue is the only menu item (completed)', () => {
+    const { container, getByTestId, queryByTestId } = render(QueueItemActions, {
+      props: { item: buildItem({ status: 'completed' }), isPrimary: true, variant: 'header' }
+    });
+    expect(queryByTestId('queue-item-cancel-q-1')).toBeNull();
+    expect(queryByTestId('queue-item-retry-q-1')).toBeNull();
+    expect(queryByTestId('queue-item-restart-q-1')).toBeNull();
+    const menu = container.querySelector('[role="menu"]') as HTMLElement | null;
+    expect(menu).not.toBeNull();
+    expect(menu!.querySelector('hr')).toBeNull();
+    expect(getByTestId('queue-item-remove-q-1').classList.contains('danger')).toBe(true);
+  });
+
+  it('opens the inline edit form from pending SgMenu and submits with btn-primary Save + btn-ghost Cancel', async () => {
+    const { container, getByTestId, queryByTestId } = render(QueueItemActions, {
+      props: { item: buildItem({ status: 'pending' }), isPrimary: true, variant: 'header' }
+    });
+    const menu = container.querySelector('[role="menu"]') as HTMLElement | null;
+    expect(menu).not.toBeNull();
+    expect([...menu!.children].map((el) => (el.tagName === 'HR' ? 'hr' : el.getAttribute('data-testid')))).toEqual([
+      'queue-item-edit-q-1',
+      'hr',
+      'queue-item-remove-q-1'
+    ]);
+    await fireEvent.click(getByTestId('queue-item-menu-q-1'));
+    await fireEvent.click(getByTestId('queue-item-edit-q-1'));
+    const form = getByTestId('queue-item-edit-form-q-1');
+    const saveBtn = getByTestId('queue-item-edit-save-q-1');
+    const cancelBtn = getByTestId('queue-item-edit-cancel-q-1');
+    expect(saveBtn.classList.contains('btn-primary')).toBe(true);
+    expect(cancelBtn.classList.contains('btn-ghost')).toBe(true);
+
+    await fireEvent.input(getByTestId('queue-item-edit-input-q-1'), {
+      target: { value: 'Updated prompt' }
+    });
+    await fireEvent.submit(form);
+    await tick();
+    expect(useConfirmMock).toHaveBeenCalledWith(
+      'run.modify-task',
+      expect.objectContaining({ context: { taskTitle: 'Updated prompt' } })
+    );
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_MODIFY_TASK, {
+      taskId: 'q-1',
+      description: 'Updated prompt'
+    });
+    expect(queryByTestId('queue-item-edit-form-q-1')).toBeNull();
+    expect(document.activeElement).toBe(getByTestId('queue-item-menu-q-1'));
+  });
+
+  it('resets discarded draft and restores focus to menu trigger on Cancel, and closes form if status leaves pending', async () => {
+    const { getByTestId, queryByTestId, rerender } = render(QueueItemActions, {
+      props: { item: buildItem({ status: 'pending', label: 'Original prompt' }), isPrimary: true, variant: 'header' }
+    });
+    await fireEvent.click(getByTestId('queue-item-menu-q-1'));
+    await fireEvent.click(getByTestId('queue-item-edit-q-1'));
+    await fireEvent.input(getByTestId('queue-item-edit-input-q-1'), {
+      target: { value: 'Discarded draft' }
+    });
+    await fireEvent.click(getByTestId('queue-item-edit-cancel-q-1'));
+
+    expect(queryByTestId('queue-item-edit-form-q-1')).toBeNull();
+    expect(document.activeElement).toBe(getByTestId('queue-item-menu-q-1'));
+
+    // Reopening shows the original label, not the discarded draft.
+    await fireEvent.click(getByTestId('queue-item-menu-q-1'));
+    await fireEvent.click(getByTestId('queue-item-edit-q-1'));
+    expect((getByTestId('queue-item-edit-input-q-1') as HTMLInputElement).value).toBe('Original prompt');
+
+    // Leaving pending status closes the open edit form automatically.
+    await rerender({
+      item: buildItem({ status: 'in-flight', label: 'Original prompt' }),
+      isPrimary: true,
+      variant: 'header'
+    });
+    expect(queryByTestId('queue-item-edit-form-q-1')).toBeNull();
+  });
+
+  it('omits Restart failed phase when failed task has no stored phase and preserves label-in-name ARIA labels', () => {
+    const { container, getByTestId, queryByTestId } = render(QueueItemActions, {
+      props: { item: buildItem({ status: 'failed', currentPhase: null }), isPrimary: true, variant: 'header' }
+    });
+    expect(queryByTestId('queue-item-restart-phase-q-1')).toBeNull();
+    const menu = container.querySelector('[role="menu"]') as HTMLElement | null;
+    expect(menu).not.toBeNull();
+    expect([...menu!.children].map((el) => (el.tagName === 'HR' ? 'hr' : el.getAttribute('data-testid')))).toEqual([
+      'queue-item-attest-q-1',
+      'hr',
+      'queue-item-remove-q-1'
+    ]);
+    expect(getByTestId('queue-item-attest-q-1').getAttribute('aria-label')).toMatch(/^Mark as completed/);
+    expect(getByTestId('queue-item-remove-q-1').getAttribute('aria-label')).toMatch(/^Remove from queue/);
+    cleanup();
+
+    const pending = render(QueueItemActions, {
+      props: { item: buildItem({ status: 'pending' }), isPrimary: true, variant: 'header' }
+    });
+    expect(pending.getByTestId('queue-item-edit-q-1').getAttribute('aria-label')).toMatch(/^Edit description/);
+  });
+
+  it('clears lifted restartPhaseError when the task leaves failed status', async () => {
+    restartPhaseSpy.mockResolvedValueOnce({
+      outcome: 'refused',
+      message: 'Restart is not available for this Run.'
+    } as never);
+    const { getByTestId, queryByTestId, rerender } = render(QueueItemActions, {
+      props: {
+        item: buildItem({ status: 'failed', currentPhase: 'implement' }),
+        isPrimary: true,
+        variant: 'header'
+      }
+    });
+    await fireEvent.click(getByTestId('queue-item-menu-q-1'));
+    await fireEvent.click(getByTestId('queue-item-restart-phase-q-1'));
+    await flushAck();
+    expect(getByTestId('queue-item-restart-phase-message-q-1').textContent).toBe(
+      'Restart is not available for this Run.'
+    );
+
+    await rerender({
+      item: buildItem({ status: 'in-flight', currentPhase: 'implement' }),
+      isPrimary: true,
+      variant: 'header'
+    });
+    await tick();
+    expect(queryByTestId('queue-item-restart-phase-message-q-1')).toBeNull();
+  });
+
+  it('keeps header menu actions aria-disabled and inert in a non-primary window', async () => {
+    const { getByTestId } = render(QueueItemActions, {
+      props: { item: buildItem({ status: 'failed' }), isPrimary: false, variant: 'header' }
+    });
+    expect(getByTestId('queue-item-retry-q-1').getAttribute('aria-disabled')).toBe('true');
+    expect(getByTestId('queue-item-attest-q-1').getAttribute('aria-disabled')).toBe('true');
+    expect(getByTestId('queue-item-remove-q-1').getAttribute('aria-disabled')).toBe('true');
+    await fireEvent.click(getByTestId('queue-item-remove-q-1'));
+    await tick();
+    expect(useConfirmMock).not.toHaveBeenCalled();
+    expect(postCommandSpy).not.toHaveBeenCalled();
   });
 });

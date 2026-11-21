@@ -324,13 +324,13 @@
                       role="menuitem"
                       data-testid="queue-task-reorder-up-{row.task.id}"
                       onclick={() => onMoveUp(row.task.id)}
-                    >Move up</button>
+                    ><svg class="i" aria-hidden="true"><use href="#i-up"></use></svg>Move up</button>
                     <button
                       type="button"
                       role="menuitem"
                       data-testid="queue-task-reorder-down-{row.task.id}"
                       onclick={() => onMoveDown(row.task.id)}
-                    >Move down</button>
+                    ><svg class="i" aria-hidden="true"><use href="#i-down"></use></svg>Move down</button>
                   {/if}
                 </SgMenu>
               </div>

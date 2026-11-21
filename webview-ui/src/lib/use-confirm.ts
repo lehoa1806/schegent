@@ -125,7 +125,7 @@ export function useConfirm<K extends ActionKey>(
     const body = renderActionBody(actionKey, (options.context ?? {}) as ActionCopyContext[K]);
 
     const host = document.createElement('div');
-    host.className = 'confirm-dialog-host';
+    host.className = 'sg confirm-dialog-host';
     document.body.appendChild(host);
 
     modalOpen = true;

@@ -91,6 +91,7 @@
 .sg .menu button[aria-disabled='true']:focus-visible { background: var(--schegent-list-hover); }
 .sg .menu hr { border: 0; border-top: 1px solid var(--schegent-border); margin: var(--schegent-space-1) 0; }
 .sg .menu .danger { color: var(--schegent-error-text); }
+.sg .menu .menu-icon-spacer { width: 16px; height: 16px; flex: 0 0 auto; }
 .sg .menu .hint { margin-left: auto; font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); }
 
 /* Cards and sections */
@@ -102,9 +103,12 @@
 .sg .section > h2 { font-weight: 600; margin-bottom: var(--schegent-space-2); display: flex; align-items: center; gap: var(--schegent-space-2); }
 .sg details.diag { margin-top: var(--schegent-space-3); border-top: 1px solid var(--schegent-border); padding-top: var(--schegent-space-2); }
 .sg details.diag > summary { color: var(--schegent-muted-fg); font-size: var(--schegent-text-secondary); }
-.sg .empty { text-align: center; padding: var(--schegent-space-5-5) var(--schegent-space-4); color: var(--schegent-muted-fg); }
+.sg .empty { text-align: center; padding: var(--schegent-space-5-5) var(--schegent-space-4); color: var(--schegent-muted-fg); border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); line-height: 1.5; }
+.sg :is(.table-wrap, .card) .empty { border: 0; border-radius: 0; }
 .sg .empty strong { display: block; color: var(--schegent-fg); font-size: var(--schegent-text-subheading); margin-bottom: var(--schegent-space-1); }
 .sg .empty .btn { margin-top: var(--schegent-space-2-5); }
+/* Programmatic heading focus moves assistive-technology focus on route/detail navigation without painting a mouse-click focus rectangle. */
+.sg h1[tabindex='-1']:focus:not(:focus-visible), .sg h2[tabindex='-1']:focus:not(:focus-visible), .sg h1[tabindex='-1'][data-focus-source='pointer']:focus, .sg h2[tabindex='-1'][data-focus-source='pointer']:focus { outline: none; }
 
 /* Tabs */
 .sg .tabs { display: flex; gap: var(--schegent-space-0-5); border-bottom: 1px solid var(--schegent-border); margin-bottom: var(--schegent-space-3-5); }
