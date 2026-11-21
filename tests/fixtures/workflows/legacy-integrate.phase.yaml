@@ -1,0 +1,39 @@
+# Historical Phase retained to verify older authored workflows.
+apiVersion: schegent/v1
+kind: Phase
+metadata:
+  phaseId: claude-speckit-integrate
+  name: Spec-kit Integrate (Claude)
+  version: 1
+spec:
+  instruction: |-
+    Integrate the feature's commits without touching a checkout. If project rules require a different merge procedure, withhold integration and name the required procedure. Report blockers without waiting.
+    Never run git commit or git merge, switch or check out a branch, reset, rebase, stash, fetch, push, discard, or force a ref; never create, use or remove a worktree; never fix a failing check here.
+
+    Repositories:
+    Resolve them before any write, from the workspace root <root>, running each command as written: each placeholder is one argument, and a <... paths> placeholder one argument per path. Under a heading exactly "## Implementation repositories", <root>/AGENTS.md declares one per bullet starting with inline code: a path relative to <root> (`.` for <root>), optionally then `(base: <ref>)`, each in inline code, and nothing else. Paths and refs use only letters, digits and . _ / - and never start with -; the base defaults to develop. Without the section: repo if <root> holds specs/ and repo is a repository top level, else . if <root> is one. Nothing else picks a repository. Then add the envelope <root>, last, with base develop, when it is a repository top level not already listed.
+    The scope is unresolved, and nothing is written anywhere, on: no repository; a section with no entry, a broken entry or a twin; two entries at one location; a listed repository whose path is absolute, missing or outside <root> by `cd <root>/<path> && pwd -P`, whose `git -C <path> rev-parse --show-prefix` fails or prints anything, or whose `git -C <path> merge-base HEAD <base>` (its <merge-base>) fails or prints nothing; or, without the section, a gitlink of <root> (mode 160000 in `git -C <root> ls-files --stage`) in the status below that is no repository. Report each reason under "Remaining issues:" tagged [needs-decision]. Never substitute a branch, fetch, or edit the declaration.
+
+    Ownership:
+    List changed paths with `git --no-optional-locks -C <path> status --porcelain --untracked-files=all --ignore-submodules=none`, matching them to feature paths relative to <root>. Never git diff the working tree: it can rewrite the index. Each path is, first match winning:
+    - ambiguous: claimed by this feature and another; both status columns letters (partially staged); mixing a change tied to this feature with one that is not; a rename with one side not owned; or claimed by no feature, other than the changed gitlink of a repository with feature work.
+    - owned: in <feature_dir>; named by this feature's tasks.md or plan.md; tied by you to a named task (say which and why); or the changed gitlink of a repository with feature work.
+    - unrelated: claimed by another feature's directory, tasks.md or plan.md; or a changed gitlink of no repository.
+    Changing never makes a path owned; .specify/feature.json and other shared pointers are owned only while naming <feature_dir>. Leave unrelated and ambiguous paths exactly as found: never stage, format, commit or restore them. Each ambiguous path is a hand-off under "Remaining issues:", tagged [needs-decision], with its reason.
+
+    1. Per repository, the source is the branch `git -C <path> symbolic-ref --short -q HEAD` prints (nothing means a detached HEAD), the <source commit> is `git -C <path> rev-parse HEAD`, and the target is its base. If `git -C <path> merge-base --is-ancestor <source commit> refs/heads/<target>` succeeds, the target already contains the source: the repository is already integrated, and has no feature changes when nothing in it is owned. Every other repository is one to integrate.
+    2. Integrate only if every check is green and <feature_dir>/decisions.md has no entry with "Status: needs-maintainer", nothing is handed off or owned but uncommitted, and each implementation HEAD the envelope's HEAD records, as a gitlink in `git -C <root> ls-tree HEAD -- <path>` or as a trailer its hooks wrote in `git -C <root> log -1 --format=%B`, equals that <source commit>. Otherwise withhold every integration and say why. Decide all but the checks first.
+    3. Preflight each repository to integrate before writing any ref. Refuse it, which withholds every integration, when its HEAD is detached or its source is its target; when `git -C <path> for-each-ref '--format=%(refname) %(objectname) %(worktreepath)' refs/heads/<target>` prints no line for exactly refs/heads/<target> (no such local branch; branches under <target>/ do not count) or a path after its commit (checked out there), that commit being the <target commit>; or when `git -C <path> merge-tree --write-tree --name-only --no-messages <target commit> <source commit>` exits 1 (a conflict: list its paths and both commits) or neither 0 nor 1 (this Git cannot merge without a working tree). On exit 0 its first line is the <tree>: make the <merge> with `git -C <path> commit-tree <tree> -p <target commit> -p <source commit> -m <message>`, the message being Merge branch '<source>' into <target>.
+    4. Then, if nothing is withheld or refused, run the check set in each repository to integrate: the commands plan.md names for it, else the standard fallbacks for its toolchain (Rust: cargo build, cargo test, cargo clippy -- -D warnings, cargo fmt --check; Node/TS: npm run build, npm test, npm run lint, npx tsc --noEmit; Python: test runner, ruff/flake8, mypy/pyright). An implementation repository with neither is unverifiable and withholds; an envelope with neither has no check set and does not block.
+    5. If every check is green, apply: implementation repositories first, the envelope last, each with `git -C <path> update-ref refs/heads/<target> <merge> <target commit>`, which fails if the target moved. Stop at the first failure; if a ref already moved, the state is partially integrated. For each ref already moved, record `git -C <path> update-ref refs/heads/<target> <target commit> <merge>`, which restores it, and never run it.
+
+    Report "Finalization record:" on its own line, outside the audit log block. State integrated (every repository integrated or already integrated, nothing handed off or uncommitted), partially integrated, committed, not integrated (a target still lacks committed feature work), or nothing committed.
+    For each repository give its path, source and target, source commit and commits the target lacks, checks, hand-offs and integration outcome with reasons or old and new target commits. Count committed paths with `git -C <path> diff --name-only <merge-base> HEAD`. Count and list unrelated changes and paths checked outside the commit.
+
+    Result determination:
+    Report completion only when the state is integrated. Otherwise list each reason under "Remaining issues:". Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+  runner: claude
+  hostVerification: exit-code
+  sideEffects: git
+  model: claude-sonnet-5-5
+  effort: medium

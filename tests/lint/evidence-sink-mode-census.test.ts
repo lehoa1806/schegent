@@ -232,6 +232,12 @@ const ROOTLESS_RUNTIME_LOG =
  */
 const DISPOSITIONS: readonly Disposition[] = [
   {
+    file: 'src/runner/native-review-launch.ts',
+    entry: 'mkdtempSync',
+    sites: 1,
+    reason: 'Creates a new owner-only Codex Security scratch directory under OS temp for each review. The bridge removes it when the child exits.'
+  },
+  {
     file: 'src/services/run-checkpoint-service.ts',
     entry: 'mkdir',
     sites: 1,

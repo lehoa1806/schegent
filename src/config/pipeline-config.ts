@@ -25,6 +25,7 @@ import {
   type PhaseEvidencePolicy,
   type EvidencePolicyOrigin,
   type PhaseHostVerification,
+  type NativeReviewKind,
   type RetryCapOutcome
 } from '../contracts/process-definitions';
 import { AUTHORED_PHASE_FIELDS, validatePhaseDefinition } from './process-definition-validator';
@@ -102,6 +103,7 @@ export interface PhaseDef {
   readonly capabilities?: readonly PhaseCapability[];
   /** FR-R5-F24 (D2) — bounded typed result contract for this phase. */
   readonly resultContract?: ResultContract;
+  readonly nativeReview?: NativeReviewKind;
 }
 
 export interface PipelineCatalog {

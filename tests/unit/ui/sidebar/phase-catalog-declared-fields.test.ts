@@ -65,6 +65,7 @@ const EVERY_FIELD_ROW = {
   sideEffects: 'git',
   evidencePolicy: 'best-effort',
   hostVerification: 'exit-code',
+  nativeReview: 'security',
   capabilities: ['workspace-write'],
   resultContract: {
     version: 1,

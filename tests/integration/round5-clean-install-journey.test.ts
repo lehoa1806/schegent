@@ -2,7 +2,7 @@
 //
 // Proves the consolidated Phase + Workflow model end-to-end on a clean empty
 // catalog (FR-R3-014):
-//   1. Preflight and publish `examples/example-nested-delivery.workflow.yaml`
+//   1. Preflight and publish `tests/fixtures/workflows/example-nested-delivery.workflow.yaml`
 //      into an empty catalog store; all 3 Phases and 3 Workflows become active
 //      and resolve as `effective`.
 //   2. Launch root Workflow `delivery-root`, step through its 3-level call
@@ -67,9 +67,9 @@ import { projectConnectedRun } from '../../src/ui/sidebar/connected-run-projecto
 import { fakeCatalogLifecycle } from '../fixtures/fake-catalog-lifecycle';
 import { FakeCatalogStore, NO_WRITES, writesOf } from '../fixtures/fake-catalog-store';
 
-const EXAMPLES_DIR = join(__dirname, '..', '..', 'examples');
+const WORKFLOW_FIXTURES_DIR = join(__dirname, '..', 'fixtures', 'workflows');
 const NESTED_DELIVERY_YAML = readFileSync(
-  join(EXAMPLES_DIR, 'example-nested-delivery.workflow.yaml'),
+  join(WORKFLOW_FIXTURES_DIR, 'example-nested-delivery.workflow.yaml'),
   'utf8'
 );
 

@@ -19,8 +19,10 @@ import {
   resolveAcpProfileLaunch,
   spawnStdioTransport,
   startAcpStdioBridgeServer,
-  type ManagedCliChild
+  type ManagedCliChild,
+  type StdioLaunch
 } from '../../../src/services/acp-runtime';
+import type { NativeReviewInvocation } from '../../../src/runner/native-review-launch';
 
 const tempDirs: string[] = [];
 
@@ -40,7 +42,8 @@ afterEach(() => {
 /** Connects `openAcpConnection` in-memory to `startAcpStdioBridgeServer` over paired byte pipes. */
 function createInMemoryBridgeTransport(
   backend: 'claude' | 'codex',
-  spawnChild: (input: { command: string; args: readonly string[]; cwd: string; env: NodeJS.ProcessEnv }) => ManagedCliChild
+  spawnChild: (input: StdioLaunch) => ManagedCliChild,
+  nativeReview?: NativeReviewInvocation
 ): AcpTransport {
   const stdoutListeners: ((chunk: Uint8Array) => void)[] = [];
   const stderrListeners: ((chunk: Uint8Array) => void)[] = [];
@@ -55,6 +58,7 @@ function createInMemoryBridgeTransport(
       permissionFlags: backend === 'claude' ? ['--dangerously-skip-permissions'] : ['--sandbox', 'workspace-write'],
       model: `${backend}-test-model`,
       env: { PATH: '/usr/bin:/bin' },
+      ...(nativeReview !== undefined ? { nativeReview } : {}),
       spawnChild
     },
     {
@@ -439,4 +443,159 @@ describe('FR-R6-F13 (F13-B) — credential-free local real-binary handshake on d
       }
     }
   );
+});
+
+describe('native review subprocess dispatch', () => {
+  const mergeBase = 'a'.repeat(40);
+
+  async function reviewTurn(
+    backend: 'claude' | 'codex',
+    review: NativeReviewInvocation,
+    prompt: string,
+    output: string,
+    exitCode = 0
+  ) {
+    const invocations: Array<{ launch: StdioLaunch; stdin: string }> = [];
+    const observations: AcpObservation[] = [];
+    const transport = createInMemoryBridgeTransport(backend, (launch) => {
+      const invocation = { launch, stdin: '' };
+      invocations.push(invocation);
+      const listeners: ((bytes: Uint8Array) => void)[] = [];
+      let finish!: (exit: { code: number | null; signal: null; launchFailed: boolean }) => void;
+      const exited = new Promise<{ code: number | null; signal: null; launchFailed: boolean }>((resolveExit) => {
+        finish = resolveExit;
+      });
+      return {
+        pid: 12345,
+        exited,
+        writeStdin(text) {
+          invocation.stdin += text;
+          return true;
+        },
+        endStdin() {
+          queueMicrotask(() => {
+            const bytes = new TextEncoder().encode(output);
+            for (const notify of listeners) notify(bytes);
+            finish({ code: exitCode, signal: null, launchFailed: false });
+          });
+        },
+        onStdout: (fn) => listeners.push(fn),
+        onStderr: () => undefined,
+        isProcessTreeGone: () => true,
+        terminate: async () => finish({ code: null, signal: null, launchFailed: false })
+      };
+    }, review);
+    const opened = await openAcpConnection({
+      profile: getBuiltinAcpProfile(backend, { platform: { os: 'darwin', arch: 'arm64' } }),
+      generation: 1,
+      launch: () => transport,
+      onObservation: (observation) => observations.push(observation)
+    });
+    if (!opened.ok) throw new Error('Bridge connection failed.');
+    try {
+      const session = await opened.connection.newSession('/workspace/target');
+      if (!session.ok) throw new Error('Bridge session failed.');
+      const outcome = await opened.connection.prompt({
+        sessionId: session.sessionId,
+        attemptId: 'review-attempt',
+        rootId: 'review-run',
+        blocks: [{ type: 'text', text: prompt }]
+      });
+      expect(invocations).toHaveLength(1);
+      return { outcome, invocation: invocations[0]!, observations };
+    } finally {
+      await opened.connection.close();
+    }
+  }
+
+  it('executes the Codex review subcommand with a read-only sandbox', async () => {
+    const report = 'One correctness finding at src/a.ts:7.';
+    const result = await reviewTurn('codex', { kind: 'code', mergeBase }, 'Review this Git scope.', [
+      JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: report } }),
+      JSON.stringify({ type: 'turn.completed' })
+    ].join('\n'));
+    expect(result.outcome).toMatchObject({ kind: 'completed', stopReason: 'end_turn' });
+    expect(result.invocation.launch).toMatchObject({ command: '/usr/local/bin/codex', cwd: '/workspace/target' });
+    expect(result.invocation.launch.args).toEqual([
+      'exec', '--json', '--sandbox', 'read-only', '--model', 'codex-test-model', 'review', '-'
+    ]);
+    expect(result.invocation.stdin).toBe('Review this Git scope.\n');
+    expect(JSON.stringify(result.observations)).toContain(report);
+  });
+
+  it.each([
+    ['code', '/code-review --max-findings all Scope information'],
+    ['security', '/security-review']
+  ] as const)('passes the Claude %s slash command as the first headless input', async (kind, command) => {
+    const result = await reviewTurn('claude', { kind, mergeBase }, command, [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Review complete.' }] } }),
+      JSON.stringify({ type: 'result', stop_reason: 'end_turn' })
+    ].join('\n'));
+    expect(result.outcome).toMatchObject({ kind: 'completed', stopReason: 'end_turn' });
+    expect(result.invocation.launch.args).toContain('-p');
+    expect(result.invocation.launch.args).not.toContain('--resume');
+    expect(result.invocation.stdin).toBe(command + '\n');
+  });
+
+  function scanOutput(status: string, baseRevision: string) {
+    return JSON.stringify({
+      ok: true,
+      data: {
+        manifest: { scan: { status, target: { kind: 'git_diff', baseRevision } } },
+        findings: { findings: [{
+          title: 'Missing input bound',
+          summary: 'A configuration value exceeds the documented bound.',
+          severity: { level: 'medium' },
+          locations: [{ path: 'src/a.ts', startLine: 7 }],
+          remediation: 'Validate the configured range.',
+          codeEvidence: [{ code: 'raw evidence omitted' }]
+        }] }
+      }
+    });
+  }
+
+  it('runs the scanner in the target and returns only the report fields used for repair', async () => {
+    const result = await reviewTurn('codex', { kind: 'security', mergeBase, excludedPaths: ['vendor/private'] },
+      'This prompt must stay out of the scanner argv.', scanOutput('completed', mergeBase));
+    expect(result.outcome).toMatchObject({ kind: 'completed', stopReason: 'end_turn' });
+    const { launch, stdin } = result.invocation;
+    expect(launch.command).toBe('codex-security');
+    expect(launch.cwd).toBe('/workspace/target');
+    expect(launch.args.slice(0, 5)).toEqual(['scan', '.', '--working-tree', '--base', mergeBase]);
+    expect(launch.args).toEqual(expect.arrayContaining([
+      '--full-output', '--patch=false', '--create-pr=false', '--validate=false', '--exclude-path=vendor/private'
+    ]));
+    expect(stdin).toBe('');
+    const scratch = path.dirname(launch.args.at(-1)!);
+    expect(fs.existsSync(scratch)).toBe(false);
+    const messages = JSON.stringify(result.observations);
+    expect(messages).toContain('Missing input bound');
+    expect(messages).toContain('src/a.ts');
+    expect(messages).not.toContain('raw evidence omitted');
+  });
+
+  it.each([
+    ['failed scan', scanOutput('failed', mergeBase), 0],
+    ['different base', scanOutput('completed', 'b'.repeat(40)), 0],
+    ['failed process', scanOutput('completed', mergeBase), 2],
+    ['malformed output', '{"ok":true}', 0]
+  ] as const)('refuses %s before it can become repair input', async (_label, report, exitCode) => {
+    const result = await reviewTurn('codex', { kind: 'security', mergeBase }, 'Scan.', report, exitCode);
+    expect(result.outcome.kind).not.toBe('completed');
+    expect(JSON.stringify(result.observations)).not.toContain('Missing input bound');
+  });
+
+  it('keeps the scan recipe closed across the bridge CLI argv boundary', () => {
+    const launch = resolveAcpProfileLaunch({
+      kind: 'codex', resolvedCliPath: 'codex', cwd: '/workspace', env: {},
+      nativeReview: { kind: 'security', mergeBase, excludedPaths: ['vendor/lib'] }
+    });
+    const argv = launch.args.slice(1);
+    expect(parseBridgeCliArgv(argv, {})?.nativeReview).toEqual({
+      kind: 'security', mergeBase, excludedPaths: ['vendor/lib']
+    });
+    expect(parseBridgeCliArgv([...argv, '--review-exclude', '../outside'], {})).toBeNull();
+    expect(parseBridgeCliArgv([...argv, '--native-review', 'exec'], {})).toBeNull();
+    expect(parseBridgeCliArgv([...argv, '--review-base', '--arbitrary'], {})).toBeNull();
+  });
 });

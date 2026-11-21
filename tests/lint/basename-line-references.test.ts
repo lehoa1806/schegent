@@ -205,6 +205,10 @@ const SKIP = ['repo', 'out', '.tmp', '.vscode-test', 'test-results', 'playwright
  */
 const KNOWN_ABSENT: ReadonlyMap<string, string> = new Map([
   [
+    'review-scope-harness.ts',
+    'replaced by src/services/native-review-scope.ts when Schegent added native review dispatch, with the Git fixtures now exercising production scope resolution'
+  ],
+  [
     'snapshot-mirror-structural-parity.test.ts',
     'retired by FR-R7-05 (feature 319): host and webview snapshot types are now generated from scripts/contracts/snapshot-descriptors.mjs and guarded by npm run contracts:check + tests/contract/sidebar-ipc-schema-validation.test.ts'
   ],

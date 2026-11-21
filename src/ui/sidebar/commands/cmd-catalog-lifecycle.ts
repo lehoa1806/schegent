@@ -43,6 +43,7 @@ import type {
   SaveDraftRequest
 } from '../../../contracts/catalog-lifecycle';
 import type { CatalogKind, StoredDefinition } from '../../../contracts/catalog-store';
+import { isNativeReviewKind } from '../../../contracts/process-definitions';
 import type { CatalogLifecycleOps } from '../../../catalog';
 import type { TrustCapability } from '../../../contracts/sidebar-ipc';
 import { isCapabilityAllowed } from '../../../state/capability-trust-resolver';
@@ -91,7 +92,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * the real predicate can be shown to accept them.
  */
 export function declaresRetryCondition(body: unknown): boolean {
-  return isRecord(body) && 'retryCondition' in body;
+  return isRecord(body) && ('retryCondition' in body || isNativeReviewKind(body['nativeReview']));
 }
 
 /** The single capability that gates authoring a Phase, or none for the other kinds. */

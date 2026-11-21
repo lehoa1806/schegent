@@ -2,6 +2,7 @@ import type { DeclaredCapabilitySet } from '../contracts/phase-capabilities';
 import type { AcpPromptBlock } from '../contracts/acp-runtime';
 import type { Phase } from '../controller/phase';
 import type { Effort } from '../config/pipeline-config';
+import type { NativeReviewInvocation } from './native-review-launch';
 
 export interface VerboseDiagnosticTarget {
   readonly directory: string;
@@ -76,6 +77,7 @@ export interface InvocationRequest {
    */
   helperInvocation?: boolean;
   prompt: string;
+  review?: NativeReviewInvocation;
   timeoutMs: number;
   /**
    * FR-R3-075 — the absolute wall-clock bound on the whole invocation, armed

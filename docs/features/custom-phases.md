@@ -9,7 +9,7 @@ Schegent starts with an empty catalog: it ships no active Phase, Workflow, or mo
 
 ## Import a real Workflow package
 
-The repository includes `examples/speckit-new-feature.workflow.yaml`, `examples/speckit-bugfix.workflow.yaml`, `examples/example-two-node.workflow.yaml`, `examples/example-nested-delivery.workflow.yaml`, and `examples/model-catalog.yaml`. Open the Dashboard Builder, run the process-YAML preflight, inspect the resource plan, then confirm publication. Preflight is read-only; publication uses the catalog lifecycle and its workspace-trust, primary-window, revision, and capability gates.
+The repository includes `examples/speckit-new-feature.workflow.yaml`, `examples/speckit-bugfix.workflow.yaml`, and `examples/model-catalog.yaml`. Open the Dashboard Builder, run the process-YAML preflight, inspect the resource plan, then confirm publication. Preflight is read-only; publication uses the catalog lifecycle and its workspace-trust, primary-window, revision, and capability gates.
 
 <!-- Source: examples/speckit-new-feature.workflow.yaml -->
 <!-- Source: examples/speckit-bugfix.workflow.yaml -->
@@ -17,7 +17,8 @@ The repository includes `examples/speckit-new-feature.workflow.yaml`, `examples/
 <!-- Source: src/services/process-yaml/preflight-service.ts -->
 <!-- Source: src/ui/sidebar/commands/cmd-catalog-lifecycle.ts -->
 
-The new-feature example declares Workflow `speckit-new-feature` and includes eleven real Phase definitions. It is data in `examples/`; nothing loads it automatically.
+The new-feature example declares Workflow `speckit-new-feature` and includes its Phase definitions
+and backend variants. Import the example to add them to the catalog.
 
 <!-- Source: examples/speckit-new-feature.workflow.yaml -->
 <!-- Source: src/config/pipeline-config.ts -->
@@ -36,6 +37,7 @@ The new-feature example declares Workflow `speckit-new-feature` and includes ele
 | `timeoutSeconds` | Optional integer validated against the Phase timeout bounds. When present it **bounds this Phase's invocation**, overriding the workspace-wide `schegent.timeoutSeconds` default; when absent the workspace value applies. <!-- Source: src/config/process-definition-validator.ts --><!-- Source: src/controller/effective-phase-timeout.ts --> |
 | `spendBoundUsd` / `spendBoundTokens` | Optional per-Phase spend bound, in force while this Phase runs when it is tighter than the operator's bound or the operator set none; a looser value is not used. `spendBoundUsd` is a number from 0.01 to 10000; `spendBoundTokens` is an integer from 1 to 1000000000. Two fields because one number cannot carry two units: `claude` reports a cost, while `codex` and `agy` report tokens and no cost at all, so the bound in force follows what the backend reports. Precedence is **per denomination**: declaring only one leaves the operator's other bound in place. Crossing the bound pauses the run; it never fails or cancels it. <!-- Source: src/config/process-definition-validator.ts --><!-- Source: src/services/spend-bound.ts --> |
 | `hostVerification` | Optional `model-token` or `exit-code`; decides who is believed when the host and the model disagree about the outcome. **Omission resolves to `exit-code` for any Phase whose `sideEffects` is other than `none`, or which produces a declared output** — and `sideEffects` itself resolves to `workspace` when omitted, so a Phase that declares nothing is judged on its process's exit status (`FR-R3-117`). Explicit `model-token` is the opt-out. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/phase-runner-policy.ts --> |
+| `nativeReview` | Optional `code` or `security`. Schegent runs the selected backend reviewer first and gives its report to the Phase instruction for repair. The run uses the review finding and verification metrics as the default retry condition. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/controller/native-review.ts --> |
 | `capabilities` | Optional list of `workspace-write`, `outside-workspace-write`, `process-spawn`, `network`. **Omission grants every capability** and produces exactly the argv the Phase spawned with before this field existed; naming a subset withholds the rest by translating them into the chosen backend's own permission flags. A capability the backend cannot express refuses the Phase before it starts rather than running it unbounded. Enforcement is the backend CLI's, not the host's, and on Claude it is a tool-access restriction rather than OS isolation: a shell the Phase still holds can do what a denied tool would have — see the threat model for that limit. <!-- Source: src/contracts/phase-capabilities.ts --><!-- Source: src/services/capability-enforcement-plan.ts --> |
 | `sideEffects` | Optional `none`, `workspace`, `git`, or `unrestricted`; omission resolves to `workspace`. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/process-catalog.ts --> |
 | `evidencePolicy` | Optional `required`, `best-effort`, or `none`. **Omitted, or `required`**: a turn that prints no complete audit block does not advance on a completion token, however the token is placed, and the next iteration is told to print the block. **Declaring `required`** also withholds advancement when a block is present but its entry cannot be read, and the record names the missing evidence as the cause. **`best-effort` and `none`** relax only the missing-block report (`best-effort` records an expectation not met, `none` expects no block and says nothing) and keep one fallback: with no complete block, the token on the last non-empty line completes the Phase, labelled as a degraded read. The origin still decides in one place, a block that is present but unparseable: the resolved default was written into every snapshot taken before the setting meant anything, so enforcing on it would retroactively change what advances for authors who said nothing. Enforcement follows the declaration, never the resolved value, so declaring `required` explicitly is not the same as leaving the field out for that case. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/pipeline-snapshot.ts --><!-- Source: src/parser/stdout-parser.ts --> |
@@ -61,7 +63,11 @@ A Workflow orders **nodes**. A node runs one Phase (`kind: phase` with a `phaseI
 <!-- Source: src/contracts/workflow-definitions.ts -->
 <!-- Source: src/services/process-yaml/workflow-document.ts -->
 
-The `speckit-new-feature` example declares eleven nodes, each running the Phase of the same name, in this order: `speckit-specify`, `speckit-clarify`, `speckit-plan`, `speckit-tasks`, `speckit-checklist`, `speckit-analyze`, `speckit-implement`, `speckit-code-review`, `speckit-security-review`, `finalize` and `integrate`. Ten plain connections chain them in that order, and the document declares no conditions, public ports or `executionDefaults`. This is how it opens; the other nine nodes and nine connections follow the same shape:
+The `speckit-new-feature` example chains eleven nodes from Specify through Finalize.
+Each Phase ID names its backend, such as `claude-speckit-specify`. The Spec Kit phases start
+with the corresponding slash command, and Schegent supplies the audit and completion format.
+Implement, Converge, Code Review, and Security Review each offer Claude, Codex, and Agy variants.
+Select each node's Phase in the Workflow editor and publish the revised Workflow to change backends.
 
 ```yaml
 apiVersion: schegent/v1
@@ -69,23 +75,23 @@ kind: Workflow
 metadata:
   id: speckit-new-feature
   name: Spec-kit New Feature
-  version: 8
+  version: 1
 spec:
   startNodeIds:
-    - speckit-specify
+    - claude-speckit-specify
   nodes:
-    - nodeId: speckit-specify
+    - nodeId: claude-speckit-specify
       kind: phase
-      phaseId: speckit-specify
-    - nodeId: speckit-clarify
+      phaseId: claude-speckit-specify
+    - nodeId: claude-speckit-clarify
       kind: phase
-      phaseId: speckit-clarify
+      phaseId: claude-speckit-clarify
     # nine more nodes
   connections:
     - from:
-        nodeId: speckit-specify
+        nodeId: claude-speckit-specify
       to:
-        nodeId: speckit-clarify
+        nodeId: claude-speckit-clarify
     # nine more connections
 ```
 
@@ -98,7 +104,7 @@ The DSL supports identifiers, signed numbers, comparisons, `and`/`&&`, `or`/`||`
 <!-- Source: src/lib/retry-condition.ts -->
 <!-- Source: src/controller/phase.ts -->
 
-The repository's real `speckit-implement` Phase declares:
+Each Implement variant in the repository example declares:
 
 ```yaml
 retryCondition: pending_tasks > 0
@@ -112,7 +118,11 @@ A task the agent cannot settle by the precedence its instruction gives it (the c
 
 A *hand-off* is an incomplete task only a person can finish, in three cases and no other. Its own line in `tasks.md` carries the `USER-RUN` marker outside inline code, so a line that only quotes the marker in inline code is not marked. Or its own line names a person's approval as the condition, so review and test wording do not count. Or every other step is done and the only one left is pushing, opening or merging a pull request, watching CI, or deploying outside the repository. A task with implementation still undone is pending, however hard it is, and a failing test the agent can fix never makes a hand-off. Only the tasks Phase writes the `[USER-RUN]` label, and only on work that needs a person; the implement Phase never adds, removes or edits a marker or an approval wording, and never ticks a hand-off. A Phase with only hand-offs left reports `CLEAR`, so the Run advances after one iteration instead of spending its retries.
 
-A Phase whose condition is falsy advances, even when it reported `Remaining issues:`. A blocked task or an open spec gap therefore makes implement report `Remaining issues:` and not `CLEAR`, and the Run still moves on to the reviews, `finalize` and `integrate`. `integrate` withholds integration while a `needs-maintainer` decision is open, as described under [Author a verification Phase](#author-a-verification-phase), and because it is the last Phase its remaining issues fail the Run with the `last_phase_issues_remain` cause. `finalize` is not last, so its remaining issues do not fail the Run: `integrate` runs next and reads the repositories again. None of this is a human gate the host enforces: the classification is prose the backend follows, the host checks no marker, basis or count, and a miscount shows in the hand-offs the Phase lists.
+Implement can advance to Converge with `Remaining issues:` when no actionable tasks are pending. Converge compares the implementation with the feature artifacts, appends uncovered work to `tasks.md`, and addresses those tasks on later passes. It retries until the backend reports `converged: 1` in the audit block. At the retry cap, missing or unsuccessful convergence fails the Run before review. Task classifications and the convergence report come from the backend.
+
+Code Review and Security Review run independently. The repair pass applies confirmed fixes.
+Each review repeats when fixes change the patch or when findings or incomplete verification remain.
+Finalize reports checks and commits feature-owned paths.
 
 <!-- Source: examples/speckit-new-feature.workflow.yaml -->
 <!-- Source: src/controller/phase.ts -->
@@ -146,9 +156,12 @@ For that verifier, declare `sideEffects: none` so the authored contract says it 
 <!-- Source: src/contracts/process-definitions.ts -->
 <!-- Source: src/controller/phase.ts -->
 
-The shipped example's `finalize` instruction already names the concrete check classes—build, tests, lint, and typecheck—and requires `checks_passing` and `checks_failing` metrics, but it is intentionally a repairing, Git-writing Phase rather than the read-only verifier described here.
-
-From version 3 its repairs have a stated limit, because a headless run has nobody to ask. A failing dependency-audit check whose advisory is in a dependency the feature did not change may be fixed without approval, by a patch or minor bump of at most three packages in a `fix(deps)` commit of its own, which is reverted if it turns a green check red. A major bump, a forced or blanket update, an `overrides` or `resolutions` entry, a new or replaced dependency, and any change to an audit's threshold, ignore list or waiver are outside that authority and are reported under `Remaining issues:`. From version 5 `finalize` no longer merges: it commits only the feature's paths, and the next Phase, `integrate`, moves each target branch without touching a checkout (see [Finalize and integrate across repositories](../operations/process-yaml.md#finalize-and-integrate-across-repositories)). `integrate` moves `develop` only when every check is green and `<feature_dir>/decisions.md` has no `Status: needs-maintainer` entry. Because `integrate` is the last Phase, its remaining issues fail the Run with the `last_phase_issues_remain` cause, and under `halt-on-failure` they stop the Queue; `finalize`'s do not. This reduces the risk of a stalled run; it does not remove it, because the authority is prose the backend follows and the host does not enforce it.
+The example's `claude-finalize` Phase formats feature-owned files, runs the repository's
+checks, and reports `checks_passing` and `checks_failing`. It commits owned paths after checks pass
+and approvals or decisions are settled. A failing check is reported for repair in the phase or
+task that owns it. As the last node by default, Finalize
+fails the Run when it reports remaining issues. See
+[Finalize across repositories](../operations/process-yaml.md#finalize-across-repositories).
 
 <!-- Source: examples/speckit-new-feature.workflow.yaml -->
 <!-- Source: src/controller/phase.ts -->

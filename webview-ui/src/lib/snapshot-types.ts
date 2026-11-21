@@ -75,6 +75,7 @@ import type {
 } from '../../../src/contracts/sidebar-ipc/uncontained-grant.js';
 export type { BackendGrantEntryProblems, BackendGrantState, BackendPosture };
 import type {
+  NativeReviewKind,
   PhaseEvidencePolicy,
   PhaseHostVerification,
   PhaseSideEffects,
@@ -463,6 +464,7 @@ export interface PortablePhaseDefinition {
   readonly sideEffects?: PhaseSideEffects;
   readonly evidencePolicy?: PhaseEvidencePolicy;
   readonly hostVerification?: PhaseHostVerification;
+  readonly nativeReview?: NativeReviewKind;
   readonly capabilities?: readonly PhaseCapability[];
   readonly spendBoundUsd?: number;
   readonly spendBoundTokens?: number;

@@ -63,6 +63,7 @@ const AUTHORED: Readonly<Record<string, unknown>> = {
   sideEffects: 'git',
   evidencePolicy: 'best-effort',
   hostVerification: 'exit-code',
+  nativeReview: 'security',
   capabilities: ['workspace-write'],
   resultContract: {
     version: 1,

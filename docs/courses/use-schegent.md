@@ -146,12 +146,11 @@ YAML package, or you must author and publish at least one Phase and Workflow.
 <!-- Source: ../operations/process-yaml.md -->
 <!-- Source: ../../webview-ui/src/components/ProcessImport/ProcessImportPreflight.svelte -->
 
-The repository example at `examples/speckit-new-feature.workflow.yaml` is an
-advanced development workflow, not a harmless hello-world sample. It selects a
-specific Claude model, invokes Spec Kit and review skills, changes the working
-tree, and includes Git operations. Use it only in a disposable checkout after
-reviewing the entire YAML and satisfying its prerequisites. For everyday use,
-prefer a process package supplied and reviewed by your team.
+The repository example at `examples/speckit-new-feature.workflow.yaml` uses
+Claude by default to create Spec Kit artifacts, implement the feature, and run
+Converge and both review phases. It changes the working tree and commits the
+feature when checks pass. Use a disposable checkout to try it after reviewing
+the YAML and satisfying its prerequisites.
 
 <!-- Source: ../../examples/speckit-new-feature.workflow.yaml -->
 

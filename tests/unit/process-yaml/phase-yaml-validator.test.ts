@@ -85,6 +85,15 @@ function doc(body: {
 }
 
 describe('phase-yaml-validator — document level (FR-002, FR-027)', () => {
+  it('admits only the two native review kinds', () => {
+    for (const kind of ['code', 'security'] as const) {
+      expect(accepted(doc({ spec: ['instruction: Fix confirmed findings', `nativeReview: ${kind}`] })).spec.nativeReview).toBe(kind);
+    }
+    expect(validate(doc({ spec: ['instruction: Fix confirmed findings', 'nativeReview: arbitrary-command'] })))
+      .toMatchObject({ ok: false, kind: 'resource', defects: expect.arrayContaining([
+        expect.objectContaining({ field: 'nativeReview', code: 'invalid-enum' })
+      ]) });
+  });
   it('accepts the minimal well-formed document', () => {
     expect(accepted(doc({}))).toEqual({
       apiVersion: 'schegent/v1',

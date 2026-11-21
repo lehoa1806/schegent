@@ -13,7 +13,8 @@
 //   1. NO WORKFLOW EXAMPLE EXISTED. Both shipped packages are Pipelines. The
 //      graph feature — the thing that distinguishes this product from a task
 //      runner — had no importable demonstration, so
-//      `example-two-node.workflow.yaml` is new here.
+//      `example-two-node.workflow.yaml` was added here; it now lives in
+//      `tests/fixtures/workflows/` with the nested delivery regression fixture.
 //   2. THE SUITES THAT SWEEP THIS DIRECTORY DID NOT KNOW ABOUT WORKFLOWS, and
 //      they said so the moment one arrived. `examples-round-trip.test.ts` threw
 //      *"declares kind 'Workflow', which this test does not know how to walk;
@@ -53,12 +54,9 @@ const read = (name: string): string => readFileSync(resolve(EXAMPLES_DIR, name),
 
 const WORKFLOWS = [
   'speckit-new-feature.workflow.yaml',
-  'speckit-bugfix.workflow.yaml',
-  'example-two-node.workflow.yaml',
-  'example-nested-delivery.workflow.yaml'
+  'speckit-bugfix.workflow.yaml'
 ] as const;
-const WORKFLOW = 'example-two-node.workflow.yaml';
-const NESTED_WORKFLOW = 'example-nested-delivery.workflow.yaml';
+const WORKFLOW = 'speckit-new-feature.workflow.yaml';
 /** Not a Phase/Workflow package; parsed, but read by its own importer. */
 const MODEL_CATALOG = 'model-catalog.yaml';
 
@@ -91,24 +89,33 @@ describe('FR-R3-132 / FR-R5-F07 — the shipped examples import through the real
     expect(result.resources.length).toBeGreaterThan(1);
   });
 
-  it.each([WORKFLOW, NESTED_WORKFLOW])(
-    '%s resolves every child workflow it names, from this package',
+  it.each(WORKFLOWS)(
+    '%s resolves every Phase and child Workflow it names, from this package',
     (name) => {
-      const declared = new Set(
-        [...read(name).matchAll(/^\s*id:\s*([\w-]+)\s*$/gm)]
-          .map(([, id = '']) => id)
-          .filter((id) => id.length > 0)
-      );
-      const referenced = [...read(name).matchAll(/workflowId:\s*([\w-]+)/g)]
-        .map(([, id = '']) => id)
-        .filter((id) => id.length > 0);
+      const result = parseWorkflowPackage(tree(name));
+      if (!result.ok) throw new Error(`${name} refused: ${result.refusal.code}`);
+      const declared = new Set<string>();
+      const referenced: string[] = [];
+      for (const resource of result.resources) {
+        if (!resource.ok) throw new Error(`${name}: invalid ${resource.resourceKind}`);
+        if (resource.resourceKind === 'phase') {
+          declared.add(`phase:${resource.document.metadata.phaseId}`);
+        } else {
+          declared.add(`workflow:${resource.definition.workflowId}`);
+          referenced.push(
+            ...resource.definition.nodes.map((node) =>
+              node.kind === 'phase' ? `phase:${node.phaseId}` : `workflow:${node.workflowId}`
+            )
+          );
+        }
+      }
 
-      expect(referenced.length, 'nested workflow references child workflows').toBeGreaterThan(1);
-      for (const workflowId of referenced) {
+      expect(referenced.length, 'workflow references at least one definition').toBeGreaterThan(0);
+      for (const resourceId of referenced) {
         expect(
           declared,
-          `${name} references workflow "${workflowId}", which no resource in ${name} declares`
-        ).toContain(workflowId);
+          `${name} references "${resourceId}", which no resource in ${name} declares`
+        ).toContain(resourceId);
       }
     }
   );

@@ -61,6 +61,7 @@ import {
   type RawInvocationOutput
 } from './invocation-result';
 import { buildSpawnEnv } from './spawn-env';
+import { buildLaneGitEnv } from '../services/execution-lanes/git-runner';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
 
 export class AcpProfileMismatchError extends Error {
@@ -205,7 +206,7 @@ export class AcpBackedRunner implements BackendRunner {
     request: InvocationRequest,
     outputSink?: InvocationOutputSink
   ): Promise<RawInvocationOutput> {
-    if (request.legacyDrain === true && this.options.allowLegacyDrain !== false) {
+    if (request.review === undefined && request.legacyDrain === true && this.options.allowLegacyDrain !== false) {
       return this.inner.invoke(request, outputSink);
     }
     if (this.closed) {
@@ -423,13 +424,15 @@ export class AcpBackedRunner implements BackendRunner {
         deadlineTimer.unref();
       }
 
-      const spawnEnv = buildSpawnEnv(request);
+      const env = buildSpawnEnv(request);
+      const spawnEnv = request.review === undefined ? env : { ...buildLaneGitEnv(env), GIT_OPTIONAL_LOCKS: '0' };
       const launchSpec = resolveAcpProfileLaunch({
         kind: this.options.kind,
         resolvedCliPath: request.cliPath,
         cwd: request.cwd,
         env: spawnEnv,
         ...(request.capabilities !== undefined ? { capabilities: request.capabilities } : {}),
+        ...(request.review !== undefined ? { nativeReview: request.review } : {}),
         ...(request.model !== undefined ? { model: request.model } : {}),
         ...(request.effort !== undefined ? { effort: request.effort } : {}),
         ...(this.options.bridgeScriptPath !== undefined
@@ -586,9 +589,11 @@ export class AcpBackedRunner implements BackendRunner {
             if (outcome.kind === 'completed') {
               emitChunk('stdout', encodeUsageResultLine(this.options.kind, activeSessionId, elapsedMs, latestUsage));
               sawTerminalResult = true;
-              acpTurnSettled = outcome.stopReason !== 'refusal';
+              acpTurnSettled = request.review === undefined
+                ? outcome.stopReason !== 'refusal'
+                : outcome.stopReason === 'end_turn';
               backgroundWorkOpenAtResult = acpTurnSettled && openWorkTracker.hasOpenWork;
-              exitCode = 0;
+              exitCode = request.review === undefined || acpTurnSettled ? 0 : 1;
             } else if (outcome.kind === 'cancelled') {
               exitCode = 130;
             } else if (outcome.kind === 'uncertain') {

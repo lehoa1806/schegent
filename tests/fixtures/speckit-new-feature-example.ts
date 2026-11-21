@@ -94,3 +94,13 @@ export function instructionOf(phase: PhaseYamlDocument): string {
   if (text === undefined) throw new Error(`${phase.metadata.phaseId} carries no instruction`);
   return text;
 }
+
+/** The earlier optional Integrate Phase remains useful as a compatibility fixture. */
+export function loadLegacyIntegrationPhase(): PhaseYamlDocument {
+  const path = resolve(__dirname, 'workflows', 'legacy-integrate.phase.yaml');
+  const parsed = parseDocumentText(readFileSync(path, 'utf8'));
+  if (!parsed.ok) throw new Error('The legacy Integrate fixture did not parse.');
+  const phase = validatePhaseDocument(parsed.node);
+  if (!phase.ok) throw new Error('The legacy Integrate fixture did not validate.');
+  return phase.document;
+}

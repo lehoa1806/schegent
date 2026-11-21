@@ -57,6 +57,7 @@ import {
   PHASE_RETRY_CONDITION_MAX_LEN,
   PHASE_SIDE_EFFECTS,
   RETRY_CAP_OUTCOMES,
+  isNativeReviewKind,
   type PhaseDefinitionEffort,
   type PhaseEvidencePolicy,
   type PhaseHostVerification,
@@ -676,6 +677,11 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     }
   }
 
+  const nativeReview = optionalScalar(section, 'nativeReview', defects)?.value;
+  if (nativeReview !== undefined && !isNativeReviewKind(nativeReview)) {
+    defects.push(defect('nativeReview', 'invalid-enum', 'Phase nativeReview must be code or security'));
+  }
+
   let resultContract: ResultContract | undefined;
   const resultContractEntry = section.entries.find((candidate) => candidate.key === 'resultContract');
   if (resultContractEntry !== undefined) {
@@ -708,6 +714,7 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     ...(forceContinueOnRetryCap !== undefined ? { forceContinueOnRetryCap } : {}),
     ...(onRetryCap !== undefined ? { onRetryCap } : {}),
     ...(retryCondition !== undefined ? { retryCondition } : {}),
+    ...(isNativeReviewKind(nativeReview) ? { nativeReview } : {}),
     ...(resultContract !== undefined ? { resultContract } : {})
   };
   return hasInstruction

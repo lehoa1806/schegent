@@ -22,6 +22,9 @@ import {
   type YamlNode
 } from '../../../src/services/process-yaml/types';
 
+import { parseWorkflowPackage } from '../../../src/services/process-yaml/workflow-document';
+import { SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
+
 const EXAMPLES_DIR = resolve(__dirname, '..', '..', '..', 'examples');
 
 /** Every YAML document the VSIX carries, discovered rather than listed. */
@@ -95,6 +98,47 @@ describe('the shipped example documents after the two fields are admitted', () =
     expect(readExample(name)).toContain(`apiVersion: ${PHASE_YAML_API_VERSION}`);
   });
 
+  it('uses backend-specific Phase ids and routes the default steps through Finalize', () => {
+    const parsed = parseDocumentText(readExample('speckit-new-feature.workflow.yaml'));
+    if (!parsed.ok) throw new Error(parsed.refusal.message);
+    const pkg = parseWorkflowPackage(parsed.node);
+    if (!pkg.ok) throw new Error(pkg.refusal.message);
+    const root = pkg.resources.at(0);
+    if (!root?.ok || root.resourceKind !== 'workflow') throw new Error('Missing root Workflow');
+    const defaultIds = [
+      ...['specify', 'clarify', 'plan', 'tasks', 'checklist', 'analyze', 'implement', 'converge']
+        .map((role) => `claude-speckit-${role}`),
+      'claude-code-review', 'claude-security-review', 'claude-finalize'
+    ];
+    expect(root.definition.startNodeIds).toEqual(['claude-speckit-specify']);
+    expect(root.definition.nodes.map(({ nodeId, phaseId }) => [nodeId, phaseId])).toEqual(
+      defaultIds.map((id) => [id, id])
+    );
+    expect(root.definition.connections.map(({ from, to }) => [from.nodeId, to.nodeId])).toEqual(
+      defaultIds.slice(1).map((id, index) => [defaultIds[index], id])
+    );
+
+    for (const resource of pkg.resources) {
+      if (!resource.ok || resource.resourceKind !== 'phase') continue;
+      const { metadata, spec } = resource.document;
+      expect(spec.runner).toBeDefined();
+      expect(metadata.phaseId).toMatch(new RegExp(`^${spec.runner}-[a-z-]+$`));
+      expect(metadata.name.toLowerCase()).toMatch(new RegExp(`\\(${spec.runner}\\)$`));
+    }
+
+    for (const role of ['speckit-implement', 'speckit-converge', 'code-review', 'security-review']) {
+      for (const backend of SUPPORTED_BACKENDS) {
+        const id = `${backend}-${role}`;
+        const phase = pkg.resources.find(
+          (resource) =>
+            resource.ok && resource.resourceKind === 'phase' && resource.document.metadata.phaseId === id
+        );
+        if (!phase?.ok || phase.resourceKind !== 'phase') throw new Error(`Missing Phase ${id}`);
+        expect(phase.document.spec.runner).toBe(backend);
+      }
+    }
+  });
+
   it.each(SUPPORTED_EXAMPLES)('%s preflights without a refusal', async (name) => {
     const result = await preflightExample(name);
     expect(
@@ -128,9 +172,8 @@ const PACKAGES: readonly string[] = EXAMPLES.filter((name) =>
 );
 
 const GIT_WRITING_EXAMPLE_PHASE_IDS: ReadonlySet<string> = new Set([
-  'speckit-specify',
-  'finalize',
-  'integrate'
+  'claude-speckit-specify',
+  'claude-finalize'
 ]);
 
 function extractIncludedPhases(root: YamlMappingNode) {

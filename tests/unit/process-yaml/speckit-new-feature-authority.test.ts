@@ -1,4 +1,4 @@
-// The authority `examples/speckit-new-feature.pipeline.yaml` delegates to the
+// The authority `examples/speckit-new-feature.workflow.yaml` delegates to the
 // agent in its implement and finalize Phases.
 //
 // Two unattended runs stopped on a question nobody could answer. Implement
@@ -23,12 +23,10 @@ import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { AGENT_ISSUE_TAGS } from '../../../src/contracts/failure-record';
 import { extractOpenQuestions, extractRemainingIssues } from '../../../src/parser/stdout-parser';
 import { expectMutantKilled, expectPins, type Pin } from '../../fixtures/instruction-pins';
 import { instructionOf, loadExample, phaseOf } from '../../fixtures/speckit-new-feature-example';
-
-/** The version the text changes shipped at; a later edit may go higher. */
-const FIRST_DELEGATING_VERSION = 3;
 
 // The hand-off clauses of implement's instruction. Each pin is declared once, as
 // a named constant: the real-text test and the mutation control below read the
@@ -83,10 +81,10 @@ const HANDOFF_HEADING_OMITTED: Pin = [
   'no heading with no hand-off',
   /With none open, omit that heading/i
 ];
-const HANDOFF_NOT_AN_ISSUE: Pin = ['a hand-off is never an issue', /Never list a hand-off task there/i];
+const HANDOFF_NOT_AN_ISSUE: Pin = ['a hand-off is listed separately', /List open hand-offs separately/i];
 const CLEAR_RULE: Pin = [
   'CLEAR needs no pending task, spec gap or blocked task',
-  /0 tasks are pending, 0 spec gaps remain and 0 tasks are blocked → emit \[SCHEGENT_STATUS: CLEAR\]/
+  /Report completion when 0 tasks are pending, 0 spec gaps remain and 0 tasks are blocked/
 ];
 const CLEAR_DESPITE_HANDOFFS: Pin = ['CLEAR despite hand-offs', /even when hand-off tasks remain/i];
 const PENDING_EXCLUDES_HANDOFFS: Pin = [
@@ -95,27 +93,15 @@ const PENDING_EXCLUDES_HANDOFFS: Pin = [
 ];
 const HANDOFF_COUNT_EQUALS_LIST: Pin = [
   'the hand-off count equals the list',
-  /`user_run_tasks` equals the number of tasks listed under "Hand-off tasks \(for the user\):"/
+  /`user_run_tasks` equals the number of listed hand-offs/
 ];
 const LIST_OUTSIDE_AUDIT_BLOCK: Pin = [
   'the list sits outside the audit block',
-  /before the SCHEGENT AUDIT LOG block and outside it/i
-];
-const TOKEN_WHERE_CONTRACT_SAYS: Pin = [
-  'the token only where the contract reads it',
-  /only where the output contract says, on its own line after the audit log block/i
-];
-const TOKEN_NEVER_ECHOED: Pin = [
-  'the token is never echoed',
-  /Never echo it in prose, in a list or in a quote/i
+  /before the audit block/i
 ];
 
 // The tasks Phase's clauses. It is the only writer of the marker, so these are the
 // other half of the protection `HANDOFF_MARKER_PROTECTED` gives on the implement side.
-const TASKS_RUNS_SKILL: Pin = [
-  'runs the skill first',
-  /Run \/speckit-tasks on the active feature/
-];
 const TASKS_MARK_ONLY_FOR_PERSON: Pin = [
   'a mark only when a person is needed',
   /\[USER-RUN\][^\n]*only when it needs a person/i
@@ -141,43 +127,50 @@ const TASKS_QUOTED_MENTION: Pin = [
 
 describe('the shipped new-feature pipeline: delegated authority', () => {
   const example = loadExample();
-  const implement = instructionOf(phaseOf(example, 'speckit-implement'));
-  const finalize = instructionOf(phaseOf(example, 'finalize'));
-  const integrate = instructionOf(phaseOf(example, 'integrate'));
-  const tasks = instructionOf(phaseOf(example, 'speckit-tasks'));
+  const implement = instructionOf(phaseOf(example, 'claude-speckit-implement'));
+  const finalize = instructionOf(phaseOf(example, 'claude-finalize'));
+  const tasks = instructionOf(phaseOf(example, 'claude-speckit-tasks'));
 
-  it('control: the example still ships the three Phases and a readable pipeline version', () => {
+  it('ships the three Phase instructions', () => {
     // Without this, every pin below could pass on an empty read.
     expect(implement.length).toBeGreaterThan(0);
     expect(finalize.length).toBeGreaterThan(0);
     expect(tasks.length).toBeGreaterThan(0);
-    expect(Number.isFinite(example.pipelineVersion)).toBe(true);
   });
 
-  it('bumps the pipeline and the three Phases whose text changed', () => {
-    // The version is how an operator who imported the old text learns there is a
-    // newer one; a text change without a bump reaches only fresh installs.
-    expect(example.pipelineVersion).toBeGreaterThanOrEqual(FIRST_DELEGATING_VERSION);
-    for (const phaseId of ['speckit-tasks', 'speckit-implement', 'finalize']) {
-      expect(
-        phaseOf(example, phaseId).metadata.version,
-        `${phaseId} version`
-      ).toBeGreaterThanOrEqual(FIRST_DELEGATING_VERSION);
+  it('uses version 1 for the Workflow and every bundled Phase', () => {
+    expect(example.pipelineVersion).toBe(1);
+    for (const [id, phase] of example.phases) {
+      expect(phase.metadata.version, id).toBe(1);
     }
   });
 
-  describe('speckit-implement', () => {
+  it.each(['specify', 'plan'])('uses only /speckit-%s for the command', (role) => {
+    expect(instructionOf(phaseOf(example, `claude-speckit-${role}`))).toBe(`/speckit-${role}`);
+  });
+
+  it.each([
+    ['claude', ['clarify', 'tasks', 'checklist', 'analyze', 'implement', 'converge']],
+    ['codex', ['implement', 'converge']],
+    ['agy', ['implement', 'converge']]
+  ] as const)('starts each %s command with its literal slash instruction', (backend, roles) => {
+    for (const role of roles) {
+      const id = `${backend}-speckit-${role}`;
+      expect(instructionOf(phaseOf(example, id)).split('\n', 1)[0], id).toBe(`/speckit-${role}`);
+    }
+  });
+
+  describe('claude-speckit-implement', () => {
     it('still loops on pending tasks alone', () => {
       // A blocked task or a hand-off that fed this condition would loop to the cap,
       // which is the stall the set-aside exists to end.
-      expect(phaseOf(example, 'speckit-implement').spec.retryCondition).toBe('pending_tasks > 0');
+      expect(phaseOf(example, 'claude-speckit-implement').spec.retryCondition).toBe('pending_tasks > 0');
     });
 
-    it('tells the agent nobody can answer, so it decides or sets aside', () => {
+    it('reports checklist approval blockers and preserves the checklist marks', () => {
       expectPins(implement, [
-        ['no questions', /nobody can answer a question/i],
-        ['never asks', /never ask the user anything/i],
-        ['never waits', /never stop to wait/i]
+        ['reports the approval blocker', /If a required checklist still needs approval, report the blocker/],
+        ['preserves reviewer marks', /leave its marks unchanged/]
       ]);
     });
 
@@ -216,7 +209,7 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
         ['unchecked', /Leave the task unchecked in tasks\.md/i],
         ['dependants are blocked', /depends on a blocked task is blocked too/i],
         ['no retry', /Do not attempt it again in a later iteration/i],
-        ['difficulty is not a blocker', /Difficulty, size and a failing test you can fix are not blockers/i]
+        ['difficulty is not a blocker', /Difficulty and fixable failures never make a task a hand-off or a blocker/i]
       ]);
     });
 
@@ -256,15 +249,14 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
       ]);
     });
 
-    it('counts all four figures and lets only pending_tasks re-loop', () => {
+    it('reports all four figures with blocked tasks and hand-offs counted separately', () => {
       expectPins(implement, [
         ['pending', /`pending_tasks: <N>`/],
         ['spec gaps', /`spec_gaps: <N>`/],
         ['blocked', /`blocked_tasks: <N>`/],
         ['hand-offs', /`user_run_tasks: <N>`/],
         PENDING_EXCLUDES_HANDOFFS,
-        HANDOFF_COUNT_EQUALS_LIST,
-        ['others do not loop', /the other three are recorded and do not re-loop this Phase/i]
+        HANDOFF_COUNT_EQUALS_LIST
       ]);
     });
 
@@ -272,23 +264,16 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
       expectPins(implement, [CLEAR_RULE, CLEAR_DESPITE_HANDOFFS]);
     });
 
-    it('emits the completion token only where the output contract reads it', () => {
-      expectPins(implement, [TOKEN_WHERE_CONTRACT_SAYS, TOKEN_NEVER_ECHOED]);
-    });
   });
 
-  describe('speckit-tasks', () => {
+  describe('claude-speckit-tasks', () => {
     // The tasks Phase grants the marker; implement never does. Without a limit on
     // the grant, the phase that writes it could label implementable work and take
     // it out of the loop, so its text is pinned as the implement side is.
     it('does not loop, and stays a workspace Phase', () => {
-      const phase = phaseOf(example, 'speckit-tasks');
+      const phase = phaseOf(example, 'claude-speckit-tasks');
       expect(phase.spec.retryCondition).toBeUndefined();
       expect(phase.spec.sideEffects).toBeUndefined();
-    });
-
-    it('runs the skill first, on the active feature', () => {
-      expectPins(tasks, [TASKS_RUNS_SKILL]);
     });
 
     it('marks a task only when it needs a person', () => {
@@ -304,105 +289,29 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
     });
   });
 
-  describe('finalize', () => {
+  describe('claude-finalize', () => {
     it('does not loop', () => {
-      expect(phaseOf(example, 'finalize').spec.retryCondition).toBeUndefined();
+      expect(phaseOf(example, 'claude-finalize').spec.retryCondition).toBeUndefined();
     });
 
-    it('tells the agent nobody can answer, so it acts inside its authority', () => {
+    it('reports approvals and decisions without waiting', () => {
+      expect(finalize).toContain('Report approval or decision blockers without waiting.');
+    });
+
+    it('reports failing checks and holds the commit', () => {
       expectPins(finalize, [
-        ['no questions', /nobody can answer a question/i],
-        ['no approval requests', /never ask for approval/i]
-      ]);
-    });
-
-    it('presumes the feature caused a failure unless shown otherwise', () => {
-      // The delegation applies only to failures the feature did not cause; the
-      // default has to point the other way or a feature bug can be filed as noise.
-      expect(finalize).toMatch(/caused by the feature unless you can show/i);
-    });
-
-    it('keeps the ban on masking a failure', () => {
-      expectPins(finalize, [
-        ['still no masking', /Do NOT mask failures/],
-        ['audit thresholds count as masking', /weaker audit threshold or ignore list/i]
-      ]);
-    });
-
-    it('authorizes a bounded dependency fix', () => {
-      expectPins(finalize, [
-        ['explicit authority', /authorized to fix/i],
-        ['no approval needed', /without asking for approval/i],
-        ['smallest step', /lowest version the advisory names as fixed/i],
-        ['patch or minor only', /patch or minor versions only/i],
-        ['non-forcing', /does not force/i],
-        ['bounded count', /at most three/i]
-      ]);
-    });
-
-    it('answers the scope rule that stopped the run, and still yields to an outright ban', () => {
-      // The refusal was "a lockfile bump is outside this task". Without a sentence
-      // that puts the fix inside the task, the delegation does not move that agent;
-      // without the second half, it overrides a project that forbids the change.
-      expectPins(finalize, [
-        ['inside the task', /part of this Phase's task/i],
-        ['an outright ban still wins', /forbids dependency changes outright/i]
-      ]);
-    });
-
-    it('withholds the authority for anything larger, and for any way of silencing a check', () => {
-      expectPins(finalize, [
-        ['no major bump', /a major version bump/i],
-        ['no new, removed or replaced dependency', /adding, removing or replacing a dependency/i],
-        ['no overrides', /overrides, resolutions or constraints entry/i],
-        ['no blanket update', /forced or blanket update/i],
-        [
-          'no check weakening',
-          /audit command, its threshold, its ignore list or a waiver, or to CI configuration/i
-        ],
-        ['no unfixable advisory', /advisory with no fixed version/i]
-      ]);
-    });
-
-    it('names a per-package command for npm, never the tree-wide audit fix', () => {
-      // `npm audit fix` applies every fixable remediation in the tree in one install,
-      // so offered as the "targeted" example it walks past the three-package bound.
-      expect(finalize).toMatch(/`npm update <package>`/);
-      expect(finalize).toMatch(/blanket update, such as `npm audit fix`/i);
-      expect(finalize).not.toMatch(/for example `npm audit fix`/i);
-    });
-
-    it('re-runs everything after a bump and undoes a bump that breaks a green check', () => {
-      expectPins(finalize, [
-        ['full re-run', /[Rr]e-run the FULL check set/],
-        ['revertible', /git revert/]
-      ]);
-    });
-
-    it('commits the feature before the dependency fix', () => {
-      // The order is what makes `git revert` of the fix clean: the fix is its own
-      // commit on top of the feature's, never mixed into it. The merge order now
-      // lives in `integrate` (speckit-finalization-authority.test.ts).
-      const feature = finalize.indexOf('feat(<feature_name>)');
-      const fix = finalize.indexOf('fix(deps)');
-      expect(feature, 'feature commit step').toBeGreaterThanOrEqual(0);
-      expect(fix, 'dependency fix commit').toBeGreaterThan(feature);
-    });
-
-    it('reports each dependency it changed, and keeps its metrics', () => {
-      expectPins(finalize, [
-        ['change list', /"Dependency fixes applied:"/],
-        ['passing', /`checks_passing: <N>`/],
-        ['failing', /`checks_failing: <N>`/]
+        ['holds commit on a failed check', /Stop before committing if a check fails/],
+        ['reports passing checks', /`checks_passing: <N>`/],
+        ['reports failing checks', /`checks_failing: <N>`/]
       ]);
     });
   });
 
-  describe('speckit-clarify', () => {
+  describe('claude-speckit-clarify', () => {
     // Spec 278 (U1): a drained Run is admitted with no feature directory, and the host learns it
     // from this Phase's sidecar. The key and the relative-path rule are what the host reads
-    // (`run-phase-facts.ts`); the version bump is how an imported copy learns of the change.
-    const clarify = instructionOf(phaseOf(example, 'speckit-clarify'));
+    // (`run-phase-facts.ts`).
+    const clarify = instructionOf(phaseOf(example, 'claude-speckit-clarify'));
 
     it('reports the feature directory through the sidecar, under the key the host reads', () => {
       expect(clarify).toMatch(/write the single line `SCHEGENT_FEATURE_DIR=<dir>` to phase-message\.env/);
@@ -411,35 +320,19 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
     });
 
     it('writes it only when the prompt carries none, and never as an absolute or parent path', () => {
-      expect(clarify).toMatch(/if this prompt has no SCHEGENT_FEATURE_DIR line/);
+      expect(clarify).toMatch(/if this prompt has no SCHEGENT_FEATURE_DIR line/i);
       expect(clarify).toMatch(/Never write an absolute path or one with a `\.\.` segment/);
     });
 
-    it('keeps its loop condition and ships at the version that carries the report', () => {
-      const phase = phaseOf(example, 'speckit-clarify');
+    it('keeps its loop condition', () => {
+      const phase = phaseOf(example, 'claude-speckit-clarify');
       expect(phase.spec.retryCondition).toBe('open_questions > 0');
-      expect(phase.metadata.version).toBeGreaterThanOrEqual(3);
-      expect(example.pipelineVersion).toBeGreaterThanOrEqual(8);
     });
   });
 
-  describe('integrate', () => {
-    it('does not loop, and is the last Phase', () => {
-      expect(phaseOf(example, 'integrate').spec.retryCondition).toBeUndefined();
-      expect(example.phaseIds.at(-1)).toBe('integrate');
-    });
-
-    it('does not merge while a check fails or a decision waits on a maintainer', () => {
-      expect(integrate).toMatch(
-        /only if every check is green and <feature_dir>\/decisions\.md has no entry with "Status: needs-maintainer"/
-      );
-    });
-
-    it('reports CLEAR only once the state is integrated', () => {
-      // Integrate is the last Phase, so what it reports is the run's outcome. A
-      // withheld integration reported as CLEAR would close the run with a decision open.
-      expect(integrate).toMatch(/If the state is integrated → emit \[SCHEGENT_STATUS: CLEAR\]/);
-    });
+  it('ends the workflow at Finalize and omits the old Integrate Phase', () => {
+    expect(example.phaseIds.at(-1)).toBe('claude-finalize');
+    expect(example.phases.has('claude-speckit-integrate')).toBe(false);
   });
 
   describe('mutation controls: a clause dropped from the shipped text is caught', () => {
@@ -498,7 +391,7 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
       expectMutantKilled(implement, {
         id: 'M7',
         removals: [
-          ' A task with any implementation step still undone is pending, even when its line also names such a step.'
+          ' A task with any implementation step still undone is pending.'
         ],
         killedBy: [HANDOFF_BOUND]
       });
@@ -537,8 +430,7 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
 
     it('control: the new headings are among the ones checked', () => {
       expect(otherHeadings).toContain('Hand-off tasks (for the user):');
-      expect(otherHeadings).toContain('Dependency fixes applied:');
-      expect(otherHeadings).toContain('Finalization record:');
+      expect(otherHeadings).toContain('Review scope:');
     });
 
     it.each(otherHeadings)('%s is not read as a heading the host acts on', (heading) => {
@@ -568,93 +460,26 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
   });
 });
 
-// FR-R4-F15 (feature 243, contract T3, T4.1, T4.4, T6.5; FR-010, D8; User Story 6 scenario 1) — the five
-// phases that ask for `Remaining issues:` also ask for one of five tags on each bullet.
-//
-// The tags are the agent's own labels, kept in a failure record for an operator to read; they change
-// nothing the host does (T2). What is pinned here is that the request is in the shipped text, once, where
-// the agent reads it, and that the versions moved so an operator who imported the old text can learn of
-// the new one. The bugfix example asks for no `Remaining issues:` and must not have moved.
-describe('the shipped new-feature pipeline: the tag request (FR-R4-F15, T3, T4)', () => {
+// FR-R4-F15: keep the failure tags the parser recognizes next to the issue report.
+describe('the shipped new-feature workflow: issue tags', () => {
   const example = loadExample();
-
-  /** T3's block, character for character. */
-  const TAG_BLOCK = [
-    'Start each bullet under "Remaining issues:" with one tag in square brackets, chosen from:',
-    '- [regression] the change made by this work broke something that worked before.',
-    '- [pre-existing] the problem was already there before this work, and this work did not cause it.',
-    '- [environment] a tool, service, network, credential or machine problem outside the code.',
-    '- [needs-approval] an action only a maintainer may approve, such as a dependency bump or a waiver.',
-    '- [needs-decision] a choice between options that someone must make before the work can continue.',
-    'If no tag fits, write the bullet without a tag. A tag describes the issue; it does not change what happens next.'
-  ].join('\n');
-
-  /** The six phases, with the version each moved to (T4.1) and the pipeline's own. */
-  const TAGGED_PHASES: ReadonlyArray<readonly [phaseId: string, minimumVersion: number]> = [
-    ['speckit-analyze', 2],
-    ['speckit-implement', 4],
-    ['speckit-code-review', 2],
-    ['speckit-security-review', 2],
-    ['finalize', 5],
-    ['integrate', 1]
+  const taggedPhases = [
+    'claude-speckit-analyze',
+    'claude-speckit-implement',
+    'claude-speckit-converge',
+    'claude-code-review',
+    'claude-security-review',
+    'claude-finalize'
   ];
-  const MINIMUM_PIPELINE_VERSION = 6;
-  const SENTENCE = 'emit "Remaining issues:"';
 
-  it('control: the block is the T3 text, and the example still ships the six phases', () => {
-    expect(TAG_BLOCK.split('\n')).toHaveLength(7);
-    for (const [phaseId] of TAGGED_PHASES) {
-      expect(instructionOf(phaseOf(example, phaseId)).length, phaseId).toBeGreaterThan(0);
-    }
-  });
-
-  it.each(TAGGED_PHASES)('%s contains the block exactly once, verbatim', (phaseId) => {
+  it.each(taggedPhases)('%s asks for the accepted issue tags once, when applicable', (phaseId) => {
     const instruction = instructionOf(phaseOf(example, phaseId));
-    expect(instruction.split(TAG_BLOCK), `${phaseId}: occurrences of the block`).toHaveLength(2);
-  });
-
-  it.each(TAGGED_PHASES)('%s puts the block directly after the sentence that asks for Remaining issues', (phaseId) => {
-    const instruction = instructionOf(phaseOf(example, phaseId));
-    const sentenceLines = instruction.split('\n').filter((line) => line.includes(SENTENCE));
-    expect(sentenceLines, `${phaseId}: exactly one sentence asks for the list`).toHaveLength(1);
-    const before = instruction.slice(0, instruction.indexOf(TAG_BLOCK));
-    // One blank line separates the sentence's line from the block, so the block reads as a paragraph of
-    // its own and its bullets are not taken for more bullets of the list above it.
-    expect(before.endsWith('\n\n'), `${phaseId}: a blank line before the block`).toBe(true);
-    const lastLine = before.replace(/\n\n$/, '').split('\n').at(-1) ?? '';
-    expect(lastLine, `${phaseId}: the line before the block`).toContain(SENTENCE);
-  });
-
-  it.each(TAGGED_PHASES)('%s keeps a blank line after the block, so what follows is not part of it', (phaseId) => {
-    const instruction = instructionOf(phaseOf(example, phaseId));
-    const after = instruction.slice(instruction.indexOf(TAG_BLOCK) + TAG_BLOCK.length);
-    // `integrate` (FR-R4-F19) is the one Phase whose instruction ends with the block, so nothing
-    // follows to be taken for part of it. Every other Phase keeps text after one blank line.
-    if (phaseId === 'integrate') expect(after, `${phaseId}: the block ends the instruction`).toBe('');
-    else expect(after.startsWith('\n\n'), phaseId).toBe(true);
-  });
-
-  it.each(TAGGED_PHASES)('%s is at version %i or later', (phaseId, minimumVersion) => {
-    expect(phaseOf(example, phaseId).metadata.version).toBeGreaterThanOrEqual(minimumVersion);
-  });
-
-  it('is at pipeline version 6 or later', () => {
-    expect(example.pipelineVersion).toBeGreaterThanOrEqual(MINIMUM_PIPELINE_VERSION);
-  });
-
-  it('adds the block to no other phase, which asks for no list', () => {
-    const tagged = new Set(TAGGED_PHASES.map(([phaseId]) => phaseId));
-    for (const [phaseId, phase] of example.phases) {
-      if (tagged.has(phaseId)) continue;
-      expect(instructionOf(phase).includes('Start each bullet under "Remaining issues:"'), phaseId).toBe(false);
-    }
-  });
-
-  it('names exactly the five agent tags the record accepts, and says an untagged bullet is allowed', () => {
-    const named = [...TAG_BLOCK.matchAll(/^- \[([a-z-]+)\]/gm)].map((match) => match[1]);
-    expect(named).toEqual(['regression', 'pre-existing', 'environment', 'needs-approval', 'needs-decision']);
-    expect(TAG_BLOCK).toContain('If no tag fits, write the bullet without a tag.');
-    expect(TAG_BLOCK).toContain('it does not change what happens next');
+    const lines = instruction.split('\n').filter((line) => line.includes('Prefix each bullet with'));
+    expect(lines).toHaveLength(1);
+    const line = lines[0]!;
+    expect(line).toContain('"Remaining issues:"');
+    expect(line).toContain('when applicable');
+    expect([...line.matchAll(/\[([a-z-]+)\]/g)].map((match) => match[1])).toEqual(AGENT_ISSUE_TAGS);
   });
 
   it('reads through the real stdout parser: a bullet tagged as the block asks is a tagged issue', () => {

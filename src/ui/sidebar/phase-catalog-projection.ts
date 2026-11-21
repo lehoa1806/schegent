@@ -125,6 +125,7 @@ function projectPhaseDefinition(
     // Builder serializes what it was shown: a projection that dropped either
     // form would silently rewrite the author's phase on the next save.
     ...(definition.onRetryCap !== undefined ? { onRetryCap: definition.onRetryCap } : {}),
+    ...(definition.nativeReview !== undefined ? { nativeReview: definition.nativeReview } : {}),
     ...(definition.resultContract !== undefined
       ? { resultContract: freezeResultContract(definition.resultContract) }
       : {})

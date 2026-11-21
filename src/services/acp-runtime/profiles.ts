@@ -23,6 +23,7 @@ import type { DeclaredCapabilitySet } from '../../contracts/phase-capabilities';
 import { planCapabilityEnforcement, unboundedArgs } from '../capability-enforcement-plan';
 import { CapabilityNotEnforceableError } from '../capability-refusal';
 import type { StdioLaunch } from './stdio-transport';
+import { assertCodexSecurityCapabilities, type NativeReviewInvocation } from '../../runner/native-review-launch';
 
 export type { BuiltinAcpProfileId };
 
@@ -92,6 +93,7 @@ export interface ResolveAcpProfileLaunchInput {
   readonly capabilities?: DeclaredCapabilitySet;
   readonly model?: string;
   readonly effort?: string;
+  readonly nativeReview?: NativeReviewInvocation;
   readonly bridgeScriptPath?: string;
   readonly nodeExecPath?: string;
 }
@@ -106,6 +108,9 @@ export function defaultAcpBridgeScriptPath(extensionDistDir?: string): string {
  * Secrets stay in `input.env`; argv carries only non-secret flags and paths.
  */
 export function resolveAcpProfileLaunch(input: ResolveAcpProfileLaunchInput): StdioLaunch {
+  if (input.kind === 'codex' && input.nativeReview?.kind === 'security') {
+    assertCodexSecurityCapabilities(input.capabilities);
+  }
   const permissionArgs = resolvePermissionArgs(input.kind, input.capabilities);
   const profile = getBackendDescriptor(input.kind).acpProfile;
 
@@ -129,6 +134,10 @@ export function resolveAcpProfileLaunch(input: ResolveAcpProfileLaunchInput): St
   }
   if (input.effort && input.effort.trim().length > 0) {
     args.push('--effort', input.effort.trim());
+  }
+  if (input.nativeReview !== undefined) {
+    args.push('--native-review', input.nativeReview.kind, '--review-base', input.nativeReview.mergeBase);
+    for (const path of input.nativeReview.excludedPaths ?? []) args.push('--review-exclude', path);
   }
   return {
     command: nodeExec,

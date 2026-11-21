@@ -19,12 +19,15 @@ import { describe, expect, it } from 'vitest';
 import { PHASE_INSTRUCTION_MAX_LEN } from '../../../src/config/process-definition-validator';
 import { extractOpenQuestions, extractRemainingIssues } from '../../../src/parser/stdout-parser';
 import { expectMutantKilled, expectPins, type Pin } from '../../fixtures/instruction-pins';
-import { instructionOf, loadExample, phaseOf } from '../../fixtures/speckit-new-feature-example';
+import { instructionOf, loadExample, loadLegacyIntegrationPhase, phaseOf } from '../../fixtures/speckit-new-feature-example';
 
 const example = loadExample();
 
 /** The Phase's instruction, read inside each test so a missing Phase fails that test alone. */
-const instructionFor = (phaseId: string): string => instructionOf(phaseOf(example, phaseId));
+const legacyIntegrate = loadLegacyIntegrationPhase();
+const finalizationPhase = (phaseId: string) =>
+  phaseId === 'claude-speckit-integrate' ? legacyIntegrate : phaseOf(example, phaseId);
+const instructionFor = (phaseId: string): string => instructionOf(finalizationPhase(phaseId));
 
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -34,7 +37,7 @@ const has = (label: string, phrase: string): Pin => [label, new RegExp(escapeReg
 /** A negative pin: it matches the real text only while the phrase is absent, so a control can fail it. */
 const lacks = (label: string, phrase: string): Pin => [label, new RegExp(`^(?![\\s\\S]*${escapeRegExp(phrase)})`)];
 
-const FINALIZATION_PHASES = ['finalize', 'integrate'] as const;
+const FINALIZATION_PHASES = ['claude-finalize', 'claude-speckit-integrate'] as const;
 
 // `Repositories:` (contract C2), the same block in both Phases (contract C1).
 const REPOSITORIES_PINS: readonly Pin[] = [
@@ -106,7 +109,7 @@ const INTEGRATE_RECORD_PINS: readonly Pin[] = [
   has('the record\'s state: partially integrated', 'partially integrated'),
   has('the record\'s state: committed, not integrated', 'committed, not integrated (a target still lacks committed feature work)'),
   has('the record\'s state: nothing committed', 'or nothing committed'),
-  has('CLEAR only when the state is integrated', 'If the state is integrated → emit [SCHEGENT_STATUS: CLEAR]')
+  has('completion requires the integrated state', 'Report completion only when the state is integrated.')
 ];
 
 // US5 (contract N1 steps 2 and 4): the merge guard holds under isolation. The guard phrase is version 4's.
@@ -123,33 +126,29 @@ const INTEGRATE_GUARD_PINS: readonly Pin[] = [
 // `finalize` (contract I1, P1).
 const FINALIZE_PINS: readonly Pin[] = [
   has('step 1 formats owned paths only', 'Run the project formatter in write mode on owned paths only'),
-  has('step 1 falls back to check mode on them', 'one that cannot take paths runs in check mode on them, or is skipped and said under Notes:'),
+  has('step 1 falls back to check mode on them', 'Use check mode or report a skip if it cannot be scoped.'),
   has('step 2 runs the check set in each repository', 'Run the full check set in each repository'),
-  has('step 2: an implementation repository with no check set is unverifiable', 'an implementation repository is unverifiable'),
-  has('step 2: an envelope with no check set has none', 'the envelope has no check set'),
+  has('step 2: an implementation repository with no check set is unverifiable', 'An implementation repository with no check set is unverifiable'),
+  has('step 2: an envelope with no check set has none', 'The envelope may have no check set'),
   has('step 3 lists the branch\'s files without writing an index', '`git --no-optional-locks -C <path> diff-index --name-only <merge-base>`'),
-  has('step 5 commits only owned paths', 'Commit only owned paths, with conventional commit format: feat(<feature_name>): <summary>'),
-  has('step 5 adds the untracked owned paths first', '`git -C <path> add -- <untracked owned paths>`'),
-  has('step 5 commits by pathspec', '`git -C <path> commit -m <message> -- <owned paths>`'),
-  has('step 5 leaves other staged entries staged', 'which leaves other staged entries staged'),
-  has('step 5 commits implementation repositories first, the envelope last', 'Implementation repositories first, the envelope last'),
-  has('step 5 stops after a failed commit', 'or after a failed commit'),
-  has('step 5 commits nothing on a detached HEAD or the base', 'HEAD is detached or on the base branch'),
-  has('step 6 names only the files the fix changed', 'naming only the files it changed'),
-  has('step 6 does not apply a fix over a change that is not owned', 'already holds a change that is not owned'),
-  // FR-R5-F19 review: a refused step 5 leaves owned edits uncommitted, and a dependency commit must not carry them.
-  has('step 6 does not apply a fix over an owned change step 5 left uncommitted', 'Nor over uncommitted owned edits'),
-  has('step 7 never merges, switches or checks out', '7. Never merge, switch or check out a branch, reset, stash or push: integration is the next Phase\'s.'),
+  has('step 4 commits only owned paths', 'Commit only owned paths, with conventional commit format: feat(<feature_name>): <summary>'),
+  has('step 4 adds the untracked owned paths first', '`git -C <path> add -- <untracked owned paths>`'),
+  has('step 4 commits by pathspec', '`git -C <path> commit -m <message> -- <owned paths>`'),
+  has('step 4 leaves other staged entries staged', 'which leaves other staged entries staged'),
+  has('step 4 commits implementation repositories first, the envelope last', 'Implementation repositories first, the envelope last'),
+  has('step 4 stops after a failed commit', 'or after a failed commit'),
+  has('step 4 commits nothing on a detached HEAD or the base', 'HEAD is detached or on the base branch'),
+  has('leaves repairs and dependencies to their own tasks', 'Leave fixes and dependency changes to their own tasks.'),
+  has('stops before committing if checks fail or blockers remain', 'Stop before committing if a check fails, scope is unresolved, or a maintainer decision or approval remains open.'),
+  has('step 5 never merges, switches or checks out', '5. Never merge, switch or check out a branch, reset, stash or push.'),
   // FR-R5-F19 FR-017: the untracked-secret and large-binary rejection, in the prompt only (contract: Secret and large-binary check).
-  has('step 5 lists the untracked owned paths before committing', 'Before committing, list the untracked owned paths'),
-  has('step 5 refuses a credential, key or token file', 'any that looks like a credential, key or token file'),
-  has('step 5 refuses a file over the size default', 'or exceeds 1 MiB'),
-  has('an owned gitlink change does not excuse an untracked secret', 'an owned gitlink change does not excuse it'),
-  has('the rejection is stated as prompt-only, with its backstop', 'Prompt-only'),
+  has('step 4 lists the untracked owned paths before committing', 'Before committing, list the untracked owned paths'),
+  has('step 4 refuses a credential, key or token file', 'any that looks like a credential, key or token file'),
+  has('step 4 refuses a file over the size default', 'or exceeds 1 MiB'),
+  has('an owned gitlink change does not excuse an untracked secret', 'even with an owned gitlink change'),
+  has('the rejection is stated as prompt-only, with its backstop', 'prompt-only check'),
   has('the tracked-files scan after the commit is the backstop', 'the post-commit tracked-files scan is the backstop'),
-  // FR-R5-F19 FR-019: a failing test that pins what the requirements now change is not decided by editing it.
-  has('step 3 hands a test that pins changed requirements off', 'A test that pins behavior the requirements now change is not edited to pass'),
-  has('CLEAR needs green checks, every owned path committed and no hand-off', 'If all checks are green, every owned path is committed and nothing is handed off → emit [SCHEGENT_STATUS: CLEAR]')
+  has('completion needs green checks, every owned path committed and no hand-off', 'Complete only if all checks are green, every owned path is committed and nothing is handed off.')
 ];
 
 /** The git verbs neither Phase may run in a command (research R7; FR-013, FR-017, FR-031). */
@@ -230,20 +229,20 @@ describe('the finalization Phases of the new-feature example (FR-R4-F19)', () =>
     });
   });
 
-  describe('finalize', () => {
+  describe('claude-finalize', () => {
     it('commits only this feature\'s paths, and leaves integration to the next Phase', () => {
-      expectPins(instructionFor('finalize'), FINALIZE_PINS);
+      expectPins(instructionFor('claude-finalize'), FINALIZE_PINS);
     });
 
     it('runs no `git diff` against the working tree, and no `git commit` to merge', () => {
-      const diffs = gitCommands(instructionFor('finalize')).filter(({ subcommand }) => subcommand === 'diff');
+      const diffs = gitCommands(instructionFor('claude-finalize')).filter(({ subcommand }) => subcommand === 'diff');
       expect(diffs.map(({ span }) => span)).toEqual([]);
     });
   });
 
-  describe('integrate', () => {
+  describe('claude-speckit-integrate', () => {
     it('runs no `git commit`, and the only `git diff` is the tree-to-tree listing', () => {
-      const commands = gitCommands(instructionFor('integrate'));
+      const commands = gitCommands(instructionFor('claude-speckit-integrate'));
       expect(commands.filter(({ subcommand }) => subcommand === 'commit')).toEqual([]);
       expect(commands.filter(({ subcommand }) => subcommand === 'diff').map(({ span }) => span)).toEqual([ALLOWED_DIFF]);
     });
@@ -261,13 +260,13 @@ describe('the finalization Phases of the new-feature example (FR-R4-F19)', () =>
 
   describe('integrate: no checkout is touched, and each refusal is named (US3)', () => {
     it('forbids every branch change, and moves a ref only by the commands it names', () => {
-      expectPins(instructionFor('integrate'), INTEGRATE_ISOLATION_PINS);
+      expectPins(instructionFor('claude-speckit-integrate'), INTEGRATE_ISOLATION_PINS);
     });
   });
 
   describe('integrate: the record says exactly how far integration got (US4)', () => {
     it('checks the recorded HEADs, applies by compare-and-swap and reports the four states', () => {
-      expectPins(instructionFor('integrate'), INTEGRATE_RECORD_PINS);
+      expectPins(instructionFor('claude-speckit-integrate'), INTEGRATE_RECORD_PINS);
     });
 
     // P3 (FR-023): the new heading is read by the real stdout parser as neither of the two it acts on.
@@ -285,7 +284,7 @@ describe('the finalization Phases of the new-feature example (FR-R4-F19)', () =>
 
   describe('integrate: the merge guard holds under isolation (US5)', () => {
     it('integrates only past green checks and a settled decision, and withholds an unverifiable repository', () => {
-      expectPins(instructionFor('integrate'), INTEGRATE_GUARD_PINS);
+      expectPins(instructionFor('claude-speckit-integrate'), INTEGRATE_GUARD_PINS);
     });
   });
 
@@ -293,15 +292,15 @@ describe('the finalization Phases of the new-feature example (FR-R4-F19)', () =>
     // M1 (SC-007): the version-4 commit line put back. Only a clause naming owned paths keeps another
     // feature's work out of the commit, so both the positive pin and the negative one must fail.
     it('M1 commit-all restored is caught', () => {
-      const finalize = instructionFor('finalize');
-      const step5 = finalize.split('\n').find((line) => line.startsWith('5. Commit only owned paths'));
-      expect(step5, 'M1: finalize has a step 5 that commits only owned paths').toBeDefined();
+      const finalize = instructionFor('claude-finalize');
+      const commitStep = finalize.split('\n').find((line) => line.startsWith('4. Commit only owned paths'));
+      expect(commitStep, 'M1: finalize has a step 4 that commits only owned paths').toBeDefined();
       expectReplacementKilled(finalize, {
         id: 'M1',
-        from: step5!,
-        to: '5. Commit all changes with conventional commit format: feat(<feature_name>): <summary>',
+        from: commitStep!,
+        to: '4. Commit all changes with conventional commit format: feat(<feature_name>): <summary>',
         killedBy: [
-          has('step 5 commits only owned paths', 'Commit only owned paths, with conventional commit format: feat(<feature_name>): <summary>'),
+          has('step 4 commits only owned paths', 'Commit only owned paths, with conventional commit format: feat(<feature_name>): <summary>'),
           lacks('no commit of everything', 'Commit all changes')
         ]
       });
@@ -309,18 +308,18 @@ describe('the finalization Phases of the new-feature example (FR-R4-F19)', () =>
   });
 
   describe('mutation controls M2 to M4 (SC-007)', () => {
-    // M2: the version-4 merge restored in finalize's step 7. Switching a branch in a shared
+    // M2: the version-4 merge restored in finalize's step 5. Switching a branch in a shared
     // checkout is the second defect, so the step's prohibition and two negatives must fail.
     it('M2 branch switch restored is caught', () => {
-      const finalize = instructionFor('finalize');
-      const step7 = finalize.split('\n').find((line) => line.startsWith('7. Never merge, switch or check out a branch'));
-      expect(step7, 'M2: finalize has a step 7 that never merges').toBeDefined();
+      const finalize = instructionFor('claude-finalize');
+      const noMergeStep = finalize.split('\n').find((line) => line.startsWith('5. Never merge, switch or check out a branch'));
+      expect(noMergeStep, 'M2: finalize has a step 5 that never merges').toBeDefined();
       expectReplacementKilled(finalize, {
         id: 'M2',
-        from: step7!,
-        to: '7. Merge to local develop branch: git switch develop && git merge --no-ff <feature_branch>, but only if every check is green and <feature_dir>/decisions.md has no entry with "Status: needs-maintainer". Otherwise stop after the commits and say why under "Remaining issues:".',
+        from: noMergeStep!,
+        to: '5. Merge to local develop branch: git switch develop && git merge --no-ff <feature_branch>, but only if every check is green and <feature_dir>/decisions.md has no entry with "Status: needs-maintainer". Otherwise stop after the commits and say why under "Remaining issues:".',
         killedBy: [
-          has('step 7 never merges, switches or checks out', '7. Never merge, switch or check out a branch, reset, stash or push: integration is the next Phase\'s.'),
+          has('step 5 never merges, switches or checks out', '5. Never merge, switch or check out a branch, reset, stash or push.'),
           lacks('no branch switch', 'git switch'),
           lacks('no merge with a merge commit made by git', 'git merge --no-ff')
         ]
@@ -330,7 +329,7 @@ describe('the finalization Phases of the new-feature example (FR-R4-F19)', () =>
     // M3: the guard removed from integrate's step 2, so integration no longer waits on a green check
     // or a maintainer's decision.
     it('M3 the guard removed is caught', () => {
-      expectMutantKilled(instructionFor('integrate'), {
+      expectMutantKilled(instructionFor('claude-speckit-integrate'), {
         id: 'M3',
         removals: ['only if every check is green and <feature_dir>/decisions.md has no entry with "Status: needs-maintainer"'],
         killedBy: [GUARD_PIN]
@@ -339,7 +338,7 @@ describe('the finalization Phases of the new-feature example (FR-R4-F19)', () =>
 
     // M4: the record sentence removed, so a multi-repository run no longer says how far it got.
     it('M4 the record heading removed is caught', () => {
-      expectMutantKilled(instructionFor('integrate'), {
+      expectMutantKilled(instructionFor('claude-speckit-integrate'), {
         id: 'M4',
         removals: ['Report "Finalization record:" on its own line, outside the audit log block.'],
         killedBy: [has('the record has its own heading, outside the audit block', 'Report "Finalization record:" on its own line, outside the audit log block.')]
@@ -347,21 +346,17 @@ describe('the finalization Phases of the new-feature example (FR-R4-F19)', () =>
     });
   });
 
-  describe('versions, fields, identity and size (P4)', () => {
+  describe('fields, identity and size (P4)', () => {
     const FIELDS = { runner: 'claude', hostVerification: 'exit-code', sideEffects: 'git', model: 'claude-sonnet-5-5', effort: 'medium' };
 
-    it('finalize is at least version 5, integrate at least 1 and the pipeline at least 6', () => {
-      expect(phaseOf(example, 'finalize').metadata.version).toBeGreaterThanOrEqual(5);
-      expect(phaseOf(example, 'integrate').metadata.version).toBeGreaterThanOrEqual(1);
-      expect(example.pipelineVersion).toBeGreaterThanOrEqual(6);
-    });
-
-    it('integrate is the last Phase, directly after finalize', () => {
-      expect(example.phaseIds.slice(-2)).toEqual(['finalize', 'integrate']);
+    it('ends at Finalize and omits Integrate from the package', () => {
+      expect(example.phaseIds.at(-1)).toBe('claude-finalize');
+      expect(example.phaseIds).not.toContain('claude-speckit-integrate');
+      expect(example.phases.has('claude-speckit-integrate')).toBe(false);
     });
 
     it.each(FINALIZATION_PHASES)('%s keeps the version-4 fields and has no retry condition', (phaseId) => {
-      const phase = phaseOf(example, phaseId);
+      const phase = finalizationPhase(phaseId);
       for (const [field, value] of Object.entries(FIELDS)) {
         expect((phase.spec as unknown as Record<string, unknown>)[field], `${phaseId}.${field}`).toBe(value);
       }
@@ -369,15 +364,15 @@ describe('the finalization Phases of the new-feature example (FR-R4-F19)', () =>
     });
 
     it('integrate declares no evidence policy and no description (contract N2)', () => {
-      const phase = phaseOf(example, 'integrate');
+      const phase = legacyIntegrate;
       expect(phase.spec.evidencePolicy).toBeUndefined();
       expect(phase.metadata.description).toBeUndefined(); // 2026-10-29 coincidental: a Phase document's metadata, not the sidebar IPC record the contract governs
     });
 
     it('finalize still asks for its two metrics, and neither Phase asks for another', () => {
       const metrics = (text: string): string[] => [...text.matchAll(/`([a-z_]+): <N>`/g)].map((match) => match[1]!);
-      expect(metrics(instructionFor('finalize'))).toEqual(['checks_passing', 'checks_failing']);
-      expect(metrics(instructionFor('integrate'))).toEqual([]);
+      expect(metrics(instructionFor('claude-finalize'))).toEqual(['checks_passing', 'checks_failing']);
+      expect(metrics(instructionFor('claude-speckit-integrate'))).toEqual([]);
     });
 
     it('the Repositories and Ownership blocks are the same string in both Phases (contract C1)', () => {
@@ -388,10 +383,10 @@ describe('the finalization Phases of the new-feature example (FR-R4-F19)', () =>
           section(text, 'Ownership:', (line) => /^1\. /.test(line))
         ];
       };
-      const [repositories, ownership] = blocks('finalize');
+      const [repositories, ownership] = blocks('claude-finalize');
       expect(repositories, 'a block was found').toContain('Resolve them before any write');
       expect(ownership, 'a block was found').toContain('first match winning');
-      expect(blocks('integrate')).toEqual([repositories, ownership]);
+      expect(blocks('claude-speckit-integrate')).toEqual([repositories, ownership]);
     });
 
     it.each(FINALIZATION_PHASES)('%s fits the instruction cap', (phaseId) => {

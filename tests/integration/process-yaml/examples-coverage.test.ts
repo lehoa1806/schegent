@@ -259,9 +259,7 @@ describe('Feature 098 T059 — the shipped examples are the whole catalog', () =
     }
 
     const resolved = workflowCatalog(inst).effective.map((d) => d.workflowId);
-    expect(resolved).toContain('example-conditional-graph');
-    expect(resolved).toContain('example-draft');
-    expect(resolved).toContain('example-revise');
+    expect(resolved.sort()).toEqual(['speckit-bugfix', 'speckit-new-feature']);
   });
 
   it('resolves every Phase each example Workflow runs (FR-038)', async () => {

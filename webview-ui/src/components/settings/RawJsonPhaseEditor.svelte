@@ -27,6 +27,7 @@
 
   import {
     AUTHORED_PHASE_FIELDS,
+    NATIVE_REVIEW_KINDS,
     PHASE_EFFORT_LEVELS,
     PHASE_EVIDENCE_POLICIES,
     PHASE_HOST_VERIFICATIONS,
@@ -199,6 +200,7 @@
       ['sideEffects', PHASE_SIDE_EFFECTS],
       ['evidencePolicy', PHASE_EVIDENCE_POLICIES],
       ['hostVerification', PHASE_HOST_VERIFICATIONS],
+      ['nativeReview', NATIVE_REVIEW_KINDS],
       ['onRetryCap', RETRY_CAP_OUTCOMES]
     ] as const) {
       const declared = obj[field];

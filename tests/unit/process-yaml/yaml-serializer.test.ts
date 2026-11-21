@@ -111,6 +111,7 @@ describe('yaml-serializer — property order (FR-017)', () => {
       // place the format itself can say they are the same decision written twice.
       'onRetryCap',
       'retryCondition',
+      'nativeReview',
       'resultContract'
     ]);
   });

@@ -16,6 +16,7 @@
 
 import type { PhaseCapability } from '../../../src/contracts/phase-capabilities';
 import type {
+  NativeReviewKind,
   PhaseEvidencePolicy,
   PhaseHostVerification,
   PhaseSideEffects,
@@ -78,6 +79,7 @@ export interface SavePhaseRow {
   readonly sideEffects?: PhaseSideEffects;
   readonly evidencePolicy?: PhaseEvidencePolicy;
   readonly hostVerification?: PhaseHostVerification;
+  readonly nativeReview?: NativeReviewKind;
   readonly capabilities?: readonly PhaseCapability[];
 }
 

@@ -24,10 +24,10 @@ import { FIXTURE_REVISION } from '../../fixtures/catalog-snapshot-fixture';
 const EXAMPLES_DIR = resolve(__dirname, '..', '..', '..', 'examples');
 
 const EXPECTED_DIGESTS: Readonly<Record<string, string>> = {
-  'example: example-two-node.workflow.yaml':
+  'fixture: example-two-node.workflow.yaml':
     '8a398f5b96dc30ef19165088357669f528186600c7cbc6794691a1b850ff177e',
   'example: model-catalog.yaml':
-    'f727213b8b19d7013373b07e0d37d935a162ca290ab2e00fd85f1a556d4cbb01',
+    '3b1271a33392636c733c649ba066d8a892d8830ff0ee5af7f533bf7638acd64a',
   'inline: Phase with a mapping value model: ollama:llama3':
     '8d56f8d1831f6de47374dc256296368f58e7261e95cf3e116b95c42a40c3cfc5',
   'inline: Model Catalog':
@@ -62,18 +62,14 @@ function digestOf(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
-function readExample(name: string): string {
-  return readFileSync(resolve(EXAMPLES_DIR, name), 'utf8');
-}
-
-function parsedRoot(name: string): YamlMappingNode {
-  const parsed = parseDocumentText(readExample(name));
-  if (!parsed.ok) throw new Error(`${name}: ${parsed.refusal.code}: ${parsed.refusal.message}`);
+function parsedRoot(path: string): YamlMappingNode {
+  const parsed = parseDocumentText(readFileSync(path, 'utf8'));
+  if (!parsed.ok) throw new Error(`${path}: ${parsed.refusal.code}: ${parsed.refusal.message}`);
   return parsed.node;
 }
 
-function workflowExample(name: string): ExportCase {
-  const root = parsedRoot(name);
+function workflowFixture(name: string): ExportCase {
+  const root = parsedRoot(resolve(__dirname, '..', '..', 'fixtures', 'workflows', name));
   const result = parseWorkflowPackage(root);
   if (!result.ok) throw new Error(`${name}: ${result.refusal.code}: ${result.refusal.message}`);
   const phases: PhaseDefinition[] = [];
@@ -97,7 +93,7 @@ function workflowExample(name: string): ExportCase {
 }
 
 function modelCatalogExample(name: string): ExportCase {
-  const root = parsedRoot(name);
+  const root = parsedRoot(resolve(EXAMPLES_DIR, name));
   const result = parseModelCatalogDocument(root);
   if (!result.ok) throw new Error(`${name}: ${result.refusal.code}: ${result.refusal.message}`);
   return {
@@ -127,7 +123,7 @@ const INLINE_CASES: Readonly<Record<string, ExportCase>> = {
 };
 
 const EXAMPLE_CASES: Readonly<Record<string, () => ExportCase>> = {
-  'example: example-two-node.workflow.yaml': () => workflowExample('example-two-node.workflow.yaml'),
+  'fixture: example-two-node.workflow.yaml': () => workflowFixture('example-two-node.workflow.yaml'),
   'example: model-catalog.yaml': () => modelCatalogExample('model-catalog.yaml')
 };
 

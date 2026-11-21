@@ -3,7 +3,7 @@ import type { PhaseBinding } from '../contracts/pipeline-definitions';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { DEFAULT_BACKEND } from '../contracts/backend-kinds';
 import { freezeResultContract } from '../contracts/decision-results';
-import type { EvidencePolicyOrigin, PhaseDefinition } from '../contracts/process-definitions';
+import { nativeReviewRetryCondition, type EvidencePolicyOrigin, type PhaseDefinition } from '../contracts/process-definitions';
 import type { FrozenWorkflowClosure } from '../contracts/run-request';
 import {
   deriveRootControlBudget,
@@ -67,6 +67,9 @@ export function snapshotPhaseDef(
 ): PhaseDef {
   return Object.freeze({
     ...phase,
+    ...(phase.nativeReview !== undefined && phase.retryCondition === undefined
+      ? { retryCondition: nativeReviewRetryCondition(phase.nativeReview) }
+      : {}),
     version: phase.version ?? 1,
     runner: effectiveRunnerKindForPhase(phase, defaultRunner),
     sideEffects: phase.sideEffects ?? 'workspace',
