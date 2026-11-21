@@ -154,6 +154,11 @@ export default defineConfig({
         lines: 84
       }
     },
-    pool: 'threads'
+    pool: 'threads',
+    // Cap concurrent worker threads at half the host's logical CPUs so V8
+    // `--coverage` runs across 1,500+ test files (including child-process crash
+    // and git-lane suites) do not saturate the single main thread and starve
+    // Vitest's `onTaskUpdate` worker RPC past Birpc's 60 s timeout.
+    maxWorkers: '50%'
   }
 });
