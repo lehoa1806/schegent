@@ -1,10 +1,3 @@
-import type {
-  CMD_ACK_PHASE_LOG_TAIL,
-  CMD_READ_PHASE_LOG,
-  CMD_START_PHASE_LOG_TAIL,
-  CMD_STOP_PHASE_LOG_TAIL,
-  CommandBase
-} from '../sidebar-ipc';
 // Feature 203 (FR-005, FR-022, D6, V2) — the banner has exactly one definition,
 // in the service module that also produces it. The member is produced host-side
 // and crosses the boundary as part of the answer, so the boundary states the
@@ -16,6 +9,13 @@ import type {
 // this tree are named `process-yaml.ts` and both are long enough to hold line 21.
 import type { VerboseDiagnosticsBanner } from '../../services/phase-log/types';
 
+export type {
+  ReadPhaseLogCommand,
+  StartPhaseLogTailCommand,
+  AckPhaseLogTailCommand,
+  StopPhaseLogTailCommand
+} from '../generated/sidebar-ipc-types';
+
 // Selection fields are identifiers only. Host-owned snapshot data resolves
 // filesystem paths after validation at the IPC boundary.
 export interface ReadPhaseLogRequest {
@@ -26,10 +26,6 @@ export interface ReadPhaseLogRequest {
     readonly phaseId: string;
     readonly iterationN: number | null;
   };
-}
-
-export interface ReadPhaseLogCommand extends CommandBase<typeof CMD_READ_PHASE_LOG> {
-  readonly payload: ReadPhaseLogRequest;
 }
 
 export type ReadPhaseLogResponse =
@@ -87,11 +83,6 @@ export interface StartPhaseLogTailRequest {
   readonly fromCursor?: string;
 }
 
-export interface StartPhaseLogTailCommand
-  extends CommandBase<typeof CMD_START_PHASE_LOG_TAIL> {
-  readonly payload: StartPhaseLogTailRequest;
-}
-
 export type StartPhaseLogTailResponse =
   | {
       readonly outcome: 'success';
@@ -125,10 +116,6 @@ export interface AckPhaseLogTailRequest {
   readonly batchSeq: number;
   readonly resync?: boolean;
   readonly duplicate?: boolean;
-}
-
-export interface AckPhaseLogTailCommand extends CommandBase<typeof CMD_ACK_PHASE_LOG_TAIL> {
-  readonly payload: AckPhaseLogTailRequest;
 }
 
 export interface AckPhaseLogTailResponse {
@@ -190,11 +177,6 @@ export interface PhaseLogBatchPayload {
 
 export interface StopPhaseLogTailRequest {
   readonly sessionId: string;
-}
-
-export interface StopPhaseLogTailCommand
-  extends CommandBase<typeof CMD_STOP_PHASE_LOG_TAIL> {
-  readonly payload: StopPhaseLogTailRequest;
 }
 
 export interface StopPhaseLogTailResponse {

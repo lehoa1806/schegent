@@ -21,6 +21,13 @@ import type {
 } from '../../../src/runner/invocation-result';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
 import { RequiredEvidenceUnavailableError } from '../../../src/lib/errors';
+import { PRE_SPAWN_REFUSAL_CAUSE } from '../../../src/audit/audit-payload';
+import { AgentConfigAckGate } from '../../../src/controller/agent-config-ack-gate';
+import { AgentConfigAcknowledgementRefusedError } from '../../../src/services/agent-config-ack-refusal';
+import { UncontainedBackendRefusedError } from '../../../src/services/backend-containment-policy';
+import { ContainmentAdmissionRefusedError } from '../../../src/services/containment-qualification/admission-refusal';
+import { computeAgentConfigFingerprint } from '../../../src/services/repo-agent-config-scanner';
+import type { BackendRunnerRegistry } from '../../../src/runner/backend-runner-registry';
 
 // Feature 107 (T623) — the token trails the audit block, as it always should
 // have. `.specify/memory/constitution.md` § Output Formatting & Loop
@@ -1857,8 +1864,8 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
       'phase'
     ]);
     const invokeMock = cliRunner.invoke as ReturnType<typeof vi.fn>;
-    expect(invokeMock.mock.calls[1][0]).not.toHaveProperty('resumeSessionId');
-    expect(invokeMock.mock.calls[1][0]).not.toHaveProperty('sessionReuse');
+    expect(invokeMock.mock.calls[1]![0]).not.toHaveProperty('resumeSessionId');
+    expect(invokeMock.mock.calls[1]![0]).not.toHaveProperty('sessionReuse');
     // Feature 012 SC-012 (a), added 2026-09-08 under BUG-001 — the record must
     // carry `outcome: 'failure'` and not only the reason code. The run itself
     // ends `clean` (asserted above), so the trail is the ONLY place a reader can
@@ -1905,7 +1912,7 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
     expect(result.outcome).toBe('clean');
     // The downgrade is unchanged: this is a recording fix, not a behaviour change.
     const invokeMock = cliRunner.invoke as ReturnType<typeof vi.fn>;
-    expect(invokeMock.mock.calls[1][0]).not.toHaveProperty('resumeSessionId');
+    expect(invokeMock.mock.calls[1]![0]).not.toHaveProperty('resumeSessionId');
     expect(auditWriter.append).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: 'warning',
@@ -1982,14 +1989,14 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
 
     expect(cliRunner.invoke).toHaveBeenCalledTimes(2);
     const invokeMock = cliRunner.invoke as ReturnType<typeof vi.fn>;
-    expect(invokeMock.mock.calls[0][0].cancellationSignal).toBe(
+    expect(invokeMock.mock.calls[0]![0].cancellationSignal).toBe(
       cancellationSignal
     );
-    expect(invokeMock.mock.calls[1][0].cancellationSignal).toBe(
+    expect(invokeMock.mock.calls[1]![0].cancellationSignal).toBe(
       cancellationSignal
     );
-    expect(invokeMock.mock.calls[0][0].processEnvAllowlist).toEqual(['HTTPS_PROXY']);
-    expect(invokeMock.mock.calls[1][0].processEnvAllowlist).toEqual(['HTTPS_PROXY']);
+    expect(invokeMock.mock.calls[0]![0].processEnvAllowlist).toEqual(['HTTPS_PROXY']);
+    expect(invokeMock.mock.calls[1]![0].processEnvAllowlist).toEqual(['HTTPS_PROXY']);
   });
 
   it('records pre-compaction and phase output as separate raw transcript invocations', async () => {
@@ -2037,8 +2044,8 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
     });
 
     expect(invoke).toHaveBeenCalledTimes(2);
-    expect(invoke.mock.calls[0][1]).toBe(compactionCapture);
-    expect(invoke.mock.calls[1][1]).toBe(phaseCapture);
+    expect(invoke.mock.calls[0]![1]).toBe(compactionCapture);
+    expect(invoke.mock.calls[1]![1]).toBe(phaseCapture);
     expect(rawTranscript.appendStart).toHaveBeenCalledTimes(2);
     expect(rawTranscript.appendEnd).toHaveBeenNthCalledWith(
       1,
@@ -2083,8 +2090,8 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
     });
 
     expect(invoke).toHaveBeenCalledTimes(2);
-    expect(invoke.mock.calls[0][0].runId).toBe('run-compaction');
-    expect(invoke.mock.calls[1][0].runId).toBe('run-compaction');
+    expect(invoke.mock.calls[0]![0].runId).toBe('run-compaction');
+    expect(invoke.mock.calls[1]![0].runId).toBe('run-compaction');
   });
 
   // FR-R3-209 — PR1: the request carries the Run's figure beside the resume id, and the output the runner's.
@@ -2217,5 +2224,262 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
     } finally {
       await fs.rm(tmpHome, { recursive: true, force: true });
     }
+  });
+
+  describe('FR-R7-11 pre-spawn containment and agent-config acknowledgement gate ordering', () => {
+    const claudeScan = () => {
+      const entries = [
+        {
+          name: '.claude/settings.json',
+          status: 'present' as const,
+          size: 64,
+          digest: 'a'.repeat(64),
+          hookEvents: ['PreToolUse']
+        }
+      ];
+      return {
+        backend: 'claude' as const,
+        entries,
+        fingerprint: computeAgentConfigFingerprint('claude', entries, false),
+        persistable: true,
+        scanError: false
+      };
+    };
+
+    const makePhaseRunnerWithGate = (
+      backend: ClaudeCliRunner | BackendRunnerRegistry,
+      ackGate: AgentConfigAckGate,
+      autoCompactPct?: number
+    ): PhaseRunner =>
+      new PhaseRunner(
+        backend,
+        new PromptBuilder(),
+        auditWriter,
+        new SanitizedLogger(),
+        null,
+        null,
+        null,
+        autoCompactPct === undefined ? null : { readAutoCompactPctOverride: () => autoCompactPct },
+        null,
+        null,
+        null,
+        null,
+        null,
+        undefined,
+        ackGate
+      );
+
+    it.each([
+      {
+        label: 'denied',
+        requestImpl: async (): Promise<'denied'> => 'denied',
+        expectedReason: 'denied' as const
+      },
+      {
+        label: 'prompt-unavailable',
+        requestImpl: async (): Promise<'denied'> => {
+          throw new Error('modal unavailable');
+        },
+        expectedReason: 'unavailable' as const
+      }
+    ])(
+      'refuses before compaction and phase spawn when ack is $label with sessionReuse + resumeSessionId on claude',
+      async ({ requestImpl, expectedReason }) => {
+        cliRunner = makeFakeRunner(async () => makeRawOutput());
+        const ackGate = new AgentConfigAckGate({
+          scan: async () => claudeScan(),
+          hasGrant: () => false,
+          latestGrantForBackend: () => null,
+          persistGrant: vi.fn(async () => undefined),
+          request: vi.fn(requestImpl),
+          appendAudit: async (entry) => auditWriter.append(entry),
+          logger: { warn: vi.fn() }
+        });
+        runner = makePhaseRunnerWithGate(cliRunner, ackGate, 50);
+
+        let caught: unknown;
+        try {
+          await runner.run({
+            ...baseInputs,
+            sessionReuse: true,
+            resumeSessionId: 'owned-session'
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        expect(caught).toBeInstanceOf(AgentConfigAcknowledgementRefusedError);
+        expect((caught as AgentConfigAcknowledgementRefusedError).reason).toBe(expectedReason);
+        expect(cliRunner.invoke).toHaveBeenCalledTimes(0);
+
+        const entries = (auditWriter.append as ReturnType<typeof vi.fn>).mock.calls.map(
+          (call) => call[0] as Omit<AuditEntry, 'id' | 'timestamp'>
+        );
+        expect(entries.some((e) => e.eventType === 'auto-compact-override-applied')).toBe(false);
+        expect(entries.some((e) => e.eventType === 'phase-start')).toBe(true);
+        const phaseEnd = entries.find((e) => e.eventType === 'phase-end');
+        expect(phaseEnd).toBeDefined();
+        expect(phaseEnd?.outcome).toBe('failure');
+        expect(phaseEnd?.payload).toMatchObject({
+          terminationReason: 'pre_spawn_refusal',
+          cause: PRE_SPAWN_REFUSAL_CAUSE,
+          exitCode: null
+        });
+      }
+    );
+
+    it('fires installation-level UncontainedBackendRefusedError before ensureAcknowledged and does not swallow it in compaction', async () => {
+      cliRunner = makeFakeRunner(async () => makeRawOutput());
+      const refusal = new UncontainedBackendRefusedError('claude', 'uncontained refused');
+      const registry = {
+        getGlobalDefault: () => 'claude' as const,
+        getOrCreate: vi.fn(() => {
+          throw refusal;
+        })
+      } as unknown as BackendRunnerRegistry;
+      const scan = vi.fn(async () => claudeScan());
+      const request = vi.fn(async () => 'this-run' as const);
+      const ackGate = new AgentConfigAckGate({
+        scan,
+        hasGrant: () => false,
+        latestGrantForBackend: () => null,
+        persistGrant: vi.fn(async () => undefined),
+        request,
+        appendAudit: async (entry) => auditWriter.append(entry),
+        logger: { warn: vi.fn() }
+      });
+      runner = makePhaseRunnerWithGate(registry, ackGate);
+
+      await expect(
+        runner.run({
+          ...baseInputs,
+          sessionReuse: true,
+          resumeSessionId: 'owned-session'
+        })
+      ).rejects.toBe(refusal);
+
+      expect(scan).toHaveBeenCalledTimes(0);
+      expect(request).toHaveBeenCalledTimes(0);
+      expect(cliRunner.invoke).toHaveBeenCalledTimes(0);
+
+      const entries = (auditWriter.append as ReturnType<typeof vi.fn>).mock.calls.map(
+        (call) => call[0] as Omit<AuditEntry, 'id' | 'timestamp'>
+      );
+      expect(entries.some((e) => e.eventType === 'warning')).toBe(false);
+      const phaseEnd = entries.find((e) => e.eventType === 'phase-end');
+      expect(phaseEnd?.payload).toMatchObject({
+        terminationReason: 'pre_spawn_refusal',
+        cause: PRE_SPAWN_REFUSAL_CAUSE,
+        exitCode: null
+      });
+    });
+
+    it('rethrows ContainmentAdmissionRefusedError raised during compaction as pre_spawn_refusal rather than swallowing it', async () => {
+      const admissionRefusal = new ContainmentAdmissionRefusedError({
+        kind: 'claude',
+        reason: 'containment-unqualified-for-tuple'
+      });
+      cliRunner = makeFakeRunner(async () => {
+        throw admissionRefusal;
+      });
+      const ackGate = new AgentConfigAckGate({
+        scan: async () => claudeScan(),
+        hasGrant: () => false,
+        latestGrantForBackend: () => null,
+        persistGrant: vi.fn(async () => undefined),
+        request: async () => 'this-run',
+        appendAudit: async (entry) => auditWriter.append(entry),
+        logger: { warn: vi.fn() }
+      });
+      runner = makePhaseRunnerWithGate(cliRunner, ackGate);
+
+      await expect(
+        runner.run({
+          ...baseInputs,
+          sessionReuse: true,
+          resumeSessionId: 'owned-session'
+        })
+      ).rejects.toBe(admissionRefusal);
+
+      // Only the compaction attempt reached invoke(); phase invocation never ran.
+      expect(cliRunner.invoke).toHaveBeenCalledTimes(1);
+      const entries = (auditWriter.append as ReturnType<typeof vi.fn>).mock.calls.map(
+        (call) => call[0] as Omit<AuditEntry, 'id' | 'timestamp'>
+      );
+      expect(entries.some((e) => e.eventType === 'warning')).toBe(false);
+      const phaseEnd = entries.find((e) => e.eventType === 'phase-end');
+      expect(phaseEnd?.payload).toMatchObject({
+        terminationReason: 'pre_spawn_refusal',
+        cause: PRE_SPAWN_REFUSAL_CAUSE,
+        exitCode: null
+      });
+    });
+
+    it('proceeds without invoking the ack modal for contained backend (codex)', async () => {
+      cliRunner = makeFakeRunner(async () => makeRawOutput());
+      const scan = vi.fn(async () => claudeScan());
+      const request = vi.fn(async () => 'denied' as const);
+      const ackGate = new AgentConfigAckGate({
+        scan,
+        hasGrant: () => false,
+        latestGrantForBackend: () => null,
+        persistGrant: vi.fn(async () => undefined),
+        request,
+        appendAudit: async (entry) => auditWriter.append(entry),
+        logger: { warn: vi.fn() }
+      });
+      runner = makePhaseRunnerWithGate(cliRunner, ackGate);
+
+      const out = await runner.run({
+        ...baseInputs,
+        phaseDef: {
+          id: 'speckit-specify',
+          name: 'Specify',
+          instruction: 'Specify.',
+          runner: 'codex'
+        }
+      });
+
+      expect(out.outcome).toBe('clean');
+      expect(scan).toHaveBeenCalledTimes(0);
+      expect(request).toHaveBeenCalledTimes(0);
+      expect(cliRunner.invoke).toHaveBeenCalledTimes(1);
+    });
+
+    it('triggers ack before compaction and phase invocation on first claude resume/retry and resolves runner once', async () => {
+      const order: string[] = [];
+      cliRunner = makeFakeRunner(async (req) => {
+        order.push(req.helperInvocation ? 'compact' : 'phase');
+        return makeRawOutput();
+      });
+      const registry = {
+        getGlobalDefault: () => 'claude' as const,
+        getOrCreate: vi.fn(() => cliRunner)
+      } as unknown as BackendRunnerRegistry;
+      const ackGate = new AgentConfigAckGate({
+        scan: async () => claudeScan(),
+        hasGrant: () => false,
+        latestGrantForBackend: () => null,
+        persistGrant: vi.fn(async () => undefined),
+        request: async () => {
+          order.push('ack');
+          return 'this-run';
+        },
+        appendAudit: async (entry) => auditWriter.append(entry),
+        logger: { warn: vi.fn() }
+      });
+      runner = makePhaseRunnerWithGate(registry, ackGate);
+
+      const out = await runner.run({
+        ...baseInputs,
+        isContinue: true,
+        sessionReuse: true,
+        resumeSessionId: 'owned-session'
+      });
+
+      expect(out.outcome).toBe('clean');
+      expect(order).toEqual(['ack', 'compact', 'phase']);
+      expect(registry.getOrCreate).toHaveBeenCalledTimes(1);
+    });
   });
 });

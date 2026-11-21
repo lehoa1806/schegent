@@ -16,6 +16,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
 import type {
   CatalogFsPort,
   FsReadOutcome,
@@ -26,7 +27,15 @@ import type {
   StoreWritability
 } from '../../catalog/ports';
 import type { CatalogManifest } from '../../contracts/catalog-store';
+import { SQLITE_SCHEMA_CURRENT_VERSION } from '../../contracts/sqlite-store/schema-types';
 import type { CatalogLayer } from '../../contracts/sqlite-store/state-census';
+import { parseStrictSchemaMetaVersion } from '../../lib/operational-value-helpers';
+import {
+  openZeroMutationReadOnlySqliteSync,
+  toImmutableSqliteUri,
+  verifyRegularDbAndSidecarsSync,
+  withZeroMutationReadOnlySqlite
+} from '../../lib/sqlite-readonly-inspect';
 import { NodeSqliteConnection } from './sqlite-driver';
 import type { SqliteApplicationStore } from './index';
 
@@ -448,15 +457,59 @@ export class SqliteCatalogFsAdapter implements CatalogFsPort {
   }
 }
 
+export interface StrictCatalogReadOnlyContainment {
+  readonly rootDir: string;
+  readonly relativeDirSegments: readonly string[];
+  readonly dbFileName: string;
+}
+
 export interface SwitchableCatalogFsAdapter extends CatalogFsPort {
   attachSqlite(
     store: SqliteApplicationStore,
     scopeId: string,
     nowMs?: () => number
   ): Promise<SqliteCatalogFsAdapter>;
-  attachReadOnlySnapshotIfPresent(databasePath: string, scopeId: string): boolean;
+  attachReadOnlySnapshotIfPresent(
+    databasePath: string,
+    scopeId: string,
+    containment?: StrictCatalogReadOnlyContainment
+  ): boolean;
+  attachReadOnlySnapshotIfPresentAsync(
+    rootDir: string,
+    relativeDirSegments: readonly string[],
+    dbFileName: string,
+    scopeId: string
+  ): Promise<boolean>;
   detachSqlite(): void;
   isSqliteAttached(): boolean;
+}
+
+function readCatalogSnapshotFromDb(db: DatabaseSync, scopeId: string): Map<string, string> | null {
+  try {
+    const minReaderRow = db
+      .prepare(`SELECT meta_value FROM schema_meta WHERE meta_key = 'min_reader_version'`)
+      .get() as { meta_value: string } | undefined;
+    if (minReaderRow !== undefined) {
+      const floor = parseStrictSchemaMetaVersion(minReaderRow.meta_value);
+      if (floor === null || floor > SQLITE_SCHEMA_CURRENT_VERSION) return null;
+    }
+  } catch {
+    // Older/minimal fixture without `schema_meta`; continue to sentinel check.
+  }
+  const sentinel = db
+    .prepare(`SELECT authority FROM cutover_sentinel WHERE scope_id = ?`)
+    .get(scopeId) as { authority: string } | undefined;
+  if (!sentinel || (sentinel.authority !== 'sqlite' && sentinel.authority !== 'retired_legacy')) {
+    return null;
+  }
+  const rows = db
+    .prepare(`SELECT doc_key, payload_json FROM operational_kv_documents WHERE doc_namespace = ?`)
+    .all(namespaceOf(scopeId)) as Array<{ doc_key: string; payload_json: string }>;
+  const files = new Map<string, string>();
+  for (const row of rows) {
+    files.set(row.doc_key, row.payload_json);
+  }
+  return files;
 }
 
 export function createSwitchableCatalogFsAdapter(
@@ -466,6 +519,9 @@ export function createSwitchableCatalogFsAdapter(
   let sqliteAdapter: SqliteCatalogFsAdapter | null = null;
   let readOnlyFiles: Map<string, string> | null = null;
   let postCutoverActive = false;
+  let stateEpoch = 0;
+  let attachingSqlite = 0;
+  const isAttachingSqlite = (): boolean => attachingSqlite > 0;
 
   return {
     async readFile(at: StoreSegments): Promise<FsReadOutcome> {
@@ -528,33 +584,70 @@ export function createSwitchableCatalogFsAdapter(
       scopeId: string,
       nowMs: () => number = () => Date.now()
     ): Promise<SqliteCatalogFsAdapter> {
-      await importLegacyCatalogIntoSqlite(store, scopeId, legacyFs, nowMs);
-      readOnlyFiles = null;
-      sqliteAdapter = new SqliteCatalogFsAdapter(store, scopeId, hasWorkspace, nowMs);
-      postCutoverActive = true;
-      return sqliteAdapter;
+      attachingSqlite += 1;
+      stateEpoch += 1;
+      const attachEpoch = stateEpoch;
+      try {
+        await importLegacyCatalogIntoSqlite(store, scopeId, legacyFs, nowMs);
+        if (stateEpoch !== attachEpoch) {
+          throw new Error('SQLite catalog attachment aborted by concurrent detach');
+        }
+        const adapter = new SqliteCatalogFsAdapter(store, scopeId, hasWorkspace, nowMs);
+        stateEpoch += 1;
+        readOnlyFiles = null;
+        sqliteAdapter = adapter;
+        postCutoverActive = true;
+        return adapter;
+      } finally {
+        attachingSqlite -= 1;
+      }
     },
 
-    attachReadOnlySnapshotIfPresent(databasePath: string, scopeId: string): boolean {
-      if (sqliteAdapter !== null) return true;
+    attachReadOnlySnapshotIfPresent(
+      databasePath: string,
+      scopeId: string,
+      containment?: StrictCatalogReadOnlyContainment
+    ): boolean {
+      if (sqliteAdapter !== null || attachingSqlite > 0) return false;
+      if (containment !== undefined) {
+        let openedDb: DatabaseSync | null = null;
+        try {
+          const opened = openZeroMutationReadOnlySqliteSync(
+            containment.rootDir,
+            containment.relativeDirSegments,
+            containment.dbFileName
+          );
+          if (opened.kind !== 'opened') return false;
+          openedDb = opened.db;
+          openedDb.exec('PRAGMA foreign_keys = ON');
+          openedDb.exec('PRAGMA busy_timeout = 250');
+          openedDb.exec('PRAGMA trusted_schema = OFF');
+          openedDb.exec('PRAGMA temp_store = MEMORY');
+          openedDb.exec('PRAGMA query_only = ON');
+          const files = readCatalogSnapshotFromDb(openedDb, scopeId);
+          if (files === null) return false;
+          stateEpoch += 1;
+          readOnlyFiles = files;
+          postCutoverActive = true;
+          return true;
+        } catch {
+          return false;
+        } finally {
+          openedDb?.close();
+        }
+      }
       let roConn: NodeSqliteConnection | null = null;
       try {
-        roConn = new NodeSqliteConnection({ databasePath, readOnly: true });
-        const sentinel = roConn.get<{ authority: string }>(
-          `SELECT authority FROM cutover_sentinel WHERE scope_id = ?`,
-          scopeId
-        );
-        if (!sentinel || (sentinel.authority !== 'sqlite' && sentinel.authority !== 'retired_legacy')) {
-          return false;
-        }
-        const rows = roConn.all<{ doc_key: string; payload_json: string }>(
-          `SELECT doc_key, payload_json FROM operational_kv_documents WHERE doc_namespace = ?`,
-          namespaceOf(scopeId)
-        );
-        const files = new Map<string, string>();
-        for (const row of rows) {
-          files.set(row.doc_key, row.payload_json);
-        }
+        const targetPath =
+          databasePath === ':memory:'
+            ? databasePath
+            : verifyRegularDbAndSidecarsSync(databasePath).walPresent
+              ? databasePath
+              : toImmutableSqliteUri(databasePath);
+        roConn = new NodeSqliteConnection({ databasePath: targetPath, readOnly: true });
+        const files = readCatalogSnapshotFromDb(roConn.db, scopeId);
+        if (files === null) return false;
+        stateEpoch += 1;
         readOnlyFiles = files;
         postCutoverActive = true;
         return true;
@@ -565,8 +658,39 @@ export function createSwitchableCatalogFsAdapter(
       }
     },
 
+    async attachReadOnlySnapshotIfPresentAsync(
+      rootDir: string,
+      relativeDirSegments: readonly string[],
+      dbFileName: string,
+      scopeId: string
+    ): Promise<boolean> {
+      if (sqliteAdapter !== null || attachingSqlite > 0) return false;
+      const startEpoch = stateEpoch;
+      const res = await withZeroMutationReadOnlySqlite(
+        rootDir,
+        relativeDirSegments,
+        dbFileName,
+        (db) => {
+          try {
+            return readCatalogSnapshotFromDb(db, scopeId);
+          } catch {
+            return null;
+          }
+        },
+        { queryOnly: true }
+      );
+      if (res.outcome !== 'ok' || res.value === null) return false;
+      if (this.isSqliteAttached() || isAttachingSqlite() || stateEpoch !== startEpoch) return false;
+      stateEpoch += 1;
+      readOnlyFiles = res.value;
+      postCutoverActive = true;
+      return true;
+    },
+
     detachSqlite(): void {
+      stateEpoch += 1;
       sqliteAdapter = null;
+      readOnlyFiles = null;
     },
 
     isSqliteAttached(): boolean {

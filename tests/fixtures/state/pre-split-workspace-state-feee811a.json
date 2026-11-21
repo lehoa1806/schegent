@@ -1,0 +1,291 @@
+{
+  "schegent.schemaVersion": "1.0.0",
+  "schegent.schemaVersionNumeric": 15,
+  "schegent.queues.registry": {
+    "entries": [
+      {
+        "id": "default",
+        "name": "Default queue",
+        "position": 0,
+        "schedule": null,
+        "createdAt": 1700000000000,
+        "updatedAt": 1700000000000
+      },
+      {
+        "id": "11111111-2222-4333-8444-555555555555",
+        "name": "Secondary queue",
+        "position": 1,
+        "schedule": null,
+        "createdAt": 1700000001000,
+        "updatedAt": 1700000001000
+      }
+    ],
+    "updatedAt": 1700000001000
+  },
+  "schegent.queue.defaultQueueId": "default",
+  "schegent.queue.globalConcurrencyCap": 2,
+  "schegent.ui.concurrencyNotice": "dismissed",
+  "schegent.queue": {
+    "default": {
+      "requests": [
+        {
+          "id": "task-pre-1",
+          "description": "Pre-split fixture task",
+          "enqueuedAt": 1700000010000,
+          "createdAt": 1700000010000,
+          "startedAt": null,
+          "updatedAt": 1700000010000,
+          "completedAt": null,
+          "status": "pending",
+          "queueId": "default",
+          "position": 0,
+          "pauseCause": null,
+          "runId": null,
+          "retryCount": 0,
+          "lastError": null,
+          "pausedReason": null
+        }
+      ],
+      "inFlightId": null,
+      "pausedReason": null,
+      "updatedAt": 1700000010000,
+      "queueLifecycle": "idle-pending",
+      "pauseSource": null,
+      "scheduledStartAt": null,
+      "scheduledStartSource": "operator-chooser"
+    },
+    "11111111-2222-4333-8444-555555555555": {
+      "requests": [],
+      "inFlightId": null,
+      "pausedReason": "Operator paused",
+      "updatedAt": 1700000020000,
+      "queueLifecycle": "operator-paused",
+      "pauseSource": "operator",
+      "scheduledStartAt": null,
+      "scheduledStartSource": null
+    }
+  },
+  "schegent.run": {
+    "default": {
+      "id": "run-pre-1",
+      "featureId": "task-pre-1",
+      "featureDir": "specs/321-state-layer-independence",
+      "status": "paused",
+      "currentPhase": "plan",
+      "currentIteration": 1,
+      "startedAt": 1700000011000,
+      "lastTransitionAt": 1700000012000,
+      "phasesCompleted": [],
+      "lastError": null,
+      "delayedRetryCount": 0,
+      "pendingRetryAt": null,
+      "pendingRetryCause": null,
+      "manualPauseAt": 1700000012000,
+      "manualPauseCause": "operator-paused",
+      "creditPause": null,
+      "phaseBreakpoints": [],
+      "phaseOverrides": [],
+      "resumeTargetPhaseId": null,
+      "pipeline": {
+        "id": "wf-pre-1",
+        "name": "Pre-split workflow",
+        "version": 1,
+        "phases": [
+          {
+            "id": "plan",
+            "name": "Plan",
+            "instruction": "Produce a plan.",
+            "loopable": false,
+            "runner": "claude",
+            "sideEffects": "workspace",
+            "hostVerification": "exit-code",
+            "hostVerificationDeclaredAt": "phase-definition"
+          }
+        ]
+      }
+    }
+  },
+  "schegent.history": {
+    "default": [
+      {
+        "runId": "run-hist-1",
+        "taskId": "task-hist-1",
+        "queueId": "default",
+        "terminalStatus": "completed",
+        "completedAt": "2026-11-12T10:00:00.000Z"
+      }
+    ]
+  },
+  "schegent.watchdog": {
+    "paused": false,
+    "pausedSince": null,
+    "nextPollAt": null,
+    "pollIntervalMs": 1800000,
+    "lastStatusOk": null,
+    "lastPollOutcome": null,
+    "cause": null
+  },
+  "schegent.ui.confirmSuppression": {
+    "version": 1,
+    "suppressedActionKeys": [
+      "clear-queue"
+    ]
+  },
+  "schegent.consent.gitPlanGrants.v1": {
+    "fp-pre-1": {
+      "fingerprint": "fp-pre-1",
+      "pipelineId": "wf-pre-1",
+      "grantedAt": 1700000030000,
+      "phaseIds": [
+        "implement"
+      ]
+    }
+  },
+  "schegent.consent.agentConfigGrants.v1": {
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+      "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "backend": "claude",
+      "grantedAt": 1700000031000,
+      "files": [
+        {
+          "name": "CLAUDE.md",
+          "size": 128,
+          "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ]
+    }
+  },
+  "schegent.connectedRuns": {
+    "crun-pre-1": {
+      "connectedRunId": "crun-pre-1",
+      "workflowId": "wf-connected-pre-1",
+      "queueId": "default",
+      "revision": 2,
+      "startedAt": 1700000011000,
+      "graph": {
+        "workflowId": "wf-connected-pre-1",
+        "name": "Pre-split connected workflow",
+        "version": 1,
+        "nodes": [
+          {
+            "nodeId": "node-plan",
+            "kind": "phase",
+            "phaseId": "plan",
+            "label": "Plan"
+          }
+        ],
+        "connections": [],
+        "startNodeIds": [
+          "node-plan"
+        ]
+      },
+      "pipelines": {
+        "wf-pre-1": {
+          "id": "wf-pre-1",
+          "name": "Pre-split workflow",
+          "version": 1,
+          "phases": [
+            {
+              "id": "plan",
+              "name": "Plan",
+              "instruction": "Produce a plan.",
+              "loopable": false,
+              "runner": "claude",
+              "sideEffects": "workspace",
+              "hostVerification": "exit-code",
+              "hostVerificationDeclaredAt": "phase-definition"
+            }
+          ]
+        }
+      },
+      "nodes": {
+        "node-plan": {
+          "nodeId": "node-plan",
+          "attempts": [
+            {
+              "queueItemId": "task-pre-1",
+              "startedAt": 1700000011000
+            }
+          ]
+        }
+      },
+      "decisions": [],
+      "controlState": {
+        "version": 1,
+        "ledgerRunId": "ledger-pre-1"
+      }
+    }
+  },
+  "schegent.terminalTransitionIntent": {
+    "run-term-1": {
+      "schemaVersion": 1,
+      "createdAt": 1700000015000,
+      "description": "Pre-split terminal transition intent",
+      "run": {
+        "id": "run-term-1",
+        "featureId": "task-term-1",
+        "featureDir": "specs/321-state-layer-independence",
+        "status": "completed",
+        "currentPhase": "plan",
+        "currentIteration": 1,
+        "startedAt": 1700000013000,
+        "lastTransitionAt": 1700000015000,
+        "phasesCompleted": [],
+        "lastError": null,
+        "delayedRetryCount": 0,
+        "pendingRetryAt": null,
+        "pendingRetryCause": null,
+        "manualPauseAt": null,
+        "manualPauseCause": null,
+        "creditPause": null,
+        "phaseBreakpoints": [],
+        "phaseOverrides": [],
+        "resumeTargetPhaseId": null,
+        "pipeline": {
+          "id": "wf-pre-1",
+          "name": "Pre-split workflow",
+          "version": 1,
+          "phases": [
+            {
+              "id": "plan",
+              "name": "Plan",
+              "instruction": "Produce a plan.",
+              "loopable": false,
+              "runner": "claude",
+              "sideEffects": "workspace",
+              "hostVerification": "exit-code",
+              "hostVerificationDeclaredAt": "phase-definition"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "schegent.executionLeases": {
+    "default": {
+      "queueId": "default",
+      "ownerId": "window-pre-1",
+      "acquiredAt": 1700000005000,
+      "heartbeatAt": 1700000010000
+    }
+  },
+  "schegent.lock": {
+    "ownerId": "window-pre-1",
+    "acquiredAt": 1700000000000,
+    "heartbeatAt": 1700000010000
+  },
+  "schegent.controlLedger": {
+    "version": 1,
+    "revision": 1,
+    "nextWaitSequence": 1,
+    "roots": {},
+    "quotaObservations": {},
+    "checks": {},
+    "waiters": [],
+    "permits": {}
+  },
+  "schegent.operatorPseudonym": {
+    "version": 1,
+    "pseudonym": "operator-pre-split"
+  }
+}

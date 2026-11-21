@@ -22,15 +22,6 @@
 // boundary.
 
 import type {
-  CMD_DEACTIVATE_DEFINITION,
-  CMD_DISCARD_DEFINITION_DRAFT,
-  CMD_PUBLISH_DEFINITION,
-  CMD_PUBLISH_PACKAGE,
-  CMD_RESTORE_DEFINITION_VERSION,
-  CMD_SAVE_DEFINITION_DRAFT,
-  CommandBase
-} from '../sidebar-ipc';
-import type {
   DeactivateRequest,
   DiscardDraftRequest,
   PackagePublishRequest,
@@ -40,37 +31,14 @@ import type {
 } from '../catalog-lifecycle';
 import { CATALOG_KINDS, type CatalogKind } from '../catalog-store';
 
-/** US1 — write a draft. Moves no active pointer, so nothing becomes triggerable. */
-export interface SaveDefinitionDraftCommand extends CommandBase<typeof CMD_SAVE_DEFINITION_DRAFT> {
-  readonly payload: SaveDraftRequest;
-}
-
-/** US2 — the one operation that makes a definition triggerable (FR-013). */
-export interface PublishDefinitionCommand extends CommandBase<typeof CMD_PUBLISH_DEFINITION> {
-  readonly payload: PublishRequest;
-}
-
-/** US4 — destructive, and confirm-gated in the webview before dispatch (FR-049). */
-export interface DeactivateDefinitionCommand extends CommandBase<typeof CMD_DEACTIVATE_DEFINITION> {
-  readonly payload: DeactivateRequest;
-}
-
-/** US3 — additive: copies a past body into the draft and moves no active pointer. */
-export interface RestoreDefinitionVersionCommand
-  extends CommandBase<typeof CMD_RESTORE_DEFINITION_VERSION> {
-  readonly payload: RestoreRequest;
-}
-
-/** US1 — destructive, and confirm-gated in the webview before dispatch (FR-049). */
-export interface DiscardDefinitionDraftCommand
-  extends CommandBase<typeof CMD_DISCARD_DEFINITION_DRAFT> {
-  readonly payload: DiscardDraftRequest;
-}
-
-/** US5 — one imported document, one confirmation, one ordered publication (FR-035). */
-export interface PublishPackageCommand extends CommandBase<typeof CMD_PUBLISH_PACKAGE> {
-  readonly payload: PackagePublishRequest;
-}
+export type {
+  SaveDefinitionDraftCommand,
+  PublishDefinitionCommand,
+  DeactivateDefinitionCommand,
+  RestoreDefinitionVersionCommand,
+  DiscardDefinitionDraftCommand,
+  PublishPackageCommand
+} from '../generated/sidebar-ipc-types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

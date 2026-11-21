@@ -3,8 +3,10 @@
 //
 // Modelled on `src/controller/backend-posture-recorder.ts`:
 //   - Runs ONLY for uncontained backends (`containmentOf(backend) === 'none'`).
-//   - Runs ONCE per `(runId, backend)` per activation via a bounded in-memory
-//     ledger (same `POSTURE_LEDGER_MAX_PAIRS` bound and NUL separator).
+//   - Runs ONCE per `(runId, backend)` per activation via a bounded LRU
+//     in-memory ledger (same `POSTURE_LEDGER_MAX_PAIRS` bound and NUL separator),
+//     coalescing overlapping concurrent calls for the same pair and releasing
+//     terminal Runs via `forgetRun(runId)`.
 //   - Checks workspace-scoped persistent grants (only when `scan.persistable`).
 //   - Emits closed metadata-only `agent-config-acknowledged` audit events
 //     (`backend`, `fileCount`, `decision`) — zero paths, hook names, or values.
@@ -56,8 +58,19 @@ export interface AgentConfigAckGateDeps {
 
 export class AgentConfigAckGate {
   private readonly cleared = new Set<string>();
+  private readonly inFlight = new Map<string, Promise<void>>();
 
   public constructor(private readonly deps: AgentConfigAckGateDeps) {}
+
+  /** Remove every cleared `(runId, backend)` pair for a terminal Run. */
+  public forgetRun(runId: string): void {
+    const prefix = `${runId}${LEDGER_KEY_SEPARATOR}`;
+    for (const key of this.cleared) {
+      if (key.startsWith(prefix)) {
+        this.cleared.delete(key);
+      }
+    }
+  }
 
   public async ensureAcknowledged(
     context: AgentConfigAckContext,
@@ -67,8 +80,32 @@ export class AgentConfigAckGate {
     if (containmentOf(backend) !== 'none') return;
 
     const ledgerKey = `${context.runId}${LEDGER_KEY_SEPARATOR}${backend}`;
-    if (this.cleared.has(ledgerKey)) return;
+    if (this.cleared.has(ledgerKey)) {
+      // Refresh LRU order so long-lived active Runs stay newest under eviction.
+      this.cleared.delete(ledgerKey);
+      this.cleared.add(ledgerKey);
+      return;
+    }
 
+    const pending = this.inFlight.get(ledgerKey);
+    if (pending !== undefined) {
+      return pending;
+    }
+
+    const task = this.evaluateAndAcknowledge(context, backend, ledgerKey).finally(() => {
+      if (this.inFlight.get(ledgerKey) === task) {
+        this.inFlight.delete(ledgerKey);
+      }
+    });
+    this.inFlight.set(ledgerKey, task);
+    return task;
+  }
+
+  private async evaluateAndAcknowledge(
+    context: AgentConfigAckContext,
+    backend: BackendRunnerKind,
+    ledgerKey: string
+  ): Promise<void> {
     const scan = await this.safeScan(context.cwd, backend);
 
     // FR-009: workspaces with no discovered repository agent config and no scan error proceed silently.
@@ -105,7 +142,6 @@ export class AgentConfigAckGate {
 
     let auditDecision: AgentConfigAckDecision = 'approved-once';
     if (choice === 'persist' && scan.persistable) {
-      auditDecision = 'acknowledged';
       const files = scan.entries
         .filter((e): e is Extract<typeof e, { status: 'present' }> => e.status === 'present')
         .map((e) => Object.freeze({ name: e.name, size: e.size, digest: e.digest }));
@@ -118,6 +154,10 @@ export class AgentConfigAckGate {
             files: Object.freeze(files)
           })
         );
+        // FR-R7-11 — record `acknowledged` ONLY after the persistent grant write
+        // actually succeeds; a failed write records `approved-once` because the
+        // grant was not stored and the next Run will prompt again.
+        auditDecision = 'acknowledged';
       } catch (error) {
         // Mirror `git-approval.ts:179-188`: a failed persistence write does not
         // revoke an operator's explicit approval for this run; next run asks again.
@@ -180,7 +220,9 @@ export class AgentConfigAckGate {
   }
 
   private rememberCleared(key: string): void {
-    if (this.cleared.size >= POSTURE_LEDGER_MAX_PAIRS) {
+    if (this.cleared.has(key)) {
+      this.cleared.delete(key);
+    } else if (this.cleared.size >= POSTURE_LEDGER_MAX_PAIRS) {
       const oldest = this.cleared.values().next();
       if (!oldest.done) this.cleared.delete(oldest.value);
     }

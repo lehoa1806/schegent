@@ -104,7 +104,7 @@ const CAP_DEFINITION_SITES: ReadonlyArray<{
 const NON_DEFINITION_MENTIONS: ReadonlySet<string> = new Set([
   // Contract surfaces — carry the field, state no bound.
   'src/contracts/sidebar-ipc.ts',
-  'src/contracts/sidebar-ipc/queue.ts',
+  'src/contracts/generated/sidebar-ipc-types.ts',
   'src/contracts/generated/schemas/sidebar-ipc.schema.json',
   'src/ui/sidebar/commands/router-types.ts',
   // Command handlers — pass an already-validated value through.

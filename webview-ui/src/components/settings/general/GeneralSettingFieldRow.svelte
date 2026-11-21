@@ -2,9 +2,9 @@
   import { hoverTextAnchor } from '../../hover-text/hover-text-anchor-action';
   import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
   import type { PortableWorkflowDefinition } from '../../../lib/snapshot-types';
-  // FR-R3-144 (T031) — a VALUE import, from `src/contracts/` as the import-direction
-  // rule requires. See `onEnumChange` for why a predicate rather than a cast.
-  import { isBackendRunnerKind } from '../../../../../src/contracts/backend-kinds';
+  // FR-R7-06 / FR-R7-11 — consume backend predicate from the self-contained generated
+  // webview descriptor mirror rather than host `src/contracts/backend-kinds`.
+  import { isBackendRunnerKind } from '../../../lib/generated/backend-descriptors';
   import type { Draft, FieldSpec, FieldStatus, ScalarKey } from './field-types';
   import { OUTCOME_NOT_YET_KNOWN_TEXT } from '../../../lib/boundary-refusal-text';
   import { isTransportUsage, type TransportUsage } from '../../../../../src/contracts/sidebar-ipc/transport-usage';

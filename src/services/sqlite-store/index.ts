@@ -8,7 +8,6 @@
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
 
-import type { StorageLocationRequest } from '../../contracts/sqlite-store/schema-types';
 import { BackupRestoreService } from './backup-restore-service';
 import { CatalogConfigStoreAdapter } from './catalog-config-store';
 import { AgentRuntimeStoreAdapter } from './domain-adapters/agent-runtime-adapter';
@@ -121,7 +120,7 @@ export class SqliteApplicationStore {
   }
 
   public static async openAtTrustedLocation(
-    request: StorageLocationRequest,
+    request: import('./storage-location-resolver').TrustedSqliteLocationRequest,
     nowMs?: () => number
   ): Promise<SqliteApplicationStore> {
     const resolution = await resolveTrustedSqliteLocation(request);

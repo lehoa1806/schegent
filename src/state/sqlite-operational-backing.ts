@@ -36,11 +36,13 @@ import {
 } from '../lib/operational-value-helpers';
 import {
   openReadOnlySqliteConnection,
+  withZeroMutationReadOnlySqliteConnection,
   type DetachedSqliteWriterConfig,
   type LegacyRunRecordInputPort,
   type OperationalMigrationOutcomePort,
   type SqliteConnectionPort,
-  type SqliteOperationalStorePort
+  type SqliteOperationalStorePort,
+  type StrictReadOnlyContainment
 } from './sqlite-operational-port';
 import {
   deleteOperationalQueueScopeInTx,
@@ -59,7 +61,7 @@ import {
 import type { ConnectedWorkflowRun } from './connected-workflow-run';
 import { isTerminalRunStatus, type WorkflowRun } from './workflow-run';
 import type { MementoBatchEntry } from './memento-write-gate';
-import { KEYS, type Memento } from './workspace-state';
+import { KEYS, QueueMutationRejected, type Memento } from './workspace-state';
 
 /** F03 authority bound for `finding-persisted-connected-runs-map` (`target-sqlite-run-step-attempt-history`). */
 export const CONNECTED_RUNS_CACHE_MAX = 512;
@@ -734,10 +736,16 @@ export class SqliteOperationalBacking {
   }
 }
 
+export interface SwitchableOperationalMementoOptions {
+  readonly requireDurableBatch?: boolean | undefined;
+}
+
 export interface SwitchableOperationalMemento extends Memento, AcceptanceMementoPort {
   get<T>(key: string): T | undefined;
   update(key: string, value: unknown): Promise<void>;
   updateBatch(entries: readonly MementoBatchEntry[]): Promise<void>;
+  requireDurableBatch(reason?: string): void;
+  setDurableBatchUnavailableReason(reason: string | null): void;
   attachSqlite(
     store: SqliteOperationalStorePort,
     scopeId: string,
@@ -746,8 +754,16 @@ export interface SwitchableOperationalMemento extends Memento, AcceptanceMemento
   attachReadOnlySnapshotIfPresent(
     databasePath: string,
     scopeId: string,
-    openReadOnlyConnection?: (databasePath: string) => SqliteConnectionPort
+    openReadOnlyConnectionOrContainment?:
+      | ((databasePath: string) => SqliteConnectionPort)
+      | StrictReadOnlyContainment
   ): boolean;
+  attachReadOnlySnapshotIfPresentAsync(
+    rootDir: string,
+    relativeDirSegments: readonly string[],
+    dbFileName: string,
+    scopeId: string
+  ): Promise<boolean>;
   configureDetachedTrustedSqliteWriter(config: DetachedSqliteWriterConfig | null): void;
   reloadSqliteCache(): void;
   detachSqlite(): void;
@@ -765,14 +781,71 @@ function isSameSerializedState(a: unknown, b: unknown): boolean {
   }
 }
 
+function readOperationalSnapshotFromConnection(
+  roConn: SqliteConnectionPort,
+  scopeId: string
+): Map<string, unknown> | null {
+  roConn.exec('BEGIN');
+  try {
+    const minReaderRow = roConn.get<{ meta_value: string }>(
+      `SELECT meta_value FROM schema_meta WHERE meta_key = 'min_reader_version'`
+    );
+    if (minReaderRow !== undefined) {
+      const floor = parseStrictSchemaMetaVersion(minReaderRow.meta_value);
+      if (floor === null || floor > SQLITE_SCHEMA_CURRENT_VERSION) return null;
+    }
+    const sentinel = roConn.get<{ authority: string }>(
+      `SELECT authority FROM cutover_sentinel WHERE scope_id = ?`,
+      scopeId
+    );
+    if (!sentinel || (sentinel.authority !== 'sqlite' && sentinel.authority !== 'retired_legacy')) {
+      return null;
+    }
+    const rows = roConn.all<{ doc_key: string; payload_json: string }>(
+      `SELECT doc_key, payload_json FROM operational_kv_documents WHERE doc_namespace = ?`,
+      scopeId
+    );
+    const snapshot = new Map<string, unknown>();
+    for (const row of rows) {
+      try {
+        snapshot.set(row.doc_key, deepFreezeValue(JSON.parse(row.payload_json)));
+      } catch {
+        // Skip malformed row in read-only view.
+      }
+    }
+    const hasEntityTables =
+      roConn.get<{ name: string }>(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'operational_queue_meta'`
+      ) !== undefined;
+    if (hasEntityTables) {
+      const ignoreCorrupt = { onCorruptRow: () => undefined };
+      const queueRes = readOperationalQueueMapFromDb(roConn, scopeId, ignoreCorrupt);
+      if (queueRes.present) snapshot.set(KEYS.queue, deepFreezeValue(queueRes.map));
+      const runRes = readOperationalRunMapFromDb(roConn, scopeId, ignoreCorrupt);
+      if (runRes.present) snapshot.set(KEYS.run, deepFreezeValue(runRes.map));
+    }
+    return snapshot;
+  } finally {
+    try {
+      roConn.exec('COMMIT');
+    } catch {
+      // Ignore read-transaction close error.
+    }
+  }
+}
+
 export function createSwitchableOperationalMemento(
   legacyMemento: Memento,
-  logger?: SanitizedLogger
+  logger?: SanitizedLogger,
+  options?: SwitchableOperationalMementoOptions
 ): SwitchableOperationalMemento {
   let activeSqlite: SqliteOperationalBacking | null = null;
   let readOnlyCache: Map<string, unknown> | null = null;
   let postCutoverScopeId: string | null = null;
   let detachedWriter: DetachedSqliteWriterConfig | null = null;
+  let durableBatchRequired = options?.requireDurableBatch === true;
+  let durableBatchUnavailableReason: string | null = null;
+  let stateEpoch = 0;
 
   return {
     get<T>(key: string): T | undefined {
@@ -806,6 +879,7 @@ export function createSwitchableOperationalMemento(
           try {
             const backing = new SqliteOperationalBacking(transient, postCutoverScopeId, legacyMemento, () => Date.now(), logger);
             backing.update(key, value);
+            stateEpoch += 1;
             readOnlyCache = backing.exportSnapshot();
             return;
           } finally {
@@ -866,6 +940,7 @@ export function createSwitchableOperationalMemento(
                   logger
                 );
                 backing.updateBatch(operationalEntries);
+                stateEpoch += 1;
                 readOnlyCache = backing.exportSnapshot();
               } finally {
                 transient.close();
@@ -877,6 +952,12 @@ export function createSwitchableOperationalMemento(
               );
             }
           }
+        } else if (durableBatchRequired) {
+          const detail = durableBatchUnavailableReason ? ` (${durableBatchUnavailableReason})` : '';
+          throw new QueueMutationRejected(
+            'durable-store-unavailable',
+            `Refused atomic operational batch write for ${operationalEntries.map((entry) => entry.key).join('+')}: durable SQLite store is unavailable${detail}.`
+          );
         } else {
           await applyLegacyWithRollback(operationalEntries);
         }
@@ -884,6 +965,17 @@ export function createSwitchableOperationalMemento(
       if (passthroughEntries.length > 0) {
         await applyLegacyWithRollback(passthroughEntries);
       }
+    },
+
+    requireDurableBatch(reason?: string): void {
+      durableBatchRequired = true;
+      if (reason !== undefined) {
+        durableBatchUnavailableReason = reason;
+      }
+    },
+
+    setDurableBatchUnavailableReason(reason: string | null): void {
+      durableBatchUnavailableReason = reason;
     },
 
     attachSqlite(
@@ -899,75 +991,67 @@ export function createSwitchableOperationalMemento(
       if (outcome !== null && !outcome.completed) {
         throw new SqliteCutoverMigrationIncompleteError(scopeId, outcome.currentStage);
       }
+      stateEpoch += 1;
       readOnlyCache = null;
       activeSqlite = backing;
       postCutoverScopeId = scopeId;
+      durableBatchUnavailableReason = null;
       return activeSqlite;
     },
 
     attachReadOnlySnapshotIfPresent(
       databasePath: string,
       scopeId: string,
-      openReadOnlyConnection: (databasePath: string) => SqliteConnectionPort = openReadOnlySqliteConnection
+      openReadOnlyConnectionOrContainment?:
+        | ((databasePath: string) => SqliteConnectionPort)
+        | StrictReadOnlyContainment
     ): boolean {
       if (activeSqlite !== null) return true;
       let roConn: SqliteConnectionPort | null = null;
       try {
-        roConn = openReadOnlyConnection(databasePath);
-        roConn.exec('BEGIN');
-        try {
-          const minReaderRow = roConn.get<{ meta_value: string }>(
-            `SELECT meta_value FROM schema_meta WHERE meta_key = 'min_reader_version'`
-          );
-          if (minReaderRow !== undefined) {
-            const floor = parseStrictSchemaMetaVersion(minReaderRow.meta_value);
-            if (floor === null || floor > SQLITE_SCHEMA_CURRENT_VERSION) return false;
-          }
-          const sentinel = roConn.get<{ authority: string }>(
-            `SELECT authority FROM cutover_sentinel WHERE scope_id = ?`,
-            scopeId
-          );
-          if (!sentinel || (sentinel.authority !== 'sqlite' && sentinel.authority !== 'retired_legacy')) {
-            return false;
-          }
-          const rows = roConn.all<{ doc_key: string; payload_json: string }>(
-            `SELECT doc_key, payload_json FROM operational_kv_documents WHERE doc_namespace = ?`,
-            scopeId
-          );
-          const snapshot = new Map<string, unknown>();
-          for (const row of rows) {
-            try {
-              snapshot.set(row.doc_key, deepFreezeValue(JSON.parse(row.payload_json)));
-            } catch {
-              // Skip malformed row in read-only view.
-            }
-          }
-          const hasEntityTables =
-            roConn.get<{ name: string }>(
-              `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'operational_queue_meta'`
-            ) !== undefined;
-          if (hasEntityTables) {
-            const ignoreCorrupt = { onCorruptRow: () => undefined };
-            const queueRes = readOperationalQueueMapFromDb(roConn, scopeId, ignoreCorrupt);
-            if (queueRes.present) snapshot.set(KEYS.queue, deepFreezeValue(queueRes.map));
-            const runRes = readOperationalRunMapFromDb(roConn, scopeId, ignoreCorrupt);
-            if (runRes.present) snapshot.set(KEYS.run, deepFreezeValue(runRes.map));
-          }
-          readOnlyCache = snapshot;
-          postCutoverScopeId = scopeId;
-          return true;
-        } finally {
-          try {
-            roConn.exec('COMMIT');
-          } catch {
-            // Ignore read-transaction close error.
-          }
-        }
+        roConn =
+          typeof openReadOnlyConnectionOrContainment === 'function'
+            ? openReadOnlyConnectionOrContainment(databasePath)
+            : openReadOnlySqliteConnection(databasePath, openReadOnlyConnectionOrContainment);
+        const snapshot = readOperationalSnapshotFromConnection(roConn, scopeId);
+        if (snapshot === null) return false;
+        stateEpoch += 1;
+        readOnlyCache = snapshot;
+        postCutoverScopeId = scopeId;
+        return true;
       } catch {
         return false;
       } finally {
         roConn?.close();
       }
+    },
+
+    async attachReadOnlySnapshotIfPresentAsync(
+      rootDir: string,
+      relativeDirSegments: readonly string[],
+      dbFileName: string,
+      scopeId: string
+    ): Promise<boolean> {
+      if (activeSqlite !== null) return false;
+      const startEpoch = stateEpoch;
+      const result = await withZeroMutationReadOnlySqliteConnection(
+        rootDir,
+        relativeDirSegments,
+        dbFileName,
+        (roConn) => {
+          try {
+            return readOperationalSnapshotFromConnection(roConn, scopeId);
+          } catch {
+            return null;
+          }
+        }
+      );
+      if (result.outcome !== 'ok' || result.value === null) return false;
+      if (this.isSqliteAttached() || stateEpoch !== startEpoch) return false;
+      stateEpoch += 1;
+      readOnlyCache = result.value;
+      postCutoverScopeId = scopeId;
+      return true;
     },
 
     configureDetachedTrustedSqliteWriter(config): void {
@@ -979,6 +1063,7 @@ export function createSwitchableOperationalMemento(
     },
 
     detachSqlite(): void {
+      stateEpoch += 1;
       if (activeSqlite !== null) {
         readOnlyCache = activeSqlite.exportSnapshot();
         activeSqlite = null;

@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const REPO_ROOT = path.resolve(__dirname, '../..');
@@ -53,6 +54,14 @@ const REQUIRED_FILES: readonly string[] = [
   'src/contracts/pipeline-definitions.ts',
   'src/contracts/command-outcome.ts',
   'src/contracts/sidebar-ipc/workflow-run.ts',
+  'src/contracts/snapshot-bounds.ts',
+  'src/contracts/process-definitions.ts',
+  'src/contracts/phase-capabilities.ts',
+  'src/contracts/run-results.ts',
+  'src/contracts/containment-qualification.ts',
+  'src/contracts/execution-decision-observation.ts',
+  'src/contracts/workflow-definitions.ts',
+  'src/contracts/phase-context/context-policy.ts',
   // Existing AST extraction inputs
   'src/contracts/sidebar-ipc.ts',
   'src/contracts/audit-events.ts',
@@ -112,9 +121,9 @@ function buildSandbox(): string {
   return sandbox;
 }
 
-function runCheck(sandbox: string): { status: number; output: string } {
+function runGenerator(sandbox: string, args: readonly string[]): { status: number; output: string } {
   try {
-    const output = execFileSync(process.execPath, [GENERATOR_SCRIPT, '--check'], {
+    const output = execFileSync(process.execPath, [GENERATOR_SCRIPT, ...args], {
       cwd: sandbox,
       encoding: 'utf8'
     });
@@ -123,6 +132,58 @@ function runCheck(sandbox: string): { status: number; output: string } {
     const failure = err as { status: number | null; stdout: string; stderr: string };
     return { status: failure.status ?? 1, output: `${failure.stdout}${failure.stderr}` };
   }
+}
+
+function runCheck(sandbox: string): { status: number; output: string } {
+  return runGenerator(sandbox, ['--check']);
+}
+
+function resolveSandboxOverlay(sandbox: string, fileName: string): string {
+  const normalized = path.resolve(fileName);
+  if (normalized.startsWith(sandbox + path.sep) || normalized === sandbox) {
+    if (fs.existsSync(normalized)) return normalized;
+    const rel = path.relative(sandbox, normalized);
+    const fallback = path.join(REPO_ROOT, rel);
+    if (fs.existsSync(fallback)) return fallback;
+  }
+  return normalized;
+}
+
+function createSandboxOverlayProgram(sandbox: string, entryFiles: readonly string[]): ts.Program {
+  const options: ts.CompilerOptions = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    strict: true,
+    noEmit: true,
+    skipLibCheck: true
+  };
+  const baseHost = ts.createCompilerHost(options, true);
+  const readOverlay = (fileName: string): string | undefined => {
+    const target = resolveSandboxOverlay(sandbox, fileName);
+    return fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : undefined;
+  };
+  const host: ts.CompilerHost = {
+    ...baseHost,
+    fileExists: (fileName) => fs.existsSync(resolveSandboxOverlay(sandbox, fileName)),
+    readFile: readOverlay,
+    getSourceFile: (fileName, languageVersion) => {
+      const content = readOverlay(fileName);
+      return content !== undefined
+        ? ts.createSourceFile(fileName, content, languageVersion, true)
+        : undefined;
+    },
+    directoryExists: (dirName) => {
+      const normalized = path.resolve(dirName);
+      if (fs.existsSync(normalized)) return true;
+      if (normalized.startsWith(sandbox + path.sep)) {
+        return fs.existsSync(path.join(REPO_ROOT, path.relative(sandbox, normalized)));
+      }
+      return false;
+    },
+    realpath: (fileName) => fileName
+  };
+  return ts.createProgram([...entryFiles], options, host);
 }
 
 describe('contract generation freshness — negative controls (T035 & FR-R7-05 / SC-006)', () => {
@@ -176,5 +237,108 @@ describe('contract generation freshness — negative controls (T035 & FR-R7-05 /
     expect(result.status).not.toBe(0);
     expect(result.output).toContain('stale generated file: src/contracts/generated/validators/queue-core.ts');
     expect(result.output).toContain('scripts/contracts/ipc-descriptors/queue-core.mjs');
+  });
+
+  it('emits all 71 inbound commands and 3 host messages as the live IPC types with zero hand-written CommandBase subclasses', () => {
+    const generatedIpc = fs.readFileSync(
+      path.join(REPO_ROOT, 'src/contracts/generated/sidebar-ipc-types.ts'),
+      'utf8'
+    );
+    const emittedCommands = [...generatedIpc.matchAll(/export interface \w+Command extends GeneratedCommandBase<'CMD_[A-Z0-9_]+'>/g)];
+    expect(emittedCommands.length).toBe(71);
+    expect(generatedIpc).toContain('export interface StateSnapshotMessage<S>');
+    expect(generatedIpc).toContain('export interface CommandAckMessage');
+    expect(generatedIpc).toContain('export interface PhaseLogBatchPushMessage');
+    expect(generatedIpc).toContain('export type HostMessage<S>');
+
+    const sidebarIpcFiles = [
+      path.join(REPO_ROOT, 'src/contracts/sidebar-ipc.ts'),
+      ...fs
+        .readdirSync(path.join(REPO_ROOT, 'src/contracts/sidebar-ipc'))
+        .filter((file) => file.endsWith('.ts'))
+        .map((file) => path.join(REPO_ROOT, 'src/contracts/sidebar-ipc', file))
+    ];
+    for (const file of sidebarIpcFiles) {
+      const content = fs.readFileSync(file, 'utf8');
+      expect(content, `${path.relative(REPO_ROOT, file)} must not hand-declare a CommandBase subclass`).not.toMatch(
+        /extends\s+CommandBase</
+      );
+    }
+  });
+
+  it('propagates a descriptor edit into generated host types, live sidebar-ipc / webview messages.ts exports, validator, and sidebar-ipc.schema.json', () => {
+    const descriptorPath = path.join(sandbox, 'scripts/contracts/ipc-descriptors/phase-control.mjs');
+    const original = fs.readFileSync(descriptorPath, 'utf8');
+    const target = `    type: 'CMD_PAUSE_PHASE',\n    interfaceName: 'PausePhaseCommand',\n    validatorName: 'validatePausePhase',\n    family: 'phase-control',\n    doc: 'Pause the active phase on the addressed queue.',\n    payloadMode: 'required',\n    payload: d.obj({ queueId: queueId() }, { allowArray: true })`;
+    const replacement = `    type: 'CMD_PAUSE_PHASE',\n    interfaceName: 'PausePhaseCommand',\n    validatorName: 'validatePausePhase',\n    family: 'phase-control',\n    doc: 'Pause the active phase on the addressed queue.',\n    payloadMode: 'required',\n    payload: d.obj({ queueId: queueId(), propagationProbe: d.field(d.str(), { optional: true }) }, { allowArray: true })`;
+    expect(original, 'fixture did not match CMD_PAUSE_PHASE descriptor').toContain(target);
+    fs.writeFileSync(descriptorPath, original.replace(target, replacement), 'utf8');
+
+    const regen = runGenerator(sandbox, []);
+    expect(regen.status, regen.output).toBe(0);
+    const check = runCheck(sandbox);
+    expect(check.status, check.output).toBe(0);
+
+    // 1. Generated host types updated.
+    const generatedTypes = fs.readFileSync(
+      path.join(sandbox, 'src/contracts/generated/sidebar-ipc-types.ts'),
+      'utf8'
+    );
+    expect(generatedTypes).toMatch(
+      /export interface PausePhaseCommand extends GeneratedCommandBase<'CMD_PAUSE_PHASE'>[\s\S]*?readonly propagationProbe\?: string;/
+    );
+
+    // 2. Generated validator updated.
+    const generatedValidator = fs.readFileSync(
+      path.join(sandbox, 'src/contracts/generated/validators/phase-control.ts'),
+      'utf8'
+    );
+    expect(generatedValidator).toContain('propagationProbe');
+
+    // 3. Generated JSON Schema updated.
+    const schemaJson = JSON.parse(
+      fs.readFileSync(path.join(sandbox, 'src/contracts/generated/schemas/sidebar-ipc.schema.json'), 'utf8')
+    ) as {
+      $defs: {
+        Command_CMD_PAUSE_PHASE: {
+          properties: {
+            payload: {
+              properties: Record<string, { type?: string }>;
+            };
+          };
+        };
+      };
+    };
+    expect(
+      schemaJson.$defs.Command_CMD_PAUSE_PHASE.properties.payload.properties.propagationProbe
+    ).toEqual({ type: 'string' });
+
+    // 4. Live `sidebar-ipc.ts` AND `webview-ui/src/lib/messages.ts` resolve the updated PausePhaseCommand type.
+    const hostBarrelPath = path.join(sandbox, 'src/contracts/sidebar-ipc.ts');
+    const webviewMessagesPath = path.join(sandbox, 'webview-ui/src/lib/messages.ts');
+    const program = createSandboxOverlayProgram(sandbox, [hostBarrelPath, webviewMessagesPath]);
+    const checker = program.getTypeChecker();
+
+    for (const entryPath of [hostBarrelPath, webviewMessagesPath]) {
+      const sourceFile = program.getSourceFile(entryPath);
+      expect(sourceFile, `source file loaded: ${entryPath}`).toBeDefined();
+      const moduleSymbol = checker.getSymbolAtLocation(sourceFile!);
+      expect(moduleSymbol, `module symbol resolved: ${entryPath}`).toBeDefined();
+      const exportsList = checker.getExportsOfModule(moduleSymbol!);
+      const pauseSym = exportsList.find((sym) => sym.getName() === 'PausePhaseCommand');
+      expect(pauseSym, `PausePhaseCommand exported from ${entryPath}`).toBeDefined();
+      const pauseType = checker.getDeclaredTypeOfSymbol(
+        pauseSym!.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(pauseSym!) : pauseSym!
+      );
+      const payloadProp = pauseType.getProperty('payload');
+      expect(payloadProp, `payload property on PausePhaseCommand in ${entryPath}`).toBeDefined();
+      const payloadType = checker.getTypeOfSymbolAtLocation(payloadProp!, sourceFile!);
+      const probeProp = payloadType.getProperty('propagationProbe');
+      expect(probeProp, `propagationProbe propagated to ${entryPath}`).toBeDefined();
+      const probeTypeStr = checker.typeToString(
+        checker.getTypeOfSymbolAtLocation(probeProp!, sourceFile!)
+      );
+      expect(probeTypeStr).toBe('string | undefined');
+    }
   });
 });

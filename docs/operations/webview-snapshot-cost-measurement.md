@@ -228,71 +228,71 @@ Each item needs an environment this feature could not run unattended. None is ma
 
 ## 9. Per-slice equality stage measurement & revision decision (`FR-R7-09`, 2026-11-19)
 
-**Measured**: 2026-11-19, on `repo/` branch `323-snapshot-slice-revisions` (`tests/perf/snapshot-slice-equality-cost.test.ts`). **Environment**: macOS 27.0, Apple M4 Max (`darwin/arm64`, 16 cores), Node `v24.22.2`, load averages `4.28 / 4.35 / 4.49`. Every distribution is **200 measured samples after 20 warm-up samples**, with strict per-sample behavioral parity verified against `areSnapshotSlicesEqual` (`src/ui/sidebar/snapshot-transport.ts`) and dual `SnapshotTransport` consumers (`SidebarViewProvider` + `DashboardPanel`).
+**Measured**: 2026-11-21 (refreshed for `FR-R7-11` Task 15 to publish complete `p50 / p95 / max` distributions from the initial 2026-11-19 `FR-R7-09` run), on `repo/` branch `327-round7-audit-followup` (`tests/perf/snapshot-slice-equality-cost.test.ts`). **Environment**: macOS 27.0, Apple M4 Max (`darwin/arm64`, 16 cores), Node `v24.22.2`, load averages `1.66 / 1.88 / 2.31`. Every distribution is **200 measured samples after 20 warm-up samples**, with strict per-sample behavioral parity verified against `areSnapshotSlicesEqual` (`src/ui/sidebar/snapshot-transport.ts`) and dual `SnapshotTransport` consumers (`SidebarViewProvider` + `DashboardPanel`).
 
 In addition to the four baseline workloads (`idle`, `active`, `large-history`, `large-history-2x`), a fifth workload (`large-history-with-catalogs`: `large-history` plus 10 effective Phases, 5 effective Pipelines, and 3 effective Workflows resolved through `resolvePhaseCatalog`, `resolvePipelineCatalog`, and `resolveWorkflowCatalog`) answers `FR-R7-09`'s open question about steady-state catalog projection rebuilds.
 
 ### Per-slice stage exit counts and fallback timing (200 measured samples per workload)
 
-| Workload | Slice | Deciding stage (`count / 200`) | Fallback hits (`count / 200`) | Fallback p95 (ms) | Total compare p95 (ms) |
+| Workload | Slice | Deciding stage (`count / 200`) | Fallback hits (`count / 200`) | Fallback `p50 / p95 / max` (ms) | Total compare `p50 / p95 / max` (ms) |
 |---|---|---|---:|---:|---:|
-| `idle` | `history` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
-| `idle` | `phaseCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
-| `idle` | `pipelineCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
-| `idle` | `workflowCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
-| `idle` | `availablePhases` | `empty-array` (200) | 0 | 0.0000 | 0.0002 |
-| `idle` | `availablePipelines` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
-| `idle` | `auditTail` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
-| `idle` | `debugLogTail` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
-| `active` | `history` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
-| `active` | `phaseCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
-| `active` | `pipelineCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
-| `active` | `workflowCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
-| `active` | `availablePhases` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
-| `active` | `availablePipelines` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
-| `active` | `auditTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0009 |
-| `active` | `debugLogTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0025 |
-| `large-history` | `history` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
-| `large-history` | `phaseCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
-| `large-history` | `pipelineCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0000 |
-| `large-history` | `workflowCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0000 |
-| `large-history` | `availablePhases` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
-| `large-history` | `availablePipelines` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
-| `large-history` | `auditTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0006 |
-| `large-history` | `debugLogTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0019 |
-| `large-history-2x` | `history` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
-| `large-history-2x` | `phaseCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0000 |
-| `large-history-2x` | `pipelineCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0000 |
-| `large-history-2x` | `workflowCatalog` | `ref-equal` (200) | 0 | 0.0000 | 0.0000 |
-| `large-history-2x` | `availablePhases` | `empty-array` (200) | 0 | 0.0000 | 0.0001 |
-| `large-history-2x` | `availablePipelines` | `empty-array` (200) | 0 | 0.0000 | 0.0000 |
-| `large-history-2x` | `auditTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0006 |
-| `large-history-2x` | `debugLogTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0018 |
-| `large-history-with-catalogs` | `history` | `ref-equal` (200) | 0 | 0.0000 | 0.0001 |
-| `large-history-with-catalogs` | `phaseCatalog` | `json-stringify-fallback` (200) | 200 | 0.0233 | 0.0234 |
-| `large-history-with-catalogs` | `pipelineCatalog` | `json-stringify-fallback` (200) | 200 | 0.0188 | 0.0189 |
-| `large-history-with-catalogs` | `workflowCatalog` | `json-stringify-fallback` (200) | 200 | 0.0151 | 0.0151 |
-| `large-history-with-catalogs` | `availablePhases` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0004 |
-| `large-history-with-catalogs` | `availablePipelines` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0001 |
-| `large-history-with-catalogs` | `auditTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0005 |
-| `large-history-with-catalogs` | `debugLogTail` | `element-ref-equal` (200) | 0 | 0.0000 | 0.0018 |
+| `idle` | `history` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0001 / 0.0001 / 0.0009 |
+| `idle` | `phaseCatalog` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0001 / 0.0001 |
+| `idle` | `pipelineCatalog` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0001 / 0.0005 |
+| `idle` | `workflowCatalog` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0001 / 0.0001 |
+| `idle` | `availablePhases` | `empty-array` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0001 / 0.0001 / 0.0011 |
+| `idle` | `availablePipelines` | `empty-array` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0001 / 0.0001 / 0.0005 |
+| `idle` | `auditTail` | `empty-array` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0001 / 0.0001 / 0.0011 |
+| `idle` | `debugLogTail` | `empty-array` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0001 / 0.0001 / 0.0003 |
+| `active` | `history` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0001 / 0.0002 |
+| `active` | `phaseCatalog` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0001 / 0.0001 |
+| `active` | `pipelineCatalog` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0001 / 0.0001 |
+| `active` | `workflowCatalog` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0001 / 0.0002 |
+| `active` | `availablePhases` | `empty-array` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0001 / 0.0021 |
+| `active` | `availablePipelines` | `empty-array` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0001 / 0.0003 |
+| `active` | `auditTail` | `element-ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0005 / 0.0008 / 0.0010 |
+| `active` | `debugLogTail` | `element-ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0016 / 0.0024 / 0.0130 |
+| `large-history` | `history` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0001 / 0.0001 |
+| `large-history` | `phaseCatalog` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0000 / 0.0001 |
+| `large-history` | `pipelineCatalog` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0000 / 0.0001 |
+| `large-history` | `workflowCatalog` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0000 / 0.0008 |
+| `large-history` | `availablePhases` | `empty-array` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0001 / 0.0041 |
+| `large-history` | `availablePipelines` | `empty-array` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0001 / 0.0001 |
+| `large-history` | `auditTail` | `element-ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0005 / 0.0007 / 0.0063 |
+| `large-history` | `debugLogTail` | `element-ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0017 / 0.0019 / 0.0023 |
+| `large-history-2x` | `history` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0000 / 0.0001 |
+| `large-history-2x` | `phaseCatalog` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0000 / 0.0001 |
+| `large-history-2x` | `pipelineCatalog` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0000 / 0.0000 |
+| `large-history-2x` | `workflowCatalog` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0000 / 0.0001 |
+| `large-history-2x` | `availablePhases` | `empty-array` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0001 / 0.0002 |
+| `large-history-2x` | `availablePipelines` | `empty-array` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0000 / 0.0001 |
+| `large-history-2x` | `auditTail` | `element-ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0005 / 0.0005 / 0.0007 |
+| `large-history-2x` | `debugLogTail` | `element-ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0016 / 0.0017 / 0.0118 |
+| `large-history-with-catalogs` | `history` | `ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0000 / 0.0000 / 0.0001 |
+| `large-history-with-catalogs` | `phaseCatalog` | `json-stringify-fallback` (200) | 200 | 0.0196 / 0.0210 / 0.0251 | 0.0197 / 0.0210 / 0.0252 |
+| `large-history-with-catalogs` | `pipelineCatalog` | `json-stringify-fallback` (200) | 200 | 0.0160 / 0.0168 / 0.0203 | 0.0160 / 0.0169 / 0.0203 |
+| `large-history-with-catalogs` | `workflowCatalog` | `json-stringify-fallback` (200) | 200 | 0.0125 / 0.0132 / 0.0164 | 0.0126 / 0.0132 / 0.0164 |
+| `large-history-with-catalogs` | `availablePhases` | `element-ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0001 / 0.0002 / 0.0004 |
+| `large-history-with-catalogs` | `availablePipelines` | `element-ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0001 / 0.0001 / 0.0001 |
+| `large-history-with-catalogs` | `auditTail` | `element-ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0004 / 0.0005 / 0.0010 |
+| `large-history-with-catalogs` | `debugLogTail` | `element-ref-equal` (200) | 0 | 0.0000 / 0.0000 / 0.0000 | 0.0016 / 0.0018 / 0.0029 |
 
 ### Per-workload host routine flush summary vs. 8 ms p95 threshold
 
-| Workload | Total fallback p95 (ms) | Total compare p95 (ms) | 1-consumer flush p95 (ms) | 2-consumer flush p95 (ms) | Threshold (ms) | Met |
+| Workload | Total fallback `p50 / p95 / max` (ms) | Total compare `p50 / p95 / max` (ms) | 1-consumer flush `p50 / p95 / max` (ms) | 2-consumer flush `p50 / p95 / max` (ms) | Threshold (ms) | Met |
 |---|---:|---:|---:|---:|---:|---|
-| `idle` | 0.0000 | 0.0013 | 0.0511 | 0.0701 | 8.0 | no |
-| `active` | 0.0000 | 0.0038 | 0.0555 | 0.0765 | 8.0 | no |
-| `large-history` | 0.0000 | 0.0032 | 0.3568 | 0.3962 | 8.0 | no |
-| `large-history-2x` | 0.0000 | 0.0028 | 0.3527 | 0.3752 | 8.0 | no |
-| `large-history-with-catalogs` | 0.0568 | 0.0601 | 0.4727 | 0.5494 | 8.0 | no |
+| `idle` | 0.0000 / 0.0000 / 0.0000 | 0.0006 / 0.0009 / 0.0022 | 0.0231 / 0.0392 / 0.3494 | 0.0309 / 0.0487 / 0.3682 | 8.0 | no |
+| `active` | 0.0000 / 0.0000 / 0.0000 | 0.0024 / 0.0037 / 0.0137 | 0.0301 / 0.0475 / 0.1789 | 0.0408 / 0.0603 / 0.2034 | 8.0 | no |
+| `large-history` | 0.0000 / 0.0000 / 0.0000 | 0.0025 / 0.0032 / 0.0090 | 0.2456 / 0.2993 / 1.2371 | 0.2649 / 0.3172 / 1.2597 | 8.0 | no |
+| `large-history-2x` | 0.0000 / 0.0000 / 0.0000 | 0.0023 / 0.0026 / 0.0125 | 0.2326 / 0.2828 / 0.4894 | 0.2508 / 0.3120 / 0.5189 | 8.0 | no |
+| `large-history-with-catalogs` | 0.0479 / 0.0508 / 0.0575 | 0.0502 / 0.0532 / 0.0600 | 0.3167 / 0.3655 / 0.6008 | 0.3842 / 0.4403 / 0.6682 | 8.0 | no |
 
 ### Decision (`FR-R7-09`): **Deferred**
 
 1. **Empirical findings**:
    - Across the four baseline workloads (`idle`, `active`, `large-history`, `large-history-2x`), **`json-stringify-fallback` runs 0 times out of 200 flushes on all eight slices**. `history` short-circuits at `ref-equal` via `HistoryStore` + `projectHistory` memoization, and `auditTail` / `debugLogTail` short-circuit at `element-ref-equal`.
    - With populated catalogs (`large-history-with-catalogs`: 10 phases, 5 pipelines, 3 workflows), `phaseCatalog`, `pipelineCatalog`, and `workflowCatalog` rebuild fresh frozen objects per compose and therefore reach `json-stringify-fallback` on `200 / 200` flushes (`availablePhases` and `availablePipelines` remain `element-ref-equal` with `0` fallbacks).
-   - Even with all three structured catalogs hitting `JSON.stringify` on every flush, the combined fallback p95 is **`0.0568` ms** (0.71% of the 8 ms threshold), the 1-consumer routine flush p95 (`project()` + `preparePost()` + wire `JSON.stringify`) is **`0.4727` ms**, and the 2-consumer routine flush p95 (sidebar + dashboard visible simultaneously) is **`0.5494` ms** — more than **14x below** the 8 ms p95 threshold declared in section 1.
+   - Even with all three structured catalogs hitting `JSON.stringify` on every flush, the combined fallback distribution is **`0.0479 / 0.0508 / 0.0575` ms** (`p50 / p95 / max`; p95 is 0.64% of the 8 ms threshold), the 1-consumer routine flush (`project()` + `preparePost()` + wire `JSON.stringify`) is **`0.3167 / 0.3655 / 0.6008` ms**, and the 2-consumer routine flush (sidebar + dashboard visible simultaneously) is **`0.3842 / 0.4403 / 0.6682` ms** — p95 is more than **18x below** the 8 ms p95 threshold declared in section 1 (and the highest observed `max` across all five workloads, `1.2597` ms on `large-history`, remains more than 6x below 8 ms).
 2. **Disposition**: Host-internal per-slice revision tracking is **deferred**; no production code changes ship in `src/`, preserving content-equality soundness (zero stale-slice risk from missed revision bumps) and leaving `SnapshotSyncMeta`, `SNAPSHOT_RESYNC_REQUEST`, `SUPPRESSIBLE_SNAPSHOT_SLICES`, and `webview-ui/src/lib/snapshot-merge.ts` untouched.
 3. **Full-resync payload size exclusion**: Host-internal per-slice change detection does not reduce full-resync serialized payload size (~780 KiB on `large-history`, already bounded below the 1 MiB ceiling by `FR-R5-F09` / `FR-R5-F12`). Shrinking full resyncs (e.g., via paged history) remains a separate concern outside `FR-R7-09`.
 4. **Platform qualification**: Measured on `darwin/arm64` (Node `v24.22.2`); `linux` and `win32` remain listed under section 7's pending qualification. Re-evaluate only if catalog sizes grow substantially or host routine flush p95 reaches the 8 ms threshold on a supported platform.

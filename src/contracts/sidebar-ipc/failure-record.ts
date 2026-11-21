@@ -1,4 +1,3 @@
-import type { CMD_READ_FAILURE_RECORD, CommandBase } from '../sidebar-ipc';
 import type { FailureRecordV1 } from '../failure-record';
 
 // FR-R4-F15 (feature 243, contract Q1) — the sidebar's half of "Show last error".
@@ -18,9 +17,7 @@ export interface ReadFailureRecordRequest {
   readonly taskId: string;
 }
 
-export interface ReadFailureRecordCommand extends CommandBase<typeof CMD_READ_FAILURE_RECORD> {
-  readonly payload: ReadFailureRecordRequest;
-}
+export type { ReadFailureRecordCommand } from '../generated/sidebar-ipc-types';
 
 /**
  * The five answers about a row, plus the failure arm the boundary needs.

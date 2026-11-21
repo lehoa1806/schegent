@@ -11,7 +11,6 @@ export const ANALYTICS_REPORTING_COMMANDS = Object.freeze([
     interfaceName: 'ReadMetricsCommand',
     validatorName: 'validateReadMetrics',
     family: 'analytics-reporting',
-    emitInterface: false,
     doc: 'Scan workspace audit/rollup metrics with optional archive inclusion and bounded runIds filter.',
     payloadMode: 'required',
     payload: d.obj(
@@ -43,7 +42,6 @@ export const ANALYTICS_REPORTING_COMMANDS = Object.freeze([
     interfaceName: 'ReadStorageDetailsCommand',
     validatorName: 'validateReadStorageDetails',
     family: 'analytics-reporting',
-    emitInterface: false,
     doc: 'Read storage pressure summary and one paginated artifact inventory page.',
     payloadMode: 'required',
     payload: d.obj({
@@ -59,7 +57,6 @@ export const ANALYTICS_REPORTING_COMMANDS = Object.freeze([
     interfaceName: 'ReadUsageAccountingCommand',
     validatorName: 'validateReadUsageAccounting',
     family: 'analytics-reporting',
-    emitInterface: false,
     doc: 'Read one usage accounting page; query validation is delegated to the shared host validator.',
     payloadMode: 'required',
     payload: d.obj({
@@ -72,7 +69,6 @@ export const ANALYTICS_REPORTING_COMMANDS = Object.freeze([
     interfaceName: 'ReadReportCommand',
     validatorName: 'validateReadReport',
     family: 'analytics-reporting',
-    emitInterface: false,
     doc: 'Run, page, drill down, cancel, list, or reproduce historical reports.',
     payloadMode: 'required',
     payload: d.discUnion(
@@ -120,7 +116,6 @@ export const ANALYTICS_REPORTING_COMMANDS = Object.freeze([
     interfaceName: 'MutateReportCommand',
     validatorName: 'validateMutateReport',
     family: 'analytics-reporting',
-    emitInterface: false,
     doc: 'Export (via host dialog), save, or delete a saved report record.',
     payloadMode: 'required',
     payload: d.discUnion(

@@ -150,8 +150,8 @@ export async function execAndAck(
  * that used to sit here (`command-outcome.ts:79`). So this deletes a duplicate
  * of a constant rather than changing a value, and no caller needs an edit. What
  * they gain is the `outcome` field, which this helper alone among the ack paths
- * did not set — additive and optional by the contract's own comment at
- * `host-messages.ts:12-19` (FR-011, FR-012, FR-013, F41).
+ * did not set — additive and optional by the contract in
+ * `src/contracts/sidebar-ipc/host-messages.ts` (FR-011, FR-012, FR-013, F41).
  *
  * FOURTEEN callers, not seventeen. Seventeen routes called this helper at the
  * diff base and all seventeen gain the field; three of them — `cmd-cancel`,

@@ -7,7 +7,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { closeSync, fstatSync, lstatSync, readdirSync, readSync } from 'node:fs';
 import * as path from 'node:path';
 import {
   STORAGE_AUTHORITIES,
@@ -15,7 +15,8 @@ import {
   type BackupExternalDependency,
   type StorageAuthority
 } from '../../contracts/sqlite-store/schema-types';
-import { walkDirectoriesWithinRoot } from '../../lib/safe-open';
+import { NON_OWNER_BITS } from '../../lib/narrow-mode';
+import { openReadOnlyNoFollowSync, walkDirectoriesWithinRoot } from '../../lib/safe-open';
 
 export const SAFE_BACKUP_FILENAME_PATTERN = /^[A-Za-z0-9._-]+\.(?:db|sqlite|sqlite3)$/;
 export const SAFE_BACKUP_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
@@ -26,6 +27,64 @@ export const MANIFEST_SUFFIX = '.manifest.json';
 export const SQLITE_SIDECAR_SUFFIXES = Object.freeze(['-wal', '-shm', '-journal'] as const);
 
 const STORAGE_AUTHORITY_SET = new Set<string>(STORAGE_AUTHORITIES);
+const FILE_FORBIDDEN_MODE_BITS = NON_OWNER_BITS | 0o100; // 0o177: group/other + owner execute
+const STREAM_READ_CHUNK_BYTES = 64 * 1024;
+
+function isOwnerOnlyDirMode(mode: number): boolean {
+  if (process.platform === 'win32') return true;
+  return (mode & NON_OWNER_BITS) === 0;
+}
+
+function isOwnerOnlyFileMode(mode: number): boolean {
+  if (process.platform === 'win32') return true;
+  return (mode & FILE_FORBIDDEN_MODE_BITS) === 0;
+}
+
+function readBoundedUtf8FileSync(
+  resolvedPath: string,
+  maxBytes: number
+): { readonly ok: true; readonly content: string } | { readonly ok: false } {
+  let fd: number | null = null;
+  try {
+    fd = openReadOnlyNoFollowSync(resolvedPath);
+    const preStat = fstatSync(fd);
+    if (!preStat.isFile() || !isOwnerOnlyFileMode(preStat.mode) || preStat.size > maxBytes) {
+      return { ok: false };
+    }
+    const chunks: Buffer[] = [];
+    let totalRead = 0;
+    if (maxBytes > 0) {
+      const buf = Buffer.allocUnsafe(Math.min(STREAM_READ_CHUNK_BYTES, maxBytes));
+      while (totalRead < maxBytes) {
+        const toRead = Math.min(buf.byteLength, maxBytes - totalRead);
+        const bytesRead = readSync(fd, buf, 0, toRead, null);
+        if (bytesRead === 0) break;
+        chunks.push(Buffer.from(buf.subarray(0, bytesRead)));
+        totalRead += bytesRead;
+      }
+    }
+    const postStat = fstatSync(fd);
+    if (
+      !postStat.isFile() ||
+      !isOwnerOnlyFileMode(postStat.mode) ||
+      postStat.size > maxBytes ||
+      totalRead !== postStat.size
+    ) {
+      return { ok: false };
+    }
+    return { ok: true, content: Buffer.concat(chunks, totalRead).toString('utf8') };
+  } catch {
+    return { ok: false };
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Ignore close failure.
+      }
+    }
+  }
+}
 
 export function validateBackupPathBeforeOpen(
   backupDatabasePath: string,
@@ -71,6 +130,20 @@ export function validateBackupPathBeforeOpen(
       }
     }
   }
+  const parentDir = path.dirname(resolvedTarget);
+  let parentStat: ReturnType<typeof lstatSync>;
+  try {
+    parentStat = lstatSync(parentDir);
+  } catch {
+    return { ok: false, error: 'Backup parent directory is unreadable' };
+  }
+  if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
+    return { ok: false, error: 'Backup parent directory must not be a symlink or non-directory' };
+  }
+  if (!isOwnerOnlyDirMode(parentStat.mode)) {
+    return { ok: false, error: 'Backup parent directory permissions must be owner-only (0700)' };
+  }
+
   let stat: ReturnType<typeof lstatSync>;
   try {
     stat = lstatSync(resolvedTarget);
@@ -82,6 +155,27 @@ export function validateBackupPathBeforeOpen(
   }
   if (!stat.isFile()) {
     return { ok: false, error: 'Backup database path must be a regular file' };
+  }
+  if (!isOwnerOnlyFileMode(stat.mode)) {
+    return { ok: false, error: 'Backup database file permissions must be owner-only (0600)' };
+  }
+  const companionManifestPath = path.join(parentDir, manifestFileNameFor(leafName));
+  try {
+    const manifestStat = lstatSync(companionManifestPath);
+    if (manifestStat.isSymbolicLink() || !manifestStat.isFile()) {
+      return { ok: false, error: 'Backup companion manifest must be a regular non-symlink file' };
+    }
+    if (!isOwnerOnlyFileMode(manifestStat.mode)) {
+      return {
+        ok: false,
+        error: 'Backup companion manifest permissions must be owner-only (0600)'
+      };
+    }
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    if (code !== 'ENOENT') {
+      return { ok: false, error: 'Backup companion manifest could not be verified' };
+    }
   }
   // VACUUM INTO produces a single self-contained database image. Any pre-existing
   // -wal/-shm/-journal sidecar (regular or symlink) must be refused so SQLite cannot
@@ -119,18 +213,62 @@ export function computeFileDigestSync(
 ):
   | { readonly ok: true; readonly byteLength: number; readonly sha256: string }
   | { readonly ok: false; readonly error: string } {
+  let fd: number | null = null;
   try {
-    const buf = readFileSync(resolvedPath);
-    if (buf.byteLength > expectedMaxBytes) {
+    fd = openReadOnlyNoFollowSync(resolvedPath);
+    const preStat = fstatSync(fd);
+    if (!preStat.isFile()) {
+      return { ok: false, error: 'Backup database path must be a regular file' };
+    }
+    if (!isOwnerOnlyFileMode(preStat.mode)) {
+      return { ok: false, error: 'Backup database file permissions must be owner-only (0600)' };
+    }
+    if (preStat.size > expectedMaxBytes) {
       return {
         ok: false,
-        error: `Backup database size (${buf.byteLength} bytes) exceeds maximum limit (${expectedMaxBytes} bytes)`
+        error: `Backup database size (${preStat.size} bytes) exceeds maximum limit (${expectedMaxBytes} bytes)`
       };
     }
-    const sha256 = createHash('sha256').update(buf).digest('hex');
-    return { ok: true, byteLength: buf.byteLength, sha256 };
-  } catch {
+    const hash = createHash('sha256');
+    let totalRead = 0;
+    if (expectedMaxBytes > 0) {
+      const chunk = Buffer.allocUnsafe(Math.min(STREAM_READ_CHUNK_BYTES, expectedMaxBytes));
+      while (totalRead < expectedMaxBytes) {
+        const toRead = Math.min(chunk.byteLength, expectedMaxBytes - totalRead);
+        const bytesRead = readSync(fd, chunk, 0, toRead, null);
+        if (bytesRead === 0) break;
+        hash.update(chunk.subarray(0, bytesRead));
+        totalRead += bytesRead;
+      }
+    }
+    const postStat = fstatSync(fd);
+    if (!postStat.isFile() || !isOwnerOnlyFileMode(postStat.mode)) {
+      return { ok: false, error: 'Backup database file changed during digest verification' };
+    }
+    if (postStat.size > expectedMaxBytes) {
+      return {
+        ok: false,
+        error: `Backup database size (${postStat.size} bytes) exceeds maximum limit (${expectedMaxBytes} bytes)`
+      };
+    }
+    if (totalRead !== postStat.size) {
+      return { ok: false, error: 'Backup database file changed during digest verification' };
+    }
+    return { ok: true, byteLength: totalRead, sha256: hash.digest('hex') };
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    if (code === 'ELOOP') {
+      return { ok: false, error: 'Backup database path must not be a symbolic link' };
+    }
     return { ok: false, error: 'Backup database file could not be read for digest verification' };
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Ignore close failure.
+      }
+    }
   }
 }
 
@@ -297,6 +435,15 @@ export async function listBackupsInRoot(
     return [];
   }
   const dirPath = walked.directory;
+  let dirStat: ReturnType<typeof lstatSync>;
+  try {
+    dirStat = lstatSync(dirPath);
+  } catch {
+    return [];
+  }
+  if (dirStat.isSymbolicLink() || !dirStat.isDirectory() || !isOwnerOnlyDirMode(dirStat.mode)) {
+    return [];
+  }
   let names: string[];
   try {
     names = readdirSync(dirPath);
@@ -324,23 +471,36 @@ export async function listBackupsInRoot(
     const manifestPath = path.join(dirPath, manifestFileNameFor(name));
     let manifestStatus: 'valid' | 'missing' | 'invalid' = 'missing';
     let manifest: BackupDependencyManifest | undefined;
-    try {
-      const mStat = lstatSync(manifestPath);
-      if (mStat.isSymbolicLink() || !mStat.isFile() || mStat.size > MAX_BACKUP_MANIFEST_BYTES) {
-        manifestStatus = 'invalid';
-      } else {
-        const raw = readFileSync(manifestPath, 'utf8');
-        const parsed = parseAndValidateBackupManifest(raw);
-        if (parsed === null || parsed.backupId !== fallbackId) {
+    if (!isOwnerOnlyFileMode(dbStat.mode)) {
+      manifestStatus = 'invalid';
+    } else {
+      try {
+        const mStat = lstatSync(manifestPath);
+        if (
+          mStat.isSymbolicLink() ||
+          !mStat.isFile() ||
+          !isOwnerOnlyFileMode(mStat.mode) ||
+          mStat.size > MAX_BACKUP_MANIFEST_BYTES
+        ) {
           manifestStatus = 'invalid';
         } else {
-          manifest = parsed;
-          manifestStatus = 'valid';
+          const bounded = readBoundedUtf8FileSync(manifestPath, MAX_BACKUP_MANIFEST_BYTES);
+          if (!bounded.ok) {
+            manifestStatus = 'invalid';
+          } else {
+            const parsed = parseAndValidateBackupManifest(bounded.content);
+            if (parsed === null || parsed.backupId !== fallbackId) {
+              manifestStatus = 'invalid';
+            } else {
+              manifest = parsed;
+              manifestStatus = 'valid';
+            }
+          }
         }
+      } catch (err) {
+        const code = (err as { code?: unknown } | null)?.code;
+        manifestStatus = code === 'ENOENT' ? 'missing' : 'invalid';
       }
-    } catch (err) {
-      const code = (err as { code?: unknown } | null)?.code;
-      manifestStatus = code === 'ENOENT' ? 'missing' : 'invalid';
     }
 
     entries.push({

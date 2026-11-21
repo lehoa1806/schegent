@@ -33,6 +33,12 @@ import type {
   TreeTeardownOutcome
 } from '../contracts/backend-runner';
 import { classifyFatal } from '../lib/fatal-signature-registry';
+import {
+  canonicalizePathWithTailSync,
+  isTargetProtectedPathSync,
+  isWorkspaceProtectedPattern,
+  normalizeProtectedComparePath
+} from '../lib/protected-path-match';
 import { openAcpConnection } from '../services/acp-runtime/acp-client';
 import {
   ACP_PROFILE_IDS,
@@ -99,7 +105,7 @@ export interface AcpBackedRunnerOptions {
   readonly bridgeScriptPath?: string;
   readonly authorityGate?: AcpAuthorityGate;
   readonly primaryWorkspaceRoot?: string;
-  readonly protectedDatabasePaths?: readonly string[];
+  readonly protectedDatabasePaths?: readonly string[] | (() => readonly string[]);
   readonly currentOwnershipGeneration?: () => number;
   /**
    * Review gap GC-08 follow-up — awaited before a session registers its scope, so the gate holds an
@@ -131,6 +137,13 @@ function sanitizeHostToken(raw: string | undefined, fallback: string): string {
 
 function isValidAcpSessionToken(raw: string | undefined): raw is string {
   return typeof raw === 'string' && raw.length >= 1 && raw.length <= 256 && !/[\r\n\0]/.test(raw);
+}
+
+function resolveProtectedDatabasePaths(
+  source: AcpBackedRunnerOptions['protectedDatabasePaths']
+): readonly string[] {
+  if (source === undefined) return [];
+  return typeof source === 'function' ? source() : source;
 }
 
 function encodeUsageResultLine(
@@ -321,26 +334,105 @@ export class AcpBackedRunner implements BackendRunner {
       cancelExecution();
     };
 
+    const hasSafeCanonicalFileUriShape = (uri: string): boolean => {
+      // Require empty authority (`file:///...`) so remote hosts (`file://host/share` -> SMB UNC)
+      // and non-canonical `file://localhost/...` URIs never reach `fileURLToPath` or `lstatSync`.
+      if (!uri.startsWith('file:///')) return false;
+      // Reject ASCII C0 controls (including \t, \r, \n stripped by WHATWG URL), raw space, DEL,
+      // query (`?`), fragment (`#`), and backslashes (`\`).
+      for (let i = 0; i < uri.length; i += 1) {
+        const code = uri.charCodeAt(i);
+        if (code <= 0x20 || code === 0x7f) return false;
+      }
+      if (uri.includes('?') || uri.includes('#') || uri.includes('\\')) return false;
+      if (/%00|%2f|%5c/i.test(uri)) return false;
+      const rawPathPart = uri.slice('file:///'.length);
+      const rawSegments = rawPathPart.split('/');
+      for (let i = 0; i < rawSegments.length; i += 1) {
+        const seg = rawSegments[i]!;
+        if (seg === '.' || seg === '..') return false;
+        let decoded: string;
+        try {
+          decoded = decodeURIComponent(seg);
+        } catch {
+          return false;
+        }
+        if (
+          decoded === '.' ||
+          decoded === '..' ||
+          decoded.includes('/') ||
+          decoded.includes('\\') ||
+          decoded.includes('\0')
+        ) {
+          return false;
+        }
+        if (process.platform === 'win32') {
+          if (decoded.includes(':') && (i !== 0 || !/^[A-Za-z]:$/.test(decoded))) {
+            return false;
+          }
+          if (/[. ]$/.test(decoded)) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
+
     const gate = this.options.authorityGate;
     const verifyResourceLink = (uri: string): boolean => {
-      if (!uri.startsWith('file://')) return false;
+      if (!hasSafeCanonicalFileUriShape(uri)) return false;
       let filePath: string;
       try {
         filePath = fileURLToPath(uri);
       } catch {
         return false;
       }
+      const liveProtectedPaths = resolveProtectedDatabasePaths(this.options.protectedDatabasePaths);
       if (gate && activeSessionId !== null) {
-        return gate.authorize({
+        // Authorize via gate FIRST using the raw `filePath` so workspace trust, primacy,
+        // generation, raw + canonical protected-path rules, and execution-root containment
+        // are all enforced before any extra filesystem checks.
+        const decision = gate.authorize({
           requestKind: 'filesystem',
           acpSessionId: activeSessionId,
           connectionGeneration: generation,
           mutating: false,
           targetPath: filePath
-        }).allowed;
+        });
+        if (!decision.allowed) return false;
+        if (liveProtectedPaths.length > 0 && isTargetProtectedPathSync(filePath, liveProtectedPaths)) {
+          return false;
+        }
+        return true;
       }
-      const rel = path.relative(path.resolve(request.cwd), path.resolve(filePath));
-      return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+      const canon = canonicalizePathWithTailSync(filePath);
+      if (!canon.ok) return false;
+      if (
+        isWorkspaceProtectedPattern(filePath) ||
+        isWorkspaceProtectedPattern(canon.canonical)
+      ) {
+        return false;
+      }
+      if (
+        liveProtectedPaths.length > 0 &&
+        (isTargetProtectedPathSync(filePath, liveProtectedPaths) ||
+          isTargetProtectedPathSync(canon.canonical, liveProtectedPaths))
+      ) {
+        return false;
+      }
+      const cwdCanon = canonicalizePathWithTailSync(request.cwd);
+      if (!cwdCanon.ok) return false;
+      const isUnder = (root: string, target: string): boolean => {
+        const rel = path.relative(
+          normalizeProtectedComparePath(root),
+          normalizeProtectedComparePath(target)
+        );
+        return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+      };
+      const lexicalPath = path.resolve(filePath);
+      const lexicalWithinCwd =
+        isUnder(request.cwd, lexicalPath) || isUnder(cwdCanon.canonical, lexicalPath);
+      return lexicalWithinCwd && isUnder(cwdCanon.canonical, canon.canonical);
     };
 
     const settleTeardown = async (): Promise<TreeTeardownOutcome | null> => {
@@ -559,7 +651,7 @@ export class AcpBackedRunner implements BackendRunner {
               executionRoot: request.cwd,
               primaryWorkspaceRoot: this.options.primaryWorkspaceRoot ?? request.cwd,
               ...(this.options.protectedDatabasePaths !== undefined
-                ? { protectedDatabasePaths: this.options.protectedDatabasePaths }
+                ? { protectedDatabasePaths: () => resolveProtectedDatabasePaths(this.options.protectedDatabasePaths) }
                 : {}),
               ...(request.authorizedUpstreamInputPaths !== undefined
                 ? { authorizedUpstreamInputPaths: request.authorizedUpstreamInputPaths }

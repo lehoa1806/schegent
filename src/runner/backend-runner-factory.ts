@@ -115,7 +115,7 @@ export interface BackendRunnerFactoryOptions {
     readonly bridgeScriptPath?: string;
     readonly authorityGate?: AcpAuthorityGate;
     readonly primaryWorkspaceRoot?: string;
-    readonly protectedDatabasePaths?: readonly string[];
+    readonly protectedDatabasePaths?: readonly string[] | (() => readonly string[]);
     readonly currentOwnershipGeneration?: () => number;
     /** See `AcpBackedRunnerOptions.primeAuthority`. */
     readonly primeAuthority?: () => Promise<boolean>;

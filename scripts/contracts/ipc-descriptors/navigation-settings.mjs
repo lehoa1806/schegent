@@ -9,7 +9,6 @@ export const NAVIGATION_SETTINGS_COMMANDS = Object.freeze([
     interfaceName: 'OpenAuditLogCommand',
     validatorName: 'validateOpenAuditLog',
     family: 'navigation-settings',
-    emitInterface: true,
     doc: 'Open the workspace audit log in VS Code.',
     payloadMode: 'none'
   }),
@@ -19,7 +18,6 @@ export const NAVIGATION_SETTINGS_COMMANDS = Object.freeze([
     interfaceName: 'OpenDashboardCommand',
     validatorName: 'validateOpenDashboard',
     family: 'navigation-settings',
-    emitInterface: true,
     doc: 'Open the full Schegent dashboard webview panel.',
     payloadMode: 'none'
   }),
@@ -29,7 +27,6 @@ export const NAVIGATION_SETTINGS_COMMANDS = Object.freeze([
     interfaceName: 'OpenVerboseSettingCommand',
     validatorName: 'validateOpenVerboseSetting',
     family: 'navigation-settings',
-    emitInterface: true,
     doc: 'Open VS Code Settings scoped to schegent.logging.verbose.',
     payloadMode: 'none'
   }),
@@ -39,7 +36,6 @@ export const NAVIGATION_SETTINGS_COMMANDS = Object.freeze([
     interfaceName: 'OpenTrustSettingsCommand',
     validatorName: 'validateOpenTrustSettings',
     family: 'navigation-settings',
-    emitInterface: true,
     doc: 'Open VS Code Settings scoped to the read-only schegent.trust.* keys.',
     payloadMode: 'none'
   }),
@@ -49,7 +45,6 @@ export const NAVIGATION_SETTINGS_COMMANDS = Object.freeze([
     interfaceName: 'DismissMigrationNoticeCommand',
     validatorName: 'validateDismissMigrationNotice',
     family: 'navigation-settings',
-    emitInterface: true,
     doc: 'Dismiss the one-time post-migration notice.',
     payloadMode: 'none'
   }),
@@ -59,7 +54,6 @@ export const NAVIGATION_SETTINGS_COMMANDS = Object.freeze([
     interfaceName: 'SetConfirmSuppressionCommand',
     validatorName: 'validateSetConfirmSuppression',
     family: 'navigation-settings',
-    emitInterface: true,
     doc: 'Persist per-action confirmation suppression state in workspace memento.',
     payloadMode: 'required',
     payloadMissingErr: 'invalid-payload',
@@ -77,7 +71,6 @@ export const NAVIGATION_SETTINGS_COMMANDS = Object.freeze([
     interfaceName: 'SaveModelsCommand',
     validatorName: 'validateSaveModels',
     family: 'navigation-settings',
-    emitInterface: true,
     doc: 'Persist the Model Catalog with optional import revision and mutation tag.',
     payloadMode: 'required',
     payload: d.obj(
@@ -102,7 +95,6 @@ export const NAVIGATION_SETTINGS_COMMANDS = Object.freeze([
     interfaceName: 'SaveGeneralSettingsCommand',
     validatorName: 'validateSaveGeneralSettings',
     family: 'navigation-settings',
-    emitInterface: true,
     doc: 'Save a batch of unprefixed scalar schegent.* settings validated against KEY_SPECS downstream.',
     payloadMode: 'required',
     payload: d.obj(
@@ -118,11 +110,14 @@ export const NAVIGATION_SETTINGS_COMMANDS = Object.freeze([
     interfaceName: 'PingBackendCommand',
     validatorName: 'validatePingBackend',
     family: 'navigation-settings',
-    emitInterface: true,
     doc: 'Probe connectivity and availability for a single supported backend.',
     payloadMode: 'required',
     payload: d.obj({
-      runner: d.enum(SUPPORTED_BACKENDS, { err: 'invalid-runner' })
+      runner: d.enum(SUPPORTED_BACKENDS, {
+        refName: 'BackendRunnerKind',
+        refImport: '../backend-kinds',
+        err: 'invalid-runner'
+      })
     })
   }),
 
@@ -131,11 +126,12 @@ export const NAVIGATION_SETTINGS_COMMANDS = Object.freeze([
     interfaceName: 'SetUncontainedBackendGrantCommand',
     validatorName: 'validateSetUncontainedBackendGrant',
     family: 'navigation-settings',
-    emitInterface: false,
     doc: 'Grant or revoke uncontained execution posture for a single supported backend.',
     payloadMode: 'required',
     payload: d.obj({
       kind: d.enum(SUPPORTED_BACKENDS, {
+        refName: 'BackendRunnerKind',
+        refImport: '../backend-kinds',
         err: 'invalid-backend-kind',
         guardFn: 'isBackendRunnerKind',
         guardImport: '../../backend-kinds'

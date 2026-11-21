@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SessionArtifactRetentionService } from '../../../../src/services/session-retention/session-artifact-retention-service';
+import { cleanupSessionArtifacts } from '../../../../src/services/session-cleanup/session-cleanup-service';
 
 describe('SessionArtifactRetentionService', () => {
   let workspaceRoot: string;
@@ -394,5 +395,151 @@ describe('the failure-record pass inside the sweep (FR-R4-F15, K2, K6.7)', () =>
     const result = await service.sweep();
     expect(result.removedArtifactCount).toBe(1);
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('FR-R7-11 (FR-020) — protected database path guards in session retention and session cleanup', () => {
+  let workspaceRoot: string;
+  const now = new Date('2026-08-01T00:00:00.000Z');
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  beforeEach(async () => {
+    workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-prot-sess-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  async function seedOldRun(runId: string): Promise<string> {
+    const runDir = path.join(workspaceRoot, '.schegent', 'sessions', runId);
+    await fs.mkdir(runDir, { recursive: true });
+    const file = path.join(runDir, 'stream.jsonl');
+    await fs.writeFile(file, 'x'.repeat(128));
+    const old = new Date(now.getTime() - 60 * DAY_MS);
+    await fs.utimes(file, old, old);
+    await fs.utimes(runDir, old, old);
+    return runDir;
+  }
+
+  it('SessionArtifactRetentionService refuses deleting canonical, fallback, sidecar, and preserved unselected protected paths', async () => {
+    const canonicalDir = await seedOldRun('run-canonical');
+    const fallbackDir = await seedOldRun('run-fallback');
+    const sidecarDir = await seedOldRun('run-sidecar');
+    const preservedDir = await seedOldRun('run-preserved');
+    const disposableDir = await seedOldRun('run-disposable');
+
+    const protectedList = [
+      path.join(canonicalDir, 'schegent-state.db'),
+      path.join(fallbackDir, 'schegent-state.db'),
+      path.join(sidecarDir, 'schegent-state.db-shm'),
+      path.join(preservedDir, 'schegent-state.unselected-123456789abc.db')
+    ];
+
+    const warn = vi.fn();
+    const svc = new SessionArtifactRetentionService({
+      workspaceRoot,
+      now: () => now,
+      policy: () => ({ maxAgeMs: 1 * DAY_MS, maxBytes: 1 }),
+      logger: { warn },
+      protectedPaths: () => protectedList
+    });
+
+    const result = await svc.sweep();
+    expect(result.removedArtifactCount).toBe(1);
+    expect(result.lastSweepFailures).toBe(4);
+    await expect(fs.access(canonicalDir)).resolves.toBeUndefined();
+    await expect(fs.access(fallbackDir)).resolves.toBeUndefined();
+    await expect(fs.access(sidecarDir)).resolves.toBeUndefined();
+    await expect(fs.access(preservedDir)).resolves.toBeUndefined();
+    await expect(fs.access(disposableDir)).rejects.toBeDefined();
+    expect(warn).toHaveBeenCalledWith('session-retention: remove-artifact refused', {
+      reason: 'protected-path'
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(workspaceRoot);
+  });
+
+  it('cleanupSessionArtifacts refuses deleting targets overlapping protected database paths', async () => {
+    const runId = 'run-protected-cleanup';
+    const sessionDir = await seedOldRun(runId);
+    const rawLog = path.join(workspaceRoot, '.schegent', 'sessions', `raw-${runId}.log`);
+    await fs.writeFile(rawLog, 'raw-data');
+
+    const warn = vi.fn();
+    const outcome = await cleanupSessionArtifacts({
+      workspaceRoot,
+      runId,
+      logger: { warn },
+      protectedPaths: () => [
+        path.join(sessionDir, 'schegent-state.db'),
+        path.join(sessionDir, 'schegent-state.db-wal')
+      ]
+    });
+
+    expect(outcome.cleaned).toBe(false);
+    expect(outcome.refusal).toBe('not-contained');
+    // Protected session directory must remain intact
+    await expect(fs.access(sessionDir)).resolves.toBeUndefined();
+    // Unprotected raw transcript sibling was still cleaned up
+    await expect(fs.access(rawLog)).rejects.toBeDefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(workspaceRoot);
+  });
+
+  it('fails closed on unresolvable protected paths (ELOOP) and enforces case-variant protection in retention and cleanup', async () => {
+    const runId = 'run-case-and-eloop';
+    const sessionDir = await seedOldRun(runId);
+    const loopA = path.join(workspaceRoot, 'prot-loop-a');
+    const loopB = path.join(workspaceRoot, 'prot-loop-b');
+    await fs.symlink(loopB, loopA);
+    await fs.symlink(loopA, loopB);
+    const unresolvableProtected = path.join(loopA, 'schegent-state.db');
+
+    const svcLoop = new SessionArtifactRetentionService({
+      workspaceRoot,
+      now: () => now,
+      policy: () => ({ maxAgeMs: 1 * DAY_MS, maxBytes: 1 }),
+      logger: { warn: vi.fn() },
+      protectedPaths: () => [unresolvableProtected]
+    });
+    const loopRes = await svcLoop.sweep();
+    expect(loopRes.removedArtifactCount).toBe(0);
+    expect(loopRes.lastSweepFailures).toBe(1);
+    await expect(fs.access(sessionDir)).resolves.toBeUndefined();
+
+    const cleanupLoop = await cleanupSessionArtifacts({
+      workspaceRoot,
+      runId,
+      logger: { warn: vi.fn() },
+      protectedPaths: () => [unresolvableProtected]
+    });
+    expect(cleanupLoop.cleaned).toBe(false);
+    expect(cleanupLoop.refusal).toBe('not-contained');
+    await expect(fs.access(sessionDir)).resolves.toBeUndefined();
+
+    if (process.platform === 'darwin' || process.platform === 'win32') {
+      const upperProtected = path.join(sessionDir, 'SCHEGENT-STATE.DB').toUpperCase();
+      const svcCase = new SessionArtifactRetentionService({
+        workspaceRoot,
+        now: () => now,
+        policy: () => ({ maxAgeMs: 1 * DAY_MS, maxBytes: 1 }),
+        logger: { warn: vi.fn() },
+        protectedPaths: () => [upperProtected]
+      });
+      const caseRes = await svcCase.sweep();
+      expect(caseRes.removedArtifactCount).toBe(0);
+      expect(caseRes.lastSweepFailures).toBe(1);
+      await expect(fs.access(sessionDir)).resolves.toBeUndefined();
+
+      const cleanupCase = await cleanupSessionArtifacts({
+        workspaceRoot,
+        runId,
+        logger: { warn: vi.fn() },
+        protectedPaths: () => [upperProtected]
+      });
+      expect(cleanupCase.cleaned).toBe(false);
+      expect(cleanupCase.refusal).toBe('not-contained');
+      await expect(fs.access(sessionDir)).resolves.toBeUndefined();
+    }
   });
 });

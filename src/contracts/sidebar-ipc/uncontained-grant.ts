@@ -18,7 +18,6 @@
 // landed. `services/uncontained-grant-writer.ts` carries the rest of that
 // argument.
 
-import type { CMD_SET_UNCONTAINED_BACKEND_GRANT, CommandBase } from '../sidebar-ipc';
 import type { ContainmentEffect, EffectOutcome, EvidenceBasis, IdentityState } from '../containment-qualification';
 import { isBackendRunnerKind, type BackendRunnerKind } from '../backend-kinds';
 // Type-only, which is what keeps `contracts` a leaf layer: the projection's
@@ -50,10 +49,7 @@ export interface SetUncontainedBackendGrantPayload {
   readonly granted: boolean;
 }
 
-export interface SetUncontainedBackendGrantCommand
-  extends CommandBase<typeof CMD_SET_UNCONTAINED_BACKEND_GRANT> {
-  readonly payload: SetUncontainedBackendGrantPayload;
-}
+export type { SetUncontainedBackendGrantCommand } from '../generated/sidebar-ipc-types';
 
 /**
  * Shape only. Whether the grant is MEANINGFUL — `codex` carries an OS-enforced

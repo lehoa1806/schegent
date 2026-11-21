@@ -263,7 +263,8 @@ function settingsPropertyFromPackage(key, property) {
     maximum: property.maximum ?? null,
     pattern: property.pattern ?? null,
     itemType: property.items?.type ?? null,
-    itemPattern: property.items?.pattern ?? null
+    itemPattern: property.items?.pattern ?? null,
+    itemEnum: property.items?.enum ?? null
   };
 }
 
@@ -491,7 +492,7 @@ const runner = new SourceExtractor('src/runner/invocation-result.ts');
 const packageJson = JSON.parse(readText('package.json'));
 const backendDescriptorData = extractBackendDescriptorTable(REPO_ROOT);
 validateBackendManifestParity({ ...backendDescriptorData, packageJson });
-validateSettingsSchemaParity(REPO_ROOT, backendDescriptorData);
+validateSettingsSchemaParity(REPO_ROOT, { ...backendDescriptorData, packageJson });
 const settingsProperties = packageJson.contributes.configuration.properties;
 const settings = Object.keys(settingsProperties)
   .sort()
@@ -585,7 +586,7 @@ const schemas = {
         items: {
           type: 'object',
           additionalProperties: false,
-          required: ['key', 'type', 'default', 'scope', 'enum', 'minimum', 'maximum', 'pattern', 'itemType', 'itemPattern'],
+          required: ['key', 'type', 'default', 'scope', 'enum', 'minimum', 'maximum', 'pattern', 'itemType', 'itemPattern', 'itemEnum'],
           properties: {
             key: { type: 'string' },
             type: { type: 'string' },
@@ -596,7 +597,8 @@ const schemas = {
             maximum: { anyOf: [{ type: 'number' }, { type: 'null' }] },
             pattern: { anyOf: [{ type: 'string' }, { type: 'null' }] },
             itemType: { anyOf: [{ type: 'string' }, { type: 'null' }] },
-            itemPattern: { anyOf: [{ type: 'string' }, { type: 'null' }] }
+            itemPattern: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+            itemEnum: { anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'null' }] }
           }
         },
         default: settings

@@ -23,6 +23,7 @@ import {
   type SetQueueFailurePolicyCommand
 } from '../../sidebar-ipc';
 import { fail, hasUnexpectedKeys, ok, type IpcValidationResult } from '../../validators/shared';
+import type { QueueFailurePolicy } from '../../queue-failure-policy';
 
 export function validateCreateQueue(
   obj: Record<string, unknown>,
@@ -169,7 +170,7 @@ export function validateSetQueueFailurePolicy(
   }
   const validated_queueId: string = validated_queueIdRaw;
   const validated_policyRaw: unknown = validatedObj['policy'];
-  let validated_policy: 'halt-on-failure' | 'continue' | null;
+  let validated_policy: QueueFailurePolicy | null;
   if (validated_policyRaw === null) {
     validated_policy = null;
   } else {

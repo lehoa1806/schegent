@@ -3,6 +3,7 @@
 // Produces full nested payload schemas for all 71 inbound commands,
 // 3 host-to-webview push messages, and the WorkflowSnapshot + slices.
 
+import { SUPPRESSIBLE_SNAPSHOT_SLICES } from './canonical-enums.mjs';
 import {
   BASE64URL_CURSOR_PATTERN,
   BOUNDED_IDENTIFIER_PATTERN,
@@ -135,6 +136,7 @@ export function toJsonSchema(node) {
         properties
       };
       if (required.length > 0) schema.required = required;
+      if (Array.isArray(node.anyOf) && node.anyOf.length > 0) schema.anyOf = node.anyOf;
       return schema;
     }
 
@@ -148,6 +150,12 @@ export function toJsonSchema(node) {
       return {
         ...base,
         anyOf: node.members.map((m) => toJsonSchema(m))
+      };
+
+    case 'oneOf':
+      return {
+        ...base,
+        oneOf: node.members.map((m) => toJsonSchema(m))
       };
 
     default:
@@ -230,6 +238,29 @@ export function buildSidebarIpcJsonSchema(spec) {
     }
   }
 
+  const suppressibleSlices = spec.suppressibleSnapshotSlices ?? SUPPRESSIBLE_SNAPSHOT_SLICES;
+  if (defs.WorkflowSnapshot && defs.WorkflowSnapshot.properties) {
+    const suppressibleSet = new Set(suppressibleSlices);
+    for (const slice of suppressibleSet) {
+      if (!Object.hasOwn(defs.WorkflowSnapshot.properties, slice)) {
+        throw new Error(
+          `WorkflowSnapshotRoutinePayload: suppressible slice '${slice}' is not a property of WorkflowSnapshot`
+        );
+      }
+    }
+    const routineRequired = (defs.WorkflowSnapshot.required ?? []).filter(
+      (field) => !suppressibleSet.has(field)
+    );
+    defs.WorkflowSnapshotRoutinePayload = {
+      description:
+        'Routine STATE_SNAPSHOT payload where unchanged SUPPRESSIBLE_SNAPSHOT_SLICES may be omitted.',
+      type: 'object',
+      additionalProperties: false,
+      properties: { ...defs.WorkflowSnapshot.properties },
+      ...(routineRequired.length > 0 ? { required: routineRequired } : {})
+    };
+  }
+
   const commandRefs = {};
   for (const cmd of spec.commands) {
     const defKey = `Command_${cmd.type}`;
@@ -240,7 +271,7 @@ export function buildSidebarIpcJsonSchema(spec) {
   const hostMessageRefs = {};
   for (const msg of spec.hostMessages) {
     const defKey = `HostMessage_${msg.type}`;
-    defs[defKey] = toJsonSchema(msg.schema);
+    defs[defKey] = toJsonSchema(msg.jsonSchema ?? msg.schema);
     hostMessageRefs[msg.type] = { $ref: `#/$defs/${defKey}` };
   }
 

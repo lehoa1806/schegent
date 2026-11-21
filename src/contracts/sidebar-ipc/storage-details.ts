@@ -1,4 +1,3 @@
-import type { CMD_READ_STORAGE_DETAILS, CommandBase } from '../sidebar-ipc';
 import type {
   LifecycleResult,
   StorageInventoryPage,
@@ -15,9 +14,7 @@ export interface ReadStorageDetailsRequest {
   readonly cursor?: string;
 }
 
-export interface ReadStorageDetailsCommand extends CommandBase<typeof CMD_READ_STORAGE_DETAILS> {
-  readonly payload: ReadStorageDetailsRequest;
-}
+export type { ReadStorageDetailsCommand } from '../generated/sidebar-ipc-types';
 
 export interface StorageDetails {
   readonly pressure: StoragePressureReport;

@@ -9,7 +9,6 @@
  *
  * Node-free and `vscode`-free so both host and webview bundle it cleanly.
  */
-import type { CMD_MUTATE_REPORT, CMD_READ_REPORT, CommandBase } from '../sidebar-ipc';
 import type {
   ExportFormat,
   ExportReceipt,
@@ -34,9 +33,7 @@ export type ReadReportRequest =
   | { readonly op: 'reproduceSaved'; readonly reportId: string }
   | { readonly op: 'cancelActive' };
 
-export interface ReadReportCommand extends CommandBase<typeof CMD_READ_REPORT> {
-  readonly payload: ReadReportRequest;
-}
+export type { ReadReportCommand, MutateReportCommand } from '../generated/sidebar-ipc-types';
 
 export type ReadReportResponse =
   | { readonly op: 'run'; readonly result: ReportResult<ReportPage> }
@@ -52,10 +49,6 @@ export type MutateReportRequest =
   | { readonly op: 'export'; readonly reportId: string; readonly format: ExportFormat }
   | { readonly op: 'save'; readonly reportId: string }
   | { readonly op: 'deleteSaved'; readonly reportId: string; readonly confirmed: true };
-
-export interface MutateReportCommand extends CommandBase<typeof CMD_MUTATE_REPORT> {
-  readonly payload: MutateReportRequest;
-}
 
 export type HostReportExportResult =
   | { readonly outcome: 'dialog-canceled' }

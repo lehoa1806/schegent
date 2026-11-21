@@ -829,6 +829,19 @@ export class AutoDrainCoordinator {
       // is in flight by the time this resolves, so the rest of the sweep reads
       // current capacity; the Run itself proceeds alongside it.
       const admission = await this.controller.admitNew(next, null);
+      if (admission.refusal !== undefined) {
+        await releaseLeaseLogged(this.executionLease, queueId, this.logger);
+        const message = admission.refusalMessage ?? admission.refusal;
+        this.logger?.warn(
+          `auto-drain: controller.admitNew refused for queue ${queueId} (${admission.refusal}): ${message}`
+        );
+        this.startFailures?.recordFailure(queueId, {
+          kind: 'admission',
+          admission: 'admitNew',
+          message
+        });
+        return false;
+      }
       this.startFailures?.clear(queueId);
       this.detach(queueId, admission.completed);
       await this.openOverlapEpisodeIfStarted(queueId);

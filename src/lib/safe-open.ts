@@ -1,5 +1,5 @@
 import * as fsp from 'node:fs/promises';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, openSync } from 'node:fs';
 import * as path from 'node:path';
 
 import { NON_OWNER_BITS, narrowMode, noticeFor, type NarrowingNotice } from './narrow-mode';
@@ -726,4 +726,16 @@ export function segmentsUnderRoot(root: string, absolutePath: string): readonly 
   if (relative === '..' || relative.startsWith('..' + path.sep)) return null;
   if (path.isAbsolute(relative)) return null;
   return relative.split(path.sep);
+}
+
+/**
+ * FR-R7-11 (Tasks 05/06) — synchronous read-only open with `O_NOFOLLOW` where
+ * supported by the host kernel so POSIX callers avoid a leaf-symlink swap
+ * between `lstatSync` and `openSync`. Lives in `safe-open.ts` so the Hard Rule
+ * 69 evidence-sink mode census keeps a single authoritative `O_NOFOLLOW` open
+ * boundary; see `docs/architecture/native-binding-decision.md`.
+ */
+export function openReadOnlyNoFollowSync(absolutePath: string, fileMode?: number): number {
+  const noFollow = (fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW ?? 0;
+  return openSync(absolutePath, fsConstants.O_RDONLY | noFollow, fileMode);
 }

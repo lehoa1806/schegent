@@ -15,7 +15,6 @@ export const PHASE_CONTROL_COMMANDS = Object.freeze([
     interfaceName: 'RetryPhaseNowCommand',
     validatorName: 'validateRetryPhaseNow',
     family: 'phase-control',
-    emitInterface: false,
     doc: 'Trigger an immediate retry for a delayed-retry phase on the addressed queue.',
     payloadMode: 'required',
     payload: d.obj({ queueId: queueId() }, { allowArray: true })
@@ -26,7 +25,6 @@ export const PHASE_CONTROL_COMMANDS = Object.freeze([
     interfaceName: 'PausePhaseCommand',
     validatorName: 'validatePausePhase',
     family: 'phase-control',
-    emitInterface: false,
     doc: 'Pause the active phase on the addressed queue.',
     payloadMode: 'required',
     payload: d.obj({ queueId: queueId() }, { allowArray: true })
@@ -37,7 +35,6 @@ export const PHASE_CONTROL_COMMANDS = Object.freeze([
     interfaceName: 'ResumePhaseCommand',
     validatorName: 'validateResumePhase',
     family: 'phase-control',
-    emitInterface: false,
     doc: 'Resume a paused phase on the addressed queue with an optional operator prompt.',
     payloadMode: 'required',
     payload: d.obj(
@@ -54,7 +51,6 @@ export const PHASE_CONTROL_COMMANDS = Object.freeze([
     interfaceName: 'RestartPhaseCommand',
     validatorName: 'validateRestartPhase',
     family: 'phase-control',
-    emitInterface: false,
     doc: 'Restart a specific phase on the addressed queue.',
     payloadMode: 'required',
     payload: d.obj({ queueId: queueId(), phaseId: phaseId() }, { allowArray: true })
@@ -65,7 +61,6 @@ export const PHASE_CONTROL_COMMANDS = Object.freeze([
     interfaceName: 'SkipPhaseCommand',
     validatorName: 'validateSkipPhase',
     family: 'phase-control',
-    emitInterface: false,
     doc: 'Skip a phase on a specific run and queue.',
     payloadMode: 'required',
     payload: d.obj({ queueId: queueId(), runId: runId(), phaseId: phaseId() }, { allowArray: true })
@@ -76,7 +71,6 @@ export const PHASE_CONTROL_COMMANDS = Object.freeze([
     interfaceName: 'DisablePhaseCommand',
     validatorName: 'validateDisablePhase',
     family: 'phase-control',
-    emitInterface: false,
     doc: 'Disable a phase on the addressed queue.',
     payloadMode: 'required',
     payload: d.obj({ queueId: queueId(), phaseId: phaseId() }, { allowArray: true })
@@ -87,7 +81,6 @@ export const PHASE_CONTROL_COMMANDS = Object.freeze([
     interfaceName: 'EnablePhaseCommand',
     validatorName: 'validateEnablePhase',
     family: 'phase-control',
-    emitInterface: false,
     doc: 'Re-enable a disabled phase on the addressed queue.',
     payloadMode: 'required',
     payload: d.obj({ queueId: queueId(), phaseId: phaseId() }, { allowArray: true })
@@ -98,7 +91,6 @@ export const PHASE_CONTROL_COMMANDS = Object.freeze([
     interfaceName: 'SetPhaseBreakpointCommand',
     validatorName: 'validateSetPhaseBreakpoint',
     family: 'phase-control',
-    emitInterface: false,
     doc: 'Set a future-phase breakpoint on a specific run and queue.',
     payloadMode: 'required',
     payload: d.obj({ queueId: queueId(), runId: runId(), phaseId: phaseId() }, { allowArray: true })
@@ -109,7 +101,6 @@ export const PHASE_CONTROL_COMMANDS = Object.freeze([
     interfaceName: 'ClearPhaseBreakpointCommand',
     validatorName: 'validateClearPhaseBreakpoint',
     family: 'phase-control',
-    emitInterface: false,
     doc: 'Clear a future-phase breakpoint on a specific run and queue.',
     payloadMode: 'required',
     payload: d.obj({ queueId: queueId(), runId: runId(), phaseId: phaseId() }, { allowArray: true })
