@@ -113,7 +113,9 @@ interface Measured {
  */
 let previousProgram: ts.Program | undefined;
 
-function measure(option: 'noUncheckedIndexedAccess' | 'exactOptionalPropertyTypes'): Measured {
+async function measure(
+  option: 'noUncheckedIndexedAccess' | 'exactOptionalPropertyTypes'
+): Promise<Measured> {
   const configPath = resolve(REPO_ROOT, 'tsconfig.json');
   const readResult = ts.readConfigFile(configPath, (path) => readFileSync(path, 'utf8'));
   expect(readResult.error, 'tsconfig.json must parse').toBeUndefined();
@@ -137,12 +139,23 @@ function measure(option: 'noUncheckedIndexedAccess' | 'exactOptionalPropertyType
   const byFile = new Map<string, number>();
   let total = 0;
   let src = 0;
-  for (const diagnostic of program.getSemanticDiagnostics()) {
-    if (diagnostic.file === undefined) continue;
-    const file = relative(REPO_ROOT, diagnostic.file.fileName).replaceAll('\\', '/');
-    total += 1;
-    if (file.startsWith('src/')) src += 1;
-    byFile.set(file, (byFile.get(file) ?? 0) + 1);
+  // Query semantic diagnostics per source file and periodically yield to the event loop so
+  // Vitest's worker thread can process `onTaskUpdate` RPC replies during heavy `--coverage`
+  // runs without hitting Birpc's 60 s worker-RPC timeout.
+  const sourceFiles = program.getSourceFiles();
+  for (let idx = 0; idx < sourceFiles.length; idx += 1) {
+    const sf = sourceFiles.at(idx);
+    if (sf === undefined) continue;
+    for (const diagnostic of program.getSemanticDiagnostics(sf)) {
+      if (diagnostic.file === undefined) continue;
+      const file = relative(REPO_ROOT, diagnostic.file.fileName).replaceAll('\\', '/');
+      total += 1;
+      if (file.startsWith('src/')) src += 1;
+      byFile.set(file, (byFile.get(file) ?? 0) + 1);
+    }
+    if ((idx + 1) % 50 === 0) {
+      await new Promise<void>((resolveTick) => setImmediate(resolveTick));
+    }
   }
   return { total, src, byFile };
 }
@@ -162,8 +175,8 @@ function measure(option: 'noUncheckedIndexedAccess' | 'exactOptionalPropertyType
 const MEASURE_TIMEOUT_MS = 300_000;
 
 describe('FR-R3-110 — compiler strictness is adopted under a ratchet', () => {
-  it.each(RATCHET)('$flag has not grown past its pinned count', (entry) => {
-    const measured = measure(entry.flag);
+  it.each(RATCHET)('$flag has not grown past its pinned count', async (entry) => {
+    const measured = await measure(entry.flag);
 
     // The floor: a tsc invocation that produced NOTHING would report zero and read as total
     // success. Zero is the goal, but it must be reached by fixing sites, not by failing to run.
