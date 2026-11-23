@@ -33,6 +33,18 @@ import type { BackendIdentityCache } from './identity-cache';
 /** Runs whose first admitted fingerprints are kept; the oldest is evicted past this. */
 export const PER_RUN_FINGERPRINT_CAPACITY = 256;
 
+/**
+ * Raised by {@link SpawnGate.admit} when `request.cancellationSignal` aborts before admission
+ * completes. Fail-closed: an aborted admission never resolves as admitted, never spawns
+ * `--version`, and never mutates Memento acceptance bindings.
+ */
+export class SpawnAdmissionCancelledError extends Error {
+  public constructor() {
+    super('Spawn admission cancelled.');
+    this.name = 'SpawnAdmissionCancelledError';
+  }
+}
+
 /** The slice of the acceptance binding store the gate reads and writes. */
 export interface SpawnAdmissionBindings {
   read(kind: BackendRunnerKind): BindingInput;
@@ -45,7 +57,11 @@ export interface SpawnAdmissionGateDeps {
   hasPrimacy(): boolean | Promise<boolean>;
   resolveExecutable(cliPath: string): Promise<'resolved' | ExecutableUnresolvedCause>;
   /** The registry's cached `--version` probe: the normalised line, or `null` when unreadable. */
-  observeVersion(kind: BackendRunnerKind, cliPath: string): Promise<string | null>;
+  observeVersion(
+    kind: BackendRunnerKind,
+    cliPath: string,
+    cancellationSignal?: AbortSignal
+  ): Promise<string | null>;
   granted(): ReadonlySet<BackendRunnerKind>;
   readonly bindings: SpawnAdmissionBindings;
   readonly platform: { readonly os: string; readonly arch: string };
@@ -90,9 +106,23 @@ export function createSpawnAdmissionGate(deps: SpawnAdmissionGateDeps): SpawnGat
     return new ContainmentAdmissionRefusedError({ kind, ...init });
   }
 
-  async function observe(kind: BackendRunnerKind, cliPath: string): Promise<BackendIdentity> {
+  async function observe(
+    kind: BackendRunnerKind,
+    cliPath: string,
+    signal?: AbortSignal
+  ): Promise<BackendIdentity> {
+    if (signal?.aborted) throw new SpawnAdmissionCancelledError();
     const executable = await deps.resolveExecutable(cliPath);
-    const versionMinor = executable === 'resolved' ? versionMinorOf(await deps.observeVersion(kind, cliPath)) : null;
+    if (signal?.aborted) throw new SpawnAdmissionCancelledError();
+    const versionMinor =
+      executable === 'resolved'
+        ? versionMinorOf(
+            signal === undefined
+              ? await deps.observeVersion(kind, cliPath)
+              : await deps.observeVersion(kind, cliPath, signal)
+          )
+        : null;
+    if (signal?.aborted) throw new SpawnAdmissionCancelledError();
     const identity: BackendIdentity = {
       kind,
       executable,
@@ -106,9 +136,14 @@ export function createSpawnAdmissionGate(deps: SpawnAdmissionGateDeps): SpawnGat
   }
 
   async function admit(kind: BackendRunnerKind, request: SpawnAdmissionRequest): Promise<void> {
+    const signal = request.cancellationSignal;
+    if (signal?.aborted) throw new SpawnAdmissionCancelledError();
     if (!deps.isTrusted()) throw refused(kind, { reason: 'workspace-untrusted-at-spawn' });
-    if (!(await deps.hasPrimacy())) throw refused(kind, { reason: 'ownership-lost-at-spawn' });
-    const identity = await observe(kind, request.cliPath);
+    const primacy = await deps.hasPrimacy();
+    if (signal?.aborted) throw new SpawnAdmissionCancelledError();
+    if (!primacy) throw refused(kind, { reason: 'ownership-lost-at-spawn' });
+    const identity = await observe(kind, request.cliPath, signal);
+    if (signal?.aborted) throw new SpawnAdmissionCancelledError();
     const verdict = judgeSpawnAdmission({ identity, granted: deps.granted(), binding: deps.bindings.read(kind) });
     if (verdict.outcome === 'refused') {
       const { outcome: _outcome, ...init } = verdict;
@@ -118,7 +153,9 @@ export function createSpawnAdmissionGate(deps: SpawnAdmissionGateDeps): SpawnGat
     if (perRun.changed(request.runId, kind, fingerprint)) {
       throw refused(kind, { reason: 'configuration-changed-at-spawn', fingerprint });
     }
+    if (signal?.aborted) throw new SpawnAdmissionCancelledError();
     if (verdict.bindingWrite !== undefined) await deps.bindings.bind(kind, fingerprint, verdict.bindingWrite);
+    if (signal?.aborted) throw new SpawnAdmissionCancelledError();
     perRun.remember(request.runId, kind, fingerprint);
   }
 

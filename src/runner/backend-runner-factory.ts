@@ -91,6 +91,11 @@ export interface BackendRunnerFactoryOptions {
    * means the shipped allowlist default, never `inherit`.
    */
   readonly environmentPolicy?: ProcessEnvironmentPolicy;
+  /**
+   * FR-R7-16 (16-14) -- live workspace trust check, read before `--version` probes so untrusted
+   * entry paths perform zero backend executable invocations.
+   */
+  readonly isTrusted?: () => boolean;
   readonly monitorHook?: MonitorSidecarHook | null;
   /**
    * Probe `<cli> --help` once per activation to pick the safest available

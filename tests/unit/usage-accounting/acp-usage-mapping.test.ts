@@ -6,6 +6,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { NodeSqliteConnection, SchemaBootstrapService } from '../../../src/services/sqlite-store';
+import { buildUsageUpdate } from '../../../src/services/acp-runtime/client-guards';
+import { ObservationEmitter } from '../../../src/services/acp-runtime/observation-emitter';
 import { acpUsageObservation } from '../../../src/services/usage-accounting/acp-usage-mapping';
 import type { AccountingMeasureInput } from '../../../src/services/usage-accounting/observation-normalizer';
 import { createUsageAccountingService } from '../../../src/services/usage-accounting/usage-accounting-service';
@@ -150,6 +152,57 @@ describe('ingestAcpUsageUpdate (T039)', () => {
     expect(answer.value.rows).toStrictEqual([]);
   });
 
+  it('bounds replayed historical ACP observations together with unattributed under maxUnattributed and preserves capacity for attributed updates (SR-A1)', () => {
+    const svc = createUsageAccountingService({
+      conn,
+      nowUtc: () => NOW,
+      monotonicMs: () => 1,
+      workspaceId: 'ws-1',
+      bounds: { maxUnattributed: 3, maxRetainedObservations: 8 }
+    });
+
+    // 1 unattributed ACP update (no binding) + 2 historical replays fill the shared cap of 3.
+    expect(svc.ingestAcpUsageUpdate(acpUpdate({ producerEventId: undefined }), null)).toMatchObject({
+      ok: true,
+      value: { disposition: 'unattributed' }
+    });
+    for (let index = 0; index < 2; index += 1) {
+      expect(
+        svc.ingestAcpUsageUpdate(
+          acpUpdate({ replayed: true, producerEventId: undefined, hostReceiveSeq: index + 1 }),
+          acpBinding()
+        )
+      ).toMatchObject({ ok: true, value: { disposition: 'historical' } });
+    }
+
+    // Flood of additional historical replays hits unattributed-limit and cannot exhaust maxRetainedObservations.
+    for (let index = 0; index < 10; index += 1) {
+      expect(
+        svc.ingestAcpUsageUpdate(
+          acpUpdate({ replayed: true, producerEventId: undefined, hostReceiveSeq: 100 + index }),
+          acpBinding()
+        )
+      ).toEqual({ ok: false, refusal: { code: 'unattributed-limit' } });
+    }
+    expect(count('SELECT count(*) FROM accounting_observations')).toBe(3);
+    expect(
+      Number(
+        conn.scalar("SELECT COALESCE(SUM(count), 0) FROM accounting_gaps WHERE gap_kind = 'unattributed-limit'") ?? 0
+      )
+    ).toBe(10);
+
+    // Live attributed ACP update still ingests and projects cleanly.
+    expect(
+      svc.ingestAcpUsageUpdate(acpUpdate({ producerEventId: 'evt-live-after-replay-cap', used: 2048 }), acpBinding())
+    ).toMatchObject({ ok: true, value: { disposition: 'accepted' } });
+    const answer = svc.query(QUERY);
+    if (!answer.ok) throw new Error('query refused');
+    expect(answer.value.rows.at(0)?.measures.find((item) => item.measure === 'context_used')).toMatchObject({
+      total: '2048',
+      completeness: 'known'
+    });
+  });
+
   it('contributes 0 billable tokens and 0 money from occupancy and credits (SC-009)', () => {
     const svc = service();
     svc.ingestAcpUsageUpdate(
@@ -191,6 +244,86 @@ describe('ingestAcpUsageUpdate (T039)', () => {
       svc.ingestAcpUsageUpdate(acpUpdate(LATE), acpBinding());
       svc.ingestAcpUsageUpdate(acpUpdate(EARLY), acpBinding());
       expect(contextUsed(svc)).toMatchObject({ total: '2500', completeness: 'known' });
+    });
+  });
+
+  describe('producer trust separation and unit folding (FR-R7-16 16-05)', () => {
+    it('folds unbaselined cycling currencies and credit units to fallback unknown units so an agent cannot mint arbitrary units', () => {
+      const svc = service();
+      const currencies = ['EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD', 'NZD', 'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'HUF', 'MXN', 'BRL', 'INR', 'KRW', 'SGD', 'HKD', 'ZAR'];
+      currencies.forEach((currency, index) => {
+        const update = acpUpdate({
+          producerEventId: `evt-cycle-${String(index)}`,
+          eventUtc: `2026-11-10T10:00:${String(index).padStart(2, '0')}.000Z`,
+          cost: { amount: '0.25', currency },
+          credits: { amount: '1.0', unit: `vendor-${String(index)}.credits` },
+          hasQualifiedSessionBaseline: false
+        });
+        const mapped = acpUsageObservation(update, acpBinding(), NOW);
+        expect(measureOf(mapped.measures, 'cost')).toMatchObject({
+          unit: 'USD',
+          quantity: null,
+          unknownReason: 'unattributed-session-baseline'
+        });
+        expect(measureOf(mapped.measures, 'credits')).toMatchObject({
+          unit: 'credits',
+          quantity: null,
+          unknownReason: 'unattributed-session-baseline'
+        });
+        const res = svc.ingestAcpUsageUpdate(update, acpBinding());
+        expect(res.ok).toBe(true);
+      });
+
+      const answer = svc.query({ groupBy: ['backend'], limit: 1 });
+      if (!answer.ok) throw new Error('query refused');
+      const row = answer.value.rows.at(0)!;
+      expect(row.measures.filter((m) => m.measure === 'cost').map((m) => m.unit)).toEqual(['USD']);
+      expect(row.measures.filter((m) => m.measure === 'credits').map((m) => m.unit)).toEqual(['credits']);
+      expect(row.omittedUnitCount).toBeUndefined();
+    });
+
+    it('stamps ACP usage updates with host receive clock via ObservationEmitter and buildUsageUpdate (never agent clock)', () => {
+      const hostClockUtc = '2026-11-10T11:55:00.000Z';
+      const emitted: Array<{ readonly eventUtc: string; readonly hasQualifiedSessionBaseline: boolean }> = [];
+      const emitter = new ObservationEmitter(
+        1,
+        {
+          nowUtc: () => hostClockUtc,
+          setTimer: () => ({ cancel: () => undefined })
+        },
+        (obs) => {
+          if (obs.kind === 'usage') {
+            emitted.push({
+              eventUtc: obs.usage.eventUtc,
+              hasQualifiedSessionBaseline: obs.usage.hasQualifiedSessionBaseline
+            });
+          }
+        }
+      );
+      emitter.emit(
+        'sess-1',
+        {
+          origin: 'live',
+          turnId: 'turn-1',
+          attemptId: ACP_ATTEMPT,
+          binding: acpBinding()
+        },
+        (hostReceiveSeq, eventUtc) => ({
+          kind: 'usage',
+          usage: buildUsageUpdate(
+            {
+              profileId: 'acp-profile',
+              generation: 1,
+              sessionId: 'sess-1',
+              attribution: { origin: 'live', turnId: 'turn-1', attemptId: ACP_ATTEMPT, binding: acpBinding() },
+              hostReceiveSeq,
+              eventUtc
+            },
+            { used: 500, size: 100_000, cost: { amount: '0.50', currency: 'EUR' } }
+          )
+        })
+      );
+      expect(emitted).toEqual([{ eventUtc: hostClockUtc, hasQualifiedSessionBaseline: false }]);
     });
   });
 });

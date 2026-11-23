@@ -6,7 +6,7 @@ import type { BackendRunner, MonitorSidecarEvent, MonitorSidecarHook, TreeAttrib
 import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
 import { buildSpawnEnv } from './spawn-env';
-import { spawnCommandFor } from '../lib/spawn-command';
+import { isInvalidExecutablePath, spawnCommandFor } from '../lib/spawn-command';
 import { planCapabilityEnforcement } from '../services/capability-enforcement-plan';
 import { CapabilityNotEnforceableError } from '../services/capability-refusal';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
@@ -188,12 +188,33 @@ function safeSpawn(
   }
   // FR-R3-054 (H-05) — its own process group, so the terminate ladder can reach
   // descendants rather than only the direct child.
-  // Review gap GC-24 -- on win32 a bare name resolves along the child's PATH only, never the cwd.
-  return spawnFn(spawnCommandFor(command, options.env ?? process.env), args, {
+  // Review gap GC-24 & FR-R7-16 (16-16): resolve against the child's exact env on real spawns,
+  // and refuse explicit relative/drive-relative paths even under injected test doubles.
+  const resolvedCommand =
+    spawnFn === (spawn as unknown as SpawnFn) || isInvalidExecutablePath(command)
+      ? spawnCommandFor(command, options.env ?? process.env)
+      : command;
+  return spawnFn(resolvedCommand, args, {
     ...options,
     shell: false,
     ...processTreeSpawnOptions()
   });
+}
+
+function cancelledInvocationOutput(command: string, startedAtMs: number): RawInvocationOutput {
+  const stdoutBuffer = new ZippedStreamBuffer();
+  const stderrBuffer = new ZippedStreamBuffer();
+  stdoutBuffer.finalize();
+  stderrBuffer.finalize();
+  return {
+    stdoutBuffer,
+    stderrBuffer,
+    exitCode: null,
+    killed: true,
+    timedOut: false,
+    durationMs: Math.max(0, Date.now() - startedAtMs),
+    command
+  };
 }
 
 /**
@@ -359,6 +380,9 @@ export class ClaudeCliRunner implements BackendRunner {
     outputSink?: InvocationOutputSink
   ): Promise<RawInvocationOutput> {
     const start = Date.now();
+    if (!this.closed && request.cancellationSignal?.aborted === true) {
+      return cancelledInvocationOutput(request.cliPath, start);
+    }
 
     // Feature 032 — session-continuation hint. When `resumeSessionId`
     // is set, the runner uses `--resume <id>` for deterministic session
@@ -422,9 +446,13 @@ export class ClaudeCliRunner implements BackendRunner {
       await diagnosticWriter.prepare(verboseTarget);
     }
 
+    const isAborted = (): boolean => request.cancellationSignal?.aborted === true;
     // After the last await, so a `close()` that lands while `prepare()` runs
     // still refuses this spawn (feature-228 security review, S1).
     if (this.closed) throw new SpawnRefusedAfterCloseError('claude-cli');
+    if (isAborted()) {
+      return cancelledInvocationOutput([request.cliPath, ...args].join(' '), start);
+    }
 
     // Feature 068 — capture the assembled command (cliPath + argv). Audit
     // schema v3 (2026-08-02) made `cli-invocation` payloads metadata-only,
@@ -753,7 +781,7 @@ export class ClaudeCliRunner implements BackendRunner {
           killed = true;
           this.terminate(child, attribution);
         };
-        if (request.cancellationSignal.aborted) onAbort();
+        if (isAborted()) onAbort();
         else request.cancellationSignal.addEventListener('abort', onAbort);
       }
 

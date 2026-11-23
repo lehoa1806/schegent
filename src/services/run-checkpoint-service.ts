@@ -332,9 +332,15 @@ export class RunCheckpointService {
         ),
         'overwrite'
       );
-      await this.prune(runRoot);
     } catch {
       throw this.blocked('artifact-write-failed');
+    }
+    // FR-R7-16 (16-11, FR-011) — retention runs best-effort outside the snapshot write boundary
+    // so a prune I/O failure never turns an already-finished checkpoint into a phase block.
+    try {
+      await this.prune(runRoot);
+    } catch {
+      this.logger.warn('checkpoint prune failed after checkpoint completed');
     }
   }
 
@@ -661,9 +667,14 @@ export class RunCheckpointService {
       // Markers are pruned on the same per-Run budget as snapshots — a Run that
       // spends its whole life beside a sibling writes one per Git-capable phase
       // and would otherwise be the one path here that grows without a bound.
-      await this.prune(runRoot);
     } catch (error) {
       this.logger.warn(`checkpoint decline marker failed: ${(error as Error).message}`);
+      return;
+    }
+    try {
+      await this.prune(runRoot);
+    } catch {
+      this.logger.warn('checkpoint prune failed after checkpoint completed');
     }
   }
 
@@ -684,16 +695,41 @@ export class RunCheckpointService {
    */
   private async prune(runRoot: string): Promise<void> {
     const files = (await fs.readdir(runRoot)).sort();
-    const prefixes = [
-      ...new Set(files.map((name) => name.replace(/\.(patch|declined\.json|recovery\.json|json)$/, '')))
-    ];
-    for (const prefix of prefixes.slice(0, Math.max(0, prefixes.length - PER_RUN_LIMIT))) {
-      await Promise.all([
-        this.removeIfContained(path.join(runRoot, `${prefix}.patch`)),
-        this.removeIfContained(path.join(runRoot, `${prefix}.json`)),
-        this.removeIfContained(path.join(runRoot, `${prefix}.declined.json`)),
-        this.removeEnvelopeUnlessProtected(runRoot, prefix)
-      ]);
+    const fileSet = new Set(files);
+    // FR-R7-16 (16-11, FR-011) — partition checkpoint prefixes (`.patch`/`.json`/`.declined.json`)
+    // from `.recovery.json` envelope prefixes so retained envelopes (e.g. `hand-*`) never displace
+    // newly written `17...-<phase>` checkpoints, absent files are never unlinked, and unowned
+    // envelopes past `PER_RUN_LIMIT` are still reaped across repeated prunes.
+    const checkpointPrefixSet = new Set<string>();
+    const envelopePrefixSet = new Set<string>();
+    for (const name of files) {
+      if (name.endsWith(RECOVERY_ENVELOPE_SUFFIX)) {
+        envelopePrefixSet.add(name.slice(0, -RECOVERY_ENVELOPE_SUFFIX.length));
+      } else if (name.endsWith('.declined.json')) {
+        checkpointPrefixSet.add(name.slice(0, -'.declined.json'.length));
+      } else if (name.endsWith('.patch')) {
+        checkpointPrefixSet.add(name.slice(0, -'.patch'.length));
+      } else if (name.endsWith('.json')) {
+        checkpointPrefixSet.add(name.slice(0, -'.json'.length));
+      }
+    }
+    const checkpointPrefixes = [...checkpointPrefixSet].sort();
+    for (const prefix of checkpointPrefixes.slice(0, Math.max(0, checkpointPrefixes.length - PER_RUN_LIMIT))) {
+      const removals: Promise<void>[] = [];
+      for (const suffix of ['.patch', '.json', '.declined.json'] as const) {
+        const fileName = `${prefix}${suffix}`;
+        if (fileSet.has(fileName)) {
+          removals.push(this.removeIfContained(path.join(runRoot, fileName)));
+        }
+      }
+      await Promise.all(removals);
+    }
+    const envelopePrefixes = [...envelopePrefixSet].sort();
+    for (const prefix of envelopePrefixes.slice(0, Math.max(0, envelopePrefixes.length - PER_RUN_LIMIT))) {
+      const fileName = `${prefix}${RECOVERY_ENVELOPE_SUFFIX}`;
+      if (fileSet.has(fileName)) {
+        await this.removeEnvelopeUnlessProtected(runRoot, prefix);
+      }
     }
   }
 

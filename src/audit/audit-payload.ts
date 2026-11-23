@@ -313,6 +313,7 @@ const KEY_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
 // property, so a plain assignment shadows it with an own property and both sides
 // already agree.
 const PROTOTYPE_SETTER_KEY = '__proto__';
+const CLI_VERSION_AUDIT_RE = /^\d{1,6}\.\d{1,6}(?:\.\d{1,6})?$/;
 const PATH_OR_ENDPOINT_RE = /(?:^~?[\\/]|^[A-Za-z]:[\\/]|[a-z][a-z0-9+.-]*:\/\/|[\\/](?:Users|home|var|tmp|private|workspace|workspaces)[\\/])/i;
 const OMITTED_KEYS = new Set([
   'args',
@@ -407,6 +408,8 @@ function projectValue(value: unknown, depth: number): unknown {
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
       if (!KEY_RE.test(key)) throw new AuditPayloadValidationError('invalid-key');
       if (OMITTED_KEYS.has(key) || key === PROTOTYPE_SETTER_KEY || child === undefined) continue;
+      // FR-R7-16 (16-15): admit `cliVersion`/`qualifiedCliVersion` only when strictly dotted-numeric.
+      if ((key === 'cliVersion' || key === 'qualifiedCliVersion') && (typeof child !== 'string' || !CLI_VERSION_AUDIT_RE.test(child))) continue;
       entries.push([key, projectValue(child, depth + 1)]);
     }
     return Object.fromEntries(entries);

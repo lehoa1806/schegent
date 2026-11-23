@@ -140,8 +140,18 @@ function syncRelationalCatalogRowInTx(
     }
     if (!Array.isArray(manifest.entries)) return;
 
-    for (const entry of manifest.entries) {
-      if (!entry || typeof entry !== 'object') continue;
+    interface SyncManifestEntry {
+      readonly kind?: unknown;
+      readonly id?: unknown;
+      readonly activeVersionId?: unknown;
+      readonly draftVersionId?: unknown;
+      readonly activeVersion?: unknown;
+      readonly draftVersion?: unknown;
+    }
+
+    for (const rawEntry of manifest.entries as readonly unknown[]) {
+      if (!rawEntry || typeof rawEntry !== 'object') continue;
+      const entry = rawEntry as SyncManifestEntry;
       const layer: CatalogLayer | null =
         entry.kind === 'phase' || entry.kind === 'pipeline' || entry.kind === 'workflow'
           ? entry.kind
@@ -155,7 +165,7 @@ function syncRelationalCatalogRowInTx(
       );
       if (!actualDef) continue;
 
-      const findVersionRowId = (verStr: string | null | undefined): string | null => {
+      const findVersionRowId = (verStr: unknown): string | null => {
         if (typeof verStr !== 'string') return null;
         const m = /^v(\d+)$/.exec(verStr);
         if (!m) return null;
@@ -168,8 +178,8 @@ function syncRelationalCatalogRowInTx(
         return row?.definition_version_id ?? null;
       };
 
-      const pubRowId = findVersionRowId(entry.activeVersion);
-      const draftRowId = findVersionRowId(entry.draftVersion);
+      const pubRowId = findVersionRowId(entry.activeVersionId ?? entry.activeVersion);
+      const draftRowId = findVersionRowId(entry.draftVersionId ?? entry.draftVersion);
       if (pubRowId !== null) {
         conn.run(
           `UPDATE definition_versions SET status = 'published' WHERE definition_version_id = ?`,

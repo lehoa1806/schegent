@@ -20,6 +20,7 @@ import {
   hasGitlinks,
   hasLfsAttributes,
   isAncestor,
+  isAncestorDetailed,
   listWorktrees,
   meetsLaneGitFloor,
   parseGitVersion,
@@ -150,6 +151,49 @@ describe('FR-R6-F10 commit, ancestry and tree reads', () => {
     expect(await isAncestor(c, second, first)).toBe(false);
     expect(await isAncestor(c, first, first)).toBe(true);
     expect(await isAncestor(c, 'c'.repeat(40), second)).toBeNull();
+
+    // Detailed ancestry distinguishes ancestor, not-ancestor, missing-ref, and git-error (16-23).
+    expect(await isAncestorDetailed(c, first, second)).toEqual({ outcome: 'ancestor' });
+    expect(await isAncestorDetailed(c, second, first)).toEqual({ outcome: 'not-ancestor' });
+    expect(await isAncestorDetailed(c, 'c'.repeat(40), second)).toEqual({
+      outcome: 'missing-ref',
+      failure: { code: 'exit', exitCode: 128 }
+    });
+    expect(
+      await isAncestorDetailed(
+        {
+          git: { run: async () => ({ ok: false, exitCode: null, code: 'timeout' }) },
+          cwd: repo.root,
+          timeoutMs: TIMEOUT_MS
+        },
+        first,
+        second
+      )
+    ).toEqual({
+      outcome: 'git-error',
+      failure: { code: 'timeout', exitCode: null }
+    });
+    // Exit 128 when both commits exist in the repo is classified as `git-error`, not `missing-ref`.
+    const realGit = createExecFileGitRunner();
+    expect(
+      await isAncestorDetailed(
+        {
+          git: {
+            run: (args, opts) =>
+              args.at(0) === 'merge-base'
+                ? Promise.resolve({ ok: false, exitCode: 128, code: 'exit' })
+                : realGit.run(args, opts)
+          },
+          cwd: repo.root,
+          timeoutMs: TIMEOUT_MS
+        },
+        first,
+        second
+      )
+    ).toEqual({
+      outcome: 'git-error',
+      failure: { code: 'exit', exitCode: 128 }
+    });
   });
 
   it('reads the tree of a commit', async () => {

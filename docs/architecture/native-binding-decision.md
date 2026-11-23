@@ -1,7 +1,7 @@
 # Decision record: is a native binding acceptable for this product?
 
 **Status: DECIDED — no. 2026-08-25.**
-**Consequence: four residuals become permanent stated limits, not open follow-ups.**
+**Consequence: five residuals become permanent stated limits, not open follow-ups.**
 
 `FR-R3-083` asks this question once, deliberately, because four residuals in three subsystems all
 resolve to it. Filing them separately asked it four times and answered it inconsistently — one of them
@@ -10,12 +10,13 @@ third said nothing at all.
 
 ## The one question
 
-Four checks cannot be written with what Node exposes. Each needs a compiled extension to the runtime:
+Five checks cannot be written with what Node exposes. Each needs a compiled extension to the runtime:
 
 | Residual | Site | Missing primitive |
 |---|---|---|
 | The component-swap race in the safe-open walk | [`src/lib/safe-open.ts`](../../src/lib/safe-open.ts) | `openat(2)` — a handle-relative walk. `/proc/self/fd` is Linux-only. |
 | Atomic publish through `rename` | [`tests/lint/safe-open-migration.test.ts`](../../tests/lint/safe-open-migration.test.ts) `ATOMIC_PUBLISH_RENAME_RESIDUAL` | `renameat(2)`. A `rename` resolves both pathnames and cannot be made handle-relative. |
+| Path-based removal TOCTOU window (contained `unlink` and artifact deletion) | [`src/lib/path-containment.ts`](../../src/lib/path-containment.ts), [`src/services/artifact-lifecycle/deletion-operations.ts`](../../src/services/artifact-lifecycle/deletion-operations.ts) | `openat(2)` / `unlinkat(2)` — descriptor-relative removal. `node:fs/promises` exposes only pathname-based `unlink`, leaving a residual window between `resolveContainedLink`/`lstat` and `unlink` (`FR-R7-16`, `16-03`). |
 | An unescapable kill on Windows | [`src/runner/process-tree.ts`](../../src/runner/process-tree.ts) | A Job Object with kill-on-close. `taskkill /T` walks by parent pid and is escaped by re-parenting. |
 | Reparse-tag inspection at the Windows leaf | [`src/lib/safe-open.ts`](../../src/lib/safe-open.ts) | `GetFileInformationByHandleEx` / `FSCTL_GET_REPARSE_POINT`. `O_NOFOLLOW` does not exist on Windows and Node ignores it. |
 
@@ -63,6 +64,11 @@ The residuals are **stated permanently** rather than tracked as work. Concretely
   through one, is refused at every component and at the leaf. What remains open is only an adversary
   who wins the interval between one component's `lstat` and the next syscall, on a path already inside
   a trusted root.
+- Contained artifact deletion (`path-containment.ts` and `deletion-operations.ts`) pins lexical
+  declared-root containment, canonical parent containment (`resolveContainedLink`), regular non-link
+  leaf `lstat`, sweep-lease fencing, and durable `executing` intent before calling pathname-based
+  `unlink` on the canonical resolved path. Only the residual window between `lstat` and `unlink`
+  remains open (risk reduction, not a guarantee).
 - `taskkill /T` is the requirement's **own allowed** well-audited equivalent, not a defect. What it
   does not survive is a descendant that re-parents itself. On POSIX the equivalent gap is a descendant
   that calls `setsid` for itself.
@@ -79,8 +85,10 @@ State the trigger rather than leaving it to judgement:
 1. **The product acquires a runtime dependency for another reason.** The decisive input above is that
    this would be the first. Once it is not the first, the marginal cost is a prebuild matrix rather
    than a change of kind, and this record should be re-argued on that narrower question.
-2. **Node exposes the primitive.** `openat`/`renameat`-class handle-relative operations reaching
-   stable `node:fs` removes the dependency question entirely for two of the four residuals.
+2. **Node exposes the primitive.** `openat`/`renameat`/`unlinkat`-class handle-relative operations
+   reaching stable `node:fs` removes the dependency question entirely for the descriptor-relative
+   walk, atomic publish, and path-based removal residuals, and triggers reevaluation of
+   descriptor-relative removal.
 3. **The threat model changes.** This product is local-first and single-operator
    (`docs/architecture/local-queue-parallelism-ratification.md`). An adversary with local code
    execution racing the walk already has the operator's authority. If Schegent ever runs work on
@@ -92,6 +100,8 @@ Any of the three is enough to reopen it. Absent them, these residuals are closed
 
 ## Related
 
+- [Artifact lifecycle operations](../operations/artifact-lifecycle.md) — states the pinned deletion
+  effect boundary and residual pathname-`unlink` TOCTOU window for operators.
 - [Workspace ownership fencing](workspace-ownership-fencing.md) — the mount limit, which is the same
   class of permanent statement for a different primitive.
 - [Backend operations](../operations/backends.md) — step 6 states the Job Object limit for operators.

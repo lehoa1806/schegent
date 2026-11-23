@@ -32,6 +32,7 @@ import {
 import type { NodeSqliteConnection } from '../sqlite-store';
 import { inImmediateTransaction } from './accounting-transaction';
 import {
+  ACCOUNTING_PROVENANCE_RANK,
   type CandidateDisposition,
   type CandidateMeasure,
   aggregateObservationDisposition,
@@ -218,7 +219,7 @@ export function recomputeInvocation(
       first.measure,
       first.unit
     );
-    if (open !== undefined && open.correction_id !== null) continue;
+    if (open !== undefined && (open.correction_id !== null || open.selected_observation_id === null)) continue;
     const candidates: CandidateMeasure[] = group.map((row) => ({
       observationId: row.observation_id,
       ingestSeq: Number(row.ingest_seq),
@@ -234,7 +235,19 @@ export function recomputeInvocation(
       perObservation.set(observationId, list);
     }
     const selected = selection.selected as CandidateMeasure;
-    if (open !== undefined && sameSelection(open, selected.quantity, selection.completeness, selected.provenance, selected.observationId)) continue;
+    // FR-R7-16 (16-07): once an open contribution is recorded as `conflicting`, pruning an expired
+    // non-selected conflicting observation must not silently downgrade completeness back to `known`
+    // on later reevaluation unless superseded by a strictly higher-ranked known provenance (or an
+    // explicit correction, handled outside `recomputeInvocation`).
+    const effectiveCompleteness: Completeness =
+      open !== undefined &&
+      open.completeness === 'conflicting' &&
+      selection.completeness !== 'conflicting' &&
+      (selection.completeness === 'unknown' ||
+        ACCOUNTING_PROVENANCE_RANK[selected.provenance] <= ACCOUNTING_PROVENANCE_RANK[open.provenance])
+        ? 'conflicting'
+        : selection.completeness;
+    if (open !== undefined && sameSelection(open, selected.quantity, effectiveCompleteness, selected.provenance, selected.observationId)) continue;
     if (open !== undefined) {
       conn.run('UPDATE accounting_contributions SET to_revision = ? WHERE contribution_id = ?', revision, open.contribution_id);
     }
@@ -246,7 +259,7 @@ export function recomputeInvocation(
       first.measure,
       first.unit,
       selected.quantity,
-      selection.completeness,
+      effectiveCompleteness,
       selected.provenance,
       costOriginOf(first.measure, selected.provenance),
       selected.observationId,

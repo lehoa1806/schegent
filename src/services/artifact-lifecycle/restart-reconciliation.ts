@@ -19,7 +19,7 @@ import type {
   MutationAuthority,
   SourcePreservationOperation
 } from '../../contracts/artifact-lifecycle/lifecycle-types';
-import { reconcileDeletionOperation } from './deletion-operations';
+import { reconcileDeletionOperation, repairDeletionAccounting } from './deletion-operations';
 import { workspaceIdOf, type LifecycleContext } from './lifecycle-context';
 import { ok } from './lifecycle-results';
 import { checkStandingAuthority } from './mutation-authority';
@@ -71,6 +71,16 @@ export async function reconcileAfterRestart(
       diagnostics.push(diagnostic('reconciled-operation', `deletion operation resumed: ${resumed.value.state}`));
     } else {
       diagnostics.push(diagnostic('reconciled-operation', `deletion operation deferred: ${resumed.refusal.code}`));
+    }
+  }
+
+  if (signal?.aborted !== true) {
+    const repair = repairDeletionAccounting(ctx);
+    if (repair.repaired > 0) {
+      const suffix = repair.capped ? ' (more remaining)' : '';
+      diagnostics.push(
+        diagnostic('reconciled-operation', `deletion accounting repaired: ${repair.repaired}${suffix}`)
+      );
     }
   }
 

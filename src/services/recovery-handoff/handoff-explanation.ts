@@ -52,6 +52,8 @@ export interface HandoffExplanationSnapshot {
   readonly references: readonly ReferenceRow[];
   readonly deliveries: readonly DeliveryRow[];
   readonly decisions: readonly DecisionRow[];
+  /** Decisions already omitted by bounded SQLite paging before in-memory trimming (`16-13`). */
+  readonly omittedDecisionCount?: number;
 }
 
 export interface ExplainedReference {
@@ -194,7 +196,12 @@ function nextActionsFor(state: HandoffState, blocked: boolean): readonly NextAct
 }
 
 function newestFirst<Row extends { readonly recordedAtMs: number }>(rows: readonly Row[], id: (row: Row) => string): Row[] {
-  return [...rows].sort((a, b) => b.recordedAtMs - a.recordedAtMs || id(b).localeCompare(id(a)));
+  return [...rows].sort((a, b) => {
+    if (b.recordedAtMs !== a.recordedAtMs) return b.recordedAtMs - a.recordedAtMs;
+    const idA = id(a);
+    const idB = id(b);
+    return idA < idB ? 1 : idA > idB ? -1 : 0;
+  });
 }
 
 function explainDelivery(row: DeliveryRow): ExplainedDelivery {
@@ -268,7 +275,7 @@ function trimToBound(explanation: HandoffExplanation): HandoffExplanation {
   const totals = new Map<ListKey, number>(
     LIST_KEYS.map((key) => [key, (sizes.get(key) ?? []).reduce((sum, size) => sum + size, 0)])
   );
-  const dropped = new Map<ListKey, number>(LIST_KEYS.map((key) => [key, 0]));
+  const dropped = new Map<ListKey, number>(LIST_KEYS.map((key) => [key, explanation.truncatedCounts[key]]));
   const assemble = (): HandoffExplanation => ({
     ...explanation,
     ...(Object.fromEntries(kept) as unknown as Lists),
@@ -302,6 +309,14 @@ export function buildExplanation(snapshot: HandoffExplanationSnapshot): HandoffE
   const manifest = reading.kind === 'read' ? reading.manifest : null;
   const state: HandoffState = reading.kind === 'unsupported' ? 'unsupported' : handoff.state;
   const blocked = reading.kind === 'unreadable' || snapshot.references.some(isBlocking);
+  const preOmittedDecisions =
+    snapshot.omittedDecisionCount !== undefined &&
+    Number.isSafeInteger(snapshot.omittedDecisionCount) &&
+    snapshot.omittedDecisionCount > 0
+      ? snapshot.omittedDecisionCount
+      : 0;
+  const initialTruncation: HandoffExplanationTruncation =
+    preOmittedDecisions === 0 ? NO_TRUNCATION : { ...NO_TRUNCATION, decisions: preOmittedDecisions };
   const explanation: HandoffExplanation = {
     handoffId: handoff.handoffId,
     state,
@@ -324,7 +339,7 @@ export function buildExplanation(snapshot: HandoffExplanationSnapshot): HandoffE
     deliveries: newestFirst(snapshot.deliveries, (row) => row.intentId).map(explainDelivery),
     decisions: newestFirst(snapshot.decisions, (row) => row.decisionId).map(explainDecision),
     nextActions: nextActionsFor(state, blocked),
-    truncatedCounts: NO_TRUNCATION
+    truncatedCounts: initialTruncation
   };
   assertPathFree(explanation, '');
   return trimToBound(explanation);

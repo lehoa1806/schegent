@@ -5,12 +5,21 @@
  * the request expected, and the frozen profile's revision and digest. An approval that names
  * anything else is `review-stale`; landing later refuses a receipt that no longer matches.
  *
+ * Authority boundary (`16-22`): `candidateCommit`, `targetCommit`, `profileRevision` and
+ * `profileDigest` are all readable on `IntegrationRequestView` — they are freshness bindings, NOT
+ * an authentication secret. `approveRequest` and `landRequest` are host-only operator actions and
+ * MUST NEVER be exposed to an agent, autonomous Run, or untrusted IPC caller without an explicit
+ * host-side human-approval gate (`ReviewContext.authorizeApproval`) that confirms both human
+ * provenance and the frozen verification profile's `checks`/`argv` so a proposed `argv` cannot
+ * authorize its own landing.
+ *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
 
-import { laneOk, laneRefused, type LaneResult } from '../../contracts/execution-lanes';
+import { laneOk, laneRefused, type LaneResult, type VerificationCheck } from '../../contracts/execution-lanes';
 import type { IntegrationStore } from './integration-store';
 import type { ReceiptRecord, RequestRecord } from './integration-store-rows';
+import { parseFrozenProfile } from './lane-input-rules';
 import type { LaneStore } from './lane-store';
 
 const ID_BYTES = 16;
@@ -24,6 +33,25 @@ export interface ApproveRequestInput {
   readonly profileDigest: string;
 }
 
+/**
+ * Facts handed to an optional host-side human-approval authority gate (`16-22`), including the
+ * parsed frozen `checks` (`argv`) so a human reviewer or policy gate sees exactly what verified
+ * the candidate before a receipt can be issued.
+ */
+export interface ApprovalAuthorizationContext {
+  readonly requestId: string;
+  readonly laneId: string;
+  readonly candidateCommit: string;
+  readonly targetRef: string;
+  readonly targetCommit: string;
+  readonly profileId: string;
+  readonly profileRevision: number;
+  readonly profileDigest: string;
+  readonly checks: readonly VerificationCheck[];
+}
+
+export type ApprovalAuthorizer = (approval: ApprovalAuthorizationContext) => boolean;
+
 export interface ReviewContext {
   readonly lanes: LaneStore;
   readonly integrations: IntegrationStore;
@@ -31,6 +59,11 @@ export interface ReviewContext {
   readonly generation: number;
   readonly clock: () => number;
   readonly random: (size: number) => Buffer;
+  /**
+   * Host authority verifier (`16-22`, SR-B9). Fails closed: omitting `authorizeApproval` or
+   * returning `false` refuses `review-stale` with zero receipt written.
+   */
+  readonly authorizeApproval?: ApprovalAuthorizer;
 }
 
 /**
@@ -80,6 +113,23 @@ export function approveRequest(ctx: ReviewContext, input: ApproveRequestInput): 
     const request = ctx.integrations.getRequest(ctx.workspaceId, input.requestId);
     const refusal = approvalRefusal(ctx, request, input);
     if (refusal !== null || request === null) return refusal ?? laneRefused<ReceiptRecord>('request-not-found');
+    if (ctx.authorizeApproval === undefined) {
+      return laneRefused<ReceiptRecord>('review-stale');
+    }
+    const profile = parseFrozenProfile(request.profileJson);
+    if (profile === null) return laneRefused<ReceiptRecord>('review-stale');
+    const authorized = ctx.authorizeApproval({
+      requestId: request.requestId,
+      laneId: request.laneId,
+      candidateCommit: request.candidateCommit,
+      targetRef: request.targetRef,
+      targetCommit: request.expectedTargetCommit,
+      profileId: request.profileId,
+      profileRevision: request.profileRevision,
+      profileDigest: request.profileDigest,
+      checks: profile.checks
+    });
+    if (!authorized) return laneRefused<ReceiptRecord>('review-stale');
     const receipt: ReceiptRecord = {
       receiptId: ctx.random(ID_BYTES).toString('hex'),
       requestId: request.requestId,

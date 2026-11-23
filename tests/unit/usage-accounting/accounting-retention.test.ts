@@ -50,7 +50,12 @@ function serviceWith(bounds: Partial<AccountingBounds> = {}): UsageAccountingSer
   });
 }
 
-function costObservation(identity: string, provenance: 'estimated' | 'provider-reported', quantity: string, overrides: Partial<AccountingObservationInput> = {}): AccountingObservationInput {
+function costObservation(
+  identity: string,
+  provenance: 'estimated' | 'derived' | 'provider-reported',
+  quantity: string,
+  overrides: Partial<AccountingObservationInput> = {}
+): AccountingObservationInput {
   return {
     producerNamespace: 'schegent.phase-end/1',
     source: 'phase-end',
@@ -148,13 +153,16 @@ describe('pruneExpired (T044)', () => {
     expect(count("SELECT count(*) FROM accounting_projection_intents WHERE state = 'pending'")).toBe(1);
   });
 
-  it('never prunes the observation holding the highest ingest sequence', () => {
+  it('never prunes the observation holding the highest ingest sequence, while compacting older expired selected observations', () => {
     const service = serviceWith();
-    ingest(service, costObservation('actual', 'provider-reported', '0.20'));
+    const first = ingest(service, costObservation('actual', 'provider-reported', '0.20'));
     const late = ingest(service, costObservation('estimate', 'estimated', '0.50'));
     now = LATER_NOW;
-    expect(service.pruneExpired()).toMatchObject({ ok: true, value: { observationsPruned: 0 } });
+    // `actual` (ingest_seq 1, expired) is compacted while `late` (ingest_seq 2, highest) stays pinned.
+    expect(service.pruneExpired()).toMatchObject({ ok: true, value: { observationsPruned: 1 } });
+    expect(conn.scalar('SELECT count(*) FROM accounting_observations WHERE observation_id = ?', first.observationId)).toBe(0);
     expect(conn.scalar('SELECT count(*) FROM accounting_observations WHERE observation_id = ?', late.observationId)).toBe(1);
+    expect(conn.scalar('SELECT selected_observation_id FROM accounting_contributions WHERE to_revision IS NULL')).toBeNull();
     const next = ingest(service, young(0));
     expect(conn.scalar('SELECT ingest_seq FROM accounting_observations WHERE observation_id = ?', next.observationId)).toBe(3);
   });
@@ -168,20 +176,152 @@ describe('pruneExpired (T044)', () => {
     });
     expect(count('SELECT count(*) FROM accounting_observations')).toBe(0);
   });
+
+  it('prunes mildly future-skewed observations past horizonDays from ingest_utc via MIN(event_utc, ingested_utc) (16-05)', () => {
+    const service = serviceWith();
+    // 12 hours ahead of INGEST_NOW -> mild skew (clock_anomaly = 1).
+    const skewed = ingest(
+      service,
+      costObservation('skewed-future', 'provider-reported', '0.25', {
+        eventUtc: '2026-11-11T00:00:00.000Z',
+        observedUtc: INGEST_NOW
+      })
+    );
+    expect(conn.scalar('SELECT clock_anomaly FROM accounting_observations WHERE observation_id = ?', skewed.observationId)).toBe(1);
+
+    // 90 days + 1 second after INGEST_NOW: ingested_utc is past horizon even though event_utc is still 11h59m59s within horizon.
+    now = '2027-02-08T12:00:01.000Z';
+    ingest(service, young(0));
+    const pruned = service.pruneExpired();
+    expect(pruned).toStrictEqual({ ok: true, value: { observationsPruned: 1, historyRowsPruned: 0 } });
+    expect(conn.scalar('SELECT count(*) FROM accounting_observations WHERE observation_id = ?', skewed.observationId)).toBe(0);
+    // Selected quantity survives compaction intact.
+    const latest = service.query({ groupBy: ['backend'], from: '2026-11-11T00:00:00Z', to: '2026-11-12T00:00:00Z' });
+    expect(latest.ok && latest.value.rows.at(0)?.measures.find((m) => m.measure === 'cost')?.total).toBe('0.250000');
+  });
 });
 
-describe('retained-observation bound (T044)', () => {
-  it('prunes near the bound, then answers store-full when nothing more can go', () => {
+describe('retained-observation bound & post-horizon compaction (T044, FR-R7-16 16-07)', () => {
+  it('compacts aged selected observations near the bound, preserves quantities/gaps, and refuses store-full when saturated within horizon', () => {
     const service = serviceWith({ maxRetainedObservations: SMALL_BOUND });
     supersededEstimate(service);
     now = LATER_NOW;
     for (let index = 0; index < SMALL_BOUND - 2; index += 1) ingest(service, young(index));
     expect(count('SELECT count(*) FROM accounting_observations')).toBe(SMALL_BOUND);
 
+    // Next ingest triggers pruneExpired: both expired rows (estimate + selected actual) are reclaimed,
+    // leaving 3 young + 1 new = 4 retained rows while preserving actual's selected quantity.
     ingest(service, young(SMALL_BOUND));
+    expect(count('SELECT count(*) FROM accounting_observations')).toBe(SMALL_BOUND - 1);
+    const oldTotal = service.query(QUERY);
+    expect(oldTotal.ok && oldTotal.value.rows.at(0)?.measures.find((item) => item.measure === 'cost')?.total).toBe('0.200000');
+
+    // Fill the remaining slot with a within-horizon observation (now 5 of 5 are within horizon).
+    ingest(service, young(SMALL_BOUND + 1));
     expect(count('SELECT count(*) FROM accounting_observations')).toBe(SMALL_BOUND);
 
-    expect(service.ingestObservation(young(SMALL_BOUND + 1))).toMatchObject({ ok: false, refusal: { code: 'store-full' } });
+    // Saturated by within-horizon observations -> explicit store-full refusal + counted ingest-failed gap.
+    expect(service.ingestObservation(young(SMALL_BOUND + 2))).toMatchObject({ ok: false, refusal: { code: 'store-full' } });
     expect(count('SELECT count(*) FROM accounting_observations')).toBe(SMALL_BOUND);
+    expect(count("SELECT COALESCE(SUM(count), 0) FROM accounting_gaps WHERE gap_kind = 'ingest-failed'")).toBe(1);
+  });
+
+  it('unwedges a capacity-full store of aged selected observations without losing quantities or gaps', () => {
+    const service = serviceWith({ maxRetainedObservations: SMALL_BOUND });
+    for (let index = 0; index < SMALL_BOUND; index += 1) {
+      ingest(
+        service,
+        costObservation(`aged-selected-${String(index)}`, 'provider-reported', '1.00', {
+          attemptId: `0b8f4c1e-5d2a-4f7b-9c36-1e2d3f4a5b0${String(index)}`
+        })
+      );
+    }
+    service.recordGaps('dimension-excluded', 2);
+    expect(count('SELECT count(*) FROM accounting_observations')).toBe(SMALL_BOUND);
+
+    now = LATER_NOW;
+    // Before 16-07, all 5 selected observations permanently wedged the store at `store-full`.
+    // Now the 4 aged non-max-seq selected observations compact cleanly so new ingests succeed.
+    const admitted = service.ingestObservation(young(0));
+    expect(admitted.ok).toBe(true);
+    expect(count('SELECT count(*) FROM accounting_observations')).toBe(2); // highest aged + new young
+    expect(count('SELECT count(*) FROM accounting_contributions WHERE to_revision IS NULL AND selected_observation_id IS NULL')).toBe(4);
+
+    const agedQuery = service.query(QUERY);
+    expect(agedQuery.ok).toBe(true);
+    if (!agedQuery.ok) return;
+    expect(agedQuery.value.rows.at(0)?.measures.find((m) => m.measure === 'cost')?.total).toBe('5.000000');
+    expect(agedQuery.value.gaps).toContainEqual({ kind: 'dimension-excluded', count: 2 });
+  });
+
+  it('preserves conflicting completeness after expired non-selected conflicting evidence is pruned and reevaluated (16-07)', () => {
+    const service = serviceWith();
+    // O1 is recent (T0), O2 disagrees at the same rank (`derived`) with an event time 89 days earlier.
+    ingest(
+      service,
+      costObservation('winner', 'derived', '0.20', {
+        eventUtc: '2026-11-10T10:00:00.000Z',
+        observedUtc: '2026-11-10T10:00:01.000Z'
+      })
+    );
+    const conflicting = ingest(
+      service,
+      costObservation('rival', 'derived', '0.95', {
+        eventUtc: '2026-08-13T10:00:00.000Z',
+        observedUtc: '2026-11-10T10:00:02.000Z'
+      })
+    );
+    expect(
+      conn.scalar("SELECT completeness FROM accounting_contributions WHERE to_revision IS NULL AND measure = 'cost'")
+    ).toBe('conflicting');
+    const attemptQuery = { groupBy: ['backend'] as const, filters: { backend: 'claude' as const } };
+    const beforeQuery = service.query(attemptQuery);
+    expect(beforeQuery.ok && beforeQuery.value.rows.at(0)?.measures.find((m) => m.measure === 'cost')?.completeness).toBe('conflicting');
+
+    // Advance 3 days: rival's event_utc is now 92 days old (> 90-day horizon), while winner is 3 days old.
+    now = '2026-11-13T12:00:00.000Z';
+    ingest(
+      service,
+      costObservation('sentinel-seq', 'provider-reported', '0.10', {
+        rootId: 'run-sentinel',
+        attemptId: '0b8f4c1e-5d2a-4f7b-9c36-1e2d3f4a5b99',
+        eventUtc: '2026-11-13T10:00:00.000Z',
+        observedUtc: '2026-11-13T10:00:01.000Z'
+      })
+    ); // ensures rival is not MAX(ingest_seq)
+    expect(service.pruneExpired()).toMatchObject({ ok: true, value: { observationsPruned: 1 } });
+    expect(conn.scalar('SELECT count(*) FROM accounting_observations WHERE observation_id = ?', conflicting.observationId)).toBe(0);
+
+    // A later corroborating derived observation triggers recomputeInvocation on the same invocation.
+    ingest(
+      service,
+      costObservation('corroborator', 'derived', '0.20', {
+        eventUtc: '2026-11-13T11:00:00.000Z',
+        observedUtc: '2026-11-13T11:00:01.000Z'
+      })
+    );
+    // Disagreement history MUST NOT silently flip back to `known`.
+    expect(
+      conn.scalar("SELECT completeness FROM accounting_contributions WHERE to_revision IS NULL AND measure = 'cost'")
+    ).toBe('conflicting');
+    const afterReeval = service.query(attemptQuery);
+    expect(afterReeval.ok && afterReeval.value.rows.at(0)?.measures.find((m) => m.measure === 'cost')?.completeness).toBe('conflicting');
+
+    // A strictly higher-ranked (`provider-reported`) observation may still resolve the lower-ranked conflict.
+    ingest(
+      service,
+      costObservation('authoritative', 'provider-reported', '0.22', {
+        eventUtc: '2026-11-13T11:05:00.000Z',
+        observedUtc: '2026-11-13T11:05:01.000Z'
+      })
+    );
+    expect(
+      conn.scalar("SELECT completeness FROM accounting_contributions WHERE to_revision IS NULL AND measure = 'cost'")
+    ).toBe('known');
+    const resolved = service.query({ ...attemptQuery, rootIds: [ROOT] });
+    expect(resolved.ok && resolved.value.rows.at(0)?.measures.find((m) => m.measure === 'cost')).toMatchObject({
+      total: '0.220000',
+      completeness: 'known'
+    });
   });
 });

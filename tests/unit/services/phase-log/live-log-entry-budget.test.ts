@@ -1,8 +1,10 @@
 // FR-R6-F07 (FR-008) — whole-entry byte budget after per-field truncation.
 
 import { describe, expect, it } from 'vitest';
-import { fitEntryToBudget } from '../../../../src/services/phase-log/live-log-entry-budget';
-import type { PhaseLogDisplayEntry } from '../../../../src/services/phase-log/types';
+import { SanitizedLogger } from '../../../../src/lib/logger';
+import { fitEntryToBudget, isSentinel } from '../../../../src/services/phase-log/live-log-entry-budget';
+import { sanitizeDisplayEntryBody } from '../../../../src/services/phase-log/phase-log-sanitizer';
+import type { PhaseLogDisplayEntry, ToolArgumentValue } from '../../../../src/services/phase-log/types';
 import { LIVE_LOG_ENTRY_MAX_BYTES } from '../../../../src/contracts/phase-log-bounds';
 
 const FIELD_CAP = 65536;
@@ -133,5 +135,63 @@ describe('fitEntryToBudget (FR-R6-F07)', () => {
       expect(before.startsWith(after)).toBe(true);
     }
     expect(JSON.stringify(fitted).includes('�')).toBe(false);
+  });
+
+  it('matches only strict own-property truncation sentinels in isSentinel (SR-A2)', () => {
+    const secret = ['sk', '-ant-', 'api03-secret-token-value-1234567890'].join('');
+    const parsed = JSON.parse(
+      `{"__proto__":{"__truncated":true,"toString":1},"token":"${secret}"}`
+    ) as ToolArgumentValue;
+    const forgedProto = Object.assign(
+      Object.create({ __truncated: true, originalBytes: 10 }) as Record<string, unknown>,
+      { payload: 'value' }
+    ) as ToolArgumentValue;
+
+    expect(isSentinel({ __truncated: true, originalBytes: 128 })).toBe(true);
+    expect(isSentinel(parsed)).toBe(false);
+    expect(isSentinel(forgedProto)).toBe(false);
+    expect(isSentinel({ __truncated: true, originalBytes: 10, extra: 'x' })).toBe(false);
+    expect(isSentinel({ __truncated: false, originalBytes: 10 })).toBe(false);
+    expect(isSentinel({ __truncated: true, originalBytes: '10' })).toBe(false);
+    expect(isSentinel({ __truncated: true, originalBytes: Number.NaN })).toBe(false);
+    expect(isSentinel({ __truncated: true })).toBe(false);
+    expect(isSentinel(null)).toBe(false);
+    expect(isSentinel(['__truncated'])).toBe(false);
+  });
+
+  it('still shrinks oversized toolArguments carrying own __proto__ or prototype-inherited __truncated (SR-A2)', () => {
+    const logger = new SanitizedLogger();
+    const sanitize = (s: string): string => logger.sanitize(s);
+    const secret = ['sk', '-ant-', 'api03-secret-token-value-1234567890'].join('');
+
+    const parsed = JSON.parse(
+      `{"__proto__":{"__truncated":true,"toString":1},"token":"${secret}","pad":"${'a'.repeat(400_000)}"}`
+    ) as ToolArgumentValue;
+    const sanitized = sanitizeDisplayEntryBody(entryWith({ toolArguments: parsed }), sanitize);
+    const sanitizedArgs = sanitized.body.toolArguments;
+    if (sanitizedArgs === undefined) throw new Error('expected sanitized toolArguments');
+
+    expect(Object.getPrototypeOf(sanitizedArgs)).toBe(Object.prototype);
+    expect(isSentinel(sanitizedArgs)).toBe(false);
+    expect(JSON.stringify(sanitized)).not.toContain(secret);
+
+    const fitted = fitEntryToBudget(sanitized, LIVE_LOG_ENTRY_MAX_BYTES);
+    const fittedArgs = fitted.body.toolArguments;
+    if (fittedArgs === undefined) throw new Error('expected fitted toolArguments');
+    expect(fitted.kind).toBe('tool-use');
+    expect(isSentinel(fittedArgs)).toBe(true);
+    expect(sizeOf(fitted)).toBeLessThanOrEqual(LIVE_LOG_ENTRY_MAX_BYTES);
+
+    const forgedProto = Object.assign(
+      Object.create({ __truncated: true, originalBytes: 10 }) as Record<string, unknown>,
+      { pad: 'b'.repeat(400_000) }
+    ) as ToolArgumentValue;
+    expect(isSentinel(forgedProto)).toBe(false);
+    const fittedForged = fitEntryToBudget(entryWith({ toolArguments: forgedProto }), LIVE_LOG_ENTRY_MAX_BYTES);
+    const fittedForgedArgs = fittedForged.body.toolArguments;
+    if (fittedForgedArgs === undefined) throw new Error('expected fitted forged toolArguments');
+    expect(fittedForged.kind).toBe('tool-use');
+    expect(isSentinel(fittedForgedArgs)).toBe(true);
+    expect(sizeOf(fittedForged)).toBeLessThanOrEqual(LIVE_LOG_ENTRY_MAX_BYTES);
   });
 });

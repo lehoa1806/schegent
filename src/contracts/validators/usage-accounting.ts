@@ -1,8 +1,15 @@
 import type { ReadUsageAccountingResponse } from '../sidebar-ipc';
 import {
+  ACCOUNTING_CALCULATION_VERSION,
+  ACCOUNTING_POLICY_VERSION,
   ACCOUNTING_REFUSAL_CODES,
   ATTEMPT_OUTCOMES,
+  COMPLETENESS_VALUES,
+  COUNT_MEASURES,
+  DEFAULT_ACCOUNTING_BOUNDS,
+  GAP_KINDS,
   MEASURES,
+  RECONCILIATIONS,
   type AccountingResult,
   type Measure
 } from '../usage-accounting/accounting-types';
@@ -14,6 +21,7 @@ import {
   MAX_QUERY_CURSOR_CHARS,
   MAX_QUERY_LIMIT,
   MAX_QUERY_ROOT_IDS,
+  MAX_REPORTED_GAP_KINDS,
   type AccountingDimension,
   type AccountingQueryRequest,
   type ReadGapsRequest
@@ -89,8 +97,16 @@ function isLimit(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_QUERY_LIMIT;
 }
 
+function hasControlChar(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return true;
+  }
+  return false;
+}
+
 function isCursor(value: unknown): value is string {
-  return typeof value === 'string' && value.length >= 1 && value.length <= MAX_QUERY_CURSOR_CHARS;
+  return typeof value === 'string' && value.length >= 1 && value.length <= MAX_QUERY_CURSOR_CHARS && !hasControlChar(value);
 }
 
 function validateGroupBy(value: unknown): readonly AccountingDimension[] | undefined {
@@ -194,34 +210,200 @@ export function validateReadGapsRequest(input: unknown): AccountingResult<ReadGa
   };
 }
 
-function isCount(value: unknown): boolean {
+function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+const OK_ENVELOPE_KEYS = ['ok', 'value'] as const;
+const REFUSAL_ENVELOPE_KEYS = ['ok', 'refusal'] as const;
+const REFUSAL_KEYS = ['code', 'detail'] as const;
+const PAGE_KEYS = [
+  'revision',
+  'cutoffIngestSeq',
+  'policyVersion',
+  'calculationVersion',
+  'rows',
+  'legacy',
+  'unattributedCount',
+  'gaps',
+  'nextCursor'
+] as const;
+const ROW_KEYS = ['key', 'attempts', 'roots', 'measures', 'omittedUnitCount'] as const;
+const MEASURE_KEYS = [
+  'measure',
+  'unit',
+  'total',
+  'reportedTotal',
+  'estimatedTotal',
+  'completeness',
+  'coverage'
+] as const;
+const COVERAGE_KEYS = ['known', 'denominator'] as const;
+const GAP_SUMMARY_KEYS = ['kind', 'count'] as const;
+const LEGACY_KEYS = [
+  'runCount',
+  'costMicros',
+  'boundaryRunId',
+  'boundaryTerminalUtc',
+  'reconciliation',
+  'detail'
+] as const;
+
+const CURRENCY_CODE_PATTERN = /^[A-Z]{3}$/;
+const CREDIT_UNIT_PATTERN = /^[a-z][a-z0-9._-]{0,31}$/;
+const INTEGER_TEXT_PATTERN = /^\d{1,20}$/;
+const MICRO_DECIMAL_TEXT_PATTERN = /^\d{1,20}\.\d{6}$/;
+const REFUSAL_DETAIL_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+const MAX_LEGACY_RUN_ID_CHARS = 256;
+const MAX_ROW_MEASURES = MEASURES.length * DEFAULT_ACCOUNTING_BOUNDS.maxUnitsPerRowMeasure;
+
+function isValidResponseUnit(measure: Measure, unit: unknown): boolean {
+  if (typeof unit !== 'string') return false;
+  if (COUNT_MEASURES.has(measure)) return unit === 'count';
+  return measure === 'cost' ? CURRENCY_CODE_PATTERN.test(unit) : CREDIT_UNIT_PATTERN.test(unit);
+}
+
+function isValidMeasureTotal(value: unknown): boolean {
+  if (!isPlain(value) || hasUnexpectedKeys(value, MEASURE_KEYS)) return false;
+  const measure = value['measure'];
+  if (typeof measure !== 'string' || !(MEASURES as readonly string[]).includes(measure)) return false;
+  const typedMeasure = measure as Measure;
+  if (!isValidResponseUnit(typedMeasure, value['unit'])) return false;
+  const total = value['total'];
+  if (typeof total !== 'string') return false;
+  if (COUNT_MEASURES.has(typedMeasure)) {
+    if (!INTEGER_TEXT_PATTERN.test(total)) return false;
+  } else if (!MICRO_DECIMAL_TEXT_PATTERN.test(total)) {
+    return false;
+  }
+  const reportedTotal = value['reportedTotal'];
+  if (reportedTotal !== undefined) {
+    if (typedMeasure !== 'cost' || typeof reportedTotal !== 'string' || !MICRO_DECIMAL_TEXT_PATTERN.test(reportedTotal)) {
+      return false;
+    }
+  }
+  const estimatedTotal = value['estimatedTotal'];
+  if (estimatedTotal !== undefined) {
+    if (typedMeasure !== 'cost' || typeof estimatedTotal !== 'string' || !MICRO_DECIMAL_TEXT_PATTERN.test(estimatedTotal)) {
+      return false;
+    }
+  }
+  const completeness = value['completeness'];
+  if (typeof completeness !== 'string' || !(COMPLETENESS_VALUES as readonly string[]).includes(completeness)) {
+    return false;
+  }
+  const coverage = value['coverage'];
+  if (!isPlain(coverage) || hasUnexpectedKeys(coverage, COVERAGE_KEYS)) return false;
+  const known = coverage['known'];
+  const denominator = coverage['denominator'];
+  return isCount(known) && isCount(denominator) && known <= denominator;
+}
+
+function isValidRowKey(value: unknown): boolean {
+  if (!isPlain(value) || hasUnexpectedKeys(value, ACCOUNTING_DIMENSIONS)) return false;
+  const keys = Object.keys(value);
+  if (keys.length > MAX_GROUP_BY_DIMENSIONS) return false;
+  for (const key of keys) {
+    const raw = value[key];
+    if (raw !== null && !isFilterValue(key as AccountingDimension, raw)) return false;
+  }
+  return true;
+}
+
+function isValidAccountingRow(value: unknown): boolean {
+  if (!isPlain(value) || hasUnexpectedKeys(value, ROW_KEYS)) return false;
+  if (!isValidRowKey(value['key'])) return false;
+  const attempts = value['attempts'];
+  const roots = value['roots'];
+  if (!isCount(attempts) || !isCount(roots) || roots > attempts) return false;
+  const measures = value['measures'];
+  if (!Array.isArray(measures) || measures.length > MAX_ROW_MEASURES || !measures.every(isValidMeasureTotal)) {
+    return false;
+  }
+  const omittedUnitCount = value['omittedUnitCount'];
+  if (omittedUnitCount !== undefined) {
+    if (typeof omittedUnitCount !== 'number' || !Number.isSafeInteger(omittedUnitCount) || omittedUnitCount < 1) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isValidGapSummary(value: unknown): boolean {
+  if (!isPlain(value) || hasUnexpectedKeys(value, GAP_SUMMARY_KEYS)) return false;
+  const kind = value['kind'];
+  return (
+    typeof kind === 'string' &&
+    (GAP_KINDS as readonly string[]).includes(kind) &&
+    isCount(value['count'])
+  );
+}
+
+function isValidLegacyEpochSummary(value: unknown): boolean {
+  if (!isPlain(value) || hasUnexpectedKeys(value, LEGACY_KEYS)) return false;
+  if (!isCount(value['runCount'])) return false;
+  const costMicros = value['costMicros'];
+  if (typeof costMicros !== 'string' || !INTEGER_TEXT_PATTERN.test(costMicros)) return false;
+  const boundaryRunId = value['boundaryRunId'];
+  if (
+    boundaryRunId !== null &&
+    (typeof boundaryRunId !== 'string' ||
+      boundaryRunId.length === 0 ||
+      boundaryRunId.length > MAX_LEGACY_RUN_ID_CHARS ||
+      hasControlChar(boundaryRunId))
+  ) {
+    return false;
+  }
+  const boundaryTerminalUtc = value['boundaryTerminalUtc'];
+  if (boundaryTerminalUtc !== null && normalizeUtcInstant(boundaryTerminalUtc) === undefined) return false;
+  const reconciliation = value['reconciliation'];
+  if (
+    reconciliation !== null &&
+    (typeof reconciliation !== 'string' || !(RECONCILIATIONS as readonly string[]).includes(reconciliation))
+  ) {
+    return false;
+  }
+  return value['detail'] === 'unavailable';
+}
+
 /**
- * The webview's gate before it reads an accounting answer: the result envelope, a known refusal
- * code, and the page fields a reader relies on. Anything else becomes the helper's failure.
+ * The webview's gate before it reads an accounting answer: validates the envelope, versions,
+ * bounded cursor, every row/measure/gap, optional legacy summary, or a known refusal. Anything
+ * else becomes the helper's `store-unavailable` failure (FR-R7-16 / 16-06).
  */
 export function isValidReadUsageAccountingResponse(value: unknown): value is ReadUsageAccountingResponse {
   if (!isPlain(value)) return false;
   if (value['ok'] === true) {
+    if (hasUnexpectedKeys(value, OK_ENVELOPE_KEYS)) return false;
     const page = value['value'];
-    if (!isPlain(page)) return false;
+    if (!isPlain(page) || hasUnexpectedKeys(page, PAGE_KEYS)) return false;
     const next = page['nextCursor'];
+    const legacy = page['legacy'];
+    const rows = page['rows'];
+    const gaps = page['gaps'];
     return (
+      page['policyVersion'] === ACCOUNTING_POLICY_VERSION &&
+      page['calculationVersion'] === ACCOUNTING_CALCULATION_VERSION &&
       isCount(page['revision']) &&
       isCount(page['cutoffIngestSeq']) &&
       isCount(page['unattributedCount']) &&
-      Array.isArray(page['rows']) &&
-      Array.isArray(page['gaps']) &&
-      (next === undefined || typeof next === 'string')
+      (next === undefined || isCursor(next)) &&
+      Array.isArray(rows) &&
+      rows.length <= MAX_QUERY_LIMIT &&
+      rows.every(isValidAccountingRow) &&
+      Array.isArray(gaps) &&
+      gaps.length <= MAX_REPORTED_GAP_KINDS &&
+      gaps.every(isValidGapSummary) &&
+      (legacy === undefined || isValidLegacyEpochSummary(legacy))
     );
   }
-  if (value['ok'] !== false || !isPlain(value['refusal'])) return false;
-  const { code, detail } = value['refusal'];
+  if (value['ok'] !== false || hasUnexpectedKeys(value, REFUSAL_ENVELOPE_KEYS)) return false;
+  const refusal = value['refusal'];
+  if (!isPlain(refusal) || hasUnexpectedKeys(refusal, REFUSAL_KEYS)) return false;
+  const { code, detail } = refusal;
   return (
     typeof code === 'string' &&
     (ACCOUNTING_REFUSAL_CODES as readonly string[]).includes(code) &&
-    (detail === undefined || typeof detail === 'string')
+    (detail === undefined || (typeof detail === 'string' && REFUSAL_DETAIL_PATTERN.test(detail)))
   );
 }

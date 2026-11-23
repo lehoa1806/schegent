@@ -29,6 +29,14 @@ import {
   RunCheckpointRetentionService,
   type RunCheckpointRetentionPolicy
 } from '../../../src/services/run-checkpoint-retention';
+import { isRecoveryRunProtectedForServices } from '../../../src/activation/sqlite-cutover-helpers';
+import { createArtifactLifecycleService, DENY_ALL_ACCESS_POLICY } from '../../../src/services/artifact-lifecycle';
+import { recoveryPinnedRunPredicate } from '../../../src/services/artifact-lifecycle/run-recovery-pins';
+import { assessRunSegmentProtection } from '../../../src/services/recovery-handoff/handoff-envelope-protection';
+import { createHandoffStore } from '../../../src/services/recovery-handoff/handoff-store';
+import { safeRunSegment } from '../../../src/services/run-checkpoint-paths';
+import { SqliteApplicationStore } from '../../../src/services/sqlite-store';
+import { checkpointArtifact } from '../artifact-lifecycle/lifecycle-fixture';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 7, 19, 0, 0, 0);
@@ -494,6 +502,223 @@ describe('FR-R3-012 (T436) cross-run checkpoint retention', () => {
         expect(caseResult.failures).toBe(1);
         expect(await survivors()).toEqual(['case-holder']);
       }
+    });
+  });
+
+  describe('FR-R7-16 (SR-B2) — normalized run pins, SQLite open handoffs, F05 pins, and fail-closed protection', () => {
+    it('matches normalized safeRunSegment directory names for live/paused run IDs containing . or :', async () => {
+      const liveRaw = 'run.dot:colon';
+      const pausedRaw = 'run:paused.2';
+      const doneRaw = 'run.done:3';
+      await writeRun(safeRunSegment(liveRaw), 30, { bytes: 2_048 });
+      await writeRun(safeRunSegment(pausedRaw), 30, { bytes: 2_048 });
+      await writeRun(safeRunSegment(doneRaw), 30, { bytes: 2_048 });
+
+      const svc = new RunCheckpointRetentionService({
+        globalStorageRoot,
+        logger: { info: vi.fn(), warn: vi.fn() },
+        now: () => NOW,
+        policy: { maxAgeMs: CHECKPOINT_MAX_AGE_MS, maxTotalBytes: 1, recentRunFloor: 0 },
+        isPinnedRun: recoveryPinnedRunPredicate(() => ({
+          q1: { id: liveRaw, status: 'running' },
+          q2: { id: pausedRaw, status: 'paused' },
+          q3: { id: doneRaw, status: 'completed' }
+        }))
+      });
+
+      const result = await svc.sweep();
+      expect(result.removedRunCount).toBe(1);
+      expect(await survivors()).toEqual([safeRunSegment(liveRaw), safeRunSegment(pausedRaw)].sort());
+    });
+
+    it('protects open SQLite handoffs across restart against cross-run retention and releases once closed', async () => {
+      const openRunId = 'run.open:post-restart';
+      const openSeg = safeRunSegment(openRunId);
+      const openDir = await writeRun(openSeg, 40, { bytes: 2_048 });
+      await fs.writeFile(path.join(openDir, 'hand-1.recovery.json'), '{}', { mode: 0o600 });
+      const oldStamp = new Date(NOW - 40 * DAY_MS);
+      await fs.utimes(path.join(openDir, 'hand-1.recovery.json'), oldStamp, oldStamp);
+      await fs.utimes(openDir, oldStamp, oldStamp);
+      await writeRun('unowned-old-run', 40, { bytes: 2_048 });
+
+      const dbPath = path.join(globalStorageRoot, 'sqlite', 'schegent-state.db');
+      await fs.mkdir(path.dirname(dbPath), { recursive: true });
+      const handoffId = 'a'.repeat(64);
+      let store = new SqliteApplicationStore({ databasePath: dbPath });
+      createHandoffStore(store.writerConnection).insertHandoff({
+        handoffId,
+        workspaceId: 'ws-1',
+        rootExecutionId: openRunId,
+        invocationId: 'inv-1',
+        sourceAttemptId: 'att-1',
+        legacyProvenance: null,
+        nowMs: NOW
+      });
+      store.close();
+
+      // Reopen after restart with empty in-memory run map.
+      store = new SqliteApplicationStore({ databasePath: dbPath });
+      try {
+        const inMemoryPinned = recoveryPinnedRunPredicate(() => ({}));
+        const svc = new RunCheckpointRetentionService({
+          globalStorageRoot,
+          logger: { info: vi.fn(), warn: vi.fn() },
+          now: () => NOW,
+          policy: { maxAgeMs: CHECKPOINT_MAX_AGE_MS, maxTotalBytes: 1, recentRunFloor: 0 },
+          isPinnedRun: (seg) => inMemoryPinned(seg) || isRecoveryRunProtectedForServices({ sqliteStore: store }, seg)
+        });
+
+        const first = await svc.sweep();
+        expect(first.removedRunCount).toBe(1);
+        expect(await survivors()).toEqual([openSeg]);
+        expect(await fs.readdir(openDir)).toContain('hand-1.recovery.json');
+
+        // Close handoff -> directory is now affirmatively unowned and eligible for retention.
+        createHandoffStore(store.writerConnection).updateHandoff(
+          handoffId,
+          { state: 'superseded', closedReason: 'superseded' },
+          NOW + 1
+        );
+        const second = await svc.sweep();
+        expect(second.removedRunCount).toBe(1);
+        expect(await survivors()).toEqual([]);
+      } finally {
+        store.close();
+      }
+    });
+
+    it('protects run directories pinned by active F05 protective references across restart', async () => {
+      const ownerPinRunId = 'run.pin:owner';
+      const ownerPinSeg = safeRunSegment(ownerPinRunId);
+      const pathPinSeg = 'run-pin-by-path';
+      await writeRun(ownerPinSeg, 40, { bytes: 2_048 });
+      await writeRun(pathPinSeg, 40, { bytes: 2_048 });
+      await writeRun('unpinned-old', 40, { bytes: 2_048 });
+
+      const dbPath = path.join(globalStorageRoot, 'sqlite-f05', 'schegent-state.db');
+      await fs.mkdir(path.dirname(dbPath), { recursive: true });
+      let store = new SqliteApplicationStore({ databasePath: dbPath });
+      const makeLifecycle = (s: SqliteApplicationStore) =>
+        createArtifactLifecycleService({
+          conn: s.writerConnection,
+          nowMs: () => NOW,
+          fs: {
+            lstat: () => Promise.resolve(null),
+            readdir: () => Promise.resolve([]),
+            realpath: (p) => Promise.resolve(p),
+            unlink: () => Promise.resolve()
+          },
+          probe: {
+            observe: () => Promise.resolve({ exists: true, sizeBytes: 10, producerIdentity: null, generation: null }),
+            digestSha256: () => Promise.resolve('a'.repeat(64))
+          },
+          audit: { recordLifecycleMutation: () => undefined },
+          scanRoots: [],
+          accessPolicy: DENY_ALL_ACCESS_POLICY,
+          resolveOwner: () => 'live',
+          workspaceRoot: globalStorageRoot
+        });
+
+      const lc1 = makeLifecycle(store);
+      expect(lc1.registerArtifact(checkpointArtifact('art-owner-pin', { ownerRunId: ownerPinRunId })).ok).toBe(true);
+      expect(
+        lc1.addReference({
+          artifactId: 'art-owner-pin',
+          ownerType: 'run',
+          ownerId: ownerPinRunId,
+          purpose: 'active-recovery',
+          protective: true
+        }).ok
+      ).toBe(true);
+      expect(
+        lc1.registerArtifact(
+          checkpointArtifact('art-path-pin', {
+            ownerRunId: 'run-unrelated',
+            locator: { storageTier: 'workspace_file', uriOrRelpath: `checkpoints/${pathPinSeg}/hand-p.recovery.json` }
+          })
+        ).ok
+      ).toBe(true);
+      expect(
+        lc1.addReference({
+          artifactId: 'art-path-pin',
+          ownerType: 'export',
+          ownerId: 'exp-1',
+          purpose: 'active-recovery',
+          protective: true
+        }).ok
+      ).toBe(true);
+      store.close();
+
+      store = new SqliteApplicationStore({ databasePath: dbPath });
+      try {
+        const svc = new RunCheckpointRetentionService({
+          globalStorageRoot,
+          logger: { info: vi.fn(), warn: vi.fn() },
+          now: () => NOW,
+          policy: { maxAgeMs: CHECKPOINT_MAX_AGE_MS, maxTotalBytes: 1, recentRunFloor: 0 },
+          isPinnedRun: (seg) => isRecoveryRunProtectedForServices({ sqliteStore: store }, seg)
+        });
+        const first = await svc.sweep();
+        expect(first.removedRunCount).toBe(1);
+        expect(await survivors()).toEqual([ownerPinSeg, pathPinSeg].sort());
+
+        const lc2 = makeLifecycle(store);
+        expect(
+          lc2.releaseReference({
+            artifactId: 'art-owner-pin',
+            ownerType: 'run',
+            ownerId: ownerPinRunId,
+            purpose: 'active-recovery',
+            reason: 'owner-durable'
+          }).ok
+        ).toBe(true);
+        expect(
+          lc2.releaseReference({
+            artifactId: 'art-path-pin',
+            ownerType: 'export',
+            ownerId: 'exp-1',
+            purpose: 'active-recovery',
+            reason: 'owner-durable'
+          }).ok
+        ).toBe(true);
+
+        const second = await svc.sweep();
+        expect(second.removedRunCount).toBe(2);
+        expect(await survivors()).toEqual([]);
+      } finally {
+        store.close();
+      }
+    });
+
+    it('fails closed and deletes no run directories when SQLite store is unavailable, closed, or newer-build', async () => {
+      await writeRun('aged-run-a', 40, { bytes: 2_048 });
+      await writeRun('aged-run-b', 40, { bytes: 2_048 });
+
+      // 1. Store unavailable (services === null).
+      const unavailableSvc = new RunCheckpointRetentionService({
+        globalStorageRoot,
+        logger: { info: vi.fn(), warn: vi.fn() },
+        now: () => NOW,
+        policy: { maxAgeMs: CHECKPOINT_MAX_AGE_MS, maxTotalBytes: 1, recentRunFloor: 0 },
+        isPinnedRun: (seg) => isRecoveryRunProtectedForServices(null, seg)
+      });
+      expect((await unavailableSvc.sweep()).removedRunCount).toBe(0);
+      expect(await survivors()).toEqual(['aged-run-a', 'aged-run-b']);
+
+      // 2. Closed SQLite connection.
+      const dbPath = path.join(globalStorageRoot, 'sqlite-closed', 'schegent-state.db');
+      await fs.mkdir(path.dirname(dbPath), { recursive: true });
+      const closedStore = new SqliteApplicationStore({ databasePath: dbPath });
+      closedStore.close();
+      const closedSvc = new RunCheckpointRetentionService({
+        globalStorageRoot,
+        logger: { info: vi.fn(), warn: vi.fn() },
+        now: () => NOW,
+        policy: { maxAgeMs: CHECKPOINT_MAX_AGE_MS, maxTotalBytes: 1, recentRunFloor: 0 },
+        isPinnedRun: (seg) => assessRunSegmentProtection(closedStore.writerConnection, seg).protected
+      });
+      expect((await closedSvc.sweep()).removedRunCount).toBe(0);
+      expect(await survivors()).toEqual(['aged-run-a', 'aged-run-b']);
     });
   });
 });

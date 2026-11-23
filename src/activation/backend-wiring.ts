@@ -123,6 +123,8 @@ export function createBackendDiagnosticsWiring(input: {
   readonly audit: AuditLogWriter;
   readonly logger: SanitizedLogger;
   readonly onDidChange: () => void;
+  /** FR-R7-16 (16-14): live workspace trust gate preventing untrusted `--help` / model probes. */
+  readonly isTrusted?: () => boolean;
 }): BackendDiagnosticsWiring {
   const readTimeout = (): unknown => vscode.workspace
     .getConfiguration('schegent', vscode.Uri.file(input.workspaceRoot))
@@ -143,6 +145,7 @@ export function createBackendDiagnosticsWiring(input: {
       env: { SCHEGENT_PHASE: 'runner-probe', SCHEGENT_ITERATION: '0' },
       ...policyRequestFields(input.environmentPolicy)
     }),
+    isTrusted: input.isTrusted ?? (() => vscode.workspace.isTrusted === true),
     logger: input.logger,
     onDidChange: input.onDidChange
   });

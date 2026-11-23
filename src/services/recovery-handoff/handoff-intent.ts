@@ -13,6 +13,7 @@
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
 
+import { isBackendRunnerKind } from '../../contracts/backend-kinds';
 import {
   CLOSED_HANDOFF_STATES,
   HANDOFF_MANIFEST_VERSION,
@@ -24,13 +25,22 @@ import {
   type SessionOwner,
   type SessionPlan
 } from '../../contracts/recovery-handoff/handoff-types';
+import {
+  isEphemeralBridgeSessionId,
+  type AcpSessionBindingStore
+} from '../acp-runtime/acp-durable-runtime-store';
 import { includesValue, isNonNegativeInteger, isOpaqueId } from '../artifact-lifecycle/lifecycle-results';
 import { evaluateRedelivery, type RedeliveryRequest } from './delivery-policy';
 import { intentIdFor, ownerDigestFor } from './handoff-identity';
 import { isNewerBuildStore } from './handoff-pins';
 import type { HandoffWriteDeps } from './handoff-prepare';
 import { lapseOutstandingDecisions, syncPinPurpose } from './handoff-settle';
-import type { DeliveryRow } from './handoff-store-rows';
+import type { DeliveryRow, HandoffRow, RevisionRow } from './handoff-store-rows';
+import {
+  isValidAcpSessionMapping,
+  parseLegacyProvenance,
+  type AcpSessionMapping
+} from './legacy-handoff-mapping';
 import { planSession, type PriorSession } from './session-plan';
 
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
@@ -46,6 +56,8 @@ export interface PriorSessionInput {
   readonly profileId: string;
   readonly profileVersion: string;
   readonly capabilitiesDigest: string;
+  /** Explicit validated ACP session mapping required to allow `load-session` on a legacy handoff (`16-12`). */
+  readonly acpMapping?: AcpSessionMapping;
 }
 
 export interface RecordIntentInput {
@@ -152,17 +164,90 @@ function requestOf(input: RecordIntentInput): RedeliveryRequest {
   };
 }
 
-function priorOf(prior: PriorSessionInput | undefined): PriorSession | null {
+function matchesBindingBackend(backendId: string, bindingBackend: string): boolean {
+  if (isBackendRunnerKind(backendId)) return backendId === bindingBackend;
+  if (backendId.startsWith('acp-')) {
+    const suffix = backendId.slice(4);
+    if (isBackendRunnerKind(suffix)) return suffix === bindingBackend;
+  }
+  return false;
+}
+
+/**
+ * FR-R7-16 (`16-12`, FR-012) — derives the prior session source from stored `legacyProvenance`
+ * rather than trusting caller-supplied `source: 'acp'`.
+ *
+ * - Ephemeral bridge IDs (`/^acp-(?:claude|codex|agy)-session-\d+$/`) never load.
+ * - Any legacy-originated handoff (`legacyProvenance !== null`) forces `source: 'legacy'` unless
+ *   stored provenance parses cleanly as `legacy-record` with a non-null `providerSessionId`,
+ *   caller supplies a valid non-ephemeral explicit `acpMapping` matching `prior.sessionId` and
+ *   distinct from `providerSessionId`, and `acpSessionBindings` is wired with a matching,
+ *   non-ephemeral durable binding for the canonical backend and stored `providerSessionId`.
+ */
+function priorOf(
+  handoff: HandoffRow,
+  input: RecordIntentInput,
+  acpSessionBindings: AcpSessionBindingStore | undefined
+): PriorSession | null {
+  const prior = input.priorSession;
   if (prior === undefined) return null;
-  return {
+  const base = {
     sessionId: prior.sessionId,
-    source: prior.source,
     ownerDigest: ownerDigestFor(prior.owner),
     backendId: prior.backendId,
     profileId: prior.profileId,
     profileVersion: prior.profileVersion,
     capabilitiesDigest: prior.capabilitiesDigest
   };
+  if (isEphemeralBridgeSessionId(prior.sessionId)) {
+    return { ...base, source: 'legacy' };
+  }
+  if (handoff.legacyProvenance === null) {
+    return { ...base, source: prior.source };
+  }
+  const provenance = parseLegacyProvenance(handoff.legacyProvenance);
+  if (provenance.kind !== 'legacy-record' || provenance.providerSessionId === null) {
+    return { ...base, source: 'legacy' };
+  }
+  if (prior.sessionId === provenance.providerSessionId) {
+    return { ...base, source: 'legacy' };
+  }
+  if (
+    prior.source !== 'acp' ||
+    prior.acpMapping === undefined ||
+    prior.acpMapping.sessionId !== prior.sessionId ||
+    !isValidAcpSessionMapping(prior.acpMapping, provenance.providerSessionId)
+  ) {
+    return { ...base, source: 'legacy' };
+  }
+  if (acpSessionBindings === undefined) {
+    return { ...base, source: 'legacy' };
+  }
+  const binding = acpSessionBindings.getBinding(prior.acpMapping.sessionId);
+  if (
+    binding === null ||
+    isEphemeralBridgeSessionId(binding.persistedSessionId) ||
+    isEphemeralBridgeSessionId(binding.providerSessionId) ||
+    !matchesBindingBackend(input.backendId, binding.backend) ||
+    binding.providerSessionId !== provenance.providerSessionId
+  ) {
+    return { ...base, source: 'legacy' };
+  }
+  return { ...base, source: 'acp' };
+}
+
+function manifestEnvelopeDigestOf(revision: RevisionRow | undefined): string | null {
+  if (revision === undefined) return null;
+  try {
+    const parsed: unknown = JSON.parse(revision.manifestJson);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    const envelope = (parsed as { readonly envelope?: unknown }).envelope;
+    if (typeof envelope !== 'object' || envelope === null || Array.isArray(envelope)) return null;
+    const digest = (envelope as { readonly digest?: unknown }).digest;
+    return typeof digest === 'string' && DIGEST_PATTERN.test(digest) ? digest : null;
+  } catch {
+    return null;
+  }
 }
 
 function writeIntent(deps: HandoffWriteDeps, input: RecordIntentInput): RecordIntentResult {
@@ -183,18 +268,26 @@ function writeIntent(deps: HandoffWriteDeps, input: RecordIntentInput): RecordIn
   if (futureRevision && !CLOSED_HANDOFF_STATES.has(handoff.state)) {
     return { ok: false, code: 'unsupported-version' };
   }
-  const decisions = store.listDecisions(input.handoffId);
+  const usableDecision = store.findUnconsumedAcceptedDecision(
+    input.handoffId,
+    input.revisionNo,
+    'continue-new-attempt'
+  );
   const verdict = evaluateRedelivery({
     handoff,
     revisionNo: input.revisionNo,
     certainty: revision?.certainty ?? 'unknown',
     priorIntents: store.listDeliveries(input.handoffId),
-    decisions,
+    decisions: usableDecision === null ? [] : [usableDecision],
     request: requestOf(input)
   });
   if (!verdict.ok) return verdict;
+  const expectedEnvelopeDigest = manifestEnvelopeDigestOf(revision);
+  if (expectedEnvelopeDigest !== null && input.envelopeDigest !== expectedEnvelopeDigest) {
+    return { ok: false, code: 'conflict' };
+  }
   const sessionPlan = planSession({
-    prior: priorOf(input.priorSession),
+    prior: priorOf(handoff, input, deps.acpSessionBindings),
     target: {
       ownerDigest,
       backendId: input.backendId,

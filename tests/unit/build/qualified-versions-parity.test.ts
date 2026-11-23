@@ -148,14 +148,23 @@ describe('FR-055 — the drift warning fires on drift and on nothing else', () =
     expect(log.warn).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to exact comparison when a version does not parse', () => {
-    // Conservative on purpose: an unreadable version string is not evidence that
-    // the binary is fine, and this path must not become a way to silence the
-    // warning by reporting a version shape the comparison cannot read.
+  it('marks drift with safe fixed wording and omits cliVersion when a version does not parse (16-15)', () => {
+    // Conservative without leaking raw text: an unreadable string still flags drift for a
+    // qualified backend, omits `cliVersion`, and never echoes the raw string in warnings.
     const log = logger();
-    const fields = cliVersionFields('not-a-version', 'claude', log);
-    expect(fields.cliVersionDrift).toBe(true);
+    const rawInput = 'not-a-version-SECRET-TOKEN-/Users/alice/bin';
+    const fields = cliVersionFields(rawInput, 'claude', log);
+    expect(fields).toEqual({
+      cliVersionDrift: true,
+      qualifiedCliVersion: QUALIFIED_BACKEND_VERSIONS.claude
+    });
+    expect(fields.cliVersion).toBeUndefined();
     expect(log.warn).toHaveBeenCalledTimes(1);
+    const message = log.warn.mock.calls[0]![0] as string;
+    expect(message).toContain('unverified');
+    expect(message).not.toContain('not-a-version');
+    expect(message).not.toContain('SECRET-TOKEN');
+    expect(message).not.toContain('/Users/alice');
   });
 
   it('says nothing when the version could not be observed', () => {

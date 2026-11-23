@@ -23,6 +23,7 @@ import type {
   VerificationProfile
 } from '../../../src/contracts/execution-lanes';
 import { createSpawnCheck } from '../../../src/services/execution-lanes/verification-runner';
+import { waitForCondition } from '../../wait-for-condition';
 import { createLaneHarness, disposeLaneHarnesses, type LaneHarness, type LaneHarnessOptions } from './lane-harness';
 
 afterEach(() => {
@@ -235,6 +236,121 @@ describe('FR-R6-F10 verification runner: a descendant that leaves the process gr
 
         expect(run).toMatchObject({ exitCode: 0, signal: null, timedOut: false });
         expect(run.outputBytes).toBe(PARENT_OUTPUT.length);
+      } finally {
+        killPidIn(pidFile);
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    ESCAPE_TEST_TIMEOUT_MS
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'settles with timedOut=true within bound even when a detached grandchild holds stdio open across timeout (CR-B3/SR-B5)',
+    async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-timeout-detached-'));
+      const pidFile = path.join(dir, 'detached.pid');
+      const script = [
+        "const cp = require('node:child_process');",
+        "const c = cp.spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { detached: true, stdio: 'inherit' });",
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid));`,
+        'c.unref();',
+        'setTimeout(() => {}, 30000);'
+      ].join(' ');
+      try {
+        const started = Date.now();
+        const run = await createSpawnCheck({ killGraceMs: 120, outputDrainGraceMs: 150 })(
+          [process.execPath, '-e', script],
+          { cwd: dir, timeoutMs: 250 }
+        );
+        const elapsed = Date.now() - started;
+
+        expect(run.timedOut).toBe(true);
+        expect(run.exitCode).toBeNull();
+        expect(elapsed).toBeLessThan(3_000);
+      } finally {
+        killPidIn(pidFile);
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    ESCAPE_TEST_TIMEOUT_MS
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'kills a lingering SIGTERM-ignoring same-group grandchild on drainTimer expiry after normal exit (CR-B3/SR-B5)',
+    async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-post-exit-tree-'));
+      const pidFile = path.join(dir, 'grandchild.pid');
+      const script = [
+        "const cp = require('node:child_process');",
+        "const c = cp.spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setTimeout(() => {}, 30000);\"], { stdio: 'inherit' });",
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid));`,
+        'c.unref();',
+        `process.stdout.write(${JSON.stringify(PARENT_OUTPUT)});`
+      ].join(' ');
+      try {
+        const run = await createSpawnCheck({ killGraceMs: 120, outputDrainGraceMs: 150 })(
+          [process.execPath, '-e', script],
+          { cwd: dir, timeoutMs: CHECK_TIMEOUT_MS }
+        );
+
+        expect(run).toMatchObject({ exitCode: 0, signal: null, timedOut: false });
+        expect(run.outputBytes).toBe(PARENT_OUTPUT.length);
+        await waitForCondition(() => fs.existsSync(pidFile), { timeoutMs: 2_000, label: 'grandchild pid written' });
+        const grandchildPid = Number(fs.readFileSync(pidFile, 'utf8'));
+        await waitForCondition(
+          () => {
+            try {
+              process.kill(grandchildPid, 0);
+              return false;
+            } catch {
+              return true;
+            }
+          },
+          { timeoutMs: 3_000, label: 'lingering same-group grandchild killed after normal check exit' }
+        );
+      } finally {
+        killPidIn(pidFile);
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    ESCAPE_TEST_TIMEOUT_MS
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'does not flip timedOut to true when timeoutMs elapses during post-exit killGraceMs teardown (CR-309-2)',
+    async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-post-exit-grace-'));
+      const pidFile = path.join(dir, 'grandchild.pid');
+      const script = [
+        "const cp = require('node:child_process');",
+        "const c = cp.spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setTimeout(() => {}, 30000);\"], { stdio: 'ignore' });",
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid));`,
+        'c.unref();',
+        `process.stdout.write(${JSON.stringify(PARENT_OUTPUT)});`
+      ].join(' ');
+      try {
+        // Parent exits cleanly well under timeoutMs (250ms), entering post-exit killGraceMs (450ms)
+        // teardown which crosses timeoutMs. The passing exit must remain timedOut: false.
+        const run = await createSpawnCheck({ killGraceMs: 450, outputDrainGraceMs: 150 })(
+          [process.execPath, '-e', script],
+          { cwd: dir, timeoutMs: 250 }
+        );
+
+        expect(run).toMatchObject({ exitCode: 0, signal: null, timedOut: false });
+        expect(run.outputBytes).toBe(PARENT_OUTPUT.length);
+        await waitForCondition(() => fs.existsSync(pidFile), { timeoutMs: 2_000, label: 'grandchild pid written' });
+        const grandchildPid = Number(fs.readFileSync(pidFile, 'utf8'));
+        await waitForCondition(
+          () => {
+            try {
+              process.kill(grandchildPid, 0);
+              return false;
+            } catch {
+              return true;
+            }
+          },
+          { timeoutMs: 3_000, label: 'lingering same-group grandchild killed during post-exit grace' }
+        );
       } finally {
         killPidIn(pidFile);
         fs.rmSync(dir, { recursive: true, force: true });

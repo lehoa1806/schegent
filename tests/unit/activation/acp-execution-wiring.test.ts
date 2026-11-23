@@ -902,7 +902,7 @@ describe('GC-08 — ACP authority gate primacy and receipt writer wiring', () =>
       isWorkspaceTrusted: () => true,
       hasPrimacy: async () => {
         calls += 1;
-        if (calls === 1) return true; // primeAuthority succeeds
+        if (calls <= 2) return true; // initial + pre-prompt primeAuthority succeed
         throw new Error('lock disappeared');
       }
     });
@@ -1164,5 +1164,175 @@ describe('GC-08 — ACP authority gate primacy and receipt writer wiring', () =>
 
     // A fresh verifyPrimacy started AFTER a legitimate re-acquisition recovers cleanly.
     expect(await dispatch.primeAuthority?.()).toBe(true);
+  });
+
+  it('FR-R7-16 (16-17): short-circuits primeAuthority and currentOwnershipGeneration when workspace is untrusted without reading primacy lock', async () => {
+    let trusted = false;
+    let hasPrimacyCalls = 0;
+    const sqlRuns: unknown[] = [];
+    registry.writer = {
+      run: (...args: unknown[]) => {
+        sqlRuns.push(args);
+      }
+    };
+    const dispatch = buildHostAcpDispatchOptions({
+      workspaceRoot: '/workspace',
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => trusted,
+      hasPrimacy: async () => {
+        hasPrimacyCalls += 1;
+        return true;
+      },
+      readRemoteName: () => undefined
+    });
+
+    expect(dispatch.currentOwnershipGeneration?.()).toBe(1);
+    expect(await dispatch.primeAuthority?.()).toBe(false);
+    expect(hasPrimacyCalls).toBe(0);
+    expect(sqlRuns).toHaveLength(0);
+
+    // Trust revocation mid-hasPrimacy also returns false and persists zero receipts.
+    trusted = true;
+    let resolveDeferred!: (held: boolean) => void;
+    const midRevokeDispatch = buildHostAcpDispatchOptions({
+      workspaceRoot: '/workspace',
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => trusted,
+      hasPrimacy: () =>
+        new Promise<boolean>((resolve) => {
+          resolveDeferred = resolve;
+        }),
+      readRemoteName: () => undefined
+    });
+    const inFlight = midRevokeDispatch.primeAuthority!();
+    trusted = false;
+    resolveDeferred(true);
+    expect(await inFlight).toBe(false);
+    expect(sqlRuns).toHaveLength(0);
+  });
+
+  it('FR-R7-16 (16-17): re-verifies primeAuthority and ownershipGeneration immediately before registerScope and connection.prompt', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'schegent-1617-preprompt-'));
+    tempDirs.push(root);
+    const sqlRuns: unknown[] = [];
+    registry.writer = {
+      run: (...args: unknown[]) => {
+        sqlRuns.push(args);
+      }
+    };
+
+    // Case A: workspace trust is revoked after session/new, before prompt dispatch.
+    let trusted = true;
+    const promptsSentA: string[] = [];
+    const dispatchA = buildHostAcpDispatchOptions({
+      workspaceRoot: root,
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => trusted,
+      hasPrimacy: async () => true,
+      readRemoteName: () => undefined
+    });
+    const runnerA = new AcpBackedRunner({
+      kind: 'agy',
+      inner: makeDummyInnerRunner(),
+      readConfiguredProfile: () => 'agy-acp-native',
+      ...(dispatchA.authorityGate ? { authorityGate: dispatchA.authorityGate } : {}),
+      primaryWorkspaceRoot: root,
+      ...(dispatchA.currentOwnershipGeneration
+        ? { currentOwnershipGeneration: dispatchA.currentOwnershipGeneration }
+        : {}),
+      ...(dispatchA.primeAuthority ? { primeAuthority: dispatchA.primeAuthority } : {}),
+      platform: { os: 'darwin', arch: 'arm64' },
+      launchTransport: () => {
+        const inner = createFakeAcpTransport();
+        return {
+          ...inner,
+          write(line: string) {
+            const msg = JSON.parse(line.trim()) as { method?: string };
+            if (msg.method === 'session/new') {
+              trusted = false;
+            }
+            if (msg.method === 'session/prompt') {
+              promptsSentA.push(line);
+            }
+            inner.write(line);
+          }
+        };
+      }
+    });
+
+    const resA = await runnerA.invoke({
+      cliPath: '/usr/bin/fake-agy',
+      cwd: root,
+      prompt: 'Must not reach prompt after trust loss',
+      phase: 'implement',
+      iteration: 1,
+      timeoutMs: 5_000,
+      runId: 'run-1617-trust-loss'
+    });
+    expect(resA.exitCode).toBe(1);
+    expect(resA.diagnosticWarnings).toContain('acp-ownership-unverified');
+    expect(promptsSentA).toEqual([]);
+    expect(sqlRuns).toHaveLength(0);
+
+    // Case B: onFenceLost fires after session/new, before prompt dispatch.
+    let fenceListener: (() => void) | undefined;
+    const promptsSentB: string[] = [];
+    const dispatchB = buildHostAcpDispatchOptions({
+      workspaceRoot: root,
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: async () => true,
+      onFenceLost: (listener) => {
+        fenceListener = listener;
+        return { dispose() {} };
+      },
+      readRemoteName: () => undefined
+    });
+    const runnerB = new AcpBackedRunner({
+      kind: 'agy',
+      inner: makeDummyInnerRunner(),
+      readConfiguredProfile: () => 'agy-acp-native',
+      ...(dispatchB.authorityGate ? { authorityGate: dispatchB.authorityGate } : {}),
+      primaryWorkspaceRoot: root,
+      ...(dispatchB.currentOwnershipGeneration
+        ? { currentOwnershipGeneration: dispatchB.currentOwnershipGeneration }
+        : {}),
+      ...(dispatchB.primeAuthority ? { primeAuthority: dispatchB.primeAuthority } : {}),
+      platform: { os: 'darwin', arch: 'arm64' },
+      launchTransport: () => {
+        const inner = createFakeAcpTransport();
+        return {
+          ...inner,
+          write(line: string) {
+            const msg = JSON.parse(line.trim()) as { method?: string };
+            if (msg.method === 'session/new') {
+              fenceListener?.();
+            }
+            if (msg.method === 'session/prompt') {
+              promptsSentB.push(line);
+            }
+            inner.write(line);
+          }
+        };
+      }
+    });
+
+    const resB = await runnerB.invoke({
+      cliPath: '/usr/bin/fake-agy',
+      cwd: root,
+      prompt: 'Must not reach prompt after fence loss',
+      phase: 'implement',
+      iteration: 1,
+      timeoutMs: 5_000,
+      runId: 'run-1617-fence-loss'
+    });
+    expect(resB.exitCode).toBe(1);
+    expect(resB.diagnosticWarnings).toContain('acp-ownership-unverified');
+    expect(promptsSentB).toEqual([]);
+    expect(sqlRuns).toHaveLength(0);
   });
 });

@@ -60,14 +60,16 @@ const SAFE_SCOPE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 
 const POPULATED_DATA_TABLES = [
   'operational_queue_meta', 'operational_tasks', 'operational_runs',
-  'operational_kv_documents', 'runs', 'definitions', 'usage_observations', 'artifacts'
+  'operational_kv_documents', 'runs', 'definitions', 'usage_observations',
+  'accounting_observations', 'live_log_streams', 'artifacts'
 ] as const;
 
 const OPERATIONAL_TIMESTAMP_SOURCES: ReadonlyArray<readonly [string, string]> = [
   ['operational_queue_meta', 'updated_at_ms'], ['operational_tasks', 'updated_at_ms'],
   ['operational_runs', 'last_transition_at_ms'], ['operational_kv_documents', 'updated_at_ms'],
   ['runs', 'updated_at_ms'], ['definitions', 'created_at_ms'],
-  ['usage_observations', 'observed_at_ms'], ['artifacts', 'created_at_ms']
+  ['usage_observations', 'observed_at_ms'], ['accounting_observations', 'ingested_utc'],
+  ['live_log_streams', 'updated_at_ms'], ['artifacts', 'created_at_ms']
 ];
 
 const METADATA_TIMESTAMP_SOURCES: ReadonlyArray<readonly [string, string]> = [

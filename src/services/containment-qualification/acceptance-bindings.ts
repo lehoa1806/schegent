@@ -19,11 +19,13 @@ import {
   DIGEST_PATTERN,
   FINGERPRINT_COMPONENTS,
   FINGERPRINT_COMPONENT_MAX,
+  VERSION_MINOR_PATTERN,
   type AcceptanceBinding,
   type AcceptanceOrigin,
   type BindingInput,
   type FingerprintRecord
 } from '../../contracts/containment-qualification';
+import { UNVERIFIED_VERSION } from './fingerprint';
 
 /** The slice of a VS Code `Memento` the store needs. */
 export interface AcceptanceMementoPort {
@@ -79,6 +81,10 @@ function isBoundedString(value: unknown, max: number): value is string {
 function isComponents(value: unknown, kind: BackendRunnerKind): boolean {
   if (!isPlainObject(value) || !hasExactKeys(value, [...FINGERPRINT_COMPONENTS].sort())) return false;
   if (!FINGERPRINT_COMPONENTS.every((name) => isBoundedString(value[name], FINGERPRINT_COMPONENT_MAX))) return false;
+  const version = value['version'];
+  if (typeof version !== 'string' || (version !== UNVERIFIED_VERSION && !VERSION_MINOR_PATTERN.test(version))) {
+    return false;
+  }
   return value['backend'] === kind;
 }
 

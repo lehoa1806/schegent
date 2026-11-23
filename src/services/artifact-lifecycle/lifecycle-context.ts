@@ -17,7 +17,7 @@ import {
 } from '../../contracts/artifact-lifecycle/lifecycle-types';
 import type { LegacyCatalogConsumerPort } from '../../contracts/artifact-lifecycle/legacy-preservation-types';
 import type { RunFrameStatusLookup } from '../../contracts/artifact-lifecycle/retention-policy-types';
-import type { NodeSqliteConnection } from '../sqlite-store';
+import type { LegacySourceRef, LegacySourceStanding, NodeSqliteConnection } from '../sqlite-store';
 import type { ArtifactByteProbe, ArtifactRecordStore } from './artifact-records';
 import type { LegacyCatalogRoot } from './legacy-classification';
 import type { LegacyPreservationFs } from './legacy-preservation-fs';
@@ -37,6 +37,8 @@ export interface LegacyCatalogDependencies {
   readonly catalogRoot: LegacyCatalogRoot;
   readonly files: LegacyPreservationFs;
   readonly consumers: LegacyCatalogConsumerPort;
+  /** Optional F04 catalog standing probe; defaults to querying `conn` directly (`16-02`). */
+  readonly catalogStanding?: (ref: LegacySourceRef) => LegacySourceStanding;
   /** Workspace-relative quarantine directory; defaults to `.schegent/quarantine/catalog`. */
   readonly quarantineSegments?: readonly string[];
 }

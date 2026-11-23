@@ -257,6 +257,8 @@ export interface TeardownQualification {
 export interface SpawnAdmissionRequest {
   readonly runId: string | undefined;
   readonly cliPath: string;
+  /** Optional abort signal triggered when the caller cancels or closes while admission is pending. */
+  readonly cancellationSignal?: AbortSignal;
 }
 
 /**

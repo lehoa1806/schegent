@@ -1,8 +1,11 @@
-// FR-R6-F07 T038 (FR-017) — projects F13's normalized ACP events to display
-// entries.
+// FR-R6-F07 T038 (FR-017) & FR-R7-16 (`16-09`, FR-009) — projects F13's
+// normalized ACP events to display entries.
 //
-// F13 does not exist yet. This module fixes the shape F13 maps its decoder to,
-// and is qualified against fixtures only. No production code calls it.
+// F13's ACP runtime (`src/services/acp-runtime/`, `src/runner/acp-stream-encoder.ts`,
+// `src/runner/acp-open-work-tracker.ts`, `src/contracts/acp-runtime.ts`) imports
+// `AcpNormalizedEvent` as a type-only contract; runtime `projectAcpEvents` currently
+// has no production caller and is qualified at its display boundary against fixtures
+// and adversarial bounds tests.
 //
 // SEGMENTS. Entries from one connection, one origin (live or history) and one
 // certain correlation share a segment. A new segment opens:
@@ -16,20 +19,34 @@
 // SEQUENCE. The stream sequence is assigned here, from 0, and only rises. It
 // orders entries locally; no event field can move it.
 //
-// CONTENT. Every entry passes the same per-field truncation, sanitization and
-// entry budget as a tail session's entries. An event that is not the normalized
-// shape is shown as a `parse-omission` gap holding none of its content.
+// CONTENT. Identifier metadata (`connectionGeneration`, `attemptId`, `sourceEventId`)
+// is grammar-checked before projection. Payload fields (`toolName`, `text`,
+// `toolArgs`) are pre-bounded host-side (Hard Rule 25) before any large buffer
+// allocation, deep clone, or `JSON.stringify`, then passed through the shared
+// truncation, sanitization, and whole-entry byte budget. An event that is not
+// the normalized shape is shown as a `parse-omission` gap holding none of its
+// content.
+//
+// Zero `vscode` imports (docs/hard-rules.md rule 13).
 
 import { LIVE_LOG_ENTRY_MAX_BYTES, type LiveLogCoverageReason } from '../../contracts/phase-log-bounds';
-import { fitEntryToBudget } from './live-log-entry-budget';
+import { cutToBytes, fitEntryToBudget } from './live-log-entry-budget';
 import { coverageGapEntry } from './live-log-snapshot';
-import { toolUseBody } from './phase-log-display-projector';
 import { sanitizeDisplayEntryBody } from './phase-log-sanitizer';
 import { truncateDisplayEntryBody, type TruncateCaps } from './phase-log-truncator';
-import type { PhaseLogDisplayEntry } from './types';
+import type { PhaseLogDisplayEntry, ToolArgumentValue } from './types';
 
 /** Longest connection generation, attempt id or source event id accepted. */
 export const ACP_IDENTIFIER_MAX_LENGTH = 256;
+
+/** Longest `toolName` kept at the ACP display boundary (UTF-16 code units). */
+export const ACP_TOOL_NAME_MAX_LENGTH = 128;
+
+/** Maximum nesting depth walked for untrusted ACP `toolArgs` before elision. */
+export const ACP_TOOL_ARGS_MAX_DEPTH = 8;
+
+/** Maximum nodes/properties walked for untrusted ACP `toolArgs` before truncation. */
+export const ACP_TOOL_ARGS_MAX_NODES = 256;
 
 export const ACP_EVENT_ORIGINS = Object.freeze(['live', 'history'] as const);
 export type AcpEventOrigin = (typeof ACP_EVENT_ORIGINS)[number];
@@ -91,12 +108,57 @@ const MARKER_SUMMARY: Readonly<Record<AcpEventOrigin, string>> = Object.freeze({
 const ORIGINS: ReadonlySet<string> = new Set(ACP_EVENT_ORIGINS);
 const KINDS: ReadonlySet<string> = new Set(ACP_EVENT_KINDS);
 
+/**
+ * Rejects Unicode control (Cc), format/bidi (Cf), lone surrogate (Cs),
+ * line separator (Zl), and paragraph separator (Zp) characters in ACP identifiers.
+ */
+const DISALLOWED_IDENTIFIER_CHAR_RE = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
+
+const HIGH_SURROGATE_FIRST = 0xd800;
+const HIGH_SURROGATE_LAST = 0xdbff;
+const LOW_SURROGATE_FIRST = 0xdc00;
+const LOW_SURROGATE_LAST = 0xdfff;
+
+/** Serialized UTF-8 byte length of `{"__elided":true}`. */
+const ELIDED_SENTINEL_BYTES = 17;
+
+type BodyTruncatedMap = NonNullable<PhaseLogDisplayEntry['bodyTruncated']>;
+
+interface BuiltBody {
+  readonly kind: PhaseLogDisplayEntry['kind'];
+  readonly body: PhaseLogDisplayEntry['body'];
+  readonly preTruncated: BodyTruncatedMap | null;
+}
+
+interface ToolArgsWalkState {
+  nodes: number;
+  bytes: number;
+  readonly maxNodes: number;
+  readonly maxBytes: number;
+  readonly ancestors: WeakSet<object>;
+}
+
+type WalkOutcome =
+  | { readonly ok: true; readonly value: ToolArgumentValue }
+  | { readonly ok: false };
+
+const WALK_OVERFLOW: WalkOutcome = Object.freeze({ ok: false });
+
+function walkOk(value: ToolArgumentValue): WalkOutcome {
+  return { ok: true, value };
+}
+
 export function initialAcpProjectionState(): AcpProjectionState {
   return Object.freeze({ nextStreamSeq: 0, segment: 0, last: null });
 }
 
 function isIdentifier(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= ACP_IDENTIFIER_MAX_LENGTH;
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= ACP_IDENTIFIER_MAX_LENGTH &&
+    !DISALLOWED_IDENTIFIER_CHAR_RE.test(value)
+  );
 }
 
 function isOptionalIdentifier(value: unknown): value is string | null {
@@ -122,20 +184,368 @@ export function asAcpNormalizedEvent(value: unknown): AcpNormalizedEvent | null 
   return event as unknown as AcpNormalizedEvent;
 }
 
-function bodyOf(event: AcpNormalizedEvent): Pick<PhaseLogDisplayEntry, 'kind' | 'body'> {
-  const text = event.text ?? '';
+function effectivePerFieldBytes(caps: TruncateCaps): number {
+  const raw = Number.isFinite(caps.perFieldBytes) ? Math.floor(caps.perFieldBytes) : 0;
+  return Math.min(Math.max(0, raw), LIVE_LOG_ENTRY_MAX_BYTES);
+}
+
+function boundCodeUnits(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  let end = maxLength;
+  if (end > 0) {
+    const last = text.charCodeAt(end - 1);
+    if (last >= HIGH_SURROGATE_FIRST && last <= HIGH_SURROGATE_LAST) {
+      end -= 1;
+    }
+  }
+  return text.slice(0, end);
+}
+
+/**
+ * Pre-bounds untrusted text to at most `maxBytes` UTF-8 bytes without allocating
+ * a multi-MiB Buffer via `Buffer.from`, while preserving exact `originalLength`
+ * in UTF-8 bytes when truncated.
+ */
+function preBoundText(text: string, maxBytes: number): {
+  readonly value: string;
+  readonly originalLength: number | null;
+} {
+  if (text.length * 3 <= maxBytes) {
+    return { value: text, originalLength: null };
+  }
+  if (text.length <= maxBytes) {
+    const byteLength = Buffer.byteLength(text, 'utf8');
+    if (byteLength <= maxBytes) {
+      return { value: text, originalLength: null };
+    }
+    return { value: cutToBytes(text, maxBytes), originalLength: byteLength };
+  }
+  // Every UTF-16 code unit encodes to >= 1 UTF-8 byte, so `text.length > maxBytes`
+  // guarantees truncation. `cutToBytes` walks only the prefix up to `maxBytes`.
+  return {
+    value: cutToBytes(text, maxBytes),
+    originalLength: Buffer.byteLength(text, 'utf8')
+  };
+}
+
+/**
+ * Measures the UTF-8 byte length of `JSON.stringify(value)` with early exit
+ * as soon as the cumulative total exceeds `limit`, avoiding any string allocation.
+ */
+function measureJsonStringBytes(value: string, limit: number): number {
+  let bytes = 2;
+  if (bytes > limit) return bytes;
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code === 0x22 || code === 0x5c || (code >= 0x08 && code <= 0x0d && code !== 0x0b)) {
+      bytes += 2;
+    } else if (code <= 0x1f) {
+      bytes += 6;
+    } else if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= HIGH_SURROGATE_FIRST && code <= HIGH_SURROGATE_LAST) {
+      const next = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
+      if (next >= LOW_SURROGATE_FIRST && next <= LOW_SURROGATE_LAST) {
+        bytes += 4;
+        i += 1;
+      } else {
+        bytes += 6;
+      }
+    } else if (code >= LOW_SURROGATE_FIRST && code <= LOW_SURROGATE_LAST) {
+      bytes += 6;
+    } else {
+      bytes += 3;
+    }
+    if (bytes > limit) return bytes;
+  }
+  return bytes;
+}
+
+function walkToolArgument(value: unknown, depth: number, state: ToolArgsWalkState): WalkOutcome {
+  state.nodes += 1;
+  if (state.nodes > state.maxNodes) {
+    return WALK_OVERFLOW;
+  }
+  if (depth >= ACP_TOOL_ARGS_MAX_DEPTH) {
+    state.bytes += ELIDED_SENTINEL_BYTES;
+    return state.bytes > state.maxBytes ? WALK_OVERFLOW : walkOk({ __elided: true });
+  }
+  if (value === null) {
+    state.bytes += 4;
+    return state.bytes > state.maxBytes ? WALK_OVERFLOW : walkOk(null);
+  }
+  const kind = typeof value;
+  if (kind === 'boolean') {
+    state.bytes += value ? 4 : 5;
+    return state.bytes > state.maxBytes ? WALK_OVERFLOW : walkOk(value as boolean);
+  }
+  if (kind === 'number') {
+    const num = value as number;
+    if (!Number.isFinite(num)) {
+      state.bytes += 4;
+      return state.bytes > state.maxBytes ? WALK_OVERFLOW : walkOk(null);
+    }
+    state.bytes += String(num).length;
+    return state.bytes > state.maxBytes ? WALK_OVERFLOW : walkOk(num);
+  }
+  if (kind === 'string') {
+    const str = value as string;
+    const remaining = state.maxBytes - state.bytes;
+    if (str.length + 2 > remaining) {
+      state.bytes += Math.max(str.length + 2, remaining + 1);
+      return WALK_OVERFLOW;
+    }
+    const jsonBytes = measureJsonStringBytes(str, remaining);
+    state.bytes += jsonBytes;
+    return state.bytes > state.maxBytes ? WALK_OVERFLOW : walkOk(str);
+  }
+  if (kind !== 'object') {
+    // undefined, function, symbol, bigint — coerce to null for safety.
+    state.bytes += 4;
+    return state.bytes > state.maxBytes ? WALK_OVERFLOW : walkOk(null);
+  }
+
+  const obj = value as object;
+  if (state.ancestors.has(obj)) {
+    state.bytes += ELIDED_SENTINEL_BYTES;
+    return state.bytes > state.maxBytes ? WALK_OVERFLOW : walkOk({ __elided: true });
+  }
+
+  state.ancestors.add(obj);
+  try {
+    if (Array.isArray(obj)) {
+      state.bytes += 2;
+      if (state.bytes > state.maxBytes) return WALK_OVERFLOW;
+      const out: ToolArgumentValue[] = [];
+      for (let i = 0; i < obj.length; i += 1) {
+        if (i > 0) {
+          state.bytes += 1;
+          if (state.bytes > state.maxBytes) return WALK_OVERFLOW;
+        }
+        let item: unknown;
+        try {
+          item = obj[i];
+        } catch {
+          return WALK_OVERFLOW;
+        }
+        const child = walkToolArgument(item, depth + 1, state);
+        if (!child.ok) return WALK_OVERFLOW;
+        out.push(child.value);
+      }
+      return walkOk(out);
+    }
+
+    state.bytes += 2;
+    if (state.bytes > state.maxBytes) return WALK_OVERFLOW;
+    const out: { [k: string]: ToolArgumentValue } = {};
+    const record = obj as Record<string, unknown>;
+    let first = true;
+    try {
+      for (const key in record) {
+        if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+        if (!first) {
+          state.bytes += 1;
+        }
+        first = false;
+        const keyRemaining = state.maxBytes - state.bytes - 1;
+        if (key.length + 2 > keyRemaining) {
+          state.bytes += Math.max(key.length + 3, keyRemaining + 2);
+          return WALK_OVERFLOW;
+        }
+        const keyBytes = measureJsonStringBytes(key, keyRemaining) + 1;
+        state.bytes += keyBytes;
+        if (state.bytes > state.maxBytes) return WALK_OVERFLOW;
+        let propVal: unknown;
+        try {
+          propVal = record[key];
+        } catch {
+          return WALK_OVERFLOW;
+        }
+        const child = walkToolArgument(propVal, depth + 1, state);
+        if (!child.ok) return WALK_OVERFLOW;
+        Object.defineProperty(out, key, {
+          value: child.value,
+          enumerable: true,
+          writable: true,
+          configurable: true
+        });
+      }
+    } catch {
+      return WALK_OVERFLOW;
+    }
+    return walkOk(out);
+  } finally {
+    state.ancestors.delete(obj);
+  }
+}
+
+function truncatedToolUseBody(toolName: string, originalBytes: number): BuiltBody {
+  const safeBytes = Math.max(originalBytes, 1);
+  const sentinel: ToolArgumentValue = { __truncated: true, originalBytes: safeBytes };
+  return {
+    kind: 'tool-use',
+    body: {
+      toolName,
+      toolInput: JSON.stringify(sentinel),
+      toolArguments: sentinel
+    },
+    preTruncated: {
+      toolInput: { originalLength: safeBytes },
+      toolArguments: { originalLength: safeBytes }
+    }
+  };
+}
+
+function buildBoundedToolUseBody(
+  rawToolName: string,
+  rawToolArgs: unknown,
+  maxBytes: number
+): BuiltBody {
+  const toolName = boundCodeUnits(rawToolName, ACP_TOOL_NAME_MAX_LENGTH);
+  if (rawToolArgs === undefined) {
+    return { kind: 'tool-use', body: { toolName, toolInput: '' }, preTruncated: null };
+  }
+  if (typeof rawToolArgs === 'string') {
+    const boundedInput = preBoundText(rawToolArgs, maxBytes);
+    if (boundedInput.originalLength !== null) {
+      const originalArgsBytes = boundedInput.originalLength + 12;
+      return {
+        kind: 'tool-use',
+        body: {
+          toolName,
+          toolInput: boundedInput.value,
+          toolArguments: { __truncated: true, originalBytes: originalArgsBytes }
+        },
+        preTruncated: {
+          toolInput: { originalLength: boundedInput.originalLength },
+          toolArguments: { originalLength: originalArgsBytes }
+        }
+      };
+    }
+    const wrappedBytes = 10 + measureJsonStringBytes(rawToolArgs, maxBytes);
+    if (wrappedBytes > maxBytes) {
+      return {
+        kind: 'tool-use',
+        body: {
+          toolName,
+          toolInput: rawToolArgs,
+          toolArguments: { __truncated: true, originalBytes: wrappedBytes }
+        },
+        preTruncated: {
+          toolArguments: { originalLength: wrappedBytes }
+        }
+      };
+    }
+    return {
+      kind: 'tool-use',
+      body: { toolName, toolInput: rawToolArgs, toolArguments: { value: rawToolArgs } },
+      preTruncated: null
+    };
+  }
+  if (rawToolArgs === null) {
+    return { kind: 'tool-use', body: { toolName, toolInput: 'null', toolArguments: null }, preTruncated: null };
+  }
+  if (typeof rawToolArgs === 'boolean') {
+    return {
+      kind: 'tool-use',
+      body: { toolName, toolInput: rawToolArgs ? 'true' : 'false', toolArguments: rawToolArgs },
+      preTruncated: null
+    };
+  }
+  if (typeof rawToolArgs === 'number') {
+    const normalized = Number.isFinite(rawToolArgs) ? rawToolArgs : null;
+    return {
+      kind: 'tool-use',
+      body: {
+        toolName,
+        toolInput: normalized === null ? 'null' : String(normalized),
+        toolArguments: normalized
+      },
+      preTruncated: null
+    };
+  }
+  if (typeof rawToolArgs !== 'object') {
+    return { kind: 'tool-use', body: { toolName, toolInput: '', toolArguments: null }, preTruncated: null };
+  }
+
+  const state: ToolArgsWalkState = {
+    nodes: 0,
+    bytes: 0,
+    maxNodes: ACP_TOOL_ARGS_MAX_NODES,
+    maxBytes,
+    ancestors: new WeakSet<object>()
+  };
+  const walked = walkToolArgument(rawToolArgs, 0, state);
+  if (!walked.ok) {
+    return truncatedToolUseBody(toolName, state.bytes);
+  }
+  const toolInput = JSON.stringify(walked.value);
+  const actualBytes = Buffer.byteLength(toolInput, 'utf8');
+  if (actualBytes > maxBytes) {
+    return truncatedToolUseBody(toolName, actualBytes);
+  }
+  return {
+    kind: 'tool-use',
+    body: { toolName, toolInput, toolArguments: walked.value },
+    preTruncated: null
+  };
+}
+
+function bodyOf(event: AcpNormalizedEvent, maxBytes: number): BuiltBody {
+  if (event.kind === 'tool-call') {
+    return buildBoundedToolUseBody(event.toolName ?? '', event.toolArgs, maxBytes);
+  }
+  const bounded = preBoundText(event.text ?? '', maxBytes);
   switch (event.kind) {
     case 'message':
-      return { kind: 'assistant-text', body: { text } };
-    case 'tool-call':
-      return { kind: 'tool-use', body: toolUseBody(event.toolName ?? '', event.toolArgs) };
+      return {
+        kind: 'assistant-text',
+        body: { text: bounded.value },
+        preTruncated: bounded.originalLength === null ? null : { text: { originalLength: bounded.originalLength } }
+      };
     case 'tool-result':
-      return { kind: 'tool-result', body: { toolResult: text } };
+      return {
+        kind: 'tool-result',
+        body: { toolResult: bounded.value },
+        preTruncated:
+          bounded.originalLength === null ? null : { toolResult: { originalLength: bounded.originalLength } }
+      };
     case 'plan':
-      return { kind: 'system', body: { systemSubtype: 'acp-plan', systemSummary: text } };
+      return {
+        kind: 'system',
+        body: { systemSubtype: 'acp-plan', systemSummary: bounded.value },
+        preTruncated:
+          bounded.originalLength === null ? null : { systemSummary: { originalLength: bounded.originalLength } }
+      };
     case 'status':
-      return { kind: 'system', body: { systemSubtype: 'acp-status', systemSummary: text } };
+      return {
+        kind: 'system',
+        body: { systemSubtype: 'acp-status', systemSummary: bounded.value },
+        preTruncated:
+          bounded.originalLength === null ? null : { systemSummary: { originalLength: bounded.originalLength } }
+      };
   }
+}
+
+function mergeBodyTruncated(
+  preTruncated: BodyTruncatedMap | null,
+  postTruncated: PhaseLogDisplayEntry['bodyTruncated']
+): PhaseLogDisplayEntry['bodyTruncated'] {
+  if (preTruncated === null) return postTruncated;
+  if (postTruncated === null) return preTruncated;
+  const merged: { -readonly [K in keyof BodyTruncatedMap]: BodyTruncatedMap[K] } = { ...preTruncated };
+  for (const key of Object.keys(postTruncated) as Array<keyof BodyTruncatedMap>) {
+    const post = postTruncated[key];
+    if (post === undefined) continue;
+    const pre = merged[key];
+    merged[key] =
+      pre === undefined
+        ? post
+        : { originalLength: Math.max(pre.originalLength, post.originalLength) };
+  }
+  return merged;
 }
 
 /** Accumulates one call's rows; the state it ends with is returned frozen. */
@@ -146,11 +556,13 @@ class Projection {
   private segment: number;
   private last: AcpProjectionState['last'];
   private omitted = 0;
+  private readonly perFieldBytes: number;
 
   constructor(state: AcpProjectionState, private readonly options: AcpProjectionOptions) {
     this.nextStreamSeq = state.nextStreamSeq;
     this.segment = state.segment;
     this.last = state.last;
+    this.perFieldBytes = effectivePerFieldBytes(options.caps);
   }
 
   accept(value: unknown): void {
@@ -161,8 +573,8 @@ class Projection {
     }
     this.flushOmitted();
     this.openSegmentIfNeeded(event);
-    const { kind, body } = bodyOf(event);
-    this.push(event, this.bounded({ seq: 0, kind, ts: null, body, bodyTruncated: null }));
+    const { kind, body, preTruncated } = bodyOf(event, this.perFieldBytes);
+    this.push(event, this.bounded({ seq: 0, kind, ts: null, body, bodyTruncated: null }, preTruncated));
     this.last = {
       connectionGeneration: event.connectionGeneration,
       origin: event.origin,
@@ -250,9 +662,15 @@ class Projection {
     this.gaps[reason] = (this.gaps[reason] ?? 0) + 1;
   }
 
-  private bounded(entry: PhaseLogDisplayEntry): PhaseLogDisplayEntry {
-    const truncated = truncateDisplayEntryBody(entry, this.options.caps);
-    const sanitized = sanitizeDisplayEntryBody(truncated, this.options.sanitize);
+  private bounded(
+    entry: PhaseLogDisplayEntry,
+    preTruncated: BodyTruncatedMap | null
+  ): PhaseLogDisplayEntry {
+    const truncated = truncateDisplayEntryBody(entry, { perFieldBytes: this.perFieldBytes });
+    const merged = mergeBodyTruncated(preTruncated, truncated.bodyTruncated);
+    const withTruncated: PhaseLogDisplayEntry =
+      merged === truncated.bodyTruncated ? truncated : { ...truncated, bodyTruncated: merged };
+    const sanitized = sanitizeDisplayEntryBody(withTruncated, this.options.sanitize);
     return fitEntryToBudget(sanitized, LIVE_LOG_ENTRY_MAX_BYTES);
   }
 }

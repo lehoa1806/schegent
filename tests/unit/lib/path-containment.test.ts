@@ -235,6 +235,16 @@ describe('FR-R3-005 (T331) path-containment oracle', () => {
       });
     });
 
+    it('returns the canonical resolved parent plus leaf when an in-root parent symlink is resolved', async () => {
+      const fs = fakeFs({ [p(WS, 'alias-dir')]: p(WS, 'real-dir') });
+      await expect(
+        resolveContainedLink(p(WS, 'alias-dir', 'artifact.patch'), [WS], fs)
+      ).resolves.toEqual({
+        outcome: 'contained',
+        resolved: p(WS, 'real-dir', 'artifact.patch')
+      });
+    });
+
     it('refuses the filesystem root, which nothing can contain', async () => {
       const fs = fakeFs({});
       const root = path.parse(path.resolve(WS)).root;

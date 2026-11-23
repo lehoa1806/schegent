@@ -47,6 +47,7 @@ import {
   getStoragePressure,
   previewArtifactDeletion
 } from '../../src/headless/artifact-lifecycle-api';
+import { createWorkspaceExternalDependencyInspector } from '../../src/headless/backup-restore-api';
 import { createCatalogFsAdapter } from '../../src/host-services/catalog-fs-adapter';
 import {
   ArtifactRecordStore,
@@ -73,7 +74,18 @@ import {
   type RegisterArtifactInput,
   type StorageScanRoot
 } from '../../src/services/artifact-lifecycle';
-import { BUILTIN_SCHEMA_MIGRATIONS, NodeSqliteConnection, SchemaBootstrapService } from '../../src/services/sqlite-store';
+import {
+  BackupRestoreService,
+  BUILTIN_SCHEMA_MIGRATIONS,
+  classifyExternalArtifactDependencies,
+  importLegacyCatalogIntoSqlite,
+  NodeSqliteConnection,
+  queryLegacySourceStanding,
+  relocateLegacySqliteStore,
+  SchemaBootstrapService,
+  SqliteApplicationStore,
+  SqliteCatalogFsAdapter
+} from '../../src/services/sqlite-store';
 import { handler as readStorageDetails } from '../../src/ui/sidebar/commands/cmd-read-storage-details';
 
 const NOW = 1_800_000_000_000;
@@ -1345,5 +1357,496 @@ describe('FR-R6-F05 acceptance (T045)', () => {
     await fs.writeFile(reportPath, 'phase report BODY\n');
     expect(refusalOf(await service.qualifyAccess(request))).toBe('content-conflict');
     expect(availabilityOf(service, 'report-1')).toBe('corrupt');
+  });
+});
+
+describe('FR-R7-16 (16-01..16-04) artifact lifecycle hardening acceptance', () => {
+  it('16-01: settles fault-injected and pre-existing split deletion rows without a second unlink and passes FR-R7-14 backup tombstone verification', async () => {
+    const h = harness();
+    let service = h.build();
+    await seedArtifact(service, 'live-keep', { ownerRunId: 'run-live' });
+    const faultFile = await seedArtifact(service, 'fault-del', { ownerRunId: 'run-fault' });
+    const splitPresentFile = await seedArtifact(service, 'split-present', { ownerRunId: 'run-split' });
+    const splitMissingFile = await seedArtifact(service, 'split-missing', { ownerRunId: 'run-split' });
+
+    // Fault between unlink and availability update: transaction rolls back so outcome stays executing.
+    let failOnce = true;
+    const faultConn = new Proxy(h.conn, {
+      get(target, property, receiver) {
+        const value: unknown = Reflect.get(target, property, receiver);
+        if (typeof value !== 'function') return value;
+        if (property !== 'run') return (value as (...args: unknown[]) => unknown).bind(target);
+        return (sql: string, ...params: unknown[]) => {
+          if (failOnce && sql.includes('UPDATE artifact_lifecycle')) {
+            failOnce = false;
+            throw new Error('simulated crash mid-recordOutcome');
+          }
+          return (value as (...args: unknown[]) => unknown).apply(target, [sql, ...params]);
+        };
+      }
+    });
+    const faultService = h.build({ conn: faultConn });
+    const faultPreview = faultService.previewDeletion({ artifactIds: ['fault-del'] });
+    if (!faultPreview.ok) throw new Error('preview refused');
+    await expect(
+      faultService.executeDeletion({
+        artifactIds: ['fault-del'],
+        previewId: faultPreview.value.previewId,
+        confirmation: 'confirmed',
+        authority: FULL
+      })
+    ).rejects.toThrow('simulated crash mid-recordOutcome');
+    expect(await exists(faultFile)).toBe(false);
+
+    // Seed pre-existing split rows on a completed deletion op whose files are already absent on disk.
+    await fs.rm(splitPresentFile);
+    await fs.rm(splitMissingFile);
+    h.conn.run(`UPDATE artifact_lifecycle SET availability = 'missing' WHERE artifact_id = 'split-missing'`);
+    h.conn.run(
+      `INSERT INTO deletion_operations
+         (operation_id, workspace_id, preview_id, state, fence_token, planned_count, created_at_ms, updated_at_ms, finished_at_ms)
+       VALUES ('op-legacy-split', 'workspace', 'prev-legacy', 'completed', 'fence-legacy', 2, ?, ?, ?)`,
+      now,
+      now,
+      now
+    );
+    h.conn.run(
+      `INSERT INTO deletion_targets (operation_id, target_ordinal, artifact_id, target_key, outcome, reason_code, updated_at_ms)
+       VALUES ('op-legacy-split', 0, 'split-present', ?, 'deleted', NULL, ?),
+              ('op-legacy-split', 1, 'split-missing', ?, 'already-absent', NULL, ?)`,
+      checkpointRel('split-present', 'run-split'),
+      now,
+      checkpointRel('split-missing', 'run-split'),
+      now
+    );
+
+    // Restart past lease TTL and reconcile with an unlink counter asserting zero unlinks during recovery.
+    now += LEASE_TTL_MARGIN_MS;
+    h.restart();
+    service = h.build();
+    let unlinksDuringReconcile = 0;
+    const origUnlink = h.files.unlink.bind(h.files);
+    h.files.unlink = async (target: string) => {
+      unlinksDuringReconcile += 1;
+      return origUnlink(target);
+    };
+
+    const reconciled = await service.reconcileAfterRestart(FULL);
+    expect(reconciled.ok).toBe(true);
+    expect(unlinksDuringReconcile).toBe(0);
+    for (const id of ['fault-del', 'split-present', 'split-missing']) {
+      expect(availabilityOf(service, id), id).toBe('deleted');
+    }
+    expect(availabilityOf(service, 'live-keep')).toBe('present');
+
+    // Repeating reconcileAfterRestart is an idempotent zero-unlink no-op.
+    const repeat = await service.reconcileAfterRestart(FULL);
+    expect(repeat).toEqual({ ok: true, value: { resumedOperations: [], ambiguous: 0, diagnostics: [] } });
+    expect(unlinksDuringReconcile).toBe(0);
+
+    // FR-R7-14 backup manifest classifies all three deleted artifacts as tombstoned-deleted and verifies cleanly.
+    const classified = classifyExternalArtifactDependencies(h.conn);
+    const byId = new Map(classified.map((dep) => [dep.artifactId, dep.disposition]));
+    expect(byId.get('live-keep')).toBe('required-live');
+    expect(byId.get('fault-del')).toBe('tombstoned-deleted');
+    expect(byId.get('split-present')).toBe('tombstoned-deleted');
+    expect(byId.get('split-missing')).toBe('tombstoned-deleted');
+
+    const backupSvc = new BackupRestoreService(h.conn, () => now);
+    const backup = await backupSvc.createOnlineBackup({
+      backupId: 'bkp-16-01',
+      scopeId: 'ws',
+      trustedRootDir: workspace,
+      relativeBackupDirSegments: ['.schegent', 'backups']
+    });
+    expect(backup.manifest.externalDependencies.map((dep) => dep.referenceId)).toEqual(['live-keep']);
+    const verified = backupSvc.verifyBackup({
+      backupDatabasePath: backup.backupDatabasePath,
+      manifest: backup.manifest,
+      trustedRootDir: workspace,
+      inspectExternalDependency: createWorkspaceExternalDependencyInspector(workspace)
+    });
+    expect(verified).toMatchObject({ status: 'verified', verifiedExternalDependencies: 1 });
+  });
+
+  it('16-02: rechecks F04 SQLite catalog standing right before unlink, preserving newly referenced source while quarantining and re-importing an eligible sibling', async () => {
+    const catalogSegments = ['.schegent', 'catalog'] as const;
+    const catalogDir = inWorkspace(...catalogSegments);
+    const digest: Digest = {
+      sha256: (text: string) => `sha256:${createHash('sha256').update(text, 'utf8').digest('hex')}`
+    };
+    const hashOf = (body: unknown): string => {
+      const hashed = contentHashOf(body, digest);
+      if (hashed.outcome !== 'hashed') throw new Error('fixture body must hash');
+      return hashed.contentHash;
+    };
+    const recordText = (id: string, versionId: string, body: unknown): string =>
+      `${JSON.stringify({ versionId, kind: 'phase', id, body }, null, 2)}\n`;
+    const v1Body = { name: 'alpha', steps: ['one'] };
+    const v2Body = { name: 'alpha', steps: ['one', 'two'] };
+    const siblingBody = { name: 'gamma', steps: ['eligible'] };
+    const writeCatalog = (segments: readonly string[], text: string): Promise<string> =>
+      writeBytes(path.join(...catalogSegments, ...segments), text);
+
+    const initialManifest = `${JSON.stringify(
+      {
+        storeFormatVersion: 1,
+        entries: [
+          {
+            kind: 'phase',
+            id: 'alpha',
+            activeVersionId: 'v1',
+            draftVersionId: null,
+            createdAt: now,
+            updatedAt: now,
+            versions: [{ versionId: 'v1', contentHash: hashOf(v1Body), createdAt: now, publishedAt: now, note: null }]
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`;
+    await writeCatalog(['manifest.json'], initialManifest);
+    await writeCatalog(['phases', 'alpha', 'v1.json'], recordText('alpha', 'v1', v1Body));
+    const alphaV2Path = await writeCatalog(['phases', 'alpha', 'v2.json'], recordText('alpha', 'v2', v2Body));
+    const gammaV1Path = await writeCatalog(['phases', 'gamma', 'v1.json'], recordText('gamma', 'v1', siblingBody));
+    const alphaV2Bytes = await fs.readFile(alphaV2Path);
+
+    const store = new SqliteApplicationStore({
+      databasePath: inWorkspace('.schegent', 'catalog-16-02.db'),
+      journalMode: 'wal',
+      nowMs: () => now
+    });
+    try {
+      const legacyFs = createCatalogFsAdapter({ workspaceRoot: workspace, storeRoot: catalogDir });
+      await importLegacyCatalogIntoSqlite(store, 'ws', legacyFs, () => now);
+      expect(store.catalogConfig.getLegacySourceStanding({ kind: 'phase', id: 'alpha', versionId: 'v1' })).toEqual({
+        referenced: true,
+        reasons: ['catalog-head', 'published-version']
+      });
+      expect(store.catalogConfig.getLegacySourceStanding({ kind: 'phase', id: 'alpha', versionId: 'v2' })).toEqual({
+        referenced: false,
+        reasons: []
+      });
+
+      const sqliteCatalog = new SqliteCatalogFsAdapter(store, 'ws', () => true, () => now);
+      const realFiles = createNodeLegacyPreservationFs(workspace);
+      const racingFiles: LegacyPreservationFs = {
+        readBytes: (segments) => realFiles.readBytes(segments),
+        writeExclusive: async (segments, bytes) => {
+          const res = await realFiles.writeExclusive(segments, bytes);
+          // Between classification and source unlink, F04 SQLite catalog promotes alpha/v2 as draft head.
+          if (segments.at(-2) === 'alpha' && segments.at(-1) === 'v2.json') {
+            const promotedManifest = `${JSON.stringify(
+              {
+                storeFormatVersion: 1,
+                entries: [
+                  {
+                    kind: 'phase',
+                    id: 'alpha',
+                    activeVersionId: 'v1',
+                    draftVersionId: 'v2',
+                    createdAt: now,
+                    updatedAt: now,
+                    versions: [
+                      { versionId: 'v1', contentHash: hashOf(v1Body), createdAt: now, publishedAt: now, note: null },
+                      { versionId: 'v2', contentHash: hashOf(v2Body), createdAt: now, publishedAt: null, note: null }
+                    ]
+                  }
+                ]
+              },
+              null,
+              2
+            )}\n`;
+            await sqliteCatalog.writeFileAtomic(['manifest.json'], promotedManifest);
+          }
+          return res;
+        },
+        unlinkContained: (segments) => realFiles.unlinkContained(segments)
+      };
+
+      const readOnlyCatalog: CatalogFsPort = {
+        readFile: (at) => legacyFs.readFile(at),
+        listDirectory: (at) => legacyFs.listDirectory(at),
+        checkWritability: () => legacyFs.checkWritability(),
+        writeFileAtomic: () => {
+          throw new Error('catalog writer called');
+        },
+        writeFileIfAbsent: () => {
+          throw new Error('catalog writer called');
+        },
+        removeFile: () => {
+          throw new Error('catalog writer called');
+        }
+      };
+
+      const service = createArtifactLifecycleService({
+        conn: store.writerConnection,
+        nowMs: () => now,
+        fs: new NodeLifecycleFs(),
+        probe: realProbe,
+        audit: { recordLifecycleMutation: () => undefined },
+        scanRoots: scanRoots(),
+        accessPolicy: DENY_ALL_ACCESS_POLICY,
+        resolveOwner: () => 'live',
+        newId,
+        workspaceRoot: workspace,
+        legacyCatalog: {
+          catalogRoot: { catalog: readOnlyCatalog, digest, segments: catalogSegments },
+          files: racingFiles,
+          consumers: { consumersOf: () => [] }
+        }
+      });
+
+      const classified = await service.classifyLegacyCatalogResidue();
+      if (!classified.ok) throw new Error('classify refused');
+      const preview = await service.previewLegacyQuarantine(classified.value.basisRevision);
+      if (!preview.ok) throw new Error('preview refused');
+
+      const quarantined = await service.quarantineLegacyResidue({
+        previewId: preview.value.previewId,
+        confirmation: 'confirmed',
+        authority: FULL
+      });
+      expect(quarantined.ok).toBe(true);
+      if (!quarantined.ok) return;
+      expect(quarantined.value.targets.map((target) => target.outcome)).toEqual(['refused', 'quarantined']);
+      // Newly referenced alpha/v2 kept intact bytes; eligible sibling gamma/v1 moved to quarantine.
+      expect(await fs.readFile(alphaV2Path)).toEqual(alphaV2Bytes);
+      expect(await exists(gammaV1Path)).toBe(false);
+
+      // Eligible sibling previews and completes re-import into the authoritative F04 SQLite catalog.
+      const reimportPreview = await service.previewLegacyReimport('residue:phase:gamma:v1', {
+        admits: () => ({ ok: true, value: true })
+      });
+      expect(reimportPreview.ok && reimportPreview.value).toMatchObject({
+        residueId: 'residue:phase:gamma:v1',
+        source: 'quarantine',
+        contentHash: hashOf(siblingBody)
+      });
+      await sqliteCatalog.writeFileIfAbsent(['phases', 'gamma', 'v1.json'], recordText('gamma', 'v1', siblingBody));
+      const importedManifest = `${JSON.stringify(
+        {
+          storeFormatVersion: 1,
+          entries: [
+            {
+              kind: 'phase',
+              id: 'gamma',
+              activeVersionId: 'v1',
+              draftVersionId: null,
+              createdAt: now,
+              updatedAt: now,
+              versions: [{ versionId: 'v1', contentHash: hashOf(siblingBody), createdAt: now, publishedAt: now, note: null }]
+            }
+          ]
+        },
+        null,
+        2
+      )}\n`;
+      expect((await sqliteCatalog.writeFileAtomic(['manifest.json'], importedManifest)).outcome).toBe('written');
+      expect(queryLegacySourceStanding(store.writerConnection, { kind: 'phase', id: 'gamma', versionId: 'v1' })).toEqual({
+        referenced: true,
+        reasons: ['catalog-head', 'published-version']
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('16-03: refuses real POSIX parent symlink escape and non-regular directory leaf with zero unlinks', async () => {
+    const h = harness();
+    const service = h.build();
+    const outsideDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-16-03-outside-')));
+    try {
+      const outsideTarget = path.join(outsideDir, 'escape-1.patch');
+      await fs.writeFile(outsideTarget, 'outside-secret');
+
+      const escapeFile = await seedArtifact(service, 'escape-1', { ownerRunId: 'run-esc' });
+      const dirLeafFile = await seedArtifact(service, 'dirleaf-1', { ownerRunId: 'run-dir' });
+
+      // Swap parent directory for an escaping symlink and swap the second leaf for a directory.
+      const escParent = path.dirname(escapeFile);
+      await fs.rm(escParent, { recursive: true, force: true });
+      await fs.symlink(outsideDir, escParent);
+      await fs.rm(dirLeafFile);
+      await fs.mkdir(dirLeafFile);
+
+      const op = await previewAndExecute(service, ['escape-1', 'dirleaf-1']);
+      expect(op.state).toBe('refused');
+      expect(outcomes(op)).toEqual({ 'escape-1': 'refused', 'dirleaf-1': 'refused' });
+      expect(op.targets.every((target) => target.reasonCode === 'containment-violation')).toBe(true);
+      expect(await fs.readFile(outsideTarget, 'utf8')).toBe('outside-secret');
+      expect((await fs.lstat(dirLeafFile)).isDirectory()).toBe(true);
+    } finally {
+      await fs.rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it('16-04: preserves primary original locator across multiple copies, backup/restore, relocation, and renumbering', async () => {
+    const attemptId = 'attempt-16-04';
+    const sessionId = 'session-16-04';
+    const policy: ArtifactAccessPolicy = {
+      admits: (request) => request.attemptId === attemptId && request.sessionId === sessionId
+    };
+    const artifactId = 'report_multi_1';
+    const body = 'original multi-copy report bytes\n';
+    const digestHex = sha256Hex(body);
+    const originalRel = path.join(...REPORT_DIR, 'report_multi_1.md');
+    const copiesDir = inWorkspace('.schegent', 'copies');
+    await fs.mkdir(copiesDir, { recursive: true });
+
+    const sourceDbPath = inWorkspace('.schegent', 'legacy-storage', 'sqlite', 'scope-16-04', 'schegent-state.db');
+    await fs.mkdir(path.dirname(sourceDbPath), { recursive: true });
+    const store = new SqliteApplicationStore({ databasePath: sourceDbPath, journalMode: 'wal', nowMs: () => now });
+
+    const buildOver = (conn: NodeSqliteConnection): ArtifactLifecycleService =>
+      createArtifactLifecycleService({
+        conn,
+        nowMs: () => now,
+        fs: new NodeLifecycleFs(),
+        probe: realProbe,
+        audit: { recordLifecycleMutation: () => undefined },
+        scanRoots: scanRoots(),
+        accessPolicy: policy,
+        resolveOwner: () => 'live',
+        newId,
+        workspaceRoot: workspace,
+        byteReader
+      });
+
+    let originalPath = '';
+    let copy1Path = '';
+    let copy2Path = '';
+    const accessRequest: QualifyAccessRequest = {
+      artifactId,
+      expectedDigest: { algorithm: 'sha256', value: digestHex },
+      attemptId,
+      sessionId,
+      mode: 'read'
+    };
+
+    try {
+      const service = buildOver(store.writerConnection);
+      originalPath = await seedArtifact(service, artifactId, {
+        relpath: originalRel,
+        body,
+        retentionClass: REPORT_CLASS,
+        storeKind: 'report'
+      });
+      expect(
+        service.addReference({
+          artifactId,
+          ownerType: 'attempt',
+          ownerId: attemptId,
+          purpose: 'phase-context',
+          protective: true
+        }).ok
+      ).toBe(true);
+
+      const handle = await service.qualifyAccess(accessRequest);
+      if (!handle.ok) throw new Error(`qualify refused: ${handle.refusal.code}`);
+      const c1 = await service.materializeCopy(handle.value, copiesDir);
+      const c2 = await service.materializeCopy(handle.value, copiesDir);
+      if (!c1.ok || !c2.ok) throw new Error('materializeCopy refused');
+      copy1Path = path.join(copiesDir, c1.value.fileName);
+      copy2Path = path.join(copiesDir, c2.value.fileName);
+
+      // 1. Backup and restore into a fresh target SQLite store.
+      const backup = await store.backupRestore.createOnlineBackup({
+        backupId: 'bkp-16-04',
+        scopeId: 'ws',
+        trustedRootDir: workspace,
+        relativeBackupDirSegments: ['.schegent', 'backups']
+      });
+      const restoredDbPath = inWorkspace('.schegent', 'restored', 'schegent-state.db');
+      await fs.mkdir(path.dirname(restoredDbPath), { recursive: true });
+      const restoredStore = new SqliteApplicationStore({ databasePath: restoredDbPath, journalMode: 'wal', nowMs: () => now });
+      try {
+        const restored = restoredStore.backupRestore.validateAndRestoreBackup({
+          backupDatabasePath: backup.backupDatabasePath,
+          manifest: backup.manifest,
+          trustedRootDir: workspace,
+          inspectExternalDependency: createWorkspaceExternalDependencyInspector(workspace)
+        });
+        expect(restored.outcome).toBe('restored');
+        const restoredRecords = new ArtifactRecordStore(restoredStore.writerConnection, () => now);
+        expect(restoredRecords.locatorOf(artifactId)?.uriOrRelpath).toBe(originalRel);
+        const restoredSvc = buildOver(restoredStore.writerConnection);
+        expect((await restoredSvc.qualifyAccess(accessRequest)).ok).toBe(true);
+      } finally {
+        restoredStore.close();
+      }
+    } finally {
+      store.close();
+    }
+
+    // 2. Relocate the legacy SQLite store into canonical global storage.
+    const globalRoot = inWorkspace('.schegent', 'global-storage', 'schegent.schegent');
+    await fs.mkdir(globalRoot, { recursive: true });
+    const relocation = await relocateLegacySqliteStore({
+      scopeId: 'scope-16-04',
+      globalStorageUri: globalRoot,
+      legacyStorageUri: inWorkspace('.schegent', 'legacy-storage'),
+      verifyPrimacy: () => Promise.resolve(true),
+      nowMs: () => now
+    });
+    expect(relocation.outcome, JSON.stringify(relocation)).toBe('relocated');
+    if (relocation.outcome !== 'relocated') return;
+
+    // 3. Reopen relocated DB, simulate location-ID renumbering putting copies lexicographically before original.
+    const relocatedConn = openStore(relocation.activeDatabasePath);
+    SchemaBootstrapService.bootstrapAndMigrate(relocatedConn, () => now);
+    const locations = relocatedConn.all<{ location_id: string; uri_or_relpath: string }>(
+      `SELECT location_id, uri_or_relpath FROM artifact_locations WHERE artifact_id = ? ORDER BY location_id`,
+      artifactId
+    );
+    expect(locations).toHaveLength(3);
+    const origRow = locations.find((loc) => loc.uri_or_relpath === originalRel);
+    const copyRows = locations.filter((loc) => loc.uri_or_relpath !== originalRel);
+    if (!origRow || copyRows.length !== 2) throw new Error('expected 1 original + 2 copies');
+    relocatedConn.run(
+      `UPDATE artifact_locations SET location_id = 'zzz-orig-renumbered', verified_at_ms = ? WHERE location_id = ?`,
+      now + 500,
+      origRow.location_id
+    );
+    relocatedConn.run(
+      `UPDATE artifact_locations SET location_id = '000#copy:renum-1', verified_at_ms = ? WHERE location_id = ?`,
+      now - 5_000,
+      copyRows[0]!.location_id
+    );
+    relocatedConn.run(
+      `UPDATE artifact_locations SET location_id = '001#copy:renum-2', verified_at_ms = ? WHERE location_id = ?`,
+      now - 4_000,
+      copyRows[1]!.location_id
+    );
+
+    const relocatedRecords = new ArtifactRecordStore(relocatedConn, () => now);
+    expect(relocatedRecords.locatorOf(artifactId)?.uriOrRelpath).toBe(originalRel);
+
+    // Mutate both materialized copies on disk: qualification & reconciliation MUST still inspect the original (untouched).
+    await fs.writeFile(copy1Path, 'tampered copy 1\n');
+    await fs.writeFile(copy2Path, 'tampered copy 2\n');
+    const relocatedSvc = buildOver(relocatedConn);
+    const qualifiedAfter = await relocatedSvc.qualifyAccess(accessRequest);
+    expect(qualifiedAfter.ok).toBe(true);
+    const reconciledAfter = await relocatedSvc.reconcileArtifact(artifactId);
+    expect(reconciledAfter.ok && reconciledAfter.value.availability).toBe('present');
+
+    // Release protective reference and delete: MUST unlink the original, leaving copies untouched.
+    expect(
+      relocatedSvc.releaseReference({
+        artifactId,
+        ownerType: 'attempt',
+        ownerId: attemptId,
+        purpose: 'phase-context',
+        reason: 'owner-durable'
+      }).ok
+    ).toBe(true);
+    const delOp = await previewAndExecute(relocatedSvc, [artifactId]);
+    expect(delOp.state).toBe('completed');
+    expect(outcomes(delOp)).toEqual({ [artifactId]: 'deleted' });
+    expect(await exists(originalPath)).toBe(false);
+    expect(await exists(copy1Path)).toBe(true);
+    expect(await exists(copy2Path)).toBe(true);
   });
 });

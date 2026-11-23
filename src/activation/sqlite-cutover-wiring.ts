@@ -37,6 +37,8 @@ import {
   buildSecretPort,
   disposeSqliteRuntimeResources,
   isChildOfActiveComposableRun,
+  isRecoveryEnvelopeProtectedForServices,
+  isRecoveryRunProtectedForServices,
   reportRelocationOutcome
 } from './sqlite-cutover-helpers';
 import {
@@ -187,6 +189,8 @@ export interface SqliteCutoverCoordinator {
   allocateAcpConnectionGeneration(): number | null;
   getProtectedRunIds(): ReadonlySet<string>;
   getDatabaseProtectedPaths(): readonly string[];
+  isRecoveryEnvelopeProtected(runSegment: string, handoverSegment: string): boolean;
+  isRecoveryRunProtected(runSegment: string): boolean;
   onTerminalRun(summary: TerminalRunSummary): void;
   completeRootExecutionLane(params: {
     readonly rootExecutionId: string;
@@ -395,7 +399,7 @@ async function openPrimarySqliteServices(
       },
       scanRoots: buildScanRoots(deps.workspaceRoot),
       accessPolicy: DENY_ALL_ACCESS_POLICY,
-      resolveOwner: buildOwnerResolver(deps.store),
+      resolveOwner: buildOwnerResolver(deps.store, sqliteStore.writerConnection),
       workspaceRoot: deps.workspaceRoot,
       workspaceId: scopeId,
       pinnedRunIds: deps.pinnedRunIds
@@ -446,12 +450,14 @@ async function openPrimarySqliteServices(
     });
 
     const liveLogIndex = createLiveLogIndex(sqliteStore.writerConnection);
+    const acpRuntimeStore = createSqliteAcpDurableRuntimeStore(sqliteStore.writerConnection, scopeId);
 
     const recoveryHandoff = createRecoveryHandoffService({
       conn: sqliteStore.writerConnection,
       lifecycle: artifactLifecycle,
       probe,
       envelopes: deps.envelopes,
+      acpSessionBindings: acpRuntimeStore.sessionBindings,
       clock: () => Date.now()
     });
     recoveryHandoff.reopen();
@@ -466,7 +472,8 @@ async function openPrimarySqliteServices(
       git: createExecFileGitRunner(),
       spawnCheck: createSpawnCheck({ environmentPolicy: () => readProcessEnvironmentPolicy(deps.workspaceRoot) }),
       clock: () => Date.now(),
-      random: (size) => randomBytes(size)
+      random: (size) => randomBytes(size),
+      authorizeApproval: () => false
     });
     try {
       await laneService.reconcile();
@@ -502,10 +509,6 @@ async function openPrimarySqliteServices(
       resolveExecutionRoot: (runId) => runLaneCoordinator.resolveExecutionRootSyncOrCached(runId),
       resolveLaneId: (runId) => runLaneCoordinator.resolveLaneIdForRun(runId)
     });
-    const acpRuntimeStore = createSqliteAcpDurableRuntimeStore(
-      sqliteStore.writerConnection,
-      scopeId
-    );
 
     const hostTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
     const reportingService = createReportingService({
@@ -535,7 +538,7 @@ async function openPrimarySqliteServices(
       cwd: deps.workspaceRoot
     });
 
-    const durableHandoffSeam = buildDurableHandoffSeam(artifactLifecycle);
+    const durableHandoffSeam = buildDurableHandoffSeam(artifactLifecycle, sqliteStore.writerConnection);
 
     workflowComposition = getOrCreateProductionWorkflowComposition(deps.store, {
       workspaceRoot: deps.workspaceRoot,
@@ -914,6 +917,9 @@ export function createSqliteCutoverCoordinator(
       activeServices?.acpRuntimeStore.allocateConnectionGeneration() ?? null,
     getProtectedRunIds: () => querySqliteProtectedRunIds(activeServices, reportSideEffectFailure),
     getDatabaseProtectedPaths,
+    isRecoveryEnvelopeProtected: (runSegment, handoverSegment) =>
+      isRecoveryEnvelopeProtectedForServices(activeServices, runSegment, handoverSegment),
+    isRecoveryRunProtected: (runSegment) => isRecoveryRunProtectedForServices(activeServices, runSegment),
     onTerminalRun(summary) {
       if (activeServices === null) return;
       activeServices.usageWiring.onTerminalRun(summary);

@@ -14,8 +14,8 @@
  */
 
 import type { HandoffRefusal } from '../../contracts/recovery-handoff/handoff-types';
-import { setHandoffPaused, type SetPausedResult } from './handoff-operator';
 import { handoffIdFor } from './handoff-identity';
+import type { SetPausedResult } from './handoff-operator';
 import { isNewerBuildStore } from './handoff-pins';
 import { prepareRevision, type HandoffWriteDeps, type PrepareResult } from './handoff-prepare';
 import { mapLegacyRecord, type LegacyHandoffRecord, type LegacyMapping } from './legacy-handoff-mapping';
@@ -47,13 +47,23 @@ function storeUnsupported(
   });
 }
 
-/** Contract `importLegacy`. */
+/**
+ * Contract `importLegacy` (`16-12`, FR-012):
+ * sets initial `paused` atomically on initial `INSERT` ONLY (`ON CONFLICT DO NOTHING`) so retrying
+ * a paused legacy drain preserves any intervening operator resume.
+ */
 export function importLegacyRecord(deps: HandoffWriteDeps, record: LegacyHandoffRecord): ImportLegacyResult {
   const mapping = mapLegacyRecord(record);
-  if (mapping.kind === 'invalid') return { ok: false, code: 'invalid', field: mapping.field };
+  if (mapping.kind === 'invalid') {
+    return { ok: false, code: mapping.code ?? 'invalid', field: mapping.field };
+  }
   if (mapping.kind === 'unsupported') return storeUnsupported(deps, mapping);
-  const prepared = prepareRevision(deps, mapping.lineage, mapping.cutoff, mapping.manifest, mapping.legacyProvenance);
-  if (!prepared.ok || !mapping.paused) return prepared;
-  const paused = setHandoffPaused(deps, prepared.handoffId, true);
-  return paused.ok ? prepared : paused;
+  return prepareRevision(
+    deps,
+    mapping.lineage,
+    mapping.cutoff,
+    mapping.manifest,
+    mapping.legacyProvenance,
+    mapping.paused
+  );
 }

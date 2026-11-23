@@ -140,6 +140,49 @@ describe('observation store (T016)', () => {
     expect(count('SELECT count(*) FROM accounting_observations')).toBe(3);
   });
 
+  it('caps historical observations together with unattributed under maxUnattributed without exhausting maxRetainedObservations or blocking attributed ingests (SR-A1)', () => {
+    const bounds = { maxUnattributed: 3, maxRetainedObservations: 10 };
+    const historicalObs = observation({
+      sourceKind: 'acp-usage-update',
+      sourceIdentity: null,
+      disposition: 'historical'
+    });
+    const unattributedObs = observation({ sourceIdentity: null });
+
+    // Mix 1 unattributed + 2 historical rows to reach the combined maxUnattributed cap of 3.
+    expect(ingestObservationRecord(conn, unattributedObs, ctx(bounds))).toMatchObject({
+      ok: true,
+      value: { disposition: 'unattributed' }
+    });
+    expect(ingestObservationRecord(conn, historicalObs, ctx(bounds))).toMatchObject({
+      ok: true,
+      value: { disposition: 'historical' }
+    });
+    expect(ingestObservationRecord(conn, historicalObs, ctx(bounds))).toMatchObject({
+      ok: true,
+      value: { disposition: 'historical' }
+    });
+
+    // Further historical and unattributed ingests are refused with unattributed-limit and never consume maxRetainedObservations.
+    for (let index = 0; index < 12; index += 1) {
+      const refusedHistorical = ingestObservationRecord(conn, historicalObs, ctx(bounds));
+      expect(refusedHistorical).toEqual({ ok: false, refusal: { code: 'unattributed-limit' } });
+    }
+    const refusedUnattributed = ingestObservationRecord(conn, unattributedObs, ctx(bounds));
+    expect(refusedUnattributed).toEqual({ ok: false, refusal: { code: 'unattributed-limit' } });
+    expect(gapCount('unattributed-limit', 'attempt-1')).toBe(13);
+    expect(count('SELECT count(*) FROM accounting_observations')).toBe(3);
+
+    // Attributed observations still ingest cleanly because historical replays could not saturate maxRetainedObservations.
+    const attributed = ingestObservationRecord(
+      conn,
+      observation({ sourceIdentity: 'run-1:phase-a:after-historical-cap' }),
+      ctx(bounds)
+    );
+    expect(attributed).toMatchObject({ ok: true, value: { disposition: 'accepted' } });
+    expect(count('SELECT count(*) FROM accounting_observations')).toBe(4);
+  });
+
   it('folds a new gap key into global once the key bound is reached', () => {
     const bounds = { maxGapKeys: 2 };
     for (const attemptId of ['a-1', 'a-2', 'a-3', 'a-4']) {
@@ -240,5 +283,82 @@ describe('observation store (T016)', () => {
     const result = ingestObservationRecord(conn, observation({ attemptId: '../escape' }), ctx());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.refusal).toEqual({ code: 'invalid-observation', detail: 'attemptId' });
+  });
+
+  it('keeps mild future skew up to 24 h as clock_anomaly = 1 and refuses beyond 24 h with an ingest-failed gap (16-05)', () => {
+    const exactLimit = '2026-11-11T12:00:00.000Z';
+    const mild = ingestObservationRecord(conn, observation({ sourceIdentity: 'skew:mild', eventUtc: exactLimit }), ctx());
+    expect(mild.ok).toBe(true);
+    expect(count("SELECT clock_anomaly FROM accounting_observations WHERE source_identity = 'skew:mild'")).toBe(1);
+
+    const beyondLimit = '2026-11-11T12:00:00.001Z';
+    const refused = ingestObservationRecord(conn, observation({ sourceIdentity: 'skew:far', eventUtc: beyondLimit }), ctx());
+    expect(refused).toEqual({ ok: false, refusal: { code: 'invalid-observation', detail: 'eventUtc' } });
+    expect(gapCount('ingest-failed', 'attempt-1')).toBe(1);
+    expect(count('SELECT count(*) FROM accounting_observations')).toBe(1);
+
+    const decadeAhead = ingestObservationRecord(
+      conn,
+      observation({ sourceIdentity: 'skew:decade', eventUtc: '2036-11-10T12:00:00.000Z' }),
+      ctx()
+    );
+    expect(decadeAhead).toEqual({ ok: false, refusal: { code: 'invalid-observation', detail: 'eventUtc' } });
+    expect(gapCount('ingest-failed', 'attempt-1')).toBe(2);
+    expect(count('SELECT count(*) FROM accounting_observations')).toBe(1);
+  });
+
+  it('caps distinct units per (attempt_id, measure) at ingest and counts an ingest-failed gap on overflow (16-05)', () => {
+    const currencyOf = (index: number): string =>
+      `C${String.fromCharCode(65 + Math.floor(index / 26))}${String.fromCharCode(65 + (index % 26))}`;
+
+    for (let index = 0; index < DEFAULT_ACCOUNTING_BOUNDS.maxUnitsPerAttemptMeasure; index += 1) {
+      const res = ingestObservationRecord(
+        conn,
+        observation({
+          sourceIdentity: `unit-cap:${String(index)}`,
+          invocationOrdinal: index,
+          measures: [{ measure: 'cost', quantity: '0.01', unit: currencyOf(index), provenance: 'provider-reported' }]
+        }),
+        ctx()
+      );
+      expect(res.ok, `unit ${currencyOf(index)} should succeed`).toBe(true);
+    }
+
+    // Reusing an already-recorded unit on the same attempt remains allowed.
+    const reuse = ingestObservationRecord(
+      conn,
+      observation({
+        sourceIdentity: 'unit-cap:reuse',
+        invocationOrdinal: 99,
+        measures: [{ measure: 'cost', quantity: '0.02', unit: currencyOf(0), provenance: 'provider-reported' }]
+      }),
+      ctx()
+    );
+    expect(reuse.ok).toBe(true);
+
+    // Introducing a 17th distinct currency on the same attempt is refused and counted as ingest-failed.
+    const overflow = ingestObservationRecord(
+      conn,
+      observation({
+        sourceIdentity: 'unit-cap:overflow',
+        invocationOrdinal: 100,
+        measures: [{ measure: 'cost', quantity: '0.01', unit: currencyOf(16), provenance: 'provider-reported' }]
+      }),
+      ctx()
+    );
+    expect(overflow).toEqual({ ok: false, refusal: { code: 'invalid-observation', detail: 'unit' } });
+    expect(gapCount('ingest-failed', 'attempt-1')).toBe(1);
+
+    // A separate measure (`credits`) on the same attempt has its own distinct-unit budget.
+    const creditOk = ingestObservationRecord(
+      conn,
+      observation({
+        sourceIdentity: 'unit-cap:credit-0',
+        invocationOrdinal: 101,
+        measures: [{ measure: 'credits', quantity: '1.0', unit: 'acme.credits', provenance: 'derived' }]
+      }),
+      ctx()
+    );
+    expect(creditOk.ok).toBe(true);
   });
 });

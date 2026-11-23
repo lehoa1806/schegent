@@ -3,6 +3,7 @@
 // unfinished deletion under its own id and settles every in-flight or ambiguous preservation.
 
 import { describe, expect, it } from 'vitest';
+import { classifyExternalArtifactDependencies } from '../../../src/services/sqlite-store';
 import { checkpointPath, FULL, lifecycleFixture, NOW, seedCheckpoint, type LifecycleFixture } from './lifecycle-fixture';
 
 const LEASE_TTL_MARGIN_MS = 10 * 60 * 1000;
@@ -106,5 +107,71 @@ describe('reconcileAfterRestart', () => {
     expect(fx.conn.scalar<string>(`SELECT state FROM preservation_operations WHERE operation_id = 'pres-1'`)).toBe(
       'copying'
     );
+  });
+
+  it('FR-R7-16 (16-01): repairs pre-existing present and missing deletion splits with zero unlinks and restores backup tombstone classification', async () => {
+    const fx = lifecycleFixture();
+    const service = fx.build();
+    seedCheckpoint(service, fx.fs, 'split-present');
+    seedCheckpoint(service, fx.fs, 'split-missing');
+    fx.fs.remove(checkpointPath('split-present'));
+    fx.fs.remove(checkpointPath('split-missing'));
+    fx.conn.run(`UPDATE artifact_lifecycle SET availability = 'missing' WHERE artifact_id = 'split-missing'`);
+    fx.conn.run(
+      `INSERT INTO deletion_operations
+         (operation_id, workspace_id, preview_id, state, fence_token, planned_count, created_at_ms, updated_at_ms, finished_at_ms)
+       VALUES ('op-pre-split', 'workspace', 'prev-split', 'completed', 'fence-split', 2, ?, ?, ?)`,
+      NOW,
+      NOW,
+      NOW
+    );
+    fx.conn.run(
+      `INSERT INTO deletion_targets (operation_id, target_ordinal, artifact_id, target_key, outcome, reason_code, updated_at_ms)
+       VALUES ('op-pre-split', 0, 'split-present', '.schegent/checkpoints/run-1/split-present.patch', 'deleted', NULL, ?),
+              ('op-pre-split', 1, 'split-missing', '.schegent/checkpoints/run-1/split-missing.patch', 'already-absent', NULL, ?)`,
+      NOW,
+      NOW
+    );
+    fx.fs.calls.length = 0;
+
+    // Before repair, FR-R7-14 backup classification sees both split rows as required-live.
+    const beforeDeps = classifyExternalArtifactDependencies(fx.conn);
+    expect(beforeDeps.map((dep) => [dep.artifactId, dep.disposition])).toEqual([
+      ['split-missing', 'required-live'],
+      ['split-present', 'required-live']
+    ]);
+
+    const first = await service.reconcileAfterRestart(FULL);
+    expect(first).toEqual({
+      ok: true,
+      value: {
+        resumedOperations: [],
+        ambiguous: 0,
+        diagnostics: [{ code: 'reconciled-operation', artifactId: null, detail: 'deletion accounting repaired: 2' }]
+      }
+    });
+    expect(fx.fs.calls).toEqual([]);
+    expect(fx.conn.scalar<string>(`SELECT availability FROM artifact_lifecycle WHERE artifact_id = 'split-present'`)).toBe('deleted');
+    expect(fx.conn.scalar<string>(`SELECT availability FROM artifact_lifecycle WHERE artifact_id = 'split-missing'`)).toBe('deleted');
+    expect(
+      fx.conn.all<{ artifact_id: string; outcome: string }>(
+        `SELECT artifact_id, outcome FROM deletion_targets WHERE operation_id = 'op-pre-split' ORDER BY target_ordinal`
+      )
+    ).toEqual([
+      { artifact_id: 'split-present', outcome: 'deleted' },
+      { artifact_id: 'split-missing', outcome: 'already-absent' }
+    ]);
+
+    // After repair, FR-R7-14 backup classification treats both as tombstoned-deleted.
+    const afterDeps = classifyExternalArtifactDependencies(fx.conn);
+    expect(afterDeps.map((dep) => [dep.artifactId, dep.disposition])).toEqual([
+      ['split-missing', 'tombstoned-deleted'],
+      ['split-present', 'tombstoned-deleted']
+    ]);
+
+    // Repeating reconcileAfterRestart is a clean zero-FS no-op.
+    const second = await service.reconcileAfterRestart(FULL);
+    expect(second).toEqual({ ok: true, value: { resumedOperations: [], ambiguous: 0, diagnostics: [] } });
+    expect(fx.fs.calls).toEqual([]);
   });
 });

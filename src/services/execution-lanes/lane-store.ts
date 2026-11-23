@@ -48,6 +48,8 @@ export interface LaneTransition {
   readonly now: string;
   /** Recorded as the lane's owner generation. */
   readonly generation: number;
+  /** When `true`, refuses `lane-pinned` if the lane is currently pinned (concurrent pin guard). */
+  readonly requireUnpinned?: boolean;
 }
 
 export interface LaneListQuery {
@@ -138,7 +140,7 @@ export class LaneStore {
     return row === undefined ? null : laneFromRow(row);
   }
 
-  /** Moves a lane to `to` only from one of `from`; otherwise `lane-state-invalid` or `lane-not-found`. */
+  /** Moves a lane to `to` only from one of `from`; otherwise `lane-state-invalid`, `lane-pinned` or `lane-not-found`. */
   public transitionLane(
     workspaceId: string,
     laneId: string,
@@ -147,9 +149,10 @@ export class LaneStore {
     change: LaneTransition
   ): LaneResult<LaneRecord> {
     return inImmediateTransaction(this.conn, () => {
+      const pinGuard = change.requireUnpinned === true ? ' AND pinned = 0' : '';
       const updated = this.conn.run(
         `UPDATE execution_lanes SET state = ?, state_reason = ?, owner_generation = ?, updated_at = ?
-         WHERE workspace_id = ? AND lane_id = ? AND state IN (${placeholders(from.length)})`,
+         WHERE workspace_id = ? AND lane_id = ? AND state IN (${placeholders(from.length)})${pinGuard}`,
         to,
         change.reason,
         change.generation,
@@ -160,7 +163,9 @@ export class LaneStore {
       );
       const lane = this.getLane(workspaceId, laneId);
       if (lane === null) return laneRefused<LaneRecord>('lane-not-found');
-      return updated.changes === 1 ? laneOk(lane) : laneRefused<LaneRecord>('lane-state-invalid');
+      if (updated.changes === 1) return laneOk(lane);
+      if (change.requireUnpinned === true && lane.pinned) return laneRefused<LaneRecord>('lane-pinned');
+      return laneRefused<LaneRecord>('lane-state-invalid');
     });
   }
 
@@ -216,7 +221,8 @@ export class LaneStore {
       where.push('(created_at > ? OR (created_at = ? AND lane_id > ?))');
       params.push(position.createdAt, position.createdAt, position.id);
     }
-    if (query.states !== undefined && query.states.length > 0) {
+    if (query.states !== undefined) {
+      if (query.states.length === 0) return laneOk({ items: [], nextCursor: null });
       where.push(`state IN (${placeholders(query.states.length)})`);
       params.push(...query.states);
     }
@@ -289,6 +295,155 @@ export class LaneStore {
         workspaceId
       )
       .map(operationFromRow);
+  }
+
+  /** Most recently inserted operation for a lane (using rowid tie-break for identical timestamps). */
+  public latestOperation(laneId: string): OperationRecord | null {
+    const row = this.conn.get<OperationRow>(
+      `SELECT ${OPERATION_COLUMNS} FROM lane_operations
+       WHERE lane_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1`,
+      laneId
+    );
+    return row === undefined ? null : operationFromRow(row);
+  }
+
+  /** Whether `laneId` currently has a `pending` operation of `kind`. */
+  public hasPendingOperation(laneId: string, kind: LaneOperationKind): boolean {
+    const row = this.conn.get<{ found: number }>(
+      `SELECT 1 AS found FROM lane_operations WHERE lane_id = ? AND kind = ? AND status = 'pending' LIMIT 1`,
+      laneId,
+      kind
+    );
+    return row !== undefined;
+  }
+
+  /**
+   * Whether `laneId`'s provisioning failed and never succeeded (so its worktree may never have
+   * been created or registered in Git).
+   */
+  public isProvisionFailureWithoutSuccess(laneId: string): boolean {
+    const row = this.conn.get<{ failed_only: number }>(
+      `SELECT CASE
+         WHEN EXISTS (SELECT 1 FROM lane_operations WHERE lane_id = ? AND kind = 'provision' AND status = 'failed')
+          AND NOT EXISTS (SELECT 1 FROM lane_operations WHERE lane_id = ? AND kind = 'provision' AND status = 'succeeded')
+         THEN 1 ELSE 0 END AS failed_only`,
+      laneId,
+      laneId
+    );
+    return row?.failed_only === 1;
+  }
+
+  /**
+   * Prunes non-pending `lane_operations` beyond `maxPerLane` per lane in `workspaceId`, keeping
+   * the newest rows and never removing `pending` operations. Call inside `fenced(...)`.
+   */
+  public pruneExcessOperations(workspaceId: string, maxPerLane: number): number {
+    return inImmediateTransaction(this.conn, () => {
+      const overCap = this.conn.all<{ lane_id: string }>(
+        `SELECT lane_id FROM lane_operations
+         WHERE workspace_id = ? AND status <> 'pending'
+         GROUP BY lane_id
+         HAVING COUNT(*) > ?`,
+        workspaceId,
+        maxPerLane
+      );
+      let pruned = 0;
+      for (const { lane_id } of overCap) {
+        pruned += this.conn.run(
+          `DELETE FROM lane_operations
+           WHERE lane_id = ? AND status <> 'pending'
+             AND rowid NOT IN (
+               SELECT rowid FROM lane_operations
+               WHERE lane_id = ? AND status <> 'pending'
+               ORDER BY started_at DESC, rowid DESC
+               LIMIT ?
+             )`,
+          lane_id,
+          lane_id,
+          maxPerLane
+        ).changes;
+      }
+      return pruned;
+    });
+  }
+
+  /**
+   * Prunes unpinned `removed` lanes that hold no pending operations, no open requests, no
+   * reachable candidates, and no recovery receipts or journals, when older than `cutoffIso` or
+   * exceeding `maxTerminalLanes`. `preparation-failed` lanes are never pruned here because their
+   * worktree or `baseRef` may still exist on disk/Git until explicitly cleaned up to `removed`.
+   * Call inside `fenced(...)`.
+   */
+  public pruneEligibleTerminalLanes(
+    workspaceId: string,
+    cutoffIso: string,
+    maxTerminalLanes: number
+  ): {
+    readonly lanesPruned: number;
+    readonly operationsPruned: number;
+    readonly requestsPruned: number;
+    readonly verificationResultsPruned: number;
+  } {
+    return inImmediateTransaction(this.conn, () => {
+      const eligible = this.conn.all<{ lane_id: string; updated_at: string }>(
+        `SELECT l.lane_id, l.updated_at
+         FROM execution_lanes l
+         WHERE l.workspace_id = ?
+           AND l.state = 'removed'
+           AND l.pinned = 0
+           AND NOT EXISTS (
+             SELECT 1 FROM lane_operations o
+             WHERE o.lane_id = l.lane_id AND o.status = 'pending'
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM lane_candidates c
+             WHERE c.lane_id = l.lane_id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM lane_review_receipts r
+             WHERE r.lane_id = l.lane_id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM lane_integration_requests req
+             WHERE req.lane_id = l.lane_id
+               AND req.state IN ('queued', 'verifying', 'awaiting-review', 'landing', 'blocked', 'uncertain')
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM lane_integration_requests req
+             JOIN lane_integration_journal j ON j.request_id = req.request_id
+             WHERE req.lane_id = l.lane_id
+           )
+         ORDER BY l.updated_at ASC, l.lane_id ASC`,
+        workspaceId
+      );
+      const excess = Math.max(0, eligible.length - maxTerminalLanes);
+      const selected = eligible.filter((row, index) => index < excess || row.updated_at < cutoffIso);
+      let lanesPruned = 0;
+      let operationsPruned = 0;
+      let requestsPruned = 0;
+      let verificationResultsPruned = 0;
+      for (const { lane_id } of selected) {
+        verificationResultsPruned += this.conn.run(
+          `DELETE FROM lane_verification_results
+           WHERE request_id IN (SELECT request_id FROM lane_integration_requests WHERE lane_id = ?)`,
+          lane_id
+        ).changes;
+        requestsPruned += this.conn.run(
+          'DELETE FROM lane_integration_requests WHERE lane_id = ?',
+          lane_id
+        ).changes;
+        operationsPruned += this.conn.run(
+          'DELETE FROM lane_operations WHERE lane_id = ?',
+          lane_id
+        ).changes;
+        lanesPruned += this.conn.run(
+          'DELETE FROM execution_lanes WHERE workspace_id = ? AND lane_id = ?',
+          workspaceId,
+          lane_id
+        ).changes;
+      }
+      return { lanesPruned, operationsPruned, requestsPruned, verificationResultsPruned };
+    });
   }
 
   // ---- candidates ----

@@ -134,3 +134,244 @@ describe('FR-R6-F06 accounting reads at 100,000 attempts (NFR-003, SC-006)', () 
     TEST_TIMEOUT_MS
   );
 });
+
+const RETENTION_BOUND_OBSERVATIONS = DEFAULT_ACCOUNTING_BOUNDS.maxRetainedObservations;
+const RETENTION_BOUND_ATTEMPTS = RETENTION_BOUND_OBSERVATIONS / MEASURES_PER_ATTEMPT;
+const RETENTION_WARMUP_SAMPLES = 5;
+const RETENTION_MEASURED_SAMPLES = 30;
+
+function percentile(sorted: readonly number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return Number((sorted[index] ?? 0).toFixed(2));
+}
+
+describe('FR-R7-16 (16-07) accounting reads at the 1,000,000-observation retention bound', () => {
+  it(
+    'measures 200-row read latency, synchronous host event-loop blocking, and between-statement abort at 1,000,000 retained observations',
+    async () => {
+      const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
+      SchemaBootstrapService.bootstrapAndMigrate(conn, () => Date.parse(NOW));
+
+      const seedStarted = performance.now();
+      conn.exec('BEGIN IMMEDIATE');
+      conn.run(
+        `INSERT INTO accounting_revisions (revision, committed_utc, cause, cutoff_ingest_seq, policy_version, calculation_version)
+         VALUES (1, ?, 'ingest', ?, 1, 1)`,
+        NOW,
+        RETENTION_BOUND_OBSERVATIONS
+      );
+      conn.run(
+        `WITH RECURSIVE cnt(x) AS (
+           SELECT 0
+           UNION ALL
+           SELECT x + 1 FROM cnt WHERE x + 1 < ?
+         )
+         INSERT INTO accounting_attempts (
+           attempt_id, root_id, workspace_id, backend, model, workflow_revision, phase_id, outcome, first_event_utc, last_event_utc
+         )
+         SELECT
+           'att-' || x,
+           'root-' || (x / 4),
+           'ws-perf-1m',
+           CASE WHEN x % 2 = 0 THEN 'claude' ELSE 'codex' END,
+           CASE x % 4 WHEN 0 THEN 'model-a' WHEN 1 THEN 'model-b' WHEN 2 THEN 'model-c' ELSE 'model-d' END,
+           'wf-1',
+           'phase-' || printf('%03d', x % 500),
+           'succeeded',
+           '2026-11-10T10:' || printf('%02d', x % 60) || ':00.000Z',
+           '2026-11-10T10:' || printf('%02d', x % 60) || ':01.000Z'
+         FROM cnt`,
+        RETENTION_BOUND_ATTEMPTS
+      );
+      conn.run(
+        `WITH RECURSIVE cnt(x) AS (
+           SELECT 0
+           UNION ALL
+           SELECT x + 1 FROM cnt WHERE x + 1 < ?
+         )
+         INSERT INTO accounting_observations (
+           observation_id, ingest_seq, dedup_key, content_digest, producer_namespace, source_kind,
+           source_identity, observation_revision, workspace_id, root_id, attempt_id, invocation_ordinal,
+           counter_scope, adapter_version, normalization_version, backend, model_requested, model_reported,
+           provider_session_ref, workflow_revision, phase_id, event_utc, observed_utc, ingested_utc,
+           ingested_monotonic_ms, clock_anomaly, disposition, uncertainty_reason
+         )
+         SELECT
+           'obs-' || x,
+           x + 1,
+           'dk-' || x,
+           printf('%064x', x),
+           'schegent.phase-end/1',
+           'phase-end',
+           'perf1m:' || x,
+           1,
+           'ws-perf-1m',
+           'root-' || (x / 16),
+           'att-' || (x / 4),
+           x % 4,
+           'invocation-delta',
+           'claude/1',
+           1,
+           CASE WHEN (x / 4) % 2 = 0 THEN 'claude' ELSE 'codex' END,
+           NULL,
+           CASE (x / 4) % 4 WHEN 0 THEN 'model-a' WHEN 1 THEN 'model-b' WHEN 2 THEN 'model-c' ELSE 'model-d' END,
+           NULL,
+           'wf-1',
+           'phase-' || printf('%03d', (x / 4) % 500),
+           '2026-11-10T10:' || printf('%02d', (x / 4) % 60) || ':00.000Z',
+           '2026-11-10T10:' || printf('%02d', (x / 4) % 60) || ':01.000Z',
+           ?,
+           1,
+           0,
+           'accepted',
+           NULL
+         FROM cnt`,
+        RETENTION_BOUND_OBSERVATIONS,
+        NOW
+      );
+      conn.run(
+        `WITH RECURSIVE cnt(x) AS (
+           SELECT 0
+           UNION ALL
+           SELECT x + 1 FROM cnt WHERE x + 1 < ?
+         )
+         INSERT INTO accounting_contributions (
+           attempt_id, invocation_ordinal, measure, unit, quantity, completeness, provenance, cost_origin, selected_observation_id, from_revision
+         )
+         SELECT
+           'att-' || (x / 4),
+           0,
+           CASE x % 4
+             WHEN 0 THEN 'input_tokens'
+             WHEN 1 THEN 'output_tokens'
+             WHEN 2 THEN 'cache_read_tokens'
+             ELSE 'cost'
+           END,
+           CASE x % 4 WHEN 3 THEN 'USD' ELSE 'count' END,
+           CASE x % 4
+             WHEN 0 THEN 100 + ((x / 4) % 1000)
+             WHEN 1 THEN 40 + ((x / 4) % 97)
+             WHEN 2 THEN (x / 4) % 13
+             ELSE ((x / 4) % 1000) * 1000 + 125
+           END,
+           'known',
+           'provider-reported',
+           CASE x % 4 WHEN 3 THEN 'reported' ELSE NULL END,
+           'obs-' || x,
+           1
+         FROM cnt`,
+        RETENTION_BOUND_OBSERVATIONS
+      );
+      conn.exec('COMMIT');
+      const seedMs = performance.now() - seedStarted;
+
+      expect(Number(conn.scalar('SELECT count(*) FROM accounting_observations'))).toBe(RETENTION_BOUND_OBSERVATIONS);
+      expect(Number(conn.scalar('SELECT count(*) FROM accounting_contributions WHERE to_revision IS NULL'))).toBe(
+        RETENTION_BOUND_OBSERVATIONS
+      );
+
+      const service = createUsageAccountingService({
+        conn,
+        nowUtc: () => NOW,
+        monotonicMs: () => performance.now(),
+        workspaceId: 'ws-perf-1m'
+      });
+
+      const request = (cursor: string | undefined) => ({
+        groupBy: ['phaseId'],
+        filters: { backend: 'claude' },
+        from: '2026-11-10T00:00:00Z',
+        to: '2026-11-11T00:00:00Z',
+        limit: PAGE_ROWS,
+        ...(cursor === undefined ? {} : { cursor })
+      });
+
+      const coldStarted = performance.now();
+      const cold = service.query(request(undefined));
+      const coldMs = performance.now() - coldStarted;
+      if (!cold.ok) throw new Error(cold.refusal.code);
+      expect(cold.value.rows).toHaveLength(PAGE_ROWS);
+
+      let cursor: string | undefined;
+      for (let i = 0; i < RETENTION_WARMUP_SAMPLES; i += 1) {
+        const page = service.query(request(cursor));
+        if (!page.ok) throw new Error(page.refusal.code);
+        cursor = page.value.nextCursor ?? undefined;
+      }
+
+      const warmLatencies: number[] = [];
+      const eventLoopBlocks: number[] = [];
+      let maxBytes = 0;
+      for (let i = 0; i < RETENTION_MEASURED_SAMPLES; i += 1) {
+        let timerFiredAt = 0;
+        const timerScheduledAt = performance.now();
+        const timerDone = new Promise<void>((resolve) => {
+          setTimeout(() => {
+            timerFiredAt = performance.now();
+            resolve();
+          }, 0);
+        });
+        const t0 = performance.now();
+        const page = service.query(request(cursor));
+        const elapsed = performance.now() - t0;
+        if (!page.ok) throw new Error(page.refusal.code);
+        maxBytes = Math.max(maxBytes, Buffer.byteLength(JSON.stringify(page.value), 'utf8'));
+        cursor = page.value.nextCursor ?? undefined;
+        await timerDone;
+        warmLatencies.push(elapsed);
+        eventLoopBlocks.push(timerFiredAt - timerScheduledAt);
+      }
+
+      // Between-statement abort contract: an already-aborted signal refuses immediately with zero query blocking.
+      const aborted = new AbortController();
+      aborted.abort();
+      const abortStart = performance.now();
+      const abortResult = service.query(request(undefined), aborted.signal);
+      const abortMs = performance.now() - abortStart;
+      expect(abortResult).toEqual({ ok: false, refusal: { code: 'deadline-exceeded' } });
+
+      const sortedLatencies = [...warmLatencies].sort((a, b) => a - b);
+      const sortedBlocks = [...eventLoopBlocks].sort((a, b) => a - b);
+      const report = {
+        benchmark: 'retention-bound-1m-observations',
+        platform: `${os.platform()}-${os.arch()}`,
+        cpu: os.cpus().at(0)?.model ?? 'unknown',
+        node: process.version,
+        fixture: {
+          observations: RETENTION_BOUND_OBSERVATIONS,
+          attempts: RETENTION_BOUND_ATTEMPTS,
+          openContributions: RETENTION_BOUND_OBSERVATIONS,
+          phases: PHASE_COUNT,
+          backends: BACKENDS.length,
+          models: MODELS.length,
+          pageRows: PAGE_ROWS,
+          warmupSamples: RETENTION_WARMUP_SAMPLES,
+          measuredSamples: RETENTION_MEASURED_SAMPLES
+        },
+        seedMs: Number(seedMs.toFixed(0)),
+        coldMs: Number(coldMs.toFixed(2)),
+        warm: {
+          p50Ms: percentile(sortedLatencies, 50),
+          p95Ms: percentile(sortedLatencies, 95),
+          p99Ms: percentile(sortedLatencies, 99),
+          maxMs: percentile(sortedLatencies, 100)
+        },
+        hostEventLoopBlocking: {
+          p50Ms: percentile(sortedBlocks, 50),
+          p95Ms: percentile(sortedBlocks, 95),
+          p99Ms: percentile(sortedBlocks, 99),
+          maxMs: percentile(sortedBlocks, 100)
+        },
+        abortedPreflightMs: Number(abortMs.toFixed(3)),
+        maxResponseBytes: maxBytes
+      };
+      console.info(JSON.stringify(report));
+
+      expect(maxBytes).toBeLessThanOrEqual(MAX_RESPONSE_BYTES);
+      expect(report.warm.maxMs).toBeLessThan(DEFAULT_ACCOUNTING_BOUNDS.queryDeadlineMs);
+      conn.close();
+    },
+    TEST_TIMEOUT_MS
+  );
+});
